@@ -507,10 +507,16 @@ class AdminPrefixRegistry:
             if command in {'help','도움말'}:
                 from functions.admin_help_view import AdminHelpView
                 view=AdminHelpView(self.bot,message.author.id,NATIONAL_COMMANDS,message.guild)
-                await message.author.send(embed=view.build_embed(),view=view)
+                await session.edit(embed=view.build_embed(),view=view)
+                session = None
             elif command in COMMANDS:
                 result=await asyncio.to_thread(AdminCommandsManager(self.bot).execute,str(message.author.id),command,arguments)
-                await self.send_result(message.author,result,command)
+                response=admin_response(result,f'Inazina · ${command}')
+                if 'file' in response:
+                    await self.send_result(message.author,result,command)
+                else:
+                    await session.edit(embed=response['embed'])
+                session = None
             elif command in NATIONAL_COMMANDS and (arguments or command in READ_ONLY):
                 if command=='주총':
                     raise ValueError('$주총은 인자 없이 실행한 뒤 DM 입력 창을 사용해주세요.')
@@ -527,7 +533,12 @@ class AdminPrefixRegistry:
                     await session.edit(embed=view.build_embed(),view=view)
                     session = None
                 else:
-                    await self.send_result(message.author,result,command)
+                    response=admin_response(result,f'Inazina · ${command}')
+                    if 'file' in response:
+                        await self.send_result(message.author,result,command)
+                    else:
+                        await session.edit(embed=response['embed'])
+                    session = None
             else:
                 if command=='사건' and arguments:
                     raise ValueError('$사건은 인자 없이 실행해주세요. 모든 설정은 모달에서 입력합니다.')

@@ -12,6 +12,8 @@ COMMODITIES = ('금','은','백금','팔라듐','구리','알루미늄','니켈'
 
 class CatalogManager:
     VERSION = 'inazina_catalog_v1'
+    CATALOG_SIZE = 25
+    FOREIGN_PER_CURRENCY = 5
     def __init__(self, db):
         self.db = db
 
@@ -22,7 +24,7 @@ class CatalogManager:
             if conn.execute('SELECT 1 FROM settings WHERE key=?', (version,)).fetchone():
                 return False
             parents = []
-            for index in range(1, 51):
+            for index in range(1, self.CATALOG_SIZE + 1):
                 code, parent_code = f'INZPR{index:03d}', f'INZST{index:03d}'
                 if self.db.code_locations(conn, code):
                     raise ValueError(f'우선주 기본 종목 코드 충돌: {code}')
@@ -52,13 +54,13 @@ class CatalogManager:
                     raise ValueError('외화 발행 대금을 받을 외환통장 상품이 필요합니다.')
                 if not conn.execute('SELECT 1 FROM fx_accounts WHERE user_id=? AND currency_code=?',(TREASURY_USER_ID,currency)).fetchone():
                     conn.execute('INSERT INTO fx_accounts(account_number,user_id,product_code,currency_code,last_interest_epoch) VALUES (?,?,?,?,?)',('FXA'+uuid.uuid4().hex[:20].upper(),TREASURY_USER_ID,product[0],currency,time.time()))
-                for i in range(1,11):
+                for i in range(1, self.FOREIGN_PER_CURRENCY + 1):
                     stock,spot=f'INZ{currency}ST{i:03d}',f'INZ{currency}CM{i:03d}'
                     for code in (stock,spot):
                         if self.db.code_locations(conn,code):
                             raise ValueError(f'외화 기본 종목 코드 충돌: {code}')
             for currency,label,base in currencies:
-                for i in range(1,11):
+                for i in range(1, self.FOREIGN_PER_CURRENCY + 1):
                     price=base+base*i//10
                     conn.execute('INSERT INTO company(company_code,name,industry,capital,total_shares,share_price,max_shareholder_id,exchange_id,quote_currency) VALUES (?,?,?,?,?,?,?,?,?)',
                         (f'INZ{currency}ST{i:03d}',f'{label} 결제 {SECTORS[i-1]} 주식',SECTORS[i-1],price*1000000,1000000,price,TREASURY_USER_ID,f'INZ_{currency}',currency))
@@ -73,11 +75,11 @@ class CatalogManager:
             if conn.execute("SELECT 1 FROM settings WHERE key=?", (self.VERSION,)).fetchone():
                 return False
             # Never overwrite an operator-created listing with the same code.
-            codes = [f'INZ{k}{i:03d}' for k in ('ST','ETF','CB','FU','MF','IF','CM','TB','OP','SV','LN','FX') for i in range(1,51)]
+            codes = [f'INZ{k}{i:03d}' for k in ('ST','ETF','CB','FU','MF','IF','CM','TB','OP','SV','LN','FX') for i in range(1, self.CATALOG_SIZE + 1)]
             for code in codes:
                 if self.db.code_locations(conn, code):
                     raise ValueError(f"기본 상품 코드가 기존 상품과 겹칩니다: {code}")
-            for i in range(1,51):
+            for i in range(1, self.CATALOG_SIZE + 1):
                 sector, brand = SECTORS[(i-1)//5], BRANDS[(i-1)%5]
                 stock, price = f'INZST{i:03d}', 1000+i*120
                 conn.execute("INSERT INTO company(company_code,name,industry,capital,total_shares,share_price,max_shareholder_id,exchange_id) VALUES (?,?,?,?,?,?,?,?)",
@@ -104,7 +106,7 @@ class CatalogManager:
                                      (f'Inazina 지수 ETF {i:02d} · {leverage:+g}배 · {cycle}초',leverage,cycle,code))
                     if kind == 'mutual_fund':
                         for offset in range(3):
-                            j = (i-1+offset)%50+1
+                            j = (i-1+offset) % self.CATALOG_SIZE + 1
                             conn.execute("INSERT INTO fund_components VALUES (?,?,?,?)", (code,f'INZST{j:03d}',1/3,1000+j*120))
                 conn.execute("INSERT INTO treasury_bond_products(product_code,name,annual_rate,maturity_days,face_value,exchange_id,market_price,total_supply) VALUES (?,?,?,?,?,?,?,?)",
                              (f'INZTB{i:03d}',f'Inazina 국채 {30+i*7}일 {i:02d}호',3+(i%10)*.1,30+i*7,1000,'BOND',1000,1_000_000_000))
@@ -124,7 +126,7 @@ class CatalogManager:
                              (f'INZLN{i:03d}',f'{brand} {sector} 대출 {i:02d}호',5+(i%10)*.3,1_000_000,30+i*7,86400,500+i,'Inazina 은행'))
             initial = [('USD','게임 달러','미국',1500),('KRW','게임 원','대한민국',1),('EUR','게임 유로','유럽연합',1650),
                        ('JPY','게임 엔','일본',10),('GBP','게임 파운드','영국',1900)]
-            initial += [(f'IZC{i:02d}',f'이자니아 {i:02d} 통화',f'이자니아 연방 {i:02d}',100+i*25) for i in range(1,46)]
+            initial += [(f'IZC{i:02d}',f'이자니아 {i:02d} 통화',f'이자니아 연방 {i:02d}',100+i*25) for i in range(1,21)]
             for i,(currency,name,country,price) in enumerate(initial,1):
                 code = f'FX_{currency}'
                 if conn.execute("SELECT 1 FROM currencies WHERE code=?",(currency,)).fetchone():

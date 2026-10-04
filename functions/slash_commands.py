@@ -8,7 +8,6 @@ import uuid
 from database.user_db import TREASURY_USER_ID
 from functions.admin_access import BOOTSTRAP_ADMIN_IDS, resolve_user_role
 from functions.interaction_reliability import retry_discord_request
-from managers.market_manager import EXCHANGE_INDEX_PREFIX
 from functions.discord_views import (
     AllAssetsView,
     AccountCloseView,
@@ -25,9 +24,7 @@ from functions.discord_views import (
     RegistrationModal,
 )
 from functions.registration import RegistrationRequired
-from functions.admin_views import MarketEventModal
-from managers.investment_manager import FUND_TYPES, PRODUCT_NAMES
-from managers.rate_manager import RateManager
+from managers.investment_manager import FUND_TYPES
 from managers.fx_manager import display_units
 
 
@@ -182,10 +179,9 @@ class SlashCommandRegistry:
         success, message = await asyncio.to_thread(self.bot.futures_mgr.add_margin, user_id, 선물, 금액)
         await self._reply(interaction, embed=self._result_embed("선물 증거금", message, success))
 
-    async def _prepare(self, interaction, *, defer=True):
-        # Acknowledge the slash command before any database work so Discord's
-        # short initial-response deadline cannot expire while SQLite is busy.
-        # A modal must be the initial response, so its caller passes defer=False.
+    async def _prepare(self, interaction, *, defer=False):
+        # Most commands complete well inside Discord's response deadline. Avoid
+        # a defer + follow-up round trip unless the caller performs heavy work.
         if defer and not interaction.response.is_done():
             await retry_discord_request(
                 lambda: interaction.response.defer(ephemeral=True, thinking=True)
@@ -197,8 +193,12 @@ class SlashCommandRegistry:
             or getattr(user, "global_name", None)
             or getattr(user, "name", str(user_id))
         )
-        await self.bot.ensure_user(user_id, nickname)
-        user_data = self.bot.db.users.get_user(user_id)
+        ensured_user = await self.bot.ensure_user(user_id, nickname)
+        user_data = (
+            ensured_user
+            if hasattr(ensured_user, "keys")
+            else self.bot.db.users.get_user(user_id)
+        )
         command_name = getattr(getattr(interaction, "command", None), "name", "")
         try:
             status = user_data["status"] if user_data is not None else None
@@ -271,8 +271,12 @@ class SlashCommandRegistry:
             or getattr(user, "name", user_id)
         )
         # Modals must be the interaction's initial response, so do not defer here.
-        await self.bot.ensure_user(user_id, nickname)
-        user_data = self.bot.db.users.get_user(user_id)
+        ensured_user = await self.bot.ensure_user(user_id, nickname)
+        user_data = (
+            ensured_user
+            if hasattr(ensured_user, "keys")
+            else self.bot.db.users.get_user(user_id)
+        )
         if user_data is not None:
             status = user_data["status"] if "status" in user_data.keys() else "active"
             if str(status or "active") != "active":
@@ -304,13 +308,7 @@ class SlashCommandRegistry:
 
     async def help(self, interaction: discord.Interaction):
         await self._prepare(interaction)
-        await self._reply(interaction,content=(
-            '**Inazina 도움말**\n/등록 · /내지갑 · /검색 · /매수 · /매도 · /호가 · /내주문\n'
-            '/그래프 종목:코드 — 종목 코드 직접 입력, 1분·5분·10분·30분·1시간·6시간·12시간·1일\n'
-            '/옵션체인 · /옵션작성 · /내지갑 · /검색 · /펀드가입 · /펀드환매\n'
-            '/검색 → 외환: 환율 확인 · /계좌개설 · /환전 · /송금\n'
-            '/복권구매 · /내복권 · /복권결과 · /복권규칙\n'
-            '관리자는 `$help`에서 설정 창을 이용합니다.'),view=HelpLinksView())
+        await self._reply(interaction, view=HelpLinksView())
 
     async def assets(self, interaction: discord.Interaction):
         user_id, user_data, _role = await self._prepare(interaction)
@@ -497,7 +495,7 @@ class SlashCommandRegistry:
         await self._reply(interaction, content=result)
 
     async def all_assets(self, interaction: discord.Interaction):
-        await self._prepare(interaction)
+        await self._prepare(interaction, defer=True)
         users = self.bot.db.users.execute(
             "SELECT user_id, nickname FROM users WHERE status = 'active' ORDER BY nickname"
         )
@@ -924,7 +922,7 @@ class SlashCommandRegistry:
 
     async def movement(self, interaction: discord.Interaction, 종목: str):
         자산 = 종목.strip()
-        user_id, _user_data, _role = await self._prepare(interaction)
+        user_id, _user_data, _role = await self._prepare(interaction, defer=True)
         if not 자산:
             return await self._reply(interaction,content='❌ 종목 코드를 입력해주세요. `/검색`에서 코드를 확인할 수 있습니다.')
 
@@ -1000,5 +998,3 @@ class SlashCommandRegistry:
             content=f"✅ 주주총회 DM 전달: {sent}명 성공 · {failed}명 실패",
             ephemeral=True,
         )
-
-

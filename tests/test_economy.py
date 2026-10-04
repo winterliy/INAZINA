@@ -855,7 +855,7 @@ class EconomyTests(unittest.TestCase):
         self.assertEqual(view.children[0].style, discord.ButtonStyle.link)
         self.assertEqual(view.children[0].label, "도움말 바로가기")
 
-    def test_help_command_sends_current_commands_and_the_link_component(self):
+    def test_help_command_sends_only_the_link_component(self):
         import asyncio
 
         sent = []
@@ -868,6 +868,10 @@ class EconomyTests(unittest.TestCase):
 
             async def defer(self, **_kwargs):
                 self.done = True
+
+            async def send_message(self, **kwargs):
+                self.done = True
+                sent.append(kwargs)
 
         class FakeFollowup:
             async def send(self, **kwargs):
@@ -890,10 +894,7 @@ class EconomyTests(unittest.TestCase):
 
         self.assertEqual(len(sent), 1)
         self.assertNotIn("embed", sent[0])
-        self.assertIn("Inazina", sent[0]["content"])
-        self.assertIn("/그래프 종목:코드", sent[0]["content"])
-        self.assertIn("/환전", sent[0]["content"])
-        self.assertIn("$help", sent[0]["content"])
+        self.assertNotIn("content", sent[0])
         self.assertEqual(sent[0]["view"].children[0].label, "도움말 바로가기")
 
     def test_registration_notice_uses_private_scrollable_modal_and_end_code(self):
@@ -1061,12 +1062,17 @@ class EconomyTests(unittest.TestCase):
         class FakeResponse:
             def __init__(self):
                 self.done = False
+                self.messages = []
 
             def is_done(self):
                 return self.done
 
             async def defer(self, **_kwargs):
                 self.done = True
+
+            async def send_message(self, **kwargs):
+                self.done = True
+                self.messages.append(kwargs)
 
         class FakeFollowup:
             def __init__(self):
@@ -1110,9 +1116,10 @@ class EconomyTests(unittest.TestCase):
             get_user=get_user,
             fetch_user=fetch_user,
         )
+        response = FakeResponse()
         followup = FakeFollowup()
         interaction = SimpleNamespace(
-            response=FakeResponse(),
+            response=response,
             followup=followup,
             user=SimpleNamespace(
                 id="citizen-1", display_name="Citizen One", name="citizen-one"
@@ -1135,7 +1142,7 @@ class EconomyTests(unittest.TestCase):
         self.assertIn("총 자산: 4,100 NWX", message)
         self.assertIn("대출 잔액: 700 NWX", message)
         self.assertEqual(self.db.users.get_user("citizen-1")["cash"], original_cash)
-        self.assertIn("관리자 2명", followup.messages[0]["content"])
+        self.assertIn("관리자 2명", response.messages[0]["content"])
 
         # Bankruptcy is the same notification-only workflow, with no financial action.
         for admin in admin_by_id.values():
@@ -1179,7 +1186,7 @@ class EconomyTests(unittest.TestCase):
         self.assertNotIn("embed", interaction.response.kwargs)
         self.assertEqual(interaction.response.kwargs["content"], "hello")
 
-    def test_slash_command_is_deferred_before_database_work(self):
+    def test_slash_prepare_defers_only_when_requested(self):
         import asyncio
 
         calls = []
@@ -1206,9 +1213,12 @@ class EconomyTests(unittest.TestCase):
             user=SimpleNamespace(id=123, display_name="Tester", name="tester"),
         )
         asyncio.run(SlashCommandRegistry(bot)._prepare(interaction))
+        self.assertEqual([call[0] for call in calls], ["ensure_user"])
 
-        self.assertEqual(calls[0][0], "defer")
-        self.assertEqual(calls[1][0], "ensure_user")
+        calls.clear()
+        interaction.response.done = False
+        asyncio.run(SlashCommandRegistry(bot)._prepare(interaction, defer=True))
+        self.assertEqual([call[0] for call in calls], ["defer", "ensure_user"])
 
     def test_unregistered_slash_command_is_redirected_to_registration(self):
         import asyncio
@@ -1223,6 +1233,10 @@ class EconomyTests(unittest.TestCase):
 
             async def defer(self, **_kwargs):
                 self.done = True
+
+            async def send_message(self, **kwargs):
+                self.done = True
+                sent.append(kwargs)
 
         class FakeFollowup:
             async def send(self, **kwargs):

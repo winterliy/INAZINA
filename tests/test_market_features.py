@@ -585,19 +585,6 @@ class MarketFeatureTests(unittest.TestCase):
         self.assertTrue(modal.submitted)
         self.assertEqual(create.call_count, 2)
 
-    def test_bare_event_slash_opens_modal_immediately_with_all_values_entered_inside(self):
-        registry = SlashCommandRegistry(SimpleNamespace(db=self.db, market_mgr=self.market, admin_mgr=AdminManager(self.db)))
-        registry._prepare = AsyncMock(return_value=("admin", None, "admin"))
-        registry._reply = AsyncMock()
-        interaction = SimpleNamespace(response=SimpleNamespace(send_modal=AsyncMock()))
-        asyncio.run(registry.market_event(interaction))
-        registry._prepare.assert_awaited_once_with(interaction, defer=False)
-        interaction.response.send_modal.assert_awaited_once()
-        modal = interaction.response.send_modal.call_args.args[0]
-        self.assertIsInstance(modal, MarketEventModal)
-        self.assertEqual(len(modal.to_dict()["components"]), 5)
-        registry._reply.assert_not_awaited()
-
     def test_chart_settings_persist_within_discord_component_limits_and_defer_before_render(self):
         bot = SimpleNamespace(market_mgr=self.market)
         view = PriceMovementView(bot, "alice", "CO")

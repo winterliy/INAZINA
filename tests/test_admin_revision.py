@@ -115,13 +115,16 @@ class AdminRevisionTests(unittest.TestCase):
         async def run():
             registry=AdminPrefixRegistry(self.bot)
             def message(content,identity='admin'):
-                return SimpleNamespace(author=SimpleNamespace(id=identity,bot=False,send=AsyncMock(return_value=SimpleNamespace(edit=AsyncMock()))),content=content,delete=AsyncMock(),channel=SimpleNamespace(send=AsyncMock()),guild=SimpleNamespace(id=1))
+                session=SimpleNamespace(edit=AsyncMock())
+                return SimpleNamespace(author=SimpleNamespace(id=identity,bot=False,send=AsyncMock(return_value=session)),content=content,delete=AsyncMock(),channel=SimpleNamespace(send=AsyncMock()),guild=SimpleNamespace(id=1),session=session)
             ordinary=message('$잔고수정 citizen modify 1','citizen')
             await registry.handle(ordinary)
             ordinary.author.send.assert_not_awaited();ordinary.delete.assert_not_awaited()
             command=message('$잔고수정 citizen modify 500')
             await registry.handle(command)
             self.assertEqual(self.db.users.get_user('citizen')['cash'],500)
+            command.author.send.assert_awaited_once()
+            command.session.edit.assert_awaited_once()
             command.delete.assert_awaited_once();command.channel.send.assert_not_awaited()
             for old in ('stock','asset','settings','setup','register','currency','catalog','volatility'):
                 command=message('$'+old)
@@ -130,9 +133,9 @@ class AdminRevisionTests(unittest.TestCase):
                 command.delete.assert_awaited_once()
             command=message('$도움말')
             await registry.handle(command)
-            joined=' '.join((call.kwargs['embed'].description or '')+' '+ ' '.join(f.value for f in call.kwargs['embed'].fields) for call in command.author.send.call_args_list)
-            self.assertNotIn('$상품생성',joined)
-            view=command.author.send.call_args.kwargs['view']
+            edited=command.session.edit.call_args.kwargs
+            self.assertNotIn('$상품생성',edited['embed'].description or '')
+            view=edited['view']
             self.assertIn('메인',view.build_embed().title)
             view.page=1
             self.assertTrue(any('$상품생성' in field.value for field in view.build_embed().fields))

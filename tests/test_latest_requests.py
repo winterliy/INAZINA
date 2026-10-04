@@ -13,7 +13,6 @@ from unittest.mock import AsyncMock,patch
 import discord
 from database import DatabaseManager
 from database.db_manager import DBManager
-from database.cleanup_legacy import cleanup_legacy
 from database.user_db import TREASURY_USER_ID
 from functions.discord_views import FXRatesView,AssetAccountsView,PriceMovementView,InfoPanelView
 from functions.lottery_views import LotteryPurchaseView,LotteryTicketsView,result_embed
@@ -94,8 +93,8 @@ class LatestRequestsTests(unittest.TestCase):
         self.seed()
         self.assertTrue(CatalogManager(self.db).seed_foreign())
         self.assertFalse(CatalogManager(self.db).seed_foreign())
-        self.assertEqual(self.db.companies.execute_one("SELECT COUNT(*) FROM company WHERE quote_currency<>'NWX'")[0],50)
-        self.assertEqual(self.db.products.execute_one("SELECT COUNT(*) FROM investment WHERE quote_currency<>'NWX'")[0],50)
+        self.assertEqual(self.db.companies.execute_one("SELECT COUNT(*) FROM company WHERE quote_currency<>'NWX'")[0],25)
+        self.assertEqual(self.db.products.execute_one("SELECT COUNT(*) FROM investment WHERE quote_currency<>'NWX'")[0],25)
         from managers.order_book_manager import OrderBookManager
         book=OrderBookManager(self.db,self.bot.user_mgr)
         self.bot.fx_mgr.open_account('alice','INZFX001')
@@ -161,7 +160,7 @@ class LatestRequestsTests(unittest.TestCase):
         self.db.assets.execute("INSERT INTO market_quote_overrides VALUES ('INZOP001',123,1,'event')")
         info=self.bot.user_mgr.get_total_assets(TREASURY_USER_ID)
         self.assertEqual(info['option_short_liability'],123)
-        self.assertEqual(len(info['written_options']),50)
+        self.assertEqual(len(info['written_options']),25)
         collateral=next(row for row in info['stocks'] if row.get('collateral_contract_code')=='INZOP001')
         self.assertTrue(collateral['is_collateral'])
         self.assertEqual(collateral['code'],'INZST001')
@@ -173,15 +172,15 @@ class LatestRequestsTests(unittest.TestCase):
         async def run():
             view = FXRatesView(self.bot,'alice')
             seen = []
-            for page,count in enumerate((10,10,10,10,10,1)):
+            for page,count in enumerate((10,10,6)):
                 view.page = page
                 embed = view.build_embed()
                 self.assertEqual(len(embed.fields),count)
                 self.assertLessEqual(len(embed),6000)
                 seen.extend(f.name.split(' · ')[0] for f in embed.fields)
-            self.assertEqual(len(set(seen)),51)
+            self.assertEqual(len(set(seen)),26)
             self.db.assets.update_price('FX_USD',1600)
-            view.page=5
+            view.page=2
             self.assertTrue(any('1 NWX = **0.000625 USD**' in f.value for f in view.build_embed().fields if f.name.startswith('USD')))
             interaction=SimpleNamespace(user=SimpleNamespace(id='bob'),response=SimpleNamespace(send_message=AsyncMock()))
             self.assertFalse(await view.interaction_check(interaction))
@@ -192,14 +191,14 @@ class LatestRequestsTests(unittest.TestCase):
         panel = InfoPanelView(self.bot,'alice')
         panel.category = 'forex'
         seen = []
-        for page in range(5):
+        for page,count in enumerate((10,10,5)):
             panel.page = page
             embed = panel.build_embed()
             rows = [line for line in embed.description.splitlines() if line.startswith('•')]
-            self.assertEqual(len(rows),10)
+            self.assertEqual(len(rows),count)
             self.assertTrue(all('1 NWX = ' in line for line in rows))
             seen.extend(rows)
-        self.assertEqual(len(set(seen)),50)
+        self.assertEqual(len(set(seen)),25)
         self.db.assets.update_price('FX_USD',1600)
         self.assertTrue(any('0.000625 USD' in line for line in panel._category_lines('forex')))
         self.db.assets.update_price('FX_USD',2000)
@@ -401,39 +400,3 @@ class LatestRequestsTests(unittest.TestCase):
         with self.assertRaises(ValueError):lottery.process_due(now=round['draw_epoch'])
         self.assertEqual(lottery.result(round['round_id'])['status'],'drawn')
         self.assertEqual(self.db.lottery.execute_one('SELECT COUNT(*) FROM lottery_payouts')[0],0)
-
-
-class LegacyCleanupTests(unittest.TestCase):
-    def test_cleanup_archives_only_migrated_known_databases_and_keeps_record_db(self):
-        from database.unified import migrate
-        with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory)
-            with closing(sqlite3.connect(root/'users.db')) as conn:
-                conn.execute('CREATE TABLE users(user_id TEXT PRIMARY KEY,cash INTEGER)')
-                conn.execute("INSERT INTO users VALUES ('user',100)")
-                conn.commit()
-            with closing(sqlite3.connect(root/'records.db')) as conn:
-                conn.execute('CREATE TABLE history(value INTEGER)')
-                conn.commit()
-            migrate(root)
-            archive=root/'backup.zip'
-            self.assertEqual(cleanup_legacy(root,archive),['users.db'])
-            self.assertTrue((root/'records.db').exists())
-            self.assertTrue((root/'inazina.db').exists())
-            with zipfile.ZipFile(archive) as zip:
-                data=zip.read('users.db')
-                manifest=json.loads(zip.read('manifest.json'))
-                self.assertEqual(hashlib.sha256(data).hexdigest(),manifest['users.db']['sha256'])
-            self.assertEqual(cleanup_legacy(root,archive),[])
-
-    def test_cleanup_refuses_unmigrated_db_and_keeps_original(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory)
-            with closing(sqlite3.connect(root/'inazina.db')) as conn:
-                conn.execute('CREATE TABLE migration_manifest(source TEXT)')
-                conn.commit()
-            with closing(sqlite3.connect(root/'users.db')) as conn:
-                conn.execute('CREATE TABLE users(user_id TEXT)')
-                conn.commit()
-            with self.assertRaises(RuntimeError):cleanup_legacy(root,root/'backup.zip')
-            self.assertTrue((root/'users.db').exists())

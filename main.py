@@ -316,15 +316,19 @@ class InazinaBot(discord.Client):
         user = self.db.users.get_user(user_id)
         if not user:
             if user_id not in BOOTSTRAP_ADMIN_IDS:
-                return False
-            return self.db.users.register_user(
+                return None
+            self.db.users.register_user(
                 user_id, nickname, "낙원", 1000000, role="admin"
             )
+            return self.db.users.get_user(user_id)
+        changed = False
         if user_id in BOOTSTRAP_ADMIN_IDS and str(user["role"] or "").lower() != "admin":
             self.db.users.update_role(user_id, "admin")
+            changed = True
         if user["nickname"] != nickname:
             self.db.users.update_nickname(user_id, nickname)
-        return False
+            changed = True
+        return self.db.users.get_user(user_id) if changed else user
 
     async def register_user(self, user_id, nickname):
         """Create a citizen only after they accept the registration notice."""

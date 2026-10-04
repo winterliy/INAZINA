@@ -586,61 +586,6 @@ class LoanRequestModal(LoanAmountModal):
         await super().on_submit(interaction)
 
 
-class LoanProductSelectView(discord.ui.View):
-    def __init__(self, bot, user_id, products):
-        super().__init__(timeout=180)
-        self.bot = bot
-        self.user_id = user_id
-        options = []
-        for product in products[:25]:
-            code = str(product["product_code"])
-            if not 0 < len(code) <= 100:
-                continue
-            try:
-                rate = float(product["interest_rate"] or 0)
-                limit = float(product["loan_limit"] or 0)
-            except (TypeError, ValueError):
-                rate, limit = 0.0, 0.0
-            limit_text = "한도 없음" if limit == 0 else f"한도 {limit:,.0f} NWX"
-            try:
-                repayment_cycle = int(product["repayment_cycle_seconds"] or 0)
-                repayment_amount = float(product["repayment_amount"] or 0)
-            except (TypeError, ValueError):
-                repayment_cycle, repayment_amount = 0, 0.0
-            repayment_text = (
-                f" · 정기 {repayment_amount:,.0f} NWX/{repayment_cycle}초"
-                if repayment_cycle > 0 and repayment_amount > 0
-                else ""
-            )
-            label = f"{product['name']} · 연 {rate:g}% · {limit_text}{repayment_text}"[:100]
-            options.append(discord.SelectOption(label=label, value=code))
-
-        self.product_select = discord.ui.Select(
-            placeholder="신청할 대출 상품을 선택하세요",
-            options=options,
-        )
-        self.product_select.callback = self.select_product
-        self.add_item(self.product_select)
-
-    async def interaction_check(self, interaction: discord.Interaction):
-        if str(interaction.user.id) == self.user_id:
-            return True
-        await interaction.response.send_message(
-            "❌ 대출 상품 선택은 명령어를 입력한 본인만 할 수 있습니다.", ephemeral=True
-        )
-        return False
-
-    async def select_product(self, interaction: discord.Interaction):
-        product_code = self.product_select.values[0]
-        product = self.bot.db.products.get_liability(product_code)
-        if not product or product["status"] != "active":
-            await interaction.response.send_message(
-                "❌ 선택한 대출 상품은 현재 신청할 수 없습니다.", ephemeral=True
-            )
-            return
-        await interaction.response.send_modal(
-            LoanAmountModal(self.bot, self.user_id, product_code)
-        )
 
 
 class FXRatesView(discord.ui.View):

@@ -70,16 +70,16 @@ class InazinaTests(unittest.TestCase):
         self.assertEqual(self.db.system.get_setting('base_rate'),'3')
         self.assertEqual(sql("SELECT 'users.users', x FROM pot.\"return\" -- assets.market_assets"),"SELECT 'users.users', x FROM \"return\" -- assets.market_assets")
 
-    def test_catalog_has_fifty_per_category_and_is_idempotent(self):
+    def test_catalog_has_twenty_five_per_category_and_is_idempotent(self):
         self.assertTrue(self.seed())
         self.assertFalse(self.seed())
         counts={r['product_type']:r['n'] for r in self.db.products.execute('SELECT product_type,COUNT(*) n FROM investment GROUP BY product_type')}
-        self.assertEqual(counts,{k:50 for k in ('etf','stock_future','corporate_bond','mutual_fund','index_fund','commodity_spot')})
+        self.assertEqual(counts,{k:25 for k in ('etf','stock_future','corporate_bond','mutual_fund','index_fund','commodity_spot')})
         for table in ('company','treasury_bond_products','saving','liability','option_contracts','fx_products'):
-            self.assertEqual(self.db.system.execute_one(f'SELECT COUNT(*) FROM {table}')[0],50)
-        self.assertEqual(self.db.fx.execute_one("SELECT COUNT(*) FROM currencies WHERE code<>'NWX'")[0],50)
-        self.assertEqual(self.db.assets.execute_one('SELECT SUM(quantity) FROM option_collateral_lots')[0],5000)
-        self.assertEqual(self.db.assets.execute_one("SELECT COUNT(*) FROM market_orders WHERE option_order_type='write'")[0],50)
+            self.assertEqual(self.db.system.execute_one(f'SELECT COUNT(*) FROM {table}')[0],25)
+        self.assertEqual(self.db.fx.execute_one("SELECT COUNT(*) FROM currencies WHERE code<>'NWX'")[0],25)
+        self.assertEqual(self.db.assets.execute_one('SELECT SUM(quantity) FROM option_collateral_lots')[0],2500)
+        self.assertEqual(self.db.assets.execute_one("SELECT COUNT(*) FROM market_orders WHERE option_order_type='write'")[0],25)
 
     def test_seed_collision_rolls_back_every_listing(self):
         self.db.assets.register_asset('INZST005','衝突','INZ',100,'stock')
@@ -347,7 +347,7 @@ class InazinaTests(unittest.TestCase):
             file=sent.kwargs['file']
             text=file.fp.read().decode('utf-8')
             self.assertIn('INZTB001',text)
-            self.assertIn('INZTB050',text)
+            self.assertIn('INZTB025',text)
             file.close()
         asyncio.run(run())
 
