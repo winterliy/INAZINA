@@ -320,12 +320,14 @@ class MarketManager:
                     # The straight average-rate path is the centre line. A
                     # bounded, correlated deviation wanders around that line;
                     # one shock can no longer traverse the full event corridor.
-                    radius = min(baseline * .10, max(span * .12, baseline * .02)) * amplitude
-                    taper = math.sin(math.pi * elapsed / duration)
-                    band = max(0.0, radius * taper)
+                    if context is None:
+                        radius = min(baseline * .10, max(span * .12, baseline * .02)) * amplitude
+                        band = max(0.0, radius * math.sin(math.pi * elapsed / duration))
+                    else:
+                        band = max(span, baseline * .10) * amplitude
                     desired_offset = band * math.tanh(shock * .6 + jump)
-                    decay = math.exp(-delta / 3)
-                    offset = old_offset * decay + desired_offset * (1-decay)
+                    decay = math.exp(-delta / 3) if context is None else 0.0
+                    offset = old_offset * decay + desired_offset * (1 - decay)
                     offset = max(-band, min(band, offset))
                     noise = offset / target["start_price"]
                     if jump:

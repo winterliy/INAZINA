@@ -172,6 +172,7 @@ class ActionModal(CheckedModal):
                 result = await asyncio.to_thread(self.execute,values)
             if self.command=='내지갑':
                 view = TreasuryAssetsView(self.bot,self.owner,json.loads(result))
+                view.category = 'holdings'
                 await interaction.followup.send(embed=view.build_embed(),view=view,ephemeral=True)
             elif self.command=='환율':
                 from functions.discord_views import FXRatesView
@@ -348,8 +349,9 @@ class TreasuryAssetsView(discord.ui.View):
         super().__init__(timeout=300)
         self.bot,self.owner,self.info,self.page = bot,str(owner),info,0
         self.category='main'
-        self.sections={'accounts':[],'fx_accounts':[],'stocks':[],'bonds':[],'written':[],'loans':[]}
-        self.labels={'main':'🏛️ 메인','accounts':'🏦 통장','fx_accounts':'💱 외환통장','stocks':'📈 보유 투자상품',
+        self.sections={'accounts':[],'fx_accounts':[],'holdings':[],'stocks':[],'bonds':[],'written':[],'loans':[]}
+        self.labels={'main':'🏛️ 메인','accounts':'🏦 통장','fx_accounts':'💱 외환통장','holdings':'📦 전체 보유',
+                     'stocks':'📈 보유 투자상품',
                      'bonds':'📜 국채','written':'✍️ 작성 옵션','loans':'💳 대출'}
         self.items = []
         for item in info['accounts']:
@@ -359,11 +361,15 @@ class TreasuryAssetsView(discord.ui.View):
                 f"{item['account_number']}\n잔액 {display_units(item['balance_units'])} {item['currency_code']} · 평가 {item['value_nwx']:,} NWX"))
         for item in info['stocks']:
             note=f"옵션담보 잠금 · 매도 불가 · {item['collateral_contract_code']}" if item.get('is_collateral') else f"매도 주문 잠금 {item.get('sell_reserved_qty',0):,}"
-            self.sections['stocks'].append((item['name'],f"{item['code']}\n수량 {item['qty']:,} · 기준가 {item['price']:,} {item.get('quote_currency','NWX')}\n평가액 {item['value']:,} NWX · {note}"))
+            entry=(item['name'],f"{item['code']}\n수량 {item['qty']:,} · 기준가 {item['price']:,} {item.get('quote_currency','NWX')}\n평가액 {item['value']:,} NWX · {note}")
+            self.sections['stocks'].append(entry)
+            self.sections['holdings'].append(entry)
         for item in info['bonds']:
             self.sections['bonds'].append((f"국채 · {item['name']}",f"{item['product_code']}\n수량 {item['quantity']:,}매 · 시장가 {item['market_price']:,} NWX\n평가액 {item['market_value']:,} NWX · 액면 {item['principal']:,} NWX"))
         for item in info.get('written_options',[]):
-            self.sections['written'].append((f"작성 옵션 · {item['name']}",f"{item['contract_code']} · 체결 {item['outstanding_contracts']:,} / 미체결 {item['offered']:,}계약\n담보 {item['collateral_quantity']:,}주 / {item['collateral_cash']:,} NWX · 만기 <t:{item['expiration_epoch']}:D>"))
+            entry=(f"작성 옵션 · {item['name']}",f"{item['contract_code']} · 체결 {item['outstanding_contracts']:,} / 미체결 {item['offered']:,}계약\n담보 {item['collateral_quantity']:,}주 / {item['collateral_cash']:,} NWX · 만기 <t:{item['expiration_epoch']}:D>")
+            self.sections['written'].append(entry)
+            self.sections['holdings'].append(entry)
         for loan in bot.db.accounts.execute("SELECT l.*,p.name FROM loans l JOIN liability p USING(product_code) WHERE l.user_id=? AND l.status='active'",(TREASURY_USER_ID,)):
             maturity=f"<t:{int(loan['maturity_epoch'])}:D>" if loan['maturity_epoch'] else '없음'
             self.sections['loans'].append((f"대출 · {loan['name']}",f"#{loan['loan_id']} · {loan['product_code']}\n잔액 {loan['outstanding_balance']:,} NWX · 만기 {maturity}"))
@@ -395,7 +401,8 @@ class TreasuryAssetsView(discord.ui.View):
                 ('총자산','grand_total'),('대출 잔액','loan_total'),('순자산','net_worth')]:
             sign='−' if key=='option_short_liability' and info.get(key,0) else ''
             embed.add_field(name=label,value=f"```{sign}{info.get(key,0):,} NWX```",inline=True)
-        embed.add_field(name='⭐ 신용점수',value=f"```{info.get('credit_score',0):,}점```",inline=True)
+        if self.category == 'main':
+            embed.add_field(name='⭐ 신용점수',value=f"```{info.get('credit_score',0):,}점```",inline=True)
         for name,value in self.items[self.page*self.PAGE_SIZE:(self.page+1)*self.PAGE_SIZE]:
             embed.add_field(name=name[:120],value=value[:300],inline=False)
         if self.category!='main' and not self.items:
