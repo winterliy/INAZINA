@@ -90,7 +90,7 @@ class InvestmentManager:
             return False, f"❌ 상품 등록 실패: {exc}"
 
     @staticmethod
-    def linked_price(conn, product, base_rate, now):
+    def linked_price(conn, product, base_rate, now, *, prices=None, fund_components=None):
         kind = product["product_type"]
         if kind == "stock_future":
             expiry = int(product["maturity_epoch"] or now)
@@ -118,7 +118,7 @@ class InvestmentManager:
                         conn, product, expiry, int(final["price"]), int(final["recorded_epoch"])
                     )
                     return max(1, int(final["price"]))
-            row = conn.execute("SELECT share_price AS price FROM company.company WHERE company_code = ? "
+            row = prices.get(product['underlying_code']) if prices is not None else conn.execute("SELECT share_price AS price FROM company.company WHERE company_code = ? "
                 "UNION ALL SELECT price FROM assets.market_assets WHERE code = ?",
                 (product["underlying_code"], product["underlying_code"])).fetchone()
             if not row or float(row["price"]) <= 0:
@@ -134,10 +134,10 @@ class InvestmentManager:
             years = max(0, int(product["maturity_epoch"] or now) - now) / (365 * 86400)
             return max(1, round_money(payoff * math.exp(-base_rate / 100 * years)))
         if kind == "mutual_fund":
-            components = conn.execute("SELECT * FROM product.fund_components WHERE product_code = ?", (product["product_code"],)).fetchall()
+            components = fund_components.get(product['product_code'], ()) if fund_components is not None else conn.execute("SELECT * FROM product.fund_components WHERE product_code = ?", (product["product_code"],)).fetchall()
             total, weight = 0.0, 0.0
             for component in components:
-                row = conn.execute("SELECT share_price AS price FROM company.company WHERE company_code = ? "
+                row = prices.get(component['asset_code']) if prices is not None else conn.execute("SELECT share_price AS price FROM company.company WHERE company_code = ? "
                     "UNION ALL SELECT price FROM assets.market_assets WHERE code = ?",
                     (component["asset_code"], component["asset_code"])).fetchone()
                 if not row or float(component["base_price"]) <= 0:

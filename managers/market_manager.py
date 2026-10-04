@@ -2,6 +2,7 @@ import math
 import random
 import sqlite3
 import time
+import threading
 from decimal import Decimal, ROUND_HALF_UP
 from dataclasses import replace
 from contextlib import contextmanager
@@ -33,6 +34,7 @@ class MarketManager:
     def __init__(self, db: DatabaseManager):
         self.db = db
         self.movement_history = MovementHistoryManager(db)
+        self._tick = threading.local()
 
     @staticmethod
     def is_stock_type(asset_type):
@@ -61,6 +63,10 @@ class MarketManager:
     def _short_market_transaction(self, alias, *, now=None):
         """Use an isolated connection and a short lock timeout for background ticks."""
         aliases = (alias,) if isinstance(alias, str) else tuple(alias)
+        active = getattr(self._tick, 'conn', None)
+        if active is not None:
+            yield active
+            return
         conn = sqlite3.connect(self.db.assets.db_path, timeout=0.05, isolation_level=None, factory=UnifiedConnection)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 50")
@@ -257,7 +263,7 @@ class MarketManager:
         return self._normalize_market_condition(raw_value)
 
     @staticmethod
-    def _event_target_price(conn, code, price, now, legacy_events, *, sample_noise, context=None):
+    def _event_target_price(conn, code, price, now, legacy_events, *, sample_noise, context=None, batch=None):
         """A random price bridge ends at its persisted goal even after a restart."""
         for event in legacy_events:
             if event["asset_code"] not in (None, "", code) or not event["severity"]:
@@ -282,7 +288,7 @@ class MarketManager:
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (event["event_id"], code, price, target, now, event["ends_epoch"],
                  "superseded" if newer else "active", now, price))
-        target = conn.execute("SELECT t.*, e.event_type, COALESCE(e.volatility_percent, "
+        target = batch['events'].get(code) if batch is not None and not legacy_events else conn.execute("SELECT t.*, e.event_type, COALESCE(e.volatility_percent, "
             "CASE WHEN e.target_mode = 'percent' THEN e.target_value ELSE e.severity END) AS volatility_percent "
             "FROM system.market_event_targets t JOIN system.market_events e ON e.event_id = t.event_id "
             "WHERE t.asset_code = ? AND t.start_epoch <= ? "
@@ -374,21 +380,27 @@ class MarketManager:
         sign = 1 if target["event_type"] == "good" else -1
         return sign * .1 * float(target["volatility_percent"]) / 100
 
-    @staticmethod
-    def _market_factor(conn, epoch, config):
+    def _market_factor(self, conn, epoch, config):
         """Every independent price source reuses this tick's common shock."""
-        factor = conn.execute("SELECT last_epoch, current_factor FROM system.market_factor_state "
-                              "WHERE key = 'market'").fetchone()
+        batch = getattr(self._tick, 'batch', None)
+        factor = batch['factor'] if batch is not None else conn.execute("SELECT last_epoch, current_factor FROM system.market_factor_state WHERE key = 'market'").fetchone()
         if factor is not None and int(factor["last_epoch"]) == epoch:
             return float(factor["current_factor"])
         shock = standardized_shock(random, config.student_df)
+        if batch is not None:
+            batch['factor'] = dict(last_epoch=epoch, current_factor=shock)
         conn.execute("INSERT INTO system.market_factor_state (key, last_epoch, current_factor) "
                      "VALUES ('market', ?, ?) ON CONFLICT(key) DO UPDATE SET "
                      "last_epoch = excluded.last_epoch, current_factor = excluded.current_factor", (epoch, shock))
         return shock
 
-    @staticmethod
-    def _save_simulation_state(conn, code, variance, innovation, latent, epoch, price, event_id=None):
+    def _save_simulation_state(self, conn, code, variance, innovation, latent, epoch, price, event_id=None):
+        batch = getattr(self._tick, 'batch', None)
+        if batch is not None:
+            batch['state_updates'][code] = (code, variance, innovation, latent, epoch, price, event_id)
+            batch['states'][code] = dict(asset_code=code, variance=variance, innovation=innovation,
+                latent_price=latent, last_epoch=epoch, last_display_price=price, event_id=event_id)
+            return
         conn.execute("INSERT INTO system.market_simulation_state "
                      "(asset_code, variance, innovation, latent_price, last_epoch, last_display_price, event_id) "
                      "VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(asset_code) DO UPDATE SET "
@@ -397,9 +409,9 @@ class MarketManager:
                      "last_display_price = excluded.last_display_price, event_id = excluded.event_id",
                      (code, variance, innovation, latent, epoch, price, event_id))
 
-    @staticmethod
-    def _auto_target(conn, code, price, epoch, config):
-        row = conn.execute("SELECT * FROM system.market_auto_targets WHERE asset_code = ?", (code,)).fetchone()
+    def _auto_target(self, conn, code, price, epoch, config):
+        batch = getattr(self._tick, 'batch', None)
+        row = batch['targets'].get(code) if batch is not None else conn.execute("SELECT * FROM system.market_auto_targets WHERE asset_code = ?", (code,)).fetchone()
         cycle = None
         if row is not None:
             try:
@@ -413,6 +425,11 @@ class MarketManager:
             # Sample from the live fractional quote, without teleporting the
             # price to either the old or the new target at a cycle boundary.
             cycle = sample_target(price, epoch, config, rng=random)
+            if batch is not None:
+                batch['targets'][code] = dict(anchor_price=cycle.anchor_price, target_price=cycle.target_price,
+                    start_epoch=cycle.start_epoch, end_epoch=cycle.end_epoch)
+                batch['target_updates'][code] = (code, cycle.anchor_price, cycle.target_price, cycle.start_epoch, cycle.end_epoch)
+                return cycle
             conn.execute("INSERT INTO system.market_auto_targets "
                          "(asset_code, anchor_price, target_price, start_epoch, end_epoch) VALUES (?, ?, ?, ?, ?) "
                          "ON CONFLICT(asset_code) DO UPDATE SET anchor_price = excluded.anchor_price, "
@@ -423,7 +440,8 @@ class MarketManager:
     def _stochastic_price(self, conn, code, price, now, settings, volatility, condition, legacy_events):
         config = GarchConfig.from_settings(settings, volatility=volatility)
         epoch = now // config.step_seconds * config.step_seconds
-        state = conn.execute("SELECT * FROM system.market_simulation_state WHERE asset_code = ?", (code,)).fetchone()
+        batch = getattr(self._tick, 'batch', None)
+        state = batch['states'].get(code) if batch is not None else conn.execute("SELECT * FROM system.market_simulation_state WHERE asset_code = ?", (code,)).fetchone()
         due = state is None or epoch > int(state["last_epoch"])
         edited = state is not None and price != int(state["last_display_price"])
         latent = float(price) if state is None or edited else float(state["latent_price"])
@@ -431,7 +449,7 @@ class MarketManager:
         innovation = 0.0 if state is None or edited else float(state["innovation"])
         auto_config = AutoTargetConfig.from_settings(settings)
         if edited or not auto_config.enabled or (state is not None and state["event_id"] is not None):
-            conn.execute("DELETE FROM system.market_auto_targets WHERE asset_code = ?", (code,))
+            self._delete_auto_target(conn, code)
         event_context = {}
         event_step = None
 
@@ -452,9 +470,9 @@ class MarketManager:
             return shock, jump
 
         event_price = self._event_target_price(conn, code, price, now, legacy_events,
-                                              sample_noise=event_noise, context=event_context)
+                                              sample_noise=event_noise, context=event_context, batch=batch)
         if event_price is not None:
-            conn.execute("DELETE FROM system.market_auto_targets WHERE asset_code = ?", (code,))
+            self._delete_auto_target(conn, code)
             if not event_context["advanced"] and state is not None and not edited:
                 return event_price
             if event_step is not None:
@@ -514,15 +532,61 @@ class MarketManager:
         """Use identical eligibility rules for the modal and event registration."""
         return [asset for asset in self.get_market_assets(active_only=True) if self.event_asset_eligible(asset)]
 
+    @staticmethod
+    def _load_tick(conn, now):
+        events = {}
+        for row in conn.execute("SELECT t.*, e.event_type, COALESCE(e.volatility_percent, "
+                "CASE WHEN e.target_mode='percent' THEN e.target_value ELSE e.severity END) volatility_percent "
+                "FROM market_event_targets t JOIN market_events e USING(event_id) "
+                "WHERE t.start_epoch<=? AND (t.state='active' OR (t.state='completed' AND t.completed_epoch=?)) "
+                "ORDER BY t.event_id", (now, now)):
+            events[row['asset_code']] = row
+        return dict(states={r['asset_code']: r for r in conn.execute('SELECT * FROM market_simulation_state')},
+            targets={r['asset_code']: r for r in conn.execute('SELECT * FROM market_auto_targets')},
+            factor=conn.execute("SELECT * FROM market_factor_state WHERE key='market'").fetchone(),
+            events=events, state_updates={}, target_updates={}, target_deletes=set())
+
+    def _delete_auto_target(self, conn, code):
+        batch = getattr(self._tick, 'batch', None)
+        if batch is None:
+            conn.execute('DELETE FROM market_auto_targets WHERE asset_code=?', (code,))
+        elif code in batch['targets']:
+            batch['targets'].pop(code)
+            batch['target_updates'].pop(code, None)
+            batch['target_deletes'].add(code)
+
+    def _flush_tick(self, conn):
+        batch = self._tick.batch
+        conn.executemany('DELETE FROM market_auto_targets WHERE asset_code=?',
+                         [(code,) for code in batch['target_deletes']])
+        conn.executemany('INSERT INTO market_auto_targets '
+            '(asset_code,anchor_price,target_price,start_epoch,end_epoch) VALUES (?,?,?,?,?) '
+            'ON CONFLICT(asset_code) DO UPDATE SET anchor_price=excluded.anchor_price, '
+            'target_price=excluded.target_price,start_epoch=excluded.start_epoch,end_epoch=excluded.end_epoch',
+            batch['target_updates'].values())
+        conn.executemany('INSERT INTO market_simulation_state '
+            '(asset_code,variance,innovation,latent_price,last_epoch,last_display_price,event_id) VALUES (?,?,?,?,?,?,?) '
+            'ON CONFLICT(asset_code) DO UPDATE SET variance=excluded.variance,innovation=excluded.innovation, '
+            'latent_price=excluded.latent_price,last_epoch=excluded.last_epoch, '
+            'last_display_price=excluded.last_display_price,event_id=excluded.event_id', batch['state_updates'].values())
+
     def update_prices(self, market_trend=1.0, volatility=None, now=None, market_condition=None):
         now = int(time.time() if now is None else now)
         # Keep the background price loop's existing short-lock behaviour. A
         # busy DB skips a tick, and an automatic resume shares the same commit
         # as shifting suspended event/model clocks.
         try:
-            with self._short_market_transaction("system", now=now):
-                pass
-            return self._update_prices_open(market_trend, volatility, now, market_condition)
+            with self._short_market_transaction("system", now=now) as conn:
+                self._tick.conn = conn
+                try:
+                    self._tick.batch = self._load_tick(conn, now)
+                    changed = self._update_prices_open(market_trend, volatility, now, market_condition)
+                    self._flush_tick(conn)
+                finally:
+                    self._tick.conn = None
+                    self._tick.batch = None
+            self.movement_history.cleanup(now)
+            return changed
         except _MarketHalted:
             self.movement_history.cleanup(now)
             return 0
@@ -534,38 +598,32 @@ class MarketManager:
     def _update_prices_open(self, market_trend=1.0, volatility=None, now=None, market_condition=None):
         """Refresh prices and append one sampled price per active code.
 
-        GARCH variance, fractional prices and common shocks persist in system.db.
+        GARCH variance, fractional prices and common shocks persist in inazina.db.
         A recurring nearby target adds mean reversion to ordinary movement;
         explicit administrator event goals take priority over those targets.
         One new epoch advances at most one game trading step, without replaying
-        downtime. Reads system.db's settings on every tick. Set
+        downtime. Reads settings in the tick transaction. Set
         ``is_fixed = 1`` to keep a SQL-edited price fixed while the loop runs.
         Every tradable price row can override global volatility; NULL follows
-        system.db. Company shares and investments can also override condition.
+        settings. Company shares and investments can also override condition.
         A 50ms lock timeout makes a busy database skip a tick instead of holding up
         commands or other processes.
         """
-        if volatility is None:
-            volatility = self._get_sql_volatility()
-        else:
-            volatility = float(volatility)
-            if not math.isfinite(volatility) or not 0 <= volatility <= self.MAX_VOLATILITY:
-                raise ValueError("volatility는 0~1 사이 숫자여야 합니다.")
-        if market_condition is None:
-            market_condition = self._get_sql_market_condition()
-        else:
-            market_condition = self._normalize_market_condition(market_condition)
+        conn = self._tick.conn
+        settings = {row['key']: row['value'] for row in conn.execute('SELECT key,value FROM settings')}
+        volatility = float(settings.get('market_volatility', self.DEFAULT_VOLATILITY) if volatility is None else volatility)
+        if not math.isfinite(volatility) or not 0 <= volatility <= self.MAX_VOLATILITY:
+            raise ValueError("volatility는 0~1 사이 숫자여야 합니다.")
+        market_condition = self._normalize_market_condition(
+            settings.get('market_condition', 'flat') if market_condition is None else market_condition)
         market_trend = float(market_trend)
         if not math.isfinite(market_trend) or market_trend < 0:
             raise ValueError("market_trend는 0 이상의 유한한 숫자여야 합니다.")
-        settings = {row["key"]: row["value"] for row in self.db.system.execute(
-            "SELECT key, value FROM settings WHERE key LIKE 'garch_%' OR key LIKE 'auto_target_%'")}
-        # Validate once before any asset can be changed, including a paused market.
         global_config = GarchConfig.from_settings(settings, volatility=volatility)
         AutoTargetConfig.from_settings(settings)
         now = int(time.time() if now is None else now)
-        legacy_events = self.db.system.execute("SELECT event_id, asset_code, event_type, severity, starts_epoch, ends_epoch "
-            "FROM market_events WHERE target_mode = 'legacy' AND starts_epoch <= ? AND ends_epoch > ?", (now, now))
+        legacy_events = conn.execute("SELECT event_id, asset_code, event_type, severity, starts_epoch, ends_epoch "
+            "FROM market_events WHERE target_mode = 'legacy' AND starts_epoch <= ? AND ends_epoch > ?", (now, now)).fetchall()
         changed = 0
         history = []
         specs = (
@@ -579,6 +637,7 @@ class MarketManager:
         ) in specs:
             schema_history = []
             schema_changed = 0
+            price_updates = []
             optional_columns = []
             if has_maturity:
                 optional_columns.extend(("maturity_days", "created_at"))
@@ -639,7 +698,7 @@ class MarketManager:
                             new_price = self._stochastic_price(conn, code, price, now, settings,
                                 min(self.MAX_VOLATILITY, asset_volatility * market_trend), asset_condition, legacy_events)
                         else:
-                            conn.execute("DELETE FROM system.market_auto_targets WHERE asset_code = ?", (code,))
+                            self._delete_auto_target(conn, code)
                         if int(row["is_fixed"] or 0) or matured:
                             # A price edited while fixed must become the new
                             # anchor when automatic movement is enabled again.
@@ -648,22 +707,18 @@ class MarketManager:
                                 "WHERE asset_code = ?", (price, price, now // global_config.step_seconds
                                                         * global_config.step_seconds, code))
                         if new_price != raw_price:
-                            if int(row["is_fixed"] or 0) or matured:
-                                where_clause = f"{code_column} = ? AND {price_column} = ?"
-                                parameters = (new_price, code, raw_price)
-                            else:
-                                where_clause = f"{code_column} = ? AND is_fixed = 0"
-                                parameters = (new_price, code)
-                            cursor = conn.execute(
-                                f"UPDATE {schema}.{table} SET {price_column} = ? "
-                                f"WHERE {where_clause}",
-                                parameters,
-                            )
-                            schema_changed += cursor.rowcount
+                            price_updates.append((new_price, code))
                         schema_history.append((code, new_price, now))
+                    if price_updates:
+                        cursor = conn.executemany(
+                            f"UPDATE {schema}.{table} SET {price_column} = ? WHERE {code_column} = ?",
+                            price_updates)
+                        schema_changed = cursor.rowcount
                 changed += schema_changed
                 history.extend(schema_history)
             except sqlite3.OperationalError as exc:
+                if getattr(self._tick, "conn", None) is not None:
+                    raise
                 if "locked" in str(exc).casefold() or "busy" in str(exc).casefold():
                     continue
                 raise
@@ -678,6 +733,8 @@ class MarketManager:
                         history,
                     )
             except sqlite3.OperationalError as exc:
+                if getattr(self._tick, "conn", None) is not None:
+                    raise
                 if "locked" not in str(exc).casefold() and "busy" not in str(exc).casefold():
                     raise
         self._update_exchange_indices(now)
@@ -685,7 +742,6 @@ class MarketManager:
         self._update_linked_products(now)
         self._update_event_quotes(now, settings, volatility, market_condition)
         self._record_special_quotes(now)
-        self.movement_history.cleanup(now)
         return changed
 
     def _update_event_quotes(self, now, settings, volatility, condition):
@@ -697,11 +753,15 @@ class MarketManager:
                              "AND updated_epoch < ? AND NOT EXISTS (SELECT 1 FROM market_event_targets t "
                              "WHERE t.asset_code=market_quote_overrides.asset_code AND t.state='active')",(now,))
         except sqlite3.OperationalError as exc:
+            if getattr(self._tick, "conn", None) is not None:
+                raise
             if 'locked' not in str(exc).lower() and 'busy' not in str(exc).lower():
                 raise
-        rows = self.db.system.execute("SELECT asset_code FROM market_event_targets WHERE state='active'")
+        with self._short_market_transaction('assets') as conn:
+            rows = conn.execute("SELECT DISTINCT asset_code FROM market_event_targets WHERE state='active'").fetchall()
+            quotes = self._batch_quotes(conn, now) if rows else {}
         for row in rows:
-            asset = self.get_asset_info(row['asset_code'])
+            asset = quotes.get(row['asset_code'])
             if not asset or asset['status'] != 'active':
                 continue
             if asset['type'] not in {'option','국채','stock_future','corporate_bond','mutual_fund','index_fund'} and not asset.get('underlying_exchange_id'):
@@ -716,45 +776,88 @@ class MarketManager:
                     conn.execute("INSERT INTO market_quote_overrides VALUES (?,?,?,'event') ON CONFLICT(asset_code) DO UPDATE SET price=excluded.price,updated_epoch=excluded.updated_epoch", (asset['code'],value,now))
                     conn.execute("INSERT INTO market_price_history(asset_code,price,recorded_epoch) VALUES (?,?,?) ON CONFLICT(asset_code,recorded_epoch) DO UPDATE SET price=excluded.price",(asset['code'],value,now))
             except sqlite3.OperationalError as exc:
+                if getattr(self._tick, "conn", None) is not None:
+                    raise
                 if 'locked' not in str(exc).lower() and 'busy' not in str(exc).lower():
                     raise
 
     def _record_special_quotes(self, now):
         # Keep observable option premiums and bond prices even with no fills.
-        codes = [r[0] for r in self.db.assets.execute("SELECT contract_code FROM option_contracts WHERE status='active'")]
-        codes += [r[0] for r in self.db.products.execute("SELECT product_code FROM treasury_bond_products WHERE status='active'")]
-        points = []
-        for code in codes:
-            asset = self.get_asset_info(code)
-            if asset and asset['status'] == 'active':
-                points.append((code,asset['price'],now))
-        if points:
-            try:
-                with self._short_market_transaction('assets') as conn:
-                    conn.executemany("INSERT INTO market_price_history(asset_code,price,recorded_epoch) VALUES (?,?,?) ON CONFLICT(asset_code,recorded_epoch) DO UPDATE SET price=excluded.price", points)
-            except sqlite3.OperationalError as exc:
-                if 'locked' not in str(exc).lower() and 'busy' not in str(exc).lower():
-                    raise
+        try:
+            with self._short_market_transaction('assets') as conn:
+                quotes = self._batch_quotes(conn, now)
+                points = [(code, asset['price'], now) for code, asset in quotes.items()
+                          if asset['type'] in {'option', '국채'} and asset['status'] == 'active']
+                conn.executemany("INSERT INTO market_price_history(asset_code,price,recorded_epoch) VALUES (?,?,?) "
+                    "ON CONFLICT(asset_code,recorded_epoch) DO UPDATE SET price=excluded.price", points)
+        except sqlite3.OperationalError as exc:
+            if getattr(self._tick, "conn", None) is not None:
+                raise
+            if 'locked' not in str(exc).lower() and 'busy' not in str(exc).lower():
+                raise
+
+    def _batch_quotes(self, conn, now):
+        """Resolve current transaction quotes without recursive per-symbol SQL."""
+        from managers.option_manager import OptionManager
+        quotes = {}
+        for table, source in (('market_assets', 'market_assets'), ('company', 'company'),
+                              ('investment', 'investment'), ('treasury_bond_products', 'treasury_bond')):
+            for row in conn.execute(f'SELECT * FROM {table}'):
+                asset = self._to_market_asset(row, source)
+                if asset['code'] in quotes:
+                    raise ValueError(f"중복 종목 코드: {asset['code']}")
+                quotes[asset['code']] = asset
+        overrides = {r['asset_code']: r['price'] for r in conn.execute('SELECT * FROM market_quote_overrides')}
+        for code, price in overrides.items():
+            if code in quotes:
+                quotes[code]['price'] = int(price)
+        last = {r['asset_code']: r['price'] for r in conn.execute('SELECT * FROM market_last_trade')}
+        rate = float(conn.execute("SELECT value FROM settings WHERE key='base_rate'").fetchone()[0]) / 100
+        for row in conn.execute('SELECT * FROM option_contracts'):
+            underlying = quotes.get(row['underlying_code'])
+            if underlying is None:
+                continue
+            code = row['contract_code']
+            if code in quotes:
+                raise ValueError(f'중복 종목 코드: {code}')
+            price = overrides.get(code, last.get(code))
+            if price is None:
+                price = OptionManager.theoretical_price(int(underlying['price']), int(row['strike_price']),
+                    max(0, row['expiration_epoch'] - now) / (365 * 86400),
+                    float(row['implied_volatility']), row['option_type'], rate)
+            quotes[code] = dict(code=code, price=int(price), type='option', is_fixed=1,
+                status='matured' if row['status']=='active' and row['expiration_epoch']<=now else row['status'])
+        return quotes
 
     def _update_linked_products(self, now):
         from managers.investment_manager import InvestmentManager
         try:
             with self._short_market_transaction(("assets", "product", "company")) as conn:
-                rate = float(self.db.system.get_setting("base_rate", "3"))
+                rate = float(conn.execute("SELECT value FROM settings WHERE key='base_rate'").fetchone()[0])
+                prices = {r['code']: r for r in conn.execute('SELECT code,price FROM market_assets')}
+                prices.update({r['code']: r for r in conn.execute('SELECT company_code code,share_price price FROM company')})
+                components = {}
+                for row in conn.execute('SELECT * FROM fund_components'):
+                    components.setdefault(row['product_code'], []).append(row)
+                updates, history = [], []
                 products = conn.execute("SELECT * FROM product.investment WHERE status = 'active' "
                     "AND product_type IN ('stock_future', 'corporate_bond', 'mutual_fund')").fetchall()
                 for product in products:
                     if int(product["is_fixed"] or 0):
                         continue
-                    price = InvestmentManager.linked_price(conn, product, rate, now)
+                    price = InvestmentManager.linked_price(conn, product, rate, now,
+                        prices=prices, fund_components=components)
                     if price is None:
                         continue
-                    conn.execute("UPDATE product.investment SET unit_price = ? WHERE product_code = ? AND is_fixed = 0",
-                                 (price, product["product_code"]))
-                    conn.execute("INSERT INTO assets.market_price_history (asset_code, price, recorded_epoch) VALUES (?, ?, ?) "
-                        "ON CONFLICT(asset_code, recorded_epoch) DO UPDATE SET price = excluded.price",
-                        (product["product_code"], price, now))
+                    if price != product['unit_price']:
+                        updates.append((price, product['product_code']))
+                    history.append((product['product_code'], price, now))
+                conn.executemany("UPDATE investment SET unit_price=? WHERE product_code=? AND is_fixed=0", updates)
+                conn.executemany("INSERT INTO market_price_history(asset_code,price,recorded_epoch) VALUES (?,?,?) "
+                    "ON CONFLICT(asset_code,recorded_epoch) DO UPDATE SET price=excluded.price", history)
         except sqlite3.OperationalError as exc:
+            if getattr(self._tick, "conn", None) is not None:
+                raise
             if "locked" not in str(exc).casefold() and "busy" not in str(exc).casefold():
                 raise
 
@@ -762,6 +865,8 @@ class MarketManager:
         """Price SQL-configured inverse/leveraged investment products from an exchange index."""
         try:
             with self._short_market_transaction(("assets", "product")) as conn:
+                indices = {r['exchange_id']: r for r in conn.execute('SELECT * FROM market_exchange_indices')}
+                states = {r['product_code']: r for r in conn.execute('SELECT * FROM leveraged_etf_state')}
                 products = conn.execute(
                     "SELECT product_code, underlying_exchange_id, leverage_multiplier, "
                     "rebalance_cycle_seconds, unit_price, is_fixed "
@@ -785,20 +890,14 @@ class MarketManager:
                     ):
                         continue
 
-                    index_row = conn.execute(
-                        "SELECT index_value FROM assets.market_exchange_indices WHERE exchange_id = ?",
-                        (exchange_id,),
-                    ).fetchone()
+                    index_row = indices.get(exchange_id)
                     if not index_row:
                         continue
                     current_index = float(index_row["index_value"])
                     if not math.isfinite(current_index) or current_index <= 0:
                         continue
 
-                    state = conn.execute(
-                        "SELECT * FROM assets.leveraged_etf_state WHERE product_code = ?",
-                        (code,),
-                    ).fetchone()
+                    state = states.get(code)
                     reset_state = (
                         not state
                         or str(state["underlying_exchange_id"]) != exchange_id
@@ -873,6 +972,8 @@ class MarketManager:
                         (code, exchange_id, leverage, cycle, base_index, base_nav, last_reset),
                     )
         except Exception as exc:
+            if getattr(self._tick, "conn", None) is not None:
+                raise
             if "locked" in str(exc).casefold() or "busy" in str(exc).casefold():
                 return
             raise
@@ -981,6 +1082,8 @@ class MarketManager:
                         (exchange_id, index_value, int(now)),
                     )
         except sqlite3.OperationalError as exc:
+            if getattr(self._tick, "conn", None) is not None:
+                raise
             if "locked" in str(exc).casefold() or "busy" in str(exc).casefold():
                 return
             raise

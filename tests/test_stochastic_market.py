@@ -6,6 +6,7 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from database import DatabaseManager
 from database.db_manager import DBManager
@@ -261,6 +262,25 @@ class StochasticMarketTests(unittest.TestCase):
             self.assertIsNotNone(self.state())
         finally:
             blocker.close()
+
+    def test_late_tick_failure_rolls_back_prices_indices_history_and_model(self):
+        self.market.update_prices(now=1000)
+        tables = ('company', 'market_price_history', 'market_exchange_indices',
+                  'market_exchange_index_components', 'market_exchange_index_history',
+                  'market_simulation_state', 'market_factor_state', 'market_auto_targets')
+        def snapshot():
+            return {table: [tuple(row) for row in self.db.assets.execute(f'SELECT * FROM {table}')]
+                    for table in tables}
+        before = snapshot()
+        with patch.object(self.market, '_record_special_quotes', side_effect=RuntimeError('late failure')):
+            with self.assertRaisesRegex(RuntimeError, 'late failure'):
+                self.market.update_prices(now=1001)
+        self.assertEqual(snapshot(), before)
+        with patch.object(self.market, '_record_special_quotes', side_effect=sqlite3.OperationalError('database is locked')):
+            self.assertEqual(self.market.update_prices(now=1001), 0)
+        self.assertEqual(snapshot(), before)
+        self.market.update_prices(now=1001)
+        self.assertEqual(self.state()['last_epoch'], 1001)
 
     def test_daily_chart_cleanup_preserves_simulation_state(self):
         first = 1790866800  # 2026-10-02 00:00:00 Asia/Seoul.

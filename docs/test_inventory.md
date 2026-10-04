@@ -1,6 +1,6 @@
 # 현재 테스트 전체 목록
 
-- 전체: **264개**
+- 전체: **265개**
 - 테스트 파일: **13개**
 - 전체 실행: `PYTHONPATH=tests .venv/bin/python -m unittest discover -s tests -q`
 
@@ -301,7 +301,7 @@
 - `test_direct_graph_command_accepts_rate_name_and_generates_attachment`
 - `test_graph_command_rejects_blank_code_without_asset_picker`
 
-## `tests/test_stochastic_market.py` (23개)
+## `tests/test_stochastic_market.py` (24개)
 
 ### `GarchModelTests`
 
@@ -325,6 +325,7 @@
 - `test_zero_volatility_and_fixed_prices_remain_stationary`
 - `test_derived_prices_do_not_have_independent_garch_state`
 - `test_busy_price_database_rolls_back_its_stochastic_state`
+- `test_late_tick_failure_rolls_back_prices_indices_history_and_model`
 - `test_daily_chart_cleanup_preserves_simulation_state`
 - `test_event_preserves_initial_price_duplicate_and_exact_goal`
 - `test_event_jump_occurs_once_and_volatility_persists_after_the_goal`
