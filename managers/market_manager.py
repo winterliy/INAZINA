@@ -322,7 +322,16 @@ class MarketManager:
                     # one shock can no longer traverse the full event corridor.
                     radius = min(baseline * .10, max(span * .12, baseline * .02)) * amplitude
                     taper = math.sin(math.pi * elapsed / duration)
-                    band = max(0.0, radius * taper)
+                    # Keep the noise local to the average-rate path. In
+                    # particular, an early negative shock must not send a good
+                    # event all the way back to its starting price (and vice
+                    # versa). At most 25% of completed/remaining progress may
+                    # be used as deviation.
+                    completed_distance = abs(baseline - target["start_price"])
+                    remaining_distance = abs(target["target_price"] - baseline)
+                    band = max(0.0, min(radius * taper,
+                                        completed_distance * .25,
+                                        remaining_distance * .25))
                     desired_offset = band * math.tanh(shock * .6 + jump)
                     decay = math.exp(-delta / 3)
                     offset = old_offset * decay + desired_offset * (1-decay)
@@ -337,6 +346,16 @@ class MarketManager:
                     latent_price = min(float(MAX_PRICE), max(1.0, float(value)))
                 else:
                     latent_price = numerator / duration
+                # A pullback is allowed, but only for part of the mean progress
+                # made since the previous tick. The next ticks then continue
+                # toward the target instead of cycling start↔goal.
+                previous_price = int(target["last_price"] if target["last_price"] is not None else price)
+                direction = 1 if target["target_price"] >= target["start_price"] else -1
+                if (next_price - previous_price) * direction < 0:
+                    mean_step = abs(target["target_price"] - target["start_price"]) * delta / duration
+                    reverse_limit = max(1, int(math.ceil(mean_step * .5)))
+                    next_price = previous_price - direction * min(abs(next_price-previous_price),reverse_limit)
+                    latent_price = float(next_price)
         else:
             noise = 0.0
         conn.execute("UPDATE system.market_event_targets SET noise_fraction = ?, last_tick_epoch = ?, last_price = ? "

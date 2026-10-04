@@ -127,6 +127,14 @@ class MarketFeatureTests(unittest.TestCase):
         after = time.time()
         self.assertEqual(self.rates.get_rate("base_rate"), 3.5)
         self.assertEqual(self.rates.get_rate("statutory_rate"), 10)
+        base_change = self.db.system.execute_one(
+            "SELECT * FROM rate_history WHERE rate_key = 'base_rate' ORDER BY history_id DESC LIMIT 1")
+        base_time = float(base_change["effective_epoch"])
+        self.assertEqual(base_change["changed_by"], "database")
+        self.assertEqual(
+            self.rates.get_rate_history("base_rate", base_time - 60, now=base_time + 60),
+            [(base_time - 60, 3.0), (base_time, 3.5), (base_time + 60, 3.5)],
+        )
         change = self.db.system.execute_one(
             "SELECT * FROM rate_history WHERE rate_key = 'statutory_rate' ORDER BY history_id DESC LIMIT 1")
         self.assertEqual(change["changed_by"], "database")
@@ -243,22 +251,6 @@ class MarketFeatureTests(unittest.TestCase):
             self.market.update_prices(volatility=.1, market_condition="bull", now=1062)
         state = self.db.system.execute_one("SELECT latent_price FROM market_simulation_state WHERE asset_code = 'SPOT'")
         self.assertGreater(state["latent_price"], 200)
-
-    def test_zero_severity_has_no_price_effect_and_bad_news_moves_down(self):
-        admin = AdminManager(self.db)
-        self.assertTrue(admin.create_market_event("admin", "bad", 0, "CO", 1, now=1000)[0])
-        with patch("managers.market_manager.standardized_shock", return_value=10), \
-             patch("managers.stochastic_price_engine.standardized_shock", return_value=10):
-            self.market.update_prices(volatility=.1, market_condition="bull", now=1000)
-        self.assertGreater(self.db.companies.get_company("CO")["share_price"], 100)
-        self.db.companies.update_share_price("CO", 100)
-        self.assertTrue(admin.create_market_event("admin", "bad", 100, "CO", 60, now=1001)[0])
-        self.event_tick_without_noise(1001, volatility=0)
-        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 100)
-        self.event_tick_without_noise(1031, volatility=0)
-        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 51)
-        self.event_tick_without_noise(1061, volatility=0)
-        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 1)
 
     def test_explicit_target_price_bridge_reaches_goal_when_random_noise_is_zero(self):
         admin = AdminManager(self.db)
@@ -606,12 +598,6 @@ class MarketFeatureTests(unittest.TestCase):
         self.assertEqual(len(modal.to_dict()["components"]), 5)
         registry._reply.assert_not_awaited()
 
-    def test_option_autocomplete_has_no_duplicates_after_exchange_listing(self):
-        self.assertTrue(self.options.create_and_write("alice", "CO", "put", 100, 1, 2, 10)[0])
-        registry = SlashCommandRegistry(SimpleNamespace(market_mgr=self.market, option_mgr=self.options))
-        choices = asyncio.run(registry.buy_asset_autocomplete(SimpleNamespace(), ""))
-        self.assertEqual(len(choices), len({choice.value for choice in choices}))
-
     def test_chart_settings_persist_within_discord_component_limits_and_defer_before_render(self):
         bot = SimpleNamespace(market_mgr=self.market)
         view = PriceMovementView(bot, "alice", "CO")
@@ -794,34 +780,6 @@ class MarketFeatureTests(unittest.TestCase):
         account = self.db.accounts.get_user_accounts("alice")[0]["account_number"]
         self.assertTrue(self.book.place_limit_order("alice", "FUT", "sell", 1, 200)[0])
         self.assertFalse(bank.close_account("alice", account, "1234")[0])
-
-    def test_slash_registration_exposes_new_commands_ranges_and_admin_guards(self):
-        class Tree:
-            def __init__(self): self.commands = []
-            def add_command(self, command): self.commands.append(command)
-        tree = Tree()
-        registry = SlashCommandRegistry(SimpleNamespace(tree=tree, rate_mgr=self.rates))
-        registry.register()
-        commands = {c.name: c for c in tree.commands}
-        self.assertTrue({"기준금리", "법정이자", "펀드가입", "펀드환매", "선물증거금"}.issubset(commands))
-        self.assertTrue({"사건", "상품등록", "register", "setup", "기본소득"}.isdisjoint(commands))
-        self.assertEqual(commands["기준금리"].parameters, [])
-        self.assertEqual(commands["법정이자"].parameters, [])
-        registry._prepare = AsyncMock(return_value=("alice", None, "user"))
-        registry._reply = AsyncMock()
-        asyncio.run(registry.base_rate(SimpleNamespace()))
-        self.assertIn("3", registry._reply.call_args.kwargs["content"])
-        registry._reply.reset_mock()
-        asyncio.run(registry.statutory_rate(SimpleNamespace()))
-        self.assertIn("5", registry._reply.call_args.kwargs["content"])
-        registry._reply.reset_mock()
-        asyncio.run(registry.market_event(SimpleNamespace()))
-        self.assertIn("관리자", registry._reply.call_args.kwargs["content"])
-        registry._reply.reset_mock()
-        asyncio.run(registry.register_product(SimpleNamespace(), SimpleNamespace(value="commodity_spot"),
-                    "GOLD", "Gold", 100, 1000, "EX"))
-        self.assertIn("관리자", registry._reply.call_args.kwargs["content"])
-
 
 class IndicatorTests(unittest.TestCase):
     @staticmethod

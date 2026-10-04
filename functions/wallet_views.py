@@ -43,7 +43,6 @@ class WalletCategoryView(discord.ui.View):
         if self.category=='written':
             text='작성해 판매한 옵션은 만기까지 의무가 남습니다. 콜은 담보 주식 인도, 풋은 담보금으로 주식 매수 의무가 있습니다. 행사되지 않은 계약의 남은 담보는 만기에 반환됩니다.\n\n'+text
         embed=discord.Embed(title=f'💰 내지갑 · {labels[self.category]}',description=text,color=discord.Color.gold())
-        if self.category=='written':self.add_obligation_field(embed)
         embed.set_footer(text=f'{len(lines)}개 · {self.page+1}/{pages} 페이지 · 조회 시점 기준 · 최신 정보는 /내지갑 재실행')
         self.previous.disabled=self.page==0
         self.next.disabled=self.page==pages-1

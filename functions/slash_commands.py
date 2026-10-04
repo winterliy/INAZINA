@@ -98,11 +98,6 @@ class SlashCommandRegistry:
         return [app_commands.Choice(name=f"{r['name']} ({r['code']})"[:100],value=r['code'])
                 for r in rows if not current or current in r['name'].casefold() or current in r['code'].casefold()][:25]
 
-    async def fx_product_autocomplete(self,interaction,current):
-        current = current.casefold()
-        rows = self.bot.db.fx.execute("SELECT * FROM fx_products WHERE status='active' ORDER BY name")
-        return [app_commands.Choice(name=f"{r['name']} ({r['product_code']})"[:100],value=r['product_code'])
-                for r in rows if not current or current in r['name'].casefold() or current in r['product_code'].casefold()][:25]
 
     async def _fx_action(self,interaction,action,*args):
         user_id,_,_ = await self._prepare(interaction)
@@ -115,8 +110,6 @@ class SlashCommandRegistry:
     async def fx_exchange(self,interaction: discord.Interaction,출금통화: str,입금통화: str,금액: str):
         await self._fx_action(interaction,self.bot.fx_mgr.exchange,출금통화,입금통화,금액)
 
-    async def fx_open(self,interaction: discord.Interaction,상품: str):
-        await self._fx_action(interaction,self.bot.fx_mgr.open_account,상품)
 
     async def lottery_buy(self,interaction: discord.Interaction,수량: app_commands.Range[int,1,1000]=1,번호: str='자동'):
         from functions.lottery_views import LotteryPurchaseView,rules_embed
@@ -170,36 +163,8 @@ class SlashCommandRegistry:
     async def statutory_rate(self, interaction: discord.Interaction):
         await self._rate_query(interaction, "statutory_rate")
 
-    async def market_event(self, interaction: discord.Interaction):
-        user_id, _, role = await self._prepare(interaction, defer=False)
-        if role != "admin":
-            return await self._reply(interaction, content="❌ `/사건`은 관리자 전용입니다.")
-        assets = await asyncio.to_thread(self.bot.market_mgr.get_event_assets)
-        await interaction.response.send_modal(MarketEventModal(self.bot, user_id, assets=assets))
 
-    @app_commands.choices(종류=[app_commands.Choice(name=label, value=key) for key, label in PRODUCT_NAMES.items()])
-    @app_commands.describe(기초="선물: 주식 코드 / 회사채: 발행 회사 코드 / 펀드: 구성 주식의 거래소 ID",
-                           가격="현물 단가, 회사채 액면가 또는 펀드 최초 NAV (선물은 기초 주가로 계산)",
-                           계약승수="선물 1계약이 나타내는 주식 수")
-    async def register_product(self, interaction: discord.Interaction, 종류: app_commands.Choice[str], 코드: str, 이름: str,
-                               가격: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
-                               발행량: app_commands.Range[int, 1, MAX_DISCORD_INTEGER], 거래소: str,
-                               기초: str | None = None, 만기일수: app_commands.Range[int, 0, 3650] = 0,
-                               연이율: app_commands.Range[float, 0, 100] = 0,
-                               계약승수: app_commands.Range[int, 1, 10000] = 1):
-        user_id, _, role = await self._prepare(interaction)
-        if role != "admin":
-            return await self._reply(interaction, content="❌ 상품 등록은 관리자 전용입니다.")
-        success, message = await asyncio.to_thread(self.bot.investment_mgr.issue, user_id, 코드, 이름, 종류.value,
-            가격, 발행량, 거래소, 기초, 만기일수, 연이율, 계약승수)
-        await self._reply(interaction, embed=self._result_embed("상품 등록", message, success))
 
-    async def fund_autocomplete(self, interaction: discord.Interaction, current: str):
-        current = current.casefold()
-        rows = self.bot.db.products.execute("SELECT product_code, name, unit_price FROM investment "
-            "WHERE product_type IN ('mutual_fund', 'index_fund') AND status = 'active' ORDER BY name")
-        return [app_commands.Choice(name=f"{row['name']} · NAV {row['unit_price']:,} NWX"[:100], value=row["product_code"])
-            for row in rows if not current or current in row["name"].casefold() or current in row["product_code"].casefold()][:25]
 
     async def subscribe_fund(self, interaction: discord.Interaction, 펀드: str, 좌수: app_commands.Range[int, 1, MAX_DISCORD_INTEGER]):
         user_id, _, _ = await self._prepare(interaction)
@@ -211,11 +176,6 @@ class SlashCommandRegistry:
         success, message = await asyncio.to_thread(self.bot.investment_mgr.trade_fund, user_id, 펀드, 좌수, True)
         await self._reply(interaction, embed=self._result_embed("펀드 환매", message, success))
 
-    async def future_autocomplete(self, interaction: discord.Interaction, current: str):
-        current = current.casefold()
-        rows = self.bot.db.products.execute("SELECT product_code, name FROM investment WHERE product_type = 'stock_future' AND status = 'active'")
-        return [app_commands.Choice(name=f"{row['name']} ({row['product_code']})"[:100], value=row["product_code"])
-            for row in rows if not current or current in row["name"].casefold() or current in row["product_code"].casefold()][:25]
 
     async def future_margin(self, interaction: discord.Interaction, 선물: str, 금액: app_commands.Range[int, 1, MAX_DISCORD_INTEGER]):
         user_id, _, _ = await self._prepare(interaction)
@@ -570,46 +530,7 @@ class SlashCommandRegistry:
         success, message = self.bot.user_mgr.gamble(user_id, 금액)
         await self._reply(interaction, embed=self._result_embed("🎲 도박 결과", message, success))
 
-    async def bond_offerings(self, interaction: discord.Interaction):
-        await self._prepare(interaction)
-        products = self.bot.treasury_bond_mgr.get_active_offerings()
-        embed = discord.Embed(title="🏛️ 거래 가능한 국채", color=discord.Color.gold())
-        if not products:
-            embed.description = "현재 매수 가능한 국채가 없습니다. 국채 상품은 관리자가 SQL Browser에서 등록합니다."
-        else:
-            embed.description = "신규발행은 액면가로 청약할 수 있고, 유통 국채는 `/매수`·`/매도` 지정가 주문으로 거래합니다. 거래 후에도 원래 만기와 이자 조건은 유지됩니다."
-            for product in products[:25]:
-                remaining = int(product["total_supply"]) - int(product["sold_amount"] or 0)
-                face_value = int(product["face_value"])
-                embed.add_field(
-                    name=f"{product['name']} · `{product['product_code']}`",
-                    value=(
-                        f"거래소 `{product['exchange_id']}` · 연이율 {float(product['annual_rate']):g}% · "
-                        f"만기 {int(product['maturity_days']):,}일\n"
-                        f"액면가 {face_value:,} NWX · 유통 기준가 {int(product['market_price']):,} NWX · "
-                        f"매수 가능 {remaining:,} NWX ({remaining // face_value:,}매)\n"
-                        f"신규 청약은 `/매수` · 자산 `{product['product_code']}` · "
-                        f"수량은 매수 수 · 지정가는 액면가 이상 (액면가 {face_value:,} NWX)"
-                    ),
-                    inline=False,
-                )
-        await self._reply(interaction, embed=embed)
 
-    async def option_underlying_autocomplete(self, interaction: discord.Interaction, current: str):
-        try:
-            assets = self.bot.market_mgr.get_tradeable_stocks()
-        except Exception:
-            return []
-        current = str(current or "").casefold()
-        return [
-            app_commands.Choice(
-                name=(f"{item['name']} ({item['code']}) · {int(item['price']):,} NWX")[:100],
-                value=str(item["code"]),
-            )
-            for item in assets
-            if (not current or current in str(item["name"]).casefold()
-                or current in str(item["code"]).casefold())
-        ][:25]
 
     async def option_chain(self, interaction: discord.Interaction, 기초주식: str = None):
         await self._prepare(interaction)
@@ -671,130 +592,9 @@ class SlashCommandRegistry:
             embed=self._result_embed("📝 옵션 작성", message, success),
         )
 
-    async def my_options(self, interaction: discord.Interaction):
-        user_id, _user_data, _role = await self._prepare(interaction)
-        positions, written = await asyncio.gather(
-            asyncio.to_thread(self.bot.option_mgr.get_user_positions, user_id),
-            asyncio.to_thread(self.bot.option_mgr.get_user_written, user_id),
-        )
-        embed = discord.Embed(title="📄 나의 옵션", color=discord.Color.blue())
-        long_lines = [
-            f"• `{row['contract_code']}` · {row['name']} · {int(row['quantity']):,}계약 · "
-            f"평균 프리미엄 {int(row['average_premium']):,} NWX · "
-            f"참고가 {int(row['theoretical_price']):,} NWX · 만기 <t:{int(row['expiration_epoch'])}:R>"
-            for row in positions
-        ]
-        writer_lines = []
-        for row in written:
-            collateral = (
-                f"주식 {int(row['collateral_quantity']):,}주"
-                if row["option_type"] == "call"
-                else f"{int(row['collateral_cash']):,} NWX 현금"
-            )
-            writer_lines.append(
-                f"• `{row['contract_code']}` · {row['name']} · 매도 체결 "
-                f"{int(row['outstanding_contracts']):,}계약 · 발행 대기 {int(row['offered']):,}계약 · "
-                f"담보 {collateral} · 만기 <t:{int(row['expiration_epoch'])}:R>"
-            )
-        embed.add_field(name="보유 옵션", value="\n".join(long_lines)[:1024] or "보유 옵션 없음", inline=False)
-        embed.add_field(name="작성 옵션", value="\n".join(writer_lines)[:1024] or "작성 옵션 없음", inline=False)
-        embed.set_footer(text="1계약은 기초주식 1주입니다. 만기에는 자금(콜) 또는 주식(풋)이 있을 때 자동 행사됩니다.")
-        await self._reply(interaction, embed=embed)
 
-    async def buy_asset_autocomplete(self, interaction: discord.Interaction, current: str):
-        try:
-            assets = self.bot.market_mgr.get_market_assets(active_only=True)
-        except Exception:
-            return []
-        current = current.casefold()
-        choices = [
-            app_commands.Choice(
-                name=(
-                    f"{item['name']} ({self.bot.market_mgr.type_label(item['type'])}) · "
-                    f"{self.bot.market_mgr.format_price(item['price'], item['type'])} NWX"
-                    + (f" · {item['exchange_id']} 거래소" if item.get("type") == "국채" else "")
-                    + (" · ⚠️ 위험" if item["price"] <= 100 else "")
-                )[:100],
-                value=str(item["code"]),
-            )
-            for item in assets
-            if 0 < len(str(item["code"])) <= 100
-            and item["type"] not in FUND_TYPES
-            and (not current or current in str(item["name"]).casefold() or current in str(item["code"]).casefold())
-        ][:25]
-        if len(choices) < 25:
-            try:
-                contracts = self.bot.option_mgr.get_active_contracts(limit=100)
-            except Exception:
-                contracts = []
-            choices.extend(
-                app_commands.Choice(
-                    name=(f"{item['name']} (`{item['contract_code']}`) · "
-                          f"참고 {int(item['theoretical_price']):,} NWX")[:100],
-                    value=str(item["contract_code"]),
-                )
-                for item in contracts
-                if item["contract_code"] not in {choice.value for choice in choices}
-                and (not current or current.casefold() in str(item["name"]).casefold()
-                    or current.casefold() in str(item["contract_code"]).casefold())
-            )
-        return choices[:25]
 
-    def _owned_assets(self, user_id):
-        rows = self.bot.db.assets.execute(
-            "SELECT asset_code, SUM(quantity) AS quantity FROM user_assets "
-            "WHERE user_id = ? AND quantity > 0 GROUP BY asset_code ORDER BY asset_code",
-            (str(user_id),),
-        )
-        assets = []
-        for row in rows:
-            asset = self.bot.market_mgr.get_asset_info(row["asset_code"])
-            if asset and asset["status"] in {"active", "matured"}:
-                assets.append({**asset, "quantity": int(row["quantity"])})
-        bond_rows = self.bot.db.accounts.execute(
-            "SELECT product_code, SUM(principal / face_value) AS quantity "
-            "FROM treasury_bond_holdings WHERE user_id = ? AND status = 'active' "
-            "AND maturity_epoch > unixepoch('now') GROUP BY product_code",
-            (str(user_id),),
-        )
-        for row in bond_rows:
-            asset = self.bot.market_mgr.get_asset_info(row["product_code"])
-            if asset and asset["status"] == "active":
-                assets.append({**asset, "quantity": int(row["quantity"] or 0)})
-        for option in self.bot.option_mgr.get_user_positions(user_id):
-            assets.append({
-                "code": option["contract_code"], "name": option["name"],
-                "type": "option", "price": option["price"],
-                "status": "active", "quantity": int(option["quantity"]),
-            })
-        # A futures sell can open a short even when no long position is held.
-        known = {asset["code"] for asset in assets}
-        for asset in self.bot.market_mgr.get_market_assets(active_only=True):
-            if asset["type"] == "stock_future" and asset["code"] not in known:
-                assets.append({**asset, "quantity": 0})
-        assets = [asset for asset in assets if asset["type"] not in FUND_TYPES]
-        return assets
 
-    async def sell_asset_autocomplete(self, interaction: discord.Interaction, current: str):
-        try:
-            assets = self._owned_assets(interaction.user.id)
-        except Exception:
-            return []
-        current = current.casefold()
-        return [
-            app_commands.Choice(
-                name=((f"{item['name']} · 롱 청산 / 신규 숏 · " if item["type"] == "stock_future" else
-                       f"{item['name']} · 보유 {item['quantity']:,}"
-                      f"{'계약' if str(item['type']).casefold() == 'option' else '주' if str(item['type']).casefold() in {'stock', '주식'} else '매' if str(item['type']) == '국채' else '개'} · ")
-                      + f"{self.bot.market_mgr.format_price(item['price'], item['type'])} NWX"
-                      + (f" · {item['exchange_id']} 거래소" if item.get("type") == "국채" else "")
-                      + (" · ⚠️ 위험" if item["price"] <= 100 else ""))[:100],
-                value=str(item["code"]),
-            )
-            for item in assets
-            if 0 < len(str(item["code"])) <= 100
-            and (not current or current in str(item["name"]).casefold() or current in str(item["code"]).casefold())
-        ][:25]
 
     async def buy(
         self,
@@ -1121,50 +921,6 @@ class SlashCommandRegistry:
         except ValueError as exc:
             await self._reply(interaction, content=f"❌ 정보 목록을 불러오지 못했습니다: {exc}")
 
-    async def movement_asset_autocomplete(self, interaction: discord.Interaction, current: str):
-        current = current.casefold()
-        choices = [app_commands.Choice(name=f"{label} · 연이율 변경 그래프", value=RateManager.chart_code(key))
-                   for key, label in RateManager.KEYS.items()
-                   if not current or current in label.casefold() or current in key
-                   or current == "연이율"]
-        try:
-            assets = self.bot.market_mgr.get_market_assets()
-            indices = self.bot.market_mgr.get_exchange_indices()
-        except Exception:
-            return choices[:25]
-        choices.extend([
-            app_commands.Choice(
-                name=f"📊 {item['exchange_id']} 거래소 지수 · {float(item['index_value']):,.2f}"[:100],
-                value=f"{EXCHANGE_INDEX_PREFIX}{item['exchange_id']}",
-            )
-            for item in indices
-            if len(f"{EXCHANGE_INDEX_PREFIX}{item['exchange_id']}") <= 100
-            and (
-                not current
-                or current in "거래소 지수"
-                or current in str(item["exchange_id"]).casefold()
-            )
-        ])
-        choices.extend([
-            app_commands.Choice(
-                name=(
-                    f"{item['name']} ({item['type']}) · "
-                    f"{self.bot.market_mgr.format_price(item['price'], item['type'])} NWX"
-                    + (" · ⚠️ 위험" if item["price"] <= 100 else "")
-                )[:100],
-                value=str(item["code"]),
-            )
-            for item in assets
-            if 0 < len(str(item["code"])) <= 100
-            and (
-                not current
-                or current in str(item["name"]).casefold()
-                or current in str(item["code"]).casefold()
-                or current in str(item["type"]).casefold()
-                or current in self.bot.market_mgr.type_label(item['type']).casefold()
-            )
-        ])
-        return choices[:25]
 
     async def movement(self, interaction: discord.Interaction, 종목: str):
         자산 = 종목.strip()
@@ -1245,37 +1001,4 @@ class SlashCommandRegistry:
             ephemeral=True,
         )
 
-    async def basic_income(
-        self,
-        interaction: discord.Interaction,
-        금액: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
-    ):
-        user_id, _user_data, role = await self._prepare(interaction)
-        if role != "admin":
-            return await self._reply(interaction, content="❌ 관리자만 사용할 수 있는 명령어입니다.")
-        success, message = self.bot.admin_mgr.distribute_basic_income(금액)
-        await self._reply(interaction, embed=self._result_embed("🏛️ 기본소득", message, success))
 
-    async def setup_user(self, interaction: discord.Interaction, 사용자: discord.User):
-        _user_id, _user_data, role = await self._prepare(interaction)
-        if role != "admin":
-            return await self._reply(interaction, content="❌ 관리자만 사용할 수 있는 명령어입니다.")
-        nickname = getattr(사용자, "global_name", None) or 사용자.name
-        message = self.bot.admin_mgr.setup_user(str(사용자.id), nickname)
-        await self._reply(interaction, content=message)
-
-    async def register_all(self, interaction: discord.Interaction):
-        _user_id, _user_data, role = await self._prepare(interaction)
-        if role != "admin":
-            return await self._reply(interaction, content="❌ 관리자만 사용할 수 있는 명령어입니다.")
-        if interaction.guild is None:
-            return await self._reply(interaction, content="❌ `/register`는 서버에서 사용해주세요.")
-        try:
-            members = [member async for member in interaction.guild.fetch_members(limit=None)]
-        except discord.Forbidden:
-            return await interaction.followup.send(
-                "❌ 서버 멤버 목록 권한이 없습니다. Developer Portal의 Server Members Intent를 확인해주세요.",
-                ephemeral=True,
-            )
-        result = self.bot.admin_mgr.setup_all(members)
-        await interaction.followup.send(result, ephemeral=True)

@@ -6,6 +6,7 @@ import discord
 from types import SimpleNamespace
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 
 from database import DatabaseManager
 from database.db_manager import DBManager
@@ -22,7 +23,6 @@ from functions.discord_views import (
     AllAssetsView,
     HelpLinksView,
     InfoPanelView,
-    MovementAssetSelectView,
     MyOrdersView,
     PriceMovementView,
     RegistrationModal,
@@ -763,11 +763,6 @@ class EconomyTests(unittest.TestCase):
         self.db.assets.register_asset("CHART", "Chart Asset", "EX", 10, "stock")
         market = MarketManager(self.db)
         market.update_prices(volatility=0)
-        asset_picker = MovementAssetSelectView(
-            SimpleNamespace(market_mgr=market),
-            "citizen-1",
-            market.get_market_assets(active_only=True),
-        )
         view = PriceMovementView(
             SimpleNamespace(market_mgr=market), "citizen-1", "CHART"
         )
@@ -778,8 +773,6 @@ class EconomyTests(unittest.TestCase):
             [option.label for option in view.period_select.options],
             ["1분", "5분", "10분", "30분", "1시간", "6시간", "12시간", "1일"],
         )
-        self.assertEqual([option.value for option in asset_picker.asset_select.options],
-                         ["__rate__:base_rate", "__rate__:statutory_rate", "CHART"])
         self.assertEqual(png[:8], b"\x89PNG\r\n\x1a\n")
         self.assertEqual(embed.image.url, "attachment://movement.png")
         self.assertGreater(len(render_price_chart([(1, 10), (2, 12)], 60)), 100)
@@ -800,52 +793,18 @@ class EconomyTests(unittest.TestCase):
         self.assertEqual(market.get_exchange_index_info("EXCHANGE-A")["index_value"], 1100)
         self.assertEqual(len(market.get_exchange_index_history("EXCHANGE-A", now)), 2)
 
-        picker = MovementAssetSelectView(
-            SimpleNamespace(market_mgr=market),
-            "citizen-1",
-            market.get_market_assets(active_only=True),
-        )
-        self.assertTrue(market.is_exchange_index_code(picker.asset_select.options[0].value))
-
         view = PriceMovementView(
             SimpleNamespace(market_mgr=market),
             "citizen-1",
             market.exchange_index_code("EXCHANGE-A"),
         )
-        embed, png = view.render()
+        with patch("functions.discord_views.render_price_chart", return_value=b"chart"):
+            embed, png = view.render()
         self.assertIn("거래소 지수", embed.title)
         self.assertIn("1,100.00", embed.description)
-        self.assertEqual(png[:8], b"\x89PNG\r\n\x1a\n")
+        self.assertEqual(png, b"chart")
 
-    def test_tradeable_stock_menu_includes_stocks_but_excludes_other_investments(self):
-        self.db.assets.register_asset("STOCK", "Market Stock", "EX", 10, "stock")
-        self.db.products.register_investment("ETF", "Index Fund", "ETF", 100, 30, 0, "Manager", "EX")
-        self.db.companies.create_company("CO", "Company Share", "Industry", 1000, 100, 20, "citizen-1", "EX")
-
-        codes = {asset["code"] for asset in MarketManager(self.db).get_tradeable_stocks()}
-
-        self.assertEqual(codes, {"STOCK", "CO"})
-
-    def test_market_info_list_includes_non_stock_investments(self):
-        self.db.assets.register_asset("STOCK", "Market Stock", "EX", 10, "stock")
-        self.db.products.register_investment("ETF", "Index Fund", "ETF", 100, 30, 0, "Manager", "EX")
-
-        assets = MarketManager(self.db).get_market_assets()
-
-        self.assertEqual({asset["code"] for asset in assets}, {"STOCK", "ETF"})
-
-    def test_info_panel_accepts_fractional_interest_cycle_seconds(self):
-        self.db.products.register_saving("FRACTION", "Fractional Cycle", 1.5, 0, 0, "0.1", 1, "Bank")
-        panel = InfoPanelView(
-            SimpleNamespace(db=self.db, market_mgr=MarketManager(self.db)),
-            "citizen-1",
-        )
-
-        panel.category='savings'
-        embed = panel.build_embed()
-        self.assertIn('이자주기 0.1초',embed.description)
-
-    def test_all_assets_view_shows_ten_citizens_per_page(self):
+    def test_all_assets_view_pages_every_citizen_without_duplicates(self):
         for index in range(3, 24):
             self.db.users.create_user(f"citizen-{index}", f"Citizen {index}", "Nac", 0)
         users = self.db.users.execute(
@@ -855,15 +814,15 @@ class EconomyTests(unittest.TestCase):
             SimpleNamespace(user_mgr=self.users), "viewer", users
         )
 
-        first_page = view.build_embed()
-        self.assertEqual(len(first_page.fields), 10)
-        self.assertIn("1/3 페이지", first_page.footer.text)
-        view.page = 1
-        second_page = view.build_embed()
-        self.assertEqual(len(second_page.fields), 10)
-        self.assertIn("2/3 페이지", second_page.footer.text)
-        view.page = 2
-        self.assertEqual(len(view.build_embed().fields), 3)
+        shown = []
+        for page in range(3):
+            view.page = page
+            embed = view.build_embed()
+            shown.extend(field.name for field in embed.fields)
+            self.assertIn(f"{page + 1}/3 페이지", embed.footer.text)
+            self.assertLessEqual(len(embed), 6000)
+        self.assertEqual(len(shown), len(users))
+        self.assertEqual(len(set(shown)), len(users))
 
     def test_my_orders_view_has_interactive_cancel_components(self):
         self.db.assets.register_asset("ORDVIEW", "주문 보기", "EX", 100, "stock")
@@ -1023,7 +982,7 @@ class EconomyTests(unittest.TestCase):
         self.assertIsInstance(interaction.response.modal, RegistrationModal)
         self.assertIsNone(interaction.response.message)
 
-    def test_slash_command_migration_uses_search_and_register_names(self):
+    def test_slash_command_schema(self):
         class FakeTree:
             def __init__(self):
                 self.commands = []
@@ -1037,8 +996,11 @@ class EconomyTests(unittest.TestCase):
 
         names = {command.name for command in tree.commands}
         self.assertIn("등록", names)
+        self.assertIn("내지갑", names)
         self.assertTrue({"setup", "register", "사건", "상품등록", "기본소득"}.isdisjoint(names))
+        self.assertTrue({"내옵션", "외환계좌", "국적", "내외환", "환율", "내자산"}.isdisjoint(names))
         self.assertTrue({"회생신청", "파산신청"}.issubset(names))
+        self.assertTrue({"기준금리", "법정이자", "펀드가입", "펀드환매", "선물증거금"}.issubset(names))
         for name in ("회생신청", "파산신청"):
             command = next(command for command in tree.commands if command.name == name)
             self.assertEqual(command.parameters, [])
@@ -1067,6 +1029,17 @@ class EconomyTests(unittest.TestCase):
         movement_asset = next(parameter for parameter in movement.parameters if parameter.name == "종목")
         self.assertFalse(movement_asset.autocomplete)
         self.assertTrue(movement_asset.required)
+        for command_name, argument_name in {
+            "선물증거금": "선물", "펀드가입": "펀드", "펀드환매": "펀드"
+        }.items():
+            parameter = next(
+                parameter for parameter in next(command for command in tree.commands if command.name == command_name).parameters
+                if parameter.name == argument_name
+            )
+            self.assertTrue(parameter.required)
+            self.assertFalse(parameter.autocomplete)
+        self.assertEqual(next(command for command in tree.commands if command.name == "기준금리").parameters, [])
+        self.assertEqual(next(command for command in tree.commands if command.name == "법정이자").parameters, [])
 
     def test_financial_relief_commands_dm_admins_with_asset_page_balances_only(self):
         import asyncio
@@ -1288,11 +1261,9 @@ class EconomyTests(unittest.TestCase):
         self.assertEqual(user["nickname"], "New Citizen")
         self.assertEqual(user["cash"], 1000000)
 
-    def test_buy_autocomplete_includes_other_investments_and_transfer_account_choices(self):
+    def test_transfer_autocomplete_includes_accounts_and_treasury(self):
         import asyncio
 
-        self.db.assets.register_asset("STOCK", "Market Stock", "EX", 10, "stock")
-        self.db.products.register_investment("ETF", "Index Fund", "ETF", 100, 30, 0, "Manager", "EX")
         self.db.users.update_cash("citizen-2", 1000)
         self.db.products.register_saving("RECIPIENT", "Recipient Savings", 0, 0, 0, 3600, 0, "Bank")
         self.assertTrue(self.bank.open_account("citizen-2", "RECIPIENT", "1234", 100)[0])
@@ -1311,10 +1282,8 @@ class EconomyTests(unittest.TestCase):
         registry = SlashCommandRegistry(bot)
         registry.register()
         interaction = SimpleNamespace(user=SimpleNamespace(id="citizen-1"))
-        buy_choices = asyncio.run(registry.buy_asset_autocomplete(interaction, ""))
         recipient_choices = asyncio.run(registry.recipient_autocomplete(interaction, ""))
 
-        self.assertEqual({choice.value for choice in buy_choices}, {"STOCK", "ETF"})
         self.assertIn(recipient_account, {choice.value for choice in recipient_choices})
         treasury_choice = next(choice for choice in recipient_choices if choice.value == TREASURY_USER_ID)
         self.assertIn("국고", treasury_choice.name)

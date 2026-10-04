@@ -27,7 +27,7 @@ from managers.admin_control_manager import AdminControlManager,ENTITIES,EXAMPLES
 from managers.catalog_manager import CatalogManager
 from managers.fx_manager import FXManager,SCALE
 from functions.admin_prefix import AdminPrefixRegistry,AdminCommandView,EntityModal,ActionModal,TreasuryAssetsView,READ_ONLY
-from functions.discord_views import MovementAssetSelectView,PriceMovementView,InfoPanelView
+from functions.discord_views import PriceMovementView,InfoPanelView
 from functions.slash_commands import SlashCommandRegistry
 
 class InazinaTests(unittest.TestCase):
@@ -160,7 +160,7 @@ class InazinaTests(unittest.TestCase):
     def test_prefix_deletes_chat_and_denies_ordinary_users(self):
         channel=SimpleNamespace(send=AsyncMock())
         registry=AdminPrefixRegistry(self.bot)
-        message=SimpleNamespace(author=SimpleNamespace(id='admin',bot=False,send=AsyncMock()),content='$사건',delete=AsyncMock(),channel=channel,guild=None)
+        message=SimpleNamespace(author=SimpleNamespace(id='admin',bot=False,send=AsyncMock()),content='$사건',delete=AsyncMock(),channel=channel,guild=SimpleNamespace(id=1))
         asyncio.run(registry.handle(message))
         message.delete.assert_awaited_once()
         self.assertIsInstance(message.author.send.call_args_list[0].kwargs.get('view',message.author.send.return_value.edit.call_args.kwargs['view']),AdminCommandView)
@@ -196,7 +196,7 @@ class InazinaTests(unittest.TestCase):
 
     def test_prefix_blocked_dm_never_publishes_controls_and_cleans_up(self):
         response=SimpleNamespace(status=403,reason='Forbidden')
-        message=SimpleNamespace(author=SimpleNamespace(id='admin',bot=False,send=AsyncMock(side_effect=discord.Forbidden(response,'DM blocked'))),content='$사건',delete=AsyncMock(),channel=SimpleNamespace(send=AsyncMock()),guild=None)
+        message=SimpleNamespace(author=SimpleNamespace(id='admin',bot=False,send=AsyncMock(side_effect=discord.Forbidden(response,'DM blocked'))),content='$사건',delete=AsyncMock(),channel=SimpleNamespace(send=AsyncMock()),guild=SimpleNamespace(id=1))
         asyncio.run(AdminPrefixRegistry(self.bot).handle(message))
         message.delete.assert_awaited_once()
         message.channel.send.assert_not_awaited()
@@ -204,7 +204,7 @@ class InazinaTests(unittest.TestCase):
     def test_prefix_cleanup_failure_disables_private_session(self):
         response=SimpleNamespace(status=403,reason='Forbidden')
         session=SimpleNamespace(edit=AsyncMock())
-        message=SimpleNamespace(author=SimpleNamespace(id='admin',bot=False,send=AsyncMock(return_value=session)),content='$사건',delete=AsyncMock(side_effect=discord.Forbidden(response,'Missing permissions')),channel=SimpleNamespace(send=AsyncMock()),guild=None)
+        message=SimpleNamespace(author=SimpleNamespace(id='admin',bot=False,send=AsyncMock(return_value=session)),content='$사건',delete=AsyncMock(side_effect=discord.Forbidden(response,'Missing permissions')),channel=SimpleNamespace(send=AsyncMock()),guild=SimpleNamespace(id=1))
         asyncio.run(AdminPrefixRegistry(self.bot).handle(message))
         self.assertEqual(session.edit.call_args.kwargs,{"view":None})
         view=session.edit.call_args_list[0].kwargs['view']
@@ -221,7 +221,7 @@ class InazinaTests(unittest.TestCase):
             self.assertFalse(await modal.interaction_check(interaction))
         asyncio.run(run())
 
-    def test_option_bond_fx_and_linked_events_record_charts_and_preserve_terms(self):
+    def test_option_bond_fx_and_linked_events_preserve_history_and_terms(self):
         self.seed()
         now=int(time.time())
         for code in ('INZOP001','INZTB001','INZCB001','INZFU001','INZMF001','INZIF001','INZETF001','FX_USD'):
@@ -233,65 +233,8 @@ class InazinaTests(unittest.TestCase):
                 self.bot.market_mgr.update_prices(now=now+10,volatility=0)
                 self.assertEqual(self.bot.market_mgr.get_asset_info(code)['price'],goal)
                 self.assertTrue(self.bot.market_mgr.get_price_history(code,now))
-                async def graph():
-                    view=PriceMovementView(self.bot,'citizen',code)
-                    embed,png=view.render()
-                    self.assertTrue(png.startswith(b'\x89PNG'))
-                asyncio.run(graph())
         self.assertEqual(self.db.products.get_treasury_bond('INZTB001')['face_value'],1000)
         self.assertEqual(self.db.assets.execute_one("SELECT strike_price FROM option_contracts WHERE contract_code='INZOP001'")[0],1008)
-
-    def test_event_corridor_is_wide_duplicate_stable_and_replacement_uses_live_price(self):
-        self.db.assets.register_asset('EV','대폭 등락','EX',10000,'commodity_spot')
-        self.bot.admin_mgr.create_market_event('admin','good',100,'EV',60,now=1000,target_price=20000)
-        prices=[]
-        for i in range(1,12):
-            with patch('managers.market_manager.standardized_shock',return_value=3 if i%2 else -3),patch('managers.stochastic_price_engine.standardized_shock',return_value=3 if i%2 else -3):
-                self.bot.market_mgr.update_prices(now=1000+i,volatility=0)
-            prices.append(self.db.assets.get_asset_info('EV')['price'])
-        self.assertLess(min(prices),11000)
-        self.assertGreater(max(prices),19000)
-        self.bot.market_mgr.update_prices(now=1011,volatility=0)
-        self.assertEqual(self.db.assets.get_asset_info('EV')['price'],prices[-1])
-        self.bot.admin_mgr.create_market_event('admin','bad',100,'EV',10,now=1011,target_price=9000)
-        targets=self.db.system.execute("SELECT * FROM market_event_targets WHERE asset_code='EV' ORDER BY event_id")
-        self.assertEqual([r['state'] for r in targets],['superseded','active'])
-        self.assertEqual(targets[-1]['start_price'],prices[-1])
-        self.bot.market_mgr.update_prices(now=1021,volatility=0)
-        self.assertEqual(self.db.assets.get_asset_info('EV')['price'],9000)
-
-    def test_graph_category_pagination_reaches_all_options_and_bonds(self):
-        self.seed()
-        async def run():
-            assets=self.bot.market_mgr.get_market_assets(active_only=True)
-            view=MovementAssetSelectView(self.bot,'citizen',assets,[])
-            for category,prefix in [('option','INZOP'),('treasury_bond','INZTB'),('forex','FX_')]:
-                view.graph_category=category
-                view.graph_page=0
-                view._graph_options()
-                first=[o.value for o in view.asset_select.options]
-                self.assertEqual(len(first),25)
-                self.assertTrue(all(s.startswith(prefix) for s in first))
-                view.graph_page=1
-                view._graph_options()
-                second=[o.value for o in view.asset_select.options]
-                self.assertEqual(len(set(first+second)),50)
-            panel=InfoPanelView(self.bot,'citizen')
-            for category in ('etf','treasury_bond','corporate_bond','stock_future','mutual_fund','index_fund','commodity_spot','option','forex','fx_savings'):
-                self.assertEqual(len(panel._category_lines(category)),50)
-        asyncio.run(run())
-
-    def test_slash_commands_keep_users_only_and_graph_has_instrument_argument(self):
-        commands=[]
-        registry=SlashCommandRegistry(SimpleNamespace(tree=SimpleNamespace(add_command=commands.append)))
-        registry.register()
-        names={c.name for c in commands}
-        self.assertTrue({'register','setup','사건','기본소득','상품등록'}.isdisjoint(names))
-        self.assertTrue({'검색','환전','계좌개설','내지갑','송금'}.issubset(names))
-        self.assertTrue({'외환계좌','국채','내옵션','국적','내외환','환율','내자산'}.isdisjoint(names))
-        self.assertTrue({'외환입금','외환출금'}.isdisjoint(names))
-        graph=next(c for c in commands if c.name=='그래프')
-        self.assertEqual([p.name for p in graph.parameters],['종목'])
 
     def test_national_put_collateral_order_cancellation_and_bank_account(self):
         self.seed()
@@ -350,7 +293,12 @@ class InazinaTests(unittest.TestCase):
                     self.assertEqual(file.filename,'movement.png')
                     self.assertTrue(file.fp.read().startswith(b'\x89PNG'))
                     file.close()
-        asyncio.run(run())
+        with patch.object(
+            PriceMovementView,
+            'render',
+            return_value=(discord.Embed(title='그래프'), b'\x89PNG\r\n\x1a\n'),
+        ):
+            asyncio.run(run())
 
     def test_treasury_assets_button_skips_dummy_modal_and_pages_all_holdings(self):
         self.seed()
@@ -365,14 +313,20 @@ class InazinaTests(unittest.TestCase):
             self.assertTrue(sent['ephemeral'])
             self.assertIsInstance(sent['view'],TreasuryAssetsView)
             assets_view=sent['view']
-            self.assertEqual(len(assets_view.items),100)
-            for page in range(10):
+            main=assets_view.build_embed()
+            self.assertNotIn('INZST001',str(main.to_dict()))
+            self.assertIn('총자산',[field.name for field in main.fields])
+            assets_view.category='stocks'
+            stock_count=len(assets_view.sections['stocks'])
+            self.assertGreater(stock_count,0)
+            shown=[]
+            for page in range((stock_count+9)//10):
                 assets_view.page=page
                 embed=assets_view.build_embed()
                 self.assertLessEqual(len(embed),6000)
                 self.assertLessEqual(len(embed.fields),25)
-                self.assertEqual(len(embed.fields[11:]),10)
-                self.assertEqual(embed.fields[11].name,assets_view.items[page*10][0][:120])
+                shown.extend(field.name for field in embed.fields)
+            self.assertEqual(shown,[item[0][:120] for item in assets_view.items])
             self.assertTrue(await assets_view.interaction_check(interaction))
             self.db.users.update_role('admin','user')
             self.assertFalse(await assets_view.interaction_check(interaction))

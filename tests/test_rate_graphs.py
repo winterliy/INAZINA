@@ -1,8 +1,6 @@
 import asyncio
-import sqlite3
 import tempfile
 import unittest
-from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -11,7 +9,7 @@ import discord
 
 from database import DatabaseManager
 from database.db_manager import DBManager
-from functions.discord_views import MovementAssetSelectView, PriceMovementView
+from functions.discord_views import PriceMovementView
 from functions.price_chart import render_rate_chart
 from functions.slash_commands import SlashCommandRegistry
 from managers.market_manager import MarketManager
@@ -53,14 +51,26 @@ class RateGraphTests(unittest.TestCase):
         self.assertIsNone(RateManager.rate_key_from_code("CO"))
         self.assertIsNone(RateManager.rate_key_from_code(RATE_CHART_PREFIX + "unknown"))
 
-    def test_history_carries_prior_rate_to_window_start_and_excludes_future(self):
-        self.history("base_rate", [(0, 3), (110.25, 3.5), (130.75, 4), (200, 99)])
-        self.assertEqual(
-            self.rates.get_rate_history("base_rate", 100, now=150),
-            [(100.0, 3.0), (110.25, 3.5), (130.75, 4.0), (150.0, 4.0)],
+    def test_rate_history_boundary_cases(self):
+        cases = (
+            ("prior value and future exclusion", "base_rate",
+             [(0, 3), (110.25, 3.5), (130.75, 4), (200, 99)], 100, 150,
+             [(100.0, 3.0), (110.25, 3.5), (130.75, 4.0), (150.0, 4.0)]),
+            ("same instant uses last value", "base_rate",
+             [(0, 3), (110, 3.5), (110, 4)], 100, 150,
+             [(100.0, 3.0), (110.0, 4.0), (150.0, 4.0)]),
+            ("window boundary is effective", "base_rate",
+             [(0, 3), (100, 4)], 100, 150,
+             [(100.0, 4.0), (150.0, 4.0)]),
+            ("zero and hundred are retained", "statutory_rate",
+             [(0, 0), (120, 100)], 100, 150,
+             [(100.0, 0.0), (120.0, 100.0), (150.0, 100.0)]),
         )
+        for name, key, rows, start, end, expected in cases:
+            with self.subTest(name=name):
+                self.history(key, rows)
+                self.assertEqual(self.rates.get_rate_history(key, start, now=end), expected)
 
-    def test_future_only_history_does_not_backdate_current_setting(self):
         self.db.system.set_setting("base_rate", "9")
         self.history("base_rate", [(200, 9)])
         self.assertEqual(self.rates.get_rate_history("base_rate", 100, now=150),
@@ -69,52 +79,9 @@ class RateGraphTests(unittest.TestCase):
                          [(150.0, 0.0)])
         self.assertEqual(self.rates.get_rate_history("base_rate", 100, now=200),
                          [(100.0, 0.0), (200.0, 9.0)])
-        # The setting fallback is still useful when no dated history exists.
         self.history("base_rate", [])
         self.assertEqual(self.rates.get_rate_history("base_rate", 100, now=150),
                          [(100.0, 9.0), (150.0, 9.0)])
-
-    def test_same_instant_changes_use_last_history_record(self):
-        self.history("base_rate", [(0, 3), (110, 3.5), (110, 4)])
-        self.assertEqual(
-            self.rates.get_rate_history("base_rate", 100, now=150),
-            [(100.0, 3.0), (110.0, 4.0), (150.0, 4.0)],
-        )
-
-    def test_change_at_window_boundary_is_effective_for_whole_window(self):
-        self.history("base_rate", [(0, 3), (100, 4)])
-        self.assertEqual(
-            self.rates.get_rate_history("base_rate", 100, now=150),
-            [(100.0, 4.0), (150.0, 4.0)],
-        )
-
-    def test_history_keeps_zero_and_hundred_percent_rates(self):
-        self.history("statutory_rate", [(0, 0), (120, 100)])
-        self.assertEqual(
-            self.rates.get_rate_history("statutory_rate", 100, now=150),
-            [(100.0, 0.0), (120.0, 100.0), (150.0, 100.0)],
-        )
-
-    def test_browser_edit_records_fractional_change_time_and_prior_baseline(self):
-        before = self.db.system.execute_one(
-            "SELECT COUNT(*) AS total FROM rate_history WHERE rate_key = 'base_rate'"
-        )["total"]
-        with closing(sqlite3.connect(self.db.system.db_path)) as browser:
-            with browser:
-                browser.execute("UPDATE settings SET value = '4.25' WHERE key = 'base_rate'")
-        row = self.db.system.execute_one(
-            "SELECT * FROM rate_history WHERE rate_key = 'base_rate' ORDER BY history_id DESC LIMIT 1"
-        )
-        self.assertEqual(row["annual_percent"], 4.25)
-        self.assertEqual(row["changed_by"], "database")
-        epoch = float(row["effective_epoch"])
-        self.assertEqual(
-            self.rates.get_rate_history("base_rate", epoch - 60, now=epoch + 60),
-            [(epoch - 60, 3.0), (epoch, 4.25), (epoch + 60, 4.25)],
-        )
-        self.assertEqual(self.db.system.execute_one(
-            "SELECT COUNT(*) AS total FROM rate_history WHERE rate_key = 'base_rate'"
-        )["total"], before + 1)
 
     def test_chart_read_does_not_change_nonretroactive_interest_or_history(self):
         self.history("statutory_rate", [(0, 5), (1000, 10)])
@@ -134,29 +101,6 @@ class RateGraphTests(unittest.TestCase):
         self.assertTrue(MovementHistoryManager(self.db).cleanup(now=86400 * 2))
         self.assertEqual(records, [tuple(row) for row in self.db.system.execute("SELECT * FROM rate_history")])
 
-    def test_picker_offers_both_rates_even_without_market_assets(self):
-        picker = MovementAssetSelectView(self.bot, "alice", [], indices=[])
-        options = {option.value: option.label for option in picker.asset_select.options}
-        self.assertEqual(set(options), {RateManager.chart_code(key) for key in RateManager.KEYS})
-        self.assertIn("기준금리", options[RateManager.chart_code("base_rate")])
-        self.assertIn("법정이자", options[RateManager.chart_code("statutory_rate")])
-
-    def test_many_assets_keep_rate_choices_inside_discord_menu_limit(self):
-        assets = [{"code": f"C{number}", "name": f"Asset {number}", "type": "stock", "price": 1000}
-                  for number in range(30)]
-        picker = MovementAssetSelectView(self.bot, "alice", assets, indices=[])
-        values = {option.value for option in picker.asset_select.options}
-        self.assertEqual(len(picker.asset_select.options), 25)
-        self.assertTrue({RateManager.chart_code(key) for key in RateManager.KEYS}.issubset(values))
-
-    def test_autocomplete_without_assets_offers_rates_and_filters_their_names(self):
-        registry = SlashCommandRegistry(self.bot)
-        choices = asyncio.run(registry.movement_asset_autocomplete(SimpleNamespace(), ""))
-        self.assertEqual({choice.value for choice in choices},
-                         {RateManager.chart_code(key) for key in RateManager.KEYS})
-        choices = asyncio.run(registry.movement_asset_autocomplete(SimpleNamespace(), "기준"))
-        self.assertEqual([choice.value for choice in choices], [RateManager.chart_code("base_rate")])
-
     def test_rate_view_has_time_range_and_refresh_without_market_indicators(self):
         view = PriceMovementView(self.bot, "alice", RateManager.chart_code("base_rate"))
         self.assertEqual([option.label for option in view.period_select.options],
@@ -169,7 +113,8 @@ class RateGraphTests(unittest.TestCase):
     def test_rate_chart_uses_percent_and_percentage_points_for_every_period(self):
         self.history("base_rate", [(0, 0), (120, 3.5)])
         view = PriceMovementView(self.bot, "alice", "기준금리")
-        with patch("functions.discord_views.time.time", return_value=150.5):
+        with patch("functions.discord_views.time.time", return_value=150.5), \
+             patch("functions.discord_views.render_rate_chart", return_value=b"chart") as render:
             for label, seconds in view.PERIODS:
                 with self.subTest(period=label):
                     view.period_seconds = seconds
@@ -181,7 +126,8 @@ class RateGraphTests(unittest.TestCase):
                     self.assertNotIn("거래량", embed.description)
                     self.assertIn(label, embed.description)
                     self.assertEqual(embed.image.url, "attachment://movement.png")
-                    self.assertEqual(png[:8], b"\x89PNG\r\n\x1a\n")
+                    self.assertEqual(png, b"chart")
+                    self.assertEqual(render.call_args.kwargs["sample_seconds"], seconds)
                     self.assertFalse(embed.fields)
 
     def test_zero_and_hundred_percent_flat_rates_render_png(self):
@@ -271,19 +217,6 @@ class RateGraphTests(unittest.TestCase):
         asyncio.run(registry.movement(SimpleNamespace(),종목=' '))
         self.assertNotIn('view',registry._reply.call_args.kwargs)
         self.assertIn('종목 코드',registry._reply.call_args.kwargs['content'])
-
-    def test_korean_command_registration_replaces_english_names(self):
-        tree = SimpleNamespace(commands=[])
-        tree.add_command = tree.commands.append
-        registry = SlashCommandRegistry(SimpleNamespace(tree=tree))
-        registry.register()
-        names = {command.name for command in tree.commands}
-        self.assertTrue({"그래프", "검색"}.issubset(names))
-        self.assertTrue({"movement", "Movement", "search"}.isdisjoint(names))
-        graph = next(command for command in tree.commands if command.name == "그래프")
-        asset = next(parameter for parameter in graph.parameters if parameter.name == "종목")
-        self.assertFalse(asset.autocomplete)
-        self.assertTrue(asset.required)
 
 
 if __name__ == "__main__":

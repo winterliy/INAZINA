@@ -10,7 +10,7 @@ from functions.technical_indicators import build_candles, candle_interval, calcu
 
 def render_chart(points, period_seconds, current_price=None, width=960, height=500,
                  integer_prices=False, volumes=None, upper_indicators=None, lower_indicators=None,
-                 anchor_epoch=None, end_epoch=None, trades=None):
+                 anchor_epoch=None, end_epoch=None, trades=None, candle_seconds=None):
     background, grid, text = (11, 18, 32), (38, 52, 73), (166, 181, 201)
     rising, falling = (239, 68, 68), (59, 130, 246)
     end = int(time.time() if end_epoch is None else end_epoch)
@@ -20,7 +20,9 @@ def render_chart(points, period_seconds, current_price=None, width=960, height=5
     points = [(int(t), int(float(p) + .5) if integer_prices else float(p)) for t, p in points]
     if not points and current_price is not None:
         points = [(end, float(current_price))]
-    interval = candle_interval(period_seconds)
+    interval = int(candle_seconds) if candle_seconds is not None else candle_interval(period_seconds)
+    if interval <= 0:
+        raise ValueError("캔들 주기는 0보다 커야 합니다.")
     candles = build_candles(points, volumes, interval)
     upper_data, lower_data = calculate_indicators(candles, upper, lower, anchor_epoch)
     visible = [(i, candle) for i, candle in enumerate(candles) if start < candle["time"] + interval and candle["time"] <= end]

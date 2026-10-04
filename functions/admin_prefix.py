@@ -389,13 +389,14 @@ class TreasuryAssetsView(discord.ui.View):
         self.page = min(max(0,self.page),pages-1)
         embed = discord.Embed(title=f'🏛️ 국가 내지갑 · {self.labels[self.category]}',color=discord.Color.gold())
         embed.description = f"국적: **{str(info.get('nationality','미설정'))[:100]}** · 기본 통화: **{info.get('national_currency','NWX')}**"
-        for label,key in [('현금','cash'),('통장 잔액','account_total'),('외환 평가액','fx_total'),
-                ('투자자산 평가액','stock_total'),('국채 평가액','bond_total'),('매수 주문 예치금','order_reserved_total'),
-                ('풋 옵션 현금담보','option_collateral_cash'),('옵션 작성 의무 평가','option_short_liability'),
-                ('총자산','grand_total'),('대출 잔액','loan_total'),('순자산','net_worth')]:
-            sign='−' if key=='option_short_liability' and info.get(key,0) else ''
-            embed.add_field(name=label,value=f"```{sign}{info.get(key,0):,} NWX```",inline=True)
-        embed.add_field(name='⭐ 신용점수',value=f"```{info.get('credit_score',0):,}점```",inline=True)
+        if self.category=='main':
+            for label,key in [('현금','cash'),('통장 잔액','account_total'),('외환 평가액','fx_total'),
+                    ('투자자산 평가액','stock_total'),('국채 평가액','bond_total'),('매수 주문 예치금','order_reserved_total'),
+                    ('풋 옵션 현금담보','option_collateral_cash'),('옵션 작성 의무 평가','option_short_liability'),
+                    ('총자산','grand_total'),('대출 잔액','loan_total'),('순자산','net_worth')]:
+                sign='−' if key=='option_short_liability' and info.get(key,0) else ''
+                embed.add_field(name=label,value=f"```{sign}{info.get(key,0):,} NWX```",inline=True)
+            embed.add_field(name='⭐ 신용점수',value=f"```{info.get('credit_score',0):,}점```",inline=True)
         for name,value in self.items[self.page*self.PAGE_SIZE:(self.page+1)*self.PAGE_SIZE]:
             embed.add_field(name=name[:120],value=value[:300],inline=False)
         if self.category!='main' and not self.items:
@@ -523,7 +524,8 @@ class AdminPrefixRegistry:
                 result=await asyncio.to_thread(modal.execute,values)
                 if command=='내지갑':
                     view=TreasuryAssetsView(self.bot,message.author.id,json.loads(result))
-                    await message.author.send(embed=view.build_embed(),view=view)
+                    await session.edit(embed=view.build_embed(),view=view)
+                    session = None
                 else:
                     await self.send_result(message.author,result,command)
             else:
@@ -542,14 +544,21 @@ class AdminPrefixRegistry:
             try:await self.send_result(message.author,'❌ 명령어 처리 중 오류가 발생했습니다. 로그를 확인해주세요.')
             except discord.HTTPException:pass
         finally:
-            try:
-                await message.delete()
-            except discord.NotFound:
-                pass
-            except discord.HTTPException:
+            # Ctrl+C cancels this handler after discord.Client.close() has closed
+            # aiohttp. Do not start another HTTP request against that session.
+            closing = bool(getattr(self.bot,'is_closed',lambda:False)())
+            if closing:
                 if view is not None:view.stop()
+            else:
                 try:
-                    if session is not None:await session.edit(view=None)
-                    await self.send_result(message.author,'❌ 명령어 채팅을 삭제하지 못했습니다. 봇의 메시지 관리 권한을 확인해주세요.')
-                except discord.HTTPException:
-                    logging.getLogger(__name__).warning('Could not remove administrator invocation')
+                    if message.guild is not None:
+                        await message.delete()
+                except discord.NotFound:
+                    pass
+                except (discord.HTTPException,RuntimeError):
+                    if view is not None:view.stop()
+                    try:
+                        if session is not None:await session.edit(view=None)
+                        await self.send_result(message.author,'❌ 명령어 채팅을 삭제하지 못했습니다. 봇의 메시지 관리 권한을 확인해주세요.')
+                    except (discord.HTTPException,RuntimeError):
+                        logging.getLogger(__name__).warning('Could not remove administrator invocation')

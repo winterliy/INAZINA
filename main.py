@@ -66,6 +66,7 @@ class InazinaBot(discord.Client):
         self._last_loan_error_log = 0.0
         self._last_option_error_log = 0.0
         self._last_product_error_log = 0.0
+        self._resources_closed = False
 
     async def setup_hook(self):
         from functions.slash_commands import SlashCommandRegistry
@@ -343,8 +344,13 @@ class InazinaBot(discord.Client):
         return created
     
     async def close(self):
+        # Discord closes the HTTP session before in-flight event handlers finish.
+        # Close SQLite off the event loop, since a command worker may briefly own
+        # the shared DB lock during Ctrl+C shutdown.
         await super().close()
-        self.db.close()
+        if not self._resources_closed:
+            self._resources_closed = True
+            await asyncio.to_thread(self.db.close)
 
     def run(self, token):
         super().run(token)

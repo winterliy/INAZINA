@@ -1034,138 +1034,6 @@ class InfoPanelView(discord.ui.View):
         await interaction.response.send_modal(LoanRequestModal(self.bot, self.user_id))
 
 
-class MovementAssetSelectView(discord.ui.View):
-    """Let /그래프 work without relying on Discord's text autocomplete."""
-
-    def __init__(self, bot, user_id, assets, indices=None):
-        super().__init__(timeout=300)
-        self.bot = bot
-        self.user_id = str(user_id)
-        if indices is None:
-            indices = self.bot.market_mgr.get_exchange_indices()
-        options = [
-            discord.SelectOption(
-                label=f"📊 {item['exchange_id']} 거래소 지수 ({float(item['index_value']):,.2f})"[:100],
-                value=f"{EXCHANGE_INDEX_PREFIX}{item['exchange_id']}",
-                description="상장 회사의 시가총액 가중 지수 · 기준 1,000"[:100],
-            )
-            for item in indices
-            if 0 < len(f"{EXCHANGE_INDEX_PREFIX}{item['exchange_id']}") <= 100
-        ][:23]
-        options.extend([
-            discord.SelectOption(label=label, value=RateManager.chart_code(key),
-                                 description=f"게임 {label}의 연이율(%) 변경 이력")
-            for key, label in RateManager.KEYS.items()
-        ])
-        options.extend([
-            discord.SelectOption(
-                label=f"{asset['name']} ({asset['code']})"[:100],
-                value=str(asset["code"]),
-                description=(
-                    f"현재가 {self.bot.market_mgr.format_price(asset['price'], asset['type'])} NWX"
-                    + (" · ⚠️ 위험구간" if asset["price"] <= 100 else "")
-                )[:100],
-            )
-            for asset in assets[:max(0, 25 - len(options))]
-            if 0 < len(str(asset["code"])) <= 100
-        ])
-        self.asset_select = discord.ui.Select(
-            placeholder="그래프를 볼 자산·지수·금리를 선택하세요",
-            options=options,
-        )
-        self.asset_select.callback = self.select_asset
-        self.add_item(self.asset_select)
-        self.all_graph_options = options[:]
-        known = {option.value for option in self.all_graph_options}
-        for asset in assets:
-            if asset['code'] not in known:
-                self.all_graph_options.append(discord.SelectOption(label=f"{asset['name']} ({asset['code']})"[:100],value=asset['code']))
-        for index in indices:
-            value = f"{EXCHANGE_INDEX_PREFIX}{index['exchange_id']}"
-            if value not in known:
-                self.all_graph_options.append(discord.SelectOption(label=f"{index['exchange_id']} 거래소 지수"[:100],value=value))
-        self.graph_types = {a['code']:{'stock':'stocks','주식':'stocks','국채':'treasury_bond'}.get(str(a['type']).casefold(),str(a['type']).casefold()) for a in assets}
-        self.graph_category,self.graph_page = 'all',0
-        categories = [('all','전체 종목'),('rate','금리'),('index','거래소 지수')] + [c for c in InfoPanelView.CATEGORIES if c[0] in {'stocks','etf','treasury_bond','corporate_bond','stock_future','mutual_fund','index_fund','commodity_spot','option','forex'}]
-        self.graph_category_select = discord.ui.Select(placeholder='종목 카테고리',row=1,options=[discord.SelectOption(label=label,value=key) for key,label in categories])
-        self.graph_category_select.callback = self.select_graph_category
-        self.add_item(self.graph_category_select)
-        self.graph_previous = discord.ui.Button(label='이전 목록',row=2,disabled=True)
-        self.graph_next = discord.ui.Button(label='다음 목록',row=2,disabled=len(self.all_graph_options)<=25)
-        self.graph_previous.callback = self.previous_graph_page
-        self.graph_next.callback = self.next_graph_page
-        self.add_item(self.graph_previous)
-        self.add_item(self.graph_next)
-
-    def _graph_options(self):
-        category = self.graph_category
-        options = [o for o in self.all_graph_options if category=='all'
-                   or (category=='rate' and RateManager.rate_key_from_code(o.value))
-                   or (category=='index' and o.value.startswith(EXCHANGE_INDEX_PREFIX))
-                   or self.graph_types.get(o.value)==category]
-        self.graph_page = min(self.graph_page,max(0,(len(options)-1)//25))
-        page = options[self.graph_page*25:(self.graph_page+1)*25]
-        self.asset_select.options = page or [discord.SelectOption(label='등록된 종목 없음',value='__none__')]
-        self.asset_select.disabled = not page
-        self.graph_previous.disabled = self.graph_page==0
-        self.graph_next.disabled = (self.graph_page+1)*25 >= len(options)
-
-    async def select_graph_category(self,interaction):
-        self.graph_category = self.graph_category_select.values[0]
-        self.graph_page = 0
-        self._graph_options()
-        await interaction.response.edit_message(view=self)
-
-    async def previous_graph_page(self,interaction):
-        self.graph_page = max(0,self.graph_page-1)
-        self._graph_options()
-        await interaction.response.edit_message(view=self)
-
-    async def next_graph_page(self,interaction):
-        self.graph_page += 1
-        self._graph_options()
-        await interaction.response.edit_message(view=self)
-
-    async def interaction_check(self, interaction: discord.Interaction):
-        if str(interaction.user.id) == self.user_id:
-            return True
-        await interaction.response.send_message(
-            "❌ 이 그래프 선택 메뉴를 연 사용자만 사용할 수 있습니다.", ephemeral=True
-        )
-        return False
-
-    async def select_asset(self, interaction: discord.Interaction):
-        asset_code = self.asset_select.values[0]
-        try:
-            await retry_discord_request(lambda: interaction.response.defer())
-        except discord.HTTPException:
-            await send_interaction_notice(
-                interaction,
-                "⚠️ Discord 응답이 일시적으로 불안정합니다. 잠시 후 다시 선택해주세요.",
-            )
-            return
-        view = PriceMovementView(self.bot, self.user_id, asset_code)
-        try:
-            embed, png = await asyncio.to_thread(view.render)
-        except Exception as exc:
-            await send_interaction_notice(
-                interaction, f"❌ 그래프를 만들지 못했습니다: {exc}"
-            )
-            return
-        try:
-            await retry_discord_request(
-                lambda: interaction.edit_original_response(
-                    content=None,
-                    embed=embed,
-                    attachments=[discord.File(io.BytesIO(png), filename="movement.png")],
-                    view=view,
-                )
-            )
-        except discord.HTTPException:
-            await send_interaction_notice(
-                interaction,
-                "⚠️ Discord 응답이 일시적으로 불안정해 그래프를 갱신하지 못했습니다. 다시 시도해주세요.",
-            )
 
 
 class VWAPAnchorModal(discord.ui.Modal, title="고정 VWAP 기준점"):
@@ -1204,9 +1072,30 @@ class PriceMovementView(discord.ui.View):
         ("12시간", 12 * 3600),
         ("1일", 86400),
     )
+    VIEW_WINDOWS = {
+        60: 10 * 60,
+        5 * 60: 60 * 60,
+        10 * 60: 6 * 3600,
+        30 * 60: 12 * 3600,
+        3600: 24 * 3600,
+        6 * 3600: 24 * 3600,
+        12 * 3600: 24 * 3600,
+        86400: 24 * 3600,
+    }
 
     def period_label(self):
         return next((label for label,seconds in self.PERIODS if seconds==self.period_seconds),f'{self.period_seconds}초')
+
+    @staticmethod
+    def _duration_label(seconds):
+        if seconds % 86400 == 0:
+            return f'{seconds//86400}일'
+        if seconds % 3600 == 0:
+            return f'{seconds//3600}시간'
+        return f'{seconds//60}분'
+
+    def view_seconds(self):
+        return self.VIEW_WINDOWS[self.period_seconds]
 
     def __init__(self, bot, user_id, asset_code):
         super().__init__(timeout=300)
@@ -1218,12 +1107,14 @@ class PriceMovementView(discord.ui.View):
             self.asset_code = RateManager.chart_code(self.rate_key)
         self.period_seconds = 3600
         self.period_select = discord.ui.Select(
-            placeholder="그래프 가로 시간 폭을 선택하세요",
+            placeholder="캔들·X축 집계 주기를 선택하세요",
             options=[
                 discord.SelectOption(
                     label=label,
                     value=str(seconds),
-                    description=f'최근 {seconds//60}분 표시' if seconds<3600 else f'최근 {seconds//3600}시간 표시',
+                    description=((f'{seconds//60}분봉' if seconds<3600 else
+                                  f'{seconds//3600}시간봉' if seconds<86400 else '1일봉')+
+                                 f' · 총 {self._duration_label(self.VIEW_WINDOWS[seconds])}'),
                     default=(seconds == self.period_seconds),
                 )
                 for label, seconds in self.PERIODS
@@ -1299,9 +1190,10 @@ class PriceMovementView(discord.ui.View):
         if self.rate_key is not None:
             return self._render_rate()
         now = int(time.time())
-        since = now - self.period_seconds
+        view_seconds = self.view_seconds()
+        since = now-view_seconds
         # Load preceding candles for indicator warm-up, and the complete VWAP anchor.
-        data_since = since - 150 * candle_interval(self.period_seconds)
+        data_since = since - 150 * self.period_seconds
         if "anchored_vwap" in self.upper_indicators:
             data_since = min(data_since, self.anchor_epoch)
         if "vwap" in self.upper_indicators:
@@ -1366,11 +1258,12 @@ class PriceMovementView(discord.ui.View):
             points.append((now, current_price))
 
         png = render_price_chart(
-            points, self.period_seconds, current_price=current_price,
+            points, view_seconds, current_price=current_price,
             integer_prices=integer_prices, volumes=volumes,
             upper_indicators=self.upper_indicators, lower_indicators=self.lower_indicators,
             anchor_epoch=self.anchor_epoch, end_epoch=now,
             trades=None if is_exchange_index else [(int(row["recorded_epoch"]), int(row["quantity"]), float(row["price"])) for row in trade_rows],
+            candle_seconds=self.period_seconds,
         )
         visible_points = [(epoch, price) for epoch, price in points if epoch >= since] or [(now, current_price)]
         first_price, last_price = visible_points[0][1], visible_points[-1][1]
@@ -1403,7 +1296,7 @@ class PriceMovementView(discord.ui.View):
                 else f"📈 {asset['name']} ({self.asset_code}) 가격 변동"
             ),
             description=(
-                f"조회 기간: **{period_label}** · {current_measure}\n"
+                f"캔들 주기: **{period_label}봉** · 총 기간 **{self._duration_label(view_seconds)}** · {current_measure}\n"
                 f"{change_measure}\n"
                 f"기록 {sum(int(row['recorded_epoch']) >= since for row in rows):,}개를 OHLC 캔들로 집계 · 거래량 **{volume_total:,}{volume_unit}**"
                 f"{volume_note}"
@@ -1431,7 +1324,8 @@ class PriceMovementView(discord.ui.View):
 
     def _render_rate(self):
         now = time.time()
-        since = now - self.period_seconds
+        view_seconds=self.view_seconds()
+        since=now-view_seconds
         manager = getattr(self.bot, "rate_mgr", None) or RateManager(self.bot.market_mgr.db)
         points = manager.get_rate_history(self.rate_key, since, now=now)
         label = RateManager.KEYS[self.rate_key]
@@ -1439,10 +1333,10 @@ class PriceMovementView(discord.ui.View):
         change = last - first
         changes = sum(left[1] != right[1] for left, right in zip(points, points[1:]))
         period_label = self.period_label()
-        png = render_rate_chart(points, self.period_seconds, end_epoch=now)
+        png = render_rate_chart(points, view_seconds, end_epoch=now,sample_seconds=self.period_seconds)
         embed = discord.Embed(title=f"📉 {label} 변동 그래프",
-            description=(f"조회 기간: **{period_label}** · 현재 연이율: **{last:g}%**\n"
-                         f"기간 변동: **{change:+g}%p** · 구간 내 변경 **{changes:,}회**\n"
+            description=(f"표시 주기: **{period_label}** · 총 기간 **{self._duration_label(view_seconds)}** · 현재 연이율: **{last:g}%**\n"
+                         f"구간 변동: **{change:+g}%p** · 구간 내 변경 **{changes:,}회**\n"
                          "DB에 저장된 적용 시각을 기준으로 표시합니다. 금리 변경 이력은 날짜가 바뀌어도 유지됩니다."),
             color=discord.Color.blue())
         embed.set_image(url="attachment://movement.png")

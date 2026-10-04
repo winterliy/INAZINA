@@ -611,6 +611,29 @@ class UserManager:
         user = self.db.users.get_user(user_id)
         cash = int(round(user["cash"] or 0)) if user else 0
         nationality = str(user['nationality'] or '미설정') if user else '미설정'
+        # One wallet can reference the same stock through holdings, covered-call
+        # collateral and written options. Resolve it once for this snapshot.
+        asset_cache = {}
+        def wallet_asset(code):
+            code = str(code)
+            if code not in asset_cache:
+                try:
+                    asset_cache[code] = self._asset_from_tables(code)
+                except ValueError:
+                    asset_cache[code] = None
+            return asset_cache[code]
+        base_rate = float(self.db.system.get_setting("base_rate", "3")) / 100
+        last_trades = {str(row['asset_code']):int(row['price']) for row in
+            self.db.assets.execute('SELECT asset_code,price FROM market_last_trade')}
+        quote_overrides = {str(row['asset_code']):int(row['price']) for row in
+            self.db.assets.execute('SELECT asset_code,price FROM market_quote_overrides')}
+        fx_rates = {'NWX':1}
+        for row in self.db.fx.execute("SELECT c.code,a.price FROM currencies c LEFT JOIN market_assets a "
+                                      "ON a.code=c.asset_code WHERE c.status='active'"):
+            if row['code']=='NWX':
+                continue
+            if row['price'] is not None and float(row['price'])>0:
+                fx_rates[str(row['code'])]=int(round(float(row['price'])))
         currency_row = self.db.fx.execute_one("SELECT n.currency_code FROM country_currencies n "
             "JOIN currencies c ON c.code=n.currency_code WHERE n.nationality=? AND c.status='active'",(nationality,))
         national_currency = currency_row['currency_code'] if currency_row else 'NWX'
@@ -642,17 +665,10 @@ class UserManager:
         }
         for position in self.db.assets.get_user_portfolio(user_id):
             code, quantity = position["asset_code"], int(position["quantity"])
-            try:
-                asset = self._asset_from_tables(code)
-            except ValueError:
-                asset = None
+            asset = wallet_asset(code)
             price = int(round(asset["price"] or 0)) if asset else 0
             currency = asset.get('quote_currency','NWX') if asset else 'NWX'
-            rate = 1
-            if currency!='NWX':
-                from managers.fx_manager import FXManager
-                with self.db.atomic() as conn:
-                    rate = FXManager._rate(conn,currency)
+            rate = fx_rates.get(currency,1)
             value = price * quantity * rate
             total_stock_value += value
             stock_details.append({
@@ -687,17 +703,16 @@ class UserManager:
         }
         now = int(time.time())
         for position in option_rows:
-            underlying = self._asset_from_tables(position["underlying_code"])
+            underlying = wallet_asset(position["underlying_code"])
             spot = int(underlying["price"] or 0) if underlying else 0
             years = max(0, int(position["expiration_epoch"]) - now) / (365.0 * 86400)
             theoretical = OptionManager.theoretical_price(
                 spot, int(position["strike_price"]), years,
                 float(position["implied_volatility"]), position["option_type"],
-                float(self.db.system.get_setting("base_rate", "3")) / 100,
+                base_rate,
             )
-            latest = self.db.assets.get_last_trade(position["contract_code"])
-            override=self.db.assets.execute_one('SELECT price FROM market_quote_overrides WHERE asset_code=?',(position['contract_code'],))
-            price = int(override['price']) if override else int(latest["price"]) if latest else theoretical
+            contract_code=str(position["contract_code"])
+            price = quote_overrides.get(contract_code,last_trades.get(contract_code,theoretical))
             quantity = int(position["quantity"])
             value = price * quantity
             total_stock_value += value
@@ -730,7 +745,7 @@ class UserManager:
             (str(user_id),),
         )
         for collateral in call_collateral:
-            underlying = self._asset_from_tables(collateral["underlying_code"])
+            underlying = wallet_asset(collateral["underlying_code"])
             spot = int(underlying["price"] or 0) if underlying else 0
             quantity = int(collateral["quantity"] or 0)
             value = spot * quantity
@@ -746,25 +761,35 @@ class UserManager:
         option_short_liability = 0
         written_rows = self.db.assets.execute(
             "SELECT contract_code, option_type, underlying_code, strike_price, "
-            "expiration_epoch, implied_volatility, outstanding_contracts "
+            "expiration_epoch, implied_volatility, issued_contracts, outstanding_contracts, "
+            "COALESCE((SELECT SUM(remaining_quantity) FROM market_orders o WHERE o.order_kind='option' "
+            "AND o.option_order_type='write' AND o.asset_code=option_contracts.contract_code "
+            "AND o.status IN ('open','partial')),0) offered, "
+            "COALESCE((SELECT SUM(quantity) FROM option_collateral_lots l "
+            "WHERE l.contract_id=option_contracts.contract_id),0) collateral_quantity, "
+            "COALESCE((SELECT SUM(amount) FROM option_collateral_cash_lots l "
+            "WHERE l.contract_id=option_contracts.contract_id),0) collateral_cash "
             "FROM option_contracts WHERE writer_id = ? AND status = 'active' "
-            "AND outstanding_contracts > 0",
+            "AND (outstanding_contracts > 0 OR issued_contracts > 0)",
             (str(user_id),),
         )
+        written_options=[]
         for written in written_rows:
-            underlying = self._asset_from_tables(written["underlying_code"])
+            underlying = wallet_asset(written["underlying_code"])
             spot = int(underlying["price"] or 0) if underlying else 0
             years = max(0, int(written["expiration_epoch"]) - now) / (365.0 * 86400)
             premium = OptionManager.theoretical_price(
                 spot, int(written["strike_price"]), years,
                 float(written["implied_volatility"]), written["option_type"],
-                float(self.db.system.get_setting("base_rate", "3")) / 100,
+                base_rate,
             )
-            latest=self.db.assets.get_last_trade(written['contract_code'])
-            override=self.db.assets.execute_one('SELECT price FROM market_quote_overrides WHERE asset_code=?',(written['contract_code'],))
-            mark=int(override['price']) if override else int(latest['price']) if latest else premium
+            contract_code=str(written['contract_code'])
+            mark=quote_overrides.get(contract_code,last_trades.get(contract_code,premium))
             option_short_liability += mark * int(written["outstanding_contracts"])
-        written_options=OptionManager(self.db,self).get_user_written(user_id)
+            written_options.append({**dict(written),
+                'name':f"{underlying['name'] if underlying else written['underlying_code']} "
+                       f"{'콜' if written['option_type']=='call' else '풋'} {int(written['strike_price']):,}",
+                'price':mark,'theoretical_price':premium,'position_type':'writer'})
 
         reserved_rows = self.db.assets.execute(
             "SELECT quote_currency,COALESCE(SUM(reserved_cash), 0) AS total FROM market_orders "
@@ -772,10 +797,8 @@ class UserManager:
             (str(user_id),),
         )
         order_reserved_total = 0
-        from managers.fx_manager import FXManager
         for reserved in reserved_rows:
-            with self.db.atomic() as conn:
-                order_reserved_total += int(reserved['total'] or 0)*FXManager._rate(conn,reserved['quote_currency'] or 'NWX')
+            order_reserved_total += int(reserved['total'] or 0)*fx_rates.get(reserved['quote_currency'] or 'NWX',1)
 
         futures_collateral = 0
         futures_unrealized = 0

@@ -85,6 +85,19 @@ class AdminExpansionTests(unittest.TestCase):
             message.delete.assert_not_called()
         asyncio.run(run())
 
+    def test_prefix_wallet_reuses_pending_dm_instead_of_sending_twice(self):
+        async def run():
+            session=SimpleNamespace(edit=AsyncMock())
+            author=SimpleNamespace(id='admin',bot=False,send=AsyncMock(return_value=session))
+            message=SimpleNamespace(content='$내지갑',author=author,guild=None,delete=AsyncMock())
+            await AdminPrefixRegistry(self.bot).handle(message)
+            author.send.assert_awaited_once()
+            session.edit.assert_awaited_once()
+            self.assertIsInstance(session.edit.call_args.kwargs['view'],TreasuryAssetsView)
+            self.assertIn('메인',session.edit.call_args.kwargs['embed'].title)
+            message.delete.assert_not_awaited()
+        asyncio.run(run())
+
     def test_halt_commands_and_corporate_registration(self):
         self.assertTrue({'증자','정기배당수정','특별배당실시','합병','휴장','개장','서킷브레이커','사이드카'} <= COMMANDS)
         self.command('휴장')

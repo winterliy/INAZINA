@@ -45,7 +45,7 @@ class LatestRequestsTests(unittest.TestCase):
     def seed(self):
         CatalogManager(self.db).seed()
 
-    def test_graph_ranges_drive_history_and_render_window(self):
+    def test_graph_choices_are_candle_intervals_not_view_windows(self):
         self.db.assets.register_asset('GRAPH','그래프','EX',1000,'stock')
         view = PriceMovementView(self.bot,'alice','GRAPH')
         mapping = [('1분',60),('5분',300),('10분',600),('30분',1800),('1시간',3600),('6시간',21600),('12시간',43200),('1일',86400)]
@@ -54,8 +54,10 @@ class LatestRequestsTests(unittest.TestCase):
             view.period_seconds = seconds
             with patch('functions.discord_views.render_price_chart',return_value=b'PNG') as render:
                 embed,_ = view.render()
-                self.assertEqual(render.call_args.args[1],seconds)
-                self.assertIn(label,embed.description)
+                self.assertEqual(render.call_args.args[1],view.VIEW_WINDOWS[seconds])
+                self.assertEqual(render.call_args.kwargs['candle_seconds'],seconds)
+                self.assertIn(label+'봉',embed.description)
+                self.assertIn(view._duration_label(view.VIEW_WINDOWS[seconds]),embed.description)
 
     def test_search_separates_categories_and_overview_fits_discord(self):
         self.seed()
@@ -71,16 +73,6 @@ class LatestRequestsTests(unittest.TestCase):
         self.assertNotIn('주식 외 투자상품',str(embed.to_dict()))
         self.assertTrue(any('ETF' in field.name for field in embed.fields))
         self.assertTrue(all(field.value.endswith('개') and '`' not in field.value for field in embed.fields))
-
-    def test_trading_codes_are_plain_required_arguments(self):
-        commands = []
-        SlashCommandRegistry(SimpleNamespace(tree=SimpleNamespace(add_command=commands.append))).register()
-        mapping = {'매수':'자산','매도':'자산','선물증거금':'선물','펀드가입':'펀드','펀드환매':'펀드','그래프':'종목'}
-        for name,argument in mapping.items():
-            parameter = next(p for p in next(c for c in commands if c.name==name).parameters if p.name==argument)
-            self.assertTrue(parameter.required)
-            self.assertFalse(parameter.autocomplete)
-        self.assertTrue({'내옵션','외환계좌','국채','국적','내외환','환율','내자산'}.isdisjoint({c.name for c in commands}))
 
     def test_unified_account_opening_accepts_foreign_product_code_and_standard_button(self):
         self.seed()
@@ -313,9 +305,14 @@ class LatestRequestsTests(unittest.TestCase):
                 sent['file'].close()
             self.assertEqual(self.db.users.get_user('alice')['cash'],988000)
             tickets=LotteryTicketsView('alice',self.bot.lottery_mgr.tickets('alice'))
-            self.assertEqual(len(tickets.build_embed().fields),10)
-            tickets.page=1
-            self.assertEqual(len(tickets.build_embed().fields),2)
+            shown=[]
+            for page in range(2):
+                tickets.page=page
+                embed=tickets.build_embed()
+                shown.extend(field.name for field in embed.fields)
+                self.assertLessEqual(len(embed),6000)
+            self.assertEqual(len(shown),12)
+            self.assertEqual(len(set(shown)),12)
             interaction.user.id='bob'
             self.assertFalse(await tickets.interaction_check(interaction))
         asyncio.run(run())

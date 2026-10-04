@@ -115,7 +115,7 @@ class AdminRevisionTests(unittest.TestCase):
         async def run():
             registry=AdminPrefixRegistry(self.bot)
             def message(content,identity='admin'):
-                return SimpleNamespace(author=SimpleNamespace(id=identity,bot=False,send=AsyncMock(return_value=SimpleNamespace(edit=AsyncMock()))),content=content,delete=AsyncMock(),channel=SimpleNamespace(send=AsyncMock()),guild=None)
+                return SimpleNamespace(author=SimpleNamespace(id=identity,bot=False,send=AsyncMock(return_value=SimpleNamespace(edit=AsyncMock()))),content=content,delete=AsyncMock(),channel=SimpleNamespace(send=AsyncMock()),guild=SimpleNamespace(id=1))
             ordinary=message('$잔고수정 citizen modify 1','citizen')
             await registry.handle(ordinary)
             ordinary.author.send.assert_not_awaited();ordinary.delete.assert_not_awaited()
@@ -140,12 +140,6 @@ class AdminRevisionTests(unittest.TestCase):
             self.assertTrue(any('$매수' in field.value for field in view.build_embed().fields))
         asyncio.run(run())
 
-    def test_wallet_renamed_in_slash_registry(self):
-        commands=[]
-        SlashCommandRegistry(SimpleNamespace(tree=SimpleNamespace(add_command=commands.append))).register()
-        names={c.name for c in commands}
-        self.assertIn('내지갑',names);self.assertNotIn('내자산',names)
-
     def test_wallet_categories_preserve_obligation_and_page_all_holdings(self):
         from functions.wallet_views import WalletCategoryView
         import discord
@@ -165,8 +159,8 @@ class AdminRevisionTests(unittest.TestCase):
                 self.assertLessEqual(len(embed),6000)
             self.assertEqual(seen,sections['stocks'])
             view.category='written'
-            self.assertTrue(any('의무 평가' in f.name for f in view.build_embed().fields))
-            self.assertIn('만기',view.build_embed().description)
+            self.assertFalse(view.build_embed().fields)
+            self.assertIn('만기까지 의무',view.build_embed().description)
             outsider=SimpleNamespace(user=SimpleNamespace(id='other'),response=SimpleNamespace(send_message=AsyncMock()))
             self.assertFalse(await view.interaction_check(outsider))
         asyncio.run(run())

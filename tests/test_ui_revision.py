@@ -67,14 +67,16 @@ class UserInterfaceRevisionTests(unittest.TestCase):
         for code, rate in [('__rate__:base_rate', '3%'), ('__rate__:statutory_rate', '5%')]:
             self.assertIn(code, rate_lines)
             self.assertIn(rate, rate_lines)
-            view = PriceMovementView(self.bot, 'citizen', code)
+        with patch('functions.discord_views.render_rate_chart', return_value=b'chart'):
+            view = PriceMovementView(self.bot, 'citizen', '__rate__:base_rate')
             view.period_seconds = 60
             embed, png = view.render()
-            self.assertIn('1분', embed.description)
-            self.assertEqual(png[:8], b'\x89PNG\r\n\x1a\n')
-        embed, png = PriceMovementView(self.bot, 'citizen', '__exchange_index__:EX').render()
+        self.assertIn('1분', embed.description)
+        self.assertEqual(png, b'chart')
+        with patch('functions.discord_views.render_price_chart', return_value=b'chart'):
+            embed, png = PriceMovementView(self.bot, 'citizen', '__exchange_index__:EX').render()
         self.assertIn('거래소 지수', embed.title)
-        self.assertEqual(png[:8], b'\x89PNG\r\n\x1a\n')
+        self.assertEqual(png, b'chart')
 
     def test_ichimoku_does_not_widen_time_axis_even_with_sparse_data(self):
         end = 1000000

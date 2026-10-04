@@ -130,17 +130,18 @@ class _Canvas:
 def render_price_chart(
     points, period_seconds, current_price=None, width=960, height=500,
     integer_prices=False, volumes=None, upper_indicators=None, lower_indicators=None,
-    anchor_epoch=None, end_epoch=None, trades=None,
+    anchor_epoch=None, end_epoch=None, trades=None, candle_seconds=None,
 ):
     """Render OHLC candles, optional overlays and independently scaled lower panels."""
     from functions.indicator_chart import render_chart
     return render_chart(
         points, period_seconds, current_price, width, height, integer_prices, volumes,
-        upper_indicators, lower_indicators, anchor_epoch, end_epoch, trades,
+        upper_indicators, lower_indicators, anchor_epoch, end_epoch, trades, candle_seconds,
     )
 
 
-def render_rate_chart(points, period_seconds, end_epoch=None, width=960, height=500):
+def render_rate_chart(points, period_seconds, end_epoch=None, width=960, height=500,
+                      sample_seconds=None):
     """Render dated annual percentages as a step chart, without market candles."""
     end = float(time.time() if end_epoch is None else end_epoch)
     period = float(period_seconds)
@@ -157,6 +158,11 @@ def render_rate_chart(points, period_seconds, end_epoch=None, width=960, height=
         if epoch <= end:
             series.append((epoch, rate))
     series.sort(key=lambda point: point[0])
+    if sample_seconds is not None:
+        sample_seconds=float(sample_seconds)
+        if not math.isfinite(sample_seconds) or sample_seconds<=0:
+            raise ValueError("금리 그래프 주기가 올바르지 않습니다.")
+        series=[(math.floor(epoch/sample_seconds)*sample_seconds,rate) for epoch,rate in series]
     # Input order breaks same-time ties, matching effective_epoch/history_id.
     unique = []
     for point in series:
