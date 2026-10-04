@@ -1,0 +1,899 @@
+import asyncio
+import math
+import sqlite3
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
+
+import discord
+from database import DatabaseManager
+from database.db_manager import DBManager
+from database.system_db import SystemDB
+from database.user_db import TREASURY_USER_ID
+from functions.admin_views import MarketEventModal
+from functions.discord_views import PriceMovementView
+from functions.price_chart import render_price_chart
+from functions.slash_commands import SlashCommandRegistry
+from functions.technical_indicators import UPPER_INDICATORS, LOWER_INDICATORS, build_candles, calculate_indicators
+from managers.admin_manager import AdminManager
+from managers.bank_manager import BankManager
+from managers.futures_manager import FuturesManager
+from managers.interest_manager import InterestManager
+from managers.investment_manager import InvestmentManager
+from managers.market_manager import MarketManager
+from managers.option_manager import OptionManager
+from managers.order_book_manager import OrderBookManager
+from managers.rate_manager import RateManager
+from managers.user_manager import UserManager
+
+
+class MarketFeatureTests(unittest.TestCase):
+    def setUp(self):
+        self.old_dir = DBManager.database_dir
+        self.tempdir = tempfile.TemporaryDirectory()
+        DBManager.database_dir = Path(self.tempdir.name)
+        self.db = DatabaseManager()
+        self.db.system.set_setting("auto_target_enabled", "0")
+        self.db.users.create_user("admin", "Admin", "Nac", 1000000, role="admin")
+        self.db.users.create_user("alice", "Alice", "Nac", 10000)
+        self.db.users.create_user("bob", "Bob", "Nac", 10000)
+        self.users = UserManager(self.db)
+        self.market = MarketManager(self.db)
+        self.rates = RateManager(self.db)
+        self.products = InvestmentManager(self.db, self.users)
+        self.options = OptionManager(self.db, self.users)
+        self.futures = FuturesManager(self.db, self.users)
+        self.book = OrderBookManager(self.db, self.users)
+        self.book.option_manager, self.book.futures_manager = self.options, self.futures
+        self.db.companies.create_company("CO", "Company", "Industry", 100000, 1000, 100, "admin", "EX")
+
+    def tearDown(self):
+        self.db.close()
+        DBManager.database_dir = self.old_dir
+        self.tempdir.cleanup()
+
+    def issue(self, code, kind, price=100, supply=100, underlying="CO", days=10, rate=0):
+        success, message = self.products.issue("admin", code, code, kind, price, supply, "EX", underlying, days, rate)
+        self.assertTrue(success, message)
+
+    def issue_future(self, code="FUT"):
+        self.assertTrue(self.rates.set_rate("base_rate", 0, "admin")[0])
+        self.issue(code, "stock_future")
+
+    def test_option_chain_and_both_position_readers_attach_accounts_database(self):
+        self.db.assets.add_user_asset("alice", "CO", 5, unit_cost=100)
+        success, message = self.options.create_and_write("alice", "CO", "call", 100, 1, 2, 10)
+        self.assertTrue(success, message)
+        chain = self.options.get_active_contracts("CO")
+        self.assertEqual(len(chain), 1)
+        code = chain[0]["contract_code"]
+        self.assertEqual(chain[0]["exchange_id"], "EX")
+        self.assertIn(code, {asset["code"] for asset in self.market.get_exchange_assets("EX")})
+        self.assertIn(code, {asset["code"] for asset in self.market.get_market_assets(active_only=True)})
+        self.assertEqual(chain[0]["price"], self.market.get_asset_info(code)["price"])
+        self.assertTrue(self.book.place_limit_order("bob", code, "buy", 2, 10)[0])
+        self.assertEqual(self.options.get_user_positions("bob")[0]["quantity"], 2)
+        self.assertEqual(self.options.get_user_written("alice")[0]["collateral_quantity"], 2)
+        self.assertGreater(self.users.get_total_assets("bob")["stock_total"], 0)
+
+    def test_covered_call_expiry_delivers_shares_and_never_repeats(self):
+        self.db.assets.add_user_asset("alice", "CO", 5, unit_cost=100)
+        self.assertTrue(self.options.create_and_write("alice", "CO", "call", 100, 1, 2, 10)[0])
+        code = self.options.get_active_contracts()[0]["contract_code"]
+        self.assertTrue(self.book.place_limit_order("bob", code, "buy", 2, 10)[0])
+        self.db.companies.update_share_price("CO", 120)
+        self.db.assets.execute("UPDATE option_contracts SET expiration_epoch = ?", (int(time.time()) - 1,))
+        results = self.options.expire_matured()
+        self.assertTrue(any(r["user_id"] == "bob" and r["exercised"] == 2 for r in results))
+        self.assertEqual(sum(r["quantity"] for r in self.db.assets.get_user_portfolio("bob")), 2)
+        self.assertEqual(self.options.expire_matured(), [])
+
+    def test_cash_secured_put_is_available_to_ordinary_user(self):
+        self.assertTrue(self.options.create_and_write("alice", "CO", "put", 100, 1, 2, 10)[0])
+        written = self.options.get_user_written("alice")[0]
+        self.assertEqual(written["collateral_cash"], 200)
+        self.assertEqual(self.db.users.get_user("alice")["cash"], 9800)
+
+    def test_default_rates_permissions_and_option_rate_sensitivity(self):
+        self.assertEqual(self.rates.get_rate("base_rate"), 3)
+        self.assertEqual(self.rates.get_rate("statutory_rate"), 5)
+        self.assertFalse(self.rates.set_rate("base_rate", 6, "alice")[0])
+        for bad in (-1, 101, float("nan"), float("inf"), True):
+            self.assertFalse(self.rates.set_rate("base_rate", bad, "admin")[0])
+        self.assertGreater(OptionManager.theoretical_price(1000, 1000, 1, .2, "call", .03),
+                           OptionManager.theoretical_price(1000, 1000, 1, .2, "call", 0))
+        self.assertLess(OptionManager.theoretical_price(1000, 1000, 1, .2, "put", .03),
+                        OptionManager.theoretical_price(1000, 1000, 1, .2, "put", 0))
+
+    def test_rate_history_splits_elapsed_interest_at_change_time(self):
+        start = int(time.time())
+        half_year = 365 * 86400 / 2
+        self.assertTrue(self.rates.set_rate("statutory_rate", 10, "admin", now=start + half_year)[0])
+        self.assertEqual(self.rates.statutory_interest(100000, start, start + 2 * half_year), 7500)
+        self.assertEqual(self.rates.statutory_interest(100000, start, start + half_year), 2500)
+
+    def test_database_browser_rate_edits_apply_live_and_preserve_past_interest(self):
+        before = time.time()
+        connection = sqlite3.connect(self.db.system.db_path)
+        try:
+            with connection:
+                connection.execute("UPDATE settings SET value = '3.5' WHERE key = 'base_rate'")
+                connection.execute("UPDATE settings SET value = '10' WHERE key = 'statutory_rate'")
+        finally:
+            connection.close()
+        after = time.time()
+        self.assertEqual(self.rates.get_rate("base_rate"), 3.5)
+        self.assertEqual(self.rates.get_rate("statutory_rate"), 10)
+        change = self.db.system.execute_one(
+            "SELECT * FROM rate_history WHERE rate_key = 'statutory_rate' ORDER BY history_id DESC LIMIT 1")
+        self.assertEqual(change["changed_by"], "database")
+        self.assertEqual(change["annual_percent"], 10)
+        self.assertGreaterEqual(change["effective_epoch"], before - .01)
+        self.assertLessEqual(change["effective_epoch"], after + .01)
+        half_year = 365 * 86400 / 2
+        change_time = change["effective_epoch"]
+        self.assertEqual(self.rates.statutory_interest(100000, change_time - half_year, change_time), 2500)
+        self.assertEqual(self.rates.statutory_interest(100000, change_time, change_time + half_year), 5000)
+        self.assertEqual(self.rates.statutory_interest(
+            100000, change_time - half_year, change_time + half_year), 7500)
+
+    def test_database_browser_rejects_invalid_rates_without_changing_history(self):
+        original_history = [dict(row) for row in self.db.system.execute("SELECT * FROM rate_history ORDER BY history_id")]
+        connection = sqlite3.connect(self.db.system.db_path)
+        try:
+            for value in ("-1", "101", "NaN", "Infinity", "3%", "abc", "", "null", "true", '"3"', "1e999", "[]", "{}"):
+                for key in ("base_rate", "statutory_rate"):
+                    with self.subTest(value=value, key=key):
+                        with self.assertRaises(sqlite3.IntegrityError), connection:
+                            connection.execute("UPDATE settings SET value = ? WHERE key = ?", (value, key))
+        finally:
+            connection.close()
+        self.assertEqual(self.rates.get_rate("base_rate"), 3)
+        self.assertEqual(self.rates.get_rate("statutory_rate"), 5)
+        self.assertEqual([dict(row) for row in self.db.system.execute(
+            "SELECT * FROM rate_history ORDER BY history_id")], original_history)
+
+    def test_equivalent_rate_and_other_settings_do_not_duplicate_rate_history(self):
+        history = [dict(row) for row in self.db.system.execute("SELECT * FROM rate_history ORDER BY history_id")]
+        connection = sqlite3.connect(self.db.system.db_path)
+        try:
+            with connection:
+                connection.execute("UPDATE settings SET value = '3.000' WHERE key = 'base_rate'")
+                connection.execute("UPDATE settings SET value = '0.8' WHERE key = 'gamble_win_rate'")
+        finally:
+            connection.close()
+        self.assertEqual(self.rates.get_rate("base_rate"), 3)
+        self.assertEqual(self.db.system.get_setting("gamble_win_rate"), "0.8")
+        self.assertEqual([dict(row) for row in self.db.system.execute(
+            "SELECT * FROM rate_history ORDER BY history_id")], history)
+
+    def test_system_reinitialization_preserves_browser_rates_and_history(self):
+        connection = sqlite3.connect(self.db.system.db_path)
+        try:
+            with connection:
+                connection.execute("UPDATE settings SET value = '3.5' WHERE key = 'base_rate'")
+                connection.execute("UPDATE settings SET value = '8' WHERE key = 'statutory_rate'")
+        finally:
+            connection.close()
+        history = [dict(row) for row in self.db.system.execute("SELECT * FROM rate_history ORDER BY history_id")]
+        restored = SystemDB()
+        try:
+            self.assertEqual(restored.get_setting("base_rate"), "3.5")
+            self.assertEqual(restored.get_setting("statutory_rate"), "8")
+            self.assertEqual([dict(row) for row in restored.execute(
+                "SELECT * FROM rate_history ORDER BY history_id")], history)
+            self.assertEqual([(row["rate_key"], row["annual_percent"], row["effective_epoch"])
+                for row in history if row["changed_by"] == "initial"], [("base_rate", 3, 0), ("statutory_rate", 5, 0)])
+        finally:
+            restored.close()
+
+    def test_internal_rate_change_records_exactly_one_history_with_actor_and_time(self):
+        self.assertTrue(self.rates.set_rate("base_rate", 4, "admin", now=12345)[0])
+        changes = self.db.system.execute("SELECT * FROM rate_history WHERE rate_key = 'base_rate' ORDER BY history_id")
+        self.assertEqual(len(changes), 2)
+        self.assertEqual((changes[-1]["annual_percent"], changes[-1]["effective_epoch"], changes[-1]["changed_by"]),
+            (4, 12345, "admin"))
+
+    def test_overdue_loan_uses_statutory_simple_interest_with_persisted_cursor(self):
+        now = int(time.time())
+        due = now - 365 * 86400
+        created = due - 86400
+        self.db.products.register_liability("LOAN", "Loan", 0, 0, 1, 86400, 0, "Bank")
+        self.db.accounts.execute("INSERT INTO loans (user_id, product_code, principal, outstanding_balance, created_at, last_payment_epoch) "
+            "VALUES ('alice', 'LOAN', 100000, 100000, datetime(?, 'unixepoch'), ?)", (created, due))
+        manager = InterestManager(self.db)
+        manager.process_user_interests("alice", now=now)
+        self.assertEqual(self.db.accounts.execute_one("SELECT outstanding_balance FROM loans WHERE user_id = 'alice'")["outstanding_balance"], 105000)
+        manager.process_user_interests("alice", now=now)
+        self.assertEqual(self.db.accounts.execute_one("SELECT outstanding_balance FROM loans WHERE user_id = 'alice'")["outstanding_balance"], 105000)
+
+    def test_event_permissions_and_strength_bounds_cover_0_to_100(self):
+        admin = AdminManager(self.db)
+        self.assertFalse(admin.create_market_event("alice", "good", 10)[0])
+        for severity in (-1, 101, 3.5, True):
+            self.assertFalse(admin.create_market_event("admin", "good", severity)[0])
+        self.assertTrue(admin.create_market_event("admin", "good", 0, "CO", now=1000)[0])
+        self.assertTrue(admin.create_market_event("admin", "good", 100, "CO", now=1000)[0])
+
+    def event_tick_without_noise(self, now, manager=None, **kwargs):
+        """Isolate the endpoint bridge from its separately tested random path."""
+        with patch("managers.market_manager.standardized_shock", return_value=0), \
+             patch("managers.stochastic_price_engine.standardized_shock", return_value=0), \
+             patch.object(MarketManager, "_event_jump_fraction", return_value=0):
+            (manager or self.market).update_prices(now=now, **kwargs)
+
+    def test_event_percentage_target_bridge_reaches_exact_endpoint_and_resumes_normal_prices(self):
+        self.db.assets.register_asset("SPOT", "Spot", "EX", 100, "commodity_spot")
+        self.db.assets.register_asset("FIX", "Fixed", "EX", 1000, "stock")
+        self.db.assets.execute("UPDATE market_assets SET is_fixed = 1 WHERE code = 'FIX'")
+        admin = AdminManager(self.db)
+        self.assertTrue(admin.create_market_event("admin", "good", 100, "SPOT", 60, now=1000)[0])
+        for now, expected in ((1000, 100), (1015, 125), (1030, 150), (1045, 175), (1060, 200)):
+            self.event_tick_without_noise(now, volatility=0)
+            self.assertEqual(self.db.assets.get_asset_info("SPOT")["price"], expected)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 100)
+        self.assertEqual(self.db.assets.get_asset_info("FIX")["price"], 1000)
+        self.event_tick_without_noise(1061, volatility=0)
+        self.assertEqual(self.db.assets.get_asset_info("SPOT")["price"], 200)
+        with patch("managers.market_manager.standardized_shock", return_value=10), \
+             patch("managers.stochastic_price_engine.standardized_shock", return_value=10):
+            self.market.update_prices(volatility=.1, market_condition="bull", now=1062)
+        state = self.db.system.execute_one("SELECT latent_price FROM market_simulation_state WHERE asset_code = 'SPOT'")
+        self.assertGreater(state["latent_price"], 200)
+
+    def test_zero_severity_has_no_price_effect_and_bad_news_moves_down(self):
+        admin = AdminManager(self.db)
+        self.assertTrue(admin.create_market_event("admin", "bad", 0, "CO", 1, now=1000)[0])
+        with patch("managers.market_manager.standardized_shock", return_value=10), \
+             patch("managers.stochastic_price_engine.standardized_shock", return_value=10):
+            self.market.update_prices(volatility=.1, market_condition="bull", now=1000)
+        self.assertGreater(self.db.companies.get_company("CO")["share_price"], 100)
+        self.db.companies.update_share_price("CO", 100)
+        self.assertTrue(admin.create_market_event("admin", "bad", 100, "CO", 60, now=1001)[0])
+        self.event_tick_without_noise(1001, volatility=0)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 100)
+        self.event_tick_without_noise(1031, volatility=0)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 51)
+        self.event_tick_without_noise(1061, volatility=0)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 1)
+
+    def test_explicit_target_price_bridge_reaches_goal_when_random_noise_is_zero(self):
+        admin = AdminManager(self.db)
+        self.assertTrue(admin.create_market_event("admin", "bad", 10, "CO", 60, now=1000, target_price=40)[0])
+        observed = []
+        for now, expected in ((1000, 100), (1015, 85), (1030, 70), (1045, 55), (1060, 40)):
+            self.event_tick_without_noise(now, volatility=.15, market_condition="bull")
+            observed.append(self.db.companies.get_company("CO")["share_price"])
+            self.assertEqual(observed[-1], expected)
+        self.assertEqual(observed, sorted(observed, reverse=True))
+
+    def test_explicit_percentage_is_signed_by_event_type_and_supports_fractional_percent(self):
+        admin = AdminManager(self.db)
+        self.assertTrue(admin.create_market_event(
+            "admin", "good", 10, "CO", 40, now=1000, target_percent=25.5)[0])
+        self.event_tick_without_noise(1020, volatility=0)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 113)
+        self.event_tick_without_noise(1040, volatility=0)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 126)
+        self.assertTrue(admin.create_market_event(
+            "admin", "bad", 10, "CO", 40, now=1041, target_percent=50)[0])
+        self.event_tick_without_noise(1061, volatility=0)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 95)
+        self.event_tick_without_noise(1081, volatility=0)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 63)
+
+    def test_event_progress_survives_new_manager_and_duplicate_ticks_do_not_accumulate(self):
+        self.db.assets.register_asset("SPOT", "Spot", "EX", 100, "commodity_spot")
+        admin = AdminManager(self.db)
+        self.assertTrue(admin.create_market_event("admin", "good", 100, "SPOT", 60, now=1000)[0])
+        self.event_tick_without_noise(1015, volatility=0)
+        self.assertEqual(self.db.assets.get_asset_info("SPOT")["price"], 125)
+        restored = MarketManager(self.db)
+        self.event_tick_without_noise(1030, manager=restored, volatility=.2)
+        self.assertEqual(self.db.assets.get_asset_info("SPOT")["price"], 150)
+        self.event_tick_without_noise(1030, manager=restored, volatility=.2)
+        self.assertEqual(self.db.assets.get_asset_info("SPOT")["price"], 150)
+        self.event_tick_without_noise(1060, manager=restored, volatility=0)
+        self.assertEqual(self.db.assets.get_asset_info("SPOT")["price"], 200)
+
+    def test_event_random_path_moves_up_and_down_before_reaching_price_target(self):
+        admin = AdminManager(self.db)
+        for start, kind, target in ((1000, "bad", 7000), (2000, "good", 13000)):
+            with self.subTest(kind=kind):
+                self.db.companies.update_share_price("CO", 10000)
+                self.assertTrue(admin.create_market_event(
+                    "admin", kind, 100, "CO", 120, now=start, target_price=target, target_percent=100)[0])
+                observed = [10000]
+                for index, now in enumerate(range(start + 5, start + 61, 5)):
+                    shock = 1 if index % 2 else -1
+                    with patch("managers.market_manager.standardized_shock", return_value=shock), \
+                         patch("managers.stochastic_price_engine.standardized_shock", return_value=shock):
+                        self.market.update_prices(volatility=0, now=now)
+                    observed.append(self.db.companies.get_company("CO")["share_price"])
+                changes = [right - left for left, right in zip(observed, observed[1:])]
+                self.assertTrue(any(change > 0 for change in changes), observed)
+                self.assertTrue(any(change < 0 for change in changes), observed)
+                self.assertTrue(all(price >= 1 for price in observed))
+                self.market.update_prices(volatility=0, now=start + 120)
+                self.assertEqual(self.db.companies.get_company("CO")["share_price"], target)
+
+    def test_event_random_state_survives_new_manager_without_resampling_duplicate_tick(self):
+        self.db.companies.update_share_price("CO", 10000)
+        admin = AdminManager(self.db)
+        self.assertTrue(admin.create_market_event(
+            "admin", "bad", 100, "CO", 120, now=1000, target_price=7000, target_percent=100)[0])
+        with patch("managers.market_manager.standardized_shock", return_value=1), \
+             patch("managers.stochastic_price_engine.standardized_shock", return_value=1):
+            self.market.update_prices(volatility=0, now=1030)
+        halfway_price = self.db.companies.get_company("CO")["share_price"]
+        restored = MarketManager(self.db)
+        with patch("managers.market_manager.standardized_shock", return_value=-1) as market_shock, \
+             patch("managers.stochastic_price_engine.standardized_shock", return_value=-1) as asset_shock:
+            restored.update_prices(volatility=0, now=1030)
+            self.assertEqual(self.db.companies.get_company("CO")["share_price"], halfway_price)
+            market_shock.assert_not_called()
+            asset_shock.assert_not_called()
+            restored.update_prices(volatility=0, now=1060)
+            self.assertNotEqual(self.db.companies.get_company("CO")["share_price"], halfway_price)
+        restored.update_prices(volatility=0, now=1120)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 7000)
+
+    def test_event_price_target_with_zero_percent_has_no_event_noise(self):
+        admin = AdminManager(self.db)
+        self.assertTrue(admin.create_market_event(
+            "admin", "bad", 0, "CO", 60, now=1000, target_price=40, target_percent=0)[0])
+        with patch("managers.market_manager.standardized_shock", return_value=1), \
+             patch("managers.stochastic_price_engine.standardized_shock", return_value=1):
+            self.market.update_prices(volatility=.15, market_condition="bull", now=1030)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 70)
+        self.market.update_prices(volatility=.15, market_condition="bull", now=1060)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 40)
+
+    def test_event_asset_code_and_display_name_resolve_without_invalid_asset_error(self):
+        admin = AdminManager(self.db)
+        for code in (" CO ", "co", " Company "):
+            with self.subTest(code=code):
+                success, message = admin.create_market_event("admin", "good", 30, code, 60, now=1000)
+                self.assertTrue(success, message)
+                self.assertEqual(self.db.system.execute_one(
+                    "SELECT asset_code FROM market_events ORDER BY event_id DESC LIMIT 1")["asset_code"], "CO")
+
+    def test_event_delayed_tick_applies_target_even_when_end_was_missed(self):
+        admin = AdminManager(self.db)
+        self.assertTrue(admin.create_market_event("admin", "bad", 30, "CO", 60, now=1000, target_price=30)[0])
+        MarketManager(self.db).update_prices(volatility=.2, market_condition="bull", now=1120)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 30)
+        self.market.update_prices(volatility=0, now=1121)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 30)
+
+    def test_event_maximum_discord_integer_target_remains_exact_in_database_and_market_reader(self):
+        target = 2 ** 53 - 1
+        admin = AdminManager(self.db)
+        self.assertTrue(admin.create_market_event(
+            "admin", "good", 10, "CO", 60, now=1000, target_price=target)[0])
+        self.market.update_prices(volatility=0, now=1060)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], target)
+        self.assertEqual(self.market.get_asset_info("CO")["price"], target)
+
+    def test_legacy_event_resumes_remaining_effect_without_immediate_price_jump(self):
+        self.db.system.execute("INSERT INTO market_events "
+            "(asset_code, event_type, severity, starts_epoch, ends_epoch, created_by) "
+            "VALUES ('CO', 'good', 100, 1000, 1060, 'admin')")
+        self.event_tick_without_noise(1030, volatility=.2)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 100)
+        self.market.update_prices(volatility=.2, now=1060)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 110)
+
+    def test_new_event_replaces_only_its_asset_target_from_current_price(self):
+        self.db.assets.register_asset("SPOT", "Spot", "EX", 100, "commodity_spot")
+        admin = AdminManager(self.db)
+        self.assertTrue(admin.create_market_event("admin", "good", 100, None, 100, now=1000)[0])
+        self.event_tick_without_noise(1020, volatility=0)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 120)
+        self.assertEqual(self.db.assets.get_asset_info("SPOT")["price"], 120)
+        self.assertTrue(admin.create_market_event("admin", "bad", 10, "CO", 40, now=1020, target_price=80)[0])
+        self.event_tick_without_noise(1040, volatility=0)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 100)
+        self.assertEqual(self.db.assets.get_asset_info("SPOT")["price"], 140)
+        self.event_tick_without_noise(1060, volatility=0)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 80)
+        self.assertEqual(self.db.assets.get_asset_info("SPOT")["price"], 160)
+        self.event_tick_without_noise(1100, volatility=0)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 80)
+        self.assertEqual(self.db.assets.get_asset_info("SPOT")["price"], 200)
+
+    def test_global_percentage_uses_each_initial_price_and_excludes_fixed_linked_and_expired_assets(self):
+        self.db.assets.register_asset("SPOT", "Spot", "EX", 200, "commodity_spot")
+        self.db.assets.register_asset("FIX", "Fixed", "EX", 1000, "stock")
+        self.db.assets.register_asset("OLD", "Expired", "EX", 500, "stock")
+        self.db.assets.execute("UPDATE market_assets SET is_fixed = 1 WHERE code = 'FIX'")
+        self.db.assets.execute("UPDATE market_assets SET status = 'expired' WHERE code = 'OLD'")
+        self.issue("IF", "index_fund", underlying="EX", days=0)
+        admin = AdminManager(self.db)
+        self.assertTrue(admin.create_market_event("admin", "bad", 5, None, 60, now=1000, target_percent=50)[0])
+        targets = {row["asset_code"] for row in self.db.system.execute("SELECT asset_code FROM market_event_targets")}
+        self.assertEqual(targets, {"CO", "SPOT"})
+        self.event_tick_without_noise(1030, volatility=0)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 75)
+        self.assertEqual(self.db.assets.get_asset_info("SPOT")["price"], 150)
+        self.assertEqual(self.db.assets.get_asset_info("FIX")["price"], 1000)
+        self.assertEqual(self.db.assets.get_asset_info("OLD")["price"], 500)
+        self.event_tick_without_noise(1060, volatility=0)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], 50)
+        self.assertEqual(self.db.assets.get_asset_info("SPOT")["price"], 100)
+
+    def test_event_rejects_wrong_direction_invalid_and_unavailable_targets(self):
+        admin = AdminManager(self.db)
+        invalid = [
+            ("good", "CO", {"target_price": 99}),
+            ("bad", "CO", {"target_price": 101}),
+            ("good", None, {"target_price": 200}),
+            ("good", "missing", {"target_price": 200}),
+        ]
+        invalid.extend(("good", "CO", {"target_price": value})
+                       for value in (0, -1, 1.5, True, float("nan"), float("inf"), 2 ** 53))
+        invalid.extend(("good", "CO", {"target_percent": value})
+                       for value in (-1, 101, True, float("nan"), float("inf")))
+        for event_type, code, kwargs in invalid:
+            with self.subTest(event_type=event_type, code=code, kwargs=kwargs):
+                self.assertFalse(admin.create_market_event("admin", event_type, 10, code, 60, now=1000, **kwargs)[0])
+        self.assertEqual(self.db.system.execute("SELECT * FROM market_events"), [])
+        self.assertEqual(self.db.system.execute("SELECT * FROM market_event_targets"), [])
+
+    def test_explicit_zero_percent_leaves_normal_movement_enabled(self):
+        admin = AdminManager(self.db)
+        self.assertTrue(admin.create_market_event("admin", "good", 10, "CO", 60, now=1000, target_percent=0)[0])
+        price = self.db.companies.get_company("CO")["share_price"]
+        with patch("managers.market_manager.standardized_shock", return_value=10), \
+             patch("managers.stochastic_price_engine.standardized_shock", return_value=10):
+            self.market.update_prices(volatility=.1, market_condition="bull", now=1020)
+        self.assertGreater(self.db.companies.get_company("CO")["share_price"], price)
+
+    @staticmethod
+    def event_interaction(user_id="admin"):
+        return SimpleNamespace(user=SimpleNamespace(id=user_id),
+            response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock()),
+            followup=SimpleNamespace(send=AsyncMock()))
+
+    @staticmethod
+    def fill_event_modal(modal, code="CO", duration="60", kind="good", percent="30", target=""):
+        if modal.asset_select is not None:
+            modal.asset_select._values = [code] if code else []
+        else:
+            modal.asset_input._value = code or ""
+        modal.duration_input._value = duration
+        modal.kind_select._values = [kind] if kind else []
+        modal.severity_input._value = percent
+        modal.target_price_input._value = target
+        return modal
+
+    def test_event_modal_contains_all_five_inputs_and_accepts_entire_percentage_range(self):
+        create = Mock(return_value=(True, "registered"))
+        bot = SimpleNamespace(db=self.db, market_mgr=self.market, admin_mgr=SimpleNamespace(create_market_event=create))
+        for value in ("0", "1", "24", "25", "49", "50", "74", "75", "99", "100", "30.5"):
+            with self.subTest(value=value):
+                modal = self.fill_event_modal(MarketEventModal(bot, "admin"), kind="bad", percent=value)
+                components = modal.to_dict()["components"]
+                self.assertEqual(len(components), 5)
+                self.assertEqual({option.value for option in modal.kind_select.options}, {"good", "bad"})
+                self.assertIn("CO", {option.value for option in modal.asset_select.options})
+                self.assertFalse(modal.target_price_input.required)
+                interaction = self.event_interaction()
+                asyncio.run(modal.on_submit(interaction))
+                self.assertEqual(create.call_args.args, ("admin", "bad", int(round(float(value))), "CO", 60))
+                self.assertEqual(create.call_args.kwargs, {"target_price": None, "target_percent": float(value)})
+                interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+                interaction.followup.send.assert_awaited_once()
+                self.assertIn("registered",interaction.followup.send.call_args.kwargs["embed"].description)
+                self.assertTrue(interaction.followup.send.call_args.kwargs["ephemeral"])
+                self.assertTrue(modal.submitted)
+
+    def test_event_modal_rejects_invalid_percent_and_missing_kind_without_creating_event(self):
+        create = Mock(return_value=(True, "registered"))
+        bot = SimpleNamespace(db=self.db, market_mgr=self.market, admin_mgr=SimpleNamespace(create_market_event=create))
+        for value in ("-1", "101", "nan", "inf", "-inf", "abc", "30%", ""):
+            with self.subTest(value=value):
+                modal = self.fill_event_modal(MarketEventModal(bot, "admin"), percent=value)
+                interaction = self.event_interaction()
+                asyncio.run(modal.on_submit(interaction))
+                interaction.response.send_message.assert_awaited_once()
+                interaction.response.defer.assert_not_awaited()
+                self.assertFalse(modal.submitted)
+        modal = self.fill_event_modal(MarketEventModal(bot, "admin"), kind=None)
+        interaction = self.event_interaction()
+        asyncio.run(modal.on_submit(interaction))
+        interaction.response.send_message.assert_awaited_once()
+        create.assert_not_called()
+
+    def test_event_modal_combines_target_price_with_random_percent_and_blocks_duplicate_submission(self):
+        create = Mock(return_value=(True, "registered"))
+        bot = SimpleNamespace(db=self.db, market_mgr=self.market, admin_mgr=SimpleNamespace(create_market_event=create))
+        modal = self.fill_event_modal(MarketEventModal(bot, "admin"), kind="bad", target="40")
+        asyncio.run(modal.on_submit(self.event_interaction()))
+        self.assertEqual(create.call_args.kwargs, {"target_price": 40, "target_percent": 30.0})
+        repeated = self.event_interaction()
+        asyncio.run(modal.on_submit(repeated))
+        repeated.response.send_message.assert_awaited_once()
+        self.assertEqual(create.call_count, 1)
+
+    def test_event_modal_rechecks_owner_and_current_administrator_role(self):
+        create = Mock(return_value=(True, "registered"))
+        bot = SimpleNamespace(db=self.db, market_mgr=self.market, admin_mgr=SimpleNamespace(create_market_event=create))
+        modal = self.fill_event_modal(MarketEventModal(bot, "admin"))
+        wrong_owner = self.event_interaction("alice")
+        asyncio.run(modal.on_submit(wrong_owner))
+        wrong_owner.response.send_message.assert_awaited_once()
+        self.db.users.execute("UPDATE users SET role = 'user' WHERE user_id = 'admin'")
+        demoted = self.event_interaction()
+        asyncio.run(modal.on_submit(demoted))
+        demoted.response.send_message.assert_awaited_once()
+        create.assert_not_called()
+
+    def test_event_modal_rejects_invalid_duration_asset_and_target_price_before_creation(self):
+        create = Mock(return_value=(True, "registered"))
+        bot = SimpleNamespace(db=self.db, market_mgr=self.market, admin_mgr=SimpleNamespace(create_market_event=create))
+        invalid = [{"duration": value} for value in ("", "0", "-1", "604801", "1.5", "nan", "inf", "abc")]
+        invalid.extend({"target": value} for value in ("0", "-1", "1.5", "abc", "nan", "inf", str(2 ** 53)))
+        invalid.extend(({"code": None}, {"code": "missing"}, {"code": "__all__", "target": "40"}))
+        for values in invalid:
+            with self.subTest(values=values):
+                modal = self.fill_event_modal(MarketEventModal(bot, "admin"), **values)
+                interaction = self.event_interaction()
+                asyncio.run(modal.on_submit(interaction))
+                interaction.response.send_message.assert_awaited_once()
+                interaction.response.defer.assert_not_awaited()
+                self.assertFalse(modal.submitted)
+        create.assert_not_called()
+
+    def test_event_modal_accepts_global_selection_and_maximum_duration_and_price(self):
+        create = Mock(return_value=(True, "registered"))
+        bot = SimpleNamespace(db=self.db, market_mgr=self.market, admin_mgr=SimpleNamespace(create_market_event=create))
+        modal = self.fill_event_modal(MarketEventModal(bot, "admin"), code="__all__", duration="604800")
+        asyncio.run(modal.on_submit(self.event_interaction()))
+        self.assertEqual(create.call_args.args, ("admin", "good", 30, None, 604800))
+        modal = self.fill_event_modal(MarketEventModal(bot, "admin"), target=str(2 ** 53 - 1))
+        asyncio.run(modal.on_submit(self.event_interaction()))
+        self.assertEqual(create.call_args.kwargs, {"target_price": 2 ** 53 - 1, "target_percent": 30.0})
+
+    def test_event_modal_asset_selection_contains_only_eligible_assets(self):
+        self.db.assets.register_asset("SPOT", "Spot", "EX", 100, "commodity_spot")
+        self.db.assets.register_asset("FIX", "Fixed", "EX", 100, "stock")
+        self.db.assets.register_asset("OLD", "Expired", "EX", 100, "stock")
+        self.db.assets.execute("UPDATE market_assets SET is_fixed = 1 WHERE code = 'FIX'")
+        self.db.assets.execute("UPDATE market_assets SET status = 'expired' WHERE code = 'OLD'")
+        self.issue("IF", "index_fund", underlying="EX", days=0)
+        modal = MarketEventModal(SimpleNamespace(db=self.db, market_mgr=self.market, admin_mgr=AdminManager(self.db)), "admin")
+        self.assertEqual({option.value for option in modal.asset_select.options}, {"__all__", "CO", "SPOT", "IF"})
+
+    def test_event_modal_keeps_every_asset_accessible_above_discord_select_limit(self):
+        for index in range(25):
+            self.db.assets.register_asset(f"S{index}", f"Asset {index}", "EX", 100, "commodity_spot")
+        create = Mock(return_value=(True, "registered"))
+        bot = SimpleNamespace(db=self.db, market_mgr=self.market, admin_mgr=SimpleNamespace(create_market_event=create))
+        for value, expected in ((" S24 ", "S24"), ("asset 24", "S24"), ("Asset 24 (S24)", "S24"), ("시장 전체", None)):
+            with self.subTest(value=value):
+                modal = self.fill_event_modal(MarketEventModal(bot, "admin"), code=value)
+                self.assertIsNone(modal.asset_select)
+                self.assertEqual(len(modal.to_dict()["components"]), 5)
+                asyncio.run(modal.on_submit(self.event_interaction()))
+                self.assertEqual(create.call_args.args[3], expected)
+
+    def test_event_modal_reports_registration_failure_and_allows_another_attempt(self):
+        create = Mock(side_effect=[(False, "❌ 자산 상태가 변경되었습니다."), (True, "registered")])
+        bot = SimpleNamespace(db=self.db, market_mgr=self.market, admin_mgr=SimpleNamespace(create_market_event=create))
+        modal = self.fill_event_modal(MarketEventModal(bot, "admin"))
+        interaction = self.event_interaction()
+        asyncio.run(modal.on_submit(interaction))
+        self.assertFalse(modal.submitted)
+        self.assertIn("자산 상태가 변경", interaction.followup.send.call_args.kwargs['embed'].description)
+        asyncio.run(modal.on_submit(self.event_interaction()))
+        self.assertTrue(modal.submitted)
+        self.assertEqual(create.call_count, 2)
+
+    def test_bare_event_slash_opens_modal_immediately_with_all_values_entered_inside(self):
+        registry = SlashCommandRegistry(SimpleNamespace(db=self.db, market_mgr=self.market, admin_mgr=AdminManager(self.db)))
+        registry._prepare = AsyncMock(return_value=("admin", None, "admin"))
+        registry._reply = AsyncMock()
+        interaction = SimpleNamespace(response=SimpleNamespace(send_modal=AsyncMock()))
+        asyncio.run(registry.market_event(interaction))
+        registry._prepare.assert_awaited_once_with(interaction, defer=False)
+        interaction.response.send_modal.assert_awaited_once()
+        modal = interaction.response.send_modal.call_args.args[0]
+        self.assertIsInstance(modal, MarketEventModal)
+        self.assertEqual(len(modal.to_dict()["components"]), 5)
+        registry._reply.assert_not_awaited()
+
+    def test_option_autocomplete_has_no_duplicates_after_exchange_listing(self):
+        self.assertTrue(self.options.create_and_write("alice", "CO", "put", 100, 1, 2, 10)[0])
+        registry = SlashCommandRegistry(SimpleNamespace(market_mgr=self.market, option_mgr=self.options))
+        choices = asyncio.run(registry.buy_asset_autocomplete(SimpleNamespace(), ""))
+        self.assertEqual(len(choices), len({choice.value for choice in choices}))
+
+    def test_chart_settings_persist_within_discord_component_limits_and_defer_before_render(self):
+        bot = SimpleNamespace(market_mgr=self.market)
+        view = PriceMovementView(bot, "alice", "CO")
+        view.upper_indicators = ["ema", "anchored_vwap"]
+        view.lower_indicators = ["macd", "rsi"]
+        view._save_preferences()
+        restored = PriceMovementView(bot, "alice", "CO")
+        self.assertEqual(restored.upper_indicators, view.upper_indicators)
+        self.assertEqual(restored.lower_indicators, view.lower_indicators)
+        self.assertEqual(len(restored.lower_select.options), 25)
+        components = restored.to_components()
+        self.assertLessEqual(len(components), 5)
+        for row in components:
+            for component in row["components"]:
+                self.assertLessEqual(len(component.get("options", [])), 25)
+        interaction = SimpleNamespace(response=SimpleNamespace(is_done=lambda: False, defer=AsyncMock()),
+            edit_original_response=AsyncMock())
+        asyncio.run(restored._edit_chart(interaction))
+        interaction.response.defer.assert_awaited_once()
+        interaction.edit_original_response.assert_awaited_once()
+
+    def test_statutory_fraction_survives_partial_principal_payment(self):
+        now = int(time.time())
+        due = now - 86400
+        self.db.products.register_liability("LOAN", "Loan", 0, 0, 1, 86400, 0, "Bank")
+        self.db.accounts.execute("INSERT INTO loans (user_id, product_code, principal, outstanding_balance, created_at, last_payment_epoch) "
+            "VALUES ('alice', 'LOAN', 1000, 1000, datetime(?, 'unixepoch'), ?)", (due - 86400, due))
+        manager = InterestManager(self.db)
+        manager.process_user_interests("alice", now=now)
+        row = self.db.accounts.execute_one("SELECT * FROM loans WHERE user_id = 'alice'")
+        self.assertAlmostEqual(row["statutory_interest_remainder"], 1000 * .05 / 365)
+        self.db.accounts.execute("UPDATE loans SET outstanding_balance = 500 WHERE user_id = 'alice'")
+        manager.process_user_interests("alice", now=now + 86400)
+        row = self.db.accounts.execute_one("SELECT * FROM loans WHERE user_id = 'alice'")
+        self.assertAlmostEqual(row["statutory_interest_remainder"], 1500 * .05 / 365)
+        self.assertEqual(row["outstanding_balance"], 500)
+
+    def test_new_product_validation_and_duplicate_code_rejection(self):
+        self.assertFalse(self.products.issue("alice", "NEW", "New", "commodity_spot", 1, 1, "EX")[0])
+        self.assertFalse(self.products.issue("admin", "CO", "Dup", "commodity_spot", 1, 1, "EX")[0])
+        self.assertFalse(self.products.issue("admin", "F", "Future", "stock_future", 100, 10, "EX", "missing", 1)[0])
+        self.assertFalse(self.products.issue("admin", "B", "Bond", "corporate_bond", 100, 10, "EX", "CO", 0)[0])
+        self.assertFalse(self.products.issue("admin", "I", "Index", "index_fund", 100, 10, "EX", "unknown", 0)[0])
+        self.assertFalse(self.products.issue("admin", "X", "X", "mutual_fund", 100, 10, "EX", "EX", 1)[0])
+
+    def test_spot_commodity_is_listed_and_trades_on_exchange(self):
+        self.issue("GOLD", "commodity_spot", days=0, underlying=None)
+        asset = self.market.get_asset_info("GOLD")
+        self.assertEqual(asset["type"], "commodity_spot")
+        self.assertTrue(self.book.place_limit_order("alice", "GOLD", "buy", 5, 100)[0])
+        self.assertTrue(self.book.place_limit_order("alice", "GOLD", "sell", 2, 120)[0])
+        self.assertTrue(self.book.place_limit_order("bob", "GOLD", "buy", 2, 120)[0])
+        self.assertEqual(sum(r["quantity"] for r in self.db.assets.get_user_portfolio("bob")), 2)
+
+    def test_funds_track_nav_and_use_subscription_redemption_with_conserved_cash(self):
+        self.issue("MF", "mutual_fund", underlying="EX", days=0)
+        self.issue("IF", "index_fund", underlying="EX", days=0)
+        now = int(time.time())
+        self.market.update_prices(volatility=0, now=now)
+        before = self.db.users.get_user("alice")["cash"] + self.db.users.get_treasury_balance()
+        self.assertTrue(self.products.trade_fund("alice", "MF", 5)[0])
+        self.assertFalse(self.book.place_limit_order("alice", "MF", "buy", 1, 100)[0])
+        self.db.companies.update_share_price("CO", 120)
+        self.market.update_prices(volatility=0, now=now + 1)
+        self.assertEqual(self.db.products.get_investment("MF")["unit_price"], 120)
+        self.assertEqual(self.db.products.get_investment("IF")["unit_price"], 120)
+        self.assertTrue(self.products.trade_fund("alice", "MF", 5, redeem=True)[0])
+        self.assertEqual(self.db.users.get_user("alice")["cash"] + self.db.users.get_treasury_balance(), before)
+        self.assertEqual(self.db.assets.get_user_portfolio("alice"), [])
+
+    def test_corporate_bond_primary_proceeds_go_to_company_and_maturity_pays_once(self):
+        self.issue("CB", "corporate_bond", rate=36.5)
+        start = self.db.companies.get_company("CO")["capital"]
+        self.assertTrue(self.book.place_limit_order("alice", "CB", "buy", 10, 100)[0])
+        self.assertEqual(self.db.companies.get_company("CO")["capital"], start + 1000)
+        expiry = self.db.products.get_investment("CB")["maturity_epoch"]
+        result = self.products.redeem_corporate_bonds(now=expiry)
+        self.assertEqual(result[0]["net"], 1010)
+        self.assertEqual(self.db.users.get_user("alice")["cash"], 10010)
+        self.assertEqual(self.db.companies.get_company("CO")["capital"], start - 10)
+        self.assertEqual(self.products.redeem_corporate_bonds(now=expiry + 1), [])
+
+    def test_corporate_bond_default_preserves_claim_and_retries_after_capital_injection(self):
+        self.db.companies.execute("UPDATE company SET capital = 0 WHERE company_code = 'CO'")
+        self.issue("CB", "corporate_bond", rate=36.5)
+        self.assertTrue(self.book.place_limit_order("alice", "CB", "buy", 10, 100)[0])
+        self.assertTrue(self.book.place_limit_order("bob", "CB", "buy", 1, 50)[0])
+        expiry = self.db.products.get_investment("CB")["maturity_epoch"]
+        self.assertEqual(self.products.redeem_corporate_bonds(now=expiry), [])
+        self.assertEqual(self.db.products.get_investment("CB")["status"], "defaulted")
+        self.assertEqual(self.market.get_asset_info("CB")["status"], "defaulted")
+        self.assertEqual(self.db.users.get_user("bob")["cash"], 10000)
+        self.assertEqual(len(self.db.assets.get_user_portfolio("alice")), 1)
+        self.db.products.execute("UPDATE investment SET created_at = '2020-01-01 00:00:00' WHERE product_code = 'CB'")
+        self.assertFalse(self.book.place_limit_order("alice", "CB", "sell", 1, 100)[0])
+        self.db.companies.execute("UPDATE company SET capital = capital + 10 WHERE company_code = 'CO'")
+        self.assertEqual(len(self.products.redeem_corporate_bonds(now=expiry + 1)), 1)
+        self.assertEqual(self.db.products.get_investment("CB")["status"], "redeemed")
+
+    def test_future_long_profit_and_close_tax_without_counting_notional_as_assets(self):
+        self.issue_future()
+        self.assertTrue(self.book.place_limit_order("alice", "FUT", "buy", 2, 100)[0])
+        self.assertEqual(self.db.users.get_user("alice")["cash"], 9960)
+        self.assertEqual(self.users.get_total_assets("alice")["net_worth"], 10000)
+        self.db.companies.update_share_price("CO", 110)
+        self.futures.settle_positions()
+        position = self.db.assets.execute_one("SELECT * FROM futures_positions WHERE user_id = 'alice'")
+        self.assertEqual(position["collateral"], 60)
+        self.assertTrue(self.book.place_limit_order("alice", "FUT", "sell", 2, 110)[0])
+        self.assertIsNone(self.db.assets.execute_one("SELECT * FROM futures_positions WHERE user_id = 'alice'"))
+        self.assertEqual(self.db.users.get_user("alice")["cash"], 10019)
+
+    def test_future_short_profit_and_margin_addition(self):
+        self.issue_future()
+        self.assertTrue(self.book.place_limit_order("alice", "FUT", "sell", 1, 100)[0])
+        self.assertEqual(self.db.assets.execute_one("SELECT quantity FROM futures_positions")["quantity"], -1)
+        self.assertTrue(self.futures.add_margin("alice", "FUT", 20)[0])
+        self.db.companies.update_share_price("CO", 80)
+        self.futures.settle_positions()
+        self.assertTrue(self.book.place_limit_order("alice", "FUT", "buy", 1, 80)[0])
+        self.assertEqual(self.db.users.get_user("alice")["cash"], 10019)
+
+    def test_future_limit_orders_match_citizens_at_maker_price(self):
+        self.issue_future()
+        self.assertTrue(self.book.place_limit_order("alice", "FUT", "buy", 2, 90)[0])
+        self.assertTrue(self.book.place_limit_order("bob", "FUT", "sell", 2, 90)[0])
+        trade = self.db.assets.execute_one("SELECT * FROM market_trade_history WHERE asset_code = 'FUT'")
+        self.assertEqual((trade["price"], trade["quantity"]), (90, 2))
+        self.assertEqual(len(self.db.assets.execute("SELECT * FROM futures_positions")), 2)
+
+    def test_future_pending_order_refunds_and_reservation_is_in_net_worth(self):
+        self.issue_future()
+        self.assertTrue(self.book.place_limit_order("alice", "FUT", "sell", 1, 200)[0])
+        order = self.book.get_user_open_orders("alice")[0]
+        self.assertEqual(self.users.get_total_assets("alice")["order_reserved_total"], 40)
+        self.assertEqual(self.users.get_total_assets("alice")["net_worth"], 10000)
+        self.assertTrue(self.book.cancel_order("alice", order["order_id"])[0])
+        self.assertEqual(self.db.users.get_user("alice")["cash"], 10000)
+
+    def test_future_pending_order_fills_when_fair_quote_crosses_limit(self):
+        self.issue_future()
+        self.assertTrue(self.book.place_limit_order("alice", "FUT", "buy", 1, 90)[0])
+        self.db.companies.update_share_price("CO", 80)
+        self.futures.settle_positions()
+        self.assertEqual(self.db.assets.execute_one("SELECT settlement_price FROM futures_positions")["settlement_price"], 80)
+        self.assertEqual(self.book.get_user_open_orders("alice"), [])
+
+    def test_future_liquidation_caps_loss_at_margin_and_cancels_resting_risk(self):
+        self.issue_future()
+        self.assertTrue(self.book.place_limit_order("alice", "FUT", "buy", 1, 100)[0])
+        self.assertTrue(self.book.place_limit_order("alice", "FUT", "buy", 1, 50)[0])
+        self.db.companies.update_share_price("CO", 70)
+        results = self.futures.settle_positions()
+        self.assertEqual(results[0]["reason"], "futures_liquidation")
+        self.assertEqual(self.db.users.get_user("alice")["cash"], 9980)
+        self.assertEqual(self.book.get_user_open_orders("alice"), [])
+        self.assertEqual(self.futures.settle_positions(), [])
+
+    def test_future_maturity_uses_last_underlying_sample_at_expiry_and_refunds_orders(self):
+        self.issue_future()
+        self.assertTrue(self.book.place_limit_order("alice", "FUT", "buy", 1, 100)[0])
+        self.assertTrue(self.book.place_limit_order("bob", "FUT", "sell", 1, 200)[0])
+        now = int(time.time())
+        self.db.products.execute("UPDATE investment SET maturity_epoch = ? WHERE product_code = 'FUT'", (now - 1,))
+        self.db.assets.execute("INSERT INTO market_price_history (asset_code, price, recorded_epoch) VALUES ('CO', 120, ?)", (now - 2,))
+        self.db.companies.update_share_price("CO", 500)
+        results = self.futures.settle_positions(now=now)
+        self.assertEqual(results[0]["reason"], "futures_maturity")
+        self.assertEqual(self.db.users.get_user("alice")["cash"], 10019)
+        self.assertEqual(self.db.users.get_user("bob")["cash"], 10000)
+        self.assertEqual(self.db.products.get_investment("FUT")["status"], "expired")
+        self.assertEqual(self.futures.settle_positions(now=now + 10), [])
+
+    def test_bank_account_cannot_close_with_reserved_short_order_margin(self):
+        self.issue_future()
+        self.db.products.register_saving("SAVE", "Saving", 0, 0, 0, 1, 0, "Bank")
+        bank = BankManager(self.db)
+        success, message = bank.open_account("alice", "SAVE", "1234", 9000)
+        self.assertTrue(success, message)
+        account = self.db.accounts.get_user_accounts("alice")[0]["account_number"]
+        self.assertTrue(self.book.place_limit_order("alice", "FUT", "sell", 1, 200)[0])
+        self.assertFalse(bank.close_account("alice", account, "1234")[0])
+
+    def test_slash_registration_exposes_new_commands_ranges_and_admin_guards(self):
+        class Tree:
+            def __init__(self): self.commands = []
+            def add_command(self, command): self.commands.append(command)
+        tree = Tree()
+        registry = SlashCommandRegistry(SimpleNamespace(tree=tree, rate_mgr=self.rates))
+        registry.register()
+        commands = {c.name: c for c in tree.commands}
+        self.assertTrue({"기준금리", "법정이자", "펀드가입", "펀드환매", "선물증거금"}.issubset(commands))
+        self.assertTrue({"사건", "상품등록", "register", "setup", "기본소득"}.isdisjoint(commands))
+        self.assertEqual(commands["기준금리"].parameters, [])
+        self.assertEqual(commands["법정이자"].parameters, [])
+        registry._prepare = AsyncMock(return_value=("alice", None, "user"))
+        registry._reply = AsyncMock()
+        asyncio.run(registry.base_rate(SimpleNamespace()))
+        self.assertIn("3", registry._reply.call_args.kwargs["content"])
+        registry._reply.reset_mock()
+        asyncio.run(registry.statutory_rate(SimpleNamespace()))
+        self.assertIn("5", registry._reply.call_args.kwargs["content"])
+        registry._reply.reset_mock()
+        asyncio.run(registry.market_event(SimpleNamespace()))
+        self.assertIn("관리자", registry._reply.call_args.kwargs["content"])
+        registry._reply.reset_mock()
+        asyncio.run(registry.register_product(SimpleNamespace(), SimpleNamespace(value="commodity_spot"),
+                    "GOLD", "Gold", 100, 1000, "EX"))
+        self.assertIn("관리자", registry._reply.call_args.kwargs["content"])
+
+
+class IndicatorTests(unittest.TestCase):
+    @staticmethod
+    def candles(count=160, volume=10):
+        return [dict(time=172800 + i * 60, open=100 + i * .1, high=102 + i * .1 + i % 3,
+                     low=98 + i * .1, close=100 + i * .1, volume=volume) for i in range(count)]
+
+    def test_all_requested_indicators_have_finite_series_and_warmup(self):
+        candles = self.candles()
+        for i, candle in enumerate(candles):
+            candle["close"] += math.sin(i / 3)
+        upper, lower = calculate_indicators(candles, UPPER_INDICATORS, LOWER_INDICATORS, candles[0]["time"])
+        self.assertEqual(set(upper), set(UPPER_INDICATORS))
+        self.assertEqual(set(lower), set(LOWER_INDICATORS))
+        self.assertEqual(len(UPPER_INDICATORS), 13)
+        self.assertEqual(len(LOWER_INDICATORS), 24)
+        for key, group in {**upper, **lower}.items():
+            self.assertTrue(group, key)
+            self.assertTrue(any(value is not None for series in group for value in series["values"]), key)
+            for series in group:
+                self.assertTrue(all(value is None or math.isfinite(value) for value in series["values"]), key)
+        self.assertIsNone(lower["rsi"][0]["values"][13])
+        _, monotonic = calculate_indicators(self.candles(), (), ("rsi",))
+        self.assertEqual(monotonic["rsi"][0]["values"][14], 100)
+
+    def test_candle_ohlc_and_volume_aggregation(self):
+        candles = build_candles([(0, 10), (1, 12), (2, 8), (59, 11), (60, 20)], [(1, 5), (30, 7), (60, 9)], 60)
+        self.assertEqual(candles[0], dict(time=0, open=10, high=12, low=8, close=11, volume=12))
+        self.assertEqual(candles[1]["volume"], 9)
+
+    def test_flat_prices_zero_volume_and_short_history_do_not_fabricate_vwap(self):
+        for count in (1, 2, 5, 20, 160):
+            candles = [dict(time=i * 60, open=100, high=100, low=100, close=100, volume=0) for i in range(count)]
+            upper, lower = calculate_indicators(candles, UPPER_INDICATORS, LOWER_INDICATORS, 0)
+            self.assertTrue(all(x is None for x in upper["vwap"][0]["values"]))
+            self.assertTrue(all(x is None for x in upper["anchored_vwap"][0]["values"]))
+            self.assertTrue(all(x is None for x in lower["mfi"][0]["values"]))
+            if count > 14:
+                self.assertEqual(lower["rsi"][0]["values"][-1], 50)
+
+    def test_vwap_resets_at_kst_midnight_and_anchor_excludes_prior_bars(self):
+        candles = [dict(time=14 * 3600, open=100, high=100, low=100, close=100, volume=10),
+                   dict(time=15 * 3600, open=200, high=200, low=200, close=200, volume=30)]
+        upper, _ = calculate_indicators(candles, ("vwap", "anchored_vwap"), (), candles[1]["time"])
+        self.assertEqual(upper["vwap"][0]["values"], [100, 200])
+        self.assertEqual(upper["anchored_vwap"][0]["values"], [None, 200])
+
+    def test_bollinger_and_obv_match_small_known_calculations(self):
+        candles = [dict(time=i * 60, open=i + 1, high=i + 1, low=i + 1, close=i + 1, volume=10) for i in range(20)]
+        upper, lower = calculate_indicators(candles, ("bollinger",), ("obv", "roc"))
+        self.assertEqual(upper["bollinger"][0]["values"][-1], 10.5)
+        self.assertAlmostEqual(upper["bollinger"][1]["values"][-1], 10.5 + 2 * math.sqrt(33.25))
+        self.assertEqual(lower["obv"][0]["values"][-1], 190)
+        self.assertAlmostEqual(lower["roc"][0]["values"][14], 1400)
+
+    def test_ichimoku_projects_spans_and_fractals_wait_for_two_confirming_bars(self):
+        candles = self.candles(80)
+        upper, _ = calculate_indicators(candles, ("ichimoku", "fractals"), ())
+        self.assertEqual(len(upper["ichimoku"][2]["values"]), 106)
+        self.assertTrue(all(x is None for x in upper["ichimoku"][2]["values"][:51]))
+        self.assertTrue(all(x is None for x in upper["fractals"][0]["values"][-2:]))
+
+    def test_all_indicator_panels_render_to_png_and_can_all_be_hidden(self):
+        candles = self.candles()
+        points = [(c["time"], c["close"]) for c in candles]
+        volumes = [(c["time"], c["volume"]) for c in candles]
+        png = render_price_chart(points, 3600, volumes=volumes, upper_indicators=UPPER_INDICATORS,
+                                 lower_indicators=LOWER_INDICATORS, end_epoch=candles[-1]["time"])
+        self.assertEqual(png[:8], b"\x89PNG\r\n\x1a\n")
+        hidden = render_price_chart(points, 3600, volumes=volumes, upper_indicators=(), lower_indicators=(), end_epoch=candles[-1]["time"])
+        self.assertNotEqual(png, hidden)
+
+
+if __name__ == "__main__":
+    unittest.main()
