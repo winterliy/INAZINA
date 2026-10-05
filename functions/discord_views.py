@@ -19,6 +19,7 @@ from managers.market_manager import EXCHANGE_INDEX_PREFIX
 from managers.rate_manager import RateManager
 from managers.fx_manager import FXManager
 from functions.wallet_views import els_status_text
+from functions.currency_display import relative_embed
 
 
 def inverse_rate_text(rate):
@@ -59,11 +60,12 @@ class RegistrationModal(discord.ui.Modal):
         path = Path(__file__).resolve().parents[1] / "database" / "private.text"
         return path.read_text(encoding="utf-8").strip()
 
-    def __init__(self, bot, user_id, nickname, notice_text):
+    def __init__(self, bot, user_id, nickname, notice_text, guild_id=None):
         super().__init__(title="Inazina 등록 안내")
         self.bot = bot
         self.user_id = str(user_id)
         self.nickname = str(nickname or user_id)
+        self.guild_id = guild_id
         self.confirmation_code = secrets.token_hex(3).upper()
         self.display_content = (
             f"{str(notice_text or '').strip()}\n\n"
@@ -100,7 +102,7 @@ class RegistrationModal(discord.ui.Modal):
             )
 
         try:
-            created = await self.bot.register_user(self.user_id, self.nickname)
+            created = await self.bot.register_user(self.user_id, self.nickname, self.guild_id)
         except Exception as exc:
             print(f"[Registration Error] {type(exc).__name__}: {exc}")
             return await interaction.response.send_message(
@@ -111,7 +113,7 @@ class RegistrationModal(discord.ui.Modal):
         if created:
             message = (
                 f"✅ {self.nickname}님, 등록이 완료됐습니다. "
-                "초기 자산 1,000,000 NWX가 지급됐습니다."
+                "등록 서버의 국적과 기본화폐가 적용되고 초기 자산이 해당 화폐로 지급됐습니다."
             )
         else:
             message = "이미 등록된 사용자입니다. 닉네임 정보를 최신 상태로 갱신했습니다."
@@ -619,12 +621,14 @@ class FXRatesView(discord.ui.View):
     def build_embed(self):
         country,currency = self.bot.fx_mgr.national_currency(self.subject_id)
         rates = self.bot.fx_mgr.rates()
+        base=next(r['rate'] for r in rates if r['code']==currency)
+        rates=[r for r in rates if r['code']!=currency]
         pages = max(1,(len(rates)+self.PAGE_SIZE-1)//self.PAGE_SIZE)
         self.page = min(max(0,self.page),pages-1)
-        embed = discord.Embed(title='🌐 환율',description=f'국적 **{str(country)[:100]}** · 기본 통화 **{currency}**\n게임 내 시세 · 1 NWX 기준 외화 금액 (수수료 제외)',color=discord.Color.blue())
+        embed = discord.Embed(title='🌐 환율',description=f'국적 **{str(country)[:100]}** · 기본 통화 **{currency}**\n게임 내 시세 · 1 {currency} 기준 외화 금액 (수수료 제외)',color=discord.Color.blue())
         for row in rates[self.page*self.PAGE_SIZE:(self.page+1)*self.PAGE_SIZE]:
             note = f"그래프 코드 `{row['asset_code']}`" if row['asset_code'] else '기준 통화'
-            embed.add_field(name=f"{row['code']} · {row['name']}"[:80],value=f"1 NWX = **{inverse_rate_text(row['rate'])} {row['code']}**\n{note}"[:120],inline=False)
+            embed.add_field(name=f"{row['code']} · {row['name']}"[:80],value=f"1 {currency} = **{format(Decimal(str(base))/Decimal(str(row['rate'])),'.12g')} {row['code']}**\n{note}"[:120],inline=False)
         embed.set_footer(text=f'{len(rates)}개 통화 · {self.page+1}/{pages} 페이지 · 페이지 이동 시 최신 환율 조회')
         self.previous.disabled = self.page==0
         self.next.disabled = self.page==pages-1
@@ -656,6 +660,7 @@ class AssetAccountsView(discord.ui.View):
         await interaction.response.send_message('❌ 본인 자산 창만 사용할 수 있습니다.',ephemeral=True)
         return False
 
+    @relative_embed
     def build_embed(self):
         pages = max(1,max((len(lines)+self.PAGE_SIZE-1)//self.PAGE_SIZE for lines in self.sections.values()))
         self.page = min(max(0,self.page),pages-1)
@@ -778,9 +783,12 @@ class InfoPanelView(discord.ui.View):
     def _category_lines(self, category, market_groups=None):
         stocks, investments = market_groups if market_groups is not None else self._market_groups()
         if category == "forex":
-            return [f"• **{r['name']}** ({r['code']}) · 1 NWX = **{inverse_rate_text(r['rate'])} {r['code']}**"
+            _,currency=FXManager(self.bot.db).national_currency(self.user_id)
+            rates=FXManager(self.bot.db).rates()
+            base=next(r['rate'] for r in rates if r['code']==currency)
+            return [f"• **{r['name']}** ({r['code']}) · 1 {currency} = **{format(Decimal(str(base))/Decimal(str(r['rate'])),'.12g')} {r['code']}**"
                     + (f" · 그래프 `{r['asset_code']}`" if r['asset_code'] else '')
-                    for r in FXManager(self.bot.db).rates() if r['code'] != 'NWX']
+                    for r in rates if r['code'] != currency]
         if category == 'indices':
             return [f"• **{row['exchange_id']} 거래소 지수** · **{float(row['index_value']):,.2f} pt**\n"
                     f"  ID / 그래프 종목: `{EXCHANGE_INDEX_PREFIX}{row['exchange_id']}`"
@@ -973,7 +981,8 @@ class InfoPanelView(discord.ui.View):
         )
         embed.set_footer(text=f"{len(lines)}개 · {self.page + 1}/{total_pages} 페이지")
         if self.category == 'forex':
-            embed.description = '1 NWX 기준 외화 금액 · 수수료 제외\n\n' + embed.description
+            _,currency=FXManager(self.bot.db).national_currency(self.user_id)
+            embed.description = f'1 {currency} 기준 외화 금액 · 수수료 제외\n\n' + embed.description
             embed.set_footer(text=f"{len(lines)}개 통화 · {self.page + 1}/{total_pages} 페이지 · 페이지 이동 시 최신 환율 조회")
         self.previous_button.disabled = self.page <= 0
         self.next_button.disabled = self.page >= total_pages - 1
@@ -1492,6 +1501,7 @@ class MyOrdersView(discord.ui.View):
         )
         return False
 
+    @relative_embed
     def build_embed(self, orders, notice=None):
         status_names = {
             "open": "대기", "partial": "부분체결", "filled": "전량체결",
@@ -1579,6 +1589,7 @@ class AllAssetsView(discord.ui.View):
         )
         return False
 
+    @relative_embed
     def build_embed(self):
         total = len(self.users)
         total_pages = max(1, (total + self.PAGE_SIZE - 1) // self.PAGE_SIZE)

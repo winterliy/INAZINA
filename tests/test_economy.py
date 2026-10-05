@@ -932,7 +932,7 @@ class EconomyTests(unittest.TestCase):
                     kwargs["content"] = content
                 self.kwargs = kwargs
 
-        async def register_user(user_id, nickname):
+        async def register_user(user_id, nickname, guild_id=None):
             calls.append((user_id, nickname))
             return True
 
@@ -1269,7 +1269,8 @@ class EconomyTests(unittest.TestCase):
         asyncio.run(bot.ensure_user("citizen-new", "New Citizen"))
         self.assertIsNone(self.db.users.get_user("citizen-new"))
 
-        created = asyncio.run(bot.register_user("citizen-new", "New Citizen"))
+        self.db.fx.execute("INSERT INTO guild_countries VALUES ('123','낙원')")
+        created = asyncio.run(bot.register_user("citizen-new", "New Citizen",123))
         self.assertTrue(created)
         user = self.db.users.get_user("citizen-new")
         self.assertEqual(user["nickname"], "New Citizen")

@@ -11,7 +11,7 @@ from managers.fx_manager import SCALE, MAX_UNITS, amount_units, display_units
 COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값',
             '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','환율수정',
             '복권가격설정','금리수정','법정이자수정','증자','정기배당수정','정기배당활성','특별배당실시','합병',
-            '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소'}
+            '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소','서버설치'}
 TYPES = {'company':'stock','주식':'stock','자산':'asset','ETF':'etf','선물':'future','주식선물':'future',
          '회사채':'corporatebond','일반펀드':'fund','펀드':'fund','인덱스펀드':'indexfund',
          '현물원자재':'commodity','원자재':'commodity','국채':'bond','저축':'saving',
@@ -22,7 +22,7 @@ USAGE = {
  '상품수정':'[id] [상품종류] [유형별 순서형 인자 ...] [추가 JSON(선택)]',
  '상품가격수정':'[종목id] [add/del/modify] [금액]',
  '상품생성':'[id] [상품종류] [유형별 순서형 인자 ...] [추가 JSON(선택)]',
- '상품삭제':'[id]', '기본소득':'[금액]', '잔고수정':'[user_id/계좌번호] [add/del/modify] [금액]',
+ '상품삭제':'[id]', '기본소득':'[금액] [지급통화(선택)]', '서버설치':'[서버ID(서버 채팅에서는 생략 가능)] [국적] [통화]', '잔고수정':'[user_id/계좌번호] [add/del/modify] [금액]',
  '등록':'[user_id]', '도박확률':'[0~100]', '도박리턴값':'[리턴 퍼센트]',
  '시장분위기':'[bull/flat/bear]', '상품분위기':'[종목id] [bull/flat/bear]',
  '복권당첨번호보기':'', '복권당첨번호변경':'[서로 다른 1~45 번호 6개] [보너스 번호(선택)]',
@@ -143,7 +143,7 @@ class AdminCommandsManager:
             raise ValueError('상품 코드를 찾을 수 없거나 중복되었습니다.')
         return matches[0]
 
-    def execute(self,actor,command,raw):
+    def execute(self,actor,command,raw,guild_id=None):
         with DBManager.admin_scope(actor):
             self.control.require(actor)
             if command=='상품생성':
@@ -151,13 +151,15 @@ class AdminCommandsManager:
             if command=='상품수정':
                 return self.create(actor,raw,operation='edit')
             args=shlex.split(raw)
+            if command=='서버설치' and len(args)==2 and guild_id is not None:
+                args.insert(0,str(guild_id))
             count={'상품가격수정':3,'상품삭제':1,'기본소득':1,'잔고수정':3,'등록':1,
                    '도박확률':1,'도박리턴값':1,'시장분위기':1,'상품분위기':2,
                    '복권당첨번호보기':0,'세율':1,'환율수정':3,'복권가격설정':1,
                    '금리수정':2,'법정이자수정':2,'정기배당수정':3,'정기배당활성':2,'특별배당실시':2,'합병':2,
                    '휴장':0,'개장':0,'장일시정지':0,'장재개':0,'서킷브레이커':1,'사이드카':0}
-            count.update({'법인잔고수정':3,'법인청산':1,'ELS취소':1})
-            if (command=='증자' and len(args) not in {3,4}) or (command not in {'복권당첨번호변경','증자'} and len(args)!=count.get(command,-1)):
+            count.update({'법인잔고수정':3,'법인청산':1,'ELS취소':1,'서버설치':3})
+            if (command=='증자' and len(args) not in {3,4}) or (command=='기본소득' and len(args) not in {1,2}) or (command not in {'복권당첨번호변경','증자','기본소득'} and len(args)!=count.get(command,-1)):
                 raise ValueError(f'사용법: ${command} {USAGE.get(command,"")}')
             if command in {'휴장','개장','장일시정지','장재개','서킷브레이커','사이드카'}:
                 from managers.market_session_manager import MarketSessionManager
@@ -182,12 +184,27 @@ class AdminCommandsManager:
                 elif command=='법인청산':result=manager.liquidate(actor,args[0])
                 else:result=manager.merge(actor,*args)
                 return self.result_text(result)
+            if command=='서버설치':
+                from managers.currency_manager import CurrencyManager
+                if not args[0].isdecimal():raise ValueError('Discord 서버 ID를 입력해주세요.')
+                with self.db.atomic() as conn:
+                    code=args[2].upper(); CurrencyManager.rate(conn,code)
+                    existing=conn.execute('SELECT currency_code FROM country_currencies WHERE nationality=?',(args[1],)).fetchone()
+                    if existing and existing[0]!=code:
+                        raise ValueError('이미 다른 화폐에 연결된 국적입니다. DB에서 기존 연결을 먼저 확인해주세요.')
+                    conn.execute('INSERT OR IGNORE INTO country_currencies(nationality,currency_code) VALUES (?,?)',(args[1],code))
+                    conn.execute('INSERT INTO guild_countries(guild_id,nationality) VALUES (?,?) ON CONFLICT(guild_id) DO UPDATE SET nationality=excluded.nationality',(args[0],args[1]))
+                    self.control._audit(conn,actor,'guild.country',{'guild_id':args[0],'nationality':args[1],'currency':code})
+                return f'✅ 등록 서버 {args[0]} → {args[1]} · 기본화폐 {code} (신규 등록부터 적용)'
             if command=='기본소득':
-                amount=self.control._number(args[0],1,integer=True)
-                result=self.bot.admin_mgr.distribute_basic_income(amount,actor=actor)
+                result=self.bot.admin_mgr.distribute_basic_income(args[0],actor=actor,currency_code=args[1] if len(args)==2 else None)
                 return result[1] if isinstance(result,tuple) else result
             if command=='등록':
-                return self.control.setup(actor,args[0],args[0],'낙원')
+                from managers.currency_manager import CurrencyManager
+                with self.db.atomic() as conn:
+                    CurrencyManager.register(conn,args[0],args[0],guild_id)
+                    self.control._audit(conn,actor,'register',{'user_id':args[0],'guild_id':guild_id})
+                return '✅ 등록 서버의 국적으로 사용자를 등록하거나 닉네임을 갱신했습니다.'
             if command in {'도박확률','도박리턴값','세율','시장분위기'}:
                 key={'도박확률':'gamble_chance','도박리턴값':'gamble_return','세율':'tax_percent','시장분위기':'market_condition'}[command]
                 value=args[0]
@@ -372,10 +389,22 @@ class AdminCommandsManager:
                 amount=Decimal(raw_amount)
                 units=amount*SCALE
                 if not amount.is_finite() or amount<0 or units!=units.to_integral_value():raise ValueError('외화 금액은 0 이상, 소수점 6자리까지 입력해주세요.')
+                from managers.currency_manager import CurrencyManager
+                CurrencyManager.validate_units(conn,int(units),fx['currency_code'])
                 value=self.adjust(current,operation,int(units))
                 if not 0<=value<=MAX_UNITS:raise ValueError('외화 잔고는 0 이상이며 저장 한도 이하여야 합니다.')
                 conn.execute('UPDATE fx_accounts SET balance_units=? WHERE account_number=?',(value,identity))
                 unit=fx['currency_code']; before=display_units(current); after=display_units(value)
+            elif user:
+                from managers.currency_manager import CurrencyManager
+                unit=CurrencyManager.home(conn,identity)
+                current=CurrencyManager.balance(conn,identity,unit)
+                amount=Decimal(raw_amount)*SCALE
+                if not amount.is_finite() or amount<0 or amount!=amount.to_integral_value():raise ValueError('금액은 0 이상, 소수점 6자리까지 입력해주세요.')
+                CurrencyManager.validate_units(conn,int(amount),unit)
+                value=self.adjust(current,operation,int(amount))
+                CurrencyManager.change(conn,identity,unit,value-current)
+                before=display_units(current); after=display_units(value)
             else:
                 table,key='accounts','account_number' if bank else 'user_id'
                 if not bank:table='users'
@@ -390,20 +419,24 @@ class AdminCommandsManager:
             return f'✅ {identity} 잔고 {before} → {after} {unit}'
 
     def currency(self,conn,actor,a,b,raw_ratio):
+        from managers.currency_manager import CurrencyManager
+        from fractions import Fraction
         a,b=a.upper(),b.upper()
-        if a==b or a=='NWX':raise ValueError('서로 다른 통화를 입력하고, 변경 대상 A는 외화로 입력해주세요.')
+        if a==b:raise ValueError('서로 다른 통화를 입력해주세요.')
         ratio=Decimal(raw_ratio)
         if not ratio.is_finite() or ratio<=0:raise ValueError('비율은 0보다 큰 유한한 값이어야 합니다.')
-        ar=self.bot.fx_mgr._rate(conn,a);br=self.bot.fx_mgr._rate(conn,b)
-        row=conn.execute("SELECT asset_code FROM currencies WHERE code=? AND status='active'",(a,)).fetchone()
-        target=int((br*ratio).to_integral_value(rounding=ROUND_HALF_UP))
-        self.control._number(target,1,integer=True)
-        conn.execute('UPDATE market_assets SET price=? WHERE code=?',(target,row[0]))
-        conn.execute('DELETE FROM market_simulation_state WHERE asset_code=?',(row[0],))
-        conn.execute('DELETE FROM market_auto_targets WHERE asset_code=?',(row[0],))
-        conn.execute("UPDATE market_event_targets SET state='superseded',completed_epoch=? WHERE asset_code=? AND state='active'",(int(time.time()),row[0]))
-        self.control._audit(conn,actor,'currency.cross_rate',{'a':a,'b':b,'ratio':str(ratio),'before':str(ar),'after':target})
-        return f'✅ 1 {a} = {Decimal(target)/br:.12g} {b} · {a} 시세 {target:,} NWX (정수 호가 반올림)'
+        ar=CurrencyManager.rate_fraction(conn,a); br=CurrencyManager.rate_fraction(conn,b)
+        # Change B so that one A buys the requested amount of B. A stays unchanged.
+        target=ar/Fraction(ratio)
+        row=conn.execute('SELECT asset_code FROM currencies WHERE code=?',(b,)).fetchone()
+        if row[0]:
+            price=conn.execute('SELECT price FROM market_assets WHERE code=?',(row[0],)).fetchone()
+            if not price or price[0]<=0:raise ValueError('통화 시세를 확인해주세요.')
+            conn.execute('UPDATE currencies SET reference_rate=NULL,rate_multiplier=? WHERE code=?',(str(target/Fraction(str(price[0]))),b))
+        else:
+            conn.execute("UPDATE currencies SET reference_rate=?,rate_multiplier='1' WHERE code=?",(str(target),b))
+        self.control._audit(conn,actor,'currency.cross_rate',{'a':a,'b':b,'ratio':str(ratio),'changed_currency':b,'before':str(br),'after':str(target)})
+        return f'✅ 1 {a} = {ratio:g} {b} · 환산 기준 저장 완료'
 
     def lottery(self,actor,command,args):
         with self.db.atomic() as conn:

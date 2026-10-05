@@ -513,6 +513,10 @@ class OrderBookManager:
 
     @staticmethod
     def _credit_reserved_source(conn, user_id, account_number, amount, now):
+        if account_number and str(account_number).startswith('__wallet__:'):
+            from managers.currency_manager import CurrencyManager,SCALE
+            CurrencyManager.change(conn,user_id,str(account_number).split(':',1)[1],amount*SCALE)
+            return
         amount = parse_money(amount, minimum=0)
         if amount <= 0:
             return
@@ -594,7 +598,7 @@ class OrderBookManager:
                 )
             message = f"✅ 주문 #{order_id}을 취소했습니다."
             if refund:
-                message += f" 예치금 {refund:,.0f} NWX를 반환했습니다."
+                message += f" 예치금 {refund:,.0f} {order['quote_currency']}를 반환했습니다."
             return True, message
         except Exception as exc:
             return False, f"❌ 주문 취소 중 오류가 발생했습니다: {exc}"

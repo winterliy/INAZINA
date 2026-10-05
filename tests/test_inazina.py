@@ -105,7 +105,7 @@ class InazinaTests(unittest.TestCase):
         self.seed()
         self.bot.fx_mgr.open_account('citizen','INZFX001')
         before=self.db.users.get_user('citizen')['cash']
-        for source,target,amount in [('NWX','EUR','100'),('NWX','USD','2000000'),('USD','NWX','1'),('NWX','USD','nan'),('NWX','USD','1.5'),('NWX','NWX','10')]:
+        for source,target,amount in [('NWX','MISSING','100'),('NWX','USD','2000000'),('USD','NWX','1'),('NWX','USD','nan'),('NWX','USD','1.5'),('NWX','NWX','10')]:
             with self.assertRaises(ValueError):self.bot.fx_mgr.exchange('citizen',source,target,amount)
         self.assertEqual(self.db.users.get_user('citizen')['cash'],before)
         self.assertEqual(self.db.fx.execute_one('SELECT COUNT(*) FROM fx_transactions')[0],0)

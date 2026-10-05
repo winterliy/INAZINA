@@ -167,6 +167,18 @@ class AdminControlManager:
                 if set(extra)-{'implied_volatility'} or price or supply:
                     raise ValueError("옵션 계약 조건은 고정됩니다. 내재변동성 수정 또는 $사건으로 프리미엄을 조정해주세요.")
             values = {k:v for k,v in extra.items() if k in columns}
+            if category=='currency':
+                if operation=='create' and 'decimal_places' not in values:
+                    values['decimal_places']=0 if code in {'NWX','KRW','JPY'} else 2 if code in {'USD','EUR','GBP','CHF','CNY','HKD','AUD','CAD'} else 6
+                if 'decimal_places' in values:
+                    values['decimal_places']=self._number(values['decimal_places'],0,6,integer=True)
+                    if code=='NWX' and values['decimal_places']!=0:raise ValueError('NWX는 정수 단위입니다.')
+                from fractions import Fraction
+                for field in ('reference_rate','rate_multiplier'):
+                    if field in values and values[field] is not None:
+                        number=Fraction(str(values[field]))
+                        if number<=0:raise ValueError('통화 환산 기준은 양수로 입력해주세요.')
+                        values[field]=str(number)
             if 'currency_code' in values:
                 values['currency_code']=str(values['currency_code']).strip().upper()
             if 'quote_currency' in values:
@@ -320,10 +332,11 @@ class AdminControlManager:
                 for account in conn.execute("SELECT DISTINCT user_id FROM fx_accounts WHERE product_code=?",(code,)).fetchall():
                     self.bot.fx_mgr._settle(conn,account['user_id'],time.time())
             if category=='currency':
-                if code=='NWX' and any(k!='name' for k in values):
-                    raise ValueError("기준 통화 NWX의 환율은 고정됩니다.")
-                if code!='NWX' and not conn.execute("SELECT 1 FROM market_assets WHERE code=? AND type='forex' AND status='active'",(merged.get('asset_code'),)).fetchone():
-                    raise ValueError("먼저 $상품생성에서 type=forex 자산을 생성해주세요.")
+                if merged.get('asset_code'):
+                    if not conn.execute("SELECT 1 FROM market_assets WHERE code=? AND type='forex' AND status='active'",(merged['asset_code'],)).fetchone():
+                        raise ValueError('활성 type=forex 시세 자산을 입력해주세요.')
+                elif merged.get('reference_rate') is None:
+                    raise ValueError('시세 자산 asset_code 또는 양수 reference_rate를 지정해주세요.')
             if operation=='create':
                 fields = ','.join(f'"{k}"' for k in values)
                 conn.execute(f'INSERT INTO "{table}" ({fields}) VALUES ({",".join("?" for _ in values)})',tuple(values.values()))

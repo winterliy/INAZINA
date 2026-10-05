@@ -1,3 +1,4 @@
+from functions.currency_display import relative_embed
 import asyncio
 import io
 import json
@@ -44,6 +45,8 @@ class LotteryPurchaseView(discord.ui.View):
         for item in self.children:
             item.disabled = True
         embed = discord.Embed(title=f"✅ 복권 구매 · {result['round_id']}회",description=f"{len(result['tickets'])}장 · 합계 **{result['price']*len(result['tickets']):,} NWX**\n/내복권에서 번호와 지급 결과를 확인하세요.",color=discord.Color.green())
+        display=getattr(self,'money_display',None)
+        if display:embed=display.embed(embed)
         lines = [f"#{t['ticket_id']} · {' '.join(map(str,t['numbers']))}" for t in result['tickets']]
         if len(lines)<=10:
             embed.add_field(name='발권 번호',value='\n'.join(lines),inline=False)
@@ -77,13 +80,14 @@ class LotteryTicketsView(discord.ui.View):
         await interaction.response.send_message('❌ 본인의 복권만 조회할 수 있습니다.',ephemeral=True)
         return False
 
+    @relative_embed
     def build_embed(self):
         pages = max(1,(len(self.rows)+self.PAGE_SIZE-1)//self.PAGE_SIZE)
         self.page = min(max(0,self.page),pages-1)
         embed = discord.Embed(title='🎟️ 내 복권',color=discord.Color.gold())
         for row in self.rows[self.page*self.PAGE_SIZE:(self.page+1)*self.PAGE_SIZE]:
             numbers = ' '.join(map(str,json.loads(row['numbers_json'])))
-            status = '추첨·지급 대기' if row['rank'] is None else '미당첨' if row['rank']==0 else f"{row['rank']}등 · 세전 {row['gross'] or 0:,} / 세금 {row['tax'] or 0:,} / 입금 {row['net'] or 0:,} NWX"
+            status = '추첨·지급 대기' if row['rank'] is None else '미당첨' if row['rank']==0 else f"{row['rank']}등 · 세전 {row['gross'] or 0:,} NWX / 세금 {row['tax'] or 0:,} NWX / 입금 {row['net'] or 0:,} NWX"
             embed.add_field(name=f"{row['round_id']}회 · 티켓 #{row['ticket_id']}",value=f'{numbers}\n{status}',inline=False)
         if not self.rows:
             embed.description='구매한 복권이 없습니다. /복권구매에서 발권할 수 있습니다.'

@@ -47,6 +47,8 @@ class InazinaBot(discord.Client):
         self.investment_mgr = InvestmentManager(self.db, self.user_mgr)
         self.futures_mgr = FuturesManager(self.db, self.user_mgr)
         self.fx_mgr = FXManager(self.db)
+        from managers.currency_manager import CurrencyManager
+        self.currency_mgr = CurrencyManager(self.db)
         from managers.lottery_manager import LotteryManager
         self.lottery_mgr = LotteryManager(self.db)
         self.order_book.futures_manager = self.futures_mgr
@@ -345,18 +347,15 @@ class InazinaBot(discord.Client):
             changed = True
         return self.db.users.get_user(user_id) if changed else user
 
-    async def register_user(self, user_id, nickname):
+    async def register_user(self, user_id, nickname, guild_id=None):
         """Create a citizen only after they accept the registration notice."""
         user_id = str(user_id)
         nickname = str(nickname or user_id)
         role = "admin" if user_id in BOOTSTRAP_ADMIN_IDS else "user"
+        from managers.currency_manager import CurrencyManager
+        currency_mgr=getattr(self,'currency_mgr',None) or CurrencyManager(self.db)
         created = await asyncio.to_thread(
-            self.db.users.register_user,
-            user_id,
-            nickname,
-            "낙원",
-            1000000,
-            role,
+            currency_mgr.register_user, user_id, nickname, guild_id, role,
         )
         if not created:
             await asyncio.to_thread(self.db.users.update_nickname, user_id, nickname)

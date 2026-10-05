@@ -1,4 +1,5 @@
 import random
+from decimal import Decimal
 import math
 import time
 from datetime import datetime, timezone
@@ -130,6 +131,10 @@ class UserManager:
 
     @staticmethod
     def _credit_source(conn, user_id, account_number, amount):
+        if account_number and str(account_number).startswith('__wallet__:'):
+            from managers.currency_manager import CurrencyManager, SCALE
+            CurrencyManager.change(conn,user_id,str(account_number).split(':',1)[1],amount*SCALE)
+            return
         if amount <= 0:
             return
         if account_number is None:
@@ -634,16 +639,14 @@ class UserManager:
             self.db.assets.execute('SELECT asset_code,price FROM market_last_trade')}
         quote_overrides = {str(row['asset_code']):int(row['price']) for row in
             self.db.assets.execute('SELECT asset_code,price FROM market_quote_overrides')}
+        from managers.currency_manager import CurrencyManager, SCALE
+        from managers.fx_manager import FXManager
         fx_rates = {'NWX':1}
-        for row in self.db.fx.execute("SELECT c.code,a.price FROM currencies c LEFT JOIN market_assets a "
-                                      "ON a.code=c.asset_code WHERE c.status='active'"):
-            if row['code']=='NWX':
-                continue
-            if row['price'] is not None and float(row['price'])>0:
-                fx_rates[str(row['code'])]=int(round(float(row['price'])))
-        currency_row = self.db.fx.execute_one("SELECT n.currency_code FROM country_currencies n "
-            "JOIN currencies c ON c.code=n.currency_code WHERE n.nationality=? AND c.status='active'",(nationality,))
-        national_currency = currency_row['currency_code'] if currency_row else 'NWX'
+        with self.db.atomic() as conn:
+            for row in conn.execute("SELECT code FROM currencies WHERE status='active'"):
+                fx_rates[row['code']]=float(FXManager._rate(conn,row['code']))
+        with self.db.atomic() as conn:
+            national_currency=CurrencyManager.home(conn,user_id)
         account_details = []
         total_account_balance = 0
         for account in self.db.accounts.get_user_accounts(user_id):
@@ -657,6 +660,7 @@ class UserManager:
                 "product_name": (f"대출금 지급 · {product['name']}" if product and account["account_type"] == "loan_payout"
                                  else product["name"] if product else account["product_code"]),
                 "balance": balance,
+                "quote_currency":account['quote_currency'],
             })
 
         stock_details = []
@@ -846,8 +850,8 @@ class UserManager:
                 fx_accounts = FXManager(self.db).accounts(user_id)
             else:
                 with self.db.atomic() as conn:
-                    fx_accounts = [{**dict(r),'value_nwx':int(r['balance_units'])*FXManager._rate(conn,r['currency_code'])//1_000_000 if r['balance_units'] else 0}
-                        for r in conn.execute("SELECT a.*,p.name AS product_name,p.annual_rate FROM fx_accounts a "
+                    fx_accounts = [{**dict(r),'value_nwx':int(Decimal(str(r['balance_units']))*FXManager._rate(conn,r['currency_code'])/1_000_000) if r['balance_units'] else 0}
+                        for r in conn.execute("SELECT a.*,p.name AS product_name,p.annual_rate,c.decimal_places FROM fx_accounts a JOIN currencies c ON c.code=a.currency_code "
                             "LEFT JOIN fx_products p ON p.product_code=a.product_code WHERE a.user_id=? ORDER BY a.currency_code",(str(user_id),))]
             fx_total = sum(r['value_nwx'] for r in fx_accounts)
         els_positions=[]
@@ -860,14 +864,25 @@ class UserManager:
             preferred_claims=[{**dict(row),'remaining_amount':int(row['gross_amount'])-int(row['paid_amount'])}
                 for row in self.db.corporate.execute("SELECT * FROM preferred_dividend_claims WHERE user_id=? AND status IN ('unpaid','partial') ORDER BY due_epoch,claim_id",(str(user_id),))]
         preferred_claim_total=sum(int(row['remaining_amount'])*fx_rates.get(row['quote_currency'],1) for row in preferred_claims)
+        wallets=CurrencyManager(self.db).wallets(user_id)
+        wallet_total=sum(float(item['balance_units'])/SCALE*fx_rates[item['currency_code']] for item in wallets if item['currency_code']!='NWX')
+        home_cash_units=next(item['balance_units'] for item in wallets if item['currency_code']==national_currency)
+        foreign_cash_units=sum(item['value_home_units'] for item in wallets if item['is_foreign'])
         grand_total = (
             cash + total_account_balance + total_stock_value + order_reserved_total
-            + bond_total + option_collateral_cash - option_short_liability + fx_total+els_total+preferred_claim_total
+            + bond_total + option_collateral_cash - option_short_liability + fx_total+els_total+preferred_claim_total+wallet_total
         )
 
         return {
             "nationality":nationality,
             "national_currency":national_currency,
+            "wallets":wallets,
+            "home_cash_units":home_cash_units,
+            "foreign_cash_units":foreign_cash_units,
+            "home_rate_nwx":fx_rates[national_currency],
+            "home_decimal_places":next(item['decimal_places'] for item in wallets if item['currency_code']==national_currency),
+            "home_account_total_home":sum(item['balance'] for item in account_details if item['quote_currency']==national_currency)+sum(item['balance_units'] for item in fx_accounts if item['currency_code']==national_currency)/SCALE,
+            "foreign_account_total_home":(sum(item['value_nwx'] for item in fx_accounts if item['currency_code']!=national_currency)+sum(item['balance']*fx_rates[item['quote_currency']] for item in account_details if item['quote_currency']!=national_currency))/fx_rates[national_currency],
             "fx_accounts":fx_accounts,
             "written_options":written_options,
             "fx_total":fx_total,

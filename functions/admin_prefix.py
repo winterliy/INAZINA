@@ -348,18 +348,20 @@ class TreasuryAssetsView(discord.ui.View):
         super().__init__(timeout=300)
         self.bot,self.owner,self.info,self.page = bot,str(owner),info,0
         self.category='main'
-        self.sections={'accounts':[],'fx_accounts':[],'stocks':[],'bonds':[],'written':[],'loans':[],'els':[],'preferred_claims':[]}
-        self.labels={'main':'🏛️ 메인','accounts':'🏦 통장','fx_accounts':'💱 외환통장','stocks':'📈 보유 투자상품',
+        self.sections={'cash':[],'accounts':[],'fx_accounts':[],'stocks':[],'bonds':[],'written':[],'loans':[],'els':[],'preferred_claims':[]}
+        self.labels={'cash':'💵 통화별 현금','main':'🏛️ 메인','accounts':'🏦 통장','fx_accounts':'💱 외환통장','stocks':'📈 보유 투자상품',
                      'bonds':'📜 국채','written':'✍️ 작성 옵션','loans':'💳 대출','els':'🧾 ELS','preferred_claims':'💰 미지급 배당'}
         from functions.wallet_views import els_position_lines,preferred_claim_lines
         self.sections['els']=els_position_lines(info.get('els_positions',[]))
         self.sections['preferred_claims']=preferred_claim_lines(info.get('preferred_dividend_claims',[]))
+        from functions.currency_display import wallet_lines
+        self.sections['cash']=[(f'통화별 현금 {i+1}',line) for i,line in enumerate(wallet_lines(info))]
         self.items = []
         for item in info['accounts']:
-            self.sections['accounts'].append((f"통장 · {item['product_name']}",f"{item['number']}\n잔액 {item['balance']:,} NWX"))
+            self.sections['accounts' if item.get('quote_currency','NWX')==info['national_currency'] else 'fx_accounts'].append((f"통장 · {item['product_name']}",f"{item['number']}\n잔액 {item['balance']:,} NWX"))
         for item in info.get('fx_accounts',[]):
-            self.sections['fx_accounts'].append((f"외환통장 · {item.get('product_name') or item['product_code']}",
-                f"{item['account_number']}\n잔액 {display_units(item['balance_units'])} {item['currency_code']} · 평가 {item['value_nwx']:,} NWX"))
+            self.sections['accounts' if item['currency_code']==info['national_currency'] else 'fx_accounts'].append((f"통장 · {item.get('product_name') or item['product_code']}",
+                f"{item['account_number']}\n잔액 {display_units(item['balance_units'],item.get('decimal_places'))} {item['currency_code']} · 평가 {item['value_nwx']:,} NWX"))
         for item in info['stocks']:
             note=f"옵션담보 잠금 · 매도 불가 · {item['collateral_contract_code']}" if item.get('is_collateral') else f"매도 주문 잠금 {item.get('sell_reserved_qty',0):,}"
             self.sections['stocks'].append((item['name'],f"{item['code']}\n수량 {item['qty']:,} · 기준가 {item['price']:,} {item.get('quote_currency','NWX')}\n평가액 {item['value']:,} NWX · {note}"))
@@ -370,6 +372,9 @@ class TreasuryAssetsView(discord.ui.View):
         for loan in bot.db.accounts.execute("SELECT l.*,p.name FROM loans l JOIN liability p USING(product_code) WHERE l.user_id=? AND l.status='active'",(TREASURY_USER_ID,)):
             maturity=f"<t:{int(loan['maturity_epoch'])}:D>" if loan['maturity_epoch'] else '없음'
             self.sections['loans'].append((f"대출 · {loan['name']}",f"#{loan['loan_id']} · {loan['product_code']}\n잔액 {loan['outstanding_balance']:,} NWX · 만기 {maturity}"))
+        from functions.currency_display import MoneyDisplay
+        display=MoneyDisplay(bot.db,TREASURY_USER_ID)
+        self.sections={key:[(name,display.text(value,relative=key not in {'cash','fx_accounts'})) for name,value in rows] for key,rows in self.sections.items()}
         self.category_select=discord.ui.Select(placeholder='국가 지갑 카테고리',row=0,
             options=[discord.SelectOption(label=label,value=key,default=key=='main') for key,label in self.labels.items()])
         self.category_select.callback=self.select_category
@@ -400,6 +405,8 @@ class TreasuryAssetsView(discord.ui.View):
                     ('총자산','grand_total'),('대출 잔액','loan_total'),('순자산','net_worth')]:
                 sign='−' if key=='option_short_liability' and info.get(key,0) else ''
                 embed.add_field(name=label,value=f"```{sign}{info.get(key,0):,} NWX```",inline=True)
+            from functions.currency_display import native_summary
+            native_summary(embed,info)
             embed.add_field(name='⭐ 신용점수',value=f"```{info.get('credit_score',0):,}점```",inline=True)
         for name,value in self.items[self.page*self.PAGE_SIZE:(self.page+1)*self.PAGE_SIZE]:
             embed.add_field(name=name[:120],value=value[:300],inline=False)
@@ -514,7 +521,7 @@ class AdminPrefixRegistry:
                 await session.edit(embed=view.build_embed(),view=view)
                 session = None
             elif command in COMMANDS:
-                result=await asyncio.to_thread(AdminCommandsManager(self.bot).execute,str(message.author.id),command,arguments)
+                result=await asyncio.to_thread(AdminCommandsManager(self.bot).execute,str(message.author.id),command,arguments,getattr(message.guild,'id',None))
                 response=admin_response(result,f'Inazina · ${command}')
                 if 'file' in response:
                     await self.send_result(message.author,result,command)

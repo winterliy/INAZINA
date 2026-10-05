@@ -197,7 +197,7 @@ class ProductDB(DBManager):
         )
 
     def register_saving(self, code, name, rate, deposit, maturity, cycle, compound, issuer):
-        self.execute("INSERT OR REPLACE INTO saving VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')", 
+        self.execute("INSERT OR REPLACE INTO saving (product_code,name,interest_rate,deposit_amount,maturity_days,interest_cycle,compound_type,issuer,status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')",
                      (code, name, rate, deposit, maturity, cycle, compound, issuer))
 
     def register_liability(
