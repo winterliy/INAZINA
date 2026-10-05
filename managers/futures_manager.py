@@ -180,8 +180,8 @@ class FuturesManager:
                 product = self._product(conn, item["product_code"])
                 if product["status"] != "active":
                     continue
-                halted = MarketSessionManager(self.db).trading_error(conn=conn, now=now)
-                if halted and now < int(product["maturity_epoch"]):
+                state = MarketSessionManager.process_conn(conn, now)
+                if state['status'] != 'open' and now < int(product["maturity_epoch"]):
                     continue
                 quote = self._quote(conn, product, now)
                 expired = now >= int(product["maturity_epoch"])
@@ -190,7 +190,7 @@ class FuturesManager:
                 for position in positions:
                     collateral, net_pnl = self._mark(conn, position, product, quote, now)
                     maintenance = math.ceil(abs(int(position["quantity"])) * int(product["contract_size"]) * quote * float(product["maintenance_margin"]))
-                    if not expired and collateral >= maintenance:
+                    if not expired and (collateral >= maintenance or state['trading_halted']):
                         continue
                     tax = self.users._tax(conn, position["user_id"], "futures_realized_gain", max(0, net_pnl))
                     self.users._credit_source(conn, position["user_id"], None, collateral - tax)
@@ -212,7 +212,7 @@ class FuturesManager:
                     for order in orders:
                         self._cancel(conn, order, now, "expired")
                     conn.execute("UPDATE product.investment SET status = 'expired' WHERE product_code = ?", (product["product_code"],))
-                else:
+                elif not state['trading_halted']:
                     orders = conn.execute("SELECT order_id FROM assets.market_orders WHERE asset_code = ? AND order_kind = 'future' "
                         "AND status IN ('open', 'partial') ORDER BY created_epoch, order_id", (product["product_code"],)).fetchall()
                     for order in orders:

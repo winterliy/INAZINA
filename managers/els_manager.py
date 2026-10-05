@@ -290,7 +290,7 @@ class ELSManager:
     def observe(self, conn, now, prices=None):
         """Record only real price ticks; never reconstruct a missing historical path."""
         now = int(now)
-        if MarketSessionManager(self.db).trading_error(conn=conn, now=now):
+        if not MarketSessionManager(self.db).prices_running(conn=conn, now=now):
             return []
         recorded = []
         for terms in conn.execute("SELECT * FROM els_terms WHERE state IN ('subscription','active','observation_pending')").fetchall():

@@ -189,6 +189,16 @@ class ELSTests(unittest.TestCase):
         self.assertEqual(payment['tax'], 6)
         self.assertEqual(self.db.users.get_user('citizen')['cash'], before + payment['net'])
 
+    def test_trade_only_stop_allows_observation_but_blocks_subscription(self):
+        self.assertTrue(self.manager.subscribe('citizen', 'ELS1', 2, now=1001)[0])
+        sessions = MarketSessionManager(self.db)
+        self.assertTrue(sessions.control('admin', 'trade_stop', now=1002)[0])
+        self.assertFalse(self.manager.subscribe('citizen', 'ELS1', 1, now=1003)[0])
+        self.tick(self.issue_epoch)
+        self.assertEqual(self.manager.get_details('ELS1')['issue_epoch'], self.issue_epoch)
+        self.tick(self.issue_epoch+DAY, 50)
+        self.assertTrue(self.manager.get_details('ELS1')['knocked_in'])
+
     def test_halt_blocks_subscription_issuance_and_observation(self):
         sessions = MarketSessionManager(self.db)
         self.assertTrue(sessions.control('admin', 'close', now=1001)[0])

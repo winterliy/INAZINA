@@ -11,7 +11,7 @@ from managers.fx_manager import SCALE, MAX_UNITS, amount_units, display_units
 COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값',
             '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','환율수정',
             '복권가격설정','금리수정','법정이자수정','증자','정기배당수정','정기배당활성','특별배당실시','합병',
-            '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소','서버설치','상품이율수정','소수점거래관리'}
+            '휴장','개장','장일시정지','장재개','시장거래중지','시장거래재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소','서버설치','상품이율수정','소수점거래관리'}
 TYPES = {'company':'stock','주식':'stock','자산':'asset','ETF':'etf','선물':'future','주식선물':'future',
          '회사채':'corporatebond','일반펀드':'fund','펀드':'fund','인덱스펀드':'indexfund',
          '현물원자재':'commodity','원자재':'commodity','국채':'bond','저축':'saving',
@@ -33,7 +33,7 @@ USAGE = {
  '정기배당수정':'[id] [주기: 초 또는 1일/1주/1달] [주당 금액 또는 비율%]',
  '정기배당활성':'[id] [on/off 또는 1/0]',
  '특별배당실시':'[id] [주당 배당금]', '합병':'[존속 A id] [통합 B id]',
- '휴장':'', '개장':'', '장일시정지':'', '장재개':'',
+ '휴장':'', '개장':'', '장일시정지':'', '장재개':'', '시장거래중지':'', '시장거래재개':'',
  '서킷브레이커':'[1/2/3단계]', '사이드카':''}
 USAGE.update({'상품이율수정':'[대출상품id] [원이율%] [연장이율% · 0은 원이율 적용]', '법인잔고수정':'[보통주 법인id] [add/del/modify] [금액]',
               '법인청산':'[보통주 법인id]', 'ELS취소':'[ELS id]'})
@@ -159,7 +159,7 @@ class AdminCommandsManager:
                    '도박확률':1,'도박리턴값':1,'시장분위기':1,'상품분위기':2,
                    '복권당첨번호보기':0,'세율':1,'환율수정':3,'복권가격설정':1,
                    '금리수정':2,'법정이자수정':2,'정기배당수정':3,'정기배당활성':2,'특별배당실시':2,'합병':2,
-                   '휴장':0,'개장':0,'장일시정지':0,'장재개':0,'서킷브레이커':1,'사이드카':0}
+                   '휴장':0,'개장':0,'장일시정지':0,'장재개':0,'시장거래중지':0,'시장거래재개':0,'서킷브레이커':1,'사이드카':0}
             count.update({'법인잔고수정':3,'법인청산':1,'ELS취소':1,'서버설치':3,'상품이율수정':3,'소수점거래관리':2})
             if (command=='증자' and len(args) not in {3,4}) or (command=='기본소득' and len(args) not in {1,2}) or (command not in {'복권당첨번호변경','증자','기본소득'} and len(args)!=count.get(command,-1)):
                 raise ValueError(f'사용법: ${command} {USAGE.get(command,"")}')
@@ -171,9 +171,9 @@ class AdminCommandsManager:
                     if category not in {'stock','asset','etf','fund','indexfund','commodity'}:
                         raise ValueError('주식·우선주·ETF·일반/인덱스 펀드·현물 원자재만 소수점 거래를 지원합니다.')
                     return self.control.entity(actor,category,'edit',args[0],extra={'Fractal':1-int(args[1])},conn=conn)
-            if command in {'휴장','개장','장일시정지','장재개','서킷브레이커','사이드카'}:
+            if command in {'휴장','개장','장일시정지','장재개','시장거래중지','시장거래재개','서킷브레이커','사이드카'}:
                 from managers.market_session_manager import MarketSessionManager
-                actions={'휴장':'close','개장':'open','장일시정지':'pause','장재개':'resume','서킷브레이커':'circuit','사이드카':'sidecar'}
+                actions={'휴장':'close','개장':'open','장일시정지':'pause','장재개':'resume','시장거래중지':'trade_stop','시장거래재개':'trade_resume','서킷브레이커':'circuit','사이드카':'sidecar'}
                 stage=int(args[0].removesuffix('단계')) if args else None
                 result=MarketSessionManager(self.db).control(actor,actions[command],stage=stage)
                 return self.result_text(result)

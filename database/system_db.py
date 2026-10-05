@@ -131,6 +131,9 @@ class SystemDB(DBManager):
             circuit_stage INTEGER CHECK(circuit_stage IN (1, 2, 3)),
             updated_epoch INTEGER NOT NULL
         )""")
+        session_columns = {row[1] for row in self.execute("PRAGMA table_info(market_session)")}
+        if 'trading_halted' not in session_columns:
+            self.execute("ALTER TABLE market_session ADD COLUMN trading_halted INTEGER NOT NULL DEFAULT 0 CHECK(trading_halted IN (0,1))")
         self.execute("INSERT OR IGNORE INTO market_session "
                      "(session_id, status, updated_epoch) VALUES (1, 'open', 0)")
         self.execute("""CREATE TABLE IF NOT EXISTS market_event_targets (
