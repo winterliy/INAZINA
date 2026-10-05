@@ -123,7 +123,7 @@ class InazinaTests(unittest.TestCase):
             updated=conn.execute('SELECT * FROM fx_accounts WHERE account_number=?',(row['account_number'],)).fetchone()
             self.assertGreater(updated['balance_units'],row['balance_units'])
 
-    def test_admin_reauthorization_crud_audit_and_settings_validation(self):
+    def test_admin_reauthorization_crud_and_settings_validation(self):
         control=self.bot.admin_control
         with self.assertRaises(ValueError): control.entity('citizen','stock','create','BAD','Bad',100,100,{})
         control.entity('admin','stock','create','NEW','새주식','100','1000',EXAMPLES['stock'])
@@ -141,7 +141,7 @@ class InazinaTests(unittest.TestCase):
         self.assertEqual(self.db.tax.get_rate_percent(),5)
         self.db.users.update_role('admin','user')
         with self.assertRaises(ValueError): control.settings('admin',{'market_volatility':.5})
-        self.assertGreater(self.db.system.execute_one('SELECT COUNT(*) FROM admin_audit')[0],3)
+        self.assertIsNone(self.db.system.execute_one("SELECT 1 FROM sqlite_schema WHERE name='admin_audit'"))
 
     def test_national_trade_uses_treasury_identity(self):
         self.db.assets.register_asset('TRADE','국가주식','EX',100,'stock')

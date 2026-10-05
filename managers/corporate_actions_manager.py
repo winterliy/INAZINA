@@ -61,10 +61,6 @@ class CorporateActionsManager:
         if not row or str(row['role']).strip().lower() != 'admin':
             raise ValueError('DB role=admin인 관리자만 사용할 수 있습니다.')
 
-    @staticmethod
-    def _audit(conn, actor, kind, code, payload, now):
-        conn.execute('INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)',
-                     (str(actor), kind, json.dumps({'code': code, **payload}, ensure_ascii=False), now))
 
     @staticmethod
     def _record(conn, key, kind, source, target, payload, now):
@@ -246,7 +242,6 @@ class CorporateActionsManager:
                 next_epoch = now + cycle if listing['dividend_is_active'] and self._dividend_configured(listing) else None
                 conn.execute(f'UPDATE {listing["table"]} SET dividend_cycle_seconds=?,dividend_mode=?,dividend_percent=?,dividend_per_share=?,dividend_next_epoch=? WHERE {listing["key"]}=?',
                              (cycle,terms['dividend_mode'],terms['dividend_percent'],terms['dividend_per_share'],next_epoch,str(code)))
-                self._audit(conn, actor, 'dividend.configure', str(code), {'cycle_seconds':cycle,**terms,'next_epoch':next_epoch}, now)
             return True, f'✅ `{code}` 정기배당을 설정했습니다. 주기 {cycle:,}초 · {self._dividend_description(listing)}' + (' · 자동배당 중지' if not next_epoch else '')
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f'❌ {exc}'
@@ -266,7 +261,6 @@ class CorporateActionsManager:
                     next_epoch = now + cycle if active else None
                     conn.execute(f'UPDATE {listing["table"]} SET dividend_is_active=? WHERE {listing["key"]}=?', (active,str(code)))
                     conn.execute(f'UPDATE {listing["table"]} SET dividend_next_epoch=? WHERE {listing["key"]}=?', (next_epoch,str(code)))
-                self._audit(conn, actor, 'dividend.activation', str(code), {'is_active':active,'next_epoch':next_epoch}, now)
             return True, f'✅ `{code}` 정기배당 {"켜짐" if active else "꺼짐"}. 주기 {cycle:,}초 · {self._dividend_description(listing)}'
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f'❌ {exc}'
@@ -286,8 +280,6 @@ class CorporateActionsManager:
                     for preferred in higher:
                         self._regular_due(conn, preferred['company_code'], now)
                 gross, duplicate = self._distribute(conn, listing, amount, 'special', now, key, now)
-                if not duplicate:
-                    self._audit(conn, actor, 'dividend.special', str(code), {'per_share': amount, 'gross_amount': gross, 'operation_key': key}, now)
             return True, f'✅ `{code}` 특별배당 {"지급 내역을 확인했습니다" if duplicate else "지급을 완료했습니다"}. 주당 {amount:,} · 총 {gross:,} {listing.get("quote_currency") or "NWX"}'
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f'❌ {exc}'
@@ -378,7 +370,6 @@ class CorporateActionsManager:
                     raise ValueError('국고 잔액 또는 반환 후 잔액 한도를 확인해주세요.')
                 conn.execute('UPDATE issuer_cash_accounts SET balance=? WHERE company_code=?',(new,issuer))
                 conn.execute('INSERT INTO issuer_cash_transfers(company_code,actor_id,old_balance,new_balance,delta,recorded_epoch) VALUES (?,?,?,?,?,?)',(issuer,str(actor),old,new,delta,now))
-                self._audit(conn,actor,'issuer.cash',issuer,{'operation':operation,'value':value,'old_balance':old,'new_balance':new},now)
             return True,f'✅ `{issuer}` 법인 사용가능 현금 {old:,} → {new:,} NWX. 국고와 {abs(delta):,} NWX 이체'
         except (ValueError,TypeError,OverflowError) as exc:
             return False,f'❌ {exc}'
@@ -517,7 +508,6 @@ class CorporateActionsManager:
                 payload = {'issuer':issuer,'cash_available':initial,'codes':codes,'debt_codes':debt_codes,'payouts':len(waterfall),'cash_ledger_existed':bool(cash),
                            'rule':'debt_accrued_interest,arrears,preferred_caps,common_residual; capital_not_cash'}
                 self._record(conn,key,'liquidation',str(code),None,payload,now)
-                self._audit(conn,actor,'liquidation',issuer,payload,now)
             return True,f'✅ `{issuer}` 법인과 연결 우선주를 청산했습니다. 현금 {initial:,} NWX · 회사채 → 미지급 배당 → 우선주 한도 → 보통주 순서로 지급'
         except (ValueError,TypeError,OverflowError) as exc:
             return False,f'❌ {exc}'
@@ -660,7 +650,6 @@ class CorporateActionsManager:
                                   'unissued_bonus_to_treasury': allocations[-1]}, now)
                     message = f'✅ `{code}` 무상증자 {quantity:,}주를 비례 배정했습니다. 발행량 {supply:,} → {supply + quantity:,} · 기준가 {price:,} → {new_price:,} {currency}'
                 UserManager._refresh_max_shareholder(conn, code)
-                self._audit(conn, actor, 'capital_increase', code, {'mode': mode, 'quantity': quantity, 'issue_price': issue_price}, now)
             return True, message
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f'❌ {exc}'
@@ -770,7 +759,6 @@ class CorporateActionsManager:
                 payload = {'survivor': surviving_code, 'absorbed': absorbed_code, 'exchange_ratio': str(Fraction(price_b, price_a)), 'cash_settled': cash, 'new_supply': new_supply, 'currency': currency,
                            'positions': [{'user_id': user, 'cash_residual': residual, 'lots': [{'account_number': lot['account_number'], 'source_quantity': int(lot['quantity']), 'target_quantity': units, 'source_average_cost': int(lot['average_cost'])} for lot, units in zip(user_lots, allocation)]} for user, user_lots, allocation, residual in conversions]}
                 self._record(conn, 'merger:' + uuid.uuid4().hex, 'merger', absorbed_code, surviving_code, payload, now)
-                self._audit(conn, actor, 'merger', surviving_code, payload, now)
             return True, f'✅ `{absorbed_code}`를 `{surviving_code}`에 통합했습니다. 교환비율 {price_b:,}/{price_a:,} · 단주 정산 {cash:,} {currency} · 존속 `{surviving_code}`'
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f'❌ {exc}'
@@ -822,6 +810,5 @@ class CorporateActionsManager:
             conn.execute(f"UPDATE {table} SET status='inactive' WHERE product_code=?", (b,))
             payload = {'survivor': a, 'absorbed': b, 'table': table}
             self._record(conn, 'merger:' + uuid.uuid4().hex, 'product_merger', b, a, payload, now)
-            self._audit(conn, actor, 'merger', a, payload, now)
             return True, f'✅ `{b}` 상품을 `{a}` 상품에 통합했습니다. 존속 `{a}`'
         raise ValueError('같은 종류의 회사·투자·금융 상품 코드를 입력해주세요.')

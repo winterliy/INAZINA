@@ -200,7 +200,6 @@ class AdminCommandsManager:
                         raise ValueError('이미 다른 화폐에 연결된 국적입니다. DB에서 기존 연결을 먼저 확인해주세요.')
                     conn.execute('INSERT OR IGNORE INTO country_currencies(nationality,currency_code) VALUES (?,?)',(args[1],code))
                     conn.execute('INSERT INTO guild_countries(guild_id,nationality) VALUES (?,?) ON CONFLICT(guild_id) DO UPDATE SET nationality=excluded.nationality',(args[0],args[1]))
-                    self.control._audit(conn,actor,'guild.country',{'guild_id':args[0],'nationality':args[1],'currency':code})
                 return f'✅ 등록 서버 {args[0]} → {args[1]} · 기본화폐 {code} (신규 등록부터 적용)'
             if command=='기본소득':
                 result=self.bot.admin_mgr.distribute_basic_income(args[0],actor=actor,currency_code=args[1] if len(args)==2 else None)
@@ -209,7 +208,6 @@ class AdminCommandsManager:
                 from managers.currency_manager import CurrencyManager
                 with self.db.atomic() as conn:
                     CurrencyManager.register(conn,args[0],args[0],guild_id)
-                    self.control._audit(conn,actor,'register',{'user_id':args[0],'guild_id':guild_id})
                 return '✅ 등록 서버의 국적으로 사용자를 등록하거나 닉네임을 갱신했습니다.'
             if command in {'도박확률','도박리턴값','세율','시장분위기'}:
                 key={'도박확률':'gamble_chance','도박리턴값':'gamble_return','세율':'tax_percent','시장분위기':'market_condition'}[command]
@@ -233,7 +231,6 @@ class AdminCommandsManager:
                     result=self.bot.rate_mgr.set_rate(key,value,actor,conn=conn)
                     if not result[0]:
                         raise ValueError(result[1])
-                    self.control._audit(conn,actor,command,{'operation':args[0],'before':current,'after':value})
                     return result[1]
                 if command=='환율수정':
                     return self.currency(conn,actor,*args)
@@ -269,7 +266,6 @@ class AdminCommandsManager:
                 conn.execute("UPDATE market_event_targets SET state='superseded',completed_epoch=? WHERE asset_code=? AND state='active'",(int(time.time()),args[0]))
                 conn.execute('DELETE FROM market_simulation_state WHERE asset_code=?',(args[0],))
                 conn.execute('DELETE FROM market_auto_targets WHERE asset_code=?',(args[0],))
-                self.control._audit(conn,actor,command,{'code':args[0],'operation':args[1],'before':current,'after':value})
                 return f'✅ {args[0]} 가격 {current:,} → {value:,} {row.get("quote_currency","NWX")}'
 
     @staticmethod
@@ -374,7 +370,6 @@ class AdminCommandsManager:
                 row=conn.execute("SELECT contract_id,contract_code FROM option_contracts WHERE writer_id='__treasury__' ORDER BY contract_id DESC LIMIT 1").fetchone()
                 conn.execute('UPDATE option_contracts SET contract_code=? WHERE contract_id=?',(code,row['contract_id']))
                 conn.execute('UPDATE market_orders SET asset_code=? WHERE asset_code=?',(code,row['contract_code']))
-                self.control._audit(conn,actor,'option.create',{'code':code,**fields})
                 return f'✅ 옵션 {code} 생성 완료. '+message.replace(row['contract_code'],code)
         return self.control.entity(actor,category,operation,code,str(name),str(price),str(supply),fields)
 
@@ -422,7 +417,6 @@ class AdminCommandsManager:
                     conn.execute('UPDATE accounts SET balance=?,principal=?,last_payment_epoch=?,last_payment=CURRENT_TIMESTAMP WHERE account_number=?',(value,value,time.time(),identity))
                 else:conn.execute('UPDATE users SET cash=? WHERE user_id=?',(value,identity))
                 unit='NWX';before=current;after=value
-            self.control._audit(conn,actor,'balance.adjust',{'target':identity,'operation':operation,'before':before,'after':after,'currency':unit})
             return f'✅ {identity} 잔고 {before} → {after} {unit}'
 
     def currency(self,conn,actor,a,b,raw_ratio):
@@ -442,7 +436,6 @@ class AdminCommandsManager:
             conn.execute('UPDATE currencies SET reference_rate=NULL,rate_multiplier=? WHERE code=?',(str(target/Fraction(str(price[0]))),b))
         else:
             conn.execute("UPDATE currencies SET reference_rate=?,rate_multiplier='1' WHERE code=?",(str(target),b))
-        self.control._audit(conn,actor,'currency.cross_rate',{'a':a,'b':b,'ratio':str(ratio),'changed_currency':b,'before':str(br),'after':str(target)})
         return f'✅ 1 {a} = {ratio:g} {b} · 환산 기준 저장 완료'
 
     def lottery(self,actor,command,args):
@@ -463,5 +456,4 @@ class AdminCommandsManager:
             bonus=values[6] if len(values)==7 else secrets.choice([n for n in range(1,46) if n not in values])
             override={'winning':sorted(values[:6]),'bonus':bonus}
             conn.execute('UPDATE lottery_rounds SET admin_numbers_json=? WHERE round_id=?',(json.dumps(override),round['round_id']))
-            self.control._audit(conn,actor,'lottery.numbers.override',{'round_id':round['round_id'],**override})
             return f'✅ {round["round_id"]}회 번호 {override["winning"]} · 보너스 {bonus} 지정. 추첨 후 결과에 관리자 지정 표시됩니다.'

@@ -4,7 +4,6 @@ from functions.money import parse_money
 from functions.admin_access import resolve_user_role
 import time
 import math
-import json
 from decimal import Decimal, ROUND_HALF_UP
 
 class AdminManager:
@@ -133,8 +132,6 @@ class AdminManager:
                     "(event_id, asset_code, start_price, target_price, start_epoch, end_epoch, last_tick_epoch, last_price) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (event_id, code, price, target, now, now + duration_seconds, now, price))
-            conn.execute("INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,'event.create',?,?)",
-                         (str(actor_id),json.dumps({'event_id':event_id,'asset_code':asset_code,'duration':duration_seconds,'mode':mode,'goal':value,'percent':percent},ensure_ascii=False),now))
         label = "호재" if event_type == "good" else "악재"
         target_label = f"목표 {target_price:,} NWX" if mode == "price" else f"목표 {'+' if event_type == 'good' else '-'}{value:g}%"
         return True, (f"✅ {asset_code or '시장 전체'}에 {label} 사건을 등록했습니다. "
@@ -183,13 +180,10 @@ class AdminManager:
                     payments.append((row[0],home,output,str(CurrencyManager.rate_fraction(conn,home))))
                 total=units*len(payments)
                 after=CurrencyManager.change(conn,TREASURY_USER_ID,source,-total,allow_deficit=True)
-                batch=uuid.uuid4().hex; now=time.time(); totals={}
+                batch=uuid.uuid4().hex; now=time.time()
                 for user_id,home,output,tr in payments:
                     CurrencyManager.change(conn,user_id,home,output)
                     conn.execute('INSERT INTO basic_income_payments(batch_id,user_id,source_currency,target_currency,source_units,target_units,source_rate,target_rate,recorded_epoch) VALUES (?,?,?,?,?,?,?,?,?)',(batch,user_id,source,home,units,output,str(sr),tr,now))
-                    totals[home]=totals.get(home,0)+output
-                if actor is not None:
-                    conn.execute('INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)',(str(actor),'basic_income',json.dumps({'batch_id':batch,'source_currency':source,'source_units':units,'recipients':len(payments),'totals_units':totals}),now))
             return True,(f'✅ {len(payments)}명에게 1인당 {display_units(units)} {source} 상당액을 국적 화폐로 지급 · 국고 {display_units(total)} {source} 차감 · 잔액 {display_units(after)} {source}'+(' (적자)' if after<0 else ''))
         except (ValueError,OverflowError) as exc:
             return False,f'❌ 기본소득 지급 실패: {exc}'

@@ -94,10 +94,11 @@ class MarketSessionTests(unittest.TestCase):
         self.assertEqual(restored.get_state(now=1400)["status"], "open")
         target = self.db.system.execute_one("SELECT * FROM market_event_targets")
         self.assertEqual((target["start_epoch"], target["end_epoch"]), (1300, 1420))
-        audit = self.db.system.execute("SELECT * FROM admin_audit WHERE action='market_auto_resume'")
-        self.assertEqual(len(audit), 1)
+        before = dict(target)
+        model = dict(self.db.system.execute_one("SELECT * FROM market_simulation_state"))
         restored.process_due(now=1500)
-        self.assertEqual(len(self.db.system.execute("SELECT * FROM admin_audit WHERE action='market_auto_resume'")), 1)
+        self.assertEqual(dict(self.db.system.execute_one("SELECT * FROM market_event_targets")), before)
+        self.assertEqual(dict(self.db.system.execute_one("SELECT * FROM market_simulation_state")), model)
 
     def test_event_created_during_pause_begins_at_reopen(self):
         self.session.control("admin", "pause", now=1000)

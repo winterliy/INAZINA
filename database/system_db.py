@@ -9,9 +9,6 @@ class SystemDB(DBManager):
         self._init_db()
 
     def _init_db(self):
-        self.execute("""CREATE TABLE IF NOT EXISTS admin_audit (
-            audit_id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT NOT NULL,
-            action TEXT NOT NULL, payload TEXT NOT NULL, recorded_epoch REAL NOT NULL)""")
         self.execute(
             '''
             CREATE TABLE IF NOT EXISTS settings (

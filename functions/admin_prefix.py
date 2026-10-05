@@ -205,7 +205,6 @@ class ActionModal(CheckedModal):
             with bot.db.atomic() as conn:
                 bot.admin_control.require(self.owner,conn)
                 conn.execute('UPDATE users SET cash=? WHERE user_id=?',(amount,uid))
-                bot.admin_control._audit(conn,self.owner,'treasury.set',{'amount':amount,'reason':v[1]})
             return f'✅ 국고 현금 {amount:,} NWX'
         elif c=='catalog':
             if v[0]!='기본상품':
@@ -271,9 +270,6 @@ class ActionModal(CheckedModal):
             result = f"{c}: 연 {bot.rate_mgr.get_rate('base_rate' if c=='기준금리' else 'statutory_rate'):g}%"
         else:
             raise ValueError('지원하지 않는 국가 기능입니다.')
-        with bot.db.atomic() as conn:
-            # Passwords are intentionally excluded from the audit log.
-            bot.admin_control._audit(conn,self.owner,'national.'+c,{'identity':uid,'result':str(result)[:1000]})
         if isinstance(result,tuple) and len(result)==2 and isinstance(result[0],bool):
             return result[1]
         if isinstance(result,(dict,list)):
@@ -310,7 +306,6 @@ class ActionModal(CheckedModal):
                 failed+=1
         with bot.db.atomic() as conn:
             bot.admin_control.require(self.owner,conn)
-            bot.admin_control._audit(conn,self.owner,'national.주총',{'code':values[0],'sent':sent,'failed':failed})
         await interaction.followup.send(**admin_response(f'✅ 국가 소집 안내 {sent}명 성공 · {failed}명 실패. 참석 회신은 이 창을 연 관리자에게 전달됩니다.','Inazina · $주총'),ephemeral=True)
 
 class MarketSettingsModal(CheckedModal):
