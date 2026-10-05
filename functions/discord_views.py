@@ -876,6 +876,9 @@ class InfoPanelView(discord.ui.View):
                 extension_text = (f" · 연장 신용 {self._number(row['extension_min_credit_score']):g}점 이상/"
                                   f"{self._number(row['extension_days']):g}일"
                                   if 'extension_days' in row.keys() and self._number(row['extension_days']) > 0 else ' · 만기 연장 불가')
+                extension_rate=self._number(row['extension_interest_rate'])
+                if self._number(row['extension_days'])>0:
+                    extension_text+=f' · 연장이율 {extension_rate:g}%' if extension_rate>0 else ' · 연장이율: 원이율 적용'
                 lines.append(
                     f"• **{row['name']}** (`{row['product_code']}`) — 연 "
                     f"{self._number(row['interest_rate']):g}% · {limit_text} · "

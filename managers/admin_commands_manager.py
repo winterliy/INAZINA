@@ -11,7 +11,7 @@ from managers.fx_manager import SCALE, MAX_UNITS, amount_units, display_units
 COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값',
             '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','환율수정',
             '복권가격설정','금리수정','법정이자수정','증자','정기배당수정','정기배당활성','특별배당실시','합병',
-            '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소','서버설치'}
+            '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소','서버설치','상품이율수정'}
 TYPES = {'company':'stock','주식':'stock','자산':'asset','ETF':'etf','선물':'future','주식선물':'future',
          '회사채':'corporatebond','일반펀드':'fund','펀드':'fund','인덱스펀드':'indexfund',
          '현물원자재':'commodity','원자재':'commodity','국채':'bond','저축':'saving',
@@ -35,7 +35,7 @@ USAGE = {
  '특별배당실시':'[id] [주당 배당금]', '합병':'[존속 A id] [통합 B id]',
  '휴장':'', '개장':'', '장일시정지':'', '장재개':'',
  '서킷브레이커':'[1/2/3단계]', '사이드카':''}
-USAGE.update({'법인잔고수정':'[보통주 법인id] [add/del/modify] [금액]',
+USAGE.update({'상품이율수정':'[대출상품id] [원이율%] [연장이율% · 0은 원이율 적용]', '법인잔고수정':'[보통주 법인id] [add/del/modify] [금액]',
               '법인청산':'[보통주 법인id]', 'ELS취소':'[ELS id]'})
 
 # Core positional arguments vary by product type; extra JSON is always optional.
@@ -60,7 +60,7 @@ CREATE_ARGS = {
 }
 OPTIONAL_ARGS = {kind:('dividend_cycle_seconds','dividend_per_share')
                  for kind in ('stock','preferred','asset','etf','fund','indexfund','commodity')}
-OPTIONAL_ARGS['loan']=('extension_min_credit_score','extension_days')
+OPTIONAL_ARGS['loan']=('extension_min_credit_score','extension_days','extension_interest_rate')
 for _kind,_fields in OPTIONAL_ARGS.items():
     CREATE_ARGS[_kind]+= _fields
 TEXT_ARGS = {'name','industry','exchange_id','underlying_exchange_id','underlying_code','issuer_code',
@@ -158,7 +158,7 @@ class AdminCommandsManager:
                    '복권당첨번호보기':0,'세율':1,'환율수정':3,'복권가격설정':1,
                    '금리수정':2,'법정이자수정':2,'정기배당수정':3,'정기배당활성':2,'특별배당실시':2,'합병':2,
                    '휴장':0,'개장':0,'장일시정지':0,'장재개':0,'서킷브레이커':1,'사이드카':0}
-            count.update({'법인잔고수정':3,'법인청산':1,'ELS취소':1,'서버설치':3})
+            count.update({'법인잔고수정':3,'법인청산':1,'ELS취소':1,'서버설치':3,'상품이율수정':3})
             if (command=='증자' and len(args) not in {3,4}) or (command=='기본소득' and len(args) not in {1,2}) or (command not in {'복권당첨번호변경','증자','기본소득'} and len(args)!=count.get(command,-1)):
                 raise ValueError(f'사용법: ${command} {USAGE.get(command,"")}')
             if command in {'휴장','개장','장일시정지','장재개','서킷브레이커','사이드카'}:
@@ -184,6 +184,12 @@ class AdminCommandsManager:
                 elif command=='법인청산':result=manager.liquidate(actor,args[0])
                 else:result=manager.merge(actor,*args)
                 return self.result_text(result)
+            if command=='상품이율수정':
+                base=self.control._number(args[1],0,100)
+                extension=self.control._number(args[2],0,100)
+                self.control.entity(actor,'loan','edit',args[0],extra={'interest_rate':base,'extension_interest_rate':extension})
+                detail=f'연 {extension:g}%' if extension>0 else '원이율 따라가기'
+                return f'✅ {args[0]} 원이율 연 {base:g}% · 연장이율 {detail}로 수정했습니다.'
             if command=='서버설치':
                 from managers.currency_manager import CurrencyManager
                 if not args[0].isdecimal():raise ValueError('Discord 서버 ID를 입력해주세요.')
@@ -299,7 +305,8 @@ class AdminCommandsManager:
             else:
                 order=CREATE_ARGS[profile]
                 optional=OPTIONAL_ARGS.get(profile,())
-                if len(tokens) not in {len(order),len(order)-len(optional)}:
+                allowed = range(len(order)-len(optional), len(order)+1) if profile=='loan' else {len(order),len(order)-len(optional)}
+                if len(tokens) not in allowed:
                     raise ValueError('사용법: '+creation_usage(kind,'상품수정' if operation=='edit' else '상품생성'))
                 fields={}
                 for key,value in zip(order,tokens):

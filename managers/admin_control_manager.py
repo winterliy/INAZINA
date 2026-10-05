@@ -281,6 +281,8 @@ class AdminControlManager:
                 exchange = merged['underlying_exchange_id']
                 if not conn.execute("SELECT 1 FROM company WHERE exchange_id=? AND status='active' UNION SELECT 1 FROM market_assets WHERE exchange_id=? AND status='active' AND type IN ('stock','주식')",(exchange,exchange)).fetchone():
                     raise ValueError("기초 지수에 사용할 주식 거래소를 확인해주세요.")
+            if 'extension_interest_rate' in values and values['extension_interest_rate'] is not None:
+                values['extension_interest_rate']=self._number(values['extension_interest_rate'],0,100)
             for field in ('interest_rate','annual_rate'):
                 if field in merged:
                     values[field] = self._number(merged[field],0,100)
@@ -337,6 +339,9 @@ class AdminControlManager:
                         raise ValueError('활성 type=forex 시세 자산을 입력해주세요.')
                 elif merged.get('reference_rate') is None:
                     raise ValueError('시세 자산 asset_code 또는 양수 reference_rate를 지정해주세요.')
+            if category=='loan' and operation=='edit' and any(field in values and values[field]!=existing[field] for field in ('interest_rate','extension_interest_rate')):
+                from managers.interest_manager import InterestManager
+                InterestManager(self.db).settle_product_rate_boundary(conn,code,time.time())
             if operation=='create':
                 fields = ','.join(f'"{k}"' for k in values)
                 conn.execute(f'INSERT INTO "{table}" ({fields}) VALUES ({",".join("?" for _ in values)})',tuple(values.values()))

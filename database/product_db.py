@@ -48,6 +48,7 @@ class ProductDB(DBManager):
         for column, declaration in {
             "extension_min_credit_score": "INTEGER NOT NULL DEFAULT 700 CHECK(extension_min_credit_score BETWEEN 0 AND 1000)",
             "extension_days": "INTEGER NOT NULL DEFAULT 0 CHECK(extension_days >= 0)",
+            "extension_interest_rate": "REAL DEFAULT NULL CHECK(extension_interest_rate IS NULL OR extension_interest_rate BETWEEN 0 AND 100)",
         }.items():
             if column not in liability_columns:
                 self.execute(f"ALTER TABLE liability ADD COLUMN {column} {declaration}")
