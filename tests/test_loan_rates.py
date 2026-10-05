@@ -1,6 +1,11 @@
+import asyncio
 import time
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+from database.user_db import TREASURY_USER_ID
+from functions.admin_prefix import ActionModal
+from functions.slash_commands import SlashCommandRegistry
 import test_inazina as fixtures
 from managers.admin_commands_manager import AdminCommandsManager, COMMANDS
 from managers.interest_manager import InterestManager
@@ -99,3 +104,35 @@ class LoanRateTests(unittest.TestCase):
             self.command('상품이율수정', 'LN 0 0')
         InterestManager(self.db).process_user_interests('citizen', now=start+2*86400)
         self.assertEqual(self.balance(), 365050)
+
+    def test_public_and_national_extensions_apply_credit_days_and_rate(self):
+        start = self.loan()
+        now = start + 86400
+        self.db.products.execute("UPDATE liability SET extension_min_credit_score=800 WHERE product_code='LN'")
+        self.db.users.execute("UPDATE users SET credit_score=799 WHERE user_id='citizen'")
+        registry = SlashCommandRegistry(self.bot)
+        registry._prepare = AsyncMock(return_value=('citizen', None, 'user'))
+        registry._reply = AsyncMock()
+        with patch('managers.bank_manager.time.time', return_value=now):
+            asyncio.run(registry.extend_loan(SimpleNamespace(), 'LN'))
+        self.assertIn('800점', registry._reply.call_args.kwargs['embed'].description)
+        self.assertEqual(self.db.accounts.execute_one("SELECT extension_count FROM loans WHERE user_id='citizen'")[0], 0)
+        self.db.users.execute("UPDATE users SET credit_score=800 WHERE user_id='citizen'")
+        with patch('managers.bank_manager.time.time', return_value=now):
+            asyncio.run(registry.extend_loan(SimpleNamespace(), 'LN'))
+        personal = self.db.accounts.execute_one("SELECT * FROM loans WHERE user_id='citizen'")
+        self.assertEqual(personal['maturity_epoch'], start+9*86400)
+        self.assertEqual(personal['extension_count'], 1)
+        self.assertIn('20%', registry._reply.call_args.kwargs['embed'].description)
+        self.assertTrue(self.bot.bank_mgr.apply_loan(TREASURY_USER_ID, 'LN', 365000)[0])
+        self.db.users.execute("UPDATE users SET credit_score=800 WHERE user_id=?", (TREASURY_USER_ID,))
+        self.db.accounts.execute("UPDATE loans SET created_at=datetime(?,'unixepoch'),last_payment_epoch=?,maturity_epoch=?,last_statutory_epoch=? WHERE user_id=?", (start, start, start+2*86400, start, TREASURY_USER_ID))
+        async def national():
+            return ActionModal(self.bot, 'admin', '대출연장').execute(['LN'])
+        with patch('managers.bank_manager.time.time', return_value=now):
+            result = asyncio.run(national())
+        government = self.db.accounts.execute_one('SELECT * FROM loans WHERE user_id=?', (TREASURY_USER_ID,))
+        self.assertIn('20%', result)
+        self.assertEqual(government['maturity_epoch'], start+9*86400)
+        self.assertEqual(government['extension_count'], 1)
+        self.assertEqual(InterestManager.loan_rate(government, self.db.products.get_liability('LN')), 20)
