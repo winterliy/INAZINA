@@ -108,6 +108,16 @@ class DBManager:
             f'UPDATE {quoted_table} SET {assignments} WHERE "{primary_key}" = NEW."{primary_key}"; END'
         )
 
+    def initialize_dividend_activation(self, table, primary_key):
+        """Browser edits to the dividend switch discard the old payment schedule."""
+        self.execute(
+            f'CREATE TRIGGER IF NOT EXISTS "trg_{table}_dividend_activation" '
+            f'AFTER UPDATE OF dividend_is_active ON "{table}" '
+            f'WHEN NEW.dividend_is_active <> OLD.dividend_is_active BEGIN '
+            f'UPDATE "{table}" SET dividend_next_epoch=NULL '
+            f'WHERE "{primary_key}"=NEW."{primary_key}"; END'
+        )
+
     @staticmethod
     def code_locations(conn, code):
         """Return every table using a symbol/product/account number as its code."""

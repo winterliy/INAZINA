@@ -84,7 +84,7 @@ class UserManager:
                 created = datetime.strptime(str(asset["created_at"]), "%Y-%m-%d %H:%M:%S").replace(
                     tzinfo=timezone.utc
                 ).timestamp()
-                if asset["status"] == "active" and days > 0 and datetime.now(timezone.utc).timestamp() >= created + days * 86400:
+                if asset['type']!='els' and asset["status"] == "active" and days > 0 and datetime.now(timezone.utc).timestamp() >= created + days * 86400:
                     asset["status"] = "matured"
             except (TypeError, ValueError, OverflowError):
                 pass
@@ -193,6 +193,10 @@ class UserManager:
     def buy_asset(self, user_id, asset_code, quantity):
         if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
             return False, "❌ 매수 수량은 0보다 큰 정수로 입력해주세요."
+        product=self.db.products.get_investment(asset_code)
+        if product and product['product_type']=='els':
+            from managers.els_manager import ELSManager
+            return ELSManager(self.db,self).subscribe(user_id,asset_code,quantity)
         interest_error = self._settle_user_interest(user_id)
         if interest_error:
             return False, interest_error
@@ -267,6 +271,9 @@ class UserManager:
     def sell_asset(self, user_id, asset_code, quantity):
         if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
             return False, "❌ 매도 수량은 0보다 큰 정수로 입력해주세요."
+        product=self.db.products.get_investment(asset_code)
+        if product and product['product_type']=='els':
+            return False,'❌ ELS는 중도 매도·환매가 불가능하며 계약 조건에 따라 자동 상환됩니다.'
         interest_error = self._settle_user_interest(user_id)
         if interest_error:
             return False, interest_error
@@ -666,6 +673,8 @@ class UserManager:
         for position in self.db.assets.get_user_portfolio(user_id):
             code, quantity = position["asset_code"], int(position["quantity"])
             asset = wallet_asset(code)
+            if asset and asset.get('type')=='els':
+                continue
             price = int(round(asset["price"] or 0)) if asset else 0
             currency = asset.get('quote_currency','NWX') if asset else 'NWX'
             rate = fx_rates.get(currency,1)
@@ -841,9 +850,19 @@ class UserManager:
                         for r in conn.execute("SELECT a.*,p.name AS product_name,p.annual_rate FROM fx_accounts a "
                             "LEFT JOIN fx_products p ON p.product_code=a.product_code WHERE a.user_id=? ORDER BY a.currency_code",(str(user_id),))]
             fx_total = sum(r['value_nwx'] for r in fx_accounts)
+        els_positions=[]
+        if getattr(self.db,'els',None) is not None:
+            from managers.els_manager import ELSManager
+            els_positions=ELSManager(self.db,self).get_user_positions(user_id)
+        els_total=sum(int(item.get('principal',0)) for item in els_positions)
+        preferred_claims=[]
+        if getattr(self.db,'corporate',None) is not None:
+            preferred_claims=[{**dict(row),'remaining_amount':int(row['gross_amount'])-int(row['paid_amount'])}
+                for row in self.db.corporate.execute("SELECT * FROM preferred_dividend_claims WHERE user_id=? AND status IN ('unpaid','partial') ORDER BY due_epoch,claim_id",(str(user_id),))]
+        preferred_claim_total=sum(int(row['remaining_amount'])*fx_rates.get(row['quote_currency'],1) for row in preferred_claims)
         grand_total = (
             cash + total_account_balance + total_stock_value + order_reserved_total
-            + bond_total + option_collateral_cash - option_short_liability + fx_total
+            + bond_total + option_collateral_cash - option_short_liability + fx_total+els_total+preferred_claim_total
         )
 
         return {
@@ -852,6 +871,10 @@ class UserManager:
             "fx_accounts":fx_accounts,
             "written_options":written_options,
             "fx_total":fx_total,
+            "els_positions":els_positions,
+            "els_total":els_total,
+            "preferred_dividend_claims":preferred_claims,
+            "preferred_claim_total":preferred_claim_total,
             "cash": cash,
             "accounts": account_details,
             "account_total": total_account_balance,

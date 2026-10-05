@@ -53,8 +53,35 @@ def admin_response(text, title='Inazina · 관리자'):
 
 
 def creation_argument_lines():
-    from managers.admin_commands_manager import CREATE_ARGS
-    return '\n'.join(f"**`{'company' if kind=='stock' else kind}`** → `{' '.join(fields)}`" for kind,fields in CREATE_ARGS.items())
+    from managers.admin_commands_manager import CREATE_ARGS, OPTIONAL_ARGS
+    labels = {
+        'name':'이름', 'industry':'업종', 'capital':'자본금', 'total_shares':'발행주식수',
+        'share_price':'주가', 'exchange_id':'거래소ID', 'type':'자산유형', 'price':'가격',
+        'total_supply':'발행수량', 'interest_rate':'연이율%', 'deposit_amount':'최소예치금',
+        'maturity_days':'만기일수', 'interest_cycle':'이자주기(초)', 'compound_type':'단리0/복리1',
+        'issuer':'발행기관', 'loan_limit':'대출한도', 'min_credit_score':'최소신용점수',
+        'unit_price':'단위가격', 'underlying_exchange_id':'기초거래소ID',
+        'leverage_multiplier':'배율', 'rebalance_cycle_seconds':'재조정주기(초)',
+        'underlying_code':'기초종목ID', 'contract_size':'계약당수량',
+        'initial_margin':'최초증거금비율', 'maintenance_margin':'유지증거금비율',
+        'issuer_code':'발행회사ID', 'face_value':'액면가', 'annual_rate':'연이율%',
+        'components':'구성종목:비중', 'market_price':'시장가격', 'option_type':'call/put',
+        'strike_price':'행사가', 'quantity':'계약수', 'limit_price':'매도지정가',
+        'volatility_percent':'변동성%', 'asset_code':'환율종목ID', 'nationality':'국적',
+        'currency_code':'통화코드', 'parent_company_code':'보통주회사ID',
+        'dividend_cycle_seconds':'배당주기', 'dividend_per_share':'주·좌당금액/비율%',
+        'extension_min_credit_score':'연장최소신용', 'extension_days':'연장일수',
+        'underlyings':'기초코드1,코드2,코드3', 'annual_coupon':'연쿠폰%',
+        'observation_days':'평가일수목록', 'redemption_levels':'조기상환기준%목록',
+        'maturity_level':'만기상환기준%', 'knock_in_level':'낙인기준%',
+        'subscription_days':'모집일수',
+    }
+    return '\n'.join(
+        f"**`{'company' if kind=='stock' else kind}`** → `"
+        + ' → '.join(('발행총액' if kind == 'bond' and field == 'total_supply' else labels.get(field, field))
+                     + ('(선택)' if field in OPTIONAL_ARGS.get(kind, ()) else '') for field in fields)
+        + '`' for kind, fields in CREATE_ARGS.items()
+    )
 
 
 def admin_help_embed(national_commands):
@@ -62,18 +89,19 @@ def admin_help_embed(national_commands):
     embed=discord.Embed(title='🛠️ Inazina · 관리자 도움말',
         description='**관리자 설정과 국가 명의 기능을 한곳에서 확인하세요.**\n명령어의 `[ ]` 부분에 값을 입력합니다.',color=discord.Color.blue())
     groups=(('📦 상품 관리',('상품생성','상품수정','상품가격수정','상품삭제')),
-            ('🏢 기업 · 배당',('증자','정기배당수정','특별배당실시','합병')),
+            ('🏢 기업 · 배당',('증자','정기배당수정','정기배당활성','특별배당실시','합병','법인잔고수정','법인청산')),
+            ('🧾 ELS 관리',('ELS취소',)),
             ('👥 시민 · 잔고',('등록','기본소득','잔고수정')),
             ('📈 시장 · 환율',('시장분위기','상품분위기','환율수정','휴장','개장','장일시정지','장재개','서킷브레이커','사이드카')),
             ('🎲 도박 · 세금',('도박확률','도박리턴값','세율')),
             ('🏦 금리 · 법정이자',('금리수정','법정이자수정')),
             ('🎟️ 복권 관리',('복권가격설정','복권당첨번호보기','복권당첨번호변경')))
     for title,commands in groups:
-        embed.add_field(name=title,value='\n'.join(f'**`${command}`**\n{USAGE[command] or "인자 없이 실행"}' for command in commands),inline=False)
+        embed.add_field(name=title,value='\n'.join(f'**`${command}`**\n{USAGE[command] or "인자 없이 실행"}' for command in commands if command in USAGE) or '상품생성에서 els 유형을 사용합니다.',inline=False)
     embed.add_field(name='📰 사건 설정',value='**`$사건`** → DM 버튼 → 모달\n상품코드 · 호재/악재 · 기간 · 변동률 · 선택 목표가격',inline=False)
     embed.add_field(name='🏛️ 국가 명의 일반 기능',value=' · '.join(f'`$'+command+'`' for command in sorted(national_commands))+'\n**국고의 잔액·보유자산·담보로 실행합니다.**',inline=False)
     embed.add_field(name='💡 입력 예시',value='```\n$상품가격수정 INZST001 add 100\n$잔고수정 사용자ID modify 1000000\n$환율수정 USD EUR 0.9\n$금리수정 modify 3\n```',inline=False)
-    embed.description+='\n\n**🧩 상품생성 인자 순서**\n'+creation_argument_lines()
+    embed.description+='\n\n상품별 인자 순서는 `$도움말`의 **상품 관리**, 우선주·ELS 규칙은 **우선주 · ELS** 페이지에서 확인하세요.'
     embed.add_field(name='📦 상품생성 예시',value='```\n$상품생성 SV saving "새 적금" 3 1000 30 86400 1 Inazina\n$상품생성 ST company "새 회사" 게임 1000000 10000 100 INZ\n```\n**추가 JSON은 마지막 선택 인자**입니다. 공백이 있는 이름은 따옴표로 묶으세요.',inline=False)
     embed.add_field(name='🔒 사용 안내',value='**DB role=admin 전용** · 결과는 개인 DM\n응답 후 입력 채팅 삭제 · DM에서 추가 인증 입력 없음\n국가 기능은 인자 없이 실행하면 입력 창을 엽니다.',inline=False)
     embed.set_footer(text='Inazina · $도움말 / $help')

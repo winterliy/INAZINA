@@ -130,13 +130,14 @@ class _Canvas:
 def render_price_chart(
     points, period_seconds, current_price=None, width=960, height=500,
     integer_prices=False, volumes=None, upper_indicators=None, lower_indicators=None,
-    anchor_epoch=None, end_epoch=None, trades=None, candle_seconds=None,
+    anchor_epoch=None, end_epoch=None, trades=None, candle_seconds=None, horizontal_levels=None,
 ):
     """Render OHLC candles, optional overlays and independently scaled lower panels."""
     from functions.indicator_chart import render_chart
     return render_chart(
         points, period_seconds, current_price, width, height, integer_prices, volumes,
         upper_indicators, lower_indicators, anchor_epoch, end_epoch, trades, candle_seconds,
+        horizontal_levels,
     )
 
 

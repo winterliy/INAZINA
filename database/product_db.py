@@ -80,11 +80,20 @@ class ProductDB(DBManager):
             "maintenance_margin": "REAL NOT NULL DEFAULT 0.15", "nav_anchor": "REAL NOT NULL DEFAULT 0",
             "dividend_cycle_seconds": "INTEGER NOT NULL DEFAULT 0 CHECK(dividend_cycle_seconds >= 0)",
             "dividend_per_share": "INTEGER NOT NULL DEFAULT 0 CHECK(dividend_per_share >= 0)",
+            "dividend_mode": "TEXT NOT NULL DEFAULT 'fixed' CHECK(dividend_mode IN ('fixed','percent'))",
+            "dividend_percent": "REAL NOT NULL DEFAULT 0 CHECK(dividend_percent >= 0 AND dividend_percent <= 100)",
+            "dividend_is_active": "INTEGER NOT NULL DEFAULT 1 CHECK(dividend_is_active IN (0,1))",
             "dividend_next_epoch": "INTEGER",
+            "liquidity": "REAL DEFAULT NULL CHECK(liquidity IS NULL OR liquidity > 0)",
+            "trend_sensitivity": "REAL DEFAULT NULL CHECK(trend_sensitivity IS NULL OR trend_sensitivity >= 0)",
+            "sector_sensitivity": "REAL DEFAULT NULL CHECK(sector_sensitivity IS NULL OR sector_sensitivity >= 0)",
+            "jump_intensity": "REAL DEFAULT NULL CHECK(jump_intensity IS NULL OR jump_intensity >= 0)",
+            "mean_reversion": "REAL DEFAULT NULL CHECK(mean_reversion IS NULL OR mean_reversion >= 0)",
         }
         for column, declaration in extra_columns.items():
             if column not in investment_columns:
                 self.execute(f"ALTER TABLE investment ADD COLUMN {column} {declaration}")
+        self.initialize_dividend_activation("investment", "product_code")
         self.execute("""CREATE TABLE IF NOT EXISTS fund_components (
             product_code TEXT NOT NULL, asset_code TEXT NOT NULL,
             weight REAL NOT NULL CHECK(weight > 0), base_price REAL NOT NULL CHECK(base_price > 0),

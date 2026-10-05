@@ -319,8 +319,10 @@ class SlashCommandRegistry:
         embed.add_field(name="💵 현금", value=f"```{info['cash']:,.0f} NWX```", inline=True)
         embed.add_field(name="🏦 통장 잔액", value=f"```{info['account_total']:,.0f} NWX```", inline=True)
         embed.add_field(name="🌐 외환통장 평가액",value=f"```{info.get('fx_total',0):,} NWX```",inline=True)
-        investment_total = int(info["stock_total"]) + int(info["bond_total"])
+        investment_total = int(info["stock_total"]) + int(info["bond_total"]) + int(info.get('els_total', 0))
         embed.add_field(name="📈 투자자산 합계", value=f"```{investment_total:,} NWX```", inline=True)
+        embed.add_field(name='🧾 ELS 인수 원금', value=f"```{int(info.get('els_total', 0)):,} NWX```\n투자자산 합계에 포함 · 인수액 기준", inline=True)
+        embed.add_field(name='💰 미지급 배당 명목액', value=f"```{int(info.get('preferred_claim_total', 0)):,} NWX```\n세전 확정 채권 · 지급 시 세금 적용", inline=True)
         embed.add_field(
             name="🔒 매수 주문 예치금",
             value=f"```{info['order_reserved_total']:,.0f} NWX```",
@@ -344,6 +346,8 @@ class SlashCommandRegistry:
         except (TypeError, ValueError, OverflowError):
             credit_score = 0
         embed.add_field(name="💳 신용 점수", value=f"```{credit_score:,}점```", inline=True)
+        # Freeze the complete financial summary before adding category details.
+        summary = discord.Embed.from_dict(embed.to_dict())
         account_lines = [
             f"• {item['product_name']} ({item['number']}): {item['balance']:,.0f} NWX"
             for item in info["accounts"]
@@ -401,15 +405,16 @@ class SlashCommandRegistry:
             f"담보 {item['collateral_quantity']:,}주 / {item['collateral_cash']:,} NWX · 만기 <t:{item['expiration_epoch']}:D>"
             for item in info.get('written_options',[])]
         embed.add_field(name='📄 작성 옵션',value='\n'.join(written_lines)[:1024] or '작성 중인 옵션이 없습니다.',inline=False)
-        from functions.wallet_views import WalletCategoryView
-        summary=discord.Embed.from_dict(embed.to_dict())
-        while len(summary.fields)>11:
-            summary.remove_field(len(summary.fields)-1)
+        from functions.wallet_views import WalletCategoryView, els_position_lines, preferred_claim_lines
         sections={'accounts':account_lines[:len(info['accounts'])],
                   'fx_accounts':account_lines[len(info['accounts']):],
-                  'treasury_bond':bond_lines,'written':written_lines}
+                  'treasury_bond':bond_lines,'written':written_lines,
+                  'els':els_position_lines(info.get('els_positions', [])),
+                  'preferred_claims':preferred_claim_lines(info.get('preferred_dividend_claims', []))}
         for item,line in zip(info['stocks'],position_lines):
             kind=str(item.get('type','')).casefold()
+            if kind == 'els':
+                continue
             category=('collateral' if item.get('is_collateral') else 'stocks' if kind in {'stock','주식'} else
                       kind if kind in dict(WalletCategoryView.CATEGORIES) else 'other')
             sections.setdefault(category,[]).append(line)
@@ -926,8 +931,8 @@ class SlashCommandRegistry:
         if not 자산:
             return await self._reply(interaction,content='❌ 종목 코드를 입력해주세요. `/검색`에서 코드를 확인할 수 있습니다.')
 
-        view = PriceMovementView(self.bot, user_id, 자산)
         try:
+            view = PriceMovementView(self.bot, user_id, 자산)
             embed, png = await asyncio.to_thread(view.render)
         except Exception as exc:
             return await self._reply(

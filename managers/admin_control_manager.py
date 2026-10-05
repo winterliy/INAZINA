@@ -17,6 +17,7 @@ ENTITIES = {
     'fund': ('investment','product_code','unit_price','total_supply'),
     'indexfund': ('investment','product_code','unit_price','total_supply'),
     'commodity': ('investment','product_code','unit_price','total_supply'),
+    'els': ('investment','product_code','unit_price','total_supply'),
     'bond': ('treasury_bond_products','product_code','market_price','total_supply'),
     'saving': ('saving','product_code',None,None),
     'loan': ('liability','product_code',None,None),
@@ -25,7 +26,7 @@ ENTITIES = {
     'fxproduct': ('fx_products','product_code',None,None),
 }
 KINDS = {'etf':'etf','future':'stock_future','corporatebond':'corporate_bond',
-         'fund':'mutual_fund','indexfund':'index_fund','commodity':'commodity_spot'}
+         'fund':'mutual_fund','indexfund':'index_fund','commodity':'commodity_spot','els':'els'}
 EXAMPLES = {
     'stock': {'industry':'소프트웨어','exchange_id':'INZ','capital':1000000},
     'asset': {'exchange_id':'INZ','type':'stock'},
@@ -41,6 +42,9 @@ EXAMPLES = {
     'option': {'underlying_code':'INZST001','option_type':'call','strike_price':1120,'maturity_days':30,'quantity':1,'limit_price':100,'volatility_percent':60},
     'currency': {'asset_code':'FX_NEW','nationality':'새 국가'},
     'fxproduct': {'currency_code':'USD','annual_rate':1},
+    'els': {'face_value':1000,'annual_coupon':12,'maturity_days':180,'underlyings':['INZST001'],
+            'observation_days':[30,60,90],'redemption_levels':[90,85,80],
+            'maturity_level':75,'knock_in_level':60,'subscription_days':1,'exchange_id':'INZ'},
 }
 
 class AdminControlManager:
@@ -84,6 +88,19 @@ class AdminControlManager:
         if (not code and not (category=='option' and operation=='create')) or len(code)>80:
             raise ValueError("코드는 1~80자로 입력해주세요.")
         extra = dict(extra or {})
+        if category=='els':
+            from managers.els_manager import ELSManager
+            manager=ELSManager(self.db,self.bot.user_mgr)
+            if operation=='create':
+                if name:extra['name']=name
+                if price:extra['face_value']=price
+                if supply:extra['total_supply']=supply
+                return manager.create(actor,code,extra,conn=conn)
+            if operation=='delete':
+                result=manager.cancel(actor,code,conn=conn)
+                if not result[0]:raise ValueError(result[1])
+                return result[1]
+            raise ValueError('ELS 발행조건은 변경할 수 없습니다. 모집 중 취소 후 새 상품을 생성해주세요.')
         if category=='option' and operation=='create':
             keys = {'underlying_code','option_type','strike_price','maturity_days','quantity','limit_price','volatility_percent'}
             if set(extra)-keys:
@@ -104,6 +121,16 @@ class AdminControlManager:
                 if not existing:
                     raise ValueError("종목 또는 상품을 찾을 수 없습니다.")
                 if operation=='delete':
+                    from managers.els_manager import ELSManager
+                    ELSManager.ensure_unreferenced(conn,code)
+                    if category=='stock':
+                        issuer=existing['parent_company_code'] or code
+                        unpaid=conn.execute("SELECT 1 FROM preferred_dividend_claims WHERE status IN ('unpaid','partial') AND (issuer_code=? OR asset_code=?) LIMIT 1",(code,code)).fetchone()
+                        cash=conn.execute('SELECT 1 FROM issuer_cash_accounts WHERE company_code=? AND (balance>0 OR locked_amount>0)',(code,)).fetchone()
+                        linked=conn.execute("SELECT 1 FROM company WHERE parent_company_code=? AND status='active' LIMIT 1",(code,)).fetchone()
+                        preference=existing['share_class']=='preferred' and existing['liquidation_value_per_share']>0 and conn.execute('SELECT 1 FROM user_assets WHERE asset_code=? AND quantity>0 LIMIT 1',(code,)).fetchone()
+                        if unpaid or cash or linked or preference:
+                            raise ValueError(f'법인 현금·배당채권·우선주 권리가 남아 있습니다. $법인청산 {issuer}로 정산해주세요.')
                     reservations = conn.execute("SELECT 1 FROM market_orders WHERE asset_code=? AND status IN ('open','partial') LIMIT 1",(code,)).fetchone()
                     claims = conn.execute("SELECT 1 FROM option_contracts WHERE (contract_code=? OR underlying_code=?) AND status='active' LIMIT 1",(code,code)).fetchone()
                     if reservations or claims:
@@ -173,6 +200,10 @@ class AdminControlManager:
                     values['nav_anchor'] = values['unit_price']
             merged = {**(dict(existing) if existing else {}),**values}
             if category=='stock':
+                if existing and values.get('exchange_id',existing['exchange_id'])!=existing['exchange_id']:
+                    from managers.els_manager import ELSManager
+                    if ELSManager.index_removal_blocked(conn,[code]):
+                        raise ValueError('미상환 ELS의 기초지수를 구성하는 마지막 주식은 거래소를 변경할 수 없습니다.')
                 share_class=merged.get('share_class','common')
                 if share_class not in {'common','preferred'}:
                     raise ValueError('share_class는 common 또는 preferred입니다.')
@@ -189,16 +220,43 @@ class AdminControlManager:
                         raise ValueError('우선주와 소속 법인의 결제 통화가 같아야 합니다.')
                     if operation=='create' and 'industry' not in extra:
                         values['industry']=parent['industry']
+                    if operation=='create':
+                        values.setdefault('dividend_priority',1)
+                        values.setdefault('liquidation_value_per_share',values.get('share_price',merged.get('share_price',0)))
+                if merged.get('dividend_funding','treasury') not in {'treasury','issuer'}:
+                    raise ValueError('dividend_funding은 treasury(국고) 또는 issuer(법인현금)입니다.')
+                if merged.get('dividend_funding')=='issuer' and merged.get('quote_currency','NWX')!='NWX':
+                    raise ValueError('법인현금 재원 배당은 NWX 결제 회사만 지원합니다.')
+                for field,maximum in (('dividend_priority',1000),('cumulative_dividend',1),('liquidation_value_per_share',2**53-1)):
+                    if field in values:values[field]=self._number(values[field],0,maximum,integer=True)
+                if share_class=='common' and (int(values.get('dividend_priority',merged.get('dividend_priority',0))) or int(values.get('cumulative_dividend',merged.get('cumulative_dividend',0)))):
+                    raise ValueError('배당 우선순위·누적배당은 우선주에만 설정할 수 있습니다.')
             for field,maximum in (('dividend_cycle_seconds',10*365*86400),('dividend_per_share',2**53-1),
-                                  ('extension_min_credit_score',1000),('extension_days',3650)):
+                                  ('dividend_is_active',1),('extension_min_credit_score',1000),('extension_days',3650)):
                 if field in values:
                     values[field]=self._number(values[field],0,maximum,integer=True)
             if 'dividend_next_epoch' in extra:
                 raise ValueError('다음 배당 시각은 배당 주기로 자동 관리합니다.')
-            if 'dividend_cycle_seconds' in values or 'dividend_per_share' in values:
+            if any(field in values for field in ('dividend_cycle_seconds','dividend_per_share','dividend_is_active','dividend_mode','dividend_percent')):
+                from managers.corporate_actions_manager import CorporateActionsManager
+                dividend_type = 'stock' if category == 'stock' else KINDS.get(category, merged.get('type'))
+                if dividend_type not in CorporateActionsManager.DIVIDEND_TYPES:
+                    raise ValueError('정기배당은 주식·우선주·ETF·펀드·현물 상품만 지원합니다.')
                 cycle=int(values.get('dividend_cycle_seconds',merged.get('dividend_cycle_seconds',0)))
                 amount=int(values.get('dividend_per_share',merged.get('dividend_per_share',0)))
-                values['dividend_next_epoch']=int(time.time())+cycle if cycle>0 and amount>0 else None
+                mode=values.get('dividend_mode')
+                if mode is None:
+                    mode='percent' if 'dividend_percent' in values else 'fixed' if 'dividend_per_share' in values else merged.get('dividend_mode','fixed')
+                if mode not in {'fixed','percent'}:
+                    raise ValueError('dividend_mode는 fixed(고정금액) 또는 percent(가격비율)입니다.')
+                percent=self._number(values.get('dividend_percent',merged.get('dividend_percent',0)),0,100)
+                if (mode=='fixed' and 'dividend_percent' in values and percent>0) or (mode=='percent' and 'dividend_per_share' in values and amount>0):
+                    raise ValueError('주당 고정금액과 비율배당 중 한 방식만 설정해주세요.')
+                values.update(dividend_mode=mode,dividend_per_share=amount if mode=='fixed' else 0,
+                              dividend_percent=percent if mode=='percent' else 0)
+                active=int(values.get('dividend_is_active',merged.get('dividend_is_active',1)))
+                dividend_value=amount if mode=='fixed' else percent
+                values['dividend_next_epoch']=int(time.time())+cycle if active and cycle>0 and dividend_value>0 else None
             for field in (price_key,supply_key):
                 if field and field in values and values[field] is not None:
                     values[field]=self._number(values[field],1,integer=True)
@@ -217,9 +275,13 @@ class AdminControlManager:
             for field in ('face_value','loan_limit','capital','contract_size','deposit_amount','maturity_days','repayment_cycle_seconds','repayment_amount'):
                 if field in merged and merged[field] is not None:
                     values[field] = self._number(merged[field],0,integer=True)
-            for field in ('market_volatility','implied_volatility','initial_margin','maintenance_margin'):
+            for field in ('market_volatility','implied_volatility','initial_margin','maintenance_margin',
+                          'liquidity','trend_sensitivity','sector_sensitivity','jump_intensity','mean_reversion'):
                 if field in values and values[field] is not None:
-                    values[field] = self._number(values[field],0,5 if field=='implied_volatility' else 1)
+                    high = 5 if field == 'implied_volatility' else 10 if field in {
+                        'liquidity','trend_sensitivity','sector_sensitivity','jump_intensity','mean_reversion'
+                    } else 1
+                    values[field] = self._number(values[field],0,high)
             if 'interest_cycle' in merged:
                 values['interest_cycle'] = self._number(merged['interest_cycle'],.001,365*86400)
             if 'is_fixed' in values:
@@ -268,6 +330,12 @@ class AdminControlManager:
             elif values:
                 assignments = ','.join(f'"{k}"=?' for k in values)
                 conn.execute(f'UPDATE "{table}" SET {assignments} WHERE "{key}"=?',(*values.values(),code))
+                if 'dividend_is_active' in values and values['dividend_is_active'] != existing['dividend_is_active']:
+                    # The trigger also protects direct DB edits; restore the explicit admin schedule.
+                    conn.execute(f'UPDATE "{table}" SET dividend_next_epoch=? WHERE "{key}"=?', (values['dividend_next_epoch'],code))
+            if category=='stock' and values.get('dividend_funding',merged.get('dividend_funding'))=='issuer':
+                owner=values.get('parent_company_code',merged.get('parent_company_code')) if share_class=='preferred' else code
+                conn.execute('INSERT OR IGNORE INTO issuer_cash_accounts(company_code) VALUES (?)',(owner,))
             if category=='currency' and extra.get('nationality'):
                 conn.execute("INSERT INTO country_currencies VALUES (?,?) ON CONFLICT(nationality) DO UPDATE SET currency_code=excluded.currency_code",(str(extra['nationality']),code))
             if category=='fund' and (operation=='create' or 'components' in extra):

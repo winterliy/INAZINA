@@ -1,15 +1,20 @@
 # 현재 테스트 전체 목록
 
-- 전체: **265개**
-- 테스트 파일: **13개**
-- 전체 실행: `PYTHONPATH=tests .venv/bin/python -m unittest discover -s tests -q`
+- 전체: **298개**
+- 테스트 파일: **17개**
+- 평소에는 변경된 기능의 테스트 모듈·메서드만 실행한다.
+- 우선주·ELS 관련 실행: `PYTHONPATH=tests .venv/bin/python -m unittest tests.test_preferred tests.test_els tests.test_structured_integration tests.test_structured_ui -q`
+- 전체 실행(요청 시): `PYTHONPATH=tests .venv/bin/python -m unittest discover -s tests -q`
 
-## `tests/test_admin_expansion.py` (6개)
+## `tests/test_admin_expansion.py` (9개)
 
 ### `AdminExpansionTests`
 
 - `test_product_full_modification_and_price_name`
 - `test_preferred_creation_and_loan_extension_fields`
+- `test_dividend_creation_and_scheduled_payment_once`
+- `test_dividend_switch_preserves_terms_and_restarts_without_arrears`
+- `test_percent_dividend_uses_payment_price_and_one_mode`
 - `test_extension_credit_and_statutory_interest_respects_new_maturity`
 - `test_private_wallet_main_and_removed_command`
 - `test_prefix_wallet_reuses_pending_dm_instead_of_sending_twice`
@@ -116,6 +121,24 @@
 - `test_hardcoded_bootstrap_user_is_always_admin_and_database_role_is_live`
 - `test_company_largest_shareholder_is_refreshed_on_trade`
 - `test_matured_investment_cannot_be_bought_but_can_be_sold`
+
+## `tests/test_els.py` (13개)
+
+### `ELSTests`
+
+- `test_early_redemption_threshold_tax_conservation_and_idempotency`
+- `test_knock_in_persists_through_restart_and_loses_only_principal`
+- `test_no_knock_in_and_recovered_knock_in_both_pay_maturity_coupon`
+- `test_cancel_refunds_principal_and_all_coupon_reserves`
+- `test_coupon_insufficiency_and_unauthorized_actions_roll_back`
+- `test_missing_underlying_waits_and_evaluates_only_latest_round`
+- `test_failed_settlement_keeps_snapshot_and_retries_without_duplicate_pay`
+- `test_index_basis_company_issuer_locked_cash_and_reference_guard`
+- `test_treasury_self_subscription_empty_early_rounds_and_closed_account_fallback`
+- `test_halt_blocks_subscription_issuance_and_observation`
+- `test_basis_and_terms_are_immutable_after_subscription_and_valid_partial_tick_retains_knock_in`
+- `test_one_recipient_limit_does_not_block_other_contracts`
+- `test_last_valid_index_constituent_is_protected_for_single_and_group_removal`
 
 ## `tests/test_graceful_shutdown.py` (1개)
 
@@ -283,6 +306,20 @@
 - `test_each_chart_reader_removes_previous_day_on_restart_and_keeps_today_samples`
 - `test_tick_and_restart_read_rebalance_etf_using_old_boundaries_before_cleanup`
 
+## `tests/test_preferred.py` (9개)
+
+### `PreferredTests`
+
+- `test_partial_cumulative_dividend_preserves_record_date_owner_and_is_idempotent`
+- `test_noncumulative_shortfall_stays_due_and_blocks_common`
+- `test_special_common_dividend_respects_due_preference_and_duplicate_key`
+- `test_switch_off_does_not_erase_fixed_receivable`
+- `test_cash_transfer_reauthorizes_and_preserves_locked_reserve`
+- `test_liquidation_waterfall_debt_arrears_preference_then_common`
+- `test_liquidation_insufficient_equal_rank_debt_is_proportional`
+- `test_liquidation_refunds_orders_and_rolls_back_failed_payment`
+- `test_liquidation_blocks_active_derivative_and_reserved_issuer_cash`
+
 ## `tests/test_rate_graphs.py` (13개)
 
 ### `RateGraphTests`
@@ -301,7 +338,7 @@
 - `test_direct_graph_command_accepts_rate_name_and_generates_attachment`
 - `test_graph_command_rejects_blank_code_without_asset_picker`
 
-## `tests/test_stochastic_market.py` (24개)
+## `tests/test_stochastic_market.py` (25개)
 
 ### `GarchModelTests`
 
@@ -318,6 +355,7 @@
 
 - `test_market_factor_is_shared_across_all_independent_price_sources`
 - `test_independent_asset_shocks_differ_without_market_loading`
+- `test_price_profile_liquidity_changes_realized_chart_texture`
 - `test_fractional_prices_accumulate_and_duplicate_restart_does_not_resample`
 - `test_configured_step_interval_does_not_multiply_returns_on_fast_calls`
 - `test_offline_gap_advances_one_step_instead_of_amplifying_elapsed_time`
@@ -332,6 +370,23 @@
 - `test_pause_retains_variance_memory_without_moving_prices`
 - `test_event_waits_for_its_next_simulation_step_before_applying_one_jump`
 - `test_busy_event_price_rolls_back_goal_noise_jump_marker_and_model_state`
+
+## `tests/test_structured_integration.py` (3개)
+
+### `StructuredIntegrationTests`
+
+- `test_preferred_primary_proceeds_claim_wallet_and_deletion_protection`
+- `test_els_command_subscription_wallet_and_halted_market_observation`
+- `test_referenced_index_survives_company_deletion_liquidation_and_merge`
+
+## `tests/test_structured_ui.py` (4개)
+
+### `StructuredProductInterfaceTests`
+
+- `test_graph_route_selects_underlying_and_uses_frozen_contract_barriers`
+- `test_subscription_chart_defers_barriers_and_search_exposes_contract_terms`
+- `test_wallet_contract_and_dividend_claim_categories_keep_main_private`
+- `test_all_admin_help_pages_remain_within_discord_limits`
 
 ## `tests/test_ui_revision.py` (8개)
 

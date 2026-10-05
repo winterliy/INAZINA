@@ -50,6 +50,146 @@ class AdminExpansionTests(unittest.TestCase):
         self.assertAlmostEqual(after['maturity_epoch']-loan['maturity_epoch'],7*86400,delta=1)
         self.assertEqual(after['extension_count'],1)
 
+    def test_dividend_creation_and_scheduled_payment_once(self):
+        from managers.corporate_actions_manager import CorporateActionsManager
+        listings = (
+            ('ST', 'company 회사 게임 1000000 10000 100 INZ', 'company', 'company_code'),
+            ('PR', 'preferred 우선주 ST 100000 1000 90 INZ', 'company', 'company_code'),
+            ('AS', 'asset 현물 commodity_spot 100 1000 COM', 'market_assets', 'code'),
+            ('ET', 'etf ETF 100 1000 INZ 1 86400 INZ', 'investment', 'product_code'),
+            ('FD', 'fund 펀드 100 1000 ST:1 INZ', 'investment', 'product_code'),
+            ('IF', 'indexfund 인덱스펀드 100 1000 INZ INZ', 'investment', 'product_code'),
+            ('CM', 'commodity 원자재 100 1000 COM', 'investment', 'product_code'),
+        )
+        now = 2000000000
+        with patch('managers.admin_control_manager.time.time', return_value=now):
+            for code, args, table, key in listings:
+                with self.subTest(code=code):
+                    self.command('상품생성', f'{code} {args} 1일 5')
+                    row = self.db.system.execute_one(f'SELECT * FROM {table} WHERE {key}=?', (code,))
+                    self.assertEqual((row['dividend_cycle_seconds'], row['dividend_per_share'], row['dividend_next_epoch']), (86400, 5, now+86400))
+                    self.assertEqual(row['dividend_is_active'], 1)
+                    self.db.assets.add_user_asset('citizen', code, 2)
+        with self.assertRaisesRegex(ValueError, '정기배당'):
+            self.command('상품생성', 'NO future 선물 100 1000 ST 30 1 0.2 0.15 FUT {"dividend_cycle_seconds":86400,"dividend_per_share":5}')
+        self.assertIsNone(self.db.products.get_investment('NO'))
+        self.command('세율', '10')
+        manager = CorporateActionsManager(self.bot)
+        self.assertEqual(manager.process_due(now=now+86399), [])
+        cash = self.db.users.get_user('citizen')['cash']
+        treasury = self.db.users.get_user(TREASURY_USER_ID)['cash']
+        results = manager.process_due(now=now+86400)
+        self.assertEqual(len(results), len(listings))
+        self.assertTrue(all(success and gross==10 for _,success,gross in results), results)
+        self.assertEqual(self.db.users.get_user('citizen')['cash']-cash, 9*len(listings))
+        self.assertEqual(treasury-self.db.users.get_user(TREASURY_USER_ID)['cash'], 9*len(listings))
+        self.assertEqual(manager.process_due(now=now+86400), [])
+        self.assertEqual(self.db.assets.execute_one('SELECT COUNT(*) FROM dividend_payments')[0], len(listings))
+        self.command('정기배당수정', 'ST 0 5')
+        self.assertIsNone(self.db.companies.get_company('ST')['dividend_next_epoch'])
+
+    def test_dividend_switch_preserves_terms_and_restarts_without_arrears(self):
+        from managers.corporate_actions_manager import CorporateActionsManager
+        manager = CorporateActionsManager(self.bot)
+        start = 2000000000
+        listings = (
+            ('ST', 'company 회사 게임 1000000 10000 100 INZ', 'company', 'company_code'),
+            ('AS', 'asset 현물 commodity_spot 100 1000 COM', 'market_assets', 'code'),
+            ('CM', 'commodity 원자재 100 1000 COM', 'investment', 'product_code'),
+        )
+        with patch('managers.admin_control_manager.time.time', return_value=start):
+            for code, args, table, key in listings:
+                self.command('상품생성', f'{code} {args} 1일 5 {{"dividend_is_active":0}}')
+                self.db.assets.add_user_asset('citizen', code, 2)
+                row = self.db.system.execute_one(f'SELECT * FROM {table} WHERE {key}=?', (code,))
+                self.assertEqual((row['dividend_is_active'],row['dividend_next_epoch']), (0,None))
+        resumed = start + 10*86400
+        self.assertEqual(manager.process_due(now=resumed), [])
+        with self.assertRaises(ValueError):self.command('정기배당활성', 'ST maybe')
+        with self.assertRaises(ValueError):AdminCommandsManager(self.bot).execute('citizen', '정기배당활성', 'ST on')
+        with self.assertRaises(ValueError):self.command('상품수정', 'ST company {"dividend_is_active":2}')
+        with patch('managers.corporate_actions_manager.time.time', return_value=resumed):
+            self.command('정기배당수정', 'ST 1일 7')
+            self.assertIsNone(self.db.companies.get_company('ST')['dividend_next_epoch'])
+            self.command('특별배당실시', 'ST 3')
+            self.command('정기배당활성', 'ST ON')
+        due = resumed + 86400
+        with patch('managers.corporate_actions_manager.time.time', return_value=resumed+10):
+            self.command('정기배당활성', 'ST 1')
+        self.assertEqual(self.db.companies.get_company('ST')['dividend_next_epoch'], due)
+        self.assertEqual(manager.process_due(now=due-1), [])
+        self.assertEqual(manager.process_due(now=due), [('ST', True, 14)])
+        self.command('정기배당활성', 'ST off')
+        row = self.db.companies.get_company('ST')
+        self.assertEqual((row['dividend_cycle_seconds'],row['dividend_per_share'],row['dividend_is_active'],row['dividend_next_epoch']), (86400,7,0,None))
+        self.assertEqual(manager.process_due(now=due+100*86400), [])
+        # Direct DB Browser edits use the same switch without paying paused cycles.
+        for code, args, table, key in listings:
+            self.db.system.execute(f'UPDATE {table} SET dividend_next_epoch=?,dividend_is_active=1 WHERE {key}=?', (start,code))
+            self.assertIsNone(self.db.system.execute_one(f'SELECT dividend_next_epoch FROM {table} WHERE {key}=?', (code,))[0])
+        later = due + 100*86400
+        self.assertEqual(manager.process_due(now=later), [])
+        for code, args, table, key in listings:
+            self.assertEqual(self.db.system.execute_one(f'SELECT dividend_next_epoch FROM {table} WHERE {key}=?', (code,))[0], later+86400)
+        self.assertEqual(len(manager.process_due(now=later+86400)), 3)
+        self.assertEqual(manager.process_due(now=later+86400), [])
+        with patch('managers.admin_control_manager.time.time', return_value=later+86400):
+            self.command('상품수정', 'CM commodity {"dividend_is_active":0}')
+            self.command('상품수정', 'CM commodity {"dividend_is_active":1}')
+        self.assertEqual(self.db.products.get_investment('CM')['dividend_next_epoch'], later+2*86400)
+
+    def test_percent_dividend_uses_payment_price_and_one_mode(self):
+        from managers.corporate_actions_manager import CorporateActionsManager
+        manager = CorporateActionsManager(self.bot)
+        start = 2000000000
+        listings = (
+            ('ST', 'company 회사 게임 1000000 10000 100 INZ', 'company', 'company_code', 'share_price'),
+            ('AS', 'asset 현물 commodity_spot 100 1000 COM', 'market_assets', 'code', 'price'),
+            ('CM', 'commodity 원자재 100 1000 COM', 'investment', 'product_code', 'unit_price'),
+        )
+        self.command('세율', '0')
+        with patch('managers.admin_control_manager.time.time', return_value=start):
+            for code, args, table, key, price in listings:
+                self.command('상품생성', f'{code} {args} 1일 0.5%')
+                row = self.db.system.execute_one(f'SELECT * FROM {table} WHERE {key}=?', (code,))
+                self.assertEqual((row['dividend_mode'],row['dividend_percent'],row['dividend_per_share'],row['dividend_next_epoch']), ('percent',0.5,0,start+86400))
+                self.db.assets.add_user_asset('citizen',code,3)
+                self.db.assets.add_user_asset('admin',code,5)
+                self.db.system.execute(f'UPDATE {table} SET {price}=105 WHERE {key}=?', (code,))
+        citizen_cash = self.db.users.get_user('citizen')['cash']
+        admin_cash = self.db.users.get_user('admin')['cash']
+        treasury = self.db.users.get_user(TREASURY_USER_ID)['cash']
+        self.assertEqual(manager.process_due(now=start+86399), [])
+        results = manager.process_due(now=start+86400)
+        self.assertEqual(len(results),3)
+        self.assertTrue(all(success and gross==5 for _,success,gross in results),results)
+        self.assertEqual(self.db.users.get_user('citizen')['cash']-citizen_cash,6)
+        self.assertEqual(self.db.users.get_user('admin')['cash']-admin_cash,9)
+        self.assertEqual(treasury-self.db.users.get_user(TREASURY_USER_ID)['cash'],15)
+        for row in self.db.assets.execute('SELECT * FROM dividend_distributions'):
+            self.assertEqual((row['dividend_mode'],row['reference_price'],row['dividend_percent'],row['per_share']), ('percent',105,0.5,0))
+        self.assertEqual(manager.process_due(now=start+86400), [])
+        for value in ('101%','-1%','NaN%','Infinity%','oops%','1.5'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.command('정기배당수정',f'ST 1일 {value}')
+        with self.assertRaises(ValueError):
+            self.command('상품수정','ST company {"dividend_mode":"percent","dividend_percent":5,"dividend_per_share":7}')
+        with patch('managers.corporate_actions_manager.time.time', return_value=start+86400):
+            self.command('정기배당활성','ST off')
+            self.command('정기배당수정','ST 1주 2%')
+            self.assertIsNone(self.db.companies.get_company('ST')['dividend_next_epoch'])
+            self.command('정기배당활성','ST on')
+            self.assertEqual(self.db.companies.get_company('ST')['dividend_next_epoch'],start+8*86400)
+            self.command('정기배당수정','ST 1주 7')
+            row = self.db.companies.get_company('ST')
+            self.assertEqual((row['dividend_mode'],row['dividend_percent'],row['dividend_per_share']),('fixed',0,7))
+        self.command('상품수정','ST company {"dividend_percent":3}')
+        row = self.db.companies.get_company('ST')
+        self.assertEqual((row['dividend_mode'],row['dividend_percent'],row['dividend_per_share']),('percent',3,0))
+        self.command('상품수정','ST company {"dividend_per_share":9}')
+        row = self.db.companies.get_company('ST')
+        self.assertEqual((row['dividend_mode'],row['dividend_percent'],row['dividend_per_share']),('fixed',0,9))
+
     def test_extension_credit_and_statutory_interest_respects_new_maturity(self):
         self.command('상품생성','LN loan 대출 0 10000 1 86400 0 Inazina 800 7')
         self.assertTrue(self.bot.bank_mgr.apply_loan('citizen','LN',1000)[0])

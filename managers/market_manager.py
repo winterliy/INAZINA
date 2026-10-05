@@ -19,6 +19,10 @@ from managers.stochastic_price_engine import (
 
 
 EXCHANGE_INDEX_PREFIX = "__exchange_index__:"
+PROFILE_COLUMNS = (
+    "liquidity", "trend_sensitivity", "sector_sensitivity",
+    "jump_intensity", "mean_reversion",
+)
 
 
 class _MarketHalted(Exception):
@@ -57,7 +61,7 @@ class MarketManager:
     @staticmethod
     def type_label(asset_type):
         return {"stock_future": "주식 선물", "corporate_bond": "회사채", "mutual_fund": "일반 펀드",
-                "index_fund": "인덱스 펀드", "commodity_spot": "현물 원자재", "option": "옵션"}.get(asset_type, asset_type)
+                "index_fund": "인덱스 펀드", "commodity_spot": "현물 원자재", "option": "옵션", "els":"ELS"}.get(asset_type, asset_type)
 
     @contextmanager
     def _short_market_transaction(self, alias, *, now=None):
@@ -89,7 +93,7 @@ class MarketManager:
     def _to_market_asset(row, source):
         if row is None:
             return None
-        if source == "company":
+        if source == "company" and "total_shares" in row.keys() and "capital" in row.keys():
             return {
                 "code": row["company_code"], "name": row["name"],
                 "exchange_id": row["exchange_id"],
@@ -101,7 +105,7 @@ class MarketManager:
             }
         if source == "investment":
             status = row["status"]
-            if status == "active" and MarketManager._investment_matured(row["created_at"], row["maturity_days"]):
+            if status == "active" and row['product_type']!='els' and MarketManager._investment_matured(row["created_at"], row["maturity_days"]):
                 status = "matured"
             return {
                 "code": row["product_code"], "name": row["name"],
@@ -261,6 +265,47 @@ class MarketManager:
     def _get_sql_market_condition(self):
         raw_value = self.db.system.get_setting("market_condition", "flat")
         return self._normalize_market_condition(raw_value)
+
+    @staticmethod
+    def _finite_profile_value(row, key, default, low=0.0, high=10.0):
+        try:
+            value = row[key] if key in row.keys() else None
+        except (AttributeError, KeyError, IndexError):
+            value = None
+        if value is None:
+            return default
+        try:
+            number = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return default
+        return number if math.isfinite(number) and low <= number <= high else default
+
+    @classmethod
+    def _price_profile(cls, row, source):
+        asset_type = str((row["product_type"] if "product_type" in row.keys() else row["type"] if "type" in row.keys() else "stock") or "stock")
+        type_key = asset_type.strip().casefold()
+        defaults = {
+            "stock": dict(liquidity=1.0, trend_sensitivity=1.0, sector_sensitivity=0.0, jump_intensity=0.0, mean_reversion=1.0),
+            "주식": dict(liquidity=1.0, trend_sensitivity=1.0, sector_sensitivity=0.0, jump_intensity=0.0, mean_reversion=1.0),
+            "commodity_spot": dict(liquidity=1.0, trend_sensitivity=1.0, sector_sensitivity=0.0, jump_intensity=0.0, mean_reversion=1.0),
+            "forex": dict(liquidity=1.0, trend_sensitivity=1.0, sector_sensitivity=0.0, jump_intensity=0.0, mean_reversion=1.0),
+            "etf": dict(liquidity=1.0, trend_sensitivity=1.0, sector_sensitivity=0.0, jump_intensity=0.0, mean_reversion=1.0),
+        }
+        base = defaults.get(type_key, defaults["stock"]).copy()
+        profile = {key: cls._finite_profile_value(row, key, base[key]) for key in PROFILE_COLUMNS}
+        profile["liquidity"] = max(0.05, profile["liquidity"])
+        return profile
+
+    def _sector_shock(self, key, epoch, config):
+        if not key:
+            return 0.0
+        batch = getattr(self._tick, 'batch', None)
+        if batch is None:
+            return standardized_shock(random, config.student_df)
+        shocks = batch.setdefault('sector_shocks', {})
+        if (key, epoch) not in shocks:
+            shocks[(key, epoch)] = standardized_shock(random, config.student_df)
+        return shocks[(key, epoch)]
 
     @staticmethod
     def _event_target_price(conn, code, price, now, legacy_events, *, sample_noise, context=None, batch=None):
@@ -437,8 +482,15 @@ class MarketManager:
                          (code, cycle.anchor_price, cycle.target_price, cycle.start_epoch, cycle.end_epoch))
         return cycle
 
-    def _stochastic_price(self, conn, code, price, now, settings, volatility, condition, legacy_events):
+    def _stochastic_price(self, conn, code, price, now, settings, volatility, condition, legacy_events, profile=None, sector_key=None):
+        profile = profile or {}
+        liquidity = max(0.05, float(profile.get("liquidity", 1.0)))
+        trend_sensitivity = max(0.0, float(profile.get("trend_sensitivity", 1.0)))
+        sector_sensitivity = max(0.0, float(profile.get("sector_sensitivity", 0.0)))
+        jump_intensity = max(0.0, float(profile.get("jump_intensity", 0.0)))
+        mean_reversion = max(0.0, float(profile.get("mean_reversion", 1.0)))
         config = GarchConfig.from_settings(settings, volatility=volatility)
+        config = replace(config, annual_volatility=config.annual_volatility / math.sqrt(liquidity))
         epoch = now // config.step_seconds * config.step_seconds
         batch = getattr(self._tick, 'batch', None)
         state = batch['states'].get(code) if batch is not None else conn.execute("SELECT * FROM system.market_simulation_state WHERE asset_code = ?", (code,)).fetchone()
@@ -459,6 +511,7 @@ class MarketManager:
                 return 0.0, 0.0
             # Events still fluctuate when ordinary market movement is paused.
             event_config = GarchConfig.from_settings(settings, volatility=max(volatility, self.DEFAULT_VOLATILITY))
+            event_config = replace(event_config, annual_volatility=event_config.annual_volatility / math.sqrt(liquidity))
             jump = self._event_jump_fraction(target)
             event_step = simulate_step(latent, variance, innovation, event_config,
                 market_shock=self._market_factor(conn, epoch, event_config), rng=random,
@@ -499,18 +552,25 @@ class MarketManager:
             # recent volatility for when the operator resumes it.
             self._save_simulation_state(conn, code, variance or 0.0, innovation, float(price), epoch, price)
             return price
-        bias = {"bull": 1, "bear": -1, "flat": 0}[condition] * math.log1p(.10) \
+        bias = {"bull": 1, "bear": -1, "flat": 0}[condition] * trend_sensitivity * math.log1p(.10) \
                * config.trading_minutes_per_step / TRADING_MINUTES_PER_YEAR
+        if sector_sensitivity:
+            bias += sector_sensitivity * math.sqrt(config.step_variance) * self._sector_shock(sector_key, epoch, config) * 0.25
         cycle = None
         if auto_config.enabled:
             cycle = self._auto_target(conn, code, latent, epoch, auto_config)
-            bias += target_pull(latent, cycle, auto_config)
+            bias += target_pull(latent, cycle, auto_config) * mean_reversion
             # Scale the GARCH target variance, not its sampled innovation.
             # This preserves alpha+beta stability and excludes target drift
             # from the stochastic innovation used by the next recurrence.
             config = replace(config, annual_volatility=config.annual_volatility * auto_config.noise_multiplier)
+        jump = 0.0
+        jump_probability = min(0.15, jump_intensity * config.trading_minutes_per_step / 390)
+        if jump_probability and random.random() < jump_probability:
+            direction = 1 if random.random() >= 0.5 else -1
+            jump = direction * math.log1p(min(0.18, max(0.01, abs(standardized_shock(random, config.student_df)) * math.sqrt(config.step_variance) * 18)))
         step = simulate_step(latent, variance, innovation, config,
-            market_shock=self._market_factor(conn, epoch, config), rng=random, directional_bias=bias)
+            market_shock=self._market_factor(conn, epoch, config), rng=random, directional_bias=bias, jump=jump)
         next_price, next_innovation = step.price, step.innovation
         if cycle is not None:
             lower, upper = cycle_bounds(cycle, auto_config)
@@ -525,6 +585,7 @@ class MarketManager:
 
     @staticmethod
     def event_asset_eligible(asset):
+        if asset.get('type')=='els':return False
         return (asset["status"] == "active" and asset["price"] > 0
                 and (not asset["is_fixed"] or asset["type"] in {"option","국채"}))
 
@@ -544,7 +605,7 @@ class MarketManager:
         return dict(states={r['asset_code']: r for r in conn.execute('SELECT * FROM market_simulation_state')},
             targets={r['asset_code']: r for r in conn.execute('SELECT * FROM market_auto_targets')},
             factor=conn.execute("SELECT * FROM market_factor_state WHERE key='market'").fetchone(),
-            events=events, state_updates={}, target_updates={}, target_deletes=set())
+            events=events, state_updates={}, target_updates={}, target_deletes=set(), sector_shocks={})
 
     def _delete_auto_target(self, conn, code):
         batch = getattr(self._tick, 'batch', None)
@@ -581,6 +642,9 @@ class MarketManager:
                 try:
                     self._tick.batch = self._load_tick(conn, now)
                     changed = self._update_prices_open(market_trend, volatility, now, market_condition)
+                    if getattr(self.db,'els',None) is not None:
+                        from managers.els_manager import ELSManager
+                        ELSManager(self.db).observe(conn,now)
                     self._flush_tick(conn)
                 finally:
                     self._tick.conn = None
@@ -645,8 +709,11 @@ class MarketManager:
                 optional_columns.append("market_condition")
             if has_volatility:
                 optional_columns.append("market_volatility")
+                optional_columns.extend(PROFILE_COLUMNS)
             if has_derivative:
                 optional_columns.extend(("underlying_exchange_id", "leverage_multiplier", "product_type"))
+            if schema == "company":
+                optional_columns.extend(("industry", "total_shares", "capital"))
             extra = f", {', '.join(optional_columns)}" if optional_columns else ""
             try:
                 with self._short_market_transaction((schema, "system")) as conn:
@@ -655,6 +722,8 @@ class MarketManager:
                         f"FROM {schema}.{table} WHERE status = 'active'"
                     ).fetchall()
                     for row in rows:
+                        if has_derivative and row['product_type']=='els':
+                            continue
                         code = str(row["code"])
                         try:
                             raw_price = float(row["price"])
@@ -695,8 +764,11 @@ class MarketManager:
                                 or row["product_type"] in {"stock_future", "corporate_bond", "mutual_fund", "index_fund"})
                         )
                         if not int(row["is_fixed"] or 0) and not matured and not is_derivative:
+                            profile = self._price_profile(row, "company" if schema == "company" else "investment" if schema == "product" else "market_assets")
+                            sector_key = row["industry"] if schema == "company" else row["product_type"] if has_derivative else row["type"] if "type" in row.keys() else None
                             new_price = self._stochastic_price(conn, code, price, now, settings,
-                                min(self.MAX_VOLATILITY, asset_volatility * market_trend), asset_condition, legacy_events)
+                                min(self.MAX_VOLATILITY, asset_volatility * market_trend), asset_condition, legacy_events,
+                                profile=profile, sector_key=sector_key)
                         else:
                             self._delete_auto_target(conn, code)
                         if int(row["is_fixed"] or 0) or matured:

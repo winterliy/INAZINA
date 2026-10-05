@@ -4,6 +4,7 @@ import time
 import uuid
 from collections import defaultdict
 from fractions import Fraction
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from database.db_manager import DBManager
 from database.user_db import TREASURY_USER_ID
@@ -27,6 +28,32 @@ class CorporateActionsManager:
         except (ValueError, TypeError, OverflowError):
             raise ValueError(f'{label}은 {minimum:,}~{maximum:,} 정수로 입력해주세요.') from None
         return number
+
+    @classmethod
+    def dividend_terms(cls, value):
+        """A bare integer is fixed money; a % suffix selects price-based dividends."""
+        text = str(value).strip()
+        if text.endswith('%'):
+            try:
+                percent = Decimal(text[:-1])
+                if not percent.is_finite() or not 0 <= percent <= 100:
+                    raise ValueError()
+            except (InvalidOperation, ValueError):
+                raise ValueError('비율배당은 0~100%로 입력해주세요. 예: 5%') from None
+            return {'dividend_mode':'percent','dividend_percent':float(percent),'dividend_per_share':0}
+        return {'dividend_mode':'fixed','dividend_percent':0,
+                'dividend_per_share':cls._integer(value, '주당 배당금')}
+
+    @staticmethod
+    def _dividend_configured(listing):
+        amount = listing['dividend_percent'] if listing['dividend_mode'] == 'percent' else listing['dividend_per_share']
+        return listing['dividend_cycle_seconds'] > 0 and amount > 0
+
+    @staticmethod
+    def _dividend_description(listing):
+        if listing['dividend_mode'] == 'percent':
+            return f'가격 기준 {listing["dividend_percent"]:g}%'
+        return f'주당 {listing["dividend_per_share"]:,} {listing.get("quote_currency") or "NWX"}'
 
     @staticmethod
     def _require(conn, actor):
@@ -91,63 +118,156 @@ class CorporateActionsManager:
                      (account, user, product['product_code'], currency, now))
         return account
 
-    def _distribute(self, conn, listing, per_share, kind, due, key, now):
-        old = conn.execute('SELECT * FROM dividend_distributions WHERE operation_key=?', (key,)).fetchone()
-        if old:
-            return int(old['gross_amount']), True
-        holders = self._holders(conn, listing['code'])
-        gross = sum(quantity * per_share for _, quantity in holders)
-        if gross > self.MAX_MONEY:
-            raise ValueError('총 배당금이 금액 한도를 초과했습니다.')
-        currency = listing.get('quote_currency') or 'NWX'
-        rate = FXManager._rate(conn, currency)
-        if gross * rate > self.MAX_MONEY or gross * SCALE > MAX_UNITS:
-            raise ValueError('배당금의 외환 평가액 또는 지급액이 한도를 초과했습니다.')
+    @staticmethod
+    def _issuer_code(listing):
+        return str(listing.get('parent_company_code') or listing['code'])
+
+    @classmethod
+    def _funding(cls, listing):
+        return listing.get('dividend_funding', 'treasury') if listing['table'] == 'company' else 'treasury'
+
+    def _source_balance(self, conn, issuer, funding, currency):
+        if funding == 'issuer':
+            if currency != 'NWX':
+                raise ValueError('발행법인 현금 배당은 NWX 상품에만 사용할 수 있습니다.')
+            row = conn.execute('SELECT balance FROM issuer_cash_accounts WHERE company_code=?', (issuer,)).fetchone()
+            return int(row['balance']) if row else 0
         if currency == 'NWX':
+            row = conn.execute('SELECT cash FROM users WHERE user_id=?', (TREASURY_USER_ID,)).fetchone()
+            return int(row['cash']) if row else 0
+        row = conn.execute('SELECT balance_units FROM fx_accounts WHERE user_id=? AND currency_code=?', (TREASURY_USER_ID, currency)).fetchone()
+        return int(row['balance_units']) // SCALE if row else 0
+
+    def _debit_dividend(self, conn, issuer, funding, currency, gross):
+        if not gross:
+            return
+        if funding == 'issuer':
+            changed = conn.execute('UPDATE issuer_cash_accounts SET balance=balance-? WHERE company_code=? AND balance>=?', (gross, issuer, gross))
+        elif currency == 'NWX':
             changed = conn.execute('UPDATE users SET cash=cash-? WHERE user_id=? AND cash>=?', (gross, TREASURY_USER_ID, gross))
         else:
             changed = conn.execute('UPDATE fx_accounts SET balance_units=balance_units-? WHERE user_id=? AND currency_code=? AND balance_units>=?',
-                                   (gross * SCALE, TREASURY_USER_ID, currency, gross * SCALE))
+                                   (gross*SCALE, TREASURY_USER_ID, currency, gross*SCALE))
         if changed.rowcount != 1:
-            raise ValueError(f'국고의 {currency} 배당 재원이 부족합니다. 필요액 {gross:,} {currency}')
-        distribution = conn.execute('INSERT INTO dividend_distributions(operation_key,asset_code,kind,due_epoch,per_share,quote_currency,gross_amount,recorded_epoch) VALUES (?,?,?,?,?,?,?,?)',
-                                    (key, listing['code'], kind, due, per_share, currency, gross, now)).lastrowid
-        for user, quantity in holders:
-            amount = quantity * per_share
-            tax = UserManager._tax(conn, user, f'{kind}_dividend:{listing["code"]}', amount * rate)
-            tax_units = tax * SCALE if currency == 'NWX' else (tax * SCALE + rate - 1) // rate
-            net_units = max(0, amount * SCALE - tax_units)
-            if currency == 'NWX':
-                changed = conn.execute('UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?',
-                                       (net_units // SCALE, user, self.MAX_MONEY - net_units // SCALE))
-            else:
-                FXManager._settle(conn, user, now)
-                account = self._fx_account(conn, user, currency, now)
-                changed = conn.execute('UPDATE fx_accounts SET balance_units=balance_units+? WHERE account_number=? AND balance_units<=?',
-                                       (net_units, account, MAX_UNITS - net_units))
-            if changed.rowcount != 1:
-                raise ValueError('배당 수령자의 계정 또는 잔액 한도를 확인해주세요.')
-            conn.execute('INSERT INTO dividend_payments(distribution_id,user_id,quantity,gross_amount,tax_nwx,net_units,quote_currency) VALUES (?,?,?,?,?,?,?)',
-                         (distribution, user, quantity, amount, tax, net_units, currency))
+            raise ValueError(f'{"법인" if funding == "issuer" else "국고"}의 {currency} 배당 재원이 부족합니다. 필요액 {gross:,} {currency}')
+
+    def _credit_dividend(self, conn, user, code, kind, amount, currency, now):
+        rate = FXManager._rate(conn, currency)
+        tax = UserManager._tax(conn, user, f'{kind}_dividend:{code}', amount*rate)
+        tax_units = tax*SCALE if currency == 'NWX' else (tax*SCALE+rate-1)//rate
+        net_units = max(0, amount*SCALE-tax_units)
+        if currency == 'NWX':
+            changed = conn.execute('UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?',
+                                   (net_units//SCALE, user, self.MAX_MONEY-net_units//SCALE))
+        else:
+            FXManager._settle(conn, user, now)
+            account = self._fx_account(conn, user, currency, now)
+            changed = conn.execute('UPDATE fx_accounts SET balance_units=balance_units+? WHERE account_number=? AND balance_units<=?',
+                                   (net_units, account, MAX_UNITS-net_units))
+        if changed.rowcount != 1:
+            raise ValueError('배당 수령자의 계정 또는 잔액 한도를 확인해주세요.')
+        return tax, net_units
+
+    def _settle_claims(self, conn, issuer, now):
+        """Pay the original record-date owner even after the shares were traded."""
+        claims = conn.execute("SELECT c.*,COALESCE(s.dividend_priority,1) priority FROM preferred_dividend_claims c LEFT JOIN company s ON s.company_code=c.asset_code WHERE c.issuer_code=? AND c.status IN ('unpaid','partial') ORDER BY priority DESC,c.due_epoch,c.claim_id", (issuer,)).fetchall()
+        paid = 0
+        for claim in claims:
+            remaining = int(claim['gross_amount'])-int(claim['paid_amount'])
+            amount = min(remaining, self._source_balance(conn, issuer, claim['funding_source'], claim['quote_currency']))
+            if not amount:
+                continue
+            self._debit_dividend(conn, issuer, claim['funding_source'], claim['quote_currency'], amount)
+            tax, _ = self._credit_dividend(conn, claim['user_id'], claim['asset_code'], 'arrears', amount, claim['quote_currency'], now)
+            total_paid = int(claim['paid_amount'])+amount
+            conn.execute("UPDATE preferred_dividend_claims SET paid_amount=?,status=? WHERE claim_id=?",
+                         (total_paid, 'paid' if total_paid == claim['gross_amount'] else 'partial', claim['claim_id']))
             conn.execute('INSERT INTO product_settlements(user_id,product_code,kind,quantity,gross_amount,tax_amount,recorded_epoch) VALUES (?,?,?,?,?,?,?)',
-                         (user, listing['code'], f'{kind}_dividend:{currency}', quantity, amount, tax, now))
-        self._record(conn, key, f'{kind}_dividend', listing['code'], None,
-                     {'distribution_id': distribution, 'per_share': per_share, 'gross_amount': gross, 'currency': currency}, now)
+                         (claim['user_id'],claim['asset_code'],f'preferred_arrears:{claim["claim_id"]}:{claim["quote_currency"]}',claim['quantity'],amount,tax,now))
+            paid += amount
+        return paid
+
+    def _priority_blocked(self, conn, listing, now):
+        if listing['table'] != 'company':
+            return False
+        issuer = self._issuer_code(listing)
+        priority = int(listing['dividend_priority'])
+        if conn.execute("SELECT 1 FROM preferred_dividend_claims c JOIN company s ON s.company_code=c.asset_code WHERE c.issuer_code=? AND c.status IN ('unpaid','partial') AND s.dividend_priority>? LIMIT 1", (issuer,priority)).fetchone():
+            return True
+        return bool(conn.execute("SELECT 1 FROM company WHERE status='active' AND COALESCE(parent_company_code,company_code)=? AND dividend_priority>? AND dividend_is_active=1 AND dividend_cycle_seconds>0 AND dividend_next_epoch<=? AND ((dividend_mode='fixed' AND dividend_per_share>0) OR (dividend_mode='percent' AND dividend_percent>0)) LIMIT 1", (issuer,priority,now)).fetchone())
+
+    def _distribute(self, conn, listing, per_share, kind, due, key, now, *, percent=None, reference_price=None):
+        old = conn.execute('SELECT * FROM dividend_distributions WHERE operation_key=?', (key,)).fetchone()
+        if old:
+            return int(old['gross_amount']), True
+        if self._priority_blocked(conn, listing, now):
+            raise ValueError('이 법인의 우선순위가 높은 주식에 미지급 배당이 있어 배당을 보류합니다.')
+        holders = self._holders(conn, listing['code'])
+        mode = 'percent' if percent is not None else 'fixed'
+        unit_amount = Decimal(reference_price)*Decimal(str(percent))/100 if percent is not None else Decimal(per_share)
+        payments = [(user,quantity,int((quantity*unit_amount).quantize(Decimal('1'),rounding=ROUND_HALF_UP))) for user,quantity in holders]
+        owed = sum(amount for _,_,amount in payments)
+        currency = listing.get('quote_currency') or 'NWX'
+        rate = FXManager._rate(conn, currency)
+        if owed > self.MAX_MONEY or owed*rate > self.MAX_MONEY or owed*SCALE > MAX_UNITS:
+            raise ValueError('총 배당금의 금액 또는 외환 평가액이 한도를 초과했습니다.')
+        issuer, funding = self._issuer_code(listing), self._funding(listing)
+        cumulative = listing['table']=='company' and listing['share_class']=='preferred' and bool(listing['cumulative_dividend'])
+        gross = min(owed,self._source_balance(conn,issuer,funding,currency)) if cumulative else owed
+        if gross < owed and not cumulative:
+            raise ValueError('배당 재원이 부족합니다.')
+        amounts = self._allocate(gross,[amount for _,_,amount in payments]) if owed and gross < owed else [amount for _,_,amount in payments]
+        self._debit_dividend(conn,issuer,funding,currency,gross)
+        distribution = conn.execute('INSERT INTO dividend_distributions(operation_key,asset_code,kind,due_epoch,per_share,quote_currency,gross_amount,recorded_epoch,dividend_mode,dividend_percent,reference_price) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                                    (key,listing['code'],kind,due,per_share,currency,gross,now,mode,percent or 0,reference_price)).lastrowid
+        for (user,quantity,entitlement),amount in zip(payments,amounts):
+            tax,net_units = self._credit_dividend(conn,user,listing['code'],kind,amount,currency,now)
+            conn.execute('INSERT INTO dividend_payments(distribution_id,user_id,quantity,gross_amount,tax_nwx,net_units,quote_currency) VALUES (?,?,?,?,?,?,?)',
+                         (distribution,user,quantity,amount,tax,net_units,currency))
+            conn.execute('INSERT INTO product_settlements(user_id,product_code,kind,quantity,gross_amount,tax_amount,recorded_epoch) VALUES (?,?,?,?,?,?,?)',
+                         (user,listing['code'],f'{kind}_dividend:{currency}',quantity,amount,tax,now))
+            if cumulative and entitlement > amount:
+                conn.execute('INSERT INTO preferred_dividend_claims(issuer_code,asset_code,distribution_id,user_id,quantity,gross_amount,quote_currency,funding_source,due_epoch,created_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                             (issuer,listing['code'],distribution,user,quantity,entitlement-amount,currency,funding,due,now))
+        self._record(conn,key,f'{kind}_dividend',listing['code'],None,
+                     {'distribution_id':distribution,'per_share':per_share,'mode':mode,'percent':percent,'reference_price':reference_price,
+                      'gross_amount':gross,'entitlement':owed,'deferred_amount':owed-gross,'currency':currency,'funding':funding,'issuer':issuer},now)
         return gross, False
 
     def configure_dividend(self, actor, code, cycle_seconds, per_share):
         try:
             cycle = self._integer(cycle_seconds, '배당주기(초)', 0, 3650 * 86400)
-            amount = self._integer(per_share, '주당 배당금')
+            terms = self.dividend_terms(per_share)
             now = int(time.time())
             with DBManager.admin_scope(actor), self.db.atomic() as conn:
                 self._require(conn, actor)
                 listing = self._dividend_listing(conn, code)
-                next_epoch = now + cycle if cycle and amount else None
-                conn.execute(f'UPDATE {listing["table"]} SET dividend_cycle_seconds=?,dividend_per_share=?,dividend_next_epoch=? WHERE {listing["key"]}=?',
-                             (cycle, amount, next_epoch, str(code)))
-                self._audit(conn, actor, 'dividend.configure', str(code), {'cycle_seconds': cycle, 'per_share': amount, 'next_epoch': next_epoch}, now)
-            return True, f'✅ `{code}` 정기배당을 설정했습니다. 주기 {cycle:,}초 · 주당 {amount:,} {listing.get("quote_currency") or "NWX"}' + (' · 자동배당 중지' if not next_epoch else '')
+                listing.update(terms,dividend_cycle_seconds=cycle)
+                next_epoch = now + cycle if listing['dividend_is_active'] and self._dividend_configured(listing) else None
+                conn.execute(f'UPDATE {listing["table"]} SET dividend_cycle_seconds=?,dividend_mode=?,dividend_percent=?,dividend_per_share=?,dividend_next_epoch=? WHERE {listing["key"]}=?',
+                             (cycle,terms['dividend_mode'],terms['dividend_percent'],terms['dividend_per_share'],next_epoch,str(code)))
+                self._audit(conn, actor, 'dividend.configure', str(code), {'cycle_seconds':cycle,**terms,'next_epoch':next_epoch}, now)
+            return True, f'✅ `{code}` 정기배당을 설정했습니다. 주기 {cycle:,}초 · {self._dividend_description(listing)}' + (' · 자동배당 중지' if not next_epoch else '')
+        except (ValueError, TypeError, OverflowError) as exc:
+            return False, f'❌ {exc}'
+
+    def set_dividend_active(self, actor, code, is_active):
+        try:
+            active = self._integer(is_active, '정기배당 활성값', 0, 1)
+            now = int(time.time())
+            with DBManager.admin_scope(actor), self.db.atomic() as conn:
+                self._require(conn, actor)
+                listing = self._dividend_listing(conn, code)
+                cycle = int(listing['dividend_cycle_seconds'])
+                if active and not self._dividend_configured(listing):
+                    raise ValueError('먼저 $정기배당수정으로 양의 배당주기와 주당 금액 또는 비율을 설정해주세요.')
+                next_epoch = listing['dividend_next_epoch']
+                if active != listing['dividend_is_active'] or (active and next_epoch is None):
+                    next_epoch = now + cycle if active else None
+                    conn.execute(f'UPDATE {listing["table"]} SET dividend_is_active=? WHERE {listing["key"]}=?', (active,str(code)))
+                    conn.execute(f'UPDATE {listing["table"]} SET dividend_next_epoch=? WHERE {listing["key"]}=?', (next_epoch,str(code)))
+                self._audit(conn, actor, 'dividend.activation', str(code), {'is_active':active,'next_epoch':next_epoch}, now)
+            return True, f'✅ `{code}` 정기배당 {"켜짐" if active else "꺼짐"}. 주기 {cycle:,}초 · {self._dividend_description(listing)}'
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f'❌ {exc}'
 
@@ -158,6 +278,13 @@ class CorporateActionsManager:
             with DBManager.admin_scope(actor), self.db.atomic() as conn:
                 self._require(conn, actor)
                 listing = self._dividend_listing(conn, code)
+                if listing['table'] == 'company' and not conn.execute('SELECT 1 FROM dividend_distributions WHERE operation_key=?', (key,)).fetchone():
+                    issuer = self._issuer_code(listing)
+                    self._settle_claims(conn, issuer, now)
+                    higher = conn.execute("SELECT company_code FROM company WHERE status='active' AND COALESCE(parent_company_code,company_code)=? AND dividend_priority>? AND dividend_is_active=1 AND dividend_next_epoch<=? ORDER BY dividend_priority DESC,company_code",
+                                          (issuer, listing['dividend_priority'], now)).fetchall()
+                    for preferred in higher:
+                        self._regular_due(conn, preferred['company_code'], now)
                 gross, duplicate = self._distribute(conn, listing, amount, 'special', now, key, now)
                 if not duplicate:
                     self._audit(conn, actor, 'dividend.special', str(code), {'per_share': amount, 'gross_amount': gross, 'operation_key': key}, now)
@@ -165,34 +292,235 @@ class CorporateActionsManager:
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f'❌ {exc}'
 
-    def process_due(self, now=None):
-        """Each persisted due time pays once; unfunded cycles stay due for retry."""
-        now = int(time.time() if now is None else now)
+    def _regular_due(self, conn, code, now):
         results = []
-        listings = []
-        for database, table, key in ((self.db.companies, 'company', 'company_code'), (self.db.products, 'investment', 'product_code'), (self.db.assets, 'market_assets', 'code')):
-            listings.extend(row[key] for row in database.execute(f"SELECT {key} FROM {table} WHERE status='active' AND dividend_cycle_seconds>0 AND dividend_per_share>0"))
-        for code in listings:
-            for _ in range(20):
-                try:
-                    with self.db.atomic() as conn:
-                        listing = self._dividend_listing(conn, code)
-                        cycle, per_share = int(listing['dividend_cycle_seconds']), int(listing['dividend_per_share'])
-                        due = listing['dividend_next_epoch']
-                        if due is None:
-                            conn.execute(f'UPDATE {listing["table"]} SET dividend_next_epoch=? WHERE {listing["key"]}=?', (now + cycle, code))
-                            break
-                        if due > now:
-                            break
-                        key = f'regular:{code}:{due}'
-                        gross, duplicate = self._distribute(conn, listing, per_share, 'regular', due, key, now)
-                        conn.execute(f'UPDATE {listing["table"]} SET dividend_next_epoch=? WHERE {listing["key"]}=?', (due + cycle, code))
-                    if not duplicate:
-                        results.append((code, True, gross))
-                except (ValueError, OverflowError) as exc:
-                    results.append((code, False, str(exc)))
-                    break
+        for _ in range(20):
+            listing = self._dividend_listing(conn,code)
+            if not listing['dividend_is_active'] or not self._dividend_configured(listing):
+                break
+            due,cycle = listing['dividend_next_epoch'],int(listing['dividend_cycle_seconds'])
+            if due is None:
+                conn.execute(f'UPDATE {listing["table"]} SET dividend_next_epoch=? WHERE {listing["key"]}=?',(now+cycle,code))
+                break
+            if due > now:
+                break
+            percent = listing['dividend_percent'] if listing['dividend_mode']=='percent' else None
+            price = int(listing[listing['price_key']]) if percent is not None else None
+            if price is not None and price <= 0:
+                raise ValueError('비율배당의 기준가격은 양수여야 합니다.')
+            gross,duplicate = self._distribute(conn,listing,int(listing['dividend_per_share']) if percent is None else 0,
+                                              'regular',due,f'regular:{code}:{due}',now,percent=percent,reference_price=price)
+            conn.execute(f'UPDATE {listing["table"]} SET dividend_next_epoch=? WHERE {listing["key"]}=?',(due+cycle,code))
+            if not duplicate:
+                results.append((code,True,gross))
         return results
+
+    def process_due(self, now=None):
+        """Group an issuer's dividend decisions in one transaction, in priority order."""
+        now = int(time.time() if now is None else now)
+        groups = defaultdict(list)
+        for database,table,key in ((self.db.companies,'company','company_code'),(self.db.products,'investment','product_code'),(self.db.assets,'market_assets','code')):
+            for row in database.execute(f"SELECT * FROM {table} WHERE status='active' AND dividend_is_active=1 AND dividend_cycle_seconds>0 AND ((dividend_mode='fixed' AND dividend_per_share>0) OR (dividend_mode='percent' AND dividend_percent>0))"):
+                issuer = str(row['parent_company_code'] or row[key]) if table=='company' else '@'+str(row[key])
+                priority = int(row['dividend_priority']) if table=='company' else 0
+                groups[issuer].append((priority,str(row[key])))
+        # Claims remain payable even when the current dividend switch is off.
+        for row in self.db.companies.execute("SELECT DISTINCT issuer_code FROM preferred_dividend_claims WHERE status IN ('unpaid','partial')"):
+            groups.setdefault(str(row['issuer_code']),[])
+        results = []
+        for issuer,items in groups.items():
+            pending = []
+            try:
+                with self.db.atomic() as conn:
+                    if not issuer.startswith('@'):
+                        self._settle_claims(conn,issuer,now)
+                    for priority,code in sorted(items,key=lambda item:(-item[0],item[1])):
+                        conn.execute('SAVEPOINT dividend_item')
+                        try:
+                            current = self._regular_due(conn,code,now)
+                            conn.execute('RELEASE SAVEPOINT dividend_item')
+                            pending.extend(current)
+                        except (ValueError,OverflowError) as exc:
+                            conn.execute('ROLLBACK TO SAVEPOINT dividend_item')
+                            conn.execute('RELEASE SAVEPOINT dividend_item')
+                            pending.append((code,False,str(exc)))
+                results.extend(pending)
+            except (ValueError,OverflowError) as exc:
+                results.extend((code,False,str(exc)) for _,code in items)
+        return results
+
+    def fund_issuer(self, actor, code, operation, value):
+        """Move spendable NWX between the treasury and a legal issuer's cash ledger."""
+        try:
+            value = self._integer(value,'법인 현금')
+            if operation not in {'add','del','modify'}:
+                raise ValueError('연산은 add / del / modify로 입력해주세요.')
+            now = int(time.time())
+            with DBManager.admin_scope(actor),self.db.atomic() as conn:
+                self._require(conn,actor)
+                listing = self._dividend_listing(conn,code)
+                if listing['table'] != 'company':
+                    raise ValueError('법인 현금은 회사 또는 우선주 코드로 조정해주세요.')
+                issuer = self._issuer_code(listing)
+                conn.execute('INSERT OR IGNORE INTO issuer_cash_accounts(company_code) VALUES (?)',(issuer,))
+                old = int(conn.execute('SELECT balance FROM issuer_cash_accounts WHERE company_code=?',(issuer,)).fetchone()['balance'])
+                new = old+value if operation=='add' else old-value if operation=='del' else value
+                if not 0 <= new <= self.MAX_MONEY:
+                    raise ValueError('사용 가능한 법인 현금의 한도를 확인해주세요. 잠금 예치금은 사용할 수 없습니다.')
+                delta = new-old
+                if delta > 0:
+                    changed = conn.execute('UPDATE users SET cash=cash-? WHERE user_id=? AND cash>=?',(delta,TREASURY_USER_ID,delta))
+                elif delta < 0:
+                    changed = conn.execute('UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?',(-delta,TREASURY_USER_ID,self.MAX_MONEY+delta))
+                else:
+                    changed = None
+                if changed is not None and changed.rowcount != 1:
+                    raise ValueError('국고 잔액 또는 반환 후 잔액 한도를 확인해주세요.')
+                conn.execute('UPDATE issuer_cash_accounts SET balance=? WHERE company_code=?',(new,issuer))
+                conn.execute('INSERT INTO issuer_cash_transfers(company_code,actor_id,old_balance,new_balance,delta,recorded_epoch) VALUES (?,?,?,?,?,?)',(issuer,str(actor),old,new,delta,now))
+                self._audit(conn,actor,'issuer.cash',issuer,{'operation':operation,'value':value,'old_balance':old,'new_balance':new},now)
+            return True,f'✅ `{issuer}` 법인 사용가능 현금 {old:,} → {new:,} NWX. 국고와 {abs(delta):,} NWX 이체'
+        except (ValueError,TypeError,OverflowError) as exc:
+            return False,f'❌ {exc}'
+
+    @staticmethod
+    def _has_table(conn, table):
+        return bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",(table,)).fetchone())
+
+    @classmethod
+    def _els_encumbered(cls, conn, codes, issuer=None):
+        if not cls._has_table(conn,'els_terms'):
+            return False
+        placeholders = ','.join('?' for _ in codes)
+        return bool(conn.execute(f"SELECT 1 FROM els_terms t LEFT JOIN els_underlyings u ON u.product_code=t.product_code WHERE t.state IN ('subscription','active','observation_pending','redemption_pending') AND (t.issuer_code IN ({placeholders}) OR u.underlying_code IN ({placeholders})) LIMIT 1",tuple(codes)+tuple(codes)).fetchone())
+
+    def liquidate(self, actor, code, operation_key=None, now=None):
+        """One atomic waterfall: debt, fixed arrears, preference capital, residual equity."""
+        try:
+            now = int(time.time() if now is None else now)
+            key = operation_key or 'liquidation:'+uuid.uuid4().hex
+            with DBManager.admin_scope(actor),self.db.atomic() as conn:
+                self._require(conn,actor)
+                previous = conn.execute("SELECT * FROM corporate_actions WHERE operation_key=?",(key,)).fetchone()
+                if previous:
+                    if previous['kind']!='liquidation' or previous['source_code']!=str(code):
+                        raise ValueError('다른 기업행동에 이미 사용한 실행 식별자입니다.')
+                    return True,f'✅ `{code}` 청산 지급 기록을 확인했습니다. 중복 지급하지 않습니다.'
+                listing = self._dividend_listing(conn,code)
+                if listing['table']!='company':
+                    raise ValueError('청산할 회사 주식 또는 우선주 코드를 입력해주세요.')
+                issuer = self._issuer_code(listing)
+                issuer_row = conn.execute("SELECT * FROM company WHERE company_code=? AND share_class='common' AND status='active'",(issuer,)).fetchone()
+                if not issuer_row:
+                    raise ValueError('거래 중인 발행법인을 찾지 못했습니다.')
+                shares = conn.execute("SELECT * FROM company WHERE status='active' AND (company_code=? OR parent_company_code=?) ORDER BY dividend_priority DESC,company_code",(issuer,issuer)).fetchall()
+                codes = [str(row['company_code']) for row in shares]
+                placeholders = ','.join('?' for _ in codes)
+                if any((row['quote_currency'] or 'NWX')!='NWX' for row in shares):
+                    raise ValueError('법인 현금 청산은 NWX 주식에만 사용할 수 있습니다.')
+                if conn.execute(f"SELECT 1 FROM option_contracts WHERE status='active' AND underlying_code IN ({placeholders}) LIMIT 1",tuple(codes)).fetchone():
+                    raise ValueError('활성 옵션 계약과 담보를 먼저 정산해주세요.')
+                future_codes = [r['product_code'] for r in conn.execute(f"SELECT product_code FROM investment WHERE product_type='stock_future' AND underlying_code IN ({placeholders})",tuple(codes)).fetchall()]
+                if future_codes and conn.execute(f"SELECT 1 FROM futures_positions WHERE product_code IN ({','.join('?' for _ in future_codes)}) LIMIT 1",tuple(future_codes)).fetchone():
+                    raise ValueError('연결된 선물 포지션을 먼저 정산해주세요.')
+                if self._els_encumbered(conn,codes,issuer):
+                    raise ValueError('발행하거나 기초자산으로 연결된 ELS를 먼저 정산·취소해주세요.')
+                from managers.els_manager import ELSManager
+                if ELSManager.index_removal_blocked(conn,codes):
+                    raise ValueError('미상환 ELS의 기초지수를 구성하는 마지막 주식은 청산할 수 없습니다.')
+                cash = conn.execute('SELECT * FROM issuer_cash_accounts WHERE company_code=?',(issuer,)).fetchone()
+                if cash and int(cash['locked_amount']):
+                    raise ValueError('법인의 잠금 예치금을 먼저 정산해주세요.')
+                balance = int(cash['balance']) if cash else 0
+                initial = balance
+                bonds = conn.execute(f"SELECT * FROM investment WHERE product_type='corporate_bond' AND status IN ('active','defaulted') AND issuer_code IN ({placeholders})",tuple(codes)).fetchall()
+                if any((bond['quote_currency'] or 'NWX')!='NWX' for bond in bonds):
+                    raise ValueError('외화 회사채를 먼저 정산해주세요.')
+                debt_codes = [str(row['product_code']) for row in bonds]
+                cleanup_codes = codes+debt_codes+future_codes
+                for asset in cleanup_codes:
+                    orders = conn.execute("SELECT * FROM market_orders WHERE asset_code=? AND status IN ('open','partial')",(asset,)).fetchall()
+                    from managers.order_book_manager import OrderBookManager
+                    for order in orders:
+                        if order['side']=='buy' and int(order['reserved_cash'] or 0):
+                            OrderBookManager._credit_reserved_source(conn,order['user_id'],order['funding_account'],int(order['reserved_cash']),now)
+                        conn.execute("UPDATE market_orders SET status='cancelled',reserved_cash=0,updated_epoch=? WHERE order_id=?",(now,order['order_id']))
+                waterfall = []
+                debt = []
+                for bond in bonds:
+                    maturity = int(bond['maturity_epoch'] or now)
+                    duration = max(0,int(bond['maturity_days'] or 0))*86400
+                    elapsed = max(0,min(duration,now-(maturity-duration)))
+                    for holder in conn.execute('SELECT user_id,SUM(quantity) quantity FROM user_assets WHERE asset_code=? GROUP BY user_id ORDER BY user_id',(bond['product_code'],)).fetchall():
+                        quantity = int(holder['quantity'])
+                        principal = quantity*int(bond['face_value'])
+                        coupon = int((Decimal(principal)*Decimal(str(bond['annual_rate']))/100*Decimal(elapsed)/Decimal(365*86400)).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
+                        debt.append({'asset':bond['product_code'],'user':holder['user_id'],'quantity':quantity,'claim':principal+coupon,'principal':principal,'kind':'debt'})
+                claims = []
+                for claim in conn.execute("SELECT * FROM preferred_dividend_claims WHERE issuer_code=? AND status IN ('unpaid','partial') ORDER BY claim_id",(issuer,)).fetchall():
+                    if claim['quote_currency']!='NWX':
+                        raise ValueError('외화 미지급 배당채권을 먼저 정산해주세요.')
+                    claims.append({'asset':claim['asset_code'],'user':claim['user_id'],'quantity':int(claim['quantity']),
+                                   'claim':int(claim['gross_amount'])-int(claim['paid_amount']),'kind':'arrears','claim_id':int(claim['claim_id'])})
+                equity = defaultdict(list)
+                common = []
+                for stock in shares:
+                    for holder in conn.execute('SELECT user_id,SUM(quantity) quantity FROM user_assets WHERE asset_code=? GROUP BY user_id ORDER BY user_id',(stock['company_code'],)).fetchall():
+                        record = {'asset':stock['company_code'],'user':holder['user_id'],'quantity':int(holder['quantity']),'kind':'preferred' if stock['share_class']=='preferred' else 'common'}
+                        if stock['share_class']=='preferred':
+                            record['claim'] = record['quantity']*int(stock['liquidation_value_per_share'])
+                            equity[int(stock['dividend_priority'])].append(record)
+                        else:
+                            record['claim'] = record['quantity']
+                            common.append(record)
+                tiers = [debt,claims]+[equity[priority] for priority in sorted(equity,reverse=True)]
+                for tier in tiers:
+                    total = sum(item['claim'] for item in tier)
+                    payout = min(balance,total)
+                    allocations = self._allocate(payout,[item['claim'] for item in tier]) if total else [0]*len(tier)
+                    for item,amount in zip(tier,allocations):
+                        waterfall.append((item,amount))
+                    balance -= payout
+                if common:
+                    allocations = self._allocate(balance,[item['quantity'] for item in common])
+                    waterfall.extend(zip(common,allocations))
+                    balance = 0
+                # No outside shareholder leaves cash to the treasury as owner of
+                # the unissued residual; preference caps never become residual claims.
+                if balance:
+                    waterfall.append(({'asset':issuer,'user':TREASURY_USER_ID,'quantity':0,'claim':balance,'kind':'unowned_residual'},balance))
+                    balance = 0
+                if initial > self.MAX_MONEY or any(item['claim']>self.MAX_MONEY for item,_ in waterfall):
+                    raise ValueError('청산 채권 또는 지급액이 금액 한도를 초과했습니다.')
+                for item,amount in waterfall:
+                    taxable = amount if item['kind']=='arrears' else max(0,amount-item.get('principal',amount)) if item['kind']=='debt' else 0
+                    tax = UserManager._tax(conn,item['user'],f'liquidation:{item["kind"]}:{issuer}',taxable)
+                    net = amount-tax
+                    changed = conn.execute('UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?',(net,item['user'],self.MAX_MONEY-net))
+                    if changed.rowcount!=1:
+                        raise ValueError('청산금을 받을 사용자 또는 잔액 한도를 확인해주세요.')
+                    conn.execute('INSERT INTO corporate_liquidation_payments(operation_key,issuer_code,asset_code,user_id,kind,quantity,claim_amount,paid_amount,tax_amount,recorded_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                                 (key,issuer,item['asset'],item['user'],item['kind'],item['quantity'],item['claim'],amount,tax,now))
+                    conn.execute('INSERT INTO product_settlements(user_id,product_code,kind,quantity,gross_amount,tax_amount,recorded_epoch) VALUES (?,?,?,?,?,?,?)',
+                                 (item['user'],item['asset'],'liquidation:'+item['kind'],item['quantity'],amount,tax,now))
+                    if item['kind']=='arrears':
+                        conn.execute("UPDATE preferred_dividend_claims SET paid_amount=paid_amount+?,status=CASE WHEN paid_amount+?=gross_amount THEN 'paid' ELSE 'written_off' END WHERE claim_id=?",(amount,amount,item['claim_id']))
+                conn.execute('INSERT OR IGNORE INTO issuer_cash_accounts(company_code) VALUES (?)',(issuer,))
+                conn.execute('UPDATE issuer_cash_accounts SET balance=0 WHERE company_code=?',(issuer,))
+                for asset in cleanup_codes:
+                    conn.execute('DELETE FROM user_assets WHERE asset_code=?',(asset,))
+                    self._reset_market_state(conn,asset)
+                conn.execute(f"UPDATE company SET status='inactive',max_shareholder_id=NULL,dividend_next_epoch=NULL WHERE company_code IN ({placeholders})",tuple(codes))
+                conn.execute(f'DELETE FROM market_exchange_index_components WHERE company_code IN ({placeholders})',tuple(codes))
+                for asset in debt_codes+future_codes:
+                    conn.execute("UPDATE investment SET status='liquidated',dividend_next_epoch=NULL WHERE product_code=?",(asset,))
+                payload = {'issuer':issuer,'cash_available':initial,'codes':codes,'debt_codes':debt_codes,'payouts':len(waterfall),'cash_ledger_existed':bool(cash),
+                           'rule':'debt_accrued_interest,arrears,preferred_caps,common_residual; capital_not_cash'}
+                self._record(conn,key,'liquidation',str(code),None,payload,now)
+                self._audit(conn,actor,'liquidation',issuer,payload,now)
+            return True,f'✅ `{issuer}` 법인과 연결 우선주를 청산했습니다. 현금 {initial:,} NWX · 회사채 → 미지급 배당 → 우선주 한도 → 보통주 순서로 지급'
+        except (ValueError,TypeError,OverflowError) as exc:
+            return False,f'❌ {exc}'
 
     @staticmethod
     def record_issue_fill(conn, order_id, quantity, price):
@@ -206,10 +534,23 @@ class CorporateActionsManager:
                                (quantity * price, offering['asset_code'], CorporateActionsManager.MAX_MONEY - quantity * price))
         if changed.rowcount != 1:
             raise ValueError('신주 발행 법인의 자본금 한도를 초과합니다.')
+        company = conn.execute('SELECT dividend_funding,parent_company_code FROM company WHERE company_code=?', (offering['asset_code'],)).fetchone()
+        if company and company['dividend_funding'] == 'issuer':
+            issuer = company['parent_company_code'] or offering['asset_code']
+            proceeds = quantity * price
+            transferred = conn.execute('UPDATE users SET cash=cash-? WHERE user_id=? AND cash>=?', (proceeds, TREASURY_USER_ID, proceeds))
+            if transferred.rowcount != 1:
+                raise ValueError('신주 판매금을 법인 현금으로 이체할 국고 잔액이 부족합니다.')
+            conn.execute('INSERT OR IGNORE INTO issuer_cash_accounts(company_code) VALUES (?)', (issuer,))
+            funded = conn.execute('UPDATE issuer_cash_accounts SET balance=balance+? WHERE company_code=? AND balance<=?', (proceeds, issuer, CorporateActionsManager.MAX_MONEY-proceeds))
+            if funded.rowcount != 1:
+                raise ValueError('신주 발행 법인의 현금 한도를 초과합니다.')
         conn.execute('UPDATE corporate_equity_offerings SET sold_quantity=sold_quantity+? WHERE offering_id=?', (quantity, offering['offering_id']))
 
     @staticmethod
     def _unencumbered(conn, codes, allow_orders=False):
+        if CorporateActionsManager._els_encumbered(conn, codes):
+            raise ValueError('발행하거나 기초자산으로 연결된 ELS를 먼저 정산·취소해주세요.')
         for code in codes:
             if not allow_orders and conn.execute("SELECT 1 FROM market_orders WHERE asset_code=? AND status IN ('open','partial') LIMIT 1", (code,)).fetchone():
                 raise ValueError(f'`{code}`의 미체결 주문을 먼저 취소해주세요.')
@@ -344,6 +685,11 @@ class CorporateActionsManager:
                     raise ValueError('보통주와 우선주는 같은 종류끼리 합병해주세요.')
                 if a['table'] == 'company' and a['share_class'] == 'preferred' and a['parent_company_code'] != b['parent_company_code']:
                     raise ValueError('같은 발행 법인의 우선주끼리 합병해주세요.')
+                if a['table'] == 'company' and a['share_class'] == 'preferred' and any(a[field] != b[field] for field in ('dividend_priority','cumulative_dividend','liquidation_value_per_share','dividend_funding')):
+                    raise ValueError('배당·청산 우선 조건이 같은 우선주끼리 합병해주세요.')
+                from managers.els_manager import ELSManager
+                if ELSManager.index_removal_blocked(conn,[absorbed_code]):
+                    raise ValueError('미상환 ELS의 기초지수를 구성하는 마지막 주식은 합병할 수 없습니다.')
                 currency = a.get('quote_currency') or 'NWX'
                 if currency != (b.get('quote_currency') or 'NWX'):
                     raise ValueError('결제 통화가 같은 상품끼리 통합할 수 있습니다.')
@@ -351,6 +697,8 @@ class CorporateActionsManager:
                 if a['type'] in {'stock_future', 'corporate_bond'} and conn.execute('SELECT 1 FROM user_assets WHERE asset_code IN (?,?) LIMIT 1', (surviving_code, absorbed_code)).fetchone():
                     raise ValueError('채권·선물의 미상환 보유분을 먼저 정산해주세요.')
                 price_a, price_b = int(a[a['price_key']]), int(b[b['price_key']])
+                if a['table']=='company' and a['share_class']=='preferred' and a['liquidation_value_per_share']>0 and price_a!=price_b:
+                    raise ValueError('청산 한도가 있는 우선주는 교환 후 권리액 보존을 위해 가격이 같은 종목끼리만 합병할 수 있습니다.')
                 supply_a, supply_b = int(a[a['supply_key']] or 0), int(b[b['supply_key']] or 0)
                 if min(price_a, price_b, supply_a, supply_b) <= 0:
                     raise ValueError('가격과 발행량이 양수인 상품만 통합할 수 있습니다.')
@@ -399,6 +747,18 @@ class CorporateActionsManager:
                         raise ValueError('통합 법인의 자본금 한도를 초과합니다.')
                     conn.execute('UPDATE company SET total_shares=?,capital=? WHERE company_code=?', (new_supply, capital, surviving_code))
                     conn.execute('UPDATE company SET parent_company_code=? WHERE parent_company_code=?', (surviving_code, absorbed_code))
+                    if a['share_class'] == 'common':
+                        accounts = conn.execute('SELECT * FROM issuer_cash_accounts WHERE company_code IN (?,?)', (surviving_code, absorbed_code)).fetchall()
+                        if any(int(account['locked_amount']) for account in accounts):
+                            raise ValueError('법인의 잠금 예치금을 먼저 정산해주세요.')
+                        if accounts:
+                            balance = sum(int(account['balance']) for account in accounts)
+                            if balance > self.MAX_MONEY:
+                                raise ValueError('합병 법인의 현금 한도를 초과합니다.')
+                            conn.execute('INSERT OR IGNORE INTO issuer_cash_accounts(company_code) VALUES (?)', (surviving_code,))
+                            conn.execute('UPDATE issuer_cash_accounts SET balance=? WHERE company_code=?', (balance, surviving_code))
+                            conn.execute('DELETE FROM issuer_cash_accounts WHERE company_code=?', (absorbed_code,))
+                        conn.execute('UPDATE preferred_dividend_claims SET issuer_code=? WHERE issuer_code=?', (surviving_code, absorbed_code))
                     UserManager._refresh_max_shareholder(conn, surviving_code)
                 else:
                     conn.execute(f'UPDATE {a["table"]} SET {a["supply_key"]}=? WHERE {a["key"]}=?', (new_supply, surviving_code))

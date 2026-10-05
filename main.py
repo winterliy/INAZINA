@@ -15,6 +15,7 @@ from managers.futures_manager import FuturesManager
 from managers.fx_manager import FXManager
 from managers.admin_control_manager import AdminControlManager
 from managers.corporate_actions_manager import CorporateActionsManager
+from managers.els_manager import ELSManager
 from managers.market_session_manager import MarketSessionManager
 from functions.admin_prefix import AdminPrefixRegistry
 from functions.admin_access import BOOTSTRAP_ADMIN_IDS
@@ -58,6 +59,7 @@ class InazinaBot(discord.Client):
         self.command_registry = None
         self.admin_control = AdminControlManager(self)
         self.corporate_actions = CorporateActionsManager(self)
+        self.els_mgr = ELSManager(self.db,self.user_mgr)
         self.market_session = MarketSessionManager(self.db)
         self.prefix_registry = AdminPrefixRegistry(self)
         self._guild_commands_cleaned = False
@@ -188,13 +190,26 @@ class InazinaBot(discord.Client):
                         self._last_product_error_log = now
                         print(f"[Lottery Worker] {type(exc).__name__}: {exc}")
                 try:
-                    future_results = await asyncio.to_thread(self.futures_mgr.settle_positions)
-                    corporate_results = await asyncio.to_thread(self.investment_mgr.redeem_corporate_bonds)
-                    for result in future_results + corporate_results:
+                    settlement_results = []
+                    for label, settle in (('ELS',self.els_mgr.process_due),
+                                          ('Futures',self.futures_mgr.settle_positions),
+                                          ('Corporate Bond',self.investment_mgr.redeem_corporate_bonds)):
+                        try:
+                            settlement_results.extend(await asyncio.to_thread(settle))
+                            if label=='ELS' and self.els_mgr.last_settlement_errors:
+                                raise ValueError(str(self.els_mgr.last_settlement_errors))
+                        except Exception as exc:
+                            now = asyncio.get_running_loop().time()
+                            if now - self._last_product_error_log >= self.BACKGROUND_ERROR_LOG_INTERVAL_SECONDS:
+                                self._last_product_error_log = now
+                                print(f'[{label} Worker] {type(exc).__name__}: {exc}')
+                    for result in settlement_results:
                         try:
                             recipient_id = int(result["user_id"])
                             recipient = self.get_user(recipient_id) or await self.fetch_user(recipient_id)
-                            reason = {"futures_maturity": "선물 만기", "futures_liquidation": "선물 유지증거금 미달 청산"}.get(result.get("reason"), "회사채 만기")
+                            reason = {"futures_maturity": "선물 만기", "futures_liquidation": "선물 유지증거금 미달 청산",
+                                      "els_early": "ELS 조기상환", "els_maturity": "ELS 만기상환",
+                                      "els_maturity_loss": "ELS 만기 손실상환"}.get(result.get("reason"), "회사채 만기")
                             await recipient.send(embed=discord.Embed(title=f"📄 {reason}",
                                 description=f"`{result['product_code']}` 정산 · 지갑 입금 **{result['net']:,} NWX**", color=discord.Color.gold()))
                         except (discord.HTTPException, ValueError, TypeError):

@@ -18,10 +18,19 @@ from functions.technical_indicators import UPPER_INDICATORS, LOWER_INDICATORS, c
 from managers.market_manager import EXCHANGE_INDEX_PREFIX
 from managers.rate_manager import RateManager
 from managers.fx_manager import FXManager
+from functions.wallet_views import els_status_text
 
 
 def inverse_rate_text(rate):
     return format(Decimal(1) / Decimal(str(rate)), '.12g')
+
+
+def _els_manager(bot):
+    manager = getattr(bot, 'els_mgr', None)
+    if manager is None:
+        from managers.els_manager import ELSManager
+        manager = ELSManager(bot.db)
+    return manager
 
 
 class HelpLinksView(discord.ui.View):
@@ -680,6 +689,7 @@ class InfoPanelView(discord.ui.View):
         ("rates", "기준금리 · 법정이자"),
         ("stocks", "주식"),
         ("etf", "ETF"),
+        ("els", "ELS"),
         ("treasury_bond", "국채"),
         ("corporate_bond", "회사채"),
         ("stock_future", "주식 선물"),
@@ -738,7 +748,9 @@ class InfoPanelView(discord.ui.View):
                 metadata[row[code_field]] = dict(row)
         for asset in assets:
             details = metadata.get(asset['code'], {})
-            for field in ('share_class', 'parent_company_code', 'dividend_cycle_seconds', 'dividend_per_share'):
+            for field in ('share_class', 'parent_company_code', 'dividend_cycle_seconds', 'dividend_per_share',
+                          'dividend_mode', 'dividend_percent', 'dividend_is_active', 'dividend_priority',
+                          'cumulative_dividend', 'liquidation_value_per_share', 'dividend_funding'):
                 if field in details:
                     asset[field] = details[field]
         stocks = [
@@ -752,10 +764,16 @@ class InfoPanelView(discord.ui.View):
     def _dividend_note(item):
         cycle = float(item.get('dividend_cycle_seconds') or 0)
         per_share = float(item.get('dividend_per_share') or 0)
-        if cycle <= 0 or per_share <= 0:
+        percent = float(item.get('dividend_percent') or 0)
+        mode = item.get('dividend_mode') or 'fixed'
+        if cycle <= 0 or (percent if mode == 'percent' else per_share) <= 0:
             return ''
         period = f'{cycle / 86400:g}일' if cycle % 86400 == 0 else f'{cycle:g}초'
-        return f" · 정기배당 {period}마다 주·좌당 {per_share:,.0f} NWX"
+        inactive = item.get('dividend_is_active') == 0
+        status = ' **OFF · 지급 중지**' if inactive else ''
+        payment = (f'지급 시 가격의 {percent:g}%/주·좌' if mode == 'percent'
+                   else f"주·좌당 {per_share:,.0f} {item.get('quote_currency', 'NWX')}")
+        return f" · 정기배당{status} {period}마다 {payment}"
 
     def _category_lines(self, category, market_groups=None):
         stocks, investments = market_groups if market_groups is not None else self._market_groups()
@@ -775,6 +793,34 @@ class InfoPanelView(discord.ui.View):
         if category == "fx_savings":
             return [f"• **{r['name']}** (`{r['product_code']}`) · {r['currency_code']} · 연 {r['annual_rate']:g}%"
                     for r in self.bot.db.products.execute("SELECT * FROM fx_products WHERE status='active' ORDER BY name")]
+        if category == 'els':
+            lines = []
+            manager = None
+            for item in investments:
+                if str(item['type']).casefold() != 'els':
+                    continue
+                manager = manager or _els_manager(self.bot)
+                details = manager.get_details(item['code'])
+                if not details:
+                    continue
+                underlyings = ', '.join(f"`{row['code']}`" for row in details.get('underlyings', []))
+                next_epoch = details.get('next_observation_epoch')
+                next_text = f"<t:{int(next_epoch)}:f>" if next_epoch else '발행 후 확정'
+                next_level = details.get('next_redemption_level')
+                next_level_text = f'{float(next_level)*100:g}%' if next_level is not None else '없음'
+                subscription_end = details.get('subscription_end_epoch')
+                subscription_note = (f" · 모집 마감 <t:{int(subscription_end)}:f>"
+                                     if details.get('status') == 'subscription' and subscription_end else '')
+                lines.append(
+                    f"• **{str(details.get('name') or item['name'])[:70]}** (`{item['code']}`) · **{els_status_text(details)}**\n"
+                    f"  액면 {float(details['face_value']):,.0f} NWX/좌 · 연 쿠폰 {float(details['annual_coupon']):g}% · "
+                    f"낙인 {'발생' if details.get('knocked_in') else '미발생'}\n"
+                    f"  기초 {underlyings} · 만기 {float(details.get('maturity_days') or 0):g}일 · "
+                    f"다음 평가 {next_text} · 상환 {next_level_text} · "
+                    f"만기기준 {float(details['maturity_level'])*100:g}% · 낙인기준 {float(details['knock_in_level']) * 100:g}%"
+                    f"{subscription_note}"
+                )
+            return lines
         if category in {"etf", "treasury_bond", "corporate_bond", "stock_future", "commodity_futures", "mutual_fund", "index_fund", "commodity_spot", "option", "forex"}:
             def kind(item):
                 value = str(item['type']).casefold()
@@ -788,6 +834,10 @@ class InfoPanelView(discord.ui.View):
             for item in stocks:
                 preferred = item.get('share_class') == 'preferred'
                 class_note = ' · **우선주 · 의결권 없음**' if preferred else ''
+                if preferred:
+                    class_note += (' · 배당 우선' if int(item.get('dividend_priority') or 0) > 0 else '')
+                    class_note += ' · 누적형' if item.get('cumulative_dividend') else ' · 비누적형'
+                    class_note += f" · 청산 우선한도 {float(item.get('liquidation_value_per_share') or 0):,.0f} NWX/주"
                 price_text = self.bot.market_mgr.format_price(item["price"], item["type"])
                 risk = " · ⚠️ 위험 알림 (100 NWX 이하)" if item["price"] <= 100 else ""
                 lines.append(
@@ -910,14 +960,15 @@ class InfoPanelView(discord.ui.View):
             return embed
 
         lines = self._category_lines(self.category)
-        page_size = FXRatesView.PAGE_SIZE if self.category == 'forex' else self.PAGE_SIZE
+        page_size = (5 if self.category == 'els' else 10 if self.category == 'stocks'
+                     else FXRatesView.PAGE_SIZE if self.category == 'forex' else self.PAGE_SIZE)
         total_pages = max(1, (len(lines) + page_size - 1) // page_size)
         self.page = min(self.page, total_pages - 1)
         start = self.page * page_size
         page_lines = lines[start:start + page_size]
         embed = discord.Embed(
             title=f"ℹ️ {labels[self.category]}",
-            description="\n".join(line[:190] for line in page_lines)[:3900] if page_lines else "항목이 없습니다.",
+            description="\n".join(line[:700 if self.category == 'els' else 350 if self.category == 'stocks' else 190] for line in page_lines)[:3900] if page_lines else "항목이 없습니다.",
             color=discord.Color.blue(),
         )
         embed.set_footer(text=f"{len(lines)}개 · {self.page + 1}/{total_pages} 페이지")
@@ -1050,6 +1101,17 @@ class PriceMovementView(discord.ui.View):
         self.rate_key = RateManager.rate_key_from_code(self.asset_code)
         if self.rate_key is not None:
             self.asset_code = RateManager.chart_code(self.rate_key)
+        self.els_code = None
+        self.els_details = None
+        if self.rate_key is None and not self.asset_code.startswith(EXCHANGE_INDEX_PREFIX):
+            asset = self.bot.market_mgr.get_asset_info(self.asset_code)
+            if asset and asset.get('type') == 'els':
+                self.els_code = self.asset_code
+                self.els_details = _els_manager(self.bot).get_details(self.els_code)
+                underlyings = self.els_details.get('underlyings', []) if self.els_details else []
+                if not underlyings:
+                    raise ValueError('ELS 기초자산 정보를 찾을 수 없습니다.')
+                self.asset_code = str(underlyings[0]['code'])
         self.period_seconds = 3600
         self.period_select = discord.ui.Select(
             placeholder="캔들·X축 집계 주기를 선택하세요",
@@ -1091,6 +1153,46 @@ class PriceMovementView(discord.ui.View):
         self.lower_select.callback = self.select_lower
         self.add_item(self.upper_select)
         self.add_item(self.lower_select)
+        if self.els_code:
+            self.underlying_select = discord.ui.Select(
+                placeholder='ELS 기초자산 그래프를 선택하세요', row=4,
+                options=[discord.SelectOption(
+                    label=f"{row.get('name') or row['code']} ({row['code']})"[:100],
+                    value=str(row['code']), default=str(row['code']) == self.asset_code,
+                ) for row in self.els_details['underlyings']],
+            )
+            self.underlying_select.callback = self.select_underlying
+            self.add_item(self.underlying_select)
+
+    async def select_underlying(self, interaction):
+        selected = self.underlying_select.values[0]
+        valid_codes = {str(row['code']) for row in self.els_details['underlyings']}
+        if selected not in valid_codes:
+            return await send_interaction_notice(interaction, '❌ ELS의 기초자산을 선택해주세요.')
+        self.asset_code = selected
+        for option in self.underlying_select.options:
+            option.default = option.value == selected
+        await self._edit_chart(interaction)
+
+    def _els_levels(self):
+        if not self.els_code:
+            return []
+        self.els_details = _els_manager(self.bot).get_details(self.els_code)
+        if not self.els_details:
+            raise ValueError('ELS 발행 조건을 찾을 수 없습니다.')
+        row = next((item for item in self.els_details['underlyings'] if str(item['code']) == self.asset_code), None)
+        initial = float(row.get('initial_price') or 0) if row else 0
+        if initial <= 0:
+            return []
+        redemption = self.els_details.get('next_redemption_level')
+        if redemption is None:
+            redemption = self.els_details['maturity_level']
+        knock_in = float(self.els_details['knock_in_level'])
+        return [
+            {'label': 'INITIAL 100%', 'value': initial, 'color': (166, 181, 201)},
+            {'label': f'REDEEM {float(redemption)*100:g}%', 'value': initial*float(redemption), 'color': (74, 222, 128)},
+            {'label': f'KNOCK-IN {knock_in*100:g}%', 'value': initial*knock_in, 'color': (251, 191, 36)},
+        ]
 
     @staticmethod
     def _indicator_select(catalog, selected, placeholder, row):
@@ -1202,6 +1304,7 @@ class PriceMovementView(discord.ui.View):
         elif points[-1][0] < now:
             points.append((now, current_price))
 
+        els_levels = self._els_levels()
         png = render_price_chart(
             points, view_seconds, current_price=current_price,
             integer_prices=integer_prices, volumes=volumes,
@@ -1209,6 +1312,7 @@ class PriceMovementView(discord.ui.View):
             anchor_epoch=self.anchor_epoch, end_epoch=now,
             trades=None if is_exchange_index else [(int(row["recorded_epoch"]), int(row["quantity"]), float(row["price"])) for row in trade_rows],
             candle_seconds=self.period_seconds,
+            horizontal_levels=els_levels,
         )
         visible_points = [(epoch, price) for epoch, price in points if epoch >= since] or [(now, current_price)]
         first_price, last_price = visible_points[0][1], visible_points[-1][1]
@@ -1252,6 +1356,23 @@ class PriceMovementView(discord.ui.View):
                    else discord.Color.green() if change >= 0 else discord.Color.red()),
         )
         embed.set_image(url="attachment://movement.png")
+        if self.els_code:
+            details = self.els_details
+            next_epoch = details.get('next_observation_epoch')
+            next_text = f"<t:{int(next_epoch)}:f>" if next_epoch else '발행 후 확정'
+            barrier = '발생' if details.get('knocked_in') else '미발생'
+            embed.title = f"📊 ELS {self.els_code} · {asset['name']}"[:256]
+            embed.add_field(
+                name='📜 ELS 발행 조건',
+                value=(f"**{els_status_text(details)}** · 액면 {float(details['face_value']):,.0f} NWX/좌 · "
+                       f"연 쿠폰 {float(details['annual_coupon']):g}%\n"
+                       f"낙인 **{barrier}** · 다음 평가 {next_text}\n"
+                       "여러 기초자산 중 최초기준가 대비 가장 낮은 비율로 상환을 판단합니다. "
+                       "이 이미지는 선택한 기초자산 가격이며 ELS 평가가격이 아닙니다."),
+                inline=False,
+            )
+            if not els_levels:
+                embed.add_field(name='기준선 안내', value='모집 종료·발행 시 최초기준가와 상환·낙인 기준선이 확정됩니다.', inline=False)
         embed.add_field(name="상단 지표", value=" · ".join(UPPER_INDICATORS[k] for k in self.upper_indicators) or "모두 숨김", inline=False)
         embed.add_field(name="하단 지표", value=" · ".join(LOWER_INDICATORS[k] for k in self.lower_indicators) or "모두 숨김", inline=False)
         if "anchored_vwap" in self.upper_indicators:

@@ -16,6 +16,14 @@ class AssetDB(DBManager):
             asset_code TEXT NOT NULL, kind TEXT NOT NULL, due_epoch INTEGER NOT NULL,
             per_share INTEGER NOT NULL CHECK(per_share >= 0), quote_currency TEXT NOT NULL,
             gross_amount INTEGER NOT NULL DEFAULT 0, recorded_epoch INTEGER NOT NULL)""")
+        distribution_columns = {row[1] for row in self.execute("PRAGMA table_info(dividend_distributions)")}
+        for column, declaration in {
+            "dividend_mode": "TEXT NOT NULL DEFAULT 'fixed' CHECK(dividend_mode IN ('fixed','percent'))",
+            "dividend_percent": "REAL NOT NULL DEFAULT 0 CHECK(dividend_percent >= 0 AND dividend_percent <= 100)",
+            "reference_price": "INTEGER CHECK(reference_price > 0)",
+        }.items():
+            if column not in distribution_columns:
+                self.execute(f"ALTER TABLE dividend_distributions ADD COLUMN {column} {declaration}")
         self.execute("""CREATE TABLE IF NOT EXISTS dividend_payments (
             payment_id INTEGER PRIMARY KEY AUTOINCREMENT, distribution_id INTEGER NOT NULL,
             user_id TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity > 0),
@@ -81,11 +89,20 @@ class AssetDB(DBManager):
         for column, declaration in {
             "dividend_cycle_seconds": "INTEGER NOT NULL DEFAULT 0 CHECK(dividend_cycle_seconds >= 0)",
             "dividend_per_share": "INTEGER NOT NULL DEFAULT 0 CHECK(dividend_per_share >= 0)",
+            "dividend_mode": "TEXT NOT NULL DEFAULT 'fixed' CHECK(dividend_mode IN ('fixed','percent'))",
+            "dividend_percent": "REAL NOT NULL DEFAULT 0 CHECK(dividend_percent >= 0 AND dividend_percent <= 100)",
+            "dividend_is_active": "INTEGER NOT NULL DEFAULT 1 CHECK(dividend_is_active IN (0,1))",
             "dividend_next_epoch": "INTEGER",
+            "liquidity": "REAL DEFAULT NULL CHECK(liquidity IS NULL OR liquidity > 0)",
+            "trend_sensitivity": "REAL DEFAULT NULL CHECK(trend_sensitivity IS NULL OR trend_sensitivity >= 0)",
+            "sector_sensitivity": "REAL DEFAULT NULL CHECK(sector_sensitivity IS NULL OR sector_sensitivity >= 0)",
+            "jump_intensity": "REAL DEFAULT NULL CHECK(jump_intensity IS NULL OR jump_intensity >= 0)",
+            "mean_reversion": "REAL DEFAULT NULL CHECK(mean_reversion IS NULL OR mean_reversion >= 0)",
         }.items():
             if column not in market_columns:
                 self.execute(f"ALTER TABLE market_assets ADD COLUMN {column} {declaration}")
 
+        self.initialize_dividend_activation("market_assets", "code")
         # Holdings are account-scoped. A NULL account_number represents the user's wallet.
         # Migrate the old (user_id, asset_code) table without discarding existing positions.
         table_info = self.execute("PRAGMA table_info(user_assets)")

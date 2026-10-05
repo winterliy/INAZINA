@@ -10,12 +10,12 @@ from managers.fx_manager import SCALE, MAX_UNITS, amount_units, display_units
 
 COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값',
             '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','환율수정',
-            '복권가격설정','금리수정','법정이자수정','증자','정기배당수정','특별배당실시','합병',
-            '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카'}
+            '복권가격설정','금리수정','법정이자수정','증자','정기배당수정','정기배당활성','특별배당실시','합병',
+            '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소'}
 TYPES = {'company':'stock','주식':'stock','자산':'asset','ETF':'etf','선물':'future','주식선물':'future',
          '회사채':'corporatebond','일반펀드':'fund','펀드':'fund','인덱스펀드':'indexfund',
          '현물원자재':'commodity','원자재':'commodity','국채':'bond','저축':'saving',
-         '대출':'loan','옵션':'option','통화':'currency','외환통장':'fxproduct',
+         '대출':'loan','옵션':'option','통화':'currency','외환통장':'fxproduct','ELS':'els',
          'preferred':'stock','preferredstock':'stock','우선주':'stock',
          **{k:k for k in ENTITIES}, **{v:k for k,v in KINDS.items()}}
 USAGE = {
@@ -30,10 +30,13 @@ USAGE = {
  '복권가격설정':'[가격]', '금리수정':'[add/del/modify] [수치]',
  '법정이자수정':'[add/del/modify] [수치]',
  '증자':'[유상/무상] [종목id] [신주 수량] [유상 발행가(선택)]',
- '정기배당수정':'[id] [주기: 초 또는 1일/1주/1달] [주당 배당금]',
+ '정기배당수정':'[id] [주기: 초 또는 1일/1주/1달] [주당 금액 또는 비율%]',
+ '정기배당활성':'[id] [on/off 또는 1/0]',
  '특별배당실시':'[id] [주당 배당금]', '합병':'[존속 A id] [통합 B id]',
  '휴장':'', '개장':'', '장일시정지':'', '장재개':'',
  '서킷브레이커':'[1/2/3단계]', '사이드카':''}
+USAGE.update({'법인잔고수정':'[보통주 법인id] [add/del/modify] [금액]',
+              '법인청산':'[보통주 법인id]', 'ELS취소':'[ELS id]'})
 
 # Core positional arguments vary by product type; extra JSON is always optional.
 CREATE_ARGS = {
@@ -52,6 +55,8 @@ CREATE_ARGS = {
  'currency':('name','asset_code','nationality'),
  'fxproduct':('name','currency_code','annual_rate'),
  'preferred':('name','parent_company_code','capital','total_shares','share_price','exchange_id'),
+ 'els':('name','face_value','total_supply','underlyings','annual_coupon','maturity_days',
+        'observation_days','redemption_levels','maturity_level','knock_in_level','subscription_days','exchange_id'),
 }
 OPTIONAL_ARGS = {kind:('dividend_cycle_seconds','dividend_per_share')
                  for kind in ('stock','preferred','asset','etf','fund','indexfund','commodity')}
@@ -80,7 +85,7 @@ def creation_usage(kind,command='상품생성'):
     category=TYPES.get(kind,TYPES.get(kind.lower()))
     if category is None:raise ValueError('지원하지 않는 상품종류입니다.')
     profile=product_profile(kind)
-    return f'${command} [id] {kind} '+' '.join(f'[{field}{"(선택)" if field in OPTIONAL_ARGS.get(profile,()) else ""}]' for field in CREATE_ARGS[profile])+' [추가 JSON(선택)]'
+    return f'${command} [id] {kind} '+' '.join(f'[{"주당금액/비율%" if field == "dividend_per_share" else field}{"(선택)" if field in OPTIONAL_ARGS.get(profile,()) else ""}]' for field in CREATE_ARGS[profile])+' [추가 JSON(선택)]'
 
 
 def positional_tokens(tail):
@@ -149,8 +154,9 @@ class AdminCommandsManager:
             count={'상품가격수정':3,'상품삭제':1,'기본소득':1,'잔고수정':3,'등록':1,
                    '도박확률':1,'도박리턴값':1,'시장분위기':1,'상품분위기':2,
                    '복권당첨번호보기':0,'세율':1,'환율수정':3,'복권가격설정':1,
-                   '금리수정':2,'법정이자수정':2,'정기배당수정':3,'특별배당실시':2,'합병':2,
+                   '금리수정':2,'법정이자수정':2,'정기배당수정':3,'정기배당활성':2,'특별배당실시':2,'합병':2,
                    '휴장':0,'개장':0,'장일시정지':0,'장재개':0,'서킷브레이커':1,'사이드카':0}
+            count.update({'법인잔고수정':3,'법인청산':1,'ELS취소':1})
             if (command=='증자' and len(args) not in {3,4}) or (command not in {'복권당첨번호변경','증자'} and len(args)!=count.get(command,-1)):
                 raise ValueError(f'사용법: ${command} {USAGE.get(command,"")}')
             if command in {'휴장','개장','장일시정지','장재개','서킷브레이커','사이드카'}:
@@ -159,12 +165,21 @@ class AdminCommandsManager:
                 stage=int(args[0].removesuffix('단계')) if args else None
                 result=MarketSessionManager(self.db).control(actor,actions[command],stage=stage)
                 return self.result_text(result)
-            if command in {'증자','정기배당수정','특별배당실시','합병'}:
+            if command=='ELS취소':
+                from managers.els_manager import ELSManager
+                return self.result_text(ELSManager(self.db,self.bot.user_mgr).cancel(actor,args[0]))
+            if command in {'증자','정기배당수정','정기배당활성','특별배당실시','합병','법인잔고수정','법인청산'}:
                 from managers.corporate_actions_manager import CorporateActionsManager
                 manager=CorporateActionsManager(self.bot)
                 if command=='증자':result=manager.increase_capital(actor,args[0],args[1],self.control._number(args[2],1,integer=True),self.control._number(args[3],1,integer=True) if len(args)==4 else None)
-                elif command=='정기배당수정':result=manager.configure_dividend(actor,args[0],duration_seconds(args[1]),self.control._number(args[2],0,integer=True))
+                elif command=='정기배당수정':result=manager.configure_dividend(actor,args[0],duration_seconds(args[1]),args[2])
+                elif command=='정기배당활성':
+                    active={'on':1,'off':0,'1':1,'0':0}.get(args[1].lower())
+                    if active is None:raise ValueError('정기배당 활성값은 on/off 또는 1/0입니다.')
+                    result=manager.set_dividend_active(actor,args[0],active)
                 elif command=='특별배당실시':result=manager.special_dividend(actor,args[0],self.control._number(args[1],1,integer=True))
+                elif command=='법인잔고수정':result=manager.fund_issuer(actor,args[0],args[1],self.control._number(args[2],0,integer=True))
+                elif command=='법인청산':result=manager.liquidate(actor,args[0])
                 else:result=manager.merge(actor,*args)
                 return self.result_text(result)
             if command=='기본소득':
@@ -244,12 +259,12 @@ class AdminCommandsManager:
     def create(self,actor,raw,operation='create'):
         parts=raw.split(maxsplit=2)
         if len(parts)<2:
-            raise ValueError('$상품생성 '+USAGE['상품생성']+' · 상품종류: company, saving, loan, asset, etf, future, corporatebond, fund, indexfund, commodity, bond, option, currency, fxproduct')
+            raise ValueError('$상품생성 '+USAGE['상품생성']+' · 상품종류: company, preferred, saving, loan, asset, etf, future, corporatebond, fund, indexfund, commodity, bond, option, currency, fxproduct, els')
         code,kind=parts[:2]
         category=TYPES.get(kind,TYPES.get(kind.lower()))
         profile=product_profile(kind)
         if category is None:
-            raise ValueError('상품종류: company, saving, loan, asset, etf, future, corporatebond, fund, indexfund, commodity, bond, option, currency, fxproduct')
+            raise ValueError('상품종류: company, preferred, saving, loan, asset, etf, future, corporatebond, fund, indexfund, commodity, bond, option, currency, fxproduct, els')
         if len(parts)!=3:raise ValueError('사용법: '+creation_usage(kind,'상품수정' if operation=='edit' else '상품생성'))
         tail=parts[2]
         # Existing structured invocations remain compatible; the documented interface is positional.
@@ -280,6 +295,11 @@ class AdminCommandsManager:
                             fields[key][asset]=float(weight)
                     elif key=='dividend_cycle_seconds':
                         fields[key]=duration_seconds(value)
+                    elif key=='dividend_per_share':
+                        from managers.corporate_actions_manager import CorporateActionsManager
+                        fields.update(CorporateActionsManager.dividend_terms(value))
+                    elif profile=='els' and key in {'underlyings','observation_days','redemption_levels'}:
+                        fields[key]=value
                     elif key in TEXT_ARGS:
                         fields[key]=value
                     else:
@@ -288,6 +308,10 @@ class AdminCommandsManager:
             if set(fields)&set(extra):raise ValueError('추가 JSON에서 이미 입력한 인자를 중복 지정할 수 없습니다.')
             fields.update(extra)
         if not isinstance(fields,dict):raise ValueError('상품 설정은 JSON 객체여야 합니다.')
+        if category=='els':
+            if operation!='create':raise ValueError('ELS 발행조건은 변경할 수 없습니다. 모집 중 취소 후 새 상품을 생성해주세요.')
+            from managers.els_manager import ELSManager
+            return ELSManager(self.db,self.bot.user_mgr).create(actor,code,fields)
         if profile=='preferred':
             if fields.get('share_class','preferred')!='preferred':raise ValueError('우선주는 share_class=preferred여야 합니다.')
             fields['share_class']='preferred'

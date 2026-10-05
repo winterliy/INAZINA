@@ -176,6 +176,18 @@ class StochasticMarketTests(unittest.TestCase):
         self.market.update_prices(now=1000)
         self.assertNotEqual(self.state("CO")["innovation"], self.state("SPOT")["innovation"])
 
+    def test_price_profile_liquidity_changes_realized_chart_texture(self):
+        self.db.system.set_setting("garch_market_correlation", "1")
+        self.db.system.set_setting("auto_target_enabled", "0")
+        self.db.assets.register_asset("DEEP", "Deep", "EX", 1000000, "commodity_spot")
+        self.db.companies.execute("UPDATE company SET liquidity = 0.25 WHERE company_code = 'CO'")
+        self.db.assets.execute("UPDATE market_assets SET liquidity = 4 WHERE code = 'DEEP'")
+        self.factor(1000, 1)
+        self.market.update_prices(now=1000)
+        shallow_move = abs(self.state("CO")["latent_price"] - 1000000)
+        deep_move = abs(self.state("DEEP")["latent_price"] - 1000000)
+        self.assertGreater(shallow_move, deep_move)
+
     def test_fractional_prices_accumulate_and_duplicate_restart_does_not_resample(self):
         self.db.companies.update_share_price("CO", 1000)
         self.db.system.set_setting("garch_market_correlation", "1")

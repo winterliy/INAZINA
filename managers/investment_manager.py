@@ -193,8 +193,12 @@ class InvestmentManager:
                     coupon = round_money(principal * float(product["annual_rate"]) / 100 * int(product["maturity_days"]) / 365)
                     payments.append((holder["user_id"], int(holder["quantity"]), principal, coupon))
                 due = sum(p + c for _, _, p, c in payments)
-                changed = conn.execute("UPDATE company.company SET capital = capital - ? WHERE company_code = ? AND capital >= ?",
-                                       (due, product["issuer_code"], due))
+                cash_account=conn.execute('SELECT 1 FROM issuer_cash_accounts WHERE company_code=?',(product['issuer_code'],)).fetchone()
+                if cash_account:
+                    changed=conn.execute('UPDATE issuer_cash_accounts SET balance=balance-? WHERE company_code=? AND balance>=?',(due,product['issuer_code'],due))
+                else:
+                    changed = conn.execute("UPDATE company.company SET capital = capital - ? WHERE company_code = ? AND capital >= ?",
+                                           (due, product["issuer_code"], due))
                 if changed.rowcount != 1 and due:
                     conn.execute("UPDATE product.investment SET status = 'defaulted' WHERE product_code = ?", (product["product_code"],))
                     continue

@@ -14,6 +14,12 @@ DB `users.role=admin`만 `$` 명령어에 응답한다. 일반 사용자의 입�
 | `$상품가격수정` | `[종목id] [add/del/modify] [금액]` · 가격 더하기/빼기/지정값 |
 | `$상품생성` | `[id] [상품종류] [유형별 순서형 인자 ...] [추가 JSON(선택)]` |
 | `$상품삭제` | `[id]` · 기록을 보존하고 거래 중지; 미체결 주문·계약 의무는 먼저 정리 |
+| `$정기배당수정` | `[id] [주기] [주당 배당금 또는 비율%]` · 고정금액/가격 기준 비율 중 하나로 정규배당 설정 |
+| `$정기배당활성` | `[id] [on/off]` · 주기·금액을 유지하며 정규배당 켜기/끄기 |
+| `$법인잔고수정` | `[보통주회사id] [add/del/modify] [금액]` · 자본금과 별도인 법인 현금 계정 조정 |
+| `$법인청산` | `[보통주회사id]` · 채무·확정 배당·우선주·보통주 순으로 법인 현금 배분 |
+| `$ELS취소` | `[id]` · 모집 중 ELS 청약금·쿠폰 예치금 환불 |
+| `$특별배당실시` | `[id] [주당 배당금]` · 정규배당 활성 상태와 별도로 일회 지급 |
 | `$기본소득` | `[금액]` · 국고에서 시민에게 지급 |
 | `$사건` | 인자 없이 실행 → DM 버튼 → 상품코드·호악재·duration·변동률·선택 목표금액 모달 |
 | `$잔고수정` | `[user_id/계좌번호] [add/del/modify] [금액]` · 사용자 지갑 또는 일반/외환통장 잔고 |
@@ -40,7 +46,7 @@ $금리수정 modify 3
 $법정이자수정 modify 5
 ```
 
-생성 유형은 `company`(주식, `stock` 별칭도 지원), `asset`(시장 자산), `etf`, `future`(주식 선물), `corporatebond`(회사채), `fund`(일반 펀드), `indexfund`, `commodity`(현물 원자재), `bond`(국채), `saving`(저축), `loan`(대출), `option`, `currency`(통화), `fxproduct`(외환통장)다. 한글 유형도 지원한다. 두 번째 인자인 상품종류에 따라 이후 인자의 이름과 순서가 달라진다. 공백이 있는 이름·문자열은 따옴표로 묶는다. 마지막 추가 JSON은 선택 사항이며 `quote_currency`, `is_fixed` 등 기본 인자 외 설정을 지정할 때만 사용한다. 이미 입력한 기본 인자를 JSON에서 중복 지정할 수 없다. 이전 key=value·전체 JSON 입력은 호환용으로만 유지한다.
+생성 유형은 `company`(주식, `stock` 별칭도 지원), `preferred`(우선주), `asset`(시장 자산), `etf`, `els`, `future`(주식 선물), `corporatebond`(회사채), `fund`(일반 펀드), `indexfund`, `commodity`(현물 원자재), `bond`(국채), `saving`(저축), `loan`(대출), `option`, `currency`(통화), `fxproduct`(외환통장)다. 한글 유형도 지원한다. 두 번째 인자인 상품종류에 따라 이후 인자의 이름과 순서가 달라진다. 공백이 있는 이름·문자열은 따옴표로 묶는다. 마지막 추가 JSON은 선택 사항이며 `quote_currency`, `is_fixed`, `dividend_is_active` 등 기본 인자 외 설정을 지정할 때만 사용한다. 이미 입력한 기본 인자를 JSON에서 중복 지정할 수 없다. 이전 key=value·전체 JSON 입력은 호환용으로만 유지한다.
 
 ```text
 $상품생성 SAV saving "새 적금" 3 1000 30 86400 1 Inazina
@@ -138,15 +144,17 @@ $상품생성 CALL1 option INZST001 call 1500 30 1 100 50
 
 ## 상품생성 인자 순서
 
-공통 앞부분은 `$상품생성 [id] [상품종류]`이며, 아래 인자를 순서대로 입력한다. 마지막 `[추가 JSON]`은 모든 유형에서 선택 사항이다.
+공통 앞부분은 `$상품생성 [id] [상품종류]`이며, 아래 인자를 순서대로 입력한다. `id`는 다른 상품과 겹치지 않는 종목 코드로 이후 검색·거래·수정에서 사용한다. `상품종류`는 아래 표의 유형이며 뒤의 인자 순서를 결정한다. `[ ]` 기호는 직접 입력하지 않는다. 마지막 `[추가 JSON]`은 모든 유형에서 선택 사항이다.
 
 | 상품종류 | 순서형 인자 |
 |---|---|
 | `company` | `name` → `industry` → `capital` → `total_shares` → `share_price` → `exchange_id` |
+| `preferred` | `name` → `parent_company_code` → `capital` → `total_shares` → `share_price` → `exchange_id` |
 | `asset` | `name` → `type` → `price` → `total_supply` → `exchange_id` |
 | `saving` | `name` → `interest_rate` → `deposit_amount` → `maturity_days` → `interest_cycle` → `compound_type` → `issuer` |
 | `loan` | `name` → `interest_rate` → `loan_limit` → `maturity_days` → `interest_cycle` → `min_credit_score` → `issuer` |
 | `etf` | `name` → `unit_price` → `total_supply` → `underlying_exchange_id` → `leverage_multiplier` → `rebalance_cycle_seconds` → `exchange_id` |
+| `els` | `name` → `face_value` → `total_supply` → `underlyings` → `annual_coupon` → `maturity_days` → `observation_days` → `redemption_levels` → `maturity_level` → `knock_in_level` → `subscription_days` → `exchange_id` |
 | `future` | `name` → `unit_price` → `total_supply` → `underlying_code` → `maturity_days` → `contract_size` → `initial_margin` → `maintenance_margin` → `exchange_id` |
 | `corporatebond` | `name` → `unit_price` → `total_supply` → `issuer_code` → `face_value` → `annual_rate` → `maturity_days` → `exchange_id` |
 | `fund` | `name` → `unit_price` → `total_supply` → `components` → `exchange_id` |
@@ -157,7 +165,93 @@ $상품생성 CALL1 option INZST001 call 1500 30 1 100 50
 | `currency` | `name` → `asset_code` → `nationality` |
 | `fxproduct` | `name` → `currency_code` → `annual_rate` |
 
-`compound_type`은 0=단리, 1=복리이고 `interest_cycle`은 초 단위다. 펀드 `components`는 `INZST001:0.5,INZST002:0.5`처럼 입력하며 비중의 합은 1이다.
+각 인자의 의미는 다음과 같다. 금액은 상품의 결제 통화 기준이며 기본 통화는 NWX다.
+
+| 인자 | 의미·단위 |
+|---|---|
+| `name` | 화면에 표시할 상품 이름. 공백이 있으면 `"새 주식"`처럼 따옴표로 묶는다. |
+| `industry` | 회사 업종. 종목별 섹터 분류에 사용한다. |
+| `capital` | 회사 자본금. |
+| `total_shares` / `total_supply` | 발행 주식 수 / 상품의 전체 발행 수량. 단, `bond`의 `total_supply`는 **수량이 아니라 총 액면 발행한도(NWX)**다. 액면가의 배수로 입력하며 발행 매수는 `total_supply / face_value`다. 회사채 `corporatebond`는 발행 개수다. |
+| `share_price` / `price` / `unit_price` / `market_price` | 생성 시 1주 / 자산 1단위 / 상품 1좌·단위 / 채권 1개 가격. |
+| `exchange_id` | 상품이 상장되는 거래소 ID. |
+| `parent_company_code` | 우선주가 소속될 보통주 회사의 종목 ID. |
+| `type` | `asset`의 자산 유형. 예: `stock`, `commodity_spot`. |
+| `interest_rate` / `annual_rate` | 연이율(%). `3`은 연 3%다. |
+| `deposit_amount` | 저축 상품의 최소 예치금. |
+| `maturity_days` | 만기까지의 일수. 저축·대출은 가입일, 옵션·선물·회사채는 생성일, 국채 1차 매수는 매수일을 기준으로 한다. |
+| `interest_cycle` | 이자 계산 주기(초). `86400`은 1일이다. |
+| `compound_type` | `0`은 단리, `1`은 복리. |
+| `issuer` | 저축·대출 상품의 발행기관 이름. |
+| `loan_limit` | 대출 한도. `0`은 한도 없음. |
+| `min_credit_score` | 대출 신청에 필요한 최소 신용점수. |
+| `underlying_exchange_id` | ETF·인덱스 펀드가 추종할 거래소의 ID. |
+| `leverage_multiplier` | ETF의 추종 배율. `1`은 1배, `2`는 2배다. |
+| `rebalance_cycle_seconds` | ETF 재조정 주기(초). |
+| `underlying_code` | 선물·옵션의 기초 종목 ID. |
+| `contract_size` | 선물 1계약에 해당하는 기초 종목 수량. |
+| `initial_margin` / `maintenance_margin` | 선물 최초 / 유지 증거금 비율. `0.2`는 20%다. |
+| `issuer_code` | 회사채를 발행할 회사의 종목 ID. |
+| `face_value` | 채권 1개 만기 상환의 기준 액면가. |
+| `components` | 펀드 구성 종목과 비중. `INZST001:0.5,INZST002:0.5`처럼 입력하며 합계는 1이다. 구성 종목은 활성 회사 주식이어야 한다. |
+| `option_type` | 콜 `call` 또는 풋 `put`. |
+| `strike_price` | 옵션 행사 가격. |
+| `quantity` | 생성·매도할 옵션 계약 수. |
+| `limit_price` | 작성한 옵션의 매도 지정가(계약당 프리미엄). |
+| `volatility_percent` | 옵션 평가에 쓰는 변동성(%). |
+| `asset_code` | 통화에 연결할 환율 자산의 종목 ID. 먼저 `asset` 유형에서 `type=forex`인 활성 자산을 생성해야 한다. |
+| `nationality` | 해당 통화를 기본 통화로 연결할 국적. |
+| `currency_code` | 외환통장의 통화 코드. 예: `USD`. |
+| `extension_min_credit_score` / `extension_days` | 대출 만기 연장에 필요한 최소 신용점수 / 허용 연장일수. |
+| `underlyings` | ELS의 활성 주식·거래소지수 코드 1~3개. `ST,__exchange_index__:INZ`처럼 쉼표로 구분한다. |
+| `annual_coupon` | ELS 연 쿠폰(%). `12`는 연 12%다. |
+| `observation_days` / `redemption_levels` | ELS 발행 후 조기평가일수 / 해당 회차 상환 기준(%). 예: `30,60,90` / `90,85,80`. |
+| `maturity_level` / `knock_in_level` | ELS 만기 상환 / 낙인 기준(%). 최초기준가에 대한 비율이며 낙인 기준은 만기 기준 이하다. |
+| `subscription_days` | ELS 생성 후 모집 기간(일). 실제 발행은 모집 종료 후 다음 유효 가격 틱이다. |
+
+예를 들어 `$상품생성 ST company "배당 회사" 게임 1000000 10000 100 INZ 1주 5`는 종목 ID `ST`, 주식, 이름 `배당 회사`, 업종 `게임`, 자본금 1,000,000 NWX, 10,000주 발행, 주가 100 NWX, 거래소 `INZ`, 매주 주당 5 NWX 배당을 뜻한다.
+
+국채 예시에서 `$상품생성 GB bond "새 국채" 1000 100000 1000 3 90 BOND`는 1매 가격 1,000 NWX, 총 액면 발행한도 100,000 NWX, 액면가 1,000 NWX, 발행 100매, 연이율 3%, 만기 90일을 뜻한다.
+
+옵션 생성은 국가 명의로 담보를 설정하고 매도 지정가 주문을 등록한다. 콜은 계약당 기초주식 1주, 풋은 `행사가 × 계약수`만큼 국고 현금이 필요하다. 기초자산은 NWX 결제 활성 주식만 지원하며 만기는 1~365일, 평가 변동성은 1~500%다. 선물·회사채의 기초/발행 회사도 NWX 결제 활성 회사 주식이어야 하며 만기는 1~3650일이다. 선물 증거금은 `0 < 유지증거금 ≤ 초기증거금 ≤ 1`로 입력한다.
+
+`company`, `preferred`, `asset`, `etf`, `fund`, `indexfund`, `commodity`는 위 기본 인자 뒤에 선택 인자 **`[정규배당주기] [주당 배당금 또는 비율%]`**을 함께 입력하거나 함께 생략한다. `5`는 1주당 고정 5, `5%`는 지급 시점 가격의 5%다. 두 방식을 동시에 적용하지 않는다. 이 비율은 기업 이익 중 배당 비중을 뜻하는 배당성향이 아니라 **가격 기준 비율배당**이다. `asset`의 배당은 주식(`stock`/`주식`)과 현물 원자재(`commodity_spot`)만 지원한다. ETF·펀드·현물 상품은 1좌/1단위당 금액 또는 가격을 기준으로 한다. 채권은 계약 이자, 선물·옵션은 계약 정산을 사용한다.
+
+- 정규배당주기: DB 컬럼 `dividend_cycle_seconds`. 초 단위 숫자 또는 `1일`, `1주`, `1달` 입력. `1달`은 고정 30일이다.
+- 배당 방식: DB 컬럼 `dividend_mode`. `fixed`는 주당 고정금액, `percent`는 지급 시점 가격 기준 비율배당이다. 기존 상품의 기본값은 `fixed`다.
+- 주당 고정 배당금: DB 컬럼 `dividend_per_share`. 상품의 결제 통화 기준 0 이상의 정수이며 `fixed` 방식에서 사용한다.
+- 가격 기준 배당 비율: DB 컬럼 `dividend_percent`. 0~100%이며 소수 입력도 가능하다. `5%` 입력은 `percent` 방식과 비율 `5`로 저장한다.
+- 정규배당 활성: DB 컬럼 `dividend_is_active`. `1`은 ON, `0`은 OFF이며 기본값은 `1`이다. 기존 상품의 다른 활성 상태와 구분한 배당 전용 스위치다.
+- 다음 지급 시각: DB 컬럼 `dividend_next_epoch`. 생성·설정 시점 + 주기로 자동 예약한다.
+- 생성 시 배당 선택 인자를 생략하면 고정금액 `0`(배당 없음), `$상품수정`에서 생략하면 기존 배당 설정을 유지한다. 주기가 `0`이거나 선택한 방식의 금액·비율이 `0`이면 자동배당이 지급되지 않는다.
+- `loan`은 별도로 `[extension_min_credit_score] [extension_days]`를 선택 입력한다.
+
+배당 컬럼은 단일 `database/inazina.db`의 `company`, `market_assets`, `investment` 테이블에 저장된다. 기존 DB도 봇 시작 시 누락된 컬럼을 자동으로 추가한다.
+
+```text
+$상품생성 ST company "배당 회사" 게임 1000000 10000 100 INZ 1주 5
+$상품생성 PR preferred "배당 회사 우선주" ST 100000 1000 90 INZ 1주 7
+$상품생성 CM commodity "현물 상품" 100 1000 COM 1일 2
+$상품생성 PC company "비율 배당 회사" 게임 1000000 10000 100 INZ 1주 5%
+$상품생성 OFF company "배당 중지 회사" 게임 1000000 10000 100 INZ 1주 5 {"dividend_is_active":0}
+$정기배당수정 ST 1달 10
+$정기배당수정 ST 1주 5%
+$정기배당활성 ST off
+$정기배당활성 ST on
+$특별배당실시 ST 20
+```
+
+`$정기배당수정 ST 1주 5%`는 매주 가격 기준 5% 배당으로 바꾸고, `ST 1주 5`는 매주 주당 고정 5 배당으로 바꾼다. `$정기배당활성 ST off`는 주기·방식·금액·비율을 유지한 채 다음 예약을 비운다. `on`으로 다시 켜면 명령 실행 시점부터 한 주기 뒤 첫 지급을 예약하며 중단기간의 배당을 소급 지급하지 않는다. OFF 상태에서 `$정기배당수정`으로 설정을 바꿔도 OFF는 유지된다. 특별배당은 이 스위치와 무관하게 `$특별배당실시`의 주당 고정금액으로 지급한다.
+
+DB Browser에서 `dividend_is_active`를 직접 변경할 수도 있다. 활성값 변경 시 DB 트리거가 기존 지급 예약을 비운다. 직접 ON으로 바꾸면 다음 배당 작업 처리 시점부터 한 주기 뒤를 예약한다. `/검색`은 주기·금액 또는 비율이 설정된 OFF 상품에 **정기배당 OFF · 지급 중지**를 표시한다.
+
+정기배당은 지급 시점 보유량을 기준으로 계산한다. 고정금액 방식은 `보유량 × 주당 고정 배당금`, 비율 방식은 `보유량 × 지급 시점 주가·상품가격 × 배당 비율 / 100`이다. 비율 방식은 사용자별 보유량을 합산한 뒤 세전 지급액을 정수 통화 단위로 반올림하며 0.5는 올린다. 예를 들어 가격 103 NWX, 3주 보유, 비율 5%라면 세전 배당은 `103 × 3 × 0.05 = 15.45`를 반올림한 15 NWX다. 국고 재원에서 지급하고 세금을 원천징수한다. NWX 배당은 지갑, 외화 배당은 해당 외환통장에 입금한다. 매도 주문으로 잠긴 수량과 콜옵션 담보 수량도 소유자의 배당 대상이다. 국고 보유 수량은 지급 대상에서 제외한다. 재원 부족이면 해당 회차 전체를 취소하고 다음 처리에서 재시도한다. 봇 재시작 후에도 회차별 중복 지급을 방지하며, 누락된 회차는 한 번의 처리에서 종목당 최대 20회씩 따라잡는다. 누락 회차의 비율배당은 재처리하여 실제 지급하는 시점의 현재가격을 사용하며 과거가격을 복원하지 않는다.
+
+회차 기록은 `dividend_distributions`, 사용자별 수령 기록은 `dividend_payments`에 저장된다. 회차별로 배당 방식·기준가격·비율을 확정해 저장하므로 이후 가격이나 설정이 바뀌어도 이미 지급한 내역의 계산 근거는 유지된다. 현재 배당 지급 시 가격을 자동으로 배당락 조정하지는 않는다.
+
+법인 재원 배당은 `company.dividend_funding='issuer'`로 지정한다. 보통주와 연결 우선주가 공유하는 `issuer_cash_accounts`에 `$법인잔고수정`으로 현금을 확보한다. 우선주 `dividend_priority`, `cumulative_dividend`, `liquidation_value_per_share`로 지급 우선·미지급 누적·청산 우선한도를 설정하며, 확정 채권은 `preferred_dividend_claims`에 수령자별로 보존한다. 같은 법인의 보통주보다 우선주를 먼저 지급하고 누적형의 부족액은 채권으로 남긴다. 이 경로는 위 국고 배당의 회차 전체 재시도와 구분한다.
+
+ELS는 `/매수`에서 모집 중 액면으로 청약하고 청약 원금·발행자 최대 쿠폰을 예치한다. 모집 종료 후 최초기준가를 확정하며 이후 추가 청약·매도·중도환매를 허용하지 않는다. `/검색`·`/내지갑`에 ELS 카테고리, `/그래프`에 기초자산 선택·상환·낙인 기준선을 제공한다. 발행 조건·평가·낙인·정산 이력은 차트 일일 삭제 대상에 포함하지 않는다. 상세 생성 예시·법인 청산·상환 규칙은 [우선주·ELS 운영 안내](preferred_and_els_plan.md)를 참고한다.
 
 ```text
 $상품생성 FIX company "고정 주식" 게임 100000000 100000 1000 INZ {"is_fixed":1}

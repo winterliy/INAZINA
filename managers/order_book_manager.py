@@ -23,6 +23,14 @@ class OrderBookManager:
         user_id = str(user_id)
         asset_code = str(asset_code).strip()
         side = str(side).casefold()
+        product = self.db.products.execute_one('SELECT product_type,face_value FROM investment WHERE product_code=?',(asset_code,))
+        if product and product['product_type']=='els':
+            if side!='buy':return False,'❌ ELS는 모집 중 액면 청약만 가능합니다. 중도 매도·환매는 지원하지 않습니다.'
+            if isinstance(limit_price,bool) or not isinstance(limit_price,int) or not 1 <= limit_price <= self.MAX_LIMIT_PRICE:
+                return False,'❌ 지정가는 1 이상의 정수 NWX여야 합니다.'
+            if limit_price < product['face_value']:return False,'❌ ELS 청약 지정가는 액면가 이상이어야 합니다.'
+            from managers.els_manager import ELSManager
+            return ELSManager(self.db,self.user_manager).subscribe(user_id,asset_code,quantity)
         foreign = self.db.assets.execute_one("SELECT quote_currency FROM market_assets WHERE code=? UNION ALL SELECT quote_currency FROM company WHERE company_code=? UNION ALL SELECT quote_currency FROM investment WHERE product_code=?",(asset_code,asset_code,asset_code))
         if foreign and foreign['quote_currency']!='NWX':
             from managers.foreign_securities_manager import ForeignSecuritiesManager
@@ -333,9 +341,16 @@ class OrderBookManager:
         proceeds = int(price * quantity)
         product = conn.execute("SELECT product_type, issuer_code FROM product.investment WHERE product_code = ?",
                                (buy_order["asset_code"],)).fetchone()
-        if product and product["product_type"] == "corporate_bond":
+        if source=='company' and conn.execute("SELECT 1 FROM company WHERE company_code=? AND dividend_funding='issuer'",(buy_order['asset_code'],)).fetchone():
+            owner=conn.execute('SELECT COALESCE(parent_company_code,company_code) FROM company WHERE company_code=?',(buy_order['asset_code'],)).fetchone()[0]
+            conn.execute('INSERT OR IGNORE INTO issuer_cash_accounts(company_code) VALUES (?)',(owner,))
+            cursor=conn.execute('UPDATE issuer_cash_accounts SET balance=balance+? WHERE company_code=? AND balance<=?',(proceeds,owner,self.MAX_LIMIT_PRICE-proceeds))
+        elif product and product["product_type"] == "corporate_bond":
             cursor = conn.execute("UPDATE company.company SET capital = capital + ? WHERE company_code = ?",
                                   (proceeds, product["issuer_code"]))
+            if conn.execute('SELECT 1 FROM issuer_cash_accounts WHERE company_code=?',(product['issuer_code'],)).fetchone():
+                cash_credit=conn.execute('UPDATE issuer_cash_accounts SET balance=balance+? WHERE company_code=? AND balance<=?',(proceeds,product['issuer_code'],self.MAX_LIMIT_PRICE-proceeds))
+                if cash_credit.rowcount!=1:raise ValueError('법인 현금 한도를 초과합니다.')
         else:
             cursor = conn.execute("UPDATE users.users SET cash = cash + ? WHERE user_id = ?", (proceeds, TREASURY_USER_ID))
         if cursor.rowcount != 1:

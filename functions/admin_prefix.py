@@ -348,9 +348,12 @@ class TreasuryAssetsView(discord.ui.View):
         super().__init__(timeout=300)
         self.bot,self.owner,self.info,self.page = bot,str(owner),info,0
         self.category='main'
-        self.sections={'accounts':[],'fx_accounts':[],'stocks':[],'bonds':[],'written':[],'loans':[]}
+        self.sections={'accounts':[],'fx_accounts':[],'stocks':[],'bonds':[],'written':[],'loans':[],'els':[],'preferred_claims':[]}
         self.labels={'main':'🏛️ 메인','accounts':'🏦 통장','fx_accounts':'💱 외환통장','stocks':'📈 보유 투자상품',
-                     'bonds':'📜 국채','written':'✍️ 작성 옵션','loans':'💳 대출'}
+                     'bonds':'📜 국채','written':'✍️ 작성 옵션','loans':'💳 대출','els':'🧾 ELS','preferred_claims':'💰 미지급 배당'}
+        from functions.wallet_views import els_position_lines,preferred_claim_lines
+        self.sections['els']=els_position_lines(info.get('els_positions',[]))
+        self.sections['preferred_claims']=preferred_claim_lines(info.get('preferred_dividend_claims',[]))
         self.items = []
         for item in info['accounts']:
             self.sections['accounts'].append((f"통장 · {item['product_name']}",f"{item['number']}\n잔액 {item['balance']:,} NWX"))
@@ -392,6 +395,7 @@ class TreasuryAssetsView(discord.ui.View):
         if self.category=='main':
             for label,key in [('현금','cash'),('통장 잔액','account_total'),('외환 평가액','fx_total'),
                     ('투자자산 평가액','stock_total'),('국채 평가액','bond_total'),('매수 주문 예치금','order_reserved_total'),
+                    ('ELS 청약·보유 원금','els_total'),('미지급 배당 명목액','preferred_claim_total'),
                     ('풋 옵션 현금담보','option_collateral_cash'),('옵션 작성 의무 평가','option_short_liability'),
                     ('총자산','grand_total'),('대출 잔액','loan_total'),('순자산','net_worth')]:
                 sign='−' if key=='option_short_liability' and info.get(key,0) else ''

@@ -10,7 +10,7 @@ from functions.technical_indicators import build_candles, candle_interval, calcu
 
 def render_chart(points, period_seconds, current_price=None, width=960, height=500,
                  integer_prices=False, volumes=None, upper_indicators=None, lower_indicators=None,
-                 anchor_epoch=None, end_epoch=None, trades=None, candle_seconds=None):
+                 anchor_epoch=None, end_epoch=None, trades=None, candle_seconds=None, horizontal_levels=None):
     background, grid, text = (11, 18, 32), (38, 52, 73), (166, 181, 201)
     rising, falling = (239, 68, 68), (59, 130, 246)
     end = int(time.time() if end_epoch is None else end_epoch)
@@ -30,8 +30,15 @@ def render_chart(points, period_seconds, current_price=None, width=960, height=5
     if "high_low" in upper_data and visible:
         for series, value in zip(upper_data["high_low"], (max(c["high"] for _, c in visible), min(c["low"] for _, c in visible))):
             series["values"] = [value] * len(candles)
+    levels = []
+    for item in horizontal_levels or ():
+        value = float(item['value'])
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError('가격 기준선은 0보다 큰 유한한 값이어야 합니다.')
+        levels.append({'label': str(item['label'])[:25], 'value': value,
+                       'color': tuple(item.get('color', (251, 191, 36)))})
     legend = [s for group in upper_data.values() for s in group]
-    legend_rows = max(1, math.ceil(len(legend) / 5))
+    legend_rows = max(1, math.ceil((len(legend) + len(levels)) / 5))
     left, right = 155, width - 28
     top, bottom = 34 + legend_rows * 17, 320 + legend_rows * 17
     panel_height = 128
@@ -56,6 +63,7 @@ def render_chart(points, period_seconds, current_price=None, width=960, height=5
         return start <= series_epoch(i) <= plot_end
 
     extremes = [c[k] for _, c in visible for k in ("high", "low")]
+    extremes.extend(item['value'] for item in levels)
     for group in upper_data.values():
         for series in group:
             if series["kind"] != "profile":
@@ -122,6 +130,14 @@ def render_chart(points, period_seconds, current_price=None, width=960, height=5
         canvas.text(x + 15, y, series["label"], text, scale=1)
         if series["kind"] != "profile":
             draw_series(series, price_y, top, bottom)
+    for index, level in enumerate(levels, len(legend)):
+        x, y = left + index % 5 * 150, 10 + index // 5 * 17
+        canvas.line(x, y + 4, x + 10, y + 4, level['color'])
+        canvas.text(x + 15, y, level['label'], text, scale=1)
+        level_y = price_y(level['value'])
+        for segment_x in range(left, right, 12):
+            canvas.line(segment_x, level_y, min(segment_x + 7, right), level_y,
+                        level['color'], thickness=2)
     if "volume_profile" in upper:
         bins = [0] * 24
         profile_trades = [(epoch, quantity, price) for epoch, quantity, price in (trades or ()) if start <= epoch <= end]
