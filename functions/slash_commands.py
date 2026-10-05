@@ -252,7 +252,7 @@ class SlashCommandRegistry:
         user_data = (
             ensured_user
             if hasattr(ensured_user, "keys")
-            else self.bot.db.users.get_user(user_id)
+            else await asyncio.to_thread(self.bot.db.users.get_user,user_id)
         )
         command_name = getattr(getattr(interaction, "command", None), "name", "")
         try:
@@ -270,9 +270,9 @@ class SlashCommandRegistry:
             )
             raise RegistrationRequired()
         extras=getattr(interaction,'extras',None)
-        if isinstance(extras,dict):
+        if isinstance(extras,dict) and command_name not in {'도움말','환전','송금','그래프','검색','호가','옵션체인','내지갑'}:
             from functions.currency_display import MoneyDisplay
-            extras['money_display']=MoneyDisplay(self.bot.db,user_id)
+            extras['money_display']=await asyncio.to_thread(MoneyDisplay,self.bot.db,user_id)
         return user_id, user_data, resolve_user_role(user_id, user_data)
 
     @staticmethod
@@ -1002,10 +1002,9 @@ class SlashCommandRegistry:
 
     async def search(self, interaction: discord.Interaction):
         user_id, _user_data, _role = await self._prepare(interaction)
-        await asyncio.to_thread(self.bot.interest_mgr.process_user_interests, user_id)
         view = InfoPanelView(self.bot, user_id)
         try:
-            await self._reply(interaction, embed=view.build_embed(), view=view)
+            await self._reply(interaction, embed=await asyncio.to_thread(view.build_embed), view=view)
         except ValueError as exc:
             await self._reply(interaction, content=f"❌ 정보 목록을 불러오지 못했습니다: {exc}")
 

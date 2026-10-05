@@ -41,7 +41,7 @@ class MoneyDisplay:
     """Snapshot quote/precision once per response, then format without further queries."""
     def __init__(self,db,user_id):
         from managers.currency_manager import CurrencyManager
-        with db.atomic() as conn:
+        with db.readonly() as conn:
             self.relative_currency=CurrencyManager.home(conn,user_id)
             self.places={r['code']:int(r['decimal_places']) for r in conn.execute("SELECT code,decimal_places FROM currencies WHERE status='active'")}
             self.nwx_quote=CurrencyManager.quote(conn,'NWX',self.relative_currency)

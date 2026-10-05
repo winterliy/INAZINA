@@ -1,6 +1,7 @@
 """Small dependency-free PNG renderer for market movement charts."""
 
 import math
+from functools import lru_cache
 import struct
 import time
 import zlib
@@ -88,9 +89,14 @@ class _Canvas:
     def fill_rect(self, x0, y0, x1, y1, color):
         left, right = sorted((x0, x1))
         top, bottom = sorted((y0, y1))
+        left, right = max(0,left), min(self.width-1,right)
+        top, bottom = max(0,top), min(self.height-1,bottom)
+        if left > right or top > bottom:
+            return
+        row = bytes(color) * (right-left+1)
         for y in range(top, bottom + 1):
-            for x in range(left, right + 1):
-                self.pixel(x, y, color)
+            offset = (y*self.width+left)*3
+            self.pixels[offset:offset+len(row)] = row
 
     def text(self, x, y, value, color, scale=2):
         cursor = x
@@ -132,13 +138,26 @@ def render_price_chart(
     integer_prices=False, volumes=None, upper_indicators=None, lower_indicators=None,
     anchor_epoch=None, end_epoch=None, trades=None, candle_seconds=None, horizontal_levels=None,
 ):
-    """Render OHLC candles, optional overlays and independently scaled lower panels."""
+    """Reuse identical immutable chart inputs, including the exact visible end time."""
+    if end_epoch is None:
+        from functions.indicator_chart import render_chart
+        return render_chart(points,period_seconds,current_price,width,height,integer_prices,volumes,
+            upper_indicators,lower_indicators,anchor_epoch,end_epoch,trades,candle_seconds,horizontal_levels)
+    return _cached_price_chart(tuple(map(tuple,points)),period_seconds,current_price,width,height,integer_prices,
+        tuple(map(tuple,volumes)) if volumes is not None else None,
+        tuple(upper_indicators) if upper_indicators is not None else None,
+        tuple(lower_indicators) if lower_indicators is not None else None,anchor_epoch,end_epoch,
+        tuple(map(tuple,trades)) if trades is not None else None,candle_seconds,
+        tuple(tuple(level.items()) for level in horizontal_levels) if horizontal_levels is not None else None)
+
+
+@lru_cache(maxsize=16)
+def _cached_price_chart(points,period_seconds,current_price,width,height,integer_prices,volumes,
+    upper_indicators,lower_indicators,anchor_epoch,end_epoch,trades,candle_seconds,horizontal_levels):
     from functions.indicator_chart import render_chart
-    return render_chart(
-        points, period_seconds, current_price, width, height, integer_prices, volumes,
-        upper_indicators, lower_indicators, anchor_epoch, end_epoch, trades, candle_seconds,
-        horizontal_levels,
-    )
+    return render_chart(points,period_seconds,current_price,width,height,integer_prices,volumes,
+        upper_indicators,lower_indicators,anchor_epoch,end_epoch,trades,candle_seconds,
+        [dict(level) for level in horizontal_levels] if horizontal_levels is not None else None)
 
 
 def render_rate_chart(points, period_seconds, end_epoch=None, width=960, height=500,

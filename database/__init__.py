@@ -15,6 +15,7 @@ from .els_db import ELSDB
 class DatabaseManager:
     """모든 데이터베이스 모듈을 통합 관리하는 클래스"""
     atomic = staticmethod(DBManager.atomic)
+    readonly = staticmethod(DBManager.readonly)
     code_locations = staticmethod(DBManager.code_locations)
 
     def __init__(self):

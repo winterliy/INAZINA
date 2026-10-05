@@ -119,6 +119,14 @@ class InterestManager:
         """
         now = time.time() if now is None else float(now)
         user_id = None if user_id is None else str(user_id)
+        filters, params = [], []
+        if user_id is not None:
+            filters.append('user_id = ?');params.append(user_id)
+        if product_code is not None:
+            filters.append('product_code = ?');params.append(product_code)
+        account_filter = ' WHERE ' + ' AND '.join(filters) if filters else ''
+        loan_filter = ' AND ' + ' AND '.join(filters) if filters else ''
+        overdue_filter = ' AND ' + ' AND '.join('l.'+f for f in filters) if filters else ''
         total_paid = 0
         account_count = 0
         loan_count = 0
@@ -127,16 +135,12 @@ class InterestManager:
                 tax_percent = self._tax_rate(conn)
                 accounts = conn.execute(
                     "SELECT account_number, user_id, product_code, balance, principal, "
-                    "created_at, last_payment, last_payment_epoch FROM accounts.accounts "
-                    "WHERE (? IS NULL OR user_id = ?) AND (? IS NULL OR product_code = ?)",
-                    (user_id, user_id, product_code, product_code),
+                    "created_at, last_payment, last_payment_epoch FROM accounts.accounts" + account_filter,
+                    params,
                 ).fetchall()
+                savings = {r['product_code']:r for r in conn.execute('SELECT * FROM saving')} if accounts else {}
                 for account in accounts:
-                    product = conn.execute(
-                        "SELECT interest_rate, maturity_days, interest_cycle, compound_type, status "
-                        "FROM product.saving WHERE product_code = ?",
-                        (account["product_code"],),
-                    ).fetchone()
+                    product = savings.get(account['product_code'])
                     if not product or product["status"] != "active":
                         self._advance_account_cursor(conn, account["account_number"], now)
                         continue
@@ -205,16 +209,12 @@ class InterestManager:
                     account_count += 1
 
                 loans = conn.execute(
-                    "SELECT * FROM accounts.loans WHERE status = 'active' AND (? IS NULL OR user_id = ?) "
-                    "AND (? IS NULL OR product_code = ?)",
-                    (user_id, user_id, product_code, product_code),
+                    "SELECT * FROM accounts.loans WHERE status = 'active'" + loan_filter,
+                    params,
                 ).fetchall()
+                liabilities = {r['product_code']:r for r in conn.execute('SELECT * FROM liability')} if loans else {}
                 for loan in loans:
-                    product = conn.execute(
-                        "SELECT interest_rate, extension_interest_rate, maturity_days, interest_cycle, status "
-                        "FROM product.liability WHERE product_code = ?",
-                        (loan["product_code"],),
-                    ).fetchone()
+                    product = liabilities.get(loan['product_code'])
                     if not product or product["status"] != "active":
                         conn.execute(
                             "UPDATE accounts.loans SET last_payment_epoch = ? "
@@ -273,9 +273,8 @@ class InterestManager:
                     "l.last_statutory_epoch, l.statutory_interest_remainder, l.maturity_epoch, p.maturity_days FROM accounts.loans l "
                     "JOIN product.liability p ON p.product_code = l.product_code "
                     "WHERE l.status = 'active' AND p.status = 'active' "
-                    "AND (l.maturity_epoch IS NOT NULL OR p.maturity_days > 0) AND (? IS NULL OR l.user_id = ?) "
-                    "AND (? IS NULL OR l.product_code = ?)",
-                    (user_id, user_id, product_code, product_code),
+                    "AND (l.maturity_epoch IS NOT NULL OR p.maturity_days > 0)" + overdue_filter,
+                    params,
                 ).fetchall()
                 for loan in overdue:
                     created = self._utc_epoch(loan["created_at"])

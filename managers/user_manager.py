@@ -620,45 +620,42 @@ class UserManager:
             if interest_error:
                 raise RuntimeError(interest_error)
             self.bond_manager.redeem_matured(user_id=user_id)
-        user = self.db.users.get_user(user_id)
+        # Finish mutable settlements before opening the read snapshot.
+        if settle and self.db.fx.execute_one('SELECT 1 FROM fx_accounts WHERE user_id=? LIMIT 1',(str(user_id),)):
+            from managers.fx_manager import FXManager
+            FXManager(self.db).accounts(user_id)
+        with self.db.readonly() as conn:
+            return self._assets_snapshot(user_id, conn)
+
+    def _assets_snapshot(self, user_id, conn):
+        user = conn.execute('SELECT * FROM users WHERE user_id=?',(str(user_id),)).fetchone()
         cash = int(round(user["cash"] or 0)) if user else 0
         nationality = str(user['nationality'] or '미설정') if user else '미설정'
-        # One wallet can reference the same stock through holdings, covered-call
-        # collateral and written options. Resolve it once for this snapshot.
-        asset_cache = {}
+        asset_cache = self._wallet_assets(conn,user_id)
         def wallet_asset(code):
-            code = str(code)
-            if code not in asset_cache:
-                try:
-                    asset_cache[code] = self._asset_from_tables(code)
-                except ValueError:
-                    asset_cache[code] = None
-            return asset_cache[code]
-        base_rate = float(self.db.system.get_setting("base_rate", "3")) / 100
+            return asset_cache.get(str(code))
+        base_rate = float(conn.execute("SELECT value FROM settings WHERE key='base_rate'").fetchone()[0]) / 100
         last_trades = {str(row['asset_code']):int(row['price']) for row in
-            self.db.assets.execute('SELECT asset_code,price FROM market_last_trade')}
+            conn.execute('SELECT asset_code,price FROM market_last_trade').fetchall()}
         quote_overrides = {str(row['asset_code']):int(row['price']) for row in
-            self.db.assets.execute('SELECT asset_code,price FROM market_quote_overrides')}
+            conn.execute('SELECT asset_code,price FROM market_quote_overrides').fetchall()}
         from managers.currency_manager import CurrencyManager, SCALE
         from managers.fx_manager import FXManager
         fx_rates = {'NWX':1}
-        with self.db.atomic() as conn:
-            for row in conn.execute("SELECT code FROM currencies WHERE status='active'"):
-                fx_rates[row['code']]=float(FXManager._rate(conn,row['code']))
-        with self.db.atomic() as conn:
-            national_currency=CurrencyManager.home(conn,user_id)
+        for row in conn.execute("SELECT code FROM currencies WHERE status='active'"):
+            fx_rates[row['code']]=float(FXManager._rate(conn,row['code']))
+        national_currency=CurrencyManager.home(conn,user_id)
         account_details = []
         total_account_balance = 0
-        for account in self.db.accounts.get_user_accounts(user_id):
+        for account in conn.execute("SELECT a.*,COALESCE(s.name,CASE WHEN a.account_type='loan_payout' THEN l.name END) product_name "
+            "FROM accounts a LEFT JOIN saving s ON s.product_code=a.product_code "
+            "LEFT JOIN liability l ON l.product_code=a.product_code WHERE a.user_id=?",(str(user_id),)):
             balance = int(round(account["balance"] or 0))
             total_account_balance += balance
-            product = self.db.products.get_saving(account["product_code"])
-            if not product and account["account_type"] == "loan_payout":
-                product = self.db.products.get_liability(account["product_code"])
             account_details.append({
                 "number": account["account_number"],
-                "product_name": (f"대출금 지급 · {product['name']}" if product and account["account_type"] == "loan_payout"
-                                 else product["name"] if product else account["product_code"]),
+                "product_name": (f"대출금 지급 · {account['product_name']}" if account['product_name'] and account["account_type"] == "loan_payout"
+                                 else account['product_name'] or account['product_code']),
                 "balance": balance,
                 "quote_currency":account['quote_currency'],
             })
@@ -667,14 +664,14 @@ class UserManager:
         total_stock_value = 0
         sell_reservations = {
             str(row["asset_code"]): int(row["quantity"] or 0)
-            for row in self.db.assets.execute(
+            for row in conn.execute(
                 "SELECT asset_code, SUM(remaining_quantity) AS quantity "
                 "FROM market_orders WHERE order_kind = 'asset' AND user_id = ? AND side = 'sell' "
                 "AND status IN ('open', 'partial') GROUP BY asset_code",
                 (str(user_id),),
-            )
+            ).fetchall()
         }
-        for position in self.db.assets.get_user_portfolio(user_id):
+        for position in conn.execute("SELECT asset_code,SUM(quantity) quantity FROM user_assets WHERE user_id=? GROUP BY asset_code ORDER BY asset_code",(str(user_id),)).fetchall():
             code, quantity = position["asset_code"], int(position["quantity"])
             asset = wallet_asset(code)
             if asset and asset.get('type')=='els':
@@ -696,23 +693,23 @@ class UserManager:
         # their Black-Scholes reference premium before the first trade.
         from managers.option_manager import OptionManager
 
-        option_rows = self.db.assets.execute(
+        option_rows = conn.execute(
             "SELECT p.contract_id, p.quantity, p.average_premium, c.contract_code, "
             "c.option_type, c.underlying_code, c.strike_price, c.expiration_epoch, "
             "c.implied_volatility FROM option_positions p JOIN option_contracts c "
             "ON c.contract_id = p.contract_id WHERE p.user_id = ? AND c.status = 'active'",
             (str(user_id),),
-        )
+        ).fetchall()
         option_sell_reservations = {
             int(row["contract_id"]): int(row["quantity"] or 0)
-            for row in self.db.assets.execute(
+            for row in conn.execute(
                 "SELECT c.contract_id, SUM(o.remaining_quantity) AS quantity "
                 "FROM option_contracts c JOIN market_orders o ON o.asset_code = c.contract_code "
                 "WHERE o.order_kind = 'option' AND o.option_order_type = 'resale' "
                 "AND o.user_id = ? AND o.side = 'sell' AND o.status IN ('open', 'partial') "
                 "GROUP BY c.contract_id",
                 (str(user_id),),
-            )
+            ).fetchall()
         }
         now = int(time.time())
         for position in option_rows:
@@ -742,21 +739,21 @@ class UserManager:
                 ),
             })
 
-        collateral_cash_row = self.db.assets.execute_one(
+        collateral_cash_row = conn.execute(
             "SELECT COALESCE(SUM(l.amount), 0) AS amount FROM option_collateral_cash_lots l "
             "JOIN option_contracts c ON c.contract_id = l.contract_id "
             "WHERE l.writer_id = ? AND c.status = 'active'",
             (str(user_id),),
-        )
+        ).fetchone()
         option_collateral_cash = int(collateral_cash_row["amount"] or 0)
 
-        call_collateral = self.db.assets.execute(
+        call_collateral = conn.execute(
             "SELECT c.contract_code, c.underlying_code, SUM(l.quantity) AS quantity "
             "FROM option_collateral_lots l JOIN option_contracts c "
             "ON c.contract_id = l.contract_id WHERE l.writer_id = ? AND c.status = 'active' "
             "GROUP BY c.contract_id",
             (str(user_id),),
-        )
+        ).fetchall()
         for collateral in call_collateral:
             underlying = wallet_asset(collateral["underlying_code"])
             spot = int(underlying["price"] or 0) if underlying else 0
@@ -772,7 +769,7 @@ class UserManager:
             })
 
         option_short_liability = 0
-        written_rows = self.db.assets.execute(
+        written_rows = conn.execute(
             "SELECT contract_code, option_type, underlying_code, strike_price, "
             "expiration_epoch, implied_volatility, issued_contracts, outstanding_contracts, "
             "COALESCE((SELECT SUM(remaining_quantity) FROM market_orders o WHERE o.order_kind='option' "
@@ -785,7 +782,7 @@ class UserManager:
             "FROM option_contracts WHERE writer_id = ? AND status = 'active' "
             "AND (outstanding_contracts > 0 OR issued_contracts > 0)",
             (str(user_id),),
-        )
+        ).fetchall()
         written_options=[]
         for written in written_rows:
             underlying = wallet_asset(written["underlying_code"])
@@ -804,21 +801,20 @@ class UserManager:
                        f"{'콜' if written['option_type']=='call' else '풋'} {int(written['strike_price']):,}",
                 'price':mark,'theoretical_price':premium,'position_type':'writer'})
 
-        reserved_rows = self.db.assets.execute(
+        reserved_rows = conn.execute(
             "SELECT quote_currency,COALESCE(SUM(reserved_cash), 0) AS total FROM market_orders "
             "WHERE user_id = ? AND (side = 'buy' OR order_kind = 'future') AND status IN ('open', 'partial') GROUP BY quote_currency",
             (str(user_id),),
-        )
+        ).fetchall()
         order_reserved_total = 0
         for reserved in reserved_rows:
             order_reserved_total += int(reserved['total'] or 0)*fx_rates.get(reserved['quote_currency'] or 'NWX',1)
 
         futures_collateral = 0
         futures_unrealized = 0
-        for position in self.db.assets.execute("SELECT * FROM futures_positions WHERE user_id = ?", (str(user_id),)):
-            product = self.db.products.get_investment(position["product_code"])
-            if not product:
-                continue
+        for position in conn.execute("SELECT f.*,p.name,p.unit_price,p.contract_size FROM futures_positions f "
+            "JOIN investment p ON p.product_code=f.product_code WHERE f.user_id=?",(str(user_id),)):
+            product=position
             price = int(product["unit_price"])
             quantity = int(position["quantity"])
             collateral = int(position["collateral"])
@@ -831,40 +827,33 @@ class UserManager:
                 "code": position["product_code"], "qty": quantity, "price": price, "value": equity,
                 "type": "stock_future", "sell_reserved_qty": 0})
 
-        bond_details = self.bond_manager.get_user_holdings(user_id)
+        bond_details = self.bond_manager.get_user_holdings(user_id,conn=conn)
         bond_face_total = sum(item["principal"] for item in bond_details)
         bond_total = sum(item["market_value"] for item in bond_details)
 
-        loan_row = self.db.accounts.execute_one(
+        loan_row = conn.execute(
             "SELECT COALESCE(SUM(outstanding_balance), 0) AS total FROM loans "
             "WHERE user_id = ? AND status = 'active'",
             (user_id,),
-        )
+        ).fetchone()
         loan_total = int(round(loan_row["total"] or 0)) if loan_row else 0
         fx_total = 0
         fx_accounts = []
-        fx_rows = self.db.fx.execute("SELECT currency_code,balance_units FROM fx_accounts WHERE user_id=?",(str(user_id),))
-        if fx_rows:
-            from managers.fx_manager import FXManager
-            if settle:
-                fx_accounts = FXManager(self.db).accounts(user_id)
-            else:
-                with self.db.atomic() as conn:
-                    fx_accounts = [{**dict(r),'value_nwx':int(Decimal(str(r['balance_units']))*FXManager._rate(conn,r['currency_code'])/1_000_000) if r['balance_units'] else 0}
-                        for r in conn.execute("SELECT a.*,p.name AS product_name,p.annual_rate,c.decimal_places FROM fx_accounts a JOIN currencies c ON c.code=a.currency_code "
-                            "LEFT JOIN fx_products p ON p.product_code=a.product_code WHERE a.user_id=? ORDER BY a.currency_code",(str(user_id),))]
-            fx_total = sum(r['value_nwx'] for r in fx_accounts)
+        fx_accounts = [{**dict(r),'value_nwx':int(Decimal(str(r['balance_units']))*FXManager._rate(conn,r['currency_code'])/1_000_000) if r['balance_units'] else 0}
+            for r in conn.execute("SELECT a.*,p.name AS product_name,p.annual_rate,c.decimal_places FROM fx_accounts a JOIN currencies c ON c.code=a.currency_code "
+                "LEFT JOIN fx_products p ON p.product_code=a.product_code WHERE a.user_id=? ORDER BY a.currency_code",(str(user_id),))]
+        fx_total = sum(r['value_nwx'] for r in fx_accounts)
         els_positions=[]
         if getattr(self.db,'els',None) is not None:
             from managers.els_manager import ELSManager
-            els_positions=ELSManager(self.db,self).get_user_positions(user_id)
+            els_positions=ELSManager(self.db,self).get_user_positions(user_id,conn=conn)
         els_total=sum(int(item.get('principal',0)) for item in els_positions)
         preferred_claims=[]
         if getattr(self.db,'corporate',None) is not None:
             preferred_claims=[{**dict(row),'remaining_amount':int(row['gross_amount'])-int(row['paid_amount'])}
-                for row in self.db.corporate.execute("SELECT * FROM preferred_dividend_claims WHERE user_id=? AND status IN ('unpaid','partial') ORDER BY due_epoch,claim_id",(str(user_id),))]
+                for row in conn.execute("SELECT * FROM preferred_dividend_claims WHERE user_id=? AND status IN ('unpaid','partial') ORDER BY due_epoch,claim_id",(str(user_id),)).fetchall()]
         preferred_claim_total=sum(int(row['remaining_amount'])*fx_rates.get(row['quote_currency'],1) for row in preferred_claims)
-        wallets=CurrencyManager(self.db).wallets(user_id)
+        wallets=CurrencyManager(self.db).wallets(user_id,conn=conn)
         wallet_total=sum(float(item['balance_units'])/SCALE*fx_rates[item['currency_code']] for item in wallets if item['currency_code']!='NWX')
         home_cash_units=next(item['balance_units'] for item in wallets if item['currency_code']==national_currency)
         foreign_cash_units=sum(item['value_home_units'] for item in wallets if item['is_foreign'])
@@ -908,44 +897,28 @@ class UserManager:
             "net_worth": grand_total - loan_total,
         }
 
-    def _asset_from_tables(self, code):
-        matches = [
-            (self.db.assets.get_asset_info(code), "market_assets"),
-            (self.db.companies.get_company(code), "company"),
-            (self.db.products.get_investment(code), "investment"),
-        ]
-        matches = [(row, source) for row, source in matches if row]
-        locations = [
-            (self.db.assets.execute_one("SELECT 1 FROM market_assets WHERE code=?", (code,)), "시장 자산"),
-            (self.db.companies.execute_one("SELECT 1 FROM company WHERE company_code=?", (code,)), "회사 주식"),
-            (self.db.products.execute_one("SELECT 1 FROM saving WHERE product_code=?", (code,)), "저축 상품"),
-            (self.db.products.execute_one("SELECT 1 FROM liability WHERE product_code=?", (code,)), "대출 상품"),
-            (self.db.products.execute_one("SELECT 1 FROM investment WHERE product_code=?", (code,)), "투자 상품"),
-            (self.db.assets.execute_one("SELECT 1 FROM option_contracts WHERE contract_code=?", (code,)), "옵션 계약"),
-            (self.db.accounts.execute_one("SELECT 1 FROM accounts WHERE account_number=?", (code,)), "계좌 번호"),
-        ]
-        if sum(1 for row, _label in locations if row) > 1 or len(matches) > 1:
-            raise ValueError("duplicate code")
-        if not matches:
-            return None
-        row, source = matches[0]
-        if source == "company":
-            return {
-                "name": row["name"],
-                "price": max(1, int(math.floor(float(row["share_price"] or 0) + 0.5)))
-                if float(row["share_price"] or 0) > 0 else 0,
-                "type": "stock",
-                "quote_currency":row['quote_currency'],
-            }
-        if source == "investment":
-            price = float(row["unit_price"] or 0)
-            return {
-                "name": row["name"],
-                "price": max(1, int(math.floor(price + 0.5))) if price > 0 else 0,
-                "type": row["product_type"],
-                "quote_currency":row['quote_currency'],
-            }
-        asset_type = row["type"]
-        price = float(row["price"] or 0)
-        price = max(1, int(math.floor(price + 0.5))) if price > 0 else 0
-        return {"name": row["name"], "price": price, "type": asset_type,"quote_currency":row['quote_currency']}
+    @staticmethod
+    def _wallet_assets(conn, user_id):
+        """Load only held symbols and option underlyings, with duplicate protection."""
+        codes = ("WITH codes AS (SELECT asset_code code FROM user_assets WHERE user_id=? "
+            "UNION SELECT c.underlying_code FROM option_positions p JOIN option_contracts c USING(contract_id) WHERE p.user_id=? "
+            "UNION SELECT underlying_code FROM option_contracts WHERE writer_id=?) ")
+        params=(str(user_id),)*3
+        rows=conn.execute(codes+
+            "SELECT code,name,price,type,quote_currency FROM market_assets WHERE code IN codes "
+            "UNION ALL SELECT company_code,name,share_price,'stock',quote_currency FROM company WHERE company_code IN codes "
+            "UNION ALL SELECT product_code,name,unit_price,product_type,quote_currency FROM investment WHERE product_code IN codes",params).fetchall()
+        duplicate_codes={row['code'] for row in conn.execute(codes+
+            ", locations AS (SELECT code FROM market_assets UNION ALL SELECT company_code FROM company "
+            "UNION ALL SELECT product_code FROM saving UNION ALL SELECT product_code FROM liability "
+            "UNION ALL SELECT product_code FROM investment UNION ALL SELECT contract_code FROM option_contracts "
+            "UNION ALL SELECT account_number FROM accounts) "
+            "SELECT code FROM locations WHERE code IN codes GROUP BY code HAVING COUNT(*)>1",params)}
+        assets={}
+        for row in rows:
+            if row['code'] in duplicate_codes:
+                continue
+            price=float(row['price'] or 0)
+            assets[row['code']]={"name":row['name'],"price":max(1,int(math.floor(price+.5))) if price>0 else 0,
+                "type":row['type'],"quote_currency":row['quote_currency']}
+        return assets

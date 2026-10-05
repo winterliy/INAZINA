@@ -1,5 +1,6 @@
 """Nationality-relative cash wallets. NWX cash keeps its legacy storage unchanged."""
 from fractions import Fraction
+from contextlib import nullcontext
 from decimal import Decimal
 from database.user_db import TREASURY_USER_ID
 
@@ -111,8 +112,8 @@ class CurrencyManager:
             conn.execute('INSERT INTO currency_wallets(user_id,currency_code,balance_units) VALUES (?,?,?) ON CONFLICT(user_id,currency_code) DO UPDATE SET balance_units=excluded.balance_units', (user_id,currency,value))
         return value
 
-    def wallets(self, user_id):
-        with self.db.atomic() as conn:
+    def wallets(self, user_id, *, conn=None):
+        with (self.db.readonly() if conn is None else nullcontext(conn)) as conn:
             home = self.home(conn,user_id)
             rows = [{'currency_code':'NWX','balance_units':self.balance(conn,user_id,'NWX')}]
             rows += [dict(r) for r in conn.execute('SELECT currency_code,balance_units FROM currency_wallets WHERE user_id=? ORDER BY currency_code',(str(user_id),))]

@@ -1,6 +1,7 @@
 import math
 import re
 import time
+from contextlib import nullcontext
 
 from database import DatabaseManager
 from database.user_db import TREASURY_USER_ID
@@ -325,9 +326,9 @@ class TreasuryBondManager:
         except Exception:
             raise
 
-    def get_user_holdings(self, user_id, now=None):
+    def get_user_holdings(self, user_id, now=None, *, conn=None):
         now = int(time.time() if now is None else now)
-        with self.db.atomic(("accounts", "product")) as conn:
+        with (self.db.readonly() if conn is None else nullcontext(conn)) as conn:
             rows = conn.execute(
                 "SELECT h.holding_id, h.product_code, h.principal, h.face_value, "
                 "h.purchased_epoch, h.maturity_epoch, h.maturity_days, "

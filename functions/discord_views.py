@@ -952,19 +952,34 @@ class InfoPanelView(discord.ui.View):
             return lines
         return []
 
+    def _category_counts(self):
+        counts={key:0 for key,_ in self.CATEGORIES}
+        aliases={'stock':'stocks','주식':'stocks','국채':'treasury_bond','옵션':'option'}
+        for asset in self.bot.market_mgr.get_market_assets():
+            key=aliases.get(str(asset['type']).casefold(),str(asset['type']).casefold())
+            if key in counts and key!='forex':counts[key]+=1
+        counts['indices']=len(self.bot.market_mgr.get_exchange_indices())
+        counts['rates']=len(RateManager.KEYS)
+        from managers.currency_manager import CurrencyManager
+        with self.bot.db.readonly() as conn:
+            home=CurrencyManager.home(conn,self.user_id)
+            counts['forex']=conn.execute("SELECT COUNT(*) FROM currencies WHERE status='active' AND code<>?",(home,)).fetchone()[0]
+            for key,table in (('fx_savings','fx_products'),('savings','saving'),('loan_products','liability')):
+                counts[key]=conn.execute(f"SELECT COUNT(*) FROM {table} WHERE status='active'").fetchone()[0]
+        return counts
+
     def build_embed(self):
         labels = dict(self.CATEGORIES)
         if self.category == "main":
-            stocks, investments = self._market_groups()
-            groups = [(label,self._category_lines(category,(stocks,investments)))
-                      for category,label in self.CATEGORIES if category!='main']
+            counts=self._category_counts()
+            groups=[(label,counts[category]) for category,label in self.CATEGORIES if category!='main']
             embed = discord.Embed(
                 title="ℹ️ 메인",
                 description="카테고리를 선택하면 해당 종목 목록과 코드를 확인할 수 있습니다.",
                 color=discord.Color.blue(),
             )
-            for title, lines in groups:
-                embed.add_field(name=title,value=f'{len(lines):,}개',inline=True)
+            for title, count in groups:
+                embed.add_field(name=title,value=f'{count:,}개',inline=True)
             self.previous_button.disabled = True
             self.next_button.disabled = True
             embed.set_footer(text="항목별 전체 목록은 선택 메뉴에서 확인하세요.")
