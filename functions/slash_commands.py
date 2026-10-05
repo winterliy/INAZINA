@@ -24,6 +24,7 @@ from functions.discord_views import (
     RegistrationModal,
 )
 from functions.registration import RegistrationRequired
+from functions.quantities import quantity_number
 from managers.investment_manager import FUND_TYPES
 from managers.fx_manager import display_units
 
@@ -218,12 +219,12 @@ class SlashCommandRegistry:
 
 
 
-    async def subscribe_fund(self, interaction: discord.Interaction, 펀드: str, 좌수: app_commands.Range[int, 1, MAX_DISCORD_INTEGER]):
+    async def subscribe_fund(self, interaction: discord.Interaction, 펀드: str, 좌수: str):
         user_id, _, _ = await self._prepare(interaction)
         success, message = await asyncio.to_thread(self.bot.investment_mgr.trade_fund, user_id, 펀드, 좌수)
         await self._reply(interaction, embed=self._result_embed("펀드 가입", message, success))
 
-    async def redeem_fund(self, interaction: discord.Interaction, 펀드: str, 좌수: app_commands.Range[int, 1, MAX_DISCORD_INTEGER]):
+    async def redeem_fund(self, interaction: discord.Interaction, 펀드: str, 좌수: str):
         user_id, _, _ = await self._prepare(interaction)
         success, message = await asyncio.to_thread(self.bot.investment_mgr.trade_fund, user_id, 펀드, 좌수, True)
         await self._reply(interaction, embed=self._result_embed("펀드 환매", message, success))
@@ -683,7 +684,7 @@ class SlashCommandRegistry:
         self,
         interaction: discord.Interaction,
         자산: str,
-        수량: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
+        수량: str,
         지정가: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
     ):
         user_id, _user_data, _role = await self._prepare(interaction)
@@ -696,7 +697,7 @@ class SlashCommandRegistry:
         self,
         interaction: discord.Interaction,
         자산: str,
-        수량: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
+        수량: str,
         지정가: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
     ):
         user_id, _user_data, _role = await self._prepare(interaction)
@@ -747,7 +748,7 @@ class SlashCommandRegistry:
                 (자산, 자산),
             )
             primary_quantity = max(
-                0, int(asset["total_supply"]) - int(issued["quantity"] or 0)
+                0, int(asset["total_supply"]) - quantity_number(issued["quantity"] or 0)
             )
             if primary_quantity:
                 book["asks"].append({

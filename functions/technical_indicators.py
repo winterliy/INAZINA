@@ -49,7 +49,7 @@ def build_candles(points, volumes, interval):
     for epoch, quantity in volumes or ():
         bucket = int(epoch) // interval * interval
         if bucket in buckets:
-            buckets[bucket]["volume"] += max(0, int(quantity))
+            buckets[bucket]["volume"] += max(0, float(quantity))
     return [buckets[key] for key in sorted(buckets)]
 
 

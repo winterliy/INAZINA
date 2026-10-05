@@ -200,6 +200,13 @@ class AdminControlManager:
                     values['manager'] = 'Inazina 국고'
                     values['nav_anchor'] = values['unit_price']
             merged = {**(dict(existing) if existing else {}),**values}
+            if 'Fractal' in values or merged.get('Fractal') == 1:
+                from functions.quantities import validate_fractional_setting
+                asset_type = 'stock' if category == 'stock' else KINDS.get(category, merged.get('type'))
+                enabled = values.get('Fractal', merged.get('Fractal', 0))
+                enabled = validate_fractional_setting(conn, table, key, code, enabled, asset_type, merged.get(supply_key))
+                if 'Fractal' in values:
+                    values['Fractal'] = enabled
             if category=='stock':
                 if existing and values.get('exchange_id',existing['exchange_id'])!=existing['exchange_id']:
                     from managers.els_manager import ELSManager

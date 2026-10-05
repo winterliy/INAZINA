@@ -1,6 +1,7 @@
 """Hidden $ commands launch owner-checked buttons, then administrator modals."""
 import asyncio
 import json
+from functions.quantities import parse_quantity
 import io
 import logging
 import sqlite3
@@ -217,7 +218,7 @@ class ActionModal(CheckedModal):
         elif c=='lottery':
             return bot.lottery_mgr.configure(self.owner,json.loads(v[0]))
         elif c in {'매수','매도'}:
-            result = bot.order_book.place_limit_order(uid,v[0],'buy' if c=='매수' else 'sell',int(v[1]),int(v[2]))
+            result = bot.order_book.place_limit_order(uid,v[0],'buy' if c=='매수' else 'sell',v[1],int(v[2]))
         elif c=='주문취소':
             result = bot.order_book.cancel_order(uid,int(v[0]))
         elif c=='호가':
@@ -244,7 +245,7 @@ class ActionModal(CheckedModal):
         elif c=='대출상환':
             result = bot.bank_mgr.repay_loan(uid,v[0],int(v[1]),int(v[2]) if v[2] else None)
         elif c in {'펀드가입','펀드환매'}:
-            result = bot.investment_mgr.trade_fund(uid,v[0],int(v[1]),c=='펀드환매')
+            result = bot.investment_mgr.trade_fund(uid,v[0],parse_quantity(v[1],fractional=True),c=='펀드환매')
         elif c=='선물증거금':
             result = bot.futures_mgr.add_margin(uid,v[0],int(v[1]))
         elif c=='옵션작성':

@@ -3,6 +3,7 @@
 import time
 from database.user_db import TREASURY_USER_ID
 from functions.money import round_money, parse_money
+from functions.quantities import parse_quantity
 from managers.market_session_manager import MarketSessionManager
 
 
@@ -23,6 +24,12 @@ class OrderBookManager:
         user_id = str(user_id)
         asset_code = str(asset_code).strip()
         side = str(side).casefold()
+        flagged = self.db.assets.execute_one('SELECT Fractal FROM market_assets WHERE code=? UNION ALL SELECT Fractal FROM company WHERE company_code=? UNION ALL SELECT Fractal FROM investment WHERE product_code=?',(asset_code,)*3)
+        if flagged and flagged[0] == 1:
+            from managers.fractional_trading_manager import FractionalTradingManager
+            return FractionalTradingManager(self).order(user_id,asset_code,side,quantity,limit_price)
+        try: quantity=parse_quantity(quantity,maximum=self.MAX_QUANTITY)
+        except ValueError as exc: return False,f'❌ {exc}'
         product = self.db.products.execute_one('SELECT product_type,face_value FROM investment WHERE product_code=?',(asset_code,))
         if product and product['product_type']=='els':
             if side!='buy':return False,'❌ ELS는 모집 중 액면 청약만 가능합니다. 중도 매도·환매는 지원하지 않습니다.'
@@ -192,6 +199,12 @@ class OrderBookManager:
             return False, f"❌ 주문 처리 중 오류가 발생했습니다: {exc}"
 
     def _match_incoming_order(self, conn, incoming_order_id, now):
+        row=conn.execute('SELECT asset_code FROM market_orders WHERE order_id=?',(incoming_order_id,)).fetchone()
+        if row:
+            flagged=conn.execute('SELECT Fractal FROM market_assets WHERE code=? UNION ALL SELECT Fractal FROM company WHERE company_code=? UNION ALL SELECT Fractal FROM investment WHERE product_code=?',(row[0],)*3).fetchone()
+            if flagged and flagged[0] == 1:
+                from managers.fractional_trading_manager import FractionalTradingManager
+                return FractionalTradingManager(self).match(conn,incoming_order_id,now)
         if MarketSessionManager(self.db).trading_error(conn=conn, now=now):
             return 0, 0, 0
         fill_count = 0
@@ -559,6 +572,10 @@ class OrderBookManager:
         )
 
     def cancel_order(self, user_id, order_id):
+        fractional=self.db.assets.execute_one('SELECT fractional_order FROM market_orders WHERE order_id=? AND user_id=?',(order_id,str(user_id)))
+        if fractional and fractional[0] == 1:
+            from managers.fractional_trading_manager import FractionalTradingManager
+            return FractionalTradingManager(self).cancel(user_id,order_id)
         user_id = str(user_id)
         if isinstance(order_id, bool) or not isinstance(order_id, int) or order_id <= 0:
             return False, "❌ 올바른 주문 번호를 입력해주세요."

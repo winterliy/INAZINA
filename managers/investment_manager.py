@@ -6,6 +6,7 @@ import time
 from database.user_db import TREASURY_USER_ID
 from functions.admin_access import resolve_user_role
 from functions.money import round_money
+from functions.quantities import parse_quantity
 
 FUND_TYPES = {"mutual_fund", "index_fund"}
 PRODUCT_NAMES = {"stock_future": "주식 선물", "corporate_bond": "회사채", "mutual_fund": "일반 펀드",
@@ -162,8 +163,10 @@ class InvestmentManager:
         product = self.db.products.get_investment(code)
         if not product or product["product_type"] not in FUND_TYPES:
             return False, "❌ 일반·인덱스 펀드 코드를 입력해주세요."
-        if isinstance(quantity, bool) or not isinstance(quantity, int) or not 1 <= quantity <= 2**53 - 1:
-            return False, "❌ 좌수는 1 이상의 정수여야 합니다."
+        try:
+            quantity = parse_quantity(quantity, fractional=bool(product['Fractal']))
+        except ValueError as exc:
+            return False, f"❌ {exc}"
         # UserManager's fund paths include NAV cash settlement with the game treasury.
         return (self.users.sell_asset if redeem else self.users.buy_asset)(str(user_id), str(code), quantity)
 

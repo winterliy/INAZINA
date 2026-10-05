@@ -11,7 +11,7 @@ from managers.fx_manager import SCALE, MAX_UNITS, amount_units, display_units
 COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값',
             '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','환율수정',
             '복권가격설정','금리수정','법정이자수정','증자','정기배당수정','정기배당활성','특별배당실시','합병',
-            '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소','서버설치','상품이율수정'}
+            '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소','서버설치','상품이율수정','소수점거래관리'}
 TYPES = {'company':'stock','주식':'stock','자산':'asset','ETF':'etf','선물':'future','주식선물':'future',
          '회사채':'corporatebond','일반펀드':'fund','펀드':'fund','인덱스펀드':'indexfund',
          '현물원자재':'commodity','원자재':'commodity','국채':'bond','저축':'saving',
@@ -22,7 +22,7 @@ USAGE = {
  '상품수정':'[id] [상품종류] [유형별 순서형 인자 ...] [추가 JSON(선택)]',
  '상품가격수정':'[종목id] [add/del/modify] [금액]',
  '상품생성':'[id] [상품종류] [유형별 순서형 인자 ...] [추가 JSON(선택)]',
- '상품삭제':'[id]', '기본소득':'[금액] [지급통화(선택)]', '서버설치':'[서버ID(서버 채팅에서는 생략 가능)] [국적] [통화]', '잔고수정':'[user_id/계좌번호] [add/del/modify] [금액]',
+ '소수점거래관리':'[id] [0:on/1:off]', '상품삭제':'[id]', '기본소득':'[금액] [지급통화(선택)]', '서버설치':'[서버ID(서버 채팅에서는 생략 가능)] [국적] [통화]', '잔고수정':'[user_id/계좌번호] [add/del/modify] [금액]',
  '등록':'[user_id]', '도박확률':'[0~100]', '도박리턴값':'[리턴 퍼센트]',
  '시장분위기':'[bull/flat/bear]', '상품분위기':'[종목id] [bull/flat/bear]',
  '복권당첨번호보기':'', '복권당첨번호변경':'[서로 다른 1~45 번호 6개] [보너스 번호(선택)]',
@@ -60,6 +60,8 @@ CREATE_ARGS = {
 }
 OPTIONAL_ARGS = {kind:('dividend_cycle_seconds','dividend_per_share')
                  for kind in ('stock','preferred','asset','etf','fund','indexfund','commodity')}
+for _kind in tuple(OPTIONAL_ARGS):
+    OPTIONAL_ARGS[_kind]+=('Fractal',)
 OPTIONAL_ARGS['loan']=('extension_min_credit_score','extension_days','extension_interest_rate')
 for _kind,_fields in OPTIONAL_ARGS.items():
     CREATE_ARGS[_kind]+= _fields
@@ -158,9 +160,17 @@ class AdminCommandsManager:
                    '복권당첨번호보기':0,'세율':1,'환율수정':3,'복권가격설정':1,
                    '금리수정':2,'법정이자수정':2,'정기배당수정':3,'정기배당활성':2,'특별배당실시':2,'합병':2,
                    '휴장':0,'개장':0,'장일시정지':0,'장재개':0,'서킷브레이커':1,'사이드카':0}
-            count.update({'법인잔고수정':3,'법인청산':1,'ELS취소':1,'서버설치':3,'상품이율수정':3})
+            count.update({'법인잔고수정':3,'법인청산':1,'ELS취소':1,'서버설치':3,'상품이율수정':3,'소수점거래관리':2})
             if (command=='증자' and len(args) not in {3,4}) or (command=='기본소득' and len(args) not in {1,2}) or (command not in {'복권당첨번호변경','증자','기본소득'} and len(args)!=count.get(command,-1)):
                 raise ValueError(f'사용법: ${command} {USAGE.get(command,"")}')
+            if command=='소수점거래관리':
+                if args[1] not in {'0','1'}:raise ValueError('0은 켜기, 1은 끄기입니다.')
+                with self.db.atomic() as conn:
+                    self.control.require(actor,conn)
+                    category,row=self.locate(conn,args[0])
+                    if category not in {'stock','asset','etf','fund','indexfund','commodity'}:
+                        raise ValueError('주식·우선주·ETF·일반/인덱스 펀드·현물 원자재만 소수점 거래를 지원합니다.')
+                    return self.control.entity(actor,category,'edit',args[0],extra={'Fractal':1-int(args[1])},conn=conn)
             if command in {'휴장','개장','장일시정지','장재개','서킷브레이커','사이드카'}:
                 from managers.market_session_manager import MarketSessionManager
                 actions={'휴장':'close','개장':'open','장일시정지':'pause','장재개':'resume','서킷브레이커':'circuit','사이드카':'sidecar'}
@@ -301,10 +311,12 @@ class AdminCommandsManager:
             else:
                 order=CREATE_ARGS[profile]
                 optional=OPTIONAL_ARGS.get(profile,())
-                allowed = range(len(order)-len(optional), len(order)+1) if profile=='loan' else {len(order),len(order)-len(optional)}
+                allowed = range(len(order)-len(optional), len(order)+1) if optional else {len(order)}
                 if len(tokens) not in allowed:
                     raise ValueError('사용법: '+creation_usage(kind,'상품수정' if operation=='edit' else '상품생성'))
                 fields={}
+                if 'Fractal' in optional and len(tokens)==len(order)-len(optional)+1:
+                    fields['Fractal']=int(tokens.pop())
                 for key,value in zip(order,tokens):
                     if key=='components':
                         fields[key]={}

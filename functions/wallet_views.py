@@ -1,4 +1,5 @@
 """Private wallet summary and paginated categories from a single asset snapshot."""
+from functions.quantities import quantity_number
 import copy
 import discord
 
@@ -19,7 +20,7 @@ def els_position_lines(positions):
     """Format contractual ELS holdings without presenting a fictitious NAV."""
     lines = []
     for item in positions:
-        quantity = int(item.get('quantity') or 0)
+        quantity = quantity_number(item.get('quantity') or 0)
         code = str(item.get('product_code') or item.get('code') or '')
         next_epoch = item.get('next_observation_epoch')
         next_text = f"<t:{int(next_epoch)}:f>" if next_epoch else '없음'
@@ -46,7 +47,7 @@ def preferred_claim_lines(claims):
         issuer = str(item.get('issuer_code') or item.get('company_code') or '')
         lines.append(
             f"• **`{str(item.get('asset_code') or '')}`** · 발행법인 `{issuer}`\n"
-            f"  확정수량 {int(item.get('quantity') or 0):,}주 · 미지급 배당 "
+            f"  확정수량 {quantity_number(item.get('quantity') or 0):,}주 · 미지급 배당 "
             f"**{float(remaining):,.0f} {item.get('quote_currency') or 'NWX'}** · {due_text}"
         )
     return lines

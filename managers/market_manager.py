@@ -4,6 +4,7 @@ import sqlite3
 import time
 import threading
 from decimal import Decimal, ROUND_HALF_UP
+from functions.quantities import quantity_number
 from dataclasses import replace
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -101,7 +102,7 @@ class MarketManager:
                 "type": "stock", "status": row["status"],
                 "is_fixed": int(row["is_fixed"] or 0), "source": source,
                 "total_supply": int(row["total_shares"] or 0),
-                "quote_currency":row['quote_currency'],
+                "quote_currency":row['quote_currency'], "Fractal":int(row['Fractal']),
             }
         if source == "investment":
             status = row["status"]
@@ -114,7 +115,7 @@ class MarketManager:
                 "type": row["product_type"], "status": status,
                 "is_fixed": int(row["is_fixed"] or 0), "source": source,
                 "total_supply": int(row["total_supply"] or 0),
-                "quote_currency":row['quote_currency'],
+                "quote_currency":row['quote_currency'], "Fractal":int(row['Fractal']),
                 "maturity_days": int(row["maturity_days"] or 0),
                 "underlying_exchange_id": row["underlying_exchange_id"],
                 "leverage_multiplier": float(row["leverage_multiplier"] or 1),
@@ -147,7 +148,7 @@ class MarketManager:
             "type": asset_type, "status": row["status"],
             "is_fixed": int(row["is_fixed"] or 0), "source": source,
             "total_supply": int(row["total_supply"]) if row["total_supply"] is not None else None,
-            "quote_currency":row['quote_currency'],
+            "quote_currency":row['quote_currency'], "Fractal":int(row['Fractal']),
         }
 
     @staticmethod
@@ -1255,7 +1256,7 @@ class MarketManager:
             )
             for trade in trades:
                 epoch = int(trade["recorded_epoch"])
-                totals[epoch] = totals.get(epoch, 0) + int(trade["quantity"] or 0)
+                totals[epoch] = quantity_number(totals.get(epoch, 0) + quantity_number(trade["quantity"] or 0))
         return [(epoch, totals[epoch]) for epoch in sorted(totals)]
 
     @staticmethod
@@ -1386,7 +1387,7 @@ class MarketManager:
                 details = metadata[code]
                 currency = details['quote_currency'] or 'NWX'
                 fill = fills.get(code, {})
-                volume = int(fill.get('volume', 0))
+                volume = quantity_number(fill.get('volume', 0))
                 opening = openings.get(code, 0)
                 change = Fraction((asset['price'] - opening) * 100, opening) if opening > 0 else None
                 if metric in {'turnover', 'volume'} and volume <= 0:

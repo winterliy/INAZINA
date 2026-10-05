@@ -1,3 +1,4 @@
+from functions.quantities import quantity_number
 import asyncio
 import copy
 import discord
@@ -920,14 +921,14 @@ class InfoPanelView(discord.ui.View):
                 except ValueError:
                     asset = None
                 if asset:
-                    value = float(asset["price"] or 0) * int(row["quantity"] or 0)
+                    value = float(asset["price"] or 0) * quantity_number(row["quantity"] or 0)
                     is_stock = self.bot.market_mgr.is_stock_type(asset["type"])
                     unit = "주" if is_stock else "개"
                     price_text = self.bot.market_mgr.format_price(asset["price"], asset["type"])
                     risk = " · ⚠️ 위험 알림 (100 NWX 이하)" if asset["price"] <= 100 else ""
                     lines.append(
                         f"• 보유 **{asset['name']}** (`{row['asset_code']}`) · "
-                        f"{int(row['quantity']):,}{unit} · 주당/단가 {price_text} NWX · "
+                        f"{quantity_number(row['quantity']):,}{unit} · 주당/단가 {price_text} NWX · "
                         f"평가액 {value:,.0f} NWX{risk}"
                     )
 
@@ -1350,7 +1351,7 @@ class PriceMovementView(discord.ui.View):
                 for row in rows
             ]
             trade_rows = self.bot.market_mgr.get_exchange_trade_history(exchange_id, data_since)
-            volumes = [(int(epoch), int(quantity)) for epoch, quantity in trade_rows]
+            volumes = [(int(epoch), quantity_number(quantity)) for epoch, quantity in trade_rows]
             integer_prices = False
             volume_unit = "주"
         else:
@@ -1361,7 +1362,7 @@ class PriceMovementView(discord.ui.View):
             points = [(int(row["recorded_epoch"]), float(row["price"])) for row in rows]
             trade_rows = self.bot.market_mgr.get_trade_history(self.asset_code, data_since)
             volumes = [
-                (int(row["recorded_epoch"]), int(row["quantity"]))
+                (int(row["recorded_epoch"]), quantity_number(row["quantity"]))
                 for row in trade_rows
             ]
             integer_prices = True
@@ -1372,9 +1373,9 @@ class PriceMovementView(discord.ui.View):
                 else "좌" if asset["type"] in {"mutual_fund", "index_fund"} else "개"
             )
         volumes = [
-            (int(epoch), int(quantity)) for epoch, quantity in volumes
+            (int(epoch), quantity_number(quantity)) for epoch, quantity in volumes
         ]
-        volume_total = sum(quantity for epoch, quantity in volumes if epoch >= since)
+        volume_total = quantity_number(sum(quantity for epoch, quantity in volumes if epoch >= since))
         current_price = float(asset["price"] or 0)
         if integer_prices:
             points = [
@@ -1396,7 +1397,7 @@ class PriceMovementView(discord.ui.View):
             integer_prices=integer_prices, volumes=volumes,
             upper_indicators=self.upper_indicators, lower_indicators=self.lower_indicators,
             anchor_epoch=self.anchor_epoch, end_epoch=now,
-            trades=None if is_exchange_index else [(int(row["recorded_epoch"]), int(row["quantity"]), float(row["price"])) for row in trade_rows],
+            trades=None if is_exchange_index else [(int(row["recorded_epoch"]), quantity_number(row["quantity"]), float(row["price"])) for row in trade_rows],
             candle_seconds=self.period_seconds,
             horizontal_levels=els_levels,
         )
@@ -1551,7 +1552,7 @@ class MyOrdersView(discord.ui.View):
                 options.append(discord.SelectOption(
                     label=f"#{order['order_id']} {side} · {order['asset_code']}"[:100],
                     description=(
-                        f"잔량 {int(order['remaining_quantity']):,} · "
+                        f"잔량 {quantity_number(order['remaining_quantity']):,} · "
                         f"지정가 {int(order['limit_price']):,} {order.get('quote_currency','NWX')}"
                     )[:100],
                     value=str(order["order_id"]),
@@ -1597,7 +1598,7 @@ class MyOrdersView(discord.ui.View):
             )
             reserve = (
                 f" · 주문 증거금 {int(order['reserved_cash']):,} NWX" if order.get("order_kind") == "future" and active else
-                f" · 예치 {int(order['reserved_cash']):,} {order.get('quote_currency','NWX')}"
+                f" · 예치 {order['reserved_cash']:,} {order.get('quote_currency','NWX')}"
                 if order["side"] == "buy" and active
                 else (
                     " · 옵션 발행 담보 잠금" if order.get("option_order_type") == "write"
@@ -1606,9 +1607,9 @@ class MyOrdersView(discord.ui.View):
             )
             lines.append(
                 f"**#{order['order_id']} {side} · {status_names.get(order['status'], order['status'])}** "
-                f"`{order['asset_code']}` · 체결 {int(order['filled_quantity']):,}/"
-                f"{int(order['quantity']):,}{unit}"
-                + (f" · 잔량 {int(order['remaining_quantity']):,}{unit}" if active else "")
+                f"`{order['asset_code']}` · 체결 {quantity_number(order['filled_quantity']):,}/"
+                f"{quantity_number(order['quantity']):,}{unit}"
+                + (f" · 잔량 {quantity_number(order['remaining_quantity']):,}{unit}" if active else "")
                 + f" · 지정가 {int(order['limit_price']):,} {order.get('quote_currency','NWX')}{reserve}"
             )
         embed = discord.Embed(

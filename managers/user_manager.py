@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from database import DatabaseManager
 from database.user_db import TREASURY_USER_ID
 from functions.tax_calc import calculate_income_tax
+from functions.quantities import quantity_number, parse_quantity
 from functions.money import parse_money, round_money
 from managers.treasury_bond_manager import TreasuryBondManager
 
@@ -46,19 +47,19 @@ class UserManager:
         matches = []
         row = conn.execute(
             "SELECT code, name, exchange_id, price, type, status, is_fixed, total_supply AS supply "
-            ", quote_currency FROM assets.market_assets WHERE code = ?", (code,)
+            ", quote_currency, Fractal FROM assets.market_assets WHERE code = ?", (code,)
         ).fetchone()
         if row:
             matches.append((dict(row), "market_assets"))
         row = conn.execute(
             "SELECT company_code AS code, name, exchange_id, share_price AS price, 'stock' AS type, "
-            "status, is_fixed, total_shares AS supply, quote_currency FROM company.company WHERE company_code = ?", (code,)
+            "status, is_fixed, total_shares AS supply, quote_currency, Fractal FROM company.company WHERE company_code = ?", (code,)
         ).fetchone()
         if row:
             matches.append((dict(row), "company"))
         row = conn.execute(
             "SELECT product_code AS code, name, exchange_id, unit_price AS price, product_type AS type, "
-            "status, is_fixed, total_supply AS supply, maturity_days, created_at, quote_currency "
+            "status, is_fixed, total_supply AS supply, maturity_days, created_at, quote_currency, Fractal "
             "FROM product.investment WHERE product_code = ?", (code,)
         ).fetchone()
         if row:
@@ -196,6 +197,18 @@ class UserManager:
         )
 
     def buy_asset(self, user_id, asset_code, quantity):
+        flagged = self.db.assets.execute_one('SELECT Fractal FROM market_assets WHERE code=? UNION ALL SELECT Fractal FROM company WHERE company_code=? UNION ALL SELECT Fractal FROM investment WHERE product_code=?', (asset_code,)*3)
+        if flagged and flagged[0] == 1:
+            from managers.order_book_manager import OrderBookManager
+            from managers.fractional_trading_manager import FractionalTradingManager
+            manager=FractionalTradingManager(OrderBookManager(self.db,self))
+            product=self.db.products.get_investment(asset_code)
+            if product and product['product_type'] in {'mutual_fund','index_fund'}:
+                return manager.trade_at_nav(user_id,asset_code,quantity)
+            asset=self.db.assets.execute_one('SELECT price FROM market_assets WHERE code=? UNION ALL SELECT share_price FROM company WHERE company_code=? UNION ALL SELECT unit_price FROM investment WHERE product_code=?',(asset_code,)*3)
+            return manager.order(user_id,asset_code,'buy',quantity,int(asset[0]))
+        try: quantity=parse_quantity(quantity)
+        except ValueError as exc: return False,f'❌ {exc}'
         if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
             return False, "❌ 매수 수량은 0보다 큰 정수로 입력해주세요."
         product=self.db.products.get_investment(asset_code)
@@ -274,6 +287,18 @@ class UserManager:
             return False, f"❌ 매수 처리 중 오류가 발생했습니다: {exc}"
 
     def sell_asset(self, user_id, asset_code, quantity):
+        flagged = self.db.assets.execute_one('SELECT Fractal FROM market_assets WHERE code=? UNION ALL SELECT Fractal FROM company WHERE company_code=? UNION ALL SELECT Fractal FROM investment WHERE product_code=?', (asset_code,)*3)
+        if flagged and flagged[0] == 1:
+            from managers.order_book_manager import OrderBookManager
+            from managers.fractional_trading_manager import FractionalTradingManager
+            manager=FractionalTradingManager(OrderBookManager(self.db,self))
+            product=self.db.products.get_investment(asset_code)
+            if product and product['product_type'] in {'mutual_fund','index_fund'}:
+                return manager.trade_at_nav(user_id,asset_code,quantity,True)
+            asset=self.db.assets.execute_one('SELECT price FROM market_assets WHERE code=? UNION ALL SELECT share_price FROM company WHERE company_code=? UNION ALL SELECT unit_price FROM investment WHERE product_code=?',(asset_code,)*3)
+            return manager.order(user_id,asset_code,'sell',quantity,int(asset[0]))
+        try: quantity=parse_quantity(quantity)
+        except ValueError as exc: return False,f'❌ {exc}'
         if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
             return False, "❌ 매도 수량은 0보다 큰 정수로 입력해주세요."
         product=self.db.products.get_investment(asset_code)
@@ -663,7 +688,7 @@ class UserManager:
         stock_details = []
         total_stock_value = 0
         sell_reservations = {
-            str(row["asset_code"]): int(row["quantity"] or 0)
+            str(row["asset_code"]): quantity_number(row["quantity"] or 0)
             for row in conn.execute(
                 "SELECT asset_code, SUM(remaining_quantity) AS quantity "
                 "FROM market_orders WHERE order_kind = 'asset' AND user_id = ? AND side = 'sell' "
@@ -672,7 +697,7 @@ class UserManager:
             ).fetchall()
         }
         for position in conn.execute("SELECT asset_code,SUM(quantity) quantity FROM user_assets WHERE user_id=? GROUP BY asset_code ORDER BY asset_code",(str(user_id),)).fetchall():
-            code, quantity = position["asset_code"], int(position["quantity"])
+            code, quantity = position["asset_code"], quantity_number(position["quantity"])
             asset = wallet_asset(code)
             if asset and asset.get('type')=='els':
                 continue
@@ -757,7 +782,7 @@ class UserManager:
         for collateral in call_collateral:
             underlying = wallet_asset(collateral["underlying_code"])
             spot = int(underlying["price"] or 0) if underlying else 0
-            quantity = int(collateral["quantity"] or 0)
+            quantity = quantity_number(collateral["quantity"] or 0)
             value = spot * quantity
             total_stock_value += value
             stock_details.append({

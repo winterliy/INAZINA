@@ -1,9 +1,11 @@
 from .db_manager import DBManager
+from .fractional import initialize_fractional
 
 class ProductDB(DBManager):
     def __init__(self):
         super().__init__("product")
         self._init_db()
+        initialize_fractional(self, 'investment', 'product_type')
 
     def _init_db(self):
         # 저축 상품 (Saving)
