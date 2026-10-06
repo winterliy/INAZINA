@@ -8,6 +8,7 @@ not discarded when the displayed NWX quote is rounded by the caller.
 from dataclasses import dataclass
 import math
 import random
+from .price_backend import kernels
 
 
 TRADING_MINUTES_PER_YEAR = 252 * 390
@@ -134,11 +135,7 @@ def next_variance(previous_variance, previous_innovation, config):
         return config.step_variance
     if not math.isfinite(variance) or variance < 0 or not math.isfinite(innovation):
         return config.step_variance
-    try:
-        updated = config.omega + config.alpha * innovation**2 + config.beta * variance
-    except OverflowError:
-        return config.step_variance
-    return updated if math.isfinite(updated) else config.step_variance
+    return kernels.variance_value(variance, innovation, config.alpha, config.beta, config.step_variance)
 
 
 def simulate_step(price, previous_variance, previous_innovation, config, *,
@@ -161,11 +158,5 @@ def simulate_step(price, previous_variance, previous_innovation, config, *,
         # A zero legacy volatility remains a freeze switch for ordinary
         # price updates. Explicit events are applied by the caller afterwards.
         return PriceStep(float(price), 0.0, 0.0, 0.0, 0.0)
-    rho = config.market_correlation
-    shock = rho * market_shock + math.sqrt(1 - rho**2) * standardized_shock(rng, config.student_df)
-    raw_return = directional_bias - variance / 2 + math.sqrt(variance) * shock + jump
-    log_return = min(MAX_LOG_RETURN, max(MIN_LOG_RETURN, raw_return))
-    next_price = min(float(MAX_PRICE), max(1.0, price * math.exp(log_return)))
-    realized_return = math.log(next_price / price)
-    innovation = realized_return - directional_bias + variance / 2
-    return PriceStep(next_price, variance, innovation, realized_return, shock)
+    return PriceStep(*kernels.price_value(price, variance, config.market_correlation, market_shock,
+        standardized_shock(rng, config.student_df), directional_bias, jump))

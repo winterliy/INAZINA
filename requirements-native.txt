@@ -1,0 +1,3 @@
+# Optional build dependencies; ordinary Python execution does not require these.
+Cython==3.3.0
+setuptools==84.0.0

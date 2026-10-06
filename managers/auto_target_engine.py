@@ -11,6 +11,7 @@ import math
 import random
 
 from .stochastic_price_engine import MAX_PRICE
+from .price_backend import kernels
 
 
 def _finite_number(value, name):
@@ -112,10 +113,7 @@ def sample_target(current_price, epoch, config, *, rng=random):
 
 def cycle_bounds(cycle, config):
     """Return a bounded fluctuation band containing both anchor and target."""
-    fraction = config.band_percent / 100
-    lower = max(1.0, min(cycle.anchor_price, cycle.target_price) * (1 - fraction))
-    upper = min(float(MAX_PRICE), max(cycle.anchor_price, cycle.target_price) * (1 + fraction))
-    return lower, upper
+    return kernels.bounds_value(cycle.anchor_price, cycle.target_price, config.band_percent)
 
 
 def target_pull(price, cycle, config, *, elapsed_steps=1.0):
@@ -124,4 +122,4 @@ def target_pull(price, cycle, config, *, elapsed_steps=1.0):
     _finite_number(elapsed_steps, "자동 목표 경과 단계")
     if elapsed_steps < 0:
         raise ValueError("자동 목표 경과 단계는 0 이상이어야 합니다.")
-    return config.pull * math.log(cycle.target_price / current) * elapsed_steps
+    return kernels.pull_value(current, cycle.target_price, config.pull, elapsed_steps)
