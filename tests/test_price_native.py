@@ -40,6 +40,14 @@ assert simulate_step(100, None, 0, GarchConfig(), market_shock=0).price > 0
         for selection in ('python', 'auto'):
             subprocess.run([sys.executable, '-c', code], check=True,
                            env={**os.environ, 'INAZINA_PRICE_BACKEND': selection})
+        stale = '''
+import sys, types
+sys.modules['managers._price_math_native'] = types.SimpleNamespace(SOURCE_HASH='old')
+from managers.price_backend import BACKEND
+assert BACKEND == 'python'
+'''
+        subprocess.run([sys.executable, '-c', stale], check=True,
+                       env={**os.environ, 'INAZINA_PRICE_BACKEND': 'auto'})
 
     @unittest.skipIf(native_math is None, 'Build optional Cython extension to check parity')
     def test_trajectories_rounding_and_rng_match(self):

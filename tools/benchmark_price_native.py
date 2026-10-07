@@ -47,6 +47,7 @@ def main():
             with sqlite3.connect(args.database.resolve().as_uri() + '?mode=ro', uri=True) as src, sqlite3.connect(snapshot) as dest:
                 src.backup(dest)
             markets = {}
+            initial_epochs = {}
             samples = {label: [] for label in backends}
             for label in backends:
                 directory = Path(temp) / label
@@ -57,10 +58,13 @@ def main():
                 db = DatabaseManager()
                 stack.callback(db.close)
                 markets[label] = MarketManager(db)
+                initial_epochs[label] = {r['asset_code']: r['last_epoch'] for r in
+                    db.assets.execute('SELECT asset_code,last_epoch FROM market_simulation_state')}
             now = int(time.time())
             for tick in range(32):
                 labels = list(backends) if tick % 2 else list(reversed(backends))
                 for label in labels:
+                    DBManager.database_dir = Path(temp) / label
                     random.seed(42 + tick)
                     module = backends[label]
                     with patch.object(garch, 'kernels', module), patch.object(target, 'kernels', module):
@@ -68,9 +72,16 @@ def main():
                         markets[label].update_prices(now=now + tick)
                         samples[label].append((time.perf_counter() - start) * 1000)
             for label, timings in samples.items():
+                advanced = sum(r['last_epoch'] != initial_epochs[label].get(r['asset_code']) for r in
+                    markets[label].db.assets.execute('SELECT asset_code,last_epoch FROM market_simulation_state'))
+                if not advanced:
+                    raise RuntimeError(f'{label}: no simulation advanced; market state cannot benchmark active pricing')
                 values = sorted(timings[2:])
-                print(f'{label}: tick median {statistics.median(values):.2f} ms, p95 {values[28]:.2f} ms')
-            for table in ('company', 'investment', 'market_assets', 'market_simulation_state', 'market_auto_targets'):
+                print(f'{label}: tick median {statistics.median(values):.2f} ms, p95 {values[28]:.2f} ms; {advanced} states advanced')
+            for table in ('company', 'investment', 'market_assets', 'market_simulation_state', 'market_auto_targets',
+                          'market_factor_state', 'market_event_targets', 'market_quote_overrides',
+                          'market_price_history', 'market_exchange_indices', 'market_exchange_index_history',
+                          'leveraged_etf_state'):
                 rows = [[tuple(r) for r in market.db.assets.execute(f'SELECT * FROM {table} ORDER BY 1')]
                         for market in markets.values()]
                 if rows[0] != rows[1]:
