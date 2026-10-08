@@ -5,6 +5,7 @@ import time
 import threading
 from decimal import Decimal, ROUND_HALF_UP
 from functions.quantities import quantity_number
+from functions.performance import log_slow
 from dataclasses import replace
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -898,8 +899,12 @@ class MarketManager:
                 price = OptionManager.theoretical_price(int(underlying['price']), int(row['strike_price']),
                     max(0, row['expiration_epoch'] - now) / (365 * 86400),
                     float(row['implied_volatility']), row['option_type'], rate)
-            quotes[code] = dict(code=code, price=int(price), type='option', is_fixed=1,
-                status='matured' if row['status']=='active' and row['expiration_epoch']<=now else row['status'])
+            side_name = '콜' if row['option_type'] == 'call' else '풋'
+            quotes[code] = {**dict(row), 'code': code, 'price': int(price),
+                'name': f"{underlying['name']} {side_name} {int(row['strike_price']):,}",
+                'type': 'option', 'is_fixed': 1, 'exchange_id': underlying.get('exchange_id'),
+                'total_supply': int(row['issued_contracts']),
+                'status': 'matured' if row['status']=='active' and row['expiration_epoch']<=now else row['status']}
         return quotes
 
     def _update_linked_products(self, now):
@@ -1182,6 +1187,33 @@ class MarketManager:
         self._prepare_movement_history_read()
         return self.db.assets.get_trade_history(asset_code, since_epoch)
 
+    @log_slow('chart.query')
+    def get_chart_candles(self, code, since_epoch, visible_since, interval, *, index=False):
+        """Read OHLC and visible-range statistics without transferring every tick."""
+        if int(interval) <= 0:
+            raise ValueError('캔들 주기는 0보다 커야 합니다.')
+        self._prepare_movement_history_read()
+        table, key, price = (('market_exchange_index_history', 'exchange_id', 'index_value')
+                             if index else ('market_price_history', 'asset_code', 'price'))
+        with self.db.readonly() as conn:
+            return conn.execute(f"""
+                WITH buckets AS (
+                    SELECT CAST(recorded_epoch / ? AS INTEGER) * ? AS time,
+                           MIN(recorded_epoch) first_epoch, MAX(recorded_epoch) last_epoch,
+                           MIN({price}) low, MAX({price}) high,
+                           SUM(recorded_epoch >= ?) visible_count,
+                           MIN(CASE WHEN recorded_epoch >= ? THEN recorded_epoch END) visible_epoch
+                    FROM {table} WHERE {key}=? AND recorded_epoch>=?
+                    GROUP BY time
+                ) SELECT b.*, o.{price} AS open, c.{price} AS close, v.{price} AS visible_open
+                  FROM buckets b
+                  JOIN {table} o ON o.{key}=? AND o.recorded_epoch=b.first_epoch
+                  JOIN {table} c ON c.{key}=? AND c.recorded_epoch=b.last_epoch
+                  LEFT JOIN {table} v ON v.{key}=? AND v.recorded_epoch=b.visible_epoch
+                  ORDER BY b.time
+                """, (int(interval), int(interval), int(visible_since), int(visible_since),
+                      str(code), int(since_epoch), str(code), str(code), str(code))).fetchall()
+
     def get_exchange_indices(self):
         """List persisted indexes plus active exchanges awaiting their first tick."""
         rows = self.db.assets.execute(
@@ -1302,27 +1334,31 @@ class MarketManager:
                 assets.append(asset)
         return sorted(assets, key=lambda item: item["code"])
 
+    @log_slow('market.listings')
     def get_market_assets(self, active_only=False):
-        """Return tradable market assets from all supported price tables.
-
-        Investment maturities are resolved through ``get_asset_info`` so the
-        returned status reflects whether an asset has matured.
-        """
-        codes = []
-        for rows in (
-            self.db.assets.execute("SELECT code FROM market_assets"),
-            self.db.companies.execute("SELECT company_code AS code FROM company"),
-            self.db.products.execute("SELECT product_code AS code FROM investment"),
-            self.db.products.execute("SELECT product_code AS code FROM treasury_bond_products"),
-            self.db.assets.execute("SELECT contract_code AS code FROM option_contracts"),
-        ):
-            codes.extend(str(row["code"]) for row in rows if row["code"])
-
-        assets = []
-        for code in dict.fromkeys(codes):
-            asset = self.get_asset_info(code)
-            if asset and (not active_only or asset["status"] == "active"):
-                assets.append(asset)
+        """Resolve listings in one read snapshot, with bounded SQL query count."""
+        with self.db.readonly() as conn:
+            # Preserve global code collision checks, including nonmarket products
+            # and account numbers, without ten existence queries per listing.
+            duplicate = conn.execute("""
+                WITH codes(code, traded) AS (
+                    SELECT code,1 FROM market_assets UNION ALL
+                    SELECT company_code,1 FROM company UNION ALL
+                    SELECT product_code,1 FROM investment UNION ALL
+                    SELECT product_code,1 FROM treasury_bond_products UNION ALL
+                    SELECT contract_code,1 FROM option_contracts UNION ALL
+                    SELECT product_code,0 FROM saving UNION ALL
+                    SELECT product_code,0 FROM liability UNION ALL
+                    SELECT account_number,0 FROM accounts UNION ALL
+                    SELECT product_code,0 FROM fx_products UNION ALL
+                    SELECT account_number,0 FROM fx_accounts
+                ) SELECT code FROM codes GROUP BY code
+                  HAVING COUNT(*) > 1 AND MAX(traded) = 1 LIMIT 1
+                """).fetchone()
+            if duplicate:
+                raise ValueError(f"코드 `{duplicate['code']}` 중복 등록 — SQL Browser에서 정리해주세요.")
+            assets = [asset for asset in self._batch_quotes(conn, int(time.time())).values()
+                      if not active_only or asset['status'] == 'active']
         return sorted(assets, key=lambda item: (str(item["name"]).casefold(), item["code"]))
 
     def get_tradeable_stocks(self):

@@ -189,7 +189,8 @@ class LatestRequestsTests(unittest.TestCase):
 
     def test_search_forex_inverts_rates_pages_ten_and_refreshes_quotes(self):
         self.seed()
-        panel = InfoPanelView(self.bot,'alice')
+        # This case checks NWX-relative quotes; alice's home currency is USD.
+        panel = InfoPanelView(self.bot,'admin')
         panel.category = 'forex'
         seen = []
         for page,count in enumerate((10,10,5)):

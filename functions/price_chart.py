@@ -137,27 +137,30 @@ def render_price_chart(
     points, period_seconds, current_price=None, width=960, height=500,
     integer_prices=False, volumes=None, upper_indicators=None, lower_indicators=None,
     anchor_epoch=None, end_epoch=None, trades=None, candle_seconds=None, horizontal_levels=None,
+    price_candles=None,
 ):
     """Reuse identical immutable chart inputs, including the exact visible end time."""
     if end_epoch is None:
         from functions.indicator_chart import render_chart
         return render_chart(points,period_seconds,current_price,width,height,integer_prices,volumes,
-            upper_indicators,lower_indicators,anchor_epoch,end_epoch,trades,candle_seconds,horizontal_levels)
+            upper_indicators,lower_indicators,anchor_epoch,end_epoch,trades,candle_seconds,horizontal_levels,price_candles)
     return _cached_price_chart(tuple(map(tuple,points)),period_seconds,current_price,width,height,integer_prices,
         tuple(map(tuple,volumes)) if volumes is not None else None,
         tuple(upper_indicators) if upper_indicators is not None else None,
         tuple(lower_indicators) if lower_indicators is not None else None,anchor_epoch,end_epoch,
         tuple(map(tuple,trades)) if trades is not None else None,candle_seconds,
-        tuple(tuple(level.items()) for level in horizontal_levels) if horizontal_levels is not None else None)
+        tuple(tuple(level.items()) for level in horizontal_levels) if horizontal_levels is not None else None,
+        tuple(tuple(candle.items()) for candle in price_candles) if price_candles is not None else None)
 
 
 @lru_cache(maxsize=16)
 def _cached_price_chart(points,period_seconds,current_price,width,height,integer_prices,volumes,
-    upper_indicators,lower_indicators,anchor_epoch,end_epoch,trades,candle_seconds,horizontal_levels):
+    upper_indicators,lower_indicators,anchor_epoch,end_epoch,trades,candle_seconds,horizontal_levels,price_candles):
     from functions.indicator_chart import render_chart
     return render_chart(points,period_seconds,current_price,width,height,integer_prices,volumes,
         upper_indicators,lower_indicators,anchor_epoch,end_epoch,trades,candle_seconds,
-        [dict(level) for level in horizontal_levels] if horizontal_levels is not None else None)
+        [dict(level) for level in horizontal_levels] if horizontal_levels is not None else None,
+        [dict(candle) for candle in price_candles] if price_candles is not None else None)
 
 
 def render_rate_chart(points, period_seconds, end_epoch=None, width=960, height=500,

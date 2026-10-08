@@ -788,7 +788,11 @@ class InfoPanelView(discord.ui.View):
         return f" · 정기배당{status} {period}마다 {payment}"
 
     def _category_lines(self, category, market_groups=None):
-        stocks, investments = market_groups if market_groups is not None else self._market_groups()
+        stocks, investments = [], []
+        if category in {'stocks', 'els', 'etf', 'treasury_bond', 'corporate_bond',
+                        'stock_future', 'commodity_futures', 'mutual_fund', 'index_fund',
+                        'commodity_spot', 'option'}:
+            stocks, investments = market_groups if market_groups is not None else self._market_groups()
         if category == "forex":
             _,currency=FXManager(self.bot.db).national_currency(self.user_id)
             rates=FXManager(self.bot.db).rates()
@@ -1345,11 +1349,7 @@ class PriceMovementView(discord.ui.View):
                 "type": "index",
                 "price": float(index["index_value"]),
             }
-            rows = self.bot.market_mgr.get_exchange_index_history(exchange_id, data_since)
-            points = [
-                (int(row["recorded_epoch"]), float(row["index_value"]))
-                for row in rows
-            ]
+            rows = self.bot.market_mgr.get_chart_candles(exchange_id, data_since, since, self.period_seconds, index=True)
             trade_rows = self.bot.market_mgr.get_exchange_trade_history(exchange_id, data_since)
             volumes = [(int(epoch), quantity_number(quantity)) for epoch, quantity in trade_rows]
             integer_prices = False
@@ -1358,8 +1358,7 @@ class PriceMovementView(discord.ui.View):
             asset = self.bot.market_mgr.get_asset_info(self.asset_code)
             if not asset:
                 raise ValueError(f"자산 코드 `{self.asset_code}`를 찾을 수 없습니다.")
-            rows = self.bot.market_mgr.get_price_history(self.asset_code, data_since)
-            points = [(int(row["recorded_epoch"]), float(row["price"])) for row in rows]
+            rows = self.bot.market_mgr.get_chart_candles(self.asset_code, data_since, since, self.period_seconds)
             trade_rows = self.bot.market_mgr.get_trade_history(self.asset_code, data_since)
             volumes = [
                 (int(row["recorded_epoch"]), quantity_number(row["quantity"]))
@@ -1372,6 +1371,19 @@ class PriceMovementView(discord.ui.View):
                 else "매" if asset["type"] in {"국채", "corporate_bond"}
                 else "좌" if asset["type"] in {"mutual_fund", "index_fund"} else "개"
             )
+        # Summary points retain the first actual visible sample, even if the
+        # viewport starts in the middle of a candle. OHLC comes directly from SQL.
+        points = []
+        for row in rows:
+            points.append((int(row['first_epoch']), float(row['open'])))
+            if row['visible_epoch'] is not None:
+                points.append((int(row['visible_epoch']), float(row['visible_open'])))
+            points.append((int(row['last_epoch']), float(row['close'])))
+        visible_count = sum(row['visible_count'] for row in rows)
+        normalize = (self.bot.market_mgr.normalize_market_price if integer_prices
+                     else lambda value: round(value, 2))
+        price_candles = [dict(time=row['time'], **{key: normalize(row[key])
+                            for key in ('open', 'high', 'low', 'close')}) for row in rows]
         volumes = [
             (int(epoch), quantity_number(quantity)) for epoch, quantity in volumes
         ]
@@ -1391,6 +1403,16 @@ class PriceMovementView(discord.ui.View):
         elif points[-1][0] < now:
             points.append((now, current_price))
 
+        if not rows or rows[-1]['last_epoch'] < now:
+            bucket = now // self.period_seconds * self.period_seconds
+            if price_candles and price_candles[-1]['time'] == bucket:
+                candle = price_candles[-1]
+                candle.update(high=max(candle['high'], current_price),
+                              low=min(candle['low'], current_price), close=current_price)
+            else:
+                price_candles.append(dict(time=bucket, open=current_price, high=current_price,
+                                          low=current_price, close=current_price))
+
         els_levels = self._els_levels()
         png = render_price_chart(
             points, view_seconds, current_price=current_price,
@@ -1400,6 +1422,7 @@ class PriceMovementView(discord.ui.View):
             trades=None if is_exchange_index else [(int(row["recorded_epoch"]), quantity_number(row["quantity"]), float(row["price"])) for row in trade_rows],
             candle_seconds=self.period_seconds,
             horizontal_levels=els_levels,
+            price_candles=price_candles,
         )
         visible_points = [(epoch, price) for epoch, price in points if epoch >= since] or [(now, current_price)]
         first_price, last_price = visible_points[0][1], visible_points[-1][1]
@@ -1408,7 +1431,7 @@ class PriceMovementView(discord.ui.View):
         period_label = self.period_label()
         history_note = (
             " 아직 저장된 기록이 없어 현재가만 표시 중입니다."
-            if not any(int(row["recorded_epoch"]) >= since for row in rows) else ""
+            if not visible_count else ""
         )
         current_price_text = f"{current_price:,.0f}" if integer_prices else f"{current_price:,.2f}"
         change_text = f"{change:+,.0f}" if integer_prices else f"{change:+,.2f}"
@@ -1434,7 +1457,7 @@ class PriceMovementView(discord.ui.View):
             description=(
                 f"캔들 주기: **{period_label}봉** · 총 기간 **{self._duration_label(view_seconds)}** · {current_measure}\n"
                 f"{change_measure}\n"
-                f"기록 {sum(int(row['recorded_epoch']) >= since for row in rows):,}개를 OHLC 캔들로 집계 · 거래량 **{volume_total:,}{volume_unit}**"
+                f"기록 {visible_count:,}개를 OHLC 캔들로 집계 · 거래량 **{volume_total:,}{volume_unit}**"
                 f"{volume_note}"
                 " · 한국시간 날짜가 바뀌면 전날 차트 기록 삭제"
                 f"{history_note}{risk_warning}"

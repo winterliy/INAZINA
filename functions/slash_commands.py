@@ -4,6 +4,7 @@ from discord import app_commands
 import io
 import time
 import uuid
+from functions.performance import log_slow
 
 from database.user_db import TREASURY_USER_ID
 from functions.admin_access import BOOTSTRAP_ADMIN_IDS, resolve_user_role
@@ -382,6 +383,14 @@ class SlashCommandRegistry:
         user_id, user_data, _role = await self._prepare(interaction)
         display_name = getattr(interaction.user, "display_name", None) or interaction.user.name
         info = await asyncio.to_thread(self.bot.user_mgr.get_total_assets, user_id)
+        summary, sections = await asyncio.to_thread(self._wallet_content, user_id, user_data, display_name, info)
+        from functions.wallet_views import WalletCategoryView
+        view = WalletCategoryView(user_id, summary, sections, info.get('option_short_liability', 0))
+        await self._reply(interaction, embed=view.build_embed(), view=view)
+
+    @log_slow('wallet.format')
+    def _wallet_content(self, user_id, user_data, display_name, info):
+        """Prepare wallet text off the Discord event loop; Views stay on it."""
         embed = discord.Embed(title=f"💰 {display_name}님의 자산 현황", color=discord.Color.gold())
         embed.description = f"국적: **{str(info.get('nationality') or user_data['nationality'])[:100]}** · 기본 통화: **{info.get('national_currency','NWX')}**"
         embed.add_field(name="💵 현금", value=f"```{info['cash']:,.0f} NWX```", inline=True)
@@ -416,16 +425,13 @@ class SlashCommandRegistry:
         embed.add_field(name="💳 신용 점수", value=f"```{credit_score:,}점```", inline=True)
         from functions.currency_display import native_summary
         native_summary(embed,info)
-        # Freeze the complete financial summary before adding category details.
-        summary = discord.Embed.from_dict(embed.to_dict())
+        summary = embed
         account_lines = [
             f"• {item['product_name']} ({item['number']}): {item['balance']:,.0f} NWX"
             for item in info["accounts"]
         ]
         account_lines.extend(f"• 외환통장 {str(item.get('product_name') or item['product_code'])[:60]} (`{item['account_number']}`): "
             f"{display_units(item['balance_units'],item.get('decimal_places'))} {item['currency_code']} · 평가 {item['value_nwx']:,} NWX" for item in info.get('fx_accounts',[]))
-        accounts = "\n".join(account_lines)
-        embed.add_field(name="🏦 보유 통장", value=accounts[:1024] or "개설된 통장이 없습니다.", inline=False)
         position_lines = []
         for item in info["stocks"]:
             if item.get("type") == "stock_future":
@@ -433,8 +439,7 @@ class SlashCommandRegistry:
                     f"기준가 {item['price']:,} NWX · 증거금·손익 평가 {item['value']:,} NWX")
                 continue
             is_stock = self.bot.market_mgr.is_stock_type(item.get("type"))
-            company = self.bot.db.companies.get_company(item['code']) if is_stock else None
-            preferred_note = ' · 우선주' if company and 'share_class' in company.keys() and company['share_class'] == 'preferred' else ''
+            preferred_note = ' · 우선주' if item.get('share_class') == 'preferred' else ''
             unit = "계약" if item.get("type") == "option" else "주" if is_stock else "개"
             price_text = self.bot.market_mgr.format_price(item["price"], item.get("type"))
             risk = (
@@ -450,7 +455,6 @@ class SlashCommandRegistry:
                 f"• {item['name']} ({item['code']}){preferred_note}: {item['qty']:,}{unit} × "
                 f"{price_text} {item.get('quote_currency','NWX')} = {item['value']:,.0f} NWX{lock_note}{risk}"
             )
-        positions = "\n".join(position_lines)
         bond_lines = [
             f"• {item['name']} ({item['product_code']}): 액면 {item['principal']:,} NWX · "
             f"{item['quantity']:,}매 · 시장가 {item['market_price']:,} NWX/매 · "
@@ -461,20 +465,9 @@ class SlashCommandRegistry:
             + (" · ⚠️ 위험 알림: 100 NWX 이하" if item["market_price"] <= 100 else "")
             for item in info["bonds"]
         ]
-        embed.add_field(
-            name="📦 보유 투자자산 (주식·상품)",
-            value=positions[:1024] or "보유 중인 주식·투자상품이 없습니다.",
-            inline=False,
-        )
-        embed.add_field(
-            name="🏛️ 보유 국채 (투자자산 합계에 포함)",
-            value="\n".join(bond_lines)[:1024] or "보유 중인 미만기 국채가 없습니다.",
-            inline=False,
-        )
         written_lines = [f"• {item['name']} (`{item['contract_code']}`) · 작성 체결 {item['outstanding_contracts']:,}계약 · 미체결 {item['offered']:,}계약 · "
             f"담보 {item['collateral_quantity']:,}주 / {item['collateral_cash']:,} NWX · 만기 <t:{item['expiration_epoch']}:D>"
             for item in info.get('written_options',[])]
-        embed.add_field(name='📄 작성 옵션',value='\n'.join(written_lines)[:1024] or '작성 중인 옵션이 없습니다.',inline=False)
         from functions.wallet_views import WalletCategoryView, els_position_lines, preferred_claim_lines
         from functions.currency_display import wallet_lines
         sections={'cash':wallet_lines(info),'accounts':account_lines[:len(info['accounts'])],
@@ -497,8 +490,9 @@ class SlashCommandRegistry:
         for item in info.get('written_options',[]):
             if item['collateral_cash']:
                 sections.setdefault('collateral',[]).append(f"• 풋 현금담보 · {item['contract_code']} · {item['collateral_cash']:,} NWX · 계약 만기까지 잠금")
-        loans=await asyncio.to_thread(self.bot.db.accounts.execute,
-            "SELECT l.loan_id,l.product_code,l.principal,l.outstanding_balance,l.maturity_epoch,p.name FROM loans l LEFT JOIN liability p ON p.product_code=l.product_code WHERE l.user_id=? AND l.status='active' ORDER BY l.loan_id",(user_id,))
+        with self.bot.db.readonly() as conn:
+            loans=conn.execute(
+                "SELECT l.loan_id,l.product_code,l.principal,l.outstanding_balance,l.maturity_epoch,p.name FROM loans l LEFT JOIN liability p ON p.product_code=l.product_code WHERE l.user_id=? AND l.status='active' ORDER BY l.loan_id",(user_id,)).fetchall()
         sections['loans']=[f"• {row['name'] or row['product_code']} ({row['product_code']}) · 대출 #{row['loan_id']} · 원금 {row['principal']:,} NWX · 남은 부채 {row['outstanding_balance']:,} NWX"
                            +(f" · 만기 <t:{int(row['maturity_epoch'])}:D> · /대출연장 id:{row['loan_id']}" if row['maturity_epoch'] else '') for row in loans]
         from functions.currency_display import MoneyDisplay
@@ -506,8 +500,7 @@ class SlashCommandRegistry:
         sections={key:[display.text(line) if key not in {'cash','fx_accounts'} else
             (display.text(line,relative=False).split(' · 평가 ',1)[0]+' · 평가 '+display.text(line.split(' · 평가 ',1)[1]) if key=='fx_accounts' and ' · 평가 ' in line else display.text(line,relative=False))
             for line in lines] for key,lines in sections.items()}
-        view=WalletCategoryView(user_id,summary,sections,info.get('option_short_liability',0))
-        await self._reply(interaction,embed=view.build_embed(),view=view)
+        return summary, sections
 
     async def apply_rehabilitation(self, interaction: discord.Interaction):
         await self._submit_financial_relief_request(interaction, "회생")

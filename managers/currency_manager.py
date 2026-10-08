@@ -112,17 +112,19 @@ class CurrencyManager:
             conn.execute('INSERT INTO currency_wallets(user_id,currency_code,balance_units) VALUES (?,?,?) ON CONFLICT(user_id,currency_code) DO UPDATE SET balance_units=excluded.balance_units', (user_id,currency,value))
         return value
 
-    def wallets(self, user_id, *, conn=None):
+    def wallets(self, user_id, *, conn=None, snapshot=None):
         with (self.db.readonly() if conn is None else nullcontext(conn)) as conn:
+            snapshot = snapshot or CurrencyReadSnapshot(conn)
             home = self.home(conn,user_id)
             rows = [{'currency_code':'NWX','balance_units':self.balance(conn,user_id,'NWX')}]
             rows += [dict(r) for r in conn.execute('SELECT currency_code,balance_units FROM currency_wallets WHERE user_id=? ORDER BY currency_code',(str(user_id),))]
             if not any(r['currency_code']==home for r in rows):
                 rows.append({'currency_code':home,'balance_units':0})
             for row in rows:
-                row['decimal_places']=self.precision(conn,row['currency_code'])
+                row['decimal_places']=snapshot.precision(row['currency_code'])
                 row['is_foreign'] = row['currency_code'] != home
-                row['value_home_units'] = self.convert(conn,row['balance_units'],row['currency_code'],home) if row['balance_units']>=0 else -self.convert(conn,-row['balance_units'],row['currency_code'],home)
+                units = row['balance_units']
+                row['value_home_units'] = snapshot.convert(abs(units),row['currency_code'],home) * (-1 if units < 0 else 1)
             return rows
 
     @classmethod
@@ -149,3 +151,57 @@ class CurrencyManager:
     def register_user(self,user_id,nickname,guild_id,role='user'):
         with self.db.atomic() as conn:
             return self.register(conn,user_id,nickname,guild_id,role)
+
+
+class CurrencyReadSnapshot:
+    """Request-local display rates. Never reuse this snapshot for settlements."""
+
+    def __init__(self, conn):
+        self.rows = {r['code']: dict(r) for r in conn.execute(
+            "SELECT c.*, a.price AS asset_price FROM currencies c "
+            "LEFT JOIN market_assets a ON a.code=c.asset_code AND a.status='active' "
+            "WHERE c.status='active' ORDER BY c.code")}
+        self._rates = {}
+
+    def row(self, code):
+        row = self.rows.get(str(code).upper())
+        if row is None:
+            raise ValueError(f'활성 통화를 확인해주세요: {code}')
+        return row
+
+    def rate_fraction(self, code):
+        code = str(code).upper()
+        if code not in self._rates:
+            row = self.row(code)
+            raw = row['reference_rate'] if row['reference_rate'] is not None else row['asset_price']
+            if raw is None:
+                raise ValueError(f'{code} 환율을 조회할 수 없습니다.')
+            value = Fraction(str(raw)) * Fraction(str(row['rate_multiplier']))
+            if value <= 0:
+                raise ValueError(f'{code} 환율 설정이 올바르지 않습니다.')
+            self._rates[code] = value
+        return self._rates[code]
+
+    def rate_nwx(self, code):
+        # Keep the same Decimal rounding order as FXManager._rate.
+        source, target = self.rate_fraction(code), self.rate_fraction('NWX')
+        value = ((Decimal(source.numerator) / Decimal(source.denominator)) /
+                 (Decimal(target.numerator) / Decimal(target.denominator)))
+        return int(value) if value == value.to_integral_value() else value
+
+    def precision(self, code):
+        places = int(self.row(code)['decimal_places'])
+        if not 0 <= places <= 6:
+            raise ValueError('통화 소수 자릿수는 0~6으로 설정해주세요.')
+        if code == 'NWX' and places != 0:
+            raise ValueError('기존 NWX 현금은 정수 단위로 설정해주세요.')
+        return places
+
+    def convert(self, units, source, target):
+        value = units * self.rate_fraction(source) / self.rate_fraction(target)
+        quantum = 10 ** (6 - self.precision(target))
+        output = (value.numerator // value.denominator) // quantum * quantum
+        limit = (2**53 - 1) * SCALE if target == 'NWX' else MAX_UNITS
+        if not 0 <= output <= limit:
+            raise ValueError('환산 금액이 저장 한도를 초과했습니다.')
+        return output

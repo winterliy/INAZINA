@@ -40,15 +40,17 @@ class FXManager:
         return user
 
     def national_currency(self, user_id):
-        with self.db.atomic() as conn:
+        with self.db.readonly() as conn:
             user = self._user(conn, user_id)
             from managers.currency_manager import CurrencyManager
             return user['nationality'], CurrencyManager.home(conn,user_id)
 
     def rates(self):
-        with self.db.atomic() as conn:
-            return [{**dict(r), 'rate': self._rate(conn, r['code'])}
-                    for r in conn.execute("SELECT * FROM currencies WHERE status='active' ORDER BY code")]
+        from managers.currency_manager import CurrencyReadSnapshot
+        with self.db.readonly() as conn:
+            snapshot = CurrencyReadSnapshot(conn)
+            return [{**{k: v for k, v in row.items() if k != 'asset_price'},
+                     'rate': snapshot.rate_nwx(code)} for code, row in snapshot.rows.items()]
 
     def open_account(self, user_id, product_code):
         with self.db.atomic() as conn:
