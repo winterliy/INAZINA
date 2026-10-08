@@ -20,7 +20,6 @@ from managers.market_session_manager import MarketSessionManager
 from functions.admin_prefix import AdminPrefixRegistry
 from functions.admin_access import BOOTSTRAP_ADMIN_IDS
 from functions.interaction_reliability import (
-    retry_discord_request,
     send_interaction_notice,
 )
 from functions.registration import RegistrationRequired

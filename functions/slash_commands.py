@@ -8,7 +8,7 @@ from functions.performance import log_slow
 
 from database.user_db import TREASURY_USER_ID
 from functions.admin_access import BOOTSTRAP_ADMIN_IDS, resolve_user_role
-from functions.interaction_reliability import retry_discord_request
+from functions.interaction_reliability import discord_request, prepare_response
 from functions.discord_views import (
     AllAssetsView,
     AccountCloseView,
@@ -240,8 +240,8 @@ class SlashCommandRegistry:
         # Most commands complete well inside Discord's response deadline. Avoid
         # a defer + follow-up round trip unless the caller performs heavy work.
         if defer and not interaction.response.is_done():
-            await retry_discord_request(
-                lambda: interaction.response.defer(ephemeral=True, thinking=True)
+            await discord_request(
+                lambda: interaction.response.defer(ephemeral=True, thinking=True), stage='ack'
             )
         user = interaction.user
         user_id = str(user.id)
@@ -313,14 +313,21 @@ class SlashCommandRegistry:
                 )
             return await send(**options)
 
-        if interaction.response.is_done():
-            await retry_discord_request(
-                lambda: send_response(interaction.followup.send)
-            )
+        extras = getattr(interaction, 'extras', None)
+        deferred = (getattr(interaction.response, 'type', None) == discord.InteractionResponseType.deferred_channel_message
+                    and isinstance(extras, dict) and not extras.get('response_delivered'))
+        if deferred:
+            options = {key: value for key, value in response_options.items() if key not in {'ephemeral', 'file'}}
+            if file_payload is not None:
+                options['attachments'] = [discord.File(io.BytesIO(file_payload), filename=file.filename)]
+            await discord_request(lambda: interaction.edit_original_response(**options), stage='complete')
+            extras['response_delivered'] = True
+        elif interaction.response.is_done():
+            await discord_request(lambda: send_response(interaction.followup.send), stage='followup')
         else:
-            await retry_discord_request(
-                lambda: send_response(interaction.response.send_message)
-            )
+            await discord_request(lambda: send_response(interaction.response.send_message))
+        if file_payload is not None and isinstance(view, PriceMovementView):
+            view.remember_uploaded_chart(file_payload)
 
     @staticmethod
     def _result_embed(title, message, success):
@@ -381,9 +388,12 @@ class SlashCommandRegistry:
 
     async def assets(self, interaction: discord.Interaction):
         user_id, user_data, _role = await self._prepare(interaction)
-        display_name = getattr(interaction.user, "display_name", None) or interaction.user.name
-        info = await asyncio.to_thread(self.bot.user_mgr.get_total_assets, user_id)
-        summary, sections = await asyncio.to_thread(self._wallet_content, user_id, user_data, display_name, info)
+        async def prepare():
+            display_name = getattr(interaction.user, "display_name", None) or interaction.user.name
+            info = await asyncio.to_thread(self.bot.user_mgr.get_total_assets, user_id)
+            summary, sections = await asyncio.to_thread(self._wallet_content, user_id, user_data, display_name, info)
+            return user_id, info, summary, sections
+        (user_id, info, summary, sections), _ = await prepare_response(interaction, prepare, thinking=True)
         from functions.wallet_views import WalletCategoryView
         view = WalletCategoryView(user_id, summary, sections, info.get('option_short_liability', 0))
         await self._reply(interaction, embed=view.build_embed(), view=view)
@@ -996,9 +1006,12 @@ class SlashCommandRegistry:
 
     async def search(self, interaction: discord.Interaction):
         user_id, _user_data, _role = await self._prepare(interaction)
-        view = InfoPanelView(self.bot, user_id)
+        async def prepare():
+            view = InfoPanelView(self.bot, user_id)
+            return view, await asyncio.to_thread(view.build_embed)
         try:
-            await self._reply(interaction, embed=await asyncio.to_thread(view.build_embed), view=view)
+            (view, embed), _ = await prepare_response(interaction, prepare, thinking=True)
+            await self._reply(interaction, embed=embed, view=view)
         except ValueError as exc:
             await self._reply(interaction, content=f"❌ 정보 목록을 불러오지 못했습니다: {exc}")
 

@@ -1,5 +1,37 @@
 # 명령어 조회·차트 최적화
 
+## Discord 전송 경로 개선
+
+- `/내지갑`·`/검색`의 조회/화면 준비와 일반 검색 페이지 전환은 0.4초 이내에
+  준비되면 바로 응답한다. 더 걸리면 먼저 defer하고 작업 완료 후 응답한다.
+  `/그래프`와 차트 조작·실시간 순위 조작은 기존처럼 먼저 defer한다.
+  초기 사용자 확인은 기존 `_prepare`에서 수행한다. 모달 열기 경로에는 자동 defer를 적용하지 않는다.
+- defer로 생성한 최초 응답은 `edit_original_response`로 완성한다. 메시지를
+  가져오는 GET은 추가하지 않으며, 완료 후 별도의 추가 알림은 followup으로 보낸다.
+- 차트 이미지의 SHA-256과 기존 `movement.png` 첨부 유무를 확인한다. PNG가 같으면
+  첨부를 유지한 채 임베드/컨트롤만 편집한다. 이미지가 다르거나 첨부가 없어졌으면 업로드한다.
+  업로드 성공 후에만 해시를 갱신한다. 현재 시각·지표·고가/저가·거래량 등이 달라져 이미지가
+  바뀌면 새로 업로드하므로, 단순히 현재가가 같다는 이유로 오래된 이미지를 쓰지 않는다.
+- 차트 요청마다 선택 상태를 복사하고 한 View 안에서 직렬 처리한다. 연속 클릭 중
+  대기 중인 이전 요청은 건너뛰며, 이미 계산 중이던 결과도 최신 선택이 아니면 전송하지 않는다.
+  지표/VWAP 설정 저장은 ACK 이후 작업 스레드에서 처리한다.
+- 설치된 discord.py는 HTTP 429의 `retry_after`, 서버 오류, 일부 연결 오류에 대한
+  내부 재시도를 이미 수행한다. 그 위에 있던 추가 전송 재시도를 제거하여, 라이브러리가
+  최종 실패를 반환한 뒤 메시지 전송 전체를 다시 시작하지 않는다. 금융 작업을 재실행하지 않는다.
+- `inazina.performance`에 `discord.ack`, `discord.response`, `discord.complete`,
+  `discord.followup`, `discord.edit`, `discord.chart_edit`를 기록한다. 100ms 이상 또는
+  실패한 호출만 남긴다. 시간에는 네트워크와 라이브러리의 요청 대기/재시도가 포함되며,
+  순수 회선 지연이나 사용자 화면에 표시되는 시각을 측정하는 것은 아니다.
+
+통신 테스트에서는 빠른 조회의 defer 생략, 느린 조회의 선행 ACK, 최초 응답 편집,
+첨부 유지/변경/실패, 연속 클릭의 오래된 결과 억제, 중복 재전송 방지를 검증했다.
+실제 Discord 메시지 전송이나 운영 봇 재시작은 수행하지 않았다.
+기존 지갑의 View 데이터 및 PNG 캐시를 재사용하며, 실시간 검색 결과를 오래 보관하는 캐시는 추가하지 않았다.
+
+참고: [Discord 응답 기한](https://github.com/discord/discord-api-docs/blob/main/developers/interactions/receiving-and-responding.mdx),
+[원본 응답 편집·첨부 API](https://discordpy.readthedocs.io/en/stable/interactions/api.html#discord.Interaction.edit_original_response),
+[discord.py 전송·재시도 구현](https://github.com/Rapptz/discord.py/blob/master/discord/webhook/async_.py).
+
 ## 2026-10-09 추가 적용
 
 - 전체 종목 목록은 종목마다 조회하는 대신 한 읽기 스냅샷에서 9개 SQL로 구성한다.
