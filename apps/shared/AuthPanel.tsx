@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { api, type ApiUser } from "./api";
+import "./typography.css";
 import "./auth.css";
 
 type Mode = "login" | "register" | "find-id" | "reset-password";

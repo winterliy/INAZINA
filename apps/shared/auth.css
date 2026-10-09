@@ -5,7 +5,7 @@
   padding: 28px 18px;
   color: #1d1d1f;
   background: #f5f5f7;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  font-family: var(--font-system);
 }
 
 .auth-panel {
@@ -69,7 +69,7 @@
 .auth-primary:disabled { opacity: .55; cursor: progress; }
 .auth-step { display: grid; gap: 15px; }
 .auth-step p { margin: 0; color: #6e6e73; font-size: 13px; line-height: 1.6; }
-.verified-id { padding: 14px; border-radius: 10px; color: #1d1d1f; background: #f5f5f7; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 17px; text-align: center; }
+.verified-id { padding: 14px; border-radius: 10px; color: #1d1d1f; background: #f5f5f7; font-family: var(--font-mono); font-size: 17px; text-align: center; }
 .auth-hint { margin: -6px 0 0; color: #6e6e73; font-size: 11px; }
 .auth-error, .auth-message { margin: 14px 0 0; font-size: 12px; line-height: 1.5; }
 .auth-error { color: #c9342f; }
