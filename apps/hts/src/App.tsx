@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { FormEvent } from "react";
 import { api, clearToken, type ApiUser } from "../../shared/api";
 import { AuthPanel } from "../../shared/AuthPanel";
 
@@ -303,7 +304,7 @@ export default function App() {
     }
   }
 
-  async function saveHtsId(event: React.FormEvent<HTMLFormElement>) {
+  async function saveHtsId(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSettingsBusy(true);
     setSettingsError("");
@@ -338,10 +339,10 @@ export default function App() {
   const pathRange = B - T;
 
   return <div className="hts-shell">
-    <header className="hts-topbar"><a className="brand" href="/">INAZINA <span>HTS</span></a><div className="top-center"><span className="connection"><i />API {health}</span><span>{user.nickname}</span></div><button className="icon-button" title="로그아웃" onClick={() => { clearToken(); void api("/api/auth/logout", { method: "POST" }); setUser(null); }}>나가기</button></header>
+    <header className="hts-topbar"><a className="brand" href="/">INAZINA <span>HTS</span></a><div className="top-center"><span className="connection"><i />API {health}</span><span>{user.nickname}</span></div><div className="top-actions"><button className="header-action" title="종목 검색" onClick={() => setSearchOpen(true)}>검색</button><button className="header-action account-action" onClick={() => { setSettingsMessage(""); setSettingsError(""); setAccountSettingsOpen(true); }}>계정 설정 <small>{htsId || "HTS ID 만들기"}</small></button><button className="icon-button" title="로그아웃" onClick={() => { clearToken(); void api("/api/auth/logout", { method: "POST" }); setUser(null); }}>로그아웃</button></div></header>
     {error && <div className="toast" role="status">{error}<button onClick={() => setError("")}>닫기</button></div>}
     <main className="hts-layout">
-      <aside className="instrument-rail"><div className="rail-head"><strong>시장</strong><span>{instruments.length}</span></div><label className="search-wrap"><span>검색</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="종목명 · 코드" /></label><div className="instrument-list">{filtered.map((item) => <button key={item.code} className={selectedCode === item.code ? "instrument active" : "instrument"} onClick={() => { setSelectedCode(item.code); setPrice(String(item.price)); }}><span className="instrument-top"><b>{item.name}</b><em>{item.type}</em></span><span className="instrument-bottom"><code>{item.code}</code><strong>{money(item.price)}</strong></span></button>)}</div></aside>
+      <aside className="instrument-rail"><div className="rail-head"><strong>시장</strong><span>{instruments.length}</span></div><section className="wallet-summary"><span>사용자 지갑</span><strong>{money(portfolio?.cash ?? user.cash)} <small>{portfolio?.national_currency || "NWX"}</small></strong><p>총 평가 자산 {money(portfolio?.grand_total ?? user.cash)} NWX</p></section><div className="instrument-list">{filtered.map((item) => <button key={item.code} className={selectedCode === item.code ? "instrument active" : "instrument"} onClick={() => chooseInstrument(item)}><span className="instrument-top"><b>{item.name}</b><em>{item.type}</em></span><span className="instrument-bottom"><code>{item.code}</code><strong>{money(item.price)}</strong></span></button>)}</div></aside>
       <section className="main-market">
         <div className="quote-strip"><div><p className="eyebrow">{selected?.exchange_id || "MARKET"} · {selected?.type || "—"}</p><h1>{selected?.name || "종목을 선택하세요"}<small>{selected?.code}</small></h1></div><div className="quote-value"><strong>{money(current)}</strong><span>{selected?.quote_currency || "NWX"}</span></div></div>
         <section className="chart-panel">

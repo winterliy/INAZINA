@@ -61,6 +61,13 @@ def identity(user_id):
         auth_version = connection.execute(
             "SELECT auth_version FROM web_auth_credentials WHERE user_id=?", (user_id,),
         ).fetchone()[0] if auth_table else 0
+        country_account = connection.execute(
+            "SELECT 1 FROM country_currencies WHERE nationality=?", (user_id,),
+        ).fetchone() if row and row["user_id"] == row["nationality"] else None
+        treasury = connection.execute(
+            "SELECT cash FROM users WHERE user_id='__treasury__' AND nationality=?",
+            (row["nationality"],),
+        ).fetchone() if country_account else None
     if not row or row["status"] != "active":
         return None
     role = "admin" if user_id in BOOTSTRAP_ADMIN_IDS else str(row["role"] or "user").strip().lower()
@@ -70,11 +77,21 @@ def identity(user_id):
         "userId": str(row["user_id"]),
         "nickname": str(row["nickname"] or row["user_id"]),
         "nationality": str(row["nationality"] or ""),
-        "cash": int(row["cash"] or 0),
+        "cash": int((treasury["cash"] if treasury else row["cash"]) or 0),
         "creditScore": int(row["credit_score"] or 0),
         "role": role,
         "authVersion": int(auth_version),
     }
+
+
+def trading_user_id(user_id):
+    with connect_readonly() as connection:
+        country_account = connection.execute(
+            "SELECT 1 FROM users u JOIN country_currencies c ON c.nationality=u.user_id "
+            "WHERE u.user_id=? AND u.nationality=u.user_id AND u.status='active'",
+            (user_id,),
+        ).fetchone()
+    return "__treasury__" if country_account else user_id
 
 
 def auth_countries():
@@ -634,7 +651,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not user:
                     self.send_json(403, {"error": "active_user_required"})
                 else:
-                    self.send_json(200, {"portfolio": portfolio(user["userId"])})
+                    self.send_json(200, {"portfolio": portfolio(trading_user_id(user["userId"]))})
             elif path == "/internal/admin/overview":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -689,7 +706,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     manager = domain().order_book
-                    orders = [dict(row) for row in manager.get_user_orders(user["userId"], limit=50)]
+                    orders = [dict(row) for row in manager.get_user_orders(trading_user_id(user["userId"]), limit=50)]
                     self.send_json(200, {"orders": orders})
             elif path.startswith("/internal/market/book/"):
                 code = path.removeprefix("/internal/market/book/")
@@ -812,11 +829,11 @@ class Handler(BaseHTTPRequestHandler):
                 hts_id = set_hts_login_id(user["userId"], payload.get("htsId"), payload.get("password"))
                 self.send_json(200, {"htsId": hts_id})
             elif path == "/internal/market/orders":
-                success, message = execute_order(user["userId"], payload)
+                success, message = execute_order(trading_user_id(user["userId"]), payload)
                 self.send_json(200 if success else 400, {"success": success, "message": message})
             elif path.startswith("/internal/market/orders/") and path.endswith("/cancel"):
                 order_id = int(path.removeprefix("/internal/market/orders/").removesuffix("/cancel"))
-                success, message = cancel_order(user["userId"], order_id)
+                success, message = cancel_order(trading_user_id(user["userId"]), order_id)
                 self.send_json(200 if success else 400, {"success": success, "message": message})
             elif path.startswith("/internal/market/drawings/"):
                 code = path.removeprefix("/internal/market/drawings/")
