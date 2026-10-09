@@ -61,18 +61,46 @@ function send(response: ServerResponse, status: number, body: unknown): void {
   response.end(JSON.stringify(body));
 }
 
-async function internalGet(path: string, userId?: string): Promise<{ status: number; body: any }> {
+async function internalRequest(
+  method: "GET" | "POST",
+  path: string,
+  userId?: string,
+  body?: unknown,
+): Promise<{ status: number; body: any }> {
   try {
     const result = await fetch(`http://127.0.0.1:${pythonPort}${path}`, {
+      method,
       headers: {
         "x-inazina-internal-token": internalToken,
         ...(userId ? { "x-inazina-user-id": userId } : {}),
+        ...(body ? { "content-type": "application/json" } : {}),
       },
+      ...(body ? { body: JSON.stringify(body) } : {}),
       signal: AbortSignal.timeout(2500),
     });
     return { status: result.status, body: await result.json() };
   } catch {
     return { status: 503, body: { error: "python_service_unavailable" } };
+  }
+}
+
+const internalGet = (path: string, userId?: string) => internalRequest("GET", path, userId);
+
+async function requestJson(request: IncomingMessage): Promise<unknown> {
+  if (!request.headers["content-type"]?.includes("application/json")) {
+    throw new Error("application_json_required");
+  }
+  let size = 0;
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > 32_768) throw new Error("request_too_large");
+    chunks.push(Buffer.from(chunk));
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  } catch {
+    throw new Error("invalid_json");
   }
 }
 
@@ -96,7 +124,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
-  if (request.method !== "GET") {
+  if (request.method !== "GET" && request.method !== "POST") {
     send(response, 405, { error: "method_not_allowed" });
     return;
   }
@@ -116,18 +144,22 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
   const user = identity.body.user as User;
 
-  if (url.pathname === "/api/auth/session" || url.pathname === "/api/me") {
+  if (request.method === "GET" && (url.pathname === "/api/auth/session" || url.pathname === "/api/me")) {
     send(response, 200, { user });
     return;
   }
 
-  if (url.pathname === "/api/market/instruments") {
+  if (request.method === "GET" && (url.pathname === "/api/market/instruments" || url.pathname === "/api/admin/instruments")) {
+    if (url.pathname.startsWith("/api/admin/") && user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
     const result = await internalGet("/internal/market/instruments", principal.userId);
     send(response, result.status, result.body);
     return;
   }
 
-  if (url.pathname === "/api/admin/overview") {
+  if (request.method === "GET" && url.pathname === "/api/admin/overview") {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });
       return;
@@ -137,14 +169,112 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/admin/audit") {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const result = await internalGet("/internal/admin/audit", principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/me/portfolio") {
+    const result = await internalGet("/internal/market/portfolio", principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/market/orders") {
+    const result = await internalGet("/internal/market/orders", principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  const bookMatch = url.pathname.match(/^\/api\/market\/book\/([^/]+)$/);
+  if (request.method === "GET" && bookMatch) {
+    const result = await internalGet(`/internal/market/book/${encodeURIComponent(decodeURIComponent(bookMatch[1]))}`, principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  const chartMatch = url.pathname.match(/^\/api\/market\/chart\/([^/]+)$/);
+  if (request.method === "GET" && chartMatch) {
+    const range = url.searchParams.get("range") ?? "1d";
+    const result = await internalGet(`/internal/market/chart/${encodeURIComponent(decodeURIComponent(chartMatch[1]))}?range=${encodeURIComponent(range)}`, principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  const drawingsMatch = url.pathname.match(/^\/api\/market\/drawings\/([^/]+)$/);
+  if (drawingsMatch) {
+    const code = encodeURIComponent(decodeURIComponent(drawingsMatch[1]));
+    if (request.method === "GET") {
+      const result = await internalGet(`/internal/market/drawings/${code}`, principal.userId);
+      send(response, result.status, result.body);
+      return;
+    }
+    if (request.method === "POST") {
+      const body = await requestJson(request);
+      const result = await internalRequest("POST", `/internal/market/drawings/${code}`, principal.userId, body);
+      send(response, result.status, result.body);
+      return;
+    }
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/market/orders") {
+    const body = await requestJson(request);
+    const result = await internalRequest("POST", "/internal/market/orders", principal.userId, body);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  const cancelMatch = url.pathname.match(/^\/api\/market\/orders\/(\d+)\/cancel$/);
+  if (request.method === "POST" && cancelMatch) {
+    const result = await internalRequest("POST", `/internal/market/orders/${cancelMatch[1]}/cancel`, principal.userId, {});
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/admin/market") {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const body = await requestJson(request);
+    const result = await internalRequest("POST", "/internal/admin/market", principal.userId, body);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  const statusMatch = url.pathname.match(/^\/api\/admin\/instruments\/([^/]+)\/status$/);
+  if (request.method === "POST" && statusMatch) {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const code = encodeURIComponent(decodeURIComponent(statusMatch[1]));
+    const body = await requestJson(request);
+    const result = await internalRequest("POST", `/internal/admin/instruments/${code}/status`, principal.userId, body);
+    send(response, result.status, result.body);
+    return;
+  }
+
   send(response, 404, { error: "not_found" });
 }
 
 const server = createServer((request, response) => {
   void handle(request, response).catch((error: unknown) => {
-    console.error("API request failed:", error);
-    if (!response.headersSent) send(response, 500, { error: "internal_error" });
-    else response.destroy();
+    const message = error instanceof Error ? error.message : "internal_error";
+    if (message === "invalid_json" || message === "application_json_required") {
+      send(response, 400, { error: message });
+    } else if (message === "request_too_large") {
+      send(response, 413, { error: message });
+    } else {
+      console.error("API request failed:", error);
+      if (!response.headersSent) send(response, 500, { error: "internal_error" });
+      else response.destroy();
+    }
   });
 });
 
