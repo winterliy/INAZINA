@@ -31,6 +31,8 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
       invalid_credentials: "Discord ID 또는 비밀번호를 확인해주세요.",
       login_rate_limited: "로그인 시도가 많습니다. 15분 후 다시 시도해주세요.",
       country_not_found: "사용 가능한 국가 ID를 선택해주세요.",
+      country_account_exists: "이미 해당 국가 계정이 있습니다.",
+      country_account_conflict: "국가 계정을 생성할 수 없습니다. 관리자에게 문의해주세요.",
       password_policy: "비밀번호는 영문과 숫자를 포함해 12~128자로 입력해주세요.",
       active_user_required: "활성 사용자 계정이 아닙니다.",
       admin_required: "관리자 권한이 필요합니다.",

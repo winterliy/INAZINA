@@ -21,6 +21,7 @@ DATABASE = Path(os.environ.get("INAZINA_DB_PATH", ROOT / "database" / "inazina.d
 INTERNAL_TOKEN = os.environ.get("INAZINA_INTERNAL_TOKEN", "")
 PORT = int(os.environ.get("INAZINA_PYTHON_PORT", "4313"))
 BOOTSTRAP_ADMIN_IDS = {"1076861147560542278"}
+COUNTRY_ACCOUNT_PREFIX = "country-account:"
 sys.path.insert(0, str(ROOT))
 _domain = None
 
@@ -94,6 +95,75 @@ def ensure_auth_table(connection):
         connection.execute("ALTER TABLE web_auth_credentials ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 0")
 
 
+def ensure_country_accounts_table(connection):
+    connection.execute("""CREATE TABLE IF NOT EXISTS country_accounts (
+        country_id TEXT PRIMARY KEY, user_id TEXT NOT NULL UNIQUE,
+        created_epoch INTEGER NOT NULL)""")
+
+
+def create_country_account(actor_id, country_id, password):
+    country_id = str(country_id or "").strip()
+    if not country_id or len(country_id) > 80:
+        raise ValueError("country_not_found")
+    validate_password(password)
+    user_id = COUNTRY_ACCOUNT_PREFIX + country_id
+    now = int(time.time())
+    salt = secrets.token_bytes(16).hex()
+    digest = password_hash(password, salt)
+    from database.db_manager import DBManager
+    with DBManager.admin_scope(actor_id):
+        with DBManager.atomic(("users", "fx", "system")) as connection:
+            ensure_auth_table(connection)
+            ensure_country_accounts_table(connection)
+            connection.execute("""CREATE TABLE IF NOT EXISTS admin_audit (
+                audit_id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT NOT NULL,
+                action TEXT NOT NULL, payload TEXT NOT NULL, recorded_epoch REAL NOT NULL)""")
+            country = connection.execute(
+                "SELECT 1 FROM country_currencies n JOIN currencies c ON c.code=n.currency_code "
+                "WHERE n.nationality=? AND c.status='active'", (country_id,),
+            ).fetchone()
+            if not country:
+                raise ValueError("country_not_found")
+            if connection.execute(
+                "SELECT 1 FROM country_accounts WHERE country_id=?", (country_id,),
+            ).fetchone():
+                raise ValueError("country_account_exists")
+            if connection.execute("SELECT 1 FROM users WHERE user_id=?", (user_id,)).fetchone():
+                raise ValueError("country_account_conflict")
+            connection.execute(
+                "INSERT INTO users(user_id,nickname,nationality,cash,role) VALUES(?,?,?,?, 'user')",
+                (user_id, f"{country_id} 국가 계정", country_id, 1_000_000),
+            )
+            connection.execute(
+                "INSERT INTO web_auth_credentials(user_id,salt,password_hash,created_epoch,updated_epoch) "
+                "VALUES(?,?,?,?,?)", (user_id, salt, digest, now, now),
+            )
+            connection.execute(
+                "INSERT INTO country_accounts(country_id,user_id,created_epoch) VALUES(?,?,?)",
+                (country_id, user_id, now),
+            )
+            connection.execute(
+                "INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES(?,?,?,?)",
+                (str(actor_id), "country_account.create", json.dumps({"countryId": country_id}, ensure_ascii=False), now),
+            )
+    return {"countryId": country_id, "userId": user_id, "cash": 1_000_000, "status": "active"}
+
+
+def country_accounts():
+    with connect_readonly() as connection:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='country_accounts'"
+        ).fetchone()
+        if not table:
+            return []
+        rows = connection.execute(
+            "SELECT a.country_id,u.cash,u.status FROM country_accounts a "
+            "JOIN users u ON u.user_id=a.user_id ORDER BY a.country_id"
+        ).fetchall()
+    return [{"countryId": row["country_id"], "cash": int(row["cash"] or 0),
+             "status": row["status"]} for row in rows]
+
+
 def save_password(user_id, password, *, create=False, nickname="", country_id=""):
     if not isinstance(user_id, str) or not user_id.isdecimal():
         raise ValueError("discord_identity_invalid")
@@ -140,7 +210,7 @@ def save_password(user_id, password, *, create=False, nickname="", country_id=""
 
 
 def authenticate_password(user_id, password):
-    if not isinstance(user_id, str) or not user_id.isdecimal() or not isinstance(password, str):
+    if not isinstance(user_id, str) or not isinstance(password, str):
         return None
     with sqlite3.connect(DATABASE, timeout=5) as connection:
         connection.execute("PRAGMA busy_timeout=5000")
@@ -155,6 +225,27 @@ def authenticate_password(user_id, password):
     if not hmac.compare_digest(digest, credential["password_hash"]):
         return None
     return identity(user_id)
+
+
+def authenticate_discord_password(user_id, password):
+    if not isinstance(user_id, str) or not user_id.isdecimal():
+        return None
+    return authenticate_password(user_id, password)
+
+
+def authenticate_country_password(country_id, password):
+    if not isinstance(country_id, str) or not isinstance(password, str):
+        return None
+    with connect_readonly() as connection:
+        table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='country_accounts'"
+        ).fetchone()
+        account = connection.execute(
+            "SELECT user_id FROM country_accounts WHERE country_id=?", (country_id,),
+        ).fetchone() if table else None
+    if not account:
+        return None
+    return authenticate_password(str(account["user_id"]), password)
 
 
 def instruments(include_inactive=False):
@@ -406,9 +497,9 @@ def admin_users(search):
     with connect_readonly() as connection:
         rows = connection.execute(
             "SELECT user_id,nickname,nationality,cash,credit_score,status,role FROM users "
-            "WHERE user_id<>'__treasury__' AND (user_id LIKE ? OR nickname LIKE ?) "
+            "WHERE user_id<>'__treasury__' AND user_id NOT LIKE ? AND (user_id LIKE ? OR nickname LIKE ?) "
             "ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END,nickname LIMIT 100",
-            (term, term),
+            (f"{COUNTRY_ACCOUNT_PREFIX}%", term, term),
         ).fetchall()
     return [{"userId": row["user_id"], "nickname": row["nickname"],
              "nationality": row["nationality"], "cash": int(row["cash"] or 0),
@@ -512,6 +603,12 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     search = parse_qs(parsed.query).get("search", [""])[0]
                     self.send_json(200, {"users": admin_users(search)})
+            elif path == "/internal/admin/country-accounts":
+                user = identity(self.headers.get("x-inazina-user-id", ""))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    self.send_json(200, {"accounts": country_accounts()})
             elif path == "/internal/admin/events":
                 user = identity(self.headers.get("x-inazina-user-id", ""))
                 if not user or user["role"] != "admin":
@@ -593,20 +690,41 @@ class Handler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             verified_id = self.headers.get("x-inazina-user-id", "")
             if path == "/internal/auth/login":
-                user_id = str(payload.get("userId", "")).strip()
-                if not user_id.isdecimal():
+                account_type = payload.get("accountType", "discord")
+                if account_type == "country":
+                    country_id = str(payload.get("countryId", "")).strip()
+                    if not country_id or len(country_id) > 80:
+                        self.send_json(401, {"error": "invalid_credentials"})
+                        return
+                    with connect_readonly() as connection:
+                        table = connection.execute(
+                            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='country_accounts'"
+                        ).fetchone()
+                        has_account = connection.execute(
+                            "SELECT 1 FROM country_accounts WHERE country_id=?", (country_id,),
+                        ).fetchone() if table else None
+                    if not has_account:
+                        self.send_json(404, {"error": "account_not_found"})
+                        return
+                    user = authenticate_country_password(country_id, payload.get("password"))
+                elif account_type == "discord":
+                    user_id = str(payload.get("userId", "")).strip()
+                    if not user_id.isdecimal():
+                        self.send_json(401, {"error": "invalid_credentials"})
+                        return
+                    with sqlite3.connect(DATABASE, timeout=5) as connection:
+                        ensure_auth_table(connection)
+                        connection.row_factory = sqlite3.Row
+                        has_account = connection.execute(
+                            "SELECT 1 FROM web_auth_credentials WHERE user_id=?", (user_id,),
+                        ).fetchone()
+                    if not has_account:
+                        self.send_json(404, {"error": "account_not_found"})
+                        return
+                    user = authenticate_discord_password(user_id, payload.get("password"))
+                else:
                     self.send_json(401, {"error": "invalid_credentials"})
                     return
-                with sqlite3.connect(DATABASE, timeout=5) as connection:
-                    ensure_auth_table(connection)
-                    connection.row_factory = sqlite3.Row
-                    has_account = connection.execute(
-                        "SELECT 1 FROM web_auth_credentials WHERE user_id=?", (user_id,),
-                    ).fetchone()
-                if not has_account:
-                    self.send_json(404, {"error": "account_not_found"})
-                    return
-                user = authenticate_password(user_id, payload.get("password"))
                 if not user:
                     self.send_json(401, {"error": "invalid_credentials"})
                 else:
@@ -628,6 +746,17 @@ class Handler(BaseHTTPRequestHandler):
                     ensure_auth_table(connection)
                     connection.execute("UPDATE web_auth_credentials SET auth_version=auth_version+1 WHERE user_id=?", (verified_id,))
                 self.send_json(200, {"success": True})
+                return
+
+            if path == "/internal/admin/country-accounts":
+                user = identity(verified_id)
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                    return
+                account = create_country_account(
+                    user["userId"], payload.get("countryId"), payload.get("password"),
+                )
+                self.send_json(201, {"account": account})
                 return
 
             user = identity(verified_id)

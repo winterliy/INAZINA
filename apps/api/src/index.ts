@@ -92,7 +92,8 @@ function sessionHeader(userId: string, authVersion: number): string {
 
 function principalFor(request: IncomingMessage): Principal | undefined {
   const session = verifiedCookie(cookieValue(request, sessionCookie));
-  if (session?.kind === "session" && /^\d{1,25}$/.test(session.userId) &&
+  if (session?.kind === "session" && typeof session.userId === "string" &&
+      session.userId.length > 0 && session.userId.length <= 120 && !/[\u0000-\u001f]/.test(session.userId) &&
       typeof session.authVersion === "number" && Number.isInteger(session.authVersion)) {
     return { userId: session.userId, authVersion: session.authVersion };
   }
@@ -288,8 +289,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
   if (request.method === "POST" && url.pathname === "/api/auth/login") {
     const body = await requestJson(request);
-    const loginBody = body as { userId?: string; password?: string };
-    const attemptKey = `${request.socket.remoteAddress ?? "local"}:${loginBody.userId ?? ""}`;
+    const loginBody = body as { accountType?: string; userId?: string; countryId?: string; password?: string };
+    const identifier = loginBody.accountType === "country" ? loginBody.countryId : loginBody.userId;
+    const attemptKey = `${request.socket.remoteAddress ?? "local"}:${loginBody.accountType ?? "discord"}:${identifier ?? ""}`;
     const attempt = failedLogins.get(attemptKey);
     if (attempt && attempt.resetAt > Date.now() && attempt.count >= 8) {
       send(response, 429, { error: "login_rate_limited" });
@@ -402,6 +404,16 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/admin/country-accounts") {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const result = await internalGet("/internal/admin/country-accounts", principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/admin/events") {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });
@@ -487,6 +499,17 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     }
     const body = await requestJson(request);
     const result = await internalRequest("POST", "/internal/admin/events", principal.userId, body);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/admin/country-accounts") {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const body = await requestJson(request);
+    const result = await internalRequest("POST", "/internal/admin/country-accounts", principal.userId, body);
     send(response, result.status, result.body);
     return;
   }

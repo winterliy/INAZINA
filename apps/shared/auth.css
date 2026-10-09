@@ -39,6 +39,30 @@
 .auth-heading h1 { margin: 0; color: #1d1d1f; font-size: 28px; font-weight: 650; line-height: 1.22; }
 .auth-subtitle { margin: 9px 0 0; color: #6e6e73; font-size: 13px; line-height: 1.55; }
 .auth-form { display: grid; gap: 15px; }
+.auth-account-types {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid #e5e5e7;
+  border-radius: 9px;
+  background: #f5f5f7;
+}
+.auth-account-types button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 6px;
+  color: #6e6e73;
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.auth-account-types button[aria-pressed="true"] {
+  color: #1d1d1f;
+  background: #fff;
+  box-shadow: 0 1px 3px #0000001a;
+}
 .auth-form label { display: grid; gap: 7px; color: #424245; font-size: 12px; font-weight: 550; }
 .auth-form input, .auth-form select {
   width: 100%;
