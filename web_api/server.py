@@ -52,18 +52,15 @@ def identity(user_id):
     }
 
 
-def instruments():
+def instruments(include_inactive=False):
+    status_clause = "" if include_inactive else " WHERE status='active'"
     with connect_readonly() as connection:
         rows = []
         for query in (
-            "SELECT code,name,type,price,exchange_id,quote_currency,'market_assets' AS source "
-            "FROM market_assets WHERE status='active'",
-            "SELECT company_code AS code,name,'stock' AS type,share_price AS price,exchange_id,quote_currency,'company' AS source "
-            "FROM company WHERE status='active'",
-            "SELECT product_code AS code,name,product_type AS type,unit_price AS price,exchange_id,quote_currency,'investment' AS source "
-            "FROM investment WHERE status='active'",
-            "SELECT product_code AS code,name,'국채' AS type,market_price AS price,exchange_id,'NWX' AS quote_currency,'treasury_bond' AS source "
-            "FROM treasury_bond_products WHERE status='active'",
+            f"SELECT code,name,type,price,exchange_id,quote_currency,status,'market_assets' AS source FROM market_assets{status_clause}",
+            f"SELECT company_code AS code,name,'stock' AS type,share_price AS price,exchange_id,quote_currency,status,'company' AS source FROM company{status_clause}",
+            f"SELECT product_code AS code,name,product_type AS type,unit_price AS price,exchange_id,quote_currency,status,'investment' AS source FROM investment{status_clause}",
+            f"SELECT product_code AS code,name,'국채' AS type,market_price AS price,exchange_id,'NWX' AS quote_currency,status,'treasury_bond' AS source FROM treasury_bond_products{status_clause}",
         ):
             rows.extend(dict(row) for row in connection.execute(query).fetchall())
     return sorted(rows, key=lambda row: (str(row["name"]).casefold(), row["code"]))
@@ -88,16 +85,20 @@ def domain():
         futures_manager = FuturesManager(db, user_manager)
         order_book.option_manager = option_manager
         order_book.futures_manager = futures_manager
+        from managers.admin_manager import AdminManager
+
         bot = SimpleNamespace(
             db=db, user_mgr=user_manager, order_book=order_book,
             option_mgr=option_manager, futures_mgr=futures_manager,
         )
         bot.admin_control = AdminControlManager(bot)
+        bot.admin_mgr = AdminManager(db)
         _domain = SimpleNamespace(
             db=db, users=user_manager, order_book=order_book,
             options=option_manager, futures=futures_manager,
             market=MarketManager(db), admin_control=bot.admin_control,
             market_session=MarketSessionManager(db),
+            admin_manager=bot.admin_mgr,
             bot=bot,
         )
     return _domain
@@ -249,11 +250,11 @@ def set_instrument_status(actor, code, payload):
     status = payload.get("status") if isinstance(payload, dict) else None
     if status not in {"active", "inactive"}:
         raise ValueError("status must be active or inactive")
-    item = next((row for row in instruments() if row["code"] == code), None)
+    item = next((row for row in instruments(include_inactive=True) if row["code"] == code), None)
     if not item:
         return False, "자산 코드를 찾을 수 없습니다."
     category = {
-        "company": "stock", "market_assets": "asset", "investment": {
+            "company": "stock", "market_assets": "asset", "investment": {
             "mutual_fund": "fund", "index_fund": "indexfund", "stock_future": "future",
             "corporate_bond": "corporatebond", "commodity_spot": "commodity", "etf": "etf",
             "els": "els",
@@ -266,6 +267,51 @@ def set_instrument_status(actor, code, payload):
         actor, category, "restore" if status == "active" else "delete", code,
     )
     return True, result
+
+
+def admin_users(search):
+    term = f"%{search.strip()}%"
+    with connect_readonly() as connection:
+        rows = connection.execute(
+            "SELECT user_id,nickname,nationality,cash,credit_score,status,role FROM users "
+            "WHERE user_id<>'__treasury__' AND (user_id LIKE ? OR nickname LIKE ?) "
+            "ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END,nickname LIMIT 100",
+            (term, term),
+        ).fetchall()
+    return [{"userId": row["user_id"], "nickname": row["nickname"],
+             "nationality": row["nationality"], "cash": int(row["cash"] or 0),
+             "creditScore": int(row["credit_score"] or 0), "status": row["status"],
+             "role": row["role"]} for row in rows]
+
+
+def admin_events():
+    with connect_readonly() as connection:
+        rows = connection.execute(
+            "SELECT event_id,asset_code,event_type,severity,starts_epoch,ends_epoch,created_by,"
+            "target_mode,target_value,volatility_percent FROM market_events "
+            "ORDER BY event_id DESC LIMIT 50"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def update_admin_user(actor, user_id, changes):
+    if not isinstance(changes, dict):
+        raise ValueError("changes must be an object")
+    return domain().admin_control.user(actor, user_id, changes)
+
+
+def create_admin_event(actor, payload):
+    if not isinstance(payload, dict):
+        raise ValueError("invalid_event")
+    return domain().admin_manager.create_market_event(
+        actor,
+        payload.get("eventType"),
+        payload.get("severity"),
+        payload.get("assetCode") or None,
+        payload.get("durationSeconds", 3600),
+        target_price=payload.get("targetPrice"),
+        target_percent=payload.get("targetPercent"),
+    )
 
 
 def request_json(handler):
