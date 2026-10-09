@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from contextlib import closing
 from pathlib import Path
+from types import SimpleNamespace
 
 from database.db_manager import DBManager
 from web_api import server
@@ -82,6 +83,10 @@ class CountryAccountTests(unittest.TestCase):
             connection.execute("INSERT INTO users(user_id,nickname,role) VALUES ('user-1','User','user')")
         with self.assertRaisesRegex(ValueError, "관리 권한"):
             server.create_country_account("user-1", "Testland", "CountryPass123")
+
+    def test_internal_user_id_decodes_non_ascii_country_id(self):
+        handler = SimpleNamespace(headers={"x-inazina-user-id": "%EB%82%99%EC%9B%90"})
+        self.assertEqual(server.internal_user_id(handler), "낙원")
 
 
 if __name__ == "__main__":

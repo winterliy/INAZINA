@@ -5,7 +5,7 @@ import { AuthPanel } from "../../shared/AuthPanel";
 type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; quote_currency?: string };
 type Point = { time: number; price: number };
 type Drawing = { id: string; type: "trend" | "horizontal"; anchors: Point[] };
-type Portfolio = { cash: number; grand_total: number; net_worth: number; loan_total: number; order_reserved_total: number; stocks: { code: string; name: string; qty: number; price: number; value: number; type: string }[] };
+type Portfolio = { cash: number; grand_total: number; net_worth: number; loan_total: number; order_reserved_total: number; national_currency?: string; stocks: { code: string; name: string; qty: number; price: number; value: number; type: string }[] };
 type Order = { order_id: number; asset_code: string; side: string; limit_price: number; quantity: number; remaining_quantity: number; filled_quantity: number; status: string };
 type Book = { bids: { limit_price: number; quantity: number; order_count: number }[]; asks: { limit_price: number; quantity: number; order_count: number }[] };
 
@@ -22,6 +22,14 @@ export default function App() {
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [selectedCode, setSelectedCode] = useState("");
   const [search, setSearch] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [accountSettingsOpen, setAccountSettingsOpen] = useState(false);
+  const [htsId, setHtsId] = useState("");
+  const [htsIdInput, setHtsIdInput] = useState("");
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [settingsMessage, setSettingsMessage] = useState("");
+  const [settingsError, setSettingsError] = useState("");
+  const [settingsBusy, setSettingsBusy] = useState(false);
   const [range, setRange] = useState<string>("1d");
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState(0);
@@ -39,6 +47,7 @@ export default function App() {
   const [draft, setDraft] = useState<Point[] | null>(null);
   const [drawingsReady, setDrawingsReady] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const draftStart = useRef<Point | null>(null);
   const moveStart = useRef<{ point: Point; drawing: Drawing } | null>(null);
   const chartGesture = useRef(false);
@@ -104,6 +113,23 @@ export default function App() {
     }).catch((cause) => { if (!cancelled) setError(cause instanceof Error ? cause.message : "화면 데이터를 불러오지 못했습니다."); });
     return () => { cancelled = true; };
   }, [user, refreshOrders]);
+
+  useEffect(() => {
+    if (!user) return;
+    void api<{ htsId: string | null }>("/api/hts/account")
+      .then(({ htsId: current }) => { setHtsId(current ?? ""); setHtsIdInput(current ?? ""); })
+      .catch((cause) => setError(cause instanceof Error ? cause.message : "HTS 계정 정보를 불러오지 못했습니다."));
+  }, [user]);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    searchInputRef.current?.focus();
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setSearchOpen(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [searchOpen]);
 
   const refreshMarket = useCallback(async (code: string, timeframe: string) => {
     if (!code) return;
@@ -275,6 +301,33 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function saveHtsId(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSettingsBusy(true);
+    setSettingsError("");
+    setSettingsMessage("");
+    try {
+      const result = await api<{ htsId: string }>("/api/hts/account", {
+        method: "POST", body: JSON.stringify({ htsId: htsIdInput, password: currentPassword }),
+      });
+      setHtsId(result.htsId);
+      setHtsIdInput(result.htsId);
+      setCurrentPassword("");
+      setSettingsMessage("HTS ID를 저장했습니다.");
+    } catch (cause) {
+      setSettingsError(cause instanceof Error ? cause.message : "HTS ID를 저장하지 못했습니다.");
+    } finally {
+      setSettingsBusy(false);
+    }
+  }
+
+  function chooseInstrument(instrument: Instrument) {
+    setSelectedCode(instrument.code);
+    setPrice(String(instrument.price));
+    setSearch("");
+    setSearchOpen(false);
   }
 
   if (!user) return <AuthPanel app="hts" onAuthenticated={setUser} />;

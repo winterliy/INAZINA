@@ -94,7 +94,7 @@ export function AuthPanel({ app, onAuthenticated }: { app: "dashboard" | "hts"; 
     try {
       if (mode === "login") {
         const result = await api<{ user: ApiUser }>("/api/auth/login", {
-          method: "POST", body: JSON.stringify({ userId: userId.trim(), password }),
+          method: "POST", body: JSON.stringify({ ...(app === "hts" ? { loginId: userId.trim() } : { userId: userId.trim() }), password }),
         });
         onAuthenticated(result.user);
       } else if (mode === "register") {
@@ -137,7 +137,7 @@ export function AuthPanel({ app, onAuthenticated }: { app: "dashboard" | "hts"; 
       </div>
 
       {mode === "login" && <form className="auth-form" onSubmit={submit}>
-        <label>{app === "hts" ? "Discord ID 또는 국가 ID" : "Discord ID"}<input autoComplete="username" inputMode={app === "hts" ? undefined : "numeric"} value={userId} onChange={(event) => setUserId(event.target.value)} placeholder={app === "hts" ? "Discord ID 또는 국가 ID" : "숫자 Discord ID"} required /></label>
+        <label>{app === "hts" ? "HTS ID · Discord ID · 국가 ID" : "Discord ID"}<input autoComplete="username" inputMode={app === "hts" ? undefined : "numeric"} value={userId} onChange={(event) => setUserId(event.target.value)} placeholder={app === "hts" ? "HTS ID, Discord ID 또는 국가 ID" : "숫자 Discord ID"} required /></label>
         <label>비밀번호<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
         <button className="auth-primary" disabled={busy}>{busy ? "확인 중…" : "로그인"}</button>
       </form>}

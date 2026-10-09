@@ -11,6 +11,7 @@ import re
 import sqlite3
 import sys
 import time
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,12 +26,26 @@ sys.path.insert(0, str(ROOT))
 _domain = None
 
 
+@contextmanager
 def connect_readonly():
     uri = DATABASE.as_uri() + "?mode=ro"
     connection = sqlite3.connect(uri, uri=True, timeout=2)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA query_only=ON")
-    return connection
+    try:
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+        yield connection
+    finally:
+        connection.close()
+
+
+@contextmanager
+def connect_db(timeout=5):
+    connection = sqlite3.connect(DATABASE, timeout=timeout)
+    try:
+        with connection:
+            yield connection
+    finally:
+        connection.close()
 
 
 def identity(user_id):
@@ -92,6 +107,48 @@ def ensure_auth_table(connection):
     columns = {row[1] for row in connection.execute("PRAGMA table_info(web_auth_credentials)")}
     if "auth_version" not in columns:
         connection.execute("ALTER TABLE web_auth_credentials ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 0")
+    if "hts_id" not in columns:
+        connection.execute("ALTER TABLE web_auth_credentials ADD COLUMN hts_id TEXT")
+    connection.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_web_auth_credentials_hts_id "
+        "ON web_auth_credentials(hts_id) WHERE hts_id IS NOT NULL"
+    )
+
+
+def normalize_hts_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{3,32}", value.strip()):
+        raise ValueError("hts_id_policy")
+    return value.strip().lower()
+
+
+def get_hts_login_id(user_id):
+    with connect_db(timeout=5) as connection:
+        ensure_auth_table(connection)
+        row = connection.execute(
+            "SELECT hts_id FROM web_auth_credentials WHERE user_id=?", (user_id,),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def set_hts_login_id(user_id, hts_id, password):
+    normalized_id = normalize_hts_id(hts_id)
+    if not authenticate_password(user_id, password):
+        raise ValueError("invalid_credentials")
+    try:
+        with connect_db(timeout=5) as connection:
+            ensure_auth_table(connection)
+            user = connection.execute(
+                "SELECT 1 FROM users WHERE user_id=? AND status='active'", (user_id,),
+            ).fetchone()
+            if not user:
+                raise ValueError("active_user_required")
+            connection.execute(
+                "UPDATE web_auth_credentials SET hts_id=?,updated_epoch=? WHERE user_id=?",
+                (normalized_id, int(time.time()), user_id),
+            )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("hts_id_taken") from exc
+    return normalized_id
 
 
 def create_country_account(actor_id, country_id, password):
@@ -196,7 +253,7 @@ def save_password(user_id, password, *, create=False, nickname="", country_id=""
 def authenticate_password(user_id, password):
     if not isinstance(user_id, str) or not isinstance(password, str):
         return None
-    with sqlite3.connect(DATABASE, timeout=5) as connection:
+    with connect_db(timeout=5) as connection:
         connection.execute("PRAGMA busy_timeout=5000")
         ensure_auth_table(connection)
         connection.row_factory = sqlite3.Row
@@ -373,7 +430,7 @@ def save_drawings(user_id, code, drawings):
             clean.append({"time": int(epoch), "price": float(price)})
         valid.append({"id": str(drawing.get("id", ""))[:80], "type": drawing["type"], "anchors": clean})
 
-    with sqlite3.connect(DATABASE, timeout=10) as connection:
+    with connect_db(timeout=10) as connection:
         connection.execute("PRAGMA busy_timeout=10000")
         connection.execute("""CREATE TABLE IF NOT EXISTS chart_drawings (
             user_id TEXT NOT NULL, asset_code TEXT NOT NULL, drawings_json TEXT NOT NULL,
@@ -534,6 +591,10 @@ def request_json(handler):
     return value
 
 
+def internal_user_id(handler):
+    return unquote(handler.headers.get("x-inazina-user-id", ""))
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "InazinaInternal/1.0"
 
@@ -554,48 +615,54 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/internal/auth/countries":
                 self.send_json(200, {"countries": auth_countries()})
             elif path == "/internal/me":
-                user_id = self.headers.get("x-inazina-user-id", "")
+                user_id = internal_user_id(self)
                 user = identity(user_id)
                 if not user:
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     self.send_json(200, {"user": user})
+            elif path == "/internal/hts/account":
+                user_id = internal_user_id(self)
+                if not identity(user_id):
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    self.send_json(200, {"htsId": get_hts_login_id(user_id)})
             elif path == "/internal/market/instruments":
                 self.send_json(200, {"instruments": instruments()})
             elif path == "/internal/market/portfolio":
-                user = identity(self.headers.get("x-inazina-user-id", ""))
+                user = identity(internal_user_id(self))
                 if not user:
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     self.send_json(200, {"portfolio": portfolio(user["userId"])})
             elif path == "/internal/admin/overview":
-                user = identity(self.headers.get("x-inazina-user-id", ""))
+                user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
                 else:
                     self.send_json(200, admin_overview())
             elif path == "/internal/admin/instruments":
-                user = identity(self.headers.get("x-inazina-user-id", ""))
+                user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
                 else:
                     include_inactive = parse_qs(parsed.query).get("includeInactive", ["0"])[0] == "1"
                     self.send_json(200, {"instruments": instruments(include_inactive)})
             elif path == "/internal/admin/users":
-                user = identity(self.headers.get("x-inazina-user-id", ""))
+                user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
                 else:
                     search = parse_qs(parsed.query).get("search", [""])[0]
                     self.send_json(200, {"users": admin_users(search)})
             elif path == "/internal/admin/events":
-                user = identity(self.headers.get("x-inazina-user-id", ""))
+                user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
                 else:
                     self.send_json(200, {"events": admin_events()})
             elif path == "/internal/admin/audit":
-                user = identity(self.headers.get("x-inazina-user-id", ""))
+                user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
                 else:
@@ -617,7 +684,7 @@ class Handler(BaseHTTPRequestHandler):
                                       "payload": payload, "time": row["recorded_epoch"]})
                     self.send_json(200, {"entries": audit})
             elif path == "/internal/market/orders":
-                user = identity(self.headers.get("x-inazina-user-id", ""))
+                user = identity(internal_user_id(self))
                 if not user:
                     self.send_json(403, {"error": "active_user_required"})
                 else:
@@ -640,7 +707,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.send_json(200, result)
             elif path.startswith("/internal/market/drawings/"):
-                user = identity(self.headers.get("x-inazina-user-id", ""))
+                user = identity(internal_user_id(self))
                 if not user:
                     self.send_json(403, {"error": "active_user_required"})
                 else:
@@ -667,26 +734,30 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 raise ValueError("invalid_payload")
             path = urlsplit(self.path).path
-            verified_id = self.headers.get("x-inazina-user-id", "")
+            verified_id = internal_user_id(self)
             if path == "/internal/auth/login":
-                user_id = str(payload.get("userId", "")).strip()
+                user_id = str(payload.get("loginId", payload.get("userId", ""))).strip()
                 if not user_id or len(user_id) > 80:
                     self.send_json(401, {"error": "invalid_credentials"})
                     return
-                with connect_readonly() as connection:
-                    credential_table = connection.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='web_auth_credentials'"
-                    ).fetchone()
+                with connect_db(timeout=5) as connection:
+                    ensure_auth_table(connection)
+                    connection.row_factory = sqlite3.Row
                     is_country_account = connection.execute(
                         "SELECT 1 FROM users u JOIN country_currencies c ON c.nationality=u.user_id "
                         "JOIN web_auth_credentials w ON w.user_id=u.user_id "
                         "WHERE u.user_id=? AND u.nationality=? AND u.status='active'",
                         (user_id, user_id),
-                    ).fetchone() if credential_table else None
+                    ).fetchone()
+                    hts_account = connection.execute(
+                        "SELECT user_id FROM web_auth_credentials WHERE hts_id=?", (user_id.lower(),),
+                    ).fetchone()
                 if is_country_account:
                     user = authenticate_country_password(user_id, payload.get("password"))
+                elif hts_account:
+                    user = authenticate_password(hts_account["user_id"], payload.get("password"))
                 elif user_id.isdecimal():
-                    with sqlite3.connect(DATABASE, timeout=5) as connection:
+                    with connect_db(timeout=5) as connection:
                         ensure_auth_table(connection)
                         connection.row_factory = sqlite3.Row
                         has_account = connection.execute(
@@ -716,7 +787,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {"user": user})
                 return
             if path == "/internal/auth/logout":
-                with sqlite3.connect(DATABASE, timeout=5) as connection:
+                with connect_db(timeout=5) as connection:
                     ensure_auth_table(connection)
                     connection.execute("UPDATE web_auth_credentials SET auth_version=auth_version+1 WHERE user_id=?", (verified_id,))
                 self.send_json(200, {"success": True})
@@ -737,7 +808,10 @@ class Handler(BaseHTTPRequestHandler):
             if not user:
                 self.send_json(403, {"error": "active_user_required"})
                 return
-            if path == "/internal/market/orders":
+            if path == "/internal/hts/account":
+                hts_id = set_hts_login_id(user["userId"], payload.get("htsId"), payload.get("password"))
+                self.send_json(200, {"htsId": hts_id})
+            elif path == "/internal/market/orders":
                 success, message = execute_order(user["userId"], payload)
                 self.send_json(200 if success else 400, {"success": success, "message": message})
             elif path.startswith("/internal/market/orders/") and path.endswith("/cancel"):

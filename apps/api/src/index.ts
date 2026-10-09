@@ -211,14 +211,21 @@ async function internalRequest(
       method,
       headers: {
         "x-inazina-internal-token": internalToken,
-        ...(userId ? { "x-inazina-user-id": userId } : {}),
+        ...(userId ? { "x-inazina-user-id": encodeURIComponent(userId) } : {}),
         ...(body ? { "content-type": "application/json" } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
       signal: AbortSignal.timeout(10_000),
     });
-    return { status: result.status, body: await result.json() };
-  } catch {
+    const responseText = await result.text();
+    try {
+      return { status: result.status, body: JSON.parse(responseText) };
+    } catch {
+      console.error(`Python service returned non-JSON for ${method} ${path} (${result.status}): ${responseText.slice(0, 500)}`);
+      return { status: 503, body: { error: "python_service_unavailable" } };
+    }
+  } catch (error) {
+    console.error(`Python service request failed for ${method} ${path}:`, error);
     return { status: 503, body: { error: "python_service_unavailable" } };
   }
 }
@@ -357,6 +364,18 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   if (request.method === "GET" && (url.pathname === "/api/auth/session" || url.pathname === "/api/me")) {
     send(response, 200, { user });
+    return;
+  }
+
+  if (url.pathname === "/api/hts/account" && request.method === "GET") {
+    const result = await internalGet("/internal/hts/account", principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+  if (url.pathname === "/api/hts/account" && request.method === "POST") {
+    const body = await requestJson(request);
+    const result = await internalRequest("POST", "/internal/hts/account", principal.userId, body);
+    send(response, result.status, result.body);
     return;
   }
 
