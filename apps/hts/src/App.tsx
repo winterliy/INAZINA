@@ -23,6 +23,8 @@ export default function App() {
   const [selectedCode, setSelectedCode] = useState("");
   const [search, setSearch] = useState("");
   const [range, setRange] = useState<string>("1d");
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState(0);
   const [points, setPoints] = useState<Point[]>([]);
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -49,13 +51,18 @@ export default function App() {
   const extent = useMemo(() => {
     const all = points.length ? points : selected ? [{ time: Date.now() / 1000, price: selected.price }] : [];
     const prices = all.map((item) => item.price).filter((value) => Number.isFinite(value) && value > 0);
-    let minTime = all[0]?.time ?? 0, maxTime = all.at(-1)?.time ?? 1;
-    let minPrice = Math.min(...prices), maxPrice = Math.max(...prices);
+    const baseStart = all[0]?.time ?? 0, baseEnd = all.at(-1)?.time ?? 1;
+    const span = Math.max(1, baseEnd - baseStart) / zoom;
+    let maxTime = baseEnd - pan * span * .5;
+    let minTime = maxTime - span;
     if (minTime === maxTime) { minTime -= 1800; maxTime += 1800; }
+    const visible = all.filter((item) => item.time >= minTime && item.time <= maxTime);
+    const visiblePrices = visible.length ? visible.map((item) => item.price) : prices;
+    let minPrice = Math.min(...visiblePrices), maxPrice = Math.max(...visiblePrices);
     if (minPrice === maxPrice) { minPrice *= .99; maxPrice *= 1.01; }
     const gap = (maxPrice - minPrice) * .08;
     return { minTime, maxTime, minPrice: Math.max(0, minPrice - gap), maxPrice: maxPrice + gap, all };
-  }, [points, selected]);
+  }, [points, selected, zoom, pan]);
   const X = (time: number) => L + ((time - extent.minTime) / (extent.maxTime - extent.minTime)) * (R - L);
   const Y = (value: number) => B - ((value - extent.minPrice) / (extent.maxPrice - extent.minPrice)) * (B - T);
 
@@ -112,6 +119,12 @@ export default function App() {
   }, []);
 
   useEffect(() => { void refreshMarket(selectedCode, range); }, [selectedCode, range, refreshMarket]);
+
+  useEffect(() => {
+    if (!selectedCode) return;
+    const timer = window.setInterval(() => void refreshMarket(selectedCode, range), 5000);
+    return () => window.clearInterval(timer);
+  }, [selectedCode, range, refreshMarket]);
 
   useEffect(() => {
     if (selected) setPrice(String(selected.price));
@@ -256,7 +269,7 @@ export default function App() {
 
   if (!user) return <main className="login-shell"><form className="login-form" onSubmit={login}><p className="eyebrow">INAZINA · LOCAL HTS</p><h1>HTS 로그인</h1><label htmlFor="token">접속 토큰</label><input id="token" type="password" autoComplete="current-password" value={token} onChange={(event) => setToken(event.target.value)} required /><button className="primary" disabled={busy}>{busy ? "확인 중" : "로그인"}</button>{error && <p className="error">{error}</p>}</form></main>;
 
-  const series = extent.all;
+  const series = extent.all.filter((point) => point.time >= extent.minTime && point.time <= extent.maxTime);
   const path = series.map((point, index) => `${index ? "L" : "M"}${X(point.time).toFixed(2)},${Y(point.price).toFixed(2)}`).join(" ");
   const current = points.at(-1)?.price ?? selected?.price ?? 0;
   const pathRange = B - T;
@@ -269,7 +282,7 @@ export default function App() {
       <section className="main-market">
         <div className="quote-strip"><div><p className="eyebrow">{selected?.exchange_id || "MARKET"} · {selected?.type || "—"}</p><h1>{selected?.name || "종목을 선택하세요"}<small>{selected?.code}</small></h1></div><div className="quote-value"><strong>{money(current)}</strong><span>{selected?.quote_currency || "NWX"}</span></div></div>
         <section className="chart-panel">
-          <div className="chart-head"><div className="segmented">{ranges.map((item) => <button key={item} className={range === item ? "selected" : ""} onClick={() => setRange(item)}>{rangeNames[item]}</button>)}</div><div className="drawing-tools"><button className={tool === "select" ? "selected" : ""} title="선 선택·이동" onClick={() => setTool("select")}>선택</button><button className={tool === "trend" ? "selected" : ""} title="드래그해 추세선" onClick={() => setTool("trend")}>추세선</button><button className={tool === "horizontal" ? "selected" : ""} title="가격 위치에 수평선" onClick={() => setTool("horizontal")}>수평선</button><button title="실행 취소" onClick={undo}>되돌리기</button><button title="선택 선 삭제" disabled={!selectedDrawing} onClick={() => { previousDrawings.current.push(drawings); setDrawings((items) => items.filter((item) => item.id !== selectedDrawing)); setSelectedDrawing(""); }}>삭제</button><button title="모든 선 삭제" onClick={() => { if (drawings.length && window.confirm("이 종목의 차트 선을 모두 삭제할까요?")) { previousDrawings.current.push(drawings); setDrawings([]); setSelectedDrawing(""); } }}>전체 삭제</button></div></div>
+          <div className="chart-head"><div className="segmented"><button title="이전 구간" onClick={() => setPan((value) => value + 1)}>←</button>{ranges.map((item) => <button key={item} className={range === item ? "selected" : ""} onClick={() => { setRange(item); setZoom(1); setPan(0); }}>{rangeNames[item]}</button>)}<button title="다음 구간" onClick={() => setPan((value) => value - 1)}>→</button><button title="확대" onClick={() => setZoom((value) => Math.min(32, value * 2))}>+</button><button title="축소" onClick={() => setZoom((value) => Math.max(1, value / 2))}>−</button></div><div className="drawing-tools"><button className={tool === "select" ? "selected" : ""} title="선 선택·이동" onClick={() => setTool("select")}>선택</button><button className={tool === "trend" ? "selected" : ""} title="드래그해 추세선" onClick={() => setTool("trend")}>추세선</button><button className={tool === "horizontal" ? "selected" : ""} title="가격 위치에 수평선" onClick={() => setTool("horizontal")}>수평선</button><button title="실행 취소" onClick={undo}>되돌리기</button><button title="선택 선 삭제" disabled={!selectedDrawing} onClick={() => { previousDrawings.current.push(drawings); setDrawings((items) => items.filter((item) => item.id !== selectedDrawing)); setSelectedDrawing(""); }}>삭제</button><button title="모든 선 삭제" onClick={() => { if (drawings.length && window.confirm("이 종목의 차트 선을 모두 삭제할까요?")) { previousDrawings.current.push(drawings); setDrawings([]); setSelectedDrawing(""); } }}>전체 삭제</button></div></div>
           <div className="chart-canvas"><svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" onPointerDown={chartDown} onPointerMove={chartMove} onPointerUp={chartUp} className={tool === "select" ? "chart-svg" : "chart-svg drawing-mode"} role="img" aria-label={`${selected?.name || "가격"} 차트`}>
             {Array.from({ length: 5 }, (_, index) => { const y = T + (pathRange / 4) * index; const value = extent.maxPrice - ((extent.maxPrice - extent.minPrice) / 4) * index; return <g key={index}><line x1={L} y1={y} x2={R} y2={y} className="grid-line"/><text x={R + 10} y={y + 4} className="axis-label">{money(value)}</text></g>; })}
             {Array.from({ length: 5 }, (_, index) => { const x = L + ((R - L) / 4) * index; const time = extent.minTime + ((extent.maxTime - extent.minTime) / 4) * index; return <g key={index}><line x1={x} y1={T} x2={x} y2={B} className="grid-line vertical"/><text x={x} y={H - 12} textAnchor="middle" className="axis-label">{new Date(time * 1000).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}</text></g>; })}
