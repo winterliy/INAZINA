@@ -42,6 +42,7 @@ def connect_readonly():
 def connect_db(timeout=5):
     connection = sqlite3.connect(DATABASE, timeout=timeout)
     try:
+        connection.execute("PRAGMA foreign_keys=ON")
         with connection:
             yield connection
     finally:
@@ -119,7 +120,8 @@ def validate_password(password):
 
 def ensure_auth_table(connection):
     connection.execute("""CREATE TABLE IF NOT EXISTS web_auth_credentials (
-        user_id TEXT PRIMARY KEY, salt TEXT NOT NULL, password_hash TEXT NOT NULL,
+        user_id TEXT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+        salt TEXT NOT NULL, password_hash TEXT NOT NULL,
         created_epoch INTEGER NOT NULL, updated_epoch INTEGER NOT NULL,
         auth_version INTEGER NOT NULL DEFAULT 0)""")
     columns = {row[1] for row in connection.execute("PRAGMA table_info(web_auth_credentials)")}
@@ -127,6 +129,29 @@ def ensure_auth_table(connection):
         connection.execute("ALTER TABLE web_auth_credentials ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 0")
     if "hts_id" not in columns:
         connection.execute("ALTER TABLE web_auth_credentials ADD COLUMN hts_id TEXT")
+    foreign_keys = connection.execute("PRAGMA foreign_key_list(web_auth_credentials)").fetchall()
+    if not any(row[2] == "users" and row[3] == "user_id" and row[4] == "user_id" for row in foreign_keys):
+        connection.execute("SAVEPOINT web_auth_user_fk")
+        try:
+            connection.execute("DROP INDEX IF EXISTS idx_web_auth_credentials_hts_id")
+            connection.execute("ALTER TABLE web_auth_credentials RENAME TO web_auth_credentials_legacy")
+            connection.execute("""CREATE TABLE web_auth_credentials (
+                user_id TEXT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                salt TEXT NOT NULL, password_hash TEXT NOT NULL,
+                created_epoch INTEGER NOT NULL, updated_epoch INTEGER NOT NULL,
+                auth_version INTEGER NOT NULL DEFAULT 0, hts_id TEXT)""")
+            connection.execute("""INSERT INTO web_auth_credentials
+                (user_id,salt,password_hash,created_epoch,updated_epoch,auth_version,hts_id)
+                SELECT old.user_id,old.salt,old.password_hash,old.created_epoch,old.updated_epoch,
+                       old.auth_version,old.hts_id
+                FROM web_auth_credentials_legacy old
+                JOIN users u ON u.user_id=old.user_id""")
+            connection.execute("DROP TABLE web_auth_credentials_legacy")
+            connection.execute("RELEASE SAVEPOINT web_auth_user_fk")
+        except Exception:
+            connection.execute("ROLLBACK TO SAVEPOINT web_auth_user_fk")
+            connection.execute("RELEASE SAVEPOINT web_auth_user_fk")
+            raise
     connection.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_web_auth_credentials_hts_id "
         "ON web_auth_credentials(hts_id) WHERE hts_id IS NOT NULL"

@@ -78,6 +78,23 @@ class CountryAccountTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "country_account_exists"):
             server.create_country_account("admin-1", "Testland", "AnotherPass123")
 
+    def test_web_credentials_reference_and_follow_user_lifecycle(self):
+        server.create_country_account("admin-1", "Testland", "CountryPass123")
+        with server.connect_db() as connection:
+            foreign_keys = connection.execute(
+                "PRAGMA foreign_key_list(web_auth_credentials)"
+            ).fetchall()
+            self.assertTrue(any(
+                row["table"] == "users" and row["from"] == "user_id"
+                and row["to"] == "user_id" and row["on_delete"] == "CASCADE"
+                for row in foreign_keys
+            ))
+            connection.execute("DELETE FROM users WHERE user_id='Testland'")
+            remaining = connection.execute(
+                "SELECT 1 FROM web_auth_credentials WHERE user_id='Testland'"
+            ).fetchone()
+        self.assertIsNone(remaining)
+
     def test_hts_login_id_is_separate_and_password_confirmed(self):
         server.create_country_account("admin-1", "Testland", "CountryPass123")
         self.assertEqual(server.set_hts_login_id("Testland", "Test.User_1", "CountryPass123"), "test.user_1")

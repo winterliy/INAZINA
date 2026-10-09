@@ -1,7 +1,9 @@
 # 국적과 화폐
 
 등록 서버 ID는 `guild_countries.guild_id`, 국적은 `guild_countries.nationality`로 설정한다.
-국적의 기본화폐는 `country_currencies.currency_code`에 저장한다. 모든 통화는 `currencies.code`의 약어를 사용한다.
+국가 ID(사용자의 `nationality`)와 국가별 기본 통화 연결은 `country_currencies`에 저장하고, 통화 기준정보는 `currencies`에 둔다. 통화 목록에서 해당 통화를 사용하는 국가는 `country_currencies`를 통화 코드로 묶어 표시한다. 이 관계를 `currencies`에 중복 문자열로 저장하지 않아 국가나 통화 설정 변경 시 목록이 어긋나지 않는다. 모든 통화 참조에는 `currencies.code`를 사용한다.
+
+`currencies`는 통화 코드·표시명·상태·기준 환율·소수 자릿수와 선택적 시장 자산(`asset_code`)을 정의한다. `market_assets`는 가격·거래·주문·차트 이력을 갖는 시장 상품이다. 예를 들어 USD는 통화 기준정보이고 `FX_USD`는 USD/NWX 시장 시세 상품이다. 시장 상품이 없는 통화는 `reference_rate`를 사용한다.
 서버 관리자는 `/설치 [국명] [화폐]`로 신청한다. INAZINA 등록 여부와 관계없이 서버 소유자 또는 Discord 관리자 권한을 가진 사람만 신청할 수 있다.
 신청 시 INAZINA 관리자(DB role=admin 및 초기 관리자)에게 발신 서버 ID·국명·화폐·신청자와 승인 명령어를 DM으로 전달한다. 신청만으로 국적 설정이 적용되지는 않는다. DM 전달 실패 시 신청자에게 실패를 알린다.
 INAZINA 관리자 승인: 해당 서버에서 `$서버설치 낙원 NWX` / `$서버설치 A국 AAA`. 신청 DM을 받은 관리자는 서버 ID를 포함해 `$서버설치 123456789 낙원 NWX`로 설정한다.

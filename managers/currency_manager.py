@@ -158,7 +158,10 @@ class CurrencyReadSnapshot:
 
     def __init__(self, conn):
         self.rows = {r['code']: dict(r) for r in conn.execute(
-            "SELECT c.*, a.price AS asset_price FROM currencies c "
+            "SELECT c.*, a.price AS asset_price, "
+            "(SELECT GROUP_CONCAT(n.nationality, ', ') FROM country_currencies n "
+            "WHERE n.currency_code=c.code ORDER BY n.nationality) AS countries "
+            "FROM currencies c "
             "LEFT JOIN market_assets a ON a.code=c.asset_code AND a.status='active' "
             "WHERE c.status='active' ORDER BY c.code")}
         self._rates = {}
