@@ -404,16 +404,6 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
-  if (request.method === "GET" && url.pathname === "/api/admin/country-accounts") {
-    if (user.role !== "admin") {
-      send(response, 403, { error: "admin_required" });
-      return;
-    }
-    const result = await internalGet("/internal/admin/country-accounts", principal.userId);
-    send(response, result.status, result.body);
-    return;
-  }
-
   if (request.method === "GET" && url.pathname === "/api/admin/events") {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });
@@ -503,25 +493,26 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
-  if (request.method === "POST" && url.pathname === "/api/admin/country-accounts") {
+  if (request.method === "POST" && url.pathname === "/api/admin/users/country-account") {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });
       return;
     }
     const body = await requestJson(request);
-    const result = await internalRequest("POST", "/internal/admin/country-accounts", principal.userId, body);
+    const result = await internalRequest("POST", "/internal/admin/users/country-account", principal.userId, body);
     send(response, result.status, result.body);
     return;
   }
 
-  const userMatch = url.pathname.match(/^\/api\/admin\/users\/(\d+)$/);
+  const userMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)$/);
   if (request.method === "POST" && userMatch) {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });
       return;
     }
     const body = await requestJson(request);
-    const result = await internalRequest("POST", `/internal/admin/users/${userMatch[1]}`, principal.userId, body);
+    const targetId = encodeURIComponent(decodeURIComponent(userMatch[1]));
+    const result = await internalRequest("POST", `/internal/admin/users/${targetId}`, principal.userId, body);
     send(response, result.status, result.body);
     return;
   }

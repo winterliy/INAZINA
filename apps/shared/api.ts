@@ -28,7 +28,6 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
       discord_authorization_failed: "Discord 인증이 취소되었거나 실패했습니다.",
       discord_verification_failed: "Discord 계정을 확인하지 못했습니다.",
       discord_state_invalid: "인증 요청이 만료되었습니다. 다시 시도해주세요.",
-      invalid_credentials: "Discord ID 또는 비밀번호를 확인해주세요.",
       login_rate_limited: "로그인 시도가 많습니다. 15분 후 다시 시도해주세요.",
       country_not_found: "사용 가능한 국가 ID를 선택해주세요.",
       country_account_exists: "이미 해당 국가 계정이 있습니다.",

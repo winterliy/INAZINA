@@ -40,10 +40,11 @@ class CountryAccountTests(unittest.TestCase):
         server.DATABASE = self.old_database
         self.tempdir.cleanup()
 
-    def test_admin_creates_separate_country_account_and_password_login_works(self):
-        server.create_country_account("admin-1", "Testland", "CountryPass123")
+    def test_country_id_is_the_user_id_and_country_password_login_works(self):
+        account = server.create_country_account("admin-1", "Testland", "CountryPass123")
 
         user = server.authenticate_country_password("Testland", "CountryPass123")
+        self.assertEqual(account["userId"], "Testland")
         self.assertEqual(user["nationality"], "Testland")
         self.assertEqual(user["cash"], 1_000_000)
         self.assertEqual(user["role"], "user")
@@ -53,9 +54,23 @@ class CountryAccountTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual(discord_cash, 2500)
         self.assertIsNone(server.authenticate_country_password("Testland", "WrongPass123"))
-        self.assertEqual(server.country_accounts(), [
-            {"countryId": "Testland", "cash": 1_000_000, "status": "active"}
-        ])
+        country_user = next(row for row in server.admin_users("") if row["userId"] == "Testland")
+        self.assertEqual(country_user["accountType"], "country")
+        with closing(server.sqlite3.connect(server.DATABASE)) as connection:
+            table = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='country_accounts'"
+            ).fetchone()
+        self.assertIsNone(table)
+
+    def test_existing_country_user_gets_password_without_resetting_balance(self):
+        with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
+            connection.execute(
+                "INSERT INTO users(user_id,nickname,nationality,cash,role) VALUES ('Testland','Existing','Testland',4200,'user')"
+            )
+        account = server.create_country_account("admin-1", "Testland", "CountryPass123")
+        user = server.authenticate_country_password("Testland", "CountryPass123")
+        self.assertEqual(account["cash"], 4200)
+        self.assertEqual(user["cash"], 4200)
 
     def test_country_account_is_unique_per_country(self):
         server.create_country_account("admin-1", "Testland", "CountryPass123")
