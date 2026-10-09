@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, clearToken, getToken, signIn, type ApiUser } from "../../shared/api";
+import { api, clearToken, type ApiUser } from "../../shared/api";
+import { AuthPanel } from "../../shared/AuthPanel";
 
 type Page = "overview" | "instruments" | "users" | "events" | "audit";
 type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string };
@@ -20,7 +21,6 @@ const date = (value: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "s
 
 export default function App() {
   const [user, setUser] = useState<ApiUser | null>(null);
-  const [token, setToken] = useState("");
   const [page, setPage] = useState<Page>("overview");
   const [health, setHealth] = useState("확인 중");
   const [error, setError] = useState("");
@@ -79,7 +79,7 @@ export default function App() {
     void fetch("/api/health").then((response) => response.json()).then((result) => {
       setHealth(result.python === "connected" ? "API · Python 연결됨" : "Python 연결 끊김");
     }).catch(() => setHealth("서버 연결 끊김"));
-    if (getToken()) void loadSession();
+    void loadSession();
   }, [loadSession]);
 
   useEffect(() => {
@@ -90,21 +90,6 @@ export default function App() {
     const term = query.trim().toLocaleLowerCase();
     return instruments.filter((item) => !term || `${item.code} ${item.name} ${item.type}`.toLocaleLowerCase().includes(term));
   }, [instruments, query]);
-
-  async function login(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setBusy(true);
-    setError("");
-    try {
-      const current = await signIn(token);
-      setUser(current);
-      setToken("");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "로그인에 실패했습니다.");
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function marketAction(action: string) {
     const labels: Record<string, string> = { close: "휴장", open: "개장", pause: "일시 정지", resume: "재개" };
@@ -220,6 +205,7 @@ export default function App() {
 
   function logout() {
     clearToken();
+    void api("/api/auth/logout", { method: "POST" });
     setUser(null);
     setOverview(null);
     setInstruments([]);
@@ -227,17 +213,7 @@ export default function App() {
   }
 
   if (!user) {
-    return <main className="login-shell">
-      <form className="login-form" onSubmit={login}>
-        <div className="login-mark">I</div>
-        <p className="eyebrow">INAZINA · LOCAL ADMIN</p>
-        <h1>관리자 로그인</h1>
-        <label htmlFor="token">접속 토큰</label>
-        <input id="token" type="password" autoComplete="current-password" value={token} onChange={(event) => setToken(event.target.value)} required />
-        <button className="primary" disabled={busy}>{busy ? "확인 중" : "로그인"}</button>
-        {error && <p className="error">{error}</p>}
-      </form>
-    </main>;
+    return <AuthPanel app="dashboard" onAuthenticated={setUser} />;
   }
 
   if (user.role !== "admin") {

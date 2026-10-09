@@ -65,3 +65,53 @@ td { padding: 10px 12px; border-top: 1px solid #edf0ed; }
 @media (max-width: 840px) { .sidebar { width: 64px; padding-inline: 8px; }.brand { padding-inline: 5px; }.brand > span:last-child,.nav-label,.nav-item:not(.active),.sidebar-foot { display: none; }.nav-item { overflow: hidden; padding-inline: 0; color: transparent; }.nav-item.active { color: transparent; }.nav-item.active::after { content: "●"; color: #226746; margin: auto; }.admin-main { margin-left: 64px; }.workspace-row { grid-template-columns: 1fr; } }
 @media (max-width: 900px) { .event-create form { grid-template-columns: repeat(2,minmax(0,1fr)); }.event-create form button { grid-column: span 2; } }
 @media (max-width: 600px) { .topbar { padding-inline: 12px; }.top-actions { gap: 8px; }.top-actions > span:nth-child(2) { display: none; }.content { padding: 22px 14px 40px; }.page-head { align-items: flex-start; }.metric-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }.metric:nth-child(2) { border-right: 0; }.metric:nth-child(n+3) { border-top: 1px solid #e8ece8; }.metric-value { font-size: 18px; }.section-head { padding-inline: 12px; }.actions { padding-inline: 12px; }.table-wrap { max-height: calc(100vh - 210px); }.user-actions { flex-direction: column; }.event-create form { grid-template-columns: 1fr; }.event-create form button { grid-column: auto; } }
+
+:root { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; color: #1d1d1f; background: #f5f5f7; }
+button { min-height: 34px; border-color: #d2d2d7; border-radius: 8px; color: #1d1d1f; }
+button:hover:not(:disabled) { border-color: #a1a1a6; background: #f5f5f7; }
+.sidebar { background: #f5f5f7; border-color: #e5e5ea; }
+.brand-mark { background: #0071e3; border-radius: 9px; }
+.nav-item.active { color: #0066cc; background: #e8f2ff; border-color: transparent; border-radius: 8px; }
+.admin-main { background: #f5f5f7; }
+.topbar { background: #ffffffd9; border-color: #e5e5ea; backdrop-filter: saturate(180%) blur(14px); }
+.content { width: min(1320px, 100%); }
+.page-head h1 { color: #1d1d1f; font-size: 27px; font-weight: 650; }
+.eyebrow { color: #6e6e73; }
+.metric-grid, .section-panel { overflow: hidden; border: 1px solid #e5e5ea; border-radius: 12px; background: #fff; box-shadow: 0 2px 8px #1d1d1f08; }
+.metric-grid { gap: 0; }
+.metric { border-color: #e8e8ed; }
+.metric-label, .muted { color: #6e6e73; }
+.section-head { border-color: #e8e8ed; }
+.state { border-radius: 999px; }
+.state.open { color: #248a3d; background: #e9f7ec; }
+.state.paused { color: #9a5b00; background: #fff4dc; }
+.actions button:first-child, .event-create .primary { color: #fff; background: #0071e3; border-color: #0071e3; }
+.service-list div, td { border-color: #e8e8ed; }
+.service-list dd { color: #1d1d1f; }
+.notice { border-color: #b9d9ff; border-radius: 9px; color: #075db3; background: #f0f7ff; }
+.search, .event-create input, .event-create select { border-color: #c7c7cc; border-radius: 8px; outline-color: #0071e3; }
+th { color: #6e6e73; background: #f5f5f7; }
+.table-action { border-radius: 7px; }
+
+/* Apple system UI language across the complete admin surface. */
+:root { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; color: #1d1d1f; background: #f5f5f7; }
+body { background: #f5f5f7; }
+button, input, select { font: inherit; }
+button { min-height: 36px; border-color: #d2d2d7; border-radius: 8px; color: #1d1d1f; transition: background-color .15s ease, border-color .15s ease, box-shadow .15s ease; }
+button:hover:not(:disabled) { border-color: #a1a1a6; background: #f5f5f7; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #0071e34d; outline-offset: 2px; }
+.sidebar { background: #f5f5f7; border-color: #e5e5ea; }
+.brand small, .sidebar-foot, .sidebar-foot span { color: #6e6e73; }
+.nav-label { color: #86868b; }
+.top-actions, .subhead { color: #6e6e73; }
+.crumb, .crumb b { color: #1d1d1f; }
+.page-head h1 { color: #1d1d1f; }
+.secondary { color: #0066cc; }
+.section-head h2 { color: #1d1d1f; }
+.login-shell { background: #f5f5f7; }
+.login-form { border-color: #e5e5ea; border-radius: 18px; box-shadow: 0 14px 42px #1d1d1f0a; }
+.login-form h1 { color: #1d1d1f; }
+.login-form input { border-color: #c7c7cc; border-radius: 8px; }
+.login-form button.primary { color: #fff; background: #0071e3; border-color: #0071e3; }
+.login-form button.primary:hover:not(:disabled), .actions button:first-child:hover:not(:disabled), .event-create .primary:hover:not(:disabled) { background: #0077ed; }
+.error { color: #c9342f; }

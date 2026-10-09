@@ -30,3 +30,43 @@ button:disabled { opacity: .5; cursor: not-allowed; }
 @media (max-width: 1120px) { .hts-layout { grid-template-columns: 190px minmax(340px,1fr); }.trade-rail { grid-column: 2; display: grid; grid-template-columns: minmax(180px,.8fr) minmax(220px,1fr); align-items: start; }.orderbook-panel { min-height: 0; }.lower-market { grid-template-columns: 1fr; }.portfolio-panel { max-width: none; } }
 @media (max-width: 700px) { .hts-layout { display: flex; flex-direction: column; padding: 7px; }.instrument-rail { max-height: 210px; }.instrument-list { display: flex; overflow-x: auto; overflow-y: hidden; }.instrument { flex: 0 0 180px; border-right: 1px solid #edf0ed; }.main-market { order: 2; }.trade-rail { order: 3; display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); }.top-center { gap: 8px; }.quote-strip { min-height: 72px; padding-inline: 9px; }.quote-strip h1 { font-size: 14px; }.quote-value strong { font-size: 19px; }.chart-head { align-items: flex-start; }.drawing-tools { width: 100%; overflow-x: auto; margin: 0; }.drawing-tools button { flex: none; }.chart-canvas { height: 320px; }.chart-panel { min-height: 370px; }.lower-market { grid-template-columns: 1fr; }.table-scroll { max-height: 190px; } }
 @media (max-width: 430px) { .trade-rail { grid-template-columns: 1fr; }.orderbook-panel { min-height: 250px; }.top-center > span:last-child { display: none; }.quote-strip h1 small { display: block; margin: 3px 0 0; }.chart-canvas { height: 290px; } }
+
+:root { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; color: #1d1d1f; background: #f5f5f7; }
+button { border-color: #d2d2d7; border-radius: 8px; color: #1d1d1f; }
+button:hover:not(:disabled) { border-color: #a1a1a6; background: #f5f5f7; }
+.hts-topbar { background: #ffffffeb; border-color: #e5e5ea; backdrop-filter: saturate(180%) blur(14px); }
+.brand { color: #1d1d1f; }
+.hts-layout { gap: 12px; padding: 12px; }
+.instrument-rail, .data-panel, .chart-panel, .quote-strip { border-color: #e5e5ea; border-radius: 11px; box-shadow: 0 2px 8px #1d1d1f08; }
+.rail-head, .panel-title, .chart-head { border-color: #e8e8ed; }
+.search-wrap input, .order-entry input { border-color: #c7c7cc; border-radius: 8px; outline-color: #0071e3; }
+.instrument.active { color: #0066cc; background: #e8f2ff; box-shadow: inset 3px 0 #0071e3; }
+.segmented button.selected, .drawing-tools button.selected { color: #0066cc; border-color: #d6e8ff; background: #eaf4ff; }
+.price-path { stroke: #0071e3; }
+.price-area { fill: #0071e3; }
+.grid-line { stroke: #e8e8ed; }
+.axis-label, .instrument-bottom code { fill: #86868b; color: #86868b; }
+.book-current { color: #424245; background: #f5f5f7; }
+.panel-title span, .search-wrap, .quote-value span, .wallet-row span { color: #6e6e73; }
+.quote-value strong { font-weight: 650; }
+.chart-empty { border: 1px solid #e8e8ed; border-radius: 8px; color: #6e6e73; }
+.data-panel, .instrument-rail, .chart-panel { overflow: hidden; }
+th { color: #6e6e73; background: #f5f5f7; }
+td { border-color: #e8e8ed; }
+.order-entry .buy.active, .buy-submit, .buy-confirm { background: #16803c; border-color: #16803c; }
+.order-entry .sell.active, .sell-submit, .sell-confirm { background: #c9342f; border-color: #c9342f; }
+
+/* Apple system UI language across market, chart, and trading controls. */
+:root { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif; color: #1d1d1f; background: #f5f5f7; }
+body { background: #f5f5f7; }
+button, input, select { font: inherit; }
+button { transition: background-color .15s ease, border-color .15s ease, box-shadow .15s ease; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #0071e34d; outline-offset: 2px; }
+.toast { border-color: #e5e5ea; border-radius: 10px; color: #1d1d1f; box-shadow: 0 8px 30px #1d1d1f1a; }
+.modal-backdrop { background: #1d1d1f66; backdrop-filter: blur(8px); }
+.review-modal { border-color: #e5e5ea; border-radius: 16px; box-shadow: 0 18px 50px #0002; }
+.login-shell { background: #f5f5f7; }
+.login-form { border-color: #e5e5ea; border-radius: 18px; box-shadow: 0 14px 42px #1d1d1f0a; }
+.login-form input { border-color: #c7c7cc; border-radius: 8px; }
+.login-form button.primary { color: #fff; background: #0071e3; border-color: #0071e3; }
+.error { color: #c9342f; }

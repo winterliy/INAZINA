@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, clearToken, getToken, signIn, type ApiUser } from "../../shared/api";
+import { api, clearToken, type ApiUser } from "../../shared/api";
+import { AuthPanel } from "../../shared/AuthPanel";
 
 type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; quote_currency?: string };
 type Point = { time: number; price: number };
@@ -15,7 +16,6 @@ const money = (value: number) => new Intl.NumberFormat("ko-KR", { maximumFractio
 
 export default function App() {
   const [user, setUser] = useState<ApiUser | null>(null);
-  const [token, setToken] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [health, setHealth] = useState("확인 중");
@@ -82,7 +82,7 @@ export default function App() {
 
   useEffect(() => {
     void fetch("/api/health").then((response) => response.json()).then((result) => setHealth(result.python === "connected" ? "연결됨" : "Python 연결 끊김")).catch(() => setHealth("연결 끊김"));
-    if (getToken()) void authenticate();
+    void authenticate();
   }, [authenticate]);
 
   useEffect(() => {
@@ -260,14 +260,7 @@ export default function App() {
     }
   }
 
-  async function login(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault(); setBusy(true); setError("");
-    try { setUser(await signIn(token)); setToken(""); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "로그인에 실패했습니다."); }
-    finally { setBusy(false); }
-  }
-
-  if (!user) return <main className="login-shell"><form className="login-form" onSubmit={login}><p className="eyebrow">INAZINA · LOCAL HTS</p><h1>HTS 로그인</h1><label htmlFor="token">접속 토큰</label><input id="token" type="password" autoComplete="current-password" value={token} onChange={(event) => setToken(event.target.value)} required /><button className="primary" disabled={busy}>{busy ? "확인 중" : "로그인"}</button>{error && <p className="error">{error}</p>}</form></main>;
+  if (!user) return <AuthPanel app="hts" onAuthenticated={setUser} />;
 
   const series = extent.all.filter((point) => point.time >= extent.minTime && point.time <= extent.maxTime);
   const path = series.map((point, index) => `${index ? "L" : "M"}${X(point.time).toFixed(2)},${Y(point.price).toFixed(2)}`).join(" ");
@@ -275,7 +268,7 @@ export default function App() {
   const pathRange = B - T;
 
   return <div className="hts-shell">
-    <header className="hts-topbar"><a className="brand" href="/">INAZINA <span>HTS</span></a><div className="top-center"><span className="connection"><i />API {health}</span><span>{user.nickname}</span></div><button className="icon-button" title="로그아웃" onClick={() => { clearToken(); setUser(null); }}>나가기</button></header>
+    <header className="hts-topbar"><a className="brand" href="/">INAZINA <span>HTS</span></a><div className="top-center"><span className="connection"><i />API {health}</span><span>{user.nickname}</span></div><button className="icon-button" title="로그아웃" onClick={() => { clearToken(); void api("/api/auth/logout", { method: "POST" }); setUser(null); }}>나가기</button></header>
     {error && <div className="toast" role="status">{error}<button onClick={() => setError("")}>닫기</button></div>}
     <main className="hts-layout">
       <aside className="instrument-rail"><div className="rail-head"><strong>시장</strong><span>{instruments.length}</span></div><label className="search-wrap"><span>검색</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="종목명 · 코드" /></label><div className="instrument-list">{filtered.map((item) => <button key={item.code} className={selectedCode === item.code ? "instrument active" : "instrument"} onClick={() => { setSelectedCode(item.code); setPrice(String(item.price)); }}><span className="instrument-top"><b>{item.name}</b><em>{item.type}</em></span><span className="instrument-bottom"><code>{item.code}</code><strong>{money(item.price)}</strong></span></button>)}</div></aside>

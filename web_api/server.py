@@ -1,9 +1,12 @@
 """Private, read-only HTTP adapter for the existing SQLite database."""
 
 import hmac
+import hashlib
 import json
 import math
 import os
+import re
+import secrets
 import re
 import sqlite3
 import sys
@@ -37,6 +40,12 @@ def identity(user_id):
             "FROM users WHERE user_id=?",
             (user_id,),
         ).fetchone()
+        auth_table = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='web_auth_credentials'"
+        ).fetchone()
+        auth_version = connection.execute(
+            "SELECT auth_version FROM web_auth_credentials WHERE user_id=?", (user_id,),
+        ).fetchone()[0] if auth_table else 0
     if not row or row["status"] != "active":
         return None
     role = "admin" if user_id in BOOTSTRAP_ADMIN_IDS else str(row["role"] or "user").strip().lower()
@@ -49,7 +58,103 @@ def identity(user_id):
         "cash": int(row["cash"] or 0),
         "creditScore": int(row["credit_score"] or 0),
         "role": role,
+        "authVersion": int(auth_version),
     }
+
+
+def auth_countries():
+    with connect_readonly() as connection:
+        rows = connection.execute(
+            "SELECT n.nationality AS country_id,c.name AS currency_name,c.code AS currency_code "
+            "FROM country_currencies n JOIN currencies c ON c.code=n.currency_code "
+            "WHERE c.status='active' ORDER BY n.nationality"
+        ).fetchall()
+    return [{"countryId": row["country_id"], "currencyName": row["currency_name"],
+             "currencyCode": row["currency_code"]} for row in rows]
+
+
+def password_hash(password, salt):
+    return hashlib.scrypt(password.encode("utf-8"), salt=bytes.fromhex(salt),
+                          n=2**14, r=8, p=1, dklen=64).hex()
+
+
+def validate_password(password):
+    if (not isinstance(password, str) or not 12 <= len(password) <= 128 or
+            not re.search(r"[A-Za-z]", password) or not re.search(r"\d", password)):
+        raise ValueError("password_policy")
+
+
+def ensure_auth_table(connection):
+    connection.execute("""CREATE TABLE IF NOT EXISTS web_auth_credentials (
+        user_id TEXT PRIMARY KEY, salt TEXT NOT NULL, password_hash TEXT NOT NULL,
+        created_epoch INTEGER NOT NULL, updated_epoch INTEGER NOT NULL,
+        auth_version INTEGER NOT NULL DEFAULT 0)""")
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(web_auth_credentials)")}
+    if "auth_version" not in columns:
+        connection.execute("ALTER TABLE web_auth_credentials ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 0")
+
+
+def save_password(user_id, password, *, create=False, nickname="", country_id=""):
+    if not isinstance(user_id, str) or not user_id.isdecimal():
+        raise ValueError("discord_identity_invalid")
+    validate_password(password)
+    db = domain().db
+    with db.atomic(("users", "fx")) as connection:
+        ensure_auth_table(connection)
+        if create:
+            country = connection.execute(
+                "SELECT 1 FROM country_currencies n JOIN currencies c ON c.code=n.currency_code "
+                "WHERE n.nationality=? AND c.status='active'", (country_id,),
+            ).fetchone()
+            if not country:
+                raise ValueError("country_not_found")
+            user = connection.execute("SELECT status FROM users WHERE user_id=?", (user_id,)).fetchone()
+            if not user:
+                role = "admin" if user_id in BOOTSTRAP_ADMIN_IDS else "user"
+                connection.execute(
+                    "INSERT INTO users(user_id,nickname,nationality,cash,role) "
+                    "VALUES (?,?,?,1000000,?)", (user_id, nickname or user_id, country_id, role),
+                )
+            elif user["status"] != "active":
+                raise ValueError("active_user_required")
+            elif connection.execute(
+                "SELECT 1 FROM web_auth_credentials WHERE user_id=?", (user_id,),
+            ).fetchone():
+                raise ValueError("account_exists")
+        elif not connection.execute(
+            "SELECT 1 FROM users WHERE user_id=? AND status='active'", (user_id,),
+        ).fetchone():
+            raise ValueError("active_user_required")
+
+        salt = secrets.token_bytes(16).hex()
+        digest = password_hash(password, salt)
+        now = int(time.time())
+        connection.execute(
+            "INSERT INTO web_auth_credentials(user_id,salt,password_hash,created_epoch,updated_epoch) "
+            "VALUES (?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET "
+            "salt=excluded.salt,password_hash=excluded.password_hash,updated_epoch=excluded.updated_epoch, "
+            "auth_version=web_auth_credentials.auth_version+1",
+            (user_id, salt, digest, now, now),
+        )
+    return identity(user_id)
+
+
+def authenticate_password(user_id, password):
+    if not isinstance(user_id, str) or not user_id.isdecimal() or not isinstance(password, str):
+        return None
+    with sqlite3.connect(DATABASE, timeout=5) as connection:
+        connection.execute("PRAGMA busy_timeout=5000")
+        ensure_auth_table(connection)
+        connection.row_factory = sqlite3.Row
+        credential = connection.execute(
+            "SELECT salt,password_hash FROM web_auth_credentials WHERE user_id=?", (user_id,),
+        ).fetchone()
+    if not credential:
+        return None
+    digest = password_hash(password, credential["salt"])
+    if not hmac.compare_digest(digest, credential["password_hash"]):
+        return None
+    return identity(user_id)
 
 
 def instruments(include_inactive=False):
@@ -370,6 +475,8 @@ class Handler(BaseHTTPRequestHandler):
                 with connect_readonly() as connection:
                     connection.execute("SELECT 1").fetchone()
                 self.send_json(200, {"status": "ok", "service": "inazina-python-data"})
+            elif path == "/internal/auth/countries":
+                self.send_json(200, {"countries": auth_countries()})
             elif path == "/internal/me":
                 user_id = self.headers.get("x-inazina-user-id", "")
                 user = identity(user_id)
@@ -479,13 +586,54 @@ class Handler(BaseHTTPRequestHandler):
         ):
             self.send_json(401, {"error": "internal_authentication_required"})
             return
-        user = identity(self.headers.get("x-inazina-user-id", ""))
-        if not user:
-            self.send_json(403, {"error": "active_user_required"})
-            return
         try:
             payload = request_json(self)
+            if not isinstance(payload, dict):
+                raise ValueError("invalid_payload")
             path = urlsplit(self.path).path
+            verified_id = self.headers.get("x-inazina-user-id", "")
+            if path == "/internal/auth/login":
+                user_id = str(payload.get("userId", "")).strip()
+                if not user_id.isdecimal():
+                    self.send_json(401, {"error": "invalid_credentials"})
+                    return
+                with sqlite3.connect(DATABASE, timeout=5) as connection:
+                    ensure_auth_table(connection)
+                    connection.row_factory = sqlite3.Row
+                    has_account = connection.execute(
+                        "SELECT 1 FROM web_auth_credentials WHERE user_id=?", (user_id,),
+                    ).fetchone()
+                if not has_account:
+                    self.send_json(404, {"error": "account_not_found"})
+                    return
+                user = authenticate_password(user_id, payload.get("password"))
+                if not user:
+                    self.send_json(401, {"error": "invalid_credentials"})
+                else:
+                    self.send_json(200, {"user": user})
+                return
+            if path == "/internal/auth/register":
+                user = save_password(
+                    verified_id, payload.get("password"), create=True,
+                    nickname=payload.get("nickname", ""), country_id=payload.get("countryId", ""),
+                )
+                self.send_json(201, {"user": user})
+                return
+            if path == "/internal/auth/password/reset":
+                user = save_password(verified_id, payload.get("password"))
+                self.send_json(200, {"user": user})
+                return
+            if path == "/internal/auth/logout":
+                with sqlite3.connect(DATABASE, timeout=5) as connection:
+                    ensure_auth_table(connection)
+                    connection.execute("UPDATE web_auth_credentials SET auth_version=auth_version+1 WHERE user_id=?", (verified_id,))
+                self.send_json(200, {"success": True})
+                return
+
+            user = identity(verified_id)
+            if not user:
+                self.send_json(403, {"error": "active_user_required"})
+                return
             if path == "/internal/market/orders":
                 success, message = execute_order(user["userId"], payload)
                 self.send_json(200 if success else 400, {"success": success, "message": message})

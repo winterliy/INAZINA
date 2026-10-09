@@ -9,26 +9,29 @@ export type ApiUser = {
   creditScore: number;
 };
 
-export function getToken(): string {
-  return sessionStorage.getItem(TOKEN_KEY) ?? "";
-}
-
 export function clearToken(): void {
   sessionStorage.removeItem(TOKEN_KEY);
 }
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
-  const token = getToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
   if (init.body) headers.set("Content-Type", "application/json");
 
-  const response = await fetch(path, { ...init, headers, cache: "no-store" });
+  const response = await fetch(path, { ...init, headers, cache: "no-store", credentials: "include" });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const messages: Record<string, string> = {
       authentication_required: "인증 토큰을 확인해주세요.",
       web_auth_not_configured: "서버에 웹 인증 토큰이 설정되지 않았습니다.",
+      discord_oauth_not_configured: "Discord OAuth 설정이 필요합니다. .env 설정을 확인해주세요.",
+      discord_verification_required: "Discord 본인확인을 먼저 완료해주세요.",
+      discord_authorization_failed: "Discord 인증이 취소되었거나 실패했습니다.",
+      discord_verification_failed: "Discord 계정을 확인하지 못했습니다.",
+      discord_state_invalid: "인증 요청이 만료되었습니다. 다시 시도해주세요.",
+      invalid_credentials: "Discord ID 또는 비밀번호를 확인해주세요.",
+      login_rate_limited: "로그인 시도가 많습니다. 15분 후 다시 시도해주세요.",
+      country_not_found: "사용 가능한 국가 ID를 선택해주세요.",
+      password_policy: "비밀번호는 영문과 숫자를 포함해 12~128자로 입력해주세요.",
       active_user_required: "활성 사용자 계정이 아닙니다.",
       admin_required: "관리자 권한이 필요합니다.",
       python_service_unavailable: "Python 데이터 서비스에 연결할 수 없습니다.",
@@ -37,15 +40,4 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new Error(messages[body.error] ?? body.message ?? body.error ?? `HTTP ${response.status}`);
   }
   return body as T;
-}
-
-export async function signIn(token: string): Promise<ApiUser> {
-  sessionStorage.setItem(TOKEN_KEY, token.trim());
-  try {
-    const result = await api<{ user: ApiUser }>("/api/auth/session");
-    return result.user;
-  } catch (error) {
-    clearToken();
-    throw error;
-  }
 }
