@@ -154,7 +154,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       send(response, 403, { error: "admin_required" });
       return;
     }
-    const result = await internalGet("/internal/market/instruments", principal.userId);
+    const result = await internalGet(url.pathname === "/api/admin/instruments"
+      ? "/internal/admin/instruments?includeInactive=1"
+      : "/internal/market/instruments", principal.userId);
     send(response, result.status, result.body);
     return;
   }
@@ -175,6 +177,27 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       return;
     }
     const result = await internalGet("/internal/admin/audit", principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/admin/users") {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const search = encodeURIComponent(url.searchParams.get("search") ?? "");
+    const result = await internalGet(`/internal/admin/users?search=${search}`, principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/admin/events") {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const result = await internalGet("/internal/admin/events", principal.userId);
     send(response, result.status, result.body);
     return;
   }
@@ -243,6 +266,29 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     }
     const body = await requestJson(request);
     const result = await internalRequest("POST", "/internal/admin/market", principal.userId, body);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/admin/events") {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const body = await requestJson(request);
+    const result = await internalRequest("POST", "/internal/admin/events", principal.userId, body);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  const userMatch = url.pathname.match(/^\/api\/admin\/users\/(\d+)$/);
+  if (request.method === "POST" && userMatch) {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const body = await requestJson(request);
+    const result = await internalRequest("POST", `/internal/admin/users/${userMatch[1]}`, principal.userId, body);
     send(response, result.status, result.body);
     return;
   }

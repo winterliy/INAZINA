@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, clearToken, getToken, signIn, type ApiUser } from "../../shared/api";
 
-type Page = "overview" | "instruments" | "audit";
+type Page = "overview" | "instruments" | "users" | "events" | "audit";
 type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string };
 type Overview = { activeUsers: number; activeInstruments: number; openOrders: number; market: { status: string; reason: string; trading_halted: number } | null };
 type Audit = { actorId: string; action: string; payload: Record<string, unknown>; time: number };
+type Citizen = { userId: string; nickname: string; nationality: string; cash: number; creditScore: number; status: string; role: string };
+type Event = { event_id: number; asset_code: string | null; event_type: string; severity: number; starts_epoch: number; ends_epoch: number; created_by: string; target_mode: string; target_value: number };
 
 const pages: { id: Page; label: string }[] = [
   { id: "overview", label: "운영 현황" },
   { id: "instruments", label: "종목 · 상품" },
+  { id: "users", label: "사용자" },
+  { id: "events", label: "시장 사건" },
   { id: "audit", label: "작업 기록" },
 ];
 const number = (value: number) => new Intl.NumberFormat("ko-KR").format(value);
@@ -24,7 +28,13 @@ export default function App() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [audit, setAudit] = useState<Audit[]>([]);
+  const [citizens, setCitizens] = useState<Citizen[]>([]);
+  const [events, setEvents] = useState<Event[]>([]);
   const [query, setQuery] = useState("");
+  const [eventType, setEventType] = useState("good");
+  const [eventSeverity, setEventSeverity] = useState("5");
+  const [eventDuration, setEventDuration] = useState("3600");
+  const [eventAsset, setEventAsset] = useState("");
 
   const loadSession = useCallback(async () => {
     try {
@@ -52,10 +62,18 @@ export default function App() {
         const result = await api<{ entries: Audit[] }>("/api/admin/audit");
         setAudit(result.entries);
       }
+      if (page === "users") {
+        const result = await api<{ users: Citizen[] }>(`/api/admin/users?search=${encodeURIComponent(query)}`);
+        setCitizens(result.users);
+      }
+      if (page === "events") {
+        const result = await api<{ events: Event[] }>("/api/admin/events");
+        setEvents(result.events);
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "요청을 처리하지 못했습니다.");
     }
-  }, [page, user]);
+  }, [page, user, query]);
 
   useEffect(() => {
     void fetch("/api/health").then((response) => response.json()).then((result) => {
@@ -122,6 +140,38 @@ export default function App() {
     }
   }
 
+  async function changeCitizen(citizen: Citizen, field: "status" | "role") {
+    const changes = field === "status"
+      ? { status: citizen.status === "active" ? "inactive" : "active" }
+      : { role: citizen.role === "admin" ? "user" : "admin" };
+    const value = Object.values(changes)[0];
+    if (!window.confirm(`${citizen.nickname} (${citizen.userId})의 ${field === "status" ? "계정 상태" : "권한"}을 ${value}로 변경할까요?`)) return;
+    setBusy(true);
+    try {
+      const result = await api<{ message: string }>(`/api/admin/users/${citizen.userId}`, { method: "POST", body: JSON.stringify(changes) });
+      setError(result.message);
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "사용자 설정을 변경하지 못했습니다.");
+    } finally { setBusy(false); }
+  }
+
+  async function createEvent(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const percent = Number(eventSeverity);
+    if (!window.confirm(`${eventAsset || "시장 전체"}에 ${eventType === "good" ? "호재" : "악재"} 사건을 적용할까요? 가격에 영향을 줍니다.`)) return;
+    setBusy(true);
+    try {
+      const result = await api<{ message: string }>("/api/admin/events", {
+        method: "POST", body: JSON.stringify({ eventType, severity: Math.round(percent), targetPercent: percent, durationSeconds: Number(eventDuration), assetCode: eventAsset.trim() || null }),
+      });
+      setError(result.message);
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "시장 사건을 등록하지 못했습니다.");
+    } finally { setBusy(false); }
+  }
+
   function logout() {
     clearToken();
     setUser(null);
@@ -174,6 +224,11 @@ export default function App() {
           <section className="section-panel"><div className="section-head"><h2>운영 범위</h2><span className="muted">관리자 작업은 모두 API에서 역할을 재검증합니다.</span></div><p className="muted">종목 거래 상태와 시장 개폐를 조정할 수 있습니다. 금전·상품 내용 변경은 별도 작업 화면에서 제공할 예정입니다.</p></section>
         </>}
         {page === "instruments" && <section className="section-panel"><div className="section-head"><h2>종목 · 상품</h2><input className="search" placeholder="이름 또는 코드 검색" value={query} onChange={(event) => setQuery(event.target.value)} /></div><div className="table-wrap"><table><thead><tr><th>코드</th><th>이름</th><th>유형</th><th>가격</th><th>거래소</th><th>상태</th><th></th></tr></thead><tbody>{filteredInstruments.map((item) => <tr key={item.code}><td className="mono">{item.code}</td><td>{item.name}</td><td>{item.type}</td><td className="mono">{number(item.price)}</td><td>{item.exchange_id || "—"}</td><td><span className={item.status === "active" ? "state open" : "state paused"}>{item.status}</span></td><td><button className="table-action" disabled={busy || item.status === "matured"} onClick={() => void changeInstrument(item)}>{item.status === "active" ? "중지" : "재개"}</button></td></tr>)}</tbody></table>{!filteredInstruments.length && <p className="empty">표시할 종목이 없습니다.</p>}</div></section>}
+        {page === "users" && <section className="section-panel"><div className="section-head"><h2>사용자 계정</h2><input className="search" placeholder="이름 또는 Discord ID 검색" value={query} onChange={(event) => setQuery(event.target.value)} /></div><div className="table-wrap"><table><thead><tr><th>사용자</th><th>ID</th><th>국적</th><th>현금</th><th>신용</th><th>권한</th><th>상태</th><th></th></tr></thead><tbody>{citizens.map((citizen) => <tr key={citizen.userId}><td>{citizen.nickname}</td><td className="mono">{citizen.userId}</td><td>{citizen.nationality}</td><td className="mono">{number(citizen.cash)}</td><td>{number(citizen.creditScore)}</td><td>{citizen.role}</td><td>{citizen.status}</td><td className="user-actions"><button className="table-action" disabled={busy || citizen.userId === user.userId} onClick={() => void changeCitizen(citizen, "status")}>{citizen.status === "active" ? "비활성" : "활성화"}</button><button className="table-action" disabled={busy || citizen.userId === user.userId} onClick={() => void changeCitizen(citizen, "role")}>{citizen.role === "admin" ? "관리자 해제" : "관리자 지정"}</button></td></tr>)}</tbody></table>{!citizens.length && <p className="empty">사용자를 찾지 못했습니다.</p>}</div></section>}
+        {page === "events" && <>
+          <section className="section-panel event-create"><div className="section-head"><h2>시장 사건 등록</h2><span className="muted">기존 시장 사건 검증과 감사 기록 적용</span></div><form onSubmit={createEvent}><label>종류<select value={eventType} onChange={(event) => setEventType(event.target.value)}><option value="good">호재</option><option value="bad">악재</option></select></label><label>목표 변동률 (%)<input type="number" min="0" max="100" step="0.1" value={eventSeverity} onChange={(event) => setEventSeverity(event.target.value)} required /></label><label>지속 시간 (초)<input type="number" min="1" max="604800" value={eventDuration} onChange={(event) => setEventDuration(event.target.value)} required /></label><label>대상 종목 코드 (비우면 전체)<input value={eventAsset} onChange={(event) => setEventAsset(event.target.value)} placeholder="예: INZST001" /></label><button className="primary" disabled={busy}>사건 검토 · 등록</button></form></section>
+          <section className="section-panel"><div className="section-head"><h2>최근 사건</h2><span className="muted">최근 50건</span></div><div className="table-wrap"><table><thead><tr><th>ID</th><th>대상</th><th>유형</th><th>강도</th><th>목표</th><th>시작</th><th>종료</th><th>관리자</th></tr></thead><tbody>{events.map((item) => <tr key={item.event_id}><td>#{item.event_id}</td><td>{item.asset_code || "시장 전체"}</td><td>{item.event_type === "good" ? "호재" : "악재"}</td><td>{item.severity}%</td><td>{item.target_mode === "price" ? `${number(item.target_value)} NWX` : `${number(item.target_value)}%`}</td><td>{date(item.starts_epoch)}</td><td>{date(item.ends_epoch)}</td><td className="mono">{item.created_by}</td></tr>)}</tbody></table>{!events.length && <p className="empty">등록된 사건이 없습니다.</p>}</div></section>
+        </>}
         {page === "audit" && <section className="section-panel"><div className="section-head"><h2>최근 관리자 작업</h2><span className="muted">최근 50건</span></div><div className="table-wrap"><table><thead><tr><th>시각</th><th>관리자 ID</th><th>작업</th><th>세부 내용</th></tr></thead><tbody>{audit.map((entry, index) => <tr key={`${entry.time}-${index}`}><td>{date(entry.time)}</td><td className="mono">{entry.actorId}</td><td>{entry.action}</td><td className="audit-payload">{JSON.stringify(entry.payload)}</td></tr>)}</tbody></table>{!audit.length && <p className="empty">기록이 없습니다.</p>}</div></section>}
       </div>
     </main>
