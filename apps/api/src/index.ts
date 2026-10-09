@@ -5,8 +5,10 @@ import { existsSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const projectRoot = findProjectRoot();
+
 try {
-  process.loadEnvFile(resolve(process.cwd(), ".env"));
+  process.loadEnvFile(resolve(projectRoot, ".env"));
 } catch (error) {
   if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 }
@@ -18,7 +20,6 @@ const host = "127.0.0.1";
 const port = Number(process.env.PORT ?? 4312);
 const pythonPort = Number(process.env.INAZINA_PYTHON_PORT ?? 4313);
 const internalToken = randomBytes(32).toString("hex");
-const projectRoot = findProjectRoot();
 const python = existsSync(join(projectRoot, ".venv", "bin", "python"))
   ? join(projectRoot, ".venv", "bin", "python")
   : process.env.PYTHON ?? "python3";
