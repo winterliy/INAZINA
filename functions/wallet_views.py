@@ -11,6 +11,18 @@ ELS_STATUS_LABELS = {
 }
 
 
+def load_active_wallet_loans(db, user_id, *, require_product=False, ordered=False):
+    join = "JOIN" if require_product else "LEFT JOIN"
+    order = " ORDER BY l.loan_id" if ordered else ""
+    return db.accounts.execute(
+        "SELECT l.loan_id,l.product_code,l.principal,l.outstanding_balance,"
+        "l.maturity_epoch,p.name FROM loans l "
+        f"{join} liability p ON p.product_code=l.product_code "
+        "WHERE l.user_id=? AND l.status='active'" + order,
+        (str(user_id),),
+    )
+
+
 def els_status_text(details):
     status = str(details.get('status') or details.get('state') or '')
     return ELS_STATUS_LABELS.get(status, status or '확인 중')

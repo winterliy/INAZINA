@@ -8,6 +8,7 @@ import uuid
 from database.user_db import TREASURY_USER_ID
 from functions.admin_access import BOOTSTRAP_ADMIN_IDS, resolve_user_role
 from functions.interaction_reliability import retry_discord_request
+from functions.shared_actions import execute_shared_action
 from functions.discord_views import (
     AllAssetsView,
     AccountCloseView,
@@ -96,16 +97,16 @@ class SlashCommandRegistry:
                 for r in rows if not current or current in r['name'].casefold() or current in r['code'].casefold()][:25]
 
 
-    async def _fx_action(self,interaction,action,*args):
-        user_id,_,_ = await self._prepare(interaction)
-        try:
-            message = await asyncio.to_thread(action,user_id,*args)
-        except ValueError as exc:
-            message = f'❌ {exc}'
-        await self._reply(interaction,content=str(message))
-
     async def fx_exchange(self,interaction: discord.Interaction,출금통화: str,입금통화: str,금액: str):
-        await self._fx_action(interaction,self.bot.fx_mgr.exchange,출금통화,입금통화,금액)
+        user_id, _, _ = await self._prepare(interaction)
+        try:
+            message = await asyncio.to_thread(
+                execute_shared_action, self.bot, user_id, "fx_exchange",
+                출금통화, 입금통화, 금액,
+            )
+        except ValueError as exc:
+            message = f"❌ {exc}"
+        await self._reply(interaction, content=str(message))
 
 
     async def lottery_buy(self,interaction: discord.Interaction,수량: app_commands.Range[int,1,1000]=1,번호: str='자동'):
@@ -165,12 +166,16 @@ class SlashCommandRegistry:
 
     async def subscribe_fund(self, interaction: discord.Interaction, 펀드: str, 좌수: app_commands.Range[int, 1, MAX_DISCORD_INTEGER]):
         user_id, _, _ = await self._prepare(interaction)
-        success, message = await asyncio.to_thread(self.bot.investment_mgr.trade_fund, user_id, 펀드, 좌수)
+        success, message = await asyncio.to_thread(
+            execute_shared_action, self.bot, user_id, "fund_subscribe", 펀드, 좌수
+        )
         await self._reply(interaction, embed=self._result_embed("펀드 가입", message, success))
 
     async def redeem_fund(self, interaction: discord.Interaction, 펀드: str, 좌수: app_commands.Range[int, 1, MAX_DISCORD_INTEGER]):
         user_id, _, _ = await self._prepare(interaction)
-        success, message = await asyncio.to_thread(self.bot.investment_mgr.trade_fund, user_id, 펀드, 좌수, True)
+        success, message = await asyncio.to_thread(
+            execute_shared_action, self.bot, user_id, "fund_redeem", 펀드, 좌수
+        )
         await self._reply(interaction, embed=self._result_embed("펀드 환매", message, success))
 
 
@@ -421,8 +426,10 @@ class SlashCommandRegistry:
         for item in info.get('written_options',[]):
             if item['collateral_cash']:
                 sections.setdefault('collateral',[]).append(f"• 풋 현금담보 · {item['contract_code']} · {item['collateral_cash']:,} NWX · 계약 만기까지 잠금")
-        loans=await asyncio.to_thread(self.bot.db.accounts.execute,
-            "SELECT l.loan_id,l.product_code,l.principal,l.outstanding_balance,l.maturity_epoch,p.name FROM loans l LEFT JOIN liability p ON p.product_code=l.product_code WHERE l.user_id=? AND l.status='active' ORDER BY l.loan_id",(user_id,))
+        from functions.wallet_views import load_active_wallet_loans
+        loans = await asyncio.to_thread(
+            load_active_wallet_loans, self.bot.db, user_id, ordered=True
+        )
         sections['loans']=[f"• {row['name'] or row['product_code']} ({row['product_code']}) · 대출 #{row['loan_id']} · 원금 {row['principal']:,} NWX · 남은 부채 {row['outstanding_balance']:,} NWX"
                            +(f" · 만기 <t:{int(row['maturity_epoch'])}:D> · /대출연장 id:{row['loan_id']}" if row['maturity_epoch'] else '') for row in loans]
         view=WalletCategoryView(user_id,summary,sections,info.get('option_short_liability',0))
@@ -518,7 +525,10 @@ class SlashCommandRegistry:
         출금계좌: str | None = None,
     ):
         user_id, _user_data, _role = await self._prepare(interaction)
-        success, message = await asyncio.to_thread(self.bot.user_mgr.transfer,user_id, 수신자, 금액, 출금계좌)
+        success, message = await asyncio.to_thread(
+            execute_shared_action, self.bot, user_id, "transfer",
+            수신자, 금액, 출금계좌,
+        )
         await self._reply(
             interaction,
             embed=self._result_embed("💸 송금", message, success),
@@ -586,9 +596,9 @@ class SlashCommandRegistry:
         변동성: app_commands.Range[int, 1, 500] = 50,
     ):
         user_id, _user_data, _role = await self._prepare(interaction)
-        success, message = await asyncio.to_thread(self.bot.option_mgr.create_and_write,
-            user_id, 기초주식, 유형.value, 행사가, 만기일수,
-            계약수, 지정프리미엄, 변동성,
+        success, message = await asyncio.to_thread(
+            execute_shared_action, self.bot, user_id, "option_write",
+            (기초주식, 유형.value, 행사가, 만기일수, 계약수, 지정프리미엄, 변동성),
         )
         await self._reply(
             interaction,
@@ -607,8 +617,8 @@ class SlashCommandRegistry:
         지정가: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
     ):
         user_id, _user_data, _role = await self._prepare(interaction)
-        success, message = await asyncio.to_thread(self.bot.order_book.place_limit_order,
-            user_id, 자산, "buy", 수량, 지정가
+        success, message = await asyncio.to_thread(
+            execute_shared_action, self.bot, user_id, "buy", 자산, 수량, 지정가
         )
         await self._reply(interaction, embed=self._result_embed("📈 지정가 매수", message, success))
 
@@ -620,8 +630,8 @@ class SlashCommandRegistry:
         지정가: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
     ):
         user_id, _user_data, _role = await self._prepare(interaction)
-        success, message = await asyncio.to_thread(self.bot.order_book.place_limit_order,
-            user_id, 자산, "sell", 수량, 지정가
+        success, message = await asyncio.to_thread(
+            execute_shared_action, self.bot, user_id, "sell", 자산, 수량, 지정가
         )
         await self._reply(interaction, embed=self._result_embed("📉 지정가 매도", message, success))
 

@@ -9,6 +9,7 @@ from database.user_db import TREASURY_USER_ID
 from database.db_manager import DBManager
 from functions.admin_views import MarketEventModal
 from functions.admin_embeds import admin_embed, admin_response, admin_help_embed
+from functions.shared_actions import execute_shared_action
 from managers.admin_control_manager import ENTITIES, EXAMPLES
 from managers.fx_manager import display_units
 
@@ -218,7 +219,9 @@ class ActionModal(CheckedModal):
         elif c=='lottery':
             return bot.lottery_mgr.configure(self.owner,json.loads(v[0]))
         elif c in {'매수','매도'}:
-            result = bot.order_book.place_limit_order(uid,v[0],'buy' if c=='매수' else 'sell',int(v[1]),int(v[2]))
+            result = execute_shared_action(
+                bot, uid, 'buy' if c=='매수' else 'sell', v[0], v[1], v[2]
+            )
         elif c=='주문취소':
             result = bot.order_book.cancel_order(uid,int(v[0]))
         elif c=='호가':
@@ -228,7 +231,7 @@ class ActionModal(CheckedModal):
         elif c=='내지갑':
             result = bot.user_mgr.get_total_assets(uid)
         elif c=='송금':
-            result = bot.user_mgr.transfer(uid,v[0],v[1],v[2] or None)
+            result = execute_shared_action(bot, uid, 'transfer', v[0], v[1], v[2])
         elif c=='계좌개설':
             if bot.db.fx.execute_one("SELECT 1 FROM fx_products WHERE product_code=? AND status='active'",(v[0],)):
                 if int(v[2])!=0:
@@ -245,17 +248,19 @@ class ActionModal(CheckedModal):
         elif c=='대출상환':
             result = bot.bank_mgr.repay_loan(uid,v[0],int(v[1]),int(v[2]) if v[2] else None)
         elif c in {'펀드가입','펀드환매'}:
-            result = bot.investment_mgr.trade_fund(uid,v[0],int(v[1]),c=='펀드환매')
+            result = execute_shared_action(
+                bot, uid, 'fund_redeem' if c=='펀드환매' else 'fund_subscribe', v[0], v[1]
+            )
         elif c=='선물증거금':
             result = bot.futures_mgr.add_margin(uid,v[0],int(v[1]))
         elif c=='옵션작성':
-            result = bot.option_mgr.create_and_write(uid,**json.loads(v[0]))
+            result = execute_shared_action(bot, uid, 'option_write', json.loads(v[0]))
         elif c=='옵션체인':
             result = bot.option_mgr.get_active_contracts(v[0] or None)
         elif c=='국채매수':
             result = bot.treasury_bond_mgr.buy(uid,v[0],int(v[1]))
         elif c=='환전':
-            result = bot.fx_mgr.exchange(uid,*v)
+            result = execute_shared_action(bot, uid, 'fx_exchange', *v)
         elif c=='내외환':
             result = '\n'.join(f"{r['currency_code']}: {display_units(r['balance_units'])} ({r['value_nwx']:,} NWX)" for r in bot.fx_mgr.accounts(uid)) or '외환통장이 없습니다.'
         elif c=='환율':
@@ -367,7 +372,10 @@ class TreasuryAssetsView(discord.ui.View):
             self.sections['bonds'].append((f"국채 · {item['name']}",f"{item['product_code']}\n수량 {item['quantity']:,}매 · 시장가 {item['market_price']:,} NWX\n평가액 {item['market_value']:,} NWX · 액면 {item['principal']:,} NWX"))
         for item in info.get('written_options',[]):
             self.sections['written'].append((f"작성 옵션 · {item['name']}",f"{item['contract_code']} · 체결 {item['outstanding_contracts']:,} / 미체결 {item['offered']:,}계약\n담보 {item['collateral_quantity']:,}주 / {item['collateral_cash']:,} NWX · 만기 <t:{item['expiration_epoch']}:D>"))
-        for loan in bot.db.accounts.execute("SELECT l.*,p.name FROM loans l JOIN liability p USING(product_code) WHERE l.user_id=? AND l.status='active'",(TREASURY_USER_ID,)):
+        from functions.wallet_views import load_active_wallet_loans
+        for loan in load_active_wallet_loans(
+            bot.db, TREASURY_USER_ID, require_product=True
+        ):
             maturity=f"<t:{int(loan['maturity_epoch'])}:D>" if loan['maturity_epoch'] else '없음'
             self.sections['loans'].append((f"대출 · {loan['name']}",f"#{loan['loan_id']} · {loan['product_code']}\n잔액 {loan['outstanding_balance']:,} NWX · 만기 {maturity}"))
         self.category_select=discord.ui.Select(placeholder='국가 지갑 카테고리',row=0,
