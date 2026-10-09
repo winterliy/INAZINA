@@ -1,5 +1,6 @@
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from .unified import UnifiedConnection, migrate
@@ -52,6 +53,11 @@ class DBManager:
         return conn
 
     @staticmethod
+    def _locked(exc):
+        message = str(exc).casefold()
+        return "database is locked" in message or "database table is locked" in message or "database is busy" in message
+
+    @staticmethod
     @contextmanager
     def readonly():
         """A consistent WAL snapshot; never reserve the writer or share its connection."""
@@ -66,18 +72,36 @@ class DBManager:
             conn.close()
 
     def execute(self, query, params=()):
-        with self.lock:
-            with self.conn:
-                cursor = self.conn.cursor()
-                cursor.execute(query, params)
-                return cursor.fetchall()
+        deadline = time.monotonic() + 90
+        delay = 0.25
+        while True:
+            try:
+                with self.lock:
+                    with self.conn:
+                        cursor = self.conn.cursor()
+                        cursor.execute(query, params)
+                        return cursor.fetchall()
+            except sqlite3.OperationalError as exc:
+                if not self._locked(exc) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 1.5, 5)
 
     def execute_one(self, query, params=()):
-        with self.lock:
-            with self.conn:
-                cursor = self.conn.cursor()
-                cursor.execute(query, params)
-                return cursor.fetchone()
+        deadline = time.monotonic() + 90
+        delay = 0.25
+        while True:
+            try:
+                with self.lock:
+                    with self.conn:
+                        cursor = self.conn.cursor()
+                        cursor.execute(query, params)
+                        return cursor.fetchone()
+            except sqlite3.OperationalError as exc:
+                if not self._locked(exc) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 1.5, 5)
 
     def commit(self):
         with self.lock:
