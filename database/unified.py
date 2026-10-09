@@ -2,7 +2,6 @@
 import os
 import re
 import sqlite3
-from functools import lru_cache
 from contextlib import closing, contextmanager
 from pathlib import Path
 
@@ -13,7 +12,6 @@ _SQL = re.compile(r"' (?:[^']|'')* ' | --[^\n]* | /\*.*?\*/ | "
                   r'\b(?:users|accounts|assets|product|company|pot|tax|system)\.(?=[A-Za-z_"\[])',
                   re.X | re.S)
 
-@lru_cache(maxsize=512)
 def sql(statement):
     return _SQL.sub(lambda m: m.group() if m.group().startswith(("'", "--", "/*")) else "", statement)
 

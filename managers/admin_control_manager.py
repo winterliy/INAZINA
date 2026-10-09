@@ -1,4 +1,5 @@
 """Validated administrator forms; no arbitrary SQL execution surface."""
+import json
 import math
 import time
 from contextlib import nullcontext
@@ -49,6 +50,9 @@ EXAMPLES = {
 class AdminControlManager:
     def __init__(self,bot):
         self.bot,self.db = bot,bot.db
+        self.db.system.execute("""CREATE TABLE IF NOT EXISTS admin_audit (
+            audit_id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT NOT NULL,
+            action TEXT NOT NULL, payload TEXT NOT NULL, recorded_epoch REAL NOT NULL)""")
 
     def require(self, actor_id, conn=None):
         user = (conn.execute("SELECT role FROM users WHERE user_id=?",(str(actor_id),)).fetchone()
@@ -56,6 +60,10 @@ class AdminControlManager:
         if not user or str(user['role']).strip().lower() != 'admin':
             raise ValueError("DB role=admin인 관리자만 사용할 수 있습니다.")
 
+    @staticmethod
+    def _audit(conn,actor,action,payload):
+        conn.execute("INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
+                     (str(actor),action,json.dumps(payload,ensure_ascii=False,default=str),time.time()))
 
     @staticmethod
     def _number(value, low=0, high=2**53-1, integer=False):
@@ -100,6 +108,8 @@ class AdminControlManager:
             result = self.bot.option_mgr.create_and_write(TREASURY_USER_ID,**extra)
             if not result[0]:
                 raise ValueError(result[1])
+            with self.db.atomic() as conn:
+                self._audit(conn,actor,'option.create',extra)
             return result[1]
         table,key,price_key,supply_key = ENTITIES[category]
         with (self.db.atomic() if conn is None else nullcontext(conn)) as conn:
@@ -140,6 +150,7 @@ class AdminControlManager:
                         raise ValueError("기준 통화 NWX는 삭제할 수 없습니다.")
                 # Preserve historical claims/holdings and payout definitions.
                 conn.execute(f'UPDATE "{table}" SET status=? WHERE "{key}"=?',('inactive' if operation=='delete' else 'active',code))
+                self._audit(conn,actor,f'{category}.{operation}',{'code':code})
                 return '✅ 거래 중지 처리했습니다.' if operation=='delete' else '✅ 거래를 재개했습니다.'
             if operation=='create' and (existing or (category!='currency' and self.db.code_locations(conn,code))):
                 raise ValueError("이미 사용 중인 코드입니다.")
@@ -156,18 +167,6 @@ class AdminControlManager:
                 if set(extra)-{'implied_volatility'} or price or supply:
                     raise ValueError("옵션 계약 조건은 고정됩니다. 내재변동성 수정 또는 $사건으로 프리미엄을 조정해주세요.")
             values = {k:v for k,v in extra.items() if k in columns}
-            if category=='currency':
-                if operation=='create' and 'decimal_places' not in values:
-                    values['decimal_places']=0 if code in {'NWX','KRW','JPY'} else 2 if code in {'USD','EUR','GBP','CHF','CNY','HKD','AUD','CAD'} else 6
-                if 'decimal_places' in values:
-                    values['decimal_places']=self._number(values['decimal_places'],0,6,integer=True)
-                    if code=='NWX' and values['decimal_places']!=0:raise ValueError('NWX는 정수 단위입니다.')
-                from fractions import Fraction
-                for field in ('reference_rate','rate_multiplier'):
-                    if field in values and values[field] is not None:
-                        number=Fraction(str(values[field]))
-                        if number<=0:raise ValueError('통화 환산 기준은 양수로 입력해주세요.')
-                        values[field]=str(number)
             if 'currency_code' in values:
                 values['currency_code']=str(values['currency_code']).strip().upper()
             if 'quote_currency' in values:
@@ -200,13 +199,6 @@ class AdminControlManager:
                     values['manager'] = 'Inazina 국고'
                     values['nav_anchor'] = values['unit_price']
             merged = {**(dict(existing) if existing else {}),**values}
-            if 'Fractal' in values or merged.get('Fractal') == 1:
-                from functions.quantities import validate_fractional_setting
-                asset_type = 'stock' if category == 'stock' else KINDS.get(category, merged.get('type'))
-                enabled = values.get('Fractal', merged.get('Fractal', 0))
-                enabled = validate_fractional_setting(conn, table, key, code, enabled, asset_type, merged.get(supply_key))
-                if 'Fractal' in values:
-                    values['Fractal'] = enabled
             if category=='stock':
                 if existing and values.get('exchange_id',existing['exchange_id'])!=existing['exchange_id']:
                     from managers.els_manager import ELSManager
@@ -277,8 +269,6 @@ class AdminControlManager:
                 exchange = merged['underlying_exchange_id']
                 if not conn.execute("SELECT 1 FROM company WHERE exchange_id=? AND status='active' UNION SELECT 1 FROM market_assets WHERE exchange_id=? AND status='active' AND type IN ('stock','주식')",(exchange,exchange)).fetchone():
                     raise ValueError("기초 지수에 사용할 주식 거래소를 확인해주세요.")
-            if 'extension_interest_rate' in values and values['extension_interest_rate'] is not None:
-                values['extension_interest_rate']=self._number(values['extension_interest_rate'],0,100)
             for field in ('interest_rate','annual_rate'):
                 if field in merged:
                     values[field] = self._number(merged[field],0,100)
@@ -330,14 +320,10 @@ class AdminControlManager:
                 for account in conn.execute("SELECT DISTINCT user_id FROM fx_accounts WHERE product_code=?",(code,)).fetchall():
                     self.bot.fx_mgr._settle(conn,account['user_id'],time.time())
             if category=='currency':
-                if merged.get('asset_code'):
-                    if not conn.execute("SELECT 1 FROM market_assets WHERE code=? AND type='forex' AND status='active'",(merged['asset_code'],)).fetchone():
-                        raise ValueError('활성 type=forex 시세 자산을 입력해주세요.')
-                elif merged.get('reference_rate') is None:
-                    raise ValueError('시세 자산 asset_code 또는 양수 reference_rate를 지정해주세요.')
-            if category=='loan' and operation=='edit' and any(field in values and values[field]!=existing[field] for field in ('interest_rate','extension_interest_rate')):
-                from managers.interest_manager import InterestManager
-                InterestManager(self.db).settle_product_rate_boundary(conn,code,time.time())
+                if code=='NWX' and any(k!='name' for k in values):
+                    raise ValueError("기준 통화 NWX의 환율은 고정됩니다.")
+                if code!='NWX' and not conn.execute("SELECT 1 FROM market_assets WHERE code=? AND type='forex' AND status='active'",(merged.get('asset_code'),)).fetchone():
+                    raise ValueError("먼저 $상품생성에서 type=forex 자산을 생성해주세요.")
             if operation=='create':
                 fields = ','.join(f'"{k}"' for k in values)
                 conn.execute(f'INSERT INTO "{table}" ({fields}) VALUES ({",".join("?" for _ in values)})',tuple(values.values()))
@@ -365,6 +351,7 @@ class AdminControlManager:
                     if not underlying:
                         raise ValueError("펀드 구성 종목을 확인해주세요.")
                     conn.execute("INSERT INTO fund_components VALUES (?,?,?,?)",(code,asset,weight,underlying[0]))
+            self._audit(conn,actor,f'{category}.{operation}',{'code':code,**values})
             return '✅ 설정을 저장했습니다.'
 
     def settings(self,actor,changes):
@@ -389,6 +376,7 @@ class AdminControlManager:
                     conn.execute(f'UPDATE "{table}" SET "{column}"=? WHERE id=1',(value,))
                 else:
                     conn.execute("INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,str(value)))
+            self._audit(conn,actor,'settings',changes)
         return '✅ 경제 설정을 저장했습니다.'
 
     def user(self,actor,user_id,changes):
@@ -410,6 +398,7 @@ class AdminControlManager:
                 raise ValueError("현재 관리자는 자신의 관리 권한을 제거할 수 없습니다.")
             assignments = ','.join(f'"{k}"=?' for k in changes)
             conn.execute(f'UPDATE users SET {assignments} WHERE user_id=?',(*changes.values(),user_id))
+            self._audit(conn,actor,'user',{'user_id':user_id,**changes})
         return '✅ 사용자 설정을 저장했습니다.'
 
     def setup(self,actor,user_id,nickname,nationality):
@@ -420,6 +409,7 @@ class AdminControlManager:
             conn.execute("INSERT INTO users(user_id,nickname,nationality,cash,role) VALUES (?,?,?,1000000,'user') "
                          "ON CONFLICT(user_id) DO UPDATE SET nickname=excluded.nickname",
                          (str(user_id),nickname or str(user_id),nationality or '낙원'))
+            self._audit(conn,actor,'setup',{'user_id':str(user_id),'nationality':nationality})
         return '✅ 사용자를 등록하거나 닉네임을 갱신했습니다.'
 
     def register(self,actor,members):
@@ -432,4 +422,5 @@ class AdminControlManager:
                 conn.execute("INSERT INTO users(user_id,nickname,nationality,cash,role) VALUES (?,?,'낙원',1000000,'user') "
                              "ON CONFLICT(user_id) DO UPDATE SET nickname=excluded.nickname",(str(member.id),str(member.display_name)))
                 count+=1
+            self._audit(conn,actor,'register',{'members':count})
         return f'✅ 서버 시민 {count}명을 등록하거나 닉네임을 갱신했습니다.'

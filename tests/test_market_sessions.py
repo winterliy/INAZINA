@@ -94,11 +94,10 @@ class MarketSessionTests(unittest.TestCase):
         self.assertEqual(restored.get_state(now=1400)["status"], "open")
         target = self.db.system.execute_one("SELECT * FROM market_event_targets")
         self.assertEqual((target["start_epoch"], target["end_epoch"]), (1300, 1420))
-        before = dict(target)
-        model = dict(self.db.system.execute_one("SELECT * FROM market_simulation_state"))
+        audit = self.db.system.execute("SELECT * FROM admin_audit WHERE action='market_auto_resume'")
+        self.assertEqual(len(audit), 1)
         restored.process_due(now=1500)
-        self.assertEqual(dict(self.db.system.execute_one("SELECT * FROM market_event_targets")), before)
-        self.assertEqual(dict(self.db.system.execute_one("SELECT * FROM market_simulation_state")), model)
+        self.assertEqual(len(self.db.system.execute("SELECT * FROM admin_audit WHERE action='market_auto_resume'")), 1)
 
     def test_event_created_during_pause_begins_at_reopen(self):
         self.session.control("admin", "pause", now=1000)
@@ -185,23 +184,17 @@ class MarketSessionTests(unittest.TestCase):
         self.assertTrue(self.options.create_and_write("alice", "CO", "call", 10000, 1, 1, 100)[0])
         code = self.db.assets.execute_one("SELECT contract_code FROM option_contracts")[0]
         cash = self.db.users.get_user("bob")["cash"]
-        self.db.companies.execute("UPDATE company SET Fractal=1 WHERE company_code='CO'")
-        self.db.products.execute("UPDATE investment SET Fractal=1 WHERE product_code='MF'")
-        for halt in ('close', 'trade_stop'):
-            self.session.control('admin', 'open')
-            self.session.control('admin', halt)
-            for action in (
-                lambda: self.options.place_limit_order("bob", code, "buy", 1, 100),
-                lambda: ForeignSecuritiesManager(self.book).order("bob", "CO", "buy", 1, 100),
-                lambda: self.book.place_limit_order("bob", "CO", "buy", '.5', 10000),
-                lambda: self.products.trade_fund("bob", "MF", '.5'),
-                lambda: self.products.trade_fund("alice", "MF", '.5', redeem=True),
-            ):
-                with self.subTest(halt=halt):
-                    ok, message = action()
-                    self.assertFalse(ok, message)
-                    self.assertIn("시장", message)
-            self.assertEqual(self.db.users.get_user("bob")["cash"], cash)
+        self.session.control("admin", "close")
+        for action in (
+            lambda: self.options.place_limit_order("bob", code, "buy", 1, 100),
+            lambda: ForeignSecuritiesManager(self.book).order("bob", "CO", "buy", 1, 100),
+            lambda: self.products.trade_fund("bob", "MF", 1),
+            lambda: self.products.trade_fund("alice", "MF", 1, redeem=True),
+        ):
+            ok, message = action()
+            self.assertFalse(ok, message)
+            self.assertIn("시장", message)
+        self.assertEqual(self.db.users.get_user("bob")["cash"], cash)
 
     def test_option_maturity_release_and_bond_maturity_redemption_continue(self):
         self.assertTrue(self.users.buy_asset("alice", "CO", 1)[0])
@@ -264,75 +257,6 @@ class MarketSessionTests(unittest.TestCase):
         self.assertEqual(self.db.companies.get_company("CO")["share_price"], 11500)
         self.market.update_prices(now=1120)
         self.assertEqual(self.db.companies.get_company("CO")["share_price"], 13000)
-
-
-    def test_trade_only_stop_keeps_prices_events_and_survives_restart(self):
-        self.event(percent=0)
-        self.market.update_prices(now=1010)
-        self.assertTrue(self.book.place_limit_order('alice', 'CO', 'buy', 1, 1)[0])
-        order_id = self.book.get_user_orders('alice')[0]['order_id']
-        reserved_cash = self.db.users.get_user('alice')['cash']
-        self.assertTrue(self.session.control('admin', 'trade_stop', now=1010)[0])
-        self.assertEqual(self.session.get_state(now=1010)['status'], 'open')
-        self.assertTrue(self.session.prices_running(now=1010))
-        self.market.update_prices(now=1060)
-        self.assertEqual(self.db.companies.get_company('CO')['share_price'], 11500)
-        self.assertFalse(self.book.place_limit_order('alice', 'CO', 'buy', 1, 11500)[0])
-        self.assertFalse(self.users.buy_asset('alice', 'CO', 1)[0])
-        self.assertFalse(self.users.sell_asset('alice', 'CO', 1)[0])
-        self.assertEqual(self.db.users.get_user('alice')['cash'], reserved_cash)
-        with self.db.atomic() as conn:
-            conn.execute("UPDATE company SET share_price=1 WHERE company_code='CO'")
-            self.assertEqual(self.book._match_incoming_order(conn, order_id, 1061), (0, 0, 0))
-        self.assertTrue(self.book.cancel_order('alice', order_id)[0])
-        self.assertEqual(self.db.users.get_user('alice')['cash'], reserved_cash+1)
-        self.market.update_prices(now=1120)
-        self.assertEqual(self.db.companies.get_company('CO')['share_price'], 13000)
-        self.assertEqual(self.db.system.execute_one('SELECT end_epoch FROM market_event_targets')[0], 1120)
-        self.db.close()
-        self.db = DatabaseManager()
-        restored = MarketSessionManager(self.db)
-        self.assertEqual(restored.get_state(now=1300)['status'], 'open')
-        self.assertEqual(restored.get_state(now=1300)['trading_halted'], 1)
-        self.assertIsNotNone(restored.trading_error(now=1300))
-        self.assertTrue(restored.control('admin', 'trade_resume', now=1300)[0])
-        self.assertIsNone(restored.trading_error(now=1300))
-        book = OrderBookManager(self.db, UserManager(self.db))
-        self.assertTrue(book.place_limit_order('bob', 'CO', 'buy', 1, 13000)[0])
-
-    def test_trade_stop_is_independent_of_price_halts_and_reauthorizes(self):
-        before = self.session.get_state(now=1000)
-        self.assertFalse(self.session.control('alice', 'trade_stop', now=1000)[0])
-        self.assertEqual(self.session.get_state(now=1000), before)
-        self.session.control('admin', 'trade_stop', now=1000)
-        self.assertFalse(self.session.control('alice', 'trade_resume', now=1000)[0])
-        self.session.control('admin', 'pause', now=1010)
-        self.session.control('admin', 'trade_resume', now=1020)
-        self.assertFalse(self.session.prices_running(now=1020))
-        self.assertIsNotNone(self.session.trading_error(now=1020))
-        self.session.control('admin', 'resume', now=1030)
-        self.assertIsNone(self.session.trading_error(now=1030))
-        self.session.control('admin', 'trade_stop', now=1040)
-        self.session.control('admin', 'close', now=1050)
-        self.session.control('admin', 'open', now=1100)
-        self.assertTrue(self.session.prices_running(now=1100))
-        self.assertIsNotNone(self.session.trading_error(now=1100))
-        self.session.control('admin', 'trade_resume', now=1110)
-        self.assertIsNone(self.session.trading_error(now=1110))
-
-    def test_trade_only_stop_reprices_futures_without_filling_orders(self):
-        self.assertTrue(self.products.issue('admin', 'FUT', 'Future', 'stock_future', 10000, 100, 'EX', 'CO', 1)[0])
-        self.assertTrue(self.futures.place_limit_order('alice', 'FUT', 'buy', 1, 1)[0])
-        before = dict(self.db.assets.execute_one("SELECT * FROM market_orders WHERE asset_code='FUT'"))
-        self.session.control('admin', 'trade_stop')
-        self.db.companies.update_share_price('CO', 1)
-        now = int(time.time())
-        self.futures.settle_positions(now=now)
-        self.assertEqual(self.db.products.get_investment('FUT')['unit_price'], 1)
-        self.assertEqual(dict(self.db.assets.execute_one("SELECT * FROM market_orders WHERE asset_code='FUT'")), before)
-        self.session.control('admin', 'trade_resume', now=now)
-        self.futures.settle_positions(now=now)
-        self.assertEqual(self.db.assets.execute_one("SELECT status FROM market_orders WHERE asset_code='FUT'")[0], 'filled')
 
 
 if __name__ == "__main__":

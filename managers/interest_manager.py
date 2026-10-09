@@ -1,5 +1,4 @@
 from datetime import datetime, timezone
-from contextlib import nullcontext
 import math
 import time
 from database import DatabaseManager
@@ -71,45 +70,7 @@ class InterestManager:
             (stamp, timestamp, account_number),
         )
 
-    @classmethod
-    def loan_rate(cls,loan,product):
-        extension=cls._number(product['extension_interest_rate'],0)
-        rate=extension if int(loan['extension_count'] or 0)>0 and extension>0 else cls._number(product['interest_rate'])
-        if rate is None or not 0<=rate<=100:
-            raise ValueError('대출 이자율은 0~100%로 설정해주세요.')
-        return rate
-
-    @classmethod
-    def settle_loan_rate_boundary(cls,conn,loan,product,now):
-        """Finish the previous rate at an exact boundary, preserving fractional debt."""
-        last=cls._number(loan['last_payment_epoch'],now)
-        maturity=cls._number(loan['maturity_epoch'])
-        if maturity is None:
-            created=cls._utc_epoch(loan['created_at'])
-            days=cls._number(product['maturity_days'],0)
-            if created is not None and days>0:
-                maturity=created+days*86400
-        end=min(now,maturity) if maturity is not None else now
-        cycle=cls._number(product['interest_cycle'])
-        if cycle is None or cycle<=0:raise ValueError('대출 이자주기를 확인해주세요.')
-        elapsed=max(0,end-last)
-        rate=cls.loan_rate(loan,product)
-        accrued=float(loan['interest_remainder'] or 0)
-        if elapsed>0 and rate>0:
-            exponent=elapsed/cycle*math.log1p(rate/100*cycle/cls.YEAR_SECONDS)
-            if exponent>700:raise ValueError('계산된 대출 이자가 너무 큽니다.')
-            accrued+=float(loan['outstanding_balance'])*math.expm1(exponent)
-        whole=max(0,round_money(accrued))
-        conn.execute('UPDATE loans SET outstanding_balance=outstanding_balance+?,interest_remainder=?,last_payment_epoch=? WHERE loan_id=?',
-            (whole,accrued-whole,max(now,last),loan['loan_id']))
-
-    def settle_product_rate_boundary(self,conn,product_code,now):
-        self.process_all_interests(now=now,conn=conn,product_code=product_code)
-        product=conn.execute('SELECT * FROM liability WHERE product_code=?',(product_code,)).fetchone()
-        for loan in conn.execute("SELECT * FROM loans WHERE product_code=? AND status='active'",(product_code,)).fetchall():
-            self.settle_loan_rate_boundary(conn,loan,product,now)
-
-    def process_all_interests(self, now=None, user_id=None, *, conn=None, product_code=None):
+    def process_all_interests(self, now=None, user_id=None):
         """Accrue due savings/loan interest, optionally for one user only.
 
         The account/loan last-payment epoch is the persisted cursor. A call compares
@@ -119,28 +80,24 @@ class InterestManager:
         """
         now = time.time() if now is None else float(now)
         user_id = None if user_id is None else str(user_id)
-        filters, params = [], []
-        if user_id is not None:
-            filters.append('user_id = ?');params.append(user_id)
-        if product_code is not None:
-            filters.append('product_code = ?');params.append(product_code)
-        account_filter = ' WHERE ' + ' AND '.join(filters) if filters else ''
-        loan_filter = ' AND ' + ' AND '.join(filters) if filters else ''
-        overdue_filter = ' AND ' + ' AND '.join('l.'+f for f in filters) if filters else ''
         total_paid = 0
         account_count = 0
         loan_count = 0
         try:
-            with (self.db.atomic(("users", "accounts", "product", "tax", "system")) if conn is None else nullcontext(conn)) as conn:
+            with self.db.atomic(("users", "accounts", "product", "tax", "system")) as conn:
                 tax_percent = self._tax_rate(conn)
                 accounts = conn.execute(
                     "SELECT account_number, user_id, product_code, balance, principal, "
-                    "created_at, last_payment, last_payment_epoch FROM accounts.accounts" + account_filter,
-                    params,
+                    "created_at, last_payment, last_payment_epoch FROM accounts.accounts "
+                    "WHERE (? IS NULL OR user_id = ?)",
+                    (user_id, user_id),
                 ).fetchall()
-                savings = {r['product_code']:r for r in conn.execute('SELECT * FROM saving')} if accounts else {}
                 for account in accounts:
-                    product = savings.get(account['product_code'])
+                    product = conn.execute(
+                        "SELECT interest_rate, maturity_days, interest_cycle, compound_type, status "
+                        "FROM product.saving WHERE product_code = ?",
+                        (account["product_code"],),
+                    ).fetchone()
                     if not product or product["status"] != "active":
                         self._advance_account_cursor(conn, account["account_number"], now)
                         continue
@@ -209,12 +166,16 @@ class InterestManager:
                     account_count += 1
 
                 loans = conn.execute(
-                    "SELECT * FROM accounts.loans WHERE status = 'active'" + loan_filter,
-                    params,
+                    "SELECT loan_id, user_id, product_code, outstanding_balance, created_at, last_payment_epoch "
+                    "FROM accounts.loans WHERE status = 'active' AND (? IS NULL OR user_id = ?)",
+                    (user_id, user_id),
                 ).fetchall()
-                liabilities = {r['product_code']:r for r in conn.execute('SELECT * FROM liability')} if loans else {}
                 for loan in loans:
-                    product = liabilities.get(loan['product_code'])
+                    product = conn.execute(
+                        "SELECT interest_rate, maturity_days, interest_cycle, status "
+                        "FROM product.liability WHERE product_code = ?",
+                        (loan["product_code"],),
+                    ).fetchone()
                     if not product or product["status"] != "active":
                         conn.execute(
                             "UPDATE accounts.loans SET last_payment_epoch = ? "
@@ -222,7 +183,7 @@ class InterestManager:
                             (now, loan["loan_id"]),
                         )
                         continue
-                    rate = self.loan_rate(loan,product)
+                    rate = self._number(product["interest_rate"])
                     cycle = self._number(product["interest_cycle"])
                     balance = self._number(loan["outstanding_balance"], 0.0)
                     last = self._number(loan["last_payment_epoch"])
@@ -236,9 +197,7 @@ class InterestManager:
                         continue
                     maturity_days = self._number(product["maturity_days"], 0)
                     end = now
-                    if loan['maturity_epoch'] is not None:
-                        end = min(now,float(loan['maturity_epoch']))
-                    elif maturity_days and maturity_days > 0 and created is not None:
+                    if maturity_days and maturity_days > 0 and created is not None:
                         end = min(now, created + maturity_days * 86400)
                     if end <= last:
                         continue
@@ -253,7 +212,6 @@ class InterestManager:
                             (now, loan["loan_id"]),
                         )
                         continue
-                    interest += float(loan['interest_remainder'] or 0)
                     whole_interest = round_money(interest)
                     if whole_interest <= 0:
                         # Retain the old cursor; future periods are recomputed as one
@@ -262,7 +220,7 @@ class InterestManager:
                     paid_until = last + periods * cycle
                     conn.execute(
                         "UPDATE accounts.loans SET outstanding_balance = outstanding_balance + ?, "
-                        "last_payment_epoch = ?, interest_remainder = 0 WHERE loan_id = ? AND status = 'active'",
+                        "last_payment_epoch = ? WHERE loan_id = ? AND status = 'active'",
                         (whole_interest, paid_until, loan["loan_id"]),
                     )
                     loan_count += 1
@@ -273,8 +231,8 @@ class InterestManager:
                     "l.last_statutory_epoch, l.statutory_interest_remainder, l.maturity_epoch, p.maturity_days FROM accounts.loans l "
                     "JOIN product.liability p ON p.product_code = l.product_code "
                     "WHERE l.status = 'active' AND p.status = 'active' "
-                    "AND (l.maturity_epoch IS NOT NULL OR p.maturity_days > 0)" + overdue_filter,
-                    params,
+                    "AND (l.maturity_epoch IS NOT NULL OR p.maturity_days > 0) AND (? IS NULL OR l.user_id = ?)",
+                    (user_id, user_id),
                 ).fetchall()
                 for loan in overdue:
                     created = self._utc_epoch(loan["created_at"])

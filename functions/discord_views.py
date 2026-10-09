@@ -1,9 +1,7 @@
-from functions.quantities import quantity_number
 import asyncio
 import copy
 import discord
 import io
-import hashlib
 import json
 import math
 import secrets
@@ -12,8 +10,7 @@ from pathlib import Path
 from datetime import datetime
 from decimal import Decimal
 from functions.interaction_reliability import (
-    discord_request,
-    prepare_response,
+    retry_discord_request,
     send_interaction_notice,
 )
 from functions.price_chart import render_price_chart, render_rate_chart
@@ -22,7 +19,6 @@ from managers.market_manager import EXCHANGE_INDEX_PREFIX
 from managers.rate_manager import RateManager
 from managers.fx_manager import FXManager
 from functions.wallet_views import els_status_text
-from functions.currency_display import relative_embed
 
 
 def inverse_rate_text(rate):
@@ -63,12 +59,11 @@ class RegistrationModal(discord.ui.Modal):
         path = Path(__file__).resolve().parents[1] / "database" / "private.text"
         return path.read_text(encoding="utf-8").strip()
 
-    def __init__(self, bot, user_id, nickname, notice_text, guild_id=None):
+    def __init__(self, bot, user_id, nickname, notice_text):
         super().__init__(title="Inazina 등록 안내")
         self.bot = bot
         self.user_id = str(user_id)
         self.nickname = str(nickname or user_id)
-        self.guild_id = guild_id
         self.confirmation_code = secrets.token_hex(3).upper()
         self.display_content = (
             f"{str(notice_text or '').strip()}\n\n"
@@ -105,7 +100,7 @@ class RegistrationModal(discord.ui.Modal):
             )
 
         try:
-            created = await self.bot.register_user(self.user_id, self.nickname, self.guild_id)
+            created = await self.bot.register_user(self.user_id, self.nickname)
         except Exception as exc:
             print(f"[Registration Error] {type(exc).__name__}: {exc}")
             return await interaction.response.send_message(
@@ -116,7 +111,7 @@ class RegistrationModal(discord.ui.Modal):
         if created:
             message = (
                 f"✅ {self.nickname}님, 등록이 완료됐습니다. "
-                "등록 서버의 국적과 기본화폐가 적용되고 초기 자산이 해당 화폐로 지급됐습니다."
+                "초기 자산 1,000,000 NWX가 지급됐습니다."
             )
         else:
             message = "이미 등록된 사용자입니다. 닉네임 정보를 최신 상태로 갱신했습니다."
@@ -624,14 +619,12 @@ class FXRatesView(discord.ui.View):
     def build_embed(self):
         country,currency = self.bot.fx_mgr.national_currency(self.subject_id)
         rates = self.bot.fx_mgr.rates()
-        base=next(r['rate'] for r in rates if r['code']==currency)
-        rates=[r for r in rates if r['code']!=currency]
         pages = max(1,(len(rates)+self.PAGE_SIZE-1)//self.PAGE_SIZE)
         self.page = min(max(0,self.page),pages-1)
-        embed = discord.Embed(title='🌐 환율',description=f'국적 **{str(country)[:100]}** · 기본 통화 **{currency}**\n게임 내 시세 · 1 {currency} 기준 외화 금액 (수수료 제외)',color=discord.Color.blue())
+        embed = discord.Embed(title='🌐 환율',description=f'국적 **{str(country)[:100]}** · 기본 통화 **{currency}**\n게임 내 시세 · 1 NWX 기준 외화 금액 (수수료 제외)',color=discord.Color.blue())
         for row in rates[self.page*self.PAGE_SIZE:(self.page+1)*self.PAGE_SIZE]:
             note = f"그래프 코드 `{row['asset_code']}`" if row['asset_code'] else '기준 통화'
-            embed.add_field(name=f"{row['code']} · {row['name']}"[:80],value=f"1 {currency} = **{format(Decimal(str(base))/Decimal(str(row['rate'])),'.12g')} {row['code']}**\n{note}"[:120],inline=False)
+            embed.add_field(name=f"{row['code']} · {row['name']}"[:80],value=f"1 NWX = **{inverse_rate_text(row['rate'])} {row['code']}**\n{note}"[:120],inline=False)
         embed.set_footer(text=f'{len(rates)}개 통화 · {self.page+1}/{pages} 페이지 · 페이지 이동 시 최신 환율 조회')
         self.previous.disabled = self.page==0
         self.next.disabled = self.page==pages-1
@@ -663,7 +656,6 @@ class AssetAccountsView(discord.ui.View):
         await interaction.response.send_message('❌ 본인 자산 창만 사용할 수 있습니다.',ephemeral=True)
         return False
 
-    @relative_embed
     def build_embed(self):
         pages = max(1,max((len(lines)+self.PAGE_SIZE-1)//self.PAGE_SIZE for lines in self.sections.values()))
         self.page = min(max(0,self.page),pages-1)
@@ -691,14 +683,8 @@ class AssetAccountsView(discord.ui.View):
 
 class InfoPanelView(discord.ui.View):
     PAGE_SIZE = 20
-    RANKINGS = {'rank_turnover': 'turnover', 'rank_volume': 'volume',
-                'rank_gainers': 'gainers', 'rank_losers': 'losers'}
     CATEGORIES = (
         ("main", "메인"),
-        ("rank_turnover", "실시간차트: 거래대금"),
-        ("rank_volume", "실시간차트: 거래량"),
-        ("rank_gainers", "실시간차트: 급상승"),
-        ("rank_losers", "실시간차트: 급하락"),
         ("indices", "거래소 지수"),
         ("rates", "기준금리 · 법정이자"),
         ("stocks", "주식"),
@@ -790,18 +776,11 @@ class InfoPanelView(discord.ui.View):
         return f" · 정기배당{status} {period}마다 {payment}"
 
     def _category_lines(self, category, market_groups=None):
-        stocks, investments = [], []
-        if category in {'stocks', 'els', 'etf', 'treasury_bond', 'corporate_bond',
-                        'stock_future', 'commodity_futures', 'mutual_fund', 'index_fund',
-                        'commodity_spot', 'option'}:
-            stocks, investments = market_groups if market_groups is not None else self._market_groups()
+        stocks, investments = market_groups if market_groups is not None else self._market_groups()
         if category == "forex":
-            _,currency=FXManager(self.bot.db).national_currency(self.user_id)
-            rates=FXManager(self.bot.db).rates()
-            base=next(r['rate'] for r in rates if r['code']==currency)
-            return [f"• **{r['name']}** ({r['code']}) · 1 {currency} = **{format(Decimal(str(base))/Decimal(str(r['rate'])),'.12g')} {r['code']}**"
+            return [f"• **{r['name']}** ({r['code']}) · 1 NWX = **{inverse_rate_text(r['rate'])} {r['code']}**"
                     + (f" · 그래프 `{r['asset_code']}`" if r['asset_code'] else '')
-                    for r in rates if r['code'] != currency]
+                    for r in FXManager(self.bot.db).rates() if r['code'] != 'NWX']
         if category == 'indices':
             return [f"• **{row['exchange_id']} 거래소 지수** · **{float(row['index_value']):,.2f} pt**\n"
                     f"  ID / 그래프 종목: `{EXCHANGE_INDEX_PREFIX}{row['exchange_id']}`"
@@ -889,9 +868,6 @@ class InfoPanelView(discord.ui.View):
                 extension_text = (f" · 연장 신용 {self._number(row['extension_min_credit_score']):g}점 이상/"
                                   f"{self._number(row['extension_days']):g}일"
                                   if 'extension_days' in row.keys() and self._number(row['extension_days']) > 0 else ' · 만기 연장 불가')
-                extension_rate=self._number(row['extension_interest_rate'])
-                if self._number(row['extension_days'])>0:
-                    extension_text+=f' · 연장이율 {extension_rate:g}%' if extension_rate>0 else ' · 연장이율: 원이율 적용'
                 lines.append(
                     f"• **{row['name']}** (`{row['product_code']}`) — 연 "
                     f"{self._number(row['interest_rate']):g}% · {limit_text} · "
@@ -927,14 +903,14 @@ class InfoPanelView(discord.ui.View):
                 except ValueError:
                     asset = None
                 if asset:
-                    value = float(asset["price"] or 0) * quantity_number(row["quantity"] or 0)
+                    value = float(asset["price"] or 0) * int(row["quantity"] or 0)
                     is_stock = self.bot.market_mgr.is_stock_type(asset["type"])
                     unit = "주" if is_stock else "개"
                     price_text = self.bot.market_mgr.format_price(asset["price"], asset["type"])
                     risk = " · ⚠️ 위험 알림 (100 NWX 이하)" if asset["price"] <= 100 else ""
                     lines.append(
                         f"• 보유 **{asset['name']}** (`{row['asset_code']}`) · "
-                        f"{quantity_number(row['quantity']):,}{unit} · 주당/단가 {price_text} NWX · "
+                        f"{int(row['quantity']):,}{unit} · 주당/단가 {price_text} NWX · "
                         f"평가액 {value:,.0f} NWX{risk}"
                     )
 
@@ -965,42 +941,23 @@ class InfoPanelView(discord.ui.View):
             return lines
         return []
 
-    def _category_counts(self):
-        counts={key:0 for key,_ in self.CATEGORIES}
-        aliases={'stock':'stocks','주식':'stocks','국채':'treasury_bond','옵션':'option'}
-        for asset in self.bot.market_mgr.get_market_assets():
-            key=aliases.get(str(asset['type']).casefold(),str(asset['type']).casefold())
-            if key in counts and key!='forex':counts[key]+=1
-        counts['indices']=len(self.bot.market_mgr.get_exchange_indices())
-        counts['rates']=len(RateManager.KEYS)
-        from managers.currency_manager import CurrencyManager
-        with self.bot.db.readonly() as conn:
-            home=CurrencyManager.home(conn,self.user_id)
-            counts['forex']=conn.execute("SELECT COUNT(*) FROM currencies WHERE status='active' AND code<>?",(home,)).fetchone()[0]
-            for key,table in (('fx_savings','fx_products'),('savings','saving'),('loan_products','liability')):
-                counts[key]=conn.execute(f"SELECT COUNT(*) FROM {table} WHERE status='active'").fetchone()[0]
-        return counts
-
     def build_embed(self):
         labels = dict(self.CATEGORIES)
         if self.category == "main":
-            counts=self._category_counts()
-            groups=[(label,counts[category]) for category,label in self.CATEGORIES if category!='main']
+            stocks, investments = self._market_groups()
+            groups = [(label,self._category_lines(category,(stocks,investments)))
+                      for category,label in self.CATEGORIES if category!='main']
             embed = discord.Embed(
                 title="ℹ️ 메인",
                 description="카테고리를 선택하면 해당 종목 목록과 코드를 확인할 수 있습니다.",
                 color=discord.Color.blue(),
             )
-            for title, count in groups:
-                embed.add_field(name=title,value='최대 100위 · 10개씩' if title in
-                                {labels[key] for key in self.RANKINGS} else f'{count:,}개',inline=True)
+            for title, lines in groups:
+                embed.add_field(name=title,value=f'{len(lines):,}개',inline=True)
             self.previous_button.disabled = True
             self.next_button.disabled = True
             embed.set_footer(text="항목별 전체 목록은 선택 메뉴에서 확인하세요.")
             return embed
-
-        if self.category in self.RANKINGS:
-            return self._ranking_embed()
 
         lines = self._category_lines(self.category)
         page_size = (5 if self.category == 'els' else 10 if self.category == 'stocks'
@@ -1016,61 +973,11 @@ class InfoPanelView(discord.ui.View):
         )
         embed.set_footer(text=f"{len(lines)}개 · {self.page + 1}/{total_pages} 페이지")
         if self.category == 'forex':
-            _,currency=FXManager(self.bot.db).national_currency(self.user_id)
-            embed.description = f'1 {currency} 기준 외화 금액 · 수수료 제외\n\n' + embed.description
+            embed.description = '1 NWX 기준 외화 금액 · 수수료 제외\n\n' + embed.description
             embed.set_footer(text=f"{len(lines)}개 통화 · {self.page + 1}/{total_pages} 페이지 · 페이지 이동 시 최신 환율 조회")
         self.previous_button.disabled = self.page <= 0
         self.next_button.disabled = self.page >= total_pages - 1
         return embed
-
-    def _ranking_embed(self):
-        now = int(time.time())
-        metric = self.RANKINGS[self.category]
-        rows = self.bot.market_mgr.get_realtime_rankings(metric, self.user_id, now=now)
-        pages = max(1, (len(rows) + 9) // 10)
-        self.page = min(max(0, self.page), pages - 1)
-        start = self.page * 10
-        notes = {'turnover': '오늘 누적 체결대금 · 기본화폐 환산 기준',
-                 'volume': '오늘 누적 체결 수량 기준',
-                 'gainers': '오늘 첫 가격 기록 대비 상승률 기준',
-                 'losers': '오늘 첫 가격 기록 대비 하락률 기준'}
-        embed = discord.Embed(title=f'📊 {dict(self.CATEGORIES)[self.category]}',
-            description=f'**{notes[metric]}**\n한국시간 00:00부터 집계 · 갱신 <t:{now}:T>',
-            color=discord.Color.blue())
-
-        def money(value, places):
-            if hasattr(value, 'numerator'):
-                value = Decimal(value.numerator) / Decimal(value.denominator)
-            return f'{value:,.{places}f}'
-
-        for rank, row in enumerate(rows[start:start + 10], start + 1):
-            medal = {1: '🥇', 2: '🥈', 3: '🥉'}.get(rank, '▪️')
-            value = (f"`{row['code'][:100]}` · 현재가 **{money(row['price'], row['decimal_places'])} {row['quote_currency']}**\n")
-            if metric == 'turnover':
-                value += f"💰 거래대금 **{money(row['turnover'], row['home_decimal_places'])} {row['home_currency']}**"
-            elif metric == 'volume':
-                value += f"📦 거래량 **{row['volume']:,}**"
-            else:
-                value += f"{'🔺' if metric == 'gainers' else '🔻'} 등락률 **{float(row['change_percent']):+.2f}%**"
-            embed.add_field(name=f"{medal} {rank}위 · {row['name']}"[:256], value=value[:1024], inline=False)
-        if not rows:
-            embed.description += '\n\n현재 조건에 해당하는 종목이 없습니다.'
-        span = f'{start + 1}–{min(start + 10, len(rows))}위 · ' if rows else ''
-        embed.set_footer(text=f'{span}{self.page + 1}/{pages} 페이지 · 최대 100위 · 페이지 이동·새로고침 시 갱신')
-        self.previous_button.disabled = self.page == 0
-        self.next_button.disabled = self.page >= pages - 1
-        return embed
-
-    async def _edit_panel(self, interaction):
-        if self.category in self.RANKINGS:
-            if not interaction.response.is_done():
-                await discord_request(lambda: interaction.response.defer(), stage='ack')
-            embed = await asyncio.to_thread(self.build_embed)
-            await discord_request(lambda: interaction.edit_original_response(embed=embed, view=self), stage='edit')
-        else:
-            embed, deferred = await prepare_response(interaction, lambda: asyncio.to_thread(self.build_embed))
-            edit = interaction.edit_original_response if deferred or interaction.response.is_done() else interaction.response.edit_message
-            await discord_request(lambda: edit(embed=embed, view=self), stage='edit')
 
     async def select_category(self, interaction: discord.Interaction):
         self.category = self.category_select.values[0]
@@ -1081,7 +988,8 @@ class InfoPanelView(discord.ui.View):
             await asyncio.to_thread(
                 self.bot.interest_mgr.process_user_interests, self.user_id
             )
-        await self._edit_panel(interaction)
+        embed = await asyncio.to_thread(self.build_embed)
+        await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="◀ 이전", style=discord.ButtonStyle.secondary, row=1)
     async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1090,7 +998,8 @@ class InfoPanelView(discord.ui.View):
             await asyncio.to_thread(
                 self.bot.interest_mgr.process_user_interests, self.user_id
             )
-        await self._edit_panel(interaction)
+        embed = await asyncio.to_thread(self.build_embed)
+        await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="다음 ▶", style=discord.ButtonStyle.secondary, row=1)
     async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1099,11 +1008,8 @@ class InfoPanelView(discord.ui.View):
             await asyncio.to_thread(
                 self.bot.interest_mgr.process_user_interests, self.user_id
             )
-        await self._edit_panel(interaction)
-
-    @discord.ui.button(label="새로고침", style=discord.ButtonStyle.secondary, row=1)
-    async def refresh_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._edit_panel(interaction)
+        embed = await asyncio.to_thread(self.build_embed)
+        await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="계좌 개설", style=discord.ButtonStyle.success, row=2)
     async def open_account_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1145,7 +1051,8 @@ class VWAPAnchorModal(discord.ui.Modal, title="고정 VWAP 기준점"):
             await interaction.response.send_message("❌ 과거 또는 현재 일시를 YYYY-MM-DD HH:MM 형식으로 입력해주세요.", ephemeral=True)
             return
         self.chart_view.anchor_epoch = epoch
-        await self.chart_view._edit_chart(interaction, save_preferences=True)
+        self.chart_view._save_preferences()
+        await self.chart_view._edit_chart(interaction)
 
 
 class PriceMovementView(discord.ui.View):
@@ -1188,10 +1095,6 @@ class PriceMovementView(discord.ui.View):
 
     def __init__(self, bot, user_id, asset_code):
         super().__init__(timeout=300)
-        self._chart_lock = asyncio.Lock()
-        self._chart_revision = 0
-        self._preferences_pending = False
-        self._uploaded_chart_digest = None
         self.bot = bot
         self.user_id = str(user_id)
         self.asset_code = str(asset_code)
@@ -1313,7 +1216,8 @@ class PriceMovementView(discord.ui.View):
             self.lower_indicators = selected
         for option in control.options:
             option.default = option.value in selected or (option.value == "none" and not selected)
-        await self._edit_chart(interaction, save_preferences=True)
+        self._save_preferences()
+        await self._edit_chart(interaction)
 
     async def select_upper(self, interaction):
         await self._select_indicators(interaction, True)
@@ -1354,19 +1258,24 @@ class PriceMovementView(discord.ui.View):
                 "type": "index",
                 "price": float(index["index_value"]),
             }
-            rows = self.bot.market_mgr.get_chart_candles(exchange_id, data_since, since, self.period_seconds, index=True)
+            rows = self.bot.market_mgr.get_exchange_index_history(exchange_id, data_since)
+            points = [
+                (int(row["recorded_epoch"]), float(row["index_value"]))
+                for row in rows
+            ]
             trade_rows = self.bot.market_mgr.get_exchange_trade_history(exchange_id, data_since)
-            volumes = [(int(epoch), quantity_number(quantity)) for epoch, quantity in trade_rows]
+            volumes = [(int(epoch), int(quantity)) for epoch, quantity in trade_rows]
             integer_prices = False
             volume_unit = "주"
         else:
             asset = self.bot.market_mgr.get_asset_info(self.asset_code)
             if not asset:
                 raise ValueError(f"자산 코드 `{self.asset_code}`를 찾을 수 없습니다.")
-            rows = self.bot.market_mgr.get_chart_candles(self.asset_code, data_since, since, self.period_seconds)
+            rows = self.bot.market_mgr.get_price_history(self.asset_code, data_since)
+            points = [(int(row["recorded_epoch"]), float(row["price"])) for row in rows]
             trade_rows = self.bot.market_mgr.get_trade_history(self.asset_code, data_since)
             volumes = [
-                (int(row["recorded_epoch"]), quantity_number(row["quantity"]))
+                (int(row["recorded_epoch"]), int(row["quantity"]))
                 for row in trade_rows
             ]
             integer_prices = True
@@ -1376,23 +1285,10 @@ class PriceMovementView(discord.ui.View):
                 else "매" if asset["type"] in {"국채", "corporate_bond"}
                 else "좌" if asset["type"] in {"mutual_fund", "index_fund"} else "개"
             )
-        # Summary points retain the first actual visible sample, even if the
-        # viewport starts in the middle of a candle. OHLC comes directly from SQL.
-        points = []
-        for row in rows:
-            points.append((int(row['first_epoch']), float(row['open'])))
-            if row['visible_epoch'] is not None:
-                points.append((int(row['visible_epoch']), float(row['visible_open'])))
-            points.append((int(row['last_epoch']), float(row['close'])))
-        visible_count = sum(row['visible_count'] for row in rows)
-        normalize = (self.bot.market_mgr.normalize_market_price if integer_prices
-                     else lambda value: round(value, 2))
-        price_candles = [dict(time=row['time'], **{key: normalize(row[key])
-                            for key in ('open', 'high', 'low', 'close')}) for row in rows]
         volumes = [
-            (int(epoch), quantity_number(quantity)) for epoch, quantity in volumes
+            (int(epoch), int(quantity)) for epoch, quantity in volumes
         ]
-        volume_total = quantity_number(sum(quantity for epoch, quantity in volumes if epoch >= since))
+        volume_total = sum(quantity for epoch, quantity in volumes if epoch >= since)
         current_price = float(asset["price"] or 0)
         if integer_prices:
             points = [
@@ -1408,26 +1304,15 @@ class PriceMovementView(discord.ui.View):
         elif points[-1][0] < now:
             points.append((now, current_price))
 
-        if not rows or rows[-1]['last_epoch'] < now:
-            bucket = now // self.period_seconds * self.period_seconds
-            if price_candles and price_candles[-1]['time'] == bucket:
-                candle = price_candles[-1]
-                candle.update(high=max(candle['high'], current_price),
-                              low=min(candle['low'], current_price), close=current_price)
-            else:
-                price_candles.append(dict(time=bucket, open=current_price, high=current_price,
-                                          low=current_price, close=current_price))
-
         els_levels = self._els_levels()
         png = render_price_chart(
             points, view_seconds, current_price=current_price,
             integer_prices=integer_prices, volumes=volumes,
             upper_indicators=self.upper_indicators, lower_indicators=self.lower_indicators,
             anchor_epoch=self.anchor_epoch, end_epoch=now,
-            trades=None if is_exchange_index else [(int(row["recorded_epoch"]), quantity_number(row["quantity"]), float(row["price"])) for row in trade_rows],
+            trades=None if is_exchange_index else [(int(row["recorded_epoch"]), int(row["quantity"]), float(row["price"])) for row in trade_rows],
             candle_seconds=self.period_seconds,
             horizontal_levels=els_levels,
-            price_candles=price_candles,
         )
         visible_points = [(epoch, price) for epoch, price in points if epoch >= since] or [(now, current_price)]
         first_price, last_price = visible_points[0][1], visible_points[-1][1]
@@ -1436,7 +1321,7 @@ class PriceMovementView(discord.ui.View):
         period_label = self.period_label()
         history_note = (
             " 아직 저장된 기록이 없어 현재가만 표시 중입니다."
-            if not visible_count else ""
+            if not any(int(row["recorded_epoch"]) >= since for row in rows) else ""
         )
         current_price_text = f"{current_price:,.0f}" if integer_prices else f"{current_price:,.2f}"
         change_text = f"{change:+,.0f}" if integer_prices else f"{change:+,.2f}"
@@ -1462,7 +1347,7 @@ class PriceMovementView(discord.ui.View):
             description=(
                 f"캔들 주기: **{period_label}봉** · 총 기간 **{self._duration_label(view_seconds)}** · {current_measure}\n"
                 f"{change_measure}\n"
-                f"기록 {visible_count:,}개를 OHLC 캔들로 집계 · 거래량 **{volume_total:,}{volume_unit}**"
+                f"기록 {sum(int(row['recorded_epoch']) >= since for row in rows):,}개를 OHLC 캔들로 집계 · 거래량 **{volume_total:,}{volume_unit}**"
                 f"{volume_note}"
                 " · 한국시간 날짜가 바뀌면 전날 차트 기록 삭제"
                 f"{history_note}{risk_warning}"
@@ -1524,49 +1409,29 @@ class PriceMovementView(discord.ui.View):
         embed.set_footer(text="단위: 연이율(%) · 변동: 퍼센트포인트(%p) | 변경 시점의 계단형 그래프 | 한국시간")
         return embed, png
 
-    def remember_uploaded_chart(self, png):
-        self._uploaded_chart_digest = hashlib.sha256(png).digest()
-
-    async def _edit_chart(self, interaction, *, save_preferences=False):
-        self._chart_revision += 1
-        revision = self._chart_revision
-        self._preferences_pending |= save_preferences
+    async def _edit_chart(self, interaction):
         if not interaction.response.is_done():
-            await discord_request(lambda: interaction.response.defer(), stage='ack')
-        async with self._chart_lock:
-            if revision != self._chart_revision:
-                return
-            # A new selection may arrive while rendering in a worker thread.
-            # Render stable inputs and only publish the newest completed request.
-            snapshot = copy.copy(self)
-            def prepare():
-                if snapshot._preferences_pending:
-                    snapshot._save_preferences()
-                return snapshot.render()
-            try:
-                embed, png = await asyncio.to_thread(prepare)
-            except Exception as exc:
-                if revision == self._chart_revision:
-                    await send_interaction_notice(interaction, f"❌ 그래프를 만들지 못했습니다: {exc}")
-                return
-            if revision != self._chart_revision:
-                return
-            self._preferences_pending = False
-            self.els_details = snapshot.els_details
-            existing = getattr(getattr(interaction, 'message', None), 'attachments', ())
-            reuse = (hashlib.sha256(png).digest() == self._uploaded_chart_digest and
-                     any(item.filename == 'movement.png' for item in existing))
-            options = dict(embed=embed, view=self)
-            if not reuse:
-                options['attachments'] = [discord.File(io.BytesIO(png), filename='movement.png')]
-            try:
-                await discord_request(lambda: interaction.edit_original_response(**options), stage='chart_edit')
-                self.remember_uploaded_chart(png)
-            except discord.HTTPException:
-                await send_interaction_notice(
-                    interaction,
-                    "⚠️ Discord 응답이 일시적으로 불안정해 그래프를 갱신하지 못했습니다. 다시 시도해주세요.",
+            await interaction.response.defer()
+        try:
+            embed, png = await asyncio.to_thread(self.render)
+        except Exception as exc:
+            await send_interaction_notice(
+                interaction, f"❌ 그래프를 만들지 못했습니다: {exc}"
+            )
+            return
+        try:
+            await retry_discord_request(
+                lambda: interaction.edit_original_response(
+                    embed=embed,
+                    attachments=[discord.File(io.BytesIO(png), filename="movement.png")],
+                    view=self,
                 )
+            )
+        except discord.HTTPException:
+            await send_interaction_notice(
+                interaction,
+                "⚠️ Discord 응답이 일시적으로 불안정해 그래프를 갱신하지 못했습니다. 다시 시도해주세요.",
+            )
 
     async def select_period(self, interaction: discord.Interaction):
         self.period_seconds = int(self.period_select.values[0])
@@ -1600,7 +1465,7 @@ class MyOrdersView(discord.ui.View):
                 options.append(discord.SelectOption(
                     label=f"#{order['order_id']} {side} · {order['asset_code']}"[:100],
                     description=(
-                        f"잔량 {quantity_number(order['remaining_quantity']):,} · "
+                        f"잔량 {int(order['remaining_quantity']):,} · "
                         f"지정가 {int(order['limit_price']):,} {order.get('quote_currency','NWX')}"
                     )[:100],
                     value=str(order["order_id"]),
@@ -1627,7 +1492,6 @@ class MyOrdersView(discord.ui.View):
         )
         return False
 
-    @relative_embed
     def build_embed(self, orders, notice=None):
         status_names = {
             "open": "대기", "partial": "부분체결", "filled": "전량체결",
@@ -1646,7 +1510,7 @@ class MyOrdersView(discord.ui.View):
             )
             reserve = (
                 f" · 주문 증거금 {int(order['reserved_cash']):,} NWX" if order.get("order_kind") == "future" and active else
-                f" · 예치 {order['reserved_cash']:,} {order.get('quote_currency','NWX')}"
+                f" · 예치 {int(order['reserved_cash']):,} {order.get('quote_currency','NWX')}"
                 if order["side"] == "buy" and active
                 else (
                     " · 옵션 발행 담보 잠금" if order.get("option_order_type") == "write"
@@ -1655,9 +1519,9 @@ class MyOrdersView(discord.ui.View):
             )
             lines.append(
                 f"**#{order['order_id']} {side} · {status_names.get(order['status'], order['status'])}** "
-                f"`{order['asset_code']}` · 체결 {quantity_number(order['filled_quantity']):,}/"
-                f"{quantity_number(order['quantity']):,}{unit}"
-                + (f" · 잔량 {quantity_number(order['remaining_quantity']):,}{unit}" if active else "")
+                f"`{order['asset_code']}` · 체결 {int(order['filled_quantity']):,}/"
+                f"{int(order['quantity']):,}{unit}"
+                + (f" · 잔량 {int(order['remaining_quantity']):,}{unit}" if active else "")
                 + f" · 지정가 {int(order['limit_price']):,} {order.get('quote_currency','NWX')}{reserve}"
             )
         embed = discord.Embed(
@@ -1715,7 +1579,6 @@ class AllAssetsView(discord.ui.View):
         )
         return False
 
-    @relative_embed
     def build_embed(self):
         total = len(self.users)
         total_pages = max(1, (total + self.PAGE_SIZE - 1) // self.PAGE_SIZE)

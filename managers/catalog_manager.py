@@ -134,7 +134,7 @@ class CatalogManager:
                 if self.db.code_locations(conn,code):
                     raise ValueError(f"외환 종목 코드 중복: {code}")
                 conn.execute("INSERT INTO market_assets(code,name,exchange_id,price,type,market_volatility) VALUES (?,?, 'FX',?,'forex',.05)", (code,f'{name}/NWX',price))
-                conn.execute("INSERT INTO currencies(code,name,asset_code,decimal_places) VALUES (?,?,?,?)", (currency,name,code,0 if currency in {'NWX','KRW','JPY'} else 2))
+                conn.execute("INSERT INTO currencies(code,name,asset_code) VALUES (?,?,?)", (currency,name,code))
                 conn.execute("INSERT OR IGNORE INTO country_currencies VALUES (?,?)", (country,currency))
                 conn.execute("INSERT INTO fx_products VALUES (?,?,?,?, 'active')", (f'INZFX{i:03d}',f'{name} 외환통장',currency,1+(i%5)*.25))
             conn.execute("INSERT INTO settings(key,value) VALUES (?, '1')", (self.VERSION,))

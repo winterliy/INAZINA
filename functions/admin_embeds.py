@@ -70,7 +70,7 @@ def creation_argument_lines():
         'volatility_percent':'변동성%', 'asset_code':'환율종목ID', 'nationality':'국적',
         'currency_code':'통화코드', 'parent_company_code':'보통주회사ID',
         'dividend_cycle_seconds':'배당주기', 'dividend_per_share':'주·좌당금액/비율%',
-        'extension_interest_rate':'연장이율%(0=원이율)', 'extension_min_credit_score':'연장최소신용', 'extension_days':'연장일수',
+        'extension_min_credit_score':'연장최소신용', 'extension_days':'연장일수',
         'underlyings':'기초코드1,코드2,코드3', 'annual_coupon':'연쿠폰%',
         'observation_days':'평가일수목록', 'redemption_levels':'조기상환기준%목록',
         'maturity_level':'만기상환기준%', 'knock_in_level':'낙인기준%',
@@ -88,13 +88,13 @@ def admin_help_embed(national_commands):
     from managers.admin_commands_manager import USAGE
     embed=discord.Embed(title='🛠️ Inazina · 관리자 도움말',
         description='**관리자 설정과 국가 명의 기능을 한곳에서 확인하세요.**\n명령어의 `[ ]` 부분에 값을 입력합니다.',color=discord.Color.blue())
-    groups=(('📦 상품 관리',('상품생성','상품수정','상품가격수정','상품삭제','소수점거래관리')),
+    groups=(('📦 상품 관리',('상품생성','상품수정','상품가격수정','상품삭제')),
             ('🏢 기업 · 배당',('증자','정기배당수정','정기배당활성','특별배당실시','합병','법인잔고수정','법인청산')),
             ('🧾 ELS 관리',('ELS취소',)),
-            ('👥 시민 · 잔고',('등록','기본소득','잔고수정','서버설치')),
-            ('📈 시장 · 환율',('시장분위기','상품분위기','환율수정','휴장','개장','장일시정지','장재개','시장거래중지','시장거래재개','서킷브레이커','사이드카')),
+            ('👥 시민 · 잔고',('등록','기본소득','잔고수정')),
+            ('📈 시장 · 환율',('시장분위기','상품분위기','환율수정','휴장','개장','장일시정지','장재개','서킷브레이커','사이드카')),
             ('🎲 도박 · 세금',('도박확률','도박리턴값','세율')),
-            ('🏦 금리 · 법정이자',('금리수정','법정이자수정','상품이율수정')),
+            ('🏦 금리 · 법정이자',('금리수정','법정이자수정')),
             ('🎟️ 복권 관리',('복권가격설정','복권당첨번호보기','복권당첨번호변경')))
     for title,commands in groups:
         embed.add_field(name=title,value='\n'.join(f'**`${command}`**\n{USAGE[command] or "인자 없이 실행"}' for command in commands if command in USAGE) or '상품생성에서 els 유형을 사용합니다.',inline=False)

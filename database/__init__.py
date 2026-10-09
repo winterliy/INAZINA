@@ -11,12 +11,10 @@ from .fx_db import ForeignExchangeDB
 from .lottery_db import LotteryDB
 from .corporate_db import CorporateDB
 from .els_db import ELSDB
-from .financial_db import FinancialDB
 
 class DatabaseManager:
     """모든 데이터베이스 모듈을 통합 관리하는 클래스"""
     atomic = staticmethod(DBManager.atomic)
-    readonly = staticmethod(DBManager.readonly)
     code_locations = staticmethod(DBManager.code_locations)
 
     def __init__(self):
@@ -32,9 +30,8 @@ class DatabaseManager:
         self.lottery = LotteryDB()
         self.corporate = CorporateDB()
         self.els = ELSDB()
-        self.financial = FinancialDB()
 
     def close(self):
         for database in (self.users, self.assets, self.products, self.companies,
-                         self.accounts, self.pot, self.tax, self.system, self.fx,self.lottery,self.corporate,self.els,self.financial):
+                         self.accounts, self.pot, self.tax, self.system, self.fx,self.lottery,self.corporate,self.els):
             database.close()

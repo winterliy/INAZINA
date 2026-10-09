@@ -17,9 +17,7 @@ def amount_units(value):
     except (InvalidOperation, ValueError, TypeError):
         raise ValueError("금액은 소수점 6자리 이내의 양수로 입력해주세요.") from None
 
-def display_units(units,decimal_places=None):
-    if decimal_places is not None:
-        return f"{Decimal(units)/SCALE:,.{int(decimal_places)}f}"
+def display_units(units):
     return f"{Decimal(units)/SCALE:,.6f}".rstrip('0').rstrip('.')
 
 class FXManager:
@@ -28,9 +26,15 @@ class FXManager:
 
     @staticmethod
     def _rate(conn, code):
-        from managers.currency_manager import CurrencyManager
-        value=CurrencyManager.rate(conn,code)/CurrencyManager.rate(conn,'NWX')
-        return int(value) if value==value.to_integral_value() else value
+        row = conn.execute("SELECT * FROM currencies WHERE code=? AND status='active'", (code,)).fetchone()
+        if not row:
+            raise ValueError(f"거래 가능한 통화가 아닙니다: {code}")
+        if code == 'NWX':
+            return 1
+        asset = conn.execute("SELECT price FROM market_assets WHERE code=? AND status='active'", (row['asset_code'],)).fetchone()
+        if not asset or asset['price'] <= 0:
+            raise ValueError("환율을 조회할 수 없습니다.")
+        return int(asset['price'])
 
     @staticmethod
     def _user(conn, user_id):
@@ -40,17 +44,15 @@ class FXManager:
         return user
 
     def national_currency(self, user_id):
-        with self.db.readonly() as conn:
+        with self.db.atomic() as conn:
             user = self._user(conn, user_id)
-            from managers.currency_manager import CurrencyManager
-            return user['nationality'], CurrencyManager.home(conn,user_id)
+            row = conn.execute("SELECT currency_code FROM country_currencies n JOIN currencies c ON c.code=n.currency_code WHERE nationality=? AND c.status='active'", (user['nationality'],)).fetchone()
+            return user['nationality'], row['currency_code'] if row else 'NWX'
 
     def rates(self):
-        from managers.currency_manager import CurrencyReadSnapshot
-        with self.db.readonly() as conn:
-            snapshot = CurrencyReadSnapshot(conn)
-            return [{**{k: v for k, v in row.items() if k != 'asset_price'},
-                     'rate': snapshot.rate_nwx(code)} for code, row in snapshot.rows.items()]
+        with self.db.atomic() as conn:
+            return [{**dict(r), 'rate': self._rate(conn, r['code'])}
+                    for r in conn.execute("SELECT * FROM currencies WHERE status='active' ORDER BY code")]
 
     def open_account(self, user_id, product_code):
         with self.db.atomic() as conn:
@@ -80,49 +82,56 @@ class FXManager:
                          "WHERE account_number=?", (credit, str(exact-credit), max(now,row['last_interest_epoch']), row['account_number']))
 
     def exchange(self, user_id, source, target, amount):
-        from managers.currency_manager import CurrencyManager
-        source,target=str(source).strip().upper(),str(target).strip().upper()
-        units=amount_units(amount)
-        if source==target:raise ValueError('서로 다른 통화를 선택해주세요.')
-        if source=='NWX' and units%SCALE:raise ValueError('NWX 현금은 정수 금액만 사용할 수 있습니다.')
-        now=time.time()
+        source, target = str(source).strip().upper(), str(target).strip().upper()
+        units = amount_units(amount)
+        if source == target:
+            raise ValueError("서로 다른 통화를 선택해주세요.")
+        if source == 'NWX' and units % SCALE:
+            raise ValueError("NWX는 정수 금액만 사용할 수 있습니다.")
+        now = time.time()
         with self.db.atomic() as conn:
             from managers.market_session_manager import MarketSessionManager
-            halt=MarketSessionManager(self.db).trading_error(conn=conn,now=now)
-            if halt:raise ValueError(halt)
-            self._user(conn,user_id);self._settle(conn,user_id,now)
-            CurrencyManager.validate_units(conn,units,source)
-            sr,tr=self._rate(conn,source),self._rate(conn,target)
-            setting=conn.execute("SELECT value FROM settings WHERE key='fx_fee_percent'").fetchone()
-            rate=Decimal(str(setting[0]))
-            if not rate.is_finite() or not 0<=rate<=100:raise ValueError('환전 수수료 설정이 올바르지 않습니다.')
-            fee=CurrencyManager.fee(conn,units,source,rate)
-            output=CurrencyManager.exchange_amount(conn,units,source,target,fee)
-            if target=='NWX':output=output//SCALE*SCALE
-            if not 1<=output<=MAX_UNITS:raise ValueError('환전 결과가 최소 단위 미만이거나 한도를 초과합니다.')
-            account=conn.execute('SELECT * FROM fx_accounts WHERE user_id=? AND currency_code=?',(str(user_id),source)).fetchone()
-            if CurrencyManager.balance(conn,user_id,source)>=units:
-                CurrencyManager.change(conn,user_id,source,-units)
-            elif account and account['balance_units']>=units:
-                conn.execute('UPDATE fx_accounts SET balance_units=balance_units-? WHERE account_number=?',(units,account['account_number']))
+            halt = MarketSessionManager(self.db).trading_error(conn=conn, now=now)
+            if halt:
+                raise ValueError(halt)
+            self._user(conn, user_id)
+            self._settle(conn, user_id, now)
+            sr, tr = self._rate(conn, source), self._rate(conn, target)
+            fee_rate = Decimal(str(conn.execute("SELECT value FROM settings WHERE key='fx_fee_percent'").fetchone()[0]))
+            if not fee_rate.is_finite() or not 0 <= fee_rate <= 100:
+                raise ValueError("환전 수수료 설정이 올바르지 않습니다.")
+            value = Decimal(units) * sr / SCALE
+            fee = int((value * fee_rate / 100).to_integral_value(rounding=ROUND_CEILING))
+            output = int(((value-fee) / tr * SCALE).to_integral_value(rounding=ROUND_FLOOR))
+            if target == 'NWX':
+                output = output // SCALE * SCALE
+            if output <= 0 or output > MAX_UNITS:
+                raise ValueError("환전 결과가 최소 단위 미만이거나 한도를 초과합니다.")
+            if source == 'NWX':
+                changed = conn.execute("UPDATE users SET cash=cash-? WHERE user_id=? AND cash>=?", (units//SCALE,str(user_id),units//SCALE))
             else:
-                CurrencyManager.change(conn,user_id,source,-units)
-            account=conn.execute('SELECT * FROM fx_accounts WHERE user_id=? AND currency_code=?',(str(user_id),target)).fetchone()
-            if account:
-                if account['balance_units']+output>MAX_UNITS:raise ValueError('입금 잔액 한도를 초과했습니다.')
-                conn.execute('UPDATE fx_accounts SET balance_units=balance_units+? WHERE account_number=?',(output,account['account_number']))
+                changed = conn.execute("UPDATE fx_accounts SET balance_units=balance_units-? WHERE user_id=? AND currency_code=? AND balance_units>=?", (units,str(user_id),source,units))
+            if changed.rowcount != 1:
+                raise ValueError("잔액이 부족하거나 출금 외환통장이 없습니다.")
+            if target == 'NWX':
+                changed = conn.execute("UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?", (output//SCALE,str(user_id),MAX_UNITS-output//SCALE))
             else:
-                CurrencyManager.change(conn,user_id,target,output)
-            CurrencyManager.change(conn,TREASURY_USER_ID,'NWX',fee*SCALE)
-            conn.execute('INSERT INTO fx_transactions(user_id,source_currency,target_currency,source_units,target_units,source_rate,target_rate,fee_nwx,recorded_epoch) VALUES (?,?,?,?,?,?,?,?,?)',(str(user_id),source,target,units,output,str(CurrencyManager.quote(conn,source,'NWX')),str(CurrencyManager.quote(conn,target,'NWX')),fee,now))
-            return f'✅ {display_units(units,CurrencyManager.precision(conn,source))} {source} → {display_units(output,CurrencyManager.precision(conn,target))} {target} · 수수료 {fee:,} NWX'
+                changed = conn.execute("UPDATE fx_accounts SET balance_units=balance_units+? WHERE user_id=? AND currency_code=? AND balance_units<=?", (output,str(user_id),target,MAX_UNITS-output))
+            if changed.rowcount != 1:
+                raise ValueError("입금 외환통장을 먼저 개설하거나 잔액 한도를 확인해주세요.")
+            treasury = conn.execute("UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?", (fee,TREASURY_USER_ID,MAX_UNITS-fee))
+            if treasury.rowcount != 1:
+                raise ValueError("국고 잔액 한도를 초과했습니다.")
+            conn.execute("INSERT INTO fx_transactions(user_id,source_currency,target_currency,source_units,target_units,source_rate,target_rate,fee_nwx,recorded_epoch) "
+                         "VALUES (?,?,?,?,?,?,?,?,?)", (str(user_id),source,target,units,output,sr,tr,fee,now))
+            return f"✅ {display_units(units)} {source} → {display_units(output)} {target} · 수수료 {fee:,} NWX"
 
     def accounts(self, user_id):
         with self.db.atomic() as conn:
             self._user(conn, user_id)
             self._settle(conn, user_id, time.time())
             return [{**dict(r), 'value_nwx': int(Decimal(r['balance_units']) * self._rate(conn,r['currency_code']) / SCALE) if r['balance_units'] else 0}
-                    for r in conn.execute("SELECT a.*,p.name AS product_name,p.annual_rate,c.decimal_places FROM fx_accounts a JOIN currencies c ON c.code=a.currency_code "
+                    for r in conn.execute("SELECT a.*,p.name AS product_name,p.annual_rate FROM fx_accounts a "
                                           "LEFT JOIN fx_products p ON p.product_code=a.product_code "
                                           "WHERE a.user_id=? ORDER BY a.currency_code", (str(user_id),))]
 
@@ -146,12 +155,9 @@ class FXManager:
         now = time.time()
         with self.db.atomic() as conn:
             self._user(conn,sender)
-            from managers.currency_manager import CurrencyManager
             def endpoint(number,owner=None):
-                if owner is not None and (number=='__wallet__' or number.startswith('__wallet__:')):
-                    currency=number.split(':',1)[1].upper() if ':' in number else CurrencyManager.home(conn,owner)
-                    CurrencyManager.rate(conn,currency)
-                    return ('wallet','balance_units','user_id',owner,owner,currency,1)
+                if number=='__wallet__' and owner is not None:
+                    return ('users','cash','user_id',owner,owner,'NWX',SCALE)
                 fx = conn.execute('SELECT * FROM fx_accounts WHERE account_number=?',(number,)).fetchone()
                 if fx:
                     if owner is not None and str(fx['user_id'])!=owner:
@@ -166,7 +172,7 @@ class FXManager:
                     return ('accounts','balance','account_number',number,str(bank['user_id']),'NWX',SCALE)
                 if owner is None:
                     self._user(conn,number)
-                    return ('wallet','balance_units','user_id',number,number,CurrencyManager.home(conn,number),1)
+                    return ('users','cash','user_id',number,number,'NWX',SCALE)
                 raise ValueError('출금 계좌를 찾을 수 없습니다.')
             src,dst = endpoint(source_account,sender),endpoint(recipient)
             if src[:4]==dst[:4]:
@@ -176,7 +182,6 @@ class FXManager:
             self._settle(conn,sender,now)
             if dst[4]!=sender:
                 self._settle(conn,dst[4],now)
-            CurrencyManager.validate_units(conn,units,src[5])
             sr,tr = self._rate(conn,src[5]),self._rate(conn,dst[5])
             fee = 0
             if src[5]!=dst[5]:
@@ -188,36 +193,30 @@ class FXManager:
                 rate = Decimal(str(setting[0]))
                 if not rate.is_finite() or not 0<=rate<=100:
                     raise ValueError('환전 수수료 설정이 올바르지 않습니다.')
-                fee=CurrencyManager.fee(conn,units,src[5],rate)
-                output=CurrencyManager.exchange_amount(conn,units,src[5],dst[5],fee)
+                value = Decimal(units)*sr/SCALE
+                fee = int((value*rate/100).to_integral_value(rounding=ROUND_CEILING))
+                output = int(((value-fee)/tr*SCALE).to_integral_value(rounding=ROUND_FLOOR))
             else:
                 output = units
             output = output//dst[6]*dst[6]
-            if dst[5]=='NWX':output=output//SCALE*SCALE
             if not 1<=output<=MAX_UNITS:
                 raise ValueError('환전 결과가 최소 단위 미만이거나 한도를 초과합니다.')
             debit,credit = units//src[6],output//dst[6]
-            if src[0]=='wallet':
-                CurrencyManager.change(conn,sender,src[5],-units)
-                debited=True
-            elif src[0]=='accounts':
+            if src[0]=='accounts':
                 debited = UserManager._debit_source(conn,sender,src[3],debit)
             else:
                 debited = conn.execute(f'UPDATE {src[0]} SET {src[1]}={src[1]}-? WHERE {src[2]}=? AND {src[1]}>=?',(debit,src[3],debit)).rowcount==1
             if not debited:
                 raise ValueError('출금 잔액이 부족합니다.')
-            if dst[0]=='wallet':
-                CurrencyManager.change(conn,dst[4],dst[5],output)
-                changed=None
-            elif dst[0]=='accounts':
+            if dst[0]=='accounts':
                 changed = conn.execute('UPDATE accounts SET balance=balance+?,principal=COALESCE(principal,0)+?,last_payment_epoch=?,last_payment=CURRENT_TIMESTAMP WHERE account_number=? AND balance<=?',(credit,credit,now,dst[3],MAX_UNITS-credit))
             else:
                 changed = conn.execute(f'UPDATE {dst[0]} SET {dst[1]}={dst[1]}+? WHERE {dst[2]}=? AND {dst[1]}<=?',(credit,dst[3],MAX_UNITS-credit))
-            if changed is not None and changed.rowcount!=1:
+            if changed.rowcount!=1:
                 raise ValueError('입금 계좌 잔액 한도를 초과했습니다.')
             changed = conn.execute('UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?',(fee,TREASURY_USER_ID,MAX_UNITS-fee))
             if changed.rowcount!=1:
                 raise ValueError('국고 잔액 한도를 초과했습니다.')
             conn.execute('INSERT INTO fx_transfer_transactions(sender_id,recipient_id,source_account,target_account,source_currency,target_currency,source_units,target_units,source_rate,target_rate,fee_nwx,recorded_epoch) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-                (sender,dst[4],None if source_account=='__wallet__' else source_account,None if dst[0]=='wallet' else dst[3],src[5],dst[5],units,output,str(CurrencyManager.quote(conn,src[5],'NWX')),str(CurrencyManager.quote(conn,dst[5],'NWX')),fee,now))
-            return f'✅ 송금 {display_units(units,CurrencyManager.precision(conn,src[5]))} {src[5]} → {display_units(output,CurrencyManager.precision(conn,dst[5]))} {dst[5]} · 환전 수수료 {fee:,} NWX'
+                (sender,dst[4],None if source_account=='__wallet__' else source_account,None if dst[0]=='users' else dst[3],src[5],dst[5],units,output,sr,tr,fee,now))
+            return f'✅ 송금 {display_units(units)} {src[5]} → {display_units(output)} {dst[5]} · 환전 수수료 {fee:,} NWX'

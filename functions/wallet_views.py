@@ -1,5 +1,4 @@
 """Private wallet summary and paginated categories from a single asset snapshot."""
-from functions.quantities import quantity_number
 import copy
 import discord
 
@@ -20,7 +19,7 @@ def els_position_lines(positions):
     """Format contractual ELS holdings without presenting a fictitious NAV."""
     lines = []
     for item in positions:
-        quantity = quantity_number(item.get('quantity') or 0)
+        quantity = int(item.get('quantity') or 0)
         code = str(item.get('product_code') or item.get('code') or '')
         next_epoch = item.get('next_observation_epoch')
         next_text = f"<t:{int(next_epoch)}:f>" if next_epoch else '없음'
@@ -47,7 +46,7 @@ def preferred_claim_lines(claims):
         issuer = str(item.get('issuer_code') or item.get('company_code') or '')
         lines.append(
             f"• **`{str(item.get('asset_code') or '')}`** · 발행법인 `{issuer}`\n"
-            f"  확정수량 {quantity_number(item.get('quantity') or 0):,}주 · 미지급 배당 "
+            f"  확정수량 {int(item.get('quantity') or 0):,}주 · 미지급 배당 "
             f"**{float(remaining):,.0f} {item.get('quote_currency') or 'NWX'}** · {due_text}"
         )
     return lines
@@ -55,7 +54,7 @@ def preferred_claim_lines(claims):
 
 class WalletCategoryView(discord.ui.View):
     PAGE_SIZE=10
-    CATEGORIES=(('main','메인'),('cash','통화별 현금'),('accounts','통장'),('fx_accounts','외환통장'),('stocks','주식'),
+    CATEGORIES=(('main','메인'),('accounts','통장'),('fx_accounts','외환통장'),('stocks','주식'),
                 ('etf','ETF'),('els','ELS'),('preferred_claims','우선주 미지급 배당'),('treasury_bond','국채'),('corporate_bond','회사채'),
                 ('stock_future','주식 선물'),('commodity_futures','원자재 선물'),
                 ('mutual_fund','일반 펀드'),('index_fund','인덱스 펀드'),('commodity_spot','현물 원자재'),
@@ -107,8 +106,7 @@ class WalletCategoryView(discord.ui.View):
         value=f"```{'−' if self.option_liability else ''}{self.option_liability:,} NWX```\n미만기 작성 옵션의 현재 의무 가치 · 순자산 차감\n만기에 이 금액을 그대로 납부하는 것은 아닙니다."
         index=next((i for i,f in enumerate(embed.fields) if f.name==name),None)
         if index is None:embed.add_field(name=name,value=value,inline=True)
-        # Existing summary already carries the subject's currency and valuation.
-        # Only add the legacy field when an old summary omitted it.
+        else:embed.set_field_at(index,name=name,value=value,inline=True)
 
     async def select_category(self,interaction):
         self.category=self.category_select.values[0]

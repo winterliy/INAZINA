@@ -102,7 +102,6 @@ class AccountDB(DBManager):
             ("extension_count", "INTEGER NOT NULL DEFAULT 0"),
             ("last_extended_epoch", "REAL"),
             ("extension_eligible_epoch", "REAL"),
-            ("interest_remainder", "REAL NOT NULL DEFAULT 0"),
         ):
             if column not in loan_columns:
                 self.execute(f"ALTER TABLE loans ADD COLUMN {column} {declaration}")

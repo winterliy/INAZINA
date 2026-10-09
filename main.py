@@ -20,6 +20,7 @@ from managers.market_session_manager import MarketSessionManager
 from functions.admin_prefix import AdminPrefixRegistry
 from functions.admin_access import BOOTSTRAP_ADMIN_IDS
 from functions.interaction_reliability import (
+    retry_discord_request,
     send_interaction_notice,
 )
 from functions.registration import RegistrationRequired
@@ -38,9 +39,6 @@ class InazinaBot(discord.Client):
         
         self.token = token
         self.db = DatabaseManager()
-        from managers.financial_manager import FinancialManager
-        self.financial_mgr = FinancialManager(self.db)
-        self.financial_mgr.initialize()
         self.user_mgr = UserManager(self.db)
         self.order_book = OrderBookManager(self.db, self.user_mgr)
         self.option_mgr = OptionManager(self.db, self.user_mgr)
@@ -49,8 +47,6 @@ class InazinaBot(discord.Client):
         self.investment_mgr = InvestmentManager(self.db, self.user_mgr)
         self.futures_mgr = FuturesManager(self.db, self.user_mgr)
         self.fx_mgr = FXManager(self.db)
-        from managers.currency_manager import CurrencyManager
-        self.currency_mgr = CurrencyManager(self.db)
         from managers.lottery_manager import LotteryManager
         self.lottery_mgr = LotteryManager(self.db)
         self.order_book.futures_manager = self.futures_mgr
@@ -181,7 +177,6 @@ class InazinaBot(discord.Client):
                 try:
                     await asyncio.to_thread(self.market_session.process_due)
                     await asyncio.to_thread(self.corporate_actions.process_due)
-                    await asyncio.to_thread(self.financial_mgr.process_due)
                 except Exception as exc:
                     now = asyncio.get_running_loop().time()
                     if now - self._last_product_error_log >= self.BACKGROUND_ERROR_LOG_INTERVAL_SECONDS:
@@ -350,15 +345,18 @@ class InazinaBot(discord.Client):
             changed = True
         return self.db.users.get_user(user_id) if changed else user
 
-    async def register_user(self, user_id, nickname, guild_id=None):
+    async def register_user(self, user_id, nickname):
         """Create a citizen only after they accept the registration notice."""
         user_id = str(user_id)
         nickname = str(nickname or user_id)
         role = "admin" if user_id in BOOTSTRAP_ADMIN_IDS else "user"
-        from managers.currency_manager import CurrencyManager
-        currency_mgr=getattr(self,'currency_mgr',None) or CurrencyManager(self.db)
         created = await asyncio.to_thread(
-            currency_mgr.register_user, user_id, nickname, guild_id, role,
+            self.db.users.register_user,
+            user_id,
+            nickname,
+            "낙원",
+            1000000,
+            role,
         )
         if not created:
             await asyncio.to_thread(self.db.users.update_nickname, user_id, nickname)

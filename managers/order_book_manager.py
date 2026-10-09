@@ -3,7 +3,6 @@
 import time
 from database.user_db import TREASURY_USER_ID
 from functions.money import round_money, parse_money
-from functions.quantities import parse_quantity
 from managers.market_session_manager import MarketSessionManager
 
 
@@ -24,12 +23,6 @@ class OrderBookManager:
         user_id = str(user_id)
         asset_code = str(asset_code).strip()
         side = str(side).casefold()
-        flagged = self.db.assets.execute_one('SELECT Fractal FROM market_assets WHERE code=? UNION ALL SELECT Fractal FROM company WHERE company_code=? UNION ALL SELECT Fractal FROM investment WHERE product_code=?',(asset_code,)*3)
-        if flagged and flagged[0] == 1:
-            from managers.fractional_trading_manager import FractionalTradingManager
-            return FractionalTradingManager(self).order(user_id,asset_code,side,quantity,limit_price)
-        try: quantity=parse_quantity(quantity,maximum=self.MAX_QUANTITY)
-        except ValueError as exc: return False,f'❌ {exc}'
         product = self.db.products.execute_one('SELECT product_type,face_value FROM investment WHERE product_code=?',(asset_code,))
         if product and product['product_type']=='els':
             if side!='buy':return False,'❌ ELS는 모집 중 액면 청약만 가능합니다. 중도 매도·환매는 지원하지 않습니다.'
@@ -199,12 +192,6 @@ class OrderBookManager:
             return False, f"❌ 주문 처리 중 오류가 발생했습니다: {exc}"
 
     def _match_incoming_order(self, conn, incoming_order_id, now):
-        row=conn.execute('SELECT asset_code FROM market_orders WHERE order_id=?',(incoming_order_id,)).fetchone()
-        if row:
-            flagged=conn.execute('SELECT Fractal FROM market_assets WHERE code=? UNION ALL SELECT Fractal FROM company WHERE company_code=? UNION ALL SELECT Fractal FROM investment WHERE product_code=?',(row[0],)*3).fetchone()
-            if flagged and flagged[0] == 1:
-                from managers.fractional_trading_manager import FractionalTradingManager
-                return FractionalTradingManager(self).match(conn,incoming_order_id,now)
         if MarketSessionManager(self.db).trading_error(conn=conn, now=now):
             return 0, 0, 0
         fill_count = 0
@@ -306,12 +293,6 @@ class OrderBookManager:
         return fill_count, filled_quantity, traded_value
 
     def _settle_primary_fill(self, conn, buy_order, asset, source, quantity, price, now):
-        from managers.financial_manager import FinancialManager as Finance
-        finance_product=conn.execute("SELECT * FROM investment WHERE product_code=? AND product_type='corporate_bond'",(buy_order['asset_code'],)).fetchone()
-        if source=='company':
-            Finance.ensure(conn,buy_order['asset_code'],now)
-        elif finance_product:
-            Finance.ensure(conn,finance_product['issuer_code'],now)
         buyer_id = str(buy_order["user_id"])
         buyer_account = buy_order["funding_account"]
         improvement = (int(buy_order["limit_price"]) - price) * quantity
@@ -374,16 +355,6 @@ class OrderBookManager:
             cursor = conn.execute("UPDATE users.users SET cash = cash + ? WHERE user_id = ?", (proceeds, TREASURY_USER_ID))
         if cursor.rowcount != 1:
             raise RuntimeError("국고 계정을 찾을 수 없어 발행주식 매수를 취소했습니다.")
-        if source=='company':
-            share=conn.execute('SELECT * FROM company WHERE company_code=?',(buy_order['asset_code'],)).fetchone()
-            Finance.event(conn,buy_order['asset_code'],'최초 발행주식 판매',
-                [('cash' if share['dividend_funding']=='issuer' else 'treasury_receivable',proceeds),('adjustment',-proceeds)],'financing',now)
-        elif finance_product:
-            has_cash=bool(conn.execute('SELECT 1 FROM issuer_cash_accounts WHERE company_code=?',(finance_product['issuer_code'],)).fetchone())
-            principal=int(finance_product['face_value']*quantity)
-            Finance.event(conn,finance_product['issuer_code'],'회사채 발행',
-                [('cash' if has_cash else 'treasury_receivable',proceeds),('bonds',-principal),('bond_discount',principal-proceeds)],'financing',now)
-            Finance.record_bond_discount(conn,finance_product['issuer_code'],finance_product['product_code'],principal-proceeds)
         if source == "company":
             self.user_manager._refresh_max_shareholder(conn, buy_order["asset_code"])
 
@@ -542,10 +513,6 @@ class OrderBookManager:
 
     @staticmethod
     def _credit_reserved_source(conn, user_id, account_number, amount, now):
-        if account_number and str(account_number).startswith('__wallet__:'):
-            from managers.currency_manager import CurrencyManager,SCALE
-            CurrencyManager.change(conn,user_id,str(account_number).split(':',1)[1],amount*SCALE)
-            return
         amount = parse_money(amount, minimum=0)
         if amount <= 0:
             return
@@ -588,10 +555,6 @@ class OrderBookManager:
         )
 
     def cancel_order(self, user_id, order_id):
-        fractional=self.db.assets.execute_one('SELECT fractional_order FROM market_orders WHERE order_id=? AND user_id=?',(order_id,str(user_id)))
-        if fractional and fractional[0] == 1:
-            from managers.fractional_trading_manager import FractionalTradingManager
-            return FractionalTradingManager(self).cancel(user_id,order_id)
         user_id = str(user_id)
         if isinstance(order_id, bool) or not isinstance(order_id, int) or order_id <= 0:
             return False, "❌ 올바른 주문 번호를 입력해주세요."
@@ -631,7 +594,7 @@ class OrderBookManager:
                 )
             message = f"✅ 주문 #{order_id}을 취소했습니다."
             if refund:
-                message += f" 예치금 {refund:,.0f} {order['quote_currency']}를 반환했습니다."
+                message += f" 예치금 {refund:,.0f} NWX를 반환했습니다."
             return True, message
         except Exception as exc:
             return False, f"❌ 주문 취소 중 오류가 발생했습니다: {exc}"

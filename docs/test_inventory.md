@@ -400,9 +400,3 @@
 - `test_warmup_candle_at_left_boundary_does_not_enter_visible_price_scale`
 - `test_preferred_shares_and_dividend_terms_are_visible_without_voting_rights`
 - `test_wallet_displays_preferred_class_and_personal_loan_maturity`
-
-## 회사 재무제표
-
-`tests/test_financial.py`: 회사/우선주 조회, 원장 균형·불변성, 결산, 관리자 권한,
-배당·미지급배당·합병, 월간 영업 중복 방지, 실제 현금 대사, 외화 정밀도,
-소수점·담보 주식수 기반 EPS와 CAPEX/FCF. 재무 변경 때 관련 거래 경로만 함께 실행합니다.

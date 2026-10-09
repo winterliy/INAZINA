@@ -6,7 +6,7 @@ from functions.admin_embeds import admin_help_embed,admin_response,creation_argu
 class AdminHelpView(discord.ui.View):
     PAGES=(('main','📖 메인'),('products','📦 상품 관리'),('citizens','👥 시민 · 잔고'),('market','📈 시장 · 환율 · 사건'),
            ('gamble','🎲 도박 · 세금'),('rates','🏦 금리 · 법정이자'),('lottery','🎟️ 복권'),('national','🏛️ 국가 명의 기능'),
-           ('structured','🧾 우선주 · ELS'),('financial','📒 재무 · 회계'))
+           ('structured','🧾 우선주 · ELS'))
     def __init__(self,bot,owner,national_commands,guild=None):
         super().__init__(timeout=300)
         self.bot,self.owner,self.page=bot,str(owner),0
@@ -33,13 +33,10 @@ class AdminHelpView(discord.ui.View):
                 'citizens':('👥 시민 · 잔고',),'market':('📈 시장 · 환율','📰 사건 설정'),
                 'gamble':('🎲 도박 · 세금',),'rates':('🏦 금리 · 법정이자',),
                 'lottery':('🎟️ 복권 관리',),'national':('🏛️ 국가 명의 일반 기능',),
-                'structured':('🧾 ELS 관리',),'financial':()}[key]
+                'structured':('🧾 ELS 관리',)}[key]
         for field in self.source.fields:
             if any(field.name.startswith(prefix) for prefix in titles):
                 embed.add_field(name=field.name,value=field.value,inline=False)
-        if key=='financial':
-            embed.add_field(name='재무 조회',value='`/재무 [product_id]` · 회사/우선주 보고서 · 기간과 페이지 선택',inline=False)
-            embed.add_field(name='회계 관리 · 인자 없이 DM 창',value='`$재무설정` 월간 영업 설정(기본 OFF)\n`$재무계정` 계정코드 목록\n`$회계분개` 거래 입력(차변 + / 대변 −)\n`$재무정정` 관리자 분개 반대 기록\n`$결산` 종료한 월 마감\n`$재무검증` 대차·현금 대사',inline=False)
         if key in {'products','citizens','rates'}:
             embed.add_field(name='🔢 add / del / modify',value='**`add`** → 현재값 + 입력값\n**`del`** → 현재값 − 입력값\n**`modify`** → 입력값으로 설정(set)\n예: 현재 100에서 `add 20` → 120, `del 20` → 80, `modify 20` → 20',inline=False)
         if key=='products':
@@ -48,10 +45,7 @@ class AdminHelpView(discord.ui.View):
             embed.add_field(name='💡 구성 종목 입력',value='펀드 `components`는 `INZST001:0.5,INZST002:0.5`처럼 입력합니다. 비중 합계는 1입니다.\n추가 JSON은 마지막에 선택적으로 입력하며 기본 인자를 중복 지정하지 않습니다.',inline=False)
             embed.add_field(name='💰 정기배당 · 고정금액 / 비율',value='배당 지원 유형은 끝에 `[배당주기] [주·좌당 금액 또는 비율%]`을 함께 선택 입력합니다. `5`는 주·좌당 고정 5, `5%`는 **지급 시점 주가·상품가격의 5%**입니다. 두 방식 중 하나만 적용합니다. 주기는 초 또는 `1일`·`1주`·`1달`(30일)입니다.\n예: `$상품생성 ST company 회사 게임 1000000 10000 100 INZ 1주 5%`\n변경: `$정기배당수정 ST 1주 5` 또는 `$정기배당수정 ST 1주 5%`\n생성 시 생략하면 배당 없음, 수정 시 생략하면 기존값 유지입니다. 특별배당은 고정 주·좌당 금액으로 실행합니다.',inline=False)
             embed.add_field(name='⏯️ 배당 활성 · 우선주 · 상품수정',value='`$정기배당활성 ST off/on`으로 배당 설정을 보존한 채 끄고 켭니다. 재활성 시 한 주기 뒤 지급하며 중단기간은 소급하지 않습니다. 생성 시 마지막 JSON `{"dividend_is_active":0}`으로 OFF를 지정할 수 있습니다.\n우선주는 `preferred`로 생성하고 보통주회사ID를 입력합니다. `$상품수정`은 생성과 같은 순서이며 가격만 변경하려면 `$상품가격수정`을 사용하세요.',inline=False)
-            embed.add_field(name='🏦 대출연장 설정',value='`loan` 유형 끝의 선택 인자는 `extension_min_credit_score extension_days extension_interest_rate`입니다. 각각 연장 기준 신용점수·연장일수·연장이율(연 %)입니다. 연장일수 0이면 연장이 허용되지 않습니다. 연장이율 생략 또는 0은 원이율을 따릅니다. `/대출연장 id`는 본인, `$대출연장 id`는 국가 명의 대출에 적용됩니다. 연장 신청 시점까지 기존 이율로 정산하고 이후 연장이율을 적용합니다.',inline=False)
-            embed.add_field(name='🧮 소수점 거래',value='지원 상품의 마지막 선택 인자는 `Fractal`입니다. `1=허용`, `0=불허`; 배당 인자를 생략하면 기본 인자 뒤 `1`만 입력할 수 있습니다. 수량은 소수점 3자리까지 지원합니다.\n`$소수점거래관리 [id] [0:on/1:off]`는 **0=켜기, 1=끄기**입니다. 소수점 보유·담보·주문을 정리한 뒤 끌 수 있습니다. 선물·옵션·채권·ELS에는 적용하지 않습니다. 결제는 화폐 최소단위에 맞춰 매수 올림·매도 내림하며, 소수점 보유자도 주주총회 DM 대상입니다.',inline=False)
-        if key=='market':
-            embed.add_field(name='⏸️ 거래만 중지',value='`$시장거래중지`는 가격 변동·사건 진행을 유지하며 전체 매매를 차단합니다. `$시장거래재개`로 매매를 다시 허용합니다.\n`$휴장`·`$장일시정지`는 거래와 가격 변동을 함께 멈추며, 별도로 `$개장`·`$장재개`가 필요합니다. 정지 중에도 주문 취소와 예치금 반환은 가능합니다.',inline=False)
+            embed.add_field(name='🏦 대출연장 설정',value='`loan` 유형 끝의 선택 인자는 `extension_min_credit_score extension_days`입니다. 연장일수 0이면 연장이 허용되지 않습니다.',inline=False)
         if key=='lottery':
             embed.add_field(name='📌 적용 시점',value='복권 가격은 **다음 개설 회차**부터 적용됩니다. 번호 변경은 **현재 미추첨 회차**에 적용되며 추첨 후 관리자 지정 여부를 표시합니다.',inline=False)
         if key=='structured':

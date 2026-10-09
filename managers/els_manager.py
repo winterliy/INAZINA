@@ -3,7 +3,6 @@
 import json
 import math
 import time
-from contextlib import nullcontext
 from decimal import Decimal
 
 from functions.admin_access import resolve_user_role
@@ -167,8 +166,6 @@ class ELSManager:
 
     @staticmethod
     def _reserve_coupon(conn, issuer, coupon, total):
-        from managers.financial_manager import FinancialManager as Finance
-        if issuer != TREASURY_USER_ID:Finance.ensure(conn,issuer)
         if issuer == TREASURY_USER_ID:
             changed = conn.execute("UPDATE users SET cash=cash-? WHERE user_id=? AND cash>=?", (coupon, issuer, coupon))
         else:
@@ -178,13 +175,8 @@ class ELSManager:
         if changed.rowcount != 1:
             raise ValueError("발행자의 최대 쿠폰 예치 재원이 부족합니다.")
 
-        if issuer != TREASURY_USER_ID:
-            Finance.event(conn,issuer,'ELS 예치',[('cash',-coupon),('restricted_cash',total),('els_liability',coupon-total)],'investing',currency='NWX')
-
     @staticmethod
-    def _release_reserve(conn, issuer, locked, refund, principal):
-        from managers.financial_manager import FinancialManager as Finance
-        if issuer != TREASURY_USER_ID:Finance.ensure(conn,issuer)
+    def _release_reserve(conn, issuer, locked, refund):
         if issuer == TREASURY_USER_ID:
             changed = conn.execute("UPDATE users SET cash=cash+? WHERE user_id=? AND cash+?<=?",
                 (refund, issuer, refund, MAX_MONEY))
@@ -194,9 +186,6 @@ class ELSManager:
                 (refund, locked, issuer, locked, refund, MAX_MONEY))
         if changed.rowcount != 1:
             raise ValueError("발행자 예치금 원장을 확인할 수 없어 정산을 보류합니다.")
-
-        if issuer != TREASURY_USER_ID:
-            Finance.event(conn,issuer,'ELS 예치 해제',[('cash',refund),('restricted_cash',-locked),('els_liability',principal),('other_expense',locked-refund-principal)],'investing',currency='NWX')
 
     def subscribe(self, user_id, code, quantity, account_number=None, now=None):
         user_id, code = str(user_id), str(code).strip()
@@ -290,7 +279,7 @@ class ELSManager:
         reserve = conn.execute("SELECT * FROM els_reserves WHERE product_code=?", (code,)).fetchone()
         for subscription in conn.execute("SELECT * FROM els_subscriptions WHERE product_code=? AND status='subscribed'", (code,)).fetchall():
             self._safe_credit(conn, subscription["user_id"], None, subscription["principal"])
-        self._release_reserve(conn, terms["issuer_code"], reserve["locked_amount"], reserve["coupon_amount"], reserve["principal_amount"])
+        self._release_reserve(conn, terms["issuer_code"], reserve["locked_amount"], reserve["coupon_amount"])
         conn.execute("UPDATE els_subscriptions SET status='cancelled' WHERE product_code=?", (code,))
         conn.execute("DELETE FROM user_assets WHERE asset_code=?", (code,))
         conn.execute("UPDATE els_reserves SET locked_amount=0,principal_amount=0,coupon_amount=0 WHERE product_code=?", (code,))
@@ -300,7 +289,7 @@ class ELSManager:
     def observe(self, conn, now, prices=None):
         """Record only real price ticks; never reconstruct a missing historical path."""
         now = int(now)
-        if not MarketSessionManager(self.db).prices_running(conn=conn, now=now):
+        if MarketSessionManager(self.db).trading_error(conn=conn, now=now):
             return []
         recorded = []
         for terms in conn.execute("SELECT * FROM els_terms WHERE state IN ('subscription','active','observation_pending')").fetchall():
@@ -420,15 +409,15 @@ class ELSManager:
             conn.execute("UPDATE els_subscriptions SET status='settled' WHERE subscription_id=?", (subscription["subscription_id"],))
             notifications.append(dict(user_id=subscription["user_id"], product_code=code, net=net, gross=gross, tax=tax,
                                       reason=f"els_{terms['settlement_kind']}"))
-        self._release_reserve(conn, terms["issuer_code"], reserve["locked_amount"], reserve["locked_amount"] - gross_total, reserve["principal_amount"])
+        self._release_reserve(conn, terms["issuer_code"], reserve["locked_amount"], reserve["locked_amount"] - gross_total)
         conn.execute("UPDATE els_reserves SET locked_amount=0,principal_amount=0,coupon_amount=0 WHERE product_code=?", (code,))
         conn.execute("DELETE FROM user_assets WHERE asset_code=?", (code,))
         conn.execute("UPDATE investment SET status='redeemed' WHERE product_code=?", (code,))
         conn.execute("UPDATE els_terms SET state='redeemed',settled_epoch=? WHERE product_code=?", (now, code))
         return notifications
 
-    def get_details(self, code, user_id=None, *, conn=None):
-        with (self.db.readonly() if conn is None else nullcontext(conn)) as conn:
+    def get_details(self, code, user_id=None):
+        with self.db.atomic() as conn:
             row = conn.execute("SELECT t.*,i.name,i.total_supply FROM els_terms t JOIN investment i USING(product_code) WHERE product_code=?", (code,)).fetchone()
             if not row:
                 return None
@@ -456,11 +445,10 @@ class ELSManager:
                     settlements=[dict(value) for value in conn.execute("SELECT * FROM els_settlements WHERE product_code=? AND user_id=? ORDER BY settlement_id", (code, str(user_id))).fetchall()])
             return details
 
-    def get_user_positions(self, user_id, *, conn=None):
-        with (self.db.readonly() if conn is None else nullcontext(conn)) as conn:
-            codes = conn.execute("SELECT DISTINCT product_code FROM els_subscriptions WHERE user_id=? "
-                "AND status IN ('subscribed','issued')", (str(user_id),)).fetchall()
-            return [self.get_details(item["product_code"], user_id, conn=conn) for item in codes]
+    def get_user_positions(self, user_id):
+        codes = self.db.products.execute("SELECT DISTINCT product_code FROM els_subscriptions WHERE user_id=? "
+            "AND status IN ('subscribed','issued')", (str(user_id),))
+        return [self.get_details(item["product_code"], user_id) for item in codes]
 
     @staticmethod
     def ensure_unreferenced(conn, code):

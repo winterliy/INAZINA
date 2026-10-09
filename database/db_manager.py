@@ -1,6 +1,5 @@
 import sqlite3
 import threading
-import time
 from contextlib import contextmanager
 from pathlib import Path
 from .unified import UnifiedConnection, migrate
@@ -52,56 +51,19 @@ class DBManager:
         conn.row_factory = sqlite3.Row # 결과를 딕셔너리 형태로 반환
         return conn
 
-    @staticmethod
-    def _locked(exc):
-        message = str(exc).casefold()
-        return "database is locked" in message or "database table is locked" in message or "database is busy" in message
-
-    @staticmethod
-    @contextmanager
-    def readonly():
-        """A consistent WAL snapshot; never reserve the writer or share its connection."""
-        path = Path(DBManager.database_dir).resolve() / "inazina.db"
-        conn = sqlite3.connect(path.as_uri()+"?mode=ro", uri=True, timeout=30,
-            isolation_level=None, factory=UnifiedConnection)
-        conn.row_factory = sqlite3.Row
-        try:
-            conn.execute("BEGIN")
-            yield conn
-        finally:
-            conn.close()
-
     def execute(self, query, params=()):
-        deadline = time.monotonic() + 90
-        delay = 0.25
-        while True:
-            try:
-                with self.lock:
-                    with self.conn:
-                        cursor = self.conn.cursor()
-                        cursor.execute(query, params)
-                        return cursor.fetchall()
-            except sqlite3.OperationalError as exc:
-                if not self._locked(exc) or time.monotonic() >= deadline:
-                    raise
-                time.sleep(delay)
-                delay = min(delay * 1.5, 5)
+        with self.lock:
+            with self.conn:
+                cursor = self.conn.cursor()
+                cursor.execute(query, params)
+                return cursor.fetchall()
 
     def execute_one(self, query, params=()):
-        deadline = time.monotonic() + 90
-        delay = 0.25
-        while True:
-            try:
-                with self.lock:
-                    with self.conn:
-                        cursor = self.conn.cursor()
-                        cursor.execute(query, params)
-                        return cursor.fetchone()
-            except sqlite3.OperationalError as exc:
-                if not self._locked(exc) or time.monotonic() >= deadline:
-                    raise
-                time.sleep(delay)
-                delay = min(delay * 1.5, 5)
+        with self.lock:
+            with self.conn:
+                cursor = self.conn.cursor()
+                cursor.execute(query, params)
+                return cursor.fetchone()
 
     def commit(self):
         with self.lock:

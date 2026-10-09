@@ -4,8 +4,6 @@ import sqlite3
 import time
 import threading
 from decimal import Decimal, ROUND_HALF_UP
-from functions.quantities import quantity_number
-from functions.performance import log_slow
 from dataclasses import replace
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -103,7 +101,7 @@ class MarketManager:
                 "type": "stock", "status": row["status"],
                 "is_fixed": int(row["is_fixed"] or 0), "source": source,
                 "total_supply": int(row["total_shares"] or 0),
-                "quote_currency":row['quote_currency'], "Fractal":int(row['Fractal']),
+                "quote_currency":row['quote_currency'],
             }
         if source == "investment":
             status = row["status"]
@@ -116,7 +114,7 @@ class MarketManager:
                 "type": row["product_type"], "status": status,
                 "is_fixed": int(row["is_fixed"] or 0), "source": source,
                 "total_supply": int(row["total_supply"] or 0),
-                "quote_currency":row['quote_currency'], "Fractal":int(row['Fractal']),
+                "quote_currency":row['quote_currency'],
                 "maturity_days": int(row["maturity_days"] or 0),
                 "underlying_exchange_id": row["underlying_exchange_id"],
                 "leverage_multiplier": float(row["leverage_multiplier"] or 1),
@@ -149,7 +147,7 @@ class MarketManager:
             "type": asset_type, "status": row["status"],
             "is_fixed": int(row["is_fixed"] or 0), "source": source,
             "total_supply": int(row["total_supply"]) if row["total_supply"] is not None else None,
-            "quote_currency":row['quote_currency'], "Fractal":int(row['Fractal']),
+            "quote_currency":row['quote_currency'],
         }
 
     @staticmethod
@@ -899,12 +897,8 @@ class MarketManager:
                 price = OptionManager.theoretical_price(int(underlying['price']), int(row['strike_price']),
                     max(0, row['expiration_epoch'] - now) / (365 * 86400),
                     float(row['implied_volatility']), row['option_type'], rate)
-            side_name = '콜' if row['option_type'] == 'call' else '풋'
-            quotes[code] = {**dict(row), 'code': code, 'price': int(price),
-                'name': f"{underlying['name']} {side_name} {int(row['strike_price']):,}",
-                'type': 'option', 'is_fixed': 1, 'exchange_id': underlying.get('exchange_id'),
-                'total_supply': int(row['issued_contracts']),
-                'status': 'matured' if row['status']=='active' and row['expiration_epoch']<=now else row['status']}
+            quotes[code] = dict(code=code, price=int(price), type='option', is_fixed=1,
+                status='matured' if row['status']=='active' and row['expiration_epoch']<=now else row['status'])
         return quotes
 
     def _update_linked_products(self, now):
@@ -1187,33 +1181,6 @@ class MarketManager:
         self._prepare_movement_history_read()
         return self.db.assets.get_trade_history(asset_code, since_epoch)
 
-    @log_slow('chart.query')
-    def get_chart_candles(self, code, since_epoch, visible_since, interval, *, index=False):
-        """Read OHLC and visible-range statistics without transferring every tick."""
-        if int(interval) <= 0:
-            raise ValueError('캔들 주기는 0보다 커야 합니다.')
-        self._prepare_movement_history_read()
-        table, key, price = (('market_exchange_index_history', 'exchange_id', 'index_value')
-                             if index else ('market_price_history', 'asset_code', 'price'))
-        with self.db.readonly() as conn:
-            return conn.execute(f"""
-                WITH buckets AS (
-                    SELECT CAST(recorded_epoch / ? AS INTEGER) * ? AS time,
-                           MIN(recorded_epoch) first_epoch, MAX(recorded_epoch) last_epoch,
-                           MIN({price}) low, MAX({price}) high,
-                           SUM(recorded_epoch >= ?) visible_count,
-                           MIN(CASE WHEN recorded_epoch >= ? THEN recorded_epoch END) visible_epoch
-                    FROM {table} WHERE {key}=? AND recorded_epoch>=?
-                    GROUP BY time
-                ) SELECT b.*, o.{price} AS open, c.{price} AS close, v.{price} AS visible_open
-                  FROM buckets b
-                  JOIN {table} o ON o.{key}=? AND o.recorded_epoch=b.first_epoch
-                  JOIN {table} c ON c.{key}=? AND c.recorded_epoch=b.last_epoch
-                  LEFT JOIN {table} v ON v.{key}=? AND v.recorded_epoch=b.visible_epoch
-                  ORDER BY b.time
-                """, (int(interval), int(interval), int(visible_since), int(visible_since),
-                      str(code), int(since_epoch), str(code), str(code), str(code))).fetchall()
-
     def get_exchange_indices(self):
         """List persisted indexes plus active exchanges awaiting their first tick."""
         rows = self.db.assets.execute(
@@ -1288,7 +1255,7 @@ class MarketManager:
             )
             for trade in trades:
                 epoch = int(trade["recorded_epoch"])
-                totals[epoch] = quantity_number(totals.get(epoch, 0) + quantity_number(trade["quantity"] or 0))
+                totals[epoch] = totals.get(epoch, 0) + int(trade["quantity"] or 0)
         return [(epoch, totals[epoch]) for epoch in sorted(totals)]
 
     @staticmethod
@@ -1334,31 +1301,27 @@ class MarketManager:
                 assets.append(asset)
         return sorted(assets, key=lambda item: item["code"])
 
-    @log_slow('market.listings')
     def get_market_assets(self, active_only=False):
-        """Resolve listings in one read snapshot, with bounded SQL query count."""
-        with self.db.readonly() as conn:
-            # Preserve global code collision checks, including nonmarket products
-            # and account numbers, without ten existence queries per listing.
-            duplicate = conn.execute("""
-                WITH codes(code, traded) AS (
-                    SELECT code,1 FROM market_assets UNION ALL
-                    SELECT company_code,1 FROM company UNION ALL
-                    SELECT product_code,1 FROM investment UNION ALL
-                    SELECT product_code,1 FROM treasury_bond_products UNION ALL
-                    SELECT contract_code,1 FROM option_contracts UNION ALL
-                    SELECT product_code,0 FROM saving UNION ALL
-                    SELECT product_code,0 FROM liability UNION ALL
-                    SELECT account_number,0 FROM accounts UNION ALL
-                    SELECT product_code,0 FROM fx_products UNION ALL
-                    SELECT account_number,0 FROM fx_accounts
-                ) SELECT code FROM codes GROUP BY code
-                  HAVING COUNT(*) > 1 AND MAX(traded) = 1 LIMIT 1
-                """).fetchone()
-            if duplicate:
-                raise ValueError(f"코드 `{duplicate['code']}` 중복 등록 — SQL Browser에서 정리해주세요.")
-            assets = [asset for asset in self._batch_quotes(conn, int(time.time())).values()
-                      if not active_only or asset['status'] == 'active']
+        """Return tradable market assets from all supported price tables.
+
+        Investment maturities are resolved through ``get_asset_info`` so the
+        returned status reflects whether an asset has matured.
+        """
+        codes = []
+        for rows in (
+            self.db.assets.execute("SELECT code FROM market_assets"),
+            self.db.companies.execute("SELECT company_code AS code FROM company"),
+            self.db.products.execute("SELECT product_code AS code FROM investment"),
+            self.db.products.execute("SELECT product_code AS code FROM treasury_bond_products"),
+            self.db.assets.execute("SELECT contract_code AS code FROM option_contracts"),
+        ):
+            codes.extend(str(row["code"]) for row in rows if row["code"])
+
+        assets = []
+        for code in dict.fromkeys(codes):
+            asset = self.get_asset_info(code)
+            if asset and (not active_only or asset["status"] == "active"):
+                assets.append(asset)
         return sorted(assets, key=lambda item: (str(item["name"]).casefold(), item["code"]))
 
     def get_tradeable_stocks(self):
@@ -1367,84 +1330,3 @@ class MarketManager:
             asset for asset in self.get_market_assets(active_only=True)
             if str(asset["type"]).strip().casefold() in {"stock", "주식"}
         ]
-
-    def get_realtime_rankings(self, metric, user_id, limit=100, now=None):
-        """Rank today's fills and current quotes in one read-only WAL snapshot."""
-        from fractions import Fraction
-        from managers.currency_manager import CurrencyManager
-
-        if metric not in {'turnover', 'volume', 'gainers', 'losers'}:
-            raise ValueError('지원하지 않는 시장 순위입니다.')
-        now = int(time.time() if now is None else now)
-        _, midnight = self.movement_history.day_boundary(now)
-        limit = min(100, max(0, int(limit)))
-        with self.db.readonly() as conn:
-            quotes = self._batch_quotes(conn, now)
-            metadata = {row['code']: dict(row) for row in conn.execute("""
-                WITH listings AS (
-                    SELECT code, name, quote_currency FROM market_assets
-                    UNION ALL SELECT company_code, name, quote_currency FROM company
-                    UNION ALL SELECT product_code, name, quote_currency FROM investment
-                    UNION ALL SELECT product_code, name, quote_currency FROM treasury_bond_products
-                )
-                SELECT * FROM listings
-                UNION ALL SELECT o.contract_code,
-                    COALESCE(l.name, o.underlying_code) || ' ' ||
-                    CASE o.option_type WHEN 'call' THEN '콜' ELSE '풋' END || ' ' || o.strike_price,
-                    o.quote_currency
-                FROM option_contracts o LEFT JOIN listings l ON l.code=o.underlying_code
-                """)}
-            fills = {row['asset_code']: dict(row) for row in conn.execute("""
-                SELECT asset_code, SUM(quantity) AS volume,
-                    SUM(CAST(price AS REAL) * quantity) AS turnover
-                FROM market_trade_history WHERE recorded_epoch BETWEEN ? AND ?
-                GROUP BY asset_code""", (midnight, now))}
-            openings = {row['asset_code']: int(row['price']) for row in conn.execute("""
-                SELECT h.asset_code, h.price FROM market_price_history h
-                JOIN (SELECT asset_code, MIN(recorded_epoch) AS recorded_epoch
-                      FROM market_price_history WHERE recorded_epoch BETWEEN ? AND ?
-                      GROUP BY asset_code) opening
-                  ON h.asset_code=opening.asset_code AND h.recorded_epoch=opening.recorded_epoch
-                """, (midnight, now))}
-            places = {row['code']: int(row['decimal_places']) for row in conn.execute(
-                'SELECT code, decimal_places FROM currencies')}
-            home = CurrencyManager.home(conn, user_id)
-            rates = {}
-
-            def rate(currency):
-                if currency not in rates:
-                    rates[currency] = CurrencyManager.rate_fraction(conn, currency)
-                return rates[currency]
-
-            ranked = []
-            for code, asset in quotes.items():
-                if asset['status'] != 'active' or asset['type'] == 'els' or asset['price'] <= 0:
-                    continue
-                details = metadata[code]
-                currency = details['quote_currency'] or 'NWX'
-                fill = fills.get(code, {})
-                volume = quantity_number(fill.get('volume', 0))
-                opening = openings.get(code, 0)
-                change = Fraction((asset['price'] - opening) * 100, opening) if opening > 0 else None
-                if metric in {'turnover', 'volume'} and volume <= 0:
-                    continue
-                if metric == 'gainers' and (change is None or change <= 0):
-                    continue
-                if metric == 'losers' and (change is None or change >= 0):
-                    continue
-                turnover = Fraction(str(fill.get('turnover', 0)))
-                if asset['type'] == 'stock_future':
-                    turnover *= max(1, int(asset.get('contract_size') or 1))
-                if metric == 'turnover':
-                    try:
-                        turnover *= rate(currency) / rate(home)
-                    except ValueError:
-                        # A disabled/missing currency cannot supply a comparable valuation.
-                        continue
-                ranked.append(dict(code=code, name=details['name'] or code, price=asset['price'],
-                    quote_currency=currency, decimal_places=places.get(currency, 0),
-                    home_currency=home, home_decimal_places=places.get(home, 0),
-                    volume=volume, turnover=turnover, change_percent=change))
-        key = {'turnover': 'turnover', 'volume': 'volume',
-               'gainers': 'change_percent', 'losers': 'change_percent'}[metric]
-        return sorted(ranked, key=lambda row: (row[key] if metric == 'losers' else -row[key], row['code']))[:limit]

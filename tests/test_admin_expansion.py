@@ -239,15 +239,10 @@ class AdminExpansionTests(unittest.TestCase):
         asyncio.run(run())
 
     def test_halt_commands_and_corporate_registration(self):
-        self.assertTrue({'증자','정기배당수정','특별배당실시','합병','휴장','개장','시장거래중지','시장거래재개','서킷브레이커','사이드카'} <= COMMANDS)
+        self.assertTrue({'증자','정기배당수정','특별배당실시','합병','휴장','개장','서킷브레이커','사이드카'} <= COMMANDS)
         self.command('휴장')
         self.assertEqual(self.db.system.execute_one('SELECT status FROM market_session')[0],'closed')
         self.command('개장')
-        self.command('시장거래중지')
-        state=self.db.system.execute_one('SELECT * FROM market_session')
-        self.assertEqual((state['status'],state['trading_halted']),('open',1))
-        self.command('시장거래재개')
-        self.assertEqual(self.db.system.execute_one('SELECT trading_halted FROM market_session')[0],0)
         self.command('장일시정지')
         self.command('장재개')
         self.command('서킷브레이커','1단계')

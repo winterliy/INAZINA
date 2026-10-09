@@ -1,11 +1,9 @@
 from .db_manager import DBManager
-from .fractional import initialize_fractional
 
 class CompanyDB(DBManager):
     def __init__(self):
         super().__init__("company")
         self._init_db()
-        initialize_fractional(self, 'company', None)
 
     def _init_db(self):
         self.execute('''

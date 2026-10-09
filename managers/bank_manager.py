@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import json
 import math
 import os
 import random
@@ -292,7 +293,7 @@ class BankManager:
                     return False, '❌ 등록된 사용자만 대출을 연장할 수 있습니다.'
                 # Product IDs are accepted as well as the individual loan number;
                 # each user has at most one contract per product.
-                rows = conn.execute("SELECT l.*,p.extension_days,p.extension_min_credit_score,p.interest_rate,p.extension_interest_rate,p.status product_status "
+                rows = conn.execute("SELECT l.*,p.extension_days,p.extension_min_credit_score,p.status product_status "
                     "FROM loans l JOIN liability p ON p.product_code=l.product_code "
                     "WHERE l.user_id=? AND l.status='active' AND "
                     "(CAST(l.loan_id AS TEXT)=? OR l.product_code=?)", (str(user_id),identity,identity)).fetchall()
@@ -314,17 +315,14 @@ class BankManager:
                 eligible=loan['extension_eligible_epoch']
                 if eligible is not None and now < float(eligible):
                     return False, '❌ 이미 연장한 대출입니다. 이전 만기 이후 다시 신청해주세요.'
-                from managers.interest_manager import InterestManager
-                product=conn.execute('SELECT * FROM liability WHERE product_code=?',(loan['product_code'],)).fetchone()
-                InterestManager.settle_loan_rate_boundary(conn,loan,product,now)
-                extension=float(product['extension_interest_rate'] or 0)
-                applied=extension if extension>0 else float(product['interest_rate'])
-                if not math.isfinite(applied) or not 0<=applied<=100:raise ValueError('연장 이자율은 0~100%로 설정해주세요.')
                 after = max(float(before), now)+days*86400
                 conn.execute("UPDATE loans SET maturity_epoch=?,extension_count=extension_count+1,"
                     "last_extended_epoch=?,extension_eligible_epoch=? WHERE loan_id=?",
                     (after,now,max(float(before),now+days*86400),loan['loan_id']))
-            return True, f"✅ 대출 #{loan['loan_id']} 만기를 {days}일 연장했습니다.\n변경 만기: <t:{int(after)}:F> · 적용 연이율: {applied:g}%"
+                conn.execute("INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
+                    (str(user_id),'loan.extend',json.dumps({'loan_id':loan['loan_id'],
+                     'product_code':loan['product_code'],'before':before,'after':after,'days':days}),int(now)))
+            return True, f"✅ 대출 #{loan['loan_id']} 만기를 {days}일 연장했습니다.\n변경 만기: <t:{int(after)}:F>"
         except (TypeError, ValueError, OverflowError) as exc:
             return False, f'❌ 대출연장 설정을 확인해주세요: {exc}'
 

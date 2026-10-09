@@ -8,7 +8,3 @@ __pycache__/
 database/*.db
 database/*.db-shm
 database/*.db-wal
-build/
-*.egg-info/
-managers/_price_math_native*.so
-managers/_price_math_native*.pyd

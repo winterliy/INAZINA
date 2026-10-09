@@ -4,11 +4,10 @@ from discord import app_commands
 import io
 import time
 import uuid
-from functions.performance import log_slow
 
 from database.user_db import TREASURY_USER_ID
 from functions.admin_access import BOOTSTRAP_ADMIN_IDS, resolve_user_role
-from functions.interaction_reliability import discord_request, prepare_response
+from functions.interaction_reliability import retry_discord_request
 from functions.discord_views import (
     AllAssetsView,
     AccountCloseView,
@@ -25,7 +24,6 @@ from functions.discord_views import (
     RegistrationModal,
 )
 from functions.registration import RegistrationRequired
-from functions.quantities import quantity_number
 from managers.investment_manager import FUND_TYPES
 from managers.fx_manager import display_units
 
@@ -42,7 +40,6 @@ class SlashCommandRegistry:
 
     def register(self):
         definitions = (
-            ("설치", "서버 관리자가 INAZINA 관리자에게 서버 설치를 신청합니다", self.request_installation),
             ("등록", "이용 안내를 확인하고 Inazina 봇에 등록합니다", self.self_register),
             ("도움말", "Inazina 명령어 도움말", self.help),
             ("내지갑", "내 국적·현금·일반/외환통장·투자자산·대출을 확인합니다", self.assets),
@@ -50,7 +47,7 @@ class SlashCommandRegistry:
             ("파산신청", "현재 자산 현황과 함께 관리자에게 파산을 신청합니다", self.apply_bankruptcy),
             ("전체자산확인", "모든 시민의 자산 현황을 확인합니다", self.all_assets),
             ("송금", "지갑·일반통장·외환통장 사이에서 송금·환전합니다", self.transfer),
-            ("도박", "게임 화폐를 걸고 도박합니다", self.gamble),
+            ("도박", "NWX를 걸고 도박합니다", self.gamble),
             ("복권구매", "주간 6/45 복권을 구매합니다", self.lottery_buy),
             ("내복권", "내 복권 번호와 당첨·자동 입금 결과를 확인합니다", self.lottery_tickets),
             ("복권결과", "회차별 당첨번호·상금·이월·추첨 검증 자료를 확인합니다", self.lottery_result),
@@ -59,7 +56,7 @@ class SlashCommandRegistry:
             ("옵션작성", "담보를 맡기고 주식 옵션 매도 호가를 작성합니다", self.option_write),
             ("기준금리", "현재 게임 기준금리를 확인합니다", self.base_rate),
             ("법정이자", "현재 게임 법정이자를 확인합니다", self.statutory_rate),
-            ("환전", "통화별 지갑과 통장 잔액을 환전합니다", self.fx_exchange),
+            ("환전", "NWX와 외환통장 또는 외환통장 사이에서 환전합니다", self.fx_exchange),
             ("펀드가입", "일반·인덱스 펀드를 NAV 기준으로 가입합니다", self.subscribe_fund),
             ("펀드환매", "보유 일반·인덱스 펀드를 NAV 기준으로 환매합니다", self.redeem_fund),
             ("선물증거금", "보유 주식 선물 포지션에 증거금을 추가합니다", self.future_margin),
@@ -73,7 +70,6 @@ class SlashCommandRegistry:
             ("대출상환", "상환할 대출과 상환액을 선택합니다", self.repay_loan),
             ("대출연장", "보유 대출 ID의 신용 조건을 확인하여 만기를 연장합니다", self.extend_loan),
             ("검색", "주식·투자·외환·저축·대출 상품을 검색합니다", self.search),
-            ("재무", "회사·우선주 product_id로 재무제표와 재무비율을 확인합니다", self.financial),
             ("그래프", "자산·거래소지수·기준금리·법정이자의 변동 그래프를 확인합니다", self.movement),
             ("주총", "회사 주주총회를 소집하고 주주에게 참석 여부를 묻습니다", self.shareholder_meeting),
         )
@@ -85,62 +81,8 @@ class SlashCommandRegistry:
         self.commands["송금"].autocomplete("수신자")(self.recipient_autocomplete)
         self.commands["송금"].autocomplete("출금계좌")(self.source_account_autocomplete)
         self.commands["주총"].autocomplete("주식코드")(self.company_autocomplete)
-        self.commands["설치"].autocomplete("화폐")(self.currency_autocomplete)
         for command,argument in (('환전','출금통화'),('환전','입금통화')):
             self.commands[command].autocomplete(argument)(self.currency_autocomplete)
-
-    @app_commands.guild_only()
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.describe(국명="등록할 국가 이름", 화폐="기본화폐 코드·약어 (예: NWX, USD)")
-    async def request_installation(self, interaction: discord.Interaction, 국명: str, 화폐: str):
-        guild=interaction.guild
-        permissions=getattr(interaction.user,'guild_permissions',None)
-        if guild is None:
-            return await self._reply(interaction,content='❌ /설치는 설치를 신청할 서버에서 실행해주세요.')
-        if not (str(getattr(guild,'owner_id',''))==str(interaction.user.id) or getattr(permissions,'administrator',False)):
-            return await self._reply(interaction,content='❌ 이 서버의 관리자만 설치를 신청할 수 있습니다.')
-        country,currency=국명.strip(),화폐.strip().upper()
-        if not 1<=len(country)<=100 or not 1<=len(currency)<=32 or any(char in country+currency for char in ('\n','\r','\x00','`')):
-            return await self._reply(interaction,content='❌ 국명은 1~100자, 화폐는 1~32자로 입력해주세요. 줄바꿈과 백틱은 사용할 수 없습니다.')
-        # Installation precedes citizen registration; no INAZINA citizen role is required.
-        if not interaction.response.is_done():
-            await interaction.response.defer(ephemeral=True,thinking=True)
-        try:
-            rows=await asyncio.to_thread(self.bot.db.users.execute,'SELECT user_id,role FROM users')
-            known=await asyncio.to_thread(self.bot.db.fx.execute,
-                "SELECT code,name FROM currencies WHERE status='active'")
-        except Exception:
-            return await self._reply(interaction,content='❌ 관리자·화폐 정보를 조회하지 못해 설치 신청을 전달하지 않았습니다. 잠시 후 다시 시도해주세요.')
-        named=[row['code'] for row in known if str(row['name']).upper()==currency]
-        if currency not in {row['code'] for row in known} and len(named)==1:
-            currency=named[0]
-        recipients={str(row['user_id']) for row in rows if str(row['user_id']).isdecimal() and resolve_user_role(row['user_id'],row)=='admin'}
-        recipients.update(BOOTSTRAP_ADMIN_IDS)
-        import shlex
-        approval=f'$서버설치 {guild.id} {shlex.quote(country)} {shlex.quote(currency)}'
-        embed=discord.Embed(title='📨 INAZINA 서버 설치 신청',color=discord.Color.blue())
-        embed.add_field(name='🏠 발신 서버',value=discord.utils.escape_markdown(str(guild.name))[:100],inline=False)
-        embed.add_field(name='🆔 서버 ID',value=f'```{guild.id}```',inline=False)
-        embed.add_field(name='🏳️ 국명',value=discord.utils.escape_markdown(country),inline=True)
-        embed.add_field(name='💱 기본화폐',value=discord.utils.escape_markdown(currency),inline=True)
-        embed.add_field(name='👤 신청자',value=f"{discord.utils.escape_markdown(str(getattr(interaction.user,'display_name',interaction.user.id)))[:100]} · `{interaction.user.id}`",inline=False)
-        embed.add_field(name='🛠️ 설치 승인 명령어',value=f'```{approval}```',inline=False)
-        embed.set_footer(text='신청 접수 단계 · 서버 설정은 관리자가 $서버설치를 실행할 때 적용됩니다.')
-        sent=failed=0
-        for admin_id in sorted(recipients):
-            try:
-                recipient=self.bot.get_user(int(admin_id))
-                if recipient is None:recipient=await self.bot.fetch_user(int(admin_id))
-                await recipient.send(embed=embed,allowed_mentions=discord.AllowedMentions.none())
-                sent+=1
-            except (discord.HTTPException,ValueError,TypeError):
-                failed+=1
-        if sent:
-            message=f'✅ 설치 신청을 INAZINA 관리자 {sent}명에게 DM으로 전달했습니다. 관리자 승인 후 등록할 수 있습니다.'
-            if failed:message+=f' (DM 전달 실패 {failed}명)'
-        else:
-            message='❌ INAZINA 관리자에게 설치 신청 DM을 전달하지 못했습니다. 잠시 후 다시 시도해주세요.'
-        await self._reply(interaction,content=message)
 
     async def currency_autocomplete(self, interaction, current):
         rows = self.bot.db.fx.execute("SELECT code,name FROM currencies WHERE status='active' ORDER BY code")
@@ -221,12 +163,12 @@ class SlashCommandRegistry:
 
 
 
-    async def subscribe_fund(self, interaction: discord.Interaction, 펀드: str, 좌수: str):
+    async def subscribe_fund(self, interaction: discord.Interaction, 펀드: str, 좌수: app_commands.Range[int, 1, MAX_DISCORD_INTEGER]):
         user_id, _, _ = await self._prepare(interaction)
         success, message = await asyncio.to_thread(self.bot.investment_mgr.trade_fund, user_id, 펀드, 좌수)
         await self._reply(interaction, embed=self._result_embed("펀드 가입", message, success))
 
-    async def redeem_fund(self, interaction: discord.Interaction, 펀드: str, 좌수: str):
+    async def redeem_fund(self, interaction: discord.Interaction, 펀드: str, 좌수: app_commands.Range[int, 1, MAX_DISCORD_INTEGER]):
         user_id, _, _ = await self._prepare(interaction)
         success, message = await asyncio.to_thread(self.bot.investment_mgr.trade_fund, user_id, 펀드, 좌수, True)
         await self._reply(interaction, embed=self._result_embed("펀드 환매", message, success))
@@ -241,8 +183,8 @@ class SlashCommandRegistry:
         # Most commands complete well inside Discord's response deadline. Avoid
         # a defer + follow-up round trip unless the caller performs heavy work.
         if defer and not interaction.response.is_done():
-            await discord_request(
-                lambda: interaction.response.defer(ephemeral=True, thinking=True), stage='ack'
+            await retry_discord_request(
+                lambda: interaction.response.defer(ephemeral=True, thinking=True)
             )
         user = interaction.user
         user_id = str(user.id)
@@ -255,7 +197,7 @@ class SlashCommandRegistry:
         user_data = (
             ensured_user
             if hasattr(ensured_user, "keys")
-            else await asyncio.to_thread(self.bot.db.users.get_user,user_id)
+            else self.bot.db.users.get_user(user_id)
         )
         command_name = getattr(getattr(interaction, "command", None), "name", "")
         try:
@@ -272,21 +214,10 @@ class SlashCommandRegistry:
                 content="⛔ 먼저 `/등록`을 실행해 이용 안내를 확인하고 등록해주세요.",
             )
             raise RegistrationRequired()
-        extras=getattr(interaction,'extras',None)
-        if isinstance(extras,dict) and command_name not in {'도움말','환전','송금','그래프','검색','호가','옵션체인','내지갑'}:
-            from functions.currency_display import MoneyDisplay
-            extras['money_display']=await asyncio.to_thread(MoneyDisplay,self.bot.db,user_id)
         return user_id, user_data, resolve_user_role(user_id, user_data)
 
     @staticmethod
     async def _reply(interaction, *, content=None, embed=None, view=None, file=None, ephemeral=True):
-        display=(getattr(interaction,'extras',None) or {}).get('money_display')
-        command=getattr(getattr(interaction,'command',None),'name','')
-        # Exchange legs and market quotes must keep their actual denominations.
-        if display and command not in {'환전','송금','그래프','검색','호가','옵션체인','내지갑'}:
-            content=display.text(content)
-            embed=display.embed(embed)
-            if view is not None:view.money_display=display
         response_options = {"ephemeral": ephemeral}
         file_payload = None
         for name, value in (
@@ -314,21 +245,14 @@ class SlashCommandRegistry:
                 )
             return await send(**options)
 
-        extras = getattr(interaction, 'extras', None)
-        deferred = (getattr(interaction.response, 'type', None) == discord.InteractionResponseType.deferred_channel_message
-                    and isinstance(extras, dict) and not extras.get('response_delivered'))
-        if deferred:
-            options = {key: value for key, value in response_options.items() if key not in {'ephemeral', 'file'}}
-            if file_payload is not None:
-                options['attachments'] = [discord.File(io.BytesIO(file_payload), filename=file.filename)]
-            await discord_request(lambda: interaction.edit_original_response(**options), stage='complete')
-            extras['response_delivered'] = True
-        elif interaction.response.is_done():
-            await discord_request(lambda: send_response(interaction.followup.send), stage='followup')
+        if interaction.response.is_done():
+            await retry_discord_request(
+                lambda: send_response(interaction.followup.send)
+            )
         else:
-            await discord_request(lambda: send_response(interaction.response.send_message))
-        if file_payload is not None and isinstance(view, PriceMovementView):
-            view.remember_uploaded_chart(file_payload)
+            await retry_discord_request(
+                lambda: send_response(interaction.response.send_message)
+            )
 
     @staticmethod
     def _result_embed(title, message, success):
@@ -372,7 +296,6 @@ class SlashCommandRegistry:
                 user_id,
                 nickname,
                 notice_text,
-                getattr(interaction, 'guild_id', None),
             )
         except (OSError, UnicodeError, ValueError) as exc:
             print(f"[Registration Notice Error] {type(exc).__name__}: {exc}")
@@ -389,19 +312,8 @@ class SlashCommandRegistry:
 
     async def assets(self, interaction: discord.Interaction):
         user_id, user_data, _role = await self._prepare(interaction)
-        async def prepare():
-            display_name = getattr(interaction.user, "display_name", None) or interaction.user.name
-            info = await asyncio.to_thread(self.bot.user_mgr.get_total_assets, user_id)
-            summary, sections = await asyncio.to_thread(self._wallet_content, user_id, user_data, display_name, info)
-            return user_id, info, summary, sections
-        (user_id, info, summary, sections), _ = await prepare_response(interaction, prepare, thinking=True)
-        from functions.wallet_views import WalletCategoryView
-        view = WalletCategoryView(user_id, summary, sections, info.get('option_short_liability', 0))
-        await self._reply(interaction, embed=view.build_embed(), view=view)
-
-    @log_slow('wallet.format')
-    def _wallet_content(self, user_id, user_data, display_name, info):
-        """Prepare wallet text off the Discord event loop; Views stay on it."""
+        display_name = getattr(interaction.user, "display_name", None) or interaction.user.name
+        info = await asyncio.to_thread(self.bot.user_mgr.get_total_assets, user_id)
         embed = discord.Embed(title=f"💰 {display_name}님의 자산 현황", color=discord.Color.gold())
         embed.description = f"국적: **{str(info.get('nationality') or user_data['nationality'])[:100]}** · 기본 통화: **{info.get('national_currency','NWX')}**"
         embed.add_field(name="💵 현금", value=f"```{info['cash']:,.0f} NWX```", inline=True)
@@ -434,15 +346,16 @@ class SlashCommandRegistry:
         except (TypeError, ValueError, OverflowError):
             credit_score = 0
         embed.add_field(name="💳 신용 점수", value=f"```{credit_score:,}점```", inline=True)
-        from functions.currency_display import native_summary
-        native_summary(embed,info)
-        summary = embed
+        # Freeze the complete financial summary before adding category details.
+        summary = discord.Embed.from_dict(embed.to_dict())
         account_lines = [
             f"• {item['product_name']} ({item['number']}): {item['balance']:,.0f} NWX"
             for item in info["accounts"]
         ]
         account_lines.extend(f"• 외환통장 {str(item.get('product_name') or item['product_code'])[:60]} (`{item['account_number']}`): "
-            f"{display_units(item['balance_units'],item.get('decimal_places'))} {item['currency_code']} · 평가 {item['value_nwx']:,} NWX" for item in info.get('fx_accounts',[]))
+            f"{display_units(item['balance_units'])} {item['currency_code']} · 평가 {item['value_nwx']:,} NWX" for item in info.get('fx_accounts',[]))
+        accounts = "\n".join(account_lines)
+        embed.add_field(name="🏦 보유 통장", value=accounts[:1024] or "개설된 통장이 없습니다.", inline=False)
         position_lines = []
         for item in info["stocks"]:
             if item.get("type") == "stock_future":
@@ -450,7 +363,8 @@ class SlashCommandRegistry:
                     f"기준가 {item['price']:,} NWX · 증거금·손익 평가 {item['value']:,} NWX")
                 continue
             is_stock = self.bot.market_mgr.is_stock_type(item.get("type"))
-            preferred_note = ' · 우선주' if item.get('share_class') == 'preferred' else ''
+            company = self.bot.db.companies.get_company(item['code']) if is_stock else None
+            preferred_note = ' · 우선주' if company and 'share_class' in company.keys() and company['share_class'] == 'preferred' else ''
             unit = "계약" if item.get("type") == "option" else "주" if is_stock else "개"
             price_text = self.bot.market_mgr.format_price(item["price"], item.get("type"))
             risk = (
@@ -466,6 +380,7 @@ class SlashCommandRegistry:
                 f"• {item['name']} ({item['code']}){preferred_note}: {item['qty']:,}{unit} × "
                 f"{price_text} {item.get('quote_currency','NWX')} = {item['value']:,.0f} NWX{lock_note}{risk}"
             )
+        positions = "\n".join(position_lines)
         bond_lines = [
             f"• {item['name']} ({item['product_code']}): 액면 {item['principal']:,} NWX · "
             f"{item['quantity']:,}매 · 시장가 {item['market_price']:,} NWX/매 · "
@@ -476,21 +391,26 @@ class SlashCommandRegistry:
             + (" · ⚠️ 위험 알림: 100 NWX 이하" if item["market_price"] <= 100 else "")
             for item in info["bonds"]
         ]
+        embed.add_field(
+            name="📦 보유 투자자산 (주식·상품)",
+            value=positions[:1024] or "보유 중인 주식·투자상품이 없습니다.",
+            inline=False,
+        )
+        embed.add_field(
+            name="🏛️ 보유 국채 (투자자산 합계에 포함)",
+            value="\n".join(bond_lines)[:1024] or "보유 중인 미만기 국채가 없습니다.",
+            inline=False,
+        )
         written_lines = [f"• {item['name']} (`{item['contract_code']}`) · 작성 체결 {item['outstanding_contracts']:,}계약 · 미체결 {item['offered']:,}계약 · "
             f"담보 {item['collateral_quantity']:,}주 / {item['collateral_cash']:,} NWX · 만기 <t:{item['expiration_epoch']}:D>"
             for item in info.get('written_options',[])]
+        embed.add_field(name='📄 작성 옵션',value='\n'.join(written_lines)[:1024] or '작성 중인 옵션이 없습니다.',inline=False)
         from functions.wallet_views import WalletCategoryView, els_position_lines, preferred_claim_lines
-        from functions.currency_display import wallet_lines
-        sections={'cash':wallet_lines(info),'accounts':account_lines[:len(info['accounts'])],
+        sections={'accounts':account_lines[:len(info['accounts'])],
                   'fx_accounts':account_lines[len(info['accounts']):],
                   'treasury_bond':bond_lines,'written':written_lines,
                   'els':els_position_lines(info.get('els_positions', [])),
                   'preferred_claims':preferred_claim_lines(info.get('preferred_dividend_claims', []))}
-        home=info['national_currency']
-        bank_lines=account_lines[:len(info['accounts'])]
-        fx_lines=account_lines[len(info['accounts']):]
-        sections['accounts']=[line for item,line in zip(info['accounts'],bank_lines) if item['quote_currency']==home]+[line for item,line in zip(info.get('fx_accounts',[]),fx_lines) if item['currency_code']==home]
-        sections['fx_accounts']=[line for item,line in zip(info['accounts'],bank_lines) if item['quote_currency']!=home]+[line for item,line in zip(info.get('fx_accounts',[]),fx_lines) if item['currency_code']!=home]
         for item,line in zip(info['stocks'],position_lines):
             kind=str(item.get('type','')).casefold()
             if kind == 'els':
@@ -501,17 +421,12 @@ class SlashCommandRegistry:
         for item in info.get('written_options',[]):
             if item['collateral_cash']:
                 sections.setdefault('collateral',[]).append(f"• 풋 현금담보 · {item['contract_code']} · {item['collateral_cash']:,} NWX · 계약 만기까지 잠금")
-        with self.bot.db.readonly() as conn:
-            loans=conn.execute(
-                "SELECT l.loan_id,l.product_code,l.principal,l.outstanding_balance,l.maturity_epoch,p.name FROM loans l LEFT JOIN liability p ON p.product_code=l.product_code WHERE l.user_id=? AND l.status='active' ORDER BY l.loan_id",(user_id,)).fetchall()
+        loans=await asyncio.to_thread(self.bot.db.accounts.execute,
+            "SELECT l.loan_id,l.product_code,l.principal,l.outstanding_balance,l.maturity_epoch,p.name FROM loans l LEFT JOIN liability p ON p.product_code=l.product_code WHERE l.user_id=? AND l.status='active' ORDER BY l.loan_id",(user_id,))
         sections['loans']=[f"• {row['name'] or row['product_code']} ({row['product_code']}) · 대출 #{row['loan_id']} · 원금 {row['principal']:,} NWX · 남은 부채 {row['outstanding_balance']:,} NWX"
                            +(f" · 만기 <t:{int(row['maturity_epoch'])}:D> · /대출연장 id:{row['loan_id']}" if row['maturity_epoch'] else '') for row in loans]
-        from functions.currency_display import MoneyDisplay
-        display=MoneyDisplay(self.bot.db,user_id)
-        sections={key:[display.text(line) if key not in {'cash','fx_accounts'} else
-            (display.text(line,relative=False).split(' · 평가 ',1)[0]+' · 평가 '+display.text(line.split(' · 평가 ',1)[1]) if key=='fx_accounts' and ' · 평가 ' in line else display.text(line,relative=False))
-            for line in lines] for key,lines in sections.items()}
-        return summary, sections
+        view=WalletCategoryView(user_id,summary,sections,info.get('option_short_liability',0))
+        await self._reply(interaction,embed=view.build_embed(),view=view)
 
     async def apply_rehabilitation(self, interaction: discord.Interaction):
         await self._submit_financial_relief_request(interaction, "회생")
@@ -688,7 +603,7 @@ class SlashCommandRegistry:
         self,
         interaction: discord.Interaction,
         자산: str,
-        수량: str,
+        수량: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
         지정가: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
     ):
         user_id, _user_data, _role = await self._prepare(interaction)
@@ -701,7 +616,7 @@ class SlashCommandRegistry:
         self,
         interaction: discord.Interaction,
         자산: str,
-        수량: str,
+        수량: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
         지정가: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
     ):
         user_id, _user_data, _role = await self._prepare(interaction)
@@ -752,7 +667,7 @@ class SlashCommandRegistry:
                 (자산, 자산),
             )
             primary_quantity = max(
-                0, int(asset["total_supply"]) - quantity_number(issued["quantity"] or 0)
+                0, int(asset["total_supply"]) - int(issued["quantity"] or 0)
             )
             if primary_quantity:
                 book["asks"].append({
@@ -886,15 +801,10 @@ class SlashCommandRegistry:
             return []
         current = current.strip().casefold()
         options = []
-        from managers.currency_manager import CurrencyManager
-        try:
-            wallets=CurrencyManager(self.bot.db).wallets(user_id)
-        except ValueError:
-            return []
-        for row in sorted(wallets,key=lambda r:r['is_foreign']):
-            code=row['currency_code']; token='__wallet__:'+code
-            if not current or current in code.casefold() or current in '지갑' or current in token:
-                options.append(app_commands.Choice(name=f"내 지갑 · {display_units(row['balance_units'],row.get('decimal_places'))} {code} · {'외환' if row['is_foreign'] else '기본화폐'}"[:100],value=token))
+        wallet_balance = float(user["cash"] or 0) if user else 0
+        wallet_label = f"내 지갑 · {wallet_balance:,.0f} NWX"
+        if not current or current in "지갑" or current in "__wallet__":
+            options.append(app_commands.Choice(name=wallet_label[:100], value="__wallet__"))
         for row in accounts:
             number = str(row["account_number"])
             code = str(row["product_code"])
@@ -1007,29 +917,13 @@ class SlashCommandRegistry:
 
     async def search(self, interaction: discord.Interaction):
         user_id, _user_data, _role = await self._prepare(interaction)
-        async def prepare():
-            view = InfoPanelView(self.bot, user_id)
-            return view, await asyncio.to_thread(view.build_embed)
+        await asyncio.to_thread(self.bot.interest_mgr.process_user_interests, user_id)
+        view = InfoPanelView(self.bot, user_id)
         try:
-            (view, embed), _ = await prepare_response(interaction, prepare, thinking=True)
-            await self._reply(interaction, embed=embed, view=view)
+            await self._reply(interaction, embed=view.build_embed(), view=view)
         except ValueError as exc:
             await self._reply(interaction, content=f"❌ 정보 목록을 불러오지 못했습니다: {exc}")
 
-
-    @app_commands.describe(product_id="회사 주식 또는 우선주 종목 코드")
-    async def financial(self, interaction: discord.Interaction, product_id: str):
-        user_id, _, _ = await self._prepare(interaction, defer=True)
-        from managers.financial_manager import FinancialManager
-        from functions.financial_views import FinancialReportView
-        manager = FinancialManager(self.bot.db)
-        try:
-            report = await asyncio.to_thread(manager.report, product_id.strip())
-            periods = await asyncio.to_thread(manager.periods, product_id.strip())
-            view = FinancialReportView(self.bot.db, user_id, report, periods)
-            await self._reply(interaction, embed=view.build_embed(), view=view)
-        except ValueError as exc:
-            await self._reply(interaction, content=f"❌ {exc}")
 
     async def movement(self, interaction: discord.Interaction, 종목: str):
         자산 = 종목.strip()

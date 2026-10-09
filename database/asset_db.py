@@ -1,12 +1,10 @@
 from .db_manager import DBManager
-from .fractional import initialize_fractional
 
 
 class AssetDB(DBManager):
     def __init__(self):
         super().__init__("assets")
         self._init_db()
-        initialize_fractional(self, 'market_assets', 'type')
 
     def _init_db(self):
         self.execute("""CREATE TABLE IF NOT EXISTS corporate_actions (

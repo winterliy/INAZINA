@@ -5,15 +5,12 @@ import time
 from datetime import datetime
 
 from functions.price_chart import _Canvas
-from functions.performance import log_slow
 from functions.technical_indicators import build_candles, candle_interval, calculate_indicators, KST
 
 
-@log_slow('chart.draw')
 def render_chart(points, period_seconds, current_price=None, width=960, height=500,
                  integer_prices=False, volumes=None, upper_indicators=None, lower_indicators=None,
-                 anchor_epoch=None, end_epoch=None, trades=None, candle_seconds=None, horizontal_levels=None,
-                 price_candles=None):
+                 anchor_epoch=None, end_epoch=None, trades=None, candle_seconds=None, horizontal_levels=None):
     background, grid, text = (11, 18, 32), (38, 52, 73), (166, 181, 201)
     rising, falling = (239, 68, 68), (59, 130, 246)
     end = int(time.time() if end_epoch is None else end_epoch)
@@ -26,15 +23,7 @@ def render_chart(points, period_seconds, current_price=None, width=960, height=5
     interval = int(candle_seconds) if candle_seconds is not None else candle_interval(period_seconds)
     if interval <= 0:
         raise ValueError("캔들 주기는 0보다 커야 합니다.")
-    if price_candles is None:
-        candles = build_candles(points, volumes, interval)
-    else:
-        candles = [dict(candle, volume=0) for candle in price_candles]
-        by_time = {candle['time']: candle for candle in candles}
-        for epoch, quantity in volumes or ():
-            candle = by_time.get(int(epoch) // interval * interval)
-            if candle is not None:
-                candle['volume'] += max(0, float(quantity))
+    candles = build_candles(points, volumes, interval)
     upper_data, lower_data = calculate_indicators(candles, upper, lower, anchor_epoch)
     visible = [(i, candle) for i, candle in enumerate(candles) if start < candle["time"] + interval and candle["time"] <= end]
     # Visible-range high/low; preceding candles are only indicator warm-up.

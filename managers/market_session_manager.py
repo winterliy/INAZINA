@@ -1,5 +1,6 @@
 """Persisted global trading/price halts, with restart-safe automatic reopening."""
 
+import json
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -10,8 +11,7 @@ class MarketSessionManager:
     CIRCUIT_SECONDS = {1: 1200, 2: 1200}
     KST = ZoneInfo("Asia/Seoul")
     LABELS = {"close": "휴장", "open": "개장", "pause": "장 일시정지",
-              "resume": "장 재개", "circuit": "서킷브레이커", "sidecar": "사이드카",
-              "trade_stop": "시장 거래 중지", "trade_resume": "시장 거래 재개"}
+              "resume": "장 재개", "circuit": "서킷브레이커", "sidecar": "사이드카"}
 
     def __init__(self, db):
         self.db = db
@@ -66,6 +66,10 @@ class MarketSessionManager:
         if (state["status"] != "open" and state["resume_epoch"] is not None
                 and int(state["resume_epoch"]) <= now):
             cls._resume(conn, state, int(state["resume_epoch"]))
+            conn.execute("INSERT INTO admin_audit(actor_id, action, payload, recorded_epoch) "
+                         "VALUES ('system', 'market_auto_resume', ?, ?)",
+                         (json.dumps({"reason": state["reason"], "scheduled_epoch": state["resume_epoch"]},
+                                     ensure_ascii=False), now))
             state = cls._row(conn)
         return state
 
@@ -79,8 +83,6 @@ class MarketSessionManager:
     @classmethod
     def error_for_state(cls, state):
         if state["status"] == "open":
-            if state['trading_halted']:
-                return '❌ 시장 거래 중지 상태입니다. $시장거래재개 후 거래할 수 있습니다. 가격 변동은 계속됩니다.'
             return None
         message = f"❌ 시장이 {state['reason'] or '정지'} 상태입니다. 개장·재개 후 거래할 수 있습니다."
         if state["resume_epoch"] is not None:
@@ -90,11 +92,6 @@ class MarketSessionManager:
     def trading_error(self, conn=None, now=None):
         state = self.process_conn(conn, now) if conn is not None else self.process_due(now)
         return self.error_for_state(state)
-
-    def prices_running(self, conn=None, now=None):
-        """Price models and observations continue during a trade-only stop."""
-        state = self.process_conn(conn, now) if conn is not None else self.process_due(now)
-        return state['status'] == 'open'
 
     def control(self, actor_id, action, stage=None, now=None):
         action = str(action).strip().casefold()
@@ -108,26 +105,11 @@ class MarketSessionManager:
             if not role or str(role["role"]).strip().casefold() != "admin":
                 return False, "❌ 관리자 전용 기능입니다."
             state = self.process_conn(conn, now)
-            if action in {'trade_stop', 'trade_resume'}:
-                stopped = int(action == 'trade_stop')
-                conn.execute('UPDATE market_session SET trading_halted=?,updated_epoch=? WHERE session_id=1', (stopped, now))
-                if stopped:
-                    message = '✅ 시장 거래 중지: 전체 매매를 차단했습니다.'
-                    if state['status'] == 'open':
-                        message += ' 가격 변동과 사건 진행은 계속됩니다.'
-                elif state['status'] == 'open':
-                    message = '✅ 시장 거래 재개: 전체 매매를 다시 허용했습니다.'
-                else:
-                    message = '✅ 시장 거래 중지를 해제했습니다. 현재 휴장·장일시정지 상태는 $개장 또는 $장재개로 해제해주세요.'
-                return True, message
             if action in {"open", "resume"}:
                 if state["status"] != "open":
                     self._resume(conn, state, now)
                 else:
-                    message = 'ℹ️ 시장은 이미 개장 상태입니다.'
-                    if state['trading_halted']:
-                        message += ' 매매는 $시장거래재개로 허용해주세요.'
-                    return True, message
+                    return True, "ℹ️ 시장은 이미 개장 상태입니다."
             else:
                 if action in {"circuit", "sidecar"} and state["status"] == "closed":
                     return False, "❌ 휴장 중입니다. 먼저 $개장으로 거래를 재개해주세요."
@@ -151,10 +133,10 @@ class MarketSessionManager:
                     ("closed" if action == "close" else "paused", reason,
                      halt_started, resume, stage if action == "circuit" else None, now))
             current = self._row(conn)
+            conn.execute("INSERT INTO admin_audit(actor_id, action, payload, recorded_epoch) VALUES (?,?,?,?)",
+                         (str(actor_id), f"market_{action}", json.dumps(current, ensure_ascii=False), now))
         label = self.LABELS[action]
         if action in {"open", "resume"}:
-            if current['trading_halted']:
-                return True, f'✅ {label}: 가격 변동을 재개했습니다. 매매는 $시장거래재개로 허용해주세요.'
             return True, f"✅ {label}: 거래와 가격 변동을 재개했습니다."
         deadline = f"\n자동 재개: <t:{int(current['resume_epoch'])}:F>" if current["resume_epoch"] is not None else ""
         return True, f"✅ {current['reason']}: 신규 거래와 가격 변동을 정지했습니다.{deadline}"

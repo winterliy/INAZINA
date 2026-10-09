@@ -49,7 +49,7 @@ def build_candles(points, volumes, interval):
     for epoch, quantity in volumes or ():
         bucket = int(epoch) // interval * interval
         if bucket in buckets:
-            buckets[bucket]["volume"] += max(0, float(quantity))
+            buckets[bucket]["volume"] += max(0, int(quantity))
     return [buckets[key] for key in sorted(buckets)]
 
 
@@ -63,27 +63,7 @@ def rolling(values, period, fn):
 
 
 def sma(values, period):
-    window, total, missing, result = deque(), 0, 0, []
-    for value in values:
-        window.append(value)
-        if value is None: missing += 1
-        else: total += value
-        if len(window) > period:
-            removed = window.popleft()
-            if removed is None: missing -= 1
-            else: total -= removed
-        result.append(total / period if len(window) == period and not missing else None)
-    return result
-
-
-def _std(values):
-    mean = sum(values) / len(values)
-    return math.sqrt(sum((value-mean)**2 for value in values) / len(values))
-
-
-def _mean_deviation(values):
-    mean = sum(values) / len(values)
-    return sum(abs(value-mean) for value in values) / len(values)
+    return rolling(values, period, lambda v: sum(v) / period)
 
 
 def ema(values, period, wilder=False):
@@ -130,26 +110,23 @@ def _series(label, values, index=0, kind="line", levels=()):
 
 def calculate_indicators(candles, upper=(), lower=(), anchor_epoch=None):
     n = len(candles)
-    if not n or (not upper and not lower):
+    if not n:
         return {}, {}
     c = [v["close"] for v in candles]
     h = [v["high"] for v in candles]
     l = [v["low"] for v in candles]
     v = [v["volume"] for v in candles]
     typical = [(a + b + close) / 3 for a, b, close in zip(h, l, c)]
-    upper_keys, lower_keys = set(upper), set(lower)
-    need_bands = bool(upper_keys & {'bollinger'} or lower_keys & {'bb_percent','bb_width'})
-    mid20 = sma(c, 20) if need_bands or upper_keys & {'sma','envelope'} or lower_keys & {'disparity'} else []
-    deviation = rolling(c, 20, _std) if need_bands else []
+    mid20 = sma(c, 20)
+    deviation = rolling(c, 20, lambda x: math.sqrt(sum((a - sum(x) / 20) ** 2 for a in x) / 20))
     bb_hi = [m + 2 * s if m is not None else None for m, s in zip(mid20, deviation)]
     bb_lo = [m - 2 * s if m is not None else None for m, s in zip(mid20, deviation)]
-    hi14, lo14 = (rolling(h, 14, max), rolling(l, 14, min)) if lower_keys & {'stochastic','williams_r'} else ([],[])
-    rsi = strength(c) if lower_keys & {'rsi','stoch_rsi'} else []
-    tr = ([h[0] - l[0]] + [max(h[i] - l[i], abs(h[i] - c[i - 1]), abs(l[i] - c[i - 1])) for i in range(1, n)]
-          if upper_keys & {'supertrend'} or lower_keys & {'adx','dmi'} else [])
+    hi14, lo14 = rolling(h, 14, max), rolling(l, 14, min)
+    rsi = strength(c)
+    tr = [h[0] - l[0]] + [max(h[i] - l[i], abs(h[i] - c[i - 1]), abs(l[i] - c[i - 1])) for i in range(1, n)]
     ad, accumulation = [], 0.0
     intensity = [(2 * close - hi - lo) / (hi - lo) * volume if hi != lo else 0.0
-                 for close, hi, lo, volume in zip(c, h, l, v)] if lower_keys & {'intraday_intensity','chaikin','ad'} else []
+                 for close, hi, lo, volume in zip(c, h, l, v)]
     for amount in intensity:
         accumulation += amount
         ad.append(accumulation)
@@ -163,7 +140,7 @@ def calculate_indicators(candles, upper=(), lower=(), anchor_epoch=None):
                 series = [_series("HIGH", [max(h)] * n), _series("LOW", [min(l)] * n, 1)]
         elif key in ("sma", "ema"):
             fn = sma if key == "sma" else ema
-            series = [_series(f"{key.upper()}{p}", (mid20 if key == 'sma' and p == 20 else fn(c, p)), i) for i, p in enumerate((5, 20, 60))]
+            series = [_series(f"{key.upper()}{p}", fn(c, p), i) for i, p in enumerate((5, 20, 60))]
         elif key == "bollinger":
             series = [_series("BB20", mid20), _series("BB+2", bb_hi, 1), _series("BB-2", bb_lo, 1)]
         elif key == "envelope":
@@ -299,7 +276,7 @@ def calculate_indicators(candles, upper=(), lower=(), anchor_epoch=None):
                 series = [_series("ADX14", ema(dx, 14, True), levels=(25,))]
         elif key == "cci":
             mean = sma(typical, 20)
-            deviation = rolling(typical, 20, _mean_deviation)
+            deviation = rolling(typical, 20, lambda x: sum(abs(a - sum(x) / 20) for a in x) / 20)
             series = [_series("CCI20", ratio(difference(typical, mean), deviation, 1 / .015), levels=(-100, 100))]
         elif key == "macd":
             macd = difference(ema(c, 12), ema(c, 26))

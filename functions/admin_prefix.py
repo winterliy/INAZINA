@@ -1,7 +1,6 @@
 """Hidden $ commands launch owner-checked buttons, then administrator modals."""
 import asyncio
 import json
-from functions.quantities import parse_quantity
 import io
 import logging
 import sqlite3
@@ -206,6 +205,7 @@ class ActionModal(CheckedModal):
             with bot.db.atomic() as conn:
                 bot.admin_control.require(self.owner,conn)
                 conn.execute('UPDATE users SET cash=? WHERE user_id=?',(amount,uid))
+                bot.admin_control._audit(conn,self.owner,'treasury.set',{'amount':amount,'reason':v[1]})
             return f'✅ 국고 현금 {amount:,} NWX'
         elif c=='catalog':
             if v[0]!='기본상품':
@@ -218,7 +218,7 @@ class ActionModal(CheckedModal):
         elif c=='lottery':
             return bot.lottery_mgr.configure(self.owner,json.loads(v[0]))
         elif c in {'매수','매도'}:
-            result = bot.order_book.place_limit_order(uid,v[0],'buy' if c=='매수' else 'sell',v[1],int(v[2]))
+            result = bot.order_book.place_limit_order(uid,v[0],'buy' if c=='매수' else 'sell',int(v[1]),int(v[2]))
         elif c=='주문취소':
             result = bot.order_book.cancel_order(uid,int(v[0]))
         elif c=='호가':
@@ -245,7 +245,7 @@ class ActionModal(CheckedModal):
         elif c=='대출상환':
             result = bot.bank_mgr.repay_loan(uid,v[0],int(v[1]),int(v[2]) if v[2] else None)
         elif c in {'펀드가입','펀드환매'}:
-            result = bot.investment_mgr.trade_fund(uid,v[0],parse_quantity(v[1],fractional=True),c=='펀드환매')
+            result = bot.investment_mgr.trade_fund(uid,v[0],int(v[1]),c=='펀드환매')
         elif c=='선물증거금':
             result = bot.futures_mgr.add_margin(uid,v[0],int(v[1]))
         elif c=='옵션작성':
@@ -271,6 +271,9 @@ class ActionModal(CheckedModal):
             result = f"{c}: 연 {bot.rate_mgr.get_rate('base_rate' if c=='기준금리' else 'statutory_rate'):g}%"
         else:
             raise ValueError('지원하지 않는 국가 기능입니다.')
+        with bot.db.atomic() as conn:
+            # Passwords are intentionally excluded from the audit log.
+            bot.admin_control._audit(conn,self.owner,'national.'+c,{'identity':uid,'result':str(result)[:1000]})
         if isinstance(result,tuple) and len(result)==2 and isinstance(result[0],bool):
             return result[1]
         if isinstance(result,(dict,list)):
@@ -307,6 +310,7 @@ class ActionModal(CheckedModal):
                 failed+=1
         with bot.db.atomic() as conn:
             bot.admin_control.require(self.owner,conn)
+            bot.admin_control._audit(conn,self.owner,'national.주총',{'code':values[0],'sent':sent,'failed':failed})
         await interaction.followup.send(**admin_response(f'✅ 국가 소집 안내 {sent}명 성공 · {failed}명 실패. 참석 회신은 이 창을 연 관리자에게 전달됩니다.','Inazina · $주총'),ephemeral=True)
 
 class MarketSettingsModal(CheckedModal):
@@ -344,20 +348,18 @@ class TreasuryAssetsView(discord.ui.View):
         super().__init__(timeout=300)
         self.bot,self.owner,self.info,self.page = bot,str(owner),info,0
         self.category='main'
-        self.sections={'cash':[],'accounts':[],'fx_accounts':[],'stocks':[],'bonds':[],'written':[],'loans':[],'els':[],'preferred_claims':[]}
-        self.labels={'cash':'💵 통화별 현금','main':'🏛️ 메인','accounts':'🏦 통장','fx_accounts':'💱 외환통장','stocks':'📈 보유 투자상품',
+        self.sections={'accounts':[],'fx_accounts':[],'stocks':[],'bonds':[],'written':[],'loans':[],'els':[],'preferred_claims':[]}
+        self.labels={'main':'🏛️ 메인','accounts':'🏦 통장','fx_accounts':'💱 외환통장','stocks':'📈 보유 투자상품',
                      'bonds':'📜 국채','written':'✍️ 작성 옵션','loans':'💳 대출','els':'🧾 ELS','preferred_claims':'💰 미지급 배당'}
         from functions.wallet_views import els_position_lines,preferred_claim_lines
         self.sections['els']=els_position_lines(info.get('els_positions',[]))
         self.sections['preferred_claims']=preferred_claim_lines(info.get('preferred_dividend_claims',[]))
-        from functions.currency_display import wallet_lines
-        self.sections['cash']=[(f'통화별 현금 {i+1}',line) for i,line in enumerate(wallet_lines(info))]
         self.items = []
         for item in info['accounts']:
-            self.sections['accounts' if item.get('quote_currency','NWX')==info['national_currency'] else 'fx_accounts'].append((f"통장 · {item['product_name']}",f"{item['number']}\n잔액 {item['balance']:,} NWX"))
+            self.sections['accounts'].append((f"통장 · {item['product_name']}",f"{item['number']}\n잔액 {item['balance']:,} NWX"))
         for item in info.get('fx_accounts',[]):
-            self.sections['accounts' if item['currency_code']==info['national_currency'] else 'fx_accounts'].append((f"통장 · {item.get('product_name') or item['product_code']}",
-                f"{item['account_number']}\n잔액 {display_units(item['balance_units'],item.get('decimal_places'))} {item['currency_code']} · 평가 {item['value_nwx']:,} NWX"))
+            self.sections['fx_accounts'].append((f"외환통장 · {item.get('product_name') or item['product_code']}",
+                f"{item['account_number']}\n잔액 {display_units(item['balance_units'])} {item['currency_code']} · 평가 {item['value_nwx']:,} NWX"))
         for item in info['stocks']:
             note=f"옵션담보 잠금 · 매도 불가 · {item['collateral_contract_code']}" if item.get('is_collateral') else f"매도 주문 잠금 {item.get('sell_reserved_qty',0):,}"
             self.sections['stocks'].append((item['name'],f"{item['code']}\n수량 {item['qty']:,} · 기준가 {item['price']:,} {item.get('quote_currency','NWX')}\n평가액 {item['value']:,} NWX · {note}"))
@@ -368,9 +370,6 @@ class TreasuryAssetsView(discord.ui.View):
         for loan in bot.db.accounts.execute("SELECT l.*,p.name FROM loans l JOIN liability p USING(product_code) WHERE l.user_id=? AND l.status='active'",(TREASURY_USER_ID,)):
             maturity=f"<t:{int(loan['maturity_epoch'])}:D>" if loan['maturity_epoch'] else '없음'
             self.sections['loans'].append((f"대출 · {loan['name']}",f"#{loan['loan_id']} · {loan['product_code']}\n잔액 {loan['outstanding_balance']:,} NWX · 만기 {maturity}"))
-        from functions.currency_display import MoneyDisplay
-        display=MoneyDisplay(bot.db,TREASURY_USER_ID)
-        self.sections={key:[(name,display.text(value,relative=key not in {'cash','fx_accounts'})) for name,value in rows] for key,rows in self.sections.items()}
         self.category_select=discord.ui.Select(placeholder='국가 지갑 카테고리',row=0,
             options=[discord.SelectOption(label=label,value=key,default=key=='main') for key,label in self.labels.items()])
         self.category_select.callback=self.select_category
@@ -401,8 +400,6 @@ class TreasuryAssetsView(discord.ui.View):
                     ('총자산','grand_total'),('대출 잔액','loan_total'),('순자산','net_worth')]:
                 sign='−' if key=='option_short_liability' and info.get(key,0) else ''
                 embed.add_field(name=label,value=f"```{sign}{info.get(key,0):,} NWX```",inline=True)
-            from functions.currency_display import native_summary
-            native_summary(embed,info)
             embed.add_field(name='⭐ 신용점수',value=f"```{info.get('credit_score',0):,}점```",inline=True)
         for name,value in self.items[self.page*self.PAGE_SIZE:(self.page+1)*self.PAGE_SIZE]:
             embed.add_field(name=name[:120],value=value[:300],inline=False)
@@ -505,8 +502,7 @@ class AdminPrefixRegistry:
             raw=message.content[1:].strip().split(maxsplit=1)
             command=raw[0] if raw else 'help'
             arguments=raw[1] if len(raw)>1 else ''
-            from functions.financial_views import FINANCIAL_COMMANDS, FinancialAdminView
-            supported=COMMANDS|NATIONAL_COMMANDS|FINANCIAL_COMMANDS|{'help','사건'}
+            supported=COMMANDS|NATIONAL_COMMANDS|{'help','사건'}
             if command not in supported:
                 await self.send_result(message.author,'❌ 알 수 없는 관리자 명령어입니다. $help를 사용해주세요.')
                 return
@@ -517,19 +513,8 @@ class AdminPrefixRegistry:
                 view=AdminHelpView(self.bot,message.author.id,NATIONAL_COMMANDS,message.guild)
                 await session.edit(embed=view.build_embed(),view=view)
                 session = None
-            elif command in FINANCIAL_COMMANDS:
-                if arguments:
-                    raise ValueError(f'${command}은 인자 없이 실행한 뒤 DM 입력창을 이용해주세요.')
-                if command=='재무계정':
-                    from database.financial_db import ACCOUNTS
-                    lines='\n'.join(f'{code}: {name}' for code,(name,_) in ACCOUNTS.items())
-                    await session.edit(embed=admin_embed(lines,'재무 계정 · 차변 양수 / 대변 음수'))
-                else:
-                    view=FinancialAdminView(self.bot.db,message.author.id,command)
-                    await session.edit(embed=admin_embed('아래 버튼에서 회계 입력창을 여세요.',f'Inazina · ${command}'),view=view)
-                session=None
             elif command in COMMANDS:
-                result=await asyncio.to_thread(AdminCommandsManager(self.bot).execute,str(message.author.id),command,arguments,getattr(message.guild,'id',None))
+                result=await asyncio.to_thread(AdminCommandsManager(self.bot).execute,str(message.author.id),command,arguments)
                 response=admin_response(result,f'Inazina · ${command}')
                 if 'file' in response:
                     await self.send_result(message.author,result,command)

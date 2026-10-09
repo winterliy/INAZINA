@@ -71,8 +71,7 @@ class LatestRequestsTests(unittest.TestCase):
         self.assertLessEqual(len(embed),6000)
         self.assertNotIn('주식 외 투자상품',str(embed.to_dict()))
         self.assertTrue(any('ETF' in field.name for field in embed.fields))
-        self.assertTrue(all((field.value.endswith('개') or field.value == '최대 100위 · 10개씩')
-                            and '`' not in field.value for field in embed.fields))
+        self.assertTrue(all(field.value.endswith('개') and '`' not in field.value for field in embed.fields))
 
     def test_unified_account_opening_accepts_foreign_product_code_and_standard_button(self):
         self.seed()
@@ -189,8 +188,7 @@ class LatestRequestsTests(unittest.TestCase):
 
     def test_search_forex_inverts_rates_pages_ten_and_refreshes_quotes(self):
         self.seed()
-        # This case checks NWX-relative quotes; alice's home currency is USD.
-        panel = InfoPanelView(self.bot,'admin')
+        panel = InfoPanelView(self.bot,'alice')
         panel.category = 'forex'
         seen = []
         for page,count in enumerate((10,10,5)):
