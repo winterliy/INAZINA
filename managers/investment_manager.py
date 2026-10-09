@@ -195,6 +195,8 @@ class InvestmentManager:
                     principal = int(holder["quantity"]) * int(product["face_value"])
                     coupon = round_money(principal * float(product["annual_rate"]) / 100 * int(product["maturity_days"]) / 365)
                     payments.append((holder["user_id"], int(holder["quantity"]), principal, coupon))
+                from managers.financial_manager import FinancialManager as Finance
+                Finance.ensure(conn,product['issuer_code'],now)
                 due = sum(p + c for _, _, p, c in payments)
                 cash_account=conn.execute('SELECT 1 FROM issuer_cash_accounts WHERE company_code=?',(product['issuer_code'],)).fetchone()
                 if cash_account:
@@ -205,6 +207,8 @@ class InvestmentManager:
                 if changed.rowcount != 1 and due:
                     conn.execute("UPDATE product.investment SET status = 'defaulted' WHERE product_code = ?", (product["product_code"],))
                     continue
+                Finance.event(conn,product['issuer_code'],'회사채 만기 원리금 상환', [('bonds',sum(p for _,_,p,c in payments)),('interest_expense',sum(c for _,_,p,c in payments)),('cash' if cash_account else 'treasury_receivable',-due)], 'financing',now,key='bond_maturity:'+product['product_code'])
+                Finance.amortize_bond(conn,product['issuer_code'],product['product_code'],now)
                 for user_id, quantity, principal, coupon in payments:
                     tax = self.users._tax(conn, user_id, "corporate_bond_interest", coupon)
                     self.users._credit_source(conn, user_id, None, principal + coupon - tax)

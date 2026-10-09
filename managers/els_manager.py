@@ -167,6 +167,8 @@ class ELSManager:
 
     @staticmethod
     def _reserve_coupon(conn, issuer, coupon, total):
+        from managers.financial_manager import FinancialManager as Finance
+        if issuer != TREASURY_USER_ID:Finance.ensure(conn,issuer)
         if issuer == TREASURY_USER_ID:
             changed = conn.execute("UPDATE users SET cash=cash-? WHERE user_id=? AND cash>=?", (coupon, issuer, coupon))
         else:
@@ -176,8 +178,13 @@ class ELSManager:
         if changed.rowcount != 1:
             raise ValueError("발행자의 최대 쿠폰 예치 재원이 부족합니다.")
 
+        if issuer != TREASURY_USER_ID:
+            Finance.event(conn,issuer,'ELS 예치',[('cash',-coupon),('restricted_cash',total),('els_liability',coupon-total)],'investing',currency='NWX')
+
     @staticmethod
-    def _release_reserve(conn, issuer, locked, refund):
+    def _release_reserve(conn, issuer, locked, refund, principal):
+        from managers.financial_manager import FinancialManager as Finance
+        if issuer != TREASURY_USER_ID:Finance.ensure(conn,issuer)
         if issuer == TREASURY_USER_ID:
             changed = conn.execute("UPDATE users SET cash=cash+? WHERE user_id=? AND cash+?<=?",
                 (refund, issuer, refund, MAX_MONEY))
@@ -187,6 +194,9 @@ class ELSManager:
                 (refund, locked, issuer, locked, refund, MAX_MONEY))
         if changed.rowcount != 1:
             raise ValueError("발행자 예치금 원장을 확인할 수 없어 정산을 보류합니다.")
+
+        if issuer != TREASURY_USER_ID:
+            Finance.event(conn,issuer,'ELS 예치 해제',[('cash',refund),('restricted_cash',-locked),('els_liability',principal),('other_expense',locked-refund-principal)],'investing',currency='NWX')
 
     def subscribe(self, user_id, code, quantity, account_number=None, now=None):
         user_id, code = str(user_id), str(code).strip()
@@ -280,7 +290,7 @@ class ELSManager:
         reserve = conn.execute("SELECT * FROM els_reserves WHERE product_code=?", (code,)).fetchone()
         for subscription in conn.execute("SELECT * FROM els_subscriptions WHERE product_code=? AND status='subscribed'", (code,)).fetchall():
             self._safe_credit(conn, subscription["user_id"], None, subscription["principal"])
-        self._release_reserve(conn, terms["issuer_code"], reserve["locked_amount"], reserve["coupon_amount"])
+        self._release_reserve(conn, terms["issuer_code"], reserve["locked_amount"], reserve["coupon_amount"], reserve["principal_amount"])
         conn.execute("UPDATE els_subscriptions SET status='cancelled' WHERE product_code=?", (code,))
         conn.execute("DELETE FROM user_assets WHERE asset_code=?", (code,))
         conn.execute("UPDATE els_reserves SET locked_amount=0,principal_amount=0,coupon_amount=0 WHERE product_code=?", (code,))
@@ -410,7 +420,7 @@ class ELSManager:
             conn.execute("UPDATE els_subscriptions SET status='settled' WHERE subscription_id=?", (subscription["subscription_id"],))
             notifications.append(dict(user_id=subscription["user_id"], product_code=code, net=net, gross=gross, tax=tax,
                                       reason=f"els_{terms['settlement_kind']}"))
-        self._release_reserve(conn, terms["issuer_code"], reserve["locked_amount"], reserve["locked_amount"] - gross_total)
+        self._release_reserve(conn, terms["issuer_code"], reserve["locked_amount"], reserve["locked_amount"] - gross_total, reserve["principal_amount"])
         conn.execute("UPDATE els_reserves SET locked_amount=0,principal_amount=0,coupon_amount=0 WHERE product_code=?", (code,))
         conn.execute("DELETE FROM user_assets WHERE asset_code=?", (code,))
         conn.execute("UPDATE investment SET status='redeemed' WHERE product_code=?", (code,))

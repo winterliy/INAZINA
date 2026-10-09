@@ -73,6 +73,7 @@ class SlashCommandRegistry:
             ("대출상환", "상환할 대출과 상환액을 선택합니다", self.repay_loan),
             ("대출연장", "보유 대출 ID의 신용 조건을 확인하여 만기를 연장합니다", self.extend_loan),
             ("검색", "주식·투자·외환·저축·대출 상품을 검색합니다", self.search),
+            ("재무", "회사·우선주 product_id로 재무제표와 재무비율을 확인합니다", self.financial),
             ("그래프", "자산·거래소지수·기준금리·법정이자의 변동 그래프를 확인합니다", self.movement),
             ("주총", "회사 주주총회를 소집하고 주주에게 참석 여부를 묻습니다", self.shareholder_meeting),
         )
@@ -1015,6 +1016,20 @@ class SlashCommandRegistry:
         except ValueError as exc:
             await self._reply(interaction, content=f"❌ 정보 목록을 불러오지 못했습니다: {exc}")
 
+
+    @app_commands.describe(product_id="회사 주식 또는 우선주 종목 코드")
+    async def financial(self, interaction: discord.Interaction, product_id: str):
+        user_id, _, _ = await self._prepare(interaction, defer=True)
+        from managers.financial_manager import FinancialManager
+        from functions.financial_views import FinancialReportView
+        manager = FinancialManager(self.bot.db)
+        try:
+            report = await asyncio.to_thread(manager.report, product_id.strip())
+            periods = await asyncio.to_thread(manager.periods, product_id.strip())
+            view = FinancialReportView(self.bot.db, user_id, report, periods)
+            await self._reply(interaction, embed=view.build_embed(), view=view)
+        except ValueError as exc:
+            await self._reply(interaction, content=f"❌ {exc}")
 
     async def movement(self, interaction: discord.Interaction, 종목: str):
         자산 = 종목.strip()

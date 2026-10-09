@@ -1,6 +1,7 @@
 """Opt-in spot/fund trading with exact minor-unit cash and bounded decimal units."""
 import time
 from fractions import Fraction
+from decimal import Decimal
 
 from database.user_db import TREASURY_USER_ID
 from functions.quantities import parse_quantity, quantity_number, quantity_units, fractional_enabled, QUANTITY_SCALE
@@ -229,6 +230,8 @@ class FractionalTradingManager:
                 buyer, seller, price = incoming, None, int(asset['price'])
             else:
                 break
+            from managers.financial_manager import FinancialManager as Finance
+            if not seller and source=='company':Finance.ensure(conn,asset['code'],now)
             spent = self._consume_buyer(conn, buyer, units, price, currency)
             gross = price*units*(SCALE//QUANTITY_SCALE)
             gross = gross//self._quantum(conn,currency)*self._quantum(conn,currency)
@@ -248,6 +251,10 @@ class FractionalTradingManager:
                     raise ValueError('발행 법인의 현금 한도를 초과했습니다.')
             else:
                 self._credit(conn,TREASURY_USER_ID,currency,spent,now=now)
+            if not seller and source=='company':
+                share=conn.execute('SELECT dividend_funding FROM company WHERE company_code=?',(asset['code'],)).fetchone()
+                amount=Decimal(spent)/SCALE
+                Finance.event(conn,asset['code'],'소수점 발행주식 판매',[('cash' if currency=='NWX' and share['dividend_funding']=='issuer' else 'treasury_receivable',amount),('adjustment',-amount)],'financing',now,currency=currency)
             self._add_lot(conn,buyer['user_id'],asset['code'],buyer['funding_account'],units,price)
             self._reduce(conn,buyer,units,currency,now)
             qty = quantity_number(Fraction(units,QUANTITY_SCALE))

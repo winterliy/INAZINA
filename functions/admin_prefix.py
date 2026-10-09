@@ -505,7 +505,8 @@ class AdminPrefixRegistry:
             raw=message.content[1:].strip().split(maxsplit=1)
             command=raw[0] if raw else 'help'
             arguments=raw[1] if len(raw)>1 else ''
-            supported=COMMANDS|NATIONAL_COMMANDS|{'help','사건'}
+            from functions.financial_views import FINANCIAL_COMMANDS, FinancialAdminView
+            supported=COMMANDS|NATIONAL_COMMANDS|FINANCIAL_COMMANDS|{'help','사건'}
             if command not in supported:
                 await self.send_result(message.author,'❌ 알 수 없는 관리자 명령어입니다. $help를 사용해주세요.')
                 return
@@ -516,6 +517,17 @@ class AdminPrefixRegistry:
                 view=AdminHelpView(self.bot,message.author.id,NATIONAL_COMMANDS,message.guild)
                 await session.edit(embed=view.build_embed(),view=view)
                 session = None
+            elif command in FINANCIAL_COMMANDS:
+                if arguments:
+                    raise ValueError(f'${command}은 인자 없이 실행한 뒤 DM 입력창을 이용해주세요.')
+                if command=='재무계정':
+                    from database.financial_db import ACCOUNTS
+                    lines='\n'.join(f'{code}: {name}' for code,(name,_) in ACCOUNTS.items())
+                    await session.edit(embed=admin_embed(lines,'재무 계정 · 차변 양수 / 대변 음수'))
+                else:
+                    view=FinancialAdminView(self.bot.db,message.author.id,command)
+                    await session.edit(embed=admin_embed('아래 버튼에서 회계 입력창을 여세요.',f'Inazina · ${command}'),view=view)
+                session=None
             elif command in COMMANDS:
                 result=await asyncio.to_thread(AdminCommandsManager(self.bot).execute,str(message.author.id),command,arguments,getattr(message.guild,'id',None))
                 response=admin_response(result,f'Inazina · ${command}')

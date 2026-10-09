@@ -6,7 +6,7 @@ from functions.admin_embeds import admin_help_embed,admin_response,creation_argu
 class AdminHelpView(discord.ui.View):
     PAGES=(('main','📖 메인'),('products','📦 상품 관리'),('citizens','👥 시민 · 잔고'),('market','📈 시장 · 환율 · 사건'),
            ('gamble','🎲 도박 · 세금'),('rates','🏦 금리 · 법정이자'),('lottery','🎟️ 복권'),('national','🏛️ 국가 명의 기능'),
-           ('structured','🧾 우선주 · ELS'))
+           ('structured','🧾 우선주 · ELS'),('financial','📒 재무 · 회계'))
     def __init__(self,bot,owner,national_commands,guild=None):
         super().__init__(timeout=300)
         self.bot,self.owner,self.page=bot,str(owner),0
@@ -33,10 +33,13 @@ class AdminHelpView(discord.ui.View):
                 'citizens':('👥 시민 · 잔고',),'market':('📈 시장 · 환율','📰 사건 설정'),
                 'gamble':('🎲 도박 · 세금',),'rates':('🏦 금리 · 법정이자',),
                 'lottery':('🎟️ 복권 관리',),'national':('🏛️ 국가 명의 일반 기능',),
-                'structured':('🧾 ELS 관리',)}[key]
+                'structured':('🧾 ELS 관리',),'financial':()}[key]
         for field in self.source.fields:
             if any(field.name.startswith(prefix) for prefix in titles):
                 embed.add_field(name=field.name,value=field.value,inline=False)
+        if key=='financial':
+            embed.add_field(name='재무 조회',value='`/재무 [product_id]` · 회사/우선주 보고서 · 기간과 페이지 선택',inline=False)
+            embed.add_field(name='회계 관리 · 인자 없이 DM 창',value='`$재무설정` 월간 영업 설정(기본 OFF)\n`$재무계정` 계정코드 목록\n`$회계분개` 거래 입력(차변 + / 대변 −)\n`$재무정정` 관리자 분개 반대 기록\n`$결산` 종료한 월 마감\n`$재무검증` 대차·현금 대사',inline=False)
         if key in {'products','citizens','rates'}:
             embed.add_field(name='🔢 add / del / modify',value='**`add`** → 현재값 + 입력값\n**`del`** → 현재값 − 입력값\n**`modify`** → 입력값으로 설정(set)\n예: 현재 100에서 `add 20` → 120, `del 20` → 80, `modify 20` → 20',inline=False)
         if key=='products':

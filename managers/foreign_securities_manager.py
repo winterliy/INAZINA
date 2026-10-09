@@ -101,9 +101,12 @@ class ForeignSecuritiesManager:
             improvement=(buy['limit_price']-price)*quantity
             if improvement:
                 self.credit_units(conn,buy['user_id'],currency,improvement*SCALE,buy['funding_account'])
+            from managers.financial_manager import FinancialManager as Finance
+            if primary and source=='company':Finance.ensure(conn,asset['code'],now)
             self.add_position(conn,buy['user_id'],asset['code'],buy['funding_account'],quantity,price)
             if primary:
                 self.credit_units(conn,TREASURY_USER_ID,currency,quantity*price*SCALE)
+                if source=='company':Finance.event(conn,asset['code'],'외화 발행주식 판매',[('treasury_receivable',quantity*price),('adjustment',-quantity*price)],'financing',now,currency=currency)
             else:
                 positions=conn.execute('SELECT * FROM user_assets WHERE user_id=? AND asset_code=? ORDER BY holding_id',(sell['user_id'],asset['code'])).fetchall()
                 left,gain = quantity,0

@@ -38,6 +38,9 @@ class InazinaBot(discord.Client):
         
         self.token = token
         self.db = DatabaseManager()
+        from managers.financial_manager import FinancialManager
+        self.financial_mgr = FinancialManager(self.db)
+        self.financial_mgr.initialize()
         self.user_mgr = UserManager(self.db)
         self.order_book = OrderBookManager(self.db, self.user_mgr)
         self.option_mgr = OptionManager(self.db, self.user_mgr)
@@ -178,6 +181,7 @@ class InazinaBot(discord.Client):
                 try:
                     await asyncio.to_thread(self.market_session.process_due)
                     await asyncio.to_thread(self.corporate_actions.process_due)
+                    await asyncio.to_thread(self.financial_mgr.process_due)
                 except Exception as exc:
                     now = asyncio.get_running_loop().time()
                     if now - self._last_product_error_log >= self.BACKGROUND_ERROR_LOG_INTERVAL_SECONDS:

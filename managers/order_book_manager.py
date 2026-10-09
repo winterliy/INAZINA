@@ -306,6 +306,12 @@ class OrderBookManager:
         return fill_count, filled_quantity, traded_value
 
     def _settle_primary_fill(self, conn, buy_order, asset, source, quantity, price, now):
+        from managers.financial_manager import FinancialManager as Finance
+        finance_product=conn.execute("SELECT * FROM investment WHERE product_code=? AND product_type='corporate_bond'",(buy_order['asset_code'],)).fetchone()
+        if source=='company':
+            Finance.ensure(conn,buy_order['asset_code'],now)
+        elif finance_product:
+            Finance.ensure(conn,finance_product['issuer_code'],now)
         buyer_id = str(buy_order["user_id"])
         buyer_account = buy_order["funding_account"]
         improvement = (int(buy_order["limit_price"]) - price) * quantity
@@ -368,6 +374,16 @@ class OrderBookManager:
             cursor = conn.execute("UPDATE users.users SET cash = cash + ? WHERE user_id = ?", (proceeds, TREASURY_USER_ID))
         if cursor.rowcount != 1:
             raise RuntimeError("국고 계정을 찾을 수 없어 발행주식 매수를 취소했습니다.")
+        if source=='company':
+            share=conn.execute('SELECT * FROM company WHERE company_code=?',(buy_order['asset_code'],)).fetchone()
+            Finance.event(conn,buy_order['asset_code'],'최초 발행주식 판매',
+                [('cash' if share['dividend_funding']=='issuer' else 'treasury_receivable',proceeds),('adjustment',-proceeds)],'financing',now)
+        elif finance_product:
+            has_cash=bool(conn.execute('SELECT 1 FROM issuer_cash_accounts WHERE company_code=?',(finance_product['issuer_code'],)).fetchone())
+            principal=int(finance_product['face_value']*quantity)
+            Finance.event(conn,finance_product['issuer_code'],'회사채 발행',
+                [('cash' if has_cash else 'treasury_receivable',proceeds),('bonds',-principal),('bond_discount',principal-proceeds)],'financing',now)
+            Finance.record_bond_discount(conn,finance_product['issuer_code'],finance_product['product_code'],principal-proceeds)
         if source == "company":
             self.user_manager._refresh_max_shareholder(conn, buy_order["asset_code"])
 
