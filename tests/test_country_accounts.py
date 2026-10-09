@@ -85,8 +85,8 @@ class CountryAccountTests(unittest.TestCase):
                 "PRAGMA foreign_key_list(web_auth_credentials)"
             ).fetchall()
             self.assertTrue(any(
-                row["table"] == "users" and row["from"] == "user_id"
-                and row["to"] == "user_id" and row["on_delete"] == "CASCADE"
+                row[2] == "users" and row[3] == "user_id"
+                and row[4] == "user_id" and row[6] == "CASCADE"
                 for row in foreign_keys
             ))
             connection.execute("DELETE FROM users WHERE user_id='Testland'")
