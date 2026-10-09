@@ -111,7 +111,7 @@ export function AuthPanel({ app, onAuthenticated }: { app: "dashboard" | "hts"; 
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : "요청을 처리하지 못했습니다.";
       if (mode === "login" && reason === "account_not_found") {
-        setError("입력한 ID로 계정을 찾지 못했습니다. Discord ID 또는 국가 ID를 확인해주세요.");
+        setError("입력한 ID로 계정을 찾지 못했습니다. HTS ID, Discord ID 또는 국가 ID를 확인해주세요.");
       } else if (mode === "login" && reason === "invalid_credentials") {
         setError("ID 또는 비밀번호가 일치하지 않습니다. 입력한 정보를 확인해주세요.");
       } else if (reason === "account_exists") {

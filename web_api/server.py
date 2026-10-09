@@ -88,6 +88,7 @@ def trading_user_id(user_id):
     with connect_readonly() as connection:
         country_account = connection.execute(
             "SELECT 1 FROM users u JOIN country_currencies c ON c.nationality=u.user_id "
+            "JOIN users t ON t.user_id='__treasury__' AND t.nationality=u.nationality "
             "WHERE u.user_id=? AND u.nationality=u.user_id AND u.status='active'",
             (user_id,),
         ).fetchone()
@@ -159,6 +160,13 @@ def set_hts_login_id(user_id, hts_id, password):
             ).fetchone()
             if not user:
                 raise ValueError("active_user_required")
+            reserved = connection.execute(
+                "SELECT 1 FROM users WHERE lower(user_id)=lower(?) AND user_id<>? "
+                "UNION ALL SELECT 1 FROM country_currencies WHERE lower(nationality)=lower(?) LIMIT 1",
+                (normalized_id, user_id, normalized_id),
+            ).fetchone()
+            if reserved:
+                raise ValueError("hts_id_taken")
             connection.execute(
                 "UPDATE web_auth_credentials SET hts_id=?,updated_epoch=? WHERE user_id=?",
                 (normalized_id, int(time.time()), user_id),
@@ -204,13 +212,14 @@ def create_country_account(actor_id, country_id, password):
                     "SELECT 1 FROM web_auth_credentials WHERE user_id=?", (user_id,),
                 ).fetchone():
                     raise ValueError("country_account_exists")
-                cash = int(existing_user["cash"] or 0)
+                connection.execute("UPDATE users SET cash=0 WHERE user_id=?", (user_id,))
+                cash = 0
             else:
                 connection.execute(
                     "INSERT INTO users(user_id,nickname,nationality,cash,role) VALUES(?,?,?,?, 'user')",
-                    (user_id, f"{country_id} 국가 계정", country_id, 1_000_000),
+                    (user_id, f"{country_id} 국가 계정", country_id, 0),
                 )
-                cash = 1_000_000
+                cash = 0
             connection.execute(
                 "INSERT INTO web_auth_credentials(user_id,salt,password_hash,created_epoch,updated_epoch) "
                 "VALUES(?,?,?,?,?)", (user_id, salt, digest, now, now),
@@ -303,6 +312,31 @@ def authenticate_country_password(country_id, password):
     if not account:
         return None
     return authenticate_password(country_id, password)
+
+
+def authenticate_login_identifier(identifier, password):
+    with connect_db(timeout=5) as connection:
+        ensure_auth_table(connection)
+        connection.row_factory = sqlite3.Row
+        country_account = connection.execute(
+            "SELECT 1 FROM users u JOIN country_currencies c ON c.nationality=u.user_id "
+            "JOIN web_auth_credentials w ON w.user_id=u.user_id "
+            "WHERE u.user_id=? AND u.nationality=? AND u.status='active'",
+            (identifier, identifier),
+        ).fetchone()
+        hts_account = connection.execute(
+            "SELECT user_id FROM web_auth_credentials WHERE hts_id=?", (identifier.lower(),),
+        ).fetchone()
+        discord_account = connection.execute(
+            "SELECT 1 FROM web_auth_credentials WHERE user_id=?", (identifier,),
+        ).fetchone() if identifier.isdecimal() else None
+    if country_account:
+        return authenticate_country_password(identifier, password), True
+    if hts_account:
+        return authenticate_password(hts_account["user_id"], password), True
+    if discord_account:
+        return authenticate_discord_password(identifier, password), True
+    return None, False
 
 
 def instruments(include_inactive=False):
@@ -553,7 +587,11 @@ def admin_users(search):
     term = f"%{search.strip()}%"
     with connect_readonly() as connection:
         rows = connection.execute(
-            "SELECT user_id,nickname,nationality,cash,credit_score,status,role, "
+            "SELECT user_id,nickname,nationality,"
+            "CASE WHEN user_id=nationality AND EXISTS(SELECT 1 FROM country_currencies c "
+            "WHERE c.nationality=users.user_id) THEN COALESCE((SELECT t.cash FROM users t "
+            "WHERE t.user_id='__treasury__' AND t.nationality=users.nationality),cash) "
+            "ELSE cash END AS cash,credit_score,status,role, "
             "CASE WHEN user_id=nationality AND EXISTS(SELECT 1 FROM country_currencies c "
             "WHERE c.nationality=users.user_id) THEN 'country' ELSE 'discord' END AS account_type "
             "FROM users WHERE user_id<>'__treasury__' AND (user_id LIKE ? OR nickname LIKE ?) "
@@ -757,34 +795,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not user_id or len(user_id) > 80:
                     self.send_json(401, {"error": "invalid_credentials"})
                     return
-                with connect_db(timeout=5) as connection:
-                    ensure_auth_table(connection)
-                    connection.row_factory = sqlite3.Row
-                    is_country_account = connection.execute(
-                        "SELECT 1 FROM users u JOIN country_currencies c ON c.nationality=u.user_id "
-                        "JOIN web_auth_credentials w ON w.user_id=u.user_id "
-                        "WHERE u.user_id=? AND u.nationality=? AND u.status='active'",
-                        (user_id, user_id),
-                    ).fetchone()
-                    hts_account = connection.execute(
-                        "SELECT user_id FROM web_auth_credentials WHERE hts_id=?", (user_id.lower(),),
-                    ).fetchone()
-                if is_country_account:
-                    user = authenticate_country_password(user_id, payload.get("password"))
-                elif hts_account:
-                    user = authenticate_password(hts_account["user_id"], payload.get("password"))
-                elif user_id.isdecimal():
-                    with connect_db(timeout=5) as connection:
-                        ensure_auth_table(connection)
-                        connection.row_factory = sqlite3.Row
-                        has_account = connection.execute(
-                            "SELECT 1 FROM web_auth_credentials WHERE user_id=?", (user_id,),
-                        ).fetchone()
-                    if not has_account:
-                        self.send_json(404, {"error": "account_not_found"})
-                        return
-                    user = authenticate_discord_password(user_id, payload.get("password"))
-                else:
+                user, account_exists = authenticate_login_identifier(user_id, payload.get("password"))
+                if not account_exists:
                     self.send_json(404, {"error": "account_not_found"})
                     return
                 if not user:

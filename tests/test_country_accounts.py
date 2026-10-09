@@ -47,7 +47,7 @@ class CountryAccountTests(unittest.TestCase):
         user = server.authenticate_country_password("Testland", "CountryPass123")
         self.assertEqual(account["userId"], "Testland")
         self.assertEqual(user["nationality"], "Testland")
-        self.assertEqual(user["cash"], 1_000_000)
+        self.assertEqual(user["cash"], 0)
         self.assertEqual(user["role"], "user")
         with closing(server.sqlite3.connect(server.DATABASE)) as connection:
             discord_cash = connection.execute(
@@ -70,13 +70,33 @@ class CountryAccountTests(unittest.TestCase):
             )
         account = server.create_country_account("admin-1", "Testland", "CountryPass123")
         user = server.authenticate_country_password("Testland", "CountryPass123")
-        self.assertEqual(account["cash"], 4200)
-        self.assertEqual(user["cash"], 4200)
+        self.assertEqual(account["cash"], 0)
+        self.assertEqual(user["cash"], 0)
 
     def test_country_account_is_unique_per_country(self):
         server.create_country_account("admin-1", "Testland", "CountryPass123")
         with self.assertRaisesRegex(ValueError, "country_account_exists"):
             server.create_country_account("admin-1", "Testland", "AnotherPass123")
+
+    def test_hts_login_id_is_separate_and_password_confirmed(self):
+        server.create_country_account("admin-1", "Testland", "CountryPass123")
+        self.assertEqual(server.set_hts_login_id("Testland", "Test.User_1", "CountryPass123"), "test.user_1")
+        self.assertEqual(server.get_hts_login_id("Testland"), "test.user_1")
+        user, found = server.authenticate_login_identifier("TEST.USER_1", "CountryPass123")
+        self.assertTrue(found)
+        self.assertEqual(user["userId"], "Testland")
+        with self.assertRaisesRegex(ValueError, "invalid_credentials"):
+            server.set_hts_login_id("Testland", "another_id", "WrongPass123")
+
+    def test_country_hts_identity_uses_national_treasury_balance(self):
+        server.create_country_account("admin-1", "Testland", "CountryPass123")
+        with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
+            connection.execute(
+                "INSERT INTO users(user_id,nickname,nationality,cash,status,role) "
+                "VALUES ('__treasury__','Treasury','Testland',123456,'system','system')"
+            )
+        self.assertEqual(server.trading_user_id("Testland"), "__treasury__")
+        self.assertEqual(server.identity("Testland")["cash"], 123456)
 
     def test_non_admin_cannot_create_country_account(self):
         with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:

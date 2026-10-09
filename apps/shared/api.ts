@@ -35,7 +35,6 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
       password_policy: "비밀번호는 영문과 숫자를 포함해 12~128자로 입력해주세요.",
       hts_id_policy: "HTS ID는 영문 소문자, 숫자, 점, 밑줄, 하이픈으로 3~32자 입력해주세요.",
       hts_id_taken: "이미 사용 중인 HTS ID입니다.",
-      invalid_credentials: "현재 비밀번호가 일치하지 않습니다.",
       active_user_required: "활성 사용자 계정이 아닙니다.",
       admin_required: "관리자 권한이 필요합니다.",
       python_service_unavailable: "Python 데이터 서비스에 연결할 수 없습니다.",

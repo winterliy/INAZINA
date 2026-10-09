@@ -123,7 +123,7 @@ export default function App() {
   }, [user]);
 
   useEffect(() => {
-    if (!searchOpen) return;
+    if (!searchOpen) { setSearch(""); return; }
     searchInputRef.current?.focus();
     function onKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") setSearchOpen(false);
@@ -318,7 +318,8 @@ export default function App() {
       setCurrentPassword("");
       setSettingsMessage("HTS ID를 저장했습니다.");
     } catch (cause) {
-      setSettingsError(cause instanceof Error ? cause.message : "HTS ID를 저장하지 못했습니다.");
+      const reason = cause instanceof Error ? cause.message : "";
+      setSettingsError(reason === "invalid_credentials" ? "현재 비밀번호가 일치하지 않습니다." : reason || "HTS ID를 저장하지 못했습니다.");
     } finally {
       setSettingsBusy(false);
     }
@@ -369,5 +370,7 @@ export default function App() {
       </aside>
     </main>
     {review && <div className="modal-backdrop"><section className="review-modal" role="dialog" aria-modal="true" aria-labelledby="review-title"><p className="eyebrow">ORDER REVIEW</p><h2 id="review-title">주문을 확인하세요</h2><dl><div><dt>종목</dt><dd>{selected?.name} ({selectedCode})</dd></div><div><dt>유형</dt><dd className={side === "buy" ? "buy-text" : "sell-text"}>{side === "buy" ? "지정가 매수" : "지정가 매도"}</dd></div><div><dt>지정가</dt><dd>{money(Number(price))} {selected?.quote_currency || "NWX"}</dd></div><div><dt>수량</dt><dd>{money(Number(quantity))}</dd></div><div><dt>예상 금액</dt><dd>{money(Number(price) * Number(quantity))} {selected?.quote_currency || "NWX"}</dd></div></dl><div className="modal-actions"><button disabled={busy} onClick={() => setReview(false)}>돌아가기</button><button className={side === "buy" ? "buy-confirm" : "sell-confirm"} disabled={busy} onClick={() => void submitOrder()}>{busy ? "제출 중" : "주문 확정"}</button></div></section></div>}
+    {searchOpen && <div className="modal-backdrop search-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSearchOpen(false); }}><section className="search-modal" role="dialog" aria-modal="true" aria-labelledby="search-title"><div className="search-modal-head"><h2 id="search-title">종목 검색</h2><button type="button" title="닫기" onClick={() => setSearchOpen(false)}>닫기</button></div><label className="search-field"><span aria-hidden="true">⌕</span><input ref={searchInputRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="종목명 또는 코드" /></label><div className="search-results">{filtered.slice(0, 100).map((item) => <button type="button" key={item.code} className={selectedCode === item.code ? "search-result active" : "search-result"} onClick={() => chooseInstrument(item)}><span><b>{item.name}</b><small>{item.code} · {item.type}</small></span><strong>{money(item.price)} {item.quote_currency || "NWX"}</strong></button>)}{!filtered.length && <p className="empty">검색 결과가 없습니다.</p>}</div></section></div>}
+    {accountSettingsOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setAccountSettingsOpen(false); }}><section className="account-modal" role="dialog" aria-modal="true" aria-labelledby="account-title"><div className="account-modal-head"><div><p className="eyebrow">HTS ACCOUNT</p><h2 id="account-title">HTS ID 설정</h2></div><button type="button" title="닫기" onClick={() => setAccountSettingsOpen(false)}>닫기</button></div><p className="account-description">Discord ID와 별도로 사용할 로그인 ID를 설정합니다.</p><form className="account-form" onSubmit={saveHtsId}><label>HTS ID<input autoComplete="username" minLength={3} maxLength={32} pattern="[A-Za-z0-9_.-]{3,32}" value={htsIdInput} onChange={(event) => setHtsIdInput(event.target.value)} placeholder="예: inazina_user" required /></label><p className="account-hint">영문, 숫자, 점, 밑줄, 하이픈으로 3~32자</p><label>현재 비밀번호<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label>{settingsMessage && <p className="account-success" role="status">{settingsMessage}</p>}{settingsError && <p className="account-error" role="alert">{settingsError}</p>}<div className="modal-actions"><button type="button" disabled={settingsBusy} onClick={() => setAccountSettingsOpen(false)}>닫기</button><button className="account-save" disabled={settingsBusy || !htsIdInput}>{settingsBusy ? "저장 중…" : htsId ? "HTS ID 변경" : "HTS ID 설정"}</button></div></form></section></div>}
   </div>;
 }
