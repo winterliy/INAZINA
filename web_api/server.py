@@ -53,7 +53,20 @@ def identity(user_id):
 
 
 def instruments():
-    return [row for row in domain().market.get_market_assets(active_only=True)]
+    with connect_readonly() as connection:
+        rows = []
+        for query in (
+            "SELECT code,name,type,price,exchange_id,quote_currency,'market_assets' AS source "
+            "FROM market_assets WHERE status='active'",
+            "SELECT company_code AS code,name,'stock' AS type,share_price AS price,exchange_id,quote_currency,'company' AS source "
+            "FROM company WHERE status='active'",
+            "SELECT product_code AS code,name,product_type AS type,unit_price AS price,exchange_id,quote_currency,'investment' AS source "
+            "FROM investment WHERE status='active'",
+            "SELECT product_code AS code,name,'국채' AS type,market_price AS price,exchange_id,'NWX' AS quote_currency,'treasury_bond' AS source "
+            "FROM treasury_bond_products WHERE status='active'",
+        ):
+            rows.extend(dict(row) for row in connection.execute(query).fetchall())
+    return sorted(rows, key=lambda row: (str(row["name"]).casefold(), row["code"]))
 
 
 def domain():
@@ -118,16 +131,25 @@ def portfolio(user_id):
 
 
 def book(code):
-    if not domain().market.get_asset_info(code):
+    if not any(row["code"] == code for row in instruments()):
         return None
-    return domain().order_book.get_order_book(code, depth=12)
+    with connect_readonly() as connection:
+        rows = connection.execute(
+            "SELECT side,limit_price,SUM(remaining_quantity) AS quantity,COUNT(*) AS order_count "
+            "FROM market_orders WHERE asset_code=? AND status IN ('open','partial') "
+            "GROUP BY side,limit_price", (code,),
+        ).fetchall()
+    bids = sorted((dict(row) for row in rows if row["side"] == "buy"), key=lambda row: -row["limit_price"])
+    asks = sorted((dict(row) for row in rows if row["side"] == "sell"), key=lambda row: row["limit_price"])
+    return {"bids": bids[:12], "asks": asks[:12]}
 
 
 def chart(code, range_key):
     ranges = {"1h": 3600, "1d": 86400, "1w": 604800, "1m": 2592000, "all": None}
     if range_key not in ranges:
         raise ValueError("unsupported_chart_range")
-    if not domain().market.get_asset_info(code):
+    item = next((row for row in instruments() if row["code"] == code), None)
+    if not item:
         return None
     start = 0 if ranges[range_key] is None else int(time.time()) - ranges[range_key]
     with connect_readonly() as connection:
@@ -141,12 +163,11 @@ def chart(code, range_key):
     if len(points) > 1200:
         stride = math.ceil(len(points) / 1200)
         points = points[::stride] + ([points[-1]] if points[-1] != points[::stride][-1] else [])
-    asset = domain().market.get_asset_info(code)
-    return {"instrument": asset, "points": points, "range": range_key}
+    return {"instrument": item, "points": points, "range": range_key}
 
 
 def save_drawings(user_id, code, drawings):
-    if not domain().market.get_asset_info(code):
+    if not any(row["code"] == code for row in instruments()):
         return False
     if not isinstance(drawings, list) or len(drawings) > 100:
         raise ValueError("drawings must contain at most 100 items")
@@ -228,7 +249,7 @@ def set_instrument_status(actor, code, payload):
     status = payload.get("status") if isinstance(payload, dict) else None
     if status not in {"active", "inactive"}:
         raise ValueError("status must be active or inactive")
-    item = domain().market.get_asset_info(code)
+    item = next((row for row in instruments() if row["code"] == code), None)
     if not item:
         return False, "자산 코드를 찾을 수 없습니다."
     category = {
@@ -354,7 +375,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     code = path.removeprefix("/internal/market/drawings/")
-                    if not domain().market.get_asset_info(code):
+                    if not any(row["code"] == code for row in instruments()):
                         self.send_json(404, {"error": "instrument_not_found"})
                     else:
                         self.send_json(200, {"drawings": get_drawings(user["userId"], code)})
