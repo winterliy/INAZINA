@@ -140,6 +140,31 @@ export default function App() {
     }
   }
 
+  async function editInstrument(item: Instrument) {
+    const name = window.prompt("상품 이름", item.name);
+    if (name === null) return;
+    const price = window.prompt("현재 가격 (변경하지 않으려면 비우기)", String(item.price));
+    if (price === null) return;
+    const supply = window.prompt("발행량 (변경하지 않으려면 비우기)", "");
+    if (supply === null) return;
+    const changes = { name: name.trim(), price: price.trim(), supply: supply.trim() };
+    if (!changes.name || (!changes.price && !changes.supply)) {
+      setError("이름을 입력하고 가격 또는 발행량을 하나 이상 입력해주세요.");
+      return;
+    }
+    if (!window.confirm(`${item.code} 상품 설정을 저장할까요?`)) return;
+    setBusy(true);
+    try {
+      const result = await api<{ message: string }>(`/api/admin/instruments/${encodeURIComponent(item.code)}`, {
+        method: "POST", body: JSON.stringify(changes),
+      });
+      setError(result.message);
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "상품 설정을 변경하지 못했습니다.");
+    } finally { setBusy(false); }
+  }
+
   async function changeCitizen(citizen: Citizen, field: "status" | "role") {
     const changes = field === "status"
       ? { status: citizen.status === "active" ? "inactive" : "active" }
@@ -153,6 +178,27 @@ export default function App() {
       await refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "사용자 설정을 변경하지 못했습니다.");
+    } finally { setBusy(false); }
+  }
+
+  async function changeCash(citizen: Citizen) {
+    const input = window.prompt(`${citizen.nickname}의 현금 잔액을 입력하세요 (NWX)`, String(citizen.cash));
+    if (input === null) return;
+    const cash = Number(input);
+    if (!Number.isSafeInteger(cash) || cash < 0) {
+      setError("현금은 0 이상의 안전한 정수로 입력해주세요.");
+      return;
+    }
+    if (!window.confirm(`${citizen.nickname}의 현금을 ${number(cash)} NWX로 설정할까요?`)) return;
+    setBusy(true);
+    try {
+      const result = await api<{ message: string }>(`/api/admin/users/${citizen.userId}`, {
+        method: "POST", body: JSON.stringify({ cash }),
+      });
+      setError(result.message);
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "현금 잔액을 변경하지 못했습니다.");
     } finally { setBusy(false); }
   }
 
@@ -221,10 +267,10 @@ export default function App() {
             <div className="section-panel"><div className="section-head"><h2>시장 제어</h2><span className={overview?.market?.status === "open" ? "state open" : "state paused"}>{overview?.market?.reason || (overview?.market?.status === "open" ? "정상 운영" : "확인 필요")}</span></div><p className="muted">변경은 기존 Python 시장 제어 로직을 통해 기록됩니다.</p><div className="actions"><button onClick={() => void marketAction("open")} disabled={busy}>개장</button><button onClick={() => void marketAction("close")} disabled={busy}>휴장</button><button onClick={() => void marketAction("pause")} disabled={busy}>일시 정지</button><button onClick={() => void marketAction("resume")} disabled={busy}>재개</button></div></div>
             <div className="section-panel"><div className="section-head"><h2>서비스 연결</h2><span className="state open">정상</span></div><dl className="service-list"><div><dt>웹 API</dt><dd>127.0.0.1:4312</dd></div><div><dt>Python 데이터 서비스</dt><dd>127.0.0.1:4313</dd></div><div><dt>데이터베이스</dt><dd>SQLite · 읽기/기존 로직</dd></div></dl></div>
           </section>
-          <section className="section-panel"><div className="section-head"><h2>운영 범위</h2><span className="muted">관리자 작업은 모두 API에서 역할을 재검증합니다.</span></div><p className="muted">종목 거래 상태와 시장 개폐를 조정할 수 있습니다. 금전·상품 내용 변경은 별도 작업 화면에서 제공할 예정입니다.</p></section>
+          <section className="section-panel"><div className="section-head"><h2>운영 범위</h2><span className="muted">관리자 작업은 모두 API에서 역할을 재검증합니다.</span></div><p className="muted">시장 상태, 상품 이름·가격·발행량, 사용자 현금·권한·계정 상태, 시장 사건을 관리할 수 있습니다. 각 변경은 기존 Python 검증과 관리자 작업 기록을 거칩니다.</p></section>
         </>}
-        {page === "instruments" && <section className="section-panel"><div className="section-head"><h2>종목 · 상품</h2><input className="search" placeholder="이름 또는 코드 검색" value={query} onChange={(event) => setQuery(event.target.value)} /></div><div className="table-wrap"><table><thead><tr><th>코드</th><th>이름</th><th>유형</th><th>가격</th><th>거래소</th><th>상태</th><th></th></tr></thead><tbody>{filteredInstruments.map((item) => <tr key={item.code}><td className="mono">{item.code}</td><td>{item.name}</td><td>{item.type}</td><td className="mono">{number(item.price)}</td><td>{item.exchange_id || "—"}</td><td><span className={item.status === "active" ? "state open" : "state paused"}>{item.status}</span></td><td><button className="table-action" disabled={busy || item.status === "matured"} onClick={() => void changeInstrument(item)}>{item.status === "active" ? "중지" : "재개"}</button></td></tr>)}</tbody></table>{!filteredInstruments.length && <p className="empty">표시할 종목이 없습니다.</p>}</div></section>}
-        {page === "users" && <section className="section-panel"><div className="section-head"><h2>사용자 계정</h2><input className="search" placeholder="이름 또는 Discord ID 검색" value={query} onChange={(event) => setQuery(event.target.value)} /></div><div className="table-wrap"><table><thead><tr><th>사용자</th><th>ID</th><th>국적</th><th>현금</th><th>신용</th><th>권한</th><th>상태</th><th></th></tr></thead><tbody>{citizens.map((citizen) => <tr key={citizen.userId}><td>{citizen.nickname}</td><td className="mono">{citizen.userId}</td><td>{citizen.nationality}</td><td className="mono">{number(citizen.cash)}</td><td>{number(citizen.creditScore)}</td><td>{citizen.role}</td><td>{citizen.status}</td><td className="user-actions"><button className="table-action" disabled={busy || citizen.userId === user.userId} onClick={() => void changeCitizen(citizen, "status")}>{citizen.status === "active" ? "비활성" : "활성화"}</button><button className="table-action" disabled={busy || citizen.userId === user.userId} onClick={() => void changeCitizen(citizen, "role")}>{citizen.role === "admin" ? "관리자 해제" : "관리자 지정"}</button></td></tr>)}</tbody></table>{!citizens.length && <p className="empty">사용자를 찾지 못했습니다.</p>}</div></section>}
+        {page === "instruments" && <section className="section-panel"><div className="section-head"><h2>종목 · 상품</h2><input className="search" placeholder="이름 또는 코드 검색" value={query} onChange={(event) => setQuery(event.target.value)} /></div><div className="table-wrap"><table><thead><tr><th>코드</th><th>이름</th><th>유형</th><th>가격</th><th>거래소</th><th>상태</th><th></th></tr></thead><tbody>{filteredInstruments.map((item) => <tr key={item.code}><td className="mono">{item.code}</td><td>{item.name}</td><td>{item.type}</td><td className="mono">{number(item.price)}</td><td>{item.exchange_id || "—"}</td><td><span className={item.status === "active" ? "state open" : "state paused"}>{item.status}</span></td><td className="user-actions"><button className="table-action" disabled={busy} onClick={() => void editInstrument(item)}>설정</button><button className="table-action" disabled={busy || item.status === "matured"} onClick={() => void changeInstrument(item)}>{item.status === "active" ? "중지" : "재개"}</button></td></tr>)}</tbody></table>{!filteredInstruments.length && <p className="empty">표시할 종목이 없습니다.</p>}</div></section>}
+        {page === "users" && <section className="section-panel"><div className="section-head"><h2>사용자 계정</h2><input className="search" placeholder="이름 또는 Discord ID 검색" value={query} onChange={(event) => setQuery(event.target.value)} /></div><div className="table-wrap"><table><thead><tr><th>사용자</th><th>ID</th><th>국적</th><th>현금</th><th>신용</th><th>권한</th><th>상태</th><th></th></tr></thead><tbody>{citizens.map((citizen) => <tr key={citizen.userId}><td>{citizen.nickname}</td><td className="mono">{citizen.userId}</td><td>{citizen.nationality}</td><td className="mono">{number(citizen.cash)}</td><td>{number(citizen.creditScore)}</td><td>{citizen.role}</td><td>{citizen.status}</td><td className="user-actions"><button className="table-action" disabled={busy || citizen.userId === user.userId} onClick={() => void changeCash(citizen)}>현금</button><button className="table-action" disabled={busy || citizen.userId === user.userId} onClick={() => void changeCitizen(citizen, "status")}>{citizen.status === "active" ? "비활성" : "활성화"}</button><button className="table-action" disabled={busy || citizen.userId === user.userId} onClick={() => void changeCitizen(citizen, "role")}>{citizen.role === "admin" ? "관리자 해제" : "관리자 지정"}</button></td></tr>)}</tbody></table>{!citizens.length && <p className="empty">사용자를 찾지 못했습니다.</p>}</div></section>}
         {page === "events" && <>
           <section className="section-panel event-create"><div className="section-head"><h2>시장 사건 등록</h2><span className="muted">기존 시장 사건 검증과 감사 기록 적용</span></div><form onSubmit={createEvent}><label>종류<select value={eventType} onChange={(event) => setEventType(event.target.value)}><option value="good">호재</option><option value="bad">악재</option></select></label><label>목표 변동률 (%)<input type="number" min="0" max="100" step="0.1" value={eventSeverity} onChange={(event) => setEventSeverity(event.target.value)} required /></label><label>지속 시간 (초)<input type="number" min="1" max="604800" value={eventDuration} onChange={(event) => setEventDuration(event.target.value)} required /></label><label>대상 종목 코드 (비우면 전체)<input value={eventAsset} onChange={(event) => setEventAsset(event.target.value)} placeholder="예: INZST001" /></label><button className="primary" disabled={busy}>사건 검토 · 등록</button></form></section>
           <section className="section-panel"><div className="section-head"><h2>최근 사건</h2><span className="muted">최근 50건</span></div><div className="table-wrap"><table><thead><tr><th>ID</th><th>대상</th><th>유형</th><th>강도</th><th>목표</th><th>시작</th><th>종료</th><th>관리자</th></tr></thead><tbody>{events.map((item) => <tr key={item.event_id}><td>#{item.event_id}</td><td>{item.asset_code || "시장 전체"}</td><td>{item.event_type === "good" ? "호재" : "악재"}</td><td>{item.severity}%</td><td>{item.target_mode === "price" ? `${number(item.target_value)} NWX` : `${number(item.target_value)}%`}</td><td>{date(item.starts_epoch)}</td><td>{date(item.ends_epoch)}</td><td className="mono">{item.created_by}</td></tr>)}</tbody></table>{!events.length && <p className="empty">등록된 사건이 없습니다.</p>}</div></section>

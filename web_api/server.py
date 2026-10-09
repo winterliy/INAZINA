@@ -111,7 +111,9 @@ def admin_overview():
         ).fetchone()[0]
         active_assets = connection.execute(
             "SELECT (SELECT COUNT(*) FROM market_assets WHERE status='active') + "
-            "(SELECT COUNT(*) FROM company WHERE status='active')"
+            "(SELECT COUNT(*) FROM company WHERE status='active') + "
+            "(SELECT COUNT(*) FROM investment WHERE status='active') + "
+            "(SELECT COUNT(*) FROM treasury_bond_products WHERE status='active')"
         ).fetchone()[0]
         open_orders = connection.execute(
             "SELECT COUNT(*) FROM market_orders WHERE status IN ('open','partial')"
@@ -265,6 +267,31 @@ def set_instrument_status(actor, code, payload):
         return False, "이 상품 유형의 상태 변경은 아직 지원하지 않습니다."
     result = domain().admin_control.entity(
         actor, category, "restore" if status == "active" else "delete", code,
+    )
+    return True, result
+
+
+def edit_instrument(actor, code, payload):
+    if not isinstance(payload, dict) or set(payload) - {"name", "price", "supply"}:
+        raise ValueError("상품 이름, 가격, 발행량만 수정할 수 있습니다.")
+    item = next((row for row in instruments(include_inactive=True) if row["code"] == code), None)
+    if not item:
+        return False, "자산 코드를 찾을 수 없습니다."
+    category = {
+        "company": "stock", "market_assets": "asset",
+        "investment": {
+            "mutual_fund": "fund", "index_fund": "indexfund",
+            "stock_future": "future", "corporate_bond": "corporatebond",
+            "commodity_spot": "commodity", "etf": "etf", "els": "els",
+        }.get(item.get("type")),
+        "treasury_bond": "bond",
+    }.get(item.get("source"))
+    if not category:
+        return False, "이 상품 유형의 설정 변경은 아직 지원하지 않습니다."
+    result = domain().admin_control.entity(
+        actor, category, "edit", code,
+        name=payload.get("name", ""), price=payload.get("price", ""),
+        supply=payload.get("supply", ""),
     )
     return True, result
 
@@ -497,6 +524,13 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     code = path.removeprefix("/internal/admin/instruments/").removesuffix("/status")
                     success, message = set_instrument_status(user["userId"], code, payload)
+                    self.send_json(200 if success else 400, {"success": success, "message": message})
+            elif path.startswith("/internal/admin/instruments/"):
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    code = path.removeprefix("/internal/admin/instruments/")
+                    success, message = edit_instrument(user["userId"], code, payload)
                     self.send_json(200 if success else 400, {"success": success, "message": message})
             else:
                 self.send_json(404, {"error": "not_found"})

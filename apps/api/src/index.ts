@@ -306,6 +306,19 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  const instrumentMatch = url.pathname.match(/^\/api\/admin\/instruments\/([^/]+)$/);
+  if (request.method === "POST" && instrumentMatch) {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const code = encodeURIComponent(decodeURIComponent(instrumentMatch[1]));
+    const body = await requestJson(request);
+    const result = await internalRequest("POST", `/internal/admin/instruments/${code}`, principal.userId, body);
+    send(response, result.status, result.body);
+    return;
+  }
+
   send(response, 404, { error: "not_found" });
 }
 
