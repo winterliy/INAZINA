@@ -44,10 +44,12 @@ class DBManager:
 
     def _get_connection(self):
         conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False, factory=UnifiedConnection)
-        # WAL 모드 활성화: 동시성 향상 및 쓰기 성능 최적화
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
         conn.execute("PRAGMA busy_timeout=30000;")
+        # WAL 모드 활성화: 동시성 향상 및 쓰기 성능 최적화
+        mode = conn.execute("PRAGMA journal_mode;").fetchone()[0]
+        if str(mode).lower() != "wal":
+            conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
         conn.row_factory = sqlite3.Row # 결과를 딕셔너리 형태로 반환
         return conn
 

@@ -10,6 +10,7 @@ import secrets
 import re
 import sqlite3
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,6 +25,7 @@ PORT = int(os.environ.get("INAZINA_PYTHON_PORT", "4313"))
 BOOTSTRAP_ADMIN_IDS = {"1076861147560542278"}
 sys.path.insert(0, str(ROOT))
 _domain = None
+_domain_lock = threading.Lock()
 
 
 @contextmanager
@@ -381,38 +383,40 @@ def instruments(include_inactive=False):
 def domain():
     global _domain
     if _domain is None:
-        from database import DatabaseManager
-        from managers.admin_control_manager import AdminControlManager
-        from managers.futures_manager import FuturesManager
-        from managers.market_manager import MarketManager
-        from managers.market_session_manager import MarketSessionManager
-        from managers.option_manager import OptionManager
-        from managers.order_book_manager import OrderBookManager
-        from managers.user_manager import UserManager
+        with _domain_lock:
+            if _domain is None:
+                from database import DatabaseManager
+                from managers.admin_control_manager import AdminControlManager
+                from managers.futures_manager import FuturesManager
+                from managers.market_manager import MarketManager
+                from managers.market_session_manager import MarketSessionManager
+                from managers.option_manager import OptionManager
+                from managers.order_book_manager import OrderBookManager
+                from managers.user_manager import UserManager
 
-        db = DatabaseManager()
-        user_manager = UserManager(db)
-        order_book = OrderBookManager(db, user_manager)
-        option_manager = OptionManager(db, user_manager)
-        futures_manager = FuturesManager(db, user_manager)
-        order_book.option_manager = option_manager
-        order_book.futures_manager = futures_manager
-        from managers.admin_manager import AdminManager
+                db = DatabaseManager()
+                user_manager = UserManager(db)
+                order_book = OrderBookManager(db, user_manager)
+                option_manager = OptionManager(db, user_manager)
+                futures_manager = FuturesManager(db, user_manager)
+                order_book.option_manager = option_manager
+                order_book.futures_manager = futures_manager
+                from managers.admin_manager import AdminManager
 
-        bot = SimpleNamespace(
-            db=db, user_mgr=user_manager, order_book=order_book,
-            option_mgr=option_manager, futures_mgr=futures_manager,
-        )
-        bot.admin_control = AdminControlManager(bot)
-        bot.admin_mgr = AdminManager(db)
-        _domain = SimpleNamespace(
-            db=db, users=user_manager, order_book=order_book,
-            options=option_manager, futures=futures_manager,
-            market=MarketManager(db), admin_control=bot.admin_control,
-            market_session=MarketSessionManager(db),
-            admin_manager=bot.admin_mgr,
-            bot=bot,
-        )
+                bot = SimpleNamespace(
+                    db=db, user_mgr=user_manager, order_book=order_book,
+                    option_mgr=option_manager, futures_mgr=futures_manager,
+                )
+                bot.admin_control = AdminControlManager(bot)
+                bot.admin_mgr = AdminManager(db)
+                _domain = SimpleNamespace(
+                    db=db, users=user_manager, order_book=order_book,
+                    options=option_manager, futures=futures_manager,
+                    market=MarketManager(db), admin_control=bot.admin_control,
+                    market_session=MarketSessionManager(db),
+                    admin_manager=bot.admin_mgr,
+                    bot=bot,
+                )
     return _domain
 
 
@@ -934,6 +938,7 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     if not INTERNAL_TOKEN:
         raise SystemExit("INAZINA_INTERNAL_TOKEN is required")
+    domain()
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"INAZINA Python data service listening at http://127.0.0.1:{PORT}", flush=True)
     try:
