@@ -369,7 +369,21 @@ class Handler(BaseHTTPRequestHandler):
                 if not user or user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
                 else:
-                    self.send_json(200, {"instruments": instruments()})
+                    include_inactive = parse_qs(parsed.query).get("includeInactive", ["0"])[0] == "1"
+                    self.send_json(200, {"instruments": instruments(include_inactive)})
+            elif path == "/internal/admin/users":
+                user = identity(self.headers.get("x-inazina-user-id", ""))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    search = parse_qs(parsed.query).get("search", [""])[0]
+                    self.send_json(200, {"users": admin_users(search)})
+            elif path == "/internal/admin/events":
+                user = identity(self.headers.get("x-inazina-user-id", ""))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    self.send_json(200, {"events": admin_events()})
             elif path == "/internal/admin/audit":
                 user = identity(self.headers.get("x-inazina-user-id", ""))
                 if not user or user["role"] != "admin":
@@ -464,6 +478,19 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     success, message = set_market_state(user["userId"], payload)
                     self.send_json(200 if success else 400, {"success": success, "message": message})
+            elif path == "/internal/admin/events":
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    success, message = create_admin_event(user["userId"], payload)
+                    self.send_json(200 if success else 400, {"success": success, "message": message})
+            elif path.startswith("/internal/admin/users/"):
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    target_id = path.removeprefix("/internal/admin/users/")
+                    message = update_admin_user(user["userId"], target_id, payload)
+                    self.send_json(200, {"success": True, "message": message})
             elif path.startswith("/internal/admin/instruments/") and path.endswith("/status"):
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
