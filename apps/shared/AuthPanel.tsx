@@ -111,8 +111,9 @@ export function AuthPanel({ app, onAuthenticated }: { app: "dashboard" | "hts"; 
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : "요청을 처리하지 못했습니다.";
       if (mode === "login" && reason === "account_not_found") {
-        setMode("register");
-        setMessage("등록된 웹 계정이 없습니다. Discord 본인확인 후 가입할 수 있습니다.");
+        setError("입력한 Discord ID로 계정을 찾지 못했습니다. ID를 확인하거나 ‘아이디 찾기’로 연결된 ID를 확인해주세요. 이미 계정이 있다면 다시 가입할 필요가 없습니다.");
+      } else if (mode === "login" && reason === "invalid_credentials") {
+        setError("Discord ID 또는 비밀번호가 일치하지 않습니다. 아이디를 확인하고, 비밀번호가 기억나지 않으면 ‘비밀번호 찾기’를 이용해주세요.");
       } else if (reason === "account_exists") {
         setMode("login");
         setError("이미 연결된 계정입니다. 로그인하거나 비밀번호를 재설정해주세요.");
