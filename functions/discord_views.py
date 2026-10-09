@@ -13,6 +13,7 @@ from functions.interaction_reliability import (
     retry_discord_request,
     send_interaction_notice,
 )
+from functions.interaction_checks import owner_interaction_check
 from functions.price_chart import render_price_chart, render_rate_chart
 from functions.technical_indicators import UPPER_INDICATORS, LOWER_INDICATORS, candle_interval, KST
 from managers.market_manager import EXCHANGE_INDEX_PREFIX
@@ -224,10 +225,9 @@ class AccountDepositRetryView(discord.ui.View):
         self.attempted_amount = int(attempted_amount)
 
     async def interaction_check(self, interaction: discord.Interaction):
-        if str(interaction.user.id) == self.user_id:
-            return True
-        await interaction.response.send_message("❌ 본인에게 전송된 계좌 설정만 수정할 수 있습니다.", ephemeral=True)
-        return False
+        return await owner_interaction_check(
+            interaction, self.user_id, "❌ 본인에게 전송된 계좌 설정만 수정할 수 있습니다."
+        )
 
     @discord.ui.button(label="예치금 수정", style=discord.ButtonStyle.primary)
     async def edit_deposit(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -263,10 +263,9 @@ class AccountOpenView(discord.ui.View):
         self.add_item(self.product_select)
 
     async def interaction_check(self, interaction: discord.Interaction):
-        if str(interaction.user.id) == self.user_id:
-            return True
-        await interaction.response.send_message("❌ 계좌 개설은 명령어를 입력한 본인만 진행할 수 있습니다.", ephemeral=True)
-        return False
+        return await owner_interaction_check(
+            interaction, self.user_id, "❌ 계좌 개설은 명령어를 입력한 본인만 진행할 수 있습니다."
+        )
 
     async def select_product(self, interaction: discord.Interaction):
         product_code = self.product_select.values[0]
@@ -284,10 +283,9 @@ class AccountProductOpenView(discord.ui.View):
         self.bot,self.owner,self.product_code = bot,str(owner),product_code
 
     async def interaction_check(self,interaction):
-        if str(interaction.user.id)==self.owner:
-            return True
-        await interaction.response.send_message('❌ 본인의 계좌 개설 요청만 사용할 수 있습니다.',ephemeral=True)
-        return False
+        return await owner_interaction_check(
+            interaction, self.owner, '❌ 본인의 계좌 개설 요청만 사용할 수 있습니다.'
+        )
 
     @discord.ui.button(label='계좌 상세 설정',style=discord.ButtonStyle.primary)
     async def configure(self,interaction,button):
@@ -350,12 +348,10 @@ class AccountCloseView(discord.ui.View):
         self.add_item(self.account_select)
 
     async def interaction_check(self, interaction: discord.Interaction):
-        if str(interaction.user.id) == self.user_id:
-            return True
-        await interaction.response.send_message(
-            "❌ 본인에게 전송된 계좌 해지 메뉴만 사용할 수 있습니다.", ephemeral=True
+        return await owner_interaction_check(
+            interaction, self.user_id,
+            "❌ 본인에게 전송된 계좌 해지 메뉴만 사용할 수 있습니다."
         )
-        return False
 
     async def select_account(self, interaction: discord.Interaction):
         await interaction.response.send_modal(
@@ -423,12 +419,10 @@ class LoanRepaymentView(discord.ui.View):
         self.add_item(self.loan_select)
 
     async def interaction_check(self, interaction: discord.Interaction):
-        if str(interaction.user.id) == self.user_id:
-            return True
-        await interaction.response.send_message(
-            "❌ 본인에게 전송된 대출 상환 메뉴만 사용할 수 있습니다.", ephemeral=True
+        return await owner_interaction_check(
+            interaction, self.user_id,
+            "❌ 본인에게 전송된 대출 상환 메뉴만 사용할 수 있습니다."
         )
-        return False
 
     async def select_loan(self, interaction: discord.Interaction):
         loan_id = int(self.loan_select.values[0])
@@ -465,12 +459,10 @@ class ShareholderMeetingResponseView(discord.ui.View):
         self.message = None
 
     async def interaction_check(self, interaction: discord.Interaction):
-        if str(interaction.user.id) == self.invited_user_id:
-            return True
-        await interaction.response.send_message(
-            "❌ 이 주주총회 초대장을 받은 사람만 응답할 수 있습니다.", ephemeral=True
+        return await owner_interaction_check(
+            interaction, self.invited_user_id,
+            "❌ 이 주주총회 초대장을 받은 사람만 응답할 수 있습니다."
         )
-        return False
 
     async def _submit_response(self, interaction: discord.Interaction, accepted: bool):
         await interaction.response.defer(ephemeral=True)
@@ -651,10 +643,9 @@ class AssetAccountsView(discord.ui.View):
         self.sections = {'🏦 보유 통장':lines,**(sections or {})}
 
     async def interaction_check(self,interaction):
-        if str(interaction.user.id)==self.owner:
-            return True
-        await interaction.response.send_message('❌ 본인 자산 창만 사용할 수 있습니다.',ephemeral=True)
-        return False
+        return await owner_interaction_check(
+            interaction, self.owner, '❌ 본인 자산 창만 사용할 수 있습니다.'
+        )
 
     def build_embed(self):
         pages = max(1,max((len(lines)+self.PAGE_SIZE-1)//self.PAGE_SIZE for lines in self.sections.values()))
@@ -1226,12 +1217,10 @@ class PriceMovementView(discord.ui.View):
         await self._select_indicators(interaction, False)
 
     async def interaction_check(self, interaction: discord.Interaction):
-        if str(interaction.user.id) == self.user_id:
-            return True
-        await interaction.response.send_message(
-            "❌ 이 그래프를 연 사용자만 기간을 바꿀 수 있습니다.", ephemeral=True
+        return await owner_interaction_check(
+            interaction, self.user_id,
+            "❌ 이 그래프를 연 사용자만 기간을 바꿀 수 있습니다."
         )
-        return False
 
     def render(self):
         if self.rate_key is not None:
@@ -1485,12 +1474,10 @@ class MyOrdersView(discord.ui.View):
             self.add_item(self.cancel_button)
 
     async def interaction_check(self, interaction: discord.Interaction):
-        if str(interaction.user.id) == self.user_id:
-            return True
-        await interaction.response.send_message(
-            "❌ 이 주문 목록을 연 사용자만 조작할 수 있습니다.", ephemeral=True
+        return await owner_interaction_check(
+            interaction, self.user_id,
+            "❌ 이 주문 목록을 연 사용자만 조작할 수 있습니다."
         )
-        return False
 
     def build_embed(self, orders, notice=None):
         status_names = {
@@ -1572,12 +1559,10 @@ class AllAssetsView(discord.ui.View):
         self.page = 0
 
     async def interaction_check(self, interaction: discord.Interaction):
-        if str(interaction.user.id) == self.user_id:
-            return True
-        await interaction.response.send_message(
-            "❌ 이 자산 목록의 명령 실행자만 페이지를 넘길 수 있습니다.", ephemeral=True
+        return await owner_interaction_check(
+            interaction, self.user_id,
+            "❌ 이 자산 목록의 명령 실행자만 페이지를 넘길 수 있습니다."
         )
-        return False
 
     def build_embed(self):
         total = len(self.users)

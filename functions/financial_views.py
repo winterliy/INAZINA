@@ -3,6 +3,7 @@ import asyncio
 import json
 from decimal import Decimal
 import discord
+from functions.interaction_checks import owner_interaction_check
 from database.financial_db import ACCOUNTS
 from managers.financial_manager import FinancialManager, month
 
@@ -25,9 +26,9 @@ class FinancialReportView(discord.ui.View):
         self.add_item(self.period_select)
 
     async def interaction_check(self, interaction):
-        if str(interaction.user.id)==self.owner:return True
-        await interaction.response.send_message('명령어를 실행한 사용자만 조작할 수 있습니다.',ephemeral=True)
-        return False
+        return await owner_interaction_check(
+            interaction, self.owner, '명령어를 실행한 사용자만 조작할 수 있습니다.'
+        )
 
     async def change_page(self, interaction):
         self.page=self.sections.values[0]

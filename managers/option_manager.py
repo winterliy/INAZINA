@@ -7,6 +7,7 @@ from contextlib import nullcontext
 from database import DatabaseManager
 from functions.money import round_money
 from managers.market_session_manager import MarketSessionManager
+from managers.order_validation import validate_limit_order
 
 
 class OptionManager:
@@ -340,13 +341,14 @@ class OptionManager:
     def place_limit_order(self, user_id, contract_code, side, quantity, limit_price):
         user_id = str(user_id)
         contract_code = str(contract_code).strip()
-        side = str(side).strip().casefold()
-        if side not in {"buy", "sell"}:
-            return False, "❌ 주문 방향은 매수 또는 매도여야 합니다."
-        if isinstance(quantity, bool) or not isinstance(quantity, int) or not 1 <= quantity <= self.MAX_CONTRACTS:
-            return False, "❌ 계약 수량은 1 이상의 정수여야 합니다."
-        if isinstance(limit_price, bool) or not isinstance(limit_price, int) or not 1 <= limit_price <= self.MAX_PRICE:
-            return False, "❌ 지정 프리미엄은 1 이상의 정수 NWX여야 합니다."
+        validated, error = validate_limit_order(
+            side, quantity, limit_price,
+            max_quantity=self.MAX_CONTRACTS, max_price=self.MAX_PRICE,
+            quantity_label="계약 수량", price_label="지정 프리미엄 NWX",
+        )
+        if error:
+            return False, error
+        side, quantity, limit_price = validated
         if limit_price * quantity > self.MAX_MONEY:
             return False, "❌ 주문 예치 금액이 데이터베이스 금액 한도를 초과합니다."
         interest_error = self.user_manager._settle_user_interest(user_id)

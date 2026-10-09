@@ -6,6 +6,7 @@ import time
 from datetime import datetime,timedelta,timezone
 from database.user_db import TREASURY_USER_ID
 from functions.tax_calc import calculate_income_tax
+from managers.user_manager import UserManager
 
 KST = timezone(timedelta(hours=9))
 MAX_MONEY = 2**53-1
@@ -153,8 +154,7 @@ class LotteryManager:
             total = price*quantity
             if round['sales_total']+total>MAX_MONEY:
                 raise ValueError('회차별 판매 한도를 초과했습니다.')
-            changed = conn.execute('UPDATE users SET cash=cash-? WHERE user_id=? AND cash>=?',(total,str(user_id),total))
-            if changed.rowcount!=1:
+            if not UserManager._change_cash(conn, user_id, -total):
                 raise ValueError('복권을 구매할 지갑 잔액이 부족합니다.')
             prize = price*rules['prize_percent']//100
             treasury = price*rules['treasury_percent']//100
@@ -163,8 +163,10 @@ class LotteryManager:
             changes[0] += prize-sum(changes)
             pools = json.loads(round['pools_json'])
             pools = [a+b*quantity for a,b in zip(pools,changes)]
-            changed = conn.execute('UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?',(treasury*quantity,TREASURY_USER_ID,MAX_MONEY-treasury*quantity))
-            if changed.rowcount!=1:
+            treasury_amount = treasury * quantity
+            if not UserManager._change_cash(
+                conn, TREASURY_USER_ID, treasury_amount, maximum=MAX_MONEY
+            ):
                 raise ValueError('국고 잔액 한도를 초과했습니다.')
             rng = secrets.SystemRandom()
             tickets = []
@@ -219,11 +221,13 @@ class LotteryManager:
                 for ticket in winners:
                     tax = calculate_income_tax(gross,float(rate)/100)
                     net = gross-tax
-                    changed = conn.execute('UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?',(net,ticket['user_id'],MAX_MONEY-net))
-                    if changed.rowcount!=1:
+                    if not UserManager._change_cash(
+                        conn, ticket['user_id'], net, maximum=MAX_MONEY
+                    ):
                         raise ValueError('당첨자의 계정 또는 잔액 한도를 확인해주세요. 추첨 결과를 보존하고 지급을 보류합니다.')
-                    changed = conn.execute('UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?',(tax,TREASURY_USER_ID,MAX_MONEY-tax))
-                    if changed.rowcount!=1:
+                    if not UserManager._change_cash(
+                        conn, TREASURY_USER_ID, tax, maximum=MAX_MONEY
+                    ):
                         raise ValueError('국고 잔액 한도를 초과하여 지급을 보류합니다.')
                     conn.execute('INSERT INTO lottery_payouts VALUES (?,?,?,?,?,?,?,?)',(ticket['ticket_id'],round['round_id'],ticket['user_id'],rank,gross,tax,net,now))
                     conn.execute('INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount) VALUES (?,?,?,?,?)',(ticket['user_id'],'lottery_prize',gross,tax,net))

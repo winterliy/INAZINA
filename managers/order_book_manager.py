@@ -4,6 +4,7 @@ import time
 from database.user_db import TREASURY_USER_ID
 from functions.money import round_money, parse_money
 from managers.market_session_manager import MarketSessionManager
+from managers.order_validation import validate_limit_order
 
 
 class OrderBookManager:
@@ -41,12 +42,14 @@ class OrderBookManager:
             return self.option_manager.place_limit_order(
                 user_id, asset_code, side, quantity, limit_price
             )
-        if side not in {"buy", "sell"}:
-            return False, "❌ 주문 방향은 매수 또는 매도여야 합니다."
-        if isinstance(quantity, bool) or not isinstance(quantity, int) or not 1 <= quantity <= self.MAX_QUANTITY:
-            return False, "❌ 주문 수량은 1 이상의 정수여야 합니다."
-        if isinstance(limit_price, bool) or not isinstance(limit_price, int) or not 1 <= limit_price <= self.MAX_LIMIT_PRICE:
-            return False, "❌ 지정가는 1 이상의 정수 NWX여야 합니다."
+        validated, error = validate_limit_order(
+            side, quantity, limit_price,
+            max_quantity=self.MAX_QUANTITY, max_price=self.MAX_LIMIT_PRICE,
+            quantity_label="주문 수량", price_label="지정가 NWX",
+        )
+        if error:
+            return False, error
+        side, quantity, limit_price = validated
 
         interest_error = self.user_manager._settle_user_interest(user_id)
         if interest_error:

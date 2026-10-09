@@ -2,6 +2,7 @@ import asyncio
 import io
 import json
 import discord
+from functions.interaction_checks import owner_interaction_check
 
 
 def rules_embed(round):
@@ -28,10 +29,9 @@ class LotteryPurchaseView(discord.ui.View):
         self.quantity,self.numbers,self.request_id = quantity,numbers,str(request_id)
 
     async def interaction_check(self,interaction):
-        if str(interaction.user.id)==self.owner:
-            return True
-        await interaction.response.send_message('❌ 본인의 구매 요청만 확인할 수 있습니다.',ephemeral=True)
-        return False
+        return await owner_interaction_check(
+            interaction, self.owner, '❌ 본인의 구매 요청만 확인할 수 있습니다.'
+        )
 
     @discord.ui.button(label='구매 확정',style=discord.ButtonStyle.success)
     async def confirm(self,interaction,button):
@@ -72,10 +72,9 @@ class LotteryTicketsView(discord.ui.View):
         self.owner,self.rows,self.page = str(owner),rows,0
 
     async def interaction_check(self,interaction):
-        if str(interaction.user.id)==self.owner:
-            return True
-        await interaction.response.send_message('❌ 본인의 복권만 조회할 수 있습니다.',ephemeral=True)
-        return False
+        return await owner_interaction_check(
+            interaction, self.owner, '❌ 본인의 복권만 조회할 수 있습니다.'
+        )
 
     def build_embed(self):
         pages = max(1,(len(self.rows)+self.PAGE_SIZE-1)//self.PAGE_SIZE)

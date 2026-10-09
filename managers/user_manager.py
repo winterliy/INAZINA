@@ -109,6 +109,27 @@ class UserManager:
         return max(sources, key=lambda source: source[0]) if sources else None
 
     @staticmethod
+    def _change_cash(conn, user_id, amount, *, maximum=None):
+        """Apply a cash delta, optionally enforcing an upper balance limit."""
+        amount = int(amount)
+        if amount < 0:
+            cursor = conn.execute(
+                "UPDATE users.users SET cash = cash + ? WHERE user_id = ? AND cash >= ?",
+                (amount, str(user_id), -amount),
+            )
+        elif maximum is None:
+            cursor = conn.execute(
+                "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
+                (amount, str(user_id)),
+            )
+        else:
+            cursor = conn.execute(
+                "UPDATE users.users SET cash = cash + ? WHERE user_id = ? AND cash <= ?",
+                (amount, str(user_id), int(maximum) - amount),
+            )
+        return cursor.rowcount == 1
+
+    @staticmethod
     def _debit_source(conn, user_id, account_number, amount):
         if account_number is None:
             cursor = conn.execute(

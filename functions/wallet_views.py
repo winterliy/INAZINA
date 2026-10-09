@@ -1,6 +1,7 @@
 """Private wallet summary and paginated categories from a single asset snapshot."""
 import copy
 import discord
+from functions.interaction_checks import owner_interaction_check
 
 
 ELS_STATUS_LABELS = {
@@ -71,9 +72,9 @@ class WalletCategoryView(discord.ui.View):
         self.add_item(self.category_select)
 
     async def interaction_check(self,interaction):
-        if str(interaction.user.id)==self.owner:return True
-        await interaction.response.send_message('❌ 본인 지갑만 조회할 수 있습니다.',ephemeral=True)
-        return False
+        return await owner_interaction_check(
+            interaction, self.owner, '❌ 본인 지갑만 조회할 수 있습니다.'
+        )
 
     def build_embed(self):
         labels=dict(self.CATEGORIES)
