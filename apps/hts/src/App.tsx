@@ -114,6 +114,10 @@ export default function App() {
   useEffect(() => { void refreshMarket(selectedCode, range); }, [selectedCode, range, refreshMarket]);
 
   useEffect(() => {
+    if (selected) setPrice(String(selected.price));
+  }, [selected?.code]);
+
+  useEffect(() => {
     if (!user || !selectedCode) return;
     let cancelled = false;
     setDrawingsReady(false);
@@ -146,10 +150,11 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [drawings, selectedDrawing]);
 
-  function position(event: React.PointerEvent<SVGSVGElement>): Point {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const x = ((event.clientX - rect.left) / rect.width) * W;
-    const y = ((event.clientY - rect.top) / rect.height) * H;
+  function position(clientX: number, clientY: number): Point {
+    const rect = svgRef.current?.getBoundingClientRect();
+    if (!rect) return { time: extent.minTime, price: extent.maxPrice };
+    const x = ((clientX - rect.left) / rect.width) * W;
+    const y = ((clientY - rect.top) / rect.height) * H;
     return {
       time: Math.round(extent.minTime + ((x - L) / (R - L)) * (extent.maxTime - extent.minTime)),
       price: Math.max(1, extent.maxPrice - ((y - T) / (B - T)) * (extent.maxPrice - extent.minPrice)),
@@ -158,7 +163,7 @@ export default function App() {
 
   function chartDown(event: React.PointerEvent<SVGSVGElement>) {
     if (tool === "select") { setSelectedDrawing(""); return; }
-    const anchor = position(event);
+    const anchor = position(event.clientX, event.clientY);
     if (tool === "horizontal") {
       previousDrawings.current.push(drawings);
       setDrawings((current) => [...current, { id: crypto.randomUUID(), type: "horizontal", anchors: [anchor] }]);
@@ -171,7 +176,7 @@ export default function App() {
   }
 
   function chartMove(event: React.PointerEvent<SVGSVGElement>) {
-    const anchor = position(event);
+    const anchor = position(event.clientX, event.clientY);
     if (draftStart.current) setDraft([draftStart.current, anchor]);
     if (moveStart.current) {
       const dx = anchor.time - moveStart.current.point.time;
@@ -184,8 +189,8 @@ export default function App() {
   }
 
   function chartUp(event: React.PointerEvent<SVGSVGElement>) {
-    if (draftStart.current && draft) {
-      const end = position(event);
+    if (draftStart.current) {
+      const end = position(event.clientX, event.clientY);
       if (Math.abs(end.time - draftStart.current.time) > 1 || Math.abs(end.price - draftStart.current.price) > .001) {
         previousDrawings.current.push(drawings);
         setDrawings((current) => [...current, { id: crypto.randomUUID(), type: "trend", anchors: [draftStart.current!, end] }]);
@@ -196,13 +201,13 @@ export default function App() {
     setDraft(null);
   }
 
-  function beginMove(event: React.PointerEvent<SVGSVGElement>, drawing: Drawing) {
+  function beginMove(event: React.PointerEvent<SVGGElement>, drawing: Drawing) {
     event.stopPropagation();
     setSelectedDrawing(drawing.id);
     if (tool === "select") {
       previousDrawings.current.push(drawings);
-      moveStart.current = { point: position(event), drawing };
-      event.currentTarget.setPointerCapture(event.pointerId);
+      moveStart.current = { point: position(event.clientX, event.clientY), drawing };
+      svgRef.current?.setPointerCapture(event.pointerId);
     }
   }
 
@@ -274,7 +279,6 @@ export default function App() {
               {drawing.type === "horizontal" ? <line x1={L} x2={R} y1={Y(drawing.anchors[0].price)} y2={Y(drawing.anchors[0].price)} /> : <line x1={X(drawing.anchors[0].time)} y1={Y(drawing.anchors[0].price)} x2={X(drawing.anchors[1].time)} y2={Y(drawing.anchors[1].price)} />}
             </g>)}
             {draft && <line className="drawing draft" x1={X(draft[0].time)} y1={Y(draft[0].price)} x2={X(draft[1].time)} y2={Y(draft[1].price)} />}
-            <rect x={L} y={T} width={R - L} height={B - T} className="chart-hit-area" />
           </svg>{!points.length && <span className="chart-empty">이 구간에 저장된 가격 기록이 없습니다.</span>}</div>
         </section>
         <div className="lower-market">
