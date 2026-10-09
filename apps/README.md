@@ -23,8 +23,13 @@ existing SQLite database in read-only mode. Available endpoints are:
 
 - `GET /api/health` (public service health)
 - `GET /api/auth/session` and `GET /api/me` (authenticated profile)
-- `GET /api/market/instruments` (authenticated active instruments)
-- `GET /api/admin/overview` (admin-only overview)
+- `GET /api/market/instruments`, `/api/me/portfolio`, `/api/market/orders`, and `/api/market/book/:code`
+- `GET /api/market/chart/:code?range=1d` and `GET/POST /api/market/drawings/:code`
+- `POST /api/market/orders` and `/api/market/orders/:id/cancel` (existing Python order validation)
+- `GET /api/admin/overview`, `/api/admin/instruments`, `/api/admin/users`, and `/api/admin/events`
+- `POST /api/admin/market`, `/api/admin/instruments/:code/status`, `/api/admin/users/:id`, and `/api/admin/events`
+- `GET /api/admin/audit`
 
-No write or trading endpoint is implemented. The HTML mockups remain separate
-reference material.
+Trading requests use the existing Python order book; administrator changes use
+the existing market, user, and administrator managers. The HTML mockups remain
+separate reference material.

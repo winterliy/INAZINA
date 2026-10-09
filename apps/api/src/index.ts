@@ -76,7 +76,7 @@ async function internalRequest(
         ...(body ? { "content-type": "application/json" } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(2500),
+      signal: AbortSignal.timeout(10_000),
     });
     return { status: result.status, body: await result.json() };
   } catch {
