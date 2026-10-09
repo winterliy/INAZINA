@@ -289,9 +289,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
   if (request.method === "POST" && url.pathname === "/api/auth/login") {
     const body = await requestJson(request);
-    const loginBody = body as { accountType?: string; userId?: string; countryId?: string; password?: string };
-    const identifier = loginBody.accountType === "country" ? loginBody.countryId : loginBody.userId;
-    const attemptKey = `${request.socket.remoteAddress ?? "local"}:${loginBody.accountType ?? "discord"}:${identifier ?? ""}`;
+    const loginBody = body as { userId?: string; password?: string };
+    const attemptKey = `${request.socket.remoteAddress ?? "local"}:auto:${loginBody.userId ?? ""}`;
     const attempt = failedLogins.get(attemptKey);
     if (attempt && attempt.resetAt > Date.now() && attempt.count >= 8) {
       send(response, 429, { error: "login_rate_limited" });

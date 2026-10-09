@@ -669,31 +669,23 @@ class Handler(BaseHTTPRequestHandler):
             path = urlsplit(self.path).path
             verified_id = self.headers.get("x-inazina-user-id", "")
             if path == "/internal/auth/login":
-                account_type = payload.get("accountType", "discord")
-                if account_type == "country":
-                    country_id = str(payload.get("countryId", "")).strip()
-                    if not country_id or len(country_id) > 80:
-                        self.send_json(401, {"error": "invalid_credentials"})
-                        return
-                    with connect_readonly() as connection:
-                        credential_table = connection.execute(
-                            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='web_auth_credentials'"
-                        ).fetchone()
-                        has_account = connection.execute(
-                            "SELECT 1 FROM users u JOIN country_currencies c ON c.nationality=u.user_id "
-                            "JOIN web_auth_credentials w ON w.user_id=u.user_id "
-                            "WHERE u.user_id=? AND u.nationality=? AND u.status='active'",
-                            (country_id, country_id),
-                        ).fetchone() if credential_table else None
-                    if not has_account:
-                        self.send_json(404, {"error": "account_not_found"})
-                        return
-                    user = authenticate_country_password(country_id, payload.get("password"))
-                elif account_type == "discord":
-                    user_id = str(payload.get("userId", "")).strip()
-                    if not user_id.isdecimal():
-                        self.send_json(401, {"error": "invalid_credentials"})
-                        return
+                user_id = str(payload.get("userId", "")).strip()
+                if not user_id or len(user_id) > 80:
+                    self.send_json(401, {"error": "invalid_credentials"})
+                    return
+                with connect_readonly() as connection:
+                    credential_table = connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='web_auth_credentials'"
+                    ).fetchone()
+                    is_country_account = connection.execute(
+                        "SELECT 1 FROM users u JOIN country_currencies c ON c.nationality=u.user_id "
+                        "JOIN web_auth_credentials w ON w.user_id=u.user_id "
+                        "WHERE u.user_id=? AND u.nationality=? AND u.status='active'",
+                        (user_id, user_id),
+                    ).fetchone() if credential_table else None
+                if is_country_account:
+                    user = authenticate_country_password(user_id, payload.get("password"))
+                elif user_id.isdecimal():
                     with sqlite3.connect(DATABASE, timeout=5) as connection:
                         ensure_auth_table(connection)
                         connection.row_factory = sqlite3.Row
@@ -705,7 +697,7 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     user = authenticate_discord_password(user_id, payload.get("password"))
                 else:
-                    self.send_json(401, {"error": "invalid_credentials"})
+                    self.send_json(404, {"error": "account_not_found"})
                     return
                 if not user:
                     self.send_json(401, {"error": "invalid_credentials"})

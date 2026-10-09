@@ -41,6 +41,8 @@ export default function App() {
   const svgRef = useRef<SVGSVGElement>(null);
   const draftStart = useRef<Point | null>(null);
   const moveStart = useRef<{ point: Point; drawing: Drawing } | null>(null);
+  const chartGesture = useRef(false);
+  const queuedPoints = useRef<Point[] | null>(null);
   const previousDrawings = useRef<Drawing[][]>([]);
 
   const selected = instruments.find((item) => item.code === selectedCode) ?? null;
@@ -110,7 +112,8 @@ export default function App() {
         api<{ points: Point[] }>(`/api/market/chart/${encodeURIComponent(code)}?range=${timeframe}`),
         api<Book>(`/api/market/book/${encodeURIComponent(code)}`),
       ]);
-      setPoints(chart.points);
+      if (chartGesture.current) queuedPoints.current = chart.points;
+      else setPoints(chart.points);
       setBook(orderBook);
       setError("");
     } catch (cause) {
@@ -182,6 +185,7 @@ export default function App() {
       setDrawings((current) => [...current, { id: crypto.randomUUID(), type: "horizontal", anchors: [anchor] }]);
       setTool("select");
     } else {
+      chartGesture.current = true;
       draftStart.current = anchor;
       setDraft([anchor, anchor]);
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -212,12 +216,25 @@ export default function App() {
     draftStart.current = null;
     moveStart.current = null;
     setDraft(null);
+    chartGesture.current = false;
+    if (queuedPoints.current) setPoints(queuedPoints.current);
+    queuedPoints.current = null;
+  }
+
+  function chartCancel() {
+    draftStart.current = null;
+    moveStart.current = null;
+    setDraft(null);
+    chartGesture.current = false;
+    if (queuedPoints.current) setPoints(queuedPoints.current);
+    queuedPoints.current = null;
   }
 
   function beginMove(event: React.PointerEvent<SVGGElement>, drawing: Drawing) {
     event.stopPropagation();
     setSelectedDrawing(drawing.id);
     if (tool === "select") {
+      chartGesture.current = true;
       previousDrawings.current.push(drawings);
       moveStart.current = { point: position(event.clientX, event.clientY), drawing };
       svgRef.current?.setPointerCapture(event.pointerId);
@@ -276,7 +293,7 @@ export default function App() {
         <div className="quote-strip"><div><p className="eyebrow">{selected?.exchange_id || "MARKET"} · {selected?.type || "—"}</p><h1>{selected?.name || "종목을 선택하세요"}<small>{selected?.code}</small></h1></div><div className="quote-value"><strong>{money(current)}</strong><span>{selected?.quote_currency || "NWX"}</span></div></div>
         <section className="chart-panel">
           <div className="chart-head"><div className="segmented"><button title="이전 구간" onClick={() => setPan((value) => value + 1)}>←</button>{ranges.map((item) => <button key={item} className={range === item ? "selected" : ""} onClick={() => { setRange(item); setZoom(1); setPan(0); }}>{rangeNames[item]}</button>)}<button title="다음 구간" onClick={() => setPan((value) => value - 1)}>→</button><button title="확대" onClick={() => setZoom((value) => Math.min(32, value * 2))}>+</button><button title="축소" onClick={() => setZoom((value) => Math.max(1, value / 2))}>−</button></div><div className="drawing-tools"><button className={tool === "select" ? "selected" : ""} title="선 선택·이동" onClick={() => setTool("select")}>선택</button><button className={tool === "trend" ? "selected" : ""} title="드래그해 추세선" onClick={() => setTool("trend")}>추세선</button><button className={tool === "horizontal" ? "selected" : ""} title="가격 위치에 수평선" onClick={() => setTool("horizontal")}>수평선</button><button title="실행 취소" onClick={undo}>되돌리기</button><button title="선택 선 삭제" disabled={!selectedDrawing} onClick={() => { previousDrawings.current.push(drawings); setDrawings((items) => items.filter((item) => item.id !== selectedDrawing)); setSelectedDrawing(""); }}>삭제</button><button title="모든 선 삭제" onClick={() => { if (drawings.length && window.confirm("이 종목의 차트 선을 모두 삭제할까요?")) { previousDrawings.current.push(drawings); setDrawings([]); setSelectedDrawing(""); } }}>전체 삭제</button></div></div>
-          <div className="chart-canvas"><svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" onPointerDown={chartDown} onPointerMove={chartMove} onPointerUp={chartUp} className={tool === "select" ? "chart-svg" : "chart-svg drawing-mode"} role="img" aria-label={`${selected?.name || "가격"} 차트`}>
+          <div className="chart-canvas"><svg ref={svgRef} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" onPointerDown={chartDown} onPointerMove={chartMove} onPointerUp={chartUp} onPointerCancel={chartCancel} className={tool === "select" ? "chart-svg" : "chart-svg drawing-mode"} role="img" aria-label={`${selected?.name || "가격"} 차트`}>
             {Array.from({ length: 5 }, (_, index) => { const y = T + (pathRange / 4) * index; const value = extent.maxPrice - ((extent.maxPrice - extent.minPrice) / 4) * index; return <g key={index}><line x1={L} y1={y} x2={R} y2={y} className="grid-line"/><text x={R + 10} y={y + 4} className="axis-label">{money(value)}</text></g>; })}
             {Array.from({ length: 5 }, (_, index) => { const x = L + ((R - L) / 4) * index; const time = extent.minTime + ((extent.maxTime - extent.minTime) / 4) * index; return <g key={index}><line x1={x} y1={T} x2={x} y2={B} className="grid-line vertical"/><text x={x} y={H - 12} textAnchor="middle" className="axis-label">{new Date(time * 1000).toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}</text></g>; })}
             <path d={path} className="price-path" />

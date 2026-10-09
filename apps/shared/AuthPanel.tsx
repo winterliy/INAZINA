@@ -5,7 +5,6 @@ import "./typography.css";
 import "./auth.css";
 
 type Mode = "login" | "register" | "find-id" | "reset-password";
-type LoginType = "discord" | "country";
 type Country = { countryId: string; currencyName: string; currencyCode: string };
 
 const titles: Record<Mode, string> = {
@@ -20,7 +19,6 @@ export function AuthPanel({ app, onAuthenticated }: { app: "dashboard" | "hts"; 
   const [userId, setUserId] = useState("");
   const [verifiedId, setVerifiedId] = useState("");
   const [countryId, setCountryId] = useState("");
-  const [loginType, setLoginType] = useState<LoginType>("discord");
   const [countries, setCountries] = useState<Country[]>([]);
   const [discordConfigured, setDiscordConfigured] = useState(false);
   const [password, setPassword] = useState("");
@@ -96,9 +94,7 @@ export function AuthPanel({ app, onAuthenticated }: { app: "dashboard" | "hts"; 
     try {
       if (mode === "login") {
         const result = await api<{ user: ApiUser }>("/api/auth/login", {
-          method: "POST", body: JSON.stringify(loginType === "country"
-            ? { accountType: "country", countryId, password }
-            : { accountType: "discord", userId: userId.trim(), password }),
+          method: "POST", body: JSON.stringify({ userId: userId.trim(), password }),
         });
         onAuthenticated(result.user);
       } else if (mode === "register") {
@@ -115,13 +111,9 @@ export function AuthPanel({ app, onAuthenticated }: { app: "dashboard" | "hts"; 
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : "요청을 처리하지 못했습니다.";
       if (mode === "login" && reason === "account_not_found") {
-        setError(loginType === "country"
-          ? "이 국가에는 HTS 계정이 없습니다. 관리자에게 국가 계정 생성을 요청해주세요."
-          : "입력한 Discord ID로 계정을 찾지 못했습니다. ID를 확인하거나 ‘아이디 찾기’로 연결된 ID를 확인해주세요. 이미 계정이 있다면 다시 가입할 필요가 없습니다.");
+        setError("입력한 ID로 계정을 찾지 못했습니다. Discord ID 또는 국가 ID를 확인해주세요.");
       } else if (mode === "login" && reason === "invalid_credentials") {
-        setError(loginType === "country"
-          ? "국가 ID 또는 비밀번호가 일치하지 않습니다. 관리자에게 비밀번호 재설정을 요청해주세요."
-          : "Discord ID 또는 비밀번호가 일치하지 않습니다. 아이디를 확인하고, 비밀번호가 기억나지 않으면 ‘비밀번호 찾기’를 이용해주세요.");
+        setError("ID 또는 비밀번호가 일치하지 않습니다. 입력한 정보를 확인해주세요.");
       } else if (reason === "account_exists") {
         setMode("login");
         setError("이미 연결된 계정입니다. 로그인하거나 비밀번호를 재설정해주세요.");
@@ -140,22 +132,14 @@ export function AuthPanel({ app, onAuthenticated }: { app: "dashboard" | "hts"; 
         <p className="auth-eyebrow">INAZINA ACCOUNT</p>
         <h1 id="auth-title">{titles[mode]}</h1>
         <p className="auth-subtitle">{mode === "login"
-          ? app === "hts" && loginType === "country" ? "관리자가 만든 국가 계정으로 접속하세요." : "Discord 계정으로 안전하게 접속하세요."
+          ? app === "hts" ? "Discord ID 또는 국가 ID로 접속하세요." : "Discord 계정으로 안전하게 접속하세요."
           : "Discord 본인확인으로 계정을 보호합니다."}</p>
       </div>
 
       {mode === "login" && <form className="auth-form" onSubmit={submit}>
-        {app === "hts" && <div className="auth-account-types" role="group" aria-label="로그인 계정 유형">
-          <button type="button" aria-pressed={loginType === "discord"} onClick={() => { setLoginType("discord"); setError(""); }}>Discord 계정</button>
-          <button type="button" aria-pressed={loginType === "country"} onClick={() => { setLoginType("country"); setError(""); }}>국가 계정</button>
-        </div>}
-        {loginType === "country"
-          ? <label>국가 ID<select autoComplete="username" value={countryId} onChange={(event) => setCountryId(event.target.value)} required>
-            {countries.map((country) => <option key={country.countryId} value={country.countryId}>{country.countryId}</option>)}
-          </select></label>
-          : <label>Discord ID<input autoComplete="username" inputMode="numeric" value={userId} onChange={(event) => setUserId(event.target.value)} placeholder="숫자 Discord ID" required /></label>}
+        <label>{app === "hts" ? "Discord ID 또는 국가 ID" : "Discord ID"}<input autoComplete="username" inputMode={app === "hts" ? undefined : "numeric"} value={userId} onChange={(event) => setUserId(event.target.value)} placeholder={app === "hts" ? "Discord ID 또는 국가 ID" : "숫자 Discord ID"} required /></label>
         <label>비밀번호<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
-        <button className="auth-primary" disabled={busy || (loginType === "country" && !countries.length)}>{busy ? "확인 중…" : "로그인"}</button>
+        <button className="auth-primary" disabled={busy}>{busy ? "확인 중…" : "로그인"}</button>
       </form>}
 
       {mode === "register" && <>
@@ -187,15 +171,12 @@ export function AuthPanel({ app, onAuthenticated }: { app: "dashboard" | "hts"; 
       {message && <p className="auth-message" role="status">{message}</p>}
       {error && <p className="auth-error" role="alert">{error}</p>}
       <nav className="auth-links" aria-label="계정 메뉴">
-        {mode === "login" && loginType === "country" ? <button onClick={() => { setLoginType("discord"); setError(""); }}>Discord 계정 로그인</button> : <>
-          {mode !== "login" && <button onClick={() => switchMode("login")}>로그인으로</button>}
-          {mode !== "register" && <button onClick={() => switchMode("register")}>계정 만들기</button>}
-          {mode !== "find-id" && <button onClick={() => switchMode("find-id")}>아이디 찾기</button>}
-          {mode !== "reset-password" && <button onClick={() => switchMode("reset-password")}>비밀번호 찾기</button>}
-        </>}
+        {mode !== "login" && <button onClick={() => switchMode("login")}>로그인으로</button>}
+        {mode !== "register" && <button onClick={() => switchMode("register")}>계정 만들기</button>}
+        {mode !== "find-id" && <button onClick={() => switchMode("find-id")}>아이디 찾기</button>}
+        {mode !== "reset-password" && <button onClick={() => switchMode("reset-password")}>비밀번호 찾기</button>}
       </nav>
-      {mode === "login" && loginType === "country" && <p className="auth-footnote">국가 계정 비밀번호 변경은 관리자에게 요청하세요.</p>}
-      {!(mode === "login" && loginType === "country") && <p className="auth-footnote">계정은 Dashboard와 HTS에서 함께 사용됩니다.</p>}
+      <p className="auth-footnote">계정은 Dashboard와 HTS에서 함께 사용됩니다.</p>
     </section>
   </main>;
 }
