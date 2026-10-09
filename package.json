@@ -1,0 +1,13 @@
+{
+  "name": "inazina-local-web",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:dashboard": "npm run dev --workspace @inazina/dashboard",
+    "dev:hts": "npm run dev --workspace @inazina/hts",
+    "dev:api": "npm run dev --workspace @inazina/api",
+    "build": "npm run build --workspaces --if-present"
+  }
+}

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Inazina · 운영 Dashboard 시안</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="dashboard.html"><span class="brand-mark">I</span><span><strong>INAZINA</strong><small>운영 Dashboard</small></span></a>
+      <div><div class="nav-label">운영</div><nav class="nav">
+        <button class="active"><span class="nav-ico">◫</span>운영 현황</button>
+        <button><span class="nav-ico">⌁</span>시장 상태</button>
+        <button><span class="nav-ico">▤</span>상품·종목</button>
+        <button><span class="nav-ico">↗</span>기업 이벤트</button>
+      </nav></div>
+      <div><div class="nav-label">관리</div><nav class="nav">
+        <button><span class="nav-ico">♙</span>사용자·국고</button>
+        <button><span class="nav-ico">⚑</span>주의 상품</button>
+        <button><span class="nav-ico">☷</span>작업 기록</button>
+      </nav></div>
+      <div class="sidebar-foot">로컬 관리 콘솔<br><span class="mono">127.0.0.1</span> · 관리자 세션<br><a href="hts.html">HTS 시안 열기 ↗</a></div>
+    </aside>
+    <main class="main">
+      <header class="topbar"><div class="crumb">운영 <span class="muted">/</span> <b>운영 현황</b></div><div class="top-actions"><div class="status"><i class="dot"></i><span>봇 연결됨</span></div><span class="muted" style="font-size:11px">관리자</span><span class="avatar">AD</span></div></header>
+      <div class="content">
+        <div class="page-head"><div><div class="eyebrow">SYSTEM OVERVIEW</div><h1>운영 현황</h1><p class="subhead">봇과 시장의 현재 상태를 확인합니다.</p></div><div class="button-row"><button class="button">새로고침 ↻</button><button class="button primary">작업 기록 보기</button></div></div>
+        <section class="metrics">
+          <div class="metric"><div class="metric-label">봇 프로세스</div><div class="metric-value positive">정상 운영</div><div class="metric-meta">마지막 응답 1초 전</div></div>
+          <div class="metric"><div class="metric-label">시장 상태</div><div class="metric-value">정규장</div><div class="metric-meta">가격 갱신 · 1초 주기</div></div>
+          <div class="metric"><div class="metric-label">활성 종목</div><div class="metric-value mono">128</div><div class="metric-meta">주식 54 · 상품 74</div></div>
+          <div class="metric"><div class="metric-label">최근 24시간 주문</div><div class="metric-value mono">1,284</div><div class="metric-meta">체결률 82.4%</div></div>
+        </section>
+        <section class="dashboard-grid">
+          <article class="panel"><div class="panel-head"><h2>시장 지표</h2><span class="market-line"><i class="dot"></i>거래 중 <span class="muted">·</span> 10월 10일 14:32</span></div><div class="panel-body"><div class="button-row" style="justify-content:space-between"><div><strong class="mono" style="font-size:19px">INZ 종합지수</strong><span class="mono positive" style="font-size:12px;margin-left:10px">+1.28%</span></div><div class="button-row"><button class="button small">1시간</button><button class="button small">1일</button><button class="button small">1주</button></div></div><div class="chart-wrap"><svg viewBox="0 0 700 170" preserveAspectRatio="none" role="img" aria-label="종합지수 시안 그래프"><defs><linearGradient id="area" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#148567" stop-opacity=".17"/><stop offset="1" stop-color="#148567" stop-opacity="0"/></linearGradient></defs><path class="chart-grid" d="M0 25H700M0 65H700M0 105H700M0 145H700"/><path class="chart-fill" d="M0 125 L35 116 70 123 105 95 140 102 175 87 210 98 245 70 280 84 315 65 350 77 385 53 420 69 455 48 490 56 525 38 560 52 595 31 630 42 665 22 700 29 L700 170H0Z"/><path class="chart-stroke" d="M0 125 L35 116 70 123 105 95 140 102 175 87 210 98 245 70 280 84 315 65 350 77 385 53 420 69 455 48 490 56 525 38 560 52 595 31 630 42 665 22 700 29"/><text class="chart-label" x="4" y="164">09:00</text><text class="chart-label" x="330" y="164">12:00</text><text class="chart-label" x="660" y="164">15:00</text></svg></div></div></article>
+          <article class="panel"><div class="panel-head"><h2>시장 제어</h2><span class="badge green">정상</span></div><div class="panel-body market-controls">
+            <div class="control-row"><div><div class="control-name">거래 상태</div><div class="control-detail">신규 주문과 체결 허용</div></div><span class="state-pill">개장</span></div>
+            <div class="control-row"><div><div class="control-name">가격 자동 갱신</div><div class="control-detail">마지막 처리 1초 전</div></div><button class="switch on" role="switch" aria-checked="true" data-name="가격 자동 갱신"></button></div>
+            <div class="control-row"><div><div class="control-name">예약 주문</div><div class="control-detail">개장 대기 3건</div></div><button class="button small">목록</button></div>
+            <div class="button-row" style="padding-top:13px"><button class="button">일시정지</button><button class="button danger">휴장</button></div>
+          </div></article>
+        </section>
+        <section class="dashboard-grid">
+          <article class="panel"><div class="panel-head"><h2>최근 관리 작업</h2><button class="button small">전체 보기</button></div><div class="table-wrap"><table><thead><tr><th>시각</th><th>관리자</th><th>작업</th><th>대상</th><th>결과</th></tr></thead><tbody>
+            <tr><td class="mono">14:29:08</td><td>admin</td><td>가격 수정</td><td class="mono">INZST014</td><td><span class="badge green">완료</span></td></tr>
+            <tr><td class="mono">14:15:42</td><td>admin</td><td>거래 재개</td><td>INZ 시장</td><td><span class="badge green">완료</span></td></tr>
+            <tr><td class="mono">13:58:10</td><td>admin</td><td>상품 수정</td><td class="mono">INZMF003</td><td><span class="badge green">완료</span></td></tr>
+            <tr><td class="mono">13:41:53</td><td>admin</td><td>국고 조정</td><td>국고 계정</td><td><span class="badge amber">확인 필요</span></td></tr>
+          </tbody></table></div></article>
+          <article class="panel"><div class="panel-head"><h2>시스템 이벤트</h2><span class="muted" style="font-size:10px">최근 1시간</span></div><div class="panel-body log-list">
+            <div class="log-item"><span class="log-time">14:32:01</span><i class="log-dot"></i><div class="log-copy">시장 가격 갱신 완료<small>종목 128개 · 처리 74ms</small></div></div>
+            <div class="log-item"><span class="log-time">14:27:01</span><i class="log-dot"></i><div class="log-copy">예약 주문 검증 완료<small>대기 3건 · 오류 0건</small></div></div>
+            <div class="log-item"><span class="log-time">14:02:16</span><i class="log-dot" style="background:#c48a28"></i><div class="log-copy">가격 갱신 지연 감지<small>복구 완료 · 지연 2.1초</small></div></div>
+          </div></article>
+        </section>
+      </div>
+    </main>
+  </div>
+  <div class="toast" role="status"></div><script src="mock.js"></script>
+</body>
+</html>

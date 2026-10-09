@@ -1,0 +1,25 @@
+:root {
+  font-family: Inter, "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  color: #202824;
+  background: #f4f5f2;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+a { color: inherit; text-decoration: none; }
+.shell { min-height: 100vh; }
+.topbar { height: 60px; padding: 0 28px; display: flex; align-items: center; justify-content: space-between; background: #fff; border-bottom: 1px solid #dfe4df; }
+.brand { font-size: 14px; font-weight: 750; letter-spacing: 0; }
+.brand span { margin-left: 8px; color: #64716a; font-weight: 500; }
+.status { display: flex; align-items: center; gap: 8px; color: #67736c; font-size: 12px; }
+.status i { width: 7px; height: 7px; border-radius: 50%; background: #a7afa9; }
+.status-connected i { background: #2f8b5b; }
+.status-unavailable i { background: #c47735; }
+.content { width: min(760px, calc(100% - 48px)); margin: 72px auto; }
+.eyebrow { margin: 0 0 12px; color: #43815f; font-size: 11px; font-weight: 700; }
+h1 { margin: 0; font-size: 26px; line-height: 1.3; font-weight: 650; }
+.description { margin: 12px 0 32px; color: #66716a; font-size: 14px; }
+.rule { height: 1px; background: #dfe4df; }
+.note { margin-top: 20px; color: #78827b; font-size: 13px; }
