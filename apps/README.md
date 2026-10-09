@@ -28,9 +28,12 @@ The browser-facing API stays bound to `127.0.0.1`. OAuth login requires network
 access to Discord; account registration and password reset remain unavailable
 until OAuth credentials are configured.
 
-The Vite apps proxy `/api` requests to Node. Node authenticates bearer tokens
-and forwards authorized read requests to the Python service, which opens the
-existing SQLite database in read-only mode. Available endpoints are:
+The Vite apps proxy `/api` requests to Node. Node authenticates session cookies
+and forwards authorized requests to the Python service, which opens the
+existing SQLite database. The API uses signed HttpOnly session cookies.
+On macOS, API start scripts add `/etc/ssl/cert.pem` to Node's trusted CA list
+so HTTPS requests to Discord validate normally; TLS verification remains on.
+Available endpoints are:
 
 - `GET /api/health` (public service health)
 - `GET /api/auth/config`, `/api/auth/countries`, `/api/auth/session`, and `/api/me`
@@ -44,8 +47,6 @@ existing SQLite database in read-only mode. Available endpoints are:
 - `GET /api/admin/audit`
 
 Trading requests use the existing Python order book; administrator changes use
-the existing market, user, and administrator managers. Bearer tokens are not
-created automatically: the API intentionally refuses authenticated access until
-the owner configures `.env`. Keep all services on loopback; router port forwarding
-is not part of this local development setup. The HTML mockups remain separate
-reference material.
+the existing market, user, and administrator managers. Keep all services on
+loopback; router port forwarding is not part of this local development setup.
+The HTML mockups remain separate reference material.

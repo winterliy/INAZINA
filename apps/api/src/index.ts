@@ -153,6 +153,7 @@ async function finishDiscordOAuth(request: IncomingMessage, response: ServerResp
       { "set-cookie": cookieHeader(oauthStateCookie, "", 0) });
     return;
   }
+  let failureStage = "token_exchange";
   try {
     const tokenResponse = await fetch("https://discord.com/api/v10/oauth2/token", {
       method: "POST",
@@ -161,15 +162,28 @@ async function finishDiscordOAuth(request: IncomingMessage, response: ServerResp
         grant_type: "authorization_code", code, redirect_uri: discordRedirectUri }),
       signal: AbortSignal.timeout(10_000),
     });
-    if (!tokenResponse.ok) throw new Error("discord_token_exchange_failed");
+    if (!tokenResponse.ok) {
+      failureStage = `token_exchange_http_${tokenResponse.status}`;
+      throw new Error("discord_token_exchange_failed");
+    }
     const tokenBody = await tokenResponse.json() as { access_token?: string; token_type?: string };
-    if (!tokenBody.access_token) throw new Error("discord_token_missing");
+    if (!tokenBody.access_token) {
+      failureStage = "token_missing";
+      throw new Error("discord_token_missing");
+    }
+    failureStage = "discord_identity";
     const userResponse = await fetch("https://discord.com/api/v10/users/@me", {
       headers: { authorization: `Bearer ${tokenBody.access_token}` }, signal: AbortSignal.timeout(10_000),
     });
-    if (!userResponse.ok) throw new Error("discord_identity_failed");
+    if (!userResponse.ok) {
+      failureStage = `discord_identity_http_${userResponse.status}`;
+      throw new Error("discord_identity_failed");
+    }
     const discordUser = await userResponse.json() as { id?: string; global_name?: string | null; username?: string };
-    if (!discordUser.id || !/^\d{1,25}$/.test(discordUser.id)) throw new Error("discord_identity_invalid");
+    if (!discordUser.id || !/^\d{1,25}$/.test(discordUser.id)) {
+      failureStage = "discord_identity_invalid";
+      throw new Error("discord_identity_invalid");
+    }
     const signedVerification = signed({ kind: "discord", userId: discordUser.id,
       nickname: discordUser.global_name || discordUser.username || discordUser.id,
       purpose: pending.purpose, nonce: randomBytes(16).toString("hex"),
@@ -179,6 +193,7 @@ async function finishDiscordOAuth(request: IncomingMessage, response: ServerResp
       "set-cookie": [verificationCookie, cookieHeader(oauthStateCookie, "", 0)], "cache-control": "no-store" });
     response.end();
   } catch {
+    console.warn(`Discord OAuth verification failed at ${failureStage}`);
     redirectToFrontend(response, destination, { authError: "discord_verification_failed" },
       { "set-cookie": cookieHeader(oauthStateCookie, "", 0) });
   }
