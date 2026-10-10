@@ -100,18 +100,6 @@ class FinancialDB(DBManager):
               THEN RAISE(ABORT,'invalid financial line') END; END''')
 
         self.execute('CREATE INDEX IF NOT EXISTS idx_option_collateral_financial ON option_collateral_lots(underlying_code,writer_id)')
-        from .user_db import TREASURY_USER_ID
-        treasury = str(TREASURY_USER_ID).replace("'", "''")
-        for table,column in (('user_assets','asset_code'),('option_collateral_lots','underlying_code')):
-            for operation in ('INSERT','UPDATE','DELETE'):
-                rows = ('OLD','NEW') if operation=='UPDATE' else ('NEW',) if operation=='INSERT' else ('OLD',)
-                statements=[]
-                for row in rows:
-                    statements.append(f"""INSERT INTO financial_share_history(company_code,recorded_epoch,quantity_milli)
-                        SELECT c.company_code,CAST(strftime('%s','now') AS INTEGER),
-                        CAST(ROUND((COALESCE((SELECT SUM(quantity) FROM user_assets WHERE asset_code=c.company_code AND user_id<>'{treasury}'),0)
-                          +COALESCE((SELECT SUM(quantity) FROM option_collateral_lots WHERE underlying_code=c.company_code AND writer_id<>'{treasury}'),0))*1000) AS INTEGER)
-                        FROM company c JOIN financial_entities f USING(company_code)
-                        WHERE c.share_class='common' AND c.company_code={row}.{column}
-                        ON CONFLICT(company_code,recorded_epoch) DO UPDATE SET quantity_milli=excluded.quantity_milli;""")
-                self.execute(f"CREATE TRIGGER IF NOT EXISTS fin_shares_{table}_{operation.lower()} AFTER {operation} ON {table} BEGIN "+' '.join(statements)+' END')
+        for table in ("user_assets", "option_collateral_lots"):
+            for operation in ("insert", "update", "delete"):
+                self.execute(f"DROP TRIGGER IF EXISTS fin_shares_{table}_{operation}")

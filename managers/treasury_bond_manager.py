@@ -233,10 +233,10 @@ class TreasuryBondManager:
         try:
             with self.db.atomic(("users", "accounts", "assets", "tax")) as conn:
                 tax_row = conn.execute(
-                    "SELECT rate_percent FROM tax.tax_settings WHERE id = 1"
+                    "SELECT value FROM settings WHERE key='tax_percent'"
                 ).fetchone()
                 try:
-                    tax_percent = float(tax_row["rate_percent"] if tax_row else 3)
+                    tax_percent = float(tax_row["value"] if tax_row else 3)
                 except (TypeError, ValueError):
                     tax_percent = 3.0
                 if not math.isfinite(tax_percent) or not 0 <= tax_percent <= 100:

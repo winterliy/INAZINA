@@ -352,7 +352,7 @@ class AdminControlManager:
             return '✅ 설정을 저장했습니다.'
 
     def settings(self,actor,changes):
-        with self.db.atomic(('system','users','tax','pot')) as conn:
+        with self.db.atomic(('system','users','pot')) as conn:
             self.require(actor,conn)
             settings = {r['key']:r['value'] for r in conn.execute('SELECT * FROM settings')}
             allowed = {k for k in settings if k.startswith(('garch_','auto_target_'))} | {'market_volatility','market_condition','fx_fee_percent','base_rate','statutory_rate','tax_percent','gamble_chance','gamble_return'}
@@ -368,9 +368,8 @@ class AdminControlManager:
                     self._number(value,0,100)
                 if key=='gamble_return':
                     self._number(value,0,10000)
-                if key in {'tax_percent','gamble_chance'}:
-                    table,column = {'tax_percent':('tax_settings','rate_percent'),'gamble_chance':('probability','chance')}[key]
-                    conn.execute(f'UPDATE "{table}" SET "{column}"=? WHERE id=1',(value,))
+                if key == 'gamble_chance':
+                    conn.execute('UPDATE probability SET chance=? WHERE id=1',(value,))
                 else:
                     conn.execute("INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,str(value)))
             self._audit(conn,actor,'settings',changes)

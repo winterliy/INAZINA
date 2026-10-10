@@ -17,7 +17,7 @@ class PreferredTests(unittest.TestCase):
                                  ('preferred' if preferred else 'common',parent if preferred else None,priority if priority is not None else int(preferred),cumulative,cap,cycle,dividend,100 if cycle else None,code))
 
     def setup_company(self, cumulative=1, funding=0):
-        self.db.tax.execute('UPDATE tax_settings SET rate_percent=0 WHERE id=1')
+        self.db.system.set_setting('tax_percent',0)
         self.company('CO',cycle=10,dividend=1)
         self.company('PR',True,cycle=10,dividend=10,cumulative=cumulative,cap=50)
         self.db.assets.add_user_asset('citizen','CO',10)

@@ -40,6 +40,9 @@ DM에서 신규 시민을 등록하려면 등록 서버 정보가 없으므로 �
 상품생성의 선택 JSON에 `{"quote_currency":"USD"}`를 쓸 수 있다. 외화 거래 지원 유형은 현재 주식·현물이며 다른 유형은 NWX 계약 검증을 유지한다.
 `currencies.reference_rate`는 시세 상품이 없는 통화의 양수 기준값(문자열, 정확한 분수도 허용)이다. 시세 상품이 있으면 가격을 기준값으로 사용한다.
 `currencies.rate_multiplier`는 그 기준값에 곱하는 양수 비율이다. 통화 간 환율은 두 기준값의 비율이며 소수 환율도 유지한다.
+환율에는 `currency_liquidity_state`의 유동성 보정도 적용된다. 기준 공급량보다 발행·예치 총량이 늘면 해당 통화 가치는 완만하게 낮아지고, 국고 밖 유통 비율이 기준보다 줄면 추가로 낮아진다. 총량과 유통비율이 기준점과 같으면 보정값은 1이다.
+총량은 해당 화폐의 지갑 잔액과 외환통장 잔액의 합계이며, NWX는 현금·일반계좌 잔액의 합계다. 국고 보유분은 총량에는 포함되지만 유통량에서는 제외한다. 신규 통화는 최초 발행 시의 총량·유통비율을 기준점으로 자동 기록한다.
+DB Browser에서 `currency_liquidity_state`의 `issuance_elasticity`, `circulation_elasticity`, `min_multiplier`, `max_multiplier`를 조정할 수 있다. 기본값은 발행량 민감도 0.50, 유통 민감도 0.20, 보정 범위 0.25~4.00배다.
 `$환율수정 A B 3`은 A 기준값을 유지하고 B 값을 조정해 1 A = 3 B를 만든다. 시세 상품이 있는 B는 가격 배수를 설정하므로 이후 자동 가격변동·사건도 계속 반영된다.
 
 DB 위치: `/Users/sinjaehyeon/Documents/naconomics/database/inazina.db`.

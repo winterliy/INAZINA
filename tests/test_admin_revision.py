@@ -76,7 +76,7 @@ class AdminRevisionTests(unittest.TestCase):
         self.assertEqual(self.db.pot.execute_one('SELECT chance FROM probability')[0],25)
         self.assertEqual(self.db.pot.get_return_percent(),200)
         self.assertEqual(self.db.system.get_setting('gamble_return'),'200')
-        self.assertEqual(self.db.tax.execute_one('SELECT rate_percent FROM tax_settings')[0],5)
+        self.assertEqual(self.db.system.get_setting('tax_percent'),'5')
         self.run_command('시장분위기','bull')
         self.assertEqual(self.db.system.get_setting('market_condition'),'bull')
         fixtures.InazinaTests.seed(self)

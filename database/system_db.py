@@ -94,7 +94,7 @@ class SystemDB(DBManager):
             start_epoch INTEGER NOT NULL,
             end_epoch INTEGER NOT NULL CHECK(end_epoch > start_epoch)
         )""")
-        for key, value in (("base_rate", "3"), ("statutory_rate", "5")):
+        for key, value in (("base_rate", "3"), ("statutory_rate", "5"), ("tax_percent", "3")):
             self.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
         self._init_gamble_triggers()
         self._init_rate_triggers()

@@ -167,13 +167,13 @@ class UserManager:
 
     @staticmethod
     def _tax(conn, user_id, source, gross_amount):
-        """양수 소득에 SQL tax.tax_settings의 세율을 적용하고 내역을 기록합니다."""
+        """양수 소득에 settings.tax_percent 세율을 적용하고 내역을 기록합니다."""
         gross = max(0, round_money(gross_amount))
         if gross == 0:
             return 0
-        row = conn.execute("SELECT rate_percent FROM tax.tax_settings WHERE id = 1").fetchone()
+        row = conn.execute("SELECT value FROM settings WHERE key='tax_percent'").fetchone()
         try:
-            rate = float(row["rate_percent"] if row else 3.0)
+            rate = float(row["value"] if row else 3.0)
         except (TypeError, ValueError):
             rate = 3.0
         if not 0 <= rate <= 100:

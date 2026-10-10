@@ -46,7 +46,6 @@ export default function App() {
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [selectedDrawing, setSelectedDrawing] = useState("");
   const [draft, setDraft] = useState<Point[] | null>(null);
-  const [drawingsReady, setDrawingsReady] = useState(false);
   const svgRef = useRef<SVGSVGElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const draftStart = useRef<Point | null>(null);
@@ -161,25 +160,10 @@ export default function App() {
   }, [selected?.code]);
 
   useEffect(() => {
-    if (!user || !selectedCode) return;
-    let cancelled = false;
-    setDrawingsReady(false);
+    if (!selectedCode) return;
     setDrawings([]);
-    api<{ drawings: Drawing[] }>(`/api/market/drawings/${encodeURIComponent(selectedCode)}`)
-      .then((result) => { if (!cancelled) { setDrawings(result.drawings); previousDrawings.current = []; setDrawingsReady(true); } })
-      .catch((cause) => { if (!cancelled) { setError(cause instanceof Error ? cause.message : "차트 도구를 불러오지 못했습니다."); setDrawingsReady(true); } });
-    return () => { cancelled = true; };
-  }, [user, selectedCode]);
-
-  useEffect(() => {
-    if (!drawingsReady || !selectedCode || !user) return;
-    const timeout = window.setTimeout(() => {
-      void api(`/api/market/drawings/${encodeURIComponent(selectedCode)}`, {
-        method: "POST", body: JSON.stringify({ drawings }),
-      }).catch((cause) => setError(cause instanceof Error ? cause.message : "차트 선을 저장하지 못했습니다."));
-    }, 350);
-    return () => window.clearTimeout(timeout);
-  }, [drawings, drawingsReady, selectedCode, user]);
+    previousDrawings.current = [];
+  }, [selectedCode]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {

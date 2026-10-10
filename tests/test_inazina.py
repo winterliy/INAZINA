@@ -138,7 +138,7 @@ class InazinaTests(unittest.TestCase):
         with self.assertRaises(ValueError): control.settings('admin',{'garch_alpha':.9,'garch_beta':.9})
         self.assertEqual(self.db.system.get_setting('garch_alpha'),'0.05')
         control.settings('admin',{'market_volatility':.4,'tax_percent':5,'base_rate':4})
-        self.assertEqual(self.db.tax.get_rate_percent(),5)
+        self.assertEqual(self.db.system.get_setting('tax_percent'),'5')
         self.db.users.update_role('admin','user')
         with self.assertRaises(ValueError): control.settings('admin',{'market_volatility':.5})
         self.assertGreater(self.db.system.execute_one('SELECT COUNT(*) FROM admin_audit')[0],3)

@@ -40,7 +40,12 @@ class ForeignExchangeDB(DBManager):
             currency_code TEXT NOT NULL, balance_units INTEGER NOT NULL DEFAULT 0 CHECK(balance_units>=0),
             interest_remainder TEXT NOT NULL DEFAULT '0', last_interest_epoch REAL NOT NULL,
             UNIQUE(user_id, currency_code))""")
+        self.execute("""CREATE TABLE IF NOT EXISTS currency_wallets (
+            user_id TEXT NOT NULL, currency_code TEXT NOT NULL REFERENCES currencies(code),
+            balance_units INTEGER NOT NULL DEFAULT 0 CHECK(balance_units >= 0),
+            PRIMARY KEY(user_id, currency_code))""")
         self.execute("CREATE INDEX IF NOT EXISTS idx_fx_accounts_user ON fx_accounts(user_id)")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_currency_wallets_currency ON currency_wallets(currency_code)")
         self.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('fx_fee_percent','0.1')")
         for table in ('company','investment','market_assets','market_orders'):
             columns = {r[1] for r in self.execute(f'PRAGMA table_info({table})')}

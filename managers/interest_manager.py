@@ -54,9 +54,9 @@ class InterestManager:
 
     @staticmethod
     def _tax_rate(conn):
-        row = conn.execute("SELECT rate_percent FROM tax.tax_settings WHERE id = 1").fetchone()
+        row = conn.execute("SELECT value FROM settings WHERE key='tax_percent'").fetchone()
         try:
-            rate = float(row["rate_percent"] if row else 3.0)
+            rate = float(row["value"] if row else 3.0)
         except (TypeError, ValueError):
             rate = 3.0
         return rate if math.isfinite(rate) and 0 <= rate <= 100 else 3.0

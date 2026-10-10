@@ -195,7 +195,7 @@ class LotteryManager:
                 conn.execute('UPDATE lottery_tickets SET rank=? WHERE ticket_id=?',(rank,ticket['ticket_id']))
                 if rank:
                     groups[rank-1].append(ticket)
-            rate = conn.execute('SELECT rate_percent FROM tax_settings WHERE id=1').fetchone()[0]
+            rate = conn.execute("SELECT value FROM settings WHERE key='tax_percent'").fetchone()[0]
             result = {}
             for rank,winners in enumerate(groups,1):
                 gross = pools[rank-1]//len(winners) if winners else 0

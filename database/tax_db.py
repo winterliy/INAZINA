@@ -2,20 +2,29 @@ from .db_manager import DBManager
 
 
 class TaxDB(DBManager):
-    """세율과 소득별 원천징수 내역을 관리합니다. 세율은 퍼센트 단위입니다."""
+    """세금 원장 접근 호환 계층. 전역 세율은 settings.tax_percent에 저장한다."""
 
     def __init__(self):
         super().__init__("tax")
         self._init_db()
 
     def _init_db(self):
-        self.execute(
-            """CREATE TABLE IF NOT EXISTS tax_settings (
-                id INTEGER PRIMARY KEY CHECK(id = 1),
-                rate_percent REAL NOT NULL DEFAULT 3 CHECK(rate_percent >= 0 AND rate_percent <= 100)
-            )"""
+        legacy = self.execute_one(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tax_settings'"
         )
-        self.execute("INSERT OR IGNORE INTO tax_settings (id, rate_percent) VALUES (1, 3)")
+        if legacy:
+            row = self.execute_one("SELECT rate_percent FROM tax_settings WHERE id=1")
+            if row is not None:
+                self.execute(
+                    "INSERT INTO settings(key,value) VALUES ('tax_percent',?) "
+                    "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                    (str(row['rate_percent']),),
+                )
+            self.execute("DROP TABLE tax_settings")
     def get_rate_percent(self):
-        row = self.execute_one("SELECT rate_percent FROM tax_settings WHERE id = 1")
-        return row["rate_percent"] if row else 3.0
+        row = self.execute_one("SELECT value FROM settings WHERE key='tax_percent'")
+        try:
+            value = float(row['value'] if row else 3)
+        except (TypeError, ValueError):
+            return 3.0
+        return value if 0 <= value <= 100 else 3.0
