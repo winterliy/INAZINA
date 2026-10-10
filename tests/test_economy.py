@@ -208,15 +208,15 @@ class EconomyTests(unittest.TestCase):
         self.assertEqual(self.db.products.get_investment("ETF2")["unit_price"], 120)
         self.assertEqual(self.db.products.get_investment("INVERSE")["unit_price"], 90)
 
-    def test_probability_is_sql_managed_percent(self):
-        self.db.pot.execute("UPDATE probability SET chance = 100 WHERE id = 1")
+    def test_gamble_chance_is_sql_managed_percent(self):
+        self.db.system.set_setting("gamble_chance", "100")
         success, message = self.users.gamble("citizen-1", 100)
         self.assertTrue(success, message)
         self.assertAlmostEqual(self.db.users.get_user("citizen-1")["cash"], 10000 + 97)
         self.assertEqual(self.db.users.get_treasury_balance(), -97)
 
     def test_gamble_return_percent_is_sql_managed(self):
-        self.db.pot.execute("UPDATE probability SET chance = 100 WHERE id = 1")
+        self.db.system.set_setting("gamble_chance", "100")
         self.db.system.set_setting("gamble_return", "50")
 
         success, message = self.users.gamble("citizen-1", 100)
@@ -227,7 +227,7 @@ class EconomyTests(unittest.TestCase):
         self.assertEqual(self.db.users.get_treasury_balance(), -48)
 
     def test_gambling_loss_is_deposited_into_treasury(self):
-        self.db.pot.execute("UPDATE probability SET chance = 0 WHERE id = 1")
+        self.db.system.set_setting("gamble_chance", "0")
 
         success, message = self.users.gamble("citizen-1", 100)
 

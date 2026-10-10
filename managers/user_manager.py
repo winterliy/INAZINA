@@ -559,9 +559,11 @@ class UserManager:
                 balance, account_number = funds
                 if balance < amount:
                     return False, "❌ 잔액이 부족합니다."
-                row = conn.execute("SELECT chance FROM pot.probability WHERE id = 1").fetchone()
+                row = conn.execute(
+                    "SELECT value FROM settings WHERE key = 'gamble_chance'"
+                ).fetchone()
                 try:
-                    chance = float(row["chance"] if row else 50)
+                    chance = float(row["value"] if row else 50)
                 except (TypeError, ValueError):
                     chance = 50.0
                 if not 0 <= chance <= 100:
@@ -851,7 +853,9 @@ class UserManager:
             if settle:
                 fx_accounts = FXManager(self.db).accounts(user_id)
             else:
-                with self.db.atomic() as conn:
+                # The web portfolio passes settle=False.  Its foreign-account
+                # valuation must remain a read, not a BEGIN IMMEDIATE writer.
+                with self.db.readonly() as conn:
                     fx_accounts = [{**dict(r),'value_nwx':int(r['balance_units'])*FXManager._rate(conn,r['currency_code'])//1_000_000 if r['balance_units'] else 0}
                         for r in conn.execute("SELECT a.*,p.name AS product_name,p.annual_rate FROM fx_accounts a "
                             "LEFT JOIN fx_products p ON p.product_code=a.product_code WHERE a.user_id=? ORDER BY a.currency_code",(str(user_id),))]

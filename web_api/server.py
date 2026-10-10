@@ -481,59 +481,6 @@ def chart(code, range_key):
     return {"instrument": item, "points": points, "range": range_key}
 
 
-def save_drawings(user_id, code, drawings):
-    if not any(row["code"] == code for row in instruments()):
-        return False
-    if not isinstance(drawings, list) or len(drawings) > 100:
-        raise ValueError("drawings must contain at most 100 items")
-    valid = []
-    for drawing in drawings:
-        if not isinstance(drawing, dict) or drawing.get("type") not in {"trend", "horizontal"}:
-            raise ValueError("invalid drawing type")
-        anchors = drawing.get("anchors")
-        expected = 2 if drawing["type"] == "trend" else 1
-        if not isinstance(anchors, list) or len(anchors) != expected:
-            raise ValueError("invalid drawing anchors")
-        clean = []
-        for anchor in anchors:
-            if not isinstance(anchor, dict):
-                raise ValueError("invalid drawing anchor")
-            epoch, price = anchor.get("time"), anchor.get("price")
-            if (isinstance(epoch, bool) or not isinstance(epoch, (int, float)) or
-                    isinstance(price, bool) or not isinstance(price, (int, float)) or
-                    not math.isfinite(epoch) or not math.isfinite(price) or epoch < 0 or price <= 0):
-                raise ValueError("invalid drawing coordinates")
-            clean.append({"time": int(epoch), "price": float(price)})
-        valid.append({"id": str(drawing.get("id", ""))[:80], "type": drawing["type"], "anchors": clean})
-
-    with connect_db(timeout=10) as connection:
-        connection.execute("PRAGMA busy_timeout=10000")
-        connection.execute("""CREATE TABLE IF NOT EXISTS chart_drawings (
-            user_id TEXT NOT NULL, asset_code TEXT NOT NULL, drawings_json TEXT NOT NULL,
-            updated_epoch INTEGER NOT NULL, PRIMARY KEY(user_id,asset_code))""")
-        connection.execute(
-            "INSERT INTO chart_drawings(user_id,asset_code,drawings_json,updated_epoch) VALUES(?,?,?,?) "
-            "ON CONFLICT(user_id,asset_code) DO UPDATE SET drawings_json=excluded.drawings_json, "
-            "updated_epoch=excluded.updated_epoch",
-            (user_id, code, json.dumps(valid, separators=(",", ":")), int(time.time())),
-        )
-    return True
-
-
-def get_drawings(user_id, code):
-    with connect_readonly() as connection:
-        exists = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='chart_drawings'"
-        ).fetchone()
-        if not exists:
-            return []
-        row = connection.execute(
-            "SELECT drawings_json FROM chart_drawings WHERE user_id=? AND asset_code=?",
-            (user_id, code),
-        ).fetchone()
-    return json.loads(row["drawings_json"]) if row else []
-
-
 def execute_order(user_id, payload):
     if not isinstance(payload, dict):
         raise ValueError("invalid_order")
@@ -770,16 +717,6 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(404, {"error": "instrument_not_found"})
                 else:
                     self.send_json(200, result)
-            elif path.startswith("/internal/market/drawings/"):
-                user = identity(internal_user_id(self))
-                if not user:
-                    self.send_json(403, {"error": "active_user_required"})
-                else:
-                    code = path.removeprefix("/internal/market/drawings/")
-                    if not any(row["code"] == code for row in instruments()):
-                        self.send_json(404, {"error": "instrument_not_found"})
-                    else:
-                        self.send_json(200, {"drawings": get_drawings(user["userId"], code)})
             else:
                 self.send_json(404, {"error": "not_found"})
         except ValueError as exc:
@@ -856,12 +793,6 @@ class Handler(BaseHTTPRequestHandler):
                 order_id = int(path.removeprefix("/internal/market/orders/").removesuffix("/cancel"))
                 success, message = cancel_order(trading_user_id(user["userId"]), order_id)
                 self.send_json(200 if success else 400, {"success": success, "message": message})
-            elif path.startswith("/internal/market/drawings/"):
-                code = path.removeprefix("/internal/market/drawings/")
-                if not save_drawings(user["userId"], code, payload.get("drawings")):
-                    self.send_json(404, {"error": "instrument_not_found"})
-                else:
-                    self.send_json(200, {"success": True})
             elif path == "/internal/admin/market":
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
@@ -904,12 +835,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def send_json(self, status, payload):
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        self.send_response(status)
-        self.send_header("content-type", "application/json; charset=utf-8")
-        self.send_header("cache-control", "no-store")
-        self.send_header("content-length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("content-type", "application/json; charset=utf-8")
+            self.send_header("cache-control", "no-store")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # Browsers cancel superseded dashboard fetches.  The response has
+            # no further side effect, so an abandoned socket is not an error.
+            return
 
     def log_message(self, format_string, *args):
         return

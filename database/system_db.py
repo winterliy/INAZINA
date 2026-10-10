@@ -25,6 +25,20 @@ class SystemDB(DBManager):
             "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
             ("gamble_return", "100"),
         )
+        legacy_probability = self.execute_one(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'probability'"
+        )
+        if legacy_probability:
+            self.execute(
+                """INSERT INTO settings (key, value)
+                   SELECT 'gamble_chance', CAST(chance AS TEXT) FROM probability WHERE id = 1
+                   ON CONFLICT(key) DO UPDATE SET value = excluded.value"""
+            )
+            self.execute("DROP TABLE probability")
+        self.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+            ("gamble_chance", "50"),
+        )
         legacy_return = self.execute_one(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'return'"
         )
@@ -168,18 +182,20 @@ class SystemDB(DBManager):
                 END""")
 
     def _init_gamble_triggers(self):
-        """Keep browser edits to gamble_return within the supported range."""
+        """Keep browser edits to gambling settings within supported ranges."""
         for operation in ("INSERT", "UPDATE OF key, value"):
             suffix = "insert" if operation == "INSERT" else "update"
-            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_settings_gamble_validate_{suffix}
+            self.execute(f"DROP TRIGGER IF EXISTS trg_settings_gamble_validate_{suffix}")
+            self.execute(f"""CREATE TRIGGER trg_settings_gamble_validate_{suffix}
                 BEFORE {operation} ON settings
-                WHEN NEW.key = 'gamble_return'
+                WHEN NEW.key IN ('gamble_chance', 'gamble_return')
                 BEGIN
                     SELECT CASE WHEN json_valid(NEW.value) = 0
-                        THEN RAISE(ABORT, 'Gamble return must be a number between 0 and 10000') END;
+                        THEN RAISE(ABORT, 'Gamble setting must be numeric') END;
                     SELECT CASE WHEN json_type(NEW.value) NOT IN ('integer', 'real')
-                        OR CAST(NEW.value AS REAL) NOT BETWEEN 0 AND 10000
-                        THEN RAISE(ABORT, 'Gamble return must be a number between 0 and 10000') END;
+                        OR (NEW.key = 'gamble_chance' AND CAST(NEW.value AS REAL) NOT BETWEEN 0 AND 100)
+                        OR (NEW.key = 'gamble_return' AND CAST(NEW.value AS REAL) NOT BETWEEN 0 AND 10000)
+                        THEN RAISE(ABORT, 'Gamble setting is outside its supported range') END;
                 END""")
 
     def get_setting(self, key, default=None):

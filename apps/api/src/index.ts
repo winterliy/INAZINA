@@ -459,22 +459,6 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
-  const drawingsMatch = url.pathname.match(/^\/api\/market\/drawings\/([^/]+)$/);
-  if (drawingsMatch) {
-    const code = encodeURIComponent(decodeURIComponent(drawingsMatch[1]));
-    if (request.method === "GET") {
-      const result = await internalGet(`/internal/market/drawings/${code}`, principal.userId);
-      send(response, result.status, result.body);
-      return;
-    }
-    if (request.method === "POST") {
-      const body = await requestJson(request);
-      const result = await internalRequest("POST", `/internal/market/drawings/${code}`, principal.userId, body);
-      send(response, result.status, result.body);
-      return;
-    }
-  }
-
   if (request.method === "POST" && url.pathname === "/api/market/orders") {
     const body = await requestJson(request);
     const result = await internalRequest("POST", "/internal/market/orders", principal.userId, body);

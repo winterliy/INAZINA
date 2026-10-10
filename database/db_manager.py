@@ -195,3 +195,35 @@ class DBManager:
             finally:
                 for lock in reversed(acquired_locks):
                     lock.release()
+
+    @staticmethod
+    @contextmanager
+    def readonly():
+        """Open a short-lived, query-only SQLite snapshot.
+
+        Read paths must not use :meth:`atomic`: ``BEGIN IMMEDIATE`` reserves
+        SQLite's single writer and can make an otherwise harmless dashboard
+        refresh block background settlements.  A separate read-only connection
+        works concurrently with writers in WAL mode and rejects accidental
+        mutations.
+        """
+        root = Path(DBManager.database_dir).resolve()
+        path = (root / "inazina.db").resolve()
+        conn = None
+        try:
+            conn = sqlite3.connect(
+                f"file:{path}?mode=ro", uri=True, timeout=5,
+                isolation_level=None, factory=UnifiedConnection,
+            )
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA query_only=ON")
+            conn.execute("BEGIN")
+            yield conn
+        finally:
+            if conn is not None:
+                try:
+                    if conn.in_transaction:
+                        conn.rollback()
+                finally:
+                    conn.close()

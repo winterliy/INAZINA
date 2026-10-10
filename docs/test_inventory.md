@@ -70,7 +70,7 @@
 - `test_limit_buy_reservations_count_toward_finite_supply_cap`
 - `test_limit_buy_primary_issuance_still_respects_remaining_total_supply`
 - `test_leveraged_and_inverse_etfs_follow_exchange_index_daily_base`
-- `test_probability_is_sql_managed_percent`
+- `test_gamble_chance_is_sql_managed_percent`
 - `test_gamble_return_percent_is_sql_managed`
 - `test_gambling_loss_is_deposited_into_treasury`
 - `test_government_bond_sale_funds_treasury_and_maturity_redeems_integer_nwx`

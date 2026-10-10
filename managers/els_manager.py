@@ -411,7 +411,9 @@ class ELSManager:
         return notifications
 
     def get_details(self, code, user_id=None):
-        with self.db.atomic() as conn:
+        # Details are used by wallet and catalogue views; they do not mutate
+        # settlement state, so keep them off SQLite's single writer.
+        with self.db.readonly() as conn:
             row = conn.execute("SELECT t.*,i.name,i.total_supply FROM els_terms t JOIN investment i USING(product_code) WHERE product_code=?", (code,)).fetchone()
             if not row:
                 return None

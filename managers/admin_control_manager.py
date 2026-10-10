@@ -368,10 +368,7 @@ class AdminControlManager:
                     self._number(value,0,100)
                 if key=='gamble_return':
                     self._number(value,0,10000)
-                if key == 'gamble_chance':
-                    conn.execute('UPDATE probability SET chance=? WHERE id=1',(value,))
-                else:
-                    conn.execute("INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,str(value)))
+                conn.execute("INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,str(value)))
             self._audit(conn,actor,'settings',changes)
         return '✅ 경제 설정을 저장했습니다.'
 
