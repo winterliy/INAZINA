@@ -119,20 +119,13 @@ class AdminManager:
                     plans[asset_code] = (price,target)
             if not plans and (mode == "price" or value > 0):
                 return False, "❌ 사건을 적용할 변동 가격 자산이 없습니다. 고정·만료·연동 상품은 제외됩니다."
-            event_id = conn.execute("INSERT INTO system.market_events "
-                "(asset_code, event_type, severity, starts_epoch, ends_epoch, created_by, target_mode, target_value, volatility_percent) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (asset_code or None, event_type, severity, now, now + duration_seconds, str(actor_id), mode, value, percent)).lastrowid
             if mode=='percent' and value==0:
-                conn.execute("UPDATE market_event_targets SET state='superseded' WHERE state='active' AND (? IS NULL OR asset_code=?)",(asset_code,asset_code))
                 conn.execute("DELETE FROM market_quote_overrides WHERE ? IS NULL OR asset_code=?",(asset_code,asset_code))
-            for code, (price, target) in plans.items():
-                conn.execute("UPDATE system.market_event_targets SET state = 'superseded' "
-                             "WHERE asset_code = ? AND state = 'active'", (code,))
-                conn.execute("INSERT INTO system.market_event_targets "
-                    "(event_id, asset_code, start_price, target_price, start_epoch, end_epoch, last_tick_epoch, last_price) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (event_id, code, price, target, now, now + duration_seconds, now, price))
+        if mode == 'percent' and value == 0:
+            market.clear_runtime_targets(asset_code)
+        else:
+            market.register_runtime_events(plans, event_type=event_type,
+                volatility_percent=percent, now=now, duration_seconds=duration_seconds)
         label = "호재" if event_type == "good" else "악재"
         target_label = f"목표 {target_price:,} NWX" if mode == "price" else f"목표 {'+' if event_type == 'good' else '-'}{value:g}%"
         return True, (f"✅ {asset_code or '시장 전체'}에 {label} 사건을 등록했습니다. "

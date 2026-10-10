@@ -34,11 +34,46 @@ class MarketManager:
 
     DEFAULT_VOLATILITY = 0.15
     MAX_VOLATILITY = 1.0
+    # Targets are intentionally process-local.  Quotes and GARCH state are
+    # persisted separately; restarting the bot keeps the last price but starts
+    # a fresh ordinary target cycle and clears unfinished administrator events.
+    _runtime_lock = threading.RLock()
+    _runtime_auto_targets = {}
+    _runtime_event_targets = {}
 
     def __init__(self, db: DatabaseManager):
         self.db = db
+        self._runtime_key = str(db.assets.db_path)
         self.movement_history = MovementHistoryManager(db)
         self._tick = threading.local()
+
+    def _runtime_auto(self):
+        with self._runtime_lock:
+            return self._runtime_auto_targets.setdefault(self._runtime_key, {})
+
+    def _runtime_events(self):
+        with self._runtime_lock:
+            return self._runtime_event_targets.setdefault(self._runtime_key, {})
+
+    def register_runtime_events(self, plans, *, event_type, volatility_percent, now, duration_seconds):
+        """Install active admin-event paths in RAM only."""
+        with self._runtime_lock:
+            events = self._runtime_events()
+            for code, (start_price, target_price) in plans.items():
+                events[str(code)] = dict(asset_code=str(code), event_type=event_type,
+                    volatility_percent=float(volatility_percent), start_price=int(start_price),
+                    target_price=int(target_price), start_epoch=int(now), end_epoch=int(now + duration_seconds),
+                    noise_fraction=0.0, last_tick_epoch=int(now), last_price=int(start_price),
+                    jump_applied=False)
+
+    def clear_runtime_targets(self, code=None):
+        with self._runtime_lock:
+            if code is None:
+                self._runtime_events().clear()
+                self._runtime_auto().clear()
+            else:
+                self._runtime_events().pop(str(code), None)
+                self._runtime_auto().pop(str(code), None)
 
     @staticmethod
     def is_stock_type(asset_type):
@@ -307,9 +342,47 @@ class MarketManager:
             shocks[(key, epoch)] = standardized_shock(random, config.student_df)
         return shocks[(key, epoch)]
 
-    @staticmethod
-    def _event_target_price(conn, code, price, now, legacy_events, *, sample_noise, context=None, batch=None):
-        """A random price bridge ends at its persisted goal even after a restart."""
+    def _event_target_price(self, conn, code, price, now, legacy_events, *, sample_noise, context=None, batch=None):
+        """Return an in-memory event bridge; events deliberately do not survive restart."""
+        with self._runtime_lock:
+            target = self._runtime_events().get(str(code))
+            if target is not None:
+                target = dict(target)
+        if target is None:
+            return None
+        duration = max(1, int(target["end_epoch"]) - int(target["start_epoch"]))
+        elapsed = max(0, min(duration, int(now) - int(target["start_epoch"])))
+        baseline = (target["start_price"] * duration + (target["target_price"] - target["start_price"]) * elapsed) / duration
+        previous = int(target["last_price"])
+        delta = max(0, int(now) - int(target["last_tick_epoch"]))
+        noise = float(target["noise_fraction"])
+        if delta and elapsed < duration:
+            shock, jump = sample_noise(target)
+            span = abs(target["target_price"] - target["start_price"])
+            radius = min(baseline * .10, max(span * .12, baseline * .02)) * (target["volatility_percent"] / 100)
+            taper = math.sin(math.pi * elapsed / duration)
+            band = max(0.0, min(radius * taper, abs(baseline-target["start_price"]) * .25,
+                                abs(target["target_price"]-baseline) * .25))
+            noise = max(-band, min(band, (noise * target["start_price"] * math.exp(-delta / 3)
+                                           + band * math.tanh(shock * .6 + jump) * (1-math.exp(-delta / 3)))) / target["start_price"])
+        value = baseline + target["start_price"] * noise
+        next_price = min(MAX_PRICE, max(1, int(Decimal(value).quantize(Decimal("1"), rounding=ROUND_HALF_UP))))
+        direction = 1 if target["target_price"] >= target["start_price"] else -1
+        if (next_price - previous) * direction < 0:
+            mean_step = abs(target["target_price"] - target["start_price"]) * delta / duration
+            next_price = previous - direction * min(abs(next_price - previous), max(1, int(math.ceil(mean_step * .5))))
+        if context is not None:
+            context.update(event_id=f"ram:{code}", advanced=True, latent_price=float(next_price),
+                           volatility_percent=float(target["volatility_percent"]))
+        with self._runtime_lock:
+            live = self._runtime_events().get(str(code))
+            if live is not None:
+                live.update(noise_fraction=noise, last_tick_epoch=int(now), last_price=next_price)
+                if elapsed >= duration:
+                    self._runtime_events().pop(str(code), None)
+        return next_price
+
+        """Legacy persisted-event implementation retained below only for source history."""
         for event in legacy_events:
             if event["asset_code"] not in (None, "", code) or not event["severity"]:
                 continue
@@ -455,6 +528,23 @@ class MarketManager:
                      (code, variance, innovation, latent, epoch, price, event_id))
 
     def _auto_target(self, conn, code, price, epoch, config):
+        with self._runtime_lock:
+            row = self._runtime_auto().get(str(code))
+        if row is not None:
+            try:
+                cycle = TargetCycle(float(row["anchor_price"]), float(row["target_price"]),
+                                    int(row["start_epoch"]), int(row["end_epoch"]))
+                if cycle.start_epoch <= epoch < cycle.end_epoch:
+                    return cycle
+            except (TypeError, ValueError, OverflowError):
+                pass
+        cycle = sample_target(price, epoch, config, rng=random)
+        with self._runtime_lock:
+            self._runtime_auto()[str(code)] = dict(anchor_price=cycle.anchor_price,
+                target_price=cycle.target_price, start_epoch=cycle.start_epoch, end_epoch=cycle.end_epoch)
+        return cycle
+
+        # Legacy SQLite-backed target state is intentionally unreachable.
         batch = getattr(self._tick, 'batch', None)
         row = batch['targets'].get(code) if batch is not None else conn.execute("SELECT * FROM system.market_auto_targets WHERE asset_code = ?", (code,)).fetchone()
         cycle = None
@@ -595,6 +685,13 @@ class MarketManager:
 
     @staticmethod
     def _load_tick(conn, now):
+        # Target paths are RAM-only.  Database reads here retain only the
+        # persistent GARCH state and common market factor.
+        return dict(states={r['asset_code']: r for r in conn.execute('SELECT * FROM market_simulation_state')},
+            targets={}, factor=conn.execute("SELECT * FROM market_factor_state WHERE key='market'").fetchone(),
+            events={}, state_updates={}, target_updates={}, target_deletes=set(), sector_shocks={})
+
+        # Legacy SQLite-backed target state is intentionally unreachable.
         events = {}
         for row in conn.execute("SELECT t.*, e.event_type, COALESCE(e.volatility_percent, "
                 "CASE WHEN e.target_mode='percent' THEN e.target_value ELSE e.severity END) volatility_percent "
@@ -608,6 +705,11 @@ class MarketManager:
             events=events, state_updates={}, target_updates={}, target_deletes=set(), sector_shocks={})
 
     def _delete_auto_target(self, conn, code):
+        with self._runtime_lock:
+            self._runtime_auto().pop(str(code), None)
+        return
+
+        # Legacy SQLite-backed target state is intentionally unreachable.
         batch = getattr(self._tick, 'batch', None)
         if batch is None:
             conn.execute('DELETE FROM market_auto_targets WHERE asset_code=?', (code,))
@@ -618,6 +720,14 @@ class MarketManager:
 
     def _flush_tick(self, conn):
         batch = self._tick.batch
+        conn.executemany('INSERT INTO market_simulation_state '
+            '(asset_code,variance,innovation,latent_price,last_epoch,last_display_price,event_id) VALUES (?,?,?,?,?,?,?) '
+            'ON CONFLICT(asset_code) DO UPDATE SET variance=excluded.variance,innovation=excluded.innovation, '
+            'latent_price=excluded.latent_price,last_epoch=excluded.last_epoch, '
+            'last_display_price=excluded.last_display_price,event_id=excluded.event_id', batch['state_updates'].values())
+        return
+
+        # Legacy SQLite-backed target state is intentionally unreachable.
         conn.executemany('DELETE FROM market_auto_targets WHERE asset_code=?',
                          [(code,) for code in batch['target_deletes']])
         conn.executemany('INSERT INTO market_auto_targets '
@@ -686,8 +796,7 @@ class MarketManager:
         global_config = GarchConfig.from_settings(settings, volatility=volatility)
         AutoTargetConfig.from_settings(settings)
         now = int(time.time() if now is None else now)
-        legacy_events = conn.execute("SELECT event_id, asset_code, event_type, severity, starts_epoch, ends_epoch "
-            "FROM market_events WHERE target_mode = 'legacy' AND starts_epoch <= ? AND ends_epoch > ?", (now, now)).fetchall()
+        legacy_events = []
         changed = 0
         history = []
         specs = (
@@ -826,18 +935,18 @@ class MarketManager:
         try:
             with self._short_market_transaction('assets') as conn:
                 conn.execute("DELETE FROM market_quote_overrides WHERE asset_code IN (SELECT product_code FROM investment) "
-                             "AND updated_epoch < ? AND NOT EXISTS (SELECT 1 FROM market_event_targets t "
-                             "WHERE t.asset_code=market_quote_overrides.asset_code AND t.state='active')",(now,))
+                             "AND updated_epoch < ?", (now,))
         except sqlite3.OperationalError as exc:
             if getattr(self._tick, "conn", None) is not None:
                 raise
             if 'locked' not in str(exc).lower() and 'busy' not in str(exc).lower():
                 raise
         with self._short_market_transaction('assets') as conn:
-            rows = conn.execute("SELECT DISTINCT asset_code FROM market_event_targets WHERE state='active'").fetchall()
-            quotes = self._batch_quotes(conn, now) if rows else {}
-        for row in rows:
-            asset = quotes.get(row['asset_code'])
+            with self._runtime_lock:
+                event_codes = tuple(self._runtime_events())
+            quotes = self._batch_quotes(conn, now) if event_codes else {}
+        for code in event_codes:
+            asset = quotes.get(code)
             if not asset or asset['status'] != 'active':
                 continue
             if MarketSessionManager(self.db).trading_error(
