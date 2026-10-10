@@ -52,7 +52,7 @@ class InstallationTests(unittest.TestCase):
         self.assertIn('123456',fields['🆔 서버 ID'])
         self.assertEqual(fields['🏳️ 국명'],'A 국가');self.assertEqual(fields['💱 기본화폐'],'NWX')
         self.assertIn("$서버설치 123456 'A 국가' NWX",fields['🛠️ 설치 승인 명령어'])
-        self.assertEqual(self.db.fx.execute_one('SELECT COUNT(*) FROM guild_countries')[0],0)
+        self.assertEqual(self.db.currency.execute_one('SELECT COUNT(*) FROM guild_countries')[0],0)
         self.assertIsNone(self.db.users.get_user('777'))
         registry._prepare.assert_not_awaited()
         self.assertTrue(interaction.followup.send.call_args.kwargs['ephemeral'])
@@ -82,13 +82,13 @@ class InstallationTests(unittest.TestCase):
         self.bot.get_user.return_value.send.side_effect=error
         asyncio.run(registry.request_installation(interaction,'낙원','NWX'))
         self.assertIn('전달하지 못했습니다',interaction.followup.send.call_args.kwargs['content'])
-        self.assertEqual(self.db.fx.execute_one('SELECT COUNT(*) FROM guild_countries')[0],0)
+        self.assertEqual(self.db.currency.execute_one('SELECT COUNT(*) FROM guild_countries')[0],0)
 
     def test_new_install_prefix_applies_requested_server_and_preserves_citizens(self):
         commands=AdminCommandsManager(self.bot)
         result=commands.execute('admin','서버설치','123456 낙원 NWX')
         self.assertIn('✅',result)
-        self.assertEqual(self.db.fx.execute_one("SELECT nationality FROM guild_countries WHERE guild_id='123456'")[0],'낙원')
+        self.assertEqual(self.db.currency.execute_one("SELECT nationality FROM guild_countries WHERE guild_id='123456'")[0],'낙원')
         self.assertEqual(self.db.users.get_user('citizen')['nationality'],'미국')
         with self.assertRaises(ValueError):commands.execute('citizen','서버설치','123456 낙원 NWX')
 

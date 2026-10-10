@@ -12,7 +12,7 @@ from .pot_db import PotDB
 from .tax_db import TaxDB
 from .system_db import SystemDB
 from .db_manager import DBManager
-from .currency_db import ForeignExchangeDB
+from .currency_db import CurrencyDB
 from .lottery_db import LotteryDB
 from .corporate_db import CorporateDB
 from .els_db import ELSDB
@@ -49,12 +49,12 @@ class DatabaseManager:
             self.pot = PotDB()
             self.tax = TaxDB()
             self.system = SystemDB()
-            self.fx = ForeignExchangeDB()
+            self.currency = CurrencyDB()
             self.lottery = LotteryDB()
             self.corporate = CorporateDB()
             self.els = ELSDB()
 
     def close(self):
         for database in (self.users, self.assets, self.products, self.companies,
-                         self.accounts, self.pot, self.tax, self.system, self.fx,self.lottery,self.corporate,self.els):
+                         self.accounts, self.pot, self.tax, self.system, self.currency,self.lottery,self.corporate,self.els):
             database.close()

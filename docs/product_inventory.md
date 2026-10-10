@@ -14,16 +14,16 @@
 
 | 코드 | 통화명 | 사용하는 국가 | 기준 시장자산 | 상태 |
 |---|---|---|---|---|
-| KRW | 어니머니 | 대한민국 | FX_KRW | active |
+| KRW | 어니머니 | 대한민국 | CUR_KRW | active |
 | NWX | 낙원자화 | 낙원 | - | active |
-| USD | 셀로화 | 미국 | FX_USD | active |
+| USD | 셀로화 | 미국 | CUR_USD | active |
 
 ## 시장 자산 (2)
 
 | 코드 | 이름 | 상태 |
 |---|---|---|
-| FX_KRW | 게임 원/NWX | active |
-| FX_USD | 게임 달러/NWX | active |
+| CUR_KRW | 게임 원/NWX | active |
+| CUR_USD | 게임 달러/NWX | active |
 
 ## 회사 주식 (3)
 
@@ -70,8 +70,8 @@
 
 | 코드 | 이름 | 상태 |
 |---|---|---|
-| INZFX001 | 게임 달러 외환통장 | active |
-| INZFX002 | 게임 원 외환통장 | active |
+| INZCU001 | 게임 달러 외환통장 | active |
+| INZCU002 | 게임 원 외환통장 | active |
 
 ## 저축 (3)
 

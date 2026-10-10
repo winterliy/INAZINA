@@ -643,13 +643,13 @@ class UserManager:
         quote_overrides = {str(row['asset_code']):int(row['price']) for row in
             self.db.assets.execute('SELECT asset_code,price FROM market_quote_overrides')}
         currency_rates = {'NWX':1}
-        for row in self.db.fx.execute("SELECT c.code,a.price FROM currencies c LEFT JOIN market_assets a "
+        for row in self.db.currency.execute("SELECT c.code,a.price FROM currencies c LEFT JOIN market_assets a "
                                       "ON a.code=c.asset_code WHERE c.status='active'"):
             if row['code']=='NWX':
                 continue
             if row['price'] is not None and float(row['price'])>0:
                 currency_rates[str(row['code'])]=int(round(float(row['price'])))
-        currency_row = self.db.fx.execute_one("SELECT n.currency_code FROM country_currencies n "
+        currency_row = self.db.currency.execute_one("SELECT n.currency_code FROM country_currencies n "
             "JOIN currencies c ON c.code=n.currency_code WHERE n.nationality=? AND c.status='active'",(nationality,))
         national_currency = currency_row['currency_code'] if currency_row else 'NWX'
         account_details = []
@@ -846,20 +846,20 @@ class UserManager:
         )
         loan_total = int(round(loan_row["total"] or 0)) if loan_row else 0
         currency_total = 0
-        currency_saving_accounts = []
+        currency_accounts = []
         currency_rows = self.db.accounts.execute("SELECT quote_currency AS currency_code,balance_units FROM accounts WHERE user_id=? AND account_type='currency_saving'",(str(user_id),))
         if currency_rows:
             from managers.currency_exchange_manager import CurrencyExchangeManager
             if settle:
-                currency_saving_accounts = CurrencyExchangeManager(self.db).accounts(user_id)
+                currency_accounts = CurrencyExchangeManager(self.db).accounts(user_id)
             else:
                 # The web portfolio passes settle=False.  Its foreign-account
                 # valuation must remain a read, not a BEGIN IMMEDIATE writer.
                 with self.db.readonly() as conn:
-                    currency_saving_accounts = [{**dict(r),'value_nwx':int(r['balance_units'])*CurrencyExchangeManager._rate(conn,r['currency_code'])//1_000_000 if r['balance_units'] else 0}
+                    currency_accounts = [{**dict(r),'value_nwx':int(r['balance_units'])*CurrencyExchangeManager._rate(conn,r['currency_code'])//1_000_000 if r['balance_units'] else 0}
                         for r in conn.execute("SELECT a.*,a.quote_currency AS currency_code,p.name AS product_name,p.interest_rate AS annual_rate FROM accounts a "
                             "LEFT JOIN saving p ON p.product_code=a.product_code WHERE a.user_id=? AND a.account_type='currency_saving' ORDER BY a.quote_currency",(str(user_id),))]
-            currency_total = sum(r['value_nwx'] for r in currency_saving_accounts)
+            currency_total = sum(r['value_nwx'] for r in currency_accounts)
         els_positions=[]
         if getattr(self.db,'els',None) is not None:
             from managers.els_manager import ELSManager
@@ -878,7 +878,7 @@ class UserManager:
         return {
             "nationality":nationality,
             "national_currency":national_currency,
-            "currency_saving_accounts":currency_saving_accounts,
+            "currency_accounts":currency_accounts,
             "written_options":written_options,
             "currency_total":currency_total,
             "els_positions":els_positions,

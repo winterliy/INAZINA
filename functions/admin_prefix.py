@@ -15,7 +15,7 @@ from managers.currency_exchange_manager import display_units
 
 ALIASES = {'주식':'stock','상품등록':'asset','상품':'asset','국채':'bond','회사채':'corporatebond','선물':'future',
            '원자재':'commodity','펀드':'fund','인덱스펀드':'indexfund','옵션':'option','저축':'saving','대출상품':'loan',
-           '외환상품':'fxproduct','통화':'currency','변동성':'volatility','경제':'settings','호재':'사건','악재':'사건',
+           '외환상품':'currencyproduct','통화':'currency','변동성':'volatility','경제':'settings','호재':'사건','악재':'사건',
            '국적':'user','nationality':'user','복권':'lottery'}
 # Prefix trades always use the treasury identity, never the administrator wallet.
 NATIONAL = {
@@ -362,8 +362,8 @@ class TreasuryAssetsView(discord.ui.View):
         super().__init__(timeout=300)
         self.bot,self.owner,self.info,self.page = bot,str(owner),info,0
         self.category='main'
-        self.sections={'accounts':[],'currency_saving_accounts':[],'stocks':[],'bonds':[],'written':[],'loans':[],'els':[],'preferred_claims':[]}
-        self.labels={'main':'🏛️ 메인','accounts':'🏦 통장','currency_saving_accounts':'💱 외환통장','stocks':'📈 보유 투자상품',
+        self.sections={'accounts':[],'currency_accounts':[],'stocks':[],'bonds':[],'written':[],'loans':[],'els':[],'preferred_claims':[]}
+        self.labels={'main':'🏛️ 메인','accounts':'🏦 통장','currency_accounts':'💱 외환통장','stocks':'📈 보유 투자상품',
                      'bonds':'📜 국채','written':'✍️ 작성 옵션','loans':'💳 대출','els':'🧾 ELS','preferred_claims':'💰 미지급 배당'}
         from functions.wallet_views import els_position_lines,preferred_claim_lines
         self.sections['els']=els_position_lines(info.get('els_positions',[]))
@@ -371,8 +371,8 @@ class TreasuryAssetsView(discord.ui.View):
         self.items = []
         for item in info['accounts']:
             self.sections['accounts'].append((f"통장 · {item['product_name']}",f"{item['number']}\n잔액 {item['balance']:,} NWX"))
-        for item in info.get('currency_saving_accounts',[]):
-            self.sections['currency_saving_accounts'].append((f"외환통장 · {item.get('product_name') or item['product_code']}",
+        for item in info.get('currency_accounts',[]):
+            self.sections['currency_accounts'].append((f"외환통장 · {item.get('product_name') or item['product_code']}",
                 f"{item['account_number']}\n잔액 {display_units(item['balance_units'])} {item['currency_code']} · 평가 {item['value_nwx']:,} NWX"))
         for item in info['stocks']:
             note=f"옵션담보 잠금 · 매도 불가 · {item['collateral_contract_code']}" if item.get('is_collateral') else f"매도 주문 잠금 {item.get('sell_reserved_qty',0):,}"

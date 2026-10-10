@@ -6,7 +6,7 @@
 
 DB `users.role=admin`만 `$` 명령어에 응답한다. 일반 사용자의 입력은 메시지 전송·삭제 없이 무반응이다. 관리자는 서버 채널에 입력한 명령의 결과를 개인 DM으로 받은 뒤 원래 채팅을 삭제한다. DM에서 직접 입력한 `$` 명령은 삭제하지 않는다. DM에서 인증 코드나 추가 확인 문구를 입력할 필요는 없다. 명령어·버튼은 실행자에게만 연결되고 저장 시 관리 권한이 유지되는지 확인한다. 봇의 Message Content Intent와 서버 메시지 관리 권한, 관리자의 DM 허용이 필요하다. DM을 전달할 수 없으면 작업을 실행하지 않는다.
 
-일반 사용자 `/도움말`은 별도 텍스트 없이 외부 도움말 링크 버튼만 표시한다. `$도움말`과 `$help`는 관리자 명령어와 국가 명의 기능을 함께 안내한다. 기존 `$stock`, `$asset`, `$etf`, `$future`, `$corporatebond`, `$fund`, `$indexfund`, `$commodity`, `$bond`, `$saving`, `$loan`, `$option`, `$currency`, `$fxproduct`, `$catalog`, `$국고`, `$user`, `$volatility`, `$settings`, `$setup`, `$register`와 이전 별칭은 더 이상 등록하지 않는다.
+일반 사용자 `/도움말`은 별도 텍스트 없이 외부 도움말 링크 버튼만 표시한다. `$도움말`과 `$help`는 관리자 명령어와 국가 명의 기능을 함께 안내한다. 기존 `$stock`, `$asset`, `$etf`, `$future`, `$corporatebond`, `$fund`, `$indexfund`, `$commodity`, `$bond`, `$saving`, `$loan`, `$option`, `$currency`, `$currencyproduct`, `$catalog`, `$국고`, `$user`, `$volatility`, `$settings`, `$setup`, `$register`와 이전 별칭은 더 이상 등록하지 않는다.
 
 | 명령어 | 인자·용도 |
 |---|---|
@@ -46,11 +46,11 @@ $금리수정 modify 3
 $법정이자수정 modify 5
 ```
 
-생성 유형은 `company`(주식, `stock` 별칭도 지원), `preferred`(우선주), `asset`(시장 자산), `etf`, `els`, `future`(주식 선물), `corporatebond`(회사채), `fund`(일반 펀드), `indexfund`, `commodity`(현물 원자재), `bond`(국채), `saving`(저축), `loan`(대출), `option`, `currency`(통화), `fxproduct`(외환통장)다. 한글 유형도 지원한다. 두 번째 인자인 상품종류에 따라 이후 인자의 이름과 순서가 달라진다. 공백이 있는 이름·문자열은 따옴표로 묶는다. 마지막 추가 JSON은 선택 사항이며 `quote_currency`, `is_fixed`, `dividend_is_active` 등 기본 인자 외 설정을 지정할 때만 사용한다. 이미 입력한 기본 인자를 JSON에서 중복 지정할 수 없다. 이전 key=value·전체 JSON 입력은 호환용으로만 유지한다.
+생성 유형은 `company`(주식, `stock` 별칭도 지원), `preferred`(우선주), `asset`(시장 자산), `etf`, `els`, `future`(주식 선물), `corporatebond`(회사채), `fund`(일반 펀드), `indexfund`, `commodity`(현물 원자재), `bond`(국채), `saving`(저축), `loan`(대출), `option`, `currency`(통화), `currencyproduct`(외환통장)다. 한글 유형도 지원한다. 두 번째 인자인 상품종류에 따라 이후 인자의 이름과 순서가 달라진다. 공백이 있는 이름·문자열은 따옴표로 묶는다. 마지막 추가 JSON은 선택 사항이며 `quote_currency`, `is_fixed`, `dividend_is_active` 등 기본 인자 외 설정을 지정할 때만 사용한다. 이미 입력한 기본 인자를 JSON에서 중복 지정할 수 없다. 이전 key=value·전체 JSON 입력은 호환용으로만 유지한다.
 
 ```text
 $상품생성 SAV saving "새 적금" 3 1000 30 86400 1 Inazina
-$상품생성 USDACC fxproduct "달러통장" USD 1
+$상품생성 USDACC currencyproduct "달러통장" USD 1
 $상품생성 CALL1 option INZST001 call 1500 30 1 100 50
 ```
 
@@ -102,15 +102,15 @@ $상품생성 CALL1 option INZST001 call 1500 30 1 100 50
 ```text
 /검색
 /내지갑
-/계좌개설 상품:INZFX001
+/계좌개설 상품:INZCU001
 /송금 수신자:본인_USD_외환계좌번호 금액:15000 출금계좌:__wallet__
 /환전 출금통화:USD 입금통화:EUR 금액:1
 /송금 수신자:본인_사용자_ID 금액:1 출금계좌:본인_USD_외환계좌번호
 /내지갑
-/그래프 종목:FX_USD
+/그래프 종목:CUR_USD
 ```
 
-출금/입금 통화의 외환통장은 먼저 개설한다. NWX는 정수, 외화는 소수점 6자리까지 지원한다. 1외화 단위당 NWX 시세가 실시간으로 움직이며, `$사건`의 `FX_USD` 같은 종목으로 환율 목표를 지정한다. 환전 중 사용한 두 시세, 수수료, 차감·입금액은 하나의 트랜잭션에 저장한다. 잔액 부족이나 통장 미개설이면 모두 롤백한다. 같은 통화 환전은 거부하며, 입금액은 내림·수수료는 올림하여 반올림 차익을 막는다.
+출금/입금 통화의 외환통장은 먼저 개설한다. NWX는 정수, 외화는 소수점 6자리까지 지원한다. 1외화 단위당 NWX 시세가 실시간으로 움직이며, `$사건`의 `CUR_USD` 같은 종목으로 환율 목표를 지정한다. 환전 중 사용한 두 시세, 수수료, 차감·입금액은 하나의 트랜잭션에 저장한다. 잔액 부족이나 통장 미개설이면 모두 롤백한다. 같은 통화 환전은 거부하며, 입금액은 내림·수수료는 올림하여 반올림 차익을 막는다.
 
 환전 수수료 기본값은 0.1%이고 국고에 입금된다. 외환통장은 상품 연이율에 따라 잔액을 늘리며 1마이크로 단위 미만 이자는 누적한다. `/내지갑`의 외환 평가액은 현재 환율을 적용한다. `/외환계좌`는 `/계좌개설`에 통합했고 상품 코드를 직접 입력한다.
 
@@ -163,7 +163,7 @@ $상품생성 CALL1 option INZST001 call 1500 30 1 100 50
 | `bond` | `name` → `market_price` → `total_supply` → `face_value` → `annual_rate` → `maturity_days` → `exchange_id` |
 | `option` | `underlying_code` → `option_type` → `strike_price` → `maturity_days` → `quantity` → `limit_price` → `volatility_percent` |
 | `currency` | `name` → `asset_code` → `nationality` |
-| `fxproduct` | `name` → `currency_code` → `annual_rate` |
+| `currencyproduct` | `name` → `currency_code` → `annual_rate` |
 
 각 인자의 의미는 다음과 같다. 금액은 상품의 결제 통화 기준이며 기본 통화는 NWX다.
 

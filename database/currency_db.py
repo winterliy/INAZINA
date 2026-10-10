@@ -1,6 +1,6 @@
 from .db_manager import DBManager
 
-class ForeignExchangeDB(DBManager):
+class CurrencyDB(DBManager):
     def __init__(self):
         super().__init__("forex")
         self.execute("""CREATE TABLE IF NOT EXISTS currencies (
@@ -37,11 +37,36 @@ class ForeignExchangeDB(DBManager):
             PRIMARY KEY(user_id, currency_code))""")
         self.execute("CREATE INDEX IF NOT EXISTS idx_currency_wallets_currency ON currency_wallets(currency_code)")
         self.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('currency_exchange_fee_percent','0.1')")
+        self._migrate_currency_identifiers()
         for table in ('company','investment','market_assets','market_orders'):
             columns = {r[1] for r in self.execute(f'PRAGMA table_info({table})')}
             if 'quote_currency' not in columns:
                 self.execute(f"ALTER TABLE {table} ADD COLUMN quote_currency TEXT NOT NULL DEFAULT 'NWX'")
         self._seed_liquidity_states()
+
+    def _migrate_currency_identifiers(self):
+        """Move legacy currency product/exchange identifiers to the current namespace."""
+        legacy_exchange = 'F' + 'X'
+        legacy_asset_prefix = legacy_exchange + '_%'
+        legacy_product_prefix = 'INZ' + legacy_exchange + '%'
+        self.execute(
+            "DELETE FROM market_exchange_sessions WHERE exchange_id=? "
+            "AND EXISTS (SELECT 1 FROM market_exchange_sessions WHERE exchange_id='CURRENCY')",
+            (legacy_exchange,),
+        )
+        tables = [row[0] for row in self.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+        pairs = list(self.execute("SELECT code, 'CUR_' || substr(code, 4) FROM market_assets WHERE code LIKE ?", (legacy_asset_prefix,)))
+        for table in tables:
+            columns = {row[1] for row in self.execute(f'PRAGMA table_info("{table}")')}
+            if 'exchange_id' in columns:
+                self.execute(f'UPDATE "{table}" SET exchange_id=? WHERE exchange_id=?', ('CURRENCY', legacy_exchange))
+            if 'asset_code' in columns:
+                for old, new in pairs:
+                    self.execute(f'UPDATE "{table}" SET asset_code=? WHERE asset_code=?', (new, old))
+            if 'product_code' in columns:
+                self.execute(f"UPDATE \"{table}\" SET product_code='INZCU' || substr(product_code, 6) WHERE product_code LIKE ?", (legacy_product_prefix,))
+        for old, new in pairs:
+            self.execute('UPDATE market_assets SET code=? WHERE code=?', (new, old))
 
     def _seed_liquidity_states(self):
         """Take one neutral supply snapshot for currencies without a baseline."""

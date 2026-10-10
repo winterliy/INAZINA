@@ -10,7 +10,7 @@ class CurrencyLiquidityTests(unittest.TestCase):
     tearDown = fixtures.InazinaTests.tearDown
 
     def _currency(self):
-        self.db.fx.execute(
+        self.db.currency.execute(
             "INSERT INTO currencies(code,name,reference_rate) VALUES ('LQD','유동화폐','100')"
         )
 

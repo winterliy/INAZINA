@@ -75,7 +75,7 @@ class CatalogManager:
             if conn.execute("SELECT 1 FROM settings WHERE key=?", (self.VERSION,)).fetchone():
                 return False
             # Never overwrite an operator-created listing with the same code.
-            codes = [f'INZ{k}{i:03d}' for k in ('ST','ETF','CB','FU','MF','IF','CM','TB','OP','SV','LN','FX') for i in range(1, self.CATALOG_SIZE + 1)]
+            codes = [f'INZ{k}{i:03d}' for k in ('ST','ETF','CB','FU','MF','IF','CM','TB','OP','SV','LN','CU') for i in range(1, self.CATALOG_SIZE + 1)]
             for code in codes:
                 if self.db.code_locations(conn, code):
                     raise ValueError(f"기본 상품 코드가 기존 상품과 겹칩니다: {code}")
@@ -128,14 +128,14 @@ class CatalogManager:
                        ('JPY','게임 엔','일본',10),('GBP','게임 파운드','영국',1900)]
             initial += [(f'IZC{i:02d}',f'이자니아 {i:02d} 통화',f'이자니아 연방 {i:02d}',100+i*25) for i in range(1,21)]
             for i,(currency,name,country,price) in enumerate(initial,1):
-                code = f'FX_{currency}'
+                code = f'CUR_{currency}'
                 if conn.execute("SELECT 1 FROM currencies WHERE code=?",(currency,)).fetchone():
                     raise ValueError(f"기본 통화 코드 중복: {currency}")
                 if self.db.code_locations(conn,code):
                     raise ValueError(f"외환 종목 코드 중복: {code}")
-                conn.execute("INSERT INTO market_assets(code,name,exchange_id,price,type,market_volatility) VALUES (?,?, 'FX',?,'forex',.05)", (code,f'{name}/NWX',price))
+                conn.execute("INSERT INTO market_assets(code,name,exchange_id,price,type,market_volatility) VALUES (?,?, 'CURRENCY',?,'forex',.05)", (code,f'{name}/NWX',price))
                 conn.execute("INSERT INTO currencies(code,name,asset_code) VALUES (?,?,?)", (currency,name,code))
                 conn.execute("INSERT OR IGNORE INTO country_currencies VALUES (?,?)", (country,currency))
-                conn.execute("INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,interest_cycle,compound_type,issuer,status,quote_currency,product_kind) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (f'INZFX{i:03d}',f'{name} 외환통장',1+(i%5)*.25,0,0,0,1,'currency','active',currency,'currency_saving'))
+                conn.execute("INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,interest_cycle,compound_type,issuer,status,quote_currency,product_kind) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (f'INZCU{i:03d}',f'{name} 외환통장',1+(i%5)*.25,0,0,0,1,'currency','active',currency,'currency_saving'))
             conn.execute("INSERT INTO settings(key,value) VALUES (?, '1')", (self.VERSION,))
             return True

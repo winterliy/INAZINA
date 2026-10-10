@@ -16,7 +16,7 @@ COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','�
 TYPES = {'company':'stock','주식':'stock','자산':'asset','ETF':'etf','선물':'future','주식선물':'future',
          '회사채':'corporatebond','일반펀드':'fund','펀드':'fund','인덱스펀드':'indexfund',
          '현물원자재':'commodity','원자재':'commodity','국채':'bond','저축':'saving',
-         '대출':'loan','옵션':'option','통화':'currency','외환통장':'fxproduct','ELS':'els',
+         '대출':'loan','옵션':'option','통화':'currency','외환통장':'currencyproduct','ELS':'els',
          'preferred':'stock','preferredstock':'stock','우선주':'stock',
          **{k:k for k in ENTITIES}, **{v:k for k,v in KINDS.items()}}
 USAGE = {
@@ -54,7 +54,7 @@ CREATE_ARGS = {
  'bond':('name','market_price','total_supply','face_value','annual_rate','maturity_days','exchange_id'),
  'option':('underlying_code','option_type','strike_price','maturity_days','quantity','limit_price','volatility_percent'),
  'currency':('name','asset_code','nationality'),
- 'fxproduct':('name','currency_code','annual_rate'),
+ 'currencyproduct':('name','currency_code','annual_rate'),
  'preferred':('name','parent_company_code','capital','total_shares','share_price','exchange_id'),
  'els':('name','face_value','total_supply','underlyings','annual_coupon','maturity_days',
         'observation_days','redemption_levels','maturity_level','knock_in_level','subscription_days','exchange_id'),
@@ -261,12 +261,12 @@ class AdminCommandsManager:
     def create(self,actor,raw,operation='create'):
         parts=raw.split(maxsplit=2)
         if len(parts)<2:
-            raise ValueError('$상품생성 '+USAGE['상품생성']+' · 상품종류: company, preferred, saving, loan, asset, etf, future, corporatebond, fund, indexfund, commodity, bond, option, currency, fxproduct, els')
+            raise ValueError('$상품생성 '+USAGE['상품생성']+' · 상품종류: company, preferred, saving, loan, asset, etf, future, corporatebond, fund, indexfund, commodity, bond, option, currency, currencyproduct, els')
         code,kind=parts[:2]
         category=TYPES.get(kind,TYPES.get(kind.lower()))
         profile=product_profile(kind)
         if category is None:
-            raise ValueError('상품종류: company, preferred, saving, loan, asset, etf, future, corporatebond, fund, indexfund, commodity, bond, option, currency, fxproduct, els')
+            raise ValueError('상품종류: company, preferred, saving, loan, asset, etf, future, corporatebond, fund, indexfund, commodity, bond, option, currency, currencyproduct, els')
         if len(parts)!=3:raise ValueError('사용법: '+creation_usage(kind,'상품수정' if operation=='edit' else '상품생성'))
         tail=parts[2]
         # Existing structured invocations remain compatible; the documented interface is positional.
@@ -363,13 +363,13 @@ class AdminCommandsManager:
             InterestManager(self.db).process_user_interests(row[0])
         with self.db.atomic() as conn:
             self.control.require(actor,conn)
-            fx=conn.execute("SELECT *,quote_currency AS currency_code FROM accounts WHERE account_number=? AND account_type='currency_saving'",(identity,)).fetchone()
+            currency_account=conn.execute("SELECT *,quote_currency AS currency_code FROM accounts WHERE account_number=? AND account_type='currency_saving'",(identity,)).fetchone()
             bank=conn.execute('SELECT * FROM accounts WHERE account_number=?',(identity,)).fetchone()
             user=conn.execute('SELECT * FROM users WHERE user_id=?',(identity,)).fetchone()
-            if sum(bool(x) for x in (fx,bank,user))!=1:
+            if sum(bool(x) for x in (currency_account,bank,user))!=1:
                 raise ValueError('사용자 ID 또는 계좌번호를 확인해주세요.')
-            if fx:
-                self.bot.currency_mgr._settle(conn,fx['user_id'],time.time())
+            if currency_account:
+                self.bot.currency_mgr._settle(conn,currency_account['user_id'],time.time())
                 current=conn.execute("SELECT balance_units FROM accounts WHERE account_number=? AND account_type='currency_saving'",(identity,)).fetchone()[0]
                 amount=Decimal(raw_amount)
                 units=amount*SCALE
@@ -377,7 +377,7 @@ class AdminCommandsManager:
                 value=self.adjust(current,operation,int(units))
                 if not 0<=value<=MAX_UNITS:raise ValueError('외화 잔고는 0 이상이며 저장 한도 이하여야 합니다.')
                 conn.execute("UPDATE accounts SET balance_units=? WHERE account_number=? AND account_type='currency_saving'",(value,identity))
-                unit=fx['currency_code']; before=display_units(current); after=display_units(value)
+                unit=currency_account['currency_code']; before=display_units(current); after=display_units(value)
             else:
                 table,key='accounts','account_number' if bank else 'user_id'
                 if not bank:table='users'

@@ -86,10 +86,10 @@ class SlashCommandRegistry:
             self.commands[command].autocomplete(argument)(self.currency_autocomplete)
 
     async def currency_autocomplete(self, interaction, current):
-        rows = self.bot.db.fx.execute("SELECT code,name FROM currencies WHERE status='active' ORDER BY code")
+        rows = self.bot.db.currency.execute("SELECT code,name FROM currencies WHERE status='active' ORDER BY code")
         current = current.casefold()
         user=self.bot.db.users.get_user(str(interaction.user.id))
-        national=self.bot.db.fx.execute_one('SELECT currency_code FROM country_currencies WHERE nationality=?',
+        national=self.bot.db.currency.execute_one('SELECT currency_code FROM country_currencies WHERE nationality=?',
                                            (user['nationality'],)) if user else None
         preferred=national['currency_code'] if national else 'NWX'
         rows=sorted(rows,key=lambda r:(r['code']!=preferred,r['code']!='NWX',r['code']))
@@ -358,7 +358,7 @@ class SlashCommandRegistry:
             for item in info["accounts"]
         ]
         account_lines.extend(f"• 외환통장 {str(item.get('product_name') or item['product_code'])[:60]} (`{item['account_number']}`): "
-            f"{display_units(item['balance_units'])} {item['currency_code']} · 평가 {item['value_nwx']:,} NWX" for item in info.get('currency_saving_accounts',[]))
+            f"{display_units(item['balance_units'])} {item['currency_code']} · 평가 {item['value_nwx']:,} NWX" for item in info.get('currency_accounts',[]))
         accounts = "\n".join(account_lines)
         embed.add_field(name="🏦 보유 통장", value=accounts[:1024] or "개설된 통장이 없습니다.", inline=False)
         position_lines = []
@@ -412,7 +412,7 @@ class SlashCommandRegistry:
         embed.add_field(name='📄 작성 옵션',value='\n'.join(written_lines)[:1024] or '작성 중인 옵션이 없습니다.',inline=False)
         from functions.wallet_views import WalletCategoryView, els_position_lines, preferred_claim_lines
         sections={'accounts':account_lines[:len(info['accounts'])],
-                  'currency_saving_accounts':account_lines[len(info['accounts']):],
+                  'currency_accounts':account_lines[len(info['accounts']):],
                   'treasury_bond':bond_lines,'written':written_lines,
                   'els':els_position_lines(info.get('els_positions', [])),
                   'preferred_claims':preferred_claim_lines(info.get('preferred_dividend_claims', []))}
@@ -792,9 +792,9 @@ class SlashCommandRegistry:
             # Keep both recipient types discoverable in the initial autocomplete list.
             treasury = [item for item in candidates if item[1].name.startswith("🏛️")][:1]
             users = [item for item in candidates if item[1].name.startswith("👤")][:12]
-            currency_saving_accounts = [item for item in candidates if item[1].name.startswith("🌐")][:5]
-            bank_accounts = [item for item in candidates if item[1].name.startswith("🏦")][:12-len(currency_saving_accounts)]
-            candidates = treasury + users + bank_accounts + currency_saving_accounts
+            currency_accounts = [item for item in candidates if item[1].name.startswith("🌐")][:5]
+            bank_accounts = [item for item in candidates if item[1].name.startswith("🏦")][:12-len(currency_accounts)]
+            candidates = treasury + users + bank_accounts + currency_accounts
         return [item[1] for item in candidates[:25]]
 
     async def source_account_autocomplete(self, interaction: discord.Interaction, current: str):

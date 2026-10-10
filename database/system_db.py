@@ -172,7 +172,7 @@ class SystemDB(DBManager):
                 WHERE exchange_id IS NOT NULL AND TRIM(exchange_id) <> ''
                 UNION SELECT DISTINCT TRIM(exchange_id) FROM treasury_bond_products
                 WHERE exchange_id IS NOT NULL AND TRIM(exchange_id) <> ''
-                UNION SELECT 'FX'
+                UNION SELECT 'CURRENCY'
             ) exchanges CROSS JOIN market_session s WHERE s.session_id=1""")
         self.execute("""CREATE TABLE IF NOT EXISTS market_event_targets (
             event_id INTEGER NOT NULL,

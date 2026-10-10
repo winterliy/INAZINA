@@ -50,10 +50,10 @@ class CommandPerformanceTests(unittest.TestCase):
     def test_currency_snapshot_matches_exact_rounding_and_refreshes_each_request(self):
         from managers.currency_manager import CurrencyManager, CurrencyReadSnapshot
         from managers.currency_exchange_manager import CurrencyExchangeManager
-        self.db.assets.register_asset('FX_T','환율','FX',137,'forex')
+        self.db.assets.register_asset('CUR_T','환율','FX',137,'forex')
         with self.db.atomic() as conn:
             conn.execute("INSERT INTO currencies(code,name,reference_rate,decimal_places,rate_multiplier) VALUES ('AAA','A','0.333333333333',2,'1.17')")
-            conn.execute("INSERT INTO currencies(code,name,asset_code,decimal_places) VALUES ('BBB','B','FX_T',6)")
+            conn.execute("INSERT INTO currencies(code,name,asset_code,decimal_places) VALUES ('BBB','B','CUR_T',6)")
         with self.db.readonly() as conn:
             queries = []
             conn.set_trace_callback(queries.append)
@@ -67,7 +67,7 @@ class CommandPerformanceTests(unittest.TestCase):
             before = len(queries)
             snapshot.rate_nwx('BBB'); snapshot.convert(1000000,'AAA','BBB')
             self.assertEqual(len(queries),before)
-        self.db.assets.update_price('FX_T',139)
+        self.db.assets.update_price('CUR_T',139)
         self.assertEqual(next(row['rate'] for row in self.bot.currency_mgr.rates() if row['code']=='BBB'),139)
         self.assertEqual(snapshot.rate_nwx('BBB'),137)
 

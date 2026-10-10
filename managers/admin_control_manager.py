@@ -23,7 +23,7 @@ ENTITIES = {
     'loan': ('liability','product_code',None,None),
     'option': ('option_contracts','contract_code',None,None),
     'currency': ('currencies','code',None,None),
-    'fxproduct': ('saving','product_code',None,None),
+    'currencyproduct': ('saving','product_code',None,None),
 }
 KINDS = {'etf':'etf','future':'stock_future','corporatebond':'corporate_bond',
          'fund':'mutual_fund','indexfund':'index_fund','commodity':'commodity_spot','els':'els'}
@@ -40,8 +40,8 @@ EXAMPLES = {
     'saving': {'interest_rate':3,'deposit_amount':1000,'maturity_days':30,'interest_cycle':86400,'compound_type':1,'issuer':'Inazina'},
     'loan': {'interest_rate':5,'loan_limit':1000000,'maturity_days':30,'interest_cycle':86400,'min_credit_score':500,'issuer':'Inazina','repayment_cycle_seconds':0,'repayment_amount':0},
     'option': {'underlying_code':'INZST001','option_type':'call','strike_price':1120,'maturity_days':30,'quantity':1,'limit_price':100,'volatility_percent':60},
-    'currency': {'asset_code':'FX_NEW','nationality':'새 국가'},
-    'fxproduct': {'quote_currency':'USD','interest_rate':1,'product_kind':'currency_saving'},
+    'currency': {'asset_code':'CUR_NEW','nationality':'새 국가'},
+    'currencyproduct': {'quote_currency':'USD','interest_rate':1,'product_kind':'currency_saving'},
     'els': {'face_value':1000,'annual_coupon':12,'maturity_days':180,'underlyings':['INZST001'],
             'observation_days':[30,60,90],'redemption_levels':[90,85,80],
             'maturity_level':75,'knock_in_level':60,'subscription_days':1,'exchange_id':'INZ'},
@@ -85,7 +85,7 @@ class AdminControlManager:
         if (not code and not (category=='option' and operation=='create')) or len(code)>80:
             raise ValueError("코드는 1~80자로 입력해주세요.")
         extra = dict(extra or {})
-        if category == 'fxproduct':
+        if category == 'currencyproduct':
             # Keep the administrator command's older field names at the boundary.
             if 'currency_code' in extra:
                 extra['quote_currency'] = extra.pop('currency_code')
@@ -119,7 +119,7 @@ class AdminControlManager:
             self.require(actor,conn)
             existing = conn.execute(
                 f'SELECT * FROM "{table}" WHERE "{key}"=?' +
-                (" AND product_kind='currency_saving'" if category == 'fxproduct' else ''),
+                (" AND product_kind='currency_saving'" if category == 'currencyproduct' else ''),
                 (code,),
             ).fetchone()
             if category in KINDS and existing and existing['product_type']!=KINDS[category]:
@@ -178,7 +178,7 @@ class AdminControlManager:
                 values['currency_code']=str(values['currency_code']).strip().upper()
             if 'quote_currency' in values:
                 values['quote_currency']=str(values['quote_currency']).strip().upper()
-                if category not in {'stock','asset','commodity','fxproduct'} and values['quote_currency']!='NWX':
+                if category not in {'stock','asset','commodity','currencyproduct'} and values['quote_currency']!='NWX':
                     raise ValueError('외화 결제 종목은 주식·현물 원자재만 지원합니다.')
                 if not conn.execute("SELECT 1 FROM currencies WHERE code=? AND status='active'",(values['quote_currency'],)).fetchone():
                     raise ValueError('활성 결제 통화를 입력해주세요.')
@@ -195,7 +195,7 @@ class AdminControlManager:
             if operation=='create':
                 values[key] = code
                 values.update({k:v for k,v in EXAMPLES[category].items() if k in columns and k not in values})
-                if category == 'fxproduct':
+                if category == 'currencyproduct':
                     values['product_kind'] = 'currency_saving'
                 if 'name' in columns and not values.get('name'):
                     raise ValueError("상품 이름을 입력해주세요.")
@@ -321,11 +321,11 @@ class AdminControlManager:
                     values['maturity_epoch'] = int(time.time())+int(merged['maturity_days'])*86400
                 elif any(k in extra for k in ('underlying_code','issuer_code','maturity_days','face_value','contract_size','maturity_epoch')):
                     raise ValueError("발행된 파생·채권 계약 조건은 변경할 수 없습니다. 새 상품을 생성해주세요.")
-            if category=='fxproduct' and not conn.execute("SELECT 1 FROM currencies WHERE code=? AND status='active'",(merged.get('quote_currency'),)).fetchone():
+            if category=='currencyproduct' and not conn.execute("SELECT 1 FROM currencies WHERE code=? AND status='active'",(merged.get('quote_currency'),)).fetchone():
                 raise ValueError("활성 통화 코드를 입력해주세요.")
-            if category=='fxproduct' and existing and 'quote_currency' in extra and extra['quote_currency']!=existing['quote_currency']:
+            if category=='currencyproduct' and existing and 'quote_currency' in extra and extra['quote_currency']!=existing['quote_currency']:
                 raise ValueError("외환통장의 통화는 변경할 수 없습니다. 새 상품을 생성해주세요.")
-            if category=='fxproduct' and existing and 'interest_rate' in extra:
+            if category=='currencyproduct' and existing and 'interest_rate' in extra:
                 for account in conn.execute("SELECT DISTINCT user_id FROM accounts WHERE account_type='currency_saving' AND product_code=?",(code,)).fetchall():
                     self.bot.currency_mgr._settle(conn,account['user_id'],time.time())
             if category=='currency':

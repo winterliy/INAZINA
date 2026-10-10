@@ -93,8 +93,8 @@ class FinancialTests(unittest.TestCase):
 
     def test_foreign_precision_and_cash_drift(self):
         self.setup_company()
-        self.db.fx.execute("INSERT INTO currencies(code,name,asset_code,reference_rate) VALUES ('USD','Dollar',NULL,1500)")
-        self.db.fx.execute("UPDATE currencies SET decimal_places=2 WHERE code='USD'")
+        self.db.currency.execute("INSERT INTO currencies(code,name,asset_code,reference_rate) VALUES ('USD','Dollar',NULL,1500)")
+        self.db.currency.execute("UPDATE currencies SET decimal_places=2 WHERE code='USD'")
         self.db.companies.execute("UPDATE company SET quote_currency='USD' WHERE company_code='CO'")
         self.fin.manual('admin','CO','소수점매출',[{'account':'receivables','amount':'1.25'},{'account':'revenue','amount':'-1.25'}])
         r=self.fin.report('CO')

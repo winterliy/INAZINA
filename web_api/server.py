@@ -216,7 +216,7 @@ def create_country_account(actor_id, country_id, password):
     digest = password_hash(password, salt)
     from database.db_manager import DBManager
     with DBManager.admin_scope(actor_id):
-        with DBManager.atomic(("users", "fx", "system")) as connection:
+        with DBManager.atomic(("users", "currency", "system")) as connection:
             ensure_auth_table(connection)
             country = connection.execute(
                 "SELECT 1 FROM country_currencies n JOIN currencies c ON c.code=n.currency_code "
@@ -258,7 +258,7 @@ def save_password(user_id, password, *, create=False, nickname="", country_id=""
         raise ValueError("discord_identity_invalid")
     validate_password(password)
     db = domain().db
-    with db.atomic(("users", "fx")) as connection:
+    with db.atomic(("users", "currency")) as connection:
         ensure_auth_table(connection)
         if create:
             country = connection.execute(

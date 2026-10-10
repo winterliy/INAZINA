@@ -129,7 +129,7 @@ class FractionalTradingTests(unittest.TestCase):
         self.stock(price=1)
         self.command('상품생성', 'US company 미국주식 게임 100000 10 1 EX 1 {"quote_currency":"USD"}')
         self.assertTrue(self.bot.order_book.place_limit_order('citizen', 'US', 'buy', '.005', 1)[0])
-        self.assertEqual(self.db.fx.execute_one("SELECT balance_units FROM currency_wallets WHERE user_id='citizen' AND currency_code='USD'")[0], 9990000)
+        self.assertEqual(self.db.currency.execute_one("SELECT balance_units FROM currency_wallets WHERE user_id='citizen' AND currency_code='USD'")[0], 9990000)
         self.assertEqual(self.holding('citizen', 'US'), .005)
         async def national():
             return ActionModal(self.bot, 'admin', '매수').execute(['ST', '.5', '1'])

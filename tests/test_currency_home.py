@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from pathlib import Path
 import test_inazina as fixtures
 from database.user_db import TREASURY_USER_ID
-from database.currency_db import ForeignExchangeDB
+from database.currency_db import CurrencyDB
 from managers.currency_manager import CurrencyManager, SCALE
 from managers.admin_commands_manager import AdminCommandsManager
 from functions.currency_display import native_summary
@@ -17,12 +17,12 @@ class CurrencyHomeTests(unittest.TestCase):
     tearDown=fixtures.InazinaTests.tearDown
 
     def configure(self):
-        self.db.fx.execute("INSERT INTO currencies(code,name,reference_rate) VALUES ('AAA','A국 화폐','1')")
+        self.db.currency.execute("INSERT INTO currencies(code,name,reference_rate) VALUES ('AAA','A국 화폐','1')")
         cmd=AdminCommandsManager(self.bot)
         cmd.execute('admin','서버설치','123 A국 AAA')
         cmd.execute('admin','서버설치','낙원 NWX',guild_id=456)
         cmd.execute('admin','환율수정','NWX AAA 3')
-        self.db.fx.execute("INSERT INTO country_currencies VALUES ('미국','AAA')")
+        self.db.currency.execute("INSERT INTO country_currencies VALUES ('미국','AAA')")
         return cmd
 
     def test_registration_uses_server_and_existing_citizens_keep_nation_and_cash(self):
@@ -48,23 +48,23 @@ class CurrencyHomeTests(unittest.TestCase):
         with self.db.atomic() as conn:
             self.assertEqual(CurrencyManager.balance(conn,'citizen','AAA'),30_000*SCALE)
         self.assertEqual(self.db.users.get_treasury_balance(),9_980_000)
-        rows=self.db.fx.execute('SELECT * FROM basic_income_payments')
+        rows=self.db.currency.execute('SELECT * FROM basic_income_payments')
         self.assertEqual(len(rows),2)
         self.assertEqual({r['source_currency'] for r in rows},{'NWX'})
         self.assertEqual(len({r['batch_id'] for r in rows}),1)
         cmd.execute('admin','환율수정','NWX AAA 4')
-        self.assertEqual(self.db.fx.execute_one("SELECT target_units FROM basic_income_payments WHERE user_id='citizen'")[0],30_000*SCALE)
+        self.assertEqual(self.db.currency.execute_one("SELECT target_units FROM basic_income_payments WHERE user_id='citizen'")[0],30_000*SCALE)
 
     def test_missing_quote_rolls_back_all_recipients_and_budget(self):
         self.configure()
-        self.db.fx.execute("INSERT INTO currencies(code,name) VALUES ('BAD','환율 없음')")
-        self.db.fx.execute("UPDATE country_currencies SET currency_code='BAD' WHERE nationality='미국'")
+        self.db.currency.execute("INSERT INTO currencies(code,name) VALUES ('BAD','환율 없음')")
+        self.db.currency.execute("UPDATE country_currencies SET currency_code='BAD' WHERE nationality='미국'")
         before=self.db.users.get_treasury_balance()
         ok,msg=self.bot.admin_mgr.distribute_basic_income(10000,currency_code='NWX')
         self.assertFalse(ok,msg)
         self.assertEqual(self.db.users.get_treasury_balance(),before)
         self.assertEqual(self.db.users.get_user('admin')['cash'],1_000_000)
-        self.assertEqual(self.db.fx.execute_one('SELECT COUNT(*) FROM basic_income_payments')[0],0)
+        self.assertEqual(self.db.currency.execute_one('SELECT COUNT(*) FROM basic_income_payments')[0],0)
 
     def test_default_income_and_admin_balance_use_actors_home_currency(self):
         cmd=self.configure()
@@ -109,26 +109,26 @@ class CurrencyHomeTests(unittest.TestCase):
 
     def test_migration_is_idempotent_and_all_product_denominations_present(self):
         self.configure();before=self.db.users.get_user('citizen')['cash']
-        fx=ForeignExchangeDB();fx.close()
+        fx=CurrencyDB();fx.close()
         self.assertEqual(self.db.users.get_user('citizen')['cash'],before)
         for table in ('company','investment','market_assets','saving','liability','treasury_bond_products','option_contracts','accounts','loans'):
-            self.assertIn('quote_currency',{r['name'] for r in self.db.fx.execute(f'PRAGMA table_info({table})')})
+            self.assertIn('quote_currency',{r['name'] for r in self.db.currency.execute(f'PRAGMA table_info({table})')})
 
     def test_dynamic_currency_quote_keeps_event_price_movement(self):
         cmd=self.configure()
-        self.db.assets.register_asset('FX_T','시세 외환','FX',100,'forex')
-        self.db.fx.execute("INSERT INTO currencies(code,name,asset_code) VALUES ('TST','시세 화폐','FX_T')")
+        self.db.assets.register_asset('CUR_T','시세 외환','FX',100,'forex')
+        self.db.currency.execute("INSERT INTO currencies(code,name,asset_code) VALUES ('TST','시세 화폐','CUR_T')")
         cmd.execute('admin','환율수정','NWX TST 3')
         with self.db.atomic() as conn:
             self.assertAlmostEqual(float(CurrencyManager.rate(conn,'NWX')/CurrencyManager.rate(conn,'TST')),3)
-        self.db.assets.update_price('FX_T',200)
+        self.db.assets.update_price('CUR_T',200)
         with self.db.atomic() as conn:
             self.assertAlmostEqual(float(CurrencyManager.rate(conn,'NWX')/CurrencyManager.rate(conn,'TST')),1.5)
 
     def test_currency_precision_controls_settlement_input_and_relative_text(self):
         cmd=self.configure()
-        self.db.fx.execute("UPDATE currencies SET decimal_places=2 WHERE code='AAA'")
-        self.db.fx.execute("INSERT INTO currencies(code,name,reference_rate,decimal_places) VALUES ('KRW','원','1/1000',0)")
+        self.db.currency.execute("UPDATE currencies SET decimal_places=2 WHERE code='AAA'")
+        self.db.currency.execute("INSERT INTO currencies(code,name,reference_rate,decimal_places) VALUES ('KRW','원','1/1000',0)")
         from functions.currency_display import MoneyDisplay
         display=MoneyDisplay(self.db,'citizen')
         self.assertEqual(display.relative(10),'30.00 AAA')
@@ -182,9 +182,9 @@ class CurrencyHomeTests(unittest.TestCase):
 
     def test_native_currency_deposit_is_a_home_account_not_foreign_account(self):
         self.configure()
-        self.db.fx.execute("INSERT INTO currency_saving_products(product_code,name,currency_code,annual_rate) VALUES ('A_SAVE','A국 예금','AAA',0)")
+        self.db.products.execute("INSERT INTO saving(product_code,name,interest_rate,quote_currency,product_kind) VALUES ('A_SAVE','A국 예금',0,'AAA','currency_saving')")
         number=self.bot.currency_mgr.open_account('citizen','A_SAVE')
-        self.db.fx.execute('UPDATE currency_saving_accounts SET balance_units=? WHERE account_number=?',(100*SCALE,number))
+        self.db.accounts.execute("UPDATE accounts SET balance_units=? WHERE account_number=? AND account_type='currency_saving'",(100*SCALE,number))
         info=self.bot.user_mgr.get_total_assets('citizen',settle=False)
         self.assertEqual(info['home_account_total_home'],100)
         self.assertEqual(info['foreign_account_total_home'],0)

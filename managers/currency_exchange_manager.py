@@ -91,7 +91,7 @@ class CurrencyExchangeManager:
         now = time.time()
         with self.db.atomic() as conn:
             from managers.market_session_manager import MarketSessionManager
-            halt = MarketSessionManager(self.db).trading_error(conn=conn, now=now, exchange_id='FX')
+            halt = MarketSessionManager(self.db).trading_error(conn=conn, now=now, exchange_id='CURRENCY')
             if halt:
                 raise ValueError(halt)
             self._user(conn, user_id)
@@ -156,12 +156,12 @@ class CurrencyExchangeManager:
             def endpoint(number,owner=None):
                 if number=='__wallet__' and owner is not None:
                     return ('users','cash','user_id',owner,owner,'NWX',SCALE)
-                fx = conn.execute("SELECT *,quote_currency AS currency_code FROM accounts WHERE account_number=? AND account_type='currency_saving'",(number,)).fetchone()
-                if fx:
-                    if owner is not None and str(fx['user_id'])!=owner:
+                currency_account = conn.execute("SELECT *,quote_currency AS currency_code FROM accounts WHERE account_number=? AND account_type='currency_saving'",(number,)).fetchone()
+                if currency_account:
+                    if owner is not None and str(currency_account['user_id'])!=owner:
                         raise ValueError('출금 계좌는 본인 명의여야 합니다.')
-                    self._user(conn,fx['user_id'])
-                    return ('accounts','balance_units','account_number',number,str(fx['user_id']),fx['currency_code'],1)
+                    self._user(conn,currency_account['user_id'])
+                    return ('accounts','balance_units','account_number',number,str(currency_account['user_id']),currency_account['currency_code'],1)
                 bank = conn.execute("SELECT * FROM accounts WHERE account_number=? AND account_type='saving'",(number,)).fetchone()
                 if bank:
                     if owner is not None and str(bank['user_id'])!=owner:
@@ -184,7 +184,7 @@ class CurrencyExchangeManager:
             fee = 0
             if src[5]!=dst[5]:
                 from managers.market_session_manager import MarketSessionManager
-                halt = MarketSessionManager(self.db).trading_error(conn=conn, now=now, exchange_id='FX')
+                halt = MarketSessionManager(self.db).trading_error(conn=conn, now=now, exchange_id='CURRENCY')
                 if halt:
                     raise ValueError(halt)
                 setting = conn.execute("SELECT value FROM settings WHERE key='currency_exchange_fee_percent'").fetchone()
