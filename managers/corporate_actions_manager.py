@@ -543,14 +543,15 @@ class CorporateActionsManager:
 
     @staticmethod
     def _reset_market_state(conn, code, price=None, shares=None):
-        for table in ('market_simulation_state', 'market_auto_targets', 'market_quote_overrides'):
+        for table in ('market_simulation_state', 'market_quote_overrides'):
             # Earlier installations use market_auto_target_state rather than a targets table.
             if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
                 conn.execute(f'DELETE FROM {table} WHERE asset_code=?', (code,))
         for table in ('market_auto_target_state',):
             if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
                 conn.execute(f'DELETE FROM {table} WHERE asset_code=?', (code,))
-        conn.execute("UPDATE market_event_targets SET state='superseded',completed_epoch=? WHERE asset_code=? AND state='active'", (int(time.time()), code))
+        from managers.market_manager import MarketManager
+        MarketManager(self.bot.db).clear_runtime_targets(code)
         conn.execute('DELETE FROM market_last_trade WHERE asset_code=?', (code,))
         if price is not None and shares is not None:
             conn.execute('UPDATE market_exchange_index_components SET previous_price=?,total_shares=? WHERE company_code=?', (price, shares, code))

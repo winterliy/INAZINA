@@ -580,13 +580,9 @@ def admin_users(search):
 
 
 def admin_events():
-    with connect_readonly() as connection:
-        rows = connection.execute(
-            "SELECT event_id,asset_code,event_type,severity,starts_epoch,ends_epoch,created_by,"
-            "target_mode,target_value,volatility_percent FROM market_events "
-            "ORDER BY event_id DESC LIMIT 50"
-        ).fetchall()
-    return [dict(row) for row in rows]
+    # Events are intentionally process-local and are not exposed as durable
+    # database history through the web service.
+    return []
 
 
 def update_admin_user(actor, user_id, changes):

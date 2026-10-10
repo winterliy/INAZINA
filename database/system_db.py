@@ -193,6 +193,13 @@ class SystemDB(DBManager):
                                    ("jump_applied_epoch", "INTEGER")):
             if column not in target_columns:
                 self.execute(f"ALTER TABLE market_event_targets ADD COLUMN {column} {definition}")
+        # Event and automatic-target paths are runtime-only.  Remove legacy
+        # tables during startup so DB Browser never retains that transient state.
+        self.execute("DROP INDEX IF EXISTS idx_market_event_targets_asset")
+        self.execute("DROP INDEX IF EXISTS idx_market_events_active")
+        self.execute("DROP TABLE IF EXISTS market_event_targets")
+        self.execute("DROP TABLE IF EXISTS market_events")
+        self.execute("DROP TABLE IF EXISTS market_auto_targets")
 
     def _init_rate_triggers(self):
         """Keep browser edits validated and synchronized with dated interest."""

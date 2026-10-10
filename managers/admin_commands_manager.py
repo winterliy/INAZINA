@@ -245,9 +245,9 @@ class AdminCommandsManager:
                     self.control.entity(actor,category,'edit',args[0],price=str(value),conn=conn)
                 if category not in {'option','bond'}:
                     conn.execute('DELETE FROM market_quote_overrides WHERE asset_code=?',(args[0],))
-                conn.execute("UPDATE market_event_targets SET state='superseded',completed_epoch=? WHERE asset_code=? AND state='active'",(int(time.time()),args[0]))
                 conn.execute('DELETE FROM market_simulation_state WHERE asset_code=?',(args[0],))
-                conn.execute('DELETE FROM market_auto_targets WHERE asset_code=?',(args[0],))
+                from managers.market_manager import MarketManager
+                MarketManager(self.db).clear_runtime_targets(args[0])
                 self.control._audit(conn,actor,command,{'code':args[0],'operation':args[1],'before':current,'after':value})
                 return f'✅ {args[0]} 가격 {current:,} → {value:,} {row.get("quote_currency","NWX")}'
 
@@ -402,8 +402,8 @@ class AdminCommandsManager:
         self.control._number(target,1,integer=True)
         conn.execute('UPDATE market_assets SET price=? WHERE code=?',(target,row[0]))
         conn.execute('DELETE FROM market_simulation_state WHERE asset_code=?',(row[0],))
-        conn.execute('DELETE FROM market_auto_targets WHERE asset_code=?',(row[0],))
-        conn.execute("UPDATE market_event_targets SET state='superseded',completed_epoch=? WHERE asset_code=? AND state='active'",(int(time.time()),row[0]))
+        from managers.market_manager import MarketManager
+        MarketManager(self.db).clear_runtime_targets(row[0])
         self.control._audit(conn,actor,'currency.cross_rate',{'a':a,'b':b,'ratio':str(ratio),'before':str(ar),'after':target})
         return f'✅ 1 {a} = {Decimal(target)/br:.12g} {b} · {a} 시세 {target:,} NWX (정수 호가 반올림)'
 

@@ -358,6 +358,11 @@ class MarketManager:
         noise = float(target["noise_fraction"])
         if delta and elapsed < duration:
             shock, jump = sample_noise(target)
+            if jump:
+                with self._runtime_lock:
+                    live = self._runtime_events().get(str(code))
+                    if live is not None:
+                        live["jump_applied"] = True
             span = abs(target["target_price"] - target["start_price"])
             radius = min(baseline * .10, max(span * .12, baseline * .02)) * (target["volatility_percent"] / 100)
             taper = math.sin(math.pi * elapsed / duration)
@@ -493,7 +498,7 @@ class MarketManager:
 
     @staticmethod
     def _event_jump_fraction(target):
-        if target["jump_applied_epoch"] is not None:
+        if target.get("jump_applied") or target.get("jump_applied_epoch") is not None:
             return 0.0
         sign = 1 if target["event_type"] == "good" else -1
         return sign * .1 * float(target["volatility_percent"]) / 100

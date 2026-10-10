@@ -79,11 +79,9 @@ class MarketSessionManager:
     def _resume(cls, conn, exchange_id, state, resume_at):
         start = int(state["halt_started_epoch"] if state["halt_started_epoch"] is not None else resume_at)
         if resume_at > start:
-            scope, params = cls._asset_scope(exchange_id)
-            delta = resume_at - start
-            conn.execute(f"UPDATE market_events SET starts_epoch=starts_epoch+?, ends_epoch=ends_epoch+? WHERE asset_code IN ({scope}) AND ends_epoch>?", (delta, delta, *params, start))
-            conn.execute(f"UPDATE market_event_targets SET start_epoch=start_epoch+?, end_epoch=end_epoch+?, last_tick_epoch=CASE WHEN last_tick_epoch IS NULL THEN NULL ELSE last_tick_epoch+? END WHERE asset_code IN ({scope}) AND state='active'", (delta, delta, delta, *params))
-            conn.execute(f"UPDATE market_auto_targets SET start_epoch=start_epoch+?, end_epoch=end_epoch+? WHERE asset_code IN ({scope})", (delta, delta, *params))
+            # Event and automatic target paths are process-local.  Prices stay
+            # persisted; a restart or resumed exchange starts a fresh path.
+            pass
             conn.execute(f"UPDATE market_simulation_state SET last_epoch=last_epoch+? WHERE asset_code IN ({scope})", (delta, *params))
         conn.execute("""UPDATE market_exchange_sessions SET status='open', reason='', halt_started_epoch=NULL,
             resume_epoch=NULL, circuit_stage=NULL, updated_epoch=?, trading_halted=0 WHERE exchange_id=?""", (resume_at, exchange_id))
