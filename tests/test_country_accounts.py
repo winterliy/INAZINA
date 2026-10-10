@@ -167,6 +167,19 @@ class CountryAccountTests(unittest.TestCase):
                 0,
             )
 
+    def test_nation_status_account_can_authenticate(self):
+        with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
+            connection.execute(
+                "INSERT INTO users(user_id,nickname,nationality,status,role) "
+                "VALUES('20230216','Treasury','Testland','nation','nation')"
+            )
+        user = server.save_password("20230216", "TreasuryPass123")
+        self.assertEqual(user["role"], "nation")
+        self.assertEqual(
+            server.authenticate_password("20230216", "TreasuryPass123")["userId"],
+            "20230216",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

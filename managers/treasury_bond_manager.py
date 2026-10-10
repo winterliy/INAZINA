@@ -205,12 +205,6 @@ class TreasuryBondManager:
                     (face_value, bond["product_code"]),
                 )
                 conn.execute(
-                    "INSERT INTO assets.market_trade_history "
-                    "(asset_code, side, quantity, price, recorded_epoch) "
-                    "VALUES (?, 'buy', ?, ?, ?)",
-                    (bond["product_code"], amount // face_value, face_value, now),
-                )
-                conn.execute(
                     "INSERT INTO assets.market_price_history "
                     "(asset_code, price, recorded_epoch) VALUES (?, ?, ?) "
                     "ON CONFLICT(asset_code, recorded_epoch) DO UPDATE SET price = excluded.price",
@@ -295,13 +289,6 @@ class TreasuryBondManager:
                     )
                     if closed.rowcount != 1:
                         raise RuntimeError("국채 상태가 변경되어 상환을 취소했습니다.")
-                    if gross_interest:
-                        conn.execute(
-                            "INSERT INTO tax.tax_transactions "
-                            "(user_id, source, gross_amount, tax_amount, net_amount) "
-                            "VALUES (?, 'treasury_bond_interest', ?, ?, ?)",
-                            (holding["user_id"], gross_interest, tax, gross_interest - tax),
-                        )
                     redeemed.append({
                         "user_id": str(holding["user_id"]),
                         "name": str(holding["name"]),

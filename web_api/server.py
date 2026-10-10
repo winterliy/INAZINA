@@ -72,7 +72,7 @@ def identity(user_id):
             "SELECT cash FROM users WHERE user_id=? AND nationality=?",
             (TREASURY_USER_ID, row["nationality"]),
         ).fetchone() if country_account else None
-    if (not row or row["status"] != "active" or
+    if (not row or row["status"] not in {"active", "nation"} or
             (auth_table and credential is None)):
         return None
     role = "admin" if user_id in BOOTSTRAP_ADMIN_IDS else str(row["role"] or "user").strip().lower()
@@ -185,7 +185,7 @@ def set_hts_login_id(user_id, hts_id, password):
         with connect_db(timeout=5) as connection:
             ensure_auth_table(connection)
             user = connection.execute(
-                "SELECT 1 FROM users WHERE user_id=? AND status='active'", (user_id,),
+                "SELECT 1 FROM users WHERE user_id=? AND status IN ('active','nation')", (user_id,),
             ).fetchone()
             if not user:
                 raise ValueError("active_user_required")
@@ -281,14 +281,14 @@ def save_password(user_id, password, *, create=False, nickname="", country_id=""
                     "INSERT INTO users(user_id,nickname,nationality,cash,role) "
                     "VALUES (?,?,?,1000000,?)", (user_id, nickname or user_id, country_id, role),
                 )
-            elif user["status"] != "active":
+            elif user["status"] not in {"active", "nation"}:
                 raise ValueError("active_user_required")
             elif connection.execute(
                 "SELECT 1 FROM web_auth_credentials WHERE user_id=?", (user_id,),
             ).fetchone():
                 raise ValueError("account_exists")
         elif not connection.execute(
-            "SELECT 1 FROM users WHERE user_id=? AND status='active'", (user_id,),
+            "SELECT 1 FROM users WHERE user_id=? AND status IN ('active','nation')", (user_id,),
         ).fetchone():
             raise ValueError("active_user_required")
 

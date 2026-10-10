@@ -487,11 +487,6 @@ class OptionManager:
             self._settle_option_fill(conn, buy_order, sell_order, quantity, price, now)
             self._reduce_order(conn, buy_order, quantity, now)
             self._reduce_order(conn, sell_order, quantity, now)
-            conn.execute(
-                "INSERT INTO assets.market_trade_history "
-                "(asset_code, side, quantity, price, recorded_epoch) VALUES (?, ?, ?, ?, ?)",
-                (incoming["asset_code"], incoming["side"], quantity, price, now),
-            )
             fill_count += 1
             filled_quantity += quantity
             traded_value += quantity * price

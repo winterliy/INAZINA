@@ -230,7 +230,6 @@ class LotteryManager:
                     ):
                         raise ValueError('국고 잔액 한도를 초과하여 지급을 보류합니다.')
                     conn.execute('INSERT INTO lottery_payouts VALUES (?,?,?,?,?,?,?,?)',(ticket['ticket_id'],round['round_id'],ticket['user_id'],rank,gross,tax,net,now))
-                    conn.execute('INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount) VALUES (?,?,?,?,?)',(ticket['user_id'],'lottery_prize',gross,tax,net))
                     conn.execute('INSERT INTO lottery_pool_ledger(round_id,kind,rank,amount,ticket_id,recorded_epoch) VALUES (?,?,?,?,?,?)',(round['round_id'],'payout',rank,-gross,ticket['ticket_id'],now))
                     paid += gross
                 pools[rank-1] -= paid

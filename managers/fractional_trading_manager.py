@@ -259,7 +259,6 @@ class FractionalTradingManager:
             self._reduce(conn,buyer,units,currency,now)
             qty = quantity_number(Fraction(units,QUANTITY_SCALE))
             self.book._apply_execution_price(conn,asset['code'],price,now)
-            conn.execute('INSERT INTO market_trade_history(asset_code,side,quantity,price,recorded_epoch) VALUES (?,?,?,?,?)', (asset['code'],incoming['side'],qty,price,now))
             if source == 'company':
                 self.users._refresh_max_shareholder(conn,asset['code'])
             count += 1
@@ -312,7 +311,6 @@ class FractionalTradingManager:
                     self._debit(conn,user,currency,gross,account)
                     self._credit(conn,TREASURY_USER_ID,currency,gross,now=now)
                     self._add_lot(conn,user,code,account,units,price)
-                conn.execute('INSERT INTO market_trade_history(asset_code,side,quantity,price,recorded_epoch) VALUES (?,?,?,?,?)',(code,'sell' if sell else 'buy',qty,price,now))
                 if source=='company':
                     self.users._refresh_max_shareholder(conn,code)
             return True,f'✅ {asset["name"]} {qty:,} · {"매도" if sell else "매수"} 금액 {self._native(gross):,} {currency}'

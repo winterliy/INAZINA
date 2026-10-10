@@ -40,9 +40,9 @@ class UserDB(DBManager):
                 merged_cash += int(existing["cash"] or 0)
             self.conn.execute(
                 "INSERT INTO users(user_id,nickname,nationality,cash,status,role) "
-                "VALUES (?, '낙원국고', '낙원', ?, 'nation', 'nation') "
+                "VALUES (?, '낙원국고', '낙원', ?, 'active', 'nation') "
                 "ON CONFLICT(user_id) DO UPDATE SET cash=excluded.cash, "
-                "nationality='낙원', status='nation', role='nation'",
+                "nationality='낙원', status='active', role='nation'",
                 (TREASURY_USER_ID, merged_cash),
             )
             old_ids = (*LEGACY_TREASURY_USER_IDS,)
@@ -71,7 +71,6 @@ class UserDB(DBManager):
                 self.conn.execute(
                     "DELETE FROM users WHERE user_id IN (?,?)", LEGACY_TREASURY_USER_IDS
                 )
-        self.enforce_integer_money("users", ("cash",), "user_id")
         self.enforce_integer_money("users", ("cash",), "user_id")
 
     def create_user(self, user_id, nickname, nationality, cash=1000000, role='user'):

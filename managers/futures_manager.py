@@ -99,8 +99,6 @@ class FuturesManager:
                                  (product["product_code"],)).fetchone()[0]
             if gross > int(product["total_supply"]):
                 raise ValueError("선물 미결제 계약 한도가 부족합니다. 주문을 줄여주세요.")
-            conn.execute("INSERT INTO assets.market_trade_history (asset_code, side, quantity, price, recorded_epoch) "
-                         "VALUES (?, ?, ?, ?, ?)", (product["product_code"], incoming["side"], quantity, price, now))
             filled += quantity
         return filled
 

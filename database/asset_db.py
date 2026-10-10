@@ -7,30 +7,6 @@ class AssetDB(DBManager):
         self._init_db()
 
     def _init_db(self):
-        self.execute("""CREATE TABLE IF NOT EXISTS corporate_actions (
-            action_id INTEGER PRIMARY KEY AUTOINCREMENT, operation_key TEXT NOT NULL UNIQUE,
-            kind TEXT NOT NULL, source_code TEXT NOT NULL, target_code TEXT,
-            payload TEXT NOT NULL, recorded_epoch INTEGER NOT NULL)""")
-        self.execute("""CREATE TABLE IF NOT EXISTS dividend_distributions (
-            distribution_id INTEGER PRIMARY KEY AUTOINCREMENT, operation_key TEXT NOT NULL UNIQUE,
-            asset_code TEXT NOT NULL, kind TEXT NOT NULL, due_epoch INTEGER NOT NULL,
-            per_share INTEGER NOT NULL CHECK(per_share >= 0), quote_currency TEXT NOT NULL,
-            gross_amount INTEGER NOT NULL DEFAULT 0, recorded_epoch INTEGER NOT NULL)""")
-        distribution_columns = {row[1] for row in self.execute("PRAGMA table_info(dividend_distributions)")}
-        for column, declaration in {
-            "dividend_mode": "TEXT NOT NULL DEFAULT 'fixed' CHECK(dividend_mode IN ('fixed','percent'))",
-            "dividend_percent": "REAL NOT NULL DEFAULT 0 CHECK(dividend_percent >= 0 AND dividend_percent <= 100)",
-            "reference_price": "INTEGER CHECK(reference_price > 0)",
-        }.items():
-            if column not in distribution_columns:
-                self.execute(f"ALTER TABLE dividend_distributions ADD COLUMN {column} {declaration}")
-        self.execute("""CREATE TABLE IF NOT EXISTS dividend_payments (
-            payment_id INTEGER PRIMARY KEY AUTOINCREMENT, distribution_id INTEGER NOT NULL,
-            user_id TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity > 0),
-            gross_amount INTEGER NOT NULL CHECK(gross_amount >= 0), tax_nwx INTEGER NOT NULL DEFAULT 0,
-            net_units INTEGER NOT NULL CHECK(net_units >= 0), quote_currency TEXT NOT NULL,
-            UNIQUE(distribution_id, user_id))""")
-        self.execute("CREATE INDEX IF NOT EXISTS idx_dividend_payments_user ON dividend_payments(user_id, distribution_id)")
         self.execute("""CREATE TABLE IF NOT EXISTS corporate_equity_offerings (
             offering_id INTEGER PRIMARY KEY AUTOINCREMENT, asset_code TEXT NOT NULL,
             order_id INTEGER NOT NULL UNIQUE, quantity INTEGER NOT NULL CHECK(quantity > 0),
@@ -51,13 +27,6 @@ class AssetDB(DBManager):
         futures_columns = {row[1] for row in self.execute("PRAGMA table_info(futures_positions)")}
         if "net_pnl" not in futures_columns:
             self.execute("ALTER TABLE futures_positions ADD COLUMN net_pnl INTEGER NOT NULL DEFAULT 0")
-        self.execute("""CREATE TABLE IF NOT EXISTS product_settlements (
-            settlement_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id TEXT NOT NULL, product_code TEXT NOT NULL,
-            kind TEXT NOT NULL, quantity INTEGER NOT NULL,
-            gross_amount INTEGER NOT NULL, tax_amount INTEGER NOT NULL DEFAULT 0,
-            recorded_epoch INTEGER NOT NULL
-        )""")
         self.execute("""CREATE TABLE IF NOT EXISTS chart_preferences (
             user_id TEXT PRIMARY KEY,
             upper_indicators TEXT NOT NULL DEFAULT '["sma"]',
@@ -175,21 +144,6 @@ class AssetDB(DBManager):
             "ON market_price_history(recorded_epoch)"
         )
         self.enforce_integer_money("market_price_history", ("price",), "history_id")
-        self.execute(
-            """CREATE TABLE IF NOT EXISTS market_trade_history (
-                trade_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                asset_code TEXT NOT NULL,
-                side TEXT NOT NULL CHECK(side IN ('buy', 'sell')),
-                quantity INTEGER NOT NULL CHECK(quantity > 0),
-                price INTEGER NOT NULL,
-                recorded_epoch INTEGER NOT NULL
-            )"""
-        )
-        self.execute(
-            "CREATE INDEX IF NOT EXISTS idx_market_trade_history_code_time "
-            "ON market_trade_history(asset_code, recorded_epoch)"
-        )
-        self.enforce_integer_money("market_trade_history", ("price",), "trade_id")
         # A current quote is state, rather than a chart log. Keep one latest
         # fill per asset so clearing yesterday's candles does not reprice
         # options at a theoretical premium after an actual trade.
@@ -202,44 +156,6 @@ class AssetDB(DBManager):
             )"""
         )
         self.enforce_integer_money("market_last_trade", ("price",), "asset_code")
-        self.execute(
-            """INSERT INTO market_last_trade
-                (asset_code, price, recorded_epoch, trade_id)
-                SELECT h.asset_code, h.price, h.recorded_epoch, h.trade_id
-                FROM market_trade_history h
-                WHERE NOT EXISTS (
-                    SELECT 1 FROM market_trade_history newer
-                    WHERE newer.asset_code = h.asset_code AND (
-                        newer.recorded_epoch > h.recorded_epoch OR
-                        (newer.recorded_epoch = h.recorded_epoch
-                         AND newer.trade_id > h.trade_id)
-                    )
-                )
-                ON CONFLICT(asset_code) DO UPDATE SET
-                    price = excluded.price,
-                    recorded_epoch = excluded.recorded_epoch,
-                    trade_id = excluded.trade_id
-                WHERE excluded.recorded_epoch > market_last_trade.recorded_epoch
-                   OR (excluded.recorded_epoch = market_last_trade.recorded_epoch
-                       AND excluded.trade_id >= market_last_trade.trade_id)"""
-        )
-        for operation in ("INSERT", "UPDATE OF price"):
-            suffix = "insert" if operation == "INSERT" else "update"
-            self.execute(
-                f"""CREATE TRIGGER IF NOT EXISTS trg_market_last_trade_{suffix}
-                    AFTER {operation} ON market_trade_history BEGIN
-                    INSERT INTO market_last_trade
-                        (asset_code, price, recorded_epoch, trade_id)
-                    VALUES (NEW.asset_code, ROUND(NEW.price), NEW.recorded_epoch, NEW.trade_id)
-                    ON CONFLICT(asset_code) DO UPDATE SET
-                        price = excluded.price,
-                        recorded_epoch = excluded.recorded_epoch,
-                        trade_id = excluded.trade_id
-                    WHERE excluded.recorded_epoch > market_last_trade.recorded_epoch
-                       OR (excluded.recorded_epoch = market_last_trade.recorded_epoch
-                           AND excluded.trade_id >= market_last_trade.trade_id);
-                    END"""
-            )
         self.execute(
             """CREATE TABLE IF NOT EXISTS market_future_expiry_prices (
                 product_code TEXT PRIMARY KEY,
@@ -268,19 +184,6 @@ class AssetDB(DBManager):
                 total_shares INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(exchange_id, company_code)
             )"""
-        )
-        self.execute(
-            """CREATE TABLE IF NOT EXISTS market_exchange_index_history (
-                history_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                exchange_id TEXT NOT NULL,
-                index_value REAL NOT NULL,
-                recorded_epoch INTEGER NOT NULL,
-                UNIQUE(exchange_id, recorded_epoch)
-            )"""
-        )
-        self.execute(
-            "CREATE INDEX IF NOT EXISTS idx_exchange_index_history_time "
-            "ON market_exchange_index_history(exchange_id, recorded_epoch)"
         )
         self.execute(
             """CREATE TABLE IF NOT EXISTS leveraged_etf_state (
@@ -467,11 +370,7 @@ class AssetDB(DBManager):
         return self.execute_one("SELECT * FROM market_assets WHERE code = ?", (code,))
 
     def get_trade_history(self, code, since_epoch):
-        return self.execute(
-            "SELECT recorded_epoch, side, quantity, price FROM market_trade_history "
-            "WHERE asset_code = ? AND recorded_epoch >= ? ORDER BY recorded_epoch, trade_id",
-            (str(code), int(since_epoch)),
-        )
+        return []
 
     def get_last_trade(self, code):
         return self.execute_one(

@@ -20,22 +20,6 @@ class ForeignExchangeDB(DBManager):
             interest_remainder TEXT NOT NULL DEFAULT '0', last_interest_epoch REAL NOT NULL,
             UNIQUE(user_id, currency_code))""")
         self.execute("CREATE INDEX IF NOT EXISTS idx_fx_accounts_user ON fx_accounts(user_id)")
-        self.execute("""CREATE TABLE IF NOT EXISTS fx_transactions (
-            transaction_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
-            source_currency TEXT NOT NULL, target_currency TEXT NOT NULL,
-            source_units INTEGER NOT NULL, target_units INTEGER NOT NULL,
-            source_rate INTEGER NOT NULL, target_rate INTEGER NOT NULL,
-            fee_nwx INTEGER NOT NULL, recorded_epoch REAL NOT NULL)""")
-        self.execute("CREATE INDEX IF NOT EXISTS idx_fx_transactions_user_time ON fx_transactions(user_id,recorded_epoch)")
-        self.execute("""CREATE TABLE IF NOT EXISTS fx_transfer_transactions (
-            transaction_id INTEGER PRIMARY KEY AUTOINCREMENT, sender_id TEXT NOT NULL,
-            recipient_id TEXT NOT NULL, source_account TEXT, target_account TEXT,
-            source_currency TEXT NOT NULL, target_currency TEXT NOT NULL,
-            source_units INTEGER NOT NULL, target_units INTEGER NOT NULL,
-            source_rate INTEGER NOT NULL, target_rate INTEGER NOT NULL,
-            fee_nwx INTEGER NOT NULL, recorded_epoch REAL NOT NULL)""")
-        self.execute("CREATE INDEX IF NOT EXISTS idx_fx_transfers_sender ON fx_transfer_transactions(sender_id,recorded_epoch)")
-        self.execute("CREATE INDEX IF NOT EXISTS idx_fx_transfers_recipient ON fx_transfer_transactions(recipient_id,recorded_epoch)")
         self.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('fx_fee_percent','0.1')")
         for table in ('company','investment','market_assets','market_orders'):
             columns = {r[1] for r in self.execute(f'PRAGMA table_info({table})')}

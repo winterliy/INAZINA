@@ -50,9 +50,7 @@ EXAMPLES = {
 class AdminControlManager:
     def __init__(self,bot):
         self.bot,self.db = bot,bot.db
-        self.db.system.execute("""CREATE TABLE IF NOT EXISTS admin_audit (
-            audit_id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT NOT NULL,
-            action TEXT NOT NULL, payload TEXT NOT NULL, recorded_epoch REAL NOT NULL)""")
+        pass
 
     def require(self, actor_id, conn=None):
         user = (conn.execute("SELECT role FROM users WHERE user_id=?",(str(actor_id),)).fetchone()
@@ -62,8 +60,7 @@ class AdminControlManager:
 
     @staticmethod
     def _audit(conn,actor,action,payload):
-        conn.execute("INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
-                     (str(actor),action,json.dumps(payload,ensure_ascii=False,default=str),time.time()))
+        return
 
     @staticmethod
     def _number(value, low=0, high=2**53-1, integer=False):

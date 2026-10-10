@@ -157,11 +157,6 @@ class InterestManager:
                         )
                         if treasury.rowcount != 1:
                             raise RuntimeError("국고 계정을 찾을 수 없어 이자 지급을 취소했습니다.")
-                        conn.execute(
-                            "INSERT INTO tax.tax_transactions "
-                            "(user_id, source, gross_amount, tax_amount, net_amount) VALUES (?, ?, ?, ?, ?)",
-                            (account["user_id"], "saving_interest", gross, tax, net),
-                        )
                     total_paid += net
                     account_count += 1
 

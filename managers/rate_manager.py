@@ -53,42 +53,8 @@ class RateManager:
         end = float(time.time() if now is None else now)
         if not math.isfinite(start) or not math.isfinite(end) or end < start:
             raise ValueError("조회 기간은 시작 시각 이후의 유효한 UNIX 시각이어야 합니다.")
-        records = self.db.system.execute(
-            "SELECT annual_percent, effective_epoch FROM rate_history "
-            "WHERE rate_key = ? AND effective_epoch <= ? "
-            "ORDER BY effective_epoch, history_id", (key, end),
-        )
-        if not records:
-            # A future-only history has no effective rate yet. The current
-            # setting may already contain that future value, so use it only
-            # when this key has no dated history at all.
-            has_history = self.db.system.execute_one(
-                "SELECT 1 FROM rate_history WHERE rate_key = ? LIMIT 1", (key,),
-            )
-            rate = 0.0 if has_history else self.get_rate(key)
-            return [(start, rate)] if start == end else [(start, rate), (end, rate)]
-
-        # Initial rates are normally seeded at epoch zero. A manually shortened
-        # history still must not move its first recorded change into the past.
-        rate = 0.0
-        for record in records:
-            if float(record["effective_epoch"]) <= start:
-                rate = float(record["annual_percent"])
-            else:
-                break
-        points = [(start, rate)]
-        for record in records:
-            epoch = float(record["effective_epoch"])
-            if epoch <= start:
-                continue
-            rate = float(record["annual_percent"])
-            if points[-1][0] == epoch:
-                points[-1] = (epoch, rate)
-            else:
-                points.append((epoch, rate))
-        if points[-1][0] != end:
-            points.append((end, rate))
-        return points
+        rate = self.get_rate(key)
+        return [(start, rate)] if start == end else [(start, rate), (end, rate)]
 
     def get_rate(self, key):
         if key not in self.KEYS:
@@ -111,18 +77,8 @@ class RateManager:
             if not math.isfinite(now) or now < 0:
                 raise ValueError("적용 시각은 유효한 UNIX 시각이어야 합니다.")
             with (self.db.atomic(("system",)) if conn is None else nullcontext(conn)) as conn:
-                last_id = conn.execute("SELECT COALESCE(MAX(history_id), 0) FROM system.rate_history").fetchone()[0]
                 conn.execute("INSERT INTO system.settings (key, value) VALUES (?, ?) "
                              "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, str(rate)))
-                recorded = conn.execute("SELECT history_id FROM system.rate_history "
-                                        "WHERE history_id > ? AND rate_key = ?", (last_id, key)).fetchone()
-                if recorded:
-                    conn.execute("UPDATE system.rate_history SET effective_epoch = ?, changed_by = ? "
-                                 "WHERE history_id = ?", (now, str(actor_id), recorded["history_id"]))
-                else:
-                    conn.execute("INSERT INTO system.rate_history "
-                                 "(rate_key, annual_percent, effective_epoch, changed_by) VALUES (?, ?, ?, ?)",
-                                 (key, rate, now, str(actor_id)))
             return True, f"✅ {self.KEYS[key]}를 연 {rate:g}%로 설정했습니다. 변경 시점 이후부터 적용됩니다."
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f"❌ {exc}"
@@ -132,25 +88,9 @@ class RateManager:
         """Integrate dated annual rates; never apply a new rate to old elapsed time."""
         if end <= start or principal <= 0:
             return 0.0
-        records = conn.execute("SELECT annual_percent, effective_epoch FROM system.rate_history "
-                               "WHERE rate_key = ? AND effective_epoch < ? "
-                               "ORDER BY effective_epoch, history_id", (key, end)).fetchall()
-        rate = 0.0
-        cursor = float(start)
-        total, balance = 0.0, float(principal)
-        for record in records:
-            epoch = float(record["effective_epoch"])
-            if epoch <= start:
-                rate = float(record["annual_percent"])
-                continue
-            duration = epoch - cursor
-            interest = balance * max(0, rate + spread) / 100 * duration / YEAR_SECONDS
-            total += interest
-            if compound:
-                balance += interest
-            cursor, rate = epoch, float(record["annual_percent"])
-        total += balance * max(0, rate + spread) / 100 * (end - cursor) / YEAR_SECONDS
-        return total
+        row = conn.execute("SELECT value FROM system.settings WHERE key = ?", (key,)).fetchone()
+        rate = float(row["value"] if row else 0)
+        return float(principal) * max(0, rate + spread) / 100 * (end - start) / YEAR_SECONDS
 
     def statutory_interest(self, principal, start, end):
         with self.db.atomic(("system",)) as conn:

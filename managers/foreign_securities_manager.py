@@ -119,7 +119,6 @@ class ForeignSecuritiesManager:
                 self.book._reduce_order(conn,sell,quantity,now)
             self.book._reduce_order(conn,buy,quantity,now)
             self.book._apply_execution_price(conn,asset['code'],price,now)
-            conn.execute('INSERT INTO market_trade_history(asset_code,side,quantity,price,recorded_epoch) VALUES (?,?,?,?,?)',(asset['code'],side,quantity,price,now))
             if source=='company':
                 self.users._refresh_max_shareholder(conn,asset['code'])
             filled += quantity

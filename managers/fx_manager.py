@@ -122,8 +122,6 @@ class FXManager:
             treasury = conn.execute("UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?", (fee,TREASURY_USER_ID,MAX_UNITS-fee))
             if treasury.rowcount != 1:
                 raise ValueError("국고 잔액 한도를 초과했습니다.")
-            conn.execute("INSERT INTO fx_transactions(user_id,source_currency,target_currency,source_units,target_units,source_rate,target_rate,fee_nwx,recorded_epoch) "
-                         "VALUES (?,?,?,?,?,?,?,?,?)", (str(user_id),source,target,units,output,sr,tr,fee,now))
             return f"✅ {display_units(units)} {source} → {display_units(output)} {target} · 수수료 {fee:,} NWX"
 
     def accounts(self, user_id):
@@ -217,6 +215,4 @@ class FXManager:
             changed = conn.execute('UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?',(fee,TREASURY_USER_ID,MAX_UNITS-fee))
             if changed.rowcount!=1:
                 raise ValueError('국고 잔액 한도를 초과했습니다.')
-            conn.execute('INSERT INTO fx_transfer_transactions(sender_id,recipient_id,source_account,target_account,source_currency,target_currency,source_units,target_units,source_rate,target_rate,fee_nwx,recorded_epoch) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
-                (sender,dst[4],None if source_account=='__wallet__' else source_account,None if dst[0]=='users' else dst[3],src[5],dst[5],units,output,sr,tr,fee,now))
             return f'✅ 송금 {display_units(units)} {src[5]} → {display_units(output)} {dst[5]} · 환전 수수료 {fee:,} NWX'

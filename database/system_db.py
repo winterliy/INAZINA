@@ -9,9 +9,6 @@ class SystemDB(DBManager):
         self._init_db()
 
     def _init_db(self):
-        self.execute("""CREATE TABLE IF NOT EXISTS admin_audit (
-            audit_id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT NOT NULL,
-            action TEXT NOT NULL, payload TEXT NOT NULL, recorded_epoch REAL NOT NULL)""")
         self.execute(
             '''
             CREATE TABLE IF NOT EXISTS settings (
@@ -100,30 +97,7 @@ class SystemDB(DBManager):
         for key, value in (("base_rate", "3"), ("statutory_rate", "5")):
             self.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
         self._init_gamble_triggers()
-        self.execute("""CREATE TABLE IF NOT EXISTS rate_history (
-            history_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            rate_key TEXT NOT NULL CHECK(rate_key IN ('base_rate', 'statutory_rate')),
-            annual_percent REAL NOT NULL CHECK(annual_percent >= 0 AND annual_percent <= 100),
-            effective_epoch REAL NOT NULL,
-            changed_by TEXT NOT NULL
-        )""")
-        self.execute("CREATE INDEX IF NOT EXISTS idx_rate_history_effective "
-                     "ON rate_history(rate_key, effective_epoch, history_id)")
-        for key in ("base_rate", "statutory_rate"):
-            self.execute("INSERT INTO rate_history (rate_key, annual_percent, effective_epoch, changed_by) "
-                         "SELECT ?, CAST(value AS REAL), 0, 'initial' FROM settings WHERE key = ? "
-                         "AND NOT EXISTS (SELECT 1 FROM rate_history WHERE rate_key = ?)", (key, key, key))
         self._init_rate_triggers()
-        # Preserve past accrual when a rate was edited before browser triggers
-        # were installed. Record the stored value from this migration onward.
-        self.execute("""INSERT INTO rate_history
-            (rate_key, annual_percent, effective_epoch, changed_by)
-            SELECT key, CAST(value AS REAL), (julianday('now') - 2440587.5) * 86400.0, 'database'
-            FROM settings WHERE key IN ('base_rate', 'statutory_rate')
-            AND CAST(value AS REAL) <> (
-                SELECT annual_percent FROM rate_history WHERE rate_key = settings.key
-                ORDER BY history_id DESC LIMIT 1
-            )""")
         self.execute("""CREATE TABLE IF NOT EXISTS market_events (
             event_id INTEGER PRIMARY KEY AUTOINCREMENT,
             asset_code TEXT,
@@ -177,12 +151,6 @@ class SystemDB(DBManager):
                                    ("jump_applied_epoch", "INTEGER")):
             if column not in target_columns:
                 self.execute(f"ALTER TABLE market_event_targets ADD COLUMN {column} {definition}")
-        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_event_quote_after_trade
-            AFTER INSERT ON market_trade_history BEGIN
-            DELETE FROM market_quote_overrides WHERE asset_code=NEW.asset_code
-              AND NOT EXISTS (SELECT 1 FROM market_event_targets
-                              WHERE asset_code=NEW.asset_code AND state='active');
-            END""")
 
     def _init_rate_triggers(self):
         """Keep browser edits validated and synchronized with dated interest."""
@@ -198,22 +166,6 @@ class SystemDB(DBManager):
                         OR CAST(NEW.value AS REAL) NOT BETWEEN 0 AND 100
                         THEN RAISE(ABORT, 'Rate must be a number between 0 and 100') END;
                 END""")
-        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_settings_rate_history_insert
-            AFTER INSERT ON settings WHEN NEW.key IN ('base_rate', 'statutory_rate')
-            BEGIN
-                INSERT INTO rate_history (rate_key, annual_percent, effective_epoch, changed_by)
-                VALUES (NEW.key, CAST(NEW.value AS REAL),
-                        (julianday('now') - 2440587.5) * 86400.0, 'database');
-            END""")
-        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_settings_rate_history_update
-            AFTER UPDATE OF key, value ON settings
-            WHEN NEW.key IN ('base_rate', 'statutory_rate')
-                AND (OLD.key <> NEW.key OR CAST(OLD.value AS REAL) <> CAST(NEW.value AS REAL))
-            BEGIN
-                INSERT INTO rate_history (rate_key, annual_percent, effective_epoch, changed_by)
-                VALUES (NEW.key, CAST(NEW.value AS REAL),
-                        (julianday('now') - 2440587.5) * 86400.0, 'database');
-            END""")
 
     def _init_gamble_triggers(self):
         """Keep browser edits to gamble_return within the supported range."""

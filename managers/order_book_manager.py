@@ -259,12 +259,6 @@ class OrderBookManager:
                     self._apply_execution_price(
                         conn, incoming["asset_code"], reference_price, now
                     )
-                    conn.execute(
-                        "INSERT INTO assets.market_trade_history "
-                        "(asset_code, side, quantity, price, recorded_epoch) "
-                        "VALUES (?, 'buy', ?, ?, ?)",
-                        (incoming["asset_code"], quantity, reference_price, now),
-                    )
                     fill_count += 1
                     filled_quantity += quantity
                     traded_value += reference_price * quantity
@@ -284,11 +278,6 @@ class OrderBookManager:
             self._reduce_order(conn, sell_order, quantity, now)
             self._apply_execution_price(
                 conn, incoming["asset_code"], execution_price, now
-            )
-            conn.execute(
-                "INSERT INTO assets.market_trade_history "
-                "(asset_code, side, quantity, price, recorded_epoch) VALUES (?, ?, ?, ?, ?)",
-                (incoming["asset_code"], incoming["side"], quantity, execution_price, now),
             )
             fill_count += 1
             filled_quantity += quantity

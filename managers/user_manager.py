@@ -187,11 +187,6 @@ class UserManager:
             )
             if treasury.rowcount != 1:
                 raise RuntimeError("국고 계정을 찾을 수 없어 세금 처리를 취소했습니다.")
-        conn.execute(
-            "INSERT INTO tax.tax_transactions "
-            "(user_id, source, gross_amount, tax_amount, net_amount) VALUES (?, ?, ?, ?, ?)",
-            (user_id, source, gross, tax_amount, net_income),
-        )
         return int(tax_amount)
 
     @staticmethod
@@ -268,11 +263,6 @@ class UserManager:
                                (quantity + excluded.quantity),
                            quantity = quantity + excluded.quantity""",
                     (user_id, asset_code, account_number, quantity, price),
-                )
-                conn.execute(
-                    "INSERT INTO assets.market_trade_history "
-                    "(asset_code, side, quantity, price, recorded_epoch) VALUES (?, 'buy', ?, ?, ?)",
-                    (asset_code, quantity, price, int(time.time())),
                 )
                 if asset["type"] in {"mutual_fund", "index_fund", "corporate_bond"}:
                     product = conn.execute("SELECT issuer_code FROM product.investment WHERE product_code = ?", (asset_code,)).fetchone()
@@ -372,11 +362,6 @@ class UserManager:
                     qty_left -= take
                 if source == "company":
                     self._refresh_max_shareholder(conn, asset_code)
-                conn.execute(
-                    "INSERT INTO assets.market_trade_history "
-                    "(asset_code, side, quantity, price, recorded_epoch) VALUES (?, 'sell', ?, ?, ?)",
-                    (asset_code, quantity, price, int(time.time())),
-                )
             net_proceeds = max(0, gross_proceeds - total_tax)
             unit = "주" if str(asset["type"]).lower() in {"stock", "주식"} else "좌" if asset["type"] in {"mutual_fund", "index_fund"} else "개"
             return True, (
