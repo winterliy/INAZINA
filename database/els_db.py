@@ -54,16 +54,6 @@ class ELSDB(DBManager):
             principal_amount INTEGER NOT NULL DEFAULT 0 CHECK(principal_amount >= 0),
             coupon_amount INTEGER NOT NULL DEFAULT 0 CHECK(coupon_amount >= 0),
             locked_amount INTEGER NOT NULL DEFAULT 0 CHECK(locked_amount >= 0))""")
-        self.execute("""CREATE TABLE IF NOT EXISTS els_settlements (
-            settlement_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            product_code TEXT NOT NULL, sequence INTEGER NOT NULL,
-            subscription_id INTEGER NOT NULL, user_id TEXT NOT NULL,
-            quantity INTEGER NOT NULL CHECK(quantity > 0), principal INTEGER NOT NULL,
-            gross_amount INTEGER NOT NULL CHECK(gross_amount >= 0),
-            tax_amount INTEGER NOT NULL CHECK(tax_amount >= 0),
-            net_amount INTEGER NOT NULL CHECK(net_amount >= 0),
-            recorded_epoch INTEGER NOT NULL,
-            UNIQUE(product_code, sequence, subscription_id))""")
         self.execute("CREATE INDEX IF NOT EXISTS idx_els_terms_state ON els_terms(state, subscription_end_epoch)")
         self.execute("CREATE INDEX IF NOT EXISTS idx_els_subscriptions_user ON els_subscriptions(user_id, product_code, status)")
         self.execute("CREATE INDEX IF NOT EXISTS idx_els_underlying_code ON els_underlyings(underlying_code, product_code)")

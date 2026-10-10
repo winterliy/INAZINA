@@ -2,6 +2,8 @@
 from fractions import Fraction
 from contextlib import nullcontext
 from decimal import Decimal
+import math
+import time
 from database.user_db import TREASURY_USER_ID
 
 SCALE = 1_000_000
@@ -10,6 +12,94 @@ MAX_UNITS = 2**63 - 1
 class CurrencyManager:
     def __init__(self, db):
         self.db = db
+
+    @staticmethod
+    def _liquidity_totals(conn, code):
+        """Return issued and non-treasury circulating minor units for ``code``."""
+        code = str(code).upper()
+        if code == 'NWX':
+            total = int(conn.execute(
+                'SELECT COALESCE(SUM(cash),0) FROM users'
+            ).fetchone()[0]) * SCALE
+            total += int(conn.execute(
+                'SELECT COALESCE(SUM(balance),0) FROM accounts'
+            ).fetchone()[0]) * SCALE
+            treasury = int(conn.execute(
+                'SELECT COALESCE(cash,0) FROM users WHERE user_id=?',
+                (TREASURY_USER_ID,)
+            ).fetchone()[0]) * SCALE
+            treasury += int(conn.execute(
+                'SELECT COALESCE(SUM(balance),0) FROM accounts WHERE user_id=?',
+                (TREASURY_USER_ID,)
+            ).fetchone()[0]) * SCALE
+        else:
+            total = int(conn.execute(
+                'SELECT COALESCE(SUM(balance_units),0) FROM currency_wallets WHERE currency_code=?',
+                (code,)
+            ).fetchone()[0])
+            total += int(conn.execute(
+                'SELECT COALESCE(SUM(balance_units),0) FROM fx_accounts WHERE currency_code=?',
+                (code,)
+            ).fetchone()[0])
+            treasury = int(conn.execute(
+                'SELECT COALESCE(SUM(balance_units),0) FROM currency_wallets WHERE currency_code=? AND user_id=?',
+                (code, TREASURY_USER_ID)
+            ).fetchone()[0])
+            treasury += int(conn.execute(
+                'SELECT COALESCE(SUM(balance_units),0) FROM fx_accounts WHERE currency_code=? AND user_id=?',
+                (code, TREASURY_USER_ID)
+            ).fetchone()[0])
+        return max(0, total), max(0, total - treasury)
+
+    @classmethod
+    def ensure_liquidity_state(cls, conn, code, *, refresh_empty=True):
+        """Create a neutral baseline when a newly issued currency first gains supply."""
+        code = str(code).upper()
+        issued, circulating = cls._liquidity_totals(conn, code)
+        ratio = circulating / issued if issued else 0
+        conn.execute(
+            'INSERT OR IGNORE INTO currency_liquidity_state '
+            '(currency_code,baseline_supply_units,baseline_circulation_ratio,updated_epoch) '
+            'VALUES (?,?,?,?)',
+            (code, issued, ratio, time.time()),
+        )
+        if refresh_empty and issued:
+            conn.execute(
+                'UPDATE currency_liquidity_state SET baseline_supply_units=?, '
+                'baseline_circulation_ratio=?, updated_epoch=? '
+                'WHERE currency_code=? AND baseline_supply_units=0',
+                (issued, ratio, time.time(), code),
+            )
+
+    @classmethod
+    def liquidity_multiplier(cls, conn, code, *, totals=None, state=None):
+        """Bounded supply/circulation adjustment around an administrator's base quote."""
+        code = str(code).upper()
+        if state is None:
+            state = conn.execute(
+                'SELECT * FROM currency_liquidity_state WHERE currency_code=?', (code,)
+            ).fetchone()
+        if not state:
+            return 1.0
+        issued, circulating = totals if totals is not None else cls._liquidity_totals(conn, code)
+        baseline = int(state['baseline_supply_units'] or 0)
+        baseline_ratio = float(state['baseline_circulation_ratio'] or 0)
+        if issued <= 0 or baseline <= 0:
+            return 1.0
+        try:
+            issuance = float(state['issuance_elasticity'])
+            circulation = float(state['circulation_elasticity'])
+            floor = float(state['min_multiplier'])
+            ceiling = float(state['max_multiplier'])
+            current_ratio = circulating / issued
+            multiplier = (baseline / issued) ** issuance
+            if baseline_ratio > 0 and current_ratio > 0:
+                multiplier *= (current_ratio / baseline_ratio) ** circulation
+            if not all(math.isfinite(value) for value in (multiplier, floor, ceiling)):
+                return 1.0
+            return max(floor, min(ceiling, multiplier))
+        except (TypeError, ValueError, OverflowError, ZeroDivisionError):
+            return 1.0
 
     @staticmethod
     def home(conn, user_id):
@@ -22,8 +112,8 @@ class CurrencyManager:
         # Existing citizens with no country mapping retain the legacy default.
         return conn.execute("SELECT value FROM settings WHERE key='default_currency'").fetchone()[0]
 
-    @staticmethod
-    def rate_fraction(conn, code):
+    @classmethod
+    def rate_fraction(cls, conn, code):
         row = conn.execute("SELECT * FROM currencies WHERE code=? AND status='active'", (str(code).upper(),)).fetchone()
         if not row:
             raise ValueError(f'활성 통화를 확인해주세요: {code}')
@@ -35,6 +125,7 @@ class CurrencyManager:
                 raise ValueError(f'{code} 환율을 조회할 수 없습니다.')
             value = Fraction(str(asset[0]))
         value *= Fraction(str(row['rate_multiplier']))
+        value *= Fraction(str(cls.liquidity_multiplier(conn, code)))
         if value <= 0:
             raise ValueError(f'{code} 환율 설정이 올바르지 않습니다.')
         return value
@@ -110,6 +201,10 @@ class CurrencyManager:
             conn.execute('UPDATE users SET cash=cash+? WHERE user_id=?', (delta//SCALE,user_id))
         else:
             conn.execute('INSERT INTO currency_wallets(user_id,currency_code,balance_units) VALUES (?,?,?) ON CONFLICT(user_id,currency_code) DO UPDATE SET balance_units=excluded.balance_units', (user_id,currency,value))
+        # This is deliberately after the balance change: a brand new currency's
+        # first issuance establishes its neutral supply rather than immediately
+        # moving its own quote.
+        cls.ensure_liquidity_state(conn, currency)
         return value
 
     def wallets(self, user_id, *, conn=None, snapshot=None):
@@ -157,6 +252,7 @@ class CurrencyReadSnapshot:
     """Request-local display rates. Never reuse this snapshot for settlements."""
 
     def __init__(self, conn):
+        self.conn = conn
         self.rows = {r['code']: dict(r) for r in conn.execute(
             "SELECT c.*, a.price AS asset_price, "
             "(SELECT GROUP_CONCAT(n.nationality, ', ') FROM country_currencies n "
@@ -165,6 +261,14 @@ class CurrencyReadSnapshot:
             "LEFT JOIN market_assets a ON a.code=c.asset_code AND a.status='active' "
             "WHERE c.status='active' ORDER BY c.code")}
         self._rates = {}
+        self._liquidity_states = {
+            row['currency_code']: dict(row)
+            for row in conn.execute('SELECT * FROM currency_liquidity_state')
+        }
+        self._liquidity_totals = {
+            code: CurrencyManager._liquidity_totals(conn, code)
+            for code in self.rows
+        }
 
     def row(self, code):
         row = self.rows.get(str(code).upper())
@@ -180,6 +284,10 @@ class CurrencyReadSnapshot:
             if raw is None:
                 raise ValueError(f'{code} 환율을 조회할 수 없습니다.')
             value = Fraction(str(raw)) * Fraction(str(row['rate_multiplier']))
+            value *= Fraction(str(CurrencyManager.liquidity_multiplier(
+                self.conn, code, totals=self._liquidity_totals[code],
+                state=self._liquidity_states.get(code),
+            )))
             if value <= 0:
                 raise ValueError(f'{code} 환율 설정이 올바르지 않습니다.')
             self._rates[code] = value

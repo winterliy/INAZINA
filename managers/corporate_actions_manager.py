@@ -63,13 +63,11 @@ class CorporateActionsManager:
 
     @staticmethod
     def _audit(conn, actor, kind, code, payload, now):
-        conn.execute('INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)',
-                     (str(actor), kind, json.dumps({'code': code, **payload}, ensure_ascii=False), now))
+        return
 
     @staticmethod
     def _record(conn, key, kind, source, target, payload, now):
-        conn.execute('INSERT INTO corporate_actions(operation_key,kind,source_code,target_code,payload,recorded_epoch) VALUES (?,?,?,?,?,?)',
-                     (key, kind, source, target, json.dumps(payload, ensure_ascii=False), now))
+        return
 
     @staticmethod
     def _listing(conn, code):
@@ -182,8 +180,6 @@ class CorporateActionsManager:
             total_paid = int(claim['paid_amount'])+amount
             conn.execute("UPDATE preferred_dividend_claims SET paid_amount=?,status=? WHERE claim_id=?",
                          (total_paid, 'paid' if total_paid == claim['gross_amount'] else 'partial', claim['claim_id']))
-            conn.execute('INSERT INTO product_settlements(user_id,product_code,kind,quantity,gross_amount,tax_amount,recorded_epoch) VALUES (?,?,?,?,?,?,?)',
-                         (claim['user_id'],claim['asset_code'],f'preferred_arrears:{claim["claim_id"]}:{claim["quote_currency"]}',claim['quantity'],amount,tax,now))
             paid += amount
         return paid
 
@@ -197,9 +193,6 @@ class CorporateActionsManager:
         return bool(conn.execute("SELECT 1 FROM company WHERE status='active' AND COALESCE(parent_company_code,company_code)=? AND dividend_priority>? AND dividend_is_active=1 AND dividend_cycle_seconds>0 AND dividend_next_epoch<=? AND ((dividend_mode='fixed' AND dividend_per_share>0) OR (dividend_mode='percent' AND dividend_percent>0)) LIMIT 1", (issuer,priority,now)).fetchone())
 
     def _distribute(self, conn, listing, per_share, kind, due, key, now, *, percent=None, reference_price=None):
-        old = conn.execute('SELECT * FROM dividend_distributions WHERE operation_key=?', (key,)).fetchone()
-        if old:
-            return int(old['gross_amount']), True
         if self._priority_blocked(conn, listing, now):
             raise ValueError('이 법인의 우선순위가 높은 주식에 미지급 배당이 있어 배당을 보류합니다.')
         holders = self._holders(conn, listing['code'])
@@ -218,14 +211,9 @@ class CorporateActionsManager:
             raise ValueError('배당 재원이 부족합니다.')
         amounts = self._allocate(gross,[amount for _,_,amount in payments]) if owed and gross < owed else [amount for _,_,amount in payments]
         self._debit_dividend(conn,issuer,funding,currency,gross)
-        distribution = conn.execute('INSERT INTO dividend_distributions(operation_key,asset_code,kind,due_epoch,per_share,quote_currency,gross_amount,recorded_epoch,dividend_mode,dividend_percent,reference_price) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-                                    (key,listing['code'],kind,due,per_share,currency,gross,now,mode,percent or 0,reference_price)).lastrowid
+        distribution = None
         for (user,quantity,entitlement),amount in zip(payments,amounts):
             tax,net_units = self._credit_dividend(conn,user,listing['code'],kind,amount,currency,now)
-            conn.execute('INSERT INTO dividend_payments(distribution_id,user_id,quantity,gross_amount,tax_nwx,net_units,quote_currency) VALUES (?,?,?,?,?,?,?)',
-                         (distribution,user,quantity,amount,tax,net_units,currency))
-            conn.execute('INSERT INTO product_settlements(user_id,product_code,kind,quantity,gross_amount,tax_amount,recorded_epoch) VALUES (?,?,?,?,?,?,?)',
-                         (user,listing['code'],f'{kind}_dividend:{currency}',quantity,amount,tax,now))
             if cumulative and entitlement > amount:
                 conn.execute('INSERT INTO preferred_dividend_claims(issuer_code,asset_code,distribution_id,user_id,quantity,gross_amount,quote_currency,funding_source,due_epoch,created_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)',
                              (issuer,listing['code'],distribution,user,quantity,entitlement-amount,currency,funding,due,now))
@@ -278,7 +266,7 @@ class CorporateActionsManager:
             with DBManager.admin_scope(actor), self.db.atomic() as conn:
                 self._require(conn, actor)
                 listing = self._dividend_listing(conn, code)
-                if listing['table'] == 'company' and not conn.execute('SELECT 1 FROM dividend_distributions WHERE operation_key=?', (key,)).fetchone():
+                if listing['table'] == 'company':
                     issuer = self._issuer_code(listing)
                     self._settle_claims(conn, issuer, now)
                     higher = conn.execute("SELECT company_code FROM company WHERE status='active' AND COALESCE(parent_company_code,company_code)=? AND dividend_priority>? AND dividend_is_active=1 AND dividend_next_epoch<=? ORDER BY dividend_priority DESC,company_code",
@@ -377,7 +365,6 @@ class CorporateActionsManager:
                 if changed is not None and changed.rowcount != 1:
                     raise ValueError('국고 잔액 또는 반환 후 잔액 한도를 확인해주세요.')
                 conn.execute('UPDATE issuer_cash_accounts SET balance=? WHERE company_code=?',(new,issuer))
-                conn.execute('INSERT INTO issuer_cash_transfers(company_code,actor_id,old_balance,new_balance,delta,recorded_epoch) VALUES (?,?,?,?,?,?)',(issuer,str(actor),old,new,delta,now))
                 self._audit(conn,actor,'issuer.cash',issuer,{'operation':operation,'value':value,'old_balance':old,'new_balance':new},now)
             return True,f'✅ `{issuer}` 법인 사용가능 현금 {old:,} → {new:,} NWX. 국고와 {abs(delta):,} NWX 이체'
         except (ValueError,TypeError,OverflowError) as exc:
@@ -401,11 +388,6 @@ class CorporateActionsManager:
             key = operation_key or 'liquidation:'+uuid.uuid4().hex
             with DBManager.admin_scope(actor),self.db.atomic() as conn:
                 self._require(conn,actor)
-                previous = conn.execute("SELECT * FROM corporate_actions WHERE operation_key=?",(key,)).fetchone()
-                if previous:
-                    if previous['kind']!='liquidation' or previous['source_code']!=str(code):
-                        raise ValueError('다른 기업행동에 이미 사용한 실행 식별자입니다.')
-                    return True,f'✅ `{code}` 청산 지급 기록을 확인했습니다. 중복 지급하지 않습니다.'
                 listing = self._dividend_listing(conn,code)
                 if listing['table']!='company':
                     raise ValueError('청산할 회사 주식 또는 우선주 코드를 입력해주세요.')
@@ -499,10 +481,6 @@ class CorporateActionsManager:
                     changed = conn.execute('UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?',(net,item['user'],self.MAX_MONEY-net))
                     if changed.rowcount!=1:
                         raise ValueError('청산금을 받을 사용자 또는 잔액 한도를 확인해주세요.')
-                    conn.execute('INSERT INTO corporate_liquidation_payments(operation_key,issuer_code,asset_code,user_id,kind,quantity,claim_amount,paid_amount,tax_amount,recorded_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)',
-                                 (key,issuer,item['asset'],item['user'],item['kind'],item['quantity'],item['claim'],amount,tax,now))
-                    conn.execute('INSERT INTO product_settlements(user_id,product_code,kind,quantity,gross_amount,tax_amount,recorded_epoch) VALUES (?,?,?,?,?,?,?)',
-                                 (item['user'],item['asset'],'liquidation:'+item['kind'],item['quantity'],amount,tax,now))
                     if item['kind']=='arrears':
                         conn.execute("UPDATE preferred_dividend_claims SET paid_amount=paid_amount+?,status=CASE WHEN paid_amount+?=gross_amount THEN 'paid' ELSE 'written_off' END WHERE claim_id=?",(amount,amount,item['claim_id']))
                 conn.execute('INSERT OR IGNORE INTO issuer_cash_accounts(company_code) VALUES (?)',(issuer,))
@@ -739,7 +717,6 @@ class CorporateActionsManager:
                             changed = conn.execute('UPDATE fx_accounts SET balance_units=balance_units+? WHERE account_number=? AND balance_units<=?', (residual * SCALE, account, MAX_UNITS - residual * SCALE))
                         if changed.rowcount != 1:
                             raise ValueError('단주 정산 수령자의 잔액 한도를 확인해주세요.')
-                        conn.execute('INSERT INTO product_settlements(user_id,product_code,kind,quantity,gross_amount,recorded_epoch) VALUES (?,?,?,?,?,?)', (user, absorbed_code, f'merger_cash:{currency}', sum(int(lot['quantity']) for lot in user_lots), residual, now))
                 conn.execute('DELETE FROM user_assets WHERE asset_code=?', (absorbed_code,))
                 if a['table'] == 'company':
                     capital = int(a['capital'] or 0) + int(b['capital'] or 0)

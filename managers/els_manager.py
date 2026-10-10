@@ -400,12 +400,6 @@ class ELSManager:
             tax = self.users._tax(conn, subscription["user_id"], "els_profit", max(0, gross - subscription["principal"]))
             net = gross - tax
             self._safe_credit(conn, subscription["user_id"], None, net)
-            conn.execute("INSERT INTO els_settlements(product_code,sequence,subscription_id,user_id,quantity,principal,"
-                "gross_amount,tax_amount,net_amount,recorded_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                (code, observation["sequence"], subscription["subscription_id"], subscription["user_id"], subscription["quantity"],
-                 subscription["principal"], gross, tax, net, now))
-            conn.execute("INSERT INTO product_settlements(user_id,product_code,kind,quantity,gross_amount,tax_amount,recorded_epoch) "
-                "VALUES (?,?,?,?,?,?,?)", (subscription["user_id"], code, f"els_{terms['settlement_kind']}", subscription["quantity"], gross, tax, now))
             conn.execute("UPDATE els_subscriptions SET status='settled' WHERE subscription_id=?", (subscription["subscription_id"],))
             notifications.append(dict(user_id=subscription["user_id"], product_code=code, net=net, gross=gross, tax=tax,
                                       reason=f"els_{terms['settlement_kind']}"))
@@ -442,7 +436,7 @@ class ELSManager:
                     "WHERE product_code=? AND user_id=? AND status IN ('subscribed','issued')", (code, str(user_id))).fetchone()
                 details.update(quantity=position["quantity"], principal=position["principal"],
                     value_nwx=position["principal"],
-                    settlements=[dict(value) for value in conn.execute("SELECT * FROM els_settlements WHERE product_code=? AND user_id=? ORDER BY settlement_id", (code, str(user_id))).fetchall()])
+                    settlements=[])
             return details
 
     def get_user_positions(self, user_id):

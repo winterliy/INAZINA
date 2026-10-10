@@ -993,23 +993,7 @@ class MarketManager:
                         last_reset = int(now)
                     else:
                         while int(now) >= last_reset + cycle:
-                            boundary = conn.execute(
-                                "SELECT index_value, recorded_epoch "
-                                "FROM assets.market_exchange_index_history "
-                                "WHERE exchange_id = ? AND recorded_epoch >= ? "
-                                "ORDER BY recorded_epoch LIMIT 1",
-                                (exchange_id, last_reset + cycle),
-                            ).fetchone()
-                            if not boundary or int(boundary["recorded_epoch"]) > int(now):
-                                break
-                            boundary_index = float(boundary["index_value"])
-                            if base_index > 0:
-                                base_nav = max(
-                                    1.0,
-                                    base_nav * (1 + leverage * (boundary_index / base_index - 1)),
-                                )
-                            base_index = boundary_index
-                            last_reset = int(boundary["recorded_epoch"])
+                            break
 
                         theoretical_nav = base_nav * (
                             1 + leverage * (current_index / base_index - 1)
@@ -1146,13 +1130,6 @@ class MarketManager:
                             for code, (price, shares) in members.items()
                         ],
                     )
-                    conn.execute(
-                        "INSERT INTO assets.market_exchange_index_history "
-                        "(exchange_id, index_value, recorded_epoch) VALUES (?, ?, ?) "
-                        "ON CONFLICT(exchange_id, recorded_epoch) DO UPDATE SET "
-                        "index_value = excluded.index_value",
-                        (exchange_id, index_value, int(now)),
-                    )
         except sqlite3.OperationalError as exc:
             if getattr(self._tick, "conn", None) is not None:
                 raise
@@ -1219,44 +1196,11 @@ class MarketManager:
         return {"exchange_id": exchange_id, "index_value": 1000.0, "updated_epoch": 0}
 
     def get_exchange_index_history(self, exchange_id, since_epoch):
-        self._prepare_movement_history_read()
-        return self.db.assets.execute(
-            "SELECT recorded_epoch, index_value FROM market_exchange_index_history "
-            "WHERE exchange_id = ? AND recorded_epoch >= ? ORDER BY recorded_epoch",
-            (str(exchange_id), int(since_epoch)),
-        )
+        return []
 
     def get_exchange_trade_history(self, exchange_id, since_epoch):
         """Aggregate traded volume for every listed asset on an exchange."""
-        self._prepare_movement_history_read()
-        exchange_id = str(exchange_id)
-        codes = []
-        for database, query in (
-            (self.db.companies, "SELECT company_code AS code FROM company WHERE exchange_id = ?"),
-            (self.db.assets, "SELECT code FROM market_assets WHERE exchange_id = ?"),
-            (self.db.products, "SELECT product_code AS code FROM investment WHERE exchange_id = ?"),
-            (self.db.products, "SELECT product_code AS code FROM treasury_bond_products WHERE exchange_id = ?"),
-        ):
-            codes.extend(
-                str(row["code"])
-                for row in database.execute(query, (exchange_id,))
-                if row["code"]
-            )
-        codes = list(dict.fromkeys(codes))
-        totals = {}
-        for offset in range(0, len(codes), 400):
-            batch = codes[offset:offset + 400]
-            placeholders = ",".join("?" for _ in batch)
-            trades = self.db.assets.execute(
-                "SELECT recorded_epoch, SUM(quantity) AS quantity "
-                "FROM market_trade_history WHERE asset_code IN (" + placeholders + ") "
-                "AND recorded_epoch >= ? GROUP BY recorded_epoch ORDER BY recorded_epoch",
-                (*batch, int(since_epoch)),
-            )
-            for trade in trades:
-                epoch = int(trade["recorded_epoch"])
-                totals[epoch] = totals.get(epoch, 0) + int(trade["quantity"] or 0)
-        return [(epoch, totals[epoch]) for epoch in sorted(totals)]
+        return []
 
     @staticmethod
     def is_exchange_index_code(code):

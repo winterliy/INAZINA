@@ -133,8 +133,6 @@ class AdminManager:
                     "(event_id, asset_code, start_price, target_price, start_epoch, end_epoch, last_tick_epoch, last_price) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (event_id, code, price, target, now, now + duration_seconds, now, price))
-            conn.execute("INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,'event.create',?,?)",
-                         (str(actor_id),json.dumps({'event_id':event_id,'asset_code':asset_code,'duration':duration_seconds,'mode':mode,'goal':value,'percent':percent},ensure_ascii=False),now))
         label = "호재" if event_type == "good" else "악재"
         target_label = f"목표 {target_price:,} NWX" if mode == "price" else f"목표 {'+' if event_type == 'good' else '-'}{value:g}%"
         return True, (f"✅ {asset_code or '시장 전체'}에 {label} 사건을 등록했습니다. "
@@ -199,10 +197,6 @@ class AdminManager:
                     )
                     if credit.rowcount != 1:
                         raise RuntimeError("지급 대상이 변경되어 기본소득 지급을 취소했습니다.")
-                if actor is not None:
-                    conn.execute('INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)',
-                        (str(actor),'basic_income',json.dumps({'amount':amount,'recipients':len(recipients),'total':total}),time.time()))
-
             after = balance - total
             deficit_note = f" · 국고 잔액 {after:,} NWX (적자)" if after < 0 else f" · 국고 잔액 {after:,} NWX"
             return True, (

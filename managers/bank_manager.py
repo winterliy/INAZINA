@@ -320,9 +320,6 @@ class BankManager:
                 conn.execute("UPDATE loans SET maturity_epoch=?,extension_count=extension_count+1,"
                     "last_extended_epoch=?,extension_eligible_epoch=? WHERE loan_id=?",
                     (after,now,max(float(before),now+days*86400),loan['loan_id']))
-                conn.execute("INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
-                    (str(user_id),'loan.extend',json.dumps({'loan_id':loan['loan_id'],
-                     'product_code':loan['product_code'],'before':before,'after':after,'days':days}),int(now)))
             return True, f"✅ 대출 #{loan['loan_id']} 만기를 {days}일 연장했습니다.\n변경 만기: <t:{int(after)}:F>"
         except (TypeError, ValueError, OverflowError) as exc:
             return False, f'❌ 대출연장 설정을 확인해주세요: {exc}'

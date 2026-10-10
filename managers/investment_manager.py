@@ -205,10 +205,6 @@ class InvestmentManager:
                 for user_id, quantity, principal, coupon in payments:
                     tax = self.users._tax(conn, user_id, "corporate_bond_interest", coupon)
                     self.users._credit_source(conn, user_id, None, principal + coupon - tax)
-                    conn.execute("INSERT INTO assets.product_settlements "
-                        "(user_id, product_code, kind, quantity, gross_amount, tax_amount, recorded_epoch) "
-                        "VALUES (?, ?, 'corporate_bond_maturity', ?, ?, ?, ?)",
-                        (user_id, product["product_code"], quantity, principal + coupon, tax, now))
                     notifications.append(dict(user_id=user_id, product_code=product["product_code"], net=principal + coupon - tax))
                 conn.execute("DELETE FROM assets.user_assets WHERE asset_code = ?", (product["product_code"],))
                 conn.execute("UPDATE product.investment SET status = 'redeemed' WHERE product_code = ?", (product["product_code"],))

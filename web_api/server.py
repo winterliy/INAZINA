@@ -218,9 +218,6 @@ def create_country_account(actor_id, country_id, password):
     with DBManager.admin_scope(actor_id):
         with DBManager.atomic(("users", "fx", "system")) as connection:
             ensure_auth_table(connection)
-            connection.execute("""CREATE TABLE IF NOT EXISTS admin_audit (
-                audit_id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT NOT NULL,
-                action TEXT NOT NULL, payload TEXT NOT NULL, recorded_epoch REAL NOT NULL)""")
             country = connection.execute(
                 "SELECT 1 FROM country_currencies n JOIN currencies c ON c.code=n.currency_code "
                 "WHERE n.nationality=? AND c.status='active'", (country_id,),
@@ -252,10 +249,6 @@ def create_country_account(actor_id, country_id, password):
             connection.execute(
                 "INSERT INTO web_auth_credentials(user_id,salt,password_hash,created_epoch,updated_epoch) "
                 "VALUES(?,?,?,?,?)", (user_id, salt, digest, now, now),
-            )
-            connection.execute(
-                "INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES(?,?,?,?)",
-                (str(actor_id), "country_account.create", json.dumps({"countryId": country_id}, ensure_ascii=False), now),
             )
     return {"countryId": country_id, "userId": user_id, "cash": cash, "status": "active"}
 
@@ -753,23 +746,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not user or user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
                 else:
-                    with connect_readonly() as connection:
-                        table = connection.execute(
-                            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='admin_audit'"
-                        ).fetchone()
-                        rows = connection.execute(
-                            "SELECT actor_id,action,payload,recorded_epoch FROM admin_audit "
-                            "ORDER BY recorded_epoch DESC LIMIT 50"
-                        ).fetchall() if table else []
-                    audit = []
-                    for row in rows:
-                        try:
-                            payload = json.loads(row["payload"])
-                        except (TypeError, json.JSONDecodeError):
-                            payload = {}
-                        audit.append({"actorId": row["actor_id"], "action": row["action"],
-                                      "payload": payload, "time": row["recorded_epoch"]})
-                    self.send_json(200, {"entries": audit})
+                    self.send_json(200, {"entries": []})
             elif path == "/internal/market/orders":
                 user = identity(internal_user_id(self))
                 if not user:

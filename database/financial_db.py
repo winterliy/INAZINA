@@ -69,9 +69,6 @@ class FinancialDB(DBManager):
         self.execute('''CREATE TABLE IF NOT EXISTS financial_periods (
             company_code TEXT NOT NULL, period TEXT NOT NULL, closed_epoch INTEGER NOT NULL,
             report_json TEXT NOT NULL, PRIMARY KEY(company_code,period))''')
-        self.execute('''CREATE TABLE IF NOT EXISTS financial_share_history (
-            company_code TEXT NOT NULL, recorded_epoch INTEGER NOT NULL, quantity_milli INTEGER NOT NULL,
-            PRIMARY KEY(company_code,recorded_epoch))''')
         self.execute('''CREATE TABLE IF NOT EXISTS financial_operating_profiles (
             company_code TEXT PRIMARY KEY, config_json TEXT NOT NULL, start_period TEXT NOT NULL,
             enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)))''')

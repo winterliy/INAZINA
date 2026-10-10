@@ -195,9 +195,6 @@ class FuturesManager:
                     conn.execute("DELETE FROM assets.futures_positions WHERE user_id = ? AND product_code = ?",
                                  (position["user_id"], product["product_code"]))
                     reason = "futures_maturity" if expired else "futures_liquidation"
-                    conn.execute("INSERT INTO assets.product_settlements "
-                        "(user_id, product_code, kind, quantity, gross_amount, tax_amount, recorded_epoch) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        (position["user_id"], product["product_code"], reason, position["quantity"], collateral, tax, now))
                     results.append(dict(user_id=position["user_id"], product_code=product["product_code"], reason=reason, net=collateral - tax))
                     # Liquidation must not leave an old resting order that reopens risk.
                     orders = conn.execute("SELECT * FROM assets.market_orders WHERE user_id = ? AND asset_code = ? "

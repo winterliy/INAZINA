@@ -81,8 +81,6 @@ class LotteryManager:
             rules = {**self._rules(conn),**updates}
             self.validate(rules)
             conn.execute("INSERT INTO settings(key,value) VALUES ('lottery_config',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(json.dumps(rules),))
-            conn.execute('INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)',
-                (str(actor),'lottery.configure',json.dumps(updates),int(time.time())))
         return '✅ 다음에 개설되는 회차부터 복권 설정을 적용합니다. 판매 중인 회차는 기존 규칙을 유지합니다.'
 
     def _ensure(self,conn,now):
@@ -100,9 +98,6 @@ class LotteryManager:
         pools = json.loads(latest['pools_json']) if latest else [0]*5
         created = conn.execute('INSERT INTO lottery_rounds(close_epoch,draw_epoch,rules_json,secret,commitment,pools_json) VALUES (?,?,?,?,?,?)',
             (int(close.timestamp()),int(close.timestamp())+rules['draw_delay_seconds'],json.dumps(rules),secret,commitment,json.dumps(pools))).lastrowid
-        for rank,amount in enumerate(pools,1):
-            if amount:
-                conn.execute('INSERT INTO lottery_pool_ledger(round_id,kind,rank,amount,recorded_epoch) VALUES (?,?,?,?,?)',(created,'carry_in',rank,amount,int(now)))
         return conn.execute('SELECT * FROM lottery_rounds WHERE round_id=?',(created,)).fetchone()
 
     @staticmethod
@@ -133,11 +128,6 @@ class LotteryManager:
         if not request_id or len(request_id)>100:
             raise ValueError('구매 요청 ID가 올바르지 않습니다.')
         with self.db.atomic() as conn:
-            prior = conn.execute('SELECT * FROM lottery_purchases WHERE request_id=?',(request_id,)).fetchone()
-            if prior:
-                if str(prior['user_id'])!=str(user_id):
-                    raise ValueError('다른 사용자의 구매 요청입니다.')
-                return {'round_id':prior['round_id'],'price':prior['price'],'tickets':json.loads(prior['tickets_json'])}
             user = conn.execute('SELECT status,cash FROM users WHERE user_id=?',(str(user_id),)).fetchone()
             if not user or (user['status']!='active' and str(user_id)!=TREASURY_USER_ID):
                 raise ValueError('등록된 활성 사용자만 구매할 수 있습니다.')
@@ -177,11 +167,6 @@ class LotteryManager:
                 tickets.append({'ticket_id':ticket,'numbers':selected})
             conn.execute('UPDATE lottery_rounds SET sales_total=sales_total+?,pools_json=?,reserve_total=reserve_total+?,treasury_total=treasury_total+? WHERE round_id=?',
                 (total,json.dumps(pools),reserve*quantity,treasury*quantity,round['round_id']))
-            for rank,change in enumerate(changes,1):
-                conn.execute('INSERT INTO lottery_pool_ledger(round_id,kind,rank,amount,recorded_epoch) VALUES (?,?,?,?,?)',(round['round_id'],'sale',rank,change*quantity,now))
-            for kind,value in [('reserve',reserve),('treasury',treasury)]:
-                conn.execute('INSERT INTO lottery_pool_ledger(round_id,kind,amount,recorded_epoch) VALUES (?,?,?,?)',(round['round_id'],kind,value*quantity,now))
-            conn.execute('INSERT INTO lottery_purchases VALUES (?,?,?,?,?,?)',(request_id,str(user_id),round['round_id'],quantity,price,json.dumps(tickets)))
             return {'round_id':round['round_id'],'price':price,'tickets':tickets}
 
     def process_due(self,now=None):
@@ -203,9 +188,6 @@ class LotteryManager:
                 return None
             winning = json.loads(round['winning_json'])
             pools = json.loads(round['pools_json'])
-            allocated = conn.execute("SELECT COALESCE(SUM(amount),0) FROM lottery_pool_ledger WHERE round_id=? AND kind IN ('sale','reserve','treasury')",(round['round_id'],)).fetchone()[0]
-            if allocated!=round['sales_total']:
-                raise ValueError('복권 판매 배분 원장 불일치로 지급을 중단했습니다.')
             tickets = conn.execute('SELECT * FROM lottery_tickets WHERE round_id=?',(round['round_id'],)).fetchall()
             groups = [[] for _ in range(5)]
             for ticket in tickets:
@@ -229,21 +211,16 @@ class LotteryManager:
                         conn, TREASURY_USER_ID, tax, maximum=MAX_MONEY
                     ):
                         raise ValueError('국고 잔액 한도를 초과하여 지급을 보류합니다.')
-                    conn.execute('INSERT INTO lottery_payouts VALUES (?,?,?,?,?,?,?,?)',(ticket['ticket_id'],round['round_id'],ticket['user_id'],rank,gross,tax,net,now))
-                    conn.execute('INSERT INTO lottery_pool_ledger(round_id,kind,rank,amount,ticket_id,recorded_epoch) VALUES (?,?,?,?,?,?)',(round['round_id'],'payout',rank,-gross,ticket['ticket_id'],now))
                     paid += gross
                 pools[rank-1] -= paid
                 result[str(rank)] = {'winners':len(winners),'gross_per_ticket':gross,'paid':paid,'carry':pools[rank-1]}
-                ledger = conn.execute("SELECT COALESCE(SUM(amount),0) FROM lottery_pool_ledger WHERE round_id=? AND rank=? AND kind IN ('carry_in','sale','payout')",(round['round_id'],rank)).fetchone()[0]
-                if ledger!=pools[rank-1]:
-                    raise ValueError('복권 상금 원장 불일치로 지급을 중단했습니다.')
             conn.execute("UPDATE lottery_rounds SET status='settled',pools_json=?,result_json=?,settled_epoch=? WHERE round_id=?",(json.dumps(pools),json.dumps(result),now,round['round_id']))
             settled = round['round_id']
             self._ensure(conn,now)
             return settled
 
     def tickets(self,user_id,round_id=None):
-        return [dict(r) for r in self.db.lottery.execute('SELECT t.*,p.gross,p.tax,p.net FROM lottery_tickets t LEFT JOIN lottery_payouts p ON p.ticket_id=t.ticket_id WHERE t.user_id=? AND (? IS NULL OR t.round_id=?) ORDER BY t.ticket_id DESC',(str(user_id),round_id,round_id))]
+        return [dict(r) for r in self.db.lottery.execute('SELECT t.*,NULL AS gross,NULL AS tax,NULL AS net FROM lottery_tickets t WHERE t.user_id=? AND (? IS NULL OR t.round_id=?) ORDER BY t.ticket_id DESC',(str(user_id),round_id,round_id))]
 
     def result(self,round_id=None):
         row = self.db.lottery.execute_one('SELECT * FROM lottery_rounds WHERE round_id=?',(round_id,)) if round_id is not None else self.db.lottery.execute_one("SELECT * FROM lottery_rounds WHERE status='settled' ORDER BY round_id DESC LIMIT 1")

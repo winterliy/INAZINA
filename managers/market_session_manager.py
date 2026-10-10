@@ -66,10 +66,6 @@ class MarketSessionManager:
         if (state["status"] != "open" and state["resume_epoch"] is not None
                 and int(state["resume_epoch"]) <= now):
             cls._resume(conn, state, int(state["resume_epoch"]))
-            conn.execute("INSERT INTO admin_audit(actor_id, action, payload, recorded_epoch) "
-                         "VALUES ('system', 'market_auto_resume', ?, ?)",
-                         (json.dumps({"reason": state["reason"], "scheduled_epoch": state["resume_epoch"]},
-                                     ensure_ascii=False), now))
             state = cls._row(conn)
         return state
 
@@ -133,8 +129,6 @@ class MarketSessionManager:
                     ("closed" if action == "close" else "paused", reason,
                      halt_started, resume, stage if action == "circuit" else None, now))
             current = self._row(conn)
-            conn.execute("INSERT INTO admin_audit(actor_id, action, payload, recorded_epoch) VALUES (?,?,?,?)",
-                         (str(actor_id), f"market_{action}", json.dumps(current, ensure_ascii=False), now))
         label = self.LABELS[action]
         if action in {"open", "resume"}:
             return True, f"✅ {label}: 거래와 가격 변동을 재개했습니다."
