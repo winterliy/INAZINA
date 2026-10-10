@@ -768,7 +768,7 @@ class CorporateActionsManager:
 
     def _merge_nonmarket(self, conn, actor, a, b, now):
         """Savings/debt offers may merge once all original contracts are closed."""
-        for table in ('saving', 'liability', 'treasury_bond_products', 'currency_saving_products'):
+        for table in ('saving', 'liability', 'treasury_bond_products'):
             first = conn.execute(f'SELECT * FROM {table} WHERE product_code=?', (a,)).fetchone()
             second = conn.execute(f'SELECT * FROM {table} WHERE product_code=?', (b,)).fetchone()
             if not first or not second:
@@ -776,8 +776,19 @@ class CorporateActionsManager:
             if first['status'] != 'active' or second['status'] != 'active':
                 raise ValueError('활성 상품 두 개를 입력해주세요.')
             self._unencumbered(conn, [a, b])
-            if table == 'saving' and conn.execute('SELECT 1 FROM accounts WHERE product_code=? LIMIT 1', (b,)).fetchone():
-                raise ValueError('흡수할 저축상품의 계좌를 먼저 해지해주세요. 가입 계약은 자동 변경하지 않습니다.')
+            if table == 'saving':
+                first_is_currency = first['product_kind'] == 'currency_saving'
+                second_is_currency = second['product_kind'] == 'currency_saving'
+                if first_is_currency != second_is_currency:
+                    continue
+                if first_is_currency:
+                    if first['quote_currency'] != second['quote_currency']:
+                        raise ValueError('같은 통화의 외환통장 상품끼리 통합할 수 있습니다.')
+                    for user in conn.execute("SELECT user_id FROM accounts WHERE account_type='currency_saving' AND product_code=?", (b,)).fetchall():
+                        CurrencyExchangeManager._settle(conn, user['user_id'], now)
+                    conn.execute("UPDATE accounts SET product_code=? WHERE account_type='currency_saving' AND product_code=?", (a, b))
+                elif conn.execute('SELECT 1 FROM accounts WHERE product_code=? LIMIT 1', (b,)).fetchone():
+                    raise ValueError('흡수할 저축상품의 계좌를 먼저 해지해주세요. 가입 계약은 자동 변경하지 않습니다.')
             if table == 'liability' and conn.execute("SELECT 1 FROM loans WHERE product_code=? AND status IN ('active','overdue') LIMIT 1", (b,)).fetchone():
                 raise ValueError('흡수할 대출상품의 채무를 먼저 상환해주세요.')
             if table == 'treasury_bond_products':
@@ -790,12 +801,6 @@ class CorporateActionsManager:
                 if total > self.MAX_MONEY:
                     raise ValueError('통합 국채 발행 한도를 초과합니다.')
                 conn.execute('UPDATE treasury_bond_products SET total_supply=? WHERE product_code=?', (total, a))
-            if table == 'currency_saving_products':
-                if first['currency_code'] != second['currency_code']:
-                    raise ValueError('같은 통화의 외환통장 상품끼리 통합할 수 있습니다.')
-                for user in conn.execute('SELECT user_id FROM currency_saving_accounts WHERE product_code=?', (b,)).fetchall():
-                    CurrencyExchangeManager._settle(conn, user['user_id'], now)
-                conn.execute('UPDATE currency_saving_accounts SET product_code=? WHERE product_code=?', (a, b))
             conn.execute(f"UPDATE {table} SET status='inactive' WHERE product_code=?", (b,))
             payload = {'survivor': a, 'absorbed': b, 'table': table}
             self._record(conn, 'merger:' + uuid.uuid4().hex, 'product_merger', b, a, payload, now)

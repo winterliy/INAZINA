@@ -751,8 +751,8 @@ class SlashCommandRegistry:
                 "SELECT account_number, user_id, product_code FROM accounts "
                 "WHERE account_type = 'saving' ORDER BY account_number LIMIT 1000"
             )
-            foreign_accounts = self.bot.db.fx.execute("SELECT a.account_number,a.user_id,a.currency_code,u.nickname "
-                "FROM currency_saving_accounts a JOIN users u ON u.user_id=a.user_id WHERE u.status='active' ORDER BY a.account_number LIMIT 1000")
+            foreign_accounts = self.bot.db.accounts.execute("SELECT a.account_number,a.user_id,a.quote_currency AS currency_code,u.nickname "
+                "FROM accounts a JOIN users u ON u.user_id=a.user_id WHERE a.account_type='currency_saving' AND u.status='active' ORDER BY a.account_number LIMIT 1000")
         except Exception:
             return []
 
@@ -806,7 +806,7 @@ class SlashCommandRegistry:
                 "WHERE user_id = ? ORDER BY account_type, created_at",
                 (user_id,),
             )
-            foreign_accounts = self.bot.db.fx.execute('SELECT * FROM currency_saving_accounts WHERE user_id=? ORDER BY currency_code',(user_id,))
+            foreign_accounts = self.bot.db.accounts.execute("SELECT *,quote_currency AS currency_code FROM accounts WHERE user_id=? AND account_type='currency_saving' ORDER BY quote_currency",(user_id,))
         except Exception:
             return []
         current = current.strip().casefold()
@@ -832,7 +832,7 @@ class SlashCommandRegistry:
     async def open_account(self, interaction: discord.Interaction, 상품: str):
         user_id, _user_data, _role = await self._prepare(interaction)
         code = 상품.strip()
-        foreign = self.bot.db.fx.execute_one("SELECT * FROM currency_saving_products WHERE product_code=? AND status='active'",(code,))
+        foreign = self.bot.db.products.execute_one("SELECT * FROM saving WHERE product_code=? AND product_kind='currency_saving' AND status='active'",(code,))
         if foreign:
             try:
                 number = await asyncio.to_thread(self.bot.currency_mgr.open_account,user_id,code)
