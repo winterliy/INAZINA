@@ -79,8 +79,8 @@ def main():
                 values = sorted(timings[2:])
                 print(f'{label}: tick median {statistics.median(values):.2f} ms, p95 {values[28]:.2f} ms; {advanced} states advanced')
             for table in ('company', 'investment', 'market_assets', 'market_simulation_state', 'market_auto_targets',
-                          'market_factor_state', 'market_event_targets', 'market_quote_overrides',
-                          'market_price_history', 'market_exchange_indices', 'market_exchange_index_history',
+                          'market_event_targets', 'market_quote_overrides',
+                          'market_price_history', 'market_exchanges', 'market_exchange_index_history',
                           'leveraged_etf_state'):
                 rows = [[tuple(r) for r in market.db.assets.execute(f'SELECT * FROM {table} ORDER BY 1')]
                         for market in markets.values()]

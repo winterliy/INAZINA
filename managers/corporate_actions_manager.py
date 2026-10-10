@@ -552,7 +552,6 @@ class CorporateActionsManager:
                 conn.execute(f'DELETE FROM {table} WHERE asset_code=?', (code,))
         from managers.market_manager import MarketManager
         MarketManager(self.bot.db).clear_runtime_targets(code)
-        conn.execute('DELETE FROM market_last_trade WHERE asset_code=?', (code,))
         if price is not None and shares is not None:
             conn.execute('UPDATE market_exchange_index_components SET previous_price=?,total_shares=? WHERE company_code=?', (price, shares, code))
 

@@ -66,7 +66,7 @@ class ELSManager:
                 "AND share_price>0 AND total_shares>0 LIMIT 1", (exchange,)).fetchone()
             if not constituents:
                 return None
-            row = conn.execute("SELECT index_value FROM market_exchange_indices WHERE exchange_id=?", (exchange,)).fetchone()
+            row = conn.execute("SELECT index_value FROM market_exchanges WHERE exchange_id=?", (exchange,)).fetchone()
             name, value = f"{exchange} 거래소 지수", row["index_value"] if row else None
             if prices is not None and code in prices:
                 cached = prices[code]

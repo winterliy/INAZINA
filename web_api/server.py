@@ -432,7 +432,7 @@ def admin_overview():
         ).fetchone()[0]
         sessions = connection.execute(
             "SELECT exchange_id,status,reason,trading_halted,updated_epoch,resume_epoch,circuit_stage "
-            "FROM market_exchange_sessions ORDER BY exchange_id"
+            "FROM market_exchanges ORDER BY exchange_id"
         ).fetchall()
     return {
         "activeUsers": int(active_users),

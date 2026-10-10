@@ -638,8 +638,6 @@ class UserManager:
                     asset_cache[code] = None
             return asset_cache[code]
         base_rate = float(self.db.system.get_setting("base_rate", "3")) / 100
-        last_trades = {str(row['asset_code']):int(row['price']) for row in
-            self.db.assets.execute('SELECT asset_code,price FROM market_last_trade')}
         quote_overrides = {str(row['asset_code']):int(row['price']) for row in
             self.db.assets.execute('SELECT asset_code,price FROM market_quote_overrides')}
         currency_rates = {'NWX':1}
@@ -729,7 +727,7 @@ class UserManager:
                 base_rate,
             )
             contract_code=str(position["contract_code"])
-            price = quote_overrides.get(contract_code,last_trades.get(contract_code,theoretical))
+            price = quote_overrides.get(contract_code, theoretical)
             quantity = int(position["quantity"])
             value = price * quantity
             total_stock_value += value
@@ -801,7 +799,7 @@ class UserManager:
                 base_rate,
             )
             contract_code=str(written['contract_code'])
-            mark=quote_overrides.get(contract_code,last_trades.get(contract_code,premium))
+            mark=quote_overrides.get(contract_code, premium)
             option_short_liability += mark * int(written["outstanding_contracts"])
             written_options.append({**dict(written),
                 'name':f"{underlying['name'] if underlying else written['underlying_code']} "

@@ -251,14 +251,13 @@ class MarketManager:
                 float(contract["implied_volatility"]), contract["option_type"],
                 float(self.db.system.get_setting("base_rate", "3")) / 100,
             )
-            latest_trade = self.db.assets.get_last_trade(str(code))
             side_name = "콜" if contract["option_type"] == "call" else "풋"
             return {
                 **contract,
                 "code": str(code),
                 "name": f"{underlying['name']} {side_name} {int(contract['strike_price']):,}",
                 "type": "option",
-                "price": int(latest_trade["price"]) if latest_trade else reference_price,
+                "price": reference_price,
                 "status": "matured" if contract["status"] == "active" and int(contract["expiration_epoch"]) <= now else contract["status"],
                 "is_fixed": 1,
                 "exchange_id": underlying.get("exchange_id"),
@@ -506,16 +505,30 @@ class MarketManager:
     def _market_factor(self, conn, epoch, config):
         """Every independent price source reuses this tick's common shock."""
         batch = getattr(self._tick, 'batch', None)
-        factor = batch['factor'] if batch is not None else conn.execute("SELECT last_epoch, current_factor FROM system.market_factor_state WHERE key = 'market'").fetchone()
+        factor = batch['factor'] if batch is not None else self._factor_from_settings(conn)
         if factor is not None and int(factor["last_epoch"]) == epoch:
             return float(factor["current_factor"])
         shock = standardized_shock(random, config.student_df)
         if batch is not None:
             batch['factor'] = dict(last_epoch=epoch, current_factor=shock)
-        conn.execute("INSERT INTO system.market_factor_state (key, last_epoch, current_factor) "
-                     "VALUES ('market', ?, ?) ON CONFLICT(key) DO UPDATE SET "
-                     "last_epoch = excluded.last_epoch, current_factor = excluded.current_factor", (epoch, shock))
+        conn.executemany("INSERT INTO system.settings(key,value) VALUES (?,?) "
+                         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (
+                             ('market_factor_last_epoch', str(int(epoch))),
+                             ('market_factor_current', repr(float(shock))),
+                         ))
         return shock
+
+    @staticmethod
+    def _factor_from_settings(conn):
+        values = {row['key']: row['value'] for row in conn.execute(
+            "SELECT key,value FROM system.settings "
+            "WHERE key IN ('market_factor_last_epoch','market_factor_current')"
+        )}
+        try:
+            return dict(last_epoch=int(values.get('market_factor_last_epoch', 0)),
+                        current_factor=float(values.get('market_factor_current', 0)))
+        except (TypeError, ValueError):
+            return dict(last_epoch=0, current_factor=0.0)
 
     def _save_simulation_state(self, conn, code, variance, innovation, latent, epoch, price, event_id=None):
         batch = getattr(self._tick, 'batch', None)
@@ -693,7 +706,7 @@ class MarketManager:
         # Target paths are RAM-only.  Database reads here retain only the
         # persistent GARCH state and common market factor.
         return dict(states={r['asset_code']: r for r in conn.execute('SELECT * FROM market_simulation_state')},
-            targets={}, factor=conn.execute("SELECT * FROM market_factor_state WHERE key='market'").fetchone(),
+            targets={}, factor=MarketManager._factor_from_settings(conn),
             events={}, state_updates={}, target_updates={}, target_deletes=set(), sector_shocks={})
 
         # Legacy SQLite-backed target state is intentionally unreachable.
@@ -706,7 +719,7 @@ class MarketManager:
             events[row['asset_code']] = row
         return dict(states={r['asset_code']: r for r in conn.execute('SELECT * FROM market_simulation_state')},
             targets={r['asset_code']: r for r in conn.execute('SELECT * FROM market_auto_targets')},
-            factor=conn.execute("SELECT * FROM market_factor_state WHERE key='market'").fetchone(),
+            factor=MarketManager._factor_from_settings(conn),
             events=events, state_updates={}, target_updates={}, target_deletes=set(), sector_shocks={})
 
     def _delete_auto_target(self, conn, code):
@@ -1006,7 +1019,6 @@ class MarketManager:
         for code, price in overrides.items():
             if code in quotes:
                 quotes[code]['price'] = int(price)
-        last = {r['asset_code']: r['price'] for r in conn.execute('SELECT * FROM market_last_trade')}
         rate = float(conn.execute("SELECT value FROM settings WHERE key='base_rate'").fetchone()[0]) / 100
         for row in conn.execute('SELECT * FROM option_contracts'):
             underlying = quotes.get(row['underlying_code'])
@@ -1015,7 +1027,7 @@ class MarketManager:
             code = row['contract_code']
             if code in quotes:
                 raise ValueError(f'중복 종목 코드: {code}')
-            price = overrides.get(code, last.get(code))
+            price = overrides.get(code)
             if price is None:
                 price = OptionManager.theoretical_price(int(underlying['price']), int(row['strike_price']),
                     max(0, row['expiration_epoch'] - now) / (365 * 86400),
@@ -1065,7 +1077,7 @@ class MarketManager:
         """Price SQL-configured inverse/leveraged investment products from an exchange index."""
         try:
             with self._short_market_transaction(("assets", "product")) as conn:
-                indices = {r['exchange_id']: r for r in conn.execute('SELECT * FROM market_exchange_indices')}
+                indices = {r['exchange_id']: r for r in conn.execute('SELECT * FROM market_exchanges')}
                 states = {r['product_code']: r for r in conn.execute('SELECT * FROM leveraged_etf_state')}
                 products = conn.execute(
                     "SELECT product_code, underlying_exchange_id, leverage_multiplier, "
@@ -1194,7 +1206,7 @@ class MarketManager:
                 constituents.setdefault(exchange_id, {})[code] = (price, shares)
             with self._short_market_transaction("assets") as conn:
                 tracked_exchanges = conn.execute(
-                    "SELECT exchange_id FROM assets.market_exchange_indices"
+                    "SELECT exchange_id FROM assets.market_exchanges"
                 ).fetchall()
                 for tracked in tracked_exchanges:
                     if str(tracked["exchange_id"]) not in constituents:
@@ -1208,7 +1220,7 @@ class MarketManager:
                     ):
                         continue
                     previous_index = conn.execute(
-                        "SELECT index_value FROM assets.market_exchange_indices "
+                        "SELECT index_value FROM assets.market_exchanges "
                         "WHERE exchange_id = ?", (exchange_id,),
                     ).fetchone()
                     previous_members = {
@@ -1248,10 +1260,11 @@ class MarketManager:
                         index_value = max(0.01, round(prior_index_value * (1 + index_return), 2))
 
                     conn.execute(
-                        "INSERT INTO assets.market_exchange_indices "
-                        "(exchange_id, index_value, updated_epoch) VALUES (?, ?, ?) "
+                        "INSERT INTO assets.market_exchanges "
+                        "(exchange_id, index_value, index_updated_epoch, status, updated_epoch, trading_halted) "
+                        "VALUES (?, ?, ?, 'open', 0, 0) "
                         "ON CONFLICT(exchange_id) DO UPDATE SET "
-                        "index_value = excluded.index_value, updated_epoch = excluded.updated_epoch",
+                        "index_value = excluded.index_value, index_updated_epoch = excluded.index_updated_epoch",
                         (exchange_id, index_value, int(now)),
                     )
                     conn.execute(
@@ -1297,8 +1310,8 @@ class MarketManager:
     def get_exchange_indices(self):
         """List persisted indexes plus active exchanges awaiting their first tick."""
         rows = self.db.assets.execute(
-            "SELECT exchange_id, index_value, updated_epoch "
-            "FROM market_exchange_indices ORDER BY exchange_id"
+            "SELECT exchange_id, index_value, index_updated_epoch AS updated_epoch "
+            "FROM market_exchanges ORDER BY exchange_id"
         )
         indices = {str(row["exchange_id"]): dict(row) for row in rows}
         active_exchanges = self.db.companies.execute(
@@ -1318,8 +1331,8 @@ class MarketManager:
     def get_exchange_index_info(self, exchange_id):
         exchange_id = str(exchange_id)
         row = self.db.assets.execute_one(
-            "SELECT exchange_id, index_value, updated_epoch "
-            "FROM market_exchange_indices WHERE exchange_id = ?", (exchange_id,)
+            "SELECT exchange_id, index_value, index_updated_epoch AS updated_epoch "
+            "FROM market_exchanges WHERE exchange_id = ?", (exchange_id,)
         )
         if row:
             return dict(row)

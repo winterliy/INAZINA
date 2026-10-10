@@ -230,9 +230,7 @@ class AdminCommandsManager:
                     underlying,_=self.bot.user_mgr._asset_row(conn,row['underlying_code'])
                     current=self.bot.option_mgr.theoretical_price(underlying['price'],row['strike_price'],max(0,row['expiration_epoch']-time.time())/(365*86400),row['implied_volatility'],row['option_type'],float(conn.execute("SELECT value FROM settings WHERE key='base_rate'").fetchone()[0])/100)
                     override=conn.execute('SELECT price FROM market_quote_overrides WHERE asset_code=?',(args[0],)).fetchone()
-                    latest=self.db.assets.get_last_trade(args[0])
                     if override:current=override[0]
-                    elif latest:current=latest['price']
                 elif price_key:
                     current=row[price_key]
                 else:

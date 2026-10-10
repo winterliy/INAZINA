@@ -83,7 +83,6 @@ class OptionManager:
                 contract["option_type"],
                 float(self.db.system.get_setting("base_rate", "0")) / 100,
             )
-            latest = self.db.assets.get_last_trade(contract["contract_code"])
             override = self.db.assets.execute_one("SELECT price FROM market_quote_overrides WHERE asset_code=?", (contract['contract_code'],))
             contract.update({
                 "name": (
@@ -91,7 +90,7 @@ class OptionManager:
                     f"{int(contract['strike_price']):,}"
                 ),
                 "type": "option",
-                "price": int(override['price']) if override else int(latest["price"]) if latest else theoretical,
+                "price": int(override['price']) if override else theoretical,
                 "theoretical_price": theoretical,
                 "underlying_price": spot,
                 "exchange_id": underlying.get("exchange_id"),

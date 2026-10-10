@@ -84,11 +84,23 @@ class SystemDB(DBManager):
             last_display_price INTEGER NOT NULL CHECK(last_display_price > 0),
             event_id INTEGER
         )""")
-        self.execute("""CREATE TABLE IF NOT EXISTS market_factor_state (
-            key TEXT PRIMARY KEY CHECK(key = 'market'),
-            last_epoch INTEGER NOT NULL,
-            current_factor REAL NOT NULL CHECK(ABS(current_factor) < 1.0e308)
-        )""")
+        # The common GARCH shock is a single system-wide value, so keep it
+        # with the rest of the runtime settings rather than in a one-row table.
+        legacy_factor = self.execute_one(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='market_factor_state'"
+        )
+        if legacy_factor:
+            factor = self.execute_one(
+                "SELECT last_epoch, current_factor FROM market_factor_state WHERE key='market'"
+            )
+            if factor:
+                self.execute("INSERT INTO settings(key,value) VALUES ('market_factor_last_epoch', ?) "
+                             "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(factor['last_epoch']),))
+                self.execute("INSERT INTO settings(key,value) VALUES ('market_factor_current', ?) "
+                             "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(factor['current_factor']),))
+            self.execute("DROP TABLE market_factor_state")
+        self.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('market_factor_last_epoch', '0')")
+        self.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('market_factor_current', '0')")
         for key, value in (
             ("auto_target_enabled", "1"),
             ("auto_target_range_percent", "10"),
@@ -133,23 +145,13 @@ class SystemDB(DBManager):
             self.execute("ALTER TABLE market_events ADD COLUMN volatility_percent REAL "
                          "CHECK(volatility_percent BETWEEN 0 AND 100)")
         self.execute("CREATE INDEX IF NOT EXISTS idx_market_events_active ON market_events(ends_epoch, starts_epoch)")
-        # A persisted market halt survives process restarts. Deadlines and event
-        # clocks are shifted exactly once when the market reopens.
-        self.execute("""CREATE TABLE IF NOT EXISTS market_session (
-            session_id INTEGER PRIMARY KEY CHECK(session_id = 1),
-            status TEXT NOT NULL CHECK(status IN ('open', 'closed', 'paused')),
-            reason TEXT NOT NULL DEFAULT '',
-            halt_started_epoch INTEGER,
-            resume_epoch INTEGER,
-            circuit_stage INTEGER CHECK(circuit_stage IN (1, 2, 3)),
-            updated_epoch INTEGER NOT NULL
-        )""")
-        self.execute("INSERT OR IGNORE INTO market_session "
-                     "(session_id, status, updated_epoch) VALUES (1, 'open', 0)")
-        # ``market_session`` was the former, global switch.  Keep it for old
-        # installations, but live trading reads this per-exchange table.
-        self.execute("""CREATE TABLE IF NOT EXISTS market_exchange_sessions (
+        # One row is the complete current state of one exchange: its index and
+        # its trading session.  Index components/history remain separate
+        # one-to-many/time-series tables.
+        self.execute("""CREATE TABLE IF NOT EXISTS market_exchanges (
             exchange_id TEXT PRIMARY KEY,
+            index_value REAL NOT NULL DEFAULT 1000,
+            index_updated_epoch INTEGER NOT NULL DEFAULT 0,
             status TEXT NOT NULL CHECK(status IN ('open', 'closed', 'paused')),
             reason TEXT NOT NULL DEFAULT '',
             halt_started_epoch INTEGER,
@@ -158,12 +160,45 @@ class SystemDB(DBManager):
             updated_epoch INTEGER NOT NULL,
             trading_halted INTEGER NOT NULL DEFAULT 0 CHECK(trading_halted IN (0, 1))
         )""")
-        self.execute("""INSERT OR IGNORE INTO market_exchange_sessions
-            (exchange_id,status,reason,halt_started_epoch,resume_epoch,circuit_stage,updated_epoch,trading_halted)
-            SELECT exchange_id, s.status, s.reason, s.halt_started_epoch,
-                   s.resume_epoch, s.circuit_stage, s.updated_epoch,
-                   CASE WHEN s.status='open' THEN 0 ELSE 1 END
-            FROM (
+        # Migrate both former exchange tables before removing them.  This also
+        # covers installations that predate per-exchange market sessions.
+        legacy_tables = {str(row[0]) for row in self.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+            "('market_exchange_indices', 'market_exchange_sessions', 'market_session')"
+        )}
+        if "market_exchange_indices" in legacy_tables:
+            self.execute("""INSERT OR IGNORE INTO market_exchanges
+                (exchange_id, index_value, index_updated_epoch)
+                SELECT exchange_id, index_value, updated_epoch
+                FROM market_exchange_indices""")
+            self.execute("""UPDATE market_exchanges
+                SET index_value=(SELECT index_value FROM market_exchange_indices old
+                                 WHERE old.exchange_id=market_exchanges.exchange_id),
+                    index_updated_epoch=(SELECT updated_epoch FROM market_exchange_indices old
+                                         WHERE old.exchange_id=market_exchanges.exchange_id)
+                WHERE EXISTS (SELECT 1 FROM market_exchange_indices old
+                              WHERE old.exchange_id=market_exchanges.exchange_id)""")
+        if "market_exchange_sessions" in legacy_tables:
+            self.execute("""INSERT OR IGNORE INTO market_exchanges
+                (exchange_id,status,reason,halt_started_epoch,resume_epoch,circuit_stage,updated_epoch,trading_halted)
+                SELECT exchange_id,status,reason,halt_started_epoch,resume_epoch,circuit_stage,updated_epoch,trading_halted
+                FROM market_exchange_sessions""")
+            self.execute("""UPDATE market_exchanges
+                SET status=(SELECT status FROM market_exchange_sessions old WHERE old.exchange_id=market_exchanges.exchange_id),
+                    reason=(SELECT reason FROM market_exchange_sessions old WHERE old.exchange_id=market_exchanges.exchange_id),
+                    halt_started_epoch=(SELECT halt_started_epoch FROM market_exchange_sessions old WHERE old.exchange_id=market_exchanges.exchange_id),
+                    resume_epoch=(SELECT resume_epoch FROM market_exchange_sessions old WHERE old.exchange_id=market_exchanges.exchange_id),
+                    circuit_stage=(SELECT circuit_stage FROM market_exchange_sessions old WHERE old.exchange_id=market_exchanges.exchange_id),
+                    updated_epoch=(SELECT updated_epoch FROM market_exchange_sessions old WHERE old.exchange_id=market_exchanges.exchange_id),
+                    trading_halted=(SELECT trading_halted FROM market_exchange_sessions old WHERE old.exchange_id=market_exchanges.exchange_id)
+                WHERE EXISTS (SELECT 1 FROM market_exchange_sessions old WHERE old.exchange_id=market_exchanges.exchange_id)""")
+        if "market_session" in legacy_tables:
+            self.execute("""INSERT OR IGNORE INTO market_exchanges
+                (exchange_id,status,reason,halt_started_epoch,resume_epoch,circuit_stage,updated_epoch,trading_halted)
+                SELECT exchange_id, s.status, s.reason, s.halt_started_epoch,
+                       s.resume_epoch, s.circuit_stage, s.updated_epoch,
+                       CASE WHEN s.status='open' THEN 0 ELSE 1 END
+                FROM (
                 SELECT DISTINCT TRIM(exchange_id) AS exchange_id FROM market_assets
                 WHERE exchange_id IS NOT NULL AND TRIM(exchange_id) <> ''
                 UNION SELECT DISTINCT TRIM(exchange_id) FROM company
@@ -173,7 +208,19 @@ class SystemDB(DBManager):
                 UNION SELECT DISTINCT TRIM(exchange_id) FROM treasury_bond_products
                 WHERE exchange_id IS NOT NULL AND TRIM(exchange_id) <> ''
                 UNION SELECT 'CURRENCY'
-            ) exchanges CROSS JOIN market_session s WHERE s.session_id=1""")
+                ) exchanges CROSS JOIN market_session s WHERE s.session_id=1""")
+        self.execute("""INSERT OR IGNORE INTO market_exchanges
+            (exchange_id,status,updated_epoch,trading_halted)
+            SELECT exchange_id, 'open', 0, 0 FROM (
+                SELECT DISTINCT TRIM(exchange_id) AS exchange_id FROM market_assets WHERE exchange_id IS NOT NULL AND TRIM(exchange_id) <> ''
+                UNION SELECT DISTINCT TRIM(exchange_id) FROM company WHERE exchange_id IS NOT NULL AND TRIM(exchange_id) <> ''
+                UNION SELECT DISTINCT TRIM(exchange_id) FROM investment WHERE exchange_id IS NOT NULL AND TRIM(exchange_id) <> ''
+                UNION SELECT DISTINCT TRIM(exchange_id) FROM treasury_bond_products WHERE exchange_id IS NOT NULL AND TRIM(exchange_id) <> ''
+                UNION SELECT 'CURRENCY'
+            )""")
+        self.execute("DROP TABLE IF EXISTS market_exchange_indices")
+        self.execute("DROP TABLE IF EXISTS market_exchange_sessions")
+        self.execute("DROP TABLE IF EXISTS market_session")
         self.execute("""CREATE TABLE IF NOT EXISTS market_event_targets (
             event_id INTEGER NOT NULL,
             asset_code TEXT NOT NULL,

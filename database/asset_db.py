@@ -144,18 +144,9 @@ class AssetDB(DBManager):
             "ON market_price_history(recorded_epoch)"
         )
         self.enforce_integer_money("market_price_history", ("price",), "history_id")
-        # A current quote is state, rather than a chart log. Keep one latest
-        # fill per asset so clearing yesterday's candles does not reprice
-        # options at a theoretical premium after an actual trade.
-        self.execute(
-            """CREATE TABLE IF NOT EXISTS market_last_trade (
-                asset_code TEXT PRIMARY KEY,
-                price INTEGER NOT NULL,
-                recorded_epoch INTEGER NOT NULL,
-                trade_id INTEGER NOT NULL
-            )"""
-        )
-        self.enforce_integer_money("market_last_trade", ("price",), "asset_code")
+        # The former latest-trade cache was never updated by order execution.
+        # Option marks use an explicit administrator override or the model.
+        self.execute("DROP TABLE IF EXISTS market_last_trade")
         self.execute(
             """CREATE TABLE IF NOT EXISTS market_future_expiry_prices (
                 product_code TEXT PRIMARY KEY,
@@ -167,15 +158,9 @@ class AssetDB(DBManager):
             )"""
         )
         self.enforce_integer_money("market_future_expiry_prices", ("price",), "product_code")
-        # Synthetic, market-cap-weighted index series are persisted alongside
-        # market history so /movement can render them like ordinary assets.
-        self.execute(
-            """CREATE TABLE IF NOT EXISTS market_exchange_indices (
-                exchange_id TEXT PRIMARY KEY,
-                index_value REAL NOT NULL DEFAULT 1000,
-                updated_epoch INTEGER NOT NULL
-            )"""
-        )
+        # Exchange-wide state (index and trading session) is owned by
+        # SystemDB's market_exchanges table.  Constituents remain here because
+        # an exchange has many component stocks.
         self.execute(
             """CREATE TABLE IF NOT EXISTS market_exchange_index_components (
                 exchange_id TEXT NOT NULL,
@@ -371,12 +356,6 @@ class AssetDB(DBManager):
 
     def get_trade_history(self, code, since_epoch):
         return []
-
-    def get_last_trade(self, code):
-        return self.execute_one(
-            "SELECT price, recorded_epoch, trade_id FROM market_last_trade WHERE asset_code = ?",
-            (str(code),),
-        )
 
     def update_price(self, code, new_price):
         self.execute("UPDATE market_assets SET price = ? WHERE code = ?", (new_price, code))

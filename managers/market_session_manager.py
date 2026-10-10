@@ -30,7 +30,7 @@ class MarketSessionManager:
     @classmethod
     def exchange_ids(cls, conn):
         return [str(row["exchange_id"]) for row in conn.execute(
-            "SELECT exchange_id FROM market_exchange_sessions ORDER BY exchange_id"
+            "SELECT exchange_id FROM market_exchanges ORDER BY exchange_id"
         )]
 
     @classmethod
@@ -55,10 +55,10 @@ class MarketSessionManager:
     @classmethod
     def _row(cls, conn, exchange_id):
         exchange_id = cls.normalize_exchange(exchange_id)
-        row = conn.execute("SELECT * FROM market_exchange_sessions WHERE exchange_id=?", (exchange_id,)).fetchone()
+        row = conn.execute("SELECT * FROM market_exchanges WHERE exchange_id=?", (exchange_id,)).fetchone()
         if row is None:
-            conn.execute("INSERT INTO market_exchange_sessions(exchange_id,status,updated_epoch,trading_halted) VALUES (?, 'open', 0, 0)", (exchange_id,))
-            row = conn.execute("SELECT * FROM market_exchange_sessions WHERE exchange_id=?", (exchange_id,)).fetchone()
+            conn.execute("INSERT INTO market_exchanges(exchange_id,status,updated_epoch,trading_halted) VALUES (?, 'open', 0, 0)", (exchange_id,))
+            row = conn.execute("SELECT * FROM market_exchanges WHERE exchange_id=?", (exchange_id,)).fetchone()
         return dict(row)
 
     @classmethod
@@ -81,9 +81,9 @@ class MarketSessionManager:
         if resume_at > start:
             # Event and automatic target paths are process-local.  Prices stay
             # persisted; a restart or resumed exchange starts a fresh path.
-            pass
-            conn.execute(f"UPDATE market_simulation_state SET last_epoch=last_epoch+? WHERE asset_code IN ({scope})", (delta, *params))
-        conn.execute("""UPDATE market_exchange_sessions SET status='open', reason='', halt_started_epoch=NULL,
+            scope, params = cls._asset_scope(exchange_id)
+            conn.execute(f"UPDATE market_simulation_state SET last_epoch=last_epoch+? WHERE asset_code IN ({scope})", (resume_at - start, *params))
+        conn.execute("""UPDATE market_exchanges SET status='open', reason='', halt_started_epoch=NULL,
             resume_epoch=NULL, circuit_stage=NULL, updated_epoch=?, trading_halted=0 WHERE exchange_id=?""", (resume_at, exchange_id))
 
     @classmethod
@@ -169,7 +169,7 @@ class MarketSessionManager:
                     if int(state["resume_epoch"]) > resume:
                         return False, "❌ 현재 정지 기간보다 짧은 정지를 적용할 수 없습니다."
                 halt_started = now if state["status"] == "open" else state["halt_started_epoch"]
-                conn.execute("""UPDATE market_exchange_sessions SET status=?, reason=?, halt_started_epoch=?,
+                conn.execute("""UPDATE market_exchanges SET status=?, reason=?, halt_started_epoch=?,
                     resume_epoch=?, circuit_stage=?, updated_epoch=?, trading_halted=1 WHERE exchange_id=?""",
                     ("closed" if action == "close" else "paused", reason, halt_started, resume,
                      stage if action == "circuit" else None, now, current_exchange))

@@ -50,8 +50,8 @@ class CurrencyDB(DBManager):
         legacy_asset_prefix = legacy_exchange + '_%'
         legacy_product_prefix = 'INZ' + legacy_exchange + '%'
         self.execute(
-            "DELETE FROM market_exchange_sessions WHERE exchange_id=? "
-            "AND EXISTS (SELECT 1 FROM market_exchange_sessions WHERE exchange_id='CURRENCY')",
+            "DELETE FROM market_exchanges WHERE exchange_id=? "
+            "AND EXISTS (SELECT 1 FROM market_exchanges WHERE exchange_id='CURRENCY')",
             (legacy_exchange,),
         )
         tables = [row[0] for row in self.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
