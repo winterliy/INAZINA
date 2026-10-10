@@ -955,7 +955,8 @@ class MarketManager:
             if not asset or asset['status'] != 'active':
                 continue
             if MarketSessionManager(self.db).trading_error(
-                now=now, exchange_id=asset.get('exchange_id')
+                conn=getattr(self._tick, 'conn', None), now=now,
+                exchange_id=asset.get('exchange_id')
             ):
                 continue
             if asset['type'] not in {'option','국채','stock_future','corporate_bond','mutual_fund','index_fund'} and not asset.get('underlying_exchange_id'):
