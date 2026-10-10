@@ -93,7 +93,7 @@ class UserManager:
     @staticmethod
     def _choose_funds(conn, user_id, exclude_account=None, exclude_wallet=False):
         user = conn.execute(
-            "SELECT cash FROM users.users WHERE user_id = ? AND (status = 'active' OR user_id='__treasury__')", (user_id,)
+            f"SELECT cash FROM users.users WHERE user_id = ? AND (status = 'active' OR user_id='{TREASURY_USER_ID}')", (user_id,)
         ).fetchone()
         if not user:
             return None
@@ -134,7 +134,7 @@ class UserManager:
         if account_number is None:
             cursor = conn.execute(
                 "UPDATE users.users SET cash = cash - ? "
-                "WHERE user_id = ? AND (status = 'active' OR user_id='__treasury__') AND cash >= ?",
+                f"WHERE user_id = ? AND (status = 'active' OR user_id='{TREASURY_USER_ID}') AND cash >= ?",
                 (amount, user_id, amount),
             )
         else:
@@ -428,7 +428,7 @@ class UserManager:
             with self.db.atomic(("users", "accounts")) as conn:
                 if recipient == TREASURY_USER_ID:
                     recipient_user = conn.execute(
-                        "SELECT user_id FROM users.users WHERE user_id = ? AND status = 'system'",
+                        "SELECT user_id FROM users.users WHERE user_id = ? AND status = 'nation'",
                         (TREASURY_USER_ID,),
                     ).fetchone()
                 else:
@@ -460,7 +460,7 @@ class UserManager:
                     return False, "❌ 같은 계좌로는 이체할 수 없습니다. 출금·입금 계좌를 다르게 선택해주세요."
 
                 wallet = conn.execute(
-                    "SELECT cash FROM users.users WHERE user_id = ? AND (status = 'active' OR user_id='__treasury__')",
+                    f"SELECT cash FROM users.users WHERE user_id = ? AND (status = 'active' OR user_id='{TREASURY_USER_ID}')",
                     (sender_id,),
                 ).fetchone()
                 if not wallet:
@@ -536,7 +536,7 @@ class UserManager:
                     if target_user_id == TREASURY_USER_ID:
                         cursor = conn.execute(
                             "UPDATE users.users SET cash = cash + ? "
-                            "WHERE user_id = ? AND status = 'system'",
+                            "WHERE user_id = ? AND status = 'nation'",
                             (amount, TREASURY_USER_ID),
                         )
                         destination = "국고"
@@ -582,10 +582,10 @@ class UserManager:
                 if not 0 <= chance <= 100:
                     chance = 50.0
                 return_row = conn.execute(
-                    'SELECT return_percent FROM pot."return" WHERE id = 1'
+                    "SELECT value FROM settings WHERE key = 'gamble_return'"
                 ).fetchone()
                 try:
-                    return_percent = float(return_row["return_percent"] if return_row else 100)
+                    return_percent = float(return_row["value"] if return_row else 100)
                 except (TypeError, ValueError):
                     return_percent = 100.0
                 if not math.isfinite(return_percent) or return_percent < 0:

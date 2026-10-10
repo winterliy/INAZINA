@@ -443,7 +443,7 @@ class OrderBookManager:
             proceeds = max(0, int(execution_price) * int(quantity) - tax)
             conn.execute(
                 "UPDATE users.users SET cash = cash + ? "
-                "WHERE user_id = ? AND (status = 'active' OR user_id='__treasury__')",
+                f"WHERE user_id = ? AND (status = 'active' OR user_id='{TREASURY_USER_ID}')",
                 (proceeds, seller_id),
             )
             return
@@ -521,7 +521,7 @@ class OrderBookManager:
             return
         if account_number is None:
             cursor = conn.execute(
-                "UPDATE users.users SET cash = cash + ? WHERE user_id = ? AND (status = 'active' OR user_id='__treasury__')",
+                f"UPDATE users.users SET cash = cash + ? WHERE user_id = ? AND (status = 'active' OR user_id='{TREASURY_USER_ID}')",
                 (amount, user_id),
             )
         else:

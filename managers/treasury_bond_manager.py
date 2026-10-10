@@ -103,7 +103,7 @@ class TreasuryBondManager:
     @staticmethod
     def _debit_funds(conn, user_id, amount):
         user = conn.execute(
-            "SELECT cash FROM users.users WHERE user_id = ? AND (status = 'active' OR user_id='__treasury__')",
+            f"SELECT cash FROM users.users WHERE user_id = ? AND (status = 'active' OR user_id='{TREASURY_USER_ID}')",
             (user_id,),
         ).fetchone()
         if not user:

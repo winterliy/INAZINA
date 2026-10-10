@@ -4,7 +4,7 @@ export type ApiUser = {
   userId: string;
   nickname: string;
   nationality: string;
-  role: "admin" | "user";
+  role: "admin" | "user" | "nation";
   cash: number;
   creditScore: number;
 };

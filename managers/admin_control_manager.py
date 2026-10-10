@@ -371,8 +371,8 @@ class AdminControlManager:
                     self._number(value,0,100)
                 if key=='gamble_return':
                     self._number(value,0,10000)
-                if key in {'tax_percent','gamble_chance','gamble_return'}:
-                    table,column = {'tax_percent':('tax_settings','rate_percent'),'gamble_chance':('probability','chance'),'gamble_return':('return','return_percent')}[key]
+                if key in {'tax_percent','gamble_chance'}:
+                    table,column = {'tax_percent':('tax_settings','rate_percent'),'gamble_chance':('probability','chance')}[key]
                     conn.execute(f'UPDATE "{table}" SET "{column}"=? WHERE id=1',(value,))
                 else:
                     conn.execute("INSERT INTO settings VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(key,str(value)))
@@ -392,7 +392,7 @@ class AdminControlManager:
             for key in ('cash','credit_score'):
                 if key in changes:
                     changes[key] = self._number(changes[key],0,1000 if key=='credit_score' else 2**53-1,integer=True)
-            if changes.get('role',user['role']) not in {'admin','user'} or changes.get('status',user['status']) not in {'active','inactive','bankrupt'}:
+            if changes.get('role',user['role']) not in {'admin','user','nation'} or changes.get('status',user['status']) not in {'active','inactive','bankrupt'}:
                 raise ValueError("role/status 값을 확인해주세요.")
             if user_id==str(actor) and (changes.get('role')=='user' or changes.get('status') in {'inactive','bankrupt'}):
                 raise ValueError("현재 관리자는 자신의 관리 권한을 제거할 수 없습니다.")

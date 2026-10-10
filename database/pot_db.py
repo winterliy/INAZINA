@@ -16,20 +16,11 @@ class PotDB(DBManager):
             )"""
         )
         self.execute("INSERT OR IGNORE INTO probability (id, chance) VALUES (1, 50)")
-        self.execute(
-            '''CREATE TABLE IF NOT EXISTS "return" (
-                id INTEGER PRIMARY KEY CHECK(id = 1),
-                return_percent REAL NOT NULL DEFAULT 100 CHECK(return_percent >= 0)
-            )'''
-        )
-        self.execute(
-            'INSERT OR IGNORE INTO "return" (id, return_percent) VALUES (1, 100)'
-        )
 
     def get_chance_percent(self):
         row = self.execute_one("SELECT chance FROM probability WHERE id = 1")
         return row["chance"] if row else 50.0
 
     def get_return_percent(self):
-        row = self.execute_one('SELECT return_percent FROM "return" WHERE id = 1')
-        return row["return_percent"] if row else 100.0
+        row = self.execute_one("SELECT value FROM settings WHERE key = 'gamble_return'")
+        return float(row["value"]) if row else 100.0

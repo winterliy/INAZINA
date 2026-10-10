@@ -26,6 +26,27 @@ class SystemDB(DBManager):
         )
         self.execute(
             "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+            ("gamble_return", "100"),
+        )
+        legacy_return = self.execute_one(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'return'"
+        )
+        legacy_migrated = self.execute_one(
+            "SELECT 1 FROM settings WHERE key = 'migration_return_to_settings'"
+        )
+        if legacy_return and not legacy_migrated:
+            self.execute(
+                """UPDATE settings
+                   SET value = (SELECT CAST(return_percent AS TEXT) FROM "return" WHERE id = 1)
+                   WHERE key = 'gamble_return'
+                     AND EXISTS (SELECT 1 FROM "return" WHERE id = 1)"""
+            )
+            self.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?)",
+                ("migration_return_to_settings", "1"),
+            )
+        self.execute(
+            "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
             ("market_volatility", "0.15"),
         )
         self.execute(
@@ -78,6 +99,7 @@ class SystemDB(DBManager):
         )""")
         for key, value in (("base_rate", "3"), ("statutory_rate", "5")):
             self.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
+        self._init_gamble_triggers()
         self.execute("""CREATE TABLE IF NOT EXISTS rate_history (
             history_id INTEGER PRIMARY KEY AUTOINCREMENT,
             rate_key TEXT NOT NULL CHECK(rate_key IN ('base_rate', 'statutory_rate')),
@@ -192,6 +214,21 @@ class SystemDB(DBManager):
                 VALUES (NEW.key, CAST(NEW.value AS REAL),
                         (julianday('now') - 2440587.5) * 86400.0, 'database');
             END""")
+
+    def _init_gamble_triggers(self):
+        """Keep browser edits to gamble_return within the supported range."""
+        for operation in ("INSERT", "UPDATE OF key, value"):
+            suffix = "insert" if operation == "INSERT" else "update"
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_settings_gamble_validate_{suffix}
+                BEFORE {operation} ON settings
+                WHEN NEW.key = 'gamble_return'
+                BEGIN
+                    SELECT CASE WHEN json_valid(NEW.value) = 0
+                        THEN RAISE(ABORT, 'Gamble return must be a number between 0 and 10000') END;
+                    SELECT CASE WHEN json_type(NEW.value) NOT IN ('integer', 'real')
+                        OR CAST(NEW.value AS REAL) NOT BETWEEN 0 AND 10000
+                        THEN RAISE(ABORT, 'Gamble return must be a number between 0 and 10000') END;
+                END""")
 
     def get_setting(self, key, default=None):
         row = self.execute_one("SELECT value FROM settings WHERE key = ?", (key,))

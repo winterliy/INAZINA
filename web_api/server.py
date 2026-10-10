@@ -24,6 +24,7 @@ INTERNAL_TOKEN = os.environ.get("INAZINA_INTERNAL_TOKEN", "")
 PORT = int(os.environ.get("INAZINA_PYTHON_PORT", "4313"))
 BOOTSTRAP_ADMIN_IDS = {"1076861147560542278"}
 sys.path.insert(0, str(ROOT))
+from database.user_db import TREASURY_USER_ID
 _domain = None
 _domain_lock = threading.Lock()
 
@@ -61,20 +62,21 @@ def identity(user_id):
         auth_table = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='web_auth_credentials'"
         ).fetchone()
-        auth_version = connection.execute(
+        credential = connection.execute(
             "SELECT auth_version FROM web_auth_credentials WHERE user_id=?", (user_id,),
-        ).fetchone()[0] if auth_table else 0
+        ).fetchone() if auth_table else None
         country_account = connection.execute(
             "SELECT 1 FROM country_currencies WHERE nationality=?", (user_id,),
         ).fetchone() if row and row["user_id"] == row["nationality"] else None
         treasury = connection.execute(
-            "SELECT cash FROM users WHERE user_id='__treasury__' AND nationality=?",
-            (row["nationality"],),
+            "SELECT cash FROM users WHERE user_id=? AND nationality=?",
+            (TREASURY_USER_ID, row["nationality"]),
         ).fetchone() if country_account else None
-    if not row or row["status"] != "active":
+    if (not row or row["status"] != "active" or
+            (auth_table and credential is None)):
         return None
     role = "admin" if user_id in BOOTSTRAP_ADMIN_IDS else str(row["role"] or "user").strip().lower()
-    if role not in {"admin", "user"}:
+    if role not in {"admin", "user", "nation"}:
         role = "user"
     return {
         "userId": str(row["user_id"]),
@@ -83,7 +85,7 @@ def identity(user_id):
         "cash": int((treasury["cash"] if treasury else row["cash"]) or 0),
         "creditScore": int(row["credit_score"] or 0),
         "role": role,
-        "authVersion": int(auth_version),
+        "authVersion": int(credential[0]) if credential else 0,
     }
 
 
@@ -91,11 +93,11 @@ def trading_user_id(user_id):
     with connect_readonly() as connection:
         country_account = connection.execute(
             "SELECT 1 FROM users u JOIN country_currencies c ON c.nationality=u.user_id "
-            "JOIN users t ON t.user_id='__treasury__' AND t.nationality=u.nationality "
+            "JOIN users t ON t.user_id=? AND t.nationality=u.nationality "
             "WHERE u.user_id=? AND u.nationality=u.user_id AND u.status='active'",
-            (user_id,),
+            (TREASURY_USER_ID, user_id),
         ).fetchone()
-    return "__treasury__" if country_account else user_id
+    return TREASURY_USER_ID if country_account else user_id
 
 
 def auth_countries():
@@ -233,17 +235,17 @@ def create_country_account(actor_id, country_id, password):
                     raise ValueError("country_account_conflict")
                 if existing_user["status"] != "active":
                     raise ValueError("active_user_required")
-                if existing_user["role"] != "user":
+                if existing_user["role"] not in {"user", "nation"}:
                     raise ValueError("country_account_conflict")
                 if connection.execute(
                     "SELECT 1 FROM web_auth_credentials WHERE user_id=?", (user_id,),
                 ).fetchone():
                     raise ValueError("country_account_exists")
-                connection.execute("UPDATE users SET cash=0 WHERE user_id=?", (user_id,))
+                connection.execute("UPDATE users SET cash=0,role='nation' WHERE user_id=?", (user_id,))
                 cash = 0
             else:
                 connection.execute(
-                    "INSERT INTO users(user_id,nickname,nationality,cash,role) VALUES(?,?,?,?, 'user')",
+                    "INSERT INTO users(user_id,nickname,nationality,cash,role) VALUES(?,?,?,?, 'nation')",
                     (user_id, f"{country_id} 국가 계정", country_id, 0),
                 )
                 cash = 0
@@ -423,7 +425,8 @@ def domain():
 def admin_overview():
     with connect_readonly() as connection:
         active_users = connection.execute(
-            "SELECT COUNT(*) FROM users WHERE status='active' AND user_id<>'__treasury__'"
+            "SELECT COUNT(*) FROM users WHERE status='active' AND user_id<>?",
+            (TREASURY_USER_ID,),
         ).fetchone()[0]
         active_assets = connection.execute(
             "SELECT (SELECT COUNT(*) FROM market_assets WHERE status='active') + "
@@ -619,13 +622,13 @@ def admin_users(search):
             "SELECT user_id,nickname,nationality,"
             "CASE WHEN user_id=nationality AND EXISTS(SELECT 1 FROM country_currencies c "
             "WHERE c.nationality=users.user_id) THEN COALESCE((SELECT t.cash FROM users t "
-            "WHERE t.user_id='__treasury__' AND t.nationality=users.nationality),cash) "
+            "WHERE t.user_id=? AND t.nationality=users.nationality),cash) "
             "ELSE cash END AS cash,credit_score,status,role, "
             "CASE WHEN user_id=nationality AND EXISTS(SELECT 1 FROM country_currencies c "
             "WHERE c.nationality=users.user_id) THEN 'country' ELSE 'discord' END AS account_type "
-            "FROM users WHERE user_id<>'__treasury__' AND (user_id LIKE ? OR nickname LIKE ?) "
+            "FROM users WHERE user_id<>? AND (user_id LIKE ? OR nickname LIKE ?) "
             "ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END,nickname LIMIT 100",
-            (term, term),
+            (TREASURY_USER_ID, TREASURY_USER_ID, term, term),
         ).fetchall()
     return [{"userId": row["user_id"], "nickname": row["nickname"],
              "nationality": row["nationality"], "cash": int(row["cash"] or 0),

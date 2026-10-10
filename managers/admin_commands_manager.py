@@ -5,6 +5,7 @@ import time
 import secrets
 from decimal import Decimal, ROUND_HALF_UP
 from database.db_manager import DBManager
+from database.user_db import TREASURY_USER_ID
 from managers.admin_control_manager import ENTITIES, KINDS
 from managers.fx_manager import SCALE, MAX_UNITS, amount_units, display_units
 
@@ -339,15 +340,15 @@ class AdminCommandsManager:
             if name or price or supply:
                 raise ValueError('옵션은 underlying_code, option_type, strike_price, maturity_days, quantity, limit_price, volatility_percent를 입력해주세요.')
             # Contracts keep the user's requested code rather than an opaque generated code.
-            error=self.bot.user_mgr._settle_user_interest('__treasury__')
+            error=self.bot.user_mgr._settle_user_interest(TREASURY_USER_ID)
             if error:raise ValueError(error)
             with self.db.atomic() as conn:
                 self.control.require(actor,conn)
                 if not code or len(code)>80 or self.db.code_locations(conn,code):
                     raise ValueError('새로운 1~80자 상품 코드를 입력해주세요.')
-                success,message=self.bot.option_mgr.create_and_write('__treasury__',**fields,conn=conn)
+                success,message=self.bot.option_mgr.create_and_write(TREASURY_USER_ID,**fields,conn=conn)
                 if not success:raise ValueError(message)
-                row=conn.execute("SELECT contract_id,contract_code FROM option_contracts WHERE writer_id='__treasury__' ORDER BY contract_id DESC LIMIT 1").fetchone()
+                row=conn.execute("SELECT contract_id,contract_code FROM option_contracts WHERE writer_id=? ORDER BY contract_id DESC LIMIT 1",(TREASURY_USER_ID,)).fetchone()
                 conn.execute('UPDATE option_contracts SET contract_code=? WHERE contract_id=?',(code,row['contract_id']))
                 conn.execute('UPDATE market_orders SET asset_code=? WHERE asset_code=?',(code,row['contract_code']))
                 self.control._audit(conn,actor,'option.create',{'code':code,**fields})

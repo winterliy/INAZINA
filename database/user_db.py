@@ -1,7 +1,8 @@
 from .db_manager import DBManager
 
 
-TREASURY_USER_ID = "__treasury__"
+TREASURY_USER_ID = "20230216"
+LEGACY_TREASURY_USER_IDS = ("__treasury__", "20230219")
 
 
 class UserDB(DBManager):
@@ -26,12 +27,51 @@ class UserDB(DBManager):
             self.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'")
         except:
             pass
-        self.execute(
-            "INSERT OR IGNORE INTO users "
-            "(user_id, nickname, nationality, cash, status, role) "
-            "VALUES (?, '국고', '낙원', 0, 'system', 'system')",
-            (TREASURY_USER_ID,),
-        )
+        with self.lock, self.conn:
+            legacy_rows = self.conn.execute(
+                "SELECT user_id,cash FROM users WHERE user_id IN (?,?)",
+                LEGACY_TREASURY_USER_IDS,
+            ).fetchall()
+            existing = self.conn.execute(
+                "SELECT cash FROM users WHERE user_id=?", (TREASURY_USER_ID,)
+            ).fetchone()
+            merged_cash = sum(int(row["cash"] or 0) for row in legacy_rows)
+            if existing:
+                merged_cash += int(existing["cash"] or 0)
+            self.conn.execute(
+                "INSERT INTO users(user_id,nickname,nationality,cash,status,role) "
+                "VALUES (?, '낙원국고', '낙원', ?, 'nation', 'nation') "
+                "ON CONFLICT(user_id) DO UPDATE SET cash=excluded.cash, "
+                "nationality='낙원', status='nation', role='nation'",
+                (TREASURY_USER_ID, merged_cash),
+            )
+            old_ids = (*LEGACY_TREASURY_USER_IDS,)
+            if legacy_rows:
+                tables = self.conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+                for (table,) in tables:
+                    columns = self.conn.execute(f'PRAGMA table_info("{table}")').fetchall()
+                    foreign_keys = self.conn.execute(
+                        f'PRAGMA foreign_key_list("{table}")'
+                    ).fetchall()
+                    for column in columns:
+                        name = column[1]
+                        is_user_ref = any(
+                            fk[2] == "users" and fk[3] == name and fk[4] == "user_id"
+                            for fk in foreign_keys
+                        ) or name in {"user_id", "writer_id", "max_shareholder_id"}
+                        if table == "users" and name == "user_id":
+                            continue
+                        if is_user_ref:
+                            self.conn.execute(
+                                f'UPDATE "{table}" SET "{name}"=? WHERE "{name}" IN (?,?)',
+                                (TREASURY_USER_ID, *old_ids),
+                            )
+                self.conn.execute(
+                    "DELETE FROM users WHERE user_id IN (?,?)", LEGACY_TREASURY_USER_IDS
+                )
+        self.enforce_integer_money("users", ("cash",), "user_id")
         self.enforce_integer_money("users", ("cash",), "user_id")
 
     def create_user(self, user_id, nickname, nationality, cash=1000000, role='user'):

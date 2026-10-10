@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from database.db_manager import DBManager
+from database.user_db import TREASURY_USER_ID, UserDB
 from web_api import server
 
 
@@ -48,7 +49,7 @@ class CountryAccountTests(unittest.TestCase):
         self.assertEqual(account["userId"], "Testland")
         self.assertEqual(user["nationality"], "Testland")
         self.assertEqual(user["cash"], 0)
-        self.assertEqual(user["role"], "user")
+        self.assertEqual(user["role"], "nation")
         with closing(server.sqlite3.connect(server.DATABASE)) as connection:
             discord_cash = connection.execute(
                 "SELECT cash FROM users WHERE user_id='discord-1'"
@@ -95,6 +96,14 @@ class CountryAccountTests(unittest.TestCase):
             ).fetchone()
         self.assertIsNone(remaining)
 
+    def test_identity_rejects_active_user_without_web_credentials(self):
+        server.create_country_account("admin-1", "Testland", "CountryPass123")
+        with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
+            connection.execute(
+                "INSERT INTO users(user_id,nickname,nationality) VALUES ('no-web-auth','No web auth','Testland')"
+            )
+        self.assertIsNone(server.identity("no-web-auth"))
+
     def test_hts_login_id_is_separate_and_password_confirmed(self):
         server.create_country_account("admin-1", "Testland", "CountryPass123")
         self.assertEqual(server.set_hts_login_id("Testland", "Test.User_1", "CountryPass123"), "test.user_1")
@@ -110,9 +119,10 @@ class CountryAccountTests(unittest.TestCase):
         with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
             connection.execute(
                 "INSERT INTO users(user_id,nickname,nationality,cash,status,role) "
-                "VALUES ('__treasury__','Treasury','Testland',123456,'system','system')"
+                "VALUES (?,'Treasury','Testland',123456,'system','nation')",
+                (TREASURY_USER_ID,),
             )
-        self.assertEqual(server.trading_user_id("Testland"), "__treasury__")
+        self.assertEqual(server.trading_user_id("Testland"), TREASURY_USER_ID)
         self.assertEqual(server.identity("Testland")["cash"], 123456)
 
     def test_non_admin_cannot_create_country_account(self):
@@ -124,6 +134,38 @@ class CountryAccountTests(unittest.TestCase):
     def test_internal_user_id_decodes_non_ascii_country_id(self):
         handler = SimpleNamespace(headers={"x-inazina-user-id": "%EB%82%99%EC%9B%90"})
         self.assertEqual(server.internal_user_id(handler), "낙원")
+
+    def test_legacy_treasuries_merge_into_nation_account(self):
+        with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
+            connection.execute(
+                "INSERT INTO users(user_id,nickname,nationality,cash,status,role) "
+                "VALUES('__treasury__','Old treasury','Testland',0,'system','system')"
+            )
+            connection.execute(
+                "INSERT INTO users(user_id,nickname,nationality,cash,status,role) "
+                "VALUES('20230219','Old country treasury','Testland',98765,'system','system')"
+            )
+            connection.execute("CREATE TABLE treasury_refs(user_id TEXT)")
+            connection.execute("INSERT INTO treasury_refs VALUES('__treasury__')")
+
+        users = UserDB()
+        treasury = users.get_user(TREASURY_USER_ID)
+        self.assertEqual(treasury["cash"], 98765)
+        self.assertEqual(treasury["status"], "nation")
+        self.assertEqual(treasury["role"], "nation")
+        users.close()
+
+        with closing(server.sqlite3.connect(server.DATABASE)) as connection:
+            self.assertEqual(
+                connection.execute("SELECT user_id FROM treasury_refs").fetchone()[0],
+                TREASURY_USER_ID,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM users WHERE user_id IN ('__treasury__','20230219')"
+                ).fetchone()[0],
+                0,
+            )
 
 
 if __name__ == "__main__":

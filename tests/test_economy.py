@@ -217,7 +217,7 @@ class EconomyTests(unittest.TestCase):
 
     def test_gamble_return_percent_is_sql_managed(self):
         self.db.pot.execute("UPDATE probability SET chance = 100 WHERE id = 1")
-        self.db.pot.execute('UPDATE "return" SET return_percent = 50 WHERE id = 1')
+        self.db.system.set_setting("gamble_return", "50")
 
         success, message = self.users.gamble("citizen-1", 100)
 
