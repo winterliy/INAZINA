@@ -26,7 +26,7 @@
 
 - `test_create_modify_delete_and_rollback`
 - `test_typed_creation_uses_json_and_protects_existing_claims`
-- `test_balances_wallet_bank_fx_and_nonadmin`
+- `test_balances_wallet_bank_currency_and_nonadmin`
 - `test_rates_settings_and_cross_currency`
 - `test_lottery_manual_numbers_private_until_draw_and_paid_once`
 - `test_prefix_authorization_argument_dispatch_old_commands_and_help`
@@ -163,7 +163,7 @@
 - `test_prefix_blocked_dm_never_publishes_controls_and_cleans_up`
 - `test_prefix_cleanup_failure_disables_private_session`
 - `test_modal_fields_and_revoked_role_are_checked`
-- `test_option_bond_fx_and_linked_events_preserve_history_and_terms`
+- `test_option_bond_currency_and_linked_events_preserve_history_and_terms`
 - `test_national_put_collateral_order_cancellation_and_bank_account`
 - `test_admin_scope_blocks_queued_transaction_after_role_revocation`
 - `test_zero_percent_event_cancels_previous_goal_and_clears_overlay`

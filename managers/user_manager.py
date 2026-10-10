@@ -219,7 +219,7 @@ class UserManager:
         try:
             with self.db.atomic(("users", "accounts", "assets", "product", "company", "tax")) as conn:
                 from managers.market_session_manager import MarketSessionManager
-                error = MarketSessionManager(self.db).trading_error(conn=conn)
+                error = MarketSessionManager(self.db).trading_error(conn=conn, asset_code=asset_code)
                 if error:
                     return False, error
                 asset, source = self._asset_row(conn, asset_code)
@@ -291,7 +291,7 @@ class UserManager:
         try:
             with self.db.atomic(("users", "accounts", "assets", "product", "company", "tax")) as conn:
                 from managers.market_session_manager import MarketSessionManager
-                error = MarketSessionManager(self.db).trading_error(conn=conn)
+                error = MarketSessionManager(self.db).trading_error(conn=conn, asset_code=asset_code)
                 if error:
                     return False, error
                 asset, source = self._asset_row(conn, asset_code)
@@ -374,10 +374,10 @@ class UserManager:
             return False, f"❌ 매도 처리 중 오류가 발생했습니다: {exc}"
 
     def transfer(self, from_user_id, recipient, amount, source_account=None):
-        if self.db.fx.execute_one("SELECT 1 FROM fx_accounts WHERE account_number IN (?,?) LIMIT 1",(str(recipient).strip(),str(source_account or '').strip())):
+        if self.db.accounts.execute_one("SELECT 1 FROM accounts WHERE account_type='currency_saving' AND account_number IN (?,?) LIMIT 1",(str(recipient).strip(),str(source_account or '').strip())):
             try:
-                from managers.fx_manager import FXManager
-                return True,FXManager(self.db).transfer(from_user_id,recipient,amount,source_account)
+                from managers.currency_exchange_manager import CurrencyExchangeManager
+                return True,CurrencyExchangeManager(self.db).transfer(from_user_id,recipient,amount,source_account)
             except ValueError as exc:
                 return False,f'❌ {exc}'
         try:
@@ -642,13 +642,13 @@ class UserManager:
             self.db.assets.execute('SELECT asset_code,price FROM market_last_trade')}
         quote_overrides = {str(row['asset_code']):int(row['price']) for row in
             self.db.assets.execute('SELECT asset_code,price FROM market_quote_overrides')}
-        fx_rates = {'NWX':1}
+        currency_rates = {'NWX':1}
         for row in self.db.fx.execute("SELECT c.code,a.price FROM currencies c LEFT JOIN market_assets a "
                                       "ON a.code=c.asset_code WHERE c.status='active'"):
             if row['code']=='NWX':
                 continue
             if row['price'] is not None and float(row['price'])>0:
-                fx_rates[str(row['code'])]=int(round(float(row['price'])))
+                currency_rates[str(row['code'])]=int(round(float(row['price'])))
         currency_row = self.db.fx.execute_one("SELECT n.currency_code FROM country_currencies n "
             "JOIN currencies c ON c.code=n.currency_code WHERE n.nationality=? AND c.status='active'",(nationality,))
         national_currency = currency_row['currency_code'] if currency_row else 'NWX'
@@ -685,7 +685,7 @@ class UserManager:
                 continue
             price = int(round(asset["price"] or 0)) if asset else 0
             currency = asset.get('quote_currency','NWX') if asset else 'NWX'
-            rate = fx_rates.get(currency,1)
+            rate = currency_rates.get(currency,1)
             value = price * quantity * rate
             total_stock_value += value
             stock_details.append({
@@ -815,7 +815,7 @@ class UserManager:
         )
         order_reserved_total = 0
         for reserved in reserved_rows:
-            order_reserved_total += int(reserved['total'] or 0)*fx_rates.get(reserved['quote_currency'] or 'NWX',1)
+            order_reserved_total += int(reserved['total'] or 0)*currency_rates.get(reserved['quote_currency'] or 'NWX',1)
 
         futures_collateral = 0
         futures_unrealized = 0
@@ -845,21 +845,21 @@ class UserManager:
             (user_id,),
         )
         loan_total = int(round(loan_row["total"] or 0)) if loan_row else 0
-        fx_total = 0
-        fx_accounts = []
-        fx_rows = self.db.fx.execute("SELECT currency_code,balance_units FROM fx_accounts WHERE user_id=?",(str(user_id),))
-        if fx_rows:
-            from managers.fx_manager import FXManager
+        currency_total = 0
+        currency_saving_accounts = []
+        currency_rows = self.db.accounts.execute("SELECT quote_currency AS currency_code,balance_units FROM accounts WHERE user_id=? AND account_type='currency_saving'",(str(user_id),))
+        if currency_rows:
+            from managers.currency_exchange_manager import CurrencyExchangeManager
             if settle:
-                fx_accounts = FXManager(self.db).accounts(user_id)
+                currency_saving_accounts = CurrencyExchangeManager(self.db).accounts(user_id)
             else:
                 # The web portfolio passes settle=False.  Its foreign-account
                 # valuation must remain a read, not a BEGIN IMMEDIATE writer.
                 with self.db.readonly() as conn:
-                    fx_accounts = [{**dict(r),'value_nwx':int(r['balance_units'])*FXManager._rate(conn,r['currency_code'])//1_000_000 if r['balance_units'] else 0}
-                        for r in conn.execute("SELECT a.*,p.name AS product_name,p.annual_rate FROM fx_accounts a "
-                            "LEFT JOIN fx_products p ON p.product_code=a.product_code WHERE a.user_id=? ORDER BY a.currency_code",(str(user_id),))]
-            fx_total = sum(r['value_nwx'] for r in fx_accounts)
+                    currency_saving_accounts = [{**dict(r),'value_nwx':int(r['balance_units'])*CurrencyExchangeManager._rate(conn,r['currency_code'])//1_000_000 if r['balance_units'] else 0}
+                        for r in conn.execute("SELECT a.*,a.quote_currency AS currency_code,p.name AS product_name,p.interest_rate AS annual_rate FROM accounts a "
+                            "LEFT JOIN saving p ON p.product_code=a.product_code WHERE a.user_id=? AND a.account_type='currency_saving' ORDER BY a.quote_currency",(str(user_id),))]
+            currency_total = sum(r['value_nwx'] for r in currency_saving_accounts)
         els_positions=[]
         if getattr(self.db,'els',None) is not None:
             from managers.els_manager import ELSManager
@@ -869,18 +869,18 @@ class UserManager:
         if getattr(self.db,'corporate',None) is not None:
             preferred_claims=[{**dict(row),'remaining_amount':int(row['gross_amount'])-int(row['paid_amount'])}
                 for row in self.db.corporate.execute("SELECT * FROM preferred_dividend_claims WHERE user_id=? AND status IN ('unpaid','partial') ORDER BY due_epoch,claim_id",(str(user_id),))]
-        preferred_claim_total=sum(int(row['remaining_amount'])*fx_rates.get(row['quote_currency'],1) for row in preferred_claims)
+        preferred_claim_total=sum(int(row['remaining_amount'])*currency_rates.get(row['quote_currency'],1) for row in preferred_claims)
         grand_total = (
             cash + total_account_balance + total_stock_value + order_reserved_total
-            + bond_total + option_collateral_cash - option_short_liability + fx_total+els_total+preferred_claim_total
+            + bond_total + option_collateral_cash - option_short_liability + currency_total+els_total+preferred_claim_total
         )
 
         return {
             "nationality":nationality,
             "national_currency":national_currency,
-            "fx_accounts":fx_accounts,
+            "currency_saving_accounts":currency_saving_accounts,
             "written_options":written_options,
-            "fx_total":fx_total,
+            "currency_total":currency_total,
             "els_positions":els_positions,
             "els_total":els_total,
             "preferred_dividend_claims":preferred_claims,

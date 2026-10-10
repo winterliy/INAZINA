@@ -157,7 +157,7 @@ class OptionManager:
         now = int(time.time())
         try:
             with (self.db.atomic(("users", "accounts", "assets", "product", "company", "tax")) if conn is None else nullcontext(conn)) as conn:
-                error = MarketSessionManager(self.db).trading_error(conn=conn, now=now)
+                error = MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=underlying_code)
                 if error:
                     return False, error
                 underlying, source = self.user_manager._asset_row(conn, underlying_code)
@@ -359,7 +359,7 @@ class OptionManager:
         now = int(time.time())
         try:
             with self.db.atomic(("users", "accounts", "assets", "product", "company", "tax")) as conn:
-                error = MarketSessionManager(self.db).trading_error(conn=conn, now=now)
+                error = MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=contract_code)
                 if error:
                     return False, error
                 contract = conn.execute(
@@ -458,7 +458,8 @@ class OptionManager:
             return False, f"❌ 옵션 주문 처리 중 오류가 발생했습니다: {exc}"
 
     def _match_incoming_order(self, conn, order_id, now):
-        if MarketSessionManager(self.db).trading_error(conn=conn, now=now):
+        row = conn.execute("SELECT asset_code FROM market_orders WHERE order_id=?", (order_id,)).fetchone()
+        if MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=row["asset_code"] if row else None):
             return 0, 0, 0
         fill_count = filled_quantity = traded_value = 0
         while True:

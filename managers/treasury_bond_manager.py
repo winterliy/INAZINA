@@ -152,7 +152,7 @@ class TreasuryBondManager:
         try:
             with self.db.atomic(("users", "accounts", "assets", "product")) as conn:
                 from managers.market_session_manager import MarketSessionManager
-                error = MarketSessionManager(self.db).trading_error(conn=conn)
+                error = MarketSessionManager(self.db).trading_error(conn=conn, asset_code=product_code)
                 if error:
                     return False, error
                 bond = conn.execute(

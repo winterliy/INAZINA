@@ -18,7 +18,7 @@ from functions.discord_views import FXRatesView,AssetAccountsView,PriceMovementV
 from functions.lottery_views import LotteryPurchaseView,LotteryTicketsView,result_embed
 from functions.slash_commands import SlashCommandRegistry
 from managers.catalog_manager import CatalogManager
-from managers.fx_manager import FXManager
+from managers.currency_exchange_manager import CurrencyExchangeManager
 from managers.user_manager import UserManager
 from managers.market_manager import MarketManager
 from managers.lottery_manager import LotteryManager
@@ -33,7 +33,7 @@ class LatestRequestsTests(unittest.TestCase):
         self.db.users.create_user('alice','앨리스','미국',1000000)
         self.db.users.create_user('bob','밥','대한민국',1000000)
         self.db.users.create_user('admin','관리자','낙원',1000000,'admin')
-        self.bot = SimpleNamespace(db=self.db,fx_mgr=FXManager(self.db),user_mgr=UserManager(self.db),
+        self.bot = SimpleNamespace(db=self.db,currency_mgr=CurrencyExchangeManager(self.db),user_mgr=UserManager(self.db),
             market_mgr=MarketManager(self.db),lottery_mgr=LotteryManager(self.db))
 
     def tearDown(self):
@@ -81,7 +81,7 @@ class LatestRequestsTests(unittest.TestCase):
         async def run():
             await registry.open_account(SimpleNamespace(),상품='INZFX001')
             self.assertIn('외환통장 개설',registry._reply.call_args.kwargs['content'])
-            self.assertEqual(self.db.fx.execute_one("SELECT COUNT(*) FROM fx_accounts WHERE user_id='alice'")[0],1)
+            self.assertEqual(self.db.fx.execute_one("SELECT COUNT(*) FROM currency_saving_accounts WHERE user_id='alice'")[0],1)
             await registry.open_account(SimpleNamespace(),상품='INZSV001')
             from functions.discord_views import AccountProductOpenView
             view=registry._reply.call_args.kwargs['view']
@@ -97,13 +97,13 @@ class LatestRequestsTests(unittest.TestCase):
         self.assertEqual(self.db.products.execute_one("SELECT COUNT(*) FROM investment WHERE quote_currency<>'NWX'")[0],25)
         from managers.order_book_manager import OrderBookManager
         book=OrderBookManager(self.db,self.bot.user_mgr)
-        self.bot.fx_mgr.open_account('alice','INZFX001')
-        self.bot.fx_mgr.exchange('alice','NWX','USD','400000')
+        self.bot.currency_mgr.open_account('alice','INZFX001')
+        self.bot.currency_mgr.exchange('alice','NWX','USD','400000')
         success,message=book.place_limit_order('alice','INZUSDST001','buy',2,120)
         self.assertTrue(success,message)
         self.assertEqual(self.db.assets.execute_one("SELECT quote_currency FROM market_orders WHERE user_id='alice'")[0],'USD')
-        self.assertEqual(self.db.fx.execute_one("SELECT balance_units FROM fx_accounts WHERE user_id='alice' AND currency_code='USD'")[0],46400000)
-        self.assertEqual(self.db.fx.execute_one("SELECT balance_units FROM fx_accounts WHERE user_id=? AND currency_code='USD'",(TREASURY_USER_ID,))[0],220000000)
+        self.assertEqual(self.db.fx.execute_one("SELECT balance_units FROM currency_saving_accounts WHERE user_id='alice' AND currency_code='USD'")[0],46400000)
+        self.assertEqual(self.db.fx.execute_one("SELECT balance_units FROM currency_saving_accounts WHERE user_id=? AND currency_code='USD'",(TREASURY_USER_ID,))[0],220000000)
         info=self.bot.user_mgr.get_total_assets('alice')
         self.assertEqual(info['stock_total'],330000)
         self.assertEqual(info['grand_total'],999600)
@@ -120,16 +120,16 @@ class LatestRequestsTests(unittest.TestCase):
         from managers.order_book_manager import OrderBookManager
         book=OrderBookManager(self.db,self.bot.user_mgr)
         for user in ('alice','bob'):
-            self.bot.fx_mgr.open_account(user,'INZFX001')
-            self.bot.fx_mgr.exchange(user,'NWX','USD','400000')
-        before=self.bot.fx_mgr.accounts('alice')[0]['balance_units']
+            self.bot.currency_mgr.open_account(user,'INZFX001')
+            self.bot.currency_mgr.exchange(user,'NWX','USD','400000')
+        before=self.bot.currency_mgr.accounts('alice')[0]['balance_units']
         success,message=book.place_limit_order('alice','INZUSDST001','buy',1,90)
         self.assertTrue(success,message)
         reserved=self.db.assets.execute_one("SELECT order_id FROM market_orders WHERE user_id='alice'")[0]
         info=self.bot.user_mgr.get_total_assets('alice')
         self.assertEqual(info['order_reserved_total'],135000)
         self.assertTrue(book.cancel_order('alice',reserved)[0])
-        self.assertEqual(self.bot.fx_mgr.accounts('alice')[0]['balance_units'],before)
+        self.assertEqual(self.bot.currency_mgr.accounts('alice')[0]['balance_units'],before)
         self.assertTrue(book.place_limit_order('alice','INZUSDST001','buy',1,110)[0])
         self.db.companies.update_share_price('INZUSDST001',200)
         self.assertTrue(book.place_limit_order('alice','INZUSDST001','sell',1,120)[0])
@@ -138,7 +138,7 @@ class LatestRequestsTests(unittest.TestCase):
         self.assertEqual(self.db.assets.execute_one("SELECT quantity FROM user_assets WHERE user_id='bob' AND asset_code='INZUSDST001'")[0],1)
         tax=self.db.tax.execute_one("SELECT * FROM tax_transactions WHERE source='foreign_security_sale_gain'")
         self.assertEqual((tax['gross_amount'],tax['tax_amount']),(15000,450))
-        self.assertEqual(self.db.fx.execute_one("SELECT balance_units FROM fx_accounts WHERE user_id='alice' AND currency_code='USD'")[0],276100000)
+        self.assertEqual(self.db.fx.execute_one("SELECT balance_units FROM currency_saving_accounts WHERE user_id='alice' AND currency_code='USD'")[0],276100000)
 
     def test_foreign_security_missing_account_and_insufficient_currency_do_not_use_nwx_cash(self):
         self.seed()
@@ -149,7 +149,7 @@ class LatestRequestsTests(unittest.TestCase):
         self.assertFalse(self.bot.user_mgr.buy_asset('alice','INZUSDST001',1)[0])
         self.assertFalse(self.bot.user_mgr.sell_asset('alice','INZUSDST001',1)[0])
         self.assertFalse(book.place_limit_order('alice','INZUSDST001','buy',1,110)[0])
-        self.bot.fx_mgr.open_account('alice','INZFX001')
+        self.bot.currency_mgr.open_account('alice','INZFX001')
         self.assertFalse(book.place_limit_order('alice','INZUSDST001','buy',1,110)[0])
         self.assertEqual(self.db.users.get_user('alice')['cash'],before)
         self.assertEqual(self.db.assets.execute_one("SELECT COUNT(*) FROM market_orders WHERE asset_code='INZUSDST001'")[0],0)
@@ -207,16 +207,16 @@ class LatestRequestsTests(unittest.TestCase):
     def test_assets_include_nationality_and_all_foreign_accounts(self):
         self.seed()
         for index in range(1,7):
-            self.bot.fx_mgr.open_account('alice',f'INZFX{index:03d}')
-        self.bot.fx_mgr.exchange('alice','NWX','USD','15000')
+            self.bot.currency_mgr.open_account('alice',f'INZFX{index:03d}')
+        self.bot.currency_mgr.exchange('alice','NWX','USD','15000')
         info = self.bot.user_mgr.get_total_assets('alice')
         self.assertEqual((info['nationality'],info['national_currency']),('미국','USD'))
-        self.assertEqual(len(info['fx_accounts']),6)
-        self.assertEqual(info['fx_total'],14985)
-        before = self.db.fx.execute_one("SELECT last_interest_epoch FROM fx_accounts WHERE user_id='alice' AND currency_code='USD'")[0]
+        self.assertEqual(len(info['currency_saving_accounts']),6)
+        self.assertEqual(info['currency_total'],14985)
+        before = self.db.fx.execute_one("SELECT last_interest_epoch FROM currency_saving_accounts WHERE user_id='alice' AND currency_code='USD'")[0]
         snapshot=self.bot.user_mgr.get_total_assets('alice',settle=False)
-        self.assertEqual(len(snapshot['fx_accounts']),6)
-        self.assertEqual(self.db.fx.execute_one("SELECT last_interest_epoch FROM fx_accounts WHERE user_id='alice' AND currency_code='USD'")[0],before)
+        self.assertEqual(len(snapshot['currency_saving_accounts']),6)
+        self.assertEqual(self.db.fx.execute_one("SELECT last_interest_epoch FROM currency_saving_accounts WHERE user_id='alice' AND currency_code='USD'")[0],before)
         registry = SlashCommandRegistry(self.bot)
         registry._prepare=AsyncMock(return_value=('alice',self.db.users.get_user('alice'),'user'))
         registry._reply=AsyncMock()
@@ -228,36 +228,36 @@ class LatestRequestsTests(unittest.TestCase):
         from functions.wallet_views import WalletCategoryView
         self.assertIsInstance(sent['view'],WalletCategoryView)
         seen=[]
-        sent['view'].category='fx_accounts'
+        sent['view'].category='currency_saving_accounts'
         seen.append(sent['view'].build_embed().description)
-        for account in info['fx_accounts']:
+        for account in info['currency_saving_accounts']:
             self.assertIn(account['account_number'],'\n'.join(seen))
 
     def test_transfer_wallet_foreign_wallet_and_other_user_without_conversion_fee(self):
         self.seed()
-        alice=self.bot.fx_mgr.open_account('alice','INZFX001')
-        bob=self.bot.fx_mgr.open_account('bob','INZFX001')
+        alice=self.bot.currency_mgr.open_account('alice','INZFX001')
+        bob=self.bot.currency_mgr.open_account('bob','INZFX001')
         success,message=self.bot.user_mgr.transfer('alice',alice,'15000','__wallet__')
         self.assertTrue(success,message)
-        self.assertEqual(self.db.fx.execute_one('SELECT balance_units FROM fx_accounts WHERE account_number=?',(alice,))[0],9990000)
+        self.assertEqual(self.db.fx.execute_one('SELECT balance_units FROM currency_saving_accounts WHERE account_number=?',(alice,))[0],9990000)
         success,message=self.bot.user_mgr.transfer('alice',bob,'1.5',alice)
         self.assertTrue(success,message)
-        row=self.db.fx.execute_one('SELECT * FROM fx_transfer_transactions ORDER BY transaction_id DESC LIMIT 1')
+        row=self.db.fx.execute_one('SELECT * FROM currency_transfer_transactions ORDER BY transaction_id DESC LIMIT 1')
         self.assertEqual((row['fee_nwx'],row['target_units'],row['recipient_id']),(0,1500000,'bob'))
         success,message=self.bot.user_mgr.transfer('alice','alice','1',alice)
         self.assertTrue(success,message)
-        self.assertEqual(self.db.fx.execute_one('SELECT target_units FROM fx_transfer_transactions ORDER BY transaction_id DESC LIMIT 1')[0],1498000000)
+        self.assertEqual(self.db.fx.execute_one('SELECT target_units FROM currency_transfer_transactions ORDER BY transaction_id DESC LIMIT 1')[0],1498000000)
 
     def test_foreign_transfer_insufficient_wrong_owner_and_fractional_nwx_rollback(self):
         self.seed()
-        alice=self.bot.fx_mgr.open_account('alice','INZFX001')
-        bob=self.bot.fx_mgr.open_account('bob','INZFX001')
+        alice=self.bot.currency_mgr.open_account('alice','INZFX001')
+        bob=self.bot.currency_mgr.open_account('bob','INZFX001')
         before=self.db.users.get_user('alice')['cash']
         for source,target,amount in [(bob,alice,'1'),('__wallet__',alice,'1.5'),(alice,bob,'1'),(alice,alice,'1')]:
             success,_=self.bot.user_mgr.transfer('alice',target,amount,source)
             self.assertFalse(success)
         self.assertEqual(self.db.users.get_user('alice')['cash'],before)
-        self.assertEqual(self.db.fx.execute_one('SELECT COUNT(*) FROM fx_transfer_transactions')[0],0)
+        self.assertEqual(self.db.fx.execute_one('SELECT COUNT(*) FROM currency_transfer_transactions')[0],0)
 
     def test_foreign_transfers_update_bank_principal_and_offer_account_codes(self):
         self.seed()
@@ -265,7 +265,7 @@ class LatestRequestsTests(unittest.TestCase):
         success,message=BankManager(self.db).open_account('alice','INZSV001','pass1234',15000)
         self.assertTrue(success,message)
         bank=self.db.accounts.execute_one("SELECT account_number FROM accounts WHERE user_id='alice'")[0]
-        fx=self.bot.fx_mgr.open_account('alice','INZFX001')
+        fx=self.bot.currency_mgr.open_account('alice','INZFX001')
         success,message=self.bot.user_mgr.transfer('alice',fx,'15000',bank)
         self.assertTrue(success,message)
         self.assertEqual(tuple(self.db.accounts.execute_one('SELECT balance,principal FROM accounts WHERE account_number=?',(bank,))),(0,0))

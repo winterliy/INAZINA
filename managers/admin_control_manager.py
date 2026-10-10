@@ -23,7 +23,7 @@ ENTITIES = {
     'loan': ('liability','product_code',None,None),
     'option': ('option_contracts','contract_code',None,None),
     'currency': ('currencies','code',None,None),
-    'fxproduct': ('fx_products','product_code',None,None),
+    'fxproduct': ('currency_saving_products','product_code',None,None),
 }
 KINDS = {'etf':'etf','future':'stock_future','corporatebond':'corporate_bond',
          'fund':'mutual_fund','indexfund':'index_fund','commodity':'commodity_spot','els':'els'}
@@ -136,12 +136,12 @@ class AdminControlManager:
                         conn.execute("SELECT 1 FROM user_assets WHERE asset_code=? LIMIT 1",(code,)).fetchone()
                         or conn.execute("SELECT 1 FROM futures_positions WHERE product_code=? LIMIT 1",(code,)).fetchone()):
                         raise ValueError("미상환 채권·선물 포지션을 먼저 정산해주세요.")
-                    if category=='currency' and conn.execute("SELECT 1 FROM fx_accounts WHERE currency_code=? AND balance_units>0",(code,)).fetchone():
+                    if category=='currency' and conn.execute("SELECT 1 FROM currency_saving_accounts WHERE currency_code=? AND balance_units>0",(code,)).fetchone():
                         raise ValueError("보유 잔액이 있는 통화는 삭제할 수 없습니다.")
                     currency = code if category=='currency' else (conn.execute('SELECT code FROM currencies WHERE asset_code=?',(code,)).fetchone() or [None])[0] if category=='asset' else None
                     if currency and currency!='NWX' and any(conn.execute(f'SELECT 1 FROM {table} WHERE quote_currency=? LIMIT 1',(currency,)).fetchone() for table in ('company','investment','market_assets')):
                         raise ValueError('이 통화로 결제하는 종목이 있어 통화·환율을 삭제할 수 없습니다.')
-                    if category=='asset' and conn.execute("SELECT 1 FROM currencies c JOIN fx_accounts a ON a.currency_code=c.code WHERE c.asset_code=? AND a.balance_units>0",(code,)).fetchone():
+                    if category=='asset' and conn.execute("SELECT 1 FROM currencies c JOIN currency_saving_accounts a ON a.currency_code=c.code WHERE c.asset_code=? AND a.balance_units>0",(code,)).fetchone():
                         raise ValueError("외환통장 잔액이 있는 환율 종목은 삭제할 수 없습니다.")
                     if category=='currency' and code=='NWX':
                         raise ValueError("기준 통화 NWX는 삭제할 수 없습니다.")
@@ -314,8 +314,8 @@ class AdminControlManager:
             if category=='fxproduct' and existing and 'currency_code' in extra and extra['currency_code']!=existing['currency_code']:
                 raise ValueError("외환통장의 통화는 변경할 수 없습니다. 새 상품을 생성해주세요.")
             if category=='fxproduct' and existing and 'annual_rate' in extra:
-                for account in conn.execute("SELECT DISTINCT user_id FROM fx_accounts WHERE product_code=?",(code,)).fetchall():
-                    self.bot.fx_mgr._settle(conn,account['user_id'],time.time())
+                for account in conn.execute("SELECT DISTINCT user_id FROM currency_saving_accounts WHERE product_code=?",(code,)).fetchall():
+                    self.bot.currency_mgr._settle(conn,account['user_id'],time.time())
             if category=='currency':
                 if code=='NWX' and any(k!='name' for k in values):
                     raise ValueError("기준 통화 NWX의 환율은 고정됩니다.")
@@ -355,7 +355,7 @@ class AdminControlManager:
         with self.db.atomic(('system','users','pot')) as conn:
             self.require(actor,conn)
             settings = {r['key']:r['value'] for r in conn.execute('SELECT * FROM settings')}
-            allowed = {k for k in settings if k.startswith(('garch_','auto_target_'))} | {'market_volatility','market_condition','fx_fee_percent','base_rate','statutory_rate','tax_percent','gamble_chance','gamble_return'}
+            allowed = {k for k in settings if k.startswith(('garch_','auto_target_'))} | {'market_volatility','market_condition','currency_exchange_fee_percent','base_rate','statutory_rate','tax_percent','gamble_chance','gamble_return'}
             if not isinstance(changes,dict) or not changes or set(changes)-allowed:
                 raise ValueError("허용된 시장·금리·세율·도박 설정 키를 입력해주세요.")
             updated = {**settings,**{k:str(v) for k,v in changes.items()}}
@@ -364,7 +364,7 @@ class AdminControlManager:
             AutoTargetConfig.from_settings(updated)
             self.bot.market_mgr._normalize_market_condition(updated.get('market_condition','normal'))
             for key,value in changes.items():
-                if key in {'base_rate','statutory_rate','fx_fee_percent','tax_percent','gamble_chance'}:
+                if key in {'base_rate','statutory_rate','currency_exchange_fee_percent','tax_percent','gamble_chance'}:
                     self._number(value,0,100)
                 if key=='gamble_return':
                     self._number(value,0,10000)

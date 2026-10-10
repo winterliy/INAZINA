@@ -25,7 +25,7 @@ from managers.futures_manager import FuturesManager
 from managers.admin_manager import AdminManager
 from managers.admin_control_manager import AdminControlManager,ENTITIES,EXAMPLES
 from managers.catalog_manager import CatalogManager
-from managers.fx_manager import FXManager,SCALE
+from managers.currency_exchange_manager import CurrencyExchangeManager,SCALE
 from functions.admin_prefix import AdminPrefixRegistry,AdminCommandView,EntityModal,ActionModal,TreasuryAssetsView,READ_ONLY
 from functions.discord_views import PriceMovementView,InfoPanelView
 from functions.slash_commands import SlashCommandRegistry
@@ -44,7 +44,7 @@ class InazinaTests(unittest.TestCase):
             option_mgr=OptionManager(self.db,users),order_book=OrderBookManager(self.db,users),
             rate_mgr=RateManager(self.db),investment_mgr=InvestmentManager(self.db,users),
             bank_mgr=BankManager(self.db),futures_mgr=FuturesManager(self.db,users),
-            admin_mgr=AdminManager(self.db),fx_mgr=FXManager(self.db),treasury_bond_mgr=users.bond_manager)
+            admin_mgr=AdminManager(self.db),currency_mgr=CurrencyExchangeManager(self.db),treasury_bond_mgr=users.bond_manager)
         self.bot.order_book.option_manager=self.bot.option_mgr
         self.bot.order_book.futures_manager=self.bot.futures_mgr
         self.bot.admin_control=AdminControlManager(self.bot)
@@ -75,7 +75,7 @@ class InazinaTests(unittest.TestCase):
         self.assertFalse(self.seed())
         counts={r['product_type']:r['n'] for r in self.db.products.execute('SELECT product_type,COUNT(*) n FROM investment GROUP BY product_type')}
         self.assertEqual(counts,{k:25 for k in ('etf','stock_future','corporate_bond','mutual_fund','index_fund','commodity_spot')})
-        for table in ('company','treasury_bond_products','saving','liability','option_contracts','fx_products'):
+        for table in ('company','treasury_bond_products','saving','liability','option_contracts','currency_saving_products'):
             self.assertEqual(self.db.system.execute_one(f'SELECT COUNT(*) FROM {table}')[0],25)
         self.assertEqual(self.db.fx.execute_one("SELECT COUNT(*) FROM currencies WHERE code<>'NWX'")[0],25)
         self.assertEqual(self.db.assets.execute_one('SELECT SUM(quantity) FROM option_collateral_lots')[0],2500)
@@ -89,38 +89,38 @@ class InazinaTests(unittest.TestCase):
 
     def test_currency_exchange_debits_and_credits_exact_units(self):
         self.seed()
-        self.bot.fx_mgr.open_account('citizen','INZFX001')
-        result=self.bot.fx_mgr.exchange('citizen','NWX','USD','15000')
+        self.bot.currency_mgr.open_account('citizen','INZFX001')
+        result=self.bot.currency_mgr.exchange('citizen','NWX','USD','15000')
         self.assertIn('수수료 15',result)
         self.assertEqual(self.db.users.get_user('citizen')['cash'],985000)
-        self.assertEqual(self.db.fx.execute_one("SELECT balance_units FROM fx_accounts WHERE user_id='citizen'")[0],9_990_000)
+        self.assertEqual(self.db.fx.execute_one("SELECT balance_units FROM currency_saving_accounts WHERE user_id='citizen'")[0],9_990_000)
         self.assertEqual(self.db.users.get_treasury_balance(),10000015)
-        self.assertEqual(self.bot.fx_mgr.national_currency('citizen'),('미국','USD'))
+        self.assertEqual(self.bot.currency_mgr.national_currency('citizen'),('미국','USD'))
         self.db.assets.update_price('FX_USD',1600)
-        rows=self.bot.fx_mgr.accounts('citizen')
+        rows=self.bot.currency_mgr.accounts('citizen')
         self.assertEqual(rows[0]['value_nwx'],15984)
-        self.assertEqual(self.bot.user_mgr.get_total_assets('citizen')['fx_total'],15984)
+        self.assertEqual(self.bot.user_mgr.get_total_assets('citizen')['currency_total'],15984)
 
     def test_exchange_failure_and_insufficient_funds_rollback_everything(self):
         self.seed()
-        self.bot.fx_mgr.open_account('citizen','INZFX001')
+        self.bot.currency_mgr.open_account('citizen','INZFX001')
         before=self.db.users.get_user('citizen')['cash']
         for source,target,amount in [('NWX','EUR','100'),('NWX','USD','2000000'),('USD','NWX','1'),('NWX','USD','nan'),('NWX','USD','1.5'),('NWX','NWX','10')]:
-            with self.assertRaises(ValueError):self.bot.fx_mgr.exchange('citizen',source,target,amount)
+            with self.assertRaises(ValueError):self.bot.currency_mgr.exchange('citizen',source,target,amount)
         self.assertEqual(self.db.users.get_user('citizen')['cash'],before)
-        self.assertEqual(self.db.fx.execute_one('SELECT COUNT(*) FROM fx_transactions')[0],0)
+        self.assertEqual(self.db.fx.execute_one('SELECT COUNT(*) FROM currency_transactions')[0],0)
 
     def test_cross_currency_exchange_and_interest_fraction_carry(self):
         self.seed()
-        self.bot.fx_mgr.open_account('citizen','INZFX001')
-        self.bot.fx_mgr.open_account('citizen','INZFX003')
-        self.bot.fx_mgr.exchange('citizen','NWX','USD','15000')
-        result=self.bot.fx_mgr.exchange('citizen','USD','EUR','1')
+        self.bot.currency_mgr.open_account('citizen','INZFX001')
+        self.bot.currency_mgr.open_account('citizen','INZFX003')
+        self.bot.currency_mgr.exchange('citizen','NWX','USD','15000')
+        result=self.bot.currency_mgr.exchange('citizen','USD','EUR','1')
         self.assertIn('EUR',result)
         with self.db.atomic() as conn:
-            row=conn.execute("SELECT * FROM fx_accounts WHERE user_id='citizen' AND currency_code='USD'").fetchone()
-            self.bot.fx_mgr._settle(conn,'citizen',row['last_interest_epoch']+365*86400)
-            updated=conn.execute('SELECT * FROM fx_accounts WHERE account_number=?',(row['account_number'],)).fetchone()
+            row=conn.execute("SELECT * FROM currency_saving_accounts WHERE user_id='citizen' AND currency_code='USD'").fetchone()
+            self.bot.currency_mgr._settle(conn,'citizen',row['last_interest_epoch']+365*86400)
+            updated=conn.execute('SELECT * FROM currency_saving_accounts WHERE account_number=?',(row['account_number'],)).fetchone()
             self.assertGreater(updated['balance_units'],row['balance_units'])
 
     def test_admin_reauthorization_crud_audit_and_settings_validation(self):
@@ -221,7 +221,7 @@ class InazinaTests(unittest.TestCase):
             self.assertFalse(await modal.interaction_check(interaction))
         asyncio.run(run())
 
-    def test_option_bond_fx_and_linked_events_preserve_history_and_terms(self):
+    def test_option_bond_currency_and_linked_events_preserve_history_and_terms(self):
         self.seed()
         now=int(time.time())
         for code in ('INZOP001','INZTB001','INZCB001','INZFU001','INZMF001','INZIF001','INZETF001','FX_USD'):
@@ -254,7 +254,7 @@ class InazinaTests(unittest.TestCase):
         with DBManager.admin_scope('admin'):
             self.db.users.update_role('admin','user')
             with self.assertRaises(ValueError):
-                self.bot.fx_mgr.open_account('citizen','MISSING')
+                self.bot.currency_mgr.open_account('citizen','MISSING')
         with self.db.atomic() as conn:
             self.assertEqual(conn.execute("SELECT role FROM users WHERE user_id='admin'").fetchone()[0],'user')
 

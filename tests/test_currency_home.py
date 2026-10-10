@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from pathlib import Path
 import test_inazina as fixtures
 from database.user_db import TREASURY_USER_ID
-from database.fx_db import ForeignExchangeDB
+from database.currency_db import ForeignExchangeDB
 from managers.currency_manager import CurrencyManager, SCALE
 from managers.admin_commands_manager import AdminCommandsManager
 from functions.currency_display import native_summary
@@ -96,13 +96,13 @@ class CurrencyHomeTests(unittest.TestCase):
 
     def test_native_wallet_exchange_transfer_and_source_wallet_preserve_denominations(self):
         cmd=self.configure();cmd.execute('admin','기본소득','10000 NWX')
-        self.db.system.set_setting('fx_fee_percent','0')
-        msg=self.bot.fx_mgr.transfer('citizen','admin','300')
+        self.db.system.set_setting('currency_exchange_fee_percent','0')
+        msg=self.bot.currency_mgr.transfer('citizen','admin','300')
         self.assertIn('300.000000 AAA → 100 NWX',msg)
         self.assertEqual(self.db.users.get_user('admin')['cash'],1_010_100)
-        self.bot.fx_mgr.exchange('citizen','AAA','NWX','300')
+        self.bot.currency_mgr.exchange('citizen','AAA','NWX','300')
         self.assertEqual(self.db.users.get_user('citizen')['cash'],1_000_100)
-        self.bot.fx_mgr.transfer('citizen','admin','10','__wallet__:NWX')
+        self.bot.currency_mgr.transfer('citizen','admin','10','__wallet__:NWX')
         self.assertEqual(self.db.users.get_user('citizen')['cash'],1_000_090)
         with self.db.atomic() as conn:
             self.assertEqual(CurrencyManager.balance(conn,'citizen','AAA'),29_400*SCALE)
@@ -136,12 +136,12 @@ class CurrencyHomeTests(unittest.TestCase):
         cmd.execute('admin','잔고수정','citizen modify 10.55')
         with self.assertRaisesRegex(ValueError,'2자리'):
             cmd.execute('admin','잔고수정','citizen modify 10.555')
-        self.db.system.set_setting('fx_fee_percent','0')
-        self.bot.fx_mgr.exchange('citizen','AAA','KRW','0.01')
+        self.db.system.set_setting('currency_exchange_fee_percent','0')
+        self.bot.currency_mgr.exchange('citizen','AAA','KRW','0.01')
         with self.db.atomic() as conn:
             self.assertEqual(CurrencyManager.balance(conn,'citizen','KRW'),3*SCALE)
         with self.assertRaisesRegex(ValueError,'0자리'):
-            self.bot.fx_mgr.exchange('citizen','KRW','AAA','0.1')
+            self.bot.currency_mgr.exchange('citizen','KRW','AAA','0.1')
 
     def test_native_stock_order_and_cancel_use_home_cash_not_nwx(self):
         cmd=self.configure();cmd.execute('admin','기본소득','10000 NWX')
@@ -182,9 +182,9 @@ class CurrencyHomeTests(unittest.TestCase):
 
     def test_native_currency_deposit_is_a_home_account_not_foreign_account(self):
         self.configure()
-        self.db.fx.execute("INSERT INTO fx_products(product_code,name,currency_code,annual_rate) VALUES ('A_SAVE','A국 예금','AAA',0)")
-        number=self.bot.fx_mgr.open_account('citizen','A_SAVE')
-        self.db.fx.execute('UPDATE fx_accounts SET balance_units=? WHERE account_number=?',(100*SCALE,number))
+        self.db.fx.execute("INSERT INTO currency_saving_products(product_code,name,currency_code,annual_rate) VALUES ('A_SAVE','A국 예금','AAA',0)")
+        number=self.bot.currency_mgr.open_account('citizen','A_SAVE')
+        self.db.fx.execute('UPDATE currency_saving_accounts SET balance_units=? WHERE account_number=?',(100*SCALE,number))
         info=self.bot.user_mgr.get_total_assets('citizen',settle=False)
         self.assertEqual(info['home_account_total_home'],100)
         self.assertEqual(info['foreign_account_total_home'],0)

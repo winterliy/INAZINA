@@ -1,6 +1,6 @@
 """Home-currency summaries, while contract details retain their actual denominations."""
 from decimal import Decimal, ROUND_FLOOR
-from managers.fx_manager import SCALE, display_units
+from managers.currency_exchange_manager import SCALE, display_units
 
 FIELDS={
     '💵 현금':'cash','현금':'cash','🏦 통장 잔액':'account_total','통장 잔액':'account_total',

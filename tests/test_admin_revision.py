@@ -45,7 +45,7 @@ class AdminRevisionTests(unittest.TestCase):
         self.assertEqual(self.db.assets.execute_one("SELECT price FROM market_quote_overrides WHERE asset_code='OP'")[0],150)
         with self.assertRaises(ValueError):self.run_command('상품삭제','ST')
 
-    def test_balances_wallet_bank_fx_and_nonadmin(self):
+    def test_balances_wallet_bank_currency_and_nonadmin(self):
         self.run_command('잔고수정','citizen add 50')
         self.run_command('잔고수정','citizen del 20')
         self.assertEqual(self.db.users.get_user('citizen')['cash'],1000030)
@@ -59,10 +59,10 @@ class AdminRevisionTests(unittest.TestCase):
         row=self.db.accounts.execute_one('SELECT balance,principal FROM accounts WHERE account_number=?',(number,))
         self.assertEqual(tuple(row),(20,20))
         fixtures.InazinaTests.seed(self)
-        fx=self.bot.fx_mgr.open_account('citizen','INZFX001')
+        fx=self.bot.currency_mgr.open_account('citizen','INZFX001')
         self.run_command('잔고수정',fx+' modify 1.25')
         self.run_command('잔고수정',fx+' add 0.5')
-        self.assertEqual(self.db.fx.execute_one('SELECT balance_units FROM fx_accounts WHERE account_number=?',(fx,))[0],1750000)
+        self.assertEqual(self.db.fx.execute_one('SELECT balance_units FROM currency_saving_accounts WHERE account_number=?',(fx,))[0],1750000)
         with self.assertRaises(ValueError):AdminCommandsManager(self.bot).execute('citizen','세율','5')
 
     def test_rates_settings_and_cross_currency(self):
@@ -189,7 +189,7 @@ class AdminRevisionTests(unittest.TestCase):
     def test_positional_foreign_fund_option_and_creation_usage(self):
         fixtures.InazinaTests.seed(self)
         self.run_command('상품생성',"FXACC fxproduct 달러통장 USD 1")
-        self.assertEqual(self.db.fx.execute_one("SELECT currency_code FROM fx_products WHERE product_code='FXACC'")[0],'USD')
+        self.assertEqual(self.db.fx.execute_one("SELECT currency_code FROM currency_saving_products WHERE product_code='FXACC'")[0],'USD')
         self.run_command('상품생성','FUND fund 혼합펀드 1000 10000 INZST001:0.5,INZST002:0.5 INZ')
         self.assertEqual(self.db.products.execute_one("SELECT COUNT(*) FROM fund_components WHERE product_code='FUND'")[0],2)
         self.db.assets.add_user_asset(TREASURY_USER_ID,'INZST001',1)

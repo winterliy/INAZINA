@@ -38,7 +38,8 @@ class CurrencyManager:
                 (code,)
             ).fetchone()[0])
             total += int(conn.execute(
-                'SELECT COALESCE(SUM(balance_units),0) FROM fx_accounts WHERE currency_code=?',
+                "SELECT COALESCE(SUM(balance_units),0) FROM accounts "
+                "WHERE account_type='currency_saving' AND quote_currency=?",
                 (code,)
             ).fetchone()[0])
             treasury = int(conn.execute(
@@ -46,7 +47,8 @@ class CurrencyManager:
                 (code, TREASURY_USER_ID)
             ).fetchone()[0])
             treasury += int(conn.execute(
-                'SELECT COALESCE(SUM(balance_units),0) FROM fx_accounts WHERE currency_code=? AND user_id=?',
+                "SELECT COALESCE(SUM(balance_units),0) FROM accounts "
+                "WHERE account_type='currency_saving' AND quote_currency=? AND user_id=?",
                 (code, TREASURY_USER_ID)
             ).fetchone()[0])
         return max(0, total), max(0, total - treasury)
@@ -294,7 +296,7 @@ class CurrencyReadSnapshot:
         return self._rates[code]
 
     def rate_nwx(self, code):
-        # Keep the same Decimal rounding order as FXManager._rate.
+        # Keep the same Decimal rounding order as CurrencyExchangeManager._rate.
         source, target = self.rate_fraction(code), self.rate_fraction('NWX')
         value = ((Decimal(source.numerator) / Decimal(source.denominator)) /
                  (Decimal(target.numerator) / Decimal(target.denominator)))

@@ -18,7 +18,10 @@ class AccountDB(DBManager):
                 balance INTEGER,
                 password TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                last_payment DATETIME DEFAULT CURRENT_TIMESTAMP
+                last_payment DATETIME DEFAULT CURRENT_TIMESTAMP,
+                quote_currency TEXT NOT NULL DEFAULT 'NWX',
+                balance_units INTEGER NOT NULL DEFAULT 0,
+                interest_remainder TEXT NOT NULL DEFAULT '0'
             )
         ''')
         try:
@@ -33,6 +36,12 @@ class AccountDB(DBManager):
             self.execute("ALTER TABLE accounts ADD COLUMN principal INTEGER NOT NULL DEFAULT 0")
         if "account_type" not in columns:
             self.execute("ALTER TABLE accounts ADD COLUMN account_type TEXT NOT NULL DEFAULT 'saving'")
+        if "quote_currency" not in columns:
+            self.execute("ALTER TABLE accounts ADD COLUMN quote_currency TEXT NOT NULL DEFAULT 'NWX'")
+        if "balance_units" not in columns:
+            self.execute("ALTER TABLE accounts ADD COLUMN balance_units INTEGER NOT NULL DEFAULT 0")
+        if "interest_remainder" not in columns:
+            self.execute("ALTER TABLE accounts ADD COLUMN interest_remainder TEXT NOT NULL DEFAULT '0'")
         now = time.time()
         for row in self.execute(
             "SELECT account_number, last_payment FROM accounts "
@@ -75,6 +84,11 @@ class AccountDB(DBManager):
         self.execute('''
             CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_user_product_unique
             ON accounts (user_id, product_code)
+        ''')
+        self.execute('''
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_user_currency_saving_unique
+            ON accounts (user_id, quote_currency)
+            WHERE account_type = 'currency_saving'
         ''')
 
         self.execute('''

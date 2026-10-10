@@ -18,7 +18,7 @@ from functions.price_chart import render_price_chart, render_rate_chart
 from functions.technical_indicators import UPPER_INDICATORS, LOWER_INDICATORS, candle_interval, KST
 from managers.market_manager import EXCHANGE_INDEX_PREFIX
 from managers.rate_manager import RateManager
-from managers.fx_manager import FXManager
+from managers.currency_exchange_manager import CurrencyExchangeManager
 from functions.wallet_views import els_status_text
 
 
@@ -609,8 +609,8 @@ class FXRatesView(discord.ui.View):
         return False
 
     def build_embed(self):
-        country,currency = self.bot.fx_mgr.national_currency(self.subject_id)
-        rates = self.bot.fx_mgr.rates()
+        country,currency = self.bot.currency_mgr.national_currency(self.subject_id)
+        rates = self.bot.currency_mgr.rates()
         pages = max(1,(len(rates)+self.PAGE_SIZE-1)//self.PAGE_SIZE)
         self.page = min(max(0,self.page),pages-1)
         embed = discord.Embed(title='🌐 환율',description=f'국적 **{str(country)[:100]}** · 기본 통화 **{currency}**\n게임 내 시세 · 1 NWX 기준 외화 금액 (수수료 제외)',color=discord.Color.blue())
@@ -690,7 +690,7 @@ class InfoPanelView(discord.ui.View):
         ("commodity_spot", "현물 원자재"),
         ("option", "옵션"),
         ("forex", "외환"),
-        ("fx_savings", "외환통장 상품"),
+        ("currency_savings", "외환통장 상품"),
         ("savings", "저축 상품"),
         ("loan_products", "대출 상품"),
     )
@@ -771,7 +771,7 @@ class InfoPanelView(discord.ui.View):
         if category == "forex":
             return [f"• **{r['name']}** ({r['code']}) · 1 NWX = **{inverse_rate_text(r['rate'])} {r['code']}**"
                     + (f" · 그래프 `{r['asset_code']}`" if r['asset_code'] else '')
-                    for r in FXManager(self.bot.db).rates() if r['code'] != 'NWX']
+                    for r in CurrencyExchangeManager(self.bot.db).rates() if r['code'] != 'NWX']
         if category == 'indices':
             return [f"• **{row['exchange_id']} 거래소 지수** · **{float(row['index_value']):,.2f} pt**\n"
                     f"  ID / 그래프 종목: `{EXCHANGE_INDEX_PREFIX}{row['exchange_id']}`"
@@ -781,9 +781,9 @@ class InfoPanelView(discord.ui.View):
             return [f"• **{label}** · 연 **{manager.get_rate(key):g}%**\n"
                     f"  ID / 그래프 종목: `{RateManager.chart_code(key)}`"
                     for key, label in RateManager.KEYS.items()]
-        if category == "fx_savings":
-            return [f"• **{r['name']}** (`{r['product_code']}`) · {r['currency_code']} · 연 {r['annual_rate']:g}%"
-                    for r in self.bot.db.products.execute("SELECT * FROM fx_products WHERE status='active' ORDER BY name")]
+        if category == "currency_savings":
+            return [f"• **{r['name']}** (`{r['product_code']}`) · {r['quote_currency']} · 연 {r['interest_rate']:g}%"
+                    for r in self.bot.db.products.execute("SELECT * FROM saving WHERE product_kind='currency_saving' AND status='active' ORDER BY name")]
         if category == 'els':
             lines = []
             manager = None

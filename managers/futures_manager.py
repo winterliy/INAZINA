@@ -44,7 +44,7 @@ class FuturesManager:
         try:
             self.settle_positions(now=now)
             with self.db.atomic(("users", "accounts", "assets", "product", "company", "tax", "system")) as conn:
-                error = MarketSessionManager(self.db).trading_error(conn=conn, now=now)
+                error = MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=code)
                 if error:
                     return False, error
                 product = self._product(conn, code)
@@ -72,7 +72,7 @@ class FuturesManager:
             return False, f"❌ {exc}"
 
     def _match(self, conn, order_id, product, quote, now):
-        if MarketSessionManager(self.db).trading_error(conn=conn, now=now):
+        if MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=product["product_code"]):
             return 0
         filled = 0
         while True:
@@ -178,7 +178,7 @@ class FuturesManager:
                 product = self._product(conn, item["product_code"])
                 if product["status"] != "active":
                     continue
-                halted = MarketSessionManager(self.db).trading_error(conn=conn, now=now)
+                halted = MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=product["product_code"])
                 if halted and now < int(product["maturity_epoch"]):
                     continue
                 quote = self._quote(conn, product, now)

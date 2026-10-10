@@ -20,7 +20,7 @@ def amount_units(value):
 def display_units(units):
     return f"{Decimal(units)/SCALE:,.6f}".rstrip('0').rstrip('.')
 
-class FXManager:
+class CurrencyExchangeManager:
     def __init__(self, db):
         self.db = db
 
@@ -57,29 +57,29 @@ class FXManager:
     def open_account(self, user_id, product_code):
         with self.db.atomic() as conn:
             self._user(conn, user_id)
-            product = conn.execute("SELECT * FROM fx_products WHERE product_code=? AND status='active'", (product_code,)).fetchone()
+            product = conn.execute("SELECT * FROM saving WHERE product_code=? AND product_kind='currency_saving' AND status='active'", (product_code,)).fetchone()
             if not product:
                 raise ValueError("외환통장 상품 코드를 확인해주세요.")
-            self._rate(conn, product['currency_code'])
-            if conn.execute("SELECT 1 FROM fx_accounts WHERE user_id=? AND currency_code=?", (str(user_id), product['currency_code'])).fetchone():
+            self._rate(conn, product['quote_currency'])
+            if conn.execute("SELECT 1 FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'", (str(user_id), product['quote_currency'])).fetchone():
                 raise ValueError("같은 통화의 외환통장이 이미 있습니다.")
             number = 'FXA' + uuid.uuid4().hex[:16].upper()
-            conn.execute("INSERT INTO fx_accounts(account_number,user_id,product_code,currency_code,last_interest_epoch) "
-                         "VALUES (?,?,?,?,?)", (number, str(user_id), product_code, product['currency_code'], time.time()))
+            conn.execute("INSERT INTO accounts(account_number,user_id,product_code,balance,password,last_payment_epoch,principal,account_type,quote_currency) "
+                         "VALUES (?,?,?,?,?,?,?,?,?)", (number, str(user_id), product_code, 0, None, time.time(), 0, 'currency_saving', product['quote_currency']))
             return number
 
     @staticmethod
     def _settle(conn, user_id, now):
-        rows = conn.execute("SELECT a.*,p.annual_rate FROM fx_accounts a JOIN fx_products p USING(product_code) WHERE user_id=?", (str(user_id),)).fetchall()
+        rows = conn.execute("SELECT a.*,p.interest_rate AS annual_rate FROM accounts a JOIN saving p USING(product_code) WHERE a.user_id=? AND a.account_type='currency_saving'", (str(user_id),)).fetchall()
         for row in rows:
-            elapsed = max(0, now - row['last_interest_epoch'])
+            elapsed = max(0, now - row['last_payment_epoch'])
             exact = (Decimal(row['balance_units']) * Decimal(str(row['annual_rate'])) / 100
                      * Decimal(str(elapsed)) / Decimal(365*86400) + Decimal(row['interest_remainder']))
             credit = int(exact.to_integral_value(rounding=ROUND_FLOOR))
             if row['balance_units'] + credit > MAX_UNITS:
                 raise ValueError("외환 잔액 한도를 초과합니다.")
-            conn.execute("UPDATE fx_accounts SET balance_units=balance_units+?,interest_remainder=?,last_interest_epoch=? "
-                         "WHERE account_number=?", (credit, str(exact-credit), max(now,row['last_interest_epoch']), row['account_number']))
+            conn.execute("UPDATE accounts SET balance_units=balance_units+?,interest_remainder=?,last_payment_epoch=? "
+                         "WHERE account_number=? AND account_type='currency_saving'", (credit, str(exact-credit), max(now,row['last_payment_epoch']), row['account_number']))
 
     def exchange(self, user_id, source, target, amount):
         source, target = str(source).strip().upper(), str(target).strip().upper()
@@ -91,13 +91,13 @@ class FXManager:
         now = time.time()
         with self.db.atomic() as conn:
             from managers.market_session_manager import MarketSessionManager
-            halt = MarketSessionManager(self.db).trading_error(conn=conn, now=now)
+            halt = MarketSessionManager(self.db).trading_error(conn=conn, now=now, exchange_id='FX')
             if halt:
                 raise ValueError(halt)
             self._user(conn, user_id)
             self._settle(conn, user_id, now)
             sr, tr = self._rate(conn, source), self._rate(conn, target)
-            fee_rate = Decimal(str(conn.execute("SELECT value FROM settings WHERE key='fx_fee_percent'").fetchone()[0]))
+            fee_rate = Decimal(str(conn.execute("SELECT value FROM settings WHERE key='currency_exchange_fee_percent'").fetchone()[0]))
             if not fee_rate.is_finite() or not 0 <= fee_rate <= 100:
                 raise ValueError("환전 수수료 설정이 올바르지 않습니다.")
             value = Decimal(units) * sr / SCALE
@@ -110,13 +110,13 @@ class FXManager:
             if source == 'NWX':
                 changed = conn.execute("UPDATE users SET cash=cash-? WHERE user_id=? AND cash>=?", (units//SCALE,str(user_id),units//SCALE))
             else:
-                changed = conn.execute("UPDATE fx_accounts SET balance_units=balance_units-? WHERE user_id=? AND currency_code=? AND balance_units>=?", (units,str(user_id),source,units))
+                changed = conn.execute("UPDATE accounts SET balance_units=balance_units-? WHERE user_id=? AND quote_currency=? AND account_type='currency_saving' AND balance_units>=?", (units,str(user_id),source,units))
             if changed.rowcount != 1:
                 raise ValueError("잔액이 부족하거나 출금 외환통장이 없습니다.")
             if target == 'NWX':
                 changed = conn.execute("UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?", (output//SCALE,str(user_id),MAX_UNITS-output//SCALE))
             else:
-                changed = conn.execute("UPDATE fx_accounts SET balance_units=balance_units+? WHERE user_id=? AND currency_code=? AND balance_units<=?", (output,str(user_id),target,MAX_UNITS-output))
+                changed = conn.execute("UPDATE accounts SET balance_units=balance_units+? WHERE user_id=? AND quote_currency=? AND account_type='currency_saving' AND balance_units<=?", (output,str(user_id),target,MAX_UNITS-output))
             if changed.rowcount != 1:
                 raise ValueError("입금 외환통장을 먼저 개설하거나 잔액 한도를 확인해주세요.")
             treasury = conn.execute("UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?", (fee,TREASURY_USER_ID,MAX_UNITS-fee))
@@ -129,9 +129,9 @@ class FXManager:
             self._user(conn, user_id)
             self._settle(conn, user_id, time.time())
             return [{**dict(r), 'value_nwx': int(Decimal(r['balance_units']) * self._rate(conn,r['currency_code']) / SCALE) if r['balance_units'] else 0}
-                    for r in conn.execute("SELECT a.*,p.name AS product_name,p.annual_rate FROM fx_accounts a "
-                                          "LEFT JOIN fx_products p ON p.product_code=a.product_code "
-                                          "WHERE a.user_id=? ORDER BY a.currency_code", (str(user_id),))]
+                    for r in conn.execute("SELECT a.*,a.quote_currency AS currency_code,p.name AS product_name,p.interest_rate AS annual_rate FROM accounts a "
+                                          "LEFT JOIN saving p ON p.product_code=a.product_code "
+                                          "WHERE a.user_id=? AND a.account_type='currency_saving' ORDER BY a.quote_currency", (str(user_id),))]
 
     def transfer(self,user_id,recipient,amount,source_account=None):
         """Account-addressed transfer; a currency change quotes and settles atomically."""
@@ -156,12 +156,12 @@ class FXManager:
             def endpoint(number,owner=None):
                 if number=='__wallet__' and owner is not None:
                     return ('users','cash','user_id',owner,owner,'NWX',SCALE)
-                fx = conn.execute('SELECT * FROM fx_accounts WHERE account_number=?',(number,)).fetchone()
+                fx = conn.execute("SELECT *,quote_currency AS currency_code FROM accounts WHERE account_number=? AND account_type='currency_saving'",(number,)).fetchone()
                 if fx:
                     if owner is not None and str(fx['user_id'])!=owner:
                         raise ValueError('출금 계좌는 본인 명의여야 합니다.')
                     self._user(conn,fx['user_id'])
-                    return ('fx_accounts','balance_units','account_number',number,str(fx['user_id']),fx['currency_code'],1)
+                    return ('accounts','balance_units','account_number',number,str(fx['user_id']),fx['currency_code'],1)
                 bank = conn.execute("SELECT * FROM accounts WHERE account_number=? AND account_type='saving'",(number,)).fetchone()
                 if bank:
                     if owner is not None and str(bank['user_id'])!=owner:
@@ -184,10 +184,10 @@ class FXManager:
             fee = 0
             if src[5]!=dst[5]:
                 from managers.market_session_manager import MarketSessionManager
-                halt = MarketSessionManager(self.db).trading_error(conn=conn, now=now)
+                halt = MarketSessionManager(self.db).trading_error(conn=conn, now=now, exchange_id='FX')
                 if halt:
                     raise ValueError(halt)
-                setting = conn.execute("SELECT value FROM settings WHERE key='fx_fee_percent'").fetchone()
+                setting = conn.execute("SELECT value FROM settings WHERE key='currency_exchange_fee_percent'").fetchone()
                 rate = Decimal(str(setting[0]))
                 if not rate.is_finite() or not 0<=rate<=100:
                     raise ValueError('환전 수수료 설정이 올바르지 않습니다.')
@@ -200,13 +200,13 @@ class FXManager:
             if not 1<=output<=MAX_UNITS:
                 raise ValueError('환전 결과가 최소 단위 미만이거나 한도를 초과합니다.')
             debit,credit = units//src[6],output//dst[6]
-            if src[0]=='accounts':
+            if src[0]=='accounts' and src[1]=='balance':
                 debited = UserManager._debit_source(conn,sender,src[3],debit)
             else:
                 debited = conn.execute(f'UPDATE {src[0]} SET {src[1]}={src[1]}-? WHERE {src[2]}=? AND {src[1]}>=?',(debit,src[3],debit)).rowcount==1
             if not debited:
                 raise ValueError('출금 잔액이 부족합니다.')
-            if dst[0]=='accounts':
+            if dst[0]=='accounts' and dst[1]=='balance':
                 changed = conn.execute('UPDATE accounts SET balance=balance+?,principal=COALESCE(principal,0)+?,last_payment_epoch=?,last_payment=CURRENT_TIMESTAMP WHERE account_number=? AND balance<=?',(credit,credit,now,dst[3],MAX_UNITS-credit))
             else:
                 changed = conn.execute(f'UPDATE {dst[0]} SET {dst[1]}={dst[1]}+? WHERE {dst[2]}=? AND {dst[1]}<=?',(credit,dst[3],MAX_UNITS-credit))

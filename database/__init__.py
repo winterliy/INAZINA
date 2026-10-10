@@ -12,7 +12,7 @@ from .pot_db import PotDB
 from .tax_db import TaxDB
 from .system_db import SystemDB
 from .db_manager import DBManager
-from .fx_db import ForeignExchangeDB
+from .currency_db import ForeignExchangeDB
 from .lottery_db import LotteryDB
 from .corporate_db import CorporateDB
 from .els_db import ELSDB

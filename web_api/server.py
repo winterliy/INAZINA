@@ -369,7 +369,7 @@ def instruments(include_inactive=False):
             f"SELECT code,name,type,price,exchange_id,quote_currency,status,'market_assets' AS source FROM market_assets{status_clause}",
             f"SELECT company_code AS code,name,'stock' AS type,share_price AS price,exchange_id,quote_currency,status,'company' AS source FROM company{status_clause}",
             f"SELECT product_code AS code,name,product_type AS type,unit_price AS price,exchange_id,quote_currency,status,'investment' AS source FROM investment{status_clause}",
-            f"SELECT product_code AS code,name,'국채' AS type,market_price AS price,exchange_id,'NWX' AS quote_currency,status,'treasury_bond' AS source FROM treasury_bond_products{status_clause}",
+            f"SELECT product_code AS code,name,'국채' AS type,market_price AS price,exchange_id,quote_currency,status,'treasury_bond' AS source FROM treasury_bond_products{status_clause}",
         ):
             rows.extend(dict(row) for row in connection.execute(query).fetchall())
     return sorted(rows, key=lambda row: (str(row["name"]).casefold(), row["code"]))
@@ -430,14 +430,15 @@ def admin_overview():
         open_orders = connection.execute(
             "SELECT COUNT(*) FROM market_orders WHERE status IN ('open','partial')"
         ).fetchone()[0]
-        session = connection.execute(
-            "SELECT status,reason,trading_halted,updated_epoch FROM market_session WHERE session_id=1"
-        ).fetchone()
+        sessions = connection.execute(
+            "SELECT exchange_id,status,reason,trading_halted,updated_epoch,resume_epoch,circuit_stage "
+            "FROM market_exchange_sessions ORDER BY exchange_id"
+        ).fetchall()
     return {
         "activeUsers": int(active_users),
         "activeInstruments": int(active_assets),
         "openOrders": int(open_orders),
-        "market": dict(session) if session else None,
+        "market": [dict(session) for session in sessions],
     }
 
 
@@ -504,7 +505,9 @@ def set_market_state(actor, payload):
     action = payload.get("action") if isinstance(payload, dict) else None
     if action not in actions:
         raise ValueError("invalid_market_action")
-    return domain().market_session.control(actor, action, stage=payload.get("stage"))
+    return domain().market_session.control(
+        actor, action, stage=payload.get("stage"), exchange_id=payload.get("exchangeId")
+    )
 
 
 def set_instrument_status(actor, code, payload):

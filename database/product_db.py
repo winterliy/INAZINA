@@ -17,9 +17,16 @@ class ProductDB(DBManager):
                 interest_cycle REAL, -- 초 단위 주기; 1 = 1초, 0.1 = 0.1초, 3600 = 1시간
                 compound_type INTEGER, -- 0: 단리, 1: 복리
                 issuer TEXT,
-                status TEXT DEFAULT 'active'
+                status TEXT DEFAULT 'active',
+                quote_currency TEXT NOT NULL DEFAULT 'NWX',
+                product_kind TEXT NOT NULL DEFAULT 'saving'
             )
         ''')
+        saving_columns = {row[1] for row in self.execute("PRAGMA table_info(saving)")}
+        if "quote_currency" not in saving_columns:
+            self.execute("ALTER TABLE saving ADD COLUMN quote_currency TEXT NOT NULL DEFAULT 'NWX'")
+        if "product_kind" not in saving_columns:
+            self.execute("ALTER TABLE saving ADD COLUMN product_kind TEXT NOT NULL DEFAULT 'saving'")
         # 대출 상품 (Liability)
         self.execute('''
             CREATE TABLE IF NOT EXISTS liability (
@@ -195,10 +202,19 @@ class ProductDB(DBManager):
             "CREATE INDEX IF NOT EXISTS idx_treasury_bond_products_status "
             "ON treasury_bond_products(status, name)"
         )
+        for table in ("liability", "investment", "treasury_bond_products"):
+            columns = {row[1] for row in self.execute(f"PRAGMA table_info({table})")}
+            if "quote_currency" not in columns:
+                self.execute(f"ALTER TABLE {table} ADD COLUMN quote_currency TEXT NOT NULL DEFAULT 'NWX'")
 
     def register_saving(self, code, name, rate, deposit, maturity, cycle, compound, issuer):
-        self.execute("INSERT OR REPLACE INTO saving VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active')", 
-                     (code, name, rate, deposit, maturity, cycle, compound, issuer))
+        self.execute(
+            """INSERT OR REPLACE INTO saving
+               (product_code,name,interest_rate,deposit_amount,maturity_days,interest_cycle,
+                compound_type,issuer,status,quote_currency,product_kind)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 'NWX', 'saving')""",
+            (code, name, rate, deposit, maturity, cycle, compound, issuer),
+        )
 
     def register_liability(
         self, code, name, rate, limit, maturity, cycle, credit, issuer,

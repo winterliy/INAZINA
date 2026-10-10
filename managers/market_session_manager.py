@@ -1,6 +1,5 @@
-"""Persisted global trading/price halts, with restart-safe automatic reopening."""
+"""Per-exchange trading halts with restart-safe automatic reopening."""
 
-import json
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -19,96 +18,146 @@ class MarketSessionManager:
     @classmethod
     def next_day_epoch(cls, now):
         current = datetime.fromtimestamp(now, cls.KST)
-        return int((current + timedelta(days=1)).replace(
-            hour=0, minute=0, second=0, microsecond=0).timestamp())
+        return int((current + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
 
     @staticmethod
-    def _row(conn):
-        return dict(conn.execute("SELECT * FROM market_session WHERE session_id=1").fetchone())
-
-    @staticmethod
-    def _resume(conn, state, resume_at):
-        """Shift suspended model clocks while preserving contract maturities."""
-        start = int(state["halt_started_epoch"] if state["halt_started_epoch"] is not None else resume_at)
-        if resume_at > start:
-            # An event created during a halt only freezes its own elapsed time.
-            # Future scheduled events retain their relative waiting time too.
-            conn.execute("""UPDATE market_events SET
-                starts_epoch=starts_epoch + ? - MAX(?, MIN(starts_epoch, ?)),
-                ends_epoch=ends_epoch + ? - MAX(?, MIN(starts_epoch, ?))
-                WHERE event_id IN (SELECT event_id FROM market_event_targets WHERE state='active')
-                   OR ends_epoch > ?""",
-                (resume_at, start, resume_at, resume_at, start, resume_at, start))
-            conn.execute("""UPDATE market_event_targets SET
-                start_epoch=start_epoch + ? - MAX(?, MIN(start_epoch, ?)),
-                end_epoch=end_epoch + ? - MAX(?, MIN(start_epoch, ?)),
-                last_tick_epoch=CASE WHEN last_tick_epoch IS NULL THEN NULL
-                    ELSE last_tick_epoch + ? - MAX(?, MIN(start_epoch, ?)) END
-                WHERE state='active'""",
-                (resume_at, start, resume_at, resume_at, start, resume_at,
-                 resume_at, start, resume_at))
-            conn.execute("""UPDATE market_auto_targets SET
-                start_epoch=start_epoch + ?, end_epoch=end_epoch + ?""",
-                (resume_at-start, resume_at-start))
-            conn.execute("UPDATE market_simulation_state SET last_epoch=last_epoch+?",
-                         (resume_at-start,))
-            conn.execute("UPDATE market_factor_state SET last_epoch=last_epoch+?",
-                         (resume_at-start,))
-        conn.execute("""UPDATE market_session SET status='open', reason='',
-            halt_started_epoch=NULL, resume_epoch=NULL, circuit_stage=NULL,
-            updated_epoch=? WHERE session_id=1""", (resume_at,))
+    def normalize_exchange(exchange_id):
+        value = str(exchange_id or "").strip()
+        if not value or len(value) > 100:
+            raise ValueError("거래소 ID를 입력해주세요.")
+        return value
 
     @classmethod
-    def process_conn(cls, conn, now=None):
-        """Called inside the same transaction as an order or a price tick."""
+    def exchange_ids(cls, conn):
+        return [str(row["exchange_id"]) for row in conn.execute(
+            "SELECT exchange_id FROM market_exchange_sessions ORDER BY exchange_id"
+        )]
+
+    @classmethod
+    def exchange_for_asset(cls, conn, asset_code):
+        code = str(asset_code or "").strip()
+        if not code:
+            return None
+        row = conn.execute("""SELECT exchange_id FROM market_assets WHERE code=?
+            UNION ALL SELECT exchange_id FROM company WHERE company_code=?
+            UNION ALL SELECT exchange_id FROM investment WHERE product_code=?
+            UNION ALL SELECT exchange_id FROM treasury_bond_products WHERE product_code=?
+            UNION ALL SELECT COALESCE(a.exchange_id,c.exchange_id,i.exchange_id,b.exchange_id)
+              FROM option_contracts o
+              LEFT JOIN market_assets a ON a.code=o.underlying_code
+              LEFT JOIN company c ON c.company_code=o.underlying_code
+              LEFT JOIN investment i ON i.product_code=o.underlying_code
+              LEFT JOIN treasury_bond_products b ON b.product_code=o.underlying_code
+              WHERE o.contract_code=?
+            LIMIT 1""", (code, code, code, code, code)).fetchone()
+        return cls.normalize_exchange(row["exchange_id"]) if row and row["exchange_id"] else None
+
+    @classmethod
+    def _row(cls, conn, exchange_id):
+        exchange_id = cls.normalize_exchange(exchange_id)
+        row = conn.execute("SELECT * FROM market_exchange_sessions WHERE exchange_id=?", (exchange_id,)).fetchone()
+        if row is None:
+            conn.execute("INSERT INTO market_exchange_sessions(exchange_id,status,updated_epoch,trading_halted) VALUES (?, 'open', 0, 0)", (exchange_id,))
+            row = conn.execute("SELECT * FROM market_exchange_sessions WHERE exchange_id=?", (exchange_id,)).fetchone()
+        return dict(row)
+
+    @classmethod
+    def _asset_scope(cls, exchange_id):
+        sql = """SELECT code FROM market_assets WHERE exchange_id=?
+            UNION SELECT company_code FROM company WHERE exchange_id=?
+            UNION SELECT product_code FROM investment WHERE exchange_id=?
+            UNION SELECT product_code FROM treasury_bond_products WHERE exchange_id=?
+            UNION SELECT o.contract_code FROM option_contracts o
+              LEFT JOIN market_assets a ON a.code=o.underlying_code
+              LEFT JOIN company c ON c.company_code=o.underlying_code
+              LEFT JOIN investment i ON i.product_code=o.underlying_code
+              LEFT JOIN treasury_bond_products b ON b.product_code=o.underlying_code
+              WHERE COALESCE(a.exchange_id,c.exchange_id,i.exchange_id,b.exchange_id)=?"""
+        return sql, (exchange_id,) * 5
+
+    @classmethod
+    def _resume(cls, conn, exchange_id, state, resume_at):
+        start = int(state["halt_started_epoch"] if state["halt_started_epoch"] is not None else resume_at)
+        if resume_at > start:
+            scope, params = cls._asset_scope(exchange_id)
+            delta = resume_at - start
+            conn.execute(f"UPDATE market_events SET starts_epoch=starts_epoch+?, ends_epoch=ends_epoch+? WHERE asset_code IN ({scope}) AND ends_epoch>?", (delta, delta, *params, start))
+            conn.execute(f"UPDATE market_event_targets SET start_epoch=start_epoch+?, end_epoch=end_epoch+?, last_tick_epoch=CASE WHEN last_tick_epoch IS NULL THEN NULL ELSE last_tick_epoch+? END WHERE asset_code IN ({scope}) AND state='active'", (delta, delta, delta, *params))
+            conn.execute(f"UPDATE market_auto_targets SET start_epoch=start_epoch+?, end_epoch=end_epoch+? WHERE asset_code IN ({scope})", (delta, delta, *params))
+            conn.execute(f"UPDATE market_simulation_state SET last_epoch=last_epoch+? WHERE asset_code IN ({scope})", (delta, *params))
+        conn.execute("""UPDATE market_exchange_sessions SET status='open', reason='', halt_started_epoch=NULL,
+            resume_epoch=NULL, circuit_stage=NULL, updated_epoch=?, trading_halted=0 WHERE exchange_id=?""", (resume_at, exchange_id))
+
+    @classmethod
+    def process_conn(cls, conn, now=None, exchange_id=None):
         now = int(time.time() if now is None else now)
-        state = cls._row(conn)
-        if (state["status"] != "open" and state["resume_epoch"] is not None
-                and int(state["resume_epoch"]) <= now):
-            cls._resume(conn, state, int(state["resume_epoch"]))
-            state = cls._row(conn)
+        if exchange_id is None:
+            return cls.process_all_conn(conn, now)
+        exchange_id = cls.normalize_exchange(exchange_id)
+        state = cls._row(conn, exchange_id)
+        if state["status"] != "open" and state["resume_epoch"] is not None and int(state["resume_epoch"]) <= now:
+            cls._resume(conn, exchange_id, state, int(state["resume_epoch"]))
+            state = cls._row(conn, exchange_id)
         return state
+
+    @classmethod
+    def process_all_conn(cls, conn, now=None):
+        now = int(time.time() if now is None else now)
+        for exchange_id in cls.exchange_ids(conn):
+            cls.process_conn(conn, now, exchange_id)
+        return {exchange_id: cls._row(conn, exchange_id) for exchange_id in cls.exchange_ids(conn)}
 
     def process_due(self, now=None):
         with self.db.atomic(("system",)) as conn:
-            return self.process_conn(conn, now)
+            return self.process_all_conn(conn, now)
 
-    def get_state(self, now=None):
-        return self.process_due(now)
+    def get_state(self, exchange_id=None, now=None):
+        with self.db.atomic(("system",)) as conn:
+            return self.process_all_conn(conn, now) if exchange_id is None else self.process_conn(conn, now, exchange_id)
 
     @classmethod
-    def error_for_state(cls, state):
+    def error_for_state(cls, state, exchange_id):
         if state["status"] == "open":
             return None
-        message = f"❌ 시장이 {state['reason'] or '정지'} 상태입니다. 개장·재개 후 거래할 수 있습니다."
+        message = f"❌ `{exchange_id}` 거래소가 {state['reason'] or '정지'} 상태입니다. 개장·재개 후 거래할 수 있습니다."
         if state["resume_epoch"] is not None:
             message += f" 자동 재개: <t:{int(state['resume_epoch'])}:F>"
         return message
 
-    def trading_error(self, conn=None, now=None):
-        state = self.process_conn(conn, now) if conn is not None else self.process_due(now)
-        return self.error_for_state(state)
+    def trading_error(self, conn=None, now=None, *, asset_code=None, exchange_id=None):
+        exchange_id = exchange_id or (self.exchange_for_asset(conn, asset_code) if conn is not None else None)
+        if exchange_id is None:
+            return None
+        if conn is None:
+            with self.db.atomic(("system",)) as transaction:
+                state = self.process_conn(transaction, now, exchange_id)
+        else:
+            state = self.process_conn(conn, now, exchange_id)
+        return self.error_for_state(state, exchange_id)
 
-    def control(self, actor_id, action, stage=None, now=None):
+    def control(self, actor_id, action, stage=None, now=None, exchange_id="ALL"):
         action = str(action).strip().casefold()
         if action not in self.LABELS:
             return False, "❌ 지원하지 않는 시장 상태 명령어입니다."
         if action == "circuit" and (isinstance(stage, bool) or stage not in (1, 2, 3)):
             return False, "❌ 서킷브레이커는 1·2·3단계 중 선택해주세요."
         now = int(time.time() if now is None else now)
+        requested = str(exchange_id or "").strip()
         with self.db.atomic(("system", "users")) as conn:
             role = conn.execute("SELECT role FROM users WHERE user_id=?", (str(actor_id),)).fetchone()
             if not role or str(role["role"]).strip().casefold() != "admin":
                 return False, "❌ 관리자 전용 기능입니다."
-            state = self.process_conn(conn, now)
-            if action in {"open", "resume"}:
-                if state["status"] != "open":
-                    self._resume(conn, state, now)
-                else:
-                    return True, "ℹ️ 시장은 이미 개장 상태입니다."
-            else:
+            exchanges = self.exchange_ids(conn) if requested.casefold() == "all" else [self.normalize_exchange(requested)]
+            if not exchanges:
+                return False, "❌ 관리할 거래소가 없습니다."
+            for current_exchange in exchanges:
+                state = self.process_conn(conn, now, current_exchange)
+                if action in {"open", "resume"}:
+                    if state["status"] != "open":
+                        self._resume(conn, current_exchange, state, now)
+                    continue
                 if action in {"circuit", "sidecar"} and state["status"] == "closed":
-                    return False, "❌ 휴장 중입니다. 먼저 $개장으로 거래를 재개해주세요."
+                    return False, f"❌ `{current_exchange}` 거래소는 휴장 중입니다. 먼저 개장해주세요."
                 if action == "circuit":
                     resume = now + self.CIRCUIT_SECONDS[stage] if stage in (1, 2) else self.next_day_epoch(now)
                     reason = f"서킷브레이커 {stage}단계"
@@ -116,21 +165,18 @@ class MarketSessionManager:
                     resume, reason = now + self.SIDE_CAR_SECONDS, "사이드카"
                 else:
                     resume, reason = None, self.LABELS[action]
-                # A shorter stop cannot shorten an already scheduled halt.
                 if resume is not None and state["status"] != "open":
                     if state["resume_epoch"] is None:
-                        return False, "❌ 수동 정지 상태입니다. $장재개로 먼저 재개해주세요."
+                        return False, f"❌ `{current_exchange}` 거래소는 수동 정지 상태입니다. 먼저 재개해주세요."
                     if int(state["resume_epoch"]) > resume:
                         return False, "❌ 현재 정지 기간보다 짧은 정지를 적용할 수 없습니다."
                 halt_started = now if state["status"] == "open" else state["halt_started_epoch"]
-                conn.execute("""UPDATE market_session SET status=?, reason=?,
-                    halt_started_epoch=?, resume_epoch=?, circuit_stage=?, updated_epoch=?
-                    WHERE session_id=1""",
-                    ("closed" if action == "close" else "paused", reason,
-                     halt_started, resume, stage if action == "circuit" else None, now))
-            current = self._row(conn)
-        label = self.LABELS[action]
+                conn.execute("""UPDATE market_exchange_sessions SET status=?, reason=?, halt_started_epoch=?,
+                    resume_epoch=?, circuit_stage=?, updated_epoch=?, trading_halted=1 WHERE exchange_id=?""",
+                    ("closed" if action == "close" else "paused", reason, halt_started, resume,
+                     stage if action == "circuit" else None, now, current_exchange))
+        target = "전체 거래소" if requested.casefold() == "all" else f"`{requested}` 거래소"
         if action in {"open", "resume"}:
-            return True, f"✅ {label}: 거래와 가격 변동을 재개했습니다."
-        deadline = f"\n자동 재개: <t:{int(current['resume_epoch'])}:F>" if current["resume_epoch"] is not None else ""
-        return True, f"✅ {current['reason']}: 신규 거래와 가격 변동을 정지했습니다.{deadline}"
+            return True, f"✅ {target} {self.LABELS[action]}: 거래와 가격 변동을 재개했습니다."
+        deadline = f"\n자동 재개: <t:{int(resume)}:F>" if resume is not None else ""
+        return True, f"✅ {target} {reason}: 신규 거래와 가격 변동을 정지했습니다.{deadline}"

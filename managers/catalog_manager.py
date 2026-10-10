@@ -49,11 +49,11 @@ class CatalogManager:
             for currency,_,_ in currencies:
                 if not conn.execute("SELECT 1 FROM currencies WHERE code=? AND status='active'",(currency,)).fetchone():
                     raise ValueError('기본 외환 상품을 먼저 등록해주세요.')
-                product=conn.execute("SELECT product_code FROM fx_products WHERE currency_code=? AND status='active' ORDER BY product_code LIMIT 1",(currency,)).fetchone()
+                product=conn.execute("SELECT product_code FROM saving WHERE quote_currency=? AND product_kind='currency_saving' AND status='active' ORDER BY product_code LIMIT 1",(currency,)).fetchone()
                 if not product:
                     raise ValueError('외화 발행 대금을 받을 외환통장 상품이 필요합니다.')
-                if not conn.execute('SELECT 1 FROM fx_accounts WHERE user_id=? AND currency_code=?',(TREASURY_USER_ID,currency)).fetchone():
-                    conn.execute('INSERT INTO fx_accounts(account_number,user_id,product_code,currency_code,last_interest_epoch) VALUES (?,?,?,?,?)',('FXA'+uuid.uuid4().hex[:20].upper(),TREASURY_USER_ID,product[0],currency,time.time()))
+                if not conn.execute("SELECT 1 FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'",(TREASURY_USER_ID,currency)).fetchone():
+                    conn.execute("INSERT INTO accounts(account_number,user_id,product_code,balance,password,last_payment_epoch,principal,account_type,quote_currency) VALUES (?,?,?,?,?,?,?,?,?)",('FXA'+uuid.uuid4().hex[:20].upper(),TREASURY_USER_ID,product[0],0,None,time.time(),0,'currency_saving',currency))
                 for i in range(1, self.FOREIGN_PER_CURRENCY + 1):
                     stock,spot=f'INZ{currency}ST{i:03d}',f'INZ{currency}CM{i:03d}'
                     for code in (stock,spot):
@@ -136,6 +136,6 @@ class CatalogManager:
                 conn.execute("INSERT INTO market_assets(code,name,exchange_id,price,type,market_volatility) VALUES (?,?, 'FX',?,'forex',.05)", (code,f'{name}/NWX',price))
                 conn.execute("INSERT INTO currencies(code,name,asset_code) VALUES (?,?,?)", (currency,name,code))
                 conn.execute("INSERT OR IGNORE INTO country_currencies VALUES (?,?)", (country,currency))
-                conn.execute("INSERT INTO fx_products VALUES (?,?,?,?, 'active')", (f'INZFX{i:03d}',f'{name} 외환통장',currency,1+(i%5)*.25))
+                conn.execute("INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,interest_cycle,compound_type,issuer,status,quote_currency,product_kind) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (f'INZFX{i:03d}',f'{name} 외환통장',1+(i%5)*.25,0,0,0,1,'currency','active',currency,'currency_saving'))
             conn.execute("INSERT INTO settings(key,value) VALUES (?, '1')", (self.VERSION,))
             return True

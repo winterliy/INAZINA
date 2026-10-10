@@ -147,7 +147,7 @@ class FinancialManager:
         currency=currency or ent['currency']
         entries=[(k,cls.converted(conn,v,currency,ent['currency'],ent['decimal_places'])) for k,v in lines]
         rounding=sum(v for _,v in entries)
-        if rounding:entries.append(('fx_rounding',-rounding))
+        if rounding:entries.append(('currency_rounding',-rounding))
         return cls.post(conn,issuer,key or 'event:'+uuid.uuid4().hex,description,entries,flow,now)
 
     @classmethod
@@ -189,7 +189,7 @@ class FinancialManager:
         revenue = -changes['revenue']
         gross = revenue-changes['cogs']
         operating = gross-sum(changes[k] for k in ('sga','depreciation','amortization'))
-        pretax = operating-sum(changes[k] for k in ('other_income','interest_income','other_expense','interest_expense','fx_rounding'))
+        pretax = operating-sum(changes[k] for k in ('other_income','interest_income','other_expense','interest_expense','currency_rounding'))
         profit = pretax-changes['income_tax']
         flows = {r['cash_flow']:int(r['amount']) for r in conn.execute('''SELECT e.cash_flow,SUM(l.amount) amount
             FROM financial_entries e JOIN financial_lines l ON l.entry_id=e.entry_id

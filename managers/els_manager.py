@@ -194,7 +194,7 @@ class ELSManager:
             now = int(time.time() if now is None else now)
             self._settle_interest(user_id)
             with self.db.atomic() as conn:
-                error = MarketSessionManager(self.db).trading_error(conn=conn, now=now)
+                error = MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=code)
                 if error:
                     return False, error
                 terms = conn.execute("SELECT t.*,i.total_supply FROM els_terms t JOIN investment i USING(product_code) "
@@ -289,11 +289,11 @@ class ELSManager:
     def observe(self, conn, now, prices=None):
         """Record only real price ticks; never reconstruct a missing historical path."""
         now = int(now)
-        if MarketSessionManager(self.db).trading_error(conn=conn, now=now):
-            return []
         recorded = []
         for terms in conn.execute("SELECT * FROM els_terms WHERE state IN ('subscription','active','observation_pending')").fetchall():
             code = terms["product_code"]
+            if MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=code):
+                continue
             if terms["state"] == "subscription" and now < terms["subscription_end_epoch"]:
                 continue
             if terms["issue_epoch"] is None:

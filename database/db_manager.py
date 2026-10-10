@@ -132,8 +132,8 @@ class DBManager:
             ("product.treasury_bond_products", "product_code", "국채 상품"),
             ("assets.option_contracts", "contract_code", "옵션 계약"),
             ("accounts.accounts", "account_number", "계좌 번호"),
-            ("fx_products", "product_code", "외환통장 상품"),
-            ("fx_accounts", "account_number", "외환계좌 번호"),
+            ("currency_saving_products", "product_code", "외환통장 상품"),
+            ("currency_saving_accounts", "account_number", "외환계좌 번호"),
         )
         locations = []
         for table, column, label in checks:

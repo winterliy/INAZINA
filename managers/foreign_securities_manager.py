@@ -1,7 +1,7 @@
 """Foreign-currency stock/spot orders using the common price-time order book."""
 import time
 from database.user_db import TREASURY_USER_ID
-from managers.fx_manager import FXManager,SCALE,MAX_UNITS
+from managers.currency_exchange_manager import CurrencyExchangeManager,SCALE,MAX_UNITS
 from managers.market_session_manager import MarketSessionManager
 
 
@@ -11,7 +11,7 @@ class ForeignSecuritiesManager:
 
     @staticmethod
     def credit_units(conn,user,currency,units):
-        changed = conn.execute('UPDATE fx_accounts SET balance_units=balance_units+? WHERE user_id=? AND currency_code=? AND balance_units<=?',
+        changed = conn.execute("UPDATE accounts SET balance_units=balance_units+? WHERE user_id=? AND quote_currency=? AND account_type='currency_saving' AND balance_units<=?",
             (units,str(user),currency,MAX_UNITS-units))
         if changed.rowcount!=1:
             raise ValueError(f'{currency} 외환통장이 없거나 잔액 한도를 초과했습니다.')
@@ -22,7 +22,7 @@ class ForeignSecuritiesManager:
         now = int(time.time())
         try:
             with self.db.atomic() as conn:
-                error = MarketSessionManager(self.db).trading_error(conn=conn, now=now)
+                error = MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=code)
                 if error:
                     return False, error
                 asset,source = self.users._asset_row(conn,code)
@@ -31,10 +31,10 @@ class ForeignSecuritiesManager:
                     raise ValueError('외화 결제는 현재 주식·현물 원자재에 지원합니다.')
                 if asset['status']!='active' or asset['price']<=0:
                     raise ValueError('현재 거래할 수 없는 종목입니다.')
-                FXManager._user(conn,user_id)
-                FXManager._rate(conn,currency)
-                FXManager(self.db)._settle(conn,user_id,now)
-                account = conn.execute('SELECT * FROM fx_accounts WHERE user_id=? AND currency_code=?',(user_id,currency)).fetchone()
+                CurrencyExchangeManager._user(conn,user_id)
+                CurrencyExchangeManager._rate(conn,currency)
+                CurrencyExchangeManager(self.db)._settle(conn,user_id,now)
+                account = conn.execute("SELECT * FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'",(user_id,currency)).fetchone()
                 if not account:
                     raise ValueError(f'/계좌개설로 {currency} 외환통장을 먼저 개설해주세요.')
                 account_number = account['account_number']
@@ -47,7 +47,7 @@ class ForeignSecuritiesManager:
                 if cash*SCALE>MAX_UNITS:
                     raise ValueError('주문 예치금 한도를 초과했습니다.')
                 if side=='buy':
-                    changed=conn.execute('UPDATE fx_accounts SET balance_units=balance_units-? WHERE account_number=? AND balance_units>=?',(cash*SCALE,account_number,cash*SCALE))
+                    changed=conn.execute("UPDATE accounts SET balance_units=balance_units-? WHERE account_number=? AND account_type='currency_saving' AND balance_units>=?",(cash*SCALE,account_number,cash*SCALE))
                     if changed.rowcount!=1:
                         raise ValueError(f'예치할 {currency} 잔액이 부족합니다. 필요액 {cash:,} {currency}')
                 elif owned-reserved<quantity:
@@ -63,7 +63,8 @@ class ForeignSecuritiesManager:
         conn.execute("INSERT INTO user_assets(user_id,asset_code,account_number,quantity,average_cost) VALUES (?,?,?,?,?) ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET average_cost=(quantity*average_cost+excluded.quantity*excluded.average_cost)/(quantity+excluded.quantity),quantity=quantity+excluded.quantity",(user,code,account,quantity,price))
 
     def match(self,conn,order_id,now):
-        if MarketSessionManager(self.db).trading_error(conn=conn, now=now):
+        incoming = conn.execute('SELECT asset_code FROM market_orders WHERE order_id=?',(order_id,)).fetchone()
+        if MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=incoming['asset_code'] if incoming else None):
             return 0
         filled=0
         while True:
@@ -109,7 +110,7 @@ class ForeignSecuritiesManager:
                         break
                 if left:
                     raise ValueError('매도 예약 수량과 보유 수량이 달라 체결을 취소했습니다.')
-                rate=FXManager._rate(conn,currency)
+                rate=CurrencyExchangeManager._rate(conn,currency)
                 tax=self.users._tax(conn,sell['user_id'],'foreign_security_sale_gain',gain*rate)
                 tax_units=(tax*SCALE+rate-1)//rate
                 self.credit_units(conn,sell['user_id'],currency,quantity*price*SCALE-tax_units)

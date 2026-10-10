@@ -37,7 +37,7 @@ ACCOUNTS = {
     'depreciation': ('감가상각비', 'expense'),
     'amortization': ('무형자산상각비', 'expense'),
     'interest_expense': ('이자비용', 'expense'),
-    'fx_rounding': ('통화환산 반올림차이', 'expense'),
+    'currency_rounding': ('통화환산 반올림차이', 'expense'),
     'other_expense': ('영업외비용', 'expense'),
     'income_tax': ('법인세비용', 'expense'),
 }

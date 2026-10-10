@@ -97,7 +97,7 @@ $상품생성 CALL1 option INZST001 call 1500 30 1 100 50
 
 ## 외환
 
-`currencies`, `country_currencies`, `fx_products`, `fx_accounts`, `fx_transactions`가 동일 DB에 저장된다. 낙원의 기본 통화는 NWX이며 미국→USD, 대한민국→KRW 등은 **게임 설정**이다. 45개 가상 국가와 통화를 함께 준비했다. 기존에 통화가 매핑되지 않은 국적은 NWX를 기본으로 표시한다. 국적·통화 연결과 사용자 국적은 DB Browser의 `country_currencies`·`users`에서 관리한다.
+`currencies`, `country_currencies`, `currency_products`, `currency_accounts`, `currency_transactions`가 동일 DB에 저장된다. 낙원의 기본 통화는 NWX이며 미국→USD, 대한민국→KRW 등은 **게임 설정**이다. 45개 가상 국가와 통화를 함께 준비했다. 기존에 통화가 매핑되지 않은 국적은 NWX를 기본으로 표시한다. 국적·통화 연결과 사용자 국적은 DB Browser의 `country_currencies`·`users`에서 관리한다.
 
 ```text
 /검색

@@ -31,22 +31,12 @@ class ForeignExchangeDB(DBManager):
         self.execute("""CREATE TABLE IF NOT EXISTS country_currencies (
             nationality TEXT PRIMARY KEY, currency_code TEXT NOT NULL REFERENCES currencies(code))""")
         self.execute("INSERT OR IGNORE INTO country_currencies VALUES ('낙원','NWX')")
-        self.execute("""CREATE TABLE IF NOT EXISTS fx_products (
-            product_code TEXT PRIMARY KEY, name TEXT NOT NULL, currency_code TEXT NOT NULL,
-            annual_rate REAL NOT NULL CHECK(annual_rate BETWEEN 0 AND 100),
-            status TEXT NOT NULL DEFAULT 'active')""")
-        self.execute("""CREATE TABLE IF NOT EXISTS fx_accounts (
-            account_number TEXT PRIMARY KEY, user_id TEXT NOT NULL, product_code TEXT NOT NULL,
-            currency_code TEXT NOT NULL, balance_units INTEGER NOT NULL DEFAULT 0 CHECK(balance_units>=0),
-            interest_remainder TEXT NOT NULL DEFAULT '0', last_interest_epoch REAL NOT NULL,
-            UNIQUE(user_id, currency_code))""")
         self.execute("""CREATE TABLE IF NOT EXISTS currency_wallets (
             user_id TEXT NOT NULL, currency_code TEXT NOT NULL REFERENCES currencies(code),
             balance_units INTEGER NOT NULL DEFAULT 0 CHECK(balance_units >= 0),
             PRIMARY KEY(user_id, currency_code))""")
-        self.execute("CREATE INDEX IF NOT EXISTS idx_fx_accounts_user ON fx_accounts(user_id)")
         self.execute("CREATE INDEX IF NOT EXISTS idx_currency_wallets_currency ON currency_wallets(currency_code)")
-        self.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('fx_fee_percent','0.1')")
+        self.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('currency_exchange_fee_percent','0.1')")
         for table in ('company','investment','market_assets','market_orders'):
             columns = {r[1] for r in self.execute(f'PRAGMA table_info({table})')}
             if 'quote_currency' not in columns:
@@ -66,9 +56,9 @@ class ForeignExchangeDB(DBManager):
                 treasury += int(self.execute("SELECT COALESCE(SUM(balance),0) FROM accounts WHERE user_id=?", (TREASURY_USER_ID,))[0][0]) * 1_000_000
             else:
                 total = int(self.execute("SELECT COALESCE(SUM(balance_units),0) FROM currency_wallets WHERE currency_code=?", (code,))[0][0])
-                total += int(self.execute("SELECT COALESCE(SUM(balance_units),0) FROM fx_accounts WHERE currency_code=?", (code,))[0][0])
+                total += int(self.execute("SELECT COALESCE(SUM(balance_units),0) FROM accounts WHERE account_type='currency_saving' AND quote_currency=?", (code,))[0][0])
                 treasury = int(self.execute("SELECT COALESCE(SUM(balance_units),0) FROM currency_wallets WHERE currency_code=? AND user_id=?", (code, TREASURY_USER_ID))[0][0])
-                treasury += int(self.execute("SELECT COALESCE(SUM(balance_units),0) FROM fx_accounts WHERE currency_code=? AND user_id=?", (code, TREASURY_USER_ID))[0][0])
+                treasury += int(self.execute("SELECT COALESCE(SUM(balance_units),0) FROM accounts WHERE account_type='currency_saving' AND quote_currency=? AND user_id=?", (code, TREASURY_USER_ID))[0][0])
             ratio = max(0, total - treasury) / total if total > 0 else 0
             self.execute(
                 "INSERT OR IGNORE INTO currency_liquidity_state "

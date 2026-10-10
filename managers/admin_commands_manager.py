@@ -7,7 +7,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from database.db_manager import DBManager
 from database.user_db import TREASURY_USER_ID
 from managers.admin_control_manager import ENTITIES, KINDS
-from managers.fx_manager import SCALE, MAX_UNITS, amount_units, display_units
+from managers.currency_exchange_manager import SCALE, MAX_UNITS, amount_units, display_units
 
 COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값',
             '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','환율수정',
@@ -34,8 +34,8 @@ USAGE = {
  '정기배당수정':'[id] [주기: 초 또는 1일/1주/1달] [주당 금액 또는 비율%]',
  '정기배당활성':'[id] [on/off 또는 1/0]',
  '특별배당실시':'[id] [주당 배당금]', '합병':'[존속 A id] [통합 B id]',
- '휴장':'', '개장':'', '장일시정지':'', '장재개':'',
- '서킷브레이커':'[1/2/3단계]', '사이드카':''}
+ '휴장':'[거래소ID]', '개장':'[거래소ID]', '장일시정지':'[거래소ID]', '장재개':'[거래소ID]',
+ '서킷브레이커':'[거래소ID] [1/2/3단계]', '사이드카':'[거래소ID]'}
 USAGE.update({'법인잔고수정':'[보통주 법인id] [add/del/modify] [금액]',
               '법인청산':'[보통주 법인id]', 'ELS취소':'[ELS id]'})
 
@@ -156,15 +156,16 @@ class AdminCommandsManager:
                    '도박확률':1,'도박리턴값':1,'시장분위기':1,'상품분위기':2,
                    '복권당첨번호보기':0,'세율':1,'환율수정':3,'복권가격설정':1,
                    '금리수정':2,'법정이자수정':2,'정기배당수정':3,'정기배당활성':2,'특별배당실시':2,'합병':2,
-                   '휴장':0,'개장':0,'장일시정지':0,'장재개':0,'서킷브레이커':1,'사이드카':0}
+                   '휴장':1,'개장':1,'장일시정지':1,'장재개':1,'서킷브레이커':2,'사이드카':1}
             count.update({'법인잔고수정':3,'법인청산':1,'ELS취소':1})
             if (command=='증자' and len(args) not in {3,4}) or (command not in {'복권당첨번호변경','증자'} and len(args)!=count.get(command,-1)):
                 raise ValueError(f'사용법: ${command} {USAGE.get(command,"")}')
             if command in {'휴장','개장','장일시정지','장재개','서킷브레이커','사이드카'}:
                 from managers.market_session_manager import MarketSessionManager
                 actions={'휴장':'close','개장':'open','장일시정지':'pause','장재개':'resume','서킷브레이커':'circuit','사이드카':'sidecar'}
-                stage=int(args[0].removesuffix('단계')) if args else None
-                result=MarketSessionManager(self.db).control(actor,actions[command],stage=stage)
+                exchange_id=args[0]
+                stage=int(args[1].removesuffix('단계')) if command=='서킷브레이커' else None
+                result=MarketSessionManager(self.db).control(actor,actions[command],stage=stage,exchange_id=exchange_id)
                 return self.result_text(result)
             if command=='ELS취소':
                 from managers.els_manager import ELSManager
@@ -362,20 +363,20 @@ class AdminCommandsManager:
             InterestManager(self.db).process_user_interests(row[0])
         with self.db.atomic() as conn:
             self.control.require(actor,conn)
-            fx=conn.execute('SELECT * FROM fx_accounts WHERE account_number=?',(identity,)).fetchone()
+            fx=conn.execute("SELECT *,quote_currency AS currency_code FROM accounts WHERE account_number=? AND account_type='currency_saving'",(identity,)).fetchone()
             bank=conn.execute('SELECT * FROM accounts WHERE account_number=?',(identity,)).fetchone()
             user=conn.execute('SELECT * FROM users WHERE user_id=?',(identity,)).fetchone()
             if sum(bool(x) for x in (fx,bank,user))!=1:
                 raise ValueError('사용자 ID 또는 계좌번호를 확인해주세요.')
             if fx:
-                self.bot.fx_mgr._settle(conn,fx['user_id'],time.time())
-                current=conn.execute('SELECT balance_units FROM fx_accounts WHERE account_number=?',(identity,)).fetchone()[0]
+                self.bot.currency_mgr._settle(conn,fx['user_id'],time.time())
+                current=conn.execute("SELECT balance_units FROM accounts WHERE account_number=? AND account_type='currency_saving'",(identity,)).fetchone()[0]
                 amount=Decimal(raw_amount)
                 units=amount*SCALE
                 if not amount.is_finite() or amount<0 or units!=units.to_integral_value():raise ValueError('외화 금액은 0 이상, 소수점 6자리까지 입력해주세요.')
                 value=self.adjust(current,operation,int(units))
                 if not 0<=value<=MAX_UNITS:raise ValueError('외화 잔고는 0 이상이며 저장 한도 이하여야 합니다.')
-                conn.execute('UPDATE fx_accounts SET balance_units=? WHERE account_number=?',(value,identity))
+                conn.execute("UPDATE accounts SET balance_units=? WHERE account_number=? AND account_type='currency_saving'",(value,identity))
                 unit=fx['currency_code']; before=display_units(current); after=display_units(value)
             else:
                 table,key='accounts','account_number' if bank else 'user_id'
@@ -395,7 +396,7 @@ class AdminCommandsManager:
         if a==b or a=='NWX':raise ValueError('서로 다른 통화를 입력하고, 변경 대상 A는 외화로 입력해주세요.')
         ratio=Decimal(raw_ratio)
         if not ratio.is_finite() or ratio<=0:raise ValueError('비율은 0보다 큰 유한한 값이어야 합니다.')
-        ar=self.bot.fx_mgr._rate(conn,a);br=self.bot.fx_mgr._rate(conn,b)
+        ar=self.bot.currency_mgr._rate(conn,a);br=self.bot.currency_mgr._rate(conn,b)
         row=conn.execute("SELECT asset_code FROM currencies WHERE code=? AND status='active'",(a,)).fetchone()
         target=int((br*ratio).to_integral_value(rounding=ROUND_HALF_UP))
         self.control._number(target,1,integer=True)

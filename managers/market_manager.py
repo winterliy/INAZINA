@@ -76,10 +76,10 @@ class MarketManager:
         conn.execute("PRAGMA busy_timeout = 50")
         try:
             conn.execute("BEGIN IMMEDIATE")
-            state = (MarketSessionManager.process_conn(conn, now) if now is not None
-                     else MarketSessionManager._row(conn))
-            if state["status"] != "open":
-                raise _MarketHalted()
+            # Expired sidecar/circuit deadlines are processed for every
+            # exchange.  Individual assets are filtered below, so pausing EX1
+            # does not freeze EX2's price engine.
+            MarketSessionManager.process_all_conn(conn, now)
             yield conn
             conn.commit()
         except Exception:
@@ -191,8 +191,8 @@ class MarketManager:
             (self.db.products, "SELECT 1 FROM treasury_bond_products WHERE product_code = ?", "국채 상품"),
             (self.db.assets, "SELECT 1 FROM option_contracts WHERE contract_code = ?", "옵션 계약"),
             (self.db.accounts, "SELECT 1 FROM accounts WHERE account_number = ?", "계좌 번호"),
-            (self.db.fx, "SELECT 1 FROM fx_products WHERE product_code = ?", "외환통장 상품"),
-            (self.db.fx, "SELECT 1 FROM fx_accounts WHERE account_number = ?", "외환계좌 번호"),
+            (self.db.products, "SELECT 1 FROM saving WHERE product_code = ? AND product_kind='currency_saving'", "외환통장 상품"),
+            (self.db.accounts, "SELECT 1 FROM accounts WHERE account_number = ? AND account_type='currency_saving'", "외환계좌 번호"),
         )
         for database, query, label in checks:
             if database.execute_one(query, (code,)):
@@ -718,13 +718,17 @@ class MarketManager:
             try:
                 with self._short_market_transaction((schema, "system")) as conn:
                     rows = conn.execute(
-                        f"SELECT {code_column} AS code, {price_column} AS price, is_fixed{extra} "
+                        f"SELECT {code_column} AS code, {price_column} AS price, exchange_id, is_fixed{extra} "
                         f"FROM {schema}.{table} WHERE status = 'active'"
                     ).fetchall()
                     for row in rows:
                         if has_derivative and row['product_type']=='els':
                             continue
                         code = str(row["code"])
+                        if MarketSessionManager(self.db).trading_error(
+                            conn=conn, now=now, exchange_id=row["exchange_id"]
+                        ):
+                            continue
                         try:
                             raw_price = float(row["price"])
                         except (TypeError, ValueError, OverflowError):
@@ -836,6 +840,10 @@ class MarketManager:
             asset = quotes.get(row['asset_code'])
             if not asset or asset['status'] != 'active':
                 continue
+            if MarketSessionManager(self.db).trading_error(
+                now=now, exchange_id=asset.get('exchange_id')
+            ):
+                continue
             if asset['type'] not in {'option','국채','stock_future','corporate_bond','mutual_fund','index_fund'} and not asset.get('underlying_exchange_id'):
                 continue
             try:
@@ -898,6 +906,7 @@ class MarketManager:
                     max(0, row['expiration_epoch'] - now) / (365 * 86400),
                     float(row['implied_volatility']), row['option_type'], rate)
             quotes[code] = dict(code=code, price=int(price), type='option', is_fixed=1,
+                exchange_id=underlying.get('exchange_id'),
                 status='matured' if row['status']=='active' and row['expiration_epoch']<=now else row['status'])
         return quotes
 
@@ -915,6 +924,10 @@ class MarketManager:
                 products = conn.execute("SELECT * FROM product.investment WHERE status = 'active' "
                     "AND product_type IN ('stock_future', 'corporate_bond', 'mutual_fund')").fetchall()
                 for product in products:
+                    if MarketSessionManager(self.db).trading_error(
+                        conn=conn, now=now, exchange_id=product['exchange_id']
+                    ):
+                        continue
                     if int(product["is_fixed"] or 0):
                         continue
                     price = InvestmentManager.linked_price(conn, product, rate, now,
@@ -949,6 +962,10 @@ class MarketManager:
                 for product in products:
                     code = str(product["product_code"])
                     exchange_id = str(product["underlying_exchange_id"]).strip()
+                    if MarketSessionManager(self.db).trading_error(
+                        conn=conn, now=now, exchange_id=exchange_id
+                    ):
+                        continue
                     try:
                         leverage = float(product["leverage_multiplier"])
                         raw_nav = float(product["unit_price"] or 0)
@@ -1071,6 +1088,10 @@ class MarketManager:
                             "WHERE exchange_id = ?", (tracked["exchange_id"],),
                         )
                 for exchange_id, members in constituents.items():
+                    if MarketSessionManager(self.db).trading_error(
+                        conn=conn, now=now, exchange_id=exchange_id
+                    ):
+                        continue
                     previous_index = conn.execute(
                         "SELECT index_value FROM assets.market_exchange_indices "
                         "WHERE exchange_id = ?", (exchange_id,),

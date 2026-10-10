@@ -26,7 +26,7 @@ from functions.discord_views import (
 )
 from functions.registration import RegistrationRequired
 from managers.investment_manager import FUND_TYPES
-from managers.fx_manager import display_units
+from managers.currency_exchange_manager import display_units
 
 
 MAX_DISCORD_INTEGER = 2**53 - 1
@@ -57,7 +57,7 @@ class SlashCommandRegistry:
             ("옵션작성", "담보를 맡기고 주식 옵션 매도 호가를 작성합니다", self.option_write),
             ("기준금리", "현재 게임 기준금리를 확인합니다", self.base_rate),
             ("법정이자", "현재 게임 법정이자를 확인합니다", self.statutory_rate),
-            ("환전", "NWX와 외환통장 또는 외환통장 사이에서 환전합니다", self.fx_exchange),
+            ("환전", "NWX와 외환통장 또는 외환통장 사이에서 환전합니다", self.currency_exchange),
             ("펀드가입", "일반·인덱스 펀드를 NAV 기준으로 가입합니다", self.subscribe_fund),
             ("펀드환매", "보유 일반·인덱스 펀드를 NAV 기준으로 환매합니다", self.redeem_fund),
             ("선물증거금", "보유 주식 선물 포지션에 증거금을 추가합니다", self.future_margin),
@@ -97,11 +97,11 @@ class SlashCommandRegistry:
                 for r in rows if not current or current in r['name'].casefold() or current in r['code'].casefold()][:25]
 
 
-    async def fx_exchange(self,interaction: discord.Interaction,출금통화: str,입금통화: str,금액: str):
+    async def currency_exchange(self,interaction: discord.Interaction,출금통화: str,입금통화: str,금액: str):
         user_id, _, _ = await self._prepare(interaction)
         try:
             message = await asyncio.to_thread(
-                execute_shared_action, self.bot, user_id, "fx_exchange",
+                execute_shared_action, self.bot, user_id, "currency_exchange",
                 출금통화, 입금통화, 금액,
             )
         except ValueError as exc:
@@ -323,7 +323,7 @@ class SlashCommandRegistry:
         embed.description = f"국적: **{str(info.get('nationality') or user_data['nationality'])[:100]}** · 기본 통화: **{info.get('national_currency','NWX')}**"
         embed.add_field(name="💵 현금", value=f"```{info['cash']:,.0f} NWX```", inline=True)
         embed.add_field(name="🏦 통장 잔액", value=f"```{info['account_total']:,.0f} NWX```", inline=True)
-        embed.add_field(name="🌐 외환통장 평가액",value=f"```{info.get('fx_total',0):,} NWX```",inline=True)
+        embed.add_field(name="🌐 외환통장 평가액",value=f"```{info.get('currency_total',0):,} NWX```",inline=True)
         investment_total = int(info["stock_total"]) + int(info["bond_total"]) + int(info.get('els_total', 0))
         embed.add_field(name="📈 투자자산 합계", value=f"```{investment_total:,} NWX```", inline=True)
         embed.add_field(name='🧾 ELS 인수 원금', value=f"```{int(info.get('els_total', 0)):,} NWX```\n투자자산 합계에 포함 · 인수액 기준", inline=True)
@@ -358,7 +358,7 @@ class SlashCommandRegistry:
             for item in info["accounts"]
         ]
         account_lines.extend(f"• 외환통장 {str(item.get('product_name') or item['product_code'])[:60]} (`{item['account_number']}`): "
-            f"{display_units(item['balance_units'])} {item['currency_code']} · 평가 {item['value_nwx']:,} NWX" for item in info.get('fx_accounts',[]))
+            f"{display_units(item['balance_units'])} {item['currency_code']} · 평가 {item['value_nwx']:,} NWX" for item in info.get('currency_saving_accounts',[]))
         accounts = "\n".join(account_lines)
         embed.add_field(name="🏦 보유 통장", value=accounts[:1024] or "개설된 통장이 없습니다.", inline=False)
         position_lines = []
@@ -412,7 +412,7 @@ class SlashCommandRegistry:
         embed.add_field(name='📄 작성 옵션',value='\n'.join(written_lines)[:1024] or '작성 중인 옵션이 없습니다.',inline=False)
         from functions.wallet_views import WalletCategoryView, els_position_lines, preferred_claim_lines
         sections={'accounts':account_lines[:len(info['accounts'])],
-                  'fx_accounts':account_lines[len(info['accounts']):],
+                  'currency_saving_accounts':account_lines[len(info['accounts']):],
                   'treasury_bond':bond_lines,'written':written_lines,
                   'els':els_position_lines(info.get('els_positions', [])),
                   'preferred_claims':preferred_claim_lines(info.get('preferred_dividend_claims', []))}
@@ -752,7 +752,7 @@ class SlashCommandRegistry:
                 "WHERE account_type = 'saving' ORDER BY account_number LIMIT 1000"
             )
             foreign_accounts = self.bot.db.fx.execute("SELECT a.account_number,a.user_id,a.currency_code,u.nickname "
-                "FROM fx_accounts a JOIN users u ON u.user_id=a.user_id WHERE u.status='active' ORDER BY a.account_number LIMIT 1000")
+                "FROM currency_saving_accounts a JOIN users u ON u.user_id=a.user_id WHERE u.status='active' ORDER BY a.account_number LIMIT 1000")
         except Exception:
             return []
 
@@ -792,9 +792,9 @@ class SlashCommandRegistry:
             # Keep both recipient types discoverable in the initial autocomplete list.
             treasury = [item for item in candidates if item[1].name.startswith("🏛️")][:1]
             users = [item for item in candidates if item[1].name.startswith("👤")][:12]
-            fx_accounts = [item for item in candidates if item[1].name.startswith("🌐")][:5]
-            bank_accounts = [item for item in candidates if item[1].name.startswith("🏦")][:12-len(fx_accounts)]
-            candidates = treasury + users + bank_accounts + fx_accounts
+            currency_saving_accounts = [item for item in candidates if item[1].name.startswith("🌐")][:5]
+            bank_accounts = [item for item in candidates if item[1].name.startswith("🏦")][:12-len(currency_saving_accounts)]
+            candidates = treasury + users + bank_accounts + currency_saving_accounts
         return [item[1] for item in candidates[:25]]
 
     async def source_account_autocomplete(self, interaction: discord.Interaction, current: str):
@@ -806,7 +806,7 @@ class SlashCommandRegistry:
                 "WHERE user_id = ? ORDER BY account_type, created_at",
                 (user_id,),
             )
-            foreign_accounts = self.bot.db.fx.execute('SELECT * FROM fx_accounts WHERE user_id=? ORDER BY currency_code',(user_id,))
+            foreign_accounts = self.bot.db.fx.execute('SELECT * FROM currency_saving_accounts WHERE user_id=? ORDER BY currency_code',(user_id,))
         except Exception:
             return []
         current = current.strip().casefold()
@@ -832,10 +832,10 @@ class SlashCommandRegistry:
     async def open_account(self, interaction: discord.Interaction, 상품: str):
         user_id, _user_data, _role = await self._prepare(interaction)
         code = 상품.strip()
-        foreign = self.bot.db.fx.execute_one("SELECT * FROM fx_products WHERE product_code=? AND status='active'",(code,))
+        foreign = self.bot.db.fx.execute_one("SELECT * FROM currency_saving_products WHERE product_code=? AND status='active'",(code,))
         if foreign:
             try:
-                number = await asyncio.to_thread(self.bot.fx_mgr.open_account,user_id,code)
+                number = await asyncio.to_thread(self.bot.currency_mgr.open_account,user_id,code)
                 return await self._reply(interaction,content=f"✅ {foreign['name']} 외환통장 개설: `{number}`\n/송금으로 입금하고 /내지갑에서 잔액을 확인하세요.")
             except ValueError as exc:
                 return await self._reply(interaction,content=f'❌ {exc}')

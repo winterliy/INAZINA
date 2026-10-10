@@ -8,7 +8,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from database.db_manager import DBManager
 from database.user_db import TREASURY_USER_ID
-from managers.fx_manager import FXManager, SCALE, MAX_UNITS
+from managers.currency_exchange_manager import CurrencyExchangeManager, SCALE, MAX_UNITS
 from managers.user_manager import UserManager
 
 
@@ -104,16 +104,16 @@ class CorporateActionsManager:
         return [(str(row['user_id']), int(row['quantity'])) for row in rows if row['user_id'] != TREASURY_USER_ID]
 
     @staticmethod
-    def _fx_account(conn, user, currency, now):
-        row = conn.execute('SELECT * FROM fx_accounts WHERE user_id=? AND currency_code=?', (user, currency)).fetchone()
+    def _currency_account(conn, user, currency, now):
+        row = conn.execute("SELECT * FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'", (user, currency)).fetchone()
         if row:
             return row['account_number']
-        product = conn.execute("SELECT product_code FROM fx_products WHERE currency_code=? AND status='active' ORDER BY product_code LIMIT 1", (currency,)).fetchone()
+        product = conn.execute("SELECT product_code FROM saving WHERE quote_currency=? AND product_kind='currency_saving' AND status='active' ORDER BY product_code LIMIT 1", (currency,)).fetchone()
         if not product:
             raise ValueError(f'{currency} 배당을 수령할 외환통장 상품이 없습니다.')
         account = 'FXA' + uuid.uuid4().hex[:16].upper()
-        conn.execute('INSERT INTO fx_accounts(account_number,user_id,product_code,currency_code,last_interest_epoch) VALUES (?,?,?,?,?)',
-                     (account, user, product['product_code'], currency, now))
+        conn.execute("INSERT INTO accounts(account_number,user_id,product_code,balance,password,last_payment_epoch,principal,account_type,quote_currency) VALUES (?,?,?,?,?,?,?,?,?)",
+                     (account, user, product['product_code'], 0, None, now, 0, 'currency_saving', currency))
         return account
 
     @staticmethod
@@ -133,7 +133,7 @@ class CorporateActionsManager:
         if currency == 'NWX':
             row = conn.execute('SELECT cash FROM users WHERE user_id=?', (TREASURY_USER_ID,)).fetchone()
             return int(row['cash']) if row else 0
-        row = conn.execute('SELECT balance_units FROM fx_accounts WHERE user_id=? AND currency_code=?', (TREASURY_USER_ID, currency)).fetchone()
+        row = conn.execute("SELECT balance_units FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'", (TREASURY_USER_ID, currency)).fetchone()
         return int(row['balance_units']) // SCALE if row else 0
 
     def _debit_dividend(self, conn, issuer, funding, currency, gross):
@@ -144,13 +144,13 @@ class CorporateActionsManager:
         elif currency == 'NWX':
             changed = conn.execute('UPDATE users SET cash=cash-? WHERE user_id=? AND cash>=?', (gross, TREASURY_USER_ID, gross))
         else:
-            changed = conn.execute('UPDATE fx_accounts SET balance_units=balance_units-? WHERE user_id=? AND currency_code=? AND balance_units>=?',
+            changed = conn.execute("UPDATE accounts SET balance_units=balance_units-? WHERE user_id=? AND quote_currency=? AND account_type='currency_saving' AND balance_units>=?",
                                    (gross*SCALE, TREASURY_USER_ID, currency, gross*SCALE))
         if changed.rowcount != 1:
             raise ValueError(f'{"법인" if funding == "issuer" else "국고"}의 {currency} 배당 재원이 부족합니다. 필요액 {gross:,} {currency}')
 
     def _credit_dividend(self, conn, user, code, kind, amount, currency, now):
-        rate = FXManager._rate(conn, currency)
+        rate = CurrencyExchangeManager._rate(conn, currency)
         tax = UserManager._tax(conn, user, f'{kind}_dividend:{code}', amount*rate)
         tax_units = tax*SCALE if currency == 'NWX' else (tax*SCALE+rate-1)//rate
         net_units = max(0, amount*SCALE-tax_units)
@@ -158,9 +158,9 @@ class CorporateActionsManager:
             changed = conn.execute('UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?',
                                    (net_units//SCALE, user, self.MAX_MONEY-net_units//SCALE))
         else:
-            FXManager._settle(conn, user, now)
-            account = self._fx_account(conn, user, currency, now)
-            changed = conn.execute('UPDATE fx_accounts SET balance_units=balance_units+? WHERE account_number=? AND balance_units<=?',
+            CurrencyExchangeManager._settle(conn, user, now)
+            account = self._currency_account(conn, user, currency, now)
+            changed = conn.execute("UPDATE accounts SET balance_units=balance_units+? WHERE account_number=? AND account_type='currency_saving' AND balance_units<=?",
                                    (net_units, account, MAX_UNITS-net_units))
         if changed.rowcount != 1:
             raise ValueError('배당 수령자의 계정 또는 잔액 한도를 확인해주세요.')
@@ -201,7 +201,7 @@ class CorporateActionsManager:
         payments = [(user,quantity,int((quantity*unit_amount).quantize(Decimal('1'),rounding=ROUND_HALF_UP))) for user,quantity in holders]
         owed = sum(amount for _,_,amount in payments)
         currency = listing.get('quote_currency') or 'NWX'
-        rate = FXManager._rate(conn, currency)
+        rate = CurrencyExchangeManager._rate(conn, currency)
         if owed > self.MAX_MONEY or owed*rate > self.MAX_MONEY or owed*SCALE > MAX_UNITS:
             raise ValueError('총 배당금의 금액 또는 외환 평가액이 한도를 초과했습니다.')
         issuer, funding = self._issuer_code(listing), self._funding(listing)
@@ -589,14 +589,14 @@ class CorporateActionsManager:
                 currency = listing.get('quote_currency') or 'NWX'
                 if mode == '유상':
                     from managers.market_session_manager import MarketSessionManager
-                    error = MarketSessionManager(self.db).trading_error(conn=conn, now=now)
+                    error = MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=code)
                     if error:
                         raise ValueError(error)
                     issue = self._integer(price if issue_price is None else issue_price, '유상 발행가', 1)
                     if quantity * issue > self.MAX_MONEY:
                         raise ValueError('유상증자 모집 금액이 한도를 초과합니다.')
                     if currency != 'NWX':
-                        self._fx_account(conn, TREASURY_USER_ID, currency, now)
+                        self._currency_account(conn, TREASURY_USER_ID, currency, now)
                     conn.execute("INSERT INTO user_assets(user_id,asset_code,quantity,average_cost) VALUES (?,?,?,?) ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET average_cost=(quantity*average_cost+excluded.quantity*excluded.average_cost)/(quantity+excluded.quantity),quantity=quantity+excluded.quantity",
                                  (TREASURY_USER_ID, code, quantity, issue))
                     order = conn.execute("INSERT INTO market_orders(user_id,asset_code,side,limit_price,quantity,remaining_quantity,order_kind,status,created_epoch,updated_epoch,quote_currency) VALUES (?,?,'sell',?,?,?,'asset','open',?,?,?)",
@@ -699,7 +699,7 @@ class CorporateActionsManager:
                 if currency == 'NWX':
                     changed = conn.execute('UPDATE users SET cash=cash-? WHERE user_id=? AND cash>=?', (cash, TREASURY_USER_ID, cash))
                 else:
-                    changed = conn.execute('UPDATE fx_accounts SET balance_units=balance_units-? WHERE user_id=? AND currency_code=? AND balance_units>=?', (cash * SCALE, TREASURY_USER_ID, currency, cash * SCALE))
+                    changed = conn.execute("UPDATE accounts SET balance_units=balance_units-? WHERE user_id=? AND quote_currency=? AND account_type='currency_saving' AND balance_units>=?", (cash * SCALE, TREASURY_USER_ID, currency, cash * SCALE))
                 if changed.rowcount != 1:
                     raise ValueError('단주 차액을 지급할 국고 잔액이 부족합니다.')
                 for user, user_lots, allocation, residual in conversions:
@@ -712,9 +712,9 @@ class CorporateActionsManager:
                         if currency == 'NWX':
                             changed = conn.execute('UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?', (residual, user, self.MAX_MONEY - residual))
                         else:
-                            FXManager._settle(conn, user, now)
-                            account = self._fx_account(conn, user, currency, now)
-                            changed = conn.execute('UPDATE fx_accounts SET balance_units=balance_units+? WHERE account_number=? AND balance_units<=?', (residual * SCALE, account, MAX_UNITS - residual * SCALE))
+                            CurrencyExchangeManager._settle(conn, user, now)
+                            account = self._currency_account(conn, user, currency, now)
+                            changed = conn.execute("UPDATE accounts SET balance_units=balance_units+? WHERE account_number=? AND account_type='currency_saving' AND balance_units<=?", (residual * SCALE, account, MAX_UNITS - residual * SCALE))
                         if changed.rowcount != 1:
                             raise ValueError('단주 정산 수령자의 잔액 한도를 확인해주세요.')
                 conn.execute('DELETE FROM user_assets WHERE asset_code=?', (absorbed_code,))
@@ -768,7 +768,7 @@ class CorporateActionsManager:
 
     def _merge_nonmarket(self, conn, actor, a, b, now):
         """Savings/debt offers may merge once all original contracts are closed."""
-        for table in ('saving', 'liability', 'treasury_bond_products', 'fx_products'):
+        for table in ('saving', 'liability', 'treasury_bond_products', 'currency_saving_products'):
             first = conn.execute(f'SELECT * FROM {table} WHERE product_code=?', (a,)).fetchone()
             second = conn.execute(f'SELECT * FROM {table} WHERE product_code=?', (b,)).fetchone()
             if not first or not second:
@@ -790,12 +790,12 @@ class CorporateActionsManager:
                 if total > self.MAX_MONEY:
                     raise ValueError('통합 국채 발행 한도를 초과합니다.')
                 conn.execute('UPDATE treasury_bond_products SET total_supply=? WHERE product_code=?', (total, a))
-            if table == 'fx_products':
+            if table == 'currency_saving_products':
                 if first['currency_code'] != second['currency_code']:
                     raise ValueError('같은 통화의 외환통장 상품끼리 통합할 수 있습니다.')
-                for user in conn.execute('SELECT user_id FROM fx_accounts WHERE product_code=?', (b,)).fetchall():
-                    FXManager._settle(conn, user['user_id'], now)
-                conn.execute('UPDATE fx_accounts SET product_code=? WHERE product_code=?', (a, b))
+                for user in conn.execute('SELECT user_id FROM currency_saving_accounts WHERE product_code=?', (b,)).fetchall():
+                    CurrencyExchangeManager._settle(conn, user['user_id'], now)
+                conn.execute('UPDATE currency_saving_accounts SET product_code=? WHERE product_code=?', (a, b))
             conn.execute(f"UPDATE {table} SET status='inactive' WHERE product_code=?", (b,))
             payload = {'survivor': a, 'absorbed': b, 'table': table}
             self._record(conn, 'merger:' + uuid.uuid4().hex, 'product_merger', b, a, payload, now)

@@ -23,6 +23,6 @@ def execute_shared_action(bot, user_id, action, *values):
         if isinstance(parameters, dict):
             return bot.option_mgr.create_and_write(user_id, **parameters)
         return bot.option_mgr.create_and_write(user_id, *parameters)
-    if action == "fx_exchange":
-        return bot.fx_mgr.exchange(user_id, *values)
+    if action == "currency_exchange":
+        return bot.currency_mgr.exchange(user_id, *values)
     raise ValueError(f"지원하지 않는 공통 명령 처리입니다: {action}")

@@ -49,7 +49,7 @@ class FractionalTradingManager:
         elif account and account.startswith('__wallet__:'):
             CurrencyManager.change(conn, user, currency, -units)
         else:
-            changed = conn.execute('UPDATE fx_accounts SET balance_units=balance_units-? WHERE account_number=? AND user_id=? AND currency_code=? AND balance_units>=?',
+            changed = conn.execute("UPDATE accounts SET balance_units=balance_units-? WHERE account_number=? AND user_id=? AND quote_currency=? AND account_type='currency_saving' AND balance_units>=?",
                                    (units, account, str(user), currency, units))
             if changed.rowcount != 1:
                 raise ValueError('외환통장 잔액이 부족합니다.')
@@ -69,10 +69,10 @@ class FractionalTradingManager:
             if not funds or funds[0]*SCALE < units:
                 raise ValueError('매수 예치금이 부족합니다.')
             return funds[1]
-        from managers.fx_manager import FXManager
-        FXManager._user(conn, str(user))
-        FXManager(self.db)._settle(conn, str(user), now)
-        account = conn.execute('SELECT account_number,balance_units FROM fx_accounts WHERE user_id=? AND currency_code=?', (str(user), currency)).fetchone()
+        from managers.currency_exchange_manager import CurrencyExchangeManager
+        CurrencyExchangeManager._user(conn, str(user))
+        CurrencyExchangeManager(self.db)._settle(conn, str(user), now)
+        account = conn.execute("SELECT account_number,balance_units FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'", (str(user), currency)).fetchone()
         if account and account['balance_units'] >= units:
             return account['account_number']
         if CurrencyManager.home(conn, user) == currency:
@@ -140,7 +140,7 @@ class FractionalTradingManager:
                 return False, error
             now = int(time.time())
             with self.db.atomic() as conn:
-                error = MarketSessionManager(self.db).trading_error(conn=conn, now=now)
+                error = MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=code)
                 if error:
                     return False, error
                 asset, _ = self.users._asset_row(conn, code)
@@ -201,7 +201,10 @@ class FractionalTradingManager:
 
     def match(self, conn, order_id, now):
         count, filled, value = 0, 0, 0
-        error = MarketSessionManager(self.db).trading_error(conn=conn, now=now)
+        order = conn.execute('SELECT asset_code FROM market_orders WHERE order_id=?', (order_id,)).fetchone()
+        error = MarketSessionManager(self.db).trading_error(
+            conn=conn, now=now, asset_code=order['asset_code'] if order else None
+        )
         if error:
             return 0, 0, 0
         while True:

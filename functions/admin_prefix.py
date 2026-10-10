@@ -11,7 +11,7 @@ from functions.admin_views import MarketEventModal
 from functions.admin_embeds import admin_embed, admin_response, admin_help_embed
 from functions.shared_actions import execute_shared_action
 from managers.admin_control_manager import ENTITIES, EXAMPLES
-from managers.fx_manager import display_units
+from managers.currency_exchange_manager import display_units
 
 ALIASES = {'주식':'stock','상품등록':'asset','상품':'asset','국채':'bond','회사채':'corporatebond','선물':'future',
            '원자재':'commodity','펀드':'fund','인덱스펀드':'indexfund','옵션':'option','저축':'saving','대출상품':'loan',
@@ -134,6 +134,12 @@ class ActionModal(CheckedModal):
                 '국고':[('국고 현금 설정액 NWX',''),('사유','')],
                 'catalog':[('확인: 기본상품을 입력','')],
                 'lottery':[('다음 회차 설정 JSON','{"ticket_price":1000,"max_tickets":100,"prize_percent":70,"treasury_percent":20}')],
+                '휴장':[('거래소 ID','INZ')],
+                '개장':[('거래소 ID','INZ')],
+                '장일시정지':[('거래소 ID','INZ')],
+                '장재개':[('거래소 ID','INZ')],
+                '서킷브레이커':[('거래소 ID','INZ'),('단계 1 / 2 / 3','1')],
+                '사이드카':[('거래소 ID','INZ')],
             }[command]
         self.fields = [self.field(label,default,not ('비우면' in label or '선택' in label), 'JSON' in label) for label,default in fields]
 
@@ -218,6 +224,9 @@ class ActionModal(CheckedModal):
             return '✅ 기본·외화 상품을 추가했습니다.' if base_added or foreign_added else 'ℹ️ 기본·외화 상품은 이미 추가되어 있습니다.'
         elif c=='lottery':
             return bot.lottery_mgr.configure(self.owner,json.loads(v[0]))
+        elif c in {'휴장','개장','장일시정지','장재개','서킷브레이커','사이드카'}:
+            from managers.admin_commands_manager import AdminCommandsManager
+            return AdminCommandsManager(bot).execute(self.owner,c,' '.join(v))
         elif c in {'매수','매도'}:
             result = execute_shared_action(
                 bot, uid, 'buy' if c=='매수' else 'sell', v[0], v[1], v[2]
@@ -233,10 +242,10 @@ class ActionModal(CheckedModal):
         elif c=='송금':
             result = execute_shared_action(bot, uid, 'transfer', v[0], v[1], v[2])
         elif c=='계좌개설':
-            if bot.db.fx.execute_one("SELECT 1 FROM fx_products WHERE product_code=? AND status='active'",(v[0],)):
+            if bot.db.products.execute_one("SELECT 1 FROM saving WHERE product_code=? AND product_kind='currency_saving' AND status='active'",(v[0],)):
                 if int(v[2])!=0:
                     raise ValueError('외환통장 초기 예치금은 0으로 입력하고 $송금으로 입금해주세요.')
-                result = '✅ 국가 외환통장: '+bot.fx_mgr.open_account(uid,v[0])
+                result = '✅ 국가 외환통장: '+bot.currency_mgr.open_account(uid,v[0])
             else:
                 result = bot.bank_mgr.open_account(uid,v[0],v[1],int(v[2]))
         elif c=='계좌해지':
@@ -260,13 +269,13 @@ class ActionModal(CheckedModal):
         elif c=='국채매수':
             result = bot.treasury_bond_mgr.buy(uid,v[0],int(v[1]))
         elif c=='환전':
-            result = execute_shared_action(bot, uid, 'fx_exchange', *v)
+            result = execute_shared_action(bot, uid, 'currency_exchange', *v)
         elif c=='내외환':
-            result = '\n'.join(f"{r['currency_code']}: {display_units(r['balance_units'])} ({r['value_nwx']:,} NWX)" for r in bot.fx_mgr.accounts(uid)) or '외환통장이 없습니다.'
+            result = '\n'.join(f"{r['currency_code']}: {display_units(r['balance_units'])} ({r['value_nwx']:,} NWX)" for r in bot.currency_mgr.accounts(uid)) or '외환통장이 없습니다.'
         elif c=='환율':
-            result = '\n'.join(f"1 {r['code']} = {r['rate']:,} NWX" for r in bot.fx_mgr.rates())
+            result = '\n'.join(f"1 {r['code']} = {r['rate']:,} NWX" for r in bot.currency_mgr.rates())
         elif c=='국적확인':
-            country,currency=bot.fx_mgr.national_currency(uid)
+            country,currency=bot.currency_mgr.national_currency(uid)
             result=f'국가 국적: {country} · 기본 통화: {currency}'
         elif c=='국채목록':
             result=[dict(r) for r in bot.treasury_bond_mgr.get_active_offerings()]
@@ -353,8 +362,8 @@ class TreasuryAssetsView(discord.ui.View):
         super().__init__(timeout=300)
         self.bot,self.owner,self.info,self.page = bot,str(owner),info,0
         self.category='main'
-        self.sections={'accounts':[],'fx_accounts':[],'stocks':[],'bonds':[],'written':[],'loans':[],'els':[],'preferred_claims':[]}
-        self.labels={'main':'🏛️ 메인','accounts':'🏦 통장','fx_accounts':'💱 외환통장','stocks':'📈 보유 투자상품',
+        self.sections={'accounts':[],'currency_saving_accounts':[],'stocks':[],'bonds':[],'written':[],'loans':[],'els':[],'preferred_claims':[]}
+        self.labels={'main':'🏛️ 메인','accounts':'🏦 통장','currency_saving_accounts':'💱 외환통장','stocks':'📈 보유 투자상품',
                      'bonds':'📜 국채','written':'✍️ 작성 옵션','loans':'💳 대출','els':'🧾 ELS','preferred_claims':'💰 미지급 배당'}
         from functions.wallet_views import els_position_lines,preferred_claim_lines
         self.sections['els']=els_position_lines(info.get('els_positions',[]))
@@ -362,8 +371,8 @@ class TreasuryAssetsView(discord.ui.View):
         self.items = []
         for item in info['accounts']:
             self.sections['accounts'].append((f"통장 · {item['product_name']}",f"{item['number']}\n잔액 {item['balance']:,} NWX"))
-        for item in info.get('fx_accounts',[]):
-            self.sections['fx_accounts'].append((f"외환통장 · {item.get('product_name') or item['product_code']}",
+        for item in info.get('currency_saving_accounts',[]):
+            self.sections['currency_saving_accounts'].append((f"외환통장 · {item.get('product_name') or item['product_code']}",
                 f"{item['account_number']}\n잔액 {display_units(item['balance_units'])} {item['currency_code']} · 평가 {item['value_nwx']:,} NWX"))
         for item in info['stocks']:
             note=f"옵션담보 잠금 · 매도 불가 · {item['collateral_contract_code']}" if item.get('is_collateral') else f"매도 주문 잠금 {item.get('sell_reserved_qty',0):,}"
@@ -401,7 +410,7 @@ class TreasuryAssetsView(discord.ui.View):
         embed = discord.Embed(title=f'🏛️ 국가 내지갑 · {self.labels[self.category]}',color=discord.Color.gold())
         embed.description = f"국적: **{str(info.get('nationality','미설정'))[:100]}** · 기본 통화: **{info.get('national_currency','NWX')}**"
         if self.category=='main':
-            for label,key in [('현금','cash'),('통장 잔액','account_total'),('외환 평가액','fx_total'),
+            for label,key in [('현금','cash'),('통장 잔액','account_total'),('외환 평가액','currency_total'),
                     ('투자자산 평가액','stock_total'),('국채 평가액','bond_total'),('매수 주문 예치금','order_reserved_total'),
                     ('ELS 청약·보유 원금','els_total'),('미지급 배당 명목액','preferred_claim_total'),
                     ('풋 옵션 현금담보','option_collateral_cash'),('옵션 작성 의무 평가','option_short_liability'),

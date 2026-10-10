@@ -18,12 +18,15 @@ class OrderBookManager:
         self.futures_manager = None
 
     def place_limit_order(self, user_id, asset_code, side, quantity, limit_price):
-        error = MarketSessionManager(self.db).trading_error()
-        if error:
-            return False, error
         user_id = str(user_id)
         asset_code = str(asset_code).strip()
         side = str(side).casefold()
+        # Resolve the symbol before touching funds: each exchange can halt
+        # independently.
+        with self.db.atomic(("system",)) as conn:
+            error = MarketSessionManager(self.db).trading_error(conn=conn, asset_code=asset_code)
+        if error:
+            return False, error
         product = self.db.products.execute_one('SELECT product_type,face_value FROM investment WHERE product_code=?',(asset_code,))
         if product and product['product_type']=='els':
             if side!='buy':return False,'❌ ELS는 모집 중 액면 청약만 가능합니다. 중도 매도·환매는 지원하지 않습니다.'
@@ -63,7 +66,7 @@ class OrderBookManager:
         now = int(time.time())
         try:
             with self.db.atomic(("users", "accounts", "assets", "product", "company", "tax")) as conn:
-                error = MarketSessionManager(self.db).trading_error(conn=conn, now=now)
+                error = MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=asset_code)
                 if error:
                     return False, error
                 asset, source = self.user_manager._asset_row(conn, asset_code)
@@ -195,7 +198,10 @@ class OrderBookManager:
             return False, f"❌ 주문 처리 중 오류가 발생했습니다: {exc}"
 
     def _match_incoming_order(self, conn, incoming_order_id, now):
-        if MarketSessionManager(self.db).trading_error(conn=conn, now=now):
+        order = conn.execute("SELECT asset_code FROM market_orders WHERE order_id=?", (incoming_order_id,)).fetchone()
+        if not order or MarketSessionManager(self.db).trading_error(
+            conn=conn, now=now, asset_code=order["asset_code"]
+        ):
             return 0, 0, 0
         fill_count = 0
         filled_quantity = 0
@@ -514,10 +520,10 @@ class OrderBookManager:
                 (amount, user_id),
             )
         else:
-            foreign = conn.execute('SELECT currency_code FROM fx_accounts WHERE account_number=? AND user_id=?',(account_number,str(user_id))).fetchone()
+            foreign = conn.execute("SELECT quote_currency AS currency_code FROM accounts WHERE account_number=? AND user_id=? AND account_type='currency_saving'",(account_number,str(user_id))).fetchone()
             if foreign:
                 from managers.foreign_securities_manager import ForeignSecuritiesManager
-                from managers.fx_manager import SCALE
+                from managers.currency_exchange_manager import SCALE
                 ForeignSecuritiesManager.credit_units(conn,user_id,foreign['currency_code'],amount*SCALE)
                 return
             cursor = conn.execute(

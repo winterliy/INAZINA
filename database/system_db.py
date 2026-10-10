@@ -146,6 +146,34 @@ class SystemDB(DBManager):
         )""")
         self.execute("INSERT OR IGNORE INTO market_session "
                      "(session_id, status, updated_epoch) VALUES (1, 'open', 0)")
+        # ``market_session`` was the former, global switch.  Keep it for old
+        # installations, but live trading reads this per-exchange table.
+        self.execute("""CREATE TABLE IF NOT EXISTS market_exchange_sessions (
+            exchange_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL CHECK(status IN ('open', 'closed', 'paused')),
+            reason TEXT NOT NULL DEFAULT '',
+            halt_started_epoch INTEGER,
+            resume_epoch INTEGER,
+            circuit_stage INTEGER CHECK(circuit_stage IN (1, 2, 3)),
+            updated_epoch INTEGER NOT NULL,
+            trading_halted INTEGER NOT NULL DEFAULT 0 CHECK(trading_halted IN (0, 1))
+        )""")
+        self.execute("""INSERT OR IGNORE INTO market_exchange_sessions
+            (exchange_id,status,reason,halt_started_epoch,resume_epoch,circuit_stage,updated_epoch,trading_halted)
+            SELECT exchange_id, s.status, s.reason, s.halt_started_epoch,
+                   s.resume_epoch, s.circuit_stage, s.updated_epoch,
+                   CASE WHEN s.status='open' THEN 0 ELSE 1 END
+            FROM (
+                SELECT DISTINCT TRIM(exchange_id) AS exchange_id FROM market_assets
+                WHERE exchange_id IS NOT NULL AND TRIM(exchange_id) <> ''
+                UNION SELECT DISTINCT TRIM(exchange_id) FROM company
+                WHERE exchange_id IS NOT NULL AND TRIM(exchange_id) <> ''
+                UNION SELECT DISTINCT TRIM(exchange_id) FROM investment
+                WHERE exchange_id IS NOT NULL AND TRIM(exchange_id) <> ''
+                UNION SELECT DISTINCT TRIM(exchange_id) FROM treasury_bond_products
+                WHERE exchange_id IS NOT NULL AND TRIM(exchange_id) <> ''
+                UNION SELECT 'FX'
+            ) exchanges CROSS JOIN market_session s WHERE s.session_id=1""")
         self.execute("""CREATE TABLE IF NOT EXISTS market_event_targets (
             event_id INTEGER NOT NULL,
             asset_code TEXT NOT NULL,

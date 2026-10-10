@@ -12,7 +12,7 @@ from managers.option_manager import OptionManager
 from managers.rate_manager import RateManager
 from managers.investment_manager import InvestmentManager
 from managers.futures_manager import FuturesManager
-from managers.fx_manager import FXManager
+from managers.currency_exchange_manager import CurrencyExchangeManager
 from managers.admin_control_manager import AdminControlManager
 from managers.corporate_actions_manager import CorporateActionsManager
 from managers.els_manager import ELSManager
@@ -46,7 +46,7 @@ class InazinaBot(discord.Client):
         self.rate_mgr = RateManager(self.db)
         self.investment_mgr = InvestmentManager(self.db, self.user_mgr)
         self.futures_mgr = FuturesManager(self.db, self.user_mgr)
-        self.fx_mgr = FXManager(self.db)
+        self.currency_mgr = CurrencyExchangeManager(self.db)
         from managers.lottery_manager import LotteryManager
         self.lottery_mgr = LotteryManager(self.db)
         self.order_book.futures_manager = self.futures_mgr
