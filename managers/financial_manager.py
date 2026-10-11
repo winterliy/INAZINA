@@ -132,7 +132,7 @@ class FinancialManager:
             FROM preferred_dividend_claims WHERE issuer_code=? AND funding_source='issuer'
             AND status IN ('unpaid','partial') GROUP BY quote_currency""",(issuer,))
         for row in arrears:lines.append(('dividend_payable',-cls.converted(conn,row['amount'],row['currency'],currency,places)))
-        els=conn.execute('SELECT COALESCE(SUM(principal_amount),0) FROM els_reserves WHERE issuer_code=?',(issuer,)).fetchone()[0]
+        els=conn.execute('SELECT COALESCE(SUM(principal_amount),0) FROM els_products WHERE issuer_code=?',(issuer,)).fetchone()[0]
         lines.append(('els_liability',-cls.converted(conn,els,'NWX',currency,places)))
         lines.append(('opening_adjustment',-sum(v for _,v in lines)))
         cls.record_shares(conn,issuer,now)

@@ -373,10 +373,10 @@ class CorporateActionsManager:
 
     @classmethod
     def _els_encumbered(cls, conn, codes, issuer=None):
-        if not cls._has_table(conn,'els_terms'):
+        if not cls._has_table(conn,'els_products'):
             return False
         placeholders = ','.join('?' for _ in codes)
-        return bool(conn.execute(f"SELECT 1 FROM els_terms t LEFT JOIN els_underlyings u ON u.product_code=t.product_code WHERE t.state IN ('subscription','active','observation_pending','redemption_pending') AND (t.issuer_code IN ({placeholders}) OR u.underlying_code IN ({placeholders})) LIMIT 1",tuple(codes)+tuple(codes)).fetchone())
+        return bool(conn.execute(f"SELECT 1 FROM els_products t LEFT JOIN els_underlyings u ON u.product_code=t.product_code WHERE t.state IN ('subscription','active','observation_pending','redemption_pending') AND (t.issuer_code IN ({placeholders}) OR u.underlying_code IN ({placeholders})) LIMIT 1",tuple(codes)+tuple(codes)).fetchone())
 
     def liquidate(self, actor, code, operation_key=None, now=None):
         """One atomic waterfall: debt, fixed arrears, preference capital, residual equity."""

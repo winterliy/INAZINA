@@ -94,9 +94,6 @@ def migrate(root):
                 escaped = name.replace('"', '""')
                 if dest.execute(f'SELECT COUNT(*) FROM "{escaped}"').fetchone()[0] != expected:
                     raise RuntimeError(f"DB 통합 건수 검증 실패: {name}")
-            dest.execute("CREATE TABLE migration_manifest (source TEXT PRIMARY KEY, imported_at TEXT "
-                         "NOT NULL DEFAULT CURRENT_TIMESTAMP)")
-            dest.executemany("INSERT INTO migration_manifest(source) VALUES (?)", [(a,) for a in attached])
             if dest.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise RuntimeError("DB 무결성 검증 실패")
             dest.commit()

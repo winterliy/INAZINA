@@ -148,7 +148,7 @@ class ELSManager:
             "manager,exchange_id,status,is_fixed,issuer_code,face_value,annual_rate,quote_currency) "
             "VALUES (?,?,'els',?,?,?,?,?,'active',1,?,?,?,'NWX')",
             (code, name, supply, face, maturity, str(actor), exchange, issuer, face, coupon))
-        conn.execute("INSERT INTO els_terms(product_code,issuer_code,face_value,annual_coupon,maturity_days,"
+        conn.execute("INSERT INTO els_products(product_code,issuer_code,face_value,annual_coupon,maturity_days,"
             "maturity_level,knock_in_level,subscription_end_epoch,created_epoch) VALUES (?,?,?,?,?,?,?,?,?)",
             (code, issuer, face, coupon, maturity, maturity_level, knock_in, now + subscription * DAY, now))
         conn.executemany("INSERT INTO els_underlyings(product_code,underlying_code,underlying_kind) VALUES (?,?,?)",
@@ -157,7 +157,6 @@ class ELSManager:
         conditions.append((code, len(days) + 1, maturity, maturity_level, 1))
         conn.executemany("INSERT INTO els_observations(product_code,sequence,observation_day,redemption_level,is_maturity) "
             "VALUES (?,?,?,?,?)", conditions)
-        conn.execute("INSERT INTO els_reserves(product_code,issuer_code) VALUES (?,?)", (code, issuer))
         return f"✅ ELS `{code}`를 등록했습니다. 액면 {face:,} NWX · 연 쿠폰 {coupon:g}% · 모집 {subscription}일"
 
     @staticmethod
@@ -197,7 +196,7 @@ class ELSManager:
                 error = MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=code)
                 if error:
                     return False, error
-                terms = conn.execute("SELECT t.*,i.total_supply FROM els_terms t JOIN investment i USING(product_code) "
+                terms = conn.execute("SELECT t.*,i.total_supply FROM els_products t JOIN investment i USING(product_code) "
                     "WHERE t.product_code=? AND i.status='active'", (code,)).fetchone()
                 if not terms or terms["state"] != "subscription" or now >= terms["subscription_end_epoch"]:
                     return False, "❌ 모집 중인 ELS만 청약할 수 있습니다."
@@ -220,7 +219,7 @@ class ELSManager:
                 if not self.users._debit_source(conn, user_id, account_number, principal):
                     raise ValueError("청약금이 부족하거나 본인 계좌가 아닙니다.")
                 self._reserve_coupon(conn, terms["issuer_code"], coupon, principal + coupon)
-                changed = conn.execute("UPDATE els_reserves SET principal_amount=principal_amount+?,coupon_amount=coupon_amount+?,"
+                changed = conn.execute("UPDATE els_products SET principal_amount=principal_amount+?,coupon_amount=coupon_amount+?,"
                     "locked_amount=locked_amount+? WHERE product_code=? AND locked_amount+?<=?",
                     (principal, coupon, principal + coupon, code, principal + coupon, MAX_MONEY))
                 if changed.rowcount != 1:
@@ -254,7 +253,7 @@ class ELSManager:
         now = int(time.time() if now is None else now)
         if conn is not None:
             self._require_admin(conn, actor)
-            terms = conn.execute("SELECT * FROM els_terms WHERE product_code=?", (code,)).fetchone()
+            terms = conn.execute("SELECT * FROM els_products WHERE product_code=?", (code,)).fetchone()
             if not terms or terms["state"] != "subscription":
                 return False, "❌ 발행 전 모집 중인 ELS만 취소할 수 있습니다."
             self._cancel(conn, terms, now)
@@ -276,21 +275,20 @@ class ELSManager:
 
     def _cancel(self, conn, terms, now):
         code = terms["product_code"]
-        reserve = conn.execute("SELECT * FROM els_reserves WHERE product_code=?", (code,)).fetchone()
+        reserve = conn.execute("SELECT * FROM els_products WHERE product_code=?", (code,)).fetchone()
         for subscription in conn.execute("SELECT * FROM els_subscriptions WHERE product_code=? AND status='subscribed'", (code,)).fetchall():
             self._safe_credit(conn, subscription["user_id"], None, subscription["principal"])
         self._release_reserve(conn, terms["issuer_code"], reserve["locked_amount"], reserve["coupon_amount"])
         conn.execute("UPDATE els_subscriptions SET status='cancelled' WHERE product_code=?", (code,))
         conn.execute("DELETE FROM user_assets WHERE asset_code=?", (code,))
-        conn.execute("UPDATE els_reserves SET locked_amount=0,principal_amount=0,coupon_amount=0 WHERE product_code=?", (code,))
-        conn.execute("UPDATE els_terms SET state='cancelled',settled_epoch=? WHERE product_code=?", (now, code))
+        conn.execute("UPDATE els_products SET locked_amount=0,principal_amount=0,coupon_amount=0,state='cancelled',settled_epoch=? WHERE product_code=?", (now, code))
         conn.execute("UPDATE investment SET status='cancelled' WHERE product_code=?", (code,))
 
     def observe(self, conn, now, prices=None):
         """Record only real price ticks; never reconstruct a missing historical path."""
         now = int(now)
         recorded = []
-        for terms in conn.execute("SELECT * FROM els_terms WHERE state IN ('subscription','active','observation_pending')").fetchall():
+        for terms in conn.execute("SELECT * FROM els_products WHERE state IN ('subscription','active','observation_pending')").fetchall():
             code = terms["product_code"]
             if MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=code):
                 continue
@@ -307,7 +305,7 @@ class ELSManager:
             if terms["issue_epoch"] is None:
                 if not values or any(value is None for value in values):
                     continue
-                conn.execute("UPDATE els_terms SET issue_epoch=?,maturity_epoch=?,state='active' WHERE product_code=?",
+                conn.execute("UPDATE els_products SET issue_epoch=?,maturity_epoch=?,state='active' WHERE product_code=?",
                     (now, now + terms["maturity_days"] * DAY, code))
                 conn.execute("UPDATE investment SET maturity_epoch=? WHERE product_code=?", (now + terms["maturity_days"] * DAY, code))
                 conn.execute("UPDATE els_observations SET scheduled_epoch=?+observation_day*? WHERE product_code=?", (now, DAY, code))
@@ -330,7 +328,7 @@ class ELSManager:
                     "WHERE product_code=? AND underlying_code=?",
                     (value, now, ratio, ratio, int(hit), int(hit), now, code, row["underlying_code"]))
             missing = not ratios or any(ratio is None for ratio in ratios)
-            conn.execute("UPDATE els_terms SET knocked_in=?,state=? WHERE product_code=?",
+            conn.execute("UPDATE els_products SET knocked_in=?,state=? WHERE product_code=?",
                 (int(knocked), "observation_pending" if missing else "active", code))
             if missing:
                 continue
@@ -350,7 +348,7 @@ class ELSManager:
                 "WHERE product_code=? AND sequence=?", (now, json.dumps(snapshot, ensure_ascii=False), ratio, outcome, code, observation["sequence"]))
             recorded.append(dict(product_code=code, kind=outcome, sequence=observation["sequence"], ratio=ratio))
             if outcome in {"redeem", "loss"}:
-                conn.execute("UPDATE els_terms SET state='redemption_pending',final_ratio=?,final_sequence=?,settlement_kind=? WHERE product_code=?",
+                conn.execute("UPDATE els_products SET state='redemption_pending',final_ratio=?,final_sequence=?,settlement_kind=? WHERE product_code=?",
                     (ratio, observation["sequence"], "maturity_loss" if outcome == "loss" else "maturity" if observation["is_maturity"] else "early", code))
         return recorded
 
@@ -359,11 +357,11 @@ class ELSManager:
         now = int(time.time() if now is None else now)
         notifications = []
         self.last_settlement_errors = []
-        codes = self.db.products.execute("SELECT product_code FROM els_terms WHERE state='redemption_pending'")
+        codes = self.db.products.execute("SELECT product_code FROM els_products WHERE state='redemption_pending'")
         for item in codes:
             try:
                 with self.db.atomic() as conn:
-                    terms = conn.execute("SELECT * FROM els_terms WHERE product_code=?", (item["product_code"],)).fetchone()
+                    terms = conn.execute("SELECT * FROM els_products WHERE product_code=?", (item["product_code"],)).fetchone()
                     if terms["state"] != "redemption_pending":
                         continue
                     observation = conn.execute("SELECT * FROM els_observations WHERE product_code=? AND sequence=?",
@@ -380,7 +378,7 @@ class ELSManager:
 
     def _settle(self, conn, terms, observation, now):
         code = terms["product_code"]
-        reserve = conn.execute("SELECT * FROM els_reserves WHERE product_code=?", (code,)).fetchone()
+        reserve = conn.execute("SELECT * FROM els_products WHERE product_code=?", (code,)).fetchone()
         subscriptions = conn.execute("SELECT * FROM els_subscriptions WHERE product_code=? AND status='issued' ORDER BY subscription_id", (code,)).fetchall()
         payments = []
         for subscription in subscriptions:
@@ -404,17 +402,17 @@ class ELSManager:
             notifications.append(dict(user_id=subscription["user_id"], product_code=code, net=net, gross=gross, tax=tax,
                                       reason=f"els_{terms['settlement_kind']}"))
         self._release_reserve(conn, terms["issuer_code"], reserve["locked_amount"], reserve["locked_amount"] - gross_total)
-        conn.execute("UPDATE els_reserves SET locked_amount=0,principal_amount=0,coupon_amount=0 WHERE product_code=?", (code,))
+        conn.execute("UPDATE els_products SET locked_amount=0,principal_amount=0,coupon_amount=0 WHERE product_code=?", (code,))
         conn.execute("DELETE FROM user_assets WHERE asset_code=?", (code,))
         conn.execute("UPDATE investment SET status='redeemed' WHERE product_code=?", (code,))
-        conn.execute("UPDATE els_terms SET state='redeemed',settled_epoch=? WHERE product_code=?", (now, code))
+        conn.execute("UPDATE els_products SET state='redeemed',settled_epoch=? WHERE product_code=?", (now, code))
         return notifications
 
     def get_details(self, code, user_id=None):
         # Details are used by wallet and catalogue views; they do not mutate
         # settlement state, so keep them off SQLite's single writer.
         with self.db.readonly() as conn:
-            row = conn.execute("SELECT t.*,i.name,i.total_supply FROM els_terms t JOIN investment i USING(product_code) WHERE product_code=?", (code,)).fetchone()
+            row = conn.execute("SELECT t.*,i.name,i.total_supply FROM els_products t JOIN investment i USING(product_code) WHERE product_code=?", (code,)).fetchone()
             if not row:
                 return None
             details = dict(row)
@@ -448,10 +446,10 @@ class ELSManager:
 
     @staticmethod
     def ensure_unreferenced(conn, code):
-        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='els_terms'").fetchone()
+        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='els_products'").fetchone()
         if not exists:
             return
-        linked = conn.execute("SELECT t.product_code FROM els_terms t LEFT JOIN els_underlyings u USING(product_code) "
+        linked = conn.execute("SELECT t.product_code FROM els_products t LEFT JOIN els_underlyings u USING(product_code) "
             "WHERE t.state IN ('subscription','active','observation_pending','redemption_pending') "
             "AND (t.issuer_code=? OR u.underlying_code=?) LIMIT 1", (code, code)).fetchone()
         if linked:
@@ -462,7 +460,7 @@ class ELSManager:
     @staticmethod
     def index_removal_blocked(conn, codes):
         """Would removing these companies eliminate a live ELS index basis?"""
-        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='els_terms'").fetchone()
+        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='els_products'").fetchone()
         if not exists:
             return False
         codes = [codes] if isinstance(codes, str) else list(codes)
@@ -472,7 +470,7 @@ class ELSManager:
         exchanges = conn.execute(f"SELECT DISTINCT exchange_id FROM company WHERE company_code IN ({placeholders})", codes).fetchall()
         for exchange in exchanges:
             index_code = INDEX_PREFIX + str(exchange['exchange_id'] or '')
-            linked = conn.execute("SELECT 1 FROM els_terms t JOIN els_underlyings u USING(product_code) "
+            linked = conn.execute("SELECT 1 FROM els_products t JOIN els_underlyings u USING(product_code) "
                 "WHERE t.state IN ('subscription','active','observation_pending','redemption_pending') "
                 "AND u.underlying_code=? LIMIT 1", (index_code,)).fetchone()
             if not linked:

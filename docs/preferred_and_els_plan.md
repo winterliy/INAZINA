@@ -100,4 +100,4 @@ $ELS취소 E1
 - `/내지갑`, `$내지갑` **ELS**: 보유 좌수·인수 원금·다음 평가·낙인 표시. 인수 원금은 거래 가능한 NAV가 아니다.
 - `/그래프 종목:E1`: 기초 선택 후 해당 주식·지수와 최초기준가·다음 상환·낙인 기준선을 표시. 모집 중 미확정 기준선은 표시하지 않는다.
 
-매일 차트 movement 기록을 정리해도 `els_terms`, `els_underlyings`, `els_observations`, `els_subscriptions`, `els_reserves`, `els_settlements`는 유지한다. 재시작 후에도 기준가·낙인·평가·정산 이력이 남는다. 공통 상품 행은 `investment.product_type='els'`다.
+매일 차트 movement 기록을 정리해도 `els_products`, `els_underlyings`, `els_observations`, `els_subscriptions`, `els_settlements`는 유지한다. 재시작 후에도 발행조건·준비금·기준가·낙인·평가·정산 이력이 남는다. 공통 상품 행은 `investment.product_type='els'`다.

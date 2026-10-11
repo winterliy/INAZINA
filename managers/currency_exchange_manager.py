@@ -91,9 +91,9 @@ class CurrencyExchangeManager:
                 raise ValueError(halt)
             self._user(conn, user_id)
             home = CurrencyManager.home(conn, user_id)
-            CurrencyManager.validate_units(conn, units, source)
             if source == home and units % SCALE:
-                raise ValueError(f"{home} 국적 통화 현금은 정수 금액만 사용할 수 있습니다.")
+                raise ValueError(f"{home} 국적 통화 현금은 정수 {home} 금액만 사용할 수 있습니다.")
+            CurrencyManager.validate_units(conn, units, source)
             self._settle(conn, user_id, now)
             fee_rate = Decimal(str(conn.execute("SELECT value FROM settings WHERE key='currency_exchange_fee_percent'").fetchone()[0]))
             if not fee_rate.is_finite() or not 0 <= fee_rate <= 100:
@@ -164,9 +164,9 @@ class CurrencyExchangeManager:
             src,dst = endpoint(source_account,sender),endpoint(recipient)
             if src[:4]==dst[:4]:
                 raise ValueError('같은 계좌로 송금할 수 없습니다.')
-            CurrencyManager.validate_units(conn,units,src[5])
             if src[6]==SCALE and units%SCALE:
-                raise ValueError(f'{src[5]} 국적 통화는 정수 금액만 사용할 수 있습니다.')
+                raise ValueError(f'{src[5]} 국적 통화는 정수 {src[5]} 금액만 사용할 수 있습니다.')
+            CurrencyManager.validate_units(conn,units,src[5])
             self._settle(conn,sender,now)
             if dst[4]!=sender:
                 self._settle(conn,dst[4],now)
@@ -188,10 +188,37 @@ class CurrencyExchangeManager:
             if not 1<=output<=MAX_UNITS:
                 raise ValueError('환전 결과가 최소 단위 미만이거나 한도를 초과합니다.')
             debit,credit = units//src[6],output//dst[6]
-            if src[0]=='accounts' and src[1]=='balance':
-                debited = UserManager._debit_source(conn,sender,src[3],debit)
+            debited_sources = []
+            if src[1] in {'cash','balance'}:
+                preferred = None if src[0]=='users' else src[3]
+                candidates = [(None,int(conn.execute(
+                    "SELECT cash FROM users WHERE user_id=?",(sender,)
+                ).fetchone()[0] or 0))]
+                candidates += [(str(row['account_number']),int(row['balance'] or 0)) for row in conn.execute(
+                    "SELECT account_number,balance FROM accounts WHERE user_id=? "
+                    "AND account_type IN ('saving','loan_payout')",(sender,)).fetchall()]
+                if dst[4]==sender:
+                    destination_source = None if dst[0]=='users' else dst[3]
+                    candidates = [item for item in candidates if item[0]!=destination_source]
+                candidates.sort(key=lambda item:(item[0]!=preferred,item[0] is None,-item[1]))
+                if sum(max(0,balance) for _,balance in candidates) < debit:
+                    debited = False
+                else:
+                    remaining = debit
+                    for account_number,balance in candidates:
+                        take = min(max(0,balance),remaining)
+                        if take and not UserManager._debit_source(conn,sender,account_number,take):
+                            raise RuntimeError('출금 잔액이 변경되어 송금을 취소했습니다.')
+                        if take:
+                            debited_sources.append(account_number or '지갑')
+                            remaining -= take
+                        if not remaining:
+                            break
+                    debited = remaining == 0
             else:
                 debited = conn.execute(f'UPDATE {src[0]} SET {src[1]}={src[1]}-? WHERE {src[2]}=? AND {src[1]}>=?',(debit,src[3],debit)).rowcount==1
+                if debited:
+                    debited_sources.append(src[3])
             if not debited:
                 raise ValueError('출금 잔액이 부족합니다.')
             if dst[0]=='accounts' and dst[1]=='balance':
@@ -204,6 +231,7 @@ class CurrencyExchangeManager:
             if changed.rowcount!=1:
                 raise ValueError('국고 잔액 한도를 초과했습니다.')
             destination_label = '국고' if dst[4] == TREASURY_USER_ID else recipient
+            sources_label = ', '.join(debited_sources)
             return (f'✅ 송금 {display_units(units)} {src[5]} → '
                     f'{display_units(output)} {dst[5]} · 받는 곳 {destination_label} · '
-                    f'환전 수수료 {fee:,} NWX')
+                    f'출금 {sources_label} · 환전 수수료 {fee:,} NWX')

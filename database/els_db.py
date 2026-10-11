@@ -9,7 +9,7 @@ class ELSDB(DBManager):
         self._init_db()
 
     def _init_db(self):
-        self.execute("""CREATE TABLE IF NOT EXISTS els_terms (
+        self.execute("""CREATE TABLE IF NOT EXISTS els_products (
             product_code TEXT PRIMARY KEY, issuer_code TEXT NOT NULL,
             face_value INTEGER NOT NULL CHECK(face_value > 0),
             annual_coupon REAL NOT NULL CHECK(annual_coupon >= 0 AND annual_coupon <= 100),
@@ -22,7 +22,10 @@ class ELSDB(DBManager):
                 ('subscription','active','observation_pending','redemption_pending','redeemed','cancelled')),
             knocked_in INTEGER NOT NULL DEFAULT 0 CHECK(knocked_in IN (0,1)),
             final_ratio REAL, final_sequence INTEGER, settlement_kind TEXT,
-            settled_epoch INTEGER)""")
+            settled_epoch INTEGER,
+            principal_amount INTEGER NOT NULL DEFAULT 0 CHECK(principal_amount >= 0),
+            coupon_amount INTEGER NOT NULL DEFAULT 0 CHECK(coupon_amount >= 0),
+            locked_amount INTEGER NOT NULL DEFAULT 0 CHECK(locked_amount >= 0))""")
         self.execute("""CREATE TABLE IF NOT EXISTS els_underlyings (
             product_code TEXT NOT NULL, underlying_code TEXT NOT NULL,
             underlying_kind TEXT NOT NULL CHECK(underlying_kind IN ('stock','index')),
@@ -49,18 +52,14 @@ class ELSDB(DBManager):
             created_epoch INTEGER NOT NULL, confirmed_epoch INTEGER,
             status TEXT NOT NULL DEFAULT 'subscribed'
                 CHECK(status IN ('subscribed','issued','settled','cancelled')))""")
-        self.execute("""CREATE TABLE IF NOT EXISTS els_reserves (
-            product_code TEXT PRIMARY KEY, issuer_code TEXT NOT NULL,
-            principal_amount INTEGER NOT NULL DEFAULT 0 CHECK(principal_amount >= 0),
-            coupon_amount INTEGER NOT NULL DEFAULT 0 CHECK(coupon_amount >= 0),
-            locked_amount INTEGER NOT NULL DEFAULT 0 CHECK(locked_amount >= 0))""")
-        self.execute("CREATE INDEX IF NOT EXISTS idx_els_terms_state ON els_terms(state, subscription_end_epoch)")
+        self._migrate_legacy_products()
+        self.execute("CREATE INDEX IF NOT EXISTS idx_els_products_state ON els_products(state, subscription_end_epoch)")
         self.execute("CREATE INDEX IF NOT EXISTS idx_els_subscriptions_user ON els_subscriptions(user_id, product_code, status)")
         self.execute("CREATE INDEX IF NOT EXISTS idx_els_underlying_code ON els_underlyings(underlying_code, product_code)")
         # A browser edit must not silently change the contract already paid for.
-        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_els_terms_immutable
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_els_products_immutable
             BEFORE UPDATE OF issuer_code, face_value, annual_coupon, maturity_days,
-                maturity_level, knock_in_level, subscription_end_epoch ON els_terms
+                maturity_level, knock_in_level, subscription_end_epoch ON els_products
             WHEN EXISTS(SELECT 1 FROM els_subscriptions s WHERE s.product_code=OLD.product_code)
             BEGIN SELECT RAISE(ABORT, '청약 이후 ELS 발행조건을 변경할 수 없습니다.'); END""")
         self.execute("""CREATE TRIGGER IF NOT EXISTS trg_els_observation_terms_immutable
@@ -98,3 +97,40 @@ class ELSDB(DBManager):
                 AND (NEW.product_type IS NOT OLD.product_type OR NEW.unit_price IS NOT OLD.unit_price
                     OR NEW.is_fixed IS NOT OLD.is_fixed OR NEW.product_code IS NOT OLD.product_code)
             BEGIN SELECT RAISE(ABORT, '청약 이후 ELS 코드·유형·액면가격을 변경할 수 없습니다.'); END""")
+
+    def _migrate_legacy_products(self):
+        """Merge the former one-to-one terms and reserve rows without data loss."""
+        terms = self.execute_one(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='els_terms'"
+        )
+        reserves = self.execute_one(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='els_reserves'"
+        )
+        if not terms and not reserves:
+            return
+        if not terms:
+            raise RuntimeError('els_reserves를 연결할 els_terms가 없습니다.')
+        if reserves:
+            mismatch = self.execute_one("""SELECT 1 FROM els_reserves r
+                LEFT JOIN els_terms t USING(product_code)
+                WHERE t.product_code IS NULL OR t.issuer_code<>r.issuer_code LIMIT 1""")
+            if mismatch:
+                raise RuntimeError('ELS 조건과 준비금의 상품 코드 또는 발행자가 일치하지 않습니다.')
+        with self.lock, self.conn:
+            reserve_join = ("LEFT JOIN els_reserves r USING(product_code)" if reserves else
+                            "LEFT JOIN (SELECT NULL product_code,NULL principal_amount,"
+                            "NULL coupon_amount,NULL locked_amount) r USING(product_code)")
+            self.conn.execute(f"""INSERT OR REPLACE INTO els_products(
+                product_code,issuer_code,face_value,annual_coupon,maturity_days,maturity_level,
+                knock_in_level,subscription_end_epoch,created_epoch,issue_epoch,maturity_epoch,
+                state,knocked_in,final_ratio,final_sequence,settlement_kind,settled_epoch,
+                principal_amount,coupon_amount,locked_amount)
+                SELECT t.product_code,t.issuer_code,t.face_value,t.annual_coupon,t.maturity_days,
+                    t.maturity_level,t.knock_in_level,t.subscription_end_epoch,t.created_epoch,
+                    t.issue_epoch,t.maturity_epoch,t.state,t.knocked_in,t.final_ratio,
+                    t.final_sequence,t.settlement_kind,t.settled_epoch,
+                    COALESCE(r.principal_amount,0),COALESCE(r.coupon_amount,0),
+                    COALESCE(r.locked_amount,0)
+                FROM els_terms t {reserve_join}""")
+            self.conn.execute("DROP TABLE IF EXISTS els_reserves")
+            self.conn.execute("DROP TABLE els_terms")

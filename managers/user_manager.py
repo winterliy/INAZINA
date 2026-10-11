@@ -1,6 +1,7 @@
 import random
 import math
 import time
+from decimal import Decimal
 from datetime import datetime, timezone
 from database import DatabaseManager
 from database.user_db import TREASURY_USER_ID

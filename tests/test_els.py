@@ -25,7 +25,8 @@ class ELSTests(unittest.TestCase):
         self.db.users.create_user('citizen', '시민', '낙원', 1000000)
         self.db.users.update_cash(TREASURY_USER_ID, 10000000)
         self.db.companies.create_company('CO', '회사', '게임', 100000, 1000, 100, 'admin', 'INZ')
-        self.db.assets.execute("INSERT INTO market_exchange_indices(exchange_id,index_value,updated_epoch) VALUES ('INZ',1000,0)")
+        self.db.assets.execute("INSERT INTO market_exchanges(exchange_id,index_value,status,updated_epoch) "
+                               "VALUES ('INZ',1000,'open',0)")
         self.manager = ELSManager(self.db)
         self.fields = dict(name='테스트 ELS', face_value=10000, total_supply=20, underlyings='CO',
             annual_coupon=12, maturity_days=180, observation_days='30,60,90', redemption_levels='90,85,80',
@@ -52,7 +53,7 @@ class ELSTests(unittest.TestCase):
 
     def total_money(self):
         return (self.db.users.execute_one('SELECT SUM(cash) FROM users')[0]
-            + self.db.products.execute_one('SELECT SUM(locked_amount) FROM els_reserves')[0]
+            + self.db.products.execute_one('SELECT SUM(locked_amount) FROM els_products')[0]
             + self.db.products.execute_one('SELECT COALESCE(SUM(balance),0) FROM issuer_cash_accounts')[0])
 
     def test_early_redemption_threshold_tax_conservation_and_idempotency(self):
@@ -215,7 +216,7 @@ class ELSTests(unittest.TestCase):
             self.manager.create('admin', 'ELS2', fields)
         self.assertTrue(self.manager.subscribe('citizen', 'ELS2', 1, now=1001)[0])
         with self.assertRaises(sqlite3.IntegrityError):
-            self.db.products.execute("UPDATE els_terms SET annual_coupon=50 WHERE product_code='ELS2'")
+            self.db.products.execute("UPDATE els_products SET annual_coupon=50 WHERE product_code='ELS2'")
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.products.execute("DELETE FROM els_underlyings WHERE product_code='ELS2'")
         self.tick(self.issue_epoch)
