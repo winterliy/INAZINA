@@ -158,8 +158,12 @@ class SystemDB(DBManager):
             resume_epoch INTEGER,
             circuit_stage INTEGER CHECK(circuit_stage IN (1, 2, 3)),
             updated_epoch INTEGER NOT NULL,
-            trading_halted INTEGER NOT NULL DEFAULT 0 CHECK(trading_halted IN (0, 1))
+            trading_halted INTEGER NOT NULL DEFAULT 0 CHECK(trading_halted IN (0, 1)),
+            nationality TEXT NOT NULL DEFAULT '낙원'
         )""")
+        exchange_columns = {row[1] for row in self.execute("PRAGMA table_info(market_exchanges)")}
+        if 'nationality' not in exchange_columns:
+            self.execute("ALTER TABLE market_exchanges ADD COLUMN nationality TEXT NOT NULL DEFAULT '낙원'")
         # Migrate both former exchange tables before removing them.  This also
         # covers installations that predate per-exchange market sessions.
         legacy_tables = {str(row[0]) for row in self.execute(

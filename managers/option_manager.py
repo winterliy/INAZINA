@@ -81,7 +81,7 @@ class OptionManager:
                 years,
                 contract["implied_volatility"],
                 contract["option_type"],
-                float(self.db.system.get_setting("base_rate", "0")) / 100,
+                self._base_rate(underlying.get("exchange_id")) / 100,
             )
             override = self.db.assets.execute_one("SELECT price FROM market_quote_overrides WHERE asset_code=?", (contract['contract_code'],))
             contract.update({
@@ -101,6 +101,11 @@ class OptionManager:
             return contract
         except (ValueError, TypeError, OverflowError):
             return None
+
+    def _base_rate(self, exchange_id):
+        from managers.rate_manager import RateManager
+        with self.db.readonly() as conn:
+            return RateManager.for_exchange(conn, 'base_rate', exchange_id)
 
     def get_active_contracts(self, underlying_code=None, limit=100):
         now = int(time.time())

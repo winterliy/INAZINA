@@ -108,6 +108,29 @@ class MarketFeatureTests(unittest.TestCase):
         self.assertLess(OptionManager.theoretical_price(1000, 1000, 1, .2, "put", .03),
                         OptionManager.theoretical_price(1000, 1000, 1, .2, "put", 0))
 
+    def test_country_rates_and_zero_deregulation(self):
+        self.db.currency.execute(
+            "INSERT INTO country_currencies(nationality,currency_code,base_rate,statutory_rate) "
+            "VALUES ('자유국','NWX',0,0)"
+        )
+        self.assertEqual(self.rates.get_rate("base_rate", "자유국"), 0)
+        self.assertEqual(self.rates.get_rate("statutory_rate", "자유국"), 0)
+        self.db.system.execute(
+            "INSERT INTO market_exchanges(exchange_id,status,updated_epoch,nationality) "
+            "VALUES ('FREE','open',0,'자유국')"
+        )
+        with self.db.readonly() as conn:
+            self.assertEqual(RateManager.for_exchange(conn, "base_rate", "FREE"), 0)
+            self.assertEqual(
+                RateManager.interest_between(
+                    conn, "statutory_rate", 100000, 0, 365 * 86400,
+                    nationality="자유국",
+                ),
+                0,
+            )
+        with self.assertRaisesRegex(ValueError, "국가 ID"):
+            self.rates.get_rate("base_rate", "없는국가")
+
     def test_rate_history_splits_elapsed_interest_at_change_time(self):
         start = int(time.time())
         half_year = 365 * 86400 / 2

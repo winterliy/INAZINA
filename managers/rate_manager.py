@@ -56,13 +56,44 @@ class RateManager:
         rate = self.get_rate(key)
         return [(start, rate)] if start == end else [(start, rate), (end, rate)]
 
-    def get_rate(self, key):
-        if key not in self.KEYS:
+    @staticmethod
+    def from_connection(conn, key, nationality=None, *, require_country=False):
+        if key not in RATE_NAMES:
             raise ValueError("지원하지 않는 금리입니다.")
-        rate = float(self.db.system.get_setting(key, "0"))
+        if nationality is not None:
+            row = conn.execute(
+                f"SELECT {key} rate FROM country_currencies WHERE nationality=?",
+                (str(nationality),),
+            ).fetchone()
+            if not row and require_country:
+                raise ValueError("국가 ID를 확인해주세요.")
+            if row:
+                rate = float(row["rate"])
+            else:
+                fallback = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+                rate = float(fallback["value"] if fallback else 0)
+        else:
+            row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+            rate = float(row["value"] if row else 0)
         if not math.isfinite(rate) or not 0 <= rate <= 100:
             raise ValueError("금리는 0~100%의 유한한 숫자여야 합니다.")
         return rate
+
+    def get_rate(self, key, nationality=None):
+        if key not in self.KEYS:
+            raise ValueError("지원하지 않는 금리입니다.")
+        with self.db.readonly() as conn:
+            return self.from_connection(conn, key, nationality, require_country=nationality is not None)
+
+    @staticmethod
+    def for_exchange(conn, key, exchange_id):
+        row = conn.execute(
+            "SELECT nationality FROM market_exchanges WHERE exchange_id=?",
+            (str(exchange_id or ''),),
+        ).fetchone()
+        return RateManager.from_connection(
+            conn, key, row['nationality'] if row and row['nationality'] else None
+        )
 
     def set_rate(self, key, percent, actor_id, now=None, conn=None):
         if resolve_user_role(actor_id, self.db.users.get_user(str(actor_id))) != "admin":
@@ -84,12 +115,12 @@ class RateManager:
             return False, f"❌ {exc}"
 
     @staticmethod
-    def interest_between(conn, key, principal, start, end, spread=0, compound=False):
+    def interest_between(conn, key, principal, start, end, spread=0, compound=False,
+                         nationality=None):
         """Integrate dated annual rates; never apply a new rate to old elapsed time."""
         if end <= start or principal <= 0:
             return 0.0
-        row = conn.execute("SELECT value FROM system.settings WHERE key = ?", (key,)).fetchone()
-        rate = float(row["value"] if row else 0)
+        rate = RateManager.from_connection(conn, key, nationality)
         return float(principal) * max(0, rate + spread) / 100 * (end - start) / YEAR_SECONDS
 
     def statutory_interest(self, principal, start, end):

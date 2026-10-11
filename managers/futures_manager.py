@@ -6,6 +6,7 @@ from managers.market_session_manager import MarketSessionManager
 
 from database.user_db import TREASURY_USER_ID
 from managers.investment_manager import InvestmentManager
+from managers.rate_manager import RateManager
 
 
 class FuturesManager:
@@ -27,8 +28,7 @@ class FuturesManager:
     def _quote(self, conn, product, now):
         if int(product["is_fixed"] or 0) and now < int(product["maturity_epoch"]):
             return max(1, int(product["unit_price"]))
-        setting = conn.execute("SELECT value FROM system.settings WHERE key = 'base_rate'").fetchone()
-        rate = float(setting["value"] if setting else 3)
+        rate = RateManager.for_exchange(conn, 'base_rate', product['exchange_id'])
         quote = InvestmentManager.linked_price(conn, product, rate, now)
         if not quote:
             raise ValueError("선물 기초주식의 가격을 찾을 수 없습니다.")

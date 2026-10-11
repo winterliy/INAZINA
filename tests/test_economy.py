@@ -1039,8 +1039,11 @@ class EconomyTests(unittest.TestCase):
             )
             self.assertTrue(parameter.required)
             self.assertFalse(parameter.autocomplete)
-        self.assertEqual(next(command for command in tree.commands if command.name == "기준금리").parameters, [])
-        self.assertEqual(next(command for command in tree.commands if command.name == "법정이자").parameters, [])
+        for name in ("기준금리", "법정이자"):
+            parameter = next(command for command in tree.commands if command.name == name).parameters[0]
+            self.assertEqual(parameter.name, "국가")
+            self.assertTrue(parameter.required)
+            self.assertTrue(parameter.autocomplete)
 
     def test_financial_relief_commands_dm_admins_with_asset_page_balances_only(self):
         import asyncio

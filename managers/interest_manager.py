@@ -222,9 +222,10 @@ class InterestManager:
                 # After contractual maturity, accrue game statutory simple interest.
                 # Use a separate cursor so rounding and repeated reads cannot double-charge.
                 overdue = conn.execute(
-                    "SELECT l.loan_id, l.principal, l.outstanding_balance, l.created_at, "
+                    "SELECT l.loan_id, l.principal, l.outstanding_balance, l.created_at, u.nationality, "
                     "l.last_statutory_epoch, l.statutory_interest_remainder, l.maturity_epoch, p.maturity_days FROM accounts.loans l "
                     "JOIN product.liability p ON p.product_code = l.product_code "
+                    "JOIN users.users u ON u.user_id = l.user_id "
                     "WHERE l.status = 'active' AND p.status = 'active' "
                     "AND (l.maturity_epoch IS NOT NULL OR p.maturity_days > 0) AND (? IS NULL OR l.user_id = ?)",
                     (user_id, user_id),
@@ -239,7 +240,10 @@ class InterestManager:
                     if now <= start:
                         continue
                     principal = min(int(loan["principal"]), int(loan["outstanding_balance"]))
-                    accrued = RateManager.interest_between(conn, "statutory_rate", principal, start, now)
+                    accrued = RateManager.interest_between(
+                        conn, "statutory_rate", principal, start, now,
+                        nationality=loan["nationality"],
+                    )
                     accrued += float(loan["statutory_interest_remainder"] or 0)
                     interest = max(0, round_money(accrued))
                     conn.execute("UPDATE accounts.loans SET outstanding_balance = outstanding_balance + ?, "

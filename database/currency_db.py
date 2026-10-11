@@ -36,7 +36,24 @@ class CurrencyDB(DBManager):
         )""")
         self.execute("""CREATE TABLE IF NOT EXISTS country_currencies (
             nationality TEXT PRIMARY KEY, currency_code TEXT NOT NULL REFERENCES currencies(code))""")
-        self.execute("INSERT OR IGNORE INTO country_currencies VALUES ('낙원','NWX')")
+        country_columns = {row[1] for row in self.execute("PRAGMA table_info(country_currencies)")}
+        added_base_rate = 'base_rate' not in country_columns
+        added_statutory_rate = 'statutory_rate' not in country_columns
+        if added_base_rate:
+            self.execute("ALTER TABLE country_currencies ADD COLUMN base_rate REAL NOT NULL DEFAULT 0 "
+                         "CHECK(base_rate BETWEEN 0 AND 100)")
+        if added_statutory_rate:
+            self.execute("ALTER TABLE country_currencies ADD COLUMN statutory_rate REAL NOT NULL DEFAULT 0 "
+                         "CHECK(statutory_rate BETWEEN 0 AND 100)")
+        self.execute("INSERT OR IGNORE INTO country_currencies(nationality,currency_code) VALUES ('낙원','NWX')")
+        # Preserve the former game-wide rates once; newly added countries start
+        # deregulated until an administrator assigns their own values.
+        if added_base_rate:
+            self.execute("UPDATE country_currencies SET base_rate=COALESCE("
+                         "(SELECT CAST(value AS REAL) FROM settings WHERE key='base_rate'),0)")
+        if added_statutory_rate:
+            self.execute("UPDATE country_currencies SET statutory_rate=COALESCE("
+                         "(SELECT CAST(value AS REAL) FROM settings WHERE key='statutory_rate'),0)")
         self._migrate_currency_wallets()
         self._normalize_home_currency_accounts()
         self.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('currency_exchange_fee_percent','0.1')")

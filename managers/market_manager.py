@@ -1007,6 +1007,7 @@ class MarketManager:
     def _batch_quotes(self, conn, now):
         """Resolve current transaction quotes without recursive per-symbol SQL."""
         from managers.option_manager import OptionManager
+        from managers.rate_manager import RateManager
         quotes = {}
         for table, source in (('market_assets', 'market_assets'), ('company', 'company'),
                               ('investment', 'investment'), ('treasury_bond_products', 'treasury_bond')):
@@ -1019,7 +1020,6 @@ class MarketManager:
         for code, price in overrides.items():
             if code in quotes:
                 quotes[code]['price'] = int(price)
-        rate = float(conn.execute("SELECT value FROM settings WHERE key='base_rate'").fetchone()[0]) / 100
         for row in conn.execute('SELECT * FROM option_contracts'):
             underlying = quotes.get(row['underlying_code'])
             if underlying is None:
@@ -1029,6 +1029,7 @@ class MarketManager:
                 raise ValueError(f'중복 종목 코드: {code}')
             price = overrides.get(code)
             if price is None:
+                rate = RateManager.for_exchange(conn, 'base_rate', underlying.get('exchange_id')) / 100
                 price = OptionManager.theoretical_price(int(underlying['price']), int(row['strike_price']),
                     max(0, row['expiration_epoch'] - now) / (365 * 86400),
                     float(row['implied_volatility']), row['option_type'], rate)
@@ -1039,9 +1040,9 @@ class MarketManager:
 
     def _update_linked_products(self, now):
         from managers.investment_manager import InvestmentManager
+        from managers.rate_manager import RateManager
         try:
             with self._short_market_transaction(("assets", "product", "company")) as conn:
-                rate = float(conn.execute("SELECT value FROM settings WHERE key='base_rate'").fetchone()[0])
                 prices = {r['code']: r for r in conn.execute('SELECT code,price FROM market_assets')}
                 prices.update({r['code']: r for r in conn.execute('SELECT company_code code,share_price price FROM company')})
                 components = {}
@@ -1057,6 +1058,7 @@ class MarketManager:
                         continue
                     if int(product["is_fixed"] or 0):
                         continue
+                    rate = RateManager.for_exchange(conn, 'base_rate', product['exchange_id'])
                     price = InvestmentManager.linked_price(conn, product, rate, now,
                         prices=prices, fund_components=components)
                     if price is None:

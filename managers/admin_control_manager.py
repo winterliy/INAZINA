@@ -346,7 +346,8 @@ class AdminControlManager:
                 owner=values.get('parent_company_code',merged.get('parent_company_code')) if share_class=='preferred' else code
                 conn.execute('INSERT OR IGNORE INTO issuer_cash_accounts(company_code) VALUES (?)',(owner,))
             if category=='currency' and extra.get('nationality'):
-                conn.execute("INSERT INTO country_currencies VALUES (?,?) ON CONFLICT(nationality) DO UPDATE SET currency_code=excluded.currency_code",(str(extra['nationality']),code))
+                conn.execute("INSERT INTO country_currencies(nationality,currency_code) VALUES (?,?) "
+                             "ON CONFLICT(nationality) DO UPDATE SET currency_code=excluded.currency_code",(str(extra['nationality']),code))
             if category=='fund' and (operation=='create' or 'components' in extra):
                 weights = extra.get('components',EXAMPLES['fund']['components'])
                 if not isinstance(weights,dict) or not weights:
