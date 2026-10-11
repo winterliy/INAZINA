@@ -355,6 +355,7 @@ class AdminCommandsManager:
         return self.control.entity(actor,category,operation,code,str(name),str(price),str(supply),fields)
 
     def balance(self,actor,identity,operation,raw_amount):
+        from managers.currency_manager import CurrencyManager
         row=self.db.accounts.execute_one('SELECT user_id FROM accounts WHERE account_number=?',(identity,))
         if row:
             from managers.interest_manager import InterestManager
@@ -367,6 +368,8 @@ class AdminCommandsManager:
             if sum(bool(x) for x in (currency_account,bank,user))!=1:
                 raise ValueError('사용자 ID 또는 계좌번호를 확인해주세요.')
             if currency_account:
+                if currency_account['currency_code'] == CurrencyManager.home(conn,currency_account['user_id']):
+                    raise ValueError('국적 통화는 사용자 cash 잔고를 수정해주세요.')
                 self.bot.currency_mgr._settle(conn,currency_account['user_id'],time.time())
                 current=conn.execute("SELECT balance_units FROM accounts WHERE account_number=? AND account_type='currency_saving'",(identity,)).fetchone()[0]
                 amount=Decimal(raw_amount)
@@ -385,7 +388,11 @@ class AdminCommandsManager:
                 if bank:
                     conn.execute('UPDATE accounts SET balance=?,principal=?,last_payment_epoch=?,last_payment=CURRENT_TIMESTAMP WHERE account_number=?',(value,value,time.time(),identity))
                 else:conn.execute('UPDATE users SET cash=? WHERE user_id=?',(value,identity))
-                unit='NWX';before=current;after=value
+                if user:
+                    unit=CurrencyManager.home(conn,identity)
+                else:
+                    unit=CurrencyManager.home(conn,bank['user_id'])
+                before=current;after=value
             self.control._audit(conn,actor,'balance.adjust',{'target':identity,'operation':operation,'before':before,'after':after,'currency':unit})
             return f'✅ {identity} 잔고 {before} → {after} {unit}'
 

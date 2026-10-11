@@ -4,11 +4,12 @@ import time
 import uuid
 from collections import defaultdict
 from fractions import Fraction
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, ROUND_CEILING
 
 from database.db_manager import DBManager
 from database.user_db import TREASURY_USER_ID
 from managers.currency_exchange_manager import CurrencyExchangeManager, SCALE, MAX_UNITS
+from managers.currency_manager import CurrencyManager
 from managers.user_manager import UserManager
 
 
@@ -108,13 +109,7 @@ class CorporateActionsManager:
         row = conn.execute("SELECT * FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'", (user, currency)).fetchone()
         if row:
             return row['account_number']
-        product = conn.execute("SELECT product_code FROM saving WHERE quote_currency=? AND product_kind='currency_saving' AND status='active' ORDER BY product_code LIMIT 1", (currency,)).fetchone()
-        if not product:
-            raise ValueError(f'{currency} 배당을 수령할 외환통장 상품이 없습니다.')
-        account = 'FXA' + uuid.uuid4().hex[:16].upper()
-        conn.execute("INSERT INTO accounts(account_number,user_id,product_code,balance,password,last_payment_epoch,principal,account_type,quote_currency) VALUES (?,?,?,?,?,?,?,?,?)",
-                     (account, user, product['product_code'], 0, None, now, 0, 'currency_saving', currency))
-        return account
+        raise ValueError(f'{currency} 외환통장을 먼저 개설해주세요.')
 
     @staticmethod
     def _issuer_code(listing):
@@ -152,12 +147,14 @@ class CorporateActionsManager:
     def _credit_dividend(self, conn, user, code, kind, amount, currency, now):
         rate = CurrencyExchangeManager._rate(conn, currency)
         tax = UserManager._tax(conn, user, f'{kind}_dividend:{code}', amount*rate)
-        tax_units = tax*SCALE if currency == 'NWX' else (tax*SCALE+rate-1)//rate
-        net_units = max(0, amount*SCALE-tax_units)
-        if currency == 'NWX':
+        if CurrencyManager.home(conn,user) == currency:
+            tax_native = int((Decimal(tax)/Decimal(rate)).to_integral_value(rounding=ROUND_CEILING))
+            net_units = max(0,amount-tax_native)*SCALE
             changed = conn.execute('UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?',
                                    (net_units//SCALE, user, self.MAX_MONEY-net_units//SCALE))
         else:
+            tax_units = tax*SCALE if currency == 'NWX' else int((Decimal(tax*SCALE)/Decimal(rate)).to_integral_value(rounding=ROUND_CEILING))
+            net_units = max(0, amount*SCALE-tax_units)
             CurrencyExchangeManager._settle(conn, user, now)
             account = self._currency_account(conn, user, currency, now)
             changed = conn.execute("UPDATE accounts SET balance_units=balance_units+? WHERE account_number=? AND account_type='currency_saving' AND balance_units<=?",

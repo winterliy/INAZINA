@@ -1,4 +1,9 @@
+import time
+import uuid
+
 from .db_manager import DBManager
+
+SCALE = 1_000_000
 
 class CurrencyDB(DBManager):
     def __init__(self):
@@ -15,6 +20,7 @@ class CurrencyDB(DBManager):
             if column not in currency_columns:
                 self.execute(f"ALTER TABLE currencies ADD COLUMN {column} {definition}")
         self.execute("INSERT OR IGNORE INTO currencies(code,name) VALUES ('NWX','낙원자화')")
+        self.execute("UPDATE currencies SET decimal_places=0 WHERE code='NWX'")
         # A currency's quoted base rate remains administrator controlled.  This
         # table stores the neutral supply point used to apply a bounded liquidity
         # adjustment at settlement/read time.  Units are millionths of a currency.
@@ -31,11 +37,8 @@ class CurrencyDB(DBManager):
         self.execute("""CREATE TABLE IF NOT EXISTS country_currencies (
             nationality TEXT PRIMARY KEY, currency_code TEXT NOT NULL REFERENCES currencies(code))""")
         self.execute("INSERT OR IGNORE INTO country_currencies VALUES ('낙원','NWX')")
-        self.execute("""CREATE TABLE IF NOT EXISTS currency_wallets (
-            user_id TEXT NOT NULL, currency_code TEXT NOT NULL REFERENCES currencies(code),
-            balance_units INTEGER NOT NULL DEFAULT 0 CHECK(balance_units >= 0),
-            PRIMARY KEY(user_id, currency_code))""")
-        self.execute("CREATE INDEX IF NOT EXISTS idx_currency_wallets_currency ON currency_wallets(currency_code)")
+        self._migrate_currency_wallets()
+        self._normalize_home_currency_accounts()
         self.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('currency_exchange_fee_percent','0.1')")
         self._migrate_currency_identifiers()
         for table in ('company','investment','market_assets','market_orders'):
@@ -43,6 +46,107 @@ class CurrencyDB(DBManager):
             if 'quote_currency' not in columns:
                 self.execute(f"ALTER TABLE {table} ADD COLUMN quote_currency TEXT NOT NULL DEFAULT 'NWX'")
         self._seed_liquidity_states()
+
+    def _migrate_currency_wallets(self):
+        """Merge the removed wallet store into home cash or currency accounts.
+
+        ``users.cash`` is denominated by the user's nationality.  Every other
+        currency belongs to exactly one ``currency_saving`` account.
+        """
+        exists = self.execute_one(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='currency_wallets'"
+        )
+        if not exists:
+            return
+        with self.lock, self.conn:
+            def foreign_account(user_id, currency_code, units):
+                account = self.conn.execute(
+                    "SELECT account_number,balance_units FROM accounts "
+                    "WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'",
+                    (user_id, currency_code),
+                ).fetchone()
+                if account:
+                    if int(account['balance_units']) + units > 2**63 - 1:
+                        raise RuntimeError('외환통장 이관 잔액이 저장 한도를 초과합니다.')
+                    self.conn.execute(
+                        "UPDATE accounts SET balance_units=balance_units+? WHERE account_number=?",
+                        (units, account['account_number']),
+                    )
+                    return
+                product = self.conn.execute(
+                    "SELECT product_code FROM saving WHERE product_kind='currency_saving' "
+                    "AND quote_currency=? ORDER BY status='active' DESC,product_code LIMIT 1",
+                    (currency_code,),
+                ).fetchone()
+                if not product:
+                    product_code = f"SYSFX_{currency_code}"
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO saving(product_code,name,interest_rate,deposit_amount,"
+                        "maturity_days,interest_cycle,compound_type,issuer,status,quote_currency,product_kind) "
+                        "VALUES (?,?,0,0,0,0,0,'system','active',?,'currency_saving')",
+                        (product_code, f"{currency_code} 외환통장", currency_code),
+                    )
+                else:
+                    product_code = product['product_code']
+                self.conn.execute(
+                    "INSERT INTO accounts(account_number,user_id,product_code,balance,password,"
+                    "last_payment_epoch,principal,account_type,quote_currency,balance_units) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    ('FXA' + uuid.uuid4().hex[:16].upper(), user_id, product_code,
+                     0, None, time.time(), 0, 'currency_saving', currency_code, units),
+                )
+
+            # In the legacy schema users.cash was always NWX, even for citizens
+            # whose nationality mapped to another currency.
+            legacy_cash = self.conn.execute("""SELECT u.user_id,u.cash,n.currency_code home_currency
+                FROM users u JOIN country_currencies n ON n.nationality=u.nationality
+                WHERE n.currency_code<>'NWX' AND u.cash<>0""").fetchall()
+            for row in legacy_cash:
+                foreign_account(row['user_id'], 'NWX', int(row['cash']) * SCALE)
+                self.conn.execute('UPDATE users SET cash=0 WHERE user_id=?', (row['user_id'],))
+
+            rows = self.conn.execute(
+                "SELECT w.user_id,w.currency_code,w.balance_units,"
+                "COALESCE(n.currency_code,(SELECT value FROM settings WHERE key='default_currency')) home_currency "
+                "FROM currency_wallets w JOIN users u ON u.user_id=w.user_id "
+                "LEFT JOIN country_currencies n ON n.nationality=u.nationality "
+                "WHERE w.balance_units<>0 ORDER BY w.user_id,w.currency_code"
+            ).fetchall()
+            for row in rows:
+                units = int(row['balance_units'])
+                if row['currency_code'] == row['home_currency']:
+                    if units % SCALE:
+                        raise RuntimeError(
+                            f"{row['user_id']}의 국적 통화 {row['currency_code']} 잔액에 "
+                            "1 미만 단위가 있어 users.cash로 이관할 수 없습니다."
+                        )
+                    self.conn.execute(
+                        "UPDATE users SET cash=cash+? WHERE user_id=?",
+                        (units // SCALE, row['user_id']),
+                    )
+                    continue
+                foreign_account(row['user_id'], row['currency_code'], units)
+            self.conn.execute("DROP TABLE currency_wallets")
+
+    def _normalize_home_currency_accounts(self):
+        """Move obsolete home-currency FX accounts into nationality cash."""
+        with self.lock, self.conn:
+            rows = self.conn.execute("""SELECT a.account_number,a.user_id,a.balance_units,a.quote_currency
+                FROM accounts a JOIN users u ON u.user_id=a.user_id
+                JOIN country_currencies n ON n.nationality=u.nationality
+                WHERE a.account_type='currency_saving' AND a.quote_currency=n.currency_code""").fetchall()
+            for row in rows:
+                units = int(row['balance_units'] or 0)
+                if units % SCALE:
+                    raise RuntimeError(
+                        f"{row['user_id']}의 국적 통화 계좌 {row['account_number']}에 "
+                        "1 미만 단위가 있어 users.cash로 이관할 수 없습니다."
+                    )
+                if units:
+                    self.conn.execute('UPDATE users SET cash=cash+? WHERE user_id=?',
+                                      (units//SCALE,row['user_id']))
+                self.conn.execute("UPDATE accounts SET balance_units=0,account_type='home_currency_migrated' "
+                                  "WHERE account_number=?",(row['account_number'],))
 
     def _migrate_currency_identifiers(self):
         """Move legacy currency product/exchange identifiers to the current namespace."""
@@ -74,16 +178,25 @@ class CurrencyDB(DBManager):
 
         for row in self.execute("SELECT code FROM currencies"):
             code = str(row[0])
-            if code == "NWX":
-                total = int(self.execute("SELECT COALESCE(SUM(cash),0) FROM users")[0][0]) * 1_000_000
-                total += int(self.execute("SELECT COALESCE(SUM(balance),0) FROM accounts")[0][0]) * 1_000_000
-                treasury = int(self.execute("SELECT COALESCE(cash,0) FROM users WHERE user_id=?", (TREASURY_USER_ID,))[0][0]) * 1_000_000
-                treasury += int(self.execute("SELECT COALESCE(SUM(balance),0) FROM accounts WHERE user_id=?", (TREASURY_USER_ID,))[0][0]) * 1_000_000
-            else:
-                total = int(self.execute("SELECT COALESCE(SUM(balance_units),0) FROM currency_wallets WHERE currency_code=?", (code,))[0][0])
-                total += int(self.execute("SELECT COALESCE(SUM(balance_units),0) FROM accounts WHERE account_type='currency_saving' AND quote_currency=?", (code,))[0][0])
-                treasury = int(self.execute("SELECT COALESCE(SUM(balance_units),0) FROM currency_wallets WHERE currency_code=? AND user_id=?", (code, TREASURY_USER_ID))[0][0])
-                treasury += int(self.execute("SELECT COALESCE(SUM(balance_units),0) FROM accounts WHERE account_type='currency_saving' AND quote_currency=? AND user_id=?", (code, TREASURY_USER_ID))[0][0])
+            home_cash = """SELECT COALESCE(SUM(u.cash),0) FROM users u
+                JOIN country_currencies n ON n.nationality=u.nationality
+                WHERE n.currency_code=?"""
+            total = int(self.execute(home_cash, (code,))[0][0]) * SCALE
+            total += int(self.execute("""SELECT COALESCE(SUM(a.balance),0) FROM accounts a
+                JOIN users u ON u.user_id=a.user_id
+                JOIN country_currencies n ON n.nationality=u.nationality
+                WHERE n.currency_code=? AND a.account_type<>'currency_saving'""", (code,))[0][0]) * SCALE
+            total += int(self.execute("SELECT COALESCE(SUM(balance_units),0) FROM accounts WHERE account_type='currency_saving' AND quote_currency=?", (code,))[0][0])
+            treasury_rows = self.execute("""SELECT COALESCE(u.cash,0) FROM users u
+                JOIN country_currencies n ON n.nationality=u.nationality
+                WHERE u.user_id=? AND n.currency_code=?""", (TREASURY_USER_ID, code))
+            treasury = int(treasury_rows[0][0] if treasury_rows else 0) * SCALE
+            treasury += int(self.execute("""SELECT COALESCE(SUM(a.balance),0) FROM accounts a
+                JOIN users u ON u.user_id=a.user_id
+                JOIN country_currencies n ON n.nationality=u.nationality
+                WHERE a.user_id=? AND n.currency_code=? AND a.account_type<>'currency_saving'""",
+                (TREASURY_USER_ID,code))[0][0]) * SCALE
+            treasury += int(self.execute("SELECT COALESCE(SUM(balance_units),0) FROM accounts WHERE account_type='currency_saving' AND quote_currency=? AND user_id=?", (code, TREASURY_USER_ID))[0][0])
             ratio = max(0, total - treasury) / total if total > 0 else 0
             self.execute(
                 "INSERT OR IGNORE INTO currency_liquidity_state "

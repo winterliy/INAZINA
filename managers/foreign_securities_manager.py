@@ -2,6 +2,7 @@
 import time
 from database.user_db import TREASURY_USER_ID
 from managers.currency_exchange_manager import CurrencyExchangeManager,SCALE,MAX_UNITS
+from managers.currency_manager import CurrencyManager
 from managers.market_session_manager import MarketSessionManager
 
 
@@ -10,9 +11,21 @@ class ForeignSecuritiesManager:
         self.book,self.db,self.users = book,book.db,book.user_manager
 
     @staticmethod
-    def credit_units(conn,user,currency,units):
-        changed = conn.execute("UPDATE accounts SET balance_units=balance_units+? WHERE user_id=? AND quote_currency=? AND account_type='currency_saving' AND balance_units<=?",
-            (units,str(user),currency,MAX_UNITS-units))
+    def credit_units(conn,user,currency,units,account=None):
+        if CurrencyManager.home(conn,user) == currency:
+            if units % SCALE:
+                raise ValueError(f'{currency} 국적 통화 현금은 정수 단위로만 입금할 수 있습니다.')
+            changed = conn.execute("UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?",
+                (units//SCALE,str(user),(2**53-1)-units//SCALE))
+            if changed.rowcount!=1:
+                raise ValueError(f'{currency} 현금 잔액 한도를 초과했습니다.')
+            return
+        if account:
+            changed = conn.execute("UPDATE accounts SET balance_units=balance_units+? WHERE account_number=? AND user_id=? AND quote_currency=? AND account_type='currency_saving' AND balance_units<=?",
+                (units,account,str(user),currency,MAX_UNITS-units))
+        else:
+            changed = conn.execute("UPDATE accounts SET balance_units=balance_units+? WHERE user_id=? AND quote_currency=? AND account_type='currency_saving' AND balance_units<=?",
+                (units,str(user),currency,MAX_UNITS-units))
         if changed.rowcount!=1:
             raise ValueError(f'{currency} 외환통장이 없거나 잔액 한도를 초과했습니다.')
 
@@ -34,10 +47,11 @@ class ForeignSecuritiesManager:
                 CurrencyExchangeManager._user(conn,user_id)
                 CurrencyExchangeManager._rate(conn,currency)
                 CurrencyExchangeManager(self.db)._settle(conn,user_id,now)
-                account = conn.execute("SELECT * FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'",(user_id,currency)).fetchone()
-                if not account:
+                home = CurrencyManager.home(conn,user_id)
+                account = None if currency == home else conn.execute("SELECT * FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'",(user_id,currency)).fetchone()
+                if currency != home and not account:
                     raise ValueError(f'/계좌개설로 {currency} 외환통장을 먼저 개설해주세요.')
-                account_number = account['account_number']
+                account_number = account['account_number'] if account else None
                 owned = conn.execute('SELECT COALESCE(SUM(quantity),0) FROM user_assets WHERE user_id=? AND asset_code=?',(user_id,code)).fetchone()[0]
                 reserved = conn.execute("SELECT COALESCE(SUM(remaining_quantity),0) FROM market_orders WHERE user_id=? AND asset_code=? AND side=? AND status IN ('open','partial')",(user_id,code,side)).fetchone()[0]
                 supply = asset.get('supply')
@@ -47,7 +61,10 @@ class ForeignSecuritiesManager:
                 if cash*SCALE>MAX_UNITS:
                     raise ValueError('주문 예치금 한도를 초과했습니다.')
                 if side=='buy':
-                    changed=conn.execute("UPDATE accounts SET balance_units=balance_units-? WHERE account_number=? AND account_type='currency_saving' AND balance_units>=?",(cash*SCALE,account_number,cash*SCALE))
+                    if currency == home:
+                        changed=conn.execute("UPDATE users SET cash=cash-? WHERE user_id=? AND cash>=?",(cash,str(user_id),cash))
+                    else:
+                        changed=conn.execute("UPDATE accounts SET balance_units=balance_units-? WHERE account_number=? AND account_type='currency_saving' AND balance_units>=?",(cash*SCALE,account_number,cash*SCALE))
                     if changed.rowcount!=1:
                         raise ValueError(f'예치할 {currency} 잔액이 부족합니다. 필요액 {cash:,} {currency}')
                 elif owned-reserved<quantity:

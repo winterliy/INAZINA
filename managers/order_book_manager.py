@@ -36,7 +36,15 @@ class OrderBookManager:
             from managers.els_manager import ELSManager
             return ELSManager(self.db,self.user_manager).subscribe(user_id,asset_code,quantity)
         foreign = self.db.assets.execute_one("SELECT quote_currency FROM market_assets WHERE code=? UNION ALL SELECT quote_currency FROM company WHERE company_code=? UNION ALL SELECT quote_currency FROM investment WHERE product_code=?",(asset_code,asset_code,asset_code))
-        if foreign and foreign['quote_currency']!='NWX':
+        home = None
+        if foreign:
+            try:
+                from managers.currency_manager import CurrencyManager
+                with self.db.readonly() as conn:
+                    home = CurrencyManager.home(conn,user_id)
+            except ValueError:
+                pass
+        if foreign and (foreign['quote_currency']!='NWX' or foreign['quote_currency']!=home):
             from managers.foreign_securities_manager import ForeignSecuritiesManager
             return ForeignSecuritiesManager(self).order(user_id,asset_code,side,quantity,limit_price)
         if self.futures_manager and self.futures_manager.is_future(asset_code):

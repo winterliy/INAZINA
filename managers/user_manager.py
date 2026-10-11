@@ -374,12 +374,18 @@ class UserManager:
             return False, f"❌ 매도 처리 중 오류가 발생했습니다: {exc}"
 
     def transfer(self, from_user_id, recipient, amount, source_account=None):
-        if self.db.accounts.execute_one("SELECT 1 FROM accounts WHERE account_type='currency_saving' AND account_number IN (?,?) LIMIT 1",(str(recipient).strip(),str(source_account or '').strip())):
-            try:
-                from managers.currency_exchange_manager import CurrencyExchangeManager
-                return True,CurrencyExchangeManager(self.db).transfer(from_user_id,recipient,amount,source_account)
-            except ValueError as exc:
-                return False,f'❌ {exc}'
+        # Cash is denominated by nationality, so even wallet-to-wallet transfers
+        # may require conversion.  Keep every endpoint on the currency-aware path.
+        try:
+            from managers.currency_exchange_manager import CurrencyExchangeManager
+            return True,CurrencyExchangeManager(self.db).transfer(
+                from_user_id,recipient,amount,source_account
+            )
+        except ValueError as exc:
+            return False,f'❌ {exc}'
+
+        # Legacy implementation retained below for migration archaeology; the
+        # currency-aware transfer above is the only reachable path.
         try:
             amount = parse_money(amount, minimum=1)
         except ValueError as exc:
@@ -650,9 +656,26 @@ class UserManager:
         currency_row = self.db.currency.execute_one("SELECT n.currency_code FROM country_currencies n "
             "JOIN currencies c ON c.code=n.currency_code WHERE n.nationality=? AND c.status='active'",(nationality,))
         national_currency = currency_row['currency_code'] if currency_row else 'NWX'
+        from managers.currency_manager import CurrencyManager, CurrencyReadSnapshot, SCALE
+        with self.db.readonly() as conn:
+            currency_snapshot = CurrencyReadSnapshot(conn)
+            wallets = CurrencyManager(self.db).wallets(
+                user_id, conn=conn, snapshot=currency_snapshot
+            ) if user else []
+            home_cash_units = cash * SCALE
+            foreign_cash_units = sum(
+                int(row['value_home_units']) for row in wallets if row['is_foreign']
+            )
+            home_decimal_places = currency_snapshot.precision(national_currency)
+            home_rate_nwx = currency_snapshot.rate_nwx(national_currency)
+            cash_value_nwx = currency_snapshot.convert(
+                home_cash_units, national_currency, 'NWX'
+            ) // SCALE if user else 0
         account_details = []
         total_account_balance = 0
         for account in self.db.accounts.get_user_accounts(user_id):
+            if account['account_type'] == 'currency_saving':
+                continue
             balance = int(round(account["balance"] or 0))
             total_account_balance += balance
             product = self.db.products.get_saving(account["product_code"])
@@ -845,7 +868,7 @@ class UserManager:
         loan_total = int(round(loan_row["total"] or 0)) if loan_row else 0
         currency_total = 0
         currency_accounts = []
-        currency_rows = self.db.accounts.execute("SELECT quote_currency AS currency_code,balance_units FROM accounts WHERE user_id=? AND account_type='currency_saving'",(str(user_id),))
+        currency_rows = self.db.accounts.execute("SELECT quote_currency AS currency_code,balance_units FROM accounts WHERE user_id=? AND account_type='currency_saving' AND quote_currency<>?",(str(user_id),national_currency))
         if currency_rows:
             from managers.currency_exchange_manager import CurrencyExchangeManager
             if settle:
@@ -856,8 +879,13 @@ class UserManager:
                 with self.db.readonly() as conn:
                     currency_accounts = [{**dict(r),'value_nwx':int(r['balance_units'])*CurrencyExchangeManager._rate(conn,r['currency_code'])//1_000_000 if r['balance_units'] else 0}
                         for r in conn.execute("SELECT a.*,a.quote_currency AS currency_code,p.name AS product_name,p.interest_rate AS annual_rate FROM accounts a "
-                            "LEFT JOIN saving p ON p.product_code=a.product_code WHERE a.user_id=? AND a.account_type='currency_saving' ORDER BY a.quote_currency",(str(user_id),))]
+                            "LEFT JOIN saving p ON p.product_code=a.product_code WHERE a.user_id=? AND a.account_type='currency_saving' AND a.quote_currency<>? ORDER BY a.quote_currency",(str(user_id),national_currency))]
             currency_total = sum(r['value_nwx'] for r in currency_accounts)
+        foreign_account_total_home = sum(
+            currency_snapshot.convert(int(r['balance_units']),r['currency_code'],national_currency)
+            for r in currency_accounts
+        ) // SCALE
+        home_account_total_nwx = int(Decimal(total_account_balance)*Decimal(str(home_rate_nwx)))
         els_positions=[]
         if getattr(self.db,'els',None) is not None:
             from managers.els_manager import ELSManager
@@ -869,13 +897,20 @@ class UserManager:
                 for row in self.db.corporate.execute("SELECT * FROM preferred_dividend_claims WHERE user_id=? AND status IN ('unpaid','partial') ORDER BY due_epoch,claim_id",(str(user_id),))]
         preferred_claim_total=sum(int(row['remaining_amount'])*currency_rates.get(row['quote_currency'],1) for row in preferred_claims)
         grand_total = (
-            cash + total_account_balance + total_stock_value + order_reserved_total
+            cash_value_nwx + home_account_total_nwx + total_stock_value + order_reserved_total
             + bond_total + option_collateral_cash - option_short_liability + currency_total+els_total+preferred_claim_total
         )
 
         return {
             "nationality":nationality,
             "national_currency":national_currency,
+            "wallets":wallets,
+            "home_cash_units":home_cash_units,
+            "foreign_cash_units":foreign_cash_units,
+            "home_decimal_places":home_decimal_places,
+            "home_rate_nwx":home_rate_nwx,
+            "home_account_total_home":total_account_balance,
+            "foreign_account_total_home":foreign_account_total_home,
             "currency_accounts":currency_accounts,
             "written_options":written_options,
             "currency_total":currency_total,

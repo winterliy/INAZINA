@@ -394,6 +394,15 @@ class AdminControlManager:
                 raise ValueError("일반 사용자를 찾을 수 없습니다. 국고 자금은 $국고를 사용해주세요.")
             if 'nationality' in changes and not conn.execute("SELECT 1 FROM country_currencies WHERE nationality=?",(changes['nationality'],)).fetchone():
                 raise ValueError("$currency에서 통화와 연결된 국적을 입력해주세요.")
+            if 'nationality' in changes and changes['nationality'] != user['nationality']:
+                old = conn.execute('SELECT currency_code FROM country_currencies WHERE nationality=?',(user['nationality'],)).fetchone()
+                new = conn.execute('SELECT currency_code FROM country_currencies WHERE nationality=?',(changes['nationality'],)).fetchone()
+                if old and new and old[0] != new[0]:
+                    if int(user['cash'] or 0):
+                        raise ValueError('국적 통화를 변경하려면 기존 cash 잔고를 먼저 0으로 정산해주세요.')
+                    account = conn.execute("SELECT balance_units FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'",(user_id,new[0])).fetchone()
+                    if account and int(account[0] or 0):
+                        raise ValueError('새 국적 통화의 외환통장 잔액을 먼저 0으로 정산해주세요.')
             for key in ('cash','credit_score'):
                 if key in changes:
                     changes[key] = self._number(changes[key],0,1000 if key=='credit_score' else 2**53-1,integer=True)

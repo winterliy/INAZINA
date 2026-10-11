@@ -803,7 +803,7 @@ class SlashCommandRegistry:
             user = self.bot.db.users.get_user(user_id)
             accounts = self.bot.db.accounts.execute(
                 "SELECT account_number, product_code, account_type, balance FROM accounts "
-                "WHERE user_id = ? ORDER BY account_type, created_at",
+                "WHERE user_id = ? AND account_type<>'currency_saving' ORDER BY account_type, created_at",
                 (user_id,),
             )
             foreign_accounts = self.bot.db.accounts.execute("SELECT *,quote_currency AS currency_code FROM accounts WHERE user_id=? AND account_type='currency_saving' ORDER BY quote_currency",(user_id,))
@@ -812,7 +812,11 @@ class SlashCommandRegistry:
         current = current.strip().casefold()
         options = []
         wallet_balance = float(user["cash"] or 0) if user else 0
-        wallet_label = f"내 지갑 · {wallet_balance:,.0f} NWX"
+        try:
+            home = self.bot.currency_mgr.national_currency(user_id)[1]
+        except ValueError:
+            home = 'NWX'
+        wallet_label = f"내 지갑 · {wallet_balance:,.0f} {home}"
         if not current or current in "지갑" or current in "__wallet__":
             options.append(app_commands.Choice(name=wallet_label[:100], value="__wallet__"))
         for row in accounts:
@@ -820,7 +824,7 @@ class SlashCommandRegistry:
             code = str(row["product_code"])
             if not current or current in number.casefold() or current in code.casefold():
                 options.append(app_commands.Choice(
-                    name=f"{code} · {number} · {float(row['balance'] or 0):,.0f} NWX"[:100],
+                    name=f"{code} · {number} · {float(row['balance'] or 0):,.0f} {home}"[:100],
                     value=number,
                 ))
         for row in foreign_accounts:

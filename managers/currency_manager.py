@@ -1,4 +1,4 @@
-"""Nationality-relative cash wallets. NWX cash keeps its legacy storage unchanged."""
+"""Nationality-relative cash and account-backed foreign currency balances."""
 from fractions import Fraction
 from contextlib import nullcontext
 from decimal import Decimal
@@ -17,40 +17,32 @@ class CurrencyManager:
     def _liquidity_totals(conn, code):
         """Return issued and non-treasury circulating minor units for ``code``."""
         code = str(code).upper()
-        if code == 'NWX':
-            total = int(conn.execute(
-                'SELECT COALESCE(SUM(cash),0) FROM users'
-            ).fetchone()[0]) * SCALE
-            total += int(conn.execute(
-                'SELECT COALESCE(SUM(balance),0) FROM accounts'
-            ).fetchone()[0]) * SCALE
-            treasury = int(conn.execute(
-                'SELECT COALESCE(cash,0) FROM users WHERE user_id=?',
-                (TREASURY_USER_ID,)
-            ).fetchone()[0]) * SCALE
-            treasury += int(conn.execute(
-                'SELECT COALESCE(SUM(balance),0) FROM accounts WHERE user_id=?',
-                (TREASURY_USER_ID,)
-            ).fetchone()[0]) * SCALE
-        else:
-            total = int(conn.execute(
-                'SELECT COALESCE(SUM(balance_units),0) FROM currency_wallets WHERE currency_code=?',
-                (code,)
-            ).fetchone()[0])
-            total += int(conn.execute(
-                "SELECT COALESCE(SUM(balance_units),0) FROM accounts "
-                "WHERE account_type='currency_saving' AND quote_currency=?",
-                (code,)
-            ).fetchone()[0])
-            treasury = int(conn.execute(
-                'SELECT COALESCE(SUM(balance_units),0) FROM currency_wallets WHERE currency_code=? AND user_id=?',
-                (code, TREASURY_USER_ID)
-            ).fetchone()[0])
-            treasury += int(conn.execute(
-                "SELECT COALESCE(SUM(balance_units),0) FROM accounts "
-                "WHERE account_type='currency_saving' AND quote_currency=? AND user_id=?",
-                (code, TREASURY_USER_ID)
-            ).fetchone()[0])
+        total = int(conn.execute("""SELECT COALESCE(SUM(u.cash),0) FROM users u
+            JOIN country_currencies n ON n.nationality=u.nationality
+            WHERE n.currency_code=?""", (code,)).fetchone()[0]) * SCALE
+        total += int(conn.execute("""SELECT COALESCE(SUM(a.balance),0) FROM accounts a
+            JOIN users u ON u.user_id=a.user_id
+            JOIN country_currencies n ON n.nationality=u.nationality
+            WHERE n.currency_code=? AND a.account_type<>'currency_saving'""",
+            (code,)).fetchone()[0]) * SCALE
+        total += int(conn.execute(
+            "SELECT COALESCE(SUM(balance_units),0) FROM accounts "
+            "WHERE account_type='currency_saving' AND quote_currency=?", (code,)
+        ).fetchone()[0])
+        treasury_row = conn.execute("""SELECT COALESCE(u.cash,0) FROM users u
+            JOIN country_currencies n ON n.nationality=u.nationality
+            WHERE u.user_id=? AND n.currency_code=?""",
+            (TREASURY_USER_ID, code)).fetchone()
+        treasury = int(treasury_row[0] if treasury_row else 0) * SCALE
+        treasury += int(conn.execute("""SELECT COALESCE(SUM(a.balance),0) FROM accounts a
+            JOIN users u ON u.user_id=a.user_id
+            JOIN country_currencies n ON n.nationality=u.nationality
+            WHERE a.user_id=? AND n.currency_code=? AND a.account_type<>'currency_saving'""",
+            (TREASURY_USER_ID,code)).fetchone()[0]) * SCALE
+        treasury += int(conn.execute(
+            "SELECT COALESCE(SUM(balance_units),0) FROM accounts "
+            "WHERE account_type='currency_saving' AND quote_currency=? AND user_id=?",
+            (code, TREASURY_USER_ID)).fetchone()[0])
         return max(0, total), max(0, total - treasury)
 
     @classmethod
@@ -112,7 +104,8 @@ class CurrencyManager:
         if row:
             return row[0]
         # Existing citizens with no country mapping retain the legacy default.
-        return conn.execute("SELECT value FROM settings WHERE key='default_currency'").fetchone()[0]
+        default = conn.execute("SELECT value FROM settings WHERE key='default_currency'").fetchone()
+        return default[0] if default else 'NWX'
 
     @classmethod
     def rate_fraction(cls, conn, code):
@@ -123,9 +116,12 @@ class CurrencyManager:
             value = Fraction(str(row['reference_rate']))
         else:
             asset = conn.execute("SELECT price FROM market_assets WHERE code=? AND status='active'", (row['asset_code'],)).fetchone()
-            if not asset:
+            if code == 'NWX' and not asset:
+                value = Fraction(1)
+            elif not asset:
                 raise ValueError(f'{code} 환율을 조회할 수 없습니다.')
-            value = Fraction(str(asset[0]))
+            else:
+                value = Fraction(str(asset[0]))
         value *= Fraction(str(row['rate_multiplier']))
         value *= Fraction(str(cls.liquidity_multiplier(conn, code)))
         if value <= 0:
@@ -181,10 +177,12 @@ class CurrencyManager:
 
     @staticmethod
     def balance(conn, user_id, currency):
-        if currency == 'NWX':
+        currency = str(currency).upper()
+        if currency == CurrencyManager.home(conn, user_id):
             row = conn.execute('SELECT cash FROM users WHERE user_id=?', (str(user_id),)).fetchone()
             return int(row[0]) * SCALE if row else 0
-        row = conn.execute('SELECT balance_units FROM currency_wallets WHERE user_id=? AND currency_code=?', (str(user_id), currency)).fetchone()
+        row = conn.execute("SELECT balance_units FROM accounts WHERE user_id=? AND quote_currency=? "
+                           "AND account_type='currency_saving'", (str(user_id), currency)).fetchone()
         return int(row[0]) if row else 0
 
     @classmethod
@@ -193,16 +191,22 @@ class CurrencyManager:
         if not conn.execute("SELECT 1 FROM users WHERE user_id=? AND (status='active' OR user_id=?)", (user_id,TREASURY_USER_ID)).fetchone():
             raise ValueError('등록된 활성 사용자만 이용할 수 있습니다.')
         cls.rate(conn, currency)
+        currency = str(currency).upper()
+        home = cls.home(conn, user_id)
+        cls.validate_units(conn, int(delta), currency)
         value = cls.balance(conn, user_id, currency) + int(delta)
-        limit=(2**53-1)*SCALE if currency=='NWX' else MAX_UNITS
+        limit=(2**53-1)*SCALE if currency == home else MAX_UNITS
         if abs(value) > limit or (value < 0 and not (allow_deficit and user_id == TREASURY_USER_ID)):
             raise ValueError(f'{currency} 잔액이 부족하거나 저장 한도를 초과했습니다.')
-        if currency == 'NWX':
+        if currency == home:
             if delta % SCALE:
-                raise ValueError('NWX 현금은 정수 금액으로 입력해주세요.')
+                raise ValueError(f'{home} 국적 통화 현금은 정수 금액으로 입력해주세요.')
             conn.execute('UPDATE users SET cash=cash+? WHERE user_id=?', (delta//SCALE,user_id))
         else:
-            conn.execute('INSERT INTO currency_wallets(user_id,currency_code,balance_units) VALUES (?,?,?) ON CONFLICT(user_id,currency_code) DO UPDATE SET balance_units=excluded.balance_units', (user_id,currency,value))
+            changed = conn.execute("UPDATE accounts SET balance_units=? WHERE user_id=? AND quote_currency=? "
+                                   "AND account_type='currency_saving'", (value,user_id,currency))
+            if changed.rowcount != 1:
+                raise ValueError(f'{currency} 외환통장을 먼저 개설해주세요.')
         # This is deliberately after the balance change: a brand new currency's
         # first issuance establishes its neutral supply rather than immediately
         # moving its own quote.
@@ -213,10 +217,11 @@ class CurrencyManager:
         with (self.db.readonly() if conn is None else nullcontext(conn)) as conn:
             snapshot = snapshot or CurrencyReadSnapshot(conn)
             home = self.home(conn,user_id)
-            rows = [{'currency_code':'NWX','balance_units':self.balance(conn,user_id,'NWX')}]
-            rows += [dict(r) for r in conn.execute('SELECT currency_code,balance_units FROM currency_wallets WHERE user_id=? ORDER BY currency_code',(str(user_id),))]
-            if not any(r['currency_code']==home for r in rows):
-                rows.append({'currency_code':home,'balance_units':0})
+            rows = [{'currency_code':home,'balance_units':self.balance(conn,user_id,home)}]
+            rows += [dict(r) for r in conn.execute(
+                "SELECT quote_currency AS currency_code,balance_units FROM accounts "
+                "WHERE user_id=? AND account_type='currency_saving' AND quote_currency<>? "
+                "ORDER BY quote_currency", (str(user_id),home))]
             for row in rows:
                 row['decimal_places']=snapshot.precision(row['currency_code'])
                 row['is_foreign'] = row['currency_code'] != home
@@ -241,6 +246,9 @@ class CurrencyManager:
         source=conn.execute("SELECT value FROM settings WHERE key='default_currency'").fetchone()[0]
         home=mapping[0]
         grant=cls.convert(conn,1_000_000*SCALE,source,home)
+        grant=grant//SCALE*SCALE
+        if grant <= 0:
+            raise ValueError('가입 지원금이 국적 통화의 현금 최소 단위보다 작습니다.')
         conn.execute('INSERT INTO users(user_id,nickname,nationality,cash,role,registration_guild_id) VALUES (?,?,?,0,?,?)',(str(user_id),str(nickname),nationality,role,str(guild_id) if guild_id is not None else None))
         cls.change(conn,user_id,home,grant)
         return True
@@ -283,7 +291,9 @@ class CurrencyReadSnapshot:
         if code not in self._rates:
             row = self.row(code)
             raw = row['reference_rate'] if row['reference_rate'] is not None else row['asset_price']
-            if raw is None:
+            if raw is None and code == 'NWX':
+                raw = 1
+            elif raw is None:
                 raise ValueError(f'{code} 환율을 조회할 수 없습니다.')
             value = Fraction(str(raw)) * Fraction(str(row['rate_multiplier']))
             value *= Fraction(str(CurrencyManager.liquidity_multiplier(

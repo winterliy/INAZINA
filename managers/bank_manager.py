@@ -59,7 +59,8 @@ class BankManager:
         try:
             with self.db.atomic(("users", "accounts", "product", "assets", "company")) as conn:
                 product = conn.execute(
-                    "SELECT product_code, name, deposit_amount, status FROM product.saving "
+                    "SELECT product_code,name,deposit_amount,status,quote_currency,product_kind "
+                    "FROM product.saving "
                     "WHERE product_code = ?", (product_code,)
                 ).fetchone()
                 if not product:
@@ -69,6 +70,12 @@ class BankManager:
                     return False, f"❌ 상품 코드 `{product_code}`가 다른 상품·자산 코드와 중복 등록되어 있습니다. SQL Browser에서 정리해주세요."
                 if product["status"] != "active":
                     return False, "❌ 현재 가입할 수 없는 상품입니다."
+                if product['product_kind'] == 'currency_saving':
+                    return False, "❌ 외환통장은 외환통장 개설 기능을 이용해주세요."
+                from managers.currency_manager import CurrencyManager
+                home = CurrencyManager.home(conn,user_id)
+                if product['quote_currency'] != home:
+                    return False, f"❌ 이 예금은 {product['quote_currency']} 상품입니다. 국적 통화 {home} 예금만 일반 계좌로 개설할 수 있습니다."
                 if conn.execute(
                     "SELECT 1 FROM accounts.accounts WHERE user_id = ? AND product_code = ?",
                     (str(user_id), product_code),
@@ -82,25 +89,25 @@ class BankManager:
                     return False, "❌ 상품의 최소 예치금 설정이 올바르지 않습니다."
                 minimum = math.ceil(minimum_value)
                 if deposit_amount < minimum:
-                    return False, f"❌ 최소 예치금은 {minimum:,} NWX입니다."
+                    return False, f"❌ 최소 예치금은 {minimum:,} {home}입니다."
                 cursor = conn.execute(
                     "UPDATE users.users SET cash = cash - ? "
                     f"WHERE user_id = ? AND (status = 'active' OR user_id='{TREASURY_USER_ID}') AND cash >= ?",
                     (deposit_amount, str(user_id), deposit_amount),
                 )
                 if cursor.rowcount != 1:
-                    return False, f"❌ 현금 잔액이 부족합니다. (필요 예치금: {deposit_amount:,} NWX)"
+                    return False, f"❌ 현금 잔액이 부족합니다. (필요 예치금: {deposit_amount:,} {home})"
                 account_number = self._generate_account_number(conn)
                 conn.execute(
                     "INSERT INTO accounts.accounts "
-                    "(account_number, user_id, product_code, balance, password, principal, last_payment_epoch) "
-                    "VALUES (?, ?, ?, ?, ?, ?, unixepoch('now'))",
+                    "(account_number,user_id,product_code,balance,password,principal,last_payment_epoch,quote_currency) "
+                    "VALUES (?, ?, ?, ?, ?, ?, unixepoch('now'),?)",
                     (account_number, str(user_id), product_code, deposit_amount,
-                     self._hash_password(password), deposit_amount),
+                     self._hash_password(password), deposit_amount,home),
                 )
             return True, (
                 f"✅ {product['name']} 계좌가 개설되었습니다.\n"
-                f"계좌번호: `{account_number}` · 예치금: {deposit_amount:,} NWX"
+                f"계좌번호: `{account_number}` · 예치금: {deposit_amount:,} {home}"
             )
         except Exception as exc:
             return False, f"❌ 계좌 개설 처리 중 오류가 발생했습니다: {exc}"
@@ -217,6 +224,10 @@ class BankManager:
                     return False, f"❌ 상품 코드 `{product_code}`가 다른 상품·자산 코드와 중복 등록되어 있습니다. SQL Browser에서 정리해주세요."
                 if product["status"] != "active":
                     return False, "❌ 현재 대출이 불가능한 상품입니다."
+                from managers.currency_manager import CurrencyManager
+                home = CurrencyManager.home(conn,user_id)
+                if product['quote_currency'] != home:
+                    return False, f"❌ 이 대출은 {product['quote_currency']} 상품입니다. 국적 통화 {home} 대출만 이용할 수 있습니다."
                 if conn.execute(
                     "SELECT 1 FROM accounts.loans WHERE user_id = ? AND product_code = ?",
                     (str(user_id), product_code),
@@ -239,7 +250,7 @@ class BankManager:
                     return False, f"❌ 신용 점수가 부족합니다. (요구 점수: {minimum_score}점)"
                 limit = int(round(limit))
                 if limit > 0 and amount > limit:
-                    return False, f"❌ 대출 한도를 초과했습니다. (한도: {limit:,} NWX)"
+                    return False, f"❌ 대출 한도를 초과했습니다. (한도: {limit:,} {home})"
                 conn.execute(
                     "INSERT INTO accounts.loans "
                     "(user_id, product_code, principal, outstanding_balance, last_payment_epoch, "
@@ -251,8 +262,9 @@ class BankManager:
                     "SELECT a.account_number FROM accounts.accounts a "
                     "JOIN product.saving s ON s.product_code = a.product_code "
                     "WHERE a.user_id = ? AND s.issuer IS ? AND a.account_type = 'saving' "
+                    "AND a.quote_currency=? "
                     "ORDER BY a.created_at LIMIT 1",
-                    (str(user_id), product["issuer"]),
+                    (str(user_id), product["issuer"],home),
                 ).fetchone()
                 if payout:
                     payout_number = payout["account_number"]
@@ -268,12 +280,12 @@ class BankManager:
                     conn.execute(
                         "INSERT INTO accounts.accounts "
                         "(account_number, user_id, product_code, balance, password, principal, "
-                        "last_payment_epoch, account_type) "
-                        "VALUES (?, ?, ?, ?, NULL, 0, unixepoch('now'), 'loan_payout')",
-                        (payout_number, str(user_id), product_code, amount),
+                        "last_payment_epoch,account_type,quote_currency) "
+                        "VALUES (?, ?, ?, ?, NULL, 0, unixepoch('now'), 'loan_payout',?)",
+                        (payout_number, str(user_id), product_code, amount,home),
                     )
             return True, (
-                f"✅ 대출이 승인되었습니다. {amount:,} NWX를 발급 은행 계좌에 입금했습니다.\n"
+                f"✅ 대출이 승인되었습니다. {amount:,} {home}를 발급 은행 계좌에 입금했습니다.\n"
                 f"입금 계좌번호: `{payout_number}`"
             )
         except Exception as exc:

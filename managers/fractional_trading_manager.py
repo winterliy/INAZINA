@@ -43,11 +43,9 @@ class FractionalTradingManager:
             raise ValueError('결제 금액 또는 화폐 최소단위를 확인해주세요.')
         if units == 0:
             return
-        if currency == 'NWX':
+        if currency == CurrencyManager.home(conn,user):
             if not self.users._debit_source(conn, str(user), account, units//SCALE):
                 raise ValueError('결제 잔액이 부족합니다.')
-        elif account and account.startswith('__wallet__:'):
-            CurrencyManager.change(conn, user, currency, -units)
         else:
             changed = conn.execute("UPDATE accounts SET balance_units=balance_units-? WHERE account_number=? AND user_id=? AND quote_currency=? AND account_type='currency_saving' AND balance_units>=?",
                                    (units, account, str(user), currency, units))
@@ -57,14 +55,20 @@ class FractionalTradingManager:
     def _credit(self, conn, user, currency, units, account=None, now=None):
         if units <= 0:
             return
-        if currency == 'NWX':
+        if currency == CurrencyManager.home(conn,user):
+            if account and not conn.execute(
+                "SELECT 1 FROM accounts WHERE account_number=? AND user_id=? "
+                "AND account_type IN ('saving','loan_payout')",
+                (account,str(user)),
+            ).fetchone():
+                account = None
             self.book._credit_reserved_source(conn, str(user), account, units//SCALE, int(now or time.time()))
         else:
             from managers.foreign_securities_manager import ForeignSecuritiesManager
             ForeignSecuritiesManager.credit_units(conn, str(user), currency, units, account)
 
     def _funds(self, conn, user, currency, units, now):
-        if currency == 'NWX':
+        if currency == CurrencyManager.home(conn,user):
             funds = self.users._choose_funds(conn, str(user))
             if not funds or funds[0]*SCALE < units:
                 raise ValueError('매수 예치금이 부족합니다.')
@@ -75,10 +79,6 @@ class FractionalTradingManager:
         account = conn.execute("SELECT account_number,balance_units FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'", (str(user), currency)).fetchone()
         if account and account['balance_units'] >= units:
             return account['account_number']
-        if CurrencyManager.home(conn, user) == currency:
-            if CurrencyManager.balance(conn, user, currency) >= units:
-                return '__wallet__:' + currency
-            raise ValueError('기본화폐 잔액이 부족합니다.')
         raise ValueError(f'{currency} 외환통장을 개설하고 예치금을 확인해주세요.')
 
     @staticmethod
@@ -303,7 +303,8 @@ class FractionalTradingManager:
                     if self._held(conn,code,user)-self._reserved(conn,code,user,'sell')<units:
                         raise ValueError('매도 가능 수량이 부족합니다.')
                     gross=raw//quantum*quantum
-                    self._debit(conn,TREASURY_USER_ID,currency,gross,None if currency=='NWX' else '__wallet__:'+currency)
+                    treasury_account=self._funds(conn,TREASURY_USER_ID,currency,gross,now)
+                    self._debit(conn,TREASURY_USER_ID,currency,gross,treasury_account)
                     sold,gain=self._remove_lots(conn,user,code,units,price)
                     self._pay_seller(conn,user,code,currency,gross,sold,gain,now)
                 else:
