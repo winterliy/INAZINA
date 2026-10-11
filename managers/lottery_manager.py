@@ -171,6 +171,19 @@ class LotteryManager:
 
     def process_due(self,now=None):
         now = int(time.time() if now is None else now)
+        # A selling round spends almost all of its lifetime before the close.
+        # Keep those frequent worker polls read-only instead of reserving the
+        # database writer every five seconds.
+        with self.db.readonly() as conn:
+            pending = conn.execute(
+                "SELECT status,close_epoch,draw_epoch FROM lottery_rounds "
+                "ORDER BY round_id DESC LIMIT 1"
+            ).fetchone()
+        if pending and (
+            (pending['status'] == 'selling' and now < int(pending['close_epoch']))
+            or (pending['status'] == 'closed' and now < int(pending['draw_epoch']))
+        ):
+            return None
         with self.db.atomic() as conn:
             round = self._ensure(conn,now)
             if now>=round['close_epoch'] and round['status']=='selling':

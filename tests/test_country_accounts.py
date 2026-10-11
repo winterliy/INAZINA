@@ -3,6 +3,7 @@ import unittest
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from database.db_manager import DBManager
 from database.user_db import TREASURY_USER_ID, UserDB
@@ -134,6 +135,17 @@ class CountryAccountTests(unittest.TestCase):
     def test_internal_user_id_decodes_non_ascii_country_id(self):
         handler = SimpleNamespace(headers={"x-inazina-user-id": "%EB%82%99%EC%9B%90"})
         self.assertEqual(server.internal_user_id(handler), "낙원")
+
+    def test_json_response_ignores_client_disconnect_during_headers(self):
+        handler = object.__new__(server.Handler)
+        handler.send_response = Mock()
+        handler.send_header = Mock()
+        handler.end_headers = Mock(side_effect=BrokenPipeError)
+        handler.wfile = Mock()
+
+        handler.send_json(200, {"ok": True})
+
+        handler.wfile.write.assert_not_called()
 
     def test_legacy_treasuries_merge_into_nation_account(self):
         with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:

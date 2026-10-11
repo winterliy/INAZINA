@@ -5,6 +5,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from database import DatabaseManager
 from database.db_manager import DBManager
@@ -56,6 +57,11 @@ class MarketSessionTests(unittest.TestCase):
         self.assertFalse(self.session.control("alice", "close", now=1000)[0])
         self.assertFalse(self.session.control("admin", "circuit", stage=True, now=1000)[0])
         self.assertEqual(self.session.get_state(now=1000), before)
+
+    def test_no_due_session_poll_does_not_reserve_writer(self):
+        with patch.object(self.db, "atomic", side_effect=AssertionError("unexpected writer")):
+            states = self.session.process_due(now=1000)
+        self.assertEqual(states["CURRENCY"]["status"], "open")
 
     def test_manual_halt_freezes_price_history_garch_and_event_then_shifts_once(self):
         self.event(percent=0)

@@ -55,32 +55,23 @@ print "HTS:       http://127.0.0.1:4311"
 print "API:       http://127.0.0.1:4312/api/health"
 print "로그는 아래에 서비스별로 표시됩니다."
 
-if lsof -nP -iTCP:4312 -sTCP:LISTEN >/dev/null 2>&1 || lsof -nP -iTCP:4313 -sTCP:LISTEN >/dev/null 2>&1; then
-  print "API 또는 Python 데이터 서비스가 이미 실행 중이라 건너뜁니다."
-else
-  npm run dev:api &
-  pids+=("$!")
+if lsof -nP -iTCP:4310 -sTCP:LISTEN >/dev/null 2>&1 \
+  || lsof -nP -iTCP:4311 -sTCP:LISTEN >/dev/null 2>&1 \
+  || lsof -nP -iTCP:4312 -sTCP:LISTEN >/dev/null 2>&1 \
+  || lsof -nP -iTCP:4313 -sTCP:LISTEN >/dev/null 2>&1 \
+  || pgrep -f "$ROOT/run.py" >/dev/null 2>&1; then
+  print -u2 "기존 INAZINA 서비스가 실행 중입니다."
+  print -u2 "이전 실행 터미널에서 Ctrl+C로 전체 종료한 뒤 다시 실행해주세요."
+  exit 1
 fi
 
-if lsof -nP -iTCP:4310 -sTCP:LISTEN >/dev/null 2>&1; then
-  print "Dashboard가 이미 실행 중이라 건너뜁니다."
-else
-  npm run dev:dashboard &
-  pids+=("$!")
-fi
-
-if lsof -nP -iTCP:4311 -sTCP:LISTEN >/dev/null 2>&1; then
-  print "HTS가 이미 실행 중이라 건너뜁니다."
-else
-  npm run dev:hts &
-  pids+=("$!")
-fi
-
-if pgrep -f "$ROOT/run.py" >/dev/null 2>&1; then
-  print "Discord 봇이 이미 실행 중이라 건너뜁니다."
-else
-  "$PYTHON" "$ROOT/run.py" &
-  pids+=("$!")
-fi
+npm run dev:api &
+pids+=("$!")
+npm run dev:dashboard &
+pids+=("$!")
+npm run dev:hts &
+pids+=("$!")
+"$PYTHON" "$ROOT/run.py" &
+pids+=("$!")
 
 wait

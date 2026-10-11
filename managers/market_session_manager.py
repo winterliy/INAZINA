@@ -106,6 +106,22 @@ class MarketSessionManager:
         return {exchange_id: cls._row(conn, exchange_id) for exchange_id in cls.exchange_ids(conn)}
 
     def process_due(self, now=None):
+        now = int(time.time() if now is None else now)
+        # Most polls have nothing to resume.  Check from a WAL read snapshot so
+        # the five-second worker does not compete for SQLite's single writer.
+        with self.db.readonly() as conn:
+            rows = conn.execute(
+                "SELECT * FROM market_exchanges ORDER BY exchange_id"
+            ).fetchall()
+            states = {str(row["exchange_id"]): dict(row) for row in rows}
+            due = any(
+                row["status"] != "open"
+                and row["resume_epoch"] is not None
+                and int(row["resume_epoch"]) <= now
+                for row in rows
+            )
+        if not due:
+            return states
         with self.db.atomic(("system",)) as conn:
             return self.process_all_conn(conn, now)
 

@@ -328,6 +328,12 @@ class LatestRequestsTests(unittest.TestCase):
         self.assertEqual(result['sales_total'],0)
         self.assertTrue(all(r['winners']==0 and r['paid']==0 for r in result['result'].values()))
 
+    def test_lottery_poll_before_close_does_not_reserve_writer(self):
+        lottery=self.bot.lottery_mgr
+        current=lottery.current(now=1000000)
+        with patch.object(self.db,'atomic',side_effect=AssertionError('unexpected writer')):
+            self.assertIsNone(lottery.process_due(now=current['close_epoch']-1))
+
     def test_lottery_purchase_is_atomic_idempotent_and_limited(self):
         lottery=self.bot.lottery_mgr
         current=lottery.current(now=1000000)
