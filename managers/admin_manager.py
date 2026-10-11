@@ -49,8 +49,8 @@ class AdminManager:
         else:
             mode, value = "percent", percent
         from managers.market_manager import MarketManager
+        market = MarketManager(self.db)
         if asset_code:
-            market = MarketManager(self.db)
             try:
                 asset = market.get_asset_info(asset_code)
                 if not asset:

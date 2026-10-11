@@ -9,6 +9,7 @@ database/*.db
 database/*.db-shm
 database/*.db-wal
 database/.inazina-schema-init.lock
+database/.inazina-bot.lock
 node_modules/
 dist/
 coverage/

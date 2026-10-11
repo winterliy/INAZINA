@@ -76,7 +76,11 @@ else
   pids+=("$!")
 fi
 
-"$PYTHON" "$ROOT/run.py" &
-pids+=("$!")
+if pgrep -f "$ROOT/run.py" >/dev/null 2>&1; then
+  print "Discord 봇이 이미 실행 중이라 건너뜁니다."
+else
+  "$PYTHON" "$ROOT/run.py" &
+  pids+=("$!")
+fi
 
 wait
