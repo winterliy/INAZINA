@@ -68,7 +68,14 @@ class CorporateActionsManager:
 
     @staticmethod
     def _record(conn, key, kind, source, target, payload, now):
-        return
+        cursor = conn.execute(
+            'INSERT OR IGNORE INTO corporate_action_records '
+            '(operation_key,action_kind,source_code,target_code,payload_json,created_epoch) '
+            'VALUES (?,?,?,?,?,?)',
+            (str(key),str(kind),str(source),None if target is None else str(target),
+             json.dumps(payload,ensure_ascii=False,sort_keys=True),int(now)),
+        )
+        return cursor.lastrowid if cursor.rowcount else None
 
     @staticmethod
     def _listing(conn, code):
@@ -190,6 +197,12 @@ class CorporateActionsManager:
         return bool(conn.execute("SELECT 1 FROM company WHERE status='active' AND COALESCE(parent_company_code,company_code)=? AND dividend_priority>? AND dividend_is_active=1 AND dividend_cycle_seconds>0 AND dividend_next_epoch<=? AND ((dividend_mode='fixed' AND dividend_per_share>0) OR (dividend_mode='percent' AND dividend_percent>0)) LIMIT 1", (issuer,priority,now)).fetchone())
 
     def _distribute(self, conn, listing, per_share, kind, due, key, now, *, percent=None, reference_price=None):
+        existing = conn.execute(
+            'SELECT distribution_id,gross_amount FROM dividend_distributions WHERE operation_key=?',
+            (str(key),),
+        ).fetchone()
+        if existing:
+            return int(existing['gross_amount']), True
         if self._priority_blocked(conn, listing, now):
             raise ValueError('이 법인의 우선순위가 높은 주식에 미지급 배당이 있어 배당을 보류합니다.')
         holders = self._holders(conn, listing['code'])
@@ -207,10 +220,21 @@ class CorporateActionsManager:
         if gross < owed and not cumulative:
             raise ValueError('배당 재원이 부족합니다.')
         amounts = self._allocate(gross,[amount for _,_,amount in payments]) if owed and gross < owed else [amount for _,_,amount in payments]
+        cursor = conn.execute('''INSERT INTO dividend_distributions
+            (operation_key,dividend_kind,asset_code,due_epoch,per_share,dividend_mode,
+             dividend_percent,reference_price,gross_amount,entitlement_amount,deferred_amount,
+             quote_currency,funding_source,issuer_code,created_epoch)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+            (str(key),kind,listing['code'],int(due),int(per_share),mode,percent,reference_price,
+             gross,owed,owed-gross,currency,funding,issuer,int(now)))
+        distribution = cursor.lastrowid
         self._debit_dividend(conn,issuer,funding,currency,gross)
-        distribution = None
         for (user,quantity,entitlement),amount in zip(payments,amounts):
             tax,net_units = self._credit_dividend(conn,user,listing['code'],kind,amount,currency,now)
+            conn.execute('''INSERT INTO dividend_payments
+                (distribution_id,user_id,quantity,gross_amount,tax_amount,net_amount_units,
+                 quote_currency,created_epoch) VALUES (?,?,?,?,?,?,?,?)''',
+                (distribution,user,quantity,amount,tax,net_units,currency,int(now)))
             if cumulative and entitlement > amount:
                 conn.execute('INSERT INTO preferred_dividend_claims(issuer_code,asset_code,distribution_id,user_id,quantity,gross_amount,quote_currency,funding_source,due_epoch,created_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)',
                              (issuer,listing['code'],distribution,user,quantity,entitlement-amount,currency,funding,due,now))
