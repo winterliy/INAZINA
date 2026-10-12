@@ -6,6 +6,7 @@ import time
 from database.user_db import TREASURY_USER_ID
 from functions.admin_access import resolve_user_role
 from functions.money import round_money
+from managers.rate_manager import RateManager
 
 FUND_TYPES = {"mutual_fund", "index_fund"}
 PRODUCT_NAMES = {"stock_future": "주식 선물", "corporate_bond": "회사채", "mutual_fund": "일반 펀드",
@@ -44,6 +45,10 @@ class InvestmentManager:
         now = int(time.time())
         try:
             with self.db.atomic(("users", "accounts", "assets", "product", "company")) as conn:
+                if product_type == "corporate_bond":
+                    RateManager.require_legal_rate(
+                        conn, rate, exchange_id=exchange_id, currency_code="NWX"
+                    )
                 if self.db.code_locations(conn, code):
                     return False, "❌ 이미 사용 중인 코드입니다."
                 if product_type == "commodity_spot":

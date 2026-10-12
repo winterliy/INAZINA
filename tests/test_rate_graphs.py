@@ -62,7 +62,7 @@ class RateGraphTests(unittest.TestCase):
             ("window boundary is effective", "base_rate",
              [(0, 3), (100, 4)], 100, 150,
              [(100.0, 4.0), (150.0, 4.0)]),
-            ("zero and hundred are retained", "statutory_rate",
+            ("zero and hundred are retained", "legal_max_rate",
              [(0, 0), (120, 100)], 100, 150,
              [(100.0, 0.0), (120.0, 100.0), (150.0, 100.0)]),
         )
@@ -83,20 +83,15 @@ class RateGraphTests(unittest.TestCase):
         self.assertEqual(self.rates.get_rate_history("base_rate", 100, now=150),
                          [(100.0, 9.0), (150.0, 9.0)])
 
-    def test_chart_read_does_not_change_nonretroactive_interest_or_history(self):
-        self.history("statutory_rate", [(0, 5), (1000, 10)])
-        with self.db.atomic(("system",)) as conn:
-            previous = RateManager.interest_between(conn, "statutory_rate", 100000, 0, 2000)
+    def test_chart_read_does_not_change_legal_maximum_or_history(self):
+        self.history("legal_max_rate", [(0, 5), (1000, 10)])
         records = [tuple(row) for row in self.db.system.execute("SELECT * FROM rate_history")]
-        self.rates.get_rate_history("statutory_rate", 500, now=1500)
-        with self.db.atomic(("system",)) as conn:
-            after = RateManager.interest_between(conn, "statutory_rate", 100000, 0, 2000)
-        self.assertEqual(previous, after)
+        self.rates.get_rate_history("legal_max_rate", 500, now=1500)
         self.assertEqual(records, [tuple(row) for row in self.db.system.execute("SELECT * FROM rate_history")])
 
     def test_daily_movement_cleanup_preserves_all_rate_changes(self):
         self.history("base_rate", [(0, 3), (60, 4)])
-        self.history("statutory_rate", [(0, 5), (70, 6)])
+        self.history("legal_max_rate", [(0, 5), (70, 6)])
         records = [tuple(row) for row in self.db.system.execute("SELECT * FROM rate_history")]
         self.assertTrue(MovementHistoryManager(self.db).cleanup(now=86400 * 2))
         self.assertEqual(records, [tuple(row) for row in self.db.system.execute("SELECT * FROM rate_history")])
@@ -155,7 +150,7 @@ class RateGraphTests(unittest.TestCase):
         self.assertTrue(any(y0 == y1 and abs(x0 - x1) > 100 for x0, y0, x1, y1 in segments))
 
     def test_other_user_cannot_operate_rate_view(self):
-        view = PriceMovementView(self.bot, "alice", "법정이자")
+        view = PriceMovementView(self.bot, "alice", "법정최고이자")
         response = SimpleNamespace(send_message=AsyncMock())
         allowed = asyncio.run(view.interaction_check(SimpleNamespace(user=SimpleNamespace(id="bob"), response=response)))
         self.assertFalse(allowed)
@@ -173,14 +168,14 @@ class RateGraphTests(unittest.TestCase):
         interaction.response.defer.assert_awaited_once()
         interaction.edit_original_response.assert_awaited_once()
         options = interaction.edit_original_response.call_args.kwargs
-        self.assertIn("법정이자", options["embed"].title)
+        self.assertIn("법정최고이자", options["embed"].title)
         self.assertEqual(options["attachments"][0].filename, "movement.png")
         self.assertEqual(options["attachments"][0].fp.read(8), b"\x89PNG\r\n\x1a\n")
         options["attachments"][0].close()
         return options
 
     def test_rate_period_callback_edits_chart_and_keeps_selected_period(self):
-        view = PriceMovementView(self.bot, "alice", "법정이자")
+        view = PriceMovementView(self.bot, "alice", "법정최고이자")
         view.period_select._values = ["60"]
         interaction = self.rate_interaction()
         asyncio.run(view.select_period(interaction))
@@ -191,8 +186,8 @@ class RateGraphTests(unittest.TestCase):
         self.assertEqual([option.value for option in view.period_select.options if option.default], ["60"])
 
     def test_rate_refresh_callback_reads_new_browser_rate_and_edits_attachment(self):
-        view = PriceMovementView(self.bot, "alice", "법정이자")
-        self.db.system.set_setting("statutory_rate", "7.25")
+        view = PriceMovementView(self.bot, "alice", "법정최고이자")
+        self.db.system.set_setting("legal_max_rate", "7.25")
         interaction = self.rate_interaction()
         asyncio.run(view.refresh_button.callback(interaction))
         options = self.check_edited_rate_chart(interaction)
@@ -202,9 +197,9 @@ class RateGraphTests(unittest.TestCase):
         registry = SlashCommandRegistry(self.bot)
         registry._prepare = AsyncMock(return_value=("alice", None, "user"))
         registry._reply = AsyncMock()
-        asyncio.run(registry.movement(SimpleNamespace(), 종목="법정이자"))
+        asyncio.run(registry.movement(SimpleNamespace(), 종목="법정최고이자"))
         options = registry._reply.call_args.kwargs
-        self.assertIn("법정이자", options["embed"].title)
+        self.assertIn("법정최고이자", options["embed"].title)
         self.assertIsInstance(options["view"], PriceMovementView)
         self.assertEqual(options["file"].filename, "movement.png")
         self.assertEqual(options["file"].fp.read(8), b"\x89PNG\r\n\x1a\n")

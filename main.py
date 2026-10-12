@@ -69,6 +69,14 @@ class InazinaBot(discord.Client):
         self._last_option_error_log = 0.0
         self._last_product_error_log = 0.0
         self._resources_closed = False
+        # SQLite has one writer.  The market tick and scheduled settlement loop
+        # must therefore never enter their write phases at the same time.
+        self._background_write_lock = asyncio.Lock()
+
+    async def _run_background_write(self, callback, *args):
+        """Run one blocking background mutation without overlapping another one."""
+        async with self._background_write_lock:
+            return await asyncio.to_thread(callback, *args)
 
     async def setup_hook(self):
         from functions.slash_commands import SlashCommandRegistry
@@ -162,7 +170,7 @@ class InazinaBot(discord.Client):
         """Update prices off the Discord event loop; busy DB ticks are skipped."""
         while not self.is_closed():
             try:
-                await asyncio.to_thread(self.market_mgr.update_prices)
+                await self._run_background_write(self.market_mgr.update_prices)
             except Exception as e:
                 now = asyncio.get_running_loop().time()
                 if now - self._last_market_error_log >= self.BACKGROUND_ERROR_LOG_INTERVAL_SECONDS:
@@ -175,15 +183,15 @@ class InazinaBot(discord.Client):
         while not self.is_closed():
             try:
                 try:
-                    await asyncio.to_thread(self.market_session.process_due)
-                    await asyncio.to_thread(self.corporate_actions.process_due)
+                    await self._run_background_write(self.market_session.process_due)
+                    await self._run_background_write(self.corporate_actions.process_due)
                 except Exception as exc:
                     now = asyncio.get_running_loop().time()
                     if now - self._last_product_error_log >= self.BACKGROUND_ERROR_LOG_INTERVAL_SECONDS:
                         self._last_product_error_log = now
                         print(f"[Dividend/Session Worker] {type(exc).__name__}: {exc}")
                 try:
-                    await asyncio.to_thread(self.lottery_mgr.process_due)
+                    await self._run_background_write(self.lottery_mgr.process_due)
                 except Exception as exc:
                     now = asyncio.get_running_loop().time()
                     if now - self._last_product_error_log >= self.BACKGROUND_ERROR_LOG_INTERVAL_SECONDS:
@@ -195,7 +203,7 @@ class InazinaBot(discord.Client):
                                           ('Futures',self.futures_mgr.settle_positions),
                                           ('Corporate Bond',self.investment_mgr.redeem_corporate_bonds)):
                         try:
-                            settlement_results.extend(await asyncio.to_thread(settle))
+                            settlement_results.extend(await self._run_background_write(settle))
                             if label=='ELS' and self.els_mgr.last_settlement_errors:
                                 raise ValueError(str(self.els_mgr.last_settlement_errors))
                         except Exception as exc:
@@ -220,7 +228,7 @@ class InazinaBot(discord.Client):
                         self._last_product_error_log = now
                         print(f"[Product Worker] {type(exc).__name__}: {exc}")
                 try:
-                    option_expirations = await asyncio.to_thread(
+                    option_expirations = await self._run_background_write(
                         self.option_mgr.expire_matured
                     )
                 except Exception as e:
@@ -269,7 +277,7 @@ class InazinaBot(discord.Client):
                         await recipient.send(embed=notice)
                     except Exception as exc:
                         print(f"[Option Expiry Notice Error] {result['user_id']}: {exc}")
-                bond_redemptions = await asyncio.to_thread(
+                bond_redemptions = await self._run_background_write(
                     self.treasury_bond_mgr.redeem_matured
                 )
                 for bond in bond_redemptions:
@@ -288,7 +296,7 @@ class InazinaBot(discord.Client):
                         await recipient.send(embed=notice)
                     except (discord.HTTPException, ValueError, TypeError):
                         pass
-                paid_count, missed_count, payment_notifications = await asyncio.to_thread(
+                paid_count, missed_count, payment_notifications = await self._run_background_write(
                     self.bank_mgr.process_scheduled_loan_payments
                 )
                 for result in payment_notifications:

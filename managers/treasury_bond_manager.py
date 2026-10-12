@@ -7,6 +7,7 @@ from database import DatabaseManager
 from database.user_db import TREASURY_USER_ID
 from functions.money import parse_money, round_money
 from functions.tax_calc import calculate_income_tax
+from managers.rate_manager import RateManager
 
 
 class TreasuryBondManager:
@@ -54,14 +55,17 @@ class TreasuryBondManager:
             return False, "❌ 국채 이름은 1~100자로 입력해주세요."
         if not exchange_id or len(exchange_id) > 100:
             return False, "❌ 거래소 ID는 1~100자로 입력해주세요."
-        if not math.isfinite(annual_rate) or annual_rate < 0 or annual_rate > 1000:
-            return False, "❌ 연이율은 0~1,000% 사이로 입력해주세요."
+        if not math.isfinite(annual_rate) or annual_rate < 0 or annual_rate > 100:
+            return False, "❌ 연이율은 0~100% 사이로 입력해주세요."
         if not 1 <= maturity_days <= 36500:
             return False, "❌ 만기는 1~36,500일로 입력해주세요."
         if total_supply % face_value:
             return False, "❌ 총 발행한도는 고정 액면가의 배수여야 합니다."
         try:
             with self.db.atomic(("users", "accounts", "assets", "product", "company")) as conn:
+                RateManager.require_legal_rate(
+                    conn, annual_rate, exchange_id=exchange_id, currency_code="NWX"
+                )
                 if DatabaseManager.code_locations(conn, code):
                     return False, f"❌ 코드 `{code}`가 다른 상품·자산에서 사용 중입니다."
                 if conn.execute(

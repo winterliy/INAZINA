@@ -5,7 +5,7 @@ from functions.admin_embeds import admin_help_embed,admin_response,creation_argu
 
 class AdminHelpView(discord.ui.View):
     PAGES=(('main','📖 메인'),('products','📦 상품 관리'),('citizens','👥 시민 · 잔고'),('market','📈 시장 · 환율 · 사건'),
-           ('gamble','🎲 도박 · 세금'),('rates','🏦 금리 · 법정이자'),('lottery','🎟️ 복권'),('national','🏛️ 국가 명의 기능'),
+           ('gamble','🎲 도박 · 세금'),('rates','🏦 금리 · 법정최고이자'),('lottery','🎟️ 복권'),('national','🏛️ 국가 명의 기능'),
            ('structured','🧾 우선주 · ELS'))
     def __init__(self,bot,owner,national_commands,guild=None):
         super().__init__(timeout=300)
@@ -31,7 +31,7 @@ class AdminHelpView(discord.ui.View):
             embed.description='\n\n'.join(f'**{category_label}**' for category_key,category_label in self.PAGES if category_key!='main')
         titles={'main':(),'products':('📦 상품 관리','🏢 기업 · 배당','🧩 상품생성 인자','📦 상품생성 예시'),
                 'citizens':('👥 시민 · 잔고',),'market':('📈 시장 · 환율','📰 사건 설정'),
-                'gamble':('🎲 도박 · 세금',),'rates':('🏦 금리 · 법정이자',),
+                'gamble':('🎲 도박 · 세금',),'rates':('🏦 금리 · 법정최고이자',),
                 'lottery':('🎟️ 복권 관리',),'national':('🏛️ 국가 명의 일반 기능',),
                 'structured':('🧾 ELS 관리',)}[key]
         for field in self.source.fields:

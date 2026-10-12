@@ -120,8 +120,11 @@ class SystemDB(DBManager):
             start_epoch INTEGER NOT NULL,
             end_epoch INTEGER NOT NULL CHECK(end_epoch > start_epoch)
         )""")
-        for key, value in (("base_rate", "3"), ("statutory_rate", "5"), ("tax_percent", "3")):
+        for key, value in (("base_rate", "3"), ("legal_max_rate", "20"), ("tax_percent", "3")):
             self.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
+        # The former statutory rate accrued extra interest after loan maturity.
+        # A legal maximum is a cap instead, so do not migrate the old value.
+        self.execute("DELETE FROM settings WHERE key='statutory_rate'")
         self._init_gamble_triggers()
         self._init_rate_triggers()
         self.execute("""CREATE TABLE IF NOT EXISTS market_events (
@@ -253,12 +256,13 @@ class SystemDB(DBManager):
         self.execute("DROP TABLE IF EXISTS market_auto_targets")
 
     def _init_rate_triggers(self):
-        """Keep browser edits validated and synchronized with dated interest."""
+        """Keep browser edits to policy/default rate settings valid."""
         for operation in ("INSERT", "UPDATE OF key, value"):
             suffix = "insert" if operation == "INSERT" else "update"
-            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_settings_rate_validate_{suffix}
+            self.execute(f"DROP TRIGGER IF EXISTS trg_settings_rate_validate_{suffix}")
+            self.execute(f"""CREATE TRIGGER trg_settings_rate_validate_{suffix}
                 BEFORE {operation} ON settings
-                WHEN NEW.key IN ('base_rate', 'statutory_rate')
+                WHEN NEW.key IN ('base_rate', 'legal_max_rate')
                 BEGIN
                     SELECT CASE WHEN json_valid(NEW.value) = 0
                         THEN RAISE(ABORT, 'Rate must be a number between 0 and 100') END;

@@ -1001,7 +1001,7 @@ class EconomyTests(unittest.TestCase):
         self.assertTrue({"setup", "register", "사건", "상품등록", "기본소득"}.isdisjoint(names))
         self.assertTrue({"내옵션", "외환계좌", "국적", "내외환", "환율", "내자산"}.isdisjoint(names))
         self.assertTrue({"회생신청", "파산신청"}.issubset(names))
-        self.assertTrue({"기준금리", "법정이자", "펀드가입", "펀드환매", "선물증거금"}.issubset(names))
+        self.assertTrue({"기준금리", "법정최고이자", "펀드가입", "펀드환매", "선물증거금"}.issubset(names))
         for name in ("회생신청", "파산신청"):
             command = next(command for command in tree.commands if command.name == name)
             self.assertEqual(command.parameters, [])
@@ -1039,7 +1039,7 @@ class EconomyTests(unittest.TestCase):
             )
             self.assertTrue(parameter.required)
             self.assertFalse(parameter.autocomplete)
-        for name in ("기준금리", "법정이자"):
+        for name in ("기준금리", "법정최고이자"):
             parameter = next(command for command in tree.commands if command.name == name).parameters[0]
             self.assertEqual(parameter.name, "국가")
             self.assertTrue(parameter.required)

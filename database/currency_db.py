@@ -38,22 +38,24 @@ class CurrencyDB(DBManager):
             nationality TEXT PRIMARY KEY, currency_code TEXT NOT NULL REFERENCES currencies(code))""")
         country_columns = {row[1] for row in self.execute("PRAGMA table_info(country_currencies)")}
         added_base_rate = 'base_rate' not in country_columns
-        added_statutory_rate = 'statutory_rate' not in country_columns
+        added_legal_max_rate = 'legal_max_rate' not in country_columns
         if added_base_rate:
             self.execute("ALTER TABLE country_currencies ADD COLUMN base_rate REAL NOT NULL DEFAULT 0 "
                          "CHECK(base_rate BETWEEN 0 AND 100)")
-        if added_statutory_rate:
-            self.execute("ALTER TABLE country_currencies ADD COLUMN statutory_rate REAL NOT NULL DEFAULT 0 "
-                         "CHECK(statutory_rate BETWEEN 0 AND 100)")
+        if added_legal_max_rate:
+            self.execute("ALTER TABLE country_currencies ADD COLUMN legal_max_rate REAL NOT NULL DEFAULT 20 "
+                         "CHECK(legal_max_rate BETWEEN 0 AND 100)")
+        if 'statutory_rate' in country_columns:
+            self.execute("ALTER TABLE country_currencies DROP COLUMN statutory_rate")
         self.execute("INSERT OR IGNORE INTO country_currencies(nationality,currency_code) VALUES ('낙원','NWX')")
-        # Preserve the former game-wide rates once; newly added countries start
-        # deregulated until an administrator assigns their own values.
+        # Newly added countries receive an independent default, which an
+        # administrator can change without affecting any other nationality.
         if added_base_rate:
             self.execute("UPDATE country_currencies SET base_rate=COALESCE("
                          "(SELECT CAST(value AS REAL) FROM settings WHERE key='base_rate'),0)")
-        if added_statutory_rate:
-            self.execute("UPDATE country_currencies SET statutory_rate=COALESCE("
-                         "(SELECT CAST(value AS REAL) FROM settings WHERE key='statutory_rate'),0)")
+        if added_legal_max_rate:
+            self.execute("UPDATE country_currencies SET legal_max_rate=COALESCE("
+                         "(SELECT CAST(value AS REAL) FROM settings WHERE key='legal_max_rate'),20)")
         self._migrate_currency_wallets()
         self._normalize_home_currency_accounts()
         self.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('currency_exchange_fee_percent','0.1')")
@@ -62,7 +64,121 @@ class CurrencyDB(DBManager):
             columns = {r[1] for r in self.execute(f'PRAGMA table_info({table})')}
             if 'quote_currency' not in columns:
                 self.execute(f"ALTER TABLE {table} ADD COLUMN quote_currency TEXT NOT NULL DEFAULT 'NWX'")
+        self._init_legal_rate_caps()
         self._seed_liquidity_states()
+
+    def _init_legal_rate_caps(self):
+        """Keep every interest-bearing product within its nationality's cap.
+
+        Savings and loans are attached to a currency. If several nationalities
+        share it, the strictest cap wins. Bonds use their exchange nationality,
+        then fall back to the currency/global cap when an exchange is unmapped.
+        """
+        currency_cap = """COALESCE(
+            (SELECT MIN(c.legal_max_rate) FROM country_currencies c
+             WHERE c.currency_code=NEW.quote_currency),
+            CAST((SELECT value FROM settings WHERE key='legal_max_rate') AS REAL), 20)"""
+        exchange_cap = """COALESCE(
+            (SELECT c.legal_max_rate FROM market_exchanges e
+             JOIN country_currencies c ON c.nationality=e.nationality
+             WHERE e.exchange_id=NEW.exchange_id),
+            (SELECT MIN(c.legal_max_rate) FROM country_currencies c
+             WHERE c.currency_code=COALESCE(NEW.quote_currency,'NWX')),
+            CAST((SELECT value FROM settings WHERE key='legal_max_rate') AS REAL), 20)"""
+        definitions = (
+            ("saving", "interest_rate", currency_cap, None),
+            ("liability", "interest_rate", currency_cap, None),
+            ("investment", "annual_rate", exchange_cap,
+             "NEW.product_type IN ('corporate_bond') AND "),
+            ("treasury_bond_products", "annual_rate", exchange_cap, None),
+        )
+        for table, rate_column, cap, condition in definitions:
+            for operation in ("INSERT", f"UPDATE OF {rate_column}, quote_currency, exchange_id"):
+                # Not every product table has both routing columns.
+                if table in {"saving", "liability"}:
+                    operation = "INSERT" if operation == "INSERT" else f"UPDATE OF {rate_column}, quote_currency"
+                if table == "treasury_bond_products":
+                    operation = "INSERT" if operation == "INSERT" else f"UPDATE OF {rate_column}, exchange_id, quote_currency"
+                suffix = "insert" if operation == "INSERT" else "update"
+                trigger = f"trg_{table}_legal_max_{suffix}"
+                self.execute(f'DROP TRIGGER IF EXISTS "{trigger}"')
+                self.execute(f'''CREATE TRIGGER "{trigger}" BEFORE {operation} ON "{table}"
+                    WHEN {condition or ''}(
+                        NEW.{rate_column} IS NULL OR NEW.{rate_column} < 0
+                        OR NEW.{rate_column} > {cap}
+                    )
+                    BEGIN
+                        SELECT RAISE(ABORT, '상품 이율이 해당 국적의 법정최고이자를 초과합니다.');
+                    END''')
+
+        for name in ("trg_country_legal_max_insert", "trg_country_legal_max_update"):
+            self.execute(f'DROP TRIGGER IF EXISTS "{name}"')
+        clamp = """
+            UPDATE saving SET interest_rate=MIN(interest_rate,
+                (SELECT MIN(c.legal_max_rate) FROM country_currencies c
+                 WHERE c.currency_code=saving.quote_currency))
+                WHERE quote_currency=NEW.currency_code;
+            UPDATE liability SET interest_rate=MIN(interest_rate,
+                (SELECT MIN(c.legal_max_rate) FROM country_currencies c
+                 WHERE c.currency_code=liability.quote_currency))
+                WHERE quote_currency=NEW.currency_code;
+            UPDATE investment SET annual_rate=MIN(annual_rate,NEW.legal_max_rate)
+                WHERE product_type='corporate_bond' AND exchange_id IN
+                (SELECT exchange_id FROM market_exchanges WHERE nationality=NEW.nationality);
+            UPDATE treasury_bond_products SET annual_rate=MIN(annual_rate,NEW.legal_max_rate)
+                WHERE exchange_id IN
+                (SELECT exchange_id FROM market_exchanges WHERE nationality=NEW.nationality);
+            UPDATE treasury_bond_holdings SET annual_rate=MIN(annual_rate,NEW.legal_max_rate)
+                WHERE product_code IN (SELECT product_code FROM treasury_bond_products
+                    WHERE exchange_id IN (SELECT exchange_id FROM market_exchanges
+                                          WHERE nationality=NEW.nationality));
+        """
+        self.execute(f'''CREATE TRIGGER trg_country_legal_max_insert
+            AFTER INSERT ON country_currencies BEGIN {clamp} END''')
+        self.execute(f'''CREATE TRIGGER trg_country_legal_max_update
+            AFTER UPDATE OF legal_max_rate, currency_code ON country_currencies
+            BEGIN {clamp} END''')
+        self.execute('DROP TRIGGER IF EXISTS "trg_settings_legal_max_clamp"')
+        self.execute('''CREATE TRIGGER trg_settings_legal_max_clamp
+            AFTER UPDATE OF value ON settings WHEN NEW.key='legal_max_rate'
+            BEGIN
+                UPDATE saving SET interest_rate=MIN(interest_rate,COALESCE(
+                    (SELECT MIN(c.legal_max_rate) FROM country_currencies c
+                     WHERE c.currency_code=saving.quote_currency),CAST(NEW.value AS REAL)));
+                UPDATE liability SET interest_rate=MIN(interest_rate,COALESCE(
+                    (SELECT MIN(c.legal_max_rate) FROM country_currencies c
+                     WHERE c.currency_code=liability.quote_currency),CAST(NEW.value AS REAL)));
+                UPDATE investment SET annual_rate=MIN(annual_rate,COALESCE(
+                    (SELECT c.legal_max_rate FROM market_exchanges e
+                     JOIN country_currencies c ON c.nationality=e.nationality
+                     WHERE e.exchange_id=investment.exchange_id),CAST(NEW.value AS REAL)))
+                    WHERE product_type='corporate_bond';
+                UPDATE treasury_bond_products SET annual_rate=MIN(annual_rate,COALESCE(
+                    (SELECT c.legal_max_rate FROM market_exchanges e
+                     JOIN country_currencies c ON c.nationality=e.nationality
+                     WHERE e.exchange_id=treasury_bond_products.exchange_id),CAST(NEW.value AS REAL)));
+                UPDATE treasury_bond_holdings SET annual_rate=MIN(annual_rate,COALESCE(
+                    (SELECT p.annual_rate FROM treasury_bond_products p
+                     WHERE p.product_code=treasury_bond_holdings.product_code),annual_rate));
+            END''')
+
+        # Bring legacy rows under the new cap once during schema initialization.
+        self.execute("""UPDATE saving SET interest_rate=MIN(interest_rate,COALESCE(
+            (SELECT MIN(c.legal_max_rate) FROM country_currencies c
+             WHERE c.currency_code=saving.quote_currency),20))""")
+        self.execute("""UPDATE liability SET interest_rate=MIN(interest_rate,COALESCE(
+            (SELECT MIN(c.legal_max_rate) FROM country_currencies c
+             WHERE c.currency_code=liability.quote_currency),20))""")
+        self.execute("""UPDATE investment SET annual_rate=MIN(annual_rate,COALESCE(
+            (SELECT c.legal_max_rate FROM market_exchanges e JOIN country_currencies c
+             ON c.nationality=e.nationality WHERE e.exchange_id=investment.exchange_id),20))
+            WHERE product_type='corporate_bond'""")
+        self.execute("""UPDATE treasury_bond_products SET annual_rate=MIN(annual_rate,COALESCE(
+            (SELECT c.legal_max_rate FROM market_exchanges e JOIN country_currencies c
+             ON c.nationality=e.nationality WHERE e.exchange_id=treasury_bond_products.exchange_id),20))""")
+        self.execute("""UPDATE treasury_bond_holdings SET annual_rate=MIN(annual_rate,COALESCE(
+            (SELECT p.annual_rate FROM treasury_bond_products p
+             WHERE p.product_code=treasury_bond_holdings.product_code),annual_rate))""")
 
     def _migrate_currency_wallets(self):
         """Merge the removed wallet store into home cash or currency accounts.

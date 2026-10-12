@@ -105,12 +105,10 @@ class AccountDB(DBManager):
             )
         ''')
         loan_columns = {row[1] for row in self.execute("PRAGMA table_info(loans)")}
-        if "statutory_interest_remainder" not in loan_columns:
-            self.execute("ALTER TABLE loans ADD COLUMN statutory_interest_remainder REAL NOT NULL DEFAULT 0")
-        if "last_statutory_epoch" not in loan_columns:
-            self.execute("ALTER TABLE loans ADD COLUMN last_statutory_epoch REAL")
-            # Start existing overdue debts at migration; do not create old arrears.
-            self.execute("UPDATE loans SET last_statutory_epoch = ?", (time.time(),))
+        for legacy_column in ("statutory_interest_remainder", "last_statutory_epoch"):
+            if legacy_column in loan_columns:
+                self.execute(f"ALTER TABLE loans DROP COLUMN {legacy_column}")
+        loan_columns = {row[1] for row in self.execute("PRAGMA table_info(loans)")}
         for column, declaration in (
             ("maturity_epoch", "REAL"),
             ("extension_count", "INTEGER NOT NULL DEFAULT 0"),

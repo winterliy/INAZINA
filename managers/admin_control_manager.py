@@ -6,6 +6,7 @@ from contextlib import nullcontext
 from database.user_db import TREASURY_USER_ID
 from managers.stochastic_price_engine import GarchConfig
 from managers.auto_target_engine import AutoTargetConfig
+from managers.rate_manager import RateManager
 from database.db_manager import DBManager
 
 ENTITIES = {
@@ -281,6 +282,17 @@ class AdminControlManager:
             for field in ('interest_rate','annual_rate'):
                 if field in merged:
                     values[field] = self._number(merged[field],0,100)
+            if category in {'saving','loan','currencyproduct'}:
+                RateManager.require_legal_rate(
+                    conn, values.get('interest_rate', merged.get('interest_rate', 0)),
+                    currency_code=values.get('quote_currency', merged.get('quote_currency', 'NWX')),
+                )
+            elif category in {'corporatebond','bond'}:
+                RateManager.require_legal_rate(
+                    conn, values.get('annual_rate', merged.get('annual_rate', 0)),
+                    currency_code=values.get('quote_currency', merged.get('quote_currency', 'NWX')),
+                    exchange_id=values.get('exchange_id', merged.get('exchange_id')),
+                )
             for field in ('face_value','loan_limit','capital','contract_size','deposit_amount','maturity_days','repayment_cycle_seconds','repayment_amount'):
                 if field in merged and merged[field] is not None:
                     values[field] = self._number(merged[field],0,integer=True)
@@ -368,7 +380,7 @@ class AdminControlManager:
         with self.db.atomic(('system','users','pot')) as conn:
             self.require(actor,conn)
             settings = {r['key']:r['value'] for r in conn.execute('SELECT * FROM settings')}
-            allowed = {k for k in settings if k.startswith(('garch_','auto_target_'))} | {'market_volatility','market_condition','currency_exchange_fee_percent','base_rate','statutory_rate','tax_percent','gamble_chance','gamble_return'}
+            allowed = {k for k in settings if k.startswith(('garch_','auto_target_'))} | {'market_volatility','market_condition','currency_exchange_fee_percent','base_rate','tax_percent','gamble_chance','gamble_return'}
             if not isinstance(changes,dict) or not changes or set(changes)-allowed:
                 raise ValueError("허용된 시장·금리·세율·도박 설정 키를 입력해주세요.")
             updated = {**settings,**{k:str(v) for k,v in changes.items()}}
@@ -377,7 +389,7 @@ class AdminControlManager:
             AutoTargetConfig.from_settings(updated)
             self.bot.market_mgr._normalize_market_condition(updated.get('market_condition','normal'))
             for key,value in changes.items():
-                if key in {'base_rate','statutory_rate','currency_exchange_fee_percent','tax_percent','gamble_chance'}:
+                if key in {'base_rate','currency_exchange_fee_percent','tax_percent','gamble_chance'}:
                     self._number(value,0,100)
                 if key=='gamble_return':
                     self._number(value,0,10000)

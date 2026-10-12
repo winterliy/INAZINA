@@ -42,7 +42,7 @@ NATIONAL = {
     '도박': [('금액 NWX','1000')],
     '환율': [],
     '기준금리': [],
-    '법정이자': [],
+    '법정최고이자': [('국적','낙원')],
     '검색': [],
     '그래프': [('종목 코드','INZST001')],
     '전체자산확인': [],
@@ -281,8 +281,10 @@ class ActionModal(CheckedModal):
             result=[dict(r) for r in bot.treasury_bond_mgr.get_active_offerings()]
         elif c=='도박':
             result = bot.user_mgr.gamble(uid,int(v[0]))
-        elif c in {'기준금리','법정이자'}:
-            result = f"{c}: 연 {bot.rate_mgr.get_rate('base_rate' if c=='기준금리' else 'statutory_rate'):g}%"
+        elif c in {'기준금리','법정최고이자'}:
+            key = 'base_rate' if c=='기준금리' else 'legal_max_rate'
+            nationality = v[0] if c=='법정최고이자' else None
+            result = f"{c}: 연 {bot.rate_mgr.get_rate(key,nationality):g}%"
         else:
             raise ValueError('지원하지 않는 국가 기능입니다.')
         with bot.db.atomic() as conn:

@@ -11,7 +11,7 @@ from managers.currency_exchange_manager import SCALE, MAX_UNITS, amount_units, d
 
 COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값',
             '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','환율수정',
-            '복권가격설정','금리수정','법정이자수정','증자','정기배당수정','정기배당활성','특별배당실시','합병',
+            '복권가격설정','금리수정','법정최고이자수정','증자','정기배당수정','정기배당활성','특별배당실시','합병',
             '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소'}
 TYPES = {'company':'stock','주식':'stock','자산':'asset','ETF':'etf','선물':'future','주식선물':'future',
          '회사채':'corporatebond','일반펀드':'fund','펀드':'fund','인덱스펀드':'indexfund',
@@ -29,7 +29,7 @@ USAGE = {
  '복권당첨번호보기':'', '복권당첨번호변경':'[서로 다른 1~45 번호 6개] [보너스 번호(선택)]',
  '세율':'[0~100]', '환율수정':'[외화A] [외화B] [1 A당 B 비율]',
  '복권가격설정':'[가격]', '금리수정':'[add/del/modify] [수치]',
- '법정이자수정':'[add/del/modify] [수치]',
+ '법정최고이자수정':'[국적] [add/del/modify] [수치]',
  '증자':'[유상/무상] [종목id] [신주 수량] [유상 발행가(선택)]',
  '정기배당수정':'[id] [주기: 초 또는 1일/1주/1달] [주당 금액 또는 비율%]',
  '정기배당활성':'[id] [on/off 또는 1/0]',
@@ -155,7 +155,7 @@ class AdminCommandsManager:
             count={'상품가격수정':3,'상품삭제':1,'기본소득':1,'잔고수정':3,'등록':1,
                    '도박확률':1,'도박리턴값':1,'시장분위기':1,'상품분위기':2,
                    '복권당첨번호보기':0,'세율':1,'환율수정':3,'복권가격설정':1,
-                   '금리수정':2,'법정이자수정':2,'정기배당수정':3,'정기배당활성':2,'특별배당실시':2,'합병':2,
+                   '금리수정':2,'법정최고이자수정':3,'정기배당수정':3,'정기배당활성':2,'특별배당실시':2,'합병':2,
                    '휴장':1,'개장':1,'장일시정지':1,'장재개':1,'서킷브레이커':2,'사이드카':1}
             count.update({'법인잔고수정':3,'법인청산':1,'ELS취소':1})
             if (command=='증자' and len(args) not in {3,4}) or (command not in {'복권당첨번호변경','증자'} and len(args)!=count.get(command,-1)):
@@ -204,15 +204,31 @@ class AdminCommandsManager:
                 return self.lottery(actor,command,args)
             with self.db.atomic() as conn:
                 self.control.require(actor,conn)
-                if command in {'금리수정','법정이자수정'}:
-                    key='base_rate' if command=='금리수정' else 'statutory_rate'
-                    current=float(conn.execute('SELECT value FROM settings WHERE key=?',(key,)).fetchone()[0])
-                    value=self.adjust(current,args[0],self.control._number(args[1],0,100))
+                if command in {'금리수정','법정최고이자수정'}:
+                    if command == '금리수정':
+                        key='base_rate'
+                        current=float(conn.execute('SELECT value FROM settings WHERE key=?',(key,)).fetchone()[0])
+                        operation, raw_value = args
+                        setter = lambda value: self.bot.rate_mgr.set_rate(key,value,actor,conn=conn)
+                    else:
+                        key='legal_max_rate'
+                        nationality, operation, raw_value = args
+                        row=conn.execute('SELECT legal_max_rate FROM country_currencies WHERE nationality=?',(nationality,)).fetchone()
+                        if not row:
+                            raise ValueError('통화와 연결된 국적을 확인해주세요.')
+                        current=float(row['legal_max_rate'])
+                        setter = lambda value: self.bot.rate_mgr.set_country_rate(
+                            key,nationality,value,actor,conn=conn
+                        )
+                    value=self.adjust(current,operation,self.control._number(raw_value,0,100))
                     self.control._number(value,0,100)
-                    result=self.bot.rate_mgr.set_rate(key,value,actor,conn=conn)
+                    result=setter(value)
                     if not result[0]:
                         raise ValueError(result[1])
-                    self.control._audit(conn,actor,command,{'operation':args[0],'before':current,'after':value})
+                    payload={'operation':operation,'before':current,'after':value}
+                    if command == '법정최고이자수정':
+                        payload['nationality']=nationality
+                    self.control._audit(conn,actor,command,payload)
                     return result[1]
                 if command=='환율수정':
                     return self.currency(conn,actor,*args)
@@ -234,7 +250,7 @@ class AdminCommandsManager:
                 elif price_key:
                     current=row[price_key]
                 else:
-                    raise ValueError('가격이 없는 상품입니다. 금리는 $금리수정/$법정이자수정으로 변경해주세요.')
+                    raise ValueError('가격이 없는 상품입니다. 상품 이율은 $상품수정으로 변경해주세요.')
                 value=self.adjust(int(current),args[1],self.control._number(args[2],0,integer=True))
                 self.control._number(value,1,integer=True)
                 if category in {'option','bond'}:

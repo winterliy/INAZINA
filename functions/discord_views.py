@@ -677,7 +677,7 @@ class InfoPanelView(discord.ui.View):
     CATEGORIES = (
         ("main", "메인"),
         ("indices", "거래소 지수"),
-        ("rates", "기준금리 · 법정이자"),
+        ("rates", "기준금리 · 법정최고이자"),
         ("stocks", "주식"),
         ("etf", "ETF"),
         ("els", "ELS"),
@@ -777,10 +777,16 @@ class InfoPanelView(discord.ui.View):
                     f"  ID / 그래프 종목: `{EXCHANGE_INDEX_PREFIX}{row['exchange_id']}`"
                     for row in self.bot.market_mgr.get_exchange_indices()]
         if category == 'rates':
-            manager = getattr(self.bot, 'rate_mgr', None) or RateManager(self.bot.db)
-            return [f"• **{label}** · 연 **{manager.get_rate(key):g}%**\n"
-                    f"  ID / 그래프 종목: `{RateManager.chart_code(key)}`"
-                    for key, label in RateManager.KEYS.items()]
+            countries = self.bot.db.currency.execute(
+                "SELECT nationality,currency_code,base_rate,legal_max_rate "
+                "FROM country_currencies ORDER BY nationality"
+            )
+            return [
+                f"• **{row['nationality']}** ({row['currency_code']}) · "
+                f"기준금리 연 **{float(row['base_rate']):g}%** · "
+                f"법정최고이자 연 **{float(row['legal_max_rate']):g}%**"
+                for row in countries
+            ]
         if category == "currency_savings":
             return [f"• **{r['name']}** (`{r['product_code']}`) · {r['quote_currency']} · 연 {r['interest_rate']:g}%"
                     for r in self.bot.db.products.execute("SELECT * FROM saving WHERE product_kind='currency_saving' AND status='active' ORDER BY name")]

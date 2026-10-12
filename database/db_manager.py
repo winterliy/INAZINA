@@ -1,5 +1,6 @@
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from .unified import UnifiedConnection, migrate
@@ -10,6 +11,9 @@ class DBManager:
     _path_locks = {}
     _path_locks_guard = threading.Lock()
     _admin_context = threading.local()
+    BUSY_TIMEOUT_MS = 2_000
+    BEGIN_BUSY_TIMEOUT_MS = 200
+    BEGIN_RETRY_DELAYS = (0.05, 0.10, 0.20, 0.40, 0.50)
 
     @staticmethod
     @contextmanager
@@ -43,8 +47,13 @@ class DBManager:
             self.conn = self._get_connection()
 
     def _get_connection(self):
-        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False, factory=UnifiedConnection)
-        conn.execute("PRAGMA busy_timeout=30000;")
+        conn = sqlite3.connect(
+            self.db_path,
+            timeout=self.BUSY_TIMEOUT_MS / 1_000,
+            check_same_thread=False,
+            factory=UnifiedConnection,
+        )
+        conn.execute(f"PRAGMA busy_timeout={self.BUSY_TIMEOUT_MS};")
         # WAL 모드 활성화: 동시성 향상 및 쓰기 성능 최적화
         mode = conn.execute("PRAGMA journal_mode;").fetchone()[0]
         if str(mode).lower() != "wal":
@@ -171,10 +180,27 @@ class DBManager:
                 lock.acquire()
                 acquired_locks.append(lock)
 
-            conn = sqlite3.connect(root / "inazina.db", timeout=30, isolation_level=None, factory=UnifiedConnection)
+            # Fail well before the HTTP proxy's 10-second timeout.  A short,
+            # bounded retry handles ordinary cross-process writer hand-offs
+            # without leaving abandoned requests blocked for 30 seconds.
+            conn = sqlite3.connect(
+                root / "inazina.db",
+                timeout=DBManager.BEGIN_BUSY_TIMEOUT_MS / 1_000,
+                isolation_level=None,
+                factory=UnifiedConnection,
+            )
             conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA busy_timeout=30000")
-            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(f"PRAGMA busy_timeout={DBManager.BEGIN_BUSY_TIMEOUT_MS}")
+            for attempt in range(len(DBManager.BEGIN_RETRY_DELAYS) + 1):
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    break
+                except sqlite3.OperationalError as exc:
+                    locked = "locked" in str(exc).casefold() or "busy" in str(exc).casefold()
+                    if not locked or attempt == len(DBManager.BEGIN_RETRY_DELAYS):
+                        raise
+                    time.sleep(DBManager.BEGIN_RETRY_DELAYS[attempt])
+            conn.execute(f"PRAGMA busy_timeout={DBManager.BUSY_TIMEOUT_MS}")
             actor = getattr(DBManager._admin_context,'actor',None)
             if actor is not None:
                 role = conn.execute('SELECT role FROM users WHERE user_id=?',(actor,)).fetchone()

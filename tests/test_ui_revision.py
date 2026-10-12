@@ -64,9 +64,9 @@ class UserInterfaceRevisionTests(unittest.TestCase):
         self.assertIn('__exchange_index__:EX', index_lines)
         self.assertIn('1,000.00 pt', index_lines)
         rate_lines = '\n'.join(panel._category_lines('rates'))
-        for code, rate in [('__rate__:base_rate', '3%'), ('__rate__:statutory_rate', '5%')]:
-            self.assertIn(code, rate_lines)
-            self.assertIn(rate, rate_lines)
+        self.assertIn('낙원', rate_lines)
+        self.assertIn('기준금리 연 **3%**', rate_lines)
+        self.assertIn('법정최고이자 연 **20%**', rate_lines)
         with patch('functions.discord_views.render_rate_chart', return_value=b'chart'):
             view = PriceMovementView(self.bot, 'citizen', '__rate__:base_rate')
             view.period_seconds = 60

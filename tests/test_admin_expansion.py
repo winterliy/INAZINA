@@ -190,7 +190,7 @@ class AdminExpansionTests(unittest.TestCase):
         row = self.db.companies.get_company('ST')
         self.assertEqual((row['dividend_mode'],row['dividend_percent'],row['dividend_per_share']),('fixed',0,9))
 
-    def test_extension_credit_and_statutory_interest_respects_new_maturity(self):
+    def test_extension_credit_and_no_post_maturity_statutory_interest(self):
         self.command('상품생성','LN loan 대출 0 10000 1 86400 0 Inazina 800 7')
         self.assertTrue(self.bot.bank_mgr.apply_loan('citizen','LN',1000)[0])
         self.db.users.execute("UPDATE users SET credit_score=799 WHERE user_id='citizen'")
@@ -198,7 +198,7 @@ class AdminExpansionTests(unittest.TestCase):
             self.assertFalse(self.bot.bank_mgr.extend_loan('citizen','LN')[0])
         now=time.time()
         self.db.users.execute("UPDATE users SET credit_score=800 WHERE user_id='citizen'")
-        self.db.accounts.execute("UPDATE loans SET created_at=datetime(?,'unixepoch'),maturity_epoch=?,last_payment_epoch=?,last_statutory_epoch=?",(now-2*86400,now-86400,now,now))
+        self.db.accounts.execute("UPDATE loans SET created_at=datetime(?,'unixepoch'),maturity_epoch=?,last_payment_epoch=?",(now-2*86400,now-86400,now))
         with patch.object(self.bot.bank_mgr,'_settle_user_interest'):
             self.assertTrue(self.bot.bank_mgr.extend_loan('citizen','LN',now=now)[0])
             self.assertFalse(self.bot.bank_mgr.extend_loan('citizen','LN',now=now+1)[0])

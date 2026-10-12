@@ -94,7 +94,7 @@ def admin_help_embed(national_commands):
             ('👥 시민 · 잔고',('등록','기본소득','잔고수정')),
             ('📈 시장 · 환율',('시장분위기','상품분위기','환율수정','휴장','개장','장일시정지','장재개','서킷브레이커','사이드카')),
             ('🎲 도박 · 세금',('도박확률','도박리턴값','세율')),
-            ('🏦 금리 · 법정이자',('금리수정','법정이자수정')),
+            ('🏦 금리 · 법정최고이자',('금리수정','법정최고이자수정')),
             ('🎟️ 복권 관리',('복권가격설정','복권당첨번호보기','복권당첨번호변경')))
     for title,commands in groups:
         embed.add_field(name=title,value='\n'.join(f'**`${command}`**\n{USAGE[command] or "인자 없이 실행"}' for command in commands if command in USAGE) or '상품생성에서 els 유형을 사용합니다.',inline=False)

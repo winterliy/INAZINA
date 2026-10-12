@@ -1,16 +1,15 @@
-"""Game economic rates and dated, non-retroactive interest calculations."""
+"""Game policy rates and nationality-specific legal interest-rate caps."""
 
 import math
 import time
 from contextlib import nullcontext
 
 from functions.interest_calc import YEAR_SECONDS
-from functions.money import round_money
 from functions.admin_access import resolve_user_role
 
 
 RATE_CHART_PREFIX = "__rate__:"
-RATE_NAMES = {"base_rate": "기준금리", "statutory_rate": "법정이자"}
+RATE_NAMES = {"base_rate": "기준금리", "legal_max_rate": "법정최고이자"}
 
 
 def rate_key_from_code(code):
@@ -114,6 +113,87 @@ class RateManager:
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f"❌ {exc}"
 
+    def set_country_rate(self, key, nationality, percent, actor_id, now=None, conn=None):
+        """Set one country's rate without changing any other nationality."""
+        if resolve_user_role(actor_id, self.db.users.get_user(str(actor_id))) != "admin":
+            return False, "❌ 금리 설정은 관리자 전용입니다."
+        if key not in self.KEYS:
+            return False, "❌ 지원하지 않는 금리입니다."
+        try:
+            rate = float(percent)
+            if isinstance(percent, bool) or not math.isfinite(rate) or not 0 <= rate <= 100:
+                raise ValueError("연이율은 0~100%여야 합니다.")
+            now = float(time.time() if now is None else now)
+            if not math.isfinite(now) or now < 0:
+                raise ValueError("적용 시각은 유효한 UNIX 시각이어야 합니다.")
+            country = str(nationality or "").strip()
+            if not country:
+                raise ValueError("국적을 입력해주세요.")
+            with (self.db.atomic(("system",)) if conn is None else nullcontext(conn)) as conn:
+                updated = conn.execute(
+                    f"UPDATE country_currencies SET {key}=? WHERE nationality=?",
+                    (rate, country),
+                )
+                if updated.rowcount != 1:
+                    raise ValueError("통화와 연결된 국적을 확인해주세요.")
+            suffix = (" 기존 초과 상품 이율은 새 상한으로 조정했습니다."
+                      if key == "legal_max_rate" else "")
+            return True, f"✅ {country} {self.KEYS[key]}를 연 {rate:g}%로 설정했습니다.{suffix}"
+        except (ValueError, TypeError, OverflowError) as exc:
+            return False, f"❌ {exc}"
+
+    @staticmethod
+    def legal_max_for_currency(conn, currency_code):
+        """Return the strictest country cap for a currency shared by countries."""
+        rows = conn.execute(
+            "SELECT nationality, legal_max_rate FROM country_currencies "
+            "WHERE currency_code=? ORDER BY nationality",
+            (str(currency_code or "NWX").upper(),),
+        ).fetchall()
+        if rows:
+            row = min(rows, key=lambda item: float(item["legal_max_rate"]))
+            return float(row["legal_max_rate"]), row["nationality"]
+        fallback = RateManager.from_connection(conn, "legal_max_rate")
+        return fallback, "기본"
+
+    @staticmethod
+    def legal_max_for_exchange(conn, exchange_id, quote_currency="NWX"):
+        row = conn.execute(
+            "SELECT c.nationality, c.legal_max_rate FROM market_exchanges e "
+            "JOIN country_currencies c ON c.nationality=e.nationality "
+            "WHERE e.exchange_id=?",
+            (str(exchange_id or ""),),
+        ).fetchone()
+        if row:
+            return float(row["legal_max_rate"]), row["nationality"]
+        return RateManager.legal_max_for_currency(conn, quote_currency)
+
+    @staticmethod
+    def require_legal_rate(conn, annual_rate, *, nationality=None,
+                           currency_code=None, exchange_id=None):
+        """Validate an interest-bearing product rate against its country cap."""
+        rate = float(annual_rate)
+        if not math.isfinite(rate) or rate < 0:
+            raise ValueError("상품 연이율은 0 이상의 유한한 숫자여야 합니다.")
+        if nationality is not None:
+            cap = RateManager.from_connection(
+                conn, "legal_max_rate", str(nationality), require_country=True
+            )
+            country = str(nationality)
+        elif exchange_id is not None:
+            cap, country = RateManager.legal_max_for_exchange(
+                conn, exchange_id, currency_code or "NWX"
+            )
+        else:
+            cap, country = RateManager.legal_max_for_currency(
+                conn, currency_code or "NWX"
+            )
+        if rate > cap:
+            raise ValueError(
+                f"상품 연이율 {rate:g}%는 {country} 법정최고이자 {cap:g}%를 넘을 수 없습니다."
+            )
+        return rate
+
     @staticmethod
     def interest_between(conn, key, principal, start, end, spread=0, compound=False,
                          nationality=None):
@@ -122,7 +202,3 @@ class RateManager:
             return 0.0
         rate = RateManager.from_connection(conn, key, nationality)
         return float(principal) * max(0, rate + spread) / 100 * (end - start) / YEAR_SECONDS
-
-    def statutory_interest(self, principal, start, end):
-        with self.db.atomic(("system",)) as conn:
-            return round_money(self.interest_between(conn, "statutory_rate", principal, start, end))

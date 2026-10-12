@@ -99,7 +99,7 @@ class MarketFeatureTests(unittest.TestCase):
 
     def test_default_rates_permissions_and_option_rate_sensitivity(self):
         self.assertEqual(self.rates.get_rate("base_rate"), 3)
-        self.assertEqual(self.rates.get_rate("statutory_rate"), 5)
+        self.assertEqual(self.rates.get_rate("legal_max_rate"), 20)
         self.assertFalse(self.rates.set_rate("base_rate", 6, "alice")[0])
         for bad in (-1, 101, float("nan"), float("inf"), True):
             self.assertFalse(self.rates.set_rate("base_rate", bad, "admin")[0])
@@ -108,87 +108,60 @@ class MarketFeatureTests(unittest.TestCase):
         self.assertLess(OptionManager.theoretical_price(1000, 1000, 1, .2, "put", .03),
                         OptionManager.theoretical_price(1000, 1000, 1, .2, "put", 0))
 
-    def test_country_rates_and_zero_deregulation(self):
+    def test_country_rates_and_zero_legal_maximum(self):
         self.db.currency.execute(
-            "INSERT INTO country_currencies(nationality,currency_code,base_rate,statutory_rate) "
+            "INSERT INTO country_currencies(nationality,currency_code,base_rate,legal_max_rate) "
             "VALUES ('자유국','NWX',0,0)"
         )
         self.assertEqual(self.rates.get_rate("base_rate", "자유국"), 0)
-        self.assertEqual(self.rates.get_rate("statutory_rate", "자유국"), 0)
+        self.assertEqual(self.rates.get_rate("legal_max_rate", "자유국"), 0)
         self.db.system.execute(
             "INSERT INTO market_exchanges(exchange_id,status,updated_epoch,nationality) "
             "VALUES ('FREE','open',0,'자유국')"
         )
         with self.db.readonly() as conn:
             self.assertEqual(RateManager.for_exchange(conn, "base_rate", "FREE"), 0)
-            self.assertEqual(
-                RateManager.interest_between(
-                    conn, "statutory_rate", 100000, 0, 365 * 86400,
-                    nationality="자유국",
-                ),
-                0,
-            )
+            with self.assertRaisesRegex(ValueError, "법정최고이자"):
+                RateManager.require_legal_rate(conn, 1, nationality="자유국")
         with self.assertRaisesRegex(ValueError, "국가 ID"):
             self.rates.get_rate("base_rate", "없는국가")
 
-    def test_rate_history_splits_elapsed_interest_at_change_time(self):
-        start = int(time.time())
-        half_year = 365 * 86400 / 2
-        self.assertTrue(self.rates.set_rate("statutory_rate", 10, "admin", now=start + half_year)[0])
-        self.assertEqual(self.rates.statutory_interest(100000, start, start + 2 * half_year), 7500)
-        self.assertEqual(self.rates.statutory_interest(100000, start, start + half_year), 2500)
+    def test_country_legal_max_rate_change_is_independent(self):
+        self.db.currency.execute(
+            "INSERT INTO country_currencies(nationality,currency_code,base_rate,legal_max_rate) "
+            "VALUES ('별도국','NWX',3,12)"
+        )
+        self.assertTrue(self.rates.set_country_rate(
+            "legal_max_rate", "별도국", 10, "admin"
+        )[0])
+        self.assertEqual(self.rates.get_rate("legal_max_rate", "별도국"), 10)
+        self.assertEqual(self.rates.get_rate("legal_max_rate", "낙원"), 20)
 
-    def test_database_browser_rate_edits_apply_live_and_preserve_past_interest(self):
-        before = time.time()
+    def test_database_browser_rate_edits_apply_live(self):
         connection = sqlite3.connect(self.db.system.db_path)
         try:
             with connection:
                 connection.execute("UPDATE settings SET value = '3.5' WHERE key = 'base_rate'")
-                connection.execute("UPDATE settings SET value = '10' WHERE key = 'statutory_rate'")
+                connection.execute("UPDATE settings SET value = '10' WHERE key = 'legal_max_rate'")
         finally:
             connection.close()
-        after = time.time()
         self.assertEqual(self.rates.get_rate("base_rate"), 3.5)
-        self.assertEqual(self.rates.get_rate("statutory_rate"), 10)
-        base_change = self.db.system.execute_one(
-            "SELECT * FROM rate_history WHERE rate_key = 'base_rate' ORDER BY history_id DESC LIMIT 1")
-        base_time = float(base_change["effective_epoch"])
-        self.assertEqual(base_change["changed_by"], "database")
-        self.assertEqual(
-            self.rates.get_rate_history("base_rate", base_time - 60, now=base_time + 60),
-            [(base_time - 60, 3.0), (base_time, 3.5), (base_time + 60, 3.5)],
-        )
-        change = self.db.system.execute_one(
-            "SELECT * FROM rate_history WHERE rate_key = 'statutory_rate' ORDER BY history_id DESC LIMIT 1")
-        self.assertEqual(change["changed_by"], "database")
-        self.assertEqual(change["annual_percent"], 10)
-        self.assertGreaterEqual(change["effective_epoch"], before - .01)
-        self.assertLessEqual(change["effective_epoch"], after + .01)
-        half_year = 365 * 86400 / 2
-        change_time = change["effective_epoch"]
-        self.assertEqual(self.rates.statutory_interest(100000, change_time - half_year, change_time), 2500)
-        self.assertEqual(self.rates.statutory_interest(100000, change_time, change_time + half_year), 5000)
-        self.assertEqual(self.rates.statutory_interest(
-            100000, change_time - half_year, change_time + half_year), 7500)
+        self.assertEqual(self.rates.get_rate("legal_max_rate"), 10)
 
-    def test_database_browser_rejects_invalid_rates_without_changing_history(self):
-        original_history = [dict(row) for row in self.db.system.execute("SELECT * FROM rate_history ORDER BY history_id")]
+    def test_database_browser_rejects_invalid_rates(self):
         connection = sqlite3.connect(self.db.system.db_path)
         try:
             for value in ("-1", "101", "NaN", "Infinity", "3%", "abc", "", "null", "true", '"3"', "1e999", "[]", "{}"):
-                for key in ("base_rate", "statutory_rate"):
+                for key in ("base_rate", "legal_max_rate"):
                     with self.subTest(value=value, key=key):
                         with self.assertRaises(sqlite3.IntegrityError), connection:
                             connection.execute("UPDATE settings SET value = ? WHERE key = ?", (value, key))
         finally:
             connection.close()
         self.assertEqual(self.rates.get_rate("base_rate"), 3)
-        self.assertEqual(self.rates.get_rate("statutory_rate"), 5)
-        self.assertEqual([dict(row) for row in self.db.system.execute(
-            "SELECT * FROM rate_history ORDER BY history_id")], original_history)
+        self.assertEqual(self.rates.get_rate("legal_max_rate"), 20)
 
-    def test_equivalent_rate_and_other_settings_do_not_duplicate_rate_history(self):
-        history = [dict(row) for row in self.db.system.execute("SELECT * FROM rate_history ORDER BY history_id")]
+    def test_equivalent_rate_and_other_settings_remain_valid(self):
         connection = sqlite3.connect(self.db.system.db_path)
         try:
             with connection:
@@ -198,37 +171,27 @@ class MarketFeatureTests(unittest.TestCase):
             connection.close()
         self.assertEqual(self.rates.get_rate("base_rate"), 3)
         self.assertEqual(self.db.system.get_setting("gamble_win_rate"), "0.8")
-        self.assertEqual([dict(row) for row in self.db.system.execute(
-            "SELECT * FROM rate_history ORDER BY history_id")], history)
 
-    def test_system_reinitialization_preserves_browser_rates_and_history(self):
+    def test_system_reinitialization_preserves_browser_rates(self):
         connection = sqlite3.connect(self.db.system.db_path)
         try:
             with connection:
                 connection.execute("UPDATE settings SET value = '3.5' WHERE key = 'base_rate'")
-                connection.execute("UPDATE settings SET value = '8' WHERE key = 'statutory_rate'")
+                connection.execute("UPDATE settings SET value = '8' WHERE key = 'legal_max_rate'")
         finally:
             connection.close()
-        history = [dict(row) for row in self.db.system.execute("SELECT * FROM rate_history ORDER BY history_id")]
         restored = SystemDB()
         try:
             self.assertEqual(restored.get_setting("base_rate"), "3.5")
-            self.assertEqual(restored.get_setting("statutory_rate"), "8")
-            self.assertEqual([dict(row) for row in restored.execute(
-                "SELECT * FROM rate_history ORDER BY history_id")], history)
-            self.assertEqual([(row["rate_key"], row["annual_percent"], row["effective_epoch"])
-                for row in history if row["changed_by"] == "initial"], [("base_rate", 3, 0), ("statutory_rate", 5, 0)])
+            self.assertEqual(restored.get_setting("legal_max_rate"), "8")
         finally:
             restored.close()
 
-    def test_internal_rate_change_records_exactly_one_history_with_actor_and_time(self):
+    def test_internal_base_rate_change_applies(self):
         self.assertTrue(self.rates.set_rate("base_rate", 4, "admin", now=12345)[0])
-        changes = self.db.system.execute("SELECT * FROM rate_history WHERE rate_key = 'base_rate' ORDER BY history_id")
-        self.assertEqual(len(changes), 2)
-        self.assertEqual((changes[-1]["annual_percent"], changes[-1]["effective_epoch"], changes[-1]["changed_by"]),
-            (4, 12345, "admin"))
+        self.assertEqual(self.rates.get_rate("base_rate"), 4)
 
-    def test_overdue_loan_uses_statutory_simple_interest_with_persisted_cursor(self):
+    def test_overdue_loan_does_not_accrue_statutory_interest(self):
         now = int(time.time())
         due = now - 365 * 86400
         created = due - 86400
@@ -237,9 +200,9 @@ class MarketFeatureTests(unittest.TestCase):
             "VALUES ('alice', 'LOAN', 100000, 100000, datetime(?, 'unixepoch'), ?)", (created, due))
         manager = InterestManager(self.db)
         manager.process_user_interests("alice", now=now)
-        self.assertEqual(self.db.accounts.execute_one("SELECT outstanding_balance FROM loans WHERE user_id = 'alice'")["outstanding_balance"], 105000)
+        self.assertEqual(self.db.accounts.execute_one("SELECT outstanding_balance FROM loans WHERE user_id = 'alice'")["outstanding_balance"], 100000)
         manager.process_user_interests("alice", now=now)
-        self.assertEqual(self.db.accounts.execute_one("SELECT outstanding_balance FROM loans WHERE user_id = 'alice'")["outstanding_balance"], 105000)
+        self.assertEqual(self.db.accounts.execute_one("SELECT outstanding_balance FROM loans WHERE user_id = 'alice'")["outstanding_balance"], 100000)
 
     def test_event_permissions_and_strength_bounds_cover_0_to_100(self):
         admin = AdminManager(self.db)
@@ -629,7 +592,7 @@ class MarketFeatureTests(unittest.TestCase):
         interaction.response.defer.assert_awaited_once()
         interaction.edit_original_response.assert_awaited_once()
 
-    def test_statutory_fraction_survives_partial_principal_payment(self):
+    def test_matured_loan_has_no_statutory_interest(self):
         now = int(time.time())
         due = now - 86400
         self.db.products.register_liability("LOAN", "Loan", 0, 0, 1, 86400, 0, "Bank")
@@ -638,11 +601,10 @@ class MarketFeatureTests(unittest.TestCase):
         manager = InterestManager(self.db)
         manager.process_user_interests("alice", now=now)
         row = self.db.accounts.execute_one("SELECT * FROM loans WHERE user_id = 'alice'")
-        self.assertAlmostEqual(row["statutory_interest_remainder"], 1000 * .05 / 365)
+        self.assertEqual(row["outstanding_balance"], 1000)
         self.db.accounts.execute("UPDATE loans SET outstanding_balance = 500 WHERE user_id = 'alice'")
         manager.process_user_interests("alice", now=now + 86400)
         row = self.db.accounts.execute_one("SELECT * FROM loans WHERE user_id = 'alice'")
-        self.assertAlmostEqual(row["statutory_interest_remainder"], 1500 * .05 / 365)
         self.assertEqual(row["outstanding_balance"], 500)
 
     def test_new_product_validation_and_duplicate_code_rejection(self):
@@ -679,6 +641,7 @@ class MarketFeatureTests(unittest.TestCase):
         self.assertEqual(self.db.assets.get_user_portfolio("alice"), [])
 
     def test_corporate_bond_primary_proceeds_go_to_company_and_maturity_pays_once(self):
+        self.assertTrue(self.rates.set_country_rate("legal_max_rate", "낙원", 40, "admin")[0])
         self.issue("CB", "corporate_bond", rate=36.5)
         start = self.db.companies.get_company("CO")["capital"]
         self.assertTrue(self.book.place_limit_order("alice", "CB", "buy", 10, 100)[0])
@@ -691,6 +654,7 @@ class MarketFeatureTests(unittest.TestCase):
         self.assertEqual(self.products.redeem_corporate_bonds(now=expiry + 1), [])
 
     def test_corporate_bond_default_preserves_claim_and_retries_after_capital_injection(self):
+        self.assertTrue(self.rates.set_country_rate("legal_max_rate", "낙원", 40, "admin")[0])
         self.db.companies.execute("UPDATE company SET capital = 0 WHERE company_code = 'CO'")
         self.issue("CB", "corporate_bond", rate=36.5)
         self.assertTrue(self.book.place_limit_order("alice", "CB", "buy", 10, 100)[0])

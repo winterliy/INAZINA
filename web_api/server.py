@@ -42,10 +42,11 @@ def connect_readonly():
 
 
 @contextmanager
-def connect_db(timeout=5):
+def connect_db(timeout=2):
     connection = sqlite3.connect(DATABASE, timeout=timeout)
     try:
         connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(f"PRAGMA busy_timeout={max(1, int(timeout * 1000))}")
         with connection:
             yield connection
     finally:
@@ -169,7 +170,7 @@ def normalize_hts_id(value):
 
 
 def get_hts_login_id(user_id):
-    with connect_db(timeout=5) as connection:
+    with connect_db(timeout=2) as connection:
         ensure_auth_table(connection)
         row = connection.execute(
             "SELECT hts_id FROM web_auth_credentials WHERE user_id=?", (user_id,),
@@ -182,7 +183,7 @@ def set_hts_login_id(user_id, hts_id, password):
     if not authenticate_password(user_id, password):
         raise ValueError("invalid_credentials")
     try:
-        with connect_db(timeout=5) as connection:
+        with connect_db(timeout=2) as connection:
             ensure_auth_table(connection)
             user = connection.execute(
                 "SELECT 1 FROM users WHERE user_id=? AND status IN ('active','nation')", (user_id,),
@@ -301,7 +302,7 @@ def save_password(user_id, password, *, create=False, nickname="", country_id=""
 def authenticate_password(user_id, password):
     if not isinstance(user_id, str) or not isinstance(password, str):
         return None
-    with connect_db(timeout=5) as connection:
+    with connect_db(timeout=2) as connection:
         connection.execute("PRAGMA busy_timeout=5000")
         ensure_auth_table(connection)
         connection.row_factory = sqlite3.Row
@@ -337,7 +338,7 @@ def authenticate_country_password(country_id, password):
 
 
 def authenticate_login_identifier(identifier, password):
-    with connect_db(timeout=5) as connection:
+    with connect_db(timeout=2) as connection:
         ensure_auth_table(connection)
         connection.row_factory = sqlite3.Row
         country_account = connection.execute(
@@ -761,7 +762,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {"user": user})
                 return
             if path == "/internal/auth/logout":
-                with connect_db(timeout=5) as connection:
+                with connect_db(timeout=2) as connection:
                     ensure_auth_table(connection)
                     connection.execute("UPDATE web_auth_credentials SET auth_version=auth_version+1 WHERE user_id=?", (verified_id,))
                 self.send_json(200, {"success": True})

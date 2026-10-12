@@ -6,7 +6,6 @@ from database.user_db import TREASURY_USER_ID
 from functions.interest_calc import calculate_compound_interest, calculate_simple_interest
 from functions.tax_calc import calculate_income_tax
 from functions.money import round_money
-from managers.rate_manager import RateManager
 
 
 class InterestManager:
@@ -219,38 +218,6 @@ class InterestManager:
                         (whole_interest, paid_until, loan["loan_id"]),
                     )
                     loan_count += 1
-                # After contractual maturity, accrue game statutory simple interest.
-                # Use a separate cursor so rounding and repeated reads cannot double-charge.
-                overdue = conn.execute(
-                    "SELECT l.loan_id, l.principal, l.outstanding_balance, l.created_at, u.nationality, "
-                    "l.last_statutory_epoch, l.statutory_interest_remainder, l.maturity_epoch, p.maturity_days FROM accounts.loans l "
-                    "JOIN product.liability p ON p.product_code = l.product_code "
-                    "JOIN users.users u ON u.user_id = l.user_id "
-                    "WHERE l.status = 'active' AND p.status = 'active' "
-                    "AND (l.maturity_epoch IS NOT NULL OR p.maturity_days > 0) AND (? IS NULL OR l.user_id = ?)",
-                    (user_id, user_id),
-                ).fetchall()
-                for loan in overdue:
-                    created = self._utc_epoch(loan["created_at"])
-                    if created is None:
-                        continue
-                    maturity = (float(loan['maturity_epoch']) if loan['maturity_epoch'] is not None
-                                else created + float(loan["maturity_days"]) * 86400)
-                    start = max(maturity, float(loan["last_statutory_epoch"] or maturity))
-                    if now <= start:
-                        continue
-                    principal = min(int(loan["principal"]), int(loan["outstanding_balance"]))
-                    accrued = RateManager.interest_between(
-                        conn, "statutory_rate", principal, start, now,
-                        nationality=loan["nationality"],
-                    )
-                    accrued += float(loan["statutory_interest_remainder"] or 0)
-                    interest = max(0, round_money(accrued))
-                    conn.execute("UPDATE accounts.loans SET outstanding_balance = outstanding_balance + ?, "
-                        "last_statutory_epoch = ?, statutory_interest_remainder = ? WHERE loan_id = ? AND status = 'active'",
-                        (interest, now, accrued - interest, loan["loan_id"]))
-                    if interest > 0:
-                        loan_count += 1
             return account_count, int(total_paid), loan_count
         except Exception:
             raise

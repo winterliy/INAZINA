@@ -56,7 +56,7 @@ class SlashCommandRegistry:
             ("옵션체인", "거래 가능한 콜·풋 옵션과 참고 프리미엄을 확인합니다", self.option_chain),
             ("옵션작성", "담보를 맡기고 주식 옵션 매도 호가를 작성합니다", self.option_write),
             ("기준금리", "국가별 기준금리를 확인합니다", self.base_rate),
-            ("법정이자", "국가별 법정이자를 확인합니다", self.statutory_rate),
+            ("법정최고이자", "국가별 법정 최고 이율을 확인합니다", self.legal_max_rate),
             ("환전", "NWX와 외환통장 또는 외환통장 사이에서 환전합니다", self.currency_exchange),
             ("펀드가입", "일반·인덱스 펀드를 NAV 기준으로 가입합니다", self.subscribe_fund),
             ("펀드환매", "보유 일반·인덱스 펀드를 NAV 기준으로 환매합니다", self.redeem_fund),
@@ -71,7 +71,7 @@ class SlashCommandRegistry:
             ("대출상환", "상환할 대출과 상환액을 선택합니다", self.repay_loan),
             ("대출연장", "보유 대출 ID의 신용 조건을 확인하여 만기를 연장합니다", self.extend_loan),
             ("검색", "주식·투자·외환·저축·대출 상품을 검색합니다", self.search),
-            ("그래프", "자산·거래소지수·기준금리·법정이자의 변동 그래프를 확인합니다", self.movement),
+            ("그래프", "자산·거래소지수·기준금리·법정최고이자의 변동 그래프를 확인합니다", self.movement),
             ("주총", "회사 주주총회를 소집하고 주주에게 참석 여부를 묻습니다", self.shareholder_meeting),
         )
         for name, description, callback in definitions:
@@ -84,7 +84,7 @@ class SlashCommandRegistry:
         self.commands["주총"].autocomplete("주식코드")(self.company_autocomplete)
         for command,argument in (('환전','출금통화'),('환전','입금통화')):
             self.commands[command].autocomplete(argument)(self.currency_autocomplete)
-        for command in ('기준금리','법정이자'):
+        for command in ('기준금리','법정최고이자'):
             self.commands[command].autocomplete('국가')(self.nationality_autocomplete)
 
     async def nationality_autocomplete(self, interaction, current):
@@ -162,21 +162,21 @@ class SlashCommandRegistry:
 
     async def _rate_query(self, interaction, key, nationality):
         await self._prepare(interaction)
-        label = "기준금리" if key == "base_rate" else "법정이자"
+        label = "기준금리" if key == "base_rate" else "법정최고이자"
         note = ("옵션 참고 프리미엄·주식 선물·회사채 평가에 적용됩니다." if key == "base_rate"
-                else "대출 만기 이후 남은 원금에 단리로 적용됩니다.")
+                else "해당 국적의 이자 상품이 설정할 수 있는 연이율 상한입니다.")
         try:
             rate = self.bot.rate_mgr.get_rate(key, nationality)
         except ValueError as exc:
             return await self._reply(interaction, content=f"❌ {exc}")
-        value = "자율화" if rate == 0 else f"연 {rate:g}%"
+        value = f"연 {rate:g}%"
         await self._reply(interaction, content=f"**{nationality} {label}: {value}**\n{note}")
 
     async def base_rate(self, interaction: discord.Interaction, 국가: str):
         await self._rate_query(interaction, "base_rate", 국가)
 
-    async def statutory_rate(self, interaction: discord.Interaction, 국가: str):
-        await self._rate_query(interaction, "statutory_rate", 국가)
+    async def legal_max_rate(self, interaction: discord.Interaction, 국가: str):
+        await self._rate_query(interaction, "legal_max_rate", 국가)
 
 
 

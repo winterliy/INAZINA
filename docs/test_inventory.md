@@ -15,7 +15,7 @@
 - `test_dividend_creation_and_scheduled_payment_once`
 - `test_dividend_switch_preserves_terms_and_restarts_without_arrears`
 - `test_percent_dividend_uses_payment_price_and_one_mode`
-- `test_extension_credit_and_statutory_interest_respects_new_maturity`
+- `test_extension_credit_and_no_post_maturity_statutory_interest`
 - `test_private_wallet_main_and_removed_command`
 - `test_prefix_wallet_reuses_pending_dm_instead_of_sending_twice`
 - `test_halt_commands_and_corporate_registration`
