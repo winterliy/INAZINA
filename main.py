@@ -168,6 +168,8 @@ class InazinaBot(discord.Client):
 
     async def market_update_loop(self):
         """Update prices off the Discord event loop; busy DB ticks are skipped."""
+        loop = asyncio.get_running_loop()
+        next_tick = loop.time()
         while not self.is_closed():
             try:
                 await self._run_background_write(self.market_mgr.update_prices)
@@ -176,7 +178,13 @@ class InazinaBot(discord.Client):
                 if now - self._last_market_error_log >= self.BACKGROUND_ERROR_LOG_INTERVAL_SECONDS:
                     self._last_market_error_log = now
                     print(f"[Market Worker] {type(e).__name__}: {e}")
-            await asyncio.sleep(self.MARKET_UPDATE_INTERVAL_SECONDS)
+            next_tick += self.MARKET_UPDATE_INTERVAL_SECONDS
+            delay = next_tick - loop.time()
+            if delay <= 0:
+                # Never enqueue catch-up ticks after a slow update.
+                next_tick = loop.time()
+                delay = 0
+            await asyncio.sleep(delay)
 
     async def scheduled_loan_payment_loop(self):
         """Poll scheduled installments; interest itself is settled lazily on account access."""

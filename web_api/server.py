@@ -22,11 +22,34 @@ ROOT = Path(__file__).resolve().parents[1]
 DATABASE = Path(os.environ.get("INAZINA_DB_PATH", ROOT / "database" / "inazina.db")).resolve()
 INTERNAL_TOKEN = os.environ.get("INAZINA_INTERNAL_TOKEN", "")
 PORT = int(os.environ.get("INAZINA_PYTHON_PORT", "4313"))
+MAX_HTTP_THREADS = max(1, min(int(os.environ.get("INAZINA_MAX_HTTP_THREADS", "16")), 64))
 BOOTSTRAP_ADMIN_IDS = {"1076861147560542278"}
 sys.path.insert(0, str(ROOT))
 from database.user_db import TREASURY_USER_ID
 _domain = None
 _domain_lock = threading.Lock()
+
+
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """Thread-per-request server with backpressure instead of unbounded threads."""
+
+    def __init__(self, server_address, request_handler_class, max_threads=MAX_HTTP_THREADS):
+        self._request_slots = threading.BoundedSemaphore(max_threads)
+        super().__init__(server_address, request_handler_class)
+
+    def process_request(self, request, client_address):
+        self._request_slots.acquire()
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
 
 
 @contextmanager
@@ -855,7 +878,7 @@ if __name__ == "__main__":
     if not INTERNAL_TOKEN:
         raise SystemExit("INAZINA_INTERNAL_TOKEN is required")
     domain()
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server = BoundedThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"INAZINA Python data service listening at http://127.0.0.1:{PORT}", flush=True)
     try:
         server.serve_forever()
