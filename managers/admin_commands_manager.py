@@ -31,7 +31,7 @@ USAGE = {
  '세율':'[국적] [0~100]', '환율수정':'[외화A] [외화B] [1 A당 B 비율]',
  '국가생성':'[국가명] [통화코드] [기준금리%(선택)] [법정최고이자%(선택)] [세율%(선택)]',
  '국가삭제':'[국가명]',
- '복권가격설정':'[가격]', '금리수정':'[add/del/modify] [수치]',
+ '복권가격설정':'[가격]', '금리수정':'[국적] [add/del/modify] [수치]',
  '법정최고이자수정':'[국적] [add/del/modify] [수치]',
  '자본변경':'[증자/감자] [유상/무상] [종목id] [수량] [유상 가격(선택)]',
  '정기배당수정':'[id] [주기: 초 또는 1일/1주/1달] [주당 금액 또는 비율%]',
@@ -200,7 +200,7 @@ class AdminCommandsManager:
                    '도박확률':1,'도박리턴값':1,'시장분위기':1,'상품분위기':2,
                    '복권당첨번호보기':0,'세율':2,'환율수정':3,'복권가격설정':1,
                    '국가삭제':1,
-                   '금리수정':2,'법정최고이자수정':3,'정기배당수정':3,'정기배당활성':2,'특별배당실시':2,'합병':3,'액면분할병합':3,
+                   '금리수정':3,'법정최고이자수정':3,'정기배당수정':3,'정기배당활성':2,'특별배당실시':2,'합병':3,'액면분할병합':3,
                    '휴장':1,'개장':1,'장일시정지':1,'장재개':1,'서킷브레이커':2,'사이드카':1}
             count.update({'법인잔고수정':3,'법인청산':1,'ELS취소':1})
             if (command=='자본변경' and len(args) not in {4,5}) or (command=='국가생성' and len(args) not in {2,3,4,5}) or (command not in {'복권당첨번호변경','자본변경','국가생성'} and len(args)!=count.get(command,-1)):
@@ -266,9 +266,12 @@ class AdminCommandsManager:
                 if command in {'금리수정','법정최고이자수정'}:
                     if command == '금리수정':
                         key='base_rate'
-                        current=float(conn.execute('SELECT value FROM settings WHERE key=?',(key,)).fetchone()[0])
-                        operation, raw_value = args
-                        setter = lambda value: self.bot.rate_mgr.set_rate(key,value,actor,conn=conn)
+                        nationality, operation, raw_value = args
+                        row=conn.execute('SELECT base_rate FROM country_currencies WHERE nationality=?',(nationality,)).fetchone()
+                        if not row:
+                            raise ValueError('등록된 국가를 확인해주세요.')
+                        current=float(row['base_rate'])
+                        setter = lambda value: self.bot.rate_mgr.set_country_rate(key,nationality,value,actor,conn=conn)
                     else:
                         key='legal_max_rate'
                         nationality, operation, raw_value = args
@@ -285,7 +288,7 @@ class AdminCommandsManager:
                     if not result[0]:
                         raise ValueError(result[1])
                     payload={'operation':operation,'before':current,'after':value}
-                    if command == '법정최고이자수정':
+                    if command in {'금리수정','법정최고이자수정'}:
                         payload['nationality']=nationality
                     self.control._audit(conn,actor,command,payload)
                     return result[1]

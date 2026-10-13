@@ -969,8 +969,13 @@ class EconomyTests(unittest.TestCase):
                 self.message = kwargs
 
         bot = SimpleNamespace(ensure_user=ensure_user, db=self.db)
+        self.db.currency.execute(
+            "INSERT OR REPLACE INTO guild_countries(guild_id,nationality) VALUES (?,?)",
+            ("123456", "낙원"),
+        )
         interaction = SimpleNamespace(
             response=FakeResponse(),
+            guild=SimpleNamespace(id="123456"),
             user=SimpleNamespace(
                 id="citizen-not-registered",
                 display_name="New Citizen",
