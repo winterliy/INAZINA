@@ -562,8 +562,7 @@ class CorporateActionsManager:
             if conn.execute('SELECT 1 FROM corporate_equity_offerings e JOIN market_orders o USING(order_id) WHERE e.asset_code=? AND o.status IN (\'open\',\'partial\') LIMIT 1', (code,)).fetchone():
                 raise ValueError('진행 중인 유상증자 신주 판매를 먼저 완료하거나 취소해주세요.')
 
-    @staticmethod
-    def _reset_market_state(conn, code, price=None, shares=None):
+    def _reset_market_state(self, conn, code, price=None, shares=None):
         for table in ('market_simulation_state', 'market_quote_overrides'):
             # Earlier installations use market_auto_target_state rather than a targets table.
             if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
@@ -664,11 +663,62 @@ class CorporateActionsManager:
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f'❌ {exc}'
 
-    def merge(self, actor, surviving_code, absorbed_code):
+    def change_capital(self, actor, direction, mode, code, quantity, issue_price=None):
+        """Unified capital-change entry point; reductions use a reverse split."""
+        direction, mode = str(direction).strip(), str(mode).strip()
+        if direction == '증자':
+            return self.increase_capital(actor, mode, code, quantity, issue_price)
+        if direction != '감자' or mode not in {'유상', '무상'}:
+            return False, '❌ 자본변경은 증자/감자와 유상/무상으로 입력해주세요.'
+        if issue_price is not None:
+            return False, '❌ 감자는 현재 액면 병합 방식이며 가격 인자를 받지 않습니다.'
+        return self.adjust_face_value(actor, '병합', code, quantity)
+
+    def adjust_face_value(self, actor, action, code, ratio):
+        """Apply an exact stock split or consolidation to every unit-based state."""
+        try:
+            action = str(action).strip()
+            if action not in {'분할', '병합'} or int(ratio) < 2:
+                raise ValueError('분할/병합과 2 이상의 정수 비율을 입력해주세요.')
+            now, ratio = int(time.time()), int(ratio)
+            with DBManager.admin_scope(actor), self.db.atomic() as conn:
+                self._require(conn, actor)
+                listing = self._listing(conn, code)
+                if listing['table'] != 'company' or listing['status'] != 'active':
+                    raise ValueError('활성 주식 종목만 액면분할·병합할 수 있습니다.')
+                self._unencumbered(conn, [code], allow_orders=True)
+                price, shares = int(listing['share_price']), int(listing['total_shares'])
+                if action == '분할':
+                    new_price, new_shares = max(1, price // ratio), shares * ratio
+                    for lot in conn.execute('SELECT holding_id,quantity,average_cost FROM user_assets WHERE asset_code=?', (code,)):
+                        conn.execute('UPDATE user_assets SET quantity=?,average_cost=? WHERE holding_id=?',
+                                     (int(lot['quantity']) * ratio, max(1, round(int(lot['average_cost']) / ratio)), lot['holding_id']))
+                    conn.execute("UPDATE market_orders SET quantity=quantity*?,remaining_quantity=remaining_quantity*?,filled_quantity=filled_quantity*?,limit_price=MAX(1,limit_price/?),reserved_cash=remaining_quantity*MAX(1,limit_price/?) WHERE asset_code=? AND status IN ('scheduled','open','partial')",
+                                 (ratio, ratio, ratio, ratio, ratio, code))
+                else:
+                    if shares % ratio or any(int(row['quantity']) % ratio for row in conn.execute('SELECT quantity FROM user_assets WHERE asset_code=?', (code,))):
+                        raise ValueError('병합 비율로 나누어떨어지는 발행·보유 수량만 지원합니다.')
+                    new_price, new_shares = price * ratio, shares // ratio
+                    for lot in conn.execute('SELECT holding_id,quantity,average_cost FROM user_assets WHERE asset_code=?', (code,)):
+                        conn.execute('UPDATE user_assets SET quantity=?,average_cost=? WHERE holding_id=?',
+                                     (int(lot['quantity']) // ratio, int(lot['average_cost']) * ratio, lot['holding_id']))
+                    conn.execute("UPDATE market_orders SET quantity=quantity/?,remaining_quantity=remaining_quantity/?,filled_quantity=filled_quantity/?,limit_price=limit_price*?,reserved_cash=remaining_quantity*limit_price WHERE asset_code=? AND status IN ('scheduled','open','partial')",
+                                 (ratio, ratio, ratio, ratio, code))
+                conn.execute('UPDATE company SET share_price=?,total_shares=? WHERE company_code=?', (new_price, new_shares, code))
+                conn.execute('UPDATE fund_components SET base_price=? WHERE asset_code=?', (new_price, code))
+                self._reset_market_state(conn, code, new_price, new_shares)
+                self._record(conn, f'face:{uuid.uuid4().hex}', 'face_value_adjustment', code, None,
+                             {'action': action, 'ratio': ratio, 'old_price': price, 'new_price': new_price}, now)
+            return True, f'✅ `{code}` {ratio}:1 액면{action} 완료 · 가격 {price:,} → {new_price:,} · 발행주식수 {shares:,} → {new_shares:,}'
+        except (ValueError, TypeError, OverflowError) as exc:
+            return False, f'❌ {exc}'
+
+    def merge(self, actor, surviving_code, absorbed_code, ratio_text='1'):
         """Exchange equal-value units, retaining B's history and deactivating B."""
         try:
             if surviving_code == absorbed_code:
                 raise ValueError('서로 다른 두 코드를 입력해주세요.')
+            ratio = self._integer(ratio_text, 'A:B 교환비율', 1)
             now = int(time.time())
             with DBManager.admin_scope(actor), self.db.atomic() as conn:
                 self._require(conn, actor)
@@ -708,13 +758,13 @@ class CorporateActionsManager:
                 conversions, total_new, cash = [], 0, 0
                 for user, user_lots in groups.items():
                     quantity = sum(int(lot['quantity']) for lot in user_lots)
-                    units, residual = divmod(quantity * price_b, price_a)
+                    units, residual = quantity * ratio, 0
                     allocation = self._allocate(units, [int(lot['quantity']) for lot in user_lots]) if units else [0] * len(user_lots)
                     cash += residual if user != TREASURY_USER_ID else 0
                     total_new += units
                     conversions.append((user, user_lots, allocation, residual))
                 unissued = max(0, supply_b - sum(int(lot['quantity']) for lot in lots))
-                new_supply = supply_a + total_new + unissued * price_b // price_a
+                new_supply = supply_a + total_new + unissued * ratio
                 if new_supply > self.MAX_MONEY or cash > self.MAX_MONEY:
                     raise ValueError('통합 후 발행량 또는 단주 정산금이 한도를 초과합니다.')
                 if currency == 'NWX':
@@ -726,7 +776,7 @@ class CorporateActionsManager:
                 for user, user_lots, allocation, residual in conversions:
                     for lot, units in zip(user_lots, allocation):
                         if units:
-                            cost = round(Fraction(int(lot['average_cost']) * price_a, price_b))
+                            cost = max(1, round(Fraction(int(lot['average_cost']), ratio)))
                             conn.execute("INSERT INTO user_assets(user_id,asset_code,account_number,quantity,average_cost) VALUES (?,?,?,?,?) ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET average_cost=(quantity*average_cost+excluded.quantity*excluded.average_cost)/(quantity+excluded.quantity),quantity=quantity+excluded.quantity",
                                          (user, surviving_code, lot['account_number'], units, cost))
                     if residual and user != TREASURY_USER_ID:
@@ -765,11 +815,11 @@ class CorporateActionsManager:
                 self._reset_market_state(conn, surviving_code, price_a, new_supply)
                 self._reset_market_state(conn, absorbed_code)
                 conn.execute('DELETE FROM market_exchange_index_components WHERE company_code=?', (absorbed_code,))
-                payload = {'survivor': surviving_code, 'absorbed': absorbed_code, 'exchange_ratio': str(Fraction(price_b, price_a)), 'cash_settled': cash, 'new_supply': new_supply, 'currency': currency,
+                payload = {'survivor': surviving_code, 'absorbed': absorbed_code, 'exchange_ratio': f'{ratio}:1', 'cash_settled': cash, 'new_supply': new_supply, 'currency': currency,
                            'positions': [{'user_id': user, 'cash_residual': residual, 'lots': [{'account_number': lot['account_number'], 'source_quantity': int(lot['quantity']), 'target_quantity': units, 'source_average_cost': int(lot['average_cost'])} for lot, units in zip(user_lots, allocation)]} for user, user_lots, allocation, residual in conversions]}
                 self._record(conn, 'merger:' + uuid.uuid4().hex, 'merger', absorbed_code, surviving_code, payload, now)
                 self._audit(conn, actor, 'merger', surviving_code, payload, now)
-            return True, f'✅ `{absorbed_code}`를 `{surviving_code}`에 통합했습니다. 교환비율 {price_b:,}/{price_a:,} · 단주 정산 {cash:,} {currency} · 존속 `{surviving_code}`'
+            return True, f'✅ `{absorbed_code}`를 `{surviving_code}`에 통합했습니다. 교환비율 {ratio}:1 · 단주 정산 {cash:,} {currency} · 존속 `{surviving_code}`'
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f'❌ {exc}'
 
