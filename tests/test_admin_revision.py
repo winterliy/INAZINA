@@ -66,17 +66,19 @@ class AdminRevisionTests(unittest.TestCase):
         with self.assertRaises(ValueError):AdminCommandsManager(self.bot).execute('citizen','세율','5')
 
     def test_rates_settings_and_cross_currency(self):
-        self.run_command('금리수정','add 1')
-        self.run_command('금리수정','del 0.5')
-        self.assertEqual(self.bot.rate_mgr.get_rate('base_rate'),3.5)
+        self.run_command('금리수정','낙원 add 1')
+        self.run_command('금리수정','낙원 del 0.5')
+        self.assertEqual(self.bot.rate_mgr.get_rate('base_rate','낙원'),3.5)
         self.run_command('법정최고이자수정','낙원 modify 18')
         self.assertEqual(self.bot.rate_mgr.get_rate('legal_max_rate','낙원'),18)
-        self.assertEqual(self.db.system.get_setting('base_rate'),'3.5')
-        self.run_command('도박확률','25');self.run_command('도박리턴값','200');self.run_command('세율','5')
+        self.assertEqual(self.db.system.get_setting('base_rate'),'3')
+        self.run_command('도박확률','25');self.run_command('도박리턴값','200');self.run_command('세율','낙원 5')
         self.assertEqual(self.db.system.get_setting('gamble_chance'),'25')
         self.assertEqual(self.db.pot.get_return_percent(),200)
         self.assertEqual(self.db.system.get_setting('gamble_return'),'200')
-        self.assertEqual(self.db.system.get_setting('tax_percent'),'5')
+        self.assertEqual(self.db.currency.execute_one(
+            "SELECT tax_percent FROM country_currencies WHERE nationality='낙원'"
+        )[0],5)
         self.run_command('시장분위기','bull')
         self.assertEqual(self.db.system.get_setting('market_condition'),'bull')
         fixtures.InazinaTests.seed(self)

@@ -42,6 +42,23 @@ class AccountDB(DBManager):
             self.execute("ALTER TABLE accounts ADD COLUMN balance_units INTEGER NOT NULL DEFAULT 0")
         if "interest_remainder" not in columns:
             self.execute("ALTER TABLE accounts ADD COLUMN interest_remainder TEXT NOT NULL DEFAULT '0'")
+        account_rate_columns = {
+            "contract_rate": "REAL",
+            "rate_type": "TEXT NOT NULL DEFAULT 'fixed' CHECK(rate_type IN ('fixed','floating'))",
+            "rate_nationality": "TEXT",
+            "base_rate_spread": "REAL NOT NULL DEFAULT 0",
+            "rate_floor": "REAL NOT NULL DEFAULT 0",
+            "rate_cap": "REAL",
+            "repricing_cycle_seconds": "INTEGER NOT NULL DEFAULT 2592000",
+            "next_repricing_epoch": "REAL",
+        }
+        for column, declaration in account_rate_columns.items():
+            if column not in columns:
+                self.execute(f"ALTER TABLE accounts ADD COLUMN {column} {declaration}")
+        self.execute(
+            "UPDATE accounts SET contract_rate=COALESCE(contract_rate, "
+            "(SELECT interest_rate FROM saving p WHERE p.product_code=accounts.product_code), 0)"
+        )
         now = time.time()
         for row in self.execute(
             "SELECT account_number, last_payment FROM accounts "
@@ -114,9 +131,21 @@ class AccountDB(DBManager):
             ("extension_count", "INTEGER NOT NULL DEFAULT 0"),
             ("last_extended_epoch", "REAL"),
             ("extension_eligible_epoch", "REAL"),
+            ("contract_rate", "REAL"),
+            ("rate_type", "TEXT NOT NULL DEFAULT 'fixed' CHECK(rate_type IN ('fixed','floating'))"),
+            ("rate_nationality", "TEXT"),
+            ("base_rate_spread", "REAL NOT NULL DEFAULT 0"),
+            ("rate_floor", "REAL NOT NULL DEFAULT 0"),
+            ("rate_cap", "REAL"),
+            ("repricing_cycle_seconds", "INTEGER NOT NULL DEFAULT 2592000"),
+            ("next_repricing_epoch", "REAL"),
         ):
             if column not in loan_columns:
                 self.execute(f"ALTER TABLE loans ADD COLUMN {column} {declaration}")
+        self.execute(
+            "UPDATE loans SET contract_rate=COALESCE(contract_rate, "
+            "(SELECT interest_rate FROM liability p WHERE p.product_code=loans.product_code), 0)"
+        )
         # Fix each contract's maturity rather than changing existing loans when
         # an administrator edits the product's duration.
         self.execute("UPDATE loans SET maturity_epoch = CAST(strftime('%s', created_at) AS REAL) + "
@@ -217,11 +246,17 @@ class AccountDB(DBManager):
             )
 
     def create_account(self, account_number, user_id, product_code, balance, password):
+        now = time.time()
         self.execute(
             "INSERT INTO accounts "
-            "(account_number, user_id, product_code, balance, password, principal, last_payment_epoch, account_type) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'saving')",
-            (account_number, user_id, product_code, balance, password, balance, time.time()),
+            "(account_number, user_id, product_code, balance, password, principal, last_payment_epoch, "
+            "account_type, contract_rate, rate_type, rate_nationality, base_rate_spread, rate_floor, "
+            "rate_cap, repricing_cycle_seconds, next_repricing_epoch) "
+            "SELECT ?, ?, ?, ?, ?, ?, ?, 'saving', interest_rate, rate_type, rate_nationality, "
+            "base_rate_spread, rate_floor, rate_cap, repricing_cycle_seconds, "
+            "CASE WHEN rate_type='floating' THEN ?+repricing_cycle_seconds END "
+            "FROM saving WHERE product_code=?",
+            (account_number, user_id, product_code, balance, password, balance, now, now, product_code),
         )
 
     def get_account(self, account_number):
@@ -249,11 +284,16 @@ class AccountDB(DBManager):
         self.execute(
             '''
             INSERT INTO loans
-            (user_id, product_code, principal, outstanding_balance, last_payment_epoch, last_repayment_epoch, maturity_epoch)
-            VALUES (?, ?, ?, ?, ?, ?, (SELECT CASE WHEN maturity_days>0 THEN ?+86400*maturity_days END
-                                      FROM liability WHERE product_code=?))
+            (user_id, product_code, principal, outstanding_balance, last_payment_epoch, last_repayment_epoch,
+             maturity_epoch, contract_rate, rate_type, rate_nationality, base_rate_spread, rate_floor,
+             rate_cap, repricing_cycle_seconds, next_repricing_epoch)
+            SELECT ?, ?, ?, ?, ?, ?, CASE WHEN maturity_days>0 THEN ?+86400*maturity_days END,
+                   interest_rate, rate_type, rate_nationality, base_rate_spread, rate_floor,
+                   rate_cap, repricing_cycle_seconds,
+                   CASE WHEN rate_type='floating' THEN ?+repricing_cycle_seconds END
+            FROM liability WHERE product_code=?
             ''',
-            (user_id, product_code, amount, amount, now, now, now, product_code),
+            (user_id, product_code, amount, amount, now, now, now, now, product_code),
         )
 
     def delete_account(self, account_number):

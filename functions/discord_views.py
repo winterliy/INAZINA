@@ -724,6 +724,21 @@ class InfoPanelView(discord.ui.View):
         except (TypeError, ValueError, OverflowError):
             return default
 
+    @classmethod
+    def _rate_model_note(cls, row):
+        if row['rate_type'] != 'floating':
+            return "고정금리"
+        spread = cls._number(row['base_rate_spread'])
+        cycle = cls._number(row['repricing_cycle_seconds'])
+        cycle_text = f"{cycle/86400:g}일" if cycle % 86400 == 0 else f"{cycle:g}초"
+        bounds = f" · 하한 {cls._number(row['rate_floor']):g}%"
+        if row['rate_cap'] is not None:
+            bounds += f" · 상한 {cls._number(row['rate_cap']):g}%"
+        return (
+            f"변동금리 · {row['rate_nationality']} 기준금리 {spread:+g}%p · "
+            f"{cycle_text}마다 재산정{bounds}"
+        )
+
     async def interaction_check(self, interaction: discord.Interaction):
         if str(interaction.user.id) == self.owner_id:
             if self.user_id != self.owner_id:
@@ -792,7 +807,7 @@ class InfoPanelView(discord.ui.View):
                 for row in countries
             ]
         if category == "currency_savings":
-            return [f"• **{r['name']}** (`{r['product_code']}`) · {r['quote_currency']} · 연 {r['interest_rate']:g}%"
+            return [f"• **{r['name']}** (`{r['product_code']}`) · {r['quote_currency']} · 연 {r['interest_rate']:g}% · {self._rate_model_note(r)}"
                     for r in self.bot.db.products.execute("SELECT * FROM saving WHERE product_kind='currency_saving' AND status='active' ORDER BY name")]
         if category == 'els':
             lines = []
@@ -852,7 +867,8 @@ class InfoPanelView(discord.ui.View):
                 f"최소 예치 {self._number(row['deposit_amount']):,.0f} NWX · "
                 f"만기 {self._number(row['maturity_days']):g}일 · "
                 f"이자주기 {self._number(row['interest_cycle']):g}초 · "
-                f"{'복리' if self._number(row['compound_type']) == 1 else '단리'}"
+                f"{'복리' if self._number(row['compound_type']) == 1 else '단리'} · "
+                f"{self._rate_model_note(row)}"
                 for row in self.bot.db.products.get_active_savings()
             ]
         if category == "loan_products":
@@ -872,7 +888,8 @@ class InfoPanelView(discord.ui.View):
                 lines.append(
                     f"• **{row['name']}** (`{row['product_code']}`) — 연 "
                     f"{self._number(row['interest_rate']):g}% · {limit_text} · "
-                    f"최소 신용 {self._number(row['min_credit_score']):g}점{repayment_text}{extension_text}"
+                    f"최소 신용 {self._number(row['min_credit_score']):g}점 · "
+                    f"{self._rate_model_note(row)}{repayment_text}{extension_text}"
                 )
             return lines
         if category == "my_accounts":

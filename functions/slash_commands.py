@@ -166,7 +166,7 @@ class SlashCommandRegistry:
     async def _rate_query(self, interaction, key, nationality):
         await self._prepare(interaction)
         label = "기준금리" if key == "base_rate" else "법정최고이자"
-        note = ("옵션 참고 프리미엄·주식 선물·회사채 평가에 적용됩니다." if key == "base_rate"
+        note = ("변동금리 예금·대출의 재산정과 옵션·선물·채권 평가에 적용됩니다." if key == "base_rate"
                 else "해당 국적의 이자 상품이 설정할 수 있는 연이율 상한입니다.")
         try:
             rate = self.bot.rate_mgr.get_rate(key, nationality)

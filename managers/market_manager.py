@@ -243,13 +243,18 @@ class MarketManager:
             if not underlying:
                 return None
             from managers.option_manager import OptionManager
+            from managers.rate_manager import RateManager
 
             now = int(time.time())
             years = max(0, int(contract["expiration_epoch"]) - now) / (365.0 * 86400)
+            with self.db.readonly() as conn:
+                option_rate = RateManager.for_exchange(
+                    conn, "base_rate", underlying.get("exchange_id")
+                ) / 100
             reference_price = OptionManager.theoretical_price(
                 int(underlying["price"] or 0), int(contract["strike_price"]), years,
                 float(contract["implied_volatility"]), contract["option_type"],
-                float(self.db.system.get_setting("base_rate", "3")) / 100,
+                option_rate,
             )
             side_name = "콜" if contract["option_type"] == "call" else "풋"
             return {

@@ -59,7 +59,9 @@ class BankManager:
         try:
             with self.db.atomic(("users", "accounts", "product", "assets", "company")) as conn:
                 product = conn.execute(
-                    "SELECT product_code,name,deposit_amount,status,quote_currency,product_kind "
+                    "SELECT product_code,name,deposit_amount,status,quote_currency,product_kind,"
+                    "interest_rate,rate_type,rate_nationality,base_rate_spread,rate_floor,rate_cap,"
+                    "repricing_cycle_seconds "
                     "FROM product.saving "
                     "WHERE product_code = ?", (product_code,)
                 ).fetchone()
@@ -98,12 +100,20 @@ class BankManager:
                 if cursor.rowcount != 1:
                     return False, f"❌ 현금 잔액이 부족합니다. (필요 예치금: {deposit_amount:,} {home})"
                 account_number = self._generate_account_number(conn)
+                opened_epoch = time.time()
                 conn.execute(
                     "INSERT INTO accounts.accounts "
-                    "(account_number,user_id,product_code,balance,password,principal,last_payment_epoch,quote_currency) "
-                    "VALUES (?, ?, ?, ?, ?, ?, unixepoch('now'),?)",
+                    "(account_number,user_id,product_code,balance,password,principal,last_payment_epoch,"
+                    "quote_currency,contract_rate,rate_type,rate_nationality,base_rate_spread,rate_floor,"
+                    "rate_cap,repricing_cycle_seconds,next_repricing_epoch) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (account_number, str(user_id), product_code, deposit_amount,
-                     self._hash_password(password), deposit_amount,home),
+                     self._hash_password(password), deposit_amount, opened_epoch, home,
+                     float(product['interest_rate']), product['rate_type'], product['rate_nationality'],
+                     float(product['base_rate_spread']), float(product['rate_floor']), product['rate_cap'],
+                     int(product['repricing_cycle_seconds']),
+                     opened_epoch+int(product['repricing_cycle_seconds'])
+                     if product['rate_type']=='floating' else None),
                 )
             return True, (
                 f"✅ {product['name']} 계좌가 개설되었습니다.\n"
@@ -251,12 +261,21 @@ class BankManager:
                 limit = int(round(limit))
                 if limit > 0 and amount > limit:
                     return False, f"❌ 대출 한도를 초과했습니다. (한도: {limit:,} {home})"
+                opened_epoch = time.time()
                 conn.execute(
                     "INSERT INTO accounts.loans "
                     "(user_id, product_code, principal, outstanding_balance, last_payment_epoch, "
-                    "last_repayment_epoch, maturity_epoch) VALUES (?, ?, ?, ?, unixepoch('now'), unixepoch('now'), ?)",
-                    (str(user_id), product_code, amount, amount,
-                     time.time()+int(product['maturity_days'] or 0)*86400 if int(product['maturity_days'] or 0)>0 else None),
+                    "last_repayment_epoch, maturity_epoch, contract_rate,rate_type,rate_nationality,"
+                    "base_rate_spread,rate_floor,rate_cap,repricing_cycle_seconds,next_repricing_epoch) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (str(user_id), product_code, amount, amount, opened_epoch, opened_epoch,
+                     opened_epoch+int(product['maturity_days'] or 0)*86400
+                     if int(product['maturity_days'] or 0)>0 else None,
+                     float(product['interest_rate']), product['rate_type'], product['rate_nationality'],
+                     float(product['base_rate_spread']), float(product['rate_floor']), product['rate_cap'],
+                     int(product['repricing_cycle_seconds']),
+                     opened_epoch+int(product['repricing_cycle_seconds'])
+                     if product['rate_type']=='floating' else None),
                 )
                 payout = conn.execute(
                     "SELECT a.account_number FROM accounts.accounts a "

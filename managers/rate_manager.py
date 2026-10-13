@@ -123,7 +123,8 @@ class RateManager:
             rate = float(percent)
             if isinstance(percent, bool) or not math.isfinite(rate) or not 0 <= rate <= 100:
                 raise ValueError("연이율은 0~100%여야 합니다.")
-            now = float(time.time() if now is None else now)
+            wall_now = time.time()
+            now = float(wall_now if now is None else now)
             if not math.isfinite(now) or now < 0:
                 raise ValueError("적용 시각은 유효한 UNIX 시각이어야 합니다.")
             country = str(nationality or "").strip()
@@ -136,9 +137,29 @@ class RateManager:
                 )
                 if updated.rowcount != 1:
                     raise ValueError("통화와 연결된 국적을 확인해주세요.")
+                # The SQL-browser trigger records ordinary direct edits.  This
+                # managed path replaces that wall-clock row with the caller's
+                # precise effective timestamp (important for deterministic jobs/tests).
+                conn.execute(
+                    "DELETE FROM country_rate_history WHERE nationality=? AND rate_key=? "
+                    "AND annual_percent=? AND changed_by='sql' AND effective_epoch BETWEEN ? AND ?",
+                    (country, key, rate, wall_now-2, wall_now+2),
+                )
+                conn.execute(
+                    "INSERT INTO country_rate_history"
+                    "(nationality,rate_key,annual_percent,effective_epoch,changed_by) "
+                    "VALUES (?,?,?,?,?) ON CONFLICT(nationality,rate_key,effective_epoch) "
+                    "DO UPDATE SET annual_percent=excluded.annual_percent,changed_by=excluded.changed_by",
+                    (country, key, rate, now, str(actor_id)),
+                )
+                if key in {"base_rate", "legal_max_rate"}:
+                    self.reprice_floating_products(conn, country)
             suffix = (" 기존 초과 상품 이율은 새 상한으로 조정했습니다."
                       if key == "legal_max_rate" else "")
-            return True, f"✅ {country} {self.KEYS[key]}를 연 {rate:g}%로 설정했습니다.{suffix}"
+            return True, (
+                f"✅ {country} {self.KEYS[key]}를 연 {rate:g}%로 설정했습니다. "
+                f"연동된 변동금리 상품도 재산정했습니다.{suffix}"
+            )
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f"❌ {exc}"
 
@@ -193,6 +214,63 @@ class RateManager:
                 f"상품 연이율 {rate:g}%는 {country} 법정최고이자 {cap:g}%를 넘을 수 없습니다."
             )
         return rate
+
+    @staticmethod
+    def rate_at(conn, key, nationality, epoch):
+        """Return the policy rate that was effective at a historical instant."""
+        row = conn.execute(
+            "SELECT annual_percent FROM country_rate_history "
+            "WHERE nationality=? AND rate_key=? AND effective_epoch<=? "
+            "ORDER BY effective_epoch DESC LIMIT 1",
+            (str(nationality), key, float(epoch)),
+        ).fetchone()
+        if row:
+            return float(row["annual_percent"])
+        return RateManager.from_connection(
+            conn, key, str(nationality), require_country=True
+        )
+
+    @staticmethod
+    def floating_rate(conn, nationality, spread=0, floor=0, cap=None, *, epoch=None):
+        """Price a floating contract as base + spread within all applicable bounds."""
+        country = str(nationality or "").strip()
+        if not country:
+            raise ValueError("변동금리 상품에는 기준금리 적용 국적이 필요합니다.")
+        base = (RateManager.rate_at(conn, "base_rate", country, epoch)
+                if epoch is not None else
+                RateManager.from_connection(conn, "base_rate", country, require_country=True))
+        legal = (RateManager.rate_at(conn, "legal_max_rate", country, epoch)
+                 if epoch is not None else
+                 RateManager.from_connection(conn, "legal_max_rate", country, require_country=True))
+        spread, floor = float(spread or 0), float(floor or 0)
+        ceiling = legal if cap is None else min(legal, float(cap))
+        values = (base, legal, spread, floor, ceiling)
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError("금리 산정값은 유한한 숫자여야 합니다.")
+        if not -100 <= spread <= 100 or not 0 <= floor <= 100 or not 0 <= ceiling <= 100:
+            raise ValueError("금리 스프레드·하한·상한 설정을 확인해주세요.")
+        if floor > ceiling:
+            raise ValueError("상품 금리 하한은 적용 상한보다 클 수 없습니다.")
+        return min(ceiling, max(floor, base + spread))
+
+    @staticmethod
+    def reprice_floating_products(conn, nationality):
+        """Refresh advertised rates; signed contracts reset on their own schedule."""
+        country = str(nationality)
+        for table in ("saving", "liability"):
+            rows = conn.execute(
+                f"SELECT product_code,base_rate_spread,rate_floor,rate_cap "
+                f"FROM {table} WHERE rate_type='floating' AND rate_nationality=?",
+                (country,),
+            ).fetchall()
+            for row in rows:
+                rate = RateManager.floating_rate(
+                    conn, country, row["base_rate_spread"], row["rate_floor"], row["rate_cap"]
+                )
+                conn.execute(
+                    f"UPDATE {table} SET interest_rate=? WHERE product_code=?",
+                    (rate, row["product_code"]),
+                )
 
     @staticmethod
     def interest_between(conn, key, principal, start, end, spread=0, compound=False,

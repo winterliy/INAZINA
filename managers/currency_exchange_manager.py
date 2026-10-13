@@ -61,22 +61,55 @@ class CurrencyExchangeManager:
             if conn.execute("SELECT 1 FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'", (str(user_id), product['quote_currency'])).fetchone():
                 raise ValueError("같은 통화의 외환통장이 이미 있습니다.")
             number = 'FXA' + uuid.uuid4().hex[:16].upper()
-            conn.execute("INSERT INTO accounts(account_number,user_id,product_code,balance,password,last_payment_epoch,principal,account_type,quote_currency) "
-                         "VALUES (?,?,?,?,?,?,?,?,?)", (number, str(user_id), product_code, 0, None, time.time(), 0, 'currency_saving', product['quote_currency']))
+            opened_epoch = time.time()
+            conn.execute("INSERT INTO accounts(account_number,user_id,product_code,balance,password,"
+                         "last_payment_epoch,principal,account_type,quote_currency,contract_rate,rate_type,"
+                         "rate_nationality,base_rate_spread,rate_floor,rate_cap,repricing_cycle_seconds,"
+                         "next_repricing_epoch) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (number, str(user_id), product_code, 0, None, opened_epoch, 0,
+                          'currency_saving', product['quote_currency'], float(product['interest_rate']),
+                          product['rate_type'], product['rate_nationality'],
+                          float(product['base_rate_spread']), float(product['rate_floor']),
+                          product['rate_cap'], int(product['repricing_cycle_seconds']),
+                          opened_epoch+int(product['repricing_cycle_seconds'])
+                          if product['rate_type']=='floating' else None))
             return number
 
     @staticmethod
     def _settle(conn, user_id, now):
-        rows = conn.execute("SELECT a.*,p.interest_rate AS annual_rate FROM accounts a JOIN saving p USING(product_code) WHERE a.user_id=? AND a.account_type='currency_saving'", (str(user_id),)).fetchall()
+        rows = conn.execute("SELECT a.*,COALESCE(a.contract_rate,p.interest_rate) AS annual_rate "
+                            "FROM accounts a JOIN saving p USING(product_code) "
+                            "WHERE a.user_id=? AND a.account_type='currency_saving'", (str(user_id),)).fetchall()
         for row in rows:
-            elapsed = max(0, now - row['last_payment_epoch'])
-            exact = (Decimal(row['balance_units']) * Decimal(str(row['annual_rate'])) / 100
-                     * Decimal(str(elapsed)) / Decimal(365*86400) + Decimal(row['interest_remainder']))
+            from managers.rate_manager import RateManager
+            cursor = float(row['last_payment_epoch'])
+            rate = float(row['annual_rate'])
+            next_reset = row['next_repricing_epoch']
+            cycle = int(row['repricing_cycle_seconds'] or 2592000)
+            exact = Decimal(row['interest_remainder'])
+            while cursor < now:
+                segment_end = now
+                if row['rate_type']=='floating' and next_reset is not None:
+                    segment_end = min(segment_end, float(next_reset))
+                elapsed = max(0, segment_end-cursor)
+                exact += (Decimal(row['balance_units']) * Decimal(str(rate)) / 100
+                          * Decimal(str(elapsed)) / Decimal(365*86400))
+                cursor = segment_end
+                if (row['rate_type']=='floating' and next_reset is not None
+                        and cursor >= float(next_reset)):
+                    rate = RateManager.floating_rate(
+                        conn, row['rate_nationality'], row['base_rate_spread'],
+                        row['rate_floor'], row['rate_cap'], epoch=float(next_reset)
+                    )
+                    next_reset = float(next_reset)+cycle
             credit = int(exact.to_integral_value(rounding=ROUND_FLOOR))
             if row['balance_units'] + credit > MAX_UNITS:
                 raise ValueError("외환 잔액 한도를 초과합니다.")
-            conn.execute("UPDATE accounts SET balance_units=balance_units+?,interest_remainder=?,last_payment_epoch=? "
-                         "WHERE account_number=? AND account_type='currency_saving'", (credit, str(exact-credit), max(now,row['last_payment_epoch']), row['account_number']))
+            conn.execute("UPDATE accounts SET balance_units=balance_units+?,interest_remainder=?,"
+                         "last_payment_epoch=?,contract_rate=?,next_repricing_epoch=? "
+                         "WHERE account_number=? AND account_type='currency_saving'",
+                         (credit, str(exact-credit), max(now,row['last_payment_epoch']), rate,
+                          next_reset, row['account_number']))
 
     def exchange(self, user_id, source, target, amount):
         source, target = str(source).strip().upper(), str(target).strip().upper()
@@ -117,7 +150,7 @@ class CurrencyExchangeManager:
             self._settle(conn, user_id, time.time())
             home = CurrencyManager.home(conn, user_id)
             return [{**dict(r), 'value_nwx': int(Decimal(r['balance_units']) * self._rate(conn,r['currency_code']) / SCALE) if r['balance_units'] else 0}
-                    for r in conn.execute("SELECT a.*,a.quote_currency AS currency_code,p.name AS product_name,p.interest_rate AS annual_rate FROM accounts a "
+                    for r in conn.execute("SELECT a.*,a.quote_currency AS currency_code,p.name AS product_name,COALESCE(a.contract_rate,p.interest_rate) AS annual_rate FROM accounts a "
                                           "LEFT JOIN saving p ON p.product_code=a.product_code "
                                           "WHERE a.user_id=? AND a.account_type='currency_saving' AND a.quote_currency<>? "
                                           "ORDER BY a.quote_currency", (str(user_id),home))]

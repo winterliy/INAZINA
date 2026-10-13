@@ -8,6 +8,7 @@ from database.db_manager import DBManager
 from database.user_db import TREASURY_USER_ID
 from managers.admin_control_manager import ENTITIES, KINDS
 from managers.currency_exchange_manager import SCALE, MAX_UNITS, amount_units, display_units
+from managers.rate_manager import RateManager
 
 COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값',
             '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','환율수정',
@@ -306,7 +307,7 @@ class AdminCommandsManager:
                 price_key=ENTITIES[category][2]
                 if category=='option':
                     underlying,_=self.bot.user_mgr._asset_row(conn,row['underlying_code'])
-                    current=self.bot.option_mgr.theoretical_price(underlying['price'],row['strike_price'],max(0,row['expiration_epoch']-time.time())/(365*86400),row['implied_volatility'],row['option_type'],float(conn.execute("SELECT value FROM settings WHERE key='base_rate'").fetchone()[0])/100)
+                    current=self.bot.option_mgr.theoretical_price(underlying['price'],row['strike_price'],max(0,row['expiration_epoch']-time.time())/(365*86400),row['implied_volatility'],row['option_type'],RateManager.for_exchange(conn,'base_rate',underlying.get('exchange_id'))/100)
                     override=conn.execute('SELECT price FROM market_quote_overrides WHERE asset_code=?',(args[0],)).fetchone()
                     if override:current=override[0]
                 elif price_key:

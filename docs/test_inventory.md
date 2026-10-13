@@ -400,3 +400,14 @@
 - `test_warmup_candle_at_left_boundary_does_not_enter_visible_price_scale`
 - `test_preferred_shares_and_dividend_terms_are_visible_without_voting_rights`
 - `test_wallet_displays_preferred_class_and_personal_loan_maturity`
+
+## `tests/test_rate_interaction.py` (6개)
+
+### `RateInteractionTests`
+
+- `test_existing_products_and_contracts_migrate_as_fixed`
+- `test_base_rate_reprices_product_now_and_contract_on_reset`
+- `test_legal_maximum_clamps_advertised_and_contract_rates`
+- `test_floating_loan_uses_contract_reset_not_immediate_product_change`
+- `test_direct_policy_edit_reprices_floating_product`
+- `test_floating_reset_must_align_with_interest_cycle`

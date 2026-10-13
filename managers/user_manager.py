@@ -649,8 +649,6 @@ class UserManager:
         asset_cache = self._portfolio_asset_catalog(user_id, conn=conn)
         def wallet_asset(code):
             return asset_cache.get(str(code))
-        base_rate_row = conn.execute("SELECT value FROM settings WHERE key='base_rate'").fetchone()
-        base_rate = float(base_rate_row[0] if base_rate_row else "3") / 100
         quote_overrides = {str(row['asset_code']):int(row['price']) for row in
             conn.execute('SELECT asset_code,price FROM market_quote_overrides')}
         currency_rates = {'NWX':1}
@@ -756,6 +754,10 @@ class UserManager:
         now = int(time.time())
         for position in option_rows:
             underlying = wallet_asset(position["underlying_code"])
+            from managers.rate_manager import RateManager
+            base_rate = RateManager.for_exchange(
+                conn, 'base_rate', underlying.get('exchange_id') if underlying else None
+            ) / 100
             spot = int(underlying["price"] or 0) if underlying else 0
             years = max(0, int(position["expiration_epoch"]) - now) / (365.0 * 86400)
             theoretical = OptionManager.theoretical_price(
@@ -828,6 +830,10 @@ class UserManager:
         written_options=[]
         for written in written_rows:
             underlying = wallet_asset(written["underlying_code"])
+            from managers.rate_manager import RateManager
+            base_rate = RateManager.for_exchange(
+                conn, 'base_rate', underlying.get('exchange_id') if underlying else None
+            ) / 100
             spot = int(underlying["price"] or 0) if underlying else 0
             years = max(0, int(written["expiration_epoch"]) - now) / (365.0 * 86400)
             premium = OptionManager.theoretical_price(
@@ -889,7 +895,7 @@ class UserManager:
         if currency_rows:
             from managers.currency_exchange_manager import CurrencyExchangeManager
             currency_accounts = [{**dict(r),'value_nwx':int(r['balance_units'])*CurrencyExchangeManager._rate(conn,r['currency_code'])//1_000_000 if r['balance_units'] else 0}
-                for r in conn.execute("SELECT a.*,a.quote_currency AS currency_code,p.name AS product_name,p.interest_rate AS annual_rate FROM accounts a "
+                for r in conn.execute("SELECT a.*,a.quote_currency AS currency_code,p.name AS product_name,COALESCE(a.contract_rate,p.interest_rate) AS annual_rate FROM accounts a "
                     "LEFT JOIN saving p ON p.product_code=a.product_code WHERE a.user_id=? AND a.account_type='currency_saving' AND a.quote_currency<>? ORDER BY a.quote_currency",(str(user_id),national_currency))]
             currency_total = sum(r['value_nwx'] for r in currency_accounts)
         foreign_account_total_home = sum(

@@ -38,11 +38,11 @@ EXAMPLES = {
     'indexfund': {'exchange_id':'INZ','underlying_exchange_id':'INZ'},
     'commodity': {'exchange_id':'COM'},
     'bond': {'annual_rate':3,'maturity_days':90,'face_value':1000,'exchange_id':'BOND'},
-    'saving': {'interest_rate':3,'deposit_amount':1000,'maturity_days':30,'interest_cycle':86400,'compound_type':1,'issuer':'Inazina'},
-    'loan': {'interest_rate':5,'loan_limit':1000000,'maturity_days':30,'interest_cycle':86400,'min_credit_score':500,'issuer':'Inazina','repayment_cycle_seconds':0,'repayment_amount':0},
+    'saving': {'interest_rate':3,'deposit_amount':1000,'maturity_days':30,'interest_cycle':86400,'compound_type':1,'issuer':'Inazina','rate_type':'fixed'},
+    'loan': {'interest_rate':5,'loan_limit':1000000,'maturity_days':30,'interest_cycle':86400,'min_credit_score':500,'issuer':'Inazina','repayment_cycle_seconds':0,'repayment_amount':0,'rate_type':'fixed'},
     'option': {'underlying_code':'INZST001','option_type':'call','strike_price':1120,'maturity_days':30,'quantity':1,'limit_price':100,'volatility_percent':60},
     'currency': {'asset_code':'CUR_NEW','nationality':'새 국가'},
-    'currencyproduct': {'quote_currency':'USD','interest_rate':1,'product_kind':'currency_saving'},
+    'currencyproduct': {'quote_currency':'USD','interest_rate':1,'product_kind':'currency_saving','rate_type':'fixed'},
     'els': {'face_value':1000,'annual_coupon':12,'maturity_days':180,'underlyings':['INZST001'],
             'observation_days':[30,60,90],'redemption_levels':[90,85,80],
             'maturity_level':75,'knock_in_level':60,'subscription_days':1,'exchange_id':'INZ'},
@@ -209,6 +209,60 @@ class AdminControlManager:
                     values['manager'] = 'Inazina 국고'
                     values['nav_anchor'] = values['unit_price']
             merged = {**(dict(existing) if existing else {}),**values}
+            if category in {'saving','loan','currencyproduct'}:
+                rate_type = str(merged.get('rate_type') or 'fixed').strip().lower()
+                if rate_type not in {'fixed','floating'}:
+                    raise ValueError("rate_type은 fixed 또는 floating이어야 합니다.")
+                values['rate_type'] = rate_type
+                if rate_type == 'floating':
+                    currency = str(merged.get('quote_currency') or 'NWX').upper()
+                    nationality = str(merged.get('rate_nationality') or '').strip()
+                    if not nationality:
+                        countries = conn.execute(
+                            "SELECT nationality FROM country_currencies WHERE currency_code=? "
+                            "ORDER BY nationality", (currency,)
+                        ).fetchall()
+                        if len(countries) != 1:
+                            raise ValueError(
+                                "변동금리 상품은 rate_nationality로 기준금리 적용 국가를 지정해주세요."
+                            )
+                        nationality = countries[0]['nationality']
+                        values['rate_nationality'] = nationality
+                    spread = self._number(merged.get('base_rate_spread', 0), -100, 100)
+                    floor = self._number(merged.get('rate_floor', 0), 0, 100)
+                    cap_raw = merged.get('rate_cap')
+                    cap = None if cap_raw in (None, '') else self._number(cap_raw, 0, 100)
+                    cycle = self._number(
+                        merged.get('repricing_cycle_seconds', 2592000), 1, 10*365*86400,
+                        integer=True,
+                    )
+                    interest_cycle = self._number(merged.get('interest_cycle'), .001, 365*86400)
+                    if cycle < interest_cycle or not math.isclose(
+                        cycle / interest_cycle, round(cycle / interest_cycle), abs_tol=1e-9
+                    ):
+                        raise ValueError("재산정주기는 이자주기의 정수배여야 합니다.")
+                    if floor > (100 if cap is None else cap):
+                        raise ValueError("상품 금리 하한은 상품 상한보다 클 수 없습니다.")
+                    values.update({
+                        'base_rate_spread': spread,
+                        'rate_floor': floor,
+                        'rate_cap': cap,
+                        'repricing_cycle_seconds': cycle,
+                    })
+                    # A supplied advertised rate is translated into a spread unless
+                    # the caller explicitly supplied the spread itself.
+                    if 'interest_rate' in extra and 'base_rate_spread' not in extra:
+                        base = RateManager.from_connection(
+                            conn, 'base_rate', nationality, require_country=True
+                        )
+                        spread = self._number(float(extra['interest_rate']) - base, -100, 100)
+                        values['base_rate_spread'] = spread
+                    values['interest_rate'] = RateManager.floating_rate(
+                        conn, nationality, values['base_rate_spread'], floor, cap
+                    )
+                elif merged.get('rate_nationality'):
+                    values['rate_nationality'] = str(merged['rate_nationality']).strip()
+                merged = {**merged, **values}
             if category=='stock':
                 if existing and values.get('exchange_id',existing['exchange_id'])!=existing['exchange_id']:
                     from managers.els_manager import ELSManager
@@ -285,6 +339,7 @@ class AdminControlManager:
             if category in {'saving','loan','currencyproduct'}:
                 RateManager.require_legal_rate(
                     conn, values.get('interest_rate', merged.get('interest_rate', 0)),
+                    nationality=merged.get('rate_nationality'),
                     currency_code=values.get('quote_currency', merged.get('quote_currency', 'NWX')),
                 )
             elif category in {'corporatebond','bond'}:

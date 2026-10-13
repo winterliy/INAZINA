@@ -67,6 +67,7 @@ class CurrencyDB(DBManager):
                          "(SELECT CAST(value AS REAL) FROM settings WHERE key='legal_max_rate'),20)")
         self.execute("UPDATE country_currencies SET tax_percent=COALESCE(tax_percent, "
                      "(SELECT CAST(value AS REAL) FROM settings WHERE key='tax_percent'),3)")
+        self._init_country_rate_history()
         self._migrate_currency_wallets()
         self._normalize_home_currency_accounts()
         self.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('currency_exchange_fee_percent','0.1')")
@@ -76,7 +77,45 @@ class CurrencyDB(DBManager):
             if 'quote_currency' not in columns:
                 self.execute(f"ALTER TABLE {table} ADD COLUMN quote_currency TEXT NOT NULL DEFAULT 'NWX'")
         self._init_legal_rate_caps()
+        self._init_floating_rate_pricing()
         self._seed_liquidity_states()
+
+    def _init_country_rate_history(self):
+        """Persist policy-rate dates so delayed variable resets are reproducible."""
+        self.execute("""CREATE TABLE IF NOT EXISTS country_rate_history (
+            nationality TEXT NOT NULL,
+            rate_key TEXT NOT NULL CHECK(rate_key IN ('base_rate','legal_max_rate')),
+            annual_percent REAL NOT NULL CHECK(annual_percent BETWEEN 0 AND 100),
+            effective_epoch REAL NOT NULL,
+            changed_by TEXT NOT NULL DEFAULT 'migration',
+            PRIMARY KEY(nationality,rate_key,effective_epoch)
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_country_rate_history_lookup "
+                     "ON country_rate_history(nationality,rate_key,effective_epoch DESC)")
+        self.execute("""INSERT OR IGNORE INTO country_rate_history
+            (nationality,rate_key,annual_percent,effective_epoch,changed_by)
+            SELECT nationality,'base_rate',base_rate,0,'migration' FROM country_currencies""")
+        self.execute("""INSERT OR IGNORE INTO country_rate_history
+            (nationality,rate_key,annual_percent,effective_epoch,changed_by)
+            SELECT nationality,'legal_max_rate',legal_max_rate,0,'migration' FROM country_currencies""")
+        self.execute('DROP TRIGGER IF EXISTS "trg_country_rate_history_insert"')
+        self.execute('DROP TRIGGER IF EXISTS "trg_country_rate_history_update"')
+        self.execute("""CREATE TRIGGER trg_country_rate_history_insert
+            AFTER INSERT ON country_currencies BEGIN
+                INSERT OR REPLACE INTO country_rate_history VALUES
+                    (NEW.nationality,'base_rate',NEW.base_rate,unixepoch(),'sql');
+                INSERT OR REPLACE INTO country_rate_history VALUES
+                    (NEW.nationality,'legal_max_rate',NEW.legal_max_rate,unixepoch(),'sql');
+            END""")
+        self.execute("""CREATE TRIGGER trg_country_rate_history_update
+            AFTER UPDATE OF base_rate,legal_max_rate ON country_currencies BEGIN
+                INSERT OR REPLACE INTO country_rate_history
+                    SELECT NEW.nationality,'base_rate',NEW.base_rate,unixepoch(),'sql'
+                    WHERE NEW.base_rate IS NOT OLD.base_rate;
+                INSERT OR REPLACE INTO country_rate_history
+                    SELECT NEW.nationality,'legal_max_rate',NEW.legal_max_rate,unixepoch(),'sql'
+                    WHERE NEW.legal_max_rate IS NOT OLD.legal_max_rate;
+            END""")
 
     def _init_legal_rate_caps(self):
         """Keep every interest-bearing product within its nationality's cap.
@@ -86,6 +125,8 @@ class CurrencyDB(DBManager):
         then fall back to the currency/global cap when an exchange is unmapped.
         """
         currency_cap = """COALESCE(
+            (SELECT c.legal_max_rate FROM country_currencies c
+             WHERE c.nationality=NEW.rate_nationality),
             (SELECT MIN(c.legal_max_rate) FROM country_currencies c
              WHERE c.currency_code=NEW.quote_currency),
             CAST((SELECT value FROM settings WHERE key='legal_max_rate') AS REAL), 20)"""
@@ -107,7 +148,8 @@ class CurrencyDB(DBManager):
             for operation in ("INSERT", f"UPDATE OF {rate_column}, quote_currency, exchange_id"):
                 # Not every product table has both routing columns.
                 if table in {"saving", "liability"}:
-                    operation = "INSERT" if operation == "INSERT" else f"UPDATE OF {rate_column}, quote_currency"
+                    operation = ("INSERT" if operation == "INSERT" else
+                                 f"UPDATE OF {rate_column}, quote_currency, rate_nationality")
                 if table == "treasury_bond_products":
                     operation = "INSERT" if operation == "INSERT" else f"UPDATE OF {rate_column}, exchange_id, quote_currency"
                 suffix = "insert" if operation == "INSERT" else "update"
@@ -125,14 +167,22 @@ class CurrencyDB(DBManager):
         for name in ("trg_country_legal_max_insert", "trg_country_legal_max_update"):
             self.execute(f'DROP TRIGGER IF EXISTS "{name}"')
         clamp = """
+            UPDATE saving SET interest_rate=MIN(interest_rate,NEW.legal_max_rate)
+                WHERE rate_nationality=NEW.nationality;
             UPDATE saving SET interest_rate=MIN(interest_rate,
                 (SELECT MIN(c.legal_max_rate) FROM country_currencies c
                  WHERE c.currency_code=saving.quote_currency))
-                WHERE quote_currency=NEW.currency_code;
+                WHERE rate_nationality IS NULL AND quote_currency=NEW.currency_code;
+            UPDATE liability SET interest_rate=MIN(interest_rate,NEW.legal_max_rate)
+                WHERE rate_nationality=NEW.nationality;
             UPDATE liability SET interest_rate=MIN(interest_rate,
                 (SELECT MIN(c.legal_max_rate) FROM country_currencies c
                  WHERE c.currency_code=liability.quote_currency))
-                WHERE quote_currency=NEW.currency_code;
+                WHERE rate_nationality IS NULL AND quote_currency=NEW.currency_code;
+            UPDATE accounts SET contract_rate=MIN(contract_rate,NEW.legal_max_rate)
+                WHERE rate_nationality=NEW.nationality;
+            UPDATE loans SET contract_rate=MIN(contract_rate,NEW.legal_max_rate)
+                WHERE rate_nationality=NEW.nationality;
             UPDATE investment SET annual_rate=MIN(annual_rate,NEW.legal_max_rate)
                 WHERE product_type='corporate_bond' AND exchange_id IN
                 (SELECT exchange_id FROM market_exchanges WHERE nationality=NEW.nationality);
@@ -190,6 +240,105 @@ class CurrencyDB(DBManager):
         self.execute("""UPDATE treasury_bond_holdings SET annual_rate=MIN(annual_rate,COALESCE(
             (SELECT p.annual_rate FROM treasury_bond_products p
              WHERE p.product_code=treasury_bond_holdings.product_code),annual_rate))""")
+
+    def _init_floating_rate_pricing(self):
+        """Link advertised floating deposit/loan rates to national policy rates."""
+        for table in ("saving", "liability"):
+            self.execute(f"""UPDATE {table} SET rate_nationality=(
+                SELECT MIN(c.nationality) FROM country_currencies c
+                WHERE c.currency_code={table}.quote_currency)
+                WHERE rate_nationality IS NULL AND 1=(
+                    SELECT COUNT(*) FROM country_currencies c
+                    WHERE c.currency_code={table}.quote_currency)""")
+            validation_insert = f"trg_{table}_floating_terms_validate_insert"
+            validation_update = f"trg_{table}_floating_terms_validate_update"
+            insert_reprice = f"trg_{table}_floating_reprice_insert"
+            update_reprice = f"trg_{table}_floating_reprice_update"
+            for trigger in (validation_insert, validation_update, insert_reprice, update_reprice):
+                self.execute(f'DROP TRIGGER IF EXISTS "{trigger}"')
+            invalid = """NEW.rate_type='floating' AND (
+                    NEW.rate_nationality IS NULL
+                    OR NOT EXISTS (SELECT 1 FROM country_currencies c
+                        WHERE c.nationality=NEW.rate_nationality
+                          AND c.currency_code=NEW.quote_currency)
+                    OR NEW.rate_floor<0 OR NEW.rate_floor>100
+                    OR NEW.rate_cap IS NOT NULL AND
+                       (NEW.rate_cap<NEW.rate_floor OR NEW.rate_cap>100)
+                    OR NEW.repricing_cycle_seconds<=0 OR NEW.interest_cycle<=0
+                    OR NEW.repricing_cycle_seconds<NEW.interest_cycle
+                    OR ABS(NEW.repricing_cycle_seconds/NEW.interest_cycle
+                           - ROUND(NEW.repricing_cycle_seconds/NEW.interest_cycle))>0.000000001
+                )"""
+            self.execute(f'''CREATE TRIGGER "{validation_insert}"
+                BEFORE INSERT ON "{table}" WHEN {invalid} BEGIN
+                    SELECT RAISE(ABORT, '변동금리 국적·하한·상한·재산정주기 설정을 확인해주세요.');
+                END''')
+            self.execute(f'''CREATE TRIGGER "{validation_update}"
+                BEFORE UPDATE OF rate_type,rate_nationality,base_rate_spread,rate_floor,
+                    rate_cap,repricing_cycle_seconds,interest_cycle,quote_currency ON "{table}"
+                WHEN {invalid} BEGIN
+                    SELECT RAISE(ABORT, '변동금리 국적·하한·상한·재산정주기 설정을 확인해주세요.');
+                END''')
+            self.execute(f'''CREATE TRIGGER "{insert_reprice}"
+                AFTER INSERT ON "{table}" WHEN NEW.rate_type='floating' BEGIN
+                    UPDATE "{table}" SET interest_rate=MIN(
+                        (SELECT legal_max_rate FROM country_currencies
+                         WHERE nationality=NEW.rate_nationality),
+                        COALESCE(NEW.rate_cap,100),
+                        MAX(NEW.rate_floor,(SELECT base_rate FROM country_currencies
+                            WHERE nationality=NEW.rate_nationality)+NEW.base_rate_spread))
+                    WHERE product_code=NEW.product_code;
+                END''')
+            self.execute(f'''CREATE TRIGGER "{update_reprice}"
+                AFTER UPDATE OF rate_type,rate_nationality,base_rate_spread,rate_floor,
+                    rate_cap,repricing_cycle_seconds,quote_currency ON "{table}"
+                WHEN NEW.rate_type='floating' BEGIN
+                    UPDATE "{table}" SET interest_rate=MIN(
+                        (SELECT legal_max_rate FROM country_currencies
+                         WHERE nationality=NEW.rate_nationality),
+                        COALESCE(NEW.rate_cap,100),
+                        MAX(NEW.rate_floor,(SELECT base_rate FROM country_currencies
+                            WHERE nationality=NEW.rate_nationality)+NEW.base_rate_spread))
+                    WHERE product_code=NEW.product_code;
+                END''')
+
+        # Reprice direct SQL edits to policy rates as well as command-driven edits.
+        self.execute('DROP TRIGGER IF EXISTS "trg_country_floating_reprice"')
+        self.execute('''CREATE TRIGGER trg_country_floating_reprice
+            AFTER UPDATE OF base_rate,legal_max_rate ON country_currencies BEGIN
+                UPDATE saving SET interest_rate=MIN(NEW.legal_max_rate,COALESCE(rate_cap,100),
+                    MAX(rate_floor,NEW.base_rate+base_rate_spread))
+                    WHERE rate_type='floating' AND rate_nationality=NEW.nationality;
+                UPDATE liability SET interest_rate=MIN(NEW.legal_max_rate,COALESCE(rate_cap,100),
+                    MAX(rate_floor,NEW.base_rate+base_rate_spread))
+                    WHERE rate_type='floating' AND rate_nationality=NEW.nationality;
+            END''')
+        # Normalize rows created before this migration or edited while triggers were absent.
+        for table in ("saving", "liability"):
+            self.execute(f'''UPDATE {table} SET interest_rate=MIN(
+                (SELECT legal_max_rate FROM country_currencies
+                 WHERE nationality={table}.rate_nationality),COALESCE(rate_cap,100),
+                MAX(rate_floor,(SELECT base_rate FROM country_currencies
+                    WHERE nationality={table}.rate_nationality)+base_rate_spread))
+                WHERE rate_type='floating' AND rate_nationality IS NOT NULL''')
+        # Existing contracts keep their old fixed-rate character, but retain the
+        # issuing nationality so a statutory maximum can still be enforced.
+        self.execute("""UPDATE accounts SET rate_nationality=(
+            SELECT p.rate_nationality FROM saving p
+            WHERE p.product_code=accounts.product_code)
+            WHERE rate_nationality IS NULL""")
+        self.execute("""UPDATE loans SET rate_nationality=(
+            SELECT p.rate_nationality FROM liability p
+            WHERE p.product_code=loans.product_code)
+            WHERE rate_nationality IS NULL""")
+        self.execute("""UPDATE accounts SET contract_rate=MIN(contract_rate,
+            (SELECT legal_max_rate FROM country_currencies c
+             WHERE c.nationality=accounts.rate_nationality))
+            WHERE contract_rate IS NOT NULL AND rate_nationality IS NOT NULL""")
+        self.execute("""UPDATE loans SET contract_rate=MIN(contract_rate,
+            (SELECT legal_max_rate FROM country_currencies c
+             WHERE c.nationality=loans.rate_nationality))
+            WHERE contract_rate IS NOT NULL AND rate_nationality IS NOT NULL""")
 
     def _migrate_currency_wallets(self):
         """Merge the removed wallet store into home cash or currency accounts.

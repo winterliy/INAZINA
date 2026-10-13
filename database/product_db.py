@@ -27,6 +27,7 @@ class ProductDB(DBManager):
             self.execute("ALTER TABLE saving ADD COLUMN quote_currency TEXT NOT NULL DEFAULT 'NWX'")
         if "product_kind" not in saving_columns:
             self.execute("ALTER TABLE saving ADD COLUMN product_kind TEXT NOT NULL DEFAULT 'saving'")
+        self._init_rate_pricing_columns("saving", saving_columns)
         # 대출 상품 (Liability)
         self.execute('''
             CREATE TABLE IF NOT EXISTS liability (
@@ -52,6 +53,7 @@ class ProductDB(DBManager):
             self.execute(
                 "ALTER TABLE liability ADD COLUMN repayment_amount INTEGER NOT NULL DEFAULT 0"
             )
+        self._init_rate_pricing_columns("liability", liability_columns)
         for column, declaration in {
             "extension_min_credit_score": "INTEGER NOT NULL DEFAULT 700 CHECK(extension_min_credit_score BETWEEN 0 AND 1000)",
             "extension_days": "INTEGER NOT NULL DEFAULT 0 CHECK(extension_days >= 0)",
@@ -206,6 +208,25 @@ class ProductDB(DBManager):
             columns = {row[1] for row in self.execute(f"PRAGMA table_info({table})")}
             if "quote_currency" not in columns:
                 self.execute(f"ALTER TABLE {table} ADD COLUMN quote_currency TEXT NOT NULL DEFAULT 'NWX'")
+
+    def _init_rate_pricing_columns(self, table, existing_columns):
+        """Add a policy-rate pricing model without changing legacy products.
+
+        Existing rows remain fixed-rate.  A floating product's advertised rate
+        is derived from its nationality's base rate plus a spread, bounded by
+        the product floor/cap and the nationality's legal maximum.
+        """
+        definitions = {
+            "rate_type": "TEXT NOT NULL DEFAULT 'fixed' CHECK(rate_type IN ('fixed','floating'))",
+            "rate_nationality": "TEXT",
+            "base_rate_spread": "REAL NOT NULL DEFAULT 0 CHECK(base_rate_spread BETWEEN -100 AND 100)",
+            "rate_floor": "REAL NOT NULL DEFAULT 0 CHECK(rate_floor BETWEEN 0 AND 100)",
+            "rate_cap": "REAL CHECK(rate_cap IS NULL OR rate_cap BETWEEN 0 AND 100)",
+            "repricing_cycle_seconds": "INTEGER NOT NULL DEFAULT 2592000 CHECK(repricing_cycle_seconds > 0)",
+        }
+        for column, declaration in definitions.items():
+            if column not in existing_columns:
+                self.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
     def register_saving(self, code, name, rate, deposit, maturity, cycle, compound, issuer):
         self.execute(
