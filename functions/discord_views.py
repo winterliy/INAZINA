@@ -60,11 +60,12 @@ class RegistrationModal(discord.ui.Modal):
         path = Path(__file__).resolve().parents[1] / "database" / "private.text"
         return path.read_text(encoding="utf-8").strip()
 
-    def __init__(self, bot, user_id, nickname, notice_text):
+    def __init__(self, bot, user_id, nickname, notice_text, guild_id=None):
         super().__init__(title="Inazina 등록 안내")
         self.bot = bot
         self.user_id = str(user_id)
         self.nickname = str(nickname or user_id)
+        self.guild_id = str(guild_id) if guild_id is not None else None
         self.confirmation_code = secrets.token_hex(3).upper()
         self.display_content = (
             f"{str(notice_text or '').strip()}\n\n"
@@ -101,7 +102,10 @@ class RegistrationModal(discord.ui.Modal):
             )
 
         try:
-            created = await self.bot.register_user(self.user_id, self.nickname)
+            if self.guild_id is None:  # Legacy direct modal construction in tests.
+                created = await self.bot.register_user(self.user_id, self.nickname)
+            else:
+                created = await self.bot.register_user(self.user_id, self.nickname, self.guild_id)
         except Exception as exc:
             print(f"[Registration Error] {type(exc).__name__}: {exc}")
             return await interaction.response.send_message(
@@ -112,7 +116,7 @@ class RegistrationModal(discord.ui.Modal):
         if created:
             message = (
                 f"✅ {self.nickname}님, 등록이 완료됐습니다. "
-                "초기 자산 1,000,000 NWX가 지급됐습니다."
+                "등록 서버 국가의 기본 화폐로 초기 자산이 지급됐습니다."
             )
         else:
             message = "이미 등록된 사용자입니다. 닉네임 정보를 최신 상태로 갱신했습니다."

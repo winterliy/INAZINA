@@ -42,6 +42,8 @@ class SlashCommandRegistry:
     def register(self):
         definitions = (
             ("등록", "이용 안내를 확인하고 Inazina 봇에 등록합니다", self.self_register),
+            ("서버등록", "이 서버를 INAZINA 연방국가에 편입합니다", self.register_server),
+            ("서버탈퇴", "이 서버의 INAZINA 연방국가 편입을 해제합니다", self.leave_server),
             ("도움말", "Inazina 명령어 도움말", self.help),
             ("내지갑", "내 국적·현금·일반/외환통장·투자자산·대출을 확인합니다", self.assets),
             ("회생신청", "현재 자산 현황과 함께 관리자에게 회생을 신청합니다", self.apply_rehabilitation),
@@ -86,6 +88,7 @@ class SlashCommandRegistry:
             self.commands[command].autocomplete(argument)(self.currency_autocomplete)
         for command in ('기준금리','법정최고이자'):
             self.commands[command].autocomplete('국가')(self.nationality_autocomplete)
+        self.commands['서버등록'].autocomplete('국가')(self.nationality_autocomplete)
 
     async def nationality_autocomplete(self, interaction, current):
         current = str(current or '').casefold()
@@ -311,6 +314,21 @@ class SlashCommandRegistry:
                 ephemeral=True,
             )
 
+        if interaction.guild is None:
+            return await interaction.response.send_message(
+                content="국적은 서버의 연방국가를 따릅니다. 가입된 서버에서 `/등록`을 실행해주세요.",
+                ephemeral=True,
+            )
+        country = self.bot.db.currency.execute_one(
+            'SELECT nationality FROM guild_countries WHERE guild_id=?',
+            (str(interaction.guild.id),),
+        )
+        if not country:
+            return await interaction.response.send_message(
+                content="이 서버는 아직 연방국가에 가입되어 있지 않습니다. 가입된 다른 서버에서 `/등록`을 실행해주세요.",
+                ephemeral=True,
+            )
+
         try:
             notice_text = await asyncio.to_thread(RegistrationModal.load_notice_text)
             modal = RegistrationModal(
@@ -318,6 +336,7 @@ class SlashCommandRegistry:
                 user_id,
                 nickname,
                 notice_text,
+                interaction.guild.id,
             )
         except (OSError, UnicodeError, ValueError) as exc:
             print(f"[Registration Notice Error] {type(exc).__name__}: {exc}")
@@ -327,6 +346,42 @@ class SlashCommandRegistry:
             )
 
         await interaction.response.send_modal(modal)
+
+    @staticmethod
+    def _server_admin(interaction):
+        guild = interaction.guild
+        return bool(guild and (guild.owner_id == interaction.user.id or
+                    getattr(interaction.user.guild_permissions, 'administrator', False)))
+
+    async def register_server(self, interaction: discord.Interaction, 국가: str):
+        if not self._server_admin(interaction):
+            return await interaction.response.send_message(
+                '❌ 서버 소유자 또는 Discord 관리자만 서버를 등록할 수 있습니다.', ephemeral=True)
+        country = str(국가 or '').strip()
+        try:
+            with self.bot.db.atomic() as conn:
+                row = conn.execute('SELECT currency_code FROM country_currencies WHERE nationality=?', (country,)).fetchone()
+                if not row:
+                    raise ValueError('INAZINA에 등록된 국가를 선택해주세요.')
+                conn.execute("INSERT INTO guild_countries(guild_id,nationality) VALUES (?,?) "
+                             "ON CONFLICT(guild_id) DO UPDATE SET nationality=excluded.nationality",
+                             (str(interaction.guild.id), country))
+            await interaction.response.send_message(
+                f'✅ 이 서버를 **{country}** ({row["currency_code"]})에 편입했습니다. 새 `/등록` 사용자에게 적용됩니다.',
+                ephemeral=True)
+        except (ValueError, TypeError) as exc:
+            await interaction.response.send_message(f'❌ {exc}', ephemeral=True)
+
+    async def leave_server(self, interaction: discord.Interaction):
+        if not self._server_admin(interaction):
+            return await interaction.response.send_message(
+                '❌ 서버 소유자 또는 Discord 관리자만 서버를 탈퇴할 수 있습니다.', ephemeral=True)
+        with self.bot.db.atomic() as conn:
+            deleted = conn.execute('DELETE FROM guild_countries WHERE guild_id=?',
+                                   (str(interaction.guild.id),)).rowcount
+        message = ('✅ 이 서버의 연방국가 편입을 해제했습니다. 기존 시민의 국적은 유지됩니다.' if deleted
+                   else '이 서버는 연방국가에 가입되어 있지 않습니다.')
+        await interaction.response.send_message(message, ephemeral=True)
 
     async def help(self, interaction: discord.Interaction):
         await self._prepare(interaction)

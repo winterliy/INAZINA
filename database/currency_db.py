@@ -45,9 +45,18 @@ class CurrencyDB(DBManager):
         if added_legal_max_rate:
             self.execute("ALTER TABLE country_currencies ADD COLUMN legal_max_rate REAL NOT NULL DEFAULT 20 "
                          "CHECK(legal_max_rate BETWEEN 0 AND 100)")
+        if 'tax_percent' not in country_columns:
+            self.execute("ALTER TABLE country_currencies ADD COLUMN tax_percent REAL NOT NULL DEFAULT 3 "
+                         "CHECK(tax_percent BETWEEN 0 AND 100)")
         if 'statutory_rate' in country_columns:
             self.execute("ALTER TABLE country_currencies DROP COLUMN statutory_rate")
         self.execute("INSERT OR IGNORE INTO country_currencies(nationality,currency_code) VALUES ('낙원','NWX')")
+        self.execute("""CREATE TABLE IF NOT EXISTS guild_countries (
+            guild_id TEXT PRIMARY KEY,
+            nationality TEXT NOT NULL REFERENCES country_currencies(nationality)
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_guild_countries_nationality "
+                     "ON guild_countries(nationality)")
         # Newly added countries receive an independent default, which an
         # administrator can change without affecting any other nationality.
         if added_base_rate:
@@ -56,6 +65,8 @@ class CurrencyDB(DBManager):
         if added_legal_max_rate:
             self.execute("UPDATE country_currencies SET legal_max_rate=COALESCE("
                          "(SELECT CAST(value AS REAL) FROM settings WHERE key='legal_max_rate'),20)")
+        self.execute("UPDATE country_currencies SET tax_percent=COALESCE(tax_percent, "
+                     "(SELECT CAST(value AS REAL) FROM settings WHERE key='tax_percent'),3)")
         self._migrate_currency_wallets()
         self._normalize_home_currency_accounts()
         self.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('currency_exchange_fee_percent','0.1')")

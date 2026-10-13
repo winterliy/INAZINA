@@ -52,10 +52,12 @@ class InterestManager:
         return max(0, int(math.floor(elapsed_seconds / cycle_seconds + 1e-9)))
 
     @staticmethod
-    def _tax_rate(conn):
-        row = conn.execute("SELECT value FROM settings WHERE key='tax_percent'").fetchone()
+    def _tax_rate(conn, user_id=None):
+        row = (conn.execute("SELECT c.tax_percent FROM users u LEFT JOIN country_currencies c "
+                            "ON c.nationality=u.nationality WHERE u.user_id=?", (str(user_id),)).fetchone()
+               if user_id is not None else None)
         try:
-            rate = float(row["value"] if row else 3.0)
+            rate = float(row["tax_percent"] if row and row["tax_percent"] is not None else 3.0)
         except (TypeError, ValueError):
             rate = 3.0
         return rate if math.isfinite(rate) and 0 <= rate <= 100 else 3.0
@@ -84,7 +86,6 @@ class InterestManager:
         loan_count = 0
         try:
             with self.db.atomic(("users", "accounts", "product", "tax", "system")) as conn:
-                tax_percent = self._tax_rate(conn)
                 accounts = conn.execute(
                     "SELECT account_number, user_id, product_code, balance, principal, "
                     "created_at, last_payment, last_payment_epoch FROM accounts.accounts "
@@ -141,7 +142,7 @@ class InterestManager:
                         # Keep the interest cursor so sub-NWX interest accumulates until
                         # it rounds to a payable whole NWX; never store fractional cash.
                         continue
-                    tax = calculate_income_tax(gross, tax_percent / 100.0)
+                    tax = calculate_income_tax(gross, self._tax_rate(conn, account['user_id']) / 100.0)
                     net = max(0, gross - tax)
                     stamp = datetime.fromtimestamp(paid_until, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
                     conn.execute(

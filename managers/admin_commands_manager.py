@@ -11,6 +11,7 @@ from managers.currency_exchange_manager import SCALE, MAX_UNITS, amount_units, d
 
 COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값',
             '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','환율수정',
+            '국가생성','국가삭제',
             '복권가격설정','금리수정','법정최고이자수정','자본변경','정기배당수정','정기배당활성','특별배당실시','합병','액면분할병합',
             '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소'}
 TYPES = {'company':'stock','주식':'stock','자산':'asset','ETF':'etf','선물':'future','주식선물':'future',
@@ -27,7 +28,9 @@ USAGE = {
  '등록':'[user_id]', '도박확률':'[0~100]', '도박리턴값':'[리턴 퍼센트]',
  '시장분위기':'[bull/flat/bear]', '상품분위기':'[종목id] [bull/flat/bear]',
  '복권당첨번호보기':'', '복권당첨번호변경':'[서로 다른 1~45 번호 6개] [보너스 번호(선택)]',
- '세율':'[0~100]', '환율수정':'[외화A] [외화B] [1 A당 B 비율]',
+ '세율':'[국적] [0~100]', '환율수정':'[외화A] [외화B] [1 A당 B 비율]',
+ '국가생성':'[국가명] [통화코드] [기준금리%(선택)] [법정최고이자%(선택)] [세율%(선택)]',
+ '국가삭제':'[국가명]',
  '복권가격설정':'[가격]', '금리수정':'[add/del/modify] [수치]',
  '법정최고이자수정':'[국적] [add/del/modify] [수치]',
  '자본변경':'[증자/감자] [유상/무상] [종목id] [수량] [유상 가격(선택)]',
@@ -145,6 +148,46 @@ class AdminCommandsManager:
             raise ValueError('상품 코드를 찾을 수 없거나 중복되었습니다.')
         return matches[0]
 
+    def country_create(self, actor, args):
+        nationality, currency = str(args[0]).strip(), str(args[1]).strip().upper()
+        if not nationality or len(nationality) > 80:
+            raise ValueError('국가명은 1~80자로 입력해주세요.')
+        values = [self.control._number(value, 0, 100) for value in args[2:]]
+        base_rate, legal_max_rate, tax_percent = (values + [3, 20, 3])[:3]
+        with self.db.atomic() as conn:
+            self.control.require(actor, conn)
+            if not conn.execute("SELECT 1 FROM currencies WHERE code=? AND status='active'", (currency,)).fetchone():
+                raise ValueError('활성 통화 코드를 입력해주세요. 통화는 먼저 $상품생성으로 만들어야 합니다.')
+            try:
+                conn.execute("INSERT INTO country_currencies(nationality,currency_code,base_rate,legal_max_rate,tax_percent) "
+                             "VALUES (?,?,?,?,?)", (nationality, currency, base_rate, legal_max_rate, tax_percent))
+            except Exception as exc:
+                if 'UNIQUE' in str(exc).upper():
+                    raise ValueError('같은 이름의 국가가 이미 있습니다.') from None
+                raise
+            self.control._audit(conn, actor, 'country.create', {
+                'nationality': nationality, 'currency_code': currency,
+                'base_rate': base_rate, 'legal_max_rate': legal_max_rate, 'tax_percent': tax_percent,
+            })
+        return f'✅ 연방국가 {nationality} 생성 · 기본화폐 {currency} · 기준금리 {base_rate:g}% · 법정최고이자 {legal_max_rate:g}% · 세율 {tax_percent:g}%'
+
+    def country_delete(self, actor, nationality):
+        nationality = str(nationality).strip()
+        if nationality == '낙원':
+            raise ValueError('기본 연방국가 낙원은 삭제할 수 없습니다.')
+        with self.db.atomic() as conn:
+            self.control.require(actor, conn)
+            if not conn.execute('SELECT 1 FROM country_currencies WHERE nationality=?', (nationality,)).fetchone():
+                raise ValueError('등록된 국가를 확인해주세요.')
+            servers = conn.execute('SELECT COUNT(*) FROM guild_countries WHERE nationality=?', (nationality,)).fetchone()[0]
+            citizens = conn.execute('SELECT COUNT(*) FROM users WHERE nationality=?', (nationality,)).fetchone()[0]
+            exchanges = conn.execute('SELECT COUNT(*) FROM market_exchanges WHERE nationality=?', (nationality,)).fetchone()[0]
+            if servers or citizens or exchanges:
+                raise ValueError(f'서버 {servers}개·시민 {citizens}명·거래소 {exchanges}개가 연결되어 삭제할 수 없습니다.')
+            conn.execute('DELETE FROM country_currencies WHERE nationality=?', (nationality,))
+            self.control._audit(conn, actor, 'country.delete', {'nationality': nationality})
+        return f'✅ 연방국가 {nationality}을(를) 삭제했습니다. 통화 자체는 유지됩니다.'
+
     def execute(self,actor,command,raw):
         with DBManager.admin_scope(actor):
             self.control.require(actor)
@@ -155,11 +198,12 @@ class AdminCommandsManager:
             args=shlex.split(raw)
             count={'상품가격수정':3,'상품삭제':1,'기본소득':1,'잔고수정':3,'등록':1,
                    '도박확률':1,'도박리턴값':1,'시장분위기':1,'상품분위기':2,
-                   '복권당첨번호보기':0,'세율':1,'환율수정':3,'복권가격설정':1,
+                   '복권당첨번호보기':0,'세율':2,'환율수정':3,'복권가격설정':1,
+                   '국가삭제':1,
                    '금리수정':2,'법정최고이자수정':3,'정기배당수정':3,'정기배당활성':2,'특별배당실시':2,'합병':3,'액면분할병합':3,
                    '휴장':1,'개장':1,'장일시정지':1,'장재개':1,'서킷브레이커':2,'사이드카':1}
             count.update({'법인잔고수정':3,'법인청산':1,'ELS취소':1})
-            if (command=='자본변경' and len(args) not in {4,5}) or (command not in {'복권당첨번호변경','자본변경'} and len(args)!=count.get(command,-1)):
+            if (command=='자본변경' and len(args) not in {4,5}) or (command=='국가생성' and len(args) not in {2,3,4,5}) or (command not in {'복권당첨번호변경','자본변경','국가생성'} and len(args)!=count.get(command,-1)):
                 raise ValueError(f'사용법: ${command} {USAGE.get(command,"")}')
             if command in {'휴장','개장','장일시정지','장재개','서킷브레이커','사이드카'}:
                 from managers.market_session_manager import MarketSessionManager
@@ -192,12 +236,25 @@ class AdminCommandsManager:
                 return result[1] if isinstance(result,tuple) else result
             if command=='등록':
                 return self.control.setup(actor,args[0],args[0],'낙원')
-            if command in {'도박확률','도박리턴값','세율','시장분위기'}:
-                key={'도박확률':'gamble_chance','도박리턴값':'gamble_return','세율':'tax_percent','시장분위기':'market_condition'}[command]
+            if command=='국가생성':
+                return self.country_create(actor,args)
+            if command=='국가삭제':
+                return self.country_delete(actor,args[0])
+            if command in {'도박확률','도박리턴값','시장분위기'}:
+                key={'도박확률':'gamble_chance','도박리턴값':'gamble_return','시장분위기':'market_condition'}[command]
                 value=args[0]
                 if command=='시장분위기' and value not in {'bull','flat','bear'}:
                     raise ValueError('bull/flat/bear 중 하나를 입력해주세요.')
                 return self.control.settings(actor,{key:value})
+            if command=='세율':
+                nationality,value=args
+                value=self.control._number(value,0,100)
+                with self.db.atomic() as conn:
+                    self.control.require(actor,conn)
+                    if conn.execute('UPDATE country_currencies SET tax_percent=? WHERE nationality=?',(value,nationality)).rowcount != 1:
+                        raise ValueError('등록된 국가를 확인해주세요.')
+                    self.control._audit(conn,actor,'세율',{'nationality':nationality,'tax_percent':value})
+                return f'✅ {nationality} 세율을 {value:g}%로 설정했습니다.'
             if command=='복권가격설정':
                 return self.bot.lottery_mgr.configure(actor,{'ticket_price':self.control._number(args[0],1,1000000,integer=True)})
             if command=='잔고수정':

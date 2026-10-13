@@ -362,19 +362,16 @@ class InazinaBot(discord.Client):
             changed = True
         return self.db.users.get_user(user_id) if changed else user
 
-    async def register_user(self, user_id, nickname):
+    async def register_user(self, user_id, nickname, guild_id):
         """Create a citizen only after they accept the registration notice."""
         user_id = str(user_id)
         nickname = str(nickname or user_id)
         role = "admin" if user_id in BOOTSTRAP_ADMIN_IDS else "user"
-        created = await asyncio.to_thread(
-            self.db.users.register_user,
-            user_id,
-            nickname,
-            "낙원",
-            1000000,
-            role,
-        )
+        from managers.currency_manager import CurrencyManager
+        def register_in_transaction():
+            with self.db.atomic() as conn:
+                return CurrencyManager.register(conn, user_id, nickname, guild_id, role)
+        created = await asyncio.to_thread(register_in_transaction)
         if not created:
             await asyncio.to_thread(self.db.users.update_nickname, user_id, nickname)
         return created
