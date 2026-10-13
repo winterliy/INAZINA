@@ -11,7 +11,7 @@ from managers.currency_exchange_manager import SCALE, MAX_UNITS, amount_units, d
 
 COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값',
             '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','환율수정',
-            '복권가격설정','금리수정','법정최고이자수정','증자','정기배당수정','정기배당활성','특별배당실시','합병',
+            '복권가격설정','금리수정','법정최고이자수정','자본변경','정기배당수정','정기배당활성','특별배당실시','합병','액면분할병합',
             '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소'}
 TYPES = {'company':'stock','주식':'stock','자산':'asset','ETF':'etf','선물':'future','주식선물':'future',
          '회사채':'corporatebond','일반펀드':'fund','펀드':'fund','인덱스펀드':'indexfund',
@@ -30,10 +30,11 @@ USAGE = {
  '세율':'[0~100]', '환율수정':'[외화A] [외화B] [1 A당 B 비율]',
  '복권가격설정':'[가격]', '금리수정':'[add/del/modify] [수치]',
  '법정최고이자수정':'[국적] [add/del/modify] [수치]',
- '증자':'[유상/무상] [종목id] [신주 수량] [유상 발행가(선택)]',
+ '자본변경':'[증자/감자] [유상/무상] [종목id] [수량] [유상 가격(선택)]',
  '정기배당수정':'[id] [주기: 초 또는 1일/1주/1달] [주당 금액 또는 비율%]',
  '정기배당활성':'[id] [on/off 또는 1/0]',
- '특별배당실시':'[id] [주당 배당금]', '합병':'[존속 A id] [통합 B id]',
+ '특별배당실시':'[id] [주당 배당금]', '합병':'[존속 A id] [통합 B id] [A:B 교환비율 n:1]',
+ '액면분할병합':'[분할/병합] [종목id] [비율]',
  '휴장':'[거래소ID]', '개장':'[거래소ID]', '장일시정지':'[거래소ID]', '장재개':'[거래소ID]',
  '서킷브레이커':'[거래소ID] [1/2/3단계]', '사이드카':'[거래소ID]'}
 USAGE.update({'법인잔고수정':'[보통주 법인id] [add/del/modify] [금액]',
@@ -155,10 +156,10 @@ class AdminCommandsManager:
             count={'상품가격수정':3,'상품삭제':1,'기본소득':1,'잔고수정':3,'등록':1,
                    '도박확률':1,'도박리턴값':1,'시장분위기':1,'상품분위기':2,
                    '복권당첨번호보기':0,'세율':1,'환율수정':3,'복권가격설정':1,
-                   '금리수정':2,'법정최고이자수정':3,'정기배당수정':3,'정기배당활성':2,'특별배당실시':2,'합병':2,
+                   '금리수정':2,'법정최고이자수정':3,'정기배당수정':3,'정기배당활성':2,'특별배당실시':2,'합병':3,'액면분할병합':3,
                    '휴장':1,'개장':1,'장일시정지':1,'장재개':1,'서킷브레이커':2,'사이드카':1}
             count.update({'법인잔고수정':3,'법인청산':1,'ELS취소':1})
-            if (command=='증자' and len(args) not in {3,4}) or (command not in {'복권당첨번호변경','증자'} and len(args)!=count.get(command,-1)):
+            if (command=='자본변경' and len(args) not in {4,5}) or (command not in {'복권당첨번호변경','자본변경'} and len(args)!=count.get(command,-1)):
                 raise ValueError(f'사용법: ${command} {USAGE.get(command,"")}')
             if command in {'휴장','개장','장일시정지','장재개','서킷브레이커','사이드카'}:
                 from managers.market_session_manager import MarketSessionManager
@@ -170,19 +171,20 @@ class AdminCommandsManager:
             if command=='ELS취소':
                 from managers.els_manager import ELSManager
                 return self.result_text(ELSManager(self.db,self.bot.user_mgr).cancel(actor,args[0]))
-            if command in {'증자','정기배당수정','정기배당활성','특별배당실시','합병','법인잔고수정','법인청산'}:
+            if command in {'자본변경','정기배당수정','정기배당활성','특별배당실시','합병','액면분할병합','법인잔고수정','법인청산'}:
                 from managers.corporate_actions_manager import CorporateActionsManager
                 manager=CorporateActionsManager(self.bot)
-                if command=='증자':result=manager.increase_capital(actor,args[0],args[1],self.control._number(args[2],1,integer=True),self.control._number(args[3],1,integer=True) if len(args)==4 else None)
+                if command=='자본변경':result=manager.change_capital(actor,args[0],args[1],args[2],self.control._number(args[3],1,integer=True),self.control._number(args[4],1,integer=True) if len(args)==5 else None)
                 elif command=='정기배당수정':result=manager.configure_dividend(actor,args[0],duration_seconds(args[1]),args[2])
                 elif command=='정기배당활성':
                     active={'on':1,'off':0,'1':1,'0':0}.get(args[1].lower())
                     if active is None:raise ValueError('정기배당 활성값은 on/off 또는 1/0입니다.')
                     result=manager.set_dividend_active(actor,args[0],active)
                 elif command=='특별배당실시':result=manager.special_dividend(actor,args[0],self.control._number(args[1],1,integer=True))
+                elif command=='액면분할병합':result=manager.adjust_face_value(actor,args[0],args[1],self.control._number(args[2],2,integer=True))
                 elif command=='법인잔고수정':result=manager.fund_issuer(actor,args[0],args[1],self.control._number(args[2],0,integer=True))
                 elif command=='법인청산':result=manager.liquidate(actor,args[0])
-                else:result=manager.merge(actor,*args)
+                else:result=manager.merge(actor,args[0],args[1],args[2])
                 return self.result_text(result)
             if command=='기본소득':
                 amount=self.control._number(args[0],1,integer=True)

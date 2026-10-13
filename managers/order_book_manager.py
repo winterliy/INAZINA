@@ -21,14 +21,12 @@ class OrderBookManager:
         user_id = str(user_id)
         asset_code = str(asset_code).strip()
         side = str(side).casefold()
-        # Resolve the symbol before touching funds: each exchange can halt
-        # independently.
-        with self.db.atomic(("system",)) as conn:
-            error = MarketSessionManager(self.db).trading_error(conn=conn, asset_code=asset_code)
-        if error:
-            return False, error
         product = self.db.products.execute_one('SELECT product_type,face_value FROM investment WHERE product_code=?',(asset_code,))
         if product and product['product_type']=='els':
+            with self.db.atomic(("system",)) as conn:
+                error = MarketSessionManager(self.db).trading_error(conn=conn, asset_code=asset_code)
+            if error:
+                return False, error
             if side!='buy':return False,'❌ ELS는 모집 중 액면 청약만 가능합니다. 중도 매도·환매는 지원하지 않습니다.'
             if isinstance(limit_price,bool) or not isinstance(limit_price,int) or not 1 <= limit_price <= self.MAX_LIMIT_PRICE:
                 return False,'❌ 지정가는 1 이상의 정수 NWX여야 합니다.'
@@ -74,9 +72,9 @@ class OrderBookManager:
         now = int(time.time())
         try:
             with self.db.atomic(("users", "accounts", "assets", "product", "company", "tax")) as conn:
-                error = MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=asset_code)
-                if error:
-                    return False, error
+                exchange_id = MarketSessionManager.exchange_for_asset(conn, asset_code)
+                state = MarketSessionManager.process_conn(conn, now, exchange_id) if exchange_id else {'status': 'open'}
+                deferred = state['status'] != 'open'
                 asset, source = self.user_manager._asset_row(conn, asset_code)
                 if not asset:
                     return False, "❌ 존재하지 않는 자산 코드입니다."
@@ -117,7 +115,7 @@ class OrderBookManager:
                             "SELECT COALESCE(SUM(remaining_quantity), 0) AS quantity "
                             "FROM assets.market_orders WHERE order_kind = 'asset' "
                             "AND user_id = ? AND asset_code = ? "
-                            "AND side = 'buy' AND status IN ('open', 'partial')",
+                            "AND side = 'buy' AND status IN ('scheduled', 'open', 'partial')",
                             (user_id, asset_code),
                         ).fetchone()
                         owned_quantity = int(owned_row["quantity"] or 0) + int(collateral_row["quantity"] or 0)
@@ -160,7 +158,7 @@ class OrderBookManager:
                         "SELECT COALESCE(SUM(remaining_quantity), 0) AS quantity "
                         "FROM assets.market_orders WHERE order_kind = 'asset' "
                         "AND user_id = ? AND asset_code = ? "
-                        "AND side = 'sell' AND status IN ('open', 'partial')",
+                        "AND side = 'sell' AND status IN ('scheduled', 'open', 'partial')",
                         (user_id, asset_code),
                     ).fetchone()
                     available = owned_quantity - int(already_reserved["quantity"] or 0)
@@ -170,20 +168,25 @@ class OrderBookManager:
                 cursor = conn.execute(
                     "INSERT INTO assets.market_orders "
                     "(user_id, asset_code, side, limit_price, quantity, remaining_quantity, "
-                    "reserved_cash, funding_account, order_kind, status, created_epoch, updated_epoch) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'asset', 'open', ?, ?)",
+                    "reserved_cash, funding_account, order_kind, status, created_epoch, updated_epoch, activation_epoch, scheduled_reason) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'asset', ?, ?, ?, ?, ?)",
                     (user_id, asset_code, side, limit_price, quantity, quantity,
-                     reserved_cash, funding_account, now, now),
+                     reserved_cash, funding_account, 'scheduled' if deferred else 'open', now, now,
+                     state.get('resume_epoch') if deferred else now,
+                     state.get('reason') if deferred else None),
                 )
                 order_id = int(cursor.lastrowid)
-                fill_count, filled_quantity, traded_value = self._match_incoming_order(
-                    conn, order_id, now
-                )
+                fill_count, filled_quantity, traded_value = (0, 0, 0) if deferred else self._match_incoming_order(conn, order_id, now)
                 order = conn.execute(
                     "SELECT remaining_quantity, status, reserved_cash "
                     "FROM assets.market_orders WHERE order_id = ?", (order_id,)
                 ).fetchone()
 
+            if deferred:
+                return True, (f"✅ 예약 주문 #{order_id} 접수 ({'매수' if side == 'buy' else '매도'} · "
+                              f"지정가 {limit_price:,} NWX · {quantity:,}개)\n"
+                              f"`{exchange_id}` 거래소가 {state.get('reason') or '정지'} 상태라 개장·재개 시 호가장에 등록됩니다.\n"
+                              + (f"매수 예치액 {int(order['reserved_cash']):,} NWX는 잠금 상태입니다." if side == 'buy' else "매도 수량은 잠금 상태입니다."))
             filled_text = f"즉시 체결 {filled_quantity:,}개 · 체결대금 {traded_value:,.0f} NWX"
             if order["remaining_quantity"]:
                 pending_text = (
@@ -585,7 +588,7 @@ class OrderBookManager:
                 ).fetchone()
                 if not order:
                     return False, "❌ 본인의 주문을 찾을 수 없습니다."
-                if order["status"] not in {"open", "partial"}:
+                if order["status"] not in {"scheduled", "open", "partial"}:
                     return False, f"❌ 이미 {order['status']} 상태라 취소할 수 없습니다."
                 refund = int(round(order["reserved_cash"] or 0)) if order["side"] == "buy" else 0
                 if refund:
@@ -605,11 +608,74 @@ class OrderBookManager:
         except Exception as exc:
             return False, f"❌ 주문 취소 중 오류가 발생했습니다: {exc}"
 
+    def _reject_scheduled_order(self, conn, order, now):
+        """Release a reservation that became invalid before its exchange opened."""
+        refund = int(order['reserved_cash'] or 0) if order['side'] == 'buy' else 0
+        if refund:
+            currency = str(order['quote_currency'] or 'NWX')
+            if currency == 'NWX':
+                self._credit_reserved_source(conn, order['user_id'], order['funding_account'], refund, now)
+            else:
+                from managers.foreign_securities_manager import ForeignSecuritiesManager
+                ForeignSecuritiesManager.credit_units(
+                    conn, order['user_id'], currency, refund * 1_000_000, order['funding_account']
+                )
+        conn.execute("UPDATE market_orders SET status='rejected', reserved_cash=0, updated_epoch=? WHERE order_id=?",
+                     (now, order['order_id']))
+
+    def process_scheduled_orders(self, now=None):
+        """Publish due reservations after their own exchange has reopened.
+
+        Scheduled orders retain their original cash or quantity reservation and
+        are activated in arrival order.  The market-session manager remains
+        responsible only for session state; this method owns order matching.
+        """
+        now = int(time.time() if now is None else now)
+        activated = rejected = 0
+        try:
+            with self.db.atomic(('users', 'accounts', 'assets', 'product', 'company', 'tax', 'system')) as conn:
+                scheduled = conn.execute("SELECT * FROM market_orders WHERE order_kind='asset' AND status='scheduled' "
+                                         "ORDER BY created_epoch ASC, order_id ASC").fetchall()
+                for order in scheduled:
+                    asset, source = self.user_manager._asset_row(conn, order['asset_code'])
+                    exchange_id = MarketSessionManager.exchange_for_asset(conn, order['asset_code'])
+                    state = MarketSessionManager.process_conn(conn, now, exchange_id) if exchange_id else {'status': 'open'}
+                    if state['status'] != 'open':
+                        continue
+                    valid = bool(asset) and (
+                        asset['status'] == 'active' if order['side'] == 'buy'
+                        else asset['status'] in {'active', 'matured'}
+                    )
+                    if valid and order['side'] == 'sell':
+                        owned = conn.execute("SELECT COALESCE(SUM(quantity),0) FROM user_assets "
+                                             "WHERE user_id=? AND asset_code=?", (order['user_id'], order['asset_code'])).fetchone()[0]
+                        reserved_elsewhere = conn.execute("SELECT COALESCE(SUM(remaining_quantity),0) FROM market_orders "
+                                                          "WHERE user_id=? AND asset_code=? AND side='sell' "
+                                                          "AND status IN ('scheduled','open','partial') AND order_id<>?",
+                                                          (order['user_id'], order['asset_code'], order['order_id'])).fetchone()[0]
+                        valid = int(owned or 0) - int(reserved_elsewhere or 0) >= int(order['remaining_quantity'])
+                    if not valid:
+                        self._reject_scheduled_order(conn, order, now)
+                        rejected += 1
+                        continue
+                    conn.execute("UPDATE market_orders SET status='open', activation_epoch=?, scheduled_reason=NULL, updated_epoch=? "
+                                 "WHERE order_id=?", (now, now, order['order_id']))
+                    currency = str(order['quote_currency'] or 'NWX')
+                    if currency == 'NWX':
+                        self._match_incoming_order(conn, order['order_id'], now)
+                    else:
+                        from managers.foreign_securities_manager import ForeignSecuritiesManager
+                        ForeignSecuritiesManager(self).match(conn, order['order_id'], now)
+                    activated += 1
+        except Exception:
+            raise
+        return activated, rejected
+
     def get_user_open_orders(self, user_id, limit=25):
         return self.db.assets.execute(
             "SELECT order_id, asset_code, side, limit_price, quantity, filled_quantity, "
-            "remaining_quantity, reserved_cash, status, created_epoch, order_kind, option_order_type "
-            "FROM market_orders WHERE user_id = ? AND status IN ('open', 'partial') "
+            "remaining_quantity, reserved_cash, status, created_epoch, order_kind, option_order_type, quote_currency, activation_epoch, scheduled_reason "
+            "FROM market_orders WHERE user_id = ? AND status IN ('scheduled', 'open', 'partial') "
             "ORDER BY order_id DESC LIMIT ?",
             (str(user_id), max(1, min(int(limit), 100))),
         )
@@ -618,16 +684,16 @@ class OrderBookManager:
         return self.db.assets.execute(
             "SELECT order_id, asset_code, side, limit_price, quantity, filled_quantity, "
             "remaining_quantity, reserved_cash, status, created_epoch, updated_epoch, "
-            "order_kind, option_order_type FROM ("
+            "order_kind, option_order_type, quote_currency, activation_epoch, scheduled_reason FROM ("
             "SELECT order_id, asset_code, side, limit_price, quantity, filled_quantity, "
             "remaining_quantity, reserved_cash, status, created_epoch, updated_epoch, "
-            "order_kind, option_order_type, 0 AS priority "
-            "FROM market_orders WHERE user_id = ? AND status IN ('open', 'partial') "
+            "order_kind, option_order_type, quote_currency, activation_epoch, scheduled_reason, 0 AS priority "
+            "FROM market_orders WHERE user_id = ? AND status IN ('scheduled', 'open', 'partial') "
             "UNION ALL "
             "SELECT order_id, asset_code, side, limit_price, quantity, filled_quantity, "
             "remaining_quantity, reserved_cash, status, created_epoch, updated_epoch, "
-            "order_kind, option_order_type, 1 AS priority "
-            "FROM market_orders WHERE user_id = ? AND status NOT IN ('open', 'partial') "
+            "order_kind, option_order_type, quote_currency, activation_epoch, scheduled_reason, 1 AS priority "
+            "FROM market_orders WHERE user_id = ? AND status NOT IN ('scheduled', 'open', 'partial') "
             "AND updated_epoch >= ?) ORDER BY priority, updated_epoch DESC LIMIT ?",
             (str(user_id), str(user_id), int(time.time()) - 86400,
              max(1, min(int(limit), 100))),

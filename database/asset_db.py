@@ -223,6 +223,10 @@ class AssetDB(DBManager):
             )
         if "option_order_type" not in order_columns:
             self.execute("ALTER TABLE market_orders ADD COLUMN option_order_type TEXT")
+        if "activation_epoch" not in order_columns:
+            self.execute("ALTER TABLE market_orders ADD COLUMN activation_epoch INTEGER")
+        if "scheduled_reason" not in order_columns:
+            self.execute("ALTER TABLE market_orders ADD COLUMN scheduled_reason TEXT")
         self.enforce_integer_money("market_orders", ("reserved_cash",), "order_id")
         self.execute(
             "CREATE INDEX IF NOT EXISTS idx_market_orders_book "
@@ -239,6 +243,10 @@ class AssetDB(DBManager):
         self.execute(
             "CREATE INDEX IF NOT EXISTS idx_market_orders_instrument "
             "ON market_orders(order_kind, asset_code, side, status, limit_price, created_epoch, order_id)"
+        )
+        self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_market_orders_scheduled "
+            "ON market_orders(status, created_epoch, order_id)"
         )
         self.execute(
             """CREATE TABLE IF NOT EXISTS option_contracts (

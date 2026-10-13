@@ -173,6 +173,7 @@ class InazinaBot(discord.Client):
         while not self.is_closed():
             try:
                 await self._run_background_write(self.market_mgr.update_prices)
+                await self._run_background_write(self.order_book.process_scheduled_orders)
             except Exception as e:
                 now = asyncio.get_running_loop().time()
                 if now - self._last_market_error_log >= self.BACKGROUND_ERROR_LOG_INTERVAL_SECONDS:

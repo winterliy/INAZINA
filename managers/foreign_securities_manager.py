@@ -35,9 +35,9 @@ class ForeignSecuritiesManager:
         now = int(time.time())
         try:
             with self.db.atomic() as conn:
-                error = MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=code)
-                if error:
-                    return False, error
+                exchange_id = MarketSessionManager.exchange_for_asset(conn, code)
+                state = MarketSessionManager.process_conn(conn, now, exchange_id) if exchange_id else {'status': 'open'}
+                deferred = state['status'] != 'open'
                 asset,source = self.users._asset_row(conn,code)
                 currency = asset['quote_currency']
                 if source not in {'company','market_assets','investment'} or asset['type'] not in {'stock','주식','commodity_spot'}:
@@ -53,7 +53,7 @@ class ForeignSecuritiesManager:
                     raise ValueError(f'/계좌개설로 {currency} 외환통장을 먼저 개설해주세요.')
                 account_number = account['account_number'] if account else None
                 owned = conn.execute('SELECT COALESCE(SUM(quantity),0) FROM user_assets WHERE user_id=? AND asset_code=?',(user_id,code)).fetchone()[0]
-                reserved = conn.execute("SELECT COALESCE(SUM(remaining_quantity),0) FROM market_orders WHERE user_id=? AND asset_code=? AND side=? AND status IN ('open','partial')",(user_id,code,side)).fetchone()[0]
+                reserved = conn.execute("SELECT COALESCE(SUM(remaining_quantity),0) FROM market_orders WHERE user_id=? AND asset_code=? AND side=? AND status IN ('scheduled','open','partial')",(user_id,code,side)).fetchone()[0]
                 supply = asset.get('supply')
                 if side=='buy' and supply is not None and owned+reserved+quantity>int(supply):
                     raise ValueError('종목 발행 수량 한도를 초과했습니다.')
@@ -69,9 +69,12 @@ class ForeignSecuritiesManager:
                         raise ValueError(f'예치할 {currency} 잔액이 부족합니다. 필요액 {cash:,} {currency}')
                 elif owned-reserved<quantity:
                     raise ValueError(f'매도 가능 수량이 부족합니다. 담보 주식은 매도할 수 없습니다. 가능 {max(0,owned-reserved):,}개')
-                order_id=conn.execute("INSERT INTO market_orders(user_id,asset_code,side,limit_price,quantity,remaining_quantity,reserved_cash,funding_account,order_kind,status,created_epoch,updated_epoch,quote_currency) VALUES (?,?,?,?,?,?,?,?,'asset','open',?,?,?)",(user_id,code,side,limit_price,quantity,quantity,cash,account_number,now,now,currency)).lastrowid
-                filled = self.match(conn,order_id,now)
-                return True,f'✅ 외화 주문 #{order_id} · {quantity:,}개 × {limit_price:,} {currency} · 체결 {filled:,}개 · /내주문에서 확인'
+                order_id=conn.execute("INSERT INTO market_orders(user_id,asset_code,side,limit_price,quantity,remaining_quantity,reserved_cash,funding_account,order_kind,status,created_epoch,updated_epoch,quote_currency,activation_epoch,scheduled_reason) VALUES (?,?,?,?,?,?,?,?,'asset',?,?,?,?,?,?)",(user_id,code,side,limit_price,quantity,quantity,cash,account_number,'scheduled' if deferred else 'open',now,now,currency,state.get('resume_epoch') if deferred else now,state.get('reason') if deferred else None)).lastrowid
+                filled = 0 if deferred else self.match(conn,order_id,now)
+                if deferred:
+                    locked = f'예치금 {cash:,} {currency}' if side=='buy' else '매도 수량'
+                    return True,f'✅ 예약 주문 #{order_id} 접수 · {quantity:,}개 × {limit_price:,} {currency}\n`{exchange_id}` 거래소가 {state.get("reason") or "정지"} 상태라 개장·재개 시 호가장에 등록됩니다. {locked}은 잠금 상태입니다.'
+                return True,f'✅ 주문 #{order_id} · {quantity:,}개 × {limit_price:,} {currency} · 체결 {filled:,}개 · /내주문에서 확인'
         except (ValueError,RuntimeError) as exc:
             return False,f'❌ {exc}'
 

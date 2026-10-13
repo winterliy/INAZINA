@@ -1487,14 +1487,14 @@ class MyOrdersView(discord.ui.View):
 
     def build_embed(self, orders, notice=None):
         status_names = {
-            "open": "대기", "partial": "부분체결", "filled": "전량체결",
+            "scheduled": "예약", "open": "대기", "partial": "부분체결", "filled": "전량체결",
             "cancelled": "취소", "expired": "만료",
         }
         lines = []
         for order in orders:
             order = dict(order)
             side = "매수" if order["side"] == "buy" else "매도"
-            active = order["status"] in {"open", "partial"}
+            active = order["status"] in {"scheduled", "open", "partial"}
             asset = self.bot.market_mgr.get_asset_info(order["asset_code"])
             asset_type = asset.get("type") if asset else None
             unit = (
@@ -1515,6 +1515,7 @@ class MyOrdersView(discord.ui.View):
                 f"`{order['asset_code']}` · 체결 {int(order['filled_quantity']):,}/"
                 f"{int(order['quantity']):,}{unit}"
                 + (f" · 잔량 {int(order['remaining_quantity']):,}{unit}" if active else "")
+                + (f" · {order.get('scheduled_reason') or '개장 대기'}" if order['status'] == 'scheduled' else "")
                 + f" · 지정가 {int(order['limit_price']):,} {order.get('quote_currency','NWX')}{reserve}"
             )
         embed = discord.Embed(
