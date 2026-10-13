@@ -37,11 +37,14 @@ class InterestManager:
             return None
 
     @staticmethod
-    def _period_interest(principal, annual_rate_percent, cycle_seconds, periods):
+    def _period_interest(principal, annual_rate_percent, cycle_seconds, periods,
+                         convention="ACT/365"):
         if principal <= 0 or periods <= 0:
             return 0.0
         try:
-            return calculate_compound_interest(principal, annual_rate_percent, periods, cycle_seconds)
+            return calculate_compound_interest(
+                principal, annual_rate_percent, periods, cycle_seconds, convention
+            )
         except (OverflowError, ValueError):
             return None
 
@@ -138,14 +141,16 @@ class InterestManager:
                     "SELECT account_number, user_id, product_code, balance, principal, "
                     "created_at, last_payment, last_payment_epoch,contract_rate,rate_type,"
                     "rate_nationality,base_rate_spread,rate_floor,rate_cap,repricing_cycle_seconds,"
-                    "next_repricing_epoch,benchmark_key,benchmark_tenor_days,repricing_lag_seconds "
+                    "next_repricing_epoch,benchmark_key,benchmark_tenor_days,repricing_lag_seconds,"
+                    "contract_effective_rate "
                     "FROM accounts.accounts "
                     "WHERE (? IS NULL OR user_id = ?)",
                     (user_id, user_id),
                 ).fetchall()
                 for account in accounts:
                     product = conn.execute(
-                        "SELECT interest_rate, maturity_days, interest_cycle, compound_type, status "
+                        "SELECT interest_rate, maturity_days, interest_cycle, compound_type, status,"
+                        "day_count_convention "
                         "FROM product.saving WHERE product_code = ?",
                         (account["product_code"],),
                     ).fetchone()
@@ -181,9 +186,13 @@ class InterestManager:
                     compound = int(compound_setting) == 1
                     credited = False
                     for periods, segment_rate, paid_until in segments:
-                        gross = (self._period_interest(balance, segment_rate, cycle, periods)
+                        gross = (self._period_interest(
+                                     balance, segment_rate, cycle, periods,
+                                     product["day_count_convention"])
                                  if compound else
-                                 calculate_simple_interest(principal, segment_rate, periods*cycle))
+                                 calculate_simple_interest(
+                                     principal, segment_rate, periods*cycle,
+                                     product["day_count_convention"]))
                         if gross is None or not math.isfinite(gross):
                             self._advance_account_cursor(conn, account["account_number"], now)
                             break
@@ -233,6 +242,7 @@ class InterestManager:
                     "repricing_lag_seconds,maturity_epoch,overdue_since_epoch,overdue_last_epoch,"
                     "overdue_interest_remainder,collection_status,accelerated_epoch,defaulted_epoch,"
                     "collateral_amount,collateral_released,collateral_seized,origination_fee "
+                    ",day_count_convention,amortization_type,payment_frequency_days "
                     "FROM accounts.loans WHERE status IN ('active','defaulted') "
                     "AND (? IS NULL OR user_id = ?)",
                     (user_id, user_id),
@@ -278,7 +288,10 @@ class InterestManager:
                         continue
                     charged = False
                     for periods, segment_rate, paid_until in segments:
-                        interest = self._period_interest(balance, segment_rate, cycle, periods)
+                        interest = self._period_interest(
+                            balance, segment_rate, cycle, periods,
+                            loan["day_count_convention"]
+                        )
                         if interest is None or not math.isfinite(interest):
                             conn.execute(
                                 "UPDATE accounts.loans SET last_payment_epoch=? WHERE loan_id=?",
@@ -308,10 +321,22 @@ class InterestManager:
                             (final_rate, next_reset,
                              RateManager.effective_annual_rate(final_rate, cycle),
                              RateManager.annual_percentage_rate(
-                                 RateManager.effective_annual_rate(final_rate, cycle),
+                                 final_rate,
                                  loan['origination_fee'],
                                  max(1, int(loan['principal'] or 0)-int(loan['origination_fee'] or 0)),
                                  int(product['maturity_days'] or 365),
+                                 cashflows=[
+                                     ((float(row['due_epoch'])-float(
+                                         self._utc_epoch(loan['created_at']) or row['due_epoch']
+                                      ))/86400,
+                                      int(row['principal_due'])+int(row['interest_due'])+int(row['fee_due']))
+                                     for row in conn.execute(
+                                         "SELECT principal_due,interest_due,fee_due,due_epoch "
+                                         "FROM accounts.loan_payment_schedule WHERE loan_id=? "
+                                         "ORDER BY installment_number", (loan['loan_id'],)
+                                     )
+                                 ] or None,
+                                 principal=int(loan['principal'] or 0),
                              ), loan["loan_id"]),
                         )
                     loan_count += int(charged)

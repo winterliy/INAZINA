@@ -22,7 +22,8 @@ def calculate_simple_interest(principal, rate, elapsed_seconds, convention="ACT/
     return principal * (rate / 100.0) * year_fraction(elapsed_seconds, convention)
 
 
-def calculate_compound_interest(principal, rate, periods, cycle_seconds):
+def calculate_compound_interest(principal, rate, periods, cycle_seconds,
+                                convention="ACT/365"):
     """정해진 초 단위 주기를 periods회 적용한 복리 이자(세전)를 반환합니다."""
     principal = float(principal)
     rate = float(rate)
@@ -30,7 +31,7 @@ def calculate_compound_interest(principal, rate, periods, cycle_seconds):
     cycle_seconds = float(cycle_seconds)
     if principal <= 0 or periods <= 0 or cycle_seconds <= 0:
         return 0.0
-    periodic_rate = (rate / 100.0) * (cycle_seconds / YEAR_SECONDS)
+    periodic_rate = (rate / 100.0) * year_fraction(cycle_seconds, convention)
     if periodic_rate <= -1:
         return -principal
     exponent = periods * math.log1p(periodic_rate)

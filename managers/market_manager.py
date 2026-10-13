@@ -1046,6 +1046,7 @@ class MarketManager:
     def _update_linked_products(self, now):
         from managers.investment_manager import InvestmentManager
         from managers.rate_manager import RateManager
+        from managers.treasury_bond_manager import TreasuryBondManager
         try:
             with self._short_market_transaction(("assets", "product", "company")) as conn:
                 prices = {r['code']: r for r in conn.execute('SELECT code,price FROM market_assets')}
@@ -1074,6 +1075,28 @@ class MarketManager:
                 conn.executemany("UPDATE investment SET unit_price=? WHERE product_code=? AND is_fixed=0", updates)
                 conn.executemany("INSERT INTO market_price_history(asset_code,price,recorded_epoch) VALUES (?,?,?) "
                     "ON CONFLICT(asset_code,recorded_epoch) DO UPDATE SET price=excluded.price", history)
+                bond_updates, bond_history = [], []
+                for bond in conn.execute(
+                    "SELECT * FROM product.treasury_bond_products WHERE status='active'"
+                ):
+                    if MarketSessionManager(self.db).trading_error(
+                        conn=conn, now=now, exchange_id=bond["exchange_id"]
+                    ):
+                        continue
+                    quote = TreasuryBondManager.theoretical_price(conn, bond, now=now)
+                    price = max(1, self.normalize_market_price(quote["dirty_price"]))
+                    if price != int(bond["market_price"]):
+                        bond_updates.append((price, bond["product_code"]))
+                    bond_history.append((bond["product_code"], price, now))
+                conn.executemany(
+                    "UPDATE treasury_bond_products SET market_price=? WHERE product_code=?",
+                    bond_updates,
+                )
+                conn.executemany(
+                    "INSERT INTO market_price_history(asset_code,price,recorded_epoch) "
+                    "VALUES (?,?,?) ON CONFLICT(asset_code,recorded_epoch) "
+                    "DO UPDATE SET price=excluded.price", bond_history,
+                )
         except sqlite3.OperationalError as exc:
             if getattr(self._tick, "conn", None) is not None:
                 raise

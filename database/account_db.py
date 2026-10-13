@@ -268,6 +268,9 @@ class AccountDB(DBManager):
             ("maturity_days", "INTEGER NOT NULL DEFAULT 1"),
             ("face_value", "INTEGER NOT NULL DEFAULT 1 CHECK(face_value > 0)"),
             ("acquisition_cost", "INTEGER NOT NULL DEFAULT 0 CHECK(acquisition_cost >= 0)"),
+            ("coupon_frequency_days", "INTEGER NOT NULL DEFAULT 0 CHECK(coupon_frequency_days >= 0)"),
+            ("day_count_convention", "TEXT NOT NULL DEFAULT 'ACT/365'"),
+            ("last_coupon_epoch", "INTEGER"),
         ):
             if column not in bond_columns:
                 self.execute(

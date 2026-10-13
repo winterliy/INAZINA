@@ -329,6 +329,61 @@ class RateManager:
         return math.exp(exponent)
 
     @staticmethod
+    def bond_quote(conn, nationality, face_value, coupon_percent, remaining_days,
+                   *, coupon_frequency_days=0, spread=0.0, epoch=None,
+                   original_maturity_days=None):
+        """Return dirty price, clean price and accrued interest for a bond.
+
+        Every promised cash flow is discounted from the matching point on the
+        treasury zero curve.  A zero coupon frequency keeps legacy bullet-interest
+        bonds compatible; a positive frequency creates periodic coupon cash flows.
+        """
+        face = float(face_value)
+        remaining = max(0, int(math.ceil(float(remaining_days or 0))))
+        original = max(1, int(original_maturity_days or remaining or 1))
+        frequency = max(0, int(coupon_frequency_days or 0))
+        coupon_rate = float(coupon_percent or 0) / 100.0
+        if remaining <= 0:
+            return {"dirty_price": face, "clean_price": face,
+                    "accrued_interest": 0.0, "cashflows": [(0, face)]}
+        if frequency <= 0:
+            payoff = face*(1.0+coupon_rate*original/365.0)
+            dirty = payoff*RateManager.discount_factor(
+                conn, nationality, "treasury", remaining,
+                epoch=epoch, spread=spread,
+            )
+            return {"dirty_price": dirty, "clean_price": dirty,
+                    "accrued_interest": 0.0,
+                    "cashflows": [(remaining, payoff)]}
+
+        elapsed = max(0, original-remaining)
+        position = elapsed % frequency
+        first_due = frequency-position if position else frequency
+        due_days = list(range(first_due, remaining, frequency)) + [remaining]
+        cashflows = []
+        prior = -position
+        for due in due_days:
+            period_days = min(frequency, due-prior)
+            coupon = face*coupon_rate*period_days/365.0
+            payment = coupon + (face if due == remaining else 0.0)
+            cashflows.append((due, payment))
+            prior = due
+        dirty = sum(
+            payment*RateManager.discount_factor(
+                conn, nationality, "treasury", due,
+                epoch=epoch, spread=spread,
+            )
+            for due, payment in cashflows
+        )
+        accrued = face*coupon_rate*position/365.0
+        return {
+            "dirty_price": dirty,
+            "clean_price": max(0.0, dirty-accrued),
+            "accrued_interest": accrued,
+            "cashflows": cashflows,
+        }
+
+    @staticmethod
     def for_exchange_market(conn, exchange_id, tenor_days, benchmark_key="treasury", *, epoch=None):
         row = conn.execute(
             "SELECT nationality FROM market_exchanges WHERE exchange_id=?",
@@ -401,7 +456,9 @@ class RateManager:
         terms = RateManager.institution_components(conn, issuer)
         sheet = RateManager.institution_balance_sheet(conn, issuer)
         deposits, loans = sheet["deposits"], sheet["loans"]
-        loan_deposit = loans / max(1.0, deposits)
+        # Equity/wholesale capacity prevents a newly configured institution
+        # with no retail deposits from looking infinitely illiquid.
+        loan_deposit = loans / max(1.0, deposits, float(terms["equity_capital"]))
         funding_pressure = max(
             0.0, loan_deposit-float(terms["target_loan_deposit_ratio"])
         ) * float(terms["funding_pressure_sensitivity"])
@@ -414,7 +471,13 @@ class RateManager:
         total = sheet["total_loans"] if product_kind == "loan" else sheet["total_deposits"]
         own = loans if product_kind == "loan" else deposits
         market_share = own / total if total > 0 else 0.0
-        competition = float(terms["competition_sensitivity"])*(1.0-market_share)
+        table = "liability" if product_kind == "loan" else "saving"
+        competitors = conn.execute(
+            f"SELECT COUNT(DISTINCT issuer) amount FROM {table} "
+            "WHERE status='active' AND issuer IS NOT NULL AND TRIM(issuer)<>''"
+        ).fetchone()
+        competition = (float(terms["competition_sensitivity"])*(1.0-market_share)
+                       if int(competitors["amount"] or 0) > 1 else 0.0)
         if product_kind == "deposit":
             # Funding pressure and weak deposit share make funding more valuable.
             return min(10.0, funding_pressure+competition)

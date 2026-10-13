@@ -19,6 +19,24 @@ class TreasuryBondManager:
         self.db = db
         self._migrate_legacy_holdings()
 
+    @staticmethod
+    def theoretical_price(conn, bond, remaining_days=None, now=None):
+        now = int(time.time() if now is None else now)
+        days = int(bond["maturity_days"] if remaining_days is None else remaining_days)
+        country = conn.execute(
+            "SELECT nationality FROM market_exchanges WHERE exchange_id=?",
+            (bond["exchange_id"],),
+        ).fetchone()
+        quote = RateManager.bond_quote(
+            conn, country["nationality"] if country else "낙원",
+            int(bond["face_value"]), float(bond["annual_rate"]), max(0, days),
+            coupon_frequency_days=int(bond["coupon_frequency_days"] or 0),
+            spread=(float(bond["credit_spread"] or 0)
+                    + float(bond["liquidity_spread"] or 0)),
+            epoch=now, original_maturity_days=int(bond["maturity_days"]),
+        )
+        return quote
+
     def _migrate_legacy_holdings(self):
         """Backfill bond lot denomination and cost basis added for exchange trading."""
         with self.db.atomic(("accounts", "product")) as conn:
@@ -158,7 +176,8 @@ class TreasuryBondManager:
                     return False, error
                 bond = conn.execute(
                     "SELECT product_code, name, annual_rate, maturity_days, face_value, "
-                    "exchange_id, market_price, total_supply, sold_amount, status "
+                    "exchange_id, market_price, total_supply, sold_amount, status,"
+                    "coupon_frequency_days,day_count_convention,credit_spread,liquidity_spread "
                     "FROM product.treasury_bond_products WHERE product_code = ?",
                     (str(product_code).upper(),),
                 ).fetchone()
@@ -189,11 +208,14 @@ class TreasuryBondManager:
                 conn.execute(
                     "INSERT INTO accounts.treasury_bond_holdings "
                     "(user_id, product_code, product_name, annual_rate, maturity_days, "
-                    "principal, face_value, acquisition_cost, purchased_epoch, maturity_epoch) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "principal, face_value, acquisition_cost, purchased_epoch, maturity_epoch,"
+                    "coupon_frequency_days,day_count_convention,last_coupon_epoch) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (str(user_id), bond["product_code"], bond["name"],
                      float(bond["annual_rate"]), int(bond["maturity_days"]),
-                     amount, face_value, amount, now, maturity),
+                     amount, face_value, amount, now, maturity,
+                     int(bond["coupon_frequency_days"] or 0),
+                     bond["day_count_convention"], now),
                 )
                 treasury = conn.execute(
                     "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
@@ -201,16 +223,19 @@ class TreasuryBondManager:
                 )
                 if treasury.rowcount != 1:
                     raise RuntimeError("국고 계정을 찾을 수 없어 국채 매수를 취소했습니다.")
+                marked = max(1, round_money(
+                    self.theoretical_price(conn, bond, now=now)["dirty_price"]
+                ))
                 conn.execute(
                     "UPDATE product.treasury_bond_products SET market_price = ? "
                     "WHERE product_code = ?",
-                    (face_value, bond["product_code"]),
+                    (marked, bond["product_code"]),
                 )
                 conn.execute(
                     "INSERT INTO assets.market_price_history "
                     "(asset_code, price, recorded_epoch) VALUES (?, ?, ?) "
                     "ON CONFLICT(asset_code, recorded_epoch) DO UPDATE SET price = excluded.price",
-                    (bond["product_code"], face_value, now),
+                    (bond["product_code"], marked, now),
                 )
             return True, (
                 f"✅ **{bond['name']}** 국채를 {amount:,} NWX 매수했습니다. "
@@ -224,6 +249,7 @@ class TreasuryBondManager:
         """Automatically repay matured principal plus simple interest, less tax."""
         now = int(time.time() if now is None else now)
         user_id = None if user_id is None else str(user_id)
+        self.pay_due_coupons(user_id=user_id, now=now)
         redeemed = []
         pending = self.db.accounts.execute_one(
             "SELECT 1 FROM treasury_bond_holdings WHERE status = 'active' "
@@ -246,7 +272,7 @@ class TreasuryBondManager:
                 query = (
                     "SELECT h.holding_id, h.user_id, h.product_code, h.principal, "
                     "h.purchased_epoch, h.maturity_epoch, h.maturity_days, "
-                    "h.product_name AS name, h.annual_rate "
+                    "h.product_name AS name, h.annual_rate,h.coupon_frequency_days "
                     "FROM accounts.treasury_bond_holdings h "
                     "WHERE h.status = 'active' AND h.maturity_epoch <= ? "
                 )
@@ -260,10 +286,9 @@ class TreasuryBondManager:
                 for holding in rows:
                     principal = int(holding["principal"])
                     days = int(holding["maturity_days"])
-                    gross_interest = round_money(
-                        principal * float(holding["annual_rate"]) * days
-                        / (100 * self.YEAR_DAYS)
-                    )
+                    gross_interest = (0 if int(holding["coupon_frequency_days"] or 0)>0 else
+                                      round_money(principal * float(holding["annual_rate"]) * days
+                                                  / (100 * self.YEAR_DAYS)))
                     tax = calculate_income_tax(gross_interest, tax_percent / 100)
                     gross_payment = principal + gross_interest
                     net_payment = principal + gross_interest - tax
@@ -314,6 +339,65 @@ class TreasuryBondManager:
         except Exception:
             raise
 
+    def pay_due_coupons(self, user_id=None, now=None):
+        """Pay all due periodic coupons for active Treasury lots."""
+        now = int(time.time() if now is None else now)
+        user_id = None if user_id is None else str(user_id)
+        paid = []
+        with self.db.atomic(("users", "accounts", "tax")) as conn:
+            rows = conn.execute(
+                "SELECT * FROM accounts.treasury_bond_holdings WHERE status='active' "
+                "AND coupon_frequency_days>0 AND (? IS NULL OR user_id=?)",
+                (user_id, user_id),
+            ).fetchall()
+            for holding in rows:
+                frequency = int(holding["coupon_frequency_days"])
+                cursor = int(holding["last_coupon_epoch"] or holding["purchased_epoch"])
+                boundary = min(now, int(holding["maturity_epoch"]))
+                periods = max(0, (boundary-cursor)//(frequency*86400))
+                # Pay the final short stub at maturity as well.
+                paid_until = cursor+periods*frequency*86400
+                elapsed = periods*frequency
+                if boundary >= int(holding["maturity_epoch"]) and paid_until < boundary:
+                    elapsed += (boundary-paid_until)/86400
+                    paid_until = boundary
+                if elapsed <= 0:
+                    continue
+                coupon = round_money(
+                    int(holding["principal"])*float(holding["annual_rate"])/100
+                    * elapsed/self.YEAR_DAYS
+                )
+                tax_row = conn.execute(
+                    "SELECT c.tax_percent FROM users u LEFT JOIN country_currencies c "
+                    "ON c.nationality=u.nationality WHERE u.user_id=?",
+                    (holding["user_id"],),
+                ).fetchone()
+                tax_percent = float(tax_row["tax_percent"] if tax_row else 3)
+                tax = calculate_income_tax(coupon, tax_percent/100)
+                treasury = conn.execute(
+                    "UPDATE users.users SET cash=cash-? WHERE user_id=?",
+                    (coupon, TREASURY_USER_ID),
+                )
+                if treasury.rowcount != 1:
+                    raise RuntimeError("국고 계정을 찾을 수 없어 쿠폰 지급을 취소했습니다.")
+                if tax:
+                    conn.execute(
+                        "UPDATE users.users SET cash=cash+? WHERE user_id=?",
+                        (tax, TREASURY_USER_ID),
+                    )
+                conn.execute(
+                    "UPDATE users.users SET cash=cash+? WHERE user_id=?",
+                    (coupon-tax, holding["user_id"]),
+                )
+                conn.execute(
+                    "UPDATE accounts.treasury_bond_holdings SET last_coupon_epoch=? "
+                    "WHERE holding_id=?", (paid_until, holding["holding_id"]),
+                )
+                paid.append({"user_id": str(holding["user_id"]),
+                             "product_code": holding["product_code"],
+                             "coupon": coupon, "tax": tax})
+        return paid
+
     def get_user_holdings(self, user_id, now=None, *, conn=None):
         now = int(time.time() if now is None else now)
         # Valuation is read-only.  Do not reserve the database writer merely
@@ -323,7 +407,9 @@ class TreasuryBondManager:
                 "SELECT h.holding_id, h.product_code, h.principal, h.face_value, "
                 "h.purchased_epoch, h.maturity_epoch, h.maturity_days, "
                 "h.product_name AS name, h.annual_rate, h.acquisition_cost, "
-                "COALESCE(p.market_price, h.face_value) AS market_price "
+                "COALESCE(p.market_price, h.face_value) AS market_price,"
+                "p.exchange_id,p.credit_spread,p.liquidity_spread,"
+                "h.coupon_frequency_days,h.day_count_convention "
                 "FROM accounts.treasury_bond_holdings h "
                 "LEFT JOIN product.treasury_bond_products p ON p.product_code = h.product_code "
                 "WHERE h.user_id = ? AND h.status = 'active' ORDER BY h.maturity_epoch",
@@ -338,7 +424,12 @@ class TreasuryBondManager:
             )
             face_value = int(row["face_value"] or 1)
             quantity = int(row["principal"]) // face_value
-            market_price = max(1, int(round(row["market_price"] or face_value)))
+            remaining_days = max(0, (int(row["maturity_epoch"])-now)/86400)
+            with self.db.readonly() as valuation_conn:
+                quote = self.theoretical_price(
+                    valuation_conn, row, remaining_days, now
+                )
+            market_price = max(1, round_money(quote["dirty_price"]))
             holdings.append({
                 "holding_id": int(row["holding_id"]),
                 "product_code": str(row["product_code"]),
@@ -349,6 +440,8 @@ class TreasuryBondManager:
                 "acquisition_cost": int(row["acquisition_cost"] or row["principal"]),
                 "market_price": market_price,
                 "market_value": quantity * market_price,
+                "clean_price": max(0, round_money(quote["clean_price"])),
+                "accrued_interest": max(0, round_money(quote["accrued_interest"])),
                 "maturity_epoch": int(row["maturity_epoch"]),
                 "projected_interest": projected_interest,
                 "projected_total": int(row["principal"]) + projected_interest,
@@ -374,7 +467,8 @@ class TreasuryBondManager:
         """Move existing claims with their coupon and maturity terms to a buyer."""
         rows = conn.execute(
             "SELECT holding_id, product_name, annual_rate, maturity_days, principal, "
-            "face_value, acquisition_cost, purchased_epoch, maturity_epoch "
+            "face_value, acquisition_cost, purchased_epoch, maturity_epoch,"
+            "coupon_frequency_days,day_count_convention,last_coupon_epoch "
             "FROM accounts.treasury_bond_holdings WHERE user_id = ? AND product_code = ? "
             "AND status = 'active' AND maturity_epoch > ? "
             "ORDER BY maturity_epoch, holding_id",
@@ -416,12 +510,14 @@ class TreasuryBondManager:
             conn.execute(
                 "INSERT INTO accounts.treasury_bond_holdings "
                 "(user_id, product_code, product_name, annual_rate, maturity_days, "
-                "principal, face_value, acquisition_cost, purchased_epoch, maturity_epoch) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "principal, face_value, acquisition_cost, purchased_epoch, maturity_epoch,"
+                "coupon_frequency_days,day_count_convention,last_coupon_epoch) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (str(buyer_id), str(product_code), row["product_name"],
                  float(row["annual_rate"]), int(row["maturity_days"]), moved_principal,
                  face_value, int(price) * take_units, int(row["purchased_epoch"]),
-                 int(row["maturity_epoch"])),
+                 int(row["maturity_epoch"]), int(row["coupon_frequency_days"] or 0),
+                 row["day_count_convention"], row["last_coupon_epoch"]),
             )
             units_left -= take_units
             if units_left == 0:

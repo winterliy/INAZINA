@@ -135,16 +135,22 @@ class InvestmentManager:
             years = max(0, int(product["maturity_epoch"] or now) - now) / (365 * 86400)
             return max(1, round_money(float(row["price"]) * math.exp(market_rate / 100 * years)))
         if kind == "corporate_bond":
-            payoff = int(product["face_value"]) * (1 + float(product["annual_rate"]) / 100 * int(product["maturity_days"]) / 365)
             remaining = max(0, int(product["maturity_epoch"] or now) - now)
-            years = remaining / (365 * 86400)
-            curve = RateManager.for_exchange_market(
-                conn, product['exchange_id'], max(1, math.ceil(remaining/86400)),
-                'treasury', epoch=now,
+            country = conn.execute(
+                "SELECT nationality FROM market_exchanges WHERE exchange_id=?",
+                (product["exchange_id"],),
+            ).fetchone()
+            quote = RateManager.bond_quote(
+                conn, country["nationality"] if country else "낙원",
+                int(product["face_value"]), float(product["annual_rate"]),
+                remaining/86400,
+                coupon_frequency_days=int(product["coupon_frequency_days"] or 0),
+                spread=(float(product["credit_spread"] or 0)
+                        + float(product["liquidity_spread"] or 0)),
+                epoch=now,
+                original_maturity_days=int(product["maturity_days"]),
             )
-            required_yield = (curve + float(product['credit_spread'] or 0)
-                              + float(product['liquidity_spread'] or 0))
-            return max(1, round_money(payoff * math.exp(-required_yield / 100 * years)))
+            return max(1, round_money(quote["dirty_price"]))
         if kind == "mutual_fund":
             components = fund_components.get(product['product_code'], ()) if fund_components is not None else conn.execute("SELECT * FROM product.fund_components WHERE product_code = ?", (product["product_code"],)).fetchall()
             total, weight = 0.0, 0.0
@@ -181,6 +187,7 @@ class InvestmentManager:
 
     def redeem_corporate_bonds(self, now=None):
         now = int(time.time() if now is None else now)
+        self.pay_corporate_bond_coupons(now=now)
         notifications = []
         rows = self.db.products.execute("SELECT product_code FROM investment WHERE product_type = 'corporate_bond' "
             "AND status IN ('active', 'defaulted') AND maturity_epoch <= ?", (now,))
@@ -202,7 +209,9 @@ class InvestmentManager:
                 payments = []
                 for holder in holders:
                     principal = int(holder["quantity"]) * int(product["face_value"])
-                    coupon = round_money(principal * float(product["annual_rate"]) / 100 * int(product["maturity_days"]) / 365)
+                    coupon = (0 if int(product["coupon_frequency_days"] or 0) > 0 else
+                              round_money(principal * float(product["annual_rate"]) / 100
+                                          * int(product["maturity_days"]) / 365))
                     payments.append((holder["user_id"], int(holder["quantity"]), principal, coupon))
                 due = sum(p + c for _, _, p, c in payments)
                 cash_account=conn.execute('SELECT 1 FROM issuer_cash_accounts WHERE company_code=?',(product['issuer_code'],)).fetchone()
@@ -220,4 +229,76 @@ class InvestmentManager:
                     notifications.append(dict(user_id=user_id, product_code=product["product_code"], net=principal + coupon - tax))
                 conn.execute("DELETE FROM assets.user_assets WHERE asset_code = ?", (product["product_code"],))
                 conn.execute("UPDATE product.investment SET status = 'redeemed' WHERE product_code = ?", (product["product_code"],))
+        return notifications
+
+    def pay_corporate_bond_coupons(self, now=None):
+        """Pay due periodic coupons to the holders of record."""
+        now = int(time.time() if now is None else now)
+        notifications = []
+        rows = self.db.products.execute(
+            "SELECT product_code FROM investment WHERE product_type='corporate_bond' "
+            "AND status='active' AND coupon_frequency_days>0",
+        )
+        for item in rows:
+            with self.db.atomic(("users", "assets", "product", "company", "tax")) as conn:
+                product = conn.execute(
+                    "SELECT * FROM product.investment WHERE product_code=?",
+                    (item["product_code"],),
+                ).fetchone()
+                if not product or product["status"] != "active":
+                    continue
+                frequency = int(product["coupon_frequency_days"] or 0)
+                created = int(product["last_coupon_epoch"] or
+                              time.mktime(time.strptime(
+                                  product["created_at"], "%Y-%m-%d %H:%M:%S"
+                              )))
+                boundary = min(now, int(product["maturity_epoch"]))
+                periods = max(0, (boundary-created)//(frequency*86400))
+                if periods <= 0:
+                    continue
+                paid_until = created+periods*frequency*86400
+                holders = conn.execute(
+                    "SELECT user_id,SUM(quantity) quantity FROM assets.user_assets "
+                    "WHERE asset_code=? GROUP BY user_id", (product["product_code"],)
+                ).fetchall()
+                due_total = 0
+                payments = []
+                for holder in holders:
+                    principal = int(holder["quantity"])*int(product["face_value"])
+                    coupon = round_money(
+                        principal*float(product["annual_rate"])/100
+                        * periods*frequency/365
+                    )
+                    payments.append((holder["user_id"], coupon))
+                    due_total += coupon
+                cash_account = conn.execute(
+                    "SELECT 1 FROM issuer_cash_accounts WHERE company_code=?",
+                    (product["issuer_code"],),
+                ).fetchone()
+                changed = (conn.execute(
+                    "UPDATE issuer_cash_accounts SET balance=balance-? "
+                    "WHERE company_code=? AND balance>=?",
+                    (due_total, product["issuer_code"], due_total),
+                ) if cash_account else conn.execute(
+                    "UPDATE company.company SET capital=capital-? "
+                    "WHERE company_code=? AND capital>=?",
+                    (due_total, product["issuer_code"], due_total),
+                ))
+                if due_total and changed.rowcount != 1:
+                    conn.execute(
+                        "UPDATE product.investment SET status='defaulted' WHERE product_code=?",
+                        (product["product_code"],),
+                    )
+                    continue
+                for user_id, coupon in payments:
+                    tax = self.users._tax(conn, user_id, "corporate_bond_interest", coupon)
+                    self.users._credit_source(conn, user_id, None, coupon-tax)
+                    notifications.append({"user_id": str(user_id),
+                                          "product_code": product["product_code"],
+                                          "coupon": coupon, "tax": tax})
+                conn.execute(
+                    "UPDATE product.investment SET last_coupon_epoch=?,next_coupon_epoch=? "
+                    "WHERE product_code=?",
+                    (paid_until, paid_until+frequency*86400, product["product_code"]),
+                )
         return notifications

@@ -102,6 +102,8 @@ class ProductDB(DBManager):
             "liquidity_spread": "REAL NOT NULL DEFAULT 0 CHECK(liquidity_spread BETWEEN 0 AND 100)",
             "coupon_frequency_days": "INTEGER NOT NULL DEFAULT 0 CHECK(coupon_frequency_days >= 0)",
             "day_count_convention": "TEXT NOT NULL DEFAULT 'ACT/365' CHECK(day_count_convention IN ('ACT/365','ACT/360','30/360'))",
+            "last_coupon_epoch": "INTEGER",
+            "next_coupon_epoch": "INTEGER",
         }
         for column, declaration in extra_columns.items():
             if column not in investment_columns:
@@ -158,6 +160,8 @@ class ProductDB(DBManager):
             "day_count_convention": "TEXT NOT NULL DEFAULT 'ACT/365' CHECK(day_count_convention IN ('ACT/365','ACT/360','30/360'))",
             "credit_spread": "REAL NOT NULL DEFAULT 0 CHECK(credit_spread BETWEEN 0 AND 100)",
             "liquidity_spread": "REAL NOT NULL DEFAULT 0 CHECK(liquidity_spread BETWEEN 0 AND 100)",
+            "last_coupon_epoch": "INTEGER",
+            "next_coupon_epoch": "INTEGER",
         }.items():
             if column not in bond_columns:
                 self.execute(

@@ -16,6 +16,57 @@ class BankManager:
 
     PASSWORD_ITERATIONS = 240_000
 
+    @staticmethod
+    def _loan_cashflows(principal, annual_rate, maturity_days, frequency_days,
+                        amortization_type):
+        """Build contractual installment cash flows for APR and servicing."""
+        principal = int(principal)
+        days = max(1, int(maturity_days or 1))
+        frequency = max(1, int(frequency_days or days))
+        mode = str(amortization_type or "legacy")
+        if mode == "legacy":
+            return []
+        due_days = list(range(frequency, days, frequency)) + [days]
+        count = len(due_days)
+        rate = float(annual_rate or 0) / 100.0
+        rows = []
+        if mode == "bullet":
+            interest = round_money(principal*rate*days/365.0)
+            return [(days, principal, max(0, interest))]
+        if mode == "equal_principal":
+            remaining = principal
+            previous_day = 0
+            allocated = 0
+            for index, due_day in enumerate(due_days, 1):
+                principal_due = (principal-allocated if index == count
+                                 else round_money(principal/count))
+                principal_due = max(0, min(remaining, principal_due))
+                interest = round_money(
+                    remaining*rate*(due_day-previous_day)/365.0
+                )
+                rows.append((due_day, principal_due, max(0, interest)))
+                remaining -= principal_due
+                allocated += principal_due
+                previous_day = due_day
+            return rows
+        # Annuity: use an effective periodic rate and adjust the final row for
+        # integer rounding so scheduled principal equals the contract principal.
+        period_years = days/365.0/count
+        periodic_rate = math.expm1(math.log1p(max(-0.999999, rate))*period_years)
+        payment = (principal/count if abs(periodic_rate) < 1e-12 else
+                   principal*periodic_rate/(1-(1+periodic_rate)**(-count)))
+        remaining = principal
+        allocated = 0
+        for index, due_day in enumerate(due_days, 1):
+            interest = max(0, round_money(remaining*periodic_rate))
+            principal_due = (principal-allocated if index == count else
+                             max(0, round_money(payment-interest)))
+            principal_due = min(remaining, principal_due)
+            rows.append((due_day, principal_due, interest))
+            remaining -= principal_due
+            allocated += principal_due
+        return rows
+
     def __init__(self, db: DatabaseManager):
         self.db = db
 
@@ -118,7 +169,9 @@ class BankManager:
                     (account_number, str(user_id), product_code, deposit_amount,
                      self._hash_password(password), deposit_amount, opened_epoch, home,
                      float(product['interest_rate']), product['rate_type'], product['rate_nationality'],
-                     contract_spread, float(product['rate_floor']), product['rate_cap'],
+                     contract_spread,
+                     (-100.0 if product['negative_rate_allowed'] else float(product['rate_floor'])),
+                     product['rate_cap'],
                      int(product['repricing_cycle_seconds']),
                      opened_epoch+int(product['repricing_cycle_seconds'])
                      if product['rate_type']=='floating' else None,
@@ -302,7 +355,7 @@ class BankManager:
                         + credit_adjustment-collateral_discount
                     )
                     contract_rate = RateManager.floating_rate(
-                        conn, product['rate_nationality'], contract_spread,
+                        conn, contract_country, contract_spread,
                         product['rate_floor'], product['rate_cap'],
                         benchmark_key=product['benchmark_key'],
                         tenor_days=(product['benchmark_tenor_days'] or product['maturity_days']),
@@ -321,17 +374,36 @@ class BankManager:
                 effective = RateManager.effective_annual_rate(
                     contract_rate, float(product['interest_cycle'] or 31536000)
                 )
-                apr = RateManager.annual_percentage_rate(
-                    effective, fee, net_payout, int(product['maturity_days'] or 365)
+                schedule = self._loan_cashflows(
+                    amount, contract_rate, int(product['maturity_days'] or 365),
+                    int(product['payment_frequency_days'] or 30),
+                    product['amortization_type'],
                 )
-                conn.execute(
+                apr = RateManager.annual_percentage_rate(
+                    contract_rate, fee, net_payout, int(product['maturity_days'] or 365),
+                    cashflows=[(day, principal_due+interest_due)
+                               for day, principal_due, interest_due in schedule] or None,
+                    principal=amount,
+                )
+                legal_cost_cap = (RateManager.from_connection(
+                    conn, 'legal_max_rate', contract_country, require_country=True
+                ) if contract_country else RateManager.legal_max_for_currency(conn, home)[0])
+                legal_cost_rate = (contract_rate + (fee/max(1, net_payout))
+                                   * 365/max(1, int(product['maturity_days'] or 365))*100)
+                if legal_cost_rate > legal_cost_cap+1e-9:
+                    raise ValueError(
+                        f"법정 산입비용 연율 {legal_cost_rate:.3f}%가 {contract_country or home} "
+                        f"법정최고이자 {legal_cost_cap:g}%를 초과합니다."
+                    )
+                inserted = conn.execute(
                     "INSERT INTO accounts.loans "
                     "(user_id, product_code, principal, outstanding_balance, last_payment_epoch, "
                     "last_repayment_epoch, maturity_epoch, contract_rate,rate_type,rate_nationality,"
                     "base_rate_spread,rate_floor,rate_cap,repricing_cycle_seconds,next_repricing_epoch,"
                     "benchmark_key,benchmark_tenor_days,repricing_lag_seconds,contract_effective_rate,"
-                    "contract_apr,origination_fee,collateral_amount) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "contract_apr,origination_fee,collateral_amount,day_count_convention,"
+                    "amortization_type,payment_frequency_days) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (str(user_id), product_code, amount, amount, opened_epoch, opened_epoch,
                      opened_epoch+int(product['maturity_days'] or 0)*86400
                      if int(product['maturity_days'] or 0)>0 else None,
@@ -341,8 +413,21 @@ class BankManager:
                      opened_epoch+int(product['repricing_cycle_seconds'])
                      if product['rate_type']=='floating' else None,
                      product['benchmark_key'], int(product['benchmark_tenor_days'] or product['maturity_days'] or 0),
-                     int(product['repricing_lag_seconds'] or 0), effective, apr, fee, collateral_amount),
+                     int(product['repricing_lag_seconds'] or 0), effective, apr, fee, collateral_amount,
+                     product['day_count_convention'], product['amortization_type'],
+                     int(product['payment_frequency_days'] or 30)),
                 )
+                loan_id = int(inserted.lastrowid)
+                if schedule:
+                    conn.executemany(
+                        "INSERT INTO accounts.loan_payment_schedule "
+                        "(loan_id,installment_number,due_epoch,principal_due,interest_due) "
+                        "VALUES (?,?,?,?,?)",
+                        [(loan_id, index, opened_epoch+days*86400,
+                          principal_due, interest_due)
+                         for index, (days, principal_due, interest_due)
+                         in enumerate(schedule, 1)],
+                    )
                 payout = conn.execute(
                     "SELECT a.account_number FROM accounts.accounts a "
                     "JOIN product.saving s ON s.product_code = a.product_code "
@@ -468,6 +553,9 @@ class BankManager:
                     "WHERE loan_id = ?",
                     (remaining, remaining, remaining, loan["loan_id"]),
                 )
+                self._allocate_schedule_payment(
+                    conn, loan["loan_id"], payment, time.time()
+                )
             suffix = f" · 담보 {released:,} NWX 반환" if released else ""
             return True, f"✅ {payment:,} NWX를 상환했습니다. 남은 원리금: {remaining:,} NWX{suffix}"
         except Exception as exc:
@@ -482,6 +570,13 @@ class BankManager:
         try:
             due_users = set()
             for row in self.db.accounts.execute(
+                "SELECT DISTINCT l.user_id FROM loans l "
+                "JOIN loan_payment_schedule s ON s.loan_id=l.loan_id "
+                "WHERE l.status='active' AND s.due_epoch<=? "
+                "AND s.status NOT IN ('paid','waived')", (now,)
+            ):
+                due_users.add(str(row["user_id"]))
+            for row in self.db.accounts.execute(
                 "SELECT user_id, product_code, last_repayment_epoch FROM loans WHERE status = 'active'"
             ):
                 product = self.db.products.get_liability(row["product_code"])
@@ -495,17 +590,33 @@ class BankManager:
                 if cycle > 0 and now - last >= cycle:
                     due_users.add(str(row["user_id"]))
             for due_user_id in due_users:
-                self._settle_user_interest(due_user_id)
+                self._settle_user_interest(due_user_id, now=now)
 
             with self.db.atomic(("users", "accounts", "product")) as conn:
                 loans = conn.execute(
                     "SELECT l.loan_id, l.user_id, l.product_code, l.outstanding_balance, "
                     "l.last_repayment_epoch, p.name AS product_name, "
-                    "p.repayment_cycle_seconds, p.repayment_amount "
+                    "p.repayment_cycle_seconds, p.repayment_amount, l.amortization_type "
                     "FROM accounts.loans l JOIN product.liability p "
                     "ON p.product_code = l.product_code WHERE l.status = 'active'"
                 ).fetchall()
                 for loan in loans:
+                    if loan["amortization_type"] != "legacy":
+                        paid, missed, amount_paid, balance = self._process_due_schedule(
+                            conn, loan, now
+                        )
+                        paid_count += paid
+                        missed_count += missed
+                        if paid or missed:
+                            notifications.append({
+                                "user_id": str(loan["user_id"]),
+                                "product_name": str(loan["product_name"] or loan["product_code"]),
+                                "paid_count": paid,
+                                "paid_amount": amount_paid,
+                                "missed_count": missed,
+                                "remaining": balance,
+                            })
+                        continue
                     try:
                         cycle = int(loan["repayment_cycle_seconds"] or 0)
                         installment = int(round(loan["repayment_amount"] or 0))
@@ -594,6 +705,89 @@ class BankManager:
             return paid_count, missed_count, notifications
         except Exception:
             raise
+
+    @staticmethod
+    def _allocate_schedule_payment(conn, loan_id, amount, paid_epoch):
+        remaining = max(0, int(amount or 0))
+        if not remaining:
+            return
+        rows = conn.execute(
+            "SELECT schedule_id,principal_due+interest_due+fee_due AS due,amount_paid "
+            "FROM accounts.loan_payment_schedule WHERE loan_id=? "
+            "AND status NOT IN ('paid','waived') ORDER BY installment_number",
+            (loan_id,),
+        ).fetchall()
+        for row in rows:
+            unpaid = max(0, int(row["due"] or 0)-int(row["amount_paid"] or 0))
+            applied = min(remaining, unpaid)
+            if not applied:
+                continue
+            new_paid = int(row["amount_paid"] or 0)+applied
+            status = "paid" if new_paid >= int(row["due"] or 0) else "partial"
+            conn.execute(
+                "UPDATE accounts.loan_payment_schedule SET amount_paid=?,status=?,"
+                "paid_epoch=CASE WHEN ?='paid' THEN ? ELSE paid_epoch END WHERE schedule_id=?",
+                (new_paid, status, status, paid_epoch, row["schedule_id"]),
+            )
+            remaining -= applied
+            if remaining <= 0:
+                break
+
+    @classmethod
+    def _process_due_schedule(cls, conn, loan, now):
+        rows = conn.execute(
+            "SELECT * FROM accounts.loan_payment_schedule WHERE loan_id=? "
+            "AND due_epoch<=? AND status NOT IN ('paid','waived') "
+            "ORDER BY installment_number",
+            (loan["loan_id"], now),
+        ).fetchall()
+        balance = int(round(loan["outstanding_balance"] or 0))
+        paid_count = missed_count = paid_amount = 0
+        for row in rows:
+            contractual = (int(row["principal_due"] or 0)
+                           + int(row["interest_due"] or 0)
+                           + int(row["fee_due"] or 0))
+            due = min(balance, max(0, contractual-int(row["amount_paid"] or 0)))
+            if due <= 0:
+                conn.execute(
+                    "UPDATE accounts.loan_payment_schedule SET status='paid',paid_epoch=? "
+                    "WHERE schedule_id=?", (now, row["schedule_id"]),
+                )
+                continue
+            funds = UserFunds.choose(conn, str(loan["user_id"]))
+            if funds and funds[0] >= due and UserFunds.debit(
+                conn, str(loan["user_id"]), funds[1], due
+            ):
+                balance -= due
+                paid_count += 1
+                paid_amount += due
+                conn.execute(
+                    "UPDATE accounts.loan_payment_schedule SET amount_paid=amount_paid+?,"
+                    "status='paid',paid_epoch=? WHERE schedule_id=?",
+                    (due, now, row["schedule_id"]),
+                )
+            else:
+                newly_missed = row["status"] != "missed"
+                missed_count += int(newly_missed)
+                conn.execute(
+                    "UPDATE accounts.loan_payment_schedule SET status='missed' "
+                    "WHERE schedule_id=?", (row["schedule_id"],),
+                )
+                if newly_missed:
+                    conn.execute(
+                        "UPDATE users.users SET credit_score=MAX(0,credit_score-1) "
+                        "WHERE user_id=?", (str(loan["user_id"]),),
+                    )
+        status = "paid" if balance <= 0 else "active"
+        conn.execute(
+            "UPDATE accounts.loans SET outstanding_balance=?,status=?,"
+            "collection_status=CASE WHEN ?='paid' THEN 'paid' ELSE collection_status END,"
+            "missed_payment_count=missed_payment_count+? WHERE loan_id=?",
+            (max(0, balance), status, status, missed_count, loan["loan_id"]),
+        )
+        if balance <= 0:
+            cls._release_collateral(conn, loan["loan_id"], str(loan["user_id"]))
+        return paid_count, missed_count, paid_amount, max(0, balance)
 
     @staticmethod
     def _generate_account_number(conn):
