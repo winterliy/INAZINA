@@ -1,7 +1,7 @@
 """Atomic currency exchange. Foreign amounts are integer millionths of a unit."""
 import time
 import uuid
-from decimal import Decimal, InvalidOperation, ROUND_FLOOR
+from decimal import Decimal, InvalidOperation
 from database.user_db import TREASURY_USER_ID
 from managers.currency_manager import CurrencyManager
 
@@ -62,18 +62,37 @@ class CurrencyExchangeManager:
                 raise ValueError("같은 통화의 외환통장이 이미 있습니다.")
             number = 'FXA' + uuid.uuid4().hex[:16].upper()
             opened_epoch = time.time()
+            from managers.rate_manager import RateManager
+            contract_spread = (RateManager.product_spread(conn, product, 'deposit')
+                               if product['rate_type'] == 'floating'
+                               else float(product['base_rate_spread']))
             conn.execute("INSERT INTO accounts(account_number,user_id,product_code,balance,password,"
                          "last_payment_epoch,principal,account_type,quote_currency,contract_rate,rate_type,"
                          "rate_nationality,base_rate_spread,rate_floor,rate_cap,repricing_cycle_seconds,"
-                         "next_repricing_epoch) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         "next_repricing_epoch,benchmark_key,benchmark_tenor_days,repricing_lag_seconds,"
+                         "contract_effective_rate) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                          (number, str(user_id), product_code, 0, None, opened_epoch, 0,
                           'currency_saving', product['quote_currency'], float(product['interest_rate']),
                           product['rate_type'], product['rate_nationality'],
-                          float(product['base_rate_spread']), float(product['rate_floor']),
+                          contract_spread, float(product['rate_floor']),
                           product['rate_cap'], int(product['repricing_cycle_seconds']),
                           opened_epoch+int(product['repricing_cycle_seconds'])
-                          if product['rate_type']=='floating' else None))
+                          if product['rate_type']=='floating' else None,
+                          product['benchmark_key'],
+                          int(product['benchmark_tenor_days'] or product['maturity_days'] or 0),
+                          int(product['repricing_lag_seconds'] or 0),
+                          self._effective_rate(product)))
             return number
+
+    @staticmethod
+    def _effective_rate(product):
+        from managers.rate_manager import RateManager
+        try:
+            return RateManager.effective_annual_rate(
+                product['interest_rate'], product['interest_cycle'] or 31536000
+            )
+        except (ValueError, OverflowError):
+            return None
 
     @staticmethod
     def _settle(conn, user_id, now):
@@ -99,10 +118,15 @@ class CurrencyExchangeManager:
                         and cursor >= float(next_reset)):
                     rate = RateManager.floating_rate(
                         conn, row['rate_nationality'], row['base_rate_spread'],
-                        row['rate_floor'], row['rate_cap'], epoch=float(next_reset)
+                        row['rate_floor'], row['rate_cap'],
+                        epoch=max(0, float(next_reset)-float(row['repricing_lag_seconds'] or 0)),
+                        benchmark_key=row['benchmark_key'],
+                        tenor_days=row['benchmark_tenor_days'], apply_legal_max=False,
                     )
                     next_reset = float(next_reset)+cycle
-            credit = int(exact.to_integral_value(rounding=ROUND_FLOOR))
+            credit = int(exact)
+            if credit < -int(row['balance_units']):
+                credit, exact = -int(row['balance_units']), Decimal(0)
             if row['balance_units'] + credit > MAX_UNITS:
                 raise ValueError("외환 잔액 한도를 초과합니다.")
             conn.execute("UPDATE accounts SET balance_units=balance_units+?,interest_remainder=?,"

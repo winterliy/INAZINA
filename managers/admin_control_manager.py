@@ -215,6 +215,20 @@ class AdminControlManager:
                     raise ValueError("rate_type은 fixed 또는 floating이어야 합니다.")
                 values['rate_type'] = rate_type
                 if rate_type == 'floating':
+                    if operation == 'create' and 'benchmark_key' not in extra:
+                        values['benchmark_key'] = 'bank_bond' if category == 'loan' else 'funding'
+                    benchmark = str(values.get(
+                        'benchmark_key', merged.get('benchmark_key', 'policy')
+                    )).strip().lower()
+                    if benchmark not in {'policy','funding','bank_bond','treasury'}:
+                        raise ValueError('benchmark_key는 policy/funding/bank_bond/treasury 중 하나여야 합니다.')
+                    tenor = self._number(
+                        values.get('benchmark_tenor_days', merged.get('benchmark_tenor_days', 0)),
+                        0, 36500, integer=True,
+                    )
+                    if benchmark != 'policy' and tenor == 0:
+                        tenor = max(1, int(merged.get('maturity_days') or 30))
+                    values.update(benchmark_key=benchmark, benchmark_tenor_days=tenor)
                     currency = str(merged.get('quote_currency') or 'NWX').upper()
                     nationality = str(merged.get('rate_nationality') or '').strip()
                     if not nationality:
@@ -252,13 +266,25 @@ class AdminControlManager:
                     # A supplied advertised rate is translated into a spread unless
                     # the caller explicitly supplied the spread itself.
                     if 'interest_rate' in extra and 'base_rate_spread' not in extra:
-                        base = RateManager.from_connection(
-                            conn, 'base_rate', nationality, require_country=True
+                        base = RateManager.market_rate(
+                            conn, nationality, benchmark, tenor or merged.get('maturity_days', 0)
                         )
-                        spread = self._number(float(extra['interest_rate']) - base, -100, 100)
+                        provisional = {**merged, **values, 'base_rate_spread': 0}
+                        other_spread = RateManager.product_spread(
+                            conn, provisional, 'loan' if category == 'loan' else 'deposit'
+                        )
+                        spread = self._number(
+                            float(extra['interest_rate']) - base - other_spread, -100, 100
+                        )
                         values['base_rate_spread'] = spread
+                    priced = {**merged, **values}
                     values['interest_rate'] = RateManager.floating_rate(
-                        conn, nationality, values['base_rate_spread'], floor, cap
+                        conn, nationality,
+                        RateManager.product_spread(
+                            conn, priced, 'loan' if category == 'loan' else 'deposit'
+                        ), floor, cap, benchmark_key=benchmark,
+                        tenor_days=tenor or merged.get('maturity_days', 0),
+                        apply_legal_max=category == 'loan',
                     )
                 elif merged.get('rate_nationality'):
                     values['rate_nationality'] = str(merged['rate_nationality']).strip()
@@ -335,18 +361,13 @@ class AdminControlManager:
                     raise ValueError("기초 지수에 사용할 주식 거래소를 확인해주세요.")
             for field in ('interest_rate','annual_rate'):
                 if field in merged:
-                    values[field] = self._number(merged[field],0,100)
-            if category in {'saving','loan','currencyproduct'}:
+                    minimum = -100 if field == 'interest_rate' and category in {'saving','currencyproduct'} else 0
+                    values[field] = self._number(merged[field],minimum,100)
+            if category == 'loan':
                 RateManager.require_legal_rate(
                     conn, values.get('interest_rate', merged.get('interest_rate', 0)),
                     nationality=merged.get('rate_nationality'),
                     currency_code=values.get('quote_currency', merged.get('quote_currency', 'NWX')),
-                )
-            elif category in {'corporatebond','bond'}:
-                RateManager.require_legal_rate(
-                    conn, values.get('annual_rate', merged.get('annual_rate', 0)),
-                    currency_code=values.get('quote_currency', merged.get('quote_currency', 'NWX')),
-                    exchange_id=values.get('exchange_id', merged.get('exchange_id')),
                 )
             for field in ('face_value','loan_limit','capital','contract_size','deposit_amount','maturity_days','repayment_cycle_seconds','repayment_amount'):
                 if field in merged and merged[field] is not None:
@@ -444,7 +465,9 @@ class AdminControlManager:
             AutoTargetConfig.from_settings(updated)
             self.bot.market_mgr._normalize_market_condition(updated.get('market_condition','normal'))
             for key,value in changes.items():
-                if key in {'base_rate','currency_exchange_fee_percent','tax_percent','gamble_chance'}:
+                if key == 'base_rate':
+                    self._number(value,-100,100)
+                if key in {'currency_exchange_fee_percent','tax_percent','gamble_chance'}:
                     self._number(value,0,100)
                 if key=='gamble_return':
                     self._number(value,0,10000)

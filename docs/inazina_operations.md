@@ -34,6 +34,7 @@ DB `users.role=admin`만 `$` 명령어에 응답한다. 일반 사용자의 입�
 | `$환율수정` | `[외화A] [외화B] [비율]` · 1 A = 비율 B. B 시세 유지, A 시세를 정수 NWX로 반올림 |
 | `$복권가격설정` | `[가격]` · 다음 개설 회차부터 적용 |
 | `$금리수정` | `[국적] [add/del/modify] [수치]` · 국가별 기준금리, 연 퍼센트 |
+| `$시장금리수정` | `[국적] [funding/bank_bond/treasury] [만기일수] [금리%]` · 만기별 시장 기준지표 |
 | `$법정최고이자수정` | `[국적] [add/del/modify] [수치]` · 국적별 상품 연이율 상한 |
 
 ```text
@@ -180,9 +181,14 @@ $상품생성 CALL1 option INZST001 call 1500 30 1 100 50
 | `interest_rate` / `annual_rate` | 연이율(%). `3`은 연 3%다. |
 | `rate_type` | 예금·대출 금리 유형. `fixed`는 고정, `floating`은 기준금리 연동이다. |
 | `rate_nationality` | 변동금리가 따라갈 국가 ID. 같은 통화를 여러 국가가 쓰면 반드시 지정한다. |
-| `base_rate_spread` | 기준금리에 더할 가산금리(%p). 음수도 가능하다. |
-| `rate_floor` / `rate_cap` | 변동금리의 상품 하한·상한(%). 법정최고이자가 최종 상한이다. |
-| `repricing_cycle_seconds` | 계약 금리를 다시 정하는 주기(초). `interest_cycle`의 정수배여야 한다. |
+| `benchmark_key` / `benchmark_tenor_days` | 변동금리 기준지표와 만기. `policy`, `funding`, `bank_bond`, `treasury` 중 선택한다. |
+| `base_rate_spread` / `maturity_spread` / `promotional_adjustment` | 지표에 더하는 상품별 가산·만기·프로모션 조정(%p). |
+| `rate_floor` / `rate_cap` | 변동금리의 상품 하한·상한(%). 대출만 법정최고이자가 최종 상한이다. |
+| `repricing_cycle_seconds` / `repricing_lag_seconds` | 계약 재산정 주기와 지표 관측 지연(초). 재산정주기는 `interest_cycle`의 정수배다. |
+| `credit_spread_max` / `collateral_discount_max` | 신용점수에 따른 최대 가산금리와 담보에 따른 최대 할인금리(%p). |
+| `collateral_required_ratio` / `origination_fee_percent` | 대출 최소 담보비율과 선취 취급수수료율. |
+| `delinquency_spread` | 만기 후 계약금리에 더하는 연체 가산금리. 최종 연체금리는 법정최고이자를 넘지 않는다. |
+| `grace_period_days` / `acceleration_after_days` / `default_after_days` | 유예, 기한이익 상실, 채무불이행 전환 시점. |
 | `deposit_amount` | 저축 상품의 최소 예치금. |
 | `maturity_days` | 만기까지의 일수. 저축·대출은 가입일, 옵션·선물·회사채는 생성일, 국채 1차 매수는 매수일을 기준으로 한다. |
 | `interest_cycle` | 이자 계산 주기(초). `86400`은 1일이다. |
@@ -218,7 +224,7 @@ $상품생성 CALL1 option INZST001 call 1500 30 1 100 50
 
 국채 예시에서 `$상품생성 GB bond "새 국채" 1000 100000 1000 3 90 BOND`는 1매 가격 1,000 NWX, 총 액면 발행한도 100,000 NWX, 액면가 1,000 NWX, 발행 100매, 연이율 3%, 만기 90일을 뜻한다.
 
-변동금리 예금 예시는 `$상품생성 FLOAT saving "변동 예금" 5 1000 365 86400 1 은행 {"rate_type":"floating","rate_nationality":"낙원","repricing_cycle_seconds":2592000}`이다. 생성 시 입력한 5%와 당시 낙원 기준금리 3%의 차이인 2%p가 가산금리로 저장되고, 이후에는 30일마다 `낙원 기준금리 + 2%p`로 계약금리를 다시 정한다. `base_rate_spread`를 JSON에 직접 넣으면 입력한 `interest_rate`보다 가산금리를 우선한다.
+변동금리 예금 예시는 `$상품생성 FLOAT saving "변동 예금" 5 1000 365 86400 1 은행 {"rate_type":"floating","rate_nationality":"낙원","benchmark_key":"funding","benchmark_tenor_days":365,"repricing_cycle_seconds":2592000}`이다. 생성 시 입력한 광고금리에서 당시 365일 조달금리와 기타 상품 조정을 뺀 값이 `base_rate_spread`로 저장되고, 이후에는 30일마다 지정한 관측시점의 조달금리로 계약금리를 다시 정한다. `base_rate_spread`를 JSON에 직접 넣으면 입력한 `interest_rate`보다 가산금리를 우선한다.
 
 옵션 생성은 국가 명의로 담보를 설정하고 매도 지정가 주문을 등록한다. 콜은 계약당 기초주식 1주, 풋은 `행사가 × 계약수`만큼 국고 현금이 필요하다. 기초자산은 NWX 결제 활성 주식만 지원하며 만기는 1~365일, 평가 변동성은 1~500%다. 선물·회사채의 기초/발행 회사도 NWX 결제 활성 회사 주식이어야 하며 만기는 1~3650일이다. 선물 증거금은 `0 < 유지증거금 ≤ 초기증거금 ≤ 1`로 입력한다.
 

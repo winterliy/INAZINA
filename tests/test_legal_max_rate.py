@@ -49,7 +49,7 @@ class LegalMaximumRateTests(unittest.TestCase):
         self.assertNotIn("statutory_interest_remainder", loan_columns)
         self.assertEqual(self.rates.get_rate("legal_max_rate", "낙원"), 20)
 
-    def test_currency_cap_blocks_edits_and_lowering_it_clamps_existing_products(self):
+    def test_currency_cap_only_blocks_loans_and_clamps_existing_loans(self):
         self.add_country("미국", "USD", 12)
         self.db.products.execute(
             "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"
@@ -61,15 +61,18 @@ class LegalMaximumRateTests(unittest.TestCase):
             "interest_cycle,min_credit_score,issuer,quote_currency) "
             "VALUES ('USD_LOAN','USD Loan',12,1000,30,86400,0,'Bank','USD')"
         )
+        self.db.products.execute(
+            "UPDATE saving SET interest_rate=13 WHERE product_code='USD_SAVE'"
+        )
         with self.assertRaisesRegex(sqlite3.IntegrityError, "법정최고이자"):
             self.db.products.execute(
-                "UPDATE saving SET interest_rate=13 WHERE product_code='USD_SAVE'"
+                "UPDATE liability SET interest_rate=13 WHERE product_code='USD_LOAN'"
             )
         result = self.rates.set_country_rate(
             "legal_max_rate", "미국", 8, "admin"
         )
         self.assertTrue(result[0], result[1])
-        self.assertEqual(self.db.products.get_saving("USD_SAVE")["interest_rate"], 8)
+        self.assertEqual(self.db.products.get_saving("USD_SAVE")["interest_rate"], 13)
         self.assertEqual(self.db.products.get_liability("USD_LOAN")["interest_rate"], 8)
         self.assertEqual(self.rates.get_rate("legal_max_rate", "미국"), 8)
         self.assertEqual(self.rates.get_rate("legal_max_rate", "낙원"), 20)
@@ -80,54 +83,52 @@ class LegalMaximumRateTests(unittest.TestCase):
         with self.db.readonly() as conn:
             cap, country = RateManager.legal_max_for_currency(conn, "SHR")
         self.assertEqual((cap, country), (7, "B국"))
+        self.db.products.execute(
+            "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"
+            "interest_cycle,compound_type,issuer,quote_currency) "
+            "VALUES ('SHARED','Shared',8,1,30,86400,1,'Bank','SHR')"
+        )
         with self.assertRaisesRegex(sqlite3.IntegrityError, "법정최고이자"):
             self.db.products.execute(
-                "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"
-                "interest_cycle,compound_type,issuer,quote_currency) "
-                "VALUES ('SHARED','Shared',8,1,30,86400,1,'Bank','SHR')"
+                "INSERT INTO liability(product_code,name,interest_rate,loan_limit,maturity_days,"
+                "interest_cycle,min_credit_score,issuer,quote_currency) "
+                "VALUES ('SHARED_LOAN','Shared',8,1000,30,86400,0,'Bank','SHR')"
             )
 
-    def test_exchange_country_caps_bonds(self):
+    def test_exchange_country_does_not_cap_bond_coupon(self):
         self.add_country("채권국", "BND", 6)
         self.db.system.execute(
             "INSERT INTO market_exchanges(exchange_id,status,updated_epoch,nationality) "
             "VALUES ('BOND-X','open',0,'채권국')"
         )
-        with self.assertRaisesRegex(sqlite3.IntegrityError, "법정최고이자"):
-            self.db.products.execute(
-                "INSERT INTO treasury_bond_products(product_code,name,annual_rate,maturity_days,"
-                "face_value,exchange_id,market_price,total_supply) "
-                "VALUES ('TB','Treasury',7,30,100,'BOND-X',100,1000)"
-            )
         self.db.products.execute(
             "INSERT INTO treasury_bond_products(product_code,name,annual_rate,maturity_days,"
             "face_value,exchange_id,market_price,total_supply) "
-            "VALUES ('TB','Treasury',6,30,100,'BOND-X',100,1000)"
+                "VALUES ('TB','Treasury',7,30,100,'BOND-X',100,1000)"
         )
         self.assertEqual(
             self.db.products.execute_one(
                 "SELECT annual_rate FROM treasury_bond_products WHERE product_code='TB'"
             )[0],
-            6,
+            7,
         )
 
-    def test_matured_loan_no_longer_gets_statutory_interest(self):
+    def test_matured_loan_gets_contractual_overdue_interest(self):
         self.db.users.create_user("borrower", "Borrower", "낙원", 0)
         self.db.products.register_liability("LOAN", "Loan", 0, 10_000, 1, 86400, 0, "Bank")
         now = time.time()
         self.db.accounts.execute(
             "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,created_at,"
             "last_payment_epoch,maturity_epoch) VALUES "
-            "('borrower','LOAN',1000,1000,datetime(?,'unixepoch'),?,?)",
+            "('borrower','LOAN',10000,10000,datetime(?,'unixepoch'),?,?)",
             (now - 3 * 86400, now - 2 * 86400, now - 2 * 86400),
         )
         InterestManager(self.db).process_user_interests("borrower", now=now)
-        self.assertEqual(
-            self.db.accounts.execute_one(
-                "SELECT outstanding_balance FROM loans WHERE user_id='borrower'"
-            )[0],
-            1000,
+        row = self.db.accounts.execute_one(
+            "SELECT outstanding_balance,collection_status FROM loans WHERE user_id='borrower'"
         )
+        self.assertGreater(row["outstanding_balance"], 10000)
+        self.assertIn(row["collection_status"], {"grace", "overdue"})
 
 
 if __name__ == "__main__":

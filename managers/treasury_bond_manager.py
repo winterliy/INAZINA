@@ -63,9 +63,6 @@ class TreasuryBondManager:
             return False, "❌ 총 발행한도는 고정 액면가의 배수여야 합니다."
         try:
             with self.db.atomic(("users", "accounts", "assets", "product", "company")) as conn:
-                RateManager.require_legal_rate(
-                    conn, annual_rate, exchange_id=exchange_id, currency_code="NWX"
-                )
                 if DatabaseManager.code_locations(conn, code):
                     return False, f"❌ 코드 `{code}`가 다른 상품·자산에서 사용 중입니다."
                 if conn.execute(

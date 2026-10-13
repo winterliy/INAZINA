@@ -98,6 +98,10 @@ class ProductDB(DBManager):
             "sector_sensitivity": "REAL DEFAULT NULL CHECK(sector_sensitivity IS NULL OR sector_sensitivity >= 0)",
             "jump_intensity": "REAL DEFAULT NULL CHECK(jump_intensity IS NULL OR jump_intensity >= 0)",
             "mean_reversion": "REAL DEFAULT NULL CHECK(mean_reversion IS NULL OR mean_reversion >= 0)",
+            "credit_spread": "REAL NOT NULL DEFAULT 0 CHECK(credit_spread BETWEEN 0 AND 100)",
+            "liquidity_spread": "REAL NOT NULL DEFAULT 0 CHECK(liquidity_spread BETWEEN 0 AND 100)",
+            "coupon_frequency_days": "INTEGER NOT NULL DEFAULT 0 CHECK(coupon_frequency_days >= 0)",
+            "day_count_convention": "TEXT NOT NULL DEFAULT 'ACT/365' CHECK(day_count_convention IN ('ACT/365','ACT/360','30/360'))",
         }
         for column, declaration in extra_columns.items():
             if column not in investment_columns:
@@ -149,6 +153,16 @@ class ProductDB(DBManager):
         bond_columns = {
             row[1] for row in self.execute("PRAGMA table_info(treasury_bond_products)")
         }
+        for column, declaration in {
+            "coupon_frequency_days": "INTEGER NOT NULL DEFAULT 0 CHECK(coupon_frequency_days >= 0)",
+            "day_count_convention": "TEXT NOT NULL DEFAULT 'ACT/365' CHECK(day_count_convention IN ('ACT/365','ACT/360','30/360'))",
+            "credit_spread": "REAL NOT NULL DEFAULT 0 CHECK(credit_spread BETWEEN 0 AND 100)",
+            "liquidity_spread": "REAL NOT NULL DEFAULT 0 CHECK(liquidity_spread BETWEEN 0 AND 100)",
+        }.items():
+            if column not in bond_columns:
+                self.execute(
+                    f"ALTER TABLE treasury_bond_products ADD COLUMN {column} {declaration}"
+                )
         if "face_value" not in bond_columns:
             # Existing offers used arbitrary whole-NWX purchase amounts; 1 NWX
             # preserves that behavior while new issues specify their denomination.
@@ -210,11 +224,11 @@ class ProductDB(DBManager):
                 self.execute(f"ALTER TABLE {table} ADD COLUMN quote_currency TEXT NOT NULL DEFAULT 'NWX'")
 
     def _init_rate_pricing_columns(self, table, existing_columns):
-        """Add a policy-rate pricing model without changing legacy products.
+        """Add benchmark, institution, borrower-risk, and delinquency pricing terms.
 
         Existing rows remain fixed-rate.  A floating product's advertised rate
-        is derived from its nationality's base rate plus a spread, bounded by
-        the product floor/cap and the nationality's legal maximum.
+        is derived from its selected benchmark plus pricing components. The
+        nationality's legal maximum is applied only to lending.
         """
         definitions = {
             "rate_type": "TEXT NOT NULL DEFAULT 'fixed' CHECK(rate_type IN ('fixed','floating'))",
@@ -223,6 +237,27 @@ class ProductDB(DBManager):
             "rate_floor": "REAL NOT NULL DEFAULT 0 CHECK(rate_floor BETWEEN 0 AND 100)",
             "rate_cap": "REAL CHECK(rate_cap IS NULL OR rate_cap BETWEEN 0 AND 100)",
             "repricing_cycle_seconds": "INTEGER NOT NULL DEFAULT 2592000 CHECK(repricing_cycle_seconds > 0)",
+            "benchmark_key": "TEXT NOT NULL DEFAULT 'policy' CHECK(benchmark_key IN ('policy','funding','bank_bond','treasury'))",
+            "benchmark_tenor_days": "INTEGER NOT NULL DEFAULT 0 CHECK(benchmark_tenor_days >= 0)",
+            "maturity_spread": "REAL NOT NULL DEFAULT 0 CHECK(maturity_spread BETWEEN -100 AND 100)",
+            "promotional_adjustment": "REAL NOT NULL DEFAULT 0 CHECK(promotional_adjustment BETWEEN -100 AND 100)",
+            "credit_spread_max": "REAL NOT NULL DEFAULT 0 CHECK(credit_spread_max BETWEEN 0 AND 100)",
+            "collateral_discount_max": "REAL NOT NULL DEFAULT 0 CHECK(collateral_discount_max BETWEEN 0 AND 100)",
+            "collateral_required_ratio": "REAL NOT NULL DEFAULT 0 CHECK(collateral_required_ratio BETWEEN 0 AND 1)",
+            "origination_fee_percent": "REAL NOT NULL DEFAULT 0 CHECK(origination_fee_percent BETWEEN 0 AND 100)",
+            "repricing_lag_seconds": "INTEGER NOT NULL DEFAULT 0 CHECK(repricing_lag_seconds >= 0)",
+            "delinquency_spread": "REAL NOT NULL DEFAULT 3 CHECK(delinquency_spread BETWEEN 0 AND 100)",
+            "grace_period_days": "INTEGER NOT NULL DEFAULT 3 CHECK(grace_period_days >= 0)",
+            "acceleration_after_days": "INTEGER NOT NULL DEFAULT 30 CHECK(acceleration_after_days >= 0)",
+            "default_after_days": "INTEGER NOT NULL DEFAULT 90 CHECK(default_after_days >= 0)",
+            "negative_rate_allowed": (
+                "INTEGER NOT NULL DEFAULT 1 CHECK(negative_rate_allowed IN (0,1))"
+                if table == "saving" else
+                "INTEGER NOT NULL DEFAULT 0 CHECK(negative_rate_allowed IN (0,1))"
+            ),
+            "day_count_convention": "TEXT NOT NULL DEFAULT 'ACT/365' CHECK(day_count_convention IN ('ACT/365','ACT/360','30/360'))",
+            "amortization_type": "TEXT NOT NULL DEFAULT 'legacy' CHECK(amortization_type IN ('legacy','bullet','equal_principal','annuity'))",
+            "payment_frequency_days": "INTEGER NOT NULL DEFAULT 30 CHECK(payment_frequency_days > 0)",
         }
         for column, declaration in definitions.items():
             if column not in existing_columns:

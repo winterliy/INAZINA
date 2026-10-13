@@ -13,7 +13,7 @@ from managers.rate_manager import RateManager
 COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값',
             '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','환율수정',
             '국가생성','국가삭제',
-            '복권가격설정','금리수정','법정최고이자수정','자본변경','정기배당수정','정기배당활성','특별배당실시','합병','액면분할병합',
+            '복권가격설정','금리수정','시장금리수정','법정최고이자수정','자본변경','정기배당수정','정기배당활성','특별배당실시','합병','액면분할병합',
             '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소'}
 TYPES = {'company':'stock','주식':'stock','자산':'asset','ETF':'etf','선물':'future','주식선물':'future',
          '회사채':'corporatebond','일반펀드':'fund','펀드':'fund','인덱스펀드':'indexfund',
@@ -33,6 +33,7 @@ USAGE = {
  '국가생성':'[국가명] [통화코드] [기준금리%(선택)] [법정최고이자%(선택)] [세율%(선택)]',
  '국가삭제':'[국가명]',
  '복권가격설정':'[가격]', '금리수정':'[국적] [add/del/modify] [수치]',
+ '시장금리수정':'[국적] [funding/bank_bond/treasury] [만기일수] [금리%]',
  '법정최고이자수정':'[국적] [add/del/modify] [수치]',
  '자본변경':'[증자/감자] [유상/무상] [종목id] [수량] [유상 가격(선택)]',
  '정기배당수정':'[id] [주기: 초 또는 1일/1주/1달] [주당 금액 또는 비율%]',
@@ -153,8 +154,10 @@ class AdminCommandsManager:
         nationality, currency = str(args[0]).strip(), str(args[1]).strip().upper()
         if not nationality or len(nationality) > 80:
             raise ValueError('국가명은 1~80자로 입력해주세요.')
-        values = [self.control._number(value, 0, 100) for value in args[2:]]
-        base_rate, legal_max_rate, tax_percent = (values + [3, 20, 3])[:3]
+        raw = list(args[2:])
+        base_rate = self.control._number(raw[0], -100, 100) if raw else 3
+        legal_max_rate = self.control._number(raw[1], 0, 100) if len(raw) > 1 else 20
+        tax_percent = self.control._number(raw[2], 0, 100) if len(raw) > 2 else 3
         with self.db.atomic() as conn:
             self.control.require(actor, conn)
             if not conn.execute("SELECT 1 FROM currencies WHERE code=? AND status='active'", (currency,)).fetchone():
@@ -183,8 +186,20 @@ class AdminCommandsManager:
             servers = conn.execute('SELECT COUNT(*) FROM guild_countries WHERE nationality=?', (nationality,)).fetchone()[0]
             citizens = conn.execute('SELECT COUNT(*) FROM users WHERE nationality=?', (nationality,)).fetchone()[0]
             exchanges = conn.execute('SELECT COUNT(*) FROM market_exchanges WHERE nationality=?', (nationality,)).fetchone()[0]
-            if servers or citizens or exchanges:
-                raise ValueError(f'서버 {servers}개·시민 {citizens}명·거래소 {exchanges}개가 연결되어 삭제할 수 없습니다.')
+            products = conn.execute(
+                "SELECT (SELECT COUNT(*) FROM saving WHERE rate_nationality=?)+"
+                "(SELECT COUNT(*) FROM liability WHERE rate_nationality=?)",
+                (nationality, nationality),
+            ).fetchone()[0]
+            if servers or citizens or exchanges or products:
+                raise ValueError(
+                    f'서버 {servers}개·시민 {citizens}명·거래소 {exchanges}개·금리상품 '
+                    f'{products}개가 연결되어 삭제할 수 없습니다.'
+                )
+            conn.execute('DELETE FROM financial_institutions WHERE nationality=?', (nationality,))
+            conn.execute('DELETE FROM market_rate_curve_history WHERE nationality=?', (nationality,))
+            conn.execute('DELETE FROM market_rate_curve WHERE nationality=?', (nationality,))
+            conn.execute('DELETE FROM country_rate_history WHERE nationality=?', (nationality,))
             conn.execute('DELETE FROM country_currencies WHERE nationality=?', (nationality,))
             self.control._audit(conn, actor, 'country.delete', {'nationality': nationality})
         return f'✅ 연방국가 {nationality}을(를) 삭제했습니다. 통화 자체는 유지됩니다.'
@@ -201,7 +216,7 @@ class AdminCommandsManager:
                    '도박확률':1,'도박리턴값':1,'시장분위기':1,'상품분위기':2,
                    '복권당첨번호보기':0,'세율':2,'환율수정':3,'복권가격설정':1,
                    '국가삭제':1,
-                   '금리수정':3,'법정최고이자수정':3,'정기배당수정':3,'정기배당활성':2,'특별배당실시':2,'합병':3,'액면분할병합':3,
+                   '금리수정':3,'시장금리수정':4,'법정최고이자수정':3,'정기배당수정':3,'정기배당활성':2,'특별배당실시':2,'합병':3,'액면분할병합':3,
                    '휴장':1,'개장':1,'장일시정지':1,'장재개':1,'서킷브레이커':2,'사이드카':1}
             count.update({'법인잔고수정':3,'법인청산':1,'ELS취소':1})
             if (command=='자본변경' and len(args) not in {4,5}) or (command=='국가생성' and len(args) not in {2,3,4,5}) or (command not in {'복권당첨번호변경','자본변경','국가생성'} and len(args)!=count.get(command,-1)):
@@ -241,6 +256,13 @@ class AdminCommandsManager:
                 return self.country_create(actor,args)
             if command=='국가삭제':
                 return self.country_delete(actor,args[0])
+            if command=='시장금리수정':
+                result = self.bot.rate_mgr.set_market_rate(
+                    args[0], args[1], args[2], args[3], actor
+                )
+                if not result[0]:
+                    raise ValueError(result[1])
+                return result[1]
             if command in {'도박확률','도박리턴값','시장분위기'}:
                 key={'도박확률':'gamble_chance','도박리턴값':'gamble_return','시장분위기':'market_condition'}[command]
                 value=args[0]
@@ -283,8 +305,9 @@ class AdminCommandsManager:
                         setter = lambda value: self.bot.rate_mgr.set_country_rate(
                             key,nationality,value,actor,conn=conn
                         )
-                    value=self.adjust(current,operation,self.control._number(raw_value,0,100))
-                    self.control._number(value,0,100)
+                    minimum = -100 if key == 'base_rate' else 0
+                    value=self.adjust(current,operation,self.control._number(raw_value,minimum,100))
+                    self.control._number(value,minimum,100)
                     result=setter(value)
                     if not result[0]:
                         raise ValueError(result[1])

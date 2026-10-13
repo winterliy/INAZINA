@@ -154,8 +154,8 @@ def render_rate_chart(points, period_seconds, end_epoch=None, width=960, height=
     series = []
     for epoch, rate in points:
         epoch, rate = float(epoch), float(rate)
-        if not math.isfinite(epoch) or not math.isfinite(rate) or not 0 <= rate <= 100:
-            raise ValueError("금리 기록은 유한한 시각과 0~100% 연이율이어야 합니다.")
+        if not math.isfinite(epoch) or not math.isfinite(rate) or not -100 <= rate <= 100:
+            raise ValueError("금리 기록은 유한한 시각과 -100~100% 연이율이어야 합니다.")
         if epoch <= end:
             series.append((epoch, rate))
     series.sort(key=lambda point: point[0])

@@ -51,6 +51,10 @@ class AccountDB(DBManager):
             "rate_cap": "REAL",
             "repricing_cycle_seconds": "INTEGER NOT NULL DEFAULT 2592000",
             "next_repricing_epoch": "REAL",
+            "benchmark_key": "TEXT NOT NULL DEFAULT 'policy'",
+            "benchmark_tenor_days": "INTEGER NOT NULL DEFAULT 0",
+            "repricing_lag_seconds": "INTEGER NOT NULL DEFAULT 0",
+            "contract_effective_rate": "REAL",
         }
         for column, declaration in account_rate_columns.items():
             if column not in columns:
@@ -139,6 +143,26 @@ class AccountDB(DBManager):
             ("rate_cap", "REAL"),
             ("repricing_cycle_seconds", "INTEGER NOT NULL DEFAULT 2592000"),
             ("next_repricing_epoch", "REAL"),
+            ("benchmark_key", "TEXT NOT NULL DEFAULT 'policy'"),
+            ("benchmark_tenor_days", "INTEGER NOT NULL DEFAULT 0"),
+            ("repricing_lag_seconds", "INTEGER NOT NULL DEFAULT 0"),
+            ("contract_effective_rate", "REAL"),
+            ("contract_apr", "REAL"),
+            ("origination_fee", "INTEGER NOT NULL DEFAULT 0"),
+            ("collateral_amount", "INTEGER NOT NULL DEFAULT 0"),
+            ("collateral_released", "INTEGER NOT NULL DEFAULT 0"),
+            ("overdue_since_epoch", "REAL"),
+            ("overdue_last_epoch", "REAL"),
+            ("overdue_interest_remainder", "REAL NOT NULL DEFAULT 0"),
+            ("collection_status", "TEXT NOT NULL DEFAULT 'current'"),
+            ("accelerated_epoch", "REAL"),
+            ("defaulted_epoch", "REAL"),
+            ("collateral_seized", "INTEGER NOT NULL DEFAULT 0"),
+            ("day_count_convention", "TEXT NOT NULL DEFAULT 'ACT/365'"),
+            ("amortization_type", "TEXT NOT NULL DEFAULT 'legacy'"),
+            ("payment_frequency_days", "INTEGER NOT NULL DEFAULT 30"),
+            ("missed_payment_count", "INTEGER NOT NULL DEFAULT 0"),
+            ("current_ltv", "REAL"),
         ):
             if column not in loan_columns:
                 self.execute(f"ALTER TABLE loans ADD COLUMN {column} {declaration}")
@@ -184,7 +208,35 @@ class AccountDB(DBManager):
             "CREATE INDEX IF NOT EXISTS idx_loans_active_user "
             "ON loans(user_id) WHERE status = 'active'"
         )
-        self.enforce_integer_money("loans", ("principal", "outstanding_balance"), "loan_id")
+        self.enforce_integer_money(
+            "loans",
+            ("principal", "outstanding_balance", "origination_fee", "collateral_amount", "collateral_seized"),
+            "loan_id",
+        )
+
+        self.execute("""CREATE TABLE IF NOT EXISTS loan_payment_schedule (
+            schedule_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            loan_id INTEGER NOT NULL,
+            installment_number INTEGER NOT NULL,
+            due_epoch REAL NOT NULL,
+            principal_due INTEGER NOT NULL DEFAULT 0 CHECK(principal_due >= 0),
+            interest_due INTEGER NOT NULL DEFAULT 0 CHECK(interest_due >= 0),
+            fee_due INTEGER NOT NULL DEFAULT 0 CHECK(fee_due >= 0),
+            amount_paid INTEGER NOT NULL DEFAULT 0 CHECK(amount_paid >= 0),
+            paid_epoch REAL,
+            status TEXT NOT NULL DEFAULT 'scheduled'
+                CHECK(status IN ('scheduled','partial','paid','missed','waived')),
+            UNIQUE(loan_id, installment_number)
+        )""")
+        self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_loan_schedule_due "
+            "ON loan_payment_schedule(status,due_epoch,loan_id)"
+        )
+        self.enforce_integer_money(
+            "loan_payment_schedule",
+            ("principal_due", "interest_due", "fee_due", "amount_paid"),
+            "schedule_id",
+        )
 
         self.execute(
             """CREATE TABLE IF NOT EXISTS treasury_bond_holdings (
@@ -251,10 +303,13 @@ class AccountDB(DBManager):
             "INSERT INTO accounts "
             "(account_number, user_id, product_code, balance, password, principal, last_payment_epoch, "
             "account_type, contract_rate, rate_type, rate_nationality, base_rate_spread, rate_floor, "
-            "rate_cap, repricing_cycle_seconds, next_repricing_epoch) "
+            "rate_cap, repricing_cycle_seconds, next_repricing_epoch,benchmark_key,"
+            "benchmark_tenor_days,repricing_lag_seconds) "
             "SELECT ?, ?, ?, ?, ?, ?, ?, 'saving', interest_rate, rate_type, rate_nationality, "
             "base_rate_spread, rate_floor, rate_cap, repricing_cycle_seconds, "
-            "CASE WHEN rate_type='floating' THEN ?+repricing_cycle_seconds END "
+            "CASE WHEN rate_type='floating' THEN ?+repricing_cycle_seconds END,benchmark_key,"
+            "CASE WHEN benchmark_tenor_days>0 THEN benchmark_tenor_days ELSE maturity_days END,"
+            "repricing_lag_seconds "
             "FROM saving WHERE product_code=?",
             (account_number, user_id, product_code, balance, password, balance, now, now, product_code),
         )
@@ -286,11 +341,14 @@ class AccountDB(DBManager):
             INSERT INTO loans
             (user_id, product_code, principal, outstanding_balance, last_payment_epoch, last_repayment_epoch,
              maturity_epoch, contract_rate, rate_type, rate_nationality, base_rate_spread, rate_floor,
-             rate_cap, repricing_cycle_seconds, next_repricing_epoch)
+             rate_cap, repricing_cycle_seconds, next_repricing_epoch,benchmark_key,
+             benchmark_tenor_days,repricing_lag_seconds)
             SELECT ?, ?, ?, ?, ?, ?, CASE WHEN maturity_days>0 THEN ?+86400*maturity_days END,
                    interest_rate, rate_type, rate_nationality, base_rate_spread, rate_floor,
                    rate_cap, repricing_cycle_seconds,
-                   CASE WHEN rate_type='floating' THEN ?+repricing_cycle_seconds END
+                   CASE WHEN rate_type='floating' THEN ?+repricing_cycle_seconds END,benchmark_key,
+                   CASE WHEN benchmark_tenor_days>0 THEN benchmark_tenor_days ELSE maturity_days END,
+                   repricing_lag_seconds
             FROM liability WHERE product_code=?
             ''',
             (user_id, product_code, amount, amount, now, now, now, now, product_code),

@@ -15,10 +15,11 @@ def load_active_wallet_loans(db, user_id, *, require_product=False, ordered=Fals
     join = "JOIN" if require_product else "LEFT JOIN"
     order = " ORDER BY l.loan_id" if ordered else ""
     return db.accounts.execute(
-        "SELECT l.loan_id,l.product_code,l.principal,l.outstanding_balance,"
-        "l.maturity_epoch,p.name FROM loans l "
+        "SELECT l.loan_id,l.product_code,l.principal,l.outstanding_balance,l.maturity_epoch,"
+        "l.contract_rate,l.contract_effective_rate,l.contract_apr,l.collection_status,"
+        "l.collateral_amount,l.collateral_released,l.collateral_seized,p.name FROM loans l "
         f"{join} liability p ON p.product_code=l.product_code "
-        "WHERE l.user_id=? AND l.status='active'" + order,
+        "WHERE l.user_id=? AND l.status IN ('active','defaulted')" + order,
         (str(user_id),),
     )
 

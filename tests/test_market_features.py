@@ -101,7 +101,8 @@ class MarketFeatureTests(unittest.TestCase):
         self.assertEqual(self.rates.get_rate("base_rate"), 3)
         self.assertEqual(self.rates.get_rate("legal_max_rate"), 20)
         self.assertFalse(self.rates.set_rate("base_rate", 6, "alice")[0])
-        for bad in (-1, 101, float("nan"), float("inf"), True):
+        self.assertTrue(self.rates.set_rate("base_rate", -1, "admin")[0])
+        for bad in (-101, 101, float("nan"), float("inf"), True):
             self.assertFalse(self.rates.set_rate("base_rate", bad, "admin")[0])
         self.assertGreater(OptionManager.theoretical_price(1000, 1000, 1, .2, "call", .03),
                            OptionManager.theoretical_price(1000, 1000, 1, .2, "call", 0))
@@ -151,8 +152,12 @@ class MarketFeatureTests(unittest.TestCase):
     def test_database_browser_rejects_invalid_rates(self):
         connection = sqlite3.connect(self.db.system.db_path)
         try:
-            for value in ("-1", "101", "NaN", "Infinity", "3%", "abc", "", "null", "true", '"3"', "1e999", "[]", "{}"):
-                for key in ("base_rate", "legal_max_rate"):
+            invalid = {
+                "base_rate": ("-101", "101", "NaN", "Infinity", "3%", "abc", "", "null", "true", '"3"', "1e999", "[]", "{}"),
+                "legal_max_rate": ("-1", "101", "NaN", "Infinity", "3%", "abc", "", "null", "true", '"3"', "1e999", "[]", "{}"),
+            }
+            for key, values in invalid.items():
+                for value in values:
                     with self.subTest(value=value, key=key):
                         with self.assertRaises(sqlite3.IntegrityError), connection:
                             connection.execute("UPDATE settings SET value = ? WHERE key = ?", (value, key))

@@ -166,8 +166,8 @@ class SlashCommandRegistry:
     async def _rate_query(self, interaction, key, nationality):
         await self._prepare(interaction)
         label = "기준금리" if key == "base_rate" else "법정최고이자"
-        note = ("변동금리 예금·대출의 재산정과 옵션·선물·채권 평가에 적용됩니다." if key == "base_rate"
-                else "해당 국적의 이자 상품이 설정할 수 있는 연이율 상한입니다.")
+        note = ("관리자가 결정하며 조달·은행채·국채 수익률곡선에 전달되어 상품금리에 간접 반영됩니다." if key == "base_rate"
+                else "해당 국적의 대출·신용계약에 적용되는 연이율 상한입니다. 예금과 채권 쿠폰에는 적용하지 않습니다.")
         try:
             rate = self.bot.rate_mgr.get_rate(key, nationality)
         except ValueError as exc:
@@ -503,6 +503,8 @@ class SlashCommandRegistry:
             load_active_wallet_loans, self.bot.db, user_id, ordered=True
         )
         sections['loans']=[f"• {row['name'] or row['product_code']} ({row['product_code']}) · 대출 #{row['loan_id']} · 원금 {row['principal']:,} NWX · 남은 부채 {row['outstanding_balance']:,} NWX"
+                           +f" · 명목 {float(row['contract_rate'] or 0):g}% · 실효 {float(row['contract_effective_rate'] or row['contract_rate'] or 0):.3f}% · APR {float(row['contract_apr'] or row['contract_rate'] or 0):.3f}% · {row['collection_status']}"
+                           +(f" · 담보 {int(row['collateral_amount'] or 0)-int(row['collateral_released'] or 0)-int(row['collateral_seized'] or 0):,} NWX" if row['collateral_amount'] else '')
                            +(f" · 만기 <t:{int(row['maturity_epoch'])}:D> · /대출연장 id:{row['loan_id']}" if row['maturity_epoch'] else '') for row in loans]
         view=WalletCategoryView(user_id,summary,sections,info.get('option_short_liability',0))
         await self._reply(interaction,embed=view.build_embed(),view=view)
@@ -979,11 +981,11 @@ class SlashCommandRegistry:
         await asyncio.to_thread(self.bot.interest_mgr.process_user_interests, user_id)
         rows = self.bot.db.accounts.execute(
             "SELECT loan_id, product_code, outstanding_balance FROM loans "
-            "WHERE user_id = ? AND status = 'active' ORDER BY created_at",
+            "WHERE user_id = ? AND status IN ('active','defaulted') ORDER BY created_at",
             (user_id,),
         )
         if not rows:
-            return await self._reply(interaction, content="❌ 상환할 활성 대출이 없습니다.")
+            return await self._reply(interaction, content="❌ 상환할 대출이 없습니다.")
         loans = []
         for row in rows:
             product = self.bot.db.products.get_liability(row["product_code"])

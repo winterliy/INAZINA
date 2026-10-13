@@ -85,7 +85,7 @@ class RateInteractionTests(unittest.TestCase):
         self.assertEqual(account["next_repricing_epoch"], start+3*86400)
         self.assertGreater(account["balance"], 1_000_000)
 
-    def test_legal_maximum_clamps_advertised_and_contract_rates(self):
+    def test_legal_maximum_does_not_cap_deposits(self):
         self.add_saving("FLOAT", floating=True)
         self.assertTrue(BankManager(self.db).open_account(
             "user", "FLOAT", "1234", 100_000
@@ -93,10 +93,10 @@ class RateInteractionTests(unittest.TestCase):
         self.assertTrue(self.rates.set_country_rate(
             "legal_max_rate", "낙원", 4, "admin"
         )[0])
-        self.assertEqual(self.db.products.get_saving("FLOAT")["interest_rate"], 4)
+        self.assertEqual(self.db.products.get_saving("FLOAT")["interest_rate"], 5)
         self.assertEqual(self.db.accounts.execute_one(
             "SELECT contract_rate FROM accounts WHERE user_id='user'"
-        )[0], 4)
+        )[0], 5)
 
     def test_floating_loan_uses_contract_reset_not_immediate_product_change(self):
         self.add_loan("LOAN")
@@ -107,20 +107,21 @@ class RateInteractionTests(unittest.TestCase):
             "SELECT * FROM loans WHERE user_id='user'"
         )
         start = float(loan["last_payment_epoch"])
+        self.assertEqual(loan["contract_rate"], 6.7)
         self.assertTrue(self.rates.set_country_rate(
             "base_rate", "낙원", 5, "admin", now=start+43200
         )[0])
-        self.assertEqual(self.db.products.get_liability("LOAN")["interest_rate"], 7)
+        self.assertEqual(self.db.products.get_liability("LOAN")["interest_rate"], 8.7)
         self.assertEqual(self.db.accounts.execute_one(
             "SELECT contract_rate FROM loans WHERE user_id='user'"
-        )[0], 5)
+        )[0], 6.7)
         InterestManager(self.db).process_user_interests(
             now=start+2*86400, user_id="user"
         )
         loan = self.db.accounts.execute_one(
             "SELECT contract_rate,outstanding_balance FROM loans WHERE user_id='user'"
         )
-        self.assertEqual(loan["contract_rate"], 7)
+        self.assertEqual(loan["contract_rate"], 8.7)
         self.assertGreater(loan["outstanding_balance"], 100_000)
 
     def test_direct_policy_edit_reprices_floating_product(self):

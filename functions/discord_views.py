@@ -376,7 +376,15 @@ class LoanRepaymentModal(discord.ui.Modal):
             min_length=1,
             max_length=15,
         )
+        self.collateral_input = discord.ui.TextInput(
+            label="담보 금액 (선택 · NWX)",
+            placeholder="없으면 0",
+            default="0",
+            required=False,
+            max_length=15,
+        )
         self.add_item(self.amount_input)
+        self.add_item(self.collateral_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         if str(interaction.user.id) != self.user_id:
@@ -388,6 +396,14 @@ class LoanRepaymentModal(discord.ui.Modal):
         if not amount_text.isascii() or not amount_text.isdigit() or int(amount_text) <= 0:
             await interaction.response.send_message(
                 "❌ 상환액은 쉼표 없이 0보다 큰 정수로 입력해주세요.", ephemeral=True
+            )
+            return
+        collateral_text = (self.collateral_input.value or "0").strip()
+        if not collateral_text:
+            collateral_text = "0"
+        if not collateral_text.isascii() or not collateral_text.isdigit():
+            await interaction.response.send_message(
+                "❌ 담보 금액은 쉼표 없이 0 이상의 정수로 입력해주세요.", ephemeral=True
             )
             return
         success, message = self.bot.bank_mgr.repay_loan(
@@ -549,7 +565,8 @@ class LoanAmountModal(discord.ui.Modal):
 
         await interaction.response.defer(ephemeral=True, thinking=True)
         success, message = await asyncio.to_thread(
-            self.bot.bank_mgr.apply_loan, self.user_id, self.product_code, int(amount_text))
+            self.bot.bank_mgr.apply_loan, self.user_id, self.product_code,
+            int(amount_text), int(collateral_text))
         color = discord.Color.green() if success else discord.Color.red()
         await interaction.followup.send(embed=discord.Embed(description=message, color=color), ephemeral=True)
 
@@ -681,7 +698,7 @@ class InfoPanelView(discord.ui.View):
     CATEGORIES = (
         ("main", "메인"),
         ("indices", "거래소 지수"),
-        ("rates", "기준금리 · 법정최고이자"),
+        ("rates", "기준·시장금리 · 법정최고이자"),
         ("stocks", "주식"),
         ("etf", "ETF"),
         ("els", "ELS"),
@@ -724,19 +741,34 @@ class InfoPanelView(discord.ui.View):
         except (TypeError, ValueError, OverflowError):
             return default
 
+    @staticmethod
+    def _effective_rate(row):
+        try:
+            return f"{RateManager.effective_annual_rate(row['interest_rate'], row['interest_cycle']):.3f}%"
+        except (ValueError, OverflowError):
+            return "산정 범위 초과"
+
     @classmethod
     def _rate_model_note(cls, row):
         if row['rate_type'] != 'floating':
             return "고정금리"
         spread = cls._number(row['base_rate_spread'])
+        benchmark = {
+            'policy': '기준금리', 'funding': '조달금리',
+            'bank_bond': '은행채금리', 'treasury': '국채금리',
+        }.get(row['benchmark_key'], str(row['benchmark_key']))
+        tenor = int(row['benchmark_tenor_days'] or row['maturity_days'] or 0)
         cycle = cls._number(row['repricing_cycle_seconds'])
         cycle_text = f"{cycle/86400:g}일" if cycle % 86400 == 0 else f"{cycle:g}초"
         bounds = f" · 하한 {cls._number(row['rate_floor']):g}%"
         if row['rate_cap'] is not None:
             bounds += f" · 상한 {cls._number(row['rate_cap']):g}%"
         return (
-            f"변동금리 · {row['rate_nationality']} 기준금리 {spread:+g}%p · "
-            f"{cycle_text}마다 재산정{bounds}"
+            f"변동금리 · {row['rate_nationality']} {benchmark}"
+            + (f" {tenor}일물" if row['benchmark_key'] != 'policy' else "")
+            + f" {spread:+g}%p · {cycle_text}마다 재산정"
+            + (f" · {cls._number(row['repricing_lag_seconds'])/86400:g}일 전 지표" if row['repricing_lag_seconds'] else "")
+            + bounds
         )
 
     async def interaction_check(self, interaction: discord.Interaction):
@@ -800,12 +832,22 @@ class InfoPanelView(discord.ui.View):
                 "SELECT nationality,currency_code,base_rate,legal_max_rate "
                 "FROM country_currencies ORDER BY nationality"
             )
-            return [
-                f"• **{row['nationality']}** ({row['currency_code']}) · "
-                f"기준금리 연 **{float(row['base_rate']):g}%** · "
-                f"법정최고이자 연 **{float(row['legal_max_rate']):g}%**"
-                for row in countries
-            ]
+            lines = []
+            for row in countries:
+                curve = self.bot.db.currency.execute(
+                    "SELECT benchmark_key,tenor_days,annual_rate FROM market_rate_curve "
+                    "WHERE nationality=? ORDER BY benchmark_key,tenor_days", (row['nationality'],)
+                )
+                curve_text = ' · '.join(
+                    f"{ {'funding':'조달','bank_bond':'은행채','treasury':'국채'}[point['benchmark_key']] }"
+                    f" {point['tenor_days']}일 {float(point['annual_rate']):g}%" for point in curve
+                )
+                lines.append(
+                    f"• **{row['nationality']}** ({row['currency_code']}) · 기준금리 연 "
+                    f"**{float(row['base_rate']):g}%** · 대출 법정최고이자 연 "
+                    f"**{float(row['legal_max_rate']):g}%**\n  {curve_text}"
+                )
+            return lines
         if category == "currency_savings":
             return [f"• **{r['name']}** (`{r['product_code']}`) · {r['quote_currency']} · 연 {r['interest_rate']:g}% · {self._rate_model_note(r)}"
                     for r in self.bot.db.products.execute("SELECT * FROM saving WHERE product_kind='currency_saving' AND status='active' ORDER BY name")]
@@ -864,6 +906,7 @@ class InfoPanelView(discord.ui.View):
         if category == "savings":
             return [
                 f"• **{row['name']}** (`{row['product_code']}`) — 연 {self._number(row['interest_rate']):g}% · "
+                f"실효 연 {self._effective_rate(row)} · "
                 f"최소 예치 {self._number(row['deposit_amount']):,.0f} NWX · "
                 f"만기 {self._number(row['maturity_days']):g}일 · "
                 f"이자주기 {self._number(row['interest_cycle']):g}초 · "
@@ -889,7 +932,11 @@ class InfoPanelView(discord.ui.View):
                     f"• **{row['name']}** (`{row['product_code']}`) — 연 "
                     f"{self._number(row['interest_rate']):g}% · {limit_text} · "
                     f"최소 신용 {self._number(row['min_credit_score']):g}점 · "
-                    f"{self._rate_model_note(row)}{repayment_text}{extension_text}"
+                    f"{self._rate_model_note(row)} · 신용가산 최대 {self._number(row['credit_spread_max']):g}%p"
+                    f" · 담보요건 {self._number(row['collateral_required_ratio'])*100:g}%"
+                    f" · 취급수수료 {self._number(row['origination_fee_percent']):g}%"
+                    f" · 연체가산 {self._number(row['delinquency_spread']):g}%p"
+                    f"{repayment_text}{extension_text}"
                 )
             return lines
         if category == "my_accounts":

@@ -265,10 +265,11 @@ class SystemDB(DBManager):
                 WHEN NEW.key IN ('base_rate', 'legal_max_rate')
                 BEGIN
                     SELECT CASE WHEN json_valid(NEW.value) = 0
-                        THEN RAISE(ABORT, 'Rate must be a number between 0 and 100') END;
+                        THEN RAISE(ABORT, 'Rate must be a valid number') END;
                     SELECT CASE WHEN json_type(NEW.value) NOT IN ('integer', 'real')
-                        OR CAST(NEW.value AS REAL) NOT BETWEEN 0 AND 100
-                        THEN RAISE(ABORT, 'Rate must be a number between 0 and 100') END;
+                        OR (NEW.key='base_rate' AND CAST(NEW.value AS REAL) NOT BETWEEN -100 AND 100)
+                        OR (NEW.key='legal_max_rate' AND CAST(NEW.value AS REAL) NOT BETWEEN 0 AND 100)
+                        THEN RAISE(ABORT, 'Rate is outside its permitted range') END;
                 END""")
 
     def _init_gamble_triggers(self):

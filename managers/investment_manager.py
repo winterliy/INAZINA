@@ -45,10 +45,6 @@ class InvestmentManager:
         now = int(time.time())
         try:
             with self.db.atomic(("users", "accounts", "assets", "product", "company")) as conn:
-                if product_type == "corporate_bond":
-                    RateManager.require_legal_rate(
-                        conn, rate, exchange_id=exchange_id, currency_code="NWX"
-                    )
                 if self.db.code_locations(conn, code):
                     return False, "❌ 이미 사용 중인 코드입니다."
                 if product_type == "commodity_spot":
@@ -132,12 +128,23 @@ class InvestmentManager:
                 price = max(1, round_money(float(row["price"])))
                 InvestmentManager._fix_future_expiry_price(conn, product, expiry, price, expiry)
                 return price
+            remaining_days = max(1, math.ceil((int(product["maturity_epoch"] or now)-now)/86400))
+            market_rate = RateManager.for_exchange_market(
+                conn, product['exchange_id'], remaining_days, 'treasury', epoch=now
+            )
             years = max(0, int(product["maturity_epoch"] or now) - now) / (365 * 86400)
-            return max(1, round_money(float(row["price"]) * math.exp(base_rate / 100 * years)))
+            return max(1, round_money(float(row["price"]) * math.exp(market_rate / 100 * years)))
         if kind == "corporate_bond":
             payoff = int(product["face_value"]) * (1 + float(product["annual_rate"]) / 100 * int(product["maturity_days"]) / 365)
-            years = max(0, int(product["maturity_epoch"] or now) - now) / (365 * 86400)
-            return max(1, round_money(payoff * math.exp(-base_rate / 100 * years)))
+            remaining = max(0, int(product["maturity_epoch"] or now) - now)
+            years = remaining / (365 * 86400)
+            curve = RateManager.for_exchange_market(
+                conn, product['exchange_id'], max(1, math.ceil(remaining/86400)),
+                'treasury', epoch=now,
+            )
+            required_yield = (curve + float(product['credit_spread'] or 0)
+                              + float(product['liquidity_spread'] or 0))
+            return max(1, round_money(payoff * math.exp(-required_yield / 100 * years)))
         if kind == "mutual_fund":
             components = fund_components.get(product['product_code'], ()) if fund_components is not None else conn.execute("SELECT * FROM product.fund_components WHERE product_code = ?", (product["product_code"],)).fetchall()
             total, weight = 0.0, 0.0
