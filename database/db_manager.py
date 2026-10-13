@@ -1,6 +1,7 @@
 import sqlite3
 import threading
 import time
+import logging
 from contextlib import contextmanager
 from pathlib import Path
 from .unified import UnifiedConnection, migrate
@@ -176,9 +177,15 @@ class DBManager:
                 DBManager._lock_for_path(path)
                 for path in sorted(set(database_paths.values()), key=str)
             ]
+            lock_started = time.perf_counter()
             for lock in locks:
                 lock.acquire()
                 acquired_locks.append(lock)
+            lock_wait_ms = (time.perf_counter() - lock_started) * 1000
+            if lock_wait_ms >= 100:
+                logging.getLogger("inazina.performance").warning(
+                    "sqlite_process_lock_wait %.1f ms", lock_wait_ms
+                )
 
             # Fail well before the HTTP proxy's 10-second timeout.  A short,
             # bounded retry handles ordinary cross-process writer hand-offs
@@ -191,6 +198,7 @@ class DBManager:
             )
             conn.row_factory = sqlite3.Row
             conn.execute(f"PRAGMA busy_timeout={DBManager.BEGIN_BUSY_TIMEOUT_MS}")
+            begin_started = time.perf_counter()
             for attempt in range(len(DBManager.BEGIN_RETRY_DELAYS) + 1):
                 try:
                     conn.execute("BEGIN IMMEDIATE")
@@ -200,6 +208,11 @@ class DBManager:
                     if not locked or attempt == len(DBManager.BEGIN_RETRY_DELAYS):
                         raise
                     time.sleep(DBManager.BEGIN_RETRY_DELAYS[attempt])
+            begin_wait_ms = (time.perf_counter() - begin_started) * 1000
+            if begin_wait_ms >= 100:
+                logging.getLogger("inazina.performance").warning(
+                    "sqlite_writer_wait %.1f ms attempts=%d", begin_wait_ms, attempt + 1
+                )
             conn.execute(f"PRAGMA busy_timeout={DBManager.BUSY_TIMEOUT_MS}")
             actor = getattr(DBManager._admin_context,'actor',None)
             if actor is not None:

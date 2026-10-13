@@ -151,6 +151,10 @@ class AccountDB(DBManager):
             "CREATE INDEX IF NOT EXISTS idx_loans_due "
             "ON loans (status, last_repayment_epoch)"
         )
+        self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_loans_active_user "
+            "ON loans(user_id) WHERE status = 'active'"
+        )
         self.enforce_integer_money("loans", ("principal", "outstanding_balance"), "loan_id")
 
         self.execute(

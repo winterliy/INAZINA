@@ -26,8 +26,51 @@ MAX_HTTP_THREADS = max(1, min(int(os.environ.get("INAZINA_MAX_HTTP_THREADS", "16
 BOOTSTRAP_ADMIN_IDS = {"1076861147560542278"}
 sys.path.insert(0, str(ROOT))
 from database.user_db import TREASURY_USER_ID
+from functions.performance import log_slow
 _domain = None
 _domain_lock = threading.Lock()
+
+
+class SingleFlightTTL:
+    """Coalesce identical concurrent reads and briefly reuse their result."""
+
+    def __init__(self, ttl_seconds=0.25):
+        self.ttl_seconds = max(0.0, float(ttl_seconds))
+        self._condition = threading.Condition()
+        self._values = {}
+        self._inflight = set()
+
+    def get(self, key, loader):
+        while True:
+            with self._condition:
+                cached = self._values.get(key)
+                now = time.monotonic()
+                if cached is not None and cached[0] > now:
+                    return cached[1]
+                if key not in self._inflight:
+                    self._inflight.add(key)
+                    break
+                self._condition.wait()
+        try:
+            value = loader()
+        except BaseException:
+            with self._condition:
+                self._inflight.discard(key)
+                self._condition.notify_all()
+            raise
+        with self._condition:
+            self._values[key] = (time.monotonic() + self.ttl_seconds, value)
+            self._inflight.discard(key)
+            self._condition.notify_all()
+        return value
+
+    def invalidate(self, *keys):
+        with self._condition:
+            for key in keys:
+                self._values.pop(key, None)
+
+
+_read_cache = SingleFlightTTL(float(os.environ.get("INAZINA_READ_CACHE_SECONDS", "0.25")))
 
 
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):
@@ -466,6 +509,7 @@ def admin_overview():
     }
 
 
+@log_slow("portfolio_snapshot", threshold_ms=100)
 def portfolio(user_id):
     return domain().users.get_total_assets(user_id, settle=False)
 
@@ -648,6 +692,18 @@ def internal_user_id(handler):
 class Handler(BaseHTTPRequestHandler):
     server_version = "InazinaInternal/1.0"
 
+    def handle_one_request(self):
+        started = time.perf_counter()
+        try:
+            return super().handle_one_request()
+        finally:
+            elapsed = (time.perf_counter() - started) * 1000
+            if elapsed >= 100:
+                import logging
+                logging.getLogger("inazina.performance").warning(
+                    "http_request %.1f ms", elapsed
+                )
+
     def do_GET(self):
         if not INTERNAL_TOKEN or not hmac.compare_digest(
             self.headers.get("x-inazina-internal-token", ""), INTERNAL_TOKEN
@@ -684,7 +740,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not user:
                     self.send_json(403, {"error": "active_user_required"})
                 else:
-                    self.send_json(200, {"portfolio": portfolio(trading_user_id(user["userId"]))})
+                    trader = trading_user_id(user["userId"])
+                    result = _read_cache.get(("portfolio", trader), lambda: portfolio(trader))
+                    self.send_json(200, {"portfolio": result})
             elif path == "/internal/admin/overview":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -723,7 +781,11 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     manager = domain().order_book
-                    orders = [dict(row) for row in manager.get_user_orders(trading_user_id(user["userId"]), limit=50)]
+                    trader = trading_user_id(user["userId"])
+                    orders = _read_cache.get(
+                        ("orders", trader),
+                        lambda: [dict(row) for row in manager.get_user_orders(trader, limit=50)],
+                    )
                     self.send_json(200, {"orders": orders})
             elif path.startswith("/internal/market/book/"):
                 code = path.removeprefix("/internal/market/book/")
@@ -810,11 +872,17 @@ class Handler(BaseHTTPRequestHandler):
                 hts_id = set_hts_login_id(user["userId"], payload.get("htsId"), payload.get("password"))
                 self.send_json(200, {"htsId": hts_id})
             elif path == "/internal/market/orders":
-                success, message = execute_order(trading_user_id(user["userId"]), payload)
+                trader = trading_user_id(user["userId"])
+                success, message = execute_order(trader, payload)
+                if success:
+                    _read_cache.invalidate(("portfolio", trader), ("orders", trader))
                 self.send_json(200 if success else 400, {"success": success, "message": message})
             elif path.startswith("/internal/market/orders/") and path.endswith("/cancel"):
                 order_id = int(path.removeprefix("/internal/market/orders/").removesuffix("/cancel"))
-                success, message = cancel_order(trading_user_id(user["userId"]), order_id)
+                trader = trading_user_id(user["userId"])
+                success, message = cancel_order(trader, order_id)
+                if success:
+                    _read_cache.invalidate(("portfolio", trader), ("orders", trader))
                 self.send_json(200 if success else 400, {"success": success, "message": message})
             elif path == "/internal/admin/market":
                 if user["role"] != "admin":

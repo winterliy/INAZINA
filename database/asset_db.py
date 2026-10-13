@@ -233,6 +233,10 @@ class AssetDB(DBManager):
             "ON market_orders(user_id, status, order_id)"
         )
         self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_market_orders_user_updated "
+            "ON market_orders(user_id, updated_epoch DESC)"
+        )
+        self.execute(
             "CREATE INDEX IF NOT EXISTS idx_market_orders_instrument "
             "ON market_orders(order_kind, asset_code, side, status, limit_price, created_epoch, order_id)"
         )

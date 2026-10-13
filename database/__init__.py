@@ -53,6 +53,9 @@ class DatabaseManager:
             self.lottery = LotteryDB()
             self.corporate = CorporateDB()
             self.els = ELSDB()
+            # Refresh planner statistics opportunistically after schema/index
+            # initialization. SQLite decides internally when analysis is needed.
+            self.users.execute("PRAGMA optimize")
 
     def close(self):
         for database in (self.users, self.assets, self.products, self.companies,

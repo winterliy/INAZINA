@@ -3,6 +3,7 @@
 import json
 import math
 import time
+from contextlib import nullcontext
 from decimal import Decimal
 
 from functions.admin_access import resolve_user_role
@@ -408,10 +409,10 @@ class ELSManager:
         conn.execute("UPDATE els_products SET state='redeemed',settled_epoch=? WHERE product_code=?", (now, code))
         return notifications
 
-    def get_details(self, code, user_id=None):
+    def get_details(self, code, user_id=None, *, conn=None):
         # Details are used by wallet and catalogue views; they do not mutate
         # settlement state, so keep them off SQLite's single writer.
-        with self.db.readonly() as conn:
+        with (self.db.readonly() if conn is None else nullcontext(conn)) as conn:
             row = conn.execute("SELECT t.*,i.name,i.total_supply FROM els_products t JOIN investment i USING(product_code) WHERE product_code=?", (code,)).fetchone()
             if not row:
                 return None
@@ -439,10 +440,11 @@ class ELSManager:
                     settlements=[])
             return details
 
-    def get_user_positions(self, user_id):
-        codes = self.db.products.execute("SELECT DISTINCT product_code FROM els_subscriptions WHERE user_id=? "
-            "AND status IN ('subscribed','issued')", (str(user_id),))
-        return [self.get_details(item["product_code"], user_id) for item in codes]
+    def get_user_positions(self, user_id, *, conn=None):
+        with (self.db.readonly() if conn is None else nullcontext(conn)) as conn:
+            codes = conn.execute("SELECT DISTINCT product_code FROM els_subscriptions WHERE user_id=? "
+                "AND status IN ('subscribed','issued')", (str(user_id),)).fetchall()
+            return [self.get_details(item["product_code"], user_id, conn=conn) for item in codes]
 
     @staticmethod
     def ensure_unreferenced(conn, code):

@@ -618,12 +618,19 @@ class OrderBookManager:
         return self.db.assets.execute(
             "SELECT order_id, asset_code, side, limit_price, quantity, filled_quantity, "
             "remaining_quantity, reserved_cash, status, created_epoch, updated_epoch, "
-            "order_kind, option_order_type "
-            "FROM market_orders WHERE user_id = ? AND (status IN ('open', 'partial') "
-            "OR updated_epoch >= ?) ORDER BY "
-            "CASE WHEN status IN ('open', 'partial') THEN 0 ELSE 1 END, "
-            "updated_epoch DESC LIMIT ?",
-            (str(user_id), int(time.time()) - 86400, max(1, min(int(limit), 100))),
+            "order_kind, option_order_type FROM ("
+            "SELECT order_id, asset_code, side, limit_price, quantity, filled_quantity, "
+            "remaining_quantity, reserved_cash, status, created_epoch, updated_epoch, "
+            "order_kind, option_order_type, 0 AS priority "
+            "FROM market_orders WHERE user_id = ? AND status IN ('open', 'partial') "
+            "UNION ALL "
+            "SELECT order_id, asset_code, side, limit_price, quantity, filled_quantity, "
+            "remaining_quantity, reserved_cash, status, created_epoch, updated_epoch, "
+            "order_kind, option_order_type, 1 AS priority "
+            "FROM market_orders WHERE user_id = ? AND status NOT IN ('open', 'partial') "
+            "AND updated_epoch >= ?) ORDER BY priority, updated_epoch DESC LIMIT ?",
+            (str(user_id), str(user_id), int(time.time()) - 86400,
+             max(1, min(int(limit), 100))),
         )
 
     def get_order_book(self, asset_code, depth=10):

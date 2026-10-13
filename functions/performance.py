@@ -14,6 +14,6 @@ def log_slow(stage, threshold_ms=100):
             finally:
                 elapsed = (perf_counter() - started) * 1000
                 if elapsed >= threshold_ms:
-                    logging.getLogger('inazina.performance').info('%s %.1f ms', stage, elapsed)
+                    logging.getLogger('inazina.performance').warning('%s %.1f ms', stage, elapsed)
         return measured
     return decorate
