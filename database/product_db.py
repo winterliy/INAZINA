@@ -262,6 +262,13 @@ class ProductDB(DBManager):
             "day_count_convention": "TEXT NOT NULL DEFAULT 'ACT/365' CHECK(day_count_convention IN ('ACT/365','ACT/360','30/360'))",
             "amortization_type": "TEXT NOT NULL DEFAULT 'legacy' CHECK(amortization_type IN ('legacy','bullet','equal_principal','annuity'))",
             "payment_frequency_days": "INTEGER NOT NULL DEFAULT 30 CHECK(payment_frequency_days > 0)",
+            "collateral_haircut": "REAL NOT NULL DEFAULT 0.20 CHECK(collateral_haircut BETWEEN 0 AND 1)",
+            "margin_call_ltv": "REAL NOT NULL DEFAULT 0.85 CHECK(margin_call_ltv > 0)",
+            "liquidation_ltv": "REAL NOT NULL DEFAULT 1.00 CHECK(liquidation_ltv > 0)",
+            "early_withdrawal_rate": "REAL NOT NULL DEFAULT 0 CHECK(early_withdrawal_rate BETWEEN -100 AND 100)",
+            "early_withdrawal_fee_percent": "REAL NOT NULL DEFAULT 0 CHECK(early_withdrawal_fee_percent BETWEEN 0 AND 100)",
+            "deposit_insured": "INTEGER NOT NULL DEFAULT 1 CHECK(deposit_insured IN (0,1))",
+            "business_day_convention": "TEXT NOT NULL DEFAULT 'following' CHECK(business_day_convention IN ('none','following','modified_following','preceding'))",
         }
         for column, declaration in definitions.items():
             if column not in existing_columns:

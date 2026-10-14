@@ -184,9 +184,17 @@ $상품생성 CALL1 option INZST001 call 1500 30 1 100 50
 | `benchmark_key` / `benchmark_tenor_days` | 변동금리 기준지표와 만기. `policy`, `funding`, `bank_bond`, `treasury` 중 선택한다. |
 | `base_rate_spread` / `maturity_spread` / `promotional_adjustment` | 지표에 더하는 상품별 가산·만기·프로모션 조정(%p). |
 | `rate_floor` / `rate_cap` | 변동금리의 상품 하한·상한(%). 대출만 법정최고이자가 최종 상한이다. |
+| `negative_rate_allowed` | 예금 변동금리의 음수 허용 여부(0/1). 허용하면 상품 하한 대신 -100%까지 계산할 수 있다. 대출은 사용하지 않는다. |
 | `repricing_cycle_seconds` / `repricing_lag_seconds` | 계약 재산정 주기와 지표 관측 지연(초). 재산정주기는 `interest_cycle`의 정수배다. |
 | `credit_spread_max` / `collateral_discount_max` | 신용점수에 따른 최대 가산금리와 담보에 따른 최대 할인금리(%p). |
 | `collateral_required_ratio` / `origination_fee_percent` | 대출 최소 담보비율과 선취 취급수수료율. |
+| `collateral_haircut` / `margin_call_ltv` / `liquidation_ltv` | 자산담보 평가 차감률, 마진콜 LTV, 강제청산 LTV. 청산 LTV는 마진콜 이상이어야 한다. |
+| `amortization_type` / `payment_frequency_days` | 대출 상환 방식(`legacy`, `bullet`, `equal_principal`, `annuity`)과 약정 납부 간격. 새 방식은 회차별 상환표를 생성한다. |
+| `day_count_convention` | 이자 일수 계산 방식. `ACT/365`, `ACT/360`, `30/360`. |
+| `coupon_frequency_days` | 국채·회사채 쿠폰 지급 간격. `0`은 만기 일괄 이자, 양수는 정기 쿠폰이다. |
+| `early_withdrawal_rate` / `early_withdrawal_fee_percent` | 만기 전 예금 해지 시 적용할 금리와 원금 기준 수수료율. |
+| `deposit_insured` | 일반 예금의 보호 대상 여부(0/1). 기관의 유효자기자본이 0 이하가 되면 예금자·기관별 `deposit_insurance_limit`까지 국고가 지급하고 초과액은 미보장채권으로 남긴다. |
+| `business_day_convention` | 납부일 영업일 조정. `none`, `following`, `modified_following`, `preceding`; 휴일은 `financial_holidays`에서 관리한다. |
 | `delinquency_spread` | 만기 후 계약금리에 더하는 연체 가산금리. 최종 연체금리는 법정최고이자를 넘지 않는다. |
 | `grace_period_days` / `acceleration_after_days` / `default_after_days` | 유예, 기한이익 상실, 채무불이행 전환 시점. |
 | `deposit_amount` | 저축 상품의 최소 예치금. |

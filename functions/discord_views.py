@@ -376,15 +376,7 @@ class LoanRepaymentModal(discord.ui.Modal):
             min_length=1,
             max_length=15,
         )
-        self.collateral_input = discord.ui.TextInput(
-            label="담보 금액 (선택 · NWX)",
-            placeholder="없으면 0",
-            default="0",
-            required=False,
-            max_length=15,
-        )
         self.add_item(self.amount_input)
-        self.add_item(self.collateral_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         if str(interaction.user.id) != self.user_id:
@@ -396,14 +388,6 @@ class LoanRepaymentModal(discord.ui.Modal):
         if not amount_text.isascii() or not amount_text.isdigit() or int(amount_text) <= 0:
             await interaction.response.send_message(
                 "❌ 상환액은 쉼표 없이 0보다 큰 정수로 입력해주세요.", ephemeral=True
-            )
-            return
-        collateral_text = (self.collateral_input.value or "0").strip()
-        if not collateral_text:
-            collateral_text = "0"
-        if not collateral_text.isascii() or not collateral_text.isdigit():
-            await interaction.response.send_message(
-                "❌ 담보 금액은 쉼표 없이 0 이상의 정수로 입력해주세요.", ephemeral=True
             )
             return
         success, message = self.bot.bank_mgr.repay_loan(
@@ -547,7 +531,30 @@ class LoanAmountModal(discord.ui.Modal):
             min_length=1,
             max_length=15,
         )
+        self.collateral_input = discord.ui.TextInput(
+            label="현금 담보 금액 (선택 · NWX)",
+            placeholder="없으면 0",
+            default="0",
+            required=False,
+            max_length=15,
+        )
+        self.collateral_asset_input = discord.ui.TextInput(
+            label="자산 담보 코드 (선택)",
+            placeholder="예: INZST001",
+            required=False,
+            max_length=60,
+        )
+        self.collateral_quantity_input = discord.ui.TextInput(
+            label="자산 담보 수량 (선택)",
+            placeholder="없으면 0",
+            default="0",
+            required=False,
+            max_length=20,
+        )
         self.add_item(self.amount_input)
+        self.add_item(self.collateral_input)
+        self.add_item(self.collateral_asset_input)
+        self.add_item(self.collateral_quantity_input)
 
     async def on_submit(self, interaction: discord.Interaction):
         if str(interaction.user.id) != self.user_id:
@@ -562,11 +569,28 @@ class LoanAmountModal(discord.ui.Modal):
                 "❌ 대출 금액은 쉼표 없이 0보다 큰 정수로 입력해주세요.", ephemeral=True
             )
             return
+        collateral_text = (self.collateral_input.value or "0").strip() or "0"
+        if not collateral_text.isascii() or not collateral_text.isdigit():
+            await interaction.response.send_message(
+                "❌ 담보 금액은 쉼표 없이 0 이상의 정수로 입력해주세요.", ephemeral=True
+            )
+            return
+        asset_code = (self.collateral_asset_input.value or "").strip().upper()
+        quantity_text = (self.collateral_quantity_input.value or "0").strip() or "0"
+        try:
+            asset_quantity = float(quantity_text)
+        except ValueError:
+            asset_quantity = -1
+        if (asset_code and asset_quantity <= 0) or (not asset_code and asset_quantity != 0):
+            await interaction.response.send_message(
+                "❌ 자산 담보 코드와 0보다 큰 수량을 함께 입력해주세요.", ephemeral=True
+            )
+            return
 
         await interaction.response.defer(ephemeral=True, thinking=True)
         success, message = await asyncio.to_thread(
             self.bot.bank_mgr.apply_loan, self.user_id, self.product_code,
-            int(amount_text), int(collateral_text))
+            int(amount_text), int(collateral_text), asset_code or None, asset_quantity)
         color = discord.Color.green() if success else discord.Color.red()
         await interaction.followup.send(embed=discord.Embed(description=message, color=color), ephemeral=True)
 
@@ -911,6 +935,9 @@ class InfoPanelView(discord.ui.View):
                 f"만기 {self._number(row['maturity_days']):g}일 · "
                 f"이자주기 {self._number(row['interest_cycle']):g}초 · "
                 f"{'복리' if self._number(row['compound_type']) == 1 else '단리'} · "
+                f"중도해지 연 {self._number(row['early_withdrawal_rate']):g}%"
+                f"/수수료 {self._number(row['early_withdrawal_fee_percent']):g}% · "
+                f"{'예금보호' if row['deposit_insured'] else '비보호'} · "
                 f"{self._rate_model_note(row)}"
                 for row in self.bot.db.products.get_active_savings()
             ]
@@ -925,6 +952,13 @@ class InfoPanelView(discord.ui.View):
                     f" · 정기납부 {installment:,.0f} NWX/{cycle}초"
                     if cycle > 0 and installment > 0 else " · 정기납부 미설정"
                 )
+                amortization_names = {
+                    'legacy': '기존 정액', 'bullet': '만기일시',
+                    'equal_principal': '원금균등', 'annuity': '원리금균등',
+                }
+                amortization = amortization_names.get(
+                    row['amortization_type'], row['amortization_type']
+                )
                 extension_text = (f" · 연장 신용 {self._number(row['extension_min_credit_score']):g}점 이상/"
                                   f"{self._number(row['extension_days']):g}일"
                                   if 'extension_days' in row.keys() and self._number(row['extension_days']) > 0 else ' · 만기 연장 불가')
@@ -936,6 +970,9 @@ class InfoPanelView(discord.ui.View):
                     f" · 담보요건 {self._number(row['collateral_required_ratio'])*100:g}%"
                     f" · 취급수수료 {self._number(row['origination_fee_percent']):g}%"
                     f" · 연체가산 {self._number(row['delinquency_spread']):g}%p"
+                    f" · 상환 {amortization}/{self._number(row['payment_frequency_days']):g}일"
+                    f" · 일수계산 {row['day_count_convention']}"
+                    f" · 영업일 {row['business_day_convention']}"
                     f"{repayment_text}{extension_text}"
                 )
             return lines

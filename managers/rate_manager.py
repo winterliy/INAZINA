@@ -2,9 +2,11 @@
 
 import math
 import time
+from datetime import datetime, timedelta, timezone
 from contextlib import nullcontext
 
 from functions.interest_calc import YEAR_SECONDS
+from functions.interest_calc import year_fraction
 from functions.admin_access import resolve_user_role
 
 
@@ -38,6 +40,35 @@ class RateManager:
         if key is None:
             raise ValueError("지원하지 않는 금리입니다.")
         return RATE_CHART_PREFIX + key
+
+    @staticmethod
+    def adjust_business_day(conn, epoch, nationality, convention="following"):
+        """Roll contractual payment dates around weekends and configured holidays."""
+        convention = str(convention or "following").lower()
+        if convention == "none":
+            return float(epoch)
+        if convention not in {"following", "modified_following", "preceding"}:
+            raise ValueError("영업일 조정 규칙을 확인해주세요.")
+        original = datetime.fromtimestamp(float(epoch), timezone.utc)
+
+        def closed(value):
+            if value.weekday() >= 5:
+                return True
+            return conn.execute(
+                "SELECT 1 FROM financial_holidays WHERE nationality=? AND holiday_date=?",
+                (str(nationality or "낙원"), value.date().isoformat()),
+            ).fetchone() is not None
+
+        direction = -1 if convention == "preceding" else 1
+        adjusted = original
+        while closed(adjusted):
+            adjusted += timedelta(days=direction)
+        if (convention == "modified_following"
+                and adjusted.month != original.month):
+            adjusted = original
+            while closed(adjusted):
+                adjusted -= timedelta(days=1)
+        return adjusted.timestamp()
 
     def get_rate_history(self, key, since, now=None):
         """Return a right-continuous annual-rate series, with both plot boundaries.
@@ -296,22 +327,119 @@ class RateManager:
             return RateManager.market_rate(conn, country, "policy", target, epoch=epoch)
         points = [(int(row["tenor_days"]), float(row["annual_rate"])) for row in rows]
         if target <= points[0][0]:
-            return points[0][1]
-        if target >= points[-1][0]:
-            return points[-1][1]
-        for (left_days, left_rate), (right_days, right_rate) in zip(points, points[1:]):
-            if left_days <= target <= right_days:
-                weight = (target-left_days)/(right_days-left_days)
-                left_time, right_time = left_days / 365.0, right_days / 365.0
-                target_time = target / 365.0
-                left_log_discount = -(left_rate / 100.0) * left_time
-                right_log_discount = -(right_rate / 100.0) * right_time
-                target_log_discount = (
-                    left_log_discount
-                    + (right_log_discount-left_log_discount)*weight
-                )
-                return -target_log_discount / target_time * 100.0
-        return points[-1][1]
+            interpolated = points[0][1]
+        elif target >= points[-1][0]:
+            interpolated = points[-1][1]
+        else:
+            interpolated = points[-1][1]
+            for (left_days, left_rate), (right_days, right_rate) in zip(points, points[1:]):
+                if left_days <= target <= right_days:
+                    weight = (target-left_days)/(right_days-left_days)
+                    left_time, right_time = left_days / 365.0, right_days / 365.0
+                    target_time = target / 365.0
+                    left_log_discount = -(left_rate / 100.0) * left_time
+                    right_log_discount = -(right_rate / 100.0) * right_time
+                    target_log_discount = (
+                        left_log_discount
+                        + (right_log_discount-left_log_discount)*weight
+                    )
+                    interpolated = -target_log_discount / target_time * 100.0
+                    break
+        if epoch is None:
+            pressure = conn.execute(
+                "SELECT adjustment FROM market_rate_pressure "
+                "WHERE nationality=? AND benchmark_key=?", (country, key)
+            ).fetchone()
+        else:
+            pressure = conn.execute(
+                "SELECT adjustment FROM market_rate_pressure_history "
+                "WHERE nationality=? AND benchmark_key=? AND effective_epoch<=? "
+                "ORDER BY effective_epoch DESC LIMIT 1", (country, key, float(epoch))
+            ).fetchone()
+        return interpolated+float(pressure["adjustment"] if pressure else 0)
+
+    @staticmethod
+    def refresh_market_pressure(conn, nationality, *, now=None):
+        """Update market benchmarks from observed credit, funding and debt demand."""
+        country = str(nationality or "").strip()
+        if not country:
+            return {}
+        when = float(time.time() if now is None else now)
+        deposits = conn.execute(
+            "SELECT COALESCE(SUM(a.balance),0) amount FROM accounts a "
+            "LEFT JOIN saving s ON s.product_code=a.product_code "
+            "LEFT JOIN liability l ON l.product_code=a.product_code "
+            "WHERE a.account_type IN ('saving','currency_saving','loan_payout') AND "
+            "COALESCE(s.rate_nationality,l.rate_nationality,(SELECT MIN(nationality) "
+            "FROM country_currencies c WHERE c.currency_code="
+            "COALESCE(s.quote_currency,l.quote_currency,a.quote_currency)))=?",
+            (country,),
+        ).fetchone()
+        loan_row = conn.execute(
+            "SELECT COALESCE(SUM(l.outstanding_balance),0) amount,"
+            "COALESCE(SUM(CASE WHEN l.status='defaulted' THEN l.outstanding_balance ELSE 0 END),0) bad "
+            "FROM loans l JOIN liability p ON p.product_code=l.product_code "
+            "WHERE l.status IN ('active','defaulted') AND COALESCE(p.rate_nationality,"
+            "(SELECT MIN(nationality) FROM country_currencies c "
+            "WHERE c.currency_code=p.quote_currency))=?", (country,)
+        ).fetchone()
+        capital = conn.execute(
+            "SELECT COALESCE(SUM(MAX(0,equity_capital+retained_earnings)),0) amount "
+            "FROM financial_institutions "
+            "WHERE nationality=?", (country,)
+        ).fetchone()
+        treasury = conn.execute(
+            "SELECT COALESCE(SUM(p.sold_amount),0) sold,COALESCE(SUM(p.total_supply),0) total "
+            "FROM treasury_bond_products p JOIN market_exchanges e "
+            "ON e.exchange_id=p.exchange_id WHERE e.nationality=? AND p.status='active'",
+            (country,),
+        ).fetchone()
+        deposits_value = max(0.0, float(deposits["amount"] or 0))
+        loans = max(0.0, float(loan_row["amount"] or 0))
+        equity = max(1.0, float(capital["amount"] or 0))
+        funding_ratio = loans/max(1.0, deposits_value+equity)
+        funding_target = max(-2.0, min(10.0, (funding_ratio-.90)*.75))
+        default_ratio = float(loan_row["bad"] or 0)/max(1.0, loans)
+        bank_bond_target = max(-2.0, min(15.0, funding_target+default_ratio*5.0))
+        debt_demand = float(treasury["sold"] or 0)/max(1.0, float(treasury["total"] or 0))
+        # A well-covered issue indicates stronger demand and therefore lower
+        # required yield; a poorly covered issue adds an issuance premium.
+        treasury_target = max(-2.0, min(5.0, (.50-debt_demand)))
+        targets = {
+            "funding": funding_target,
+            "bank_bond": bank_bond_target,
+            "treasury": treasury_target,
+        }
+        adjustments = {}
+        for key, target_adjustment in targets.items():
+            previous = conn.execute(
+                "SELECT adjustment FROM market_rate_pressure "
+                "WHERE nationality=? AND benchmark_key=?", (country, key)
+            ).fetchone()
+            old = float(previous["adjustment"] if previous else 0)
+            adjustment = max(-20.0, min(20.0, old*.70+target_adjustment*.30))
+            adjustments[key] = adjustment
+            conn.execute(
+                "INSERT INTO market_rate_pressure(nationality,benchmark_key,adjustment,updated_epoch) "
+                "VALUES (?,?,?,?) ON CONFLICT(nationality,benchmark_key) DO UPDATE SET "
+                "adjustment=excluded.adjustment,updated_epoch=excluded.updated_epoch",
+                (country, key, adjustment, when),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO market_rate_pressure_history VALUES (?,?,?,?)",
+                (country, key, adjustment, when),
+            )
+        RateManager.reprice_floating_products(conn, country)
+        return adjustments
+
+    @staticmethod
+    def refresh_all_market_pressure(conn, *, now=None):
+        return {
+            row["nationality"]: RateManager.refresh_market_pressure(
+                conn, row["nationality"], now=now
+            )
+            for row in conn.execute("SELECT nationality FROM country_currencies")
+        }
 
     @staticmethod
     def discount_factor(conn, nationality, benchmark_key, tenor_days, *, epoch=None,
@@ -331,7 +459,7 @@ class RateManager:
     @staticmethod
     def bond_quote(conn, nationality, face_value, coupon_percent, remaining_days,
                    *, coupon_frequency_days=0, spread=0.0, epoch=None,
-                   original_maturity_days=None):
+                   original_maturity_days=None, day_count_convention="ACT/365"):
         """Return dirty price, clean price and accrued interest for a bond.
 
         Every promised cash flow is discounted from the matching point on the
@@ -343,11 +471,15 @@ class RateManager:
         original = max(1, int(original_maturity_days or remaining or 1))
         frequency = max(0, int(coupon_frequency_days or 0))
         coupon_rate = float(coupon_percent or 0) / 100.0
+        valuation_epoch = float(time.time() if epoch is None else epoch)
         if remaining <= 0:
             return {"dirty_price": face, "clean_price": face,
                     "accrued_interest": 0.0, "cashflows": [(0, face)]}
         if frequency <= 0:
-            payoff = face*(1.0+coupon_rate*original/365.0)
+            issue_epoch = valuation_epoch-max(0, original-remaining)*86400
+            payoff = face*(1.0+coupon_rate*year_fraction(
+                original*86400, day_count_convention, issue_epoch
+            ))
             dirty = payoff*RateManager.discount_factor(
                 conn, nationality, "treasury", remaining,
                 epoch=epoch, spread=spread,
@@ -364,7 +496,10 @@ class RateManager:
         prior = -position
         for due in due_days:
             period_days = min(frequency, due-prior)
-            coupon = face*coupon_rate*period_days/365.0
+            coupon = face*coupon_rate*year_fraction(
+                period_days*86400, day_count_convention,
+                valuation_epoch+prior*86400,
+            )
             payment = coupon + (face if due == remaining else 0.0)
             cashflows.append((due, payment))
             prior = due
@@ -375,7 +510,10 @@ class RateManager:
             )
             for due, payment in cashflows
         )
-        accrued = face*coupon_rate*position/365.0
+        accrued = face*coupon_rate*year_fraction(
+            position*86400, day_count_convention,
+            valuation_epoch-position*86400,
+        )
         return {
             "dirty_price": dirty,
             "clean_price": max(0.0, dirty-accrued),
@@ -400,7 +538,8 @@ class RateManager:
             "SELECT funding_spread,operating_cost_spread,liquidity_spread,target_margin,"
             "competition_adjustment,equity_capital,target_capital_ratio,"
             "target_loan_deposit_ratio,funding_pressure_sensitivity,"
-            "capital_pressure_sensitivity,competition_sensitivity "
+            "capital_pressure_sensitivity,competition_sensitivity,reserve_ratio,"
+            "deposit_insurance_limit,retained_earnings,status "
             "FROM financial_institutions WHERE issuer=?",
             (str(issuer or ""),),
         ).fetchone()
@@ -413,11 +552,19 @@ class RateManager:
             "funding_pressure_sensitivity": 0.50,
             "capital_pressure_sensitivity": 1.00,
             "competition_sensitivity": 0.25,
+            "reserve_ratio": 0.10,
+            "deposit_insurance_limit": 50_000_000.0,
+            "retained_earnings": 0.0,
         }
-        return {
+        result = {
             key: float(row[key] if row and row[key] is not None else default)
             for key, default in defaults.items()
         }
+        result["status"] = str(row["status"] if row and row["status"] else "active")
+        result["effective_equity"] = (
+            result["equity_capital"]+result["retained_earnings"]
+        )
+        return result
 
     @staticmethod
     def institution_balance_sheet(conn, issuer):
@@ -425,9 +572,11 @@ class RateManager:
         issuer = str(issuer or "")
         deposits = conn.execute(
             "SELECT COALESCE(SUM(a.balance),0) amount FROM accounts a "
-            "JOIN saving p ON p.product_code=a.product_code "
-            "WHERE p.issuer=? AND a.account_type IN ('saving','currency_saving')",
-            (issuer,),
+            "LEFT JOIN saving s ON s.product_code=a.product_code "
+            "LEFT JOIN liability l ON l.product_code=a.product_code "
+            "WHERE (s.issuer=? AND a.account_type IN ('saving','currency_saving')) "
+            "OR (l.issuer=? AND a.account_type='loan_payout')",
+            (issuer, issuer),
         ).fetchone()
         loans = conn.execute(
             "SELECT COALESCE(SUM(l.outstanding_balance),0) amount FROM loans l "
@@ -437,7 +586,7 @@ class RateManager:
         ).fetchone()
         total_deposits = conn.execute(
             "SELECT COALESCE(SUM(balance),0) amount FROM accounts "
-            "WHERE account_type IN ('saving','currency_saving')"
+            "WHERE account_type IN ('saving','currency_saving','loan_payout')"
         ).fetchone()
         total_loans = conn.execute(
             "SELECT COALESCE(SUM(outstanding_balance),0) amount FROM loans "
@@ -449,6 +598,93 @@ class RateManager:
             "total_deposits": max(0.0, float(total_deposits["amount"] or 0)),
             "total_loans": max(0.0, float(total_loans["amount"] or 0)),
         }
+
+    @staticmethod
+    def institution_capacity(conn, issuer, proposed_loan=0):
+        """Apply simplified reserve and risk-weighted capital constraints."""
+        RateManager.refresh_institution_status(conn, issuer)
+        terms = RateManager.institution_components(conn, issuer)
+        sheet = RateManager.institution_balance_sheet(conn, issuer)
+        proposed = max(0.0, float(proposed_loan or 0))
+        equity = max(0.0, float(terms["effective_equity"]))
+        deposits = float(sheet["deposits"])
+        loans = float(sheet["loans"])
+        reserve_ratio = float(terms["reserve_ratio"])
+        required_reserves = deposits*reserve_ratio
+        # A loan creates a matching transaction deposit. Only the reserve share
+        # of that new deposit consumes pre-existing liquid capital.
+        liquid_buffer = deposits+equity-required_reserves-loans
+        funding_headroom = (float("inf") if reserve_ratio <= 0 and liquid_buffer >= 0
+                            else max(0.0, liquid_buffer/max(1e-12, reserve_ratio)))
+        target_capital = float(terms["target_capital_ratio"])
+        risk_weight = 0.75
+        capital_capacity = (float("inf") if target_capital <= 0 else
+                            equity/(target_capital*risk_weight))
+        capital_headroom = max(0.0, capital_capacity-loans)
+        headroom = min(funding_headroom, capital_headroom)
+        allowed = terms["status"] == "active" and proposed <= headroom+1e-9
+        return {
+            "allowed": allowed,
+            "status": terms["status"],
+            "effective_equity": equity,
+            "deposits": deposits,
+            "loans": loans,
+            "required_reserves": required_reserves,
+            "funding_headroom": funding_headroom,
+            "capital_headroom": capital_headroom,
+            "headroom": headroom,
+        }
+
+    @staticmethod
+    def refresh_institution_status(conn, issuer, *, now=None):
+        """Set active/restricted/failed from live effective capital ratios."""
+        issuer = str(issuer or "").strip()
+        if not issuer:
+            return "active"
+        terms = RateManager.institution_components(conn, issuer)
+        if terms["status"] == "failed":
+            return "failed"
+        sheet = RateManager.institution_balance_sheet(conn, issuer)
+        equity = float(terms["effective_equity"])
+        risk_weighted_assets = float(sheet["loans"])*0.75
+        ratio = equity/risk_weighted_assets if risk_weighted_assets > 0 else float("inf")
+        if equity <= 0:
+            status = "failed"
+        elif ratio+1e-12 < float(terms["target_capital_ratio"]):
+            status = "restricted"
+        else:
+            status = "active"
+        when = float(time.time() if now is None else now)
+        conn.execute(
+            "UPDATE financial_institutions SET status=?,last_capital_update_epoch=?,"
+            "failed_epoch=CASE WHEN ?='failed' THEN COALESCE(failed_epoch,?) "
+            "ELSE failed_epoch END WHERE issuer=?",
+            (status, when, status, when, issuer),
+        )
+        return status
+
+    @staticmethod
+    def record_institution_result(conn, issuer, amount, event_type, reference_key,
+                                  *, now=None):
+        """Post an idempotent income/expense entry to an institution's capital."""
+        issuer = str(issuer or "").strip()
+        if not issuer:
+            return False
+        when = float(time.time() if now is None else now)
+        cursor = conn.execute(
+            "INSERT OR IGNORE INTO financial_institution_ledger "
+            "(issuer,event_type,amount,reference_key,created_epoch) VALUES (?,?,?,?,?)",
+            (issuer, str(event_type), float(amount), str(reference_key), when),
+        )
+        if cursor.rowcount != 1:
+            return False
+        conn.execute(
+            "UPDATE financial_institutions SET retained_earnings=retained_earnings+?,"
+            "last_capital_update_epoch=? WHERE issuer=?",
+            (float(amount), when, issuer),
+        )
+        RateManager.refresh_institution_status(conn, issuer, now=when)
+        return True
 
     @staticmethod
     def dynamic_institution_adjustment(conn, issuer, product_kind):
@@ -463,7 +699,7 @@ class RateManager:
             0.0, loan_deposit-float(terms["target_loan_deposit_ratio"])
         ) * float(terms["funding_pressure_sensitivity"])
         risk_weighted_assets = loans * 0.75
-        capital_ratio = (float(terms["equity_capital"])/risk_weighted_assets
+        capital_ratio = (max(0.0, float(terms["effective_equity"]))/risk_weighted_assets
                          if risk_weighted_assets > 0 else 1.0)
         capital_pressure = max(
             0.0, float(terms["target_capital_ratio"])-capital_ratio

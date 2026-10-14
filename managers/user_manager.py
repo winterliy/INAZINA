@@ -680,6 +680,7 @@ class UserManager:
         total_account_balance = 0
         account_rows = conn.execute(
             "SELECT a.account_number,a.product_code,a.balance,a.account_type,"
+            "a.resolution_status,a.insurance_paid,a.uninsured_claim,"
             "COALESCE(s.name,l.name) AS product_name "
             "FROM accounts a LEFT JOIN saving s ON s.product_code=a.product_code "
             "LEFT JOIN liability l ON l.product_code=a.product_code "
@@ -695,6 +696,9 @@ class UserManager:
                 "product_name": (f"대출금 지급 · {product_name}"
                                  if account["account_type"] == "loan_payout" else product_name),
                 "balance": balance,
+                "resolution_status": account["resolution_status"],
+                "insurance_paid": int(account["insurance_paid"] or 0),
+                "uninsured_claim": int(account["uninsured_claim"] or 0),
             })
 
         stock_details = []

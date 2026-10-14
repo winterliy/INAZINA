@@ -6,6 +6,7 @@ from contextlib import nullcontext
 from database import DatabaseManager
 from database.user_db import TREASURY_USER_ID
 from functions.money import parse_money, round_money
+from functions.interest_calc import year_fraction
 from functions.tax_calc import calculate_income_tax
 from managers.rate_manager import RateManager
 
@@ -34,6 +35,7 @@ class TreasuryBondManager:
             spread=(float(bond["credit_spread"] or 0)
                     + float(bond["liquidity_spread"] or 0)),
             epoch=now, original_maturity_days=int(bond["maturity_days"]),
+            day_count_convention=bond["day_count_convention"],
         )
         return quote
 
@@ -237,6 +239,7 @@ class TreasuryBondManager:
                     "ON CONFLICT(asset_code, recorded_epoch) DO UPDATE SET price = excluded.price",
                     (bond["product_code"], marked, now),
                 )
+                RateManager.refresh_all_market_pressure(conn, now=now)
             return True, (
                 f"✅ **{bond['name']}** 국채를 {amount:,} NWX 매수했습니다. "
                 f"(액면가 {face_value:,} NWX · {amount // face_value:,}매) "
@@ -365,7 +368,9 @@ class TreasuryBondManager:
                     continue
                 coupon = round_money(
                     int(holding["principal"])*float(holding["annual_rate"])/100
-                    * elapsed/self.YEAR_DAYS
+                    * year_fraction(
+                        elapsed*86400, holding["day_count_convention"], cursor
+                    )
                 )
                 tax_row = conn.execute(
                     "SELECT c.tax_percent FROM users u LEFT JOIN country_currencies c "

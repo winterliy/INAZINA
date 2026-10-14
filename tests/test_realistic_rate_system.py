@@ -1,6 +1,7 @@
 import tempfile
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from database import DatabaseManager
@@ -10,6 +11,7 @@ from managers.interest_manager import InterestManager
 from managers.investment_manager import InvestmentManager
 from managers.rate_manager import RateManager
 from managers.treasury_bond_manager import TreasuryBondManager
+from functions.interest_calc import year_fraction
 
 
 class RealisticRateSystemTests(unittest.TestCase):
@@ -108,6 +110,10 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(row["origination_fee"], 500)
         self.assertEqual(row["collateral_amount"], 10_000)
         self.assertGreater(row["contract_apr"], row["contract_effective_rate"])
+        institution = self.db.currency.execute_one(
+            "SELECT retained_earnings FROM financial_institutions WHERE issuer='Bank'"
+        )
+        self.assertEqual(institution["retained_earnings"], 500)
 
     def test_overdue_accelerates_defaults_and_seizes_collateral(self):
         self.add_loan(maturity=1, origination_fee=0)
@@ -141,6 +147,68 @@ class RealisticRateSystemTests(unittest.TestCase):
         )
         self.assertAlmostEqual(apr, 10.0, places=7)
 
+    def test_day_count_conventions_are_distinct(self):
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
+        elapsed = 180*86400
+        self.assertAlmostEqual(year_fraction(elapsed, "ACT/365", start), 180/365)
+        self.assertAlmostEqual(year_fraction(elapsed, "ACT/360", start), .5)
+        self.assertAlmostEqual(year_fraction(181*86400, "30/360", start), .5)
+
+    def test_payment_schedule_uses_selected_day_count(self):
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
+        act365 = BankManager._loan_cashflows(
+            10_000, 10, 180, 180, "bullet", "ACT/365", start
+        )
+        act360 = BankManager._loan_cashflows(
+            10_000, 10, 180, 180, "bullet", "ACT/360", start
+        )
+        self.assertEqual(act365[0][2], 493)
+        self.assertEqual(act360[0][2], 500)
+
+    def test_business_day_calendar_rolls_weekends_and_holidays(self):
+        saturday = datetime(2026, 1, 3, 12, tzinfo=timezone.utc).timestamp()
+        self.db.currency.execute(
+            "INSERT INTO financial_holidays VALUES ('낙원','2026-01-05','holiday')"
+        )
+        with self.db.readonly() as conn:
+            following = RateManager.adjust_business_day(
+                conn, saturday, "낙원", "following"
+            )
+            preceding = RateManager.adjust_business_day(
+                conn, saturday, "낙원", "preceding"
+            )
+        self.assertEqual(
+            datetime.fromtimestamp(following, timezone.utc).date().isoformat(),
+            "2026-01-06",
+        )
+        self.assertEqual(
+            datetime.fromtimestamp(preceding, timezone.utc).date().isoformat(),
+            "2026-01-02",
+        )
+
+    def test_early_withdrawal_claws_back_excess_interest(self):
+        self.db.products.execute(
+            "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"
+            "interest_cycle,compound_type,issuer,quote_currency,early_withdrawal_rate) "
+            "VALUES ('EARLY','Early',10,1,365,31536000,0,'Bank','NWX',0)"
+        )
+        bank = BankManager(self.db)
+        self.assertTrue(bank.open_account("borrower", "EARLY", "1234", 1_000)[0])
+        account = self.db.accounts.execute_one(
+            "SELECT account_number FROM accounts WHERE product_code='EARLY'"
+        )
+        self.db.accounts.execute(
+            "UPDATE accounts SET balance=1100,principal=1000 WHERE account_number=?",
+            (account["account_number"],),
+        )
+        treasury_before = self.db.users.get_treasury_balance()
+        result = bank.close_account(
+            "borrower", account["account_number"], password="1234"
+        )
+        self.assertTrue(result[0], result[1])
+        self.assertIn("중도해지 조정 100", result[1])
+        self.assertEqual(self.db.users.get_treasury_balance()-treasury_before, 100)
+
     def test_annuity_contract_creates_and_services_payment_schedule(self):
         self.add_loan(code="AMORT", maturity=90, collateral_ratio=0,
                       origination_fee=0)
@@ -171,6 +239,93 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(first["status"], "paid")
         self.assertGreater(first["amount_paid"], 0)
 
+    def test_floating_reset_recasts_unpaid_future_schedule(self):
+        self.add_loan(code="RECAST", maturity=90, collateral_ratio=0,
+                      origination_fee=0)
+        self.db.products.execute(
+            "UPDATE liability SET amortization_type='annuity',payment_frequency_days=30,"
+            "repricing_cycle_seconds=86400,benchmark_key='bank_bond',"
+            "benchmark_tenor_days=90 WHERE product_code='RECAST'"
+        )
+        bank = BankManager(self.db)
+        result = bank.apply_loan("borrower", "RECAST", 90_000)
+        self.assertTrue(result[0], result[1])
+        loan = self.db.accounts.execute_one(
+            "SELECT * FROM loans WHERE product_code='RECAST'"
+        )
+        before = self.db.accounts.execute_one(
+            "SELECT rate_applied,interest_due FROM loan_payment_schedule "
+            "WHERE loan_id=? ORDER BY installment_number LIMIT 1", (loan["loan_id"],)
+        )
+        self.assertTrue(self.rates.set_market_rate(
+            "낙원", "bank_bond", 90, 12, "admin"
+        )[0])
+        InterestManager(self.db).process_user_interests(
+            "borrower", now=float(loan["next_repricing_epoch"])+86400
+        )
+        after = self.db.accounts.execute_one(
+            "SELECT rate_applied,interest_due,recast_epoch FROM loan_payment_schedule "
+            "WHERE loan_id=? ORDER BY installment_number LIMIT 1", (loan["loan_id"],)
+        )
+        self.assertIsNotNone(after["recast_epoch"])
+        self.assertNotEqual(after["rate_applied"], before["rate_applied"])
+        self.assertGreater(after["interest_due"], before["interest_due"])
+
+    def test_reserve_and_capital_constraints_reject_excess_new_loan(self):
+        self.add_loan(code="REGULATED", collateral_ratio=0, origination_fee=0)
+        self.db.currency.execute(
+            "UPDATE financial_institutions SET equity_capital=1000,retained_earnings=0,"
+            "reserve_ratio=.1,target_capital_ratio=.1,status='active' WHERE issuer='Bank'"
+        )
+        result = BankManager(self.db).apply_loan(
+            "borrower", "REGULATED", 100_000
+        )
+        self.assertFalse(result[0])
+        self.assertIn("지급준비·자기자본", result[1])
+        self.assertIsNone(self.db.accounts.execute_one(
+            "SELECT 1 FROM loans WHERE product_code='REGULATED'"
+        ))
+
+    def test_failed_bank_pays_only_insured_limit_and_preserves_claim(self):
+        self.db.products.execute(
+            "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"
+            "interest_cycle,compound_type,issuer,quote_currency,deposit_insured) "
+            "VALUES ('INSURED','Insured',0,1,365,31536000,0,'Bank','NWX',1)"
+        )
+        bank = BankManager(self.db)
+        self.assertTrue(bank.open_account(
+            "borrower", "INSURED", "1234", 1_000
+        )[0])
+        self.db.currency.execute(
+            "UPDATE financial_institutions SET equity_capital=100,retained_earnings=0,"
+            "deposit_insurance_limit=600,status='active' WHERE issuer='Bank'"
+        )
+        treasury_before = self.db.users.get_treasury_balance()
+        with self.db.atomic(("users", "accounts", "product")) as conn:
+            RateManager.record_institution_result(
+                conn, "Bank", -200, "stress_loss", "test:failure", now=1000
+            )
+            resolved = BankManager.resolve_failed_institution(
+                conn, "Bank", now=1000
+            )
+        self.assertEqual(resolved, {
+            "accounts": 1, "covered": 600, "uninsured": 400,
+        })
+        account = self.db.accounts.execute_one(
+            "SELECT balance,resolution_status,insurance_paid,uninsured_claim "
+            "FROM accounts WHERE product_code='INSURED'"
+        )
+        self.assertEqual(
+            (account["balance"], account["resolution_status"],
+             account["insurance_paid"], account["uninsured_claim"]),
+            (0, "resolved", 600, 400),
+        )
+        self.assertEqual(self.db.users.get_treasury_balance(), treasury_before-600)
+        self.assertIsNotNone(self.db.accounts.execute_one(
+            "SELECT 1 FROM deposit_insurance_claims WHERE account_number IN "
+            "(SELECT account_number FROM accounts WHERE product_code='INSURED')"
+        ))
+
     def test_competing_banks_and_balance_sheet_pressure_change_spread(self):
         self.add_loan(code="BANK1", collateral_ratio=0, origination_fee=0)
         self.db.products.execute(
@@ -183,8 +338,12 @@ class RealisticRateSystemTests(unittest.TestCase):
                 conn, self.db.products.get_liability("BANK1"), "loan"
             )
         self.db.currency.execute(
-            "UPDATE financial_institutions SET equity_capital=1000,"
+            "UPDATE financial_institutions SET equity_capital=100000,"
             "target_loan_deposit_ratio=.1 WHERE issuer='Bank'"
+        )
+        self.db.currency.execute(
+            "UPDATE financial_institutions SET equity_capital=1000,"
+            "target_loan_deposit_ratio=.1 WHERE issuer='Other Bank'"
         )
         self.assertTrue(BankManager(self.db).apply_loan(
             "borrower", "BANK1", 100_000
@@ -194,6 +353,52 @@ class RealisticRateSystemTests(unittest.TestCase):
                 conn, self.db.products.get_liability("BANK1"), "loan"
             )
         self.assertGreater(after, before)
+        pressure = self.db.currency.execute_one(
+            "SELECT adjustment FROM market_rate_pressure "
+            "WHERE nationality='낙원' AND benchmark_key='bank_bond'"
+        )
+        self.assertGreater(pressure["adjustment"], 0)
+        self.assertIsNotNone(self.db.currency.execute_one(
+            "SELECT 1 FROM market_rate_pressure_history "
+            "WHERE nationality='낙원' AND benchmark_key='bank_bond'"
+        ))
+
+    def test_asset_collateral_is_haircut_revalued_and_liquidated(self):
+        self.add_loan(code="ASSETLOAN", collateral_ratio=1, origination_fee=0)
+        self.db.products.execute(
+            "UPDATE liability SET collateral_haircut=.2,margin_call_ltv=.85,"
+            "liquidation_ltv=1 WHERE product_code='ASSETLOAN'"
+        )
+        self.db.assets.execute(
+            "INSERT INTO market_assets(code,name,exchange_id,price,type,quote_currency) "
+            "VALUES ('COLL','Collateral','EX',1000,'stock','NWX')"
+        )
+        self.db.assets.execute(
+            "INSERT INTO user_assets(user_id,asset_code,quantity,average_cost) "
+            "VALUES ('borrower','COLL',125,900)"
+        )
+        result = BankManager(self.db).apply_loan(
+            "borrower", "ASSETLOAN", 100_000, 0, "COLL", 125
+        )
+        self.assertTrue(result[0], result[1])
+        loan = self.db.accounts.execute_one(
+            "SELECT * FROM loans WHERE product_code='ASSETLOAN'"
+        )
+        self.assertEqual(loan["collateral_asset_value"], 100_000)
+        self.assertIsNone(self.db.assets.execute_one(
+            "SELECT 1 FROM user_assets WHERE user_id='borrower' AND asset_code='COLL'"
+        ))
+        self.db.assets.execute("UPDATE market_assets SET price=500 WHERE code='COLL'")
+        InterestManager(self.db).process_user_interests("borrower")
+        loan = self.db.accounts.execute_one(
+            "SELECT * FROM loans WHERE product_code='ASSETLOAN'"
+        )
+        self.assertEqual(loan["collateral_liquidated_value"], 50_000)
+        self.assertLess(loan["outstanding_balance"], 100_000)
+        treasury = self.db.assets.execute_one(
+            "SELECT quantity FROM user_assets WHERE user_id='20230216' AND asset_code='COLL'"
+        )
+        self.assertEqual(treasury["quantity"], 125)
 
     def test_periodic_bond_quote_has_clean_dirty_and_curve_mark(self):
         with self.db.readonly() as conn:

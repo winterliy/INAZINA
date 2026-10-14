@@ -17,7 +17,8 @@ def load_active_wallet_loans(db, user_id, *, require_product=False, ordered=Fals
     return db.accounts.execute(
         "SELECT l.loan_id,l.product_code,l.principal,l.outstanding_balance,l.maturity_epoch,"
         "l.contract_rate,l.contract_effective_rate,l.contract_apr,l.collection_status,"
-        "l.collateral_amount,l.collateral_released,l.collateral_seized,p.name FROM loans l "
+        "l.collateral_amount,l.collateral_released,l.collateral_seized,"
+        "l.collateral_asset_value,l.current_ltv,p.name FROM loans l "
         f"{join} liability p ON p.product_code=l.product_code "
         "WHERE l.user_id=? AND l.status IN ('active','defaulted')" + order,
         (str(user_id),),

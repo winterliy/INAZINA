@@ -476,6 +476,10 @@ class EconomyTests(unittest.TestCase):
 
     def test_zero_loan_limit_means_unlimited(self):
         self.db.products.register_liability("OPEN", "No Limit Loan", 3, 0, 365, 3600, 600, "Open Bank")
+        self.db.currency.execute(
+            "UPDATE financial_institutions SET equity_capital=10000000 "
+            "WHERE issuer='Open Bank'"
+        )
 
         success, message = self.bank.apply_loan("citizen-1", "OPEN", 10000000)
 

@@ -54,6 +54,12 @@ class CurrencyExchangeManager:
             product = conn.execute("SELECT * FROM saving WHERE product_code=? AND product_kind='currency_saving' AND status='active'", (product_code,)).fetchone()
             if not product:
                 raise ValueError("외환통장 상품 코드를 확인해주세요.")
+            institution = conn.execute(
+                "SELECT status FROM financial_institutions WHERE issuer=?",
+                (product['issuer'],),
+            ).fetchone()
+            if institution and institution['status'] == 'failed':
+                raise ValueError("발행 금융기관이 정리 절차 중이라 외환통장을 개설할 수 없습니다.")
             self._rate(conn, product['quote_currency'])
             home = CurrencyManager.home(conn, user_id)
             if product['quote_currency'] == home:
@@ -98,7 +104,10 @@ class CurrencyExchangeManager:
     def _settle(conn, user_id, now):
         rows = conn.execute("SELECT a.*,COALESCE(a.contract_rate,p.interest_rate) AS annual_rate "
                             "FROM accounts a JOIN saving p USING(product_code) "
-                            "WHERE a.user_id=? AND a.account_type='currency_saving'", (str(user_id),)).fetchall()
+                            "LEFT JOIN financial_institutions f ON f.issuer=p.issuer "
+                            "WHERE a.user_id=? AND a.account_type='currency_saving' "
+                            "AND a.resolution_status='active' AND COALESCE(f.status,'active')<>'failed'",
+                            (str(user_id),)).fetchall()
         for row in rows:
             from managers.rate_manager import RateManager
             cursor = float(row['last_payment_epoch'])

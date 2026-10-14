@@ -244,6 +244,10 @@ class AdminControlManager:
                         values['rate_nationality'] = nationality
                     spread = self._number(merged.get('base_rate_spread', 0), -100, 100)
                     floor = self._number(merged.get('rate_floor', 0), 0, 100)
+                    negative_allowed = bool(self._number(
+                        merged.get('negative_rate_allowed', 1 if category != 'loan' else 0),
+                        0, 1, integer=True,
+                    ))
                     cap_raw = merged.get('rate_cap')
                     cap = None if cap_raw in (None, '') else self._number(cap_raw, 0, 100)
                     cycle = self._number(
@@ -262,6 +266,7 @@ class AdminControlManager:
                         'rate_floor': floor,
                         'rate_cap': cap,
                         'repricing_cycle_seconds': cycle,
+                        'negative_rate_allowed': int(negative_allowed),
                     })
                     # A supplied advertised rate is translated into a spread unless
                     # the caller explicitly supplied the spread itself.
@@ -282,13 +287,56 @@ class AdminControlManager:
                         conn, nationality,
                         RateManager.product_spread(
                             conn, priced, 'loan' if category == 'loan' else 'deposit'
-                        ), floor, cap, benchmark_key=benchmark,
+                        ), (None if category != 'loan' and negative_allowed else floor),
+                        cap, benchmark_key=benchmark,
                         tenor_days=tenor or merged.get('maturity_days', 0),
                         apply_legal_max=category == 'loan',
                     )
                 elif merged.get('rate_nationality'):
                     values['rate_nationality'] = str(merged['rate_nationality']).strip()
                 merged = {**merged, **values}
+                day_count = str(merged.get('day_count_convention') or 'ACT/365').upper()
+                if day_count not in {'ACT/365', 'ACT/360', '30/360'}:
+                    raise ValueError('day_count_convention은 ACT/365, ACT/360, 30/360 중 하나여야 합니다.')
+                values['day_count_convention'] = day_count
+                business_day = str(
+                    merged.get('business_day_convention') or 'following'
+                ).lower()
+                if business_day not in {'none','following','modified_following','preceding'}:
+                    raise ValueError(
+                        'business_day_convention은 none/following/modified_following/preceding 중 하나여야 합니다.'
+                    )
+                values['business_day_convention'] = business_day
+                if category != 'loan':
+                    values['early_withdrawal_rate'] = self._number(
+                        merged.get('early_withdrawal_rate', 0), -100, 100
+                    )
+                    values['early_withdrawal_fee_percent'] = self._number(
+                        merged.get('early_withdrawal_fee_percent', 0), 0, 100
+                    )
+                    values['deposit_insured'] = self._number(
+                        merged.get('deposit_insured', 1), 0, 1, integer=True
+                    )
+                if category == 'loan':
+                    amortization = str(merged.get('amortization_type') or 'legacy').lower()
+                    if amortization not in {'legacy', 'bullet', 'equal_principal', 'annuity'}:
+                        raise ValueError(
+                            'amortization_type은 legacy/bullet/equal_principal/annuity 중 하나여야 합니다.'
+                        )
+                    values['amortization_type'] = amortization
+                    values['payment_frequency_days'] = self._number(
+                        merged.get('payment_frequency_days', 30), 1, 3650, integer=True
+                    )
+                    haircut = self._number(merged.get('collateral_haircut', .2), 0, 1)
+                    margin_ltv = self._number(merged.get('margin_call_ltv', .85), .01, 100)
+                    liquidation_ltv = self._number(
+                        merged.get('liquidation_ltv', 1), margin_ltv, 100
+                    )
+                    values.update(
+                        collateral_haircut=haircut,
+                        margin_call_ltv=margin_ltv,
+                        liquidation_ltv=liquidation_ltv,
+                    )
             if category=='stock':
                 if existing and values.get('exchange_id',existing['exchange_id'])!=existing['exchange_id']:
                     from managers.els_manager import ELSManager

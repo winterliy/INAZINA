@@ -58,6 +58,12 @@ class CurrencyDB(DBManager):
         )""")
         self.execute("CREATE INDEX IF NOT EXISTS idx_guild_countries_nationality "
                      "ON guild_countries(nationality)")
+        self.execute("""CREATE TABLE IF NOT EXISTS financial_holidays (
+            nationality TEXT NOT NULL REFERENCES country_currencies(nationality),
+            holiday_date TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY(nationality,holiday_date)
+        )""")
         # Newly added countries receive an independent default, which an
         # administrator can change without affecting any other nationality.
         if added_base_rate:
@@ -207,6 +213,24 @@ class CurrencyDB(DBManager):
         )""")
         self.execute("CREATE INDEX IF NOT EXISTS idx_market_curve_history_lookup ON "
                      "market_rate_curve_history(nationality,benchmark_key,tenor_days,effective_epoch DESC)")
+        self.execute("""CREATE TABLE IF NOT EXISTS market_rate_pressure (
+            nationality TEXT NOT NULL,
+            benchmark_key TEXT NOT NULL CHECK(benchmark_key IN ('funding','bank_bond','treasury')),
+            adjustment REAL NOT NULL DEFAULT 0 CHECK(adjustment BETWEEN -20 AND 20),
+            updated_epoch REAL NOT NULL,
+            PRIMARY KEY(nationality,benchmark_key)
+        )""")
+        self.execute("""CREATE TABLE IF NOT EXISTS market_rate_pressure_history (
+            nationality TEXT NOT NULL,
+            benchmark_key TEXT NOT NULL,
+            adjustment REAL NOT NULL CHECK(adjustment BETWEEN -20 AND 20),
+            effective_epoch REAL NOT NULL,
+            PRIMARY KEY(nationality,benchmark_key,effective_epoch)
+        )""")
+        self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_market_rate_pressure_history "
+            "ON market_rate_pressure_history(nationality,benchmark_key,effective_epoch DESC)"
+        )
         curve = {
             'funding': ((30, .20, .85), (90, .35, .80), (365, .55, .70)),
             'bank_bond': ((90, .45, .90), (365, .75, .85), (1095, 1.10, .75)),
@@ -221,6 +245,10 @@ class CurrencyDB(DBManager):
                         (country['nationality'], key, tenor,
                          float(country['base_rate'])+spread, pass_through),
                     )
+                self.execute(
+                    "INSERT OR IGNORE INTO market_rate_pressure VALUES (?,?,0,0)",
+                    (country['nationality'], key),
+                )
         self.execute("""INSERT OR IGNORE INTO market_rate_curve_history
             SELECT nationality,benchmark_key,tenor_days,annual_rate,0,'migration'
             FROM market_rate_curve""")
@@ -255,6 +283,10 @@ class CurrencyDB(DBManager):
                     (NEW.nationality,'treasury',365,NEW.base_rate+0.35,0.85,unixepoch()),
                     (NEW.nationality,'treasury',1095,NEW.base_rate+0.65,0.75,unixepoch()),
                     (NEW.nationality,'treasury',3650,NEW.base_rate+1.00,0.60,unixepoch());
+                INSERT OR IGNORE INTO market_rate_pressure VALUES
+                    (NEW.nationality,'funding',0,unixepoch()),
+                    (NEW.nationality,'bank_bond',0,unixepoch()),
+                    (NEW.nationality,'treasury',0,unixepoch());
             END""")
         self.execute("""CREATE TRIGGER trg_country_market_curve_policy_move
             AFTER UPDATE OF base_rate ON country_currencies
@@ -279,6 +311,7 @@ class CurrencyDB(DBManager):
         }
         for column, declaration in {
             "equity_capital": "REAL NOT NULL DEFAULT 1000000 CHECK(equity_capital > 0)",
+            "retained_earnings": "REAL NOT NULL DEFAULT 0",
             "target_capital_ratio": "REAL NOT NULL DEFAULT 0.10 CHECK(target_capital_ratio BETWEEN 0 AND 1)",
             "target_loan_deposit_ratio": "REAL NOT NULL DEFAULT 0.90 CHECK(target_loan_deposit_ratio > 0)",
             "funding_pressure_sensitivity": "REAL NOT NULL DEFAULT 0.50 CHECK(funding_pressure_sensitivity BETWEEN 0 AND 100)",
@@ -286,11 +319,27 @@ class CurrencyDB(DBManager):
             "competition_sensitivity": "REAL NOT NULL DEFAULT 0.25 CHECK(competition_sensitivity BETWEEN 0 AND 100)",
             "reserve_ratio": "REAL NOT NULL DEFAULT 0.10 CHECK(reserve_ratio BETWEEN 0 AND 1)",
             "deposit_insurance_limit": "INTEGER NOT NULL DEFAULT 50000000 CHECK(deposit_insurance_limit >= 0)",
+            "status": "TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','restricted','failed'))",
+            "failed_epoch": "REAL",
+            "last_capital_update_epoch": "REAL",
         }.items():
             if column not in institution_columns:
                 self.execute(
                     f"ALTER TABLE financial_institutions ADD COLUMN {column} {declaration}"
                 )
+        self.execute("""CREATE TABLE IF NOT EXISTS financial_institution_ledger (
+            entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            issuer TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            amount REAL NOT NULL,
+            reference_key TEXT NOT NULL,
+            created_epoch REAL NOT NULL,
+            UNIQUE(issuer,event_type,reference_key)
+        )""")
+        self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_financial_institution_ledger "
+            "ON financial_institution_ledger(issuer,created_epoch,event_type)"
+        )
         self.execute("""INSERT OR IGNORE INTO financial_institutions(issuer,nationality)
             SELECT DISTINCT p.issuer,COALESCE(p.rate_nationality,
                 (SELECT MIN(c.nationality) FROM country_currencies c
@@ -313,8 +362,12 @@ class CurrencyDB(DBManager):
         self.execute("""CREATE TRIGGER trg_market_curve_product_reprice
             AFTER UPDATE OF annual_rate ON market_rate_curve
             WHEN NEW.annual_rate IS NOT OLD.annual_rate BEGIN
-                UPDATE saving SET interest_rate=MIN(COALESCE(rate_cap,100),MAX(rate_floor,
-                    NEW.annual_rate+base_rate_spread+maturity_spread+promotional_adjustment+
+                UPDATE saving SET interest_rate=MIN(COALESCE(rate_cap,100),MAX(
+                    CASE WHEN negative_rate_allowed=1 THEN -100 ELSE rate_floor END,
+                    NEW.annual_rate+COALESCE((SELECT adjustment FROM market_rate_pressure m
+                        WHERE m.nationality=NEW.nationality
+                          AND m.benchmark_key=NEW.benchmark_key),0)+
+                    base_rate_spread+maturity_spread+promotional_adjustment+
                     COALESCE((SELECT competition_adjustment FROM financial_institutions f
                               WHERE f.issuer=saving.issuer),0)))
                 WHERE rate_type='floating' AND rate_nationality=NEW.nationality
@@ -322,7 +375,10 @@ class CurrencyDB(DBManager):
                 UPDATE liability SET interest_rate=MIN(
                     (SELECT legal_max_rate FROM country_currencies
                      WHERE nationality=NEW.nationality),COALESCE(rate_cap,100),MAX(rate_floor,
-                    NEW.annual_rate+base_rate_spread+maturity_spread+promotional_adjustment+
+                    NEW.annual_rate+COALESCE((SELECT adjustment FROM market_rate_pressure m
+                        WHERE m.nationality=NEW.nationality
+                          AND m.benchmark_key=NEW.benchmark_key),0)+
+                    base_rate_spread+maturity_spread+promotional_adjustment+
                     COALESCE((SELECT funding_spread+operating_cost_spread+liquidity_spread+
                         target_margin+competition_adjustment FROM financial_institutions f
                         WHERE f.issuer=liability.issuer),1.7)))
@@ -494,7 +550,8 @@ class CurrencyDB(DBManager):
         self.execute('''CREATE TRIGGER trg_country_floating_reprice
             AFTER UPDATE OF base_rate,legal_max_rate ON country_currencies BEGIN
                 UPDATE saving SET interest_rate=MIN(COALESCE(rate_cap,100),
-                    MAX(rate_floor,NEW.base_rate+base_rate_spread+maturity_spread+
+                    MAX(CASE WHEN negative_rate_allowed=1 THEN -100 ELSE rate_floor END,
+                        NEW.base_rate+base_rate_spread+maturity_spread+
                         promotional_adjustment+COALESCE((SELECT competition_adjustment
                         FROM financial_institutions WHERE issuer=saving.issuer),0)))
                     WHERE rate_type='floating' AND benchmark_key='policy'

@@ -2,10 +2,12 @@
 
 import math
 import time
+from datetime import datetime, timezone
 
 from database.user_db import TREASURY_USER_ID
 from functions.admin_access import resolve_user_role
 from functions.money import round_money
+from functions.interest_calc import year_fraction
 from managers.rate_manager import RateManager
 
 FUND_TYPES = {"mutual_fund", "index_fund"}
@@ -149,6 +151,7 @@ class InvestmentManager:
                         + float(product["liquidity_spread"] or 0)),
                 epoch=now,
                 original_maturity_days=int(product["maturity_days"]),
+                day_count_convention=product["day_count_convention"],
             )
             return max(1, round_money(quote["dirty_price"]))
         if kind == "mutual_fund":
@@ -248,10 +251,9 @@ class InvestmentManager:
                 if not product or product["status"] != "active":
                     continue
                 frequency = int(product["coupon_frequency_days"] or 0)
-                created = int(product["last_coupon_epoch"] or
-                              time.mktime(time.strptime(
-                                  product["created_at"], "%Y-%m-%d %H:%M:%S"
-                              )))
+                created = int(product["last_coupon_epoch"] or datetime.strptime(
+                    product["created_at"], "%Y-%m-%d %H:%M:%S"
+                ).replace(tzinfo=timezone.utc).timestamp())
                 boundary = min(now, int(product["maturity_epoch"]))
                 periods = max(0, (boundary-created)//(frequency*86400))
                 if periods <= 0:
@@ -267,7 +269,10 @@ class InvestmentManager:
                     principal = int(holder["quantity"])*int(product["face_value"])
                     coupon = round_money(
                         principal*float(product["annual_rate"])/100
-                        * periods*frequency/365
+                        * year_fraction(
+                            periods*frequency*86400,
+                            product["day_count_convention"], created,
+                        )
                     )
                     payments.append((holder["user_id"], coupon))
                     due_total += coupon

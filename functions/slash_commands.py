@@ -427,6 +427,9 @@ class SlashCommandRegistry:
         summary = discord.Embed.from_dict(embed.to_dict())
         account_lines = [
             f"• {item['product_name']} ({item['number']}): {item['balance']:,.0f} NWX"
+            + (f" · 금융기관 정리 완료 · 보험금 {item['insurance_paid']:,} NWX"
+               f" · 미보장채권 {item['uninsured_claim']:,} NWX"
+               if item.get('resolution_status') == 'resolved' else '')
             for item in info["accounts"]
         ]
         account_lines.extend(f"• 외환통장 {str(item.get('product_name') or item['product_code'])[:60]} (`{item['account_number']}`): "
@@ -504,7 +507,8 @@ class SlashCommandRegistry:
         )
         sections['loans']=[f"• {row['name'] or row['product_code']} ({row['product_code']}) · 대출 #{row['loan_id']} · 원금 {row['principal']:,} NWX · 남은 부채 {row['outstanding_balance']:,} NWX"
                            +f" · 명목 {float(row['contract_rate'] or 0):g}% · 실효 {float(row['contract_effective_rate'] or row['contract_rate'] or 0):.3f}% · APR {float(row['contract_apr'] or row['contract_rate'] or 0):.3f}% · {row['collection_status']}"
-                           +(f" · 담보 {int(row['collateral_amount'] or 0)-int(row['collateral_released'] or 0)-int(row['collateral_seized'] or 0):,} NWX" if row['collateral_amount'] else '')
+                           +(f" · 현금담보 {int(row['collateral_amount'] or 0)-int(row['collateral_released'] or 0)-int(row['collateral_seized'] or 0):,} NWX" if row['collateral_amount'] else '')
+                           +(f" · 자산담보평가 {int(row['collateral_asset_value'] or 0):,} NWX · LTV {float(row['current_ltv'] or 0)*100:.1f}%" if row['collateral_asset_value'] else '')
                            +(f" · 만기 <t:{int(row['maturity_epoch'])}:D> · /대출연장 id:{row['loan_id']}" if row['maturity_epoch'] else '') for row in loans]
         view=WalletCategoryView(user_id,summary,sections,info.get('option_short_liability',0))
         await self._reply(interaction,embed=view.build_embed(),view=view)

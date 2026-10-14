@@ -78,6 +78,17 @@ def creation_argument_lines():
         'rate_type':'금리유형', 'rate_nationality':'기준금리국가',
         'base_rate_spread':'가산금리%p', 'rate_floor':'금리하한%',
         'rate_cap':'상품금리상한%', 'repricing_cycle_seconds':'금리재산정주기(초)',
+        'negative_rate_allowed':'마이너스금리허용0/1',
+        'day_count_convention':'일수계산ACT/365·ACT/360·30/360',
+        'amortization_type':'상환방식legacy·bullet·equal_principal·annuity',
+        'payment_frequency_days':'상환간격일',
+        'coupon_frequency_days':'쿠폰지급간격일',
+        'collateral_haircut':'담보헤어컷0~1',
+        'margin_call_ltv':'마진콜LTV', 'liquidation_ltv':'청산LTV',
+        'early_withdrawal_rate':'중도해지금리%',
+        'early_withdrawal_fee_percent':'중도해지수수료%',
+        'deposit_insured':'예금보호0/1',
+        'business_day_convention':'영업일조정규칙',
     }
     return '\n'.join(
         f"**`{'company' if kind=='stock' else kind}`** → `"

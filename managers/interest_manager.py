@@ -6,6 +6,7 @@ from database.user_db import TREASURY_USER_ID
 from functions.interest_calc import calculate_compound_interest, calculate_simple_interest
 from functions.tax_calc import calculate_income_tax
 from functions.money import round_money
+from managers.bank_manager import BankManager
 from managers.rate_manager import RateManager
 
 
@@ -38,12 +39,13 @@ class InterestManager:
 
     @staticmethod
     def _period_interest(principal, annual_rate_percent, cycle_seconds, periods,
-                         convention="ACT/365"):
+                         convention="ACT/365", start_epoch=None):
         if principal <= 0 or periods <= 0:
             return 0.0
         try:
             return calculate_compound_interest(
-                principal, annual_rate_percent, periods, cycle_seconds, convention
+                principal, annual_rate_percent, periods, cycle_seconds,
+                convention, start_epoch
             )
         except (OverflowError, ValueError):
             return None
@@ -144,13 +146,13 @@ class InterestManager:
                     "next_repricing_epoch,benchmark_key,benchmark_tenor_days,repricing_lag_seconds,"
                     "contract_effective_rate "
                     "FROM accounts.accounts "
-                    "WHERE (? IS NULL OR user_id = ?)",
+                    "WHERE resolution_status='active' AND (? IS NULL OR user_id = ?)",
                     (user_id, user_id),
                 ).fetchall()
                 for account in accounts:
                     product = conn.execute(
                         "SELECT interest_rate, maturity_days, interest_cycle, compound_type, status,"
-                        "day_count_convention "
+                        "day_count_convention,issuer "
                         "FROM product.saving WHERE product_code = ?",
                         (account["product_code"],),
                     ).fetchone()
@@ -188,11 +190,13 @@ class InterestManager:
                     for periods, segment_rate, paid_until in segments:
                         gross = (self._period_interest(
                                      balance, segment_rate, cycle, periods,
-                                     product["day_count_convention"])
+                                     product["day_count_convention"],
+                                     paid_until-periods*cycle)
                                  if compound else
                                  calculate_simple_interest(
                                      principal, segment_rate, periods*cycle,
-                                     product["day_count_convention"]))
+                                     product["day_count_convention"],
+                                     paid_until-periods*cycle))
                         if gross is None or not math.isfinite(gross):
                             self._advance_account_cursor(conn, account["account_number"], now)
                             break
@@ -213,6 +217,11 @@ class InterestManager:
                             "UPDATE accounts.accounts SET balance=balance+?,last_payment=?,"
                             "last_payment_epoch=? WHERE account_number=?",
                             (net, stamp, paid_until, account["account_number"]),
+                        )
+                        RateManager.record_institution_result(
+                            conn, product["issuer"], -gross, "deposit_interest",
+                            f"account:{account['account_number']}:{paid_until}",
+                            now=paid_until,
                         )
                         balance += net
                         if tax > 0:
@@ -241,7 +250,8 @@ class InterestManager:
                     "repricing_cycle_seconds,next_repricing_epoch,benchmark_key,benchmark_tenor_days,"
                     "repricing_lag_seconds,maturity_epoch,overdue_since_epoch,overdue_last_epoch,"
                     "overdue_interest_remainder,collection_status,accelerated_epoch,defaulted_epoch,"
-                    "collateral_amount,collateral_released,collateral_seized,origination_fee "
+                    "collateral_amount,collateral_released,collateral_seized,origination_fee,"
+                    "provisioned_loss "
                     ",day_count_convention,amortization_type,payment_frequency_days "
                     "FROM accounts.loans WHERE status IN ('active','defaulted') "
                     "AND (? IS NULL OR user_id = ?)",
@@ -250,7 +260,8 @@ class InterestManager:
                 for loan in loans:
                     product = conn.execute(
                         "SELECT interest_rate,maturity_days,interest_cycle,status,delinquency_spread,"
-                        "grace_period_days,acceleration_after_days,default_after_days "
+                        "grace_period_days,acceleration_after_days,default_after_days,"
+                        "margin_call_ltv,liquidation_ltv,issuer "
                         "FROM product.liability WHERE product_code = ?",
                         (loan["product_code"],),
                     ).fetchone()
@@ -273,6 +284,14 @@ class InterestManager:
                             (now, loan["loan_id"]),
                         )
                         continue
+                    balance, _ltv, _liquidated = BankManager.revalue_asset_collateral(
+                        conn, loan["loan_id"], int(round(balance)), product
+                    )
+                    if balance <= 0:
+                        BankManager._release_collateral(
+                            conn, loan["loan_id"], str(loan["user_id"])
+                        )
+                        continue
                     maturity_days = self._number(product["maturity_days"], 0)
                     end = now
                     if maturity_days and maturity_days > 0 and created is not None:
@@ -290,7 +309,8 @@ class InterestManager:
                     for periods, segment_rate, paid_until in segments:
                         interest = self._period_interest(
                             balance, segment_rate, cycle, periods,
-                            loan["day_count_convention"]
+                            loan["day_count_convention"],
+                            paid_until-periods*cycle
                         )
                         if interest is None or not math.isfinite(interest):
                             conn.execute(
@@ -311,9 +331,20 @@ class InterestManager:
                             "last_payment_epoch=? WHERE loan_id=? AND status='active'",
                             (whole_interest, paid_until, loan["loan_id"]),
                         )
+                        RateManager.record_institution_result(
+                            conn, product["issuer"], whole_interest, "loan_interest",
+                            f"loan:{loan['loan_id']}:{paid_until}", now=paid_until,
+                        )
                         balance += whole_interest
                         charged = True
                     if loan["rate_type"] == "floating":
+                        if (loan["amortization_type"] != "legacy"
+                                and not math.isclose(float(final_rate), float(rate),
+                                                     abs_tol=1e-12)):
+                            BankManager._recast_payment_schedule(
+                                conn, loan, final_rate, end,
+                                outstanding_balance=balance,
+                            )
                         conn.execute(
                             "UPDATE accounts.loans SET contract_rate=?,next_repricing_epoch=?,"
                             "contract_effective_rate=?,contract_apr=? "
@@ -341,6 +372,9 @@ class InterestManager:
                         )
                     loan_count += int(charged)
                     self._process_overdue(conn, loan, product, now)
+                resolutions = BankManager.resolve_all_failed_institutions(conn, now=now)
+                if any(value["accounts"] for value in resolutions.values()):
+                    RateManager.refresh_all_market_pressure(conn, now=now)
             return account_count, int(total_paid), loan_count
         except Exception:
             raise
@@ -353,7 +387,8 @@ class InterestManager:
             return
         fresh = conn.execute(
             "SELECT outstanding_balance,status,overdue_last_epoch,overdue_interest_remainder,"
-            "collection_status,collateral_amount,collateral_released,collateral_seized "
+            "collection_status,collateral_amount,collateral_released,collateral_seized,"
+            "provisioned_loss "
             "FROM accounts.loans WHERE loan_id=?", (loan["loan_id"],)
         ).fetchone()
         if not fresh or int(fresh["outstanding_balance"] or 0) <= 0:
@@ -367,11 +402,18 @@ class InterestManager:
         overdue_rate = min(legal, max(0.0, float(loan["contract_rate"] or 0)
                                      + float(product["delinquency_spread"] or 0)))
         fractional = float(fresh["overdue_interest_remainder"] or 0)
-        raw_interest = calculate_simple_interest(balance, overdue_rate, max(0, now-cursor))+fractional
+        raw_interest = calculate_simple_interest(
+            balance, overdue_rate, max(0, now-cursor),
+            loan["day_count_convention"], cursor
+        )+fractional
         whole_interest = math.floor(raw_interest + 1e-12)
         remainder = raw_interest-whole_interest
         if whole_interest:
             balance += whole_interest
+            RateManager.record_institution_result(
+                conn, product["issuer"], whole_interest, "overdue_interest",
+                f"loan:{loan['loan_id']}:{cursor}:{now}", now=now,
+            )
         age_days = (now-maturity)/86400
         grace = int(product["grace_period_days"] or 0)
         acceleration = int(product["acceleration_after_days"] or 0)
@@ -390,6 +432,7 @@ class InterestManager:
                 )
         released = int(fresh["collateral_released"] or 0)
         seized = int(fresh["collateral_seized"] or 0)
+        provisioned = int(fresh["provisioned_loss"] or 0)
         if default > 0 and age_days >= default:
             state, status = "defaulted", "defaulted"
             if defaulted_epoch is None:
@@ -411,13 +454,26 @@ class InterestManager:
                     released += surplus
                 if balance <= 0:
                     balance, status, state = 0, "paid", "paid"
+                else:
+                    balance, _ltv, _liquidated = BankManager.revalue_asset_collateral(
+                        conn, loan["loan_id"], balance, product, force=True
+                    )
+                    if balance <= 0:
+                        balance, status, state = 0, "paid", "paid"
+                if balance > provisioned:
+                    new_provision = balance-provisioned
+                    RateManager.record_institution_result(
+                        conn, product["issuer"], -new_provision, "credit_loss",
+                        f"loan:{loan['loan_id']}:default", now=now,
+                    )
+                    provisioned += new_provision
         conn.execute(
             "UPDATE accounts.loans SET outstanding_balance=?,overdue_since_epoch=COALESCE("
             "overdue_since_epoch,?),overdue_last_epoch=?,overdue_interest_remainder=?,"
             "collection_status=?,accelerated_epoch=?,defaulted_epoch=?,status=?,"
-            "collateral_released=?,collateral_seized=? WHERE loan_id=?",
+            "collateral_released=?,collateral_seized=?,provisioned_loss=? WHERE loan_id=?",
             (balance, maturity, now, remainder, state, accelerated_epoch, defaulted_epoch,
-             status, released, seized, loan["loan_id"]),
+             status, released, seized, provisioned, loan["loan_id"]),
         )
 
     def process_user_interests(self, user_id, now=None):

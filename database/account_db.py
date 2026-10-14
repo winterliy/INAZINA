@@ -55,6 +55,12 @@ class AccountDB(DBManager):
             "benchmark_tenor_days": "INTEGER NOT NULL DEFAULT 0",
             "repricing_lag_seconds": "INTEGER NOT NULL DEFAULT 0",
             "contract_effective_rate": "REAL",
+            "early_withdrawal_rate": "REAL NOT NULL DEFAULT 0",
+            "early_withdrawal_fee_percent": "REAL NOT NULL DEFAULT 0",
+            "deposit_insured": "INTEGER NOT NULL DEFAULT 1",
+            "resolution_status": "TEXT NOT NULL DEFAULT 'active'",
+            "insurance_paid": "INTEGER NOT NULL DEFAULT 0",
+            "uninsured_claim": "INTEGER NOT NULL DEFAULT 0",
         }
         for column, declaration in account_rate_columns.items():
             if column not in columns:
@@ -163,6 +169,9 @@ class AccountDB(DBManager):
             ("payment_frequency_days", "INTEGER NOT NULL DEFAULT 30"),
             ("missed_payment_count", "INTEGER NOT NULL DEFAULT 0"),
             ("current_ltv", "REAL"),
+            ("collateral_asset_value", "INTEGER NOT NULL DEFAULT 0"),
+            ("collateral_liquidated_value", "INTEGER NOT NULL DEFAULT 0"),
+            ("provisioned_loss", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if column not in loan_columns:
                 self.execute(f"ALTER TABLE loans ADD COLUMN {column} {declaration}")
@@ -228,6 +237,18 @@ class AccountDB(DBManager):
                 CHECK(status IN ('scheduled','partial','paid','missed','waived')),
             UNIQUE(loan_id, installment_number)
         )""")
+        schedule_columns = {
+            row[1] for row in self.execute("PRAGMA table_info(loan_payment_schedule)")
+        }
+        for column, declaration in (
+            ("rate_applied", "REAL"),
+            ("day_count_convention", "TEXT NOT NULL DEFAULT 'ACT/365'"),
+            ("recast_epoch", "REAL"),
+        ):
+            if column not in schedule_columns:
+                self.execute(
+                    f"ALTER TABLE loan_payment_schedule ADD COLUMN {column} {declaration}"
+                )
         self.execute(
             "CREATE INDEX IF NOT EXISTS idx_loan_schedule_due "
             "ON loan_payment_schedule(status,due_epoch,loan_id)"
@@ -236,6 +257,49 @@ class AccountDB(DBManager):
             "loan_payment_schedule",
             ("principal_due", "interest_due", "fee_due", "amount_paid"),
             "schedule_id",
+        )
+        self.execute("""CREATE TABLE IF NOT EXISTS loan_collateral_assets (
+            collateral_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            loan_id INTEGER NOT NULL,
+            user_id TEXT NOT NULL,
+            asset_code TEXT NOT NULL,
+            source_account TEXT,
+            quantity REAL NOT NULL CHECK(quantity > 0),
+            average_cost INTEGER NOT NULL DEFAULT 0 CHECK(average_cost >= 0),
+            pledged_epoch REAL NOT NULL,
+            haircut REAL NOT NULL DEFAULT 0.20 CHECK(haircut BETWEEN 0 AND 1),
+            last_price INTEGER NOT NULL CHECK(last_price > 0),
+            last_value INTEGER NOT NULL CHECK(last_value >= 0),
+            status TEXT NOT NULL DEFAULT 'pledged'
+                CHECK(status IN ('pledged','released','liquidated'))
+        )""")
+        self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_loan_collateral_assets "
+            "ON loan_collateral_assets(loan_id,status)"
+        )
+        self.enforce_integer_money(
+            "loan_collateral_assets",
+            ("average_cost", "last_price", "last_value"),
+            "collateral_id",
+        )
+        self.execute("""CREATE TABLE IF NOT EXISTS deposit_insurance_claims (
+            claim_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            issuer TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            account_number TEXT NOT NULL,
+            covered_amount INTEGER NOT NULL DEFAULT 0 CHECK(covered_amount >= 0),
+            uninsured_amount INTEGER NOT NULL DEFAULT 0 CHECK(uninsured_amount >= 0),
+            resolved_epoch REAL NOT NULL,
+            UNIQUE(issuer,account_number)
+        )""")
+        self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_deposit_insurance_claims_user "
+            "ON deposit_insurance_claims(user_id,issuer,resolved_epoch)"
+        )
+        self.enforce_integer_money(
+            "deposit_insurance_claims",
+            ("covered_amount", "uninsured_amount"),
+            "claim_id",
         )
 
         self.execute(
