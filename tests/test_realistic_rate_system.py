@@ -393,12 +393,110 @@ class RealisticRateSystemTests(unittest.TestCase):
         loan = self.db.accounts.execute_one(
             "SELECT * FROM loans WHERE product_code='ASSETLOAN'"
         )
-        self.assertEqual(loan["collateral_liquidated_value"], 50_000)
+        # With no bid depth the resolution backstop applies the contractual
+        # haircut, market-impact discount, and liquidation cost.
+        self.assertGreater(loan["collateral_liquidated_value"], 0)
+        self.assertLess(loan["collateral_liquidated_value"], 50_000)
         self.assertLess(loan["outstanding_balance"], 100_000)
         treasury = self.db.assets.execute_one(
             "SELECT quantity FROM user_assets WHERE user_id='20230216' AND asset_code='COLL'"
         )
         self.assertEqual(treasury["quantity"], 125)
+        event = self.db.accounts.execute_one(
+            "SELECT * FROM collateral_liquidation_events WHERE loan_id=?", (loan["loan_id"],)
+        )
+        self.assertEqual(event["book_filled_quantity"], 0)
+        self.assertEqual(event["backstop_quantity"], 125)
+        self.assertGreater(event["liquidation_cost"], 0)
+
+    def test_income_dsr_and_repayment_history_affect_underwriting(self):
+        self.db.users.execute(
+            "UPDATE users SET annual_income=100000,income_stability=1 WHERE user_id='borrower'"
+        )
+        self.add_loan(code="DSR", collateral_ratio=0, origination_fee=0)
+        self.db.products.execute(
+            "UPDATE liability SET max_dsr_percent=50,amortization_type='bullet' "
+            "WHERE product_code='DSR'"
+        )
+        denied = BankManager(self.db).apply_loan("borrower", "DSR", 60_000)
+        self.assertFalse(denied[0])
+        self.assertIn("DSR", denied[1])
+
+        self.db.users.create_user("clean", "Clean", "낙원", 1_000_000)
+        self.db.users.execute(
+            "UPDATE users SET annual_income=1000000 WHERE user_id IN ('borrower','clean')"
+        )
+        self.add_loan(code="HISTORY", collateral_ratio=0, origination_fee=0)
+        self.db.products.execute(
+            "UPDATE liability SET borrower_history_spread_max=6 WHERE product_code='HISTORY'"
+        )
+        self.db.accounts.execute(
+            "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,status,"
+            "missed_payment_count,contract_rate) VALUES ('borrower','OLD',1000,1000,'defaulted',5,5)"
+        )
+        self.assertTrue(BankManager(self.db).apply_loan(
+            "borrower", "HISTORY", 10_000
+        )[0])
+        self.assertTrue(BankManager(self.db).apply_loan(
+            "clean", "HISTORY", 10_000
+        )[0])
+        risky = self.db.accounts.execute_one(
+            "SELECT contract_rate,borrower_risk_score,underwriting_dsr FROM loans "
+            "WHERE user_id='borrower' AND product_code='HISTORY'"
+        )
+        clean = self.db.accounts.execute_one(
+            "SELECT contract_rate,borrower_risk_score FROM loans "
+            "WHERE user_id='clean' AND product_code='HISTORY'"
+        )
+        self.assertGreater(risky["contract_rate"], clean["contract_rate"])
+        self.assertLess(risky["borrower_risk_score"], clean["borrower_risk_score"])
+        self.assertIsNotNone(risky["underwriting_dsr"])
+
+    def test_mandatory_finance_cost_is_included_in_legal_maximum(self):
+        self.add_loan(code="COSTCAP", collateral_ratio=0, origination_fee=0)
+        self.db.products.execute(
+            "UPDATE liability SET interest_rate=5,maturity_days=365,"
+            "mandatory_cost_percent=20 WHERE product_code='COSTCAP'"
+        )
+        result = BankManager(self.db).apply_loan("borrower", "COSTCAP", 10_000)
+        self.assertFalse(result[0])
+        self.assertIn("법정최고이자", result[1])
+
+    def test_collateral_liquidation_consumes_resting_buy_bid(self):
+        self.add_loan(code="BIDLOAN", collateral_ratio=1, origination_fee=0)
+        self.db.products.execute(
+            "UPDATE liability SET collateral_haircut=.2,margin_call_ltv=.85,"
+            "liquidation_ltv=1,liquidation_cost_percent=2 WHERE product_code='BIDLOAN'"
+        )
+        self.db.assets.execute(
+            "INSERT INTO market_assets(code,name,exchange_id,price,type,quote_currency) "
+            "VALUES ('BIDCOLL','Bid Collateral','EX',1000,'stock','NWX')"
+        )
+        self.db.assets.execute(
+            "INSERT INTO user_assets(user_id,asset_code,quantity,average_cost) "
+            "VALUES ('borrower','BIDCOLL',125,900)"
+        )
+        self.db.users.create_user("buyer", "Buyer", "낙원", 0)
+        self.db.assets.execute(
+            "INSERT INTO market_orders(user_id,asset_code,side,limit_price,quantity,"
+            "remaining_quantity,reserved_cash,order_kind,status,created_epoch,updated_epoch) "
+            "VALUES ('buyer','BIDCOLL','buy',450,125,125,56250,'asset','open',1,1)"
+        )
+        self.assertTrue(BankManager(self.db).apply_loan(
+            "borrower", "BIDLOAN", 100_000, 0, "BIDCOLL", 125
+        )[0])
+        self.db.assets.execute("UPDATE market_assets SET price=500 WHERE code='BIDCOLL'")
+        InterestManager(self.db).process_user_interests("borrower")
+        event = self.db.accounts.execute_one(
+            "SELECT * FROM collateral_liquidation_events WHERE asset_code='BIDCOLL'"
+        )
+        self.assertEqual(event["book_filled_quantity"], 125)
+        self.assertEqual(event["backstop_quantity"], 0)
+        self.assertEqual(event["gross_proceeds"], 56_250)
+        self.assertEqual(event["net_proceeds"], 55_125)
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT quantity FROM user_assets WHERE user_id='buyer' AND asset_code='BIDCOLL'"
+        )["quantity"], 125)
 
     def test_periodic_bond_quote_has_clean_dirty_and_curve_mark(self):
         with self.db.readonly() as conn:

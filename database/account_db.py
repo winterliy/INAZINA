@@ -172,6 +172,11 @@ class AccountDB(DBManager):
             ("collateral_asset_value", "INTEGER NOT NULL DEFAULT 0"),
             ("collateral_liquidated_value", "INTEGER NOT NULL DEFAULT 0"),
             ("provisioned_loss", "INTEGER NOT NULL DEFAULT 0"),
+            ("mandatory_cost_fee", "INTEGER NOT NULL DEFAULT 0"),
+            ("underwriting_dti", "REAL"),
+            ("underwriting_dsr", "REAL"),
+            ("borrower_risk_score", "REAL"),
+            ("underwriting_income", "INTEGER NOT NULL DEFAULT 0"),
         ):
             if column not in loan_columns:
                 self.execute(f"ALTER TABLE loans ADD COLUMN {column} {declaration}")
@@ -219,7 +224,7 @@ class AccountDB(DBManager):
         )
         self.enforce_integer_money(
             "loans",
-            ("principal", "outstanding_balance", "origination_fee", "collateral_amount", "collateral_seized"),
+            ("principal", "outstanding_balance", "origination_fee", "mandatory_cost_fee", "collateral_amount", "collateral_seized", "underwriting_income"),
             "loan_id",
         )
 
@@ -281,6 +286,45 @@ class AccountDB(DBManager):
             "loan_collateral_assets",
             ("average_cost", "last_price", "last_value"),
             "collateral_id",
+        )
+        collateral_columns = {
+            row[1] for row in self.execute("PRAGMA table_info(loan_collateral_assets)")
+        }
+        for column, declaration in (
+            ("liquidation_price", "INTEGER NOT NULL DEFAULT 0"),
+            ("liquidation_cost", "INTEGER NOT NULL DEFAULT 0"),
+            ("liquidation_proceeds", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if column not in collateral_columns:
+                self.execute(
+                    f"ALTER TABLE loan_collateral_assets ADD COLUMN {column} {declaration}"
+                )
+        self.enforce_integer_money(
+            "loan_collateral_assets",
+            ("average_cost", "last_price", "last_value", "liquidation_price",
+             "liquidation_cost", "liquidation_proceeds"),
+            "collateral_id",
+        )
+        self.execute("""CREATE TABLE IF NOT EXISTS collateral_liquidation_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            loan_id INTEGER NOT NULL,
+            collateral_id INTEGER NOT NULL,
+            asset_code TEXT NOT NULL,
+            quantity REAL NOT NULL CHECK(quantity > 0),
+            mark_price INTEGER NOT NULL CHECK(mark_price > 0),
+            execution_price REAL NOT NULL CHECK(execution_price >= 0),
+            gross_proceeds INTEGER NOT NULL DEFAULT 0 CHECK(gross_proceeds >= 0),
+            liquidation_cost INTEGER NOT NULL DEFAULT 0 CHECK(liquidation_cost >= 0),
+            net_proceeds INTEGER NOT NULL DEFAULT 0 CHECK(net_proceeds >= 0),
+            book_filled_quantity REAL NOT NULL DEFAULT 0,
+            backstop_quantity REAL NOT NULL DEFAULT 0,
+            liquidated_epoch REAL NOT NULL,
+            UNIQUE(collateral_id)
+        )""")
+        self.enforce_integer_money(
+            "collateral_liquidation_events",
+            ("mark_price", "gross_proceeds", "liquidation_cost", "net_proceeds"),
+            "event_id",
         )
         self.execute("""CREATE TABLE IF NOT EXISTS deposit_insurance_claims (
             claim_id INTEGER PRIMARY KEY AUTOINCREMENT,

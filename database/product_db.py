@@ -269,6 +269,14 @@ class ProductDB(DBManager):
             "early_withdrawal_fee_percent": "REAL NOT NULL DEFAULT 0 CHECK(early_withdrawal_fee_percent BETWEEN 0 AND 100)",
             "deposit_insured": "INTEGER NOT NULL DEFAULT 1 CHECK(deposit_insured IN (0,1))",
             "business_day_convention": "TEXT NOT NULL DEFAULT 'following' CHECK(business_day_convention IN ('none','following','modified_following','preceding'))",
+            # Zero keeps legacy products available until an administrator opts
+            # into income-based underwriting for that product.
+            "max_dti_percent": "REAL NOT NULL DEFAULT 0 CHECK(max_dti_percent BETWEEN 0 AND 100)",
+            "max_dsr_percent": "REAL NOT NULL DEFAULT 0 CHECK(max_dsr_percent BETWEEN 0 AND 100)",
+            "borrower_history_spread_max": "REAL NOT NULL DEFAULT 0 CHECK(borrower_history_spread_max BETWEEN 0 AND 100)",
+            "affordability_spread_max": "REAL NOT NULL DEFAULT 0 CHECK(affordability_spread_max BETWEEN 0 AND 100)",
+            "mandatory_cost_percent": "REAL NOT NULL DEFAULT 0 CHECK(mandatory_cost_percent BETWEEN 0 AND 100)",
+            "liquidation_cost_percent": "REAL NOT NULL DEFAULT 2 CHECK(liquidation_cost_percent BETWEEN 0 AND 100)",
         }
         for column, declaration in definitions.items():
             if column not in existing_columns:

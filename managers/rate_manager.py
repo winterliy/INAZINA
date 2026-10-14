@@ -400,7 +400,39 @@ class RateManager:
         funding_ratio = loans/max(1.0, deposits_value+equity)
         funding_target = max(-2.0, min(10.0, (funding_ratio-.90)*.75))
         default_ratio = float(loan_row["bad"] or 0)/max(1.0, loans)
-        bank_bond_target = max(-2.0, min(15.0, funding_target+default_ratio*5.0))
+        institution_pressure = 0.0
+        pressure_weight = 0.0
+        for institution in conn.execute(
+            "SELECT issuer,target_loan_deposit_ratio,target_capital_ratio,"
+            "funding_pressure_sensitivity,capital_pressure_sensitivity "
+            "FROM financial_institutions WHERE nationality=? AND status<>'failed'",
+            (country,),
+        ):
+            sheet = RateManager.institution_balance_sheet(conn, institution["issuer"])
+            bank_loans = float(sheet["loans"])
+            if bank_loans <= 0:
+                continue
+            terms = RateManager.institution_components(conn, institution["issuer"])
+            ldr = bank_loans/max(1.0, float(sheet["deposits"]))
+            ldr_target = max(.01, float(institution["target_loan_deposit_ratio"] or .9))
+            ldr_gap = max(-1.0, min(5.0, (ldr-ldr_target)/ldr_target))
+            capital_ratio = float(terms["effective_equity"])/max(1.0, bank_loans*.75)
+            capital_target = max(.001, float(institution["target_capital_ratio"] or .1))
+            capital_gap = max(-1.0, min(5.0,
+                (capital_target-capital_ratio)/capital_target
+            ))
+            weight = max(1.0, bank_loans)
+            institution_pressure += weight*(
+                ldr_gap*float(institution["funding_pressure_sensitivity"] or 0)
+                + capital_gap*float(institution["capital_pressure_sensitivity"] or 0)
+            )
+            pressure_weight += weight
+        balance_sheet_pressure = (
+            institution_pressure/pressure_weight if pressure_weight else 0.0
+        )
+        bank_bond_target = max(-2.0, min(
+            15.0, funding_target+default_ratio*5.0+balance_sheet_pressure
+        ))
         debt_demand = float(treasury["sold"] or 0)/max(1.0, float(treasury["total"] or 0))
         # A well-covered issue indicates stronger demand and therefore lower
         # required yield; a poorly covered issue adds an issuance premium.

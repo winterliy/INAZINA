@@ -423,6 +423,11 @@ class SlashCommandRegistry:
         except (TypeError, ValueError, OverflowError):
             credit_score = 0
         embed.add_field(name="💳 신용 점수", value=f"```{credit_score:,}점```", inline=True)
+        embed.add_field(
+            name="💼 심사 연소득",
+            value=f"```{int(user_data['annual_income'] or 0):,} NWX```",
+            inline=True,
+        )
         # Freeze the complete financial summary before adding category details.
         summary = discord.Embed.from_dict(embed.to_dict())
         account_lines = [

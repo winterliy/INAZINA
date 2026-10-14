@@ -261,7 +261,7 @@ class InterestManager:
                     product = conn.execute(
                         "SELECT interest_rate,maturity_days,interest_cycle,status,delinquency_spread,"
                         "grace_period_days,acceleration_after_days,default_after_days,"
-                        "margin_call_ltv,liquidation_ltv,issuer "
+                        "margin_call_ltv,liquidation_ltv,liquidation_cost_percent,issuer "
                         "FROM product.liability WHERE product_code = ?",
                         (loan["product_code"],),
                     ).fetchone()

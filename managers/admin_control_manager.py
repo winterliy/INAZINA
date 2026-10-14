@@ -337,6 +337,13 @@ class AdminControlManager:
                         margin_call_ltv=margin_ltv,
                         liquidation_ltv=liquidation_ltv,
                     )
+                    for field in (
+                        'max_dti_percent', 'max_dsr_percent',
+                        'borrower_history_spread_max', 'affordability_spread_max',
+                        'mandatory_cost_percent', 'liquidation_cost_percent',
+                    ):
+                        if field in merged:
+                            values[field] = self._number(merged[field], 0, 100)
             if category=='stock':
                 if existing and values.get('exchange_id',existing['exchange_id'])!=existing['exchange_id']:
                     from managers.els_manager import ELSManager
@@ -526,7 +533,7 @@ class AdminControlManager:
     def user(self,actor,user_id,changes):
         with self.db.atomic(('users','system')) as conn:
             self.require(actor,conn)
-            if not changes or set(changes)-{'nickname','nationality','cash','credit_score','status','role'}:
+            if not changes or set(changes)-{'nickname','nationality','cash','credit_score','annual_income','income_stability','status','role'}:
                 raise ValueError("허용된 사용자 필드를 입력해주세요.")
             user = conn.execute("SELECT * FROM users WHERE user_id=?",(user_id,)).fetchone()
             if not user or user_id==TREASURY_USER_ID:
@@ -542,9 +549,13 @@ class AdminControlManager:
                     account = conn.execute("SELECT balance_units FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'",(user_id,new[0])).fetchone()
                     if account and int(account[0] or 0):
                         raise ValueError('새 국적 통화의 외환통장 잔액을 먼저 0으로 정산해주세요.')
-            for key in ('cash','credit_score'):
+            for key in ('cash','credit_score','annual_income'):
                 if key in changes:
                     changes[key] = self._number(changes[key],0,1000 if key=='credit_score' else 2**53-1,integer=True)
+            if 'income_stability' in changes:
+                changes['income_stability'] = self._number(
+                    changes['income_stability'], 0, 1
+                )
             if changes.get('role',user['role']) not in {'admin','user','nation'} or changes.get('status',user['status']) not in {'active','inactive','bankrupt'}:
                 raise ValueError("role/status 값을 확인해주세요.")
             if user_id==str(actor) and (changes.get('role')=='user' or changes.get('status') in {'inactive','bankrupt'}):

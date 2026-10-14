@@ -188,7 +188,11 @@ $상품생성 CALL1 option INZST001 call 1500 30 1 100 50
 | `repricing_cycle_seconds` / `repricing_lag_seconds` | 계약 재산정 주기와 지표 관측 지연(초). 재산정주기는 `interest_cycle`의 정수배다. |
 | `credit_spread_max` / `collateral_discount_max` | 신용점수에 따른 최대 가산금리와 담보에 따른 최대 할인금리(%p). |
 | `collateral_required_ratio` / `origination_fee_percent` | 대출 최소 담보비율과 선취 취급수수료율. |
+| `max_dti_percent` / `max_dsr_percent` | 소득기반 심사 한도(%). 0은 기존 상품 호환을 위한 미사용, 양수이면 사용자 `annual_income` 등록이 필수다. |
+| `borrower_history_spread_max` / `affordability_spread_max` | 연체·부도 이력과 DTI/DSR 사용률에 따른 최대 계약 가산금리(%p). |
+| `mandatory_cost_percent` | 의무 보험·중개 등 법정최고이자 및 APR에 산입할 선취 비용률. |
 | `collateral_haircut` / `margin_call_ltv` / `liquidation_ltv` | 자산담보 평가 차감률, 마진콜 LTV, 강제청산 LTV. 청산 LTV는 마진콜 이상이어야 한다. |
+| `liquidation_cost_percent` | 강제청산 총매각대금에서 차감할 집행 비용률. 매수호가가 부족한 잔량에는 유동성 기반 시장충격도 적용한다. |
 | `amortization_type` / `payment_frequency_days` | 대출 상환 방식(`legacy`, `bullet`, `equal_principal`, `annuity`)과 약정 납부 간격. 새 방식은 회차별 상환표를 생성한다. |
 | `day_count_convention` | 이자 일수 계산 방식. `ACT/365`, `ACT/360`, `30/360`. |
 | `coupon_frequency_days` | 국채·회사채 쿠폰 지급 간격. `0`은 만기 일괄 이자, 양수는 정기 쿠폰이다. |

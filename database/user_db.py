@@ -27,6 +27,13 @@ class UserDB(DBManager):
             self.execute("ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'")
         except:
             pass
+        user_columns = {row[1] for row in self.execute("PRAGMA table_info(users)")}
+        for column, declaration in (
+            ("annual_income", "INTEGER NOT NULL DEFAULT 0 CHECK(annual_income >= 0)"),
+            ("income_stability", "REAL NOT NULL DEFAULT 1 CHECK(income_stability BETWEEN 0 AND 1)"),
+        ):
+            if column not in user_columns:
+                self.execute(f"ALTER TABLE users ADD COLUMN {column} {declaration}")
         with self.lock, self.conn:
             legacy_rows = self.conn.execute(
                 "SELECT user_id,cash FROM users WHERE user_id IN (?,?)",
@@ -71,7 +78,7 @@ class UserDB(DBManager):
                 self.conn.execute(
                     "DELETE FROM users WHERE user_id IN (?,?)", LEGACY_TREASURY_USER_IDS
                 )
-        self.enforce_integer_money("users", ("cash",), "user_id")
+        self.enforce_integer_money("users", ("cash", "annual_income"), "user_id")
 
     def create_user(self, user_id, nickname, nationality, cash=1000000, role='user'):
         self.execute("INSERT OR IGNORE INTO users (user_id, nickname, nationality, cash, role) VALUES (?, ?, ?, ?, ?)", 
