@@ -277,6 +277,8 @@ class ProductDB(DBManager):
             "affordability_spread_max": "REAL NOT NULL DEFAULT 0 CHECK(affordability_spread_max BETWEEN 0 AND 100)",
             "mandatory_cost_percent": "REAL NOT NULL DEFAULT 0 CHECK(mandatory_cost_percent BETWEEN 0 AND 100)",
             "liquidation_cost_percent": "REAL NOT NULL DEFAULT 2 CHECK(liquidation_cost_percent BETWEEN 0 AND 100)",
+            "prepayment_fee_percent": "REAL NOT NULL DEFAULT 0 CHECK(prepayment_fee_percent BETWEEN 0 AND 100)",
+            "prepayment_fee_decline_days": "INTEGER NOT NULL DEFAULT 0 CHECK(prepayment_fee_decline_days >= 0)",
         }
         for column, declaration in definitions.items():
             if column not in existing_columns:

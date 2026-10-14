@@ -177,12 +177,20 @@ class AccountDB(DBManager):
             ("underwriting_dsr", "REAL"),
             ("borrower_risk_score", "REAL"),
             ("underwriting_income", "INTEGER NOT NULL DEFAULT 0"),
+            ("prepayment_fee_percent", "REAL NOT NULL DEFAULT 0"),
+            ("prepayment_fee_decline_days", "INTEGER NOT NULL DEFAULT 0"),
+            ("prepayment_fees_paid", "INTEGER NOT NULL DEFAULT 0"),
+            ("quote_currency", "TEXT NOT NULL DEFAULT 'NWX'"),
         ):
             if column not in loan_columns:
                 self.execute(f"ALTER TABLE loans ADD COLUMN {column} {declaration}")
         self.execute(
             "UPDATE loans SET contract_rate=COALESCE(contract_rate, "
             "(SELECT interest_rate FROM liability p WHERE p.product_code=loans.product_code), 0)"
+        )
+        self.execute(
+            "UPDATE loans SET quote_currency=COALESCE((SELECT quote_currency FROM liability p "
+            "WHERE p.product_code=loans.product_code),quote_currency,'NWX')"
         )
         # Fix each contract's maturity rather than changing existing loans when
         # an administrator edits the product's duration.
@@ -262,6 +270,24 @@ class AccountDB(DBManager):
             "loan_payment_schedule",
             ("principal_due", "interest_due", "fee_due", "amount_paid"),
             "schedule_id",
+        )
+        self.execute("""CREATE TABLE IF NOT EXISTS contract_rate_reset_history (
+            reset_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            contract_type TEXT NOT NULL CHECK(contract_type IN ('account','loan')),
+            contract_id TEXT NOT NULL,
+            old_rate REAL NOT NULL,
+            new_rate REAL NOT NULL,
+            scheduled_epoch REAL NOT NULL,
+            observation_epoch REAL NOT NULL,
+            applied_epoch REAL NOT NULL,
+            benchmark_key TEXT NOT NULL,
+            benchmark_tenor_days INTEGER NOT NULL DEFAULT 0,
+            installments_recast INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(contract_type,contract_id,scheduled_epoch)
+        )""")
+        self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_contract_rate_reset_history_contract "
+            "ON contract_rate_reset_history(contract_type,contract_id,scheduled_epoch)"
         )
         self.execute("""CREATE TABLE IF NOT EXISTS loan_collateral_assets (
             collateral_id INTEGER PRIMARY KEY AUTOINCREMENT,

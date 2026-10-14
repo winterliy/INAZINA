@@ -270,6 +270,76 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertIsNotNone(after["recast_epoch"])
         self.assertNotEqual(after["rate_applied"], before["rate_applied"])
         self.assertGreater(after["interest_due"], before["interest_due"])
+        reset = self.db.accounts.execute_one(
+            "SELECT * FROM contract_rate_reset_history WHERE contract_type='loan' "
+            "AND contract_id=? ORDER BY scheduled_epoch DESC LIMIT 1",
+            (str(loan["loan_id"]),),
+        )
+        self.assertIsNotNone(reset)
+        self.assertEqual(reset["benchmark_key"], "bank_bond")
+        self.assertGreater(reset["installments_recast"], 0)
+
+    def test_manual_prepayment_charges_snapshotted_declining_fee(self):
+        self.add_loan(code="PREPAY", collateral_ratio=0, origination_fee=0)
+        self.db.products.execute(
+            "UPDATE liability SET rate_type='fixed',interest_rate=0,"
+            "prepayment_fee_percent=2,prepayment_fee_decline_days=0 "
+            "WHERE product_code='PREPAY'"
+        )
+        bank = BankManager(self.db)
+        self.assertTrue(bank.apply_loan("borrower", "PREPAY", 1_000)[0])
+        # Later product edits must not rewrite the signed contract.
+        self.db.products.execute(
+            "UPDATE liability SET prepayment_fee_percent=0 WHERE product_code='PREPAY'"
+        )
+        ok, message = bank.repay_loan("borrower", "PREPAY", 500)
+        self.assertTrue(ok, message)
+        self.assertIn("중도상환수수료 10 NWX", message)
+        loan = self.db.accounts.execute_one(
+            "SELECT outstanding_balance,prepayment_fees_paid FROM loans "
+            "WHERE product_code='PREPAY'"
+        )
+        self.assertEqual((loan["outstanding_balance"], loan["prepayment_fees_paid"]),
+                         (500, 10))
+        ledger = self.db.currency.execute_one(
+            "SELECT amount,currency_code FROM financial_institution_ledger "
+            "WHERE event_type='prepayment_fee'"
+        )
+        self.assertEqual((ledger["amount"], ledger["currency_code"]), (10, "NWX"))
+
+    def test_contract_amounts_follow_product_currency_precision(self):
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('USD','Dollar','1',2)"
+        )
+        self.db.currency.execute(
+            "INSERT INTO country_currencies(nationality,currency_code) VALUES ('US','USD')"
+        )
+        self.db.users.create_user("usd-user", "USD user", "US", 100.125)
+        self.assertEqual(self.db.users.get_user("usd-user")["cash"], 100.13)
+        self.db.products.execute(
+            "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"
+            "interest_cycle,compound_type,issuer,quote_currency) VALUES "
+            "('USD-SAVE','USD saving',0,1.005,365,31536000,0,'US Bank','USD')"
+        )
+        self.assertEqual(
+            self.db.products.get_saving("USD-SAVE")["deposit_amount"], 1.01
+        )
+        bank = BankManager(self.db)
+        ok, message = bank.open_account("usd-user", "USD-SAVE", "1234", 10.55)
+        self.assertTrue(ok, message)
+        account = self.db.accounts.execute_one(
+            "SELECT account_number,balance FROM accounts WHERE product_code='USD-SAVE'"
+        )
+        self.assertEqual(account["balance"], 10.55)
+        self.assertEqual(self.db.users.get_user("usd-user")["cash"], 89.58)
+        self.db.accounts.execute(
+            "UPDATE accounts SET balance=1.239 WHERE account_number=?",
+            (account["account_number"],),
+        )
+        self.assertEqual(
+            self.db.accounts.get_account(account["account_number"])["balance"], 1.24
+        )
 
     def test_reserve_and_capital_constraints_reject_excess_new_loan(self):
         self.add_loan(code="REGULATED", collateral_ratio=0, origination_fee=0)

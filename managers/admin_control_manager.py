@@ -8,6 +8,7 @@ from managers.stochastic_price_engine import GarchConfig
 from managers.auto_target_engine import AutoTargetConfig
 from managers.rate_manager import RateManager
 from database.db_manager import DBManager
+from functions.money import parse_currency_money
 
 ENTITIES = {
     'stock': ('company','company_code','share_price','total_shares'),
@@ -179,8 +180,10 @@ class AdminControlManager:
                 values['currency_code']=str(values['currency_code']).strip().upper()
             if 'quote_currency' in values:
                 values['quote_currency']=str(values['quote_currency']).strip().upper()
-                if category not in {'stock','asset','commodity','currencyproduct'} and values['quote_currency']!='NWX':
-                    raise ValueError('외화 결제 종목은 주식·현물 원자재만 지원합니다.')
+                if category not in {
+                    'stock','asset','commodity','currencyproduct','saving','loan'
+                } and values['quote_currency']!='NWX':
+                    raise ValueError('이 상품 유형은 외화 결제를 지원하지 않습니다.')
                 if not conn.execute("SELECT 1 FROM currencies WHERE code=? AND status='active'",(values['quote_currency'],)).fetchone():
                     raise ValueError('활성 결제 통화를 입력해주세요.')
                 if category=='asset' and values['quote_currency']!='NWX' and extra.get('type',(dict(existing) if existing else {}).get('type','stock')) not in {'stock','주식','commodity_spot'}:
@@ -190,7 +193,15 @@ class AdminControlManager:
             if name and 'name' in columns:
                 values['name'] = name[:100]
             if price and price_key:
-                values[price_key] = self._number(price,1,integer=True)
+                price_currency = str(
+                    values.get('quote_currency')
+                    or (existing['quote_currency'] if existing and 'quote_currency' in existing.keys() else 'NWX')
+                ).upper()
+                values[price_key] = parse_currency_money(
+                    conn, price, price_currency, minimum=0
+                )
+                if values[price_key] <= 0:
+                    raise ValueError("양의 가격을 입력해주세요.")
             if supply and supply_key:
                 values[supply_key] = self._number(supply,1,integer=True)
             if operation=='create':
@@ -209,6 +220,26 @@ class AdminControlManager:
                     values['manager'] = 'Inazina 국고'
                     values['nav_anchor'] = values['unit_price']
             merged = {**(dict(existing) if existing else {}),**values}
+            money_fields = {
+                'stock': {'capital','share_price','liquidation_value_per_share','dividend_per_share'},
+                'asset': {'price','dividend_per_share'},
+                'saving': {'deposit_amount'},
+                'currencyproduct': {'deposit_amount'},
+                'loan': {'loan_limit','repayment_amount'},
+                'etf': {'unit_price','face_value','dividend_per_share'},
+                'future': {'unit_price','face_value','dividend_per_share'},
+                'corporatebond': {'unit_price','face_value','dividend_per_share'},
+                'fund': {'unit_price','face_value','dividend_per_share'},
+                'indexfund': {'unit_price','face_value','dividend_per_share'},
+                'commodity': {'unit_price','face_value','dividend_per_share'},
+                'bond': {'market_price','face_value'},
+            }.get(category, set())
+            denomination = str(merged.get('quote_currency') or 'NWX').upper()
+            for field in money_fields & values.keys():
+                values[field] = parse_currency_money(
+                    conn, values[field], denomination, minimum=0
+                )
+            merged = {**merged, **values}
             if category in {'saving','loan','currencyproduct'}:
                 rate_type = str(merged.get('rate_type') or 'fixed').strip().lower()
                 if rate_type not in {'fixed','floating'}:
@@ -341,9 +372,14 @@ class AdminControlManager:
                         'max_dti_percent', 'max_dsr_percent',
                         'borrower_history_spread_max', 'affordability_spread_max',
                         'mandatory_cost_percent', 'liquidation_cost_percent',
+                        'prepayment_fee_percent',
                     ):
                         if field in merged:
                             values[field] = self._number(merged[field], 0, 100)
+                    values['prepayment_fee_decline_days'] = self._number(
+                        merged.get('prepayment_fee_decline_days', 0), 0, 36500,
+                        integer=True,
+                    )
             if category=='stock':
                 if existing and values.get('exchange_id',existing['exchange_id'])!=existing['exchange_id']:
                     from managers.els_manager import ELSManager
@@ -372,14 +408,23 @@ class AdminControlManager:
                     raise ValueError('dividend_funding은 treasury(국고) 또는 issuer(법인현금)입니다.')
                 if merged.get('dividend_funding')=='issuer' and merged.get('quote_currency','NWX')!='NWX':
                     raise ValueError('법인현금 재원 배당은 NWX 결제 회사만 지원합니다.')
-                for field,maximum in (('dividend_priority',1000),('cumulative_dividend',1),('liquidation_value_per_share',2**53-1)):
+                for field,maximum in (('dividend_priority',1000),('cumulative_dividend',1)):
                     if field in values:values[field]=self._number(values[field],0,maximum,integer=True)
+                if 'liquidation_value_per_share' in values:
+                    values['liquidation_value_per_share'] = parse_currency_money(
+                        conn, values['liquidation_value_per_share'], denomination,
+                        minimum=0,
+                    )
                 if share_class=='common' and (int(values.get('dividend_priority',merged.get('dividend_priority',0))) or int(values.get('cumulative_dividend',merged.get('cumulative_dividend',0)))):
                     raise ValueError('배당 우선순위·누적배당은 우선주에만 설정할 수 있습니다.')
-            for field,maximum in (('dividend_cycle_seconds',10*365*86400),('dividend_per_share',2**53-1),
+            for field,maximum in (('dividend_cycle_seconds',10*365*86400),
                                   ('dividend_is_active',1),('extension_min_credit_score',1000),('extension_days',3650)):
                 if field in values:
                     values[field]=self._number(values[field],0,maximum,integer=True)
+            if 'dividend_per_share' in values:
+                values['dividend_per_share'] = parse_currency_money(
+                    conn, values['dividend_per_share'], denomination, minimum=0
+                )
             if 'dividend_next_epoch' in extra:
                 raise ValueError('다음 배당 시각은 배당 주기로 자동 관리합니다.')
             if any(field in values for field in ('dividend_cycle_seconds','dividend_per_share','dividend_is_active','dividend_mode','dividend_percent')):
@@ -388,7 +433,7 @@ class AdminControlManager:
                 if dividend_type not in CorporateActionsManager.DIVIDEND_TYPES:
                     raise ValueError('정기배당은 주식·우선주·ETF·펀드·현물 상품만 지원합니다.')
                 cycle=int(values.get('dividend_cycle_seconds',merged.get('dividend_cycle_seconds',0)))
-                amount=int(values.get('dividend_per_share',merged.get('dividend_per_share',0)))
+                amount=float(values.get('dividend_per_share',merged.get('dividend_per_share',0)))
                 mode=values.get('dividend_mode')
                 if mode is None:
                     mode='percent' if 'dividend_percent' in values else 'fixed' if 'dividend_per_share' in values else merged.get('dividend_mode','fixed')
@@ -402,9 +447,14 @@ class AdminControlManager:
                 active=int(values.get('dividend_is_active',merged.get('dividend_is_active',1)))
                 dividend_value=amount if mode=='fixed' else percent
                 values['dividend_next_epoch']=int(time.time())+cycle if active and cycle>0 and dividend_value>0 else None
-            for field in (price_key,supply_key):
-                if field and field in values and values[field] is not None:
-                    values[field]=self._number(values[field],1,integer=True)
+            if price_key and price_key in values and values[price_key] is not None:
+                values[price_key] = parse_currency_money(
+                    conn, values[price_key], denomination, minimum=0
+                )
+                if values[price_key] <= 0:
+                    raise ValueError('양의 가격을 입력해주세요.')
+            if supply_key and supply_key in values and values[supply_key] is not None:
+                values[supply_key]=self._number(values[supply_key],1,integer=True)
             if existing and supply_key and supply_key in values:
                 issued = conn.execute("SELECT COALESCE(SUM(quantity),0) FROM user_assets WHERE asset_code=?",(code,)).fetchone()[0]
                 issued += conn.execute("SELECT COALESCE(SUM(quantity),0) FROM option_collateral_lots WHERE underlying_code=?",(code,)).fetchone()[0]
@@ -544,14 +594,26 @@ class AdminControlManager:
                 old = conn.execute('SELECT currency_code FROM country_currencies WHERE nationality=?',(user['nationality'],)).fetchone()
                 new = conn.execute('SELECT currency_code FROM country_currencies WHERE nationality=?',(changes['nationality'],)).fetchone()
                 if old and new and old[0] != new[0]:
-                    if int(user['cash'] or 0):
+                    if float(user['cash'] or 0):
                         raise ValueError('국적 통화를 변경하려면 기존 cash 잔고를 먼저 0으로 정산해주세요.')
                     account = conn.execute("SELECT balance_units FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'",(user_id,new[0])).fetchone()
                     if account and int(account[0] or 0):
                         raise ValueError('새 국적 통화의 외환통장 잔액을 먼저 0으로 정산해주세요.')
-            for key in ('cash','credit_score','annual_income'):
+            if 'credit_score' in changes:
+                changes['credit_score'] = self._number(
+                    changes['credit_score'], 0, 1000, integer=True
+                )
+            target_nationality = changes.get('nationality', user['nationality'])
+            currency_row = conn.execute(
+                "SELECT currency_code FROM country_currencies WHERE nationality=?",
+                (target_nationality,),
+            ).fetchone()
+            currency = str(currency_row[0]) if currency_row else 'NWX'
+            for key in ('cash','annual_income'):
                 if key in changes:
-                    changes[key] = self._number(changes[key],0,1000 if key=='credit_score' else 2**53-1,integer=True)
+                    changes[key] = parse_currency_money(
+                        conn, changes[key], currency, minimum=0
+                    )
             if 'income_stability' in changes:
                 changes['income_stability'] = self._number(
                     changes['income_stability'], 0, 1

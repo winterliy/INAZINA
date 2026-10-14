@@ -76,7 +76,7 @@ DB Browser에서는 `country_currencies`를 수정하거나 `$금리수정`, `$�
 - 변동금리는 `benchmark_key`(`policy`, `funding`, `bank_bond`, `treasury`)와 `benchmark_tenor_days`로 지표·만기를 지정한다. 만기 사이에서는 금리 자체가 아니라 로그 할인계수를 보간해 일관된 할인계수를 만든다.
 - 예금금리는 지표에 상품 만기·프로모션·경쟁 조정을 더한다. 대출금리는 여기에 금융기관 조달·운영·유동성 비용과 목표마진을 더한다. 기관의 실제 예금·대출 잔액, 자기자본비율, 목표 예대율, 시장점유율도 신규 계약과 광고금리 재산정의 동적 가산·할인에 반영된다.
 - 대출 계약은 신용점수뿐 아니라 유효 연소득(`annual_income × income_stability`), DTI, DSR, 기존 연체·부도 이력을 함께 심사한다. `max_dti_percent`와 `max_dsr_percent`가 0이면 기존 상품 호환을 위해 해당 제한을 사용하지 않고, 양수이면 소득 등록과 한도 통과가 필수다. 신용점수 가산금리 외에 `borrower_history_spread_max`, `affordability_spread_max` 범위의 계약별 가산금리를 붙이고 심사 시점의 소득·DTI·DSR·위험점수를 대출 계약에 보존한다. 담보비율에 따라 `collateral_discount_max`만큼 낮춘다. `collateral_required_ratio`는 최소 담보다. 현금 또는 같은 결제통화의 보유 자산을 담보로 쓸 수 있으며 자산은 `collateral_haircut`만큼 차감 평가한다. 시세 변동으로 `margin_call_ltv`를 넘으면 마진콜, `liquidation_ltv`를 넘으면 매수호가를 가격·시간 우선으로 소진한다. 남은 수량만 유동성·발행량에 따른 시장충격과 헤어컷을 적용한 정리 백스톱으로 넘기며 `liquidation_cost_percent`를 차감한다. 체결·백스톱 수량과 총·순회수액은 `collateral_liquidation_events`에 기록한다. 신규 대출은 기관별 예금·유효자기자본에서 지급준비금을 제외한 자금 한도와 위험가중 자기자본 한도를 모두 통과해야 한다. 자본비율이 목표 아래면 `restricted`, 유효자기자본이 0 이하이면 `failed`가 되어 신규 대출이 중단된다.
-- 계약은 `repricing_cycle_seconds`마다 `repricing_lag_seconds` 전 관측일의 지표를 읽어 재산정한다. 새 금리를 과거 기간에 소급하지 않는다.
+- 계약은 `repricing_cycle_seconds`마다 `repricing_lag_seconds` 전 관측일의 지표를 읽어 재산정한다. 새 금리를 과거 기간에 소급하지 않으며, 예정 재산정일·관측일·이전/신규 금리·상환표 재산정 건수를 `contract_rate_reset_history`에 계약별로 보존한다.
 - 법정최고이자는 대출 광고금리·계약금리·연체금리에 적용하고, 신규 대출은 취급수수료와 `mandatory_cost_percent`로 설정한 의무 보험·중개 등 법정 산입비용을 모두 실수령액 기준 연율로 환산해 국적별 상한을 검사한다. 두 비용은 APR 현금흐름에도 포함된다. 예금금리와 국채·회사채 쿠폰은 제한하지 않는다.
 
 채권 쿠폰은 발행 시 고정된다. `coupon_frequency_days=0`은 기존 만기 일괄 이자, 양수는 정기 쿠폰이다. 각 현금흐름을 국채 제로금리곡선의 해당 만기 할인계수로 평가하며 회사채에는 `credit_spread`와 `liquidity_spread`를 더한다. 보유 국채에는 발생이자와 클린·더티 가격을 구분하고 시장 갱신 시 국채 시가도 곡선으로 재평가한다. 대출 만기 뒤에는 `delinquency_spread`를 더한 연체이자를 법정최고이자 안에서 계산하며, 유예·기한이익 상실·채무불이행 단계와 담보 처분을 순서대로 적용한다. 상품별 `day_count_convention`은 `ACT/365`, `ACT/360`, `30/360`을 지원한다.
@@ -86,6 +86,8 @@ DB Browser에서는 `country_currencies`를 수정하거나 `$금리수정`, `$�
 표시에서는 명목 연이율과 복리 주기를 반영한 실효 연이율을 구분한다. 대출 APR은 선취 수수료와 실제 약정 현금흐름의 내부수익률로 계산한다. `amortization_type`은 기존 방식 `legacy`, 만기일시 `bullet`, 원금균등 `equal_principal`, 원리금균등 `annuity`를 지원하며 새 방식은 `loan_payment_schedule`에 회차별 원금·이자·납부 상태를 저장한다. 상환표 이자는 상품의 일수계산 방식과 조정된 납부일을 사용하고, 변동금리가 재산정되면 이미 납부한 회차는 보존한 채 미래 미납 회차의 원금·이자와 APR을 다시 계산한다. 중앙은행의 기준금리 결정만 관리자 권한으로 남아 있고, 결정된 금리의 시장 전달과 계약 재산정은 자동 처리된다.
 
 만기 전 예금 해지는 계약에 스냅샷된 `early_withdrawal_rate`로 허용 이자를 다시 계산하고 초과 지급 이자와 `early_withdrawal_fee_percent`를 차감한다. 일반 예금의 `deposit_insured`가 켜져 있고 기관이 `failed`가 되면 예금자·기관별 `deposit_insurance_limit` 한도까지 국고가 현금으로 지급한다. 초과액은 `uninsured_claim`과 `deposit_insurance_claims`에 채권으로 보존되고 해당 기관의 신규 예금·대출 상품은 중단된다. 외환통장은 부실기관에서 추가 이자와 신규 개설을 정지하며 별도 외화 정리 절차 대상으로 남긴다. 대출 상환표의 납부일은 주말과 `financial_holidays`를 피해 `business_day_convention` 규칙으로 조정한다.
+
+수동 조기상환에는 계약 시점에 스냅샷된 `prepayment_fee_percent`를 적용한다. `prepayment_fee_decline_days`가 0이면 만기 전 고정 비율, 양수이면 실행일부터 해당 기간 동안 선형으로 0까지 체감한다. 수수료는 대출 잔액을 줄이지 않고 금융기관 손익원장에 별도 기록한다.
 
 ## 그래프 지표 보기·숨기기
 

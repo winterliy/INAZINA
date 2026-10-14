@@ -9,6 +9,7 @@ from database.user_db import TREASURY_USER_ID
 from managers.admin_control_manager import ENTITIES, KINDS
 from managers.currency_exchange_manager import SCALE, MAX_UNITS, amount_units, display_units
 from managers.rate_manager import RateManager
+from functions.money import parse_currency_money
 
 COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값',
             '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','환율수정',
@@ -337,8 +338,12 @@ class AdminCommandsManager:
                     current=row[price_key]
                 else:
                     raise ValueError('가격이 없는 상품입니다. 상품 이율은 $상품수정으로 변경해주세요.')
-                value=self.adjust(int(current),args[1],self.control._number(args[2],0,integer=True))
-                self.control._number(value,1,integer=True)
+                currency_code=str(row.get('quote_currency') or 'NWX')
+                entered=parse_currency_money(conn,args[2],currency_code,minimum=0)
+                value=self.adjust(float(current),args[1],entered)
+                value=parse_currency_money(conn,value,currency_code,minimum=0)
+                if value <= 0:
+                    raise ValueError('가격은 0보다 커야 합니다.')
                 if category in {'option','bond'}:
                     conn.execute("INSERT INTO market_quote_overrides VALUES (?, ?, ?, 'admin') ON CONFLICT(asset_code) DO UPDATE SET price=excluded.price,updated_epoch=excluded.updated_epoch,source=excluded.source",(args[0],value,int(time.time())))
                 if category!='option':
@@ -476,7 +481,11 @@ class AdminCommandsManager:
                 current=conn.execute("SELECT balance_units FROM accounts WHERE account_number=? AND account_type='currency_saving'",(identity,)).fetchone()[0]
                 amount=Decimal(raw_amount)
                 units=amount*SCALE
-                if not amount.is_finite() or amount<0 or units!=units.to_integral_value():raise ValueError('외화 금액은 0 이상, 소수점 6자리까지 입력해주세요.')
+                if not amount.is_finite() or amount<0 or units!=units.to_integral_value():
+                    raise ValueError('외화 금액을 확인해주세요.')
+                CurrencyManager.validate_units(
+                    conn, int(units), currency_account['currency_code']
+                )
                 value=self.adjust(current,operation,int(units))
                 if not 0<=value<=MAX_UNITS:raise ValueError('외화 잔고는 0 이상이며 저장 한도 이하여야 합니다.')
                 conn.execute("UPDATE accounts SET balance_units=? WHERE account_number=? AND account_type='currency_saving'",(value,identity))
@@ -484,16 +493,16 @@ class AdminCommandsManager:
             else:
                 table,key='accounts','account_number' if bank else 'user_id'
                 if not bank:table='users'
-                current=int((bank or user)['balance' if bank else 'cash'])
-                value=self.adjust(current,operation,self.control._number(raw_amount,0,integer=True))
-                self.control._number(value,0,integer=True)
+                currency = (str(bank['quote_currency']) if bank
+                            else CurrencyManager.home(conn, identity))
+                current=float((bank or user)['balance' if bank else 'cash'] or 0)
+                entered=parse_currency_money(conn,raw_amount,currency,minimum=0)
+                value=self.adjust(current,operation,entered)
+                value=parse_currency_money(conn,value,currency,minimum=0)
                 if bank:
                     conn.execute('UPDATE accounts SET balance=?,principal=?,last_payment_epoch=?,last_payment=CURRENT_TIMESTAMP WHERE account_number=?',(value,value,time.time(),identity))
                 else:conn.execute('UPDATE users SET cash=? WHERE user_id=?',(value,identity))
-                if user:
-                    unit=CurrencyManager.home(conn,identity)
-                else:
-                    unit=CurrencyManager.home(conn,bank['user_id'])
+                unit=currency
                 before=current;after=value
             self.control._audit(conn,actor,'balance.adjust',{'target':identity,'operation':operation,'before':before,'after':after,'currency':unit})
             return f'✅ {identity} 잔고 {before} → {after} {unit}'

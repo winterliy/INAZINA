@@ -91,7 +91,7 @@ class UserDB(DBManager):
                 cursor = self.conn.execute(
                     "INSERT OR IGNORE INTO users "
                     "(user_id, nickname, nationality, cash, role) VALUES (?, ?, ?, ?, ?)",
-                    (str(user_id), str(nickname), str(nationality), int(cash), str(role)),
+                    (str(user_id), str(nickname), str(nationality), cash, str(role)),
                 )
                 return cursor.rowcount == 1
 

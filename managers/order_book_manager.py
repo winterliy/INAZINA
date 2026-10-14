@@ -2,7 +2,8 @@
 
 import time
 from database.user_db import TREASURY_USER_ID
-from functions.money import round_money, parse_money
+from functions.money import (round_money, parse_money, round_currency,
+                             parse_currency_money)
 from managers.market_session_manager import MarketSessionManager
 from managers.order_validation import validate_limit_order
 
@@ -521,8 +522,9 @@ class OrderBookManager:
             self.user_manager._refresh_max_shareholder(conn, sell_order["asset_code"])
 
     @staticmethod
-    def _credit_reserved_source(conn, user_id, account_number, amount, now):
-        amount = parse_money(amount, minimum=0)
+    def _credit_reserved_source(conn, user_id, account_number, amount, now,
+                                currency="NWX"):
+        amount = parse_currency_money(conn, amount, currency, minimum=0)
         if amount <= 0:
             return
         if account_number is None:
@@ -535,7 +537,9 @@ class OrderBookManager:
             if foreign:
                 from managers.foreign_securities_manager import ForeignSecuritiesManager
                 from managers.currency_exchange_manager import SCALE
-                ForeignSecuritiesManager.credit_units(conn,user_id,foreign['currency_code'],amount*SCALE)
+                ForeignSecuritiesManager.credit_units(
+                    conn,user_id,foreign['currency_code'],int(round(amount*SCALE))
+                )
                 return
             cursor = conn.execute(
                 "UPDATE accounts.accounts SET balance = balance + ?, "
@@ -552,9 +556,14 @@ class OrderBookManager:
         new_remaining = old_remaining - quantity
         if new_remaining < 0:
             raise RuntimeError("주문 잔량보다 많은 수량이 체결되었습니다.")
-        reserved_cash = int(round(order["reserved_cash"] or 0))
+        currency = str(order["quote_currency"] or "NWX")
+        reserved_cash = round_currency(
+            conn, order["reserved_cash"] or 0, currency
+        )
         if order["side"] == "buy":
-            reserved_cash = max(0, reserved_cash - int(order["limit_price"]) * quantity)
+            reserved_cash = max(0, round_currency(
+                conn, reserved_cash-float(order["limit_price"])*quantity, currency
+            ))
         status = "filled" if new_remaining == 0 else "partial"
         conn.execute(
             "UPDATE assets.market_orders SET remaining_quantity = ?, "
@@ -590,10 +599,13 @@ class OrderBookManager:
                     return False, "❌ 본인의 주문을 찾을 수 없습니다."
                 if order["status"] not in {"scheduled", "open", "partial"}:
                     return False, f"❌ 이미 {order['status']} 상태라 취소할 수 없습니다."
-                refund = int(round(order["reserved_cash"] or 0)) if order["side"] == "buy" else 0
+                currency = str(order["quote_currency"] or "NWX")
+                refund = (round_currency(conn, order["reserved_cash"] or 0, currency)
+                          if order["side"] == "buy" else 0)
                 if refund:
                     self._credit_reserved_source(
-                        conn, user_id, order["funding_account"], refund, now
+                        conn, user_id, order["funding_account"], refund, now,
+                        currency,
                     )
                 conn.execute(
                     "UPDATE assets.market_orders SET status = 'cancelled', "
@@ -603,22 +615,24 @@ class OrderBookManager:
                 )
             message = f"✅ 주문 #{order_id}을 취소했습니다."
             if refund:
-                message += f" 예치금 {refund:,.0f} NWX를 반환했습니다."
+                message += f" 예치금 {refund:,} {currency}를 반환했습니다."
             return True, message
         except Exception as exc:
             return False, f"❌ 주문 취소 중 오류가 발생했습니다: {exc}"
 
     def _reject_scheduled_order(self, conn, order, now):
         """Release a reservation that became invalid before its exchange opened."""
-        refund = int(order['reserved_cash'] or 0) if order['side'] == 'buy' else 0
+        currency = str(order['quote_currency'] or 'NWX')
+        refund = (round_currency(conn, order['reserved_cash'] or 0, currency)
+                  if order['side'] == 'buy' else 0)
         if refund:
-            currency = str(order['quote_currency'] or 'NWX')
             if currency == 'NWX':
                 self._credit_reserved_source(conn, order['user_id'], order['funding_account'], refund, now)
             else:
                 from managers.foreign_securities_manager import ForeignSecuritiesManager
                 ForeignSecuritiesManager.credit_units(
-                    conn, order['user_id'], currency, refund * 1_000_000, order['funding_account']
+                    conn, order['user_id'], currency,
+                    int(round(refund * 1_000_000)), order['funding_account']
                 )
         conn.execute("UPDATE market_orders SET status='rejected', reserved_cash=0, updated_epoch=? WHERE order_id=?",
                      (now, order['order_id']))

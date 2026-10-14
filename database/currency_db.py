@@ -87,6 +87,75 @@ class CurrencyDB(DBManager):
         self._init_legal_rate_caps()
         self._init_floating_rate_pricing()
         self._seed_liquidity_states()
+        self._init_currency_precision_triggers()
+
+    def _init_currency_precision_triggers(self):
+        """Replace legacy whole-NWX rounding with denomination-aware rounding."""
+        direct = (
+            ("company", ("capital", "share_price", "liquidation_value_per_share",
+                         "dividend_per_share"), "company_code", "NEW.quote_currency"),
+            ("market_assets", ("price", "dividend_per_share"), "code", "NEW.quote_currency"),
+            ("saving", ("deposit_amount",), "product_code", "NEW.quote_currency"),
+            ("liability", ("loan_limit", "repayment_amount"), "product_code", "NEW.quote_currency"),
+            ("investment", ("unit_price", "face_value", "dividend_per_share"),
+             "product_code", "NEW.quote_currency"),
+            ("treasury_bond_products", ("face_value", "market_price", "total_supply",
+                                         "sold_amount"), "product_code", "NEW.quote_currency"),
+            ("accounts", ("balance", "principal", "insurance_paid", "uninsured_claim"),
+             "account_number", "NEW.quote_currency"),
+            ("loans", ("principal", "outstanding_balance", "origination_fee",
+                       "mandatory_cost_fee", "collateral_amount", "collateral_seized",
+                       "collateral_asset_value", "collateral_liquidated_value",
+                       "provisioned_loss", "underwriting_income",
+                       "prepayment_fees_paid"),
+             "loan_id", "NEW.quote_currency"),
+            ("market_orders", ("limit_price", "reserved_cash"), "order_id",
+             "NEW.quote_currency"),
+            ("financial_institution_ledger", ("base_amount",), "entry_id",
+             "NEW.base_currency_code"),
+        )
+        for table, columns, key, currency in direct:
+            existing = {row[1] for row in self.execute(f"PRAGMA table_info({table})")}
+            available = tuple(column for column in columns if column in existing)
+            if available and "quote_currency" in existing:
+                self.enforce_currency_money(table, available, key, currency)
+
+        derived = (
+            ("users", ("cash", "annual_income"), "user_id",
+             "SELECT currency_code FROM country_currencies WHERE nationality=NEW.nationality"),
+            ("loan_payment_schedule",
+             ("principal_due", "interest_due", "fee_due", "amount_paid"), "schedule_id",
+             "SELECT quote_currency FROM loans WHERE loan_id=NEW.loan_id"),
+            ("loan_collateral_assets",
+             ("average_cost", "last_price", "last_value", "liquidation_price",
+              "liquidation_cost", "liquidation_proceeds"), "collateral_id",
+             "SELECT quote_currency FROM loans WHERE loan_id=NEW.loan_id"),
+            ("deposit_insurance_claims", ("covered_amount", "uninsured_amount"), "claim_id",
+             "SELECT quote_currency FROM accounts WHERE account_number=NEW.account_number"),
+            ("collateral_liquidation_events",
+             ("mark_price", "gross_proceeds", "liquidation_cost", "net_proceeds"),
+             "event_id", "SELECT quote_currency FROM loans WHERE loan_id=NEW.loan_id"),
+            ("treasury_bond_holdings", ("principal", "face_value", "acquisition_cost"),
+             "holding_id", "SELECT quote_currency FROM treasury_bond_products "
+             "WHERE product_code=NEW.product_code"),
+            ("user_assets", ("average_cost",), "holding_id",
+             "SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code "
+             "UNION ALL SELECT quote_currency FROM company WHERE company_code=NEW.asset_code "
+             "UNION ALL SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code LIMIT 1"),
+            ("market_price_history", ("price",), "history_id",
+             "SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code "
+             "UNION ALL SELECT quote_currency FROM company WHERE company_code=NEW.asset_code "
+             "UNION ALL SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code LIMIT 1"),
+            ("financial_institutions",
+             ("equity_capital", "retained_earnings", "deposit_insurance_limit"),
+             "issuer", "SELECT c.currency_code FROM country_currencies c "
+             "WHERE c.nationality=NEW.nationality"),
+        )
+        for table, columns, key, currency in derived:
+            existing = {row[1] for row in self.execute(f"PRAGMA table_info({table})")}
+            available = tuple(column for column in columns if column in existing)
+            if available:
+                self.enforce_currency_money(table, available, key, currency)
 
     def _ensure_negative_policy_rates(self):
         """Rebuild the small country table once to permit negative policy rates."""
@@ -336,6 +405,18 @@ class CurrencyDB(DBManager):
             created_epoch REAL NOT NULL,
             UNIQUE(issuer,event_type,reference_key)
         )""")
+        ledger_columns = {
+            row[1] for row in self.execute("PRAGMA table_info(financial_institution_ledger)")
+        }
+        for column, declaration in (
+            ("currency_code", "TEXT NOT NULL DEFAULT 'NWX'"),
+            ("base_currency_code", "TEXT NOT NULL DEFAULT 'NWX'"),
+            ("base_amount", "REAL NOT NULL DEFAULT 0"),
+        ):
+            if column not in ledger_columns:
+                self.execute(
+                    f"ALTER TABLE financial_institution_ledger ADD COLUMN {column} {declaration}"
+                )
         self.execute(
             "CREATE INDEX IF NOT EXISTS idx_financial_institution_ledger "
             "ON financial_institution_ledger(issuer,created_epoch,event_type)"
@@ -721,21 +802,22 @@ class CurrencyDB(DBManager):
             home_cash = """SELECT COALESCE(SUM(u.cash),0) FROM users u
                 JOIN country_currencies n ON n.nationality=u.nationality
                 WHERE n.currency_code=?"""
-            total = int(self.execute(home_cash, (code,))[0][0]) * SCALE
-            total += int(self.execute("""SELECT COALESCE(SUM(a.balance),0) FROM accounts a
+            from decimal import Decimal
+            total = int(Decimal(str(self.execute(home_cash, (code,))[0][0] or 0)) * SCALE)
+            total += int(Decimal(str(self.execute("""SELECT COALESCE(SUM(a.balance),0) FROM accounts a
                 JOIN users u ON u.user_id=a.user_id
                 JOIN country_currencies n ON n.nationality=u.nationality
-                WHERE n.currency_code=? AND a.account_type<>'currency_saving'""", (code,))[0][0]) * SCALE
+                WHERE n.currency_code=? AND a.account_type<>'currency_saving'""", (code,))[0][0] or 0)) * SCALE)
             total += int(self.execute("SELECT COALESCE(SUM(balance_units),0) FROM accounts WHERE account_type='currency_saving' AND quote_currency=?", (code,))[0][0])
             treasury_rows = self.execute("""SELECT COALESCE(u.cash,0) FROM users u
                 JOIN country_currencies n ON n.nationality=u.nationality
                 WHERE u.user_id=? AND n.currency_code=?""", (TREASURY_USER_ID, code))
-            treasury = int(treasury_rows[0][0] if treasury_rows else 0) * SCALE
-            treasury += int(self.execute("""SELECT COALESCE(SUM(a.balance),0) FROM accounts a
+            treasury = int(Decimal(str(treasury_rows[0][0] if treasury_rows else 0)) * SCALE)
+            treasury += int(Decimal(str(self.execute("""SELECT COALESCE(SUM(a.balance),0) FROM accounts a
                 JOIN users u ON u.user_id=a.user_id
                 JOIN country_currencies n ON n.nationality=u.nationality
                 WHERE a.user_id=? AND n.currency_code=? AND a.account_type<>'currency_saving'""",
-                (TREASURY_USER_ID,code))[0][0]) * SCALE
+                (TREASURY_USER_ID,code))[0][0] or 0)) * SCALE)
             treasury += int(self.execute("SELECT COALESCE(SUM(balance_units),0) FROM accounts WHERE account_type='currency_saving' AND quote_currency=? AND user_id=?", (code, TREASURY_USER_ID))[0][0])
             ratio = max(0, total - treasury) / total if total > 0 else 0
             self.execute(

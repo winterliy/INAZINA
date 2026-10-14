@@ -17,14 +17,16 @@ class CurrencyManager:
     def _liquidity_totals(conn, code):
         """Return issued and non-treasury circulating minor units for ``code``."""
         code = str(code).upper()
-        total = int(conn.execute("""SELECT COALESCE(SUM(u.cash),0) FROM users u
+        total_native = conn.execute("""SELECT COALESCE(SUM(u.cash),0) FROM users u
             JOIN country_currencies n ON n.nationality=u.nationality
-            WHERE n.currency_code=?""", (code,)).fetchone()[0]) * SCALE
-        total += int(conn.execute("""SELECT COALESCE(SUM(a.balance),0) FROM accounts a
+            WHERE n.currency_code=?""", (code,)).fetchone()[0]
+        total = int(Decimal(str(total_native or 0))*SCALE)
+        account_native = conn.execute("""SELECT COALESCE(SUM(a.balance),0) FROM accounts a
             JOIN users u ON u.user_id=a.user_id
             JOIN country_currencies n ON n.nationality=u.nationality
             WHERE n.currency_code=? AND a.account_type<>'currency_saving'""",
-            (code,)).fetchone()[0]) * SCALE
+            (code,)).fetchone()[0]
+        total += int(Decimal(str(account_native or 0))*SCALE)
         total += int(conn.execute(
             "SELECT COALESCE(SUM(balance_units),0) FROM accounts "
             "WHERE account_type='currency_saving' AND quote_currency=?", (code,)
@@ -33,12 +35,13 @@ class CurrencyManager:
             JOIN country_currencies n ON n.nationality=u.nationality
             WHERE u.user_id=? AND n.currency_code=?""",
             (TREASURY_USER_ID, code)).fetchone()
-        treasury = int(treasury_row[0] if treasury_row else 0) * SCALE
-        treasury += int(conn.execute("""SELECT COALESCE(SUM(a.balance),0) FROM accounts a
+        treasury = int(Decimal(str(treasury_row[0] if treasury_row else 0))*SCALE)
+        treasury_accounts = conn.execute("""SELECT COALESCE(SUM(a.balance),0) FROM accounts a
             JOIN users u ON u.user_id=a.user_id
             JOIN country_currencies n ON n.nationality=u.nationality
             WHERE a.user_id=? AND n.currency_code=? AND a.account_type<>'currency_saving'""",
-            (TREASURY_USER_ID,code)).fetchone()[0]) * SCALE
+            (TREASURY_USER_ID,code)).fetchone()[0]
+        treasury += int(Decimal(str(treasury_accounts or 0))*SCALE)
         treasury += int(conn.execute(
             "SELECT COALESCE(SUM(balance_units),0) FROM accounts "
             "WHERE account_type='currency_saving' AND quote_currency=? AND user_id=?",
@@ -180,7 +183,7 @@ class CurrencyManager:
         currency = str(currency).upper()
         if currency == CurrencyManager.home(conn, user_id):
             row = conn.execute('SELECT cash FROM users WHERE user_id=?', (str(user_id),)).fetchone()
-            return int(row[0]) * SCALE if row else 0
+            return int(Decimal(str(row[0] or 0))*SCALE) if row else 0
         row = conn.execute("SELECT balance_units FROM accounts WHERE user_id=? AND quote_currency=? "
                            "AND account_type='currency_saving'", (str(user_id), currency)).fetchone()
         return int(row[0]) if row else 0
@@ -199,9 +202,10 @@ class CurrencyManager:
         if abs(value) > limit or (value < 0 and not (allow_deficit and user_id == TREASURY_USER_ID)):
             raise ValueError(f'{currency} 잔액이 부족하거나 저장 한도를 초과했습니다.')
         if currency == home:
-            if delta % SCALE:
-                raise ValueError(f'{home} 국적 통화 현금은 정수 금액으로 입력해주세요.')
-            conn.execute('UPDATE users SET cash=cash+? WHERE user_id=?', (delta//SCALE,user_id))
+            native = Decimal(int(delta))/Decimal(SCALE)
+            conn.execute('UPDATE users SET cash=cash+? WHERE user_id=?',
+                         (int(native) if native == native.to_integral_value() else float(native),
+                          user_id))
         else:
             changed = conn.execute("UPDATE accounts SET balance_units=? WHERE user_id=? AND quote_currency=? "
                                    "AND account_type='currency_saving'", (value,user_id,currency))
@@ -246,7 +250,6 @@ class CurrencyManager:
         source=conn.execute("SELECT value FROM settings WHERE key='default_currency'").fetchone()[0]
         home=mapping[0]
         grant=cls.convert(conn,1_000_000*SCALE,source,home)
-        grant=grant//SCALE*SCALE
         if grant <= 0:
             raise ValueError('가입 지원금이 국적 통화의 현금 최소 단위보다 작습니다.')
         conn.execute('INSERT INTO users(user_id,nickname,nationality,cash,role,registration_guild_id) VALUES (?,?,?,0,?,?)',(str(user_id),str(nickname),nationality,role,str(guild_id) if guild_id is not None else None))

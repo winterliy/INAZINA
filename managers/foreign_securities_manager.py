@@ -4,6 +4,7 @@ from database.user_db import TREASURY_USER_ID
 from managers.currency_exchange_manager import CurrencyExchangeManager,SCALE,MAX_UNITS
 from managers.currency_manager import CurrencyManager
 from managers.market_session_manager import MarketSessionManager
+from functions.money import parse_currency_money, round_currency, currency_precision
 
 
 class ForeignSecuritiesManager:
@@ -12,11 +13,11 @@ class ForeignSecuritiesManager:
 
     @staticmethod
     def credit_units(conn,user,currency,units,account=None):
+        CurrencyManager.validate_units(conn, int(units), currency)
         if CurrencyManager.home(conn,user) == currency:
-            if units % SCALE:
-                raise ValueError(f'{currency} 국적 통화 현금은 정수 단위로만 입금할 수 있습니다.')
+            native = units/SCALE
             changed = conn.execute("UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?",
-                (units//SCALE,str(user),(2**53-1)-units//SCALE))
+                (native,str(user),(2**53-1)-native))
             if changed.rowcount!=1:
                 raise ValueError(f'{currency} 현금 잔액 한도를 초과했습니다.')
             return
@@ -30,7 +31,8 @@ class ForeignSecuritiesManager:
             raise ValueError(f'{currency} 외환통장이 없거나 잔액 한도를 초과했습니다.')
 
     def order(self,user_id,code,side,quantity,limit_price):
-        if side not in {'buy','sell'} or any(isinstance(v,bool) or not isinstance(v,int) or not 1<=v<=self.book.MAX_LIMIT_PRICE for v in (quantity,limit_price)):
+        if (side not in {'buy','sell'} or isinstance(quantity,bool)
+                or not isinstance(quantity,int) or not 1<=quantity<=self.book.MAX_QUANTITY):
             return False,'❌ 주문 방향·수량·지정가를 확인해주세요.'
         now = int(time.time())
         try:
@@ -40,6 +42,11 @@ class ForeignSecuritiesManager:
                 deferred = state['status'] != 'open'
                 asset,source = self.users._asset_row(conn,code)
                 currency = asset['quote_currency']
+                limit_price = parse_currency_money(
+                    conn, limit_price, currency, minimum=0
+                )
+                if limit_price <= 0 or limit_price > self.book.MAX_LIMIT_PRICE:
+                    raise ValueError('지정가를 확인해주세요.')
                 if source not in {'company','market_assets','investment'} or asset['type'] not in {'stock','주식','commodity_spot'}:
                     raise ValueError('외화 결제는 현재 주식·현물 원자재에 지원합니다.')
                 if asset['status']!='active' or asset['price']<=0:
@@ -57,14 +64,15 @@ class ForeignSecuritiesManager:
                 supply = asset.get('supply')
                 if side=='buy' and supply is not None and owned+reserved+quantity>int(supply):
                     raise ValueError('종목 발행 수량 한도를 초과했습니다.')
-                cash = limit_price*quantity if side=='buy' else 0
-                if cash*SCALE>MAX_UNITS:
+                cash = round_currency(conn,limit_price*quantity,currency) if side=='buy' else 0
+                cash_units = int(round(cash*SCALE))
+                if cash_units>MAX_UNITS:
                     raise ValueError('주문 예치금 한도를 초과했습니다.')
                 if side=='buy':
                     if currency == home:
                         changed=conn.execute("UPDATE users SET cash=cash-? WHERE user_id=? AND cash>=?",(cash,str(user_id),cash))
                     else:
-                        changed=conn.execute("UPDATE accounts SET balance_units=balance_units-? WHERE account_number=? AND account_type='currency_saving' AND balance_units>=?",(cash*SCALE,account_number,cash*SCALE))
+                        changed=conn.execute("UPDATE accounts SET balance_units=balance_units-? WHERE account_number=? AND account_type='currency_saving' AND balance_units>=?",(cash_units,account_number,cash_units))
                     if changed.rowcount!=1:
                         raise ValueError(f'예치할 {currency} 잔액이 부족합니다. 필요액 {cash:,} {currency}')
                 elif owned-reserved<quantity:
@@ -96,23 +104,28 @@ class ForeignSecuritiesManager:
             maker=conn.execute(f"SELECT * FROM market_orders WHERE asset_code=? AND order_kind='asset' AND side=? AND status IN ('open','partial') AND user_id<>? AND limit_price {comparator} ? ORDER BY limit_price {sort},created_epoch,order_id LIMIT 1",(incoming['asset_code'],'sell' if side=='buy' else 'buy',incoming['user_id'],incoming['limit_price'])).fetchone()
             asset,source=self.users._asset_row(conn,incoming['asset_code'])
             currency=asset['quote_currency']
-            price=int(asset['price'])
+            price=float(asset['price'])
             owned=conn.execute('SELECT COALESCE(SUM(quantity),0) FROM user_assets WHERE asset_code=?',(asset['code'],)).fetchone()[0]
             collateral=conn.execute('SELECT COALESCE(SUM(quantity),0) FROM option_collateral_lots WHERE underlying_code=?',(asset['code'],)).fetchone()[0]
             remaining=max(0,int(asset['supply'] or 0)-int(owned)-int(collateral)) if asset.get('supply') is not None else 0
-            primary=side=='buy' and remaining>0 and price<=incoming['limit_price'] and (not maker or price<int(maker['limit_price']))
+            primary=side=='buy' and remaining>0 and price<=float(incoming['limit_price']) and (not maker or price<float(maker['limit_price']))
             if not primary and not maker:
                 break
             quantity=min(incoming['remaining_quantity'],remaining if primary else maker['remaining_quantity'])
-            price=price if primary else int(maker['limit_price'])
+            price=price if primary else float(maker['limit_price'])
             buy=incoming if side=='buy' else maker
             sell=None if primary else maker if side=='buy' else incoming
-            improvement=(buy['limit_price']-price)*quantity
+            improvement=round_currency(
+                conn,(float(buy['limit_price'])-price)*quantity,currency
+            )
             if improvement:
                 self.credit_units(conn,buy['user_id'],currency,improvement*SCALE)
             self.add_position(conn,buy['user_id'],asset['code'],buy['funding_account'],quantity,price)
             if primary:
-                self.credit_units(conn,TREASURY_USER_ID,currency,quantity*price*SCALE)
+                self.credit_units(
+                    conn,TREASURY_USER_ID,currency,
+                    int(round(round_currency(conn,quantity*price,currency)*SCALE))
+                )
             else:
                 positions=conn.execute('SELECT * FROM user_assets WHERE user_id=? AND asset_code=? ORDER BY holding_id',(sell['user_id'],asset['code'])).fetchall()
                 left,gain = quantity,0
@@ -120,7 +133,7 @@ class ForeignSecuritiesManager:
                     take=min(left,position['quantity'])
                     if not take:
                         continue
-                    gain += max(0,price-int(round(position['average_cost'])))*take
+                    gain += max(0,price-float(position['average_cost'] or 0))*take
                     if take==position['quantity']:
                         conn.execute('DELETE FROM user_assets WHERE holding_id=?',(position['holding_id'],))
                     else:
@@ -133,7 +146,12 @@ class ForeignSecuritiesManager:
                 rate=CurrencyExchangeManager._rate(conn,currency)
                 tax=self.users._tax(conn,sell['user_id'],'foreign_security_sale_gain',gain*rate)
                 tax_units=(tax*SCALE+rate-1)//rate
-                self.credit_units(conn,sell['user_id'],currency,quantity*price*SCALE-tax_units)
+                proceeds_units = int(round(
+                    round_currency(conn,quantity*price,currency)*SCALE
+                ))-int(tax_units)
+                quantum = 10**(6-currency_precision(conn,currency))
+                proceeds_units = max(0, proceeds_units//quantum*quantum)
+                self.credit_units(conn,sell['user_id'],currency,proceeds_units)
                 if source == 'company':
                     from managers.corporate_actions_manager import CorporateActionsManager
                     CorporateActionsManager.record_issue_fill(conn, sell['order_id'], quantity, price)

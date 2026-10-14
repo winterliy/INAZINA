@@ -157,8 +157,6 @@ class CurrencyExchangeManager:
                 raise ValueError(halt)
             self._user(conn, user_id)
             home = CurrencyManager.home(conn, user_id)
-            if source == home and units % SCALE:
-                raise ValueError(f"{home} 국적 통화 현금은 정수 {home} 금액만 사용할 수 있습니다.")
             CurrencyManager.validate_units(conn, units, source)
             self._settle(conn, user_id, now)
             fee_rate = Decimal(str(conn.execute("SELECT value FROM settings WHERE key='currency_exchange_fee_percent'").fetchone()[0]))
@@ -166,8 +164,6 @@ class CurrencyExchangeManager:
                 raise ValueError("환전 수수료 설정이 올바르지 않습니다.")
             fee = CurrencyManager.fee(conn, units, source, fee_rate)
             output = CurrencyManager.exchange_amount(conn, units, source, target, fee)
-            if target == home:
-                output = output // SCALE * SCALE
             if output <= 0 or output > MAX_UNITS:
                 raise ValueError("환전 결과가 최소 단위 미만이거나 한도를 초과합니다.")
             CurrencyManager.change(conn, user_id, source, -units)

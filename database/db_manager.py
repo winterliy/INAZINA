@@ -90,6 +90,27 @@ class DBManager:
         columns = tuple(columns)
         if not columns:
             return
+        # These tables contain an explicit or derivable denomination. CurrencyDB
+        # installs their per-row precision triggers after the currency schema is
+        # available. Do not destroy decimal balances earlier in startup.
+        currency_aware = {
+            "users", "company", "market_assets", "user_assets",
+            "market_price_history", "market_orders", "saving", "liability",
+            "investment", "treasury_bond_products", "accounts", "loans",
+            "loan_payment_schedule", "loan_collateral_assets",
+            "collateral_liquidation_events", "deposit_insurance_claims",
+            "treasury_bond_holdings", "issuer_cash_accounts",
+            "preferred_dividend_claims", "dividend_distributions",
+            "dividend_payments", "financial_institutions",
+            "financial_institution_ledger",
+        }
+        if table in currency_aware:
+            safe_table = "".join(ch if ch.isalnum() else "_" for ch in table)
+            for suffix in ("insert", "update"):
+                self.execute(
+                    f'DROP TRIGGER IF EXISTS "trg_{safe_table}_integer_money_{suffix}"'
+                )
+            return
         quoted_table = f'"{table}"'
         quoted_columns = [f'"{column}"' for column in columns]
         assignments = ", ".join(
@@ -118,6 +139,54 @@ class DBManager:
             f'AFTER UPDATE OF {", ".join(quoted_columns)} ON {quoted_table} '
             f'WHEN {fractional} BEGIN '
             f'UPDATE {quoted_table} SET {assignments} WHERE "{primary_key}" = NEW."{primary_key}"; END'
+        )
+
+    def enforce_currency_money(self, table, columns, primary_key, currency_sql):
+        """Round native amounts to each row's product/contract currency precision.
+
+        ``currency_sql`` is a trusted schema expression containing ``NEW`` (for
+        example ``NEW.quote_currency`` or a scalar subquery).  This replaces the
+        legacy whole-NWX trigger while keeping NWX at zero decimals.
+        """
+        columns = tuple(columns)
+        if not columns:
+            return
+        safe_table = "".join(ch if ch.isalnum() else "_" for ch in table)
+        for suffix in ("insert", "update"):
+            self.execute(f'DROP TRIGGER IF EXISTS "trg_{safe_table}_integer_money_{suffix}"')
+            self.execute(f'DROP TRIGGER IF EXISTS "trg_{safe_table}_currency_money_{suffix}"')
+        quoted_table = f'"{table}"'
+        quoted_columns = [f'"{column}"' for column in columns]
+        places = (
+            "COALESCE((SELECT decimal_places FROM currencies WHERE code="
+            f"({currency_sql})),0)"
+        )
+        def rounded(column):
+            # SQLite's binary ROUND(1.005, 2) can produce 1.00.  A tiny signed
+            # guard digit makes exact decimal half cases agree with the public
+            # Decimal/ROUND_HALF_UP API without affecting supported 0~6 places.
+            value = f"COALESCE(NEW.{column},0)"
+            return (
+                f"ROUND(({value})+CASE WHEN ({value})>=0 THEN 1e-12 ELSE -1e-12 END,"
+                f"{places})"
+            )
+        assignments = ", ".join(
+            f'{column}={rounded(column)}'
+            for column in quoted_columns
+        )
+        changed = " OR ".join(
+            f'(NEW.{column} IS NULL OR NEW.{column}<>{rounded(column)})'
+            for column in quoted_columns
+        )
+        self.execute(
+            f'CREATE TRIGGER "trg_{safe_table}_currency_money_insert" '
+            f'AFTER INSERT ON {quoted_table} WHEN {changed} BEGIN '
+            f'UPDATE {quoted_table} SET {assignments} WHERE "{primary_key}"=NEW."{primary_key}"; END'
+        )
+        self.execute(
+            f'CREATE TRIGGER "trg_{safe_table}_currency_money_update" '
+            f'AFTER UPDATE OF {", ".join(quoted_columns)} ON {quoted_table} WHEN {changed} BEGIN '
+            f'UPDATE {quoted_table} SET {assignments} WHERE "{primary_key}"=NEW."{primary_key}"; END'
         )
 
     def initialize_dividend_activation(self, table, primary_key):

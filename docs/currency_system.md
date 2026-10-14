@@ -15,7 +15,7 @@ DM에서 신규 시민을 등록하려면 등록 서버 정보가 없으므로 �
 
 국적 화폐가 기본화폐이며 그 외 모든 화폐는 외환이다. A국 시민에게 NWX도 외환이다.
 `users.cash`는 사용자의 국적 화폐만 저장한다. NWX 고정 지갑이 아니다.
-외화는 별도 지갑 테이블에 저장하지 않고 `accounts`의 `account_type='currency_saving'`, `quote_currency`, `balance_units`에 저장한다. 외화 금액은 100만분의 1 단위의 정수다.
+외화는 별도 지갑 테이블에 저장하지 않고 `accounts`의 `account_type='currency_saving'`, `quote_currency`, `balance_units`에 저장한다. `balance_units`의 100만분의 1 정수는 환전·송금을 위한 내부 전송 단위일 뿐 회계 정밀도가 아니다. 실제 입력·정산 가능 자릿수는 해당 통화의 `decimal_places`를 따른다.
 사용자는 국적 화폐와 같은 외환통장을 개설할 수 없다. 외화를 받거나 환전·거래하려면 그 화폐용 외환통장을 먼저 개설해야 한다.
 기존 `currency_wallets`는 시작 시 한 번 이관한다. 국적 화폐 잔액은 `users.cash`로, 기존 NWX 현금과 그 밖의 외화는 통화별 `accounts` 외환통장으로 옮긴 뒤 테이블을 삭제한다.
 `/내지갑`의 메인 요약은 본인 기본화폐로 평가하고, 통화별 현금에서 각 화폐의 실제 잔액을 표시한다.
@@ -38,7 +38,7 @@ DM에서 신규 시민을 등록하려면 등록 서버 정보가 없으므로 �
 `company`, `investment`, `market_assets`, `saving`, `liability`, `treasury_bond_products`, `option_contracts`의 `quote_currency`가 가격·계약금액의 통화 코드다.
 `currency_products.currency_code`는 외환 예금 통화다. 계좌·대출·주문에도 통화 코드가 따로 저장된다.
 기존 상품·계약은 NWX를 유지하며, 발행 후 통화를 바꾸어 기존 계약을 재표시하지 않는다.
-상품생성의 선택 JSON에 `{"quote_currency":"USD"}`를 쓸 수 있다. 외화 거래 지원 유형은 현재 주식·현물이며 다른 유형은 NWX 계약 검증을 유지한다.
+상품생성의 선택 JSON에 `{"quote_currency":"USD"}`를 쓸 수 있다. 주식·현물뿐 아니라 일반 예금·대출도 해당 통화를 국적 통화로 쓰는 사용자를 대상으로 개설할 수 있다. 계약 체결 뒤에는 상품 통화를 바꾸지 않는다.
 `currencies.reference_rate`는 시세 상품이 없는 통화의 양수 기준값(문자열, 정확한 분수도 허용)이다. 시세 상품이 있으면 가격을 기준값으로 사용한다.
 `currencies.rate_multiplier`는 그 기준값에 곱하는 양수 비율이다. 통화 간 환율은 두 기준값의 비율이며 소수 환율도 유지한다.
 환율에는 `currency_liquidity_state`의 유동성 보정도 적용된다. 기준 공급량보다 발행·예치 총량이 늘면 해당 통화 가치는 완만하게 낮아지고, 국고 밖 유통 비율이 기준보다 줄면 추가로 낮아진다. 총량과 유통비율이 기준점과 같으면 보정값은 1이다.
@@ -53,4 +53,6 @@ DB 위치: `/Users/sinjaehyeon/Documents/naconomics/database/inazina.db`.
 `currencies.decimal_places`에 0~6을 저장한다. NWX·KRW·JPY는 초기 0, USD·EUR·GBP 등은 초기 2, 다른 통화는 6이다.
 `$상품수정 USD currency 달러 CUR_USD 미국 '{"decimal_places":2}'`처럼 선택 JSON으로 바꿀 수 있으며 DB Browser로도 조절 가능하다.
 통화별 금액 입력은 해당 자릿수까지만 허용하며 환산 지급은 수령 화폐의 최소 단위로 절삭한다. 표시에는 지정 자릿수를 사용한다(예: USD 12.50, KRW 12500).
+`users.cash`, 예금·대출 원금과 이자, 수수료, 상환표, 담보평가액, 주문 예치금과 평균단가는 NWX 정수로 통일하지 않고 각 행의 국적·상품·계약 `quote_currency` 정밀도로 half-up 반올림한다. 따라서 NWX·JPY는 0자리, USD는 2자리다. SQL Browser 직접 입력에도 같은 트리거가 적용된다.
+금융기관 손익 원장은 거래통화 금액과 기관 기준통화 환산액을 함께 저장하며, 건전성·예대율 계산은 서로 다른 통화의 숫자를 직접 합하지 않고 기관 기준통화로 환산한다. 회사 복식부기의 `financial_lines.amount`는 회사 통화의 **최소단위 정수**이므로, 예를 들어 USD 12.34는 1234로 저장한다. 이는 NWX 정수 회계가 아니다.
 기존 외환통장의 이자 소수 잔액은 보존하고 화면에서만 통화별 자릿수로 표시한다.

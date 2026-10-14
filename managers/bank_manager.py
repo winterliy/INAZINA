@@ -8,7 +8,8 @@ import time
 from datetime import datetime, timezone
 from database import DatabaseManager
 from database.user_db import TREASURY_USER_ID
-from functions.money import round_money
+from functions.money import (round_money, round_currency, parse_currency_money,
+                             currency_precision)
 from functions.interest_calc import year_fraction
 from managers.rate_manager import RateManager
 
@@ -21,9 +22,9 @@ class BankManager:
     @staticmethod
     def _loan_cashflows(principal, annual_rate, maturity_days, frequency_days,
                         amortization_type, day_count_convention="ACT/365",
-                        start_epoch=None, due_epochs=None):
+                        start_epoch=None, due_epochs=None, decimal_places=0):
         """Build contractual installment cash flows for APR and servicing."""
-        principal = int(principal)
+        principal = float(principal)
         days = max(1, int(maturity_days or 1))
         frequency = max(1, int(frequency_days or days))
         mode = str(amortization_type or "legacy")
@@ -49,16 +50,16 @@ class BankManager:
             previous = due
         rows = []
         if mode == "bullet":
-            interest = round_money(principal*rate*sum(fractions))
+            interest = round_money(principal*rate*sum(fractions), decimal_places)
             return [(due_days[-1], principal, max(0, interest))]
         if mode == "equal_principal":
             remaining = principal
             allocated = 0
             for index, (due_day, fraction) in enumerate(zip(due_days, fractions), 1):
                 principal_due = (principal-allocated if index == count
-                                 else round_money(principal/count))
+                                 else round_money(principal/count, decimal_places))
                 principal_due = max(0, min(remaining, principal_due))
-                interest = round_money(remaining*rate*fraction)
+                interest = round_money(remaining*rate*fraction, decimal_places)
                 rows.append((due_day, principal_due, max(0, interest)))
                 remaining -= principal_due
                 allocated += principal_due
@@ -79,9 +80,9 @@ class BankManager:
         for index, (due_day, periodic_rate) in enumerate(
             zip(due_days, period_rates), 1
         ):
-            interest = max(0, round_money(remaining*periodic_rate))
+            interest = max(0, round_money(remaining*periodic_rate, decimal_places))
             principal_due = (principal-allocated if index == count else
-                             max(0, round_money(payment-interest)))
+                             max(0, round_money(payment-interest, decimal_places)))
             principal_due = min(remaining, principal_due)
             rows.append((due_day, principal_due, interest))
             remaining -= principal_due
@@ -105,7 +106,8 @@ class BankManager:
             return 0
         raw_balance = (loan["outstanding_balance"] if outstanding_balance is None
                        else outstanding_balance)
-        balance = max(0, int(round(raw_balance or 0)))
+        places = currency_precision(conn, loan["quote_currency"])
+        balance = max(0, round_money(raw_balance or 0, places))
         if balance <= 0:
             return 0
         due_epochs = [float(row["due_epoch"]) for row in rows]
@@ -113,10 +115,10 @@ class BankManager:
             balance, annual_rate,
             max(1, math.ceil((due_epochs[-1]-float(as_of))/86400)),
             int(loan["payment_frequency_days"] or 30), mode,
-            loan["day_count_convention"], float(as_of), due_epochs,
+            loan["day_count_convention"], float(as_of), due_epochs, places,
         )
         for row, (_days, principal_due, interest_due) in zip(rows, cashflows):
-            already_paid = max(0, int(row["amount_paid"] or 0))
+            already_paid = max(0, float(row["amount_paid"] or 0))
             conn.execute(
                 "UPDATE accounts.loan_payment_schedule SET principal_due=?,interest_due=?,"
                 "rate_applied=?,day_count_convention=?,recast_epoch=? WHERE schedule_id=?",
@@ -163,8 +165,8 @@ class BankManager:
         return hmac.compare_digest(password, stored_password)
 
     def open_account(self, user_id, product_code, password, deposit_amount):
-        if isinstance(deposit_amount, bool) or not isinstance(deposit_amount, int) or deposit_amount < 0:
-            return False, "❌ 초기 예치금은 0 이상의 정수로 입력해주세요."
+        if isinstance(deposit_amount, bool):
+            return False, "❌ 초기 예치금을 확인해주세요."
         if not isinstance(password, str) or not 4 <= len(password) <= 16:
             return False, "❌ 비밀번호는 4~16자로 입력해주세요."
         try:
@@ -191,6 +193,9 @@ class BankManager:
                 home = CurrencyManager.home(conn,user_id)
                 if product['quote_currency'] != home:
                     return False, f"❌ 이 예금은 {product['quote_currency']} 상품입니다. 국적 통화 {home} 예금만 일반 계좌로 개설할 수 있습니다."
+                deposit_amount = parse_currency_money(
+                    conn, deposit_amount, product['quote_currency'], minimum=0
+                )
                 if conn.execute(
                     "SELECT 1 FROM accounts.accounts WHERE user_id = ? AND product_code = ?",
                     (str(user_id), product_code),
@@ -202,7 +207,7 @@ class BankManager:
                     return False, "❌ 상품의 최소 예치금 설정이 올바르지 않습니다."
                 if not math.isfinite(minimum_value) or minimum_value < 0:
                     return False, "❌ 상품의 최소 예치금 설정이 올바르지 않습니다."
-                minimum = math.ceil(minimum_value)
+                minimum = round_currency(conn, minimum_value, home)
                 if deposit_amount < minimum:
                     return False, f"❌ 최소 예치금은 {minimum:,} {home}입니다."
                 cursor = conn.execute(
@@ -284,8 +289,11 @@ class BankManager:
                 if destination_account:
                     destination = conn.execute(
                         "SELECT account_number FROM accounts.accounts "
-                        "WHERE account_number = ? AND user_id = ? AND account_number <> ?",
-                        (str(destination_account), str(user_id), str(account_number)),
+                        "WHERE account_number = ? AND user_id = ? AND account_number <> ? "
+                        "AND quote_currency=(SELECT quote_currency FROM accounts.accounts "
+                        "WHERE account_number=?)",
+                        (str(destination_account), str(user_id), str(account_number),
+                         str(account_number)),
                     ).fetchone()
                     if not destination:
                         return False, "❌ 이관 대상은 본인 명의의 다른 계좌여야 합니다."
@@ -294,12 +302,18 @@ class BankManager:
                     destination = conn.execute(
                         "SELECT account_number FROM accounts.accounts WHERE user_id = ? "
                         "AND account_number <> ? AND account_type = 'saving' "
+                        "AND quote_currency=(SELECT quote_currency FROM accounts.accounts "
+                        "WHERE account_number=?) "
                         "ORDER BY balance DESC LIMIT 1",
-                        (str(user_id), str(account_number)),
+                        (str(user_id), str(account_number), str(account_number)),
                     ).fetchone()
                     destination_number = destination["account_number"] if destination else None
 
-                balance = int(round(source["balance"] or 0))
+                source_currency = conn.execute(
+                    "SELECT quote_currency FROM accounts.accounts WHERE account_number=?",
+                    (str(account_number),),
+                ).fetchone()[0]
+                balance = round_currency(conn, source["balance"] or 0, source_currency)
                 early_penalty = 0
                 product = conn.execute(
                     "SELECT maturity_days,day_count_convention FROM product.saving "
@@ -311,21 +325,28 @@ class BankManager:
                     ).replace(tzinfo=timezone.utc).timestamp()
                     now = time.time()
                     if now < opened+int(product["maturity_days"])*86400:
-                        principal = max(0, int(source["principal"] or 0))
+                        principal = max(0, float(source["principal"] or 0))
                         earned = max(0, balance-principal)
-                        allowed = max(0, round_money(
+                        allowed = max(0, round_currency(conn,
                             principal*float(source["early_withdrawal_rate"] or 0)/100
-                            * year_fraction(now-opened, product["day_count_convention"], opened)
+                            * year_fraction(now-opened, product["day_count_convention"], opened),
+                            source_currency
                         ))
-                        fee = round_money(
-                            principal*float(source["early_withdrawal_fee_percent"] or 0)/100
+                        fee = round_currency(
+                            conn, principal*float(source["early_withdrawal_fee_percent"] or 0)/100,
+                            source_currency
                         )
                         early_penalty = min(balance, max(0, earned-allowed)+fee)
                         balance -= early_penalty
                         if early_penalty:
+                            from managers.currency_manager import CurrencyManager, SCALE
+                            treasury_units = CurrencyManager.convert(
+                                conn, int(round(early_penalty*SCALE)),
+                                source_currency, "NWX"
+                            )
                             conn.execute(
                                 "UPDATE users.users SET cash=cash+? WHERE user_id=?",
-                                (early_penalty, TREASURY_USER_ID),
+                                (treasury_units/SCALE, TREASURY_USER_ID),
                             )
                 if destination_number:
                     conn.execute(
@@ -376,7 +397,10 @@ class BankManager:
                 conn.execute("DELETE FROM accounts.accounts WHERE account_number = ?", (str(account_number),))
                 RateManager.refresh_all_market_pressure(conn)
             target_text = f"계좌 `{destination_number}`" if destination_number else "현금 지갑"
-            penalty_text = f" 중도해지 조정 {early_penalty:,} NWX를 차감했습니다." if early_penalty else ""
+            penalty_text = (
+                f" 중도해지 조정 {early_penalty:,} {source_currency}를 차감했습니다."
+                if early_penalty else ""
+            )
             return True, (
                 f"✅ 계좌를 해지했습니다. 잔액과 보유 자산을 {target_text}(으)로 이관했습니다."
                 f"{penalty_text}"
@@ -402,7 +426,7 @@ class BankManager:
             "FROM product.investment WHERE product_code=? LIMIT 1",
             (code, code, code),
         ).fetchone()
-        if not asset or asset["status"] != "active" or int(asset["price"] or 0) <= 0:
+        if not asset or asset["status"] != "active" or float(asset["price"] or 0) <= 0:
             raise ValueError("담보로 설정할 수 있는 활성 자산 코드를 확인해주세요.")
         if str(asset["quote_currency"] or "NWX") != str(currency_code):
             raise ValueError("대출과 같은 결제통화의 자산만 담보로 사용할 수 있습니다.")
@@ -423,18 +447,20 @@ class BankManager:
                     "source_account": row["account_number"],
                     "quantity": take,
                     "old_quantity": float(row["quantity"]),
-                    "average_cost": int(row["average_cost"] or 0),
+                    "average_cost": float(row["average_cost"] or 0),
                 })
                 left -= take
             if left <= 1e-9:
                 break
-        return plan, int(round(float(asset["price"])*quantity)), asset
+        return plan, round_currency(
+            conn, float(asset["price"])*quantity, currency_code
+        ), asset
 
     @staticmethod
     def _pledge_asset_collateral(conn, loan_id, user_id, asset, plan, haircut, now):
         if not plan:
             return
-        price = int(asset["price"])
+        price = float(asset["price"])
         for lot in plan:
             if math.isclose(lot["quantity"], lot["old_quantity"], abs_tol=1e-9):
                 changed = conn.execute(
@@ -449,7 +475,12 @@ class BankManager:
                 )
             if changed.rowcount != 1:
                 raise RuntimeError("담보 자산 보유량이 변경되어 대출을 취소했습니다.")
-            value = round_money(price*lot["quantity"]*(1-float(haircut)))
+            currency = conn.execute(
+                "SELECT quote_currency FROM accounts.loans WHERE loan_id=?", (loan_id,)
+            ).fetchone()[0]
+            value = round_currency(
+                conn, price*lot["quantity"]*(1-float(haircut)), currency
+            )
             conn.execute(
                 "INSERT INTO accounts.loan_collateral_assets "
                 "(loan_id,user_id,asset_code,source_account,quantity,average_cost,"
@@ -462,7 +493,7 @@ class BankManager:
     def _underwriting_metrics(conn, user_id, amount, product, annual_rate, now,
                               annual_income):
         """Return income affordability and repayment-history measures at origination."""
-        income = max(0, int(annual_income or 0))
+        income = max(0.0, float(annual_income or 0))
         maturity_days = max(1, int(product["maturity_days"] or 365))
         maturity_years = maturity_days / 365.0
         proposed_principal_service = min(
@@ -482,7 +513,7 @@ class BankManager:
         ).fetchall()
         horizon = float(now) + 365 * 86400
         for loan in loans:
-            balance = max(0, int(loan["outstanding_balance"] or 0))
+            balance = max(0.0, float(loan["outstanding_balance"] or 0))
             existing_balance += balance
             existing_interest += balance * max(0.0, float(loan["contract_rate"] or 0)) / 100.0
             scheduled = conn.execute(
@@ -517,11 +548,8 @@ class BankManager:
 
     def apply_loan(self, user_id, product_code, amount, collateral_amount=0,
                    collateral_asset_code=None, collateral_asset_quantity=0):
-        if isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
-            return False, "❌ 대출 금액은 0보다 큰 정수로 입력해주세요."
-        if (isinstance(collateral_amount, bool) or not isinstance(collateral_amount, int)
-                or collateral_amount < 0):
-            return False, "❌ 담보 금액은 0 이상의 정수로 입력해주세요."
+        if isinstance(amount, bool) or isinstance(collateral_amount, bool):
+            return False, "❌ 대출·담보 금액을 확인해주세요."
         try:
             self._settle_user_interest(user_id)
             with self.db.atomic(("users", "accounts", "product", "assets", "company")) as conn:
@@ -535,8 +563,16 @@ class BankManager:
                     return False, f"❌ 상품 코드 `{product_code}`가 다른 상품·자산 코드와 중복 등록되어 있습니다. SQL Browser에서 정리해주세요."
                 if product["status"] != "active":
                     return False, "❌ 현재 대출이 불가능한 상품입니다."
+                amount = parse_currency_money(
+                    conn, amount, product['quote_currency'], minimum=0
+                )
+                collateral_amount = parse_currency_money(
+                    conn, collateral_amount, product['quote_currency'], minimum=0
+                )
+                if amount <= 0:
+                    return False, "❌ 대출 금액은 0보다 커야 합니다."
                 capacity = RateManager.institution_capacity(
-                    conn, product["issuer"], amount
+                    conn, product["issuer"], amount, product['quote_currency']
                 )
                 if not capacity["allowed"]:
                     if capacity["status"] != "active":
@@ -575,18 +611,20 @@ class BankManager:
                     return False, "❌ 대출 상품의 한도 또는 신용 기준이 잘못 설정되었습니다."
                 if int(user["credit_score"] or 0) < minimum_score:
                     return False, f"❌ 신용 점수가 부족합니다. (요구 점수: {minimum_score}점)"
-                limit = int(round(limit))
+                limit = round_currency(conn, limit, home)
                 if limit > 0 and amount > limit:
                     return False, f"❌ 대출 한도를 초과했습니다. (한도: {limit:,} {home})"
                 opened_epoch = time.time()
-                required_collateral = math.ceil(
-                    amount*float(product['collateral_required_ratio'] or 0)
+                required_collateral = round_currency(
+                    conn, amount*float(product['collateral_required_ratio'] or 0), home
                 )
                 asset_plan, asset_market_value, asset = self._asset_collateral_plan(
                     conn, user_id, collateral_asset_code, collateral_asset_quantity, home
                 )
                 haircut = float(product['collateral_haircut'] or 0)
-                asset_collateral_value = round_money(asset_market_value*(1-haircut))
+                asset_collateral_value = round_currency(
+                    conn, asset_market_value*(1-haircut), home
+                )
                 total_collateral_value = collateral_amount+asset_collateral_value
                 if total_collateral_value < required_collateral:
                     return False, (
@@ -600,9 +638,9 @@ class BankManager:
                 base_credit_adjustment = (
                     float(product['credit_spread_max'] or 0)*(1000-credit_score)/1000
                 )
-                effective_income = round_money(
-                    max(0, int(user['annual_income'] or 0))
-                    * max(0.0, min(1.0, float(user['income_stability'] or 0)))
+                effective_income = round_currency(conn,
+                    max(0.0, float(user['annual_income'] or 0))
+                    * max(0.0, min(1.0, float(user['income_stability'] or 0))), home
                 )
                 underwriting = self._underwriting_metrics(
                     conn, user_id, amount, product,
@@ -665,9 +703,11 @@ class BankManager:
                         conn, 'legal_max_rate', contract_country, require_country=True
                     ) if contract_country else RateManager.legal_max_for_currency(conn, home)[0])
                     contract_rate = min(contract_rate, legal)
-                fee = round_money(amount*float(product['origination_fee_percent'] or 0)/100)
-                mandatory_fee = round_money(
-                    amount*float(product['mandatory_cost_percent'] or 0)/100
+                fee = round_currency(
+                    conn, amount*float(product['origination_fee_percent'] or 0)/100, home
+                )
+                mandatory_fee = round_currency(
+                    conn, amount*float(product['mandatory_cost_percent'] or 0)/100, home
                 )
                 total_finance_fee = fee+mandatory_fee
                 net_payout = max(0, amount-total_finance_fee)
@@ -689,7 +729,7 @@ class BankManager:
                 schedule = self._loan_cashflows(
                     amount, contract_rate, maturity_days, frequency_days,
                     product['amortization_type'], product['day_count_convention'],
-                    opened_epoch, due_epochs,
+                    opened_epoch, due_epochs, currency_precision(conn, home),
                 )
                 apr = RateManager.annual_percentage_rate(
                     contract_rate, total_finance_fee, net_payout, maturity_days,
@@ -700,7 +740,8 @@ class BankManager:
                 legal_cost_cap = (RateManager.from_connection(
                     conn, 'legal_max_rate', contract_country, require_country=True
                 ) if contract_country else RateManager.legal_max_for_currency(conn, home)[0])
-                legal_cost_rate = (contract_rate + (total_finance_fee/max(1, net_payout))
+                legal_cost_rate = (contract_rate + (total_finance_fee/max(
+                                   10**(-currency_precision(conn, home)), net_payout))
                                    * 365/max(1, int(product['maturity_days'] or 365))*100)
                 if legal_cost_rate > legal_cost_cap+1e-9:
                     raise ValueError(
@@ -708,7 +749,7 @@ class BankManager:
                         f"법정최고이자 {legal_cost_cap:g}%를 초과합니다."
                     )
                 if collateral_amount:
-                    funds = UserFunds.choose(conn, str(user_id))
+                    funds = UserFunds.choose(conn, str(user_id), home)
                     if not funds or funds[0] < collateral_amount or not UserFunds.debit(
                         conn, str(user_id), funds[1], collateral_amount
                     ):
@@ -721,8 +762,9 @@ class BankManager:
                     "benchmark_key,benchmark_tenor_days,repricing_lag_seconds,contract_effective_rate,"
                     "contract_apr,origination_fee,mandatory_cost_fee,collateral_amount,day_count_convention,"
                     "amortization_type,payment_frequency_days,collateral_asset_value,current_ltv,"
-                    "underwriting_dti,underwriting_dsr,borrower_risk_score,underwriting_income) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "underwriting_dti,underwriting_dsr,borrower_risk_score,underwriting_income,"
+                    "quote_currency,prepayment_fee_percent,prepayment_fee_decline_days) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (str(user_id), product_code, amount, amount, opened_epoch, opened_epoch,
                      opened_epoch+int(product['maturity_days'] or 0)*86400
                      if int(product['maturity_days'] or 0)>0 else None,
@@ -738,7 +780,9 @@ class BankManager:
                      int(product['payment_frequency_days'] or 30), asset_collateral_value,
                      (amount/total_collateral_value if total_collateral_value else None),
                      underwriting['dti'], underwriting['dsr'], borrower_risk_score,
-                     effective_income),
+                     effective_income, home,
+                     float(product['prepayment_fee_percent'] or 0),
+                     int(product['prepayment_fee_decline_days'] or 0)),
                 )
                 loan_id = int(inserted.lastrowid)
                 self._pledge_asset_collateral(
@@ -790,7 +834,7 @@ class BankManager:
                 if total_finance_fee:
                     RateManager.record_institution_result(
                         conn, product["issuer"], total_finance_fee, "origination_fee",
-                        f"loan:{loan_id}", now=opened_epoch,
+                        f"loan:{loan_id}", now=opened_epoch, currency_code=home,
                     )
                 RateManager.refresh_all_market_pressure(conn, now=opened_epoch)
             return True, (
@@ -855,14 +899,16 @@ class BankManager:
             return False, f'❌ 대출연장 설정을 확인해주세요: {exc}'
 
     def repay_loan(self, user_id, product_code, amount, loan_id=None):
-        if isinstance(amount, bool) or not isinstance(amount, int) or amount <= 0:
-            return False, "❌ 상환액은 0보다 큰 정수로 입력해주세요."
+        if isinstance(amount, bool):
+            return False, "❌ 상환액을 확인해주세요."
         try:
             self._settle_user_interest(user_id)
             with self.db.atomic(("users", "accounts")) as conn:
                 if loan_id is None:
                     loan = conn.execute(
-                        "SELECT l.loan_id,l.outstanding_balance,l.status,l.provisioned_loss,"
+                        "SELECT l.loan_id,l.outstanding_balance,l.status,l.provisioned_loss,l.quote_currency,"
+                        "l.created_at,l.maturity_epoch,l.prepayment_fee_percent,"
+                        "l.prepayment_fee_decline_days,"
                         "p.issuer FROM accounts.loans l JOIN product.liability p "
                         "ON p.product_code=l.product_code WHERE l.user_id=? "
                         "AND l.product_code=? AND l.status IN ('active','defaulted')",
@@ -870,7 +916,9 @@ class BankManager:
                     ).fetchone()
                 else:
                     loan = conn.execute(
-                        "SELECT l.loan_id,l.outstanding_balance,l.status,l.provisioned_loss,"
+                        "SELECT l.loan_id,l.outstanding_balance,l.status,l.provisioned_loss,l.quote_currency,"
+                        "l.created_at,l.maturity_epoch,l.prepayment_fee_percent,"
+                        "l.prepayment_fee_decline_days,"
                         "p.issuer FROM accounts.loans l JOIN product.liability p "
                         "ON p.product_code=l.product_code WHERE l.loan_id=? AND l.user_id=? "
                         "AND l.product_code=? AND l.status IN ('active','defaulted')",
@@ -878,14 +926,41 @@ class BankManager:
                     ).fetchone()
                 if not loan:
                     return False, "❌ 상환할 대출을 찾을 수 없습니다."
-                outstanding = int(round(loan["outstanding_balance"] or 0))
+                amount = parse_currency_money(
+                    conn, amount, loan["quote_currency"], minimum=0
+                )
+                if amount <= 0:
+                    return False, "❌ 상환액은 0보다 커야 합니다."
+                outstanding = round_currency(
+                    conn, loan["outstanding_balance"] or 0, loan["quote_currency"]
+                )
                 payment = min(amount, outstanding)
-                funds = UserFunds.choose(conn, str(user_id))
-                if not funds or funds[0] < payment:
+                now = time.time()
+                prepayment_fee = 0
+                if (loan["status"] == "active"
+                        and loan["maturity_epoch"] is not None
+                        and now < float(loan["maturity_epoch"])
+                        and float(loan["prepayment_fee_percent"] or 0) > 0):
+                    opened = datetime.strptime(
+                        loan["created_at"], "%Y-%m-%d %H:%M:%S"
+                    ).replace(tzinfo=timezone.utc).timestamp()
+                    decline_days = int(loan["prepayment_fee_decline_days"] or 0)
+                    factor = (1.0 if decline_days <= 0 else
+                              max(0.0, 1.0-(now-opened)/(decline_days*86400)))
+                    prepayment_fee = round_currency(
+                        conn,
+                        payment*float(loan["prepayment_fee_percent"])*factor/100,
+                        loan["quote_currency"],
+                    )
+                total_debit = payment+prepayment_fee
+                funds = UserFunds.choose(conn, str(user_id), loan["quote_currency"])
+                if not funds or funds[0] < total_debit:
                     return False, "❌ 상환할 잔액이 부족합니다."
-                if not UserFunds.debit(conn, str(user_id), funds[1], payment):
+                if not UserFunds.debit(conn, str(user_id), funds[1], total_debit):
                     return False, "❌ 잔액이 부족합니다."
-                remaining = max(0, outstanding - payment)
+                remaining = round_currency(
+                    conn, max(0, outstanding-payment), loan["quote_currency"]
+                )
                 released = 0
                 if remaining <= 0:
                     released = self._release_collateral(conn, loan["loan_id"], str(user_id))
@@ -893,23 +968,40 @@ class BankManager:
                     "UPDATE accounts.loans SET outstanding_balance = ?, "
                     "status = CASE WHEN ? <= 0 THEN 'paid' ELSE status END, "
                     "collection_status=CASE WHEN ? <= 0 THEN 'paid' ELSE collection_status END,"
-                    "provisioned_loss=MAX(0,provisioned_loss-?) "
+                    "provisioned_loss=MAX(0,provisioned_loss-?),"
+                    "prepayment_fees_paid=prepayment_fees_paid+? "
                     "WHERE loan_id = ?",
                     (remaining, remaining, remaining,
-                     min(payment, int(loan["provisioned_loss"] or 0)), loan["loan_id"]),
+                     min(payment, float(loan["provisioned_loss"] or 0)),
+                     prepayment_fee, loan["loan_id"]),
                 )
-                recovery = min(payment, int(loan["provisioned_loss"] or 0))
+                if prepayment_fee:
+                    RateManager.record_institution_result(
+                        conn, loan["issuer"], prepayment_fee, "prepayment_fee",
+                        f"loan:{loan['loan_id']}:prepayment:{time.time_ns()}",
+                        now=now, currency_code=loan["quote_currency"],
+                    )
+                recovery = min(payment, float(loan["provisioned_loss"] or 0))
                 if recovery:
                     RateManager.record_institution_result(
                         conn, loan["issuer"], recovery, "default_recovery",
                         f"loan:{loan['loan_id']}:payment:{time.time_ns()}",
+                        currency_code=loan["quote_currency"],
                     )
                 self._allocate_schedule_payment(
-                    conn, loan["loan_id"], payment, time.time()
+                    conn, loan["loan_id"], payment, now
                 )
                 RateManager.refresh_all_market_pressure(conn)
-            suffix = f" · 담보 {released:,} NWX 반환" if released else ""
-            return True, f"✅ {payment:,} NWX를 상환했습니다. 남은 원리금: {remaining:,} NWX{suffix}"
+            currency = loan["quote_currency"]
+            suffix = f" · 담보 {released:,} {currency} 반환" if released else ""
+            fee_text = (
+                f" · 중도상환수수료 {prepayment_fee:,} {currency}"
+                if prepayment_fee else ""
+            )
+            return True, (
+                f"✅ {payment:,} {currency}를 상환했습니다. "
+                f"남은 원리금: {remaining:,} {currency}{fee_text}{suffix}"
+            )
         except Exception as exc:
             return False, f"❌ 대출 상환 처리 중 오류가 발생했습니다: {exc}"
 
@@ -948,7 +1040,8 @@ class BankManager:
                 loans = conn.execute(
                     "SELECT l.loan_id, l.user_id, l.product_code, l.outstanding_balance, "
                     "l.last_repayment_epoch, p.name AS product_name, "
-                    "p.repayment_cycle_seconds, p.repayment_amount, l.amortization_type "
+                    "p.repayment_cycle_seconds, p.repayment_amount, l.amortization_type,"
+                    "l.quote_currency "
                     "FROM accounts.loans l JOIN product.liability p "
                     "ON p.product_code = l.product_code WHERE l.status = 'active'"
                 ).fetchall()
@@ -971,8 +1064,12 @@ class BankManager:
                         continue
                     try:
                         cycle = int(loan["repayment_cycle_seconds"] or 0)
-                        installment = int(round(loan["repayment_amount"] or 0))
-                        balance = int(round(loan["outstanding_balance"] or 0))
+                        installment = round_currency(
+                            conn, loan["repayment_amount"] or 0, loan["quote_currency"]
+                        )
+                        balance = round_currency(
+                            conn, loan["outstanding_balance"] or 0, loan["quote_currency"]
+                        )
                         last = float(loan["last_repayment_epoch"] or now)
                     except (TypeError, ValueError, OverflowError):
                         continue
@@ -1009,7 +1106,9 @@ class BankManager:
                             break
 
                         payment = min(installment, balance)
-                        funds = UserFunds.choose(conn, str(loan["user_id"]))
+                        funds = UserFunds.choose(
+                            conn, str(loan["user_id"]), loan["quote_currency"]
+                        )
                         if funds and funds[0] >= payment and UserFunds.debit(
                             conn, str(loan["user_id"]), funds[1], payment
                         ):
@@ -1050,9 +1149,11 @@ class BankManager:
                             "user_id": str(loan["user_id"]),
                             "product_name": str(loan["product_name"] or loan["product_code"]),
                             "paid_count": loan_paid_count,
-                            "paid_amount": int(loan_paid_amount),
+                            "paid_amount": round_currency(
+                                conn, loan_paid_amount, loan["quote_currency"]
+                            ),
                             "missed_count": loan_missed_count,
-                            "remaining": int(balance),
+                            "remaining": balance,
                         })
                 RateManager.refresh_all_market_pressure(conn, now=now)
             return paid_count, missed_count, notifications
@@ -1061,7 +1162,7 @@ class BankManager:
 
     @staticmethod
     def _allocate_schedule_payment(conn, loan_id, amount, paid_epoch):
-        remaining = max(0, int(amount or 0))
+        remaining = max(0.0, float(amount or 0))
         if not remaining:
             return
         rows = conn.execute(
@@ -1071,12 +1172,12 @@ class BankManager:
             (loan_id,),
         ).fetchall()
         for row in rows:
-            unpaid = max(0, int(row["due"] or 0)-int(row["amount_paid"] or 0))
+            unpaid = max(0.0, float(row["due"] or 0)-float(row["amount_paid"] or 0))
             applied = min(remaining, unpaid)
             if not applied:
                 continue
-            new_paid = int(row["amount_paid"] or 0)+applied
-            status = "paid" if new_paid >= int(row["due"] or 0) else "partial"
+            new_paid = float(row["amount_paid"] or 0)+applied
+            status = "paid" if new_paid >= float(row["due"] or 0)-1e-9 else "partial"
             conn.execute(
                 "UPDATE accounts.loan_payment_schedule SET amount_paid=?,status=?,"
                 "paid_epoch=CASE WHEN ?='paid' THEN ? ELSE paid_epoch END WHERE schedule_id=?",
@@ -1094,20 +1195,24 @@ class BankManager:
             "ORDER BY installment_number",
             (loan["loan_id"], now),
         ).fetchall()
-        balance = int(round(loan["outstanding_balance"] or 0))
+        balance = round_currency(
+            conn, loan["outstanding_balance"] or 0, loan["quote_currency"]
+        )
         paid_count = missed_count = paid_amount = 0
         for row in rows:
-            contractual = (int(row["principal_due"] or 0)
-                           + int(row["interest_due"] or 0)
-                           + int(row["fee_due"] or 0))
-            due = min(balance, max(0, contractual-int(row["amount_paid"] or 0)))
+            contractual = (float(row["principal_due"] or 0)
+                           + float(row["interest_due"] or 0)
+                           + float(row["fee_due"] or 0))
+            due = min(balance, max(0, contractual-float(row["amount_paid"] or 0)))
             if due <= 0:
                 conn.execute(
                     "UPDATE accounts.loan_payment_schedule SET status='paid',paid_epoch=? "
                     "WHERE schedule_id=?", (now, row["schedule_id"]),
                 )
                 continue
-            funds = UserFunds.choose(conn, str(loan["user_id"]))
+            funds = UserFunds.choose(
+                conn, str(loan["user_id"]), loan["quote_currency"]
+            )
             if funds and funds[0] >= due and UserFunds.debit(
                 conn, str(loan["user_id"]), funds[1], due
             ):
@@ -1161,11 +1266,14 @@ class BankManager:
         ).fetchone()
         if not row:
             return 0
-        remaining = max(0, int(row['collateral_amount'] or 0)
-                        - int(row['collateral_released'] or 0)
-                        - int(row['collateral_seized'] or 0))
+        currency = conn.execute(
+            "SELECT quote_currency FROM accounts.loans WHERE loan_id=?", (loan_id,)
+        ).fetchone()[0]
+        remaining = max(0.0, float(row['collateral_amount'] or 0)
+                        - float(row['collateral_released'] or 0)
+                        - float(row['collateral_seized'] or 0))
         if remaining:
-            UserFunds.credit(conn, user_id, remaining)
+            UserFunds.credit(conn, user_id, remaining, currency=currency)
             conn.execute(
                 "UPDATE accounts.loans SET collateral_released=collateral_released+? WHERE loan_id=?",
                 (remaining, loan_id),
@@ -1184,9 +1292,10 @@ class BankManager:
             if existing:
                 old_quantity = float(existing["quantity"])
                 added = float(asset["quantity"])
-                average = round_money(
-                    (old_quantity*int(existing["average_cost"] or 0)
-                     + added*int(asset["average_cost"] or 0))/(old_quantity+added)
+                average = round_currency(conn,
+                    (old_quantity*float(existing["average_cost"] or 0)
+                     + added*float(asset["average_cost"] or 0))/(old_quantity+added),
+                    currency
                 )
                 conn.execute(
                     "UPDATE assets.user_assets SET quantity=quantity+?,average_cost=? "
@@ -1213,30 +1322,56 @@ class BankManager:
         issuer = str(issuer or "").strip()
         when = float(time.time() if now is None else now)
         institution = conn.execute(
-            "SELECT status,deposit_insurance_limit FROM financial_institutions "
-            "WHERE issuer=?", (issuer,),
+            "SELECT f.status,f.deposit_insurance_limit,"
+            "COALESCE(c.currency_code,'NWX') base_currency "
+            "FROM financial_institutions f LEFT JOIN country_currencies c "
+            "ON c.nationality=f.nationality WHERE f.issuer=?", (issuer,),
         ).fetchone()
         if not institution or institution["status"] != "failed":
             return {"accounts": 0, "covered": 0, "uninsured": 0}
         accounts = conn.execute(
-            "SELECT a.account_number,a.user_id,a.balance,a.deposit_insured "
+            "SELECT a.account_number,a.user_id,a.balance,a.deposit_insured,a.quote_currency "
             "FROM accounts.accounts a JOIN product.saving p "
             "ON p.product_code=a.product_code WHERE p.issuer=? "
             "AND a.account_type='saving' "
             "AND a.resolution_status='active' ORDER BY a.user_id,a.account_number",
             (issuer,),
         ).fetchall()
-        limit = max(0, int(institution["deposit_insurance_limit"] or 0))
+        limit = max(0.0, float(institution["deposit_insurance_limit"] or 0))
+        from managers.currency_manager import CurrencyManager, SCALE
+        base_currency = str(institution["base_currency"] or "NWX")
         used_by_user = {}
         covered_total = uninsured_total = 0
         for account in accounts:
-            balance = max(0, int(account["balance"] or 0))
+            balance = max(0.0, float(account["balance"] or 0))
             user_id = str(account["user_id"])
-            used = used_by_user.get(user_id, 0)
-            covered = (min(balance, max(0, limit-used))
-                       if int(account["deposit_insured"] or 0) else 0)
+            used_base = used_by_user.get(user_id, 0.0)
+            remaining_base = max(0.0, limit-used_base)
+            if int(account["deposit_insured"] or 0) and remaining_base > 0:
+                if account["quote_currency"] == base_currency:
+                    available_cover = remaining_base
+                else:
+                    available_cover = CurrencyManager.convert(
+                        conn, int(round(remaining_base*SCALE)), base_currency,
+                        account["quote_currency"]
+                    )/SCALE
+                covered = min(balance, available_cover)
+            else:
+                covered = 0
             uninsured = balance-covered
-            used_by_user[user_id] = used+covered
+            if account["quote_currency"] == base_currency:
+                covered_base = covered
+                uninsured_base = uninsured
+            else:
+                covered_base = CurrencyManager.convert(
+                    conn, int(round(covered*SCALE)), account["quote_currency"],
+                    base_currency
+                )/SCALE if covered else 0
+                uninsured_base = CurrencyManager.convert(
+                    conn, int(round(uninsured*SCALE)), account["quote_currency"],
+                    base_currency
+                )/SCALE if uninsured else 0
+            used_by_user[user_id] = used_base+covered_base
             if covered:
                 paid = conn.execute(
                     "UPDATE users.users SET cash=cash+? WHERE user_id=?",
@@ -1244,9 +1379,12 @@ class BankManager:
                 )
                 if paid.rowcount != 1:
                     raise RuntimeError("예금보험금을 받을 사용자를 찾을 수 없습니다.")
+                treasury_units = CurrencyManager.convert(
+                    conn, int(round(covered*SCALE)), account["quote_currency"], "NWX"
+                )
                 conn.execute(
                     "UPDATE users.users SET cash=cash-? WHERE user_id=?",
-                    (covered, TREASURY_USER_ID),
+                    (treasury_units//SCALE, TREASURY_USER_ID),
                 )
             conn.execute(
                 "UPDATE accounts.accounts SET balance=0,principal=0,"
@@ -1260,8 +1398,8 @@ class BankManager:
                 "VALUES (?,?,?,?,?,?)",
                 (issuer, user_id, account["account_number"], covered, uninsured, when),
             )
-            covered_total += covered
-            uninsured_total += uninsured
+            covered_total += covered_base
+            uninsured_total += uninsured_base
         conn.execute("UPDATE product.saving SET status='inactive' WHERE issuer=?", (issuer,))
         conn.execute("UPDATE product.liability SET status='inactive' WHERE issuer=?", (issuer,))
         return {
@@ -1282,7 +1420,8 @@ class BankManager:
         }
 
     @staticmethod
-    def _liquidate_collateral_lot(conn, loan_id, row, mark_price, product, now):
+    def _liquidate_collateral_lot(conn, loan_id, row, mark_price, product, now,
+                                  currency):
         """Sell whole units into resting bids, then use a depth-adjusted backstop."""
         total_quantity = float(row["quantity"] or 0)
         remaining = total_quantity
@@ -1299,12 +1438,16 @@ class BankManager:
             (row["asset_code"], str(row["user_id"])),
         ).fetchall()
         for bid in bids:
-            affordable = int(bid["reserved_cash"] or 0)//max(1, int(bid["limit_price"]))
+            affordable = math.floor(
+                float(bid["reserved_cash"] or 0)
+                / max(1e-12, float(bid["limit_price"]))
+            )
             fill = min(int(math.floor(remaining+1e-9)),
                        int(bid["remaining_quantity"] or 0), affordable)
             if fill <= 0:
                 continue
-            price = max(1, int(bid["limit_price"]))
+            price = max(10**(-currency_precision(conn, currency)),
+                        float(bid["limit_price"]))
             conn.execute(
                 "INSERT INTO assets.user_assets "
                 "(user_id,asset_code,account_number,quantity,average_cost) VALUES (?,?,?,?,?) "
@@ -1318,10 +1461,10 @@ class BankManager:
                 "UPDATE assets.market_orders SET remaining_quantity=?,"
                 "filled_quantity=filled_quantity+?,reserved_cash=MAX(0,reserved_cash-?),"
                 "status=?,updated_epoch=? WHERE order_id=?",
-                (new_remaining, fill, price*fill,
+                (new_remaining, fill, round_currency(conn, price*fill, currency),
                  "filled" if new_remaining == 0 else "partial", int(now), bid["order_id"]),
             )
-            gross += price*fill
+            gross += round_currency(conn, price*fill, currency)
             remaining -= fill
             book_quantity += fill
             last_execution = price
@@ -1349,7 +1492,7 @@ class BankManager:
             backstop_price = max(0.0, float(mark_price) * (
                 1.0-float(row["haircut"] or 0)-market_impact
             ))
-            gross += round_money(backstop_price*backstop_quantity)
+            gross += round_currency(conn, backstop_price*backstop_quantity, currency)
             existing = conn.execute(
                 "SELECT holding_id,quantity,average_cost FROM assets.user_assets "
                 "WHERE user_id=? AND asset_code=? AND account_number IS NULL",
@@ -1357,9 +1500,10 @@ class BankManager:
             ).fetchone()
             if existing:
                 old_quantity = float(existing["quantity"])
-                average = round_money(
-                    (old_quantity*int(existing["average_cost"] or 0)
-                     + backstop_quantity*backstop_price)/(old_quantity+backstop_quantity)
+                average = round_currency(conn,
+                    (old_quantity*float(existing["average_cost"] or 0)
+                     + backstop_quantity*backstop_price)/(old_quantity+backstop_quantity),
+                    currency
                 )
                 conn.execute(
                     "UPDATE assets.user_assets SET quantity=quantity+?,average_cost=? "
@@ -1372,11 +1516,12 @@ class BankManager:
                     "(user_id,asset_code,account_number,quantity,average_cost) "
                     "VALUES (?,?,NULL,?,?)",
                     (TREASURY_USER_ID, row["asset_code"], backstop_quantity,
-                     round_money(backstop_price)),
+                     round_currency(conn, backstop_price, currency)),
                 )
 
-        liquidation_cost = round_money(
-            gross*float(product["liquidation_cost_percent"] or 0)/100
+        liquidation_cost = round_currency(
+            conn, gross*float(product["liquidation_cost_percent"] or 0)/100,
+            currency
         )
         net = max(0, gross-liquidation_cost)
         weighted_price = gross/total_quantity if total_quantity > 0 else 0.0
@@ -1384,7 +1529,8 @@ class BankManager:
             "UPDATE accounts.loan_collateral_assets SET status='liquidated',"
             "liquidation_price=?,liquidation_cost=?,liquidation_proceeds=? "
             "WHERE collateral_id=?",
-            (round_money(weighted_price), liquidation_cost, net, row["collateral_id"]),
+            (round_currency(conn, weighted_price, currency), liquidation_cost, net,
+             row["collateral_id"]),
         )
         conn.execute(
             "INSERT OR IGNORE INTO accounts.collateral_liquidation_events "
@@ -1407,7 +1553,10 @@ class BankManager:
             (loan_id,),
         ).fetchall()
         if not rows:
-            return int(outstanding_balance), None, 0
+            return float(outstanding_balance), None, 0
+        currency = conn.execute(
+            "SELECT quote_currency FROM accounts.loans WHERE loan_id=?", (loan_id,)
+        ).fetchone()[0]
         total = 0
         marked = []
         for row in rows:
@@ -1417,9 +1566,10 @@ class BankManager:
                 "UNION ALL SELECT unit_price FROM product.investment WHERE product_code=? LIMIT 1",
                 (row["asset_code"], row["asset_code"], row["asset_code"]),
             ).fetchone()
-            price = max(1, int(quote["price"] if quote else row["last_price"]))
-            value = max(0, round_money(
-                price*float(row["quantity"])*(1-float(row["haircut"]))
+            price = max(10**(-currency_precision(conn, currency)),
+                        float(quote["price"] if quote else row["last_price"]))
+            value = max(0, round_currency(conn,
+                price*float(row["quantity"])*(1-float(row["haircut"])), currency
             ))
             total += value
             marked.append((row, price, value))
@@ -1438,14 +1588,16 @@ class BankManager:
              "margin_call" if ltv > margin_ltv else "current", loan_id),
         )
         if not liquidate or (not force and ltv <= liquidation_ltv):
-            return int(outstanding_balance), ltv, 0
+            return float(outstanding_balance), ltv, 0
         proceeds = 0
         now = time.time()
         for row, price, value in marked:
             proceeds += BankManager._liquidate_collateral_lot(
-                conn, loan_id, row, price, product, now
+                conn, loan_id, row, price, product, now, currency
             )
-        new_balance = max(0, int(outstanding_balance)-proceeds)
+        new_balance = max(0, round_currency(
+            conn, float(outstanding_balance)-proceeds, currency
+        ))
         conn.execute(
             "UPDATE accounts.loans SET outstanding_balance=?,"
             "collateral_liquidated_value=collateral_liquidated_value+?,"
@@ -1460,17 +1612,24 @@ class UserFunds:
     """대출 상환에서만 재사용하는 가장 잔액이 큰 자금원 헬퍼."""
 
     @staticmethod
-    def choose(conn, user_id):
+    def choose(conn, user_id, currency="NWX"):
+        from managers.currency_manager import CurrencyManager
         user = conn.execute("SELECT cash FROM users.users WHERE user_id = ?", (user_id,)).fetchone()
         if not user:
             return None
-        sources = [(int(round(user["cash"] or 0)), None)]
+        sources = []
+        if CurrencyManager.home(conn, user_id) == currency:
+            sources.append((float(user["cash"] or 0), None))
         sources.extend(
-            (int(round(row["balance"] or 0)), row["account_number"])
+            (float(row["balance"] or 0), row["account_number"])
             for row in conn.execute(
-                "SELECT account_number, balance FROM accounts.accounts WHERE user_id = ?", (user_id,)
+                "SELECT account_number,balance FROM accounts.accounts WHERE user_id=? "
+                "AND quote_currency=? AND account_type IN ('saving','loan_payout')",
+                (user_id, currency),
             ).fetchall()
         )
+        if not sources:
+            return None
         balance, account_number = max(sources, key=lambda source: source[0])
         return balance, account_number
 
@@ -1493,10 +1652,13 @@ class UserFunds:
         return cursor.rowcount == 1
 
     @staticmethod
-    def credit(conn, user_id, amount, account_number=None):
+    def credit(conn, user_id, amount, account_number=None, currency="NWX"):
         if amount <= 0:
             return True
         if account_number is None:
+            from managers.currency_manager import CurrencyManager
+            if CurrencyManager.home(conn, user_id) != currency:
+                raise ValueError(f"{currency} 입금 계좌가 필요합니다.")
             cursor = conn.execute(
                 "UPDATE users.users SET cash=cash+? WHERE user_id=?", (amount, user_id)
             )

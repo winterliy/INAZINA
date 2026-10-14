@@ -111,7 +111,7 @@ $상품생성 CALL1 option INZST001 call 1500 30 1 100 50
 /그래프 종목:CUR_USD
 ```
 
-출금/입금 통화의 외환통장은 먼저 개설한다. NWX는 정수, 외화는 소수점 6자리까지 지원한다. 1외화 단위당 NWX 시세가 실시간으로 움직이며, `$사건`의 `CUR_USD` 같은 종목으로 환율 목표를 지정한다. 환전 중 사용한 두 시세, 수수료, 차감·입금액은 하나의 트랜잭션에 저장한다. 잔액 부족이나 통장 미개설이면 모두 롤백한다. 같은 통화 환전은 거부하며, 입금액은 내림·수수료는 올림하여 반올림 차익을 막는다.
+출금/입금 통화의 외환통장은 먼저 개설한다. 금액은 통화별 `decimal_places`(최대 6자리)까지 지원하며 NWX는 0자리다. 1외화 단위당 NWX 시세가 실시간으로 움직이며, `$사건`의 `CUR_USD` 같은 종목으로 환율 목표를 지정한다. 환전 중 사용한 두 시세, 수수료, 차감·입금액은 하나의 트랜잭션에 저장한다. 잔액 부족이나 통장 미개설이면 모두 롤백한다. 같은 통화 환전은 거부하며, 입금액은 내림·수수료는 올림하여 반올림 차익을 막는다.
 
 환전 수수료 기본값은 0.1%이고 국고에 입금된다. 외환통장은 상품 연이율에 따라 잔액을 늘리며 1마이크로 단위 미만 이자는 누적한다. `/내지갑`의 외환 평가액은 현재 환율을 적용한다. `/외환계좌`는 `/계좌개설`에 통합했고 상품 코드를 직접 입력한다.
 
@@ -191,6 +191,7 @@ $상품생성 CALL1 option INZST001 call 1500 30 1 100 50
 | `max_dti_percent` / `max_dsr_percent` | 소득기반 심사 한도(%). 0은 기존 상품 호환을 위한 미사용, 양수이면 사용자 `annual_income` 등록이 필수다. |
 | `borrower_history_spread_max` / `affordability_spread_max` | 연체·부도 이력과 DTI/DSR 사용률에 따른 최대 계약 가산금리(%p). |
 | `mandatory_cost_percent` | 의무 보험·중개 등 법정최고이자 및 APR에 산입할 선취 비용률. |
+| `prepayment_fee_percent` / `prepayment_fee_decline_days` | 수동 조기상환 수수료율과 선형 체감 기간. 0일은 만기 전 고정 비율이다. |
 | `collateral_haircut` / `margin_call_ltv` / `liquidation_ltv` | 자산담보 평가 차감률, 마진콜 LTV, 강제청산 LTV. 청산 LTV는 마진콜 이상이어야 한다. |
 | `liquidation_cost_percent` | 강제청산 총매각대금에서 차감할 집행 비용률. 매수호가가 부족한 잔량에는 유동성 기반 시장충격도 적용한다. |
 | `amortization_type` / `payment_frequency_days` | 대출 상환 방식(`legacy`, `bullet`, `equal_principal`, `annuity`)과 약정 납부 간격. 새 방식은 회차별 상환표를 생성한다. |

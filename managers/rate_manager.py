@@ -600,44 +600,89 @@ class RateManager:
 
     @staticmethod
     def institution_balance_sheet(conn, issuer):
-        """Return a compact, live balance-sheet view used for contract pricing."""
+        """Return balances translated into the institution's national currency.
+
+        Contract balances remain denominated and rounded in their own product
+        currency.  Only this consolidated prudential view translates them, so
+        unlike the old implementation it never adds (for example) USD and NWX
+        native amounts as if they were the same unit.
+        """
         issuer = str(issuer or "")
-        deposits = conn.execute(
-            "SELECT COALESCE(SUM(a.balance),0) amount FROM accounts a "
+        institution = conn.execute(
+            "SELECT COALESCE(c.currency_code,'NWX') currency_code "
+            "FROM financial_institutions f LEFT JOIN country_currencies c "
+            "ON c.nationality=f.nationality WHERE f.issuer=?", (issuer,)
+        ).fetchone()
+        base_currency = str(institution["currency_code"] if institution else "NWX")
+
+        deposit_rows = conn.execute(
+            "SELECT a.quote_currency,"
+            "COALESCE(SUM(CASE WHEN a.account_type='currency_saving' "
+            "THEN a.balance_units/1000000.0 ELSE a.balance END),0) amount "
+            "FROM accounts a "
             "LEFT JOIN saving s ON s.product_code=a.product_code "
             "LEFT JOIN liability l ON l.product_code=a.product_code "
             "WHERE (s.issuer=? AND a.account_type IN ('saving','currency_saving')) "
-            "OR (l.issuer=? AND a.account_type='loan_payout')",
+            "OR (l.issuer=? AND a.account_type='loan_payout') "
+            "GROUP BY a.quote_currency",
             (issuer, issuer),
-        ).fetchone()
-        loans = conn.execute(
-            "SELECT COALESCE(SUM(l.outstanding_balance),0) amount FROM loans l "
+        ).fetchall()
+        loan_rows = conn.execute(
+            "SELECT l.quote_currency,COALESCE(SUM(l.outstanding_balance),0) amount "
+            "FROM loans l "
             "JOIN liability p ON p.product_code=l.product_code "
-            "WHERE p.issuer=? AND l.status IN ('active','defaulted')",
+            "WHERE p.issuer=? AND l.status IN ('active','defaulted') "
+            "GROUP BY l.quote_currency",
             (issuer,),
-        ).fetchone()
-        total_deposits = conn.execute(
-            "SELECT COALESCE(SUM(balance),0) amount FROM accounts "
-            "WHERE account_type IN ('saving','currency_saving','loan_payout')"
-        ).fetchone()
-        total_loans = conn.execute(
-            "SELECT COALESCE(SUM(outstanding_balance),0) amount FROM loans "
-            "WHERE status IN ('active','defaulted')"
-        ).fetchone()
+        ).fetchall()
+        total_deposit_rows = conn.execute(
+            "SELECT quote_currency,COALESCE(SUM(CASE WHEN account_type='currency_saving' "
+            "THEN balance_units/1000000.0 ELSE balance END),0) amount FROM accounts "
+            "WHERE account_type IN ('saving','currency_saving','loan_payout') "
+            "GROUP BY quote_currency"
+        ).fetchall()
+        total_loan_rows = conn.execute(
+            "SELECT quote_currency,COALESCE(SUM(outstanding_balance),0) amount FROM loans "
+            "WHERE status IN ('active','defaulted') GROUP BY quote_currency"
+        ).fetchall()
+
+        from managers.currency_manager import CurrencyManager, SCALE
+
+        def translated(rows):
+            total = 0.0
+            for row in rows:
+                native = max(0.0, float(row["amount"] or 0))
+                currency = str(row["quote_currency"] or "NWX")
+                if currency == base_currency:
+                    total += native
+                else:
+                    units = int(round(native*SCALE))
+                    total += CurrencyManager.convert(
+                        conn, units, currency, base_currency
+                    )/SCALE
+            return total
+
         return {
-            "deposits": max(0.0, float(deposits["amount"] or 0)),
-            "loans": max(0.0, float(loans["amount"] or 0)),
-            "total_deposits": max(0.0, float(total_deposits["amount"] or 0)),
-            "total_loans": max(0.0, float(total_loans["amount"] or 0)),
+            "base_currency": base_currency,
+            "deposits": translated(deposit_rows),
+            "loans": translated(loan_rows),
+            "total_deposits": translated(total_deposit_rows),
+            "total_loans": translated(total_loan_rows),
         }
 
     @staticmethod
-    def institution_capacity(conn, issuer, proposed_loan=0):
+    def institution_capacity(conn, issuer, proposed_loan=0, currency_code=None):
         """Apply simplified reserve and risk-weighted capital constraints."""
         RateManager.refresh_institution_status(conn, issuer)
         terms = RateManager.institution_components(conn, issuer)
         sheet = RateManager.institution_balance_sheet(conn, issuer)
         proposed = max(0.0, float(proposed_loan or 0))
+        if proposed and currency_code and str(currency_code) != sheet["base_currency"]:
+            from managers.currency_manager import CurrencyManager, SCALE
+            proposed = CurrencyManager.convert(
+                conn, int(round(proposed*SCALE)), str(currency_code),
+                sheet["base_currency"]
+            )/SCALE
         equity = max(0.0, float(terms["effective_equity"]))
         deposits = float(sheet["deposits"])
         loans = float(sheet["loans"])
@@ -697,23 +742,47 @@ class RateManager:
 
     @staticmethod
     def record_institution_result(conn, issuer, amount, event_type, reference_key,
-                                  *, now=None):
+                                  *, now=None, currency_code=None):
         """Post an idempotent income/expense entry to an institution's capital."""
         issuer = str(issuer or "").strip()
         if not issuer:
             return False
         when = float(time.time() if now is None else now)
+        institution = conn.execute(
+            "SELECT f.nationality,c.currency_code FROM financial_institutions f "
+            "LEFT JOIN country_currencies c ON c.nationality=f.nationality "
+            "WHERE f.issuer=?", (issuer,)
+        ).fetchone()
+        base_currency = str(
+            institution["currency_code"] if institution and institution["currency_code"]
+            else "NWX"
+        )
+        event_currency = str(currency_code or base_currency)
+        from managers.currency_manager import CurrencyManager, SCALE
+        from functions.money import round_currency
+        event_amount = round_currency(conn, amount, event_currency)
+        if event_currency == base_currency:
+            base_amount = round_currency(conn, event_amount, base_currency)
+        else:
+            sign = -1 if event_amount < 0 else 1
+            converted = CurrencyManager.convert(
+                conn, int(round(abs(event_amount)*SCALE)), event_currency, base_currency
+            )
+            base_amount = sign*converted/SCALE
+            base_amount = round_currency(conn, base_amount, base_currency)
         cursor = conn.execute(
             "INSERT OR IGNORE INTO financial_institution_ledger "
-            "(issuer,event_type,amount,reference_key,created_epoch) VALUES (?,?,?,?,?)",
-            (issuer, str(event_type), float(amount), str(reference_key), when),
+            "(issuer,event_type,amount,reference_key,created_epoch,currency_code,"
+            "base_currency_code,base_amount) VALUES (?,?,?,?,?,?,?,?)",
+            (issuer, str(event_type), event_amount, str(reference_key), when,
+             event_currency, base_currency, base_amount),
         )
         if cursor.rowcount != 1:
             return False
         conn.execute(
             "UPDATE financial_institutions SET retained_earnings=retained_earnings+?,"
             "last_capital_update_epoch=? WHERE issuer=?",
-            (float(amount), when, issuer),
+            (base_amount, when, issuer),
         )
         RateManager.refresh_institution_status(conn, issuer, now=when)
         return True

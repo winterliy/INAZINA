@@ -5,7 +5,7 @@ from database import DatabaseManager
 from database.user_db import TREASURY_USER_ID
 from functions.interest_calc import calculate_compound_interest, calculate_simple_interest
 from functions.tax_calc import calculate_income_tax
-from functions.money import round_money
+from functions.money import round_money, round_currency, currency_precision
 from managers.bank_manager import BankManager
 from managers.rate_manager import RateManager
 
@@ -82,7 +82,8 @@ class InterestManager:
         """Split due interest cycles at scheduled floating-rate reset boundaries."""
         last = cls._number(contract["last_payment_epoch"])
         if last is None or end <= last:
-            return [], cls._number(contract["contract_rate"], fallback_rate), contract["next_repricing_epoch"]
+            return ([], cls._number(contract["contract_rate"], fallback_rate),
+                    contract["next_repricing_epoch"], [])
         rate = cls._number(contract["contract_rate"], fallback_rate)
         rate_type = contract["rate_type"] or "fixed"
         next_reset = cls._number(contract["next_repricing_epoch"])
@@ -90,16 +91,25 @@ class InterestManager:
         if rate_type == "floating" and (not contract["rate_nationality"] or reset_cycle <= 0):
             raise ValueError("변동금리 계약의 국적 또는 재산정주기가 올바르지 않습니다.")
         segments = []
+        resets = []
+
+        def reset_at(scheduled_epoch, current_rate):
+            observation = max(
+                0, scheduled_epoch-float(contract["repricing_lag_seconds"] or 0)
+            )
+            new_rate = RateManager.floating_rate(
+                conn, contract["rate_nationality"], contract["base_rate_spread"],
+                contract["rate_floor"], contract["rate_cap"], epoch=observation,
+                benchmark_key=contract["benchmark_key"],
+                tenor_days=contract["benchmark_tenor_days"],
+                apply_legal_max=apply_legal_max,
+            )
+            resets.append((current_rate, new_rate, scheduled_epoch, observation))
+            return new_rate
+
         while last < end:
             if rate_type == "floating" and next_reset is not None and next_reset <= last:
-                rate = RateManager.floating_rate(
-                    conn, contract["rate_nationality"], contract["base_rate_spread"],
-                    contract["rate_floor"], contract["rate_cap"],
-                    epoch=max(0, next_reset-float(contract["repricing_lag_seconds"] or 0)),
-                    benchmark_key=contract["benchmark_key"],
-                    tenor_days=contract["benchmark_tenor_days"],
-                    apply_legal_max=apply_legal_max,
-                )
+                rate = reset_at(next_reset, rate)
                 next_reset += reset_cycle
                 continue
             boundary = min(end, next_reset) if rate_type == "floating" and next_reset is not None else end
@@ -111,18 +121,26 @@ class InterestManager:
             last = paid_until
             if (rate_type == "floating" and next_reset is not None
                     and last >= next_reset):
-                rate = RateManager.floating_rate(
-                    conn, contract["rate_nationality"], contract["base_rate_spread"],
-                    contract["rate_floor"], contract["rate_cap"],
-                    epoch=max(0, next_reset-float(contract["repricing_lag_seconds"] or 0)),
-                    benchmark_key=contract["benchmark_key"],
-                    tenor_days=contract["benchmark_tenor_days"],
-                    apply_legal_max=apply_legal_max,
-                )
+                rate = reset_at(next_reset, rate)
                 next_reset += reset_cycle
             if paid_until < boundary:
                 break
-        return segments, rate, next_reset
+        return segments, rate, next_reset, resets
+
+    @staticmethod
+    def _record_rate_resets(conn, contract_type, contract_id, contract, resets,
+                            applied_epoch, installments_recast=0):
+        for index, (old_rate, new_rate, scheduled, observation) in enumerate(resets):
+            conn.execute(
+                "INSERT OR IGNORE INTO accounts.contract_rate_reset_history "
+                "(contract_type,contract_id,old_rate,new_rate,scheduled_epoch,"
+                "observation_epoch,applied_epoch,benchmark_key,benchmark_tenor_days,"
+                "installments_recast) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (contract_type, str(contract_id), old_rate, new_rate, scheduled,
+                 observation, float(applied_epoch), contract["benchmark_key"],
+                 int(contract["benchmark_tenor_days"] or 0),
+                 installments_recast if index == len(resets)-1 else 0),
+            )
 
     def process_all_interests(self, now=None, user_id=None):
         """Accrue due savings/loan interest, optionally for one user only.
@@ -144,7 +162,7 @@ class InterestManager:
                     "created_at, last_payment, last_payment_epoch,contract_rate,rate_type,"
                     "rate_nationality,base_rate_spread,rate_floor,rate_cap,repricing_cycle_seconds,"
                     "next_repricing_epoch,benchmark_key,benchmark_tenor_days,repricing_lag_seconds,"
-                    "contract_effective_rate "
+                    "contract_effective_rate,quote_currency "
                     "FROM accounts.accounts "
                     "WHERE resolution_status='active' AND (? IS NULL OR user_id = ?)",
                     (user_id, user_id),
@@ -180,7 +198,7 @@ class InterestManager:
                         end = min(now, created + maturity_days * 86400)
                     if end <= last:
                         continue
-                    segments, final_rate, next_reset = self._rate_segments(
+                    segments, final_rate, next_reset, resets = self._rate_segments(
                         conn, account, end, cycle, rate, apply_legal_max=False
                     )
                     if not segments:
@@ -200,16 +218,19 @@ class InterestManager:
                         if gross is None or not math.isfinite(gross):
                             self._advance_account_cursor(conn, account["account_number"], now)
                             break
-                        gross = round_money(gross)
+                        gross = round_currency(
+                            conn, gross, account["quote_currency"]
+                        )
                         if gross == 0:
                             self._advance_account_cursor(
                                 conn, account["account_number"], paid_until
                             )
                             continue
-                        tax = (calculate_income_tax(
-                            gross, self._tax_rate(conn, account['user_id']) / 100.0
+                        tax = (round_currency(
+                            conn, gross*self._tax_rate(conn, account['user_id'])/100.0,
+                            account["quote_currency"]
                         ) if gross > 0 else 0)
-                        net = max(-int(balance), gross-tax)
+                        net = max(-float(balance), gross-tax)
                         stamp = datetime.fromtimestamp(
                             paid_until, timezone.utc
                         ).strftime("%Y-%m-%d %H:%M:%S")
@@ -221,19 +242,28 @@ class InterestManager:
                         RateManager.record_institution_result(
                             conn, product["issuer"], -gross, "deposit_interest",
                             f"account:{account['account_number']}:{paid_until}",
-                            now=paid_until,
+                            now=paid_until, currency_code=account["quote_currency"],
                         )
                         balance += net
                         if tax > 0:
+                            from managers.currency_manager import CurrencyManager, SCALE
+                            tax_units = int(round(float(tax)*SCALE))
+                            treasury_units = CurrencyManager.convert(
+                                conn, tax_units, account["quote_currency"], "NWX"
+                            )
                             treasury = conn.execute(
                                 "UPDATE users.users SET cash=cash+? WHERE user_id=?",
-                                (tax, TREASURY_USER_ID),
+                                (treasury_units//SCALE, TREASURY_USER_ID),
                             )
                             if treasury.rowcount != 1:
                                 raise RuntimeError("국고 계정을 찾을 수 없어 이자 지급을 취소했습니다.")
                         total_paid += net
                         credited = True
                     if account["rate_type"] == "floating":
+                        self._record_rate_resets(
+                            conn, "account", account["account_number"], account,
+                            resets, end,
+                        )
                         conn.execute(
                             "UPDATE accounts.accounts SET contract_rate=?,next_repricing_epoch=?,"
                             "contract_effective_rate=? "
@@ -250,9 +280,9 @@ class InterestManager:
                     "repricing_cycle_seconds,next_repricing_epoch,benchmark_key,benchmark_tenor_days,"
                     "repricing_lag_seconds,maturity_epoch,overdue_since_epoch,overdue_last_epoch,"
                     "overdue_interest_remainder,collection_status,accelerated_epoch,defaulted_epoch,"
-                    "collateral_amount,collateral_released,collateral_seized,origination_fee,"
+                    "collateral_amount,collateral_released,collateral_seized,origination_fee,mandatory_cost_fee,"
                     "provisioned_loss "
-                    ",day_count_convention,amortization_type,payment_frequency_days "
+                    ",day_count_convention,amortization_type,payment_frequency_days,quote_currency "
                     "FROM accounts.loans WHERE status IN ('active','defaulted') "
                     "AND (? IS NULL OR user_id = ?)",
                     (user_id, user_id),
@@ -285,7 +315,7 @@ class InterestManager:
                         )
                         continue
                     balance, _ltv, _liquidated = BankManager.revalue_asset_collateral(
-                        conn, loan["loan_id"], int(round(balance)), product
+                        conn, loan["loan_id"], balance, product
                     )
                     if balance <= 0:
                         BankManager._release_collateral(
@@ -299,7 +329,7 @@ class InterestManager:
                     if end <= last:
                         self._process_overdue(conn, loan, product, now)
                         continue
-                    segments, final_rate, next_reset = self._rate_segments(
+                    segments, final_rate, next_reset, resets = self._rate_segments(
                         conn, loan, end, cycle, rate, apply_legal_max=True
                     )
                     if not segments:
@@ -318,7 +348,9 @@ class InterestManager:
                                 (now, loan["loan_id"]),
                             )
                             break
-                        whole_interest = round_money(interest)
+                        whole_interest = round_currency(
+                            conn, interest, loan["quote_currency"]
+                        )
                         if whole_interest <= 0:
                             if loan["rate_type"] == "floating":
                                 conn.execute(
@@ -334,17 +366,23 @@ class InterestManager:
                         RateManager.record_institution_result(
                             conn, product["issuer"], whole_interest, "loan_interest",
                             f"loan:{loan['loan_id']}:{paid_until}", now=paid_until,
+                            currency_code=loan["quote_currency"],
                         )
                         balance += whole_interest
                         charged = True
                     if loan["rate_type"] == "floating":
+                        recast_count = 0
                         if (loan["amortization_type"] != "legacy"
                                 and not math.isclose(float(final_rate), float(rate),
                                                      abs_tol=1e-12)):
-                            BankManager._recast_payment_schedule(
+                            recast_count = BankManager._recast_payment_schedule(
                                 conn, loan, final_rate, end,
                                 outstanding_balance=balance,
                             )
+                        self._record_rate_resets(
+                            conn, "loan", loan["loan_id"], loan, resets, end,
+                            recast_count,
+                        )
                         conn.execute(
                             "UPDATE accounts.loans SET contract_rate=?,next_repricing_epoch=?,"
                             "contract_effective_rate=?,contract_apr=? "
@@ -353,21 +391,25 @@ class InterestManager:
                              RateManager.effective_annual_rate(final_rate, cycle),
                              RateManager.annual_percentage_rate(
                                  final_rate,
-                                 loan['origination_fee'],
-                                 max(1, int(loan['principal'] or 0)-int(loan['origination_fee'] or 0)),
+                                 float(loan['origination_fee'] or 0)
+                                 + float(loan['mandatory_cost_fee'] or 0),
+                                 max(10**(-currency_precision(conn, loan['quote_currency'])),
+                                     float(loan['principal'] or 0)
+                                     - float(loan['origination_fee'] or 0)
+                                     - float(loan['mandatory_cost_fee'] or 0)),
                                  int(product['maturity_days'] or 365),
                                  cashflows=[
                                      ((float(row['due_epoch'])-float(
                                          self._utc_epoch(loan['created_at']) or row['due_epoch']
                                       ))/86400,
-                                      int(row['principal_due'])+int(row['interest_due'])+int(row['fee_due']))
+                                      float(row['principal_due'])+float(row['interest_due'])+float(row['fee_due']))
                                      for row in conn.execute(
                                          "SELECT principal_due,interest_due,fee_due,due_epoch "
                                          "FROM accounts.loan_payment_schedule WHERE loan_id=? "
                                          "ORDER BY installment_number", (loan['loan_id'],)
                                      )
                                  ] or None,
-                                 principal=int(loan['principal'] or 0),
+                                 principal=float(loan['principal'] or 0),
                              ), loan["loan_id"]),
                         )
                     loan_count += int(charged)
@@ -375,7 +417,7 @@ class InterestManager:
                 resolutions = BankManager.resolve_all_failed_institutions(conn, now=now)
                 if any(value["accounts"] for value in resolutions.values()):
                     RateManager.refresh_all_market_pressure(conn, now=now)
-            return account_count, int(total_paid), loan_count
+            return account_count, total_paid, loan_count
         except Exception:
             raise
 
@@ -391,9 +433,9 @@ class InterestManager:
             "provisioned_loss "
             "FROM accounts.loans WHERE loan_id=?", (loan["loan_id"],)
         ).fetchone()
-        if not fresh or int(fresh["outstanding_balance"] or 0) <= 0:
+        if not fresh or float(fresh["outstanding_balance"] or 0) <= 0:
             return
-        balance = int(fresh["outstanding_balance"])
+        balance = float(fresh["outstanding_balance"])
         cursor = max(maturity, cls._number(fresh["overdue_last_epoch"], maturity))
         legal = RateManager.from_connection(
             conn, "legal_max_rate", loan["rate_nationality"],
@@ -406,13 +448,16 @@ class InterestManager:
             balance, overdue_rate, max(0, now-cursor),
             loan["day_count_convention"], cursor
         )+fractional
-        whole_interest = math.floor(raw_interest + 1e-12)
-        remainder = raw_interest-whole_interest
+        whole_interest = round_currency(
+            conn, raw_interest, loan["quote_currency"]
+        )
+        remainder = 0
         if whole_interest:
             balance += whole_interest
             RateManager.record_institution_result(
                 conn, product["issuer"], whole_interest, "overdue_interest",
                 f"loan:{loan['loan_id']}:{cursor}:{now}", now=now,
+                currency_code=loan["quote_currency"],
             )
         age_days = (now-maturity)/86400
         grace = int(product["grace_period_days"] or 0)
@@ -430,9 +475,9 @@ class InterestManager:
                     "UPDATE users.users SET credit_score=MAX(0,credit_score-25) WHERE user_id=?",
                     (loan["user_id"],),
                 )
-        released = int(fresh["collateral_released"] or 0)
-        seized = int(fresh["collateral_seized"] or 0)
-        provisioned = int(fresh["provisioned_loss"] or 0)
+        released = float(fresh["collateral_released"] or 0)
+        seized = float(fresh["collateral_seized"] or 0)
+        provisioned = float(fresh["provisioned_loss"] or 0)
         if default > 0 and age_days >= default:
             state, status = "defaulted", "defaulted"
             if defaulted_epoch is None:
@@ -441,7 +486,7 @@ class InterestManager:
                     "UPDATE users.users SET credit_score=MAX(0,credit_score-100) WHERE user_id=?",
                     (loan["user_id"],),
                 )
-                available = max(0, int(fresh["collateral_amount"] or 0)-released-seized)
+                available = max(0.0, float(fresh["collateral_amount"] or 0)-released-seized)
                 take = min(available, balance)
                 balance -= take
                 seized += take
@@ -465,6 +510,7 @@ class InterestManager:
                     RateManager.record_institution_result(
                         conn, product["issuer"], -new_provision, "credit_loss",
                         f"loan:{loan['loan_id']}:default", now=now,
+                        currency_code=loan["quote_currency"],
                     )
                     provisioned += new_provision
         conn.execute(

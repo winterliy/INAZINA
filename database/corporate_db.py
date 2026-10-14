@@ -72,4 +72,20 @@ class CorporateDB(DBManager):
             ON dividend_distributions(asset_code,created_epoch)''')
         self.execute('''CREATE INDEX IF NOT EXISTS idx_dividend_payments_user
             ON dividend_payments(user_id,distribution_id)''')
-        self.enforce_integer_money('issuer_cash_accounts', ('balance','locked_amount'), 'company_code')
+        self.enforce_currency_money(
+            'issuer_cash_accounts', ('balance','locked_amount'), 'company_code',
+            "SELECT quote_currency FROM company WHERE company_code=NEW.company_code",
+        )
+        self.enforce_currency_money(
+            'preferred_dividend_claims', ('gross_amount','paid_amount'), 'claim_id',
+            'NEW.quote_currency',
+        )
+        self.enforce_currency_money(
+            'dividend_distributions',
+            ('per_share','reference_price','gross_amount','entitlement_amount','deferred_amount'),
+            'distribution_id', 'NEW.quote_currency',
+        )
+        self.enforce_currency_money(
+            'dividend_payments', ('gross_amount','tax_amount'), 'payment_id',
+            'NEW.quote_currency',
+        )
