@@ -5,10 +5,11 @@ from discord import app_commands
 import io
 import time
 import uuid
+import shlex
 
 from database.user_db import TREASURY_USER_ID
 from functions.admin_access import BOOTSTRAP_ADMIN_IDS, resolve_user_role
-from functions.interaction_reliability import retry_discord_request
+from functions.interaction_reliability import discord_request
 from functions.shared_actions import execute_shared_action
 from functions.discord_views import (
     AccountCloseView,
@@ -41,6 +42,7 @@ class SlashCommandRegistry:
 
     def register(self):
         definitions = (
+            ("설치", "서버 관리자가 INAZINA 관리자에게 서버 설치를 신청합니다", self.request_installation),
             ("등록", "이용 안내를 확인하고 Inazina 봇에 등록합니다", self.self_register),
             ("서버등록", "이 서버를 INAZINA 시스템에 등록합니다.", self.register_server),
             ("서버탈퇴", "이 서버를 INAZINA 시스템에 등록해제합니다.", self.leave_server),
@@ -67,6 +69,7 @@ class SlashCommandRegistry:
             ("대출상환", "상환할 대출과 상환액을 선택합니다", self.repay_loan),
             ("대출연장", "보유 대출 ID의 신용 조건을 확인하여 만기를 연장합니다", self.extend_loan),
             ("검색", "상품·금리·실시간차트·자산순위를 조회합니다", self.search),
+            ("재무", "회사·우선주 product_id로 재무제표와 재무비율을 확인합니다", self.financial),
             ("그래프", "자산·거래소지수·기준금리·법정최고이자의 변동 그래프를 확인합니다", self.movement),
             ("주총소집", "회사 주주총회를 소집하고 주주에게 참석 여부를 묻습니다", self.shareholder_meeting),
         )
@@ -80,6 +83,59 @@ class SlashCommandRegistry:
         self.commands["주총소집"].autocomplete("주식코드")(self.company_autocomplete)
         self.commands['법정최고이자'].autocomplete('국가')(self.nationality_autocomplete)
         self.commands['서버등록'].autocomplete('국가')(self.nationality_autocomplete)
+        self.commands["설치"].autocomplete("화폐")(self.currency_autocomplete)
+
+    @app_commands.guild_only()
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.describe(국명="등록할 국가 이름", 화폐="기본화폐 코드·약어 (예: NWX, USD)")
+    async def request_installation(self, interaction: discord.Interaction, 국명: str, 화폐: str):
+        guild=interaction.guild
+        permissions=getattr(interaction.user,'guild_permissions',None)
+        if guild is None:
+            return await self._reply(interaction,content='❌ /설치는 설치를 신청할 서버에서 실행해주세요.')
+        if not (str(getattr(guild,'owner_id',''))==str(interaction.user.id) or getattr(permissions,'administrator',False)):
+            return await self._reply(interaction,content='❌ 이 서버의 관리자만 설치를 신청할 수 있습니다.')
+        country,currency=국명.strip(),화폐.strip().upper()
+        if not 1<=len(country)<=100 or not 1<=len(currency)<=32 or any(char in country+currency for char in ('\n','\r','\x00','`')):
+            return await self._reply(interaction,content='❌ 국명은 1~100자, 화폐는 1~32자로 입력해주세요. 줄바꿈과 백틱은 사용할 수 없습니다.')
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True,thinking=True)
+        try:
+            rows=await asyncio.to_thread(self.bot.db.users.execute,'SELECT user_id,role FROM users')
+            known=await asyncio.to_thread(self.bot.db.currency.execute,
+                "SELECT code,name FROM currencies WHERE status='active'")
+        except Exception:
+            return await self._reply(interaction,content='❌ 관리자·화폐 정보를 조회하지 못해 설치 신청을 전달하지 않았습니다. 잠시 후 다시 시도해주세요.')
+        named=[row['code'] for row in known if str(row['name']).upper()==currency]
+        if currency not in {row['code'] for row in known} and len(named)==1:
+            currency=named[0]
+        recipients={str(row['user_id']) for row in rows if str(row['user_id']).isdecimal() and resolve_user_role(row['user_id'],row)=='admin'}
+        recipients.update(BOOTSTRAP_ADMIN_IDS)
+        approval=f'$서버설치 {guild.id} {shlex.quote(country)} {shlex.quote(currency)}'
+        embed=discord.Embed(title='📨 INAZINA 서버 설치 신청',color=discord.Color.blue())
+        embed.add_field(name='🏠 발신 서버',value=discord.utils.escape_markdown(str(guild.name))[:100],inline=False)
+        embed.add_field(name='🆔 서버 ID',value=f'```{guild.id}```',inline=False)
+        embed.add_field(name='🏳️ 국명',value=discord.utils.escape_markdown(country),inline=True)
+        embed.add_field(name='💱 기본화폐',value=discord.utils.escape_markdown(currency),inline=True)
+        embed.add_field(name='👤 신청자',value=f"{discord.utils.escape_markdown(str(getattr(interaction.user,'display_name',interaction.user.id)))[:100]} · `{interaction.user.id}`",inline=False)
+        embed.add_field(name='🛠️ 설치 승인 명령어',value=f'```{approval}```',inline=False)
+        embed.set_footer(text='신청 접수 단계 · 서버 설정은 관리자가 $서버설치를 실행할 때 적용됩니다.')
+        sent=failed=0
+        for admin_id in sorted(recipients):
+            try:
+                recipient=self.bot.get_user(int(admin_id))
+                if recipient is None:
+                    recipient=await self.bot.fetch_user(int(admin_id))
+                await recipient.send(embed=embed,allowed_mentions=discord.AllowedMentions.none())
+                sent+=1
+            except (discord.HTTPException,ValueError,TypeError):
+                failed+=1
+        if sent:
+            message=f'✅ 설치 신청을 INAZINA 관리자 {sent}명에게 DM으로 전달했습니다. 관리자 승인 후 등록할 수 있습니다.'
+            if failed:message+=f' (DM 전달 실패 {failed}명)'
+        else:
+            message='❌ INAZINA 관리자에게 설치 신청 DM을 전달하지 못했습니다. 잠시 후 다시 시도해주세요.'
+        await self._reply(interaction,content=message)
 
     async def nationality_autocomplete(self, interaction, current):
         current = str(current or '').casefold()
@@ -261,14 +317,34 @@ class SlashCommandRegistry:
                 )
             return await send(**options)
 
-        if interaction.response.is_done():
-            await retry_discord_request(
-                lambda: send_response(interaction.followup.send)
+        extras = getattr(interaction, 'extras', None)
+        deferred = (
+            getattr(interaction.response, 'type', None)
+            == discord.InteractionResponseType.deferred_channel_message
+            and isinstance(extras, dict)
+            and not extras.get('response_delivered')
+        )
+        if deferred:
+            options = {
+                key: value for key, value in response_options.items()
+                if key not in {'ephemeral', 'file'}
+            }
+            if file_payload is not None:
+                options['attachments'] = [
+                    discord.File(io.BytesIO(file_payload), filename=file.filename)
+                ]
+            await discord_request(
+                lambda: interaction.edit_original_response(**options), stage='complete'
+            )
+            extras['response_delivered'] = True
+        elif interaction.response.is_done():
+            await discord_request(
+                lambda: send_response(interaction.followup.send), stage='followup'
             )
         else:
-            await retry_discord_request(
-                lambda: send_response(interaction.response.send_message)
-            )
+            await discord_request(lambda: send_response(interaction.response.send_message))
+        if file_payload is not None and isinstance(view, PriceMovementView):
+            view.remember_uploaded_chart(file_payload)
 
     @staticmethod
     def _result_embed(title, message, success):
@@ -1050,6 +1126,20 @@ class SlashCommandRegistry:
         except ValueError as exc:
             await self._reply(interaction, content=f"❌ 정보 목록을 불러오지 못했습니다: {exc}")
 
+
+    @app_commands.describe(product_id="회사 주식 또는 우선주 종목 코드")
+    async def financial(self, interaction: discord.Interaction, product_id: str):
+        user_id, _, _ = await self._prepare(interaction, defer=True)
+        from managers.financial_manager import FinancialManager
+        from functions.financial_views import FinancialReportView
+        manager = FinancialManager(self.bot.db)
+        try:
+            report = await asyncio.to_thread(manager.report, product_id.strip())
+            periods = await asyncio.to_thread(manager.periods, product_id.strip())
+            view = FinancialReportView(self.bot.db, user_id, report, periods)
+            await self._reply(interaction, embed=view.build_embed(), view=view)
+        except ValueError as exc:
+            await self._reply(interaction, content=f"❌ {exc}")
 
     async def movement(self, interaction: discord.Interaction, 종목: str):
         자산 = 종목.strip()

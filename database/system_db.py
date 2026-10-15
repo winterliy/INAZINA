@@ -113,6 +113,24 @@ class SystemDB(DBManager):
         # The former statutory rate accrued extra interest after loan maturity.
         # A legal maximum is a cap instead, so do not migrate the old value.
         self.execute("DELETE FROM settings WHERE key='statutory_rate'")
+        self.execute("""CREATE TABLE IF NOT EXISTS rate_history (
+            history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rate_key TEXT NOT NULL CHECK(rate_key IN ('base_rate','legal_max_rate')),
+            annual_percent REAL NOT NULL,
+            effective_epoch REAL NOT NULL,
+            changed_by TEXT NOT NULL,
+            CHECK((rate_key='base_rate' AND annual_percent BETWEEN -100 AND 100)
+               OR (rate_key='legal_max_rate' AND annual_percent BETWEEN 0 AND 100))
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_rate_history_effective "
+                     "ON rate_history(rate_key,effective_epoch,history_id)")
+        for key in ("base_rate", "legal_max_rate"):
+            self.execute(
+                "INSERT INTO rate_history(rate_key,annual_percent,effective_epoch,changed_by) "
+                "SELECT ?,CAST(value AS REAL),0,'initial' FROM settings WHERE key=? "
+                "AND NOT EXISTS(SELECT 1 FROM rate_history WHERE rate_key=?)",
+                (key, key, key),
+            )
         self._init_gamble_triggers()
         self._init_rate_triggers()
         self.execute("""CREATE TABLE IF NOT EXISTS market_events (
@@ -157,6 +175,10 @@ class SystemDB(DBManager):
             self.execute("ALTER TABLE market_exchanges ADD COLUMN nationality TEXT NOT NULL DEFAULT '낙원'")
         # Migrate both former exchange tables before removing them.  This also
         # covers installations that predate per-exchange market sessions.
+        if self.execute_one("SELECT 1 FROM sqlite_master WHERE type='view' AND name='market_exchange_indices'"):
+            self.execute("DROP VIEW market_exchange_indices")
+        if self.execute_one("SELECT 1 FROM sqlite_master WHERE type='view' AND name='market_session'"):
+            self.execute("DROP VIEW market_session")
         legacy_tables = {str(row[0]) for row in self.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
             "('market_exchange_indices', 'market_exchange_sessions', 'market_session')"
@@ -216,6 +238,25 @@ class SystemDB(DBManager):
         self.execute("DROP TABLE IF EXISTS market_exchange_indices")
         self.execute("DROP TABLE IF EXISTS market_exchange_sessions")
         self.execute("DROP TABLE IF EXISTS market_session")
+        self.execute("""CREATE VIEW market_exchange_indices AS
+            SELECT exchange_id,index_value,index_updated_epoch AS updated_epoch
+            FROM market_exchanges""")
+        self.execute("""CREATE TRIGGER market_exchange_indices_insert
+            INSTEAD OF INSERT ON market_exchange_indices BEGIN
+            INSERT INTO market_exchanges(exchange_id,index_value,index_updated_epoch,status,updated_epoch)
+            VALUES(NEW.exchange_id,NEW.index_value,NEW.updated_epoch,'open',NEW.updated_epoch)
+            ON CONFLICT(exchange_id) DO UPDATE SET
+                index_value=excluded.index_value,index_updated_epoch=excluded.index_updated_epoch;
+            END""")
+        self.execute("""CREATE TRIGGER market_exchange_indices_update
+            INSTEAD OF UPDATE ON market_exchange_indices BEGIN
+            UPDATE market_exchanges SET index_value=NEW.index_value,
+                index_updated_epoch=NEW.updated_epoch WHERE exchange_id=OLD.exchange_id;
+            END""")
+        self.execute("""CREATE VIEW market_session AS
+            SELECT 1 AS session_id,status,reason,halt_started_epoch,resume_epoch,
+                   circuit_stage,updated_epoch
+            FROM market_exchanges ORDER BY exchange_id LIMIT 1""")
         self.execute("""CREATE TABLE IF NOT EXISTS market_event_targets (
             event_id INTEGER NOT NULL,
             asset_code TEXT NOT NULL,
@@ -259,6 +300,22 @@ class SystemDB(DBManager):
                         OR (NEW.key='legal_max_rate' AND CAST(NEW.value AS REAL) NOT BETWEEN 0 AND 100)
                         THEN RAISE(ABORT, 'Rate is outside its permitted range') END;
                 END""")
+        self.execute("DROP TRIGGER IF EXISTS trg_settings_rate_history_insert")
+        self.execute("DROP TRIGGER IF EXISTS trg_settings_rate_history_update")
+        self.execute("""CREATE TRIGGER trg_settings_rate_history_insert
+            AFTER INSERT ON settings WHEN NEW.key IN ('base_rate','legal_max_rate') BEGIN
+            INSERT INTO rate_history(rate_key,annual_percent,effective_epoch,changed_by)
+            VALUES(NEW.key,CAST(NEW.value AS REAL),
+                   (julianday('now')-2440587.5)*86400.0,'database');
+            END""")
+        self.execute("""CREATE TRIGGER trg_settings_rate_history_update
+            AFTER UPDATE OF key,value ON settings
+            WHEN NEW.key IN ('base_rate','legal_max_rate')
+             AND (OLD.key<>NEW.key OR CAST(OLD.value AS REAL)<>CAST(NEW.value AS REAL)) BEGIN
+            INSERT INTO rate_history(rate_key,annual_percent,effective_epoch,changed_by)
+            VALUES(NEW.key,CAST(NEW.value AS REAL),
+                   (julianday('now')-2440587.5)*86400.0,'database');
+            END""")
 
     def _init_gamble_triggers(self):
         """Keep browser edits to gambling settings within supported ranges."""
@@ -287,3 +344,5 @@ class SystemDB(DBManager):
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, str(value)),
         )
+        if key == "tax_percent":
+            self.execute("UPDATE country_currencies SET tax_percent=?", (float(value),))

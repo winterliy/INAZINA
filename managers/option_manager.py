@@ -83,7 +83,12 @@ class OptionManager:
                 contract["option_type"],
                 self._base_rate(underlying.get("exchange_id")) / 100,
             )
-            override = self.db.assets.execute_one("SELECT price FROM market_quote_overrides WHERE asset_code=?", (contract['contract_code'],))
+            override = self.db.assets.execute_one(
+                "SELECT price FROM market_quote_overrides WHERE asset_code=? "
+                "UNION ALL SELECT price FROM market_last_trade WHERE asset_code=? "
+                "AND NOT EXISTS(SELECT 1 FROM market_quote_overrides WHERE asset_code=?) LIMIT 1",
+                (contract['contract_code'], contract['contract_code'], contract['contract_code']),
+            )
             contract.update({
                 "name": (
                     f"{underlying['name']} {'콜' if contract['option_type'] == 'call' else '풋'} "

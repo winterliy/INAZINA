@@ -166,50 +166,38 @@ class AdminManager:
                     count += 1
         return f"✅ 신규 등록 {count}명 · 기존 등록 {existed}명 · 닉네임 갱신 {renamed}명입니다."
 
-    def distribute_basic_income(self, amount, actor=None):
-        """활성 시민에게 1인당 지급하며, 재원은 users.db의 국고에서 뺍니다."""
+    def distribute_basic_income(self, amount, actor=None, currency_code=None):
+        """Pay equal source-currency value in each citizen's home currency."""
+        from managers.currency_manager import CurrencyManager
+        from managers.currency_exchange_manager import amount_units, display_units
+        import uuid
         try:
-            amount = parse_money(amount, minimum=1)
-        except ValueError as exc:
-            return False, f"❌ 기본소득은 정수 NWX로 입력해주세요. ({exc})"
-
-        try:
-            with self.db.atomic(("users",)) as conn:
-                recipients = conn.execute(
-                    "SELECT user_id FROM users.users "
-                    "WHERE status = 'active' AND user_id != ? ORDER BY user_id",
+            units=amount_units(amount)
+            with self.db.atomic() as conn:
+                source=(str(currency_code).upper() if currency_code else
+                        CurrencyManager.home(conn,actor or TREASURY_USER_ID))
+                CurrencyManager.validate_units(conn,units,source)
+                recipients=conn.execute(
+                    "SELECT user_id FROM users WHERE status='active' AND user_id!=? ORDER BY user_id",
                     (TREASURY_USER_ID,),
                 ).fetchall()
                 if not recipients:
-                    return False, "❌ 기본소득을 받을 활성 시민이 없습니다."
-
-                total = amount * len(recipients)
-                treasury = conn.execute(
-                    "SELECT cash FROM users.users WHERE user_id = ?",
-                    (TREASURY_USER_ID,),
-                ).fetchone()
-                balance = int(round(treasury["cash"] or 0)) if treasury else 0
-
-                debit = conn.execute(
-                    "UPDATE users.users SET cash = cash - ? WHERE user_id = ?",
-                    (total, TREASURY_USER_ID),
-                )
-                if debit.rowcount != 1:
-                    return False, "❌ 국고 잔액이 변경되어 기본소득 지급을 취소했습니다."
-
-                for recipient in recipients:
-                    credit = conn.execute(
-                        "UPDATE users.users SET cash = cash + ? "
-                        "WHERE user_id = ? AND status = 'active'",
-                        (amount, recipient["user_id"]),
-                    )
-                    if credit.rowcount != 1:
-                        raise RuntimeError("지급 대상이 변경되어 기본소득 지급을 취소했습니다.")
-            after = balance - total
-            deficit_note = f" · 국고 잔액 {after:,} NWX (적자)" if after < 0 else f" · 국고 잔액 {after:,} NWX"
-            return True, (
-                f"✅ {len(recipients)}명에게 1인당 {amount:,} NWX 지급 "
-                f"(국고에서 {total:,} NWX 차감){deficit_note}"
-            )
-        except Exception as exc:
-            return False, f"❌ 기본소득 처리 중 오류가 발생했습니다: {exc}"
+                    return False,'❌ 기본소득을 받을 활성 시민이 없습니다.'
+                source_rate=CurrencyManager.rate_fraction(conn,source)
+                payments=[]
+                for row in recipients:
+                    home=CurrencyManager.home(conn,row[0])
+                    output=CurrencyManager.convert(conn,units,source,home)
+                    if output<=0:
+                        raise ValueError(f'{home} 지급액이 최소 단위 미만입니다.')
+                    payments.append((row[0],home,output,str(CurrencyManager.rate_fraction(conn,home))))
+                total=units*len(payments)
+                after=CurrencyManager.change(conn,TREASURY_USER_ID,source,-total,allow_deficit=True)
+                batch=uuid.uuid4().hex; now=time.time()
+                for user_id,home,output,target_rate in payments:
+                    CurrencyManager.change(conn,user_id,home,output)
+                    conn.execute('INSERT INTO basic_income_payments(batch_id,user_id,source_currency,target_currency,source_units,target_units,source_rate,target_rate,recorded_epoch) VALUES (?,?,?,?,?,?,?,?,?)',
+                                 (batch,user_id,source,home,units,output,str(source_rate),target_rate,now))
+            return True,(f'✅ {len(payments)}명에게 1인당 {display_units(units)} {source} 상당액을 국적 화폐로 지급 · 국고 {display_units(total)} {source} 차감 · 잔액 {display_units(after)} {source}'+(' (적자)' if after<0 else ''))
+        except (ValueError,OverflowError) as exc:
+            return False,f'❌ 기본소득 지급 실패: {exc}'

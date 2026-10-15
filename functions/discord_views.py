@@ -2,6 +2,7 @@ import asyncio
 import copy
 import discord
 import io
+import hashlib
 import json
 import math
 import secrets
@@ -11,7 +12,7 @@ from datetime import datetime
 from decimal import Decimal
 from database.user_db import TREASURY_USER_ID
 from functions.interaction_reliability import (
-    retry_discord_request,
+    discord_request,
     send_interaction_notice,
 )
 from functions.interaction_checks import owner_interaction_check
@@ -1343,6 +1344,10 @@ class PriceMovementView(discord.ui.View):
 
     def __init__(self, bot, user_id, asset_code):
         super().__init__(timeout=300)
+        self._chart_lock = asyncio.Lock()
+        self._chart_revision = 0
+        self._preferences_pending = False
+        self._uploaded_chart_digest = None
         self.bot = bot
         self.user_id = str(user_id)
         self.asset_code = str(asset_code)
@@ -1655,29 +1660,57 @@ class PriceMovementView(discord.ui.View):
         embed.set_footer(text="단위: 연이율(%) · 변동: 퍼센트포인트(%p) | 변경 시점의 계단형 그래프 | 한국시간")
         return embed, png
 
-    async def _edit_chart(self, interaction):
+    def remember_uploaded_chart(self, png):
+        self._uploaded_chart_digest = hashlib.sha256(png).digest()
+
+    async def _edit_chart(self, interaction, *, save_preferences=False):
+        self._chart_revision += 1
+        revision = self._chart_revision
+        self._preferences_pending |= save_preferences
         if not interaction.response.is_done():
-            await interaction.response.defer()
-        try:
-            embed, png = await asyncio.to_thread(self.render)
-        except Exception as exc:
-            await send_interaction_notice(
-                interaction, f"❌ 그래프를 만들지 못했습니다: {exc}"
+            await discord_request(lambda: interaction.response.defer(), stage='ack')
+        async with self._chart_lock:
+            if revision != self._chart_revision:
+                return
+            snapshot = copy.copy(self)
+
+            def prepare():
+                if snapshot._preferences_pending:
+                    snapshot._save_preferences()
+                return snapshot.render()
+
+            try:
+                embed, png = await asyncio.to_thread(prepare)
+            except Exception as exc:
+                if revision == self._chart_revision:
+                    await send_interaction_notice(
+                        interaction, f"❌ 그래프를 만들지 못했습니다: {exc}"
+                    )
+                return
+            if revision != self._chart_revision:
+                return
+            self._preferences_pending = False
+            self.els_details = snapshot.els_details
+            existing = getattr(getattr(interaction, 'message', None), 'attachments', ())
+            reuse = (
+                hashlib.sha256(png).digest() == self._uploaded_chart_digest
+                and any(item.filename == 'movement.png' for item in existing)
             )
-            return
-        try:
-            await retry_discord_request(
-                lambda: interaction.edit_original_response(
-                    embed=embed,
-                    attachments=[discord.File(io.BytesIO(png), filename="movement.png")],
-                    view=self,
+            options = dict(embed=embed, view=self)
+            if not reuse:
+                options['attachments'] = [
+                    discord.File(io.BytesIO(png), filename='movement.png')
+                ]
+            try:
+                await discord_request(
+                    lambda: interaction.edit_original_response(**options), stage='chart_edit'
                 )
-            )
-        except discord.HTTPException:
-            await send_interaction_notice(
-                interaction,
-                "⚠️ Discord 응답이 일시적으로 불안정해 그래프를 갱신하지 못했습니다. 다시 시도해주세요.",
-            )
+                self.remember_uploaded_chart(png)
+            except discord.HTTPException:
+                await send_interaction_notice(
+                    interaction,
+                    "⚠️ Discord 응답이 일시적으로 불안정해 그래프를 갱신하지 못했습니다. 다시 시도해주세요.",
+                )
 
     async def select_period(self, interaction: discord.Interaction):
         self.period_seconds = int(self.period_select.values[0])

@@ -5,8 +5,8 @@ from functions.admin_embeds import admin_help_embed,admin_response,creation_argu
 
 class AdminHelpView(discord.ui.View):
     PAGES=(('main','📖 메인'),('products','📦 상품 관리'),('citizens','👥 시민 · 잔고'),('market','📈 시장 · 환율 · 사건'),
-           ('gamble','🎲 도박 · 세금'),('rates','🏦 금리 · 법정최고이자'),('lottery','🎟️ 복권'),('national','🏛️ 국가 명의 기능'),
-           ('structured','🧾 우선주 · ELS'))
+           ('gamble','🎲 도박 · 세금'),('rates','🏦 금리 · 법정최고이자'),('lottery','🎟️ 복권'),
+           ('structured','🧾 우선주 · ELS'),('national','🏛️ 국가 명의 기능'))
     def __init__(self,bot,owner,national_commands,guild=None):
         super().__init__(timeout=300)
         self.bot,self.owner,self.page=bot,str(owner),0

@@ -16,6 +16,7 @@ from .currency_db import CurrencyDB
 from .lottery_db import LotteryDB
 from .corporate_db import CorporateDB
 from .els_db import ELSDB
+from .financial_db import FinancialDB
 
 
 _schema_lock = threading.RLock()
@@ -53,11 +54,13 @@ class DatabaseManager:
             self.lottery = LotteryDB()
             self.corporate = CorporateDB()
             self.els = ELSDB()
+            self.financial = FinancialDB()
             # Refresh planner statistics opportunistically after schema/index
             # initialization. SQLite decides internally when analysis is needed.
             self.users.execute("PRAGMA optimize")
 
     def close(self):
         for database in (self.users, self.assets, self.products, self.companies,
-                         self.accounts, self.pot, self.tax, self.system, self.currency,self.lottery,self.corporate,self.els):
+                         self.accounts, self.pot, self.tax, self.system, self.currency,self.lottery,
+                         self.corporate,self.els,self.financial):
             database.close()

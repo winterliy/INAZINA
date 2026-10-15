@@ -175,8 +175,10 @@ class UserManager:
         row = conn.execute("SELECT c.tax_percent FROM users u "
                            "LEFT JOIN country_currencies c ON c.nationality=u.nationality "
                            "WHERE u.user_id=?", (str(user_id),)).fetchone()
+        fallback = conn.execute("SELECT value FROM settings WHERE key='tax_percent'").fetchone()
         try:
-            rate = float(row["tax_percent"] if row and row["tax_percent"] is not None else 3.0)
+            rate = float(row["tax_percent"] if row and row["tax_percent"] is not None
+                         else fallback["value"] if fallback else 3.0)
         except (TypeError, ValueError):
             rate = 3.0
         if not 0 <= rate <= 100:
@@ -192,6 +194,11 @@ class UserManager:
             )
             if treasury.rowcount != 1:
                 raise RuntimeError("국고 계정을 찾을 수 없어 세금 처리를 취소했습니다.")
+        conn.execute(
+            "INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount) "
+            "VALUES (?,?,?,?,?)",
+            (str(user_id), str(source), gross, tax_amount, net_income),
+        )
         return int(tax_amount)
 
     @staticmethod

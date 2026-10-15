@@ -21,6 +21,13 @@ class CurrencyDB(DBManager):
                 self.execute(f"ALTER TABLE currencies ADD COLUMN {column} {definition}")
         self.execute("INSERT OR IGNORE INTO currencies(code,name) VALUES ('NWX','낙원자화')")
         self.execute("UPDATE currencies SET decimal_places=0 WHERE code='NWX'")
+        self.execute("""CREATE TABLE IF NOT EXISTS basic_income_payments (
+            payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            batch_id TEXT NOT NULL, user_id TEXT NOT NULL,
+            source_currency TEXT NOT NULL, target_currency TEXT NOT NULL,
+            source_units INTEGER NOT NULL, target_units INTEGER NOT NULL,
+            source_rate TEXT NOT NULL, target_rate TEXT NOT NULL,
+            recorded_epoch REAL NOT NULL)""")
         # A currency's quoted base rate remains administrator controlled.  This
         # table stores the neutral supply point used to apply a bounded liquidity
         # adjustment at settlement/read time.  Units are millionths of a currency.

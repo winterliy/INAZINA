@@ -14,6 +14,11 @@ class CorporateDB(DBManager):
             company_code TEXT PRIMARY KEY,
             balance INTEGER NOT NULL DEFAULT 0 CHECK(balance >= 0),
             locked_amount INTEGER NOT NULL DEFAULT 0 CHECK(locked_amount >= 0))''')
+        self.execute('''CREATE TABLE IF NOT EXISTS issuer_cash_transfers (
+            transfer_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_code TEXT NOT NULL, actor_id TEXT NOT NULL,
+            old_balance INTEGER NOT NULL, new_balance INTEGER NOT NULL,
+            delta INTEGER NOT NULL, recorded_epoch INTEGER NOT NULL)''')
         self.execute('''CREATE TABLE IF NOT EXISTS preferred_dividend_claims (
             claim_id INTEGER PRIMARY KEY AUTOINCREMENT,
             issuer_code TEXT NOT NULL, asset_code TEXT NOT NULL,
@@ -32,6 +37,15 @@ class CorporateDB(DBManager):
             ON preferred_dividend_claims(issuer_code,status,due_epoch,claim_id)''')
         self.execute('''CREATE INDEX IF NOT EXISTS idx_preferred_claims_user
             ON preferred_dividend_claims(user_id,status)''')
+        self.execute('''CREATE TABLE IF NOT EXISTS corporate_liquidation_payments (
+            payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            operation_key TEXT NOT NULL, issuer_code TEXT NOT NULL,
+            asset_code TEXT NOT NULL, user_id TEXT NOT NULL, kind TEXT NOT NULL,
+            quantity INTEGER NOT NULL, claim_amount INTEGER NOT NULL,
+            paid_amount INTEGER NOT NULL, tax_amount INTEGER NOT NULL DEFAULT 0,
+            recorded_epoch INTEGER NOT NULL)''')
+        self.execute('''CREATE INDEX IF NOT EXISTS idx_liquidation_payments_user
+            ON corporate_liquidation_payments(user_id,recorded_epoch)''')
         self.execute('''CREATE TABLE IF NOT EXISTS corporate_action_records (
             record_id INTEGER PRIMARY KEY AUTOINCREMENT,
             operation_key TEXT NOT NULL UNIQUE,

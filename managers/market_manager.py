@@ -65,7 +65,7 @@ class MarketManager:
                     noise_fraction=0.0, last_tick_epoch=int(now), last_price=int(start_price),
                     jump_applied=False)
 
-    def clear_runtime_targets(self, code=None):
+    def clear_runtime_targets(self, code=None, conn=None):
         with self._runtime_lock:
             if code is None:
                 self._runtime_events().clear()
@@ -73,12 +73,13 @@ class MarketManager:
             else:
                 self._runtime_events().pop(str(code), None)
                 self._runtime_auto().pop(str(code), None)
+        target = conn if conn is not None else self.db.system
         if code is None:
-            self.db.system.execute("DELETE FROM market_auto_targets")
-            self.db.system.execute("UPDATE market_event_targets SET state='superseded' WHERE state='active'")
+            target.execute("DELETE FROM market_auto_targets")
+            target.execute("UPDATE market_event_targets SET state='superseded' WHERE state='active'")
         else:
-            self.db.system.execute("DELETE FROM market_auto_targets WHERE asset_code=?", (str(code),))
-            self.db.system.execute(
+            target.execute("DELETE FROM market_auto_targets WHERE asset_code=?", (str(code),))
+            target.execute(
                 "UPDATE market_event_targets SET state='superseded' WHERE asset_code=? AND state='active'",
                 (str(code),),
             )
@@ -1139,7 +1140,19 @@ class MarketManager:
                         last_reset = int(now)
                     else:
                         while int(now) >= last_reset + cycle:
-                            break
+                            boundary = conn.execute(
+                                "SELECT index_value,recorded_epoch FROM market_exchange_index_history "
+                                "WHERE exchange_id=? AND recorded_epoch>=? "
+                                "ORDER BY recorded_epoch LIMIT 1",
+                                (exchange_id,last_reset+cycle),
+                            ).fetchone()
+                            if not boundary or int(boundary['recorded_epoch']) > int(now):
+                                break
+                            boundary_index=float(boundary['index_value'])
+                            if base_index>0:
+                                base_nav=max(1.0,base_nav*(1+leverage*(boundary_index/base_index-1)))
+                            base_index=boundary_index
+                            last_reset=int(boundary['recorded_epoch'])
 
                         theoretical_nav = base_nav * (
                             1 + leverage * (current_index / base_index - 1)

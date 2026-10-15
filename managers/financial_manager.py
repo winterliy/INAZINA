@@ -162,9 +162,10 @@ class FinancialManager:
 
     @staticmethod
     def balances(conn, code, before):
-        return {r['account']:int(r['amount']) for r in conn.execute('''SELECT l.account,SUM(l.amount) amount
+        values = {r['account']:int(r['amount']) for r in conn.execute('''SELECT l.account,SUM(l.amount) amount
             FROM financial_lines l JOIN financial_entries e ON e.entry_id=l.entry_id
             WHERE e.company_code=? AND e.status='posted' AND e.recorded_epoch<? GROUP BY l.account''', (code,before))}
+        return {account: values.get(account, 0) for account in ACCOUNTS}
 
     @classmethod
     def summarize(cls, balances):
@@ -191,9 +192,11 @@ class FinancialManager:
         operating = gross-sum(changes[k] for k in ('sga','depreciation','amortization'))
         pretax = operating-sum(changes[k] for k in ('other_income','interest_income','other_expense','interest_expense','currency_rounding'))
         profit = pretax-changes['income_tax']
-        flows = {r['cash_flow']:int(r['amount']) for r in conn.execute('''SELECT e.cash_flow,SUM(l.amount) amount
+        flow_values = {r['cash_flow']:int(r['amount']) for r in conn.execute('''SELECT e.cash_flow,SUM(l.amount) amount
             FROM financial_entries e JOIN financial_lines l ON l.entry_id=e.entry_id
             WHERE e.company_code=? AND e.period=? AND e.status='posted' AND l.account='cash' GROUP BY e.cash_flow''', (code,period))}
+        flows = {key: flow_values.get(key, 0) for key in
+                 ('opening','operating','investing','financing','adjustment','none')}
         # Recognized opening entries are excluded from the period's operating result.
         average = lambda field: (s[field]+previous[field])/2 if ent['opened_epoch']<start else None
         ratio = lambda n,d,percent=True: n/d*(100 if percent else 1) if d is not None and d>0 else None
@@ -398,16 +401,28 @@ class FinancialManager:
             COALESCE((SELECT SUM(quantity) FROM user_assets WHERE asset_code=? AND user_id<>?),0)
             +COALESCE((SELECT SUM(quantity) FROM option_collateral_lots WHERE underlying_code=? AND writer_id<>?),0)''',
             (code,TREASURY_USER_ID,code,TREASURY_USER_ID)).fetchone()[0]
-        return shares
+        conn.execute('INSERT INTO financial_share_history VALUES (?,?,?) '
+                     'ON CONFLICT(company_code,recorded_epoch) DO UPDATE SET '
+                     'quantity_milli=excluded.quantity_milli',(code,now,round(shares*1000)))
 
     @classmethod
     def eps(cls,conn,code,start,end,profit,opened):
         if opened>start:return None,None
         until=min(end,int(time.time()))
         if until<=start:return None,None
-        quantity = cls.snapshot_shares(conn, code, until)
-        if quantity <= 0:return None,None
-        average=quantity
+        prior=conn.execute('SELECT quantity_milli FROM financial_share_history WHERE company_code=? AND recorded_epoch<=? ORDER BY recorded_epoch DESC LIMIT 1',(code,start)).fetchone()
+        if prior is None:return None,None
+        quantity=int(prior[0]);weighted=0;cursor=start
+        for row in conn.execute('SELECT recorded_epoch,quantity_milli FROM financial_share_history WHERE company_code=? AND recorded_epoch>? AND recorded_epoch<? ORDER BY recorded_epoch',(code,start,until)):
+            weighted+=quantity*(row[0]-cursor);quantity=int(row[1]);cursor=row[0]
+        weighted+=quantity*(until-cursor)
+        average=weighted/(until-start)/1000
         ent=cls.entity(conn,code)
         preferred=0
+        rows=conn.execute('''SELECT d.gross_amount,d.quote_currency,
+            COALESCE((SELECT SUM(c.gross_amount) FROM preferred_dividend_claims c WHERE c.distribution_id=d.distribution_id),0) unpaid
+            FROM dividend_distributions d JOIN company s ON s.company_code=d.asset_code
+            WHERE s.share_class='preferred' AND s.parent_company_code=? AND d.created_epoch>=? AND d.created_epoch<?''',(code,start,until))
+        for row in rows:
+            preferred+=cls.converted(conn,row['gross_amount']+row['unpaid'],row['quote_currency'],ent['currency'],ent['decimal_places'])
         return average,(profit-preferred)/average if average>0 else None

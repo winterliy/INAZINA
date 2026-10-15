@@ -11,10 +11,10 @@ from managers.currency_exchange_manager import SCALE, MAX_UNITS, amount_units, d
 from managers.rate_manager import RateManager
 from functions.money import parse_currency_money
 
-COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값',
+COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값','서버설치',
             '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','환율수정',
             '국가생성','국가삭제',
-            '복권가격설정','금리수정','시장금리수정','법정최고이자수정','자본변경','정기배당수정','정기배당활성','특별배당실시','합병','액면분할병합',
+            '복권가격설정','금리수정','시장금리수정','법정최고이자수정','자본변경','증자','정기배당수정','정기배당활성','특별배당실시','합병','액면분할병합',
             '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소'}
 TYPES = {'company':'stock','주식':'stock','자산':'asset','ETF':'etf','선물':'future','주식선물':'future',
          '회사채':'corporatebond','일반펀드':'fund','펀드':'fund','인덱스펀드':'indexfund',
@@ -26,7 +26,7 @@ USAGE = {
  '상품수정':'[id] [상품종류] [유형별 순서형 인자 ...] [추가 JSON(선택)]',
  '상품가격수정':'[종목id] [add/del/modify] [금액]',
  '상품생성':'[id] [상품종류] [유형별 순서형 인자 ...] [추가 JSON(선택)]',
- '상품삭제':'[id]', '기본소득':'[금액]', '잔고수정':'[user_id/계좌번호] [add/del/modify] [금액]',
+ '상품삭제':'[id]', '기본소득':'[금액]', '서버설치':'[서버ID] [국적] [통화]', '잔고수정':'[user_id/계좌번호] [add/del/modify] [금액]',
  '등록':'[user_id]', '도박확률':'[0~100]', '도박리턴값':'[리턴 퍼센트]',
  '시장분위기':'[bull/flat/bear]', '상품분위기':'[종목id] [bull/flat/bear]',
  '복권당첨번호보기':'', '복권당첨번호변경':'[서로 다른 1~45 번호 6개] [보너스 번호(선택)]',
@@ -37,12 +37,13 @@ USAGE = {
  '시장금리수정':'[국적] [funding/bank_bond/treasury] [만기일수] [금리%]',
  '법정최고이자수정':'[국적] [add/del/modify] [수치]',
  '자본변경':'[증자/감자] [유상/무상] [종목id] [수량] [유상 가격(선택)]',
+ '증자':'[유상/무상] [종목id] [수량] [유상 가격(선택)]',
  '정기배당수정':'[id] [주기: 초 또는 1일/1주/1달] [주당 금액 또는 비율%]',
  '정기배당활성':'[id] [on/off 또는 1/0]',
- '특별배당실시':'[id] [주당 배당금]', '합병':'[존속 A id] [통합 B id] [A:B 교환비율 n:1]',
+ '특별배당실시':'[id] [주당 배당금]', '합병':'[존속 A id] [통합 B id] [A:B 교환비율(선택)]',
  '액면분할병합':'[분할/병합] [종목id] [비율]',
- '휴장':'[거래소ID]', '개장':'[거래소ID]', '장일시정지':'[거래소ID]', '장재개':'[거래소ID]',
- '서킷브레이커':'[거래소ID] [1/2/3단계]', '사이드카':'[거래소ID]'}
+ '휴장':'[거래소ID(선택)]', '개장':'[거래소ID(선택)]', '장일시정지':'[거래소ID(선택)]', '장재개':'[거래소ID(선택)]',
+ '서킷브레이커':'[거래소ID(선택)] [1/2/3단계]', '사이드카':'[거래소ID(선택)]'}
 USAGE.update({'법인잔고수정':'[보통주 법인id] [add/del/modify] [금액]',
               '법인청산':'[보통주 법인id]', 'ELS취소':'[ELS id]'})
 
@@ -214,7 +215,7 @@ class AdminCommandsManager:
             self.control._audit(conn, actor, 'country.delete', {'nationality': nationality})
         return f'✅ 연방국가 {nationality}을(를) 삭제했습니다. 통화 자체는 유지됩니다.'
 
-    def execute(self,actor,command,raw):
+    def execute(self,actor,command,raw,guild_id=None):
         with DBManager.admin_scope(actor):
             self.control.require(actor)
             if command=='상품생성':
@@ -222,29 +223,40 @@ class AdminCommandsManager:
             if command=='상품수정':
                 return self.create(actor,raw,operation='edit')
             args=shlex.split(raw)
+            if command=='서버설치' and len(args)==2 and guild_id is not None:
+                args.insert(0,str(guild_id))
             count={'상품가격수정':3,'상품삭제':1,'기본소득':1,'잔고수정':3,'등록':1,
                    '도박확률':1,'도박리턴값':1,'시장분위기':1,'상품분위기':2,
-                   '복권당첨번호보기':0,'세율':2,'환율수정':3,'복권가격설정':1,
+                   '복권당첨번호보기':0,'환율수정':3,'복권가격설정':1,'서버설치':3,
                    '국가삭제':1,
                    '금리수정':3,'시장금리수정':4,'법정최고이자수정':3,'정기배당수정':3,'정기배당활성':2,'특별배당실시':2,'합병':3,'액면분할병합':3,
                    '휴장':1,'개장':1,'장일시정지':1,'장재개':1,'서킷브레이커':2,'사이드카':1}
             count.update({'법인잔고수정':3,'법인청산':1,'ELS취소':1})
-            if (command=='자본변경' and len(args) not in {4,5}) or (command=='국가생성' and len(args) not in {2,3,4,5}) or (command not in {'복권당첨번호변경','자본변경','국가생성'} and len(args)!=count.get(command,-1)):
+            flexible = ((command=='기본소득' and len(args) in {1,2})
+                        or (command=='자본변경' and len(args) in {4,5})
+                        or (command=='증자' and len(args) in {3,4})
+                        or (command=='국가생성' and len(args) in {2,3,4,5})
+                        or (command=='세율' and len(args) in {1,2})
+                        or (command=='합병' and len(args) in {2,3})
+                        or (command in {'휴장','개장','장일시정지','장재개','사이드카'} and len(args) in {0,1})
+                        or (command=='서킷브레이커' and len(args) in {1,2}))
+            if not flexible and command not in {'복권당첨번호변경'} and len(args)!=count.get(command,-1):
                 raise ValueError(f'사용법: ${command} {USAGE.get(command,"")}')
             if command in {'휴장','개장','장일시정지','장재개','서킷브레이커','사이드카'}:
                 from managers.market_session_manager import MarketSessionManager
                 actions={'휴장':'close','개장':'open','장일시정지':'pause','장재개':'resume','서킷브레이커':'circuit','사이드카':'sidecar'}
-                exchange_id=args[0]
-                stage=int(args[1].removesuffix('단계')) if command=='서킷브레이커' else None
+                exchange_id=(args[0] if args else 'ALL') if command!='서킷브레이커' else (args[0] if len(args)==2 else 'ALL')
+                stage=int(args[-1].removesuffix('단계')) if command=='서킷브레이커' else None
                 result=MarketSessionManager(self.db).control(actor,actions[command],stage=stage,exchange_id=exchange_id)
                 return self.result_text(result)
             if command=='ELS취소':
                 from managers.els_manager import ELSManager
                 return self.result_text(ELSManager(self.db,self.bot.user_mgr).cancel(actor,args[0]))
-            if command in {'자본변경','정기배당수정','정기배당활성','특별배당실시','합병','액면분할병합','법인잔고수정','법인청산'}:
+            if command in {'자본변경','증자','정기배당수정','정기배당활성','특별배당실시','합병','액면분할병합','법인잔고수정','법인청산'}:
                 from managers.corporate_actions_manager import CorporateActionsManager
                 manager=CorporateActionsManager(self.bot)
                 if command=='자본변경':result=manager.change_capital(actor,args[0],args[1],args[2],self.control._number(args[3],1,integer=True),self.control._number(args[4],1,integer=True) if len(args)==5 else None)
+                elif command=='증자':result=manager.change_capital(actor,'증자',args[0],args[1],self.control._number(args[2],1,integer=True),self.control._number(args[3],1,integer=True) if len(args)==4 else None)
                 elif command=='정기배당수정':result=manager.configure_dividend(actor,args[0],duration_seconds(args[1]),args[2])
                 elif command=='정기배당활성':
                     active={'on':1,'off':0,'1':1,'0':0}.get(args[1].lower())
@@ -254,14 +266,27 @@ class AdminCommandsManager:
                 elif command=='액면분할병합':result=manager.adjust_face_value(actor,args[0],args[1],self.control._number(args[2],2,integer=True))
                 elif command=='법인잔고수정':result=manager.fund_issuer(actor,args[0],args[1],self.control._number(args[2],0,integer=True))
                 elif command=='법인청산':result=manager.liquidate(actor,args[0])
-                else:result=manager.merge(actor,args[0],args[1],args[2])
+                else:result=manager.merge(actor,args[0],args[1],args[2] if len(args)==3 else '1')
                 return self.result_text(result)
             if command=='기본소득':
-                amount=self.control._number(args[0],1,integer=True)
-                result=self.bot.admin_mgr.distribute_basic_income(amount,actor=actor)
+                result=self.bot.admin_mgr.distribute_basic_income(
+                    args[0],actor=actor,currency_code=args[1] if len(args)==2 else None
+                )
                 return result[1] if isinstance(result,tuple) else result
             if command=='등록':
                 return self.control.setup(actor,args[0],args[0],'낙원')
+            if command=='서버설치':
+                from managers.currency_manager import CurrencyManager
+                if not args[0].isdecimal():
+                    raise ValueError('Discord 서버 ID를 입력해주세요.')
+                with self.db.atomic() as conn:
+                    code=args[2].upper(); CurrencyManager.rate(conn,code)
+                    existing=conn.execute('SELECT currency_code FROM country_currencies WHERE nationality=?',(args[1],)).fetchone()
+                    if existing and existing[0]!=code:
+                        raise ValueError('이미 다른 화폐에 연결된 국적입니다. DB에서 기존 연결을 먼저 확인해주세요.')
+                    conn.execute('INSERT OR IGNORE INTO country_currencies(nationality,currency_code) VALUES (?,?)',(args[1],code))
+                    conn.execute('INSERT INTO guild_countries(guild_id,nationality) VALUES (?,?) ON CONFLICT(guild_id) DO UPDATE SET nationality=excluded.nationality',(args[0],args[1]))
+                return f'✅ 등록 서버 {args[0]} → {args[1]} · 기본화폐 {code} (신규 등록부터 적용)'
             if command=='국가생성':
                 return self.country_create(actor,args)
             if command=='국가삭제':
@@ -280,6 +305,10 @@ class AdminCommandsManager:
                     raise ValueError('bull/flat/bear 중 하나를 입력해주세요.')
                 return self.control.settings(actor,{key:value})
             if command=='세율':
+                if len(args)==1:
+                    value=self.control._number(args[0],0,100)
+                    self.db.system.set_setting('tax_percent',value)
+                    return f'✅ 전체 기본 세율을 {value:g}%로 설정했습니다.'
                 nationality,value=args
                 value=self.control._number(value,0,100)
                 with self.db.atomic() as conn:
@@ -361,7 +390,7 @@ class AdminCommandsManager:
                     conn.execute('DELETE FROM market_quote_overrides WHERE asset_code=?',(args[0],))
                 conn.execute('DELETE FROM market_simulation_state WHERE asset_code=?',(args[0],))
                 from managers.market_manager import MarketManager
-                MarketManager(self.db).clear_runtime_targets(args[0])
+                MarketManager(self.db).clear_runtime_targets(args[0],conn=conn)
                 self.control._audit(conn,actor,command,{'code':args[0],'operation':args[1],'before':current,'after':value})
                 return f'✅ {args[0]} 가격 {current:,} → {value:,} {row.get("quote_currency","NWX")}'
 
@@ -528,7 +557,7 @@ class AdminCommandsManager:
         conn.execute('UPDATE market_assets SET price=? WHERE code=?',(target,row[0]))
         conn.execute('DELETE FROM market_simulation_state WHERE asset_code=?',(row[0],))
         from managers.market_manager import MarketManager
-        MarketManager(self.db).clear_runtime_targets(row[0])
+        MarketManager(self.db).clear_runtime_targets(row[0],conn=conn)
         self.control._audit(conn,actor,'currency.cross_rate',{'a':a,'b':b,'ratio':str(ratio),'before':str(ar),'after':target})
         return f'✅ 1 {a} = {Decimal(target)/br:.12g} {b} · {a} 시세 {target:,} NWX (정수 호가 반올림)'
 

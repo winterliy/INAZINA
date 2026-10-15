@@ -21,6 +21,23 @@ class TaxDB(DBManager):
                     (str(row['rate_percent']),),
                 )
             self.execute("DROP TABLE tax_settings")
+        self.execute(
+            """CREATE TABLE IF NOT EXISTS tax_transactions (
+                transaction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id TEXT NOT NULL,
+                source TEXT NOT NULL,
+                gross_amount INTEGER NOT NULL,
+                tax_amount INTEGER NOT NULL,
+                net_amount INTEGER NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        self.enforce_integer_money(
+            "tax_transactions",
+            ("gross_amount", "tax_amount", "net_amount"),
+            "transaction_id",
+        )
+
     def get_rate_percent(self):
         row = self.execute_one("SELECT value FROM settings WHERE key='tax_percent'")
         try:

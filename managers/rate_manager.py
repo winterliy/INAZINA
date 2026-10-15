@@ -84,8 +84,36 @@ class RateManager:
         end = float(time.time() if now is None else now)
         if not math.isfinite(start) or not math.isfinite(end) or end < start:
             raise ValueError("조회 기간은 시작 시각 이후의 유효한 UNIX 시각이어야 합니다.")
-        rate = self.get_rate(key)
-        return [(start, rate)] if start == end else [(start, rate), (end, rate)]
+        with self.db.readonly() as conn:
+            prior = conn.execute(
+                "SELECT annual_percent FROM rate_history WHERE rate_key=? "
+                "AND effective_epoch<=? ORDER BY effective_epoch DESC,history_id DESC LIMIT 1",
+                (key, start),
+            ).fetchone()
+            any_history = conn.execute(
+                "SELECT 1 FROM rate_history WHERE rate_key=? LIMIT 1", (key,)
+            ).fetchone()
+            if prior is not None:
+                opening = float(prior["annual_percent"])
+            elif any_history is not None:
+                opening = 0.0
+            else:
+                opening = self.from_connection(conn, key)
+            changes = conn.execute(
+                """SELECT h.effective_epoch,h.annual_percent FROM rate_history h
+                   WHERE h.rate_key=? AND h.effective_epoch>? AND h.effective_epoch<=?
+                     AND h.history_id=(SELECT MAX(h2.history_id) FROM rate_history h2
+                         WHERE h2.rate_key=h.rate_key
+                           AND h2.effective_epoch=h.effective_epoch)
+                   ORDER BY h.effective_epoch,h.history_id""",
+                (key, start, end),
+            ).fetchall()
+        points = [(start, opening)]
+        points.extend((float(row["effective_epoch"]), float(row["annual_percent"]))
+                      for row in changes)
+        if end != start and points[-1][0] != end:
+            points.append((end, points[-1][1]))
+        return points
 
     @staticmethod
     def from_connection(conn, key, nationality=None, *, require_country=False):

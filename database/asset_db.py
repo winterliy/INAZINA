@@ -7,6 +7,13 @@ class AssetDB(DBManager):
         self._init_db()
 
     def _init_db(self):
+        self.execute("""CREATE TABLE IF NOT EXISTS product_settlements (
+            settlement_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL, product_code TEXT NOT NULL,
+            kind TEXT NOT NULL, quantity INTEGER NOT NULL,
+            gross_amount INTEGER NOT NULL, tax_amount INTEGER NOT NULL DEFAULT 0,
+            recorded_epoch INTEGER NOT NULL
+        )""")
         self.execute("""CREATE TABLE IF NOT EXISTS corporate_equity_offerings (
             offering_id INTEGER PRIMARY KEY AUTOINCREMENT, asset_code TEXT NOT NULL,
             order_id INTEGER NOT NULL UNIQUE, quantity INTEGER NOT NULL CHECK(quantity > 0),
@@ -158,9 +165,46 @@ class AssetDB(DBManager):
             "CREATE INDEX IF NOT EXISTS idx_market_trade_history_code_time "
             "ON market_trade_history(asset_code, recorded_epoch)"
         )
-        # The former latest-trade cache was never updated by order execution.
-        # Option marks use an explicit administrator override or the model.
-        self.execute("DROP TABLE IF EXISTS market_last_trade")
+        # Keep the latest execution quote independently from disposable chart
+        # history.  This is also updated for direct SQL imports.
+        self.execute(
+            """CREATE TABLE IF NOT EXISTS market_last_trade (
+                asset_code TEXT PRIMARY KEY,
+                price REAL NOT NULL CHECK(price > 0),
+                recorded_epoch INTEGER NOT NULL,
+                trade_id INTEGER NOT NULL
+            )"""
+        )
+        self.execute(
+            """INSERT INTO market_last_trade(asset_code,price,recorded_epoch,trade_id)
+               SELECT h.asset_code,h.price,h.recorded_epoch,h.trade_id
+               FROM market_trade_history h
+               WHERE NOT EXISTS (
+                   SELECT 1 FROM market_trade_history newer
+                   WHERE newer.asset_code=h.asset_code AND (
+                       newer.recorded_epoch>h.recorded_epoch OR
+                       (newer.recorded_epoch=h.recorded_epoch AND newer.trade_id>h.trade_id)))
+               ON CONFLICT(asset_code) DO UPDATE SET
+                   price=excluded.price, recorded_epoch=excluded.recorded_epoch,
+                   trade_id=excluded.trade_id
+               WHERE excluded.recorded_epoch>market_last_trade.recorded_epoch OR
+                     (excluded.recorded_epoch=market_last_trade.recorded_epoch AND
+                      excluded.trade_id>=market_last_trade.trade_id)"""
+        )
+        for operation, suffix in (("INSERT", "insert"), ("UPDATE OF price", "update")):
+            self.execute(
+                f"""CREATE TRIGGER IF NOT EXISTS trg_market_last_trade_{suffix}
+                    AFTER {operation} ON market_trade_history BEGIN
+                    INSERT INTO market_last_trade(asset_code,price,recorded_epoch,trade_id)
+                    VALUES (NEW.asset_code,NEW.price,NEW.recorded_epoch,NEW.trade_id)
+                    ON CONFLICT(asset_code) DO UPDATE SET
+                        price=excluded.price, recorded_epoch=excluded.recorded_epoch,
+                        trade_id=excluded.trade_id
+                    WHERE excluded.recorded_epoch>market_last_trade.recorded_epoch OR
+                          (excluded.recorded_epoch=market_last_trade.recorded_epoch AND
+                           excluded.trade_id>=market_last_trade.trade_id);
+                    END"""
+            )
         self.execute(
             """CREATE TABLE IF NOT EXISTS market_future_expiry_prices (
                 product_code TEXT PRIMARY KEY,
@@ -398,6 +442,12 @@ class AssetDB(DBManager):
             "SELECT recorded_epoch, side, quantity, price FROM market_trade_history "
             "WHERE asset_code = ? AND recorded_epoch >= ? ORDER BY recorded_epoch, trade_id",
             (str(code), int(since_epoch)),
+        )
+
+    def get_last_trade(self, code):
+        return self.execute_one(
+            "SELECT price, recorded_epoch, trade_id FROM market_last_trade WHERE asset_code=?",
+            (str(code),),
         )
 
     def update_price(self, code, new_price):
