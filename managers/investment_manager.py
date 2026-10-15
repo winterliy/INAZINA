@@ -3,6 +3,7 @@
 import math
 import time
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 
 from database.user_db import TREASURY_USER_ID
 from functions.admin_access import resolve_user_role
@@ -11,6 +12,10 @@ from functions.interest_calc import year_fraction
 from managers.rate_manager import RateManager
 
 FUND_TYPES = {"mutual_fund", "index_fund"}
+FUND_CATEGORIES = {"equity", "bond", "mixed", "other"}
+FUND_CATEGORY_NAMES = {
+    "equity": "주식형", "bond": "채권형", "mixed": "혼합형", "other": "기타형",
+}
 PRODUCT_NAMES = {"stock_future": "주식 선물", "corporate_bond": "회사채", "mutual_fund": "일반 펀드",
                  "index_fund": "인덱스 펀드", "commodity_spot": "현물 원자재"}
 
@@ -18,6 +23,103 @@ PRODUCT_NAMES = {"stock_future": "주식 선물", "corporate_bond": "회사채",
 class InvestmentManager:
     def __init__(self, db, user_manager):
         self.db, self.users = db, user_manager
+
+    @staticmethod
+    def normalize_fund_category(value):
+        category = str(value or "").strip().lower()
+        aliases = {
+            "stock": "equity", "주식": "equity", "주식형": "equity",
+            "채권": "bond", "채권형": "bond",
+            "혼합": "mixed", "혼합형": "mixed",
+            "기타": "other", "기타형": "other",
+        }
+        category = aliases.get(category, category)
+        if category and category not in FUND_CATEGORIES:
+            raise ValueError("펀드 유형은 equity/bond/mixed/other 중 하나여야 합니다.")
+        return category or None
+
+    @staticmethod
+    def component_quote(conn, asset_code, *, active_only=True):
+        """Resolve one fund component across the repository's asset tables."""
+        code = str(asset_code).strip()
+        status_clause = " AND status='active'" if active_only else ""
+        row = conn.execute(
+            "SELECT company_code code,share_price price,status,quote_currency "
+            f"FROM company.company WHERE company_code=?{status_clause}", (code,),
+        ).fetchone()
+        if row:
+            return dict(row, asset_source="company", asset_class="equity")
+        row = conn.execute(
+            "SELECT product_code code,unit_price price,status,quote_currency "
+            "FROM product.investment WHERE product_code=? AND product_type='corporate_bond'" + status_clause,
+            (code,),
+        ).fetchone()
+        if row:
+            return dict(row, asset_source="investment", asset_class="bond")
+        row = conn.execute(
+            "SELECT product_code code,market_price price,status,quote_currency "
+            "FROM product.treasury_bond_products WHERE product_code=?" + status_clause,
+            (code,),
+        ).fetchone()
+        if row:
+            return dict(row, asset_source="treasury_bond", asset_class="bond")
+        row = conn.execute(
+            "SELECT code,price,status,quote_currency,type FROM assets.market_assets "
+            f"WHERE code=?{status_clause}", (code,),
+        ).fetchone()
+        if row:
+            asset_class = {
+                "stock": "equity", "주식": "equity",
+                "commodity_spot": "commodity", "real_estate": "real_estate",
+                "special_asset": "special_asset",
+            }.get(str(row["type"]).lower())
+            if asset_class:
+                return dict(row, asset_source="market_asset", asset_class=asset_class)
+        return None
+
+    @classmethod
+    def validate_fund_components(cls, conn, weights, requested_category=None):
+        if not isinstance(weights, dict) or not weights:
+            raise ValueError("components에 종목별 비중을 입력해주세요.")
+        parsed, totals = [], {"equity": Decimal(0), "bond": Decimal(0), "other": Decimal(0)}
+        total = Decimal(0)
+        for asset_code, raw_weight in weights.items():
+            try:
+                if isinstance(raw_weight, bool):
+                    raise InvalidOperation()
+                weight = Decimal(str(raw_weight))
+            except (InvalidOperation, ValueError, TypeError):
+                raise ValueError("펀드 구성 비중은 양의 숫자여야 합니다.") from None
+            if not weight.is_finite() or weight <= 0 or weight > 1:
+                raise ValueError("펀드 구성 비중은 0보다 크고 1 이하여야 합니다.")
+            quote = cls.component_quote(conn, asset_code)
+            if not quote or float(quote["price"] or 0) <= 0:
+                raise ValueError(f"활성 펀드 구성 자산을 확인해주세요: {asset_code}")
+            if str(quote.get("quote_currency") or "NWX").upper() != "NWX":
+                raise ValueError("펀드 구성 자산은 현재 NWX 결제 자산만 지원합니다.")
+            bucket = quote["asset_class"] if quote["asset_class"] in {"equity", "bond"} else "other"
+            totals[bucket] += weight
+            total += weight
+            parsed.append((str(asset_code), float(weight), float(quote["price"]),
+                           quote["asset_source"], quote["asset_class"]))
+        if abs(total - Decimal(1)) > Decimal("0.00000001"):
+            raise ValueError("펀드 구성 비중의 합은 1이어야 합니다.")
+        if totals["equity"] >= Decimal("0.60"):
+            inferred = "equity"
+        elif totals["bond"] >= Decimal("0.60"):
+            inferred = "bond"
+        elif (totals["equity"] > 0 and totals["bond"] > 0
+              and totals["equity"] + totals["bond"] >= Decimal("0.60")):
+            inferred = "mixed"
+        else:
+            inferred = "other"
+        requested = cls.normalize_fund_category(requested_category)
+        if requested and requested != inferred:
+            raise ValueError(
+                f"구성 비중은 {FUND_CATEGORY_NAMES[inferred]}이며 "
+                f"{FUND_CATEGORY_NAMES[requested]} 조건을 충족하지 않습니다."
+            )
+        return inferred, parsed
 
     def issue(self, actor_id, code, name, product_type, price, supply, exchange_id,
               underlying_code=None, maturity_days=0, annual_rate=0, contract_size=1):
@@ -75,16 +177,19 @@ class InvestmentManager:
                 conn.execute("INSERT INTO product.investment "
                     "(product_code, name, product_type, total_supply, unit_price, maturity_days, manager, exchange_id, "
                     "underlying_code, issuer_code, maturity_epoch, face_value, annual_rate, contract_size, "
-                    "nav_anchor, underlying_exchange_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "nav_anchor, underlying_exchange_id, fund_category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (code, name, product_type, supply, price, maturity_days, str(actor_id), exchange_id,
                      underlying["code"] if underlying else None, issuer["company_code"] if issuer else None,
                      expiry, price if issuer else 0, rate, contract_size, price,
-                     index_id if product_type == "index_fund" else None))
+                     index_id if product_type == "index_fund" else None,
+                     "equity" if product_type in FUND_TYPES else None))
                 if product_type == "mutual_fund":
                     total_cap = sum(float(row["share_price"]) * int(row["total_shares"]) for row in constituents)
                     for row in constituents:
                         weight = float(row["share_price"]) * int(row["total_shares"]) / total_cap
-                        conn.execute("INSERT INTO product.fund_components VALUES (?, ?, ?, ?)",
+                        conn.execute("INSERT INTO product.fund_components "
+                            "(product_code,asset_code,weight,base_price,asset_source,asset_class) "
+                            "VALUES (?, ?, ?, ?, 'company', 'equity')",
                             (code, row["company_code"], weight, float(row["share_price"])))
             return True, f"✅ {PRODUCT_NAMES[product_type]} `{code}`를 등록했습니다. " + (
                 "/매수·/매도로 지정가 없이 NAV 기준 거래합니다." if product_type in FUND_TYPES
@@ -158,9 +263,9 @@ class InvestmentManager:
             components = fund_components.get(product['product_code'], ()) if fund_components is not None else conn.execute("SELECT * FROM product.fund_components WHERE product_code = ?", (product["product_code"],)).fetchall()
             total, weight = 0.0, 0.0
             for component in components:
-                row = prices.get(component['asset_code']) if prices is not None else conn.execute("SELECT share_price AS price FROM company.company WHERE company_code = ? "
-                    "UNION ALL SELECT price FROM assets.market_assets WHERE code = ?",
-                    (component["asset_code"], component["asset_code"])).fetchone()
+                row = prices.get(component['asset_code']) if prices is not None else InvestmentManager.component_quote(
+                    conn, component["asset_code"], active_only=False
+                )
                 if not row or float(component["base_price"]) <= 0:
                     return None
                 total += float(component["weight"]) * float(row["price"]) / float(component["base_price"])

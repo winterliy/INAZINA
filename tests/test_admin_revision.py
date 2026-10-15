@@ -194,6 +194,7 @@ class AdminRevisionTests(unittest.TestCase):
         self.assertEqual(self.db.products.execute_one("SELECT quote_currency FROM saving WHERE product_code='FXACC' AND product_kind='currency_saving'")[0],'USD')
         self.run_command('상품생성','FUND fund 혼합펀드 1000 10000 INZST001:0.5,INZST002:0.5 INZ')
         self.assertEqual(self.db.products.execute_one("SELECT COUNT(*) FROM fund_components WHERE product_code='FUND'")[0],2)
+        self.assertEqual(self.db.products.get_investment('FUND')['fund_category'],'equity')
         self.db.assets.add_user_asset(TREASURY_USER_ID,'INZST001',1)
         self.run_command('상품생성','CALL option INZST001 call 1200 30 1 100 50')
         self.assertIsNotNone(self.db.assets.execute_one("SELECT * FROM option_contracts WHERE contract_code='CALL'"))

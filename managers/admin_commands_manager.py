@@ -72,7 +72,8 @@ OPTIONAL_ARGS['loan']=('extension_min_credit_score','extension_days')
 for _kind,_fields in OPTIONAL_ARGS.items():
     CREATE_ARGS[_kind]+= _fields
 TEXT_ARGS = {'name','industry','exchange_id','underlying_exchange_id','underlying_code','issuer_code',
-             'issuer','type','option_type','asset_code','nationality','currency_code','parent_company_code'}
+             'issuer','type','option_type','asset_code','nationality','currency_code','parent_company_code',
+             'fund_category'}
 
 
 def product_profile(kind):
@@ -170,6 +171,8 @@ class AdminCommandsManager:
                 if 'UNIQUE' in str(exc).upper():
                     raise ValueError('같은 이름의 국가가 이미 있습니다.') from None
                 raise
+            from managers.currency_manager import CurrencyManager
+            CurrencyManager.treasury_id(conn, nationality)
             self.control._audit(conn, actor, 'country.create', {
                 'nationality': nationality, 'currency_code': currency,
                 'base_rate': base_rate, 'legal_max_rate': legal_max_rate, 'tax_percent': tax_percent,
@@ -185,7 +188,9 @@ class AdminCommandsManager:
             if not conn.execute('SELECT 1 FROM country_currencies WHERE nationality=?', (nationality,)).fetchone():
                 raise ValueError('등록된 국가를 확인해주세요.')
             servers = conn.execute('SELECT COUNT(*) FROM guild_countries WHERE nationality=?', (nationality,)).fetchone()[0]
-            citizens = conn.execute('SELECT COUNT(*) FROM users WHERE nationality=?', (nationality,)).fetchone()[0]
+            citizens = conn.execute("SELECT COUNT(*) FROM users WHERE nationality=? AND user_id NOT IN "
+                                    "(SELECT user_id FROM country_treasuries WHERE nationality=?)",
+                                    (nationality, nationality)).fetchone()[0]
             exchanges = conn.execute('SELECT COUNT(*) FROM market_exchanges WHERE nationality=?', (nationality,)).fetchone()[0]
             products = conn.execute(
                 "SELECT (SELECT COUNT(*) FROM saving WHERE rate_nationality=?)+"
@@ -201,6 +206,10 @@ class AdminCommandsManager:
             conn.execute('DELETE FROM market_rate_curve_history WHERE nationality=?', (nationality,))
             conn.execute('DELETE FROM market_rate_curve WHERE nationality=?', (nationality,))
             conn.execute('DELETE FROM country_rate_history WHERE nationality=?', (nationality,))
+            treasury = conn.execute('SELECT user_id FROM country_treasuries WHERE nationality=?', (nationality,)).fetchone()
+            conn.execute('DELETE FROM country_treasuries WHERE nationality=?', (nationality,))
+            if treasury:
+                conn.execute('DELETE FROM users WHERE user_id=?', (treasury['user_id'],))
             conn.execute('DELETE FROM country_currencies WHERE nationality=?', (nationality,))
             self.control._audit(conn, actor, 'country.delete', {'nationality': nationality})
         return f'✅ 연방국가 {nationality}을(를) 삭제했습니다. 통화 자체는 유지됩니다.'

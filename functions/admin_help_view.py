@@ -42,7 +42,7 @@ class AdminHelpView(discord.ui.View):
         if key=='products':
             embed.description+='\n\n**🧩 상품생성 인자 순서**\n'+creation_argument_lines()
             embed.add_field(name='🏷️ 공통 인자 · 숫자 단위',value='`id`는 다른 종목과 겹치지 않는 상품 코드입니다. 두 번째 인자인 상품종류가 뒤의 인자 순서를 정합니다.\n가격·자본금·고정배당금은 결제 통화 기준, 수량은 주/좌/계약 단위입니다. 국채 `bond`의 `total_supply`는 수량이 아닌 발행총액입니다. 이율은 연 %, 만기는 일, 이자·재조정 주기는 초입니다. 증거금 비율 `0.2`는 20%입니다.',inline=False)
-            embed.add_field(name='💡 구성 종목 입력',value='펀드 `components`는 `INZST001:0.5,INZST002:0.5`처럼 입력합니다. 비중 합계는 1입니다.\n추가 JSON은 마지막에 선택적으로 입력하며 기본 인자를 중복 지정하지 않습니다.',inline=False)
+            embed.add_field(name='💡 구성 종목 입력',value='펀드 `components`는 `INZST001:0.6,INZCB001:0.4`처럼 입력하며 비중 합계는 1입니다. 주식·회사채·국채·원자재·부동산·특별자산을 지원합니다. `fund_category`는 `equity`(주식형), `bond`(채권형), `mixed`(혼합형), `other`(기타형)이며 생략하면 구성 비중으로 자동 판정합니다.\n추가 JSON은 마지막에 선택적으로 입력하며 기본 인자를 중복 지정하지 않습니다.',inline=False)
             embed.add_field(name='💰 정기배당 · 고정금액 / 비율',value='배당 지원 유형은 끝에 `[배당주기] [주·좌당 금액 또는 비율%]`을 함께 선택 입력합니다. `5`는 주·좌당 고정 5, `5%`는 **지급 시점 주가·상품가격의 5%**입니다. 두 방식 중 하나만 적용합니다. 주기는 초 또는 `1일`·`1주`·`1달`(30일)입니다.\n예: `$상품생성 ST company 회사 게임 1000000 10000 100 INZ 1주 5%`\n변경: `$정기배당수정 ST 1주 5` 또는 `$정기배당수정 ST 1주 5%`\n생성 시 생략하면 배당 없음, 수정 시 생략하면 기존값 유지입니다. 특별배당은 고정 주·좌당 금액으로 실행합니다.',inline=False)
             embed.add_field(name='⏯️ 배당 활성 · 우선주 · 상품수정',value='`$정기배당활성 ST off/on`으로 배당 설정을 보존한 채 끄고 켭니다. 재활성 시 한 주기 뒤 지급하며 중단기간은 소급하지 않습니다. 생성 시 마지막 JSON `{"dividend_is_active":0}`으로 OFF를 지정할 수 있습니다.\n우선주는 `preferred`로 생성하고 보통주회사ID를 입력합니다. `$상품수정`은 생성과 같은 순서이며 가격만 변경하려면 `$상품가격수정`을 사용하세요.',inline=False)
             embed.add_field(name='🏦 대출연장 설정',value='`loan` 유형 끝의 선택 인자는 `extension_min_credit_score extension_days`입니다. 연장일수 0이면 연장이 허용되지 않습니다.',inline=False)

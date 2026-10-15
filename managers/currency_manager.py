@@ -10,6 +10,36 @@ SCALE = 1_000_000
 MAX_UNITS = 2**63 - 1
 
 class CurrencyManager:
+    @staticmethod
+    def treasury_id(conn, nationality):
+        """Return the dedicated treasury account for one federation country."""
+        nationality = str(nationality or '낙원')
+        row = conn.execute('SELECT user_id FROM country_treasuries WHERE nationality=?',
+                           (nationality,)).fetchone()
+        if row:
+            return str(row['user_id'])
+        country = conn.execute('SELECT 1 FROM country_currencies WHERE nationality=?',
+                               (nationality,)).fetchone()
+        if not country:
+            raise ValueError('국고를 찾을 국가가 등록되어 있지 않습니다.')
+        # Discord IDs are decimal strings; this reserved non-decimal namespace
+        # cannot collide with a real Discord account.
+        user_id = f'country_treasury:{nationality}'
+        conn.execute("INSERT OR IGNORE INTO users(user_id,nickname,nationality,cash,status,role) "
+                     "VALUES (?,?,?,0,'active','nation')",
+                     (user_id, f'{nationality} 국고', nationality))
+        conn.execute('INSERT INTO country_treasuries(nationality,user_id) VALUES (?,?)',
+                     (nationality, user_id))
+        return user_id
+
+    @classmethod
+    def user_treasury_id(cls, conn, user_id):
+        row = conn.execute('SELECT nationality FROM users WHERE user_id=?',
+                           (str(user_id),)).fetchone()
+        nationality = row['nationality'] if row else '낙원'
+        known = conn.execute('SELECT 1 FROM country_currencies WHERE nationality=?',
+                             (nationality,)).fetchone()
+        return cls.treasury_id(conn, nationality if known else '낙원')
     def __init__(self, db):
         self.db = db
 

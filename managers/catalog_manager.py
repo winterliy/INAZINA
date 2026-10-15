@@ -95,10 +95,11 @@ class CatalogManager:
                     index = 'INZ' if kind in {'index_fund','etf'} else None
                     rate = 3.5 + (i%10)*.25 if kind=='corporate_bond' else 0
                     conn.execute("""INSERT INTO investment(product_code,name,product_type,total_supply,unit_price,maturity_days,manager,exchange_id,
-                        underlying_code,issuer_code,maturity_epoch,face_value,annual_rate,nav_anchor,underlying_exchange_id)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (code,name,kind,1_000_000,unit,days,'Inazina 국고',
+                        underlying_code,issuer_code,maturity_epoch,face_value,annual_rate,nav_anchor,underlying_exchange_id,fund_category)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (code,name,kind,1_000_000,unit,days,'Inazina 국고',
                         {'stock_future':'FUT','corporate_bond':'BOND','commodity_spot':'COM'}.get(kind,'INZ'),
-                        underlying,issuer,now+days*86400 if days else None,1000 if kind=='corporate_bond' else 0,rate,unit,index))
+                        underlying,issuer,now+days*86400 if days else None,1000 if kind=='corporate_bond' else 0,rate,unit,index,
+                        'equity' if kind in {'mutual_fund','index_fund'} else None))
                     if kind=='etf':
                         leverage=(-3,-2,-1,.5,1,1.5,2,3)[(i-1)%8]
                         cycle=(60,300,900,3600,86400)[(i-1)//10]
@@ -107,7 +108,12 @@ class CatalogManager:
                     if kind == 'mutual_fund':
                         for offset in range(3):
                             j = (i-1+offset) % self.CATALOG_SIZE + 1
-                            conn.execute("INSERT INTO fund_components VALUES (?,?,?,?)", (code,f'INZST{j:03d}',1/3,1000+j*120))
+                            conn.execute(
+                                "INSERT INTO fund_components "
+                                "(product_code,asset_code,weight,base_price,asset_source,asset_class) "
+                                "VALUES (?,?,?,?,'company','equity')",
+                                (code,f'INZST{j:03d}',1/3,1000+j*120),
+                            )
                 conn.execute("INSERT INTO treasury_bond_products(product_code,name,annual_rate,maturity_days,face_value,exchange_id,market_price,total_supply) VALUES (?,?,?,?,?,?,?,?)",
                              (f'INZTB{i:03d}',f'Inazina 국채 {30+i*7}일 {i:02d}호',3+(i%10)*.1,30+i*7,1000,'BOND',1000,1_000_000_000))
                 # Covered calls own 100 of the one million issued shares. No

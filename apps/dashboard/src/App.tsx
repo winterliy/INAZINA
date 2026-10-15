@@ -3,7 +3,8 @@ import { api, clearToken, type ApiUser } from "../../shared/api";
 import { AuthPanel } from "../../shared/AuthPanel";
 
 type Page = "overview" | "instruments" | "users" | "events" | "audit";
-type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string };
+type FundComponent = { assetCode: string; weight: number; assetClass: string };
+type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
 type Overview = { activeUsers: number; activeInstruments: number; openOrders: number; market: { status: string; reason: string; trading_halted: number } | null };
 type Audit = { actorId: string; action: string; payload: Record<string, unknown>; time: number };
 type Citizen = { userId: string; nickname: string; nationality: string; cash: number; creditScore: number; status: string; role: string; accountType: "discord" | "country" };
@@ -19,6 +20,23 @@ const pages: { id: Page; label: string }[] = [
 ];
 const number = (value: number) => new Intl.NumberFormat("ko-KR").format(value);
 const date = (value: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "medium" }).format(value * 1000);
+const fundCategoryName: Record<string, string> = { equity: "주식형", bond: "채권형", mixed: "혼합형", other: "기타형" };
+
+function parseFundComponents(value: string): Record<string, number> {
+  const components: Record<string, number> = {};
+  for (const token of value.split(",")) {
+    const [rawCode, rawWeight, ...rest] = token.split(":");
+    const code = rawCode?.trim();
+    const percent = Number(rawWeight);
+    if (!code || rest.length || !Number.isFinite(percent) || percent <= 0 || percent > 100 || components[code]) {
+      throw new Error("구성은 자산코드:비중% 형식으로 중복 없이 입력해주세요.");
+    }
+    components[code] = percent / 100;
+  }
+  const total = Object.values(components).reduce((sum, weight) => sum + weight, 0);
+  if (Math.abs(total - 1) > 1e-8) throw new Error("구성 비중 합계는 100%여야 합니다.");
+  return components;
+}
 
 export default function App() {
   const [user, setUser] = useState<ApiUser | null>(null);
@@ -40,6 +58,13 @@ export default function App() {
   const [eventSeverity, setEventSeverity] = useState("5");
   const [eventDuration, setEventDuration] = useState("3600");
   const [eventAsset, setEventAsset] = useState("");
+  const [fundCode, setFundCode] = useState("");
+  const [fundName, setFundName] = useState("");
+  const [fundPrice, setFundPrice] = useState("1000");
+  const [fundSupply, setFundSupply] = useState("10000");
+  const [fundExchange, setFundExchange] = useState("INZ");
+  const [fundCategory, setFundCategory] = useState("equity");
+  const [fundComponents, setFundComponents] = useState("");
 
   const loadSession = useCallback(async () => {
     try {
@@ -98,7 +123,7 @@ export default function App() {
 
   const filteredInstruments = useMemo(() => {
     const term = query.trim().toLocaleLowerCase();
-    return instruments.filter((item) => !term || `${item.code} ${item.name} ${item.type}`.toLocaleLowerCase().includes(term));
+    return instruments.filter((item) => !term || `${item.code} ${item.name} ${item.type} ${fundCategoryName[item.fund_category || ""] || ""}`.toLocaleLowerCase().includes(term));
   }, [instruments, query]);
 
   async function marketAction(action: string) {
@@ -142,8 +167,22 @@ export default function App() {
     if (price === null) return;
     const supply = window.prompt("발행량 (변경하지 않으려면 비우기)", "");
     if (supply === null) return;
-    const changes = { name: name.trim(), price: price.trim(), supply: supply.trim() };
-    if (!changes.name || (!changes.price && !changes.supply)) {
+    const changes: Record<string, unknown> = { name: name.trim(), price: price.trim(), supply: supply.trim() };
+    if (item.type === "mutual_fund") {
+      const category = window.prompt("펀드 유형 (equity/bond/mixed/other)", item.fund_category || "equity");
+      if (category === null) return;
+      const currentComponents = (item.components || []).map((component) => `${component.assetCode}:${component.weight * 100}`).join(",");
+      const componentInput = window.prompt("구성 자산과 비중(%)", currentComponents);
+      if (componentInput === null) return;
+      try {
+        changes.fundCategory = category.trim();
+        changes.components = parseFundComponents(componentInput);
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : "펀드 구성을 확인해주세요.");
+        return;
+      }
+    }
+    if (!changes.name || (!changes.price && !changes.supply && item.type !== "mutual_fund")) {
       setError("이름을 입력하고 가격 또는 발행량을 하나 이상 입력해주세요.");
       return;
     }
@@ -157,6 +196,32 @@ export default function App() {
       await refresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "상품 설정을 변경하지 못했습니다.");
+    } finally { setBusy(false); }
+  }
+
+  async function createFund(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    let components: Record<string, number>;
+    try {
+      components = parseFundComponents(fundComponents);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "펀드 구성을 확인해주세요.");
+      return;
+    }
+    if (!window.confirm(`${fundName} (${fundCode}) 펀드를 생성할까요?`)) return;
+    setBusy(true);
+    try {
+      const result = await api<{ message: string }>("/api/admin/funds", {
+        method: "POST",
+        body: JSON.stringify({ code: fundCode.trim(), name: fundName.trim(), unitPrice: fundPrice, totalSupply: fundSupply, exchangeId: fundExchange.trim(), fundCategory, components }),
+      });
+      setError(result.message);
+      setFundCode("");
+      setFundName("");
+      setFundComponents("");
+      await refresh();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "펀드를 생성하지 못했습니다.");
     } finally { setBusy(false); }
   }
 
@@ -283,7 +348,19 @@ export default function App() {
           </section>
           <section className="section-panel"><div className="section-head"><h2>운영 범위</h2><span className="muted">관리자 작업은 모두 API에서 역할을 재검증합니다.</span></div><p className="muted">시장 상태, 상품 이름·가격·발행량, 사용자 현금·권한·계정 상태, 시장 사건을 관리할 수 있습니다. 각 변경은 기존 Python 검증과 관리자 작업 기록을 거칩니다.</p></section>
         </>}
-        {page === "instruments" && <section className="section-panel"><div className="section-head"><h2>종목 · 상품</h2><input className="search" placeholder="이름 또는 코드 검색" value={query} onChange={(event) => setQuery(event.target.value)} /></div><div className="table-wrap"><table><thead><tr><th>코드</th><th>이름</th><th>유형</th><th>가격</th><th>거래소</th><th>상태</th><th></th></tr></thead><tbody>{filteredInstruments.map((item) => <tr key={item.code}><td className="mono">{item.code}</td><td>{item.name}</td><td>{item.type}</td><td className="mono">{number(item.price)}</td><td>{item.exchange_id || "—"}</td><td><span className={item.status === "active" ? "state open" : "state paused"}>{item.status}</span></td><td className="user-actions"><button className="table-action" disabled={busy} onClick={() => void editInstrument(item)}>설정</button><button className="table-action" disabled={busy || item.status === "matured"} onClick={() => void changeInstrument(item)}>{item.status === "active" ? "중지" : "재개"}</button></td></tr>)}</tbody></table>{!filteredInstruments.length && <p className="empty">표시할 종목이 없습니다.</p>}</div></section>}
+        {page === "instruments" && <>
+          <section className="section-panel fund-create"><div className="section-head"><h2>펀드 생성</h2><span className="muted">NAV 가입·환매형 일반 펀드</span></div><form onSubmit={createFund}>
+            <label>코드<input value={fundCode} onChange={(event) => setFundCode(event.target.value)} required /></label>
+            <label>이름<input value={fundName} onChange={(event) => setFundName(event.target.value)} required /></label>
+            <label>기준가격<input type="number" min="1" step="1" value={fundPrice} onChange={(event) => setFundPrice(event.target.value)} required /></label>
+            <label>총 발행 좌수<input type="number" min="1" step="1" value={fundSupply} onChange={(event) => setFundSupply(event.target.value)} required /></label>
+            <label>거래소<input value={fundExchange} onChange={(event) => setFundExchange(event.target.value)} required /></label>
+            <label>유형<select value={fundCategory} onChange={(event) => setFundCategory(event.target.value)}><option value="equity">주식형</option><option value="bond">채권형</option><option value="mixed">혼합형</option><option value="other">기타형</option></select></label>
+            <label className="fund-components">구성 자산 · 비중(%)<input value={fundComponents} onChange={(event) => setFundComponents(event.target.value)} placeholder="INZST001:60,INZCB001:40" required /></label>
+            <button className="primary" disabled={busy}>{busy ? "생성 중…" : "펀드 생성"}</button>
+          </form></section>
+          <section className="section-panel"><div className="section-head"><h2>종목 · 상품</h2><input className="search" placeholder="이름 또는 코드 검색" value={query} onChange={(event) => setQuery(event.target.value)} /></div><div className="table-wrap"><table><thead><tr><th>코드</th><th>이름</th><th>유형</th><th>펀드 분류</th><th>가격</th><th>거래소</th><th>상태</th><th></th></tr></thead><tbody>{filteredInstruments.map((item) => <tr key={item.code}><td className="mono">{item.code}</td><td>{item.name}</td><td>{item.type}</td><td>{fundCategoryName[item.fund_category || ""] || "—"}</td><td className="mono">{number(item.price)}</td><td>{item.exchange_id || "—"}</td><td><span className={item.status === "active" ? "state open" : "state paused"}>{item.status}</span></td><td className="user-actions"><button className="table-action" disabled={busy} onClick={() => void editInstrument(item)}>설정</button><button className="table-action" disabled={busy || item.status === "matured"} onClick={() => void changeInstrument(item)}>{item.status === "active" ? "중지" : "재개"}</button></td></tr>)}</tbody></table>{!filteredInstruments.length && <p className="empty">표시할 종목이 없습니다.</p>}</div></section>
+        </>}
         {page === "users" && <section className="section-panel">
           <div className="section-head"><h2>사용자 계정</h2><input className="search" placeholder="이름 또는 ID 검색" value={query} onChange={(event) => setQuery(event.target.value)} /></div>
           <div className="country-user-create"><h3>국가 계정 추가</h3><p className="muted">국가 ID가 사용자 ID가 됩니다. HTS에서 국가 계정으로 로그인하며, 시작 잔액은 1,000,000 NWX입니다.</p><form onSubmit={(event) => void createCountryAccount(event)}>

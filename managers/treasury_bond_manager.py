@@ -269,15 +269,6 @@ class TreasuryBondManager:
             return redeemed
         try:
             with self.db.atomic(("users", "accounts", "assets", "tax")) as conn:
-                tax_row = conn.execute(
-                    "SELECT value FROM settings WHERE key='tax_percent'"
-                ).fetchone()
-                try:
-                    tax_percent = float(tax_row["value"] if tax_row else 3)
-                except (TypeError, ValueError):
-                    tax_percent = 3.0
-                if not math.isfinite(tax_percent) or not 0 <= tax_percent <= 100:
-                    tax_percent = 3.0
                 query = (
                     "SELECT h.holding_id, h.user_id, h.product_code, h.principal, "
                     "h.purchased_epoch, h.maturity_epoch, h.maturity_days, "
@@ -298,6 +289,11 @@ class TreasuryBondManager:
                     gross_interest = (0 if int(holding["coupon_frequency_days"] or 0)>0 else
                                       round_money(principal * float(holding["annual_rate"]) * days
                                                   / (100 * self.YEAR_DAYS)))
+                    tax_row = conn.execute(
+                        "SELECT c.tax_percent FROM users u LEFT JOIN country_currencies c "
+                        "ON c.nationality=u.nationality WHERE u.user_id=?", (holding['user_id'],)
+                    ).fetchone()
+                    tax_percent = float(tax_row['tax_percent'] if tax_row and tax_row['tax_percent'] is not None else 3)
                     tax = calculate_income_tax(gross_interest, tax_percent / 100)
                     gross_payment = principal + gross_interest
                     net_payment = principal + gross_interest - tax
@@ -308,9 +304,11 @@ class TreasuryBondManager:
                     if treasury_debit.rowcount != 1:
                         raise RuntimeError("국고 계정을 찾을 수 없어 국채 상환을 취소했습니다.")
                     if tax:
+                        from managers.currency_manager import CurrencyManager
+                        tax_treasury = CurrencyManager.user_treasury_id(conn, holding['user_id'])
                         conn.execute(
                             "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
-                            (tax, TREASURY_USER_ID),
+                            (tax, tax_treasury),
                         )
                     credit = conn.execute(
                         "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
@@ -392,9 +390,11 @@ class TreasuryBondManager:
                 if treasury.rowcount != 1:
                     raise RuntimeError("국고 계정을 찾을 수 없어 쿠폰 지급을 취소했습니다.")
                 if tax:
+                    from managers.currency_manager import CurrencyManager
+                    tax_treasury = CurrencyManager.user_treasury_id(conn, holding['user_id'])
                     conn.execute(
                         "UPDATE users.users SET cash=cash+? WHERE user_id=?",
-                        (tax, TREASURY_USER_ID),
+                        (tax, tax_treasury),
                     )
                 conn.execute(
                     "UPDATE users.users SET cash=cash+? WHERE user_id=?",

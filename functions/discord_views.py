@@ -919,7 +919,10 @@ class InfoPanelView(discord.ui.View):
             def kind(item):
                 value = str(item['type']).casefold()
                 return {"국채": "treasury_bond", "etf": "etf", "옵션": "option"}.get(value, value)
-            return [f"• **{r['name']}** (`{r['code']}`) · {r['price']:,} {r.get('quote_currency','NWX')} · {r['status']}"
+            fund_names = {'equity':'주식형','bond':'채권형','mixed':'혼합형','other':'기타형'}
+            return [f"• **{r['name']}** (`{r['code']}`)"
+                    +(f" · {fund_names.get(r.get('fund_category'), '미분류')}" if category in {'mutual_fund','index_fund'} else '')
+                    +f" · {r['price']:,} {r.get('quote_currency','NWX')} · {r['status']}"
                     +(f" · 액면 {r['face_value']:,} NWX · 연 {r['annual_rate']:g}% · {r['maturity_days']}일" if category=='treasury_bond' else '')
                     +self._dividend_note(r)
                     for r in investments if kind(r) == category]

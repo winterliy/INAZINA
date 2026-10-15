@@ -84,23 +84,11 @@ class SystemDB(DBManager):
             last_display_price INTEGER NOT NULL CHECK(last_display_price > 0),
             event_id INTEGER
         )""")
-        # The common GARCH shock is a single system-wide value, so keep it
-        # with the rest of the runtime settings rather than in a one-row table.
-        legacy_factor = self.execute_one(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='market_factor_state'"
-        )
-        if legacy_factor:
-            factor = self.execute_one(
-                "SELECT last_epoch, current_factor FROM market_factor_state WHERE key='market'"
-            )
-            if factor:
-                self.execute("INSERT INTO settings(key,value) VALUES ('market_factor_last_epoch', ?) "
-                             "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(factor['last_epoch']),))
-                self.execute("INSERT INTO settings(key,value) VALUES ('market_factor_current', ?) "
-                             "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(factor['current_factor']),))
-            self.execute("DROP TABLE market_factor_state")
-        self.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('market_factor_last_epoch', '0')")
-        self.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('market_factor_current', '0')")
+        self.execute("""CREATE TABLE IF NOT EXISTS market_factor_state (
+            key TEXT PRIMARY KEY,
+            last_epoch INTEGER NOT NULL,
+            current_factor REAL NOT NULL CHECK(ABS(current_factor) < 1.0e308)
+        )""")
         for key, value in (
             ("auto_target_enabled", "1"),
             ("auto_target_range_percent", "10"),
@@ -247,13 +235,13 @@ class SystemDB(DBManager):
                                    ("jump_applied_epoch", "INTEGER")):
             if column not in target_columns:
                 self.execute(f"ALTER TABLE market_event_targets ADD COLUMN {column} {definition}")
-        # Event and automatic-target paths are runtime-only.  Remove legacy
-        # tables during startup so DB Browser never retains that transient state.
-        self.execute("DROP INDEX IF EXISTS idx_market_event_targets_asset")
-        self.execute("DROP INDEX IF EXISTS idx_market_events_active")
-        self.execute("DROP TABLE IF EXISTS market_event_targets")
-        self.execute("DROP TABLE IF EXISTS market_events")
-        self.execute("DROP TABLE IF EXISTS market_auto_targets")
+        self.execute("""CREATE TABLE IF NOT EXISTS admin_audit (
+            audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            actor_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            recorded_epoch REAL NOT NULL
+        )""")
 
     def _init_rate_triggers(self):
         """Keep browser edits to policy/default rate settings valid."""

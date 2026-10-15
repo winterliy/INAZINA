@@ -429,16 +429,31 @@ def authenticate_login_identifier(identifier, password):
 
 
 def instruments(include_inactive=False):
+    # Ensure additive schema migrations have run before the read-only adapter
+    # selects newly introduced fund metadata.
+    domain()
     status_clause = "" if include_inactive else " WHERE status='active'"
     with connect_readonly() as connection:
         rows = []
         for query in (
-            f"SELECT code,name,type,price,exchange_id,quote_currency,status,'market_assets' AS source FROM market_assets{status_clause}",
-            f"SELECT company_code AS code,name,'stock' AS type,share_price AS price,exchange_id,quote_currency,status,'company' AS source FROM company{status_clause}",
-            f"SELECT product_code AS code,name,product_type AS type,unit_price AS price,exchange_id,quote_currency,status,'investment' AS source FROM investment{status_clause}",
-            f"SELECT product_code AS code,name,'국채' AS type,market_price AS price,exchange_id,quote_currency,status,'treasury_bond' AS source FROM treasury_bond_products{status_clause}",
+            f"SELECT code,name,type,price,exchange_id,quote_currency,status,'market_assets' AS source,NULL AS fund_category FROM market_assets{status_clause}",
+            f"SELECT company_code AS code,name,'stock' AS type,share_price AS price,exchange_id,quote_currency,status,'company' AS source,NULL AS fund_category FROM company{status_clause}",
+            f"SELECT product_code AS code,name,product_type AS type,unit_price AS price,exchange_id,quote_currency,status,'investment' AS source,fund_category FROM investment{status_clause}",
+            f"SELECT product_code AS code,name,'국채' AS type,market_price AS price,exchange_id,quote_currency,status,'treasury_bond' AS source,NULL AS fund_category FROM treasury_bond_products{status_clause}",
         ):
             rows.extend(dict(row) for row in connection.execute(query).fetchall())
+        components = {}
+        for row in connection.execute(
+            "SELECT product_code,asset_code,weight,asset_class FROM fund_components "
+            "ORDER BY product_code,asset_code"
+        ).fetchall():
+            components.setdefault(row["product_code"], []).append({
+                "assetCode": row["asset_code"], "weight": float(row["weight"]),
+                "assetClass": row["asset_class"],
+            })
+        for row in rows:
+            if row["type"] == "mutual_fund":
+                row["components"] = components.get(row["code"], [])
     return sorted(rows, key=lambda row: (str(row["name"]).casefold(), row["code"]))
 
 
@@ -602,8 +617,8 @@ def set_instrument_status(actor, code, payload):
 
 
 def edit_instrument(actor, code, payload):
-    if not isinstance(payload, dict) or set(payload) - {"name", "price", "supply"}:
-        raise ValueError("상품 이름, 가격, 발행량만 수정할 수 있습니다.")
+    if not isinstance(payload, dict) or set(payload) - {"name", "price", "supply", "fundCategory", "components"}:
+        raise ValueError("상품 설정 필드를 확인해주세요.")
     item = next((row for row in instruments(include_inactive=True) if row["code"] == code), None)
     if not item:
         return False, "자산 코드를 찾을 수 없습니다."
@@ -618,10 +633,44 @@ def edit_instrument(actor, code, payload):
     }.get(item.get("source"))
     if not category:
         return False, "이 상품 유형의 설정 변경은 아직 지원하지 않습니다."
+    extra = {}
+    if item.get("type") == "mutual_fund":
+        if "fundCategory" in payload:
+            extra["fund_category"] = payload["fundCategory"]
+        if "components" in payload:
+            if not isinstance(payload["components"], dict):
+                raise ValueError("components는 자산 코드별 비중 객체여야 합니다.")
+            extra["components"] = payload["components"]
+    elif "fundCategory" in payload or "components" in payload:
+        raise ValueError("펀드 구성은 일반 펀드에서만 수정할 수 있습니다.")
     result = domain().admin_control.entity(
         actor, category, "edit", code,
         name=payload.get("name", ""), price=payload.get("price", ""),
-        supply=payload.get("supply", ""),
+        supply=payload.get("supply", ""), extra=extra,
+    )
+    return True, result
+
+
+def create_fund(actor, payload):
+    allowed = {"code", "name", "unitPrice", "totalSupply", "exchangeId", "fundCategory", "components"}
+    if not isinstance(payload, dict) or set(payload) - allowed:
+        raise ValueError("펀드 생성 필드를 확인해주세요.")
+    code = str(payload.get("code", "")).strip()
+    name = str(payload.get("name", "")).strip()
+    exchange_id = str(payload.get("exchangeId", "")).strip()
+    components = payload.get("components")
+    if not code or len(code) > 80 or not name or not exchange_id:
+        raise ValueError("펀드 코드, 이름, 거래소를 입력해주세요.")
+    if not isinstance(components, dict) or not components:
+        raise ValueError("펀드 구성 자산과 비중을 입력해주세요.")
+    result = domain().admin_control.entity(
+        actor, "fund", "create", code, name=name,
+        price=str(payload.get("unitPrice", "")), supply=str(payload.get("totalSupply", "")),
+        extra={
+            "exchange_id": exchange_id,
+            "fund_category": payload.get("fundCategory"),
+            "components": components,
+        },
     )
     return True, result
 
@@ -896,6 +945,12 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     success, message = create_admin_event(user["userId"], payload)
                     self.send_json(200 if success else 400, {"success": success, "message": message})
+            elif path == "/internal/admin/funds":
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    success, message = create_fund(user["userId"], payload)
+                    self.send_json(201 if success else 400, {"success": success, "message": message})
             elif path.startswith("/internal/admin/users/"):
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})

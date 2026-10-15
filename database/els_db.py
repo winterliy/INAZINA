@@ -52,6 +52,16 @@ class ELSDB(DBManager):
             created_epoch INTEGER NOT NULL, confirmed_epoch INTEGER,
             status TEXT NOT NULL DEFAULT 'subscribed'
                 CHECK(status IN ('subscribed','issued','settled','cancelled')))""")
+        self.execute("""CREATE TABLE IF NOT EXISTS els_settlements (
+            settlement_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            product_code TEXT NOT NULL, sequence INTEGER NOT NULL,
+            subscription_id INTEGER NOT NULL, user_id TEXT NOT NULL,
+            quantity INTEGER NOT NULL CHECK(quantity > 0), principal INTEGER NOT NULL,
+            gross_amount INTEGER NOT NULL CHECK(gross_amount >= 0),
+            tax_amount INTEGER NOT NULL CHECK(tax_amount >= 0),
+            net_amount INTEGER NOT NULL CHECK(net_amount >= 0),
+            recorded_epoch INTEGER NOT NULL,
+            UNIQUE(product_code, sequence, subscription_id))""")
         self._migrate_legacy_products()
         self.execute("CREATE INDEX IF NOT EXISTS idx_els_products_state ON els_products(state, subscription_end_epoch)")
         self.execute("CREATE INDEX IF NOT EXISTS idx_els_subscriptions_user ON els_subscriptions(user_id, product_code, status)")

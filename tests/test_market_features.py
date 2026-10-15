@@ -19,6 +19,7 @@ from functions.price_chart import render_price_chart
 from functions.slash_commands import SlashCommandRegistry
 from functions.technical_indicators import UPPER_INDICATORS, LOWER_INDICATORS, build_candles, calculate_indicators
 from managers.admin_manager import AdminManager
+from managers.admin_control_manager import AdminControlManager
 from managers.bank_manager import BankManager
 from managers.futures_manager import FuturesManager
 from managers.interest_manager import InterestManager
@@ -644,6 +645,87 @@ class MarketFeatureTests(unittest.TestCase):
         self.assertTrue(self.products.trade_fund("alice", "MF", 5, redeem=True)[0])
         self.assertEqual(self.db.users.get_user("alice")["cash"] + self.db.users.get_treasury_balance(), before)
         self.assertEqual(self.db.assets.get_user_portfolio("alice"), [])
+
+    def test_all_four_fund_categories_accept_cross_asset_components_and_price_nav(self):
+        self.db.assets.register_asset("GOLD", "Gold", "EX", 100, "commodity_spot", 1000)
+        self.db.assets.register_asset("REIT", "Real estate", "EX", 100, "real_estate", 1000)
+        self.issue("CB", "corporate_bond", price=100, underlying="CO", days=30)
+        control = AdminControlManager(SimpleNamespace(db=self.db))
+
+        cases = {
+            "EQ": ("equity", {"CO": .60, "GOLD": .40}),
+            "BD": ("bond", {"CB": .60, "GOLD": .40}),
+            "MX": ("mixed", {"CO": .50, "CB": .50}),
+            "OT": ("other", {"GOLD": .50, "REIT": .50}),
+        }
+        for code, (category, components) in cases.items():
+            with self.subTest(category=category):
+                control.entity(
+                    "admin", "fund", "create", code, name=code, price="100", supply="1000",
+                    extra={"exchange_id": "EX", "fund_category": category, "components": components},
+                )
+                product = self.db.products.get_investment(code)
+                self.assertEqual(product["fund_category"], category)
+
+        component_rows = self.db.products.execute(
+            "SELECT asset_code,asset_source,asset_class FROM fund_components WHERE product_code='MX' ORDER BY asset_code"
+        )
+        self.assertEqual(
+            [(row["asset_code"], row["asset_source"], row["asset_class"]) for row in component_rows],
+            [("CB", "investment", "bond"), ("CO", "company", "equity")],
+        )
+        with self.db.atomic(("assets", "product", "company")) as conn:
+            product = conn.execute("SELECT * FROM investment WHERE product_code='MX'").fetchone()
+            components = {"MX": conn.execute(
+                "SELECT * FROM fund_components WHERE product_code='MX'"
+            ).fetchall()}
+            price = InvestmentManager.linked_price(
+                conn, product, 0, int(time.time()),
+                prices={"CO": {"price": 120}, "CB": {"price": 110}},
+                fund_components=components,
+            )
+        self.assertEqual(price, 115)
+
+        with self.assertRaisesRegex(ValueError, "주식형 조건"):
+            control.entity(
+                "admin", "fund", "create", "BAD", name="BAD", price="100", supply="1000",
+                extra={"exchange_id": "EX", "fund_category": "equity",
+                       "components": {"CO": .5999, "GOLD": .4001}},
+            )
+
+    def test_fund_component_edit_reanchors_current_nav(self):
+        self.db.assets.register_asset("GOLD", "Gold", "EX", 100, "commodity_spot", 1000)
+        control = AdminControlManager(SimpleNamespace(db=self.db))
+        control.entity(
+            "admin", "fund", "create", "FD", name="Fund", price="100", supply="1000",
+            extra={"exchange_id": "EX", "fund_category": "equity", "components": {"CO": 1}},
+        )
+        self.db.products.execute("UPDATE investment SET unit_price=125 WHERE product_code='FD'")
+        control.entity(
+            "admin", "fund", "edit", "FD",
+            extra={"fund_category": "equity", "components": {"CO": .6, "GOLD": .4}},
+        )
+        product = self.db.products.get_investment("FD")
+        self.assertEqual(product["nav_anchor"], 125)
+        with self.db.atomic(("assets", "product", "company")) as conn:
+            linked = InvestmentManager.linked_price(
+                conn, conn.execute("SELECT * FROM investment WHERE product_code='FD'").fetchone(),
+                0, int(time.time()),
+            )
+        self.assertEqual(linked, 125)
+
+    def test_bond_fund_uses_same_tick_corporate_bond_quote(self):
+        self.issue("CB", "corporate_bond", price=100, underlying="CO", days=365, rate=20)
+        control = AdminControlManager(SimpleNamespace(db=self.db))
+        control.entity(
+            "admin", "fund", "create", "BF", name="Bond fund", price="100", supply="1000",
+            extra={"exchange_id": "EX", "fund_category": "bond", "components": {"CB": 1}},
+        )
+        self.market._update_linked_products(int(time.time()))
+        bond_price = self.db.products.get_investment("CB")["unit_price"]
+        fund_price = self.db.products.get_investment("BF")["unit_price"]
+        self.assertNotEqual(bond_price, 100)
+        self.assertEqual(fund_price, bond_price)
 
     def test_corporate_bond_primary_proceeds_go_to_company_and_maturity_pays_once(self):
         self.assertTrue(self.rates.set_country_rate("legal_max_rate", "낙원", 40, "admin")[0])

@@ -495,6 +495,17 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/api/admin/funds") {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const body = await requestJson(request);
+    const result = await internalRequest("POST", "/internal/admin/funds", principal.userId, body);
+    send(response, result.status, result.body);
+    return;
+  }
+
   if (request.method === "POST" && url.pathname === "/api/admin/users/country-account") {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });

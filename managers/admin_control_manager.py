@@ -36,7 +36,7 @@ EXAMPLES = {
     'future': {'exchange_id':'FUT','underlying_code':'INZST001','maturity_days':90,'contract_size':1},
     'corporatebond': {'exchange_id':'BOND','issuer_code':'INZST001','face_value':1000,'annual_rate':4,'maturity_days':90},
     'fund': {'exchange_id':'INZ','components':{'INZST001':.5,'INZST002':.5}},
-    'indexfund': {'exchange_id':'INZ','underlying_exchange_id':'INZ'},
+    'indexfund': {'exchange_id':'INZ','underlying_exchange_id':'INZ','fund_category':'equity'},
     'commodity': {'exchange_id':'COM'},
     'bond': {'annual_rate':3,'maturity_days':90,'face_value':1000,'exchange_id':'BOND'},
     'saving': {'interest_rate':3,'deposit_amount':1000,'maturity_days':30,'interest_cycle':86400,'compound_type':1,'issuer':'Inazina','rate_type':'fixed'},
@@ -52,7 +52,6 @@ EXAMPLES = {
 class AdminControlManager:
     def __init__(self,bot):
         self.bot,self.db = bot,bot.db
-        pass
 
     def require(self, actor_id, conn=None):
         user = (conn.execute("SELECT role FROM users WHERE user_id=?",(str(actor_id),)).fetchone()
@@ -62,7 +61,10 @@ class AdminControlManager:
 
     @staticmethod
     def _audit(conn,actor,action,payload):
-        return
+        conn.execute(
+            "INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
+            (str(actor), action, json.dumps(payload, ensure_ascii=False, default=str), time.time()),
+        )
 
     @staticmethod
     def _number(value, low=0, high=2**53-1, integer=False):
@@ -219,6 +221,14 @@ class AdminControlManager:
                     values['product_type'] = KINDS[category]
                     values['manager'] = 'Inazina 국고'
                     values['nav_anchor'] = values['unit_price']
+                if category == 'indexfund':
+                    from managers.investment_manager import InvestmentManager
+                    fund_category = InvestmentManager.normalize_fund_category(
+                        values.get('fund_category', 'equity')
+                    )
+                    if fund_category != 'equity':
+                        raise ValueError('현재 인덱스 펀드는 주식 거래소 지수만 추종하므로 주식형만 지원합니다.')
+                    values['fund_category'] = 'equity'
             merged = {**(dict(existing) if existing else {}),**values}
             money_fields = {
                 'stock': {'capital','share_price','liquidation_value_per_share','dividend_per_share'},
@@ -541,19 +551,40 @@ class AdminControlManager:
             if category=='currency' and extra.get('nationality'):
                 conn.execute("INSERT INTO country_currencies(nationality,currency_code) VALUES (?,?) "
                              "ON CONFLICT(nationality) DO UPDATE SET currency_code=excluded.currency_code",(str(extra['nationality']),code))
-            if category=='fund' and (operation=='create' or 'components' in extra):
-                weights = extra.get('components',EXAMPLES['fund']['components'])
-                if not isinstance(weights,dict) or not weights:
-                    raise ValueError("components에 종목별 비중을 입력해주세요.")
-                total = sum(self._number(v,.000001,1) for v in weights.values())
-                if not math.isclose(total,1,abs_tol=1e-8):
-                    raise ValueError("펀드 구성 비중의 합은 1이어야 합니다.")
-                conn.execute("DELETE FROM fund_components WHERE product_code=?",(code,))
-                for asset,weight in weights.items():
-                    underlying = conn.execute("SELECT share_price FROM company WHERE company_code=? AND status='active'",(asset,)).fetchone()
-                    if not underlying:
-                        raise ValueError("펀드 구성 종목을 확인해주세요.")
-                    conn.execute("INSERT INTO fund_components VALUES (?,?,?,?)",(code,asset,weight,underlying[0]))
+            if category=='indexfund' and 'fund_category' in extra:
+                from managers.investment_manager import InvestmentManager
+                if InvestmentManager.normalize_fund_category(extra['fund_category']) != 'equity':
+                    raise ValueError('현재 인덱스 펀드는 주식 거래소 지수만 추종하므로 주식형만 지원합니다.')
+            if category=='fund' and (operation=='create' or 'components' in extra or 'fund_category' in extra):
+                from managers.investment_manager import InvestmentManager
+                if 'components' in extra or operation == 'create':
+                    weights = extra.get('components',EXAMPLES['fund']['components'])
+                else:
+                    weights = {
+                        row['asset_code']: row['weight'] for row in conn.execute(
+                            "SELECT asset_code,weight FROM fund_components WHERE product_code=?", (code,)
+                        ).fetchall()
+                    }
+                requested = extra.get('fund_category')
+                if requested is None and existing:
+                    requested = existing['fund_category']
+                inferred, components = InvestmentManager.validate_fund_components(
+                    conn, weights, requested
+                )
+                if operation != 'create' and 'components' in extra:
+                    # Re-anchor at the current NAV so replacing the reference basket
+                    # cannot reset a live fund to its original issue price.
+                    conn.execute("UPDATE investment SET nav_anchor=unit_price WHERE product_code=?", (code,))
+                conn.execute("UPDATE investment SET fund_category=? WHERE product_code=?", (inferred, code))
+                if operation=='create' or 'components' in extra:
+                    conn.execute("DELETE FROM fund_components WHERE product_code=?",(code,))
+                    conn.executemany(
+                        "INSERT INTO fund_components "
+                        "(product_code,asset_code,weight,base_price,asset_source,asset_class) "
+                        "VALUES (?,?,?,?,?,?)",
+                        [(code, asset, weight, price, source, asset_class)
+                         for asset, weight, price, source, asset_class in components],
+                    )
             self._audit(conn,actor,f'{category}.{operation}',{'code':code,**values})
             return '✅ 설정을 저장했습니다.'
 

@@ -248,12 +248,14 @@ class InterestManager:
                         if tax > 0:
                             from managers.currency_manager import CurrencyManager, SCALE
                             tax_units = int(round(float(tax)*SCALE))
+                            treasury_id = CurrencyManager.user_treasury_id(conn, account['user_id'])
+                            home_currency = CurrencyManager.home(conn, account['user_id'])
                             treasury_units = CurrencyManager.convert(
-                                conn, tax_units, account["quote_currency"], "NWX"
+                                conn, tax_units, account["quote_currency"], home_currency
                             )
                             treasury = conn.execute(
                                 "UPDATE users.users SET cash=cash+? WHERE user_id=?",
-                                (treasury_units//SCALE, TREASURY_USER_ID),
+                                (treasury_units//SCALE, treasury_id),
                             )
                             if treasury.rowcount != 1:
                                 raise RuntimeError("국고 계정을 찾을 수 없어 이자 지급을 취소했습니다.")

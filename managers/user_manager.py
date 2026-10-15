@@ -184,9 +184,11 @@ class UserManager:
         tax_amount = calculate_income_tax(gross, rate / 100.0)
         net_income = max(0, gross - tax_amount)
         if tax_amount > 0:
+            from managers.currency_manager import CurrencyManager
+            treasury_id = CurrencyManager.user_treasury_id(conn, user_id)
             treasury = conn.execute(
                 "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
-                (tax_amount, TREASURY_USER_ID),
+                (tax_amount, treasury_id),
             )
             if treasury.rowcount != 1:
                 raise RuntimeError("국고 계정을 찾을 수 없어 세금 처리를 취소했습니다.")

@@ -87,6 +87,7 @@ class ProductDB(DBManager):
             "face_value": "INTEGER NOT NULL DEFAULT 0", "annual_rate": "REAL NOT NULL DEFAULT 0",
             "contract_size": "INTEGER NOT NULL DEFAULT 1", "initial_margin": "REAL NOT NULL DEFAULT 0.2",
             "maintenance_margin": "REAL NOT NULL DEFAULT 0.15", "nav_anchor": "REAL NOT NULL DEFAULT 0",
+            "fund_category": "TEXT CHECK(fund_category IS NULL OR fund_category IN ('equity','bond','mixed','other'))",
             "dividend_cycle_seconds": "INTEGER NOT NULL DEFAULT 0 CHECK(dividend_cycle_seconds >= 0)",
             "dividend_per_share": "INTEGER NOT NULL DEFAULT 0 CHECK(dividend_per_share >= 0)",
             "dividend_mode": "TEXT NOT NULL DEFAULT 'fixed' CHECK(dividend_mode IN ('fixed','percent'))",
@@ -112,8 +113,24 @@ class ProductDB(DBManager):
         self.execute("""CREATE TABLE IF NOT EXISTS fund_components (
             product_code TEXT NOT NULL, asset_code TEXT NOT NULL,
             weight REAL NOT NULL CHECK(weight > 0), base_price REAL NOT NULL CHECK(base_price > 0),
+            asset_source TEXT NOT NULL DEFAULT 'company'
+                CHECK(asset_source IN ('company','investment','treasury_bond','market_asset')),
+            asset_class TEXT NOT NULL DEFAULT 'equity'
+                CHECK(asset_class IN ('equity','bond','real_estate','commodity','special_asset')),
             PRIMARY KEY(product_code, asset_code)
         )""")
+        component_columns = {row[1] for row in self.execute("PRAGMA table_info(fund_components)")}
+        if "asset_source" not in component_columns:
+            self.execute("ALTER TABLE fund_components ADD COLUMN asset_source TEXT NOT NULL DEFAULT 'company' "
+                         "CHECK(asset_source IN ('company','investment','treasury_bond','market_asset'))")
+        if "asset_class" not in component_columns:
+            self.execute("ALTER TABLE fund_components ADD COLUMN asset_class TEXT NOT NULL DEFAULT 'equity' "
+                         "CHECK(asset_class IN ('equity','bond','real_estate','commodity','special_asset'))")
+        # Before asset-allocation categories existed every stored mutual fund
+        # could contain only company shares, and every index fund tracked a
+        # stock exchange index. Preserve that meaning during migration.
+        self.execute("UPDATE investment SET fund_category='equity' "
+                     "WHERE product_type IN ('mutual_fund','index_fund') AND fund_category IS NULL")
         if "is_fixed" not in investment_columns:
             self.execute("ALTER TABLE investment ADD COLUMN is_fixed INTEGER NOT NULL DEFAULT 0")
         if "created_at" not in investment_columns:
@@ -313,9 +330,10 @@ class ProductDB(DBManager):
         self.execute("INSERT OR REPLACE INTO investment "
                      "(product_code, name, product_type, total_supply, unit_price, maturity_days, "
                      "manager, exchange_id, status, underlying_exchange_id, leverage_multiplier, "
-                     "rebalance_cycle_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)",
+                     "rebalance_cycle_seconds, fund_category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)",
                      (code, name, p_type, supply, price, maturity, manager, ex_id,
-                      underlying_exchange_id, leverage_multiplier, rebalance_cycle_seconds))
+                      underlying_exchange_id, leverage_multiplier, rebalance_cycle_seconds,
+                      'equity' if p_type in {'mutual_fund','index_fund'} else None))
 
     def get_saving(self, code):
         return self.execute_one("SELECT * FROM saving WHERE product_code = ?", (code,))

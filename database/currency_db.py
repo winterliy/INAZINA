@@ -58,6 +58,15 @@ class CurrencyDB(DBManager):
         )""")
         self.execute("CREATE INDEX IF NOT EXISTS idx_guild_countries_nationality "
                      "ON guild_countries(nationality)")
+        # The legacy Nakwon treasury remains the lottery treasury.  Other
+        # federation countries receive an independent nation account so taxes
+        # can never be mixed merely because they share one SQLite database.
+        self.execute("""CREATE TABLE IF NOT EXISTS country_treasuries (
+            nationality TEXT PRIMARY KEY REFERENCES country_currencies(nationality),
+            user_id TEXT NOT NULL UNIQUE REFERENCES users(user_id)
+        )""")
+        self.execute("INSERT OR IGNORE INTO country_treasuries(nationality,user_id) "
+                     "VALUES ('낙원','20230216')")
         self.execute("""CREATE TABLE IF NOT EXISTS financial_holidays (
             nationality TEXT NOT NULL REFERENCES country_currencies(nationality),
             holiday_date TEXT NOT NULL,

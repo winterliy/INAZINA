@@ -20,3 +20,15 @@ class LotteryDB(DBManager):
             request_id TEXT NOT NULL, created_epoch INTEGER NOT NULL,
             rank INTEGER)""")
         self.execute('CREATE INDEX IF NOT EXISTS idx_lottery_tickets_user_round ON lottery_tickets(user_id,round_id,ticket_id)')
+        self.execute("""CREATE TABLE IF NOT EXISTS lottery_purchases (
+            request_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, round_id INTEGER NOT NULL,
+            quantity INTEGER NOT NULL, price INTEGER NOT NULL, tickets_json TEXT NOT NULL)""")
+        self.execute("""CREATE TABLE IF NOT EXISTS lottery_payouts (
+            ticket_id INTEGER PRIMARY KEY, round_id INTEGER NOT NULL, user_id TEXT NOT NULL,
+            rank INTEGER NOT NULL, gross INTEGER NOT NULL, tax INTEGER NOT NULL,
+            net INTEGER NOT NULL, recorded_epoch INTEGER NOT NULL)""")
+        self.execute("""CREATE TABLE IF NOT EXISTS lottery_pool_ledger (
+            entry_id INTEGER PRIMARY KEY AUTOINCREMENT, round_id INTEGER NOT NULL,
+            kind TEXT NOT NULL, rank INTEGER NOT NULL DEFAULT 0,
+            amount INTEGER NOT NULL, ticket_id INTEGER, recorded_epoch INTEGER NOT NULL)""")
+        self.execute('CREATE INDEX IF NOT EXISTS idx_lottery_pool_round ON lottery_pool_ledger(round_id,entry_id)')

@@ -49,6 +49,22 @@ class EconomyTests(unittest.TestCase):
         DBManager.database_dir = self.original_database_dir
         self.tempdir.cleanup()
 
+    def test_income_tax_credits_citizen_country_treasury(self):
+        self.db.currency.execute("INSERT INTO currencies(code,name) VALUES ('NAC','Nac 화폐')")
+        self.db.currency.execute(
+            "INSERT INTO country_currencies(nationality,currency_code,base_rate,legal_max_rate,tax_percent) "
+            "VALUES ('Nac','NAC',3,20,7)"
+        )
+        with self.db.atomic() as conn:
+            self.assertEqual(UserManager._tax(conn, 'citizen-1', 'test', 100), 7)
+            treasury = conn.execute(
+                "SELECT t.user_id,u.cash FROM country_treasuries t JOIN users u ON u.user_id=t.user_id "
+                "WHERE t.nationality='Nac'"
+            ).fetchone()
+            self.assertIsNotNone(treasury)
+            self.assertEqual(treasury['cash'], 7)
+            self.assertEqual(conn.execute("SELECT cash FROM users WHERE user_id=?", (TREASURY_USER_ID,)).fetchone()[0], 0)
+
     def test_buy_sell_tracks_funding_account_and_taxes_realized_gain(self):
         self.db.assets.register_asset("TEST", "Test Co", "EX", 10, "stock")
         self.assertTrue(self.users.buy_asset("citizen-1", "TEST", 10)[0])
