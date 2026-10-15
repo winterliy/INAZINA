@@ -1009,11 +1009,17 @@ class EconomyTests(unittest.TestCase):
         self.assertIn("내지갑", names)
         self.assertTrue({"setup", "register", "사건", "상품등록", "기본소득"}.isdisjoint(names))
         self.assertTrue({"내옵션", "외환계좌", "국적", "내외환", "환율", "내자산"}.isdisjoint(names))
-        self.assertTrue({"회생신청", "파산신청"}.issubset(names))
-        self.assertTrue({"기준금리", "법정최고이자", "펀드가입", "펀드환매", "선물증거금"}.issubset(names))
-        for name in ("회생신청", "파산신청"):
-            command = next(command for command in tree.commands if command.name == name)
-            self.assertEqual(command.parameters, [])
+        self.assertIn("파산", names)
+        self.assertTrue({"회생신청", "파산신청", "환전", "기준금리",
+                         "펀드가입", "펀드환매", "전체자산확인"}.isdisjoint(names))
+        self.assertTrue({"법정최고이자", "선물증거금", "대출신청", "주총소집"}.issubset(names))
+        descriptions = {command.name: command.description for command in tree.commands}
+        self.assertEqual(descriptions["서버등록"], "이 서버를 INAZINA 시스템에 등록합니다.")
+        self.assertEqual(descriptions["서버탈퇴"], "이 서버를 INAZINA 시스템에 등록해제합니다.")
+        self.assertEqual(
+            next(command for command in tree.commands if command.name == "파산").parameters,
+            [],
+        )
         self_register = next(command for command in tree.commands if command.name == "등록")
         self.assertEqual(self_register.parameters, [])
         self.assertIn("검색", names)
@@ -1029,7 +1035,8 @@ class EconomyTests(unittest.TestCase):
         self.assertNotIn("신용확인", names)
         asset = next(parameter for parameter in buy.parameters if parameter.name == "자산")
         self.assertFalse(asset.autocomplete)
-        self.assertTrue(any(parameter.name == "지정가" for parameter in buy.parameters))
+        limit_price = next(parameter for parameter in buy.parameters if parameter.name == "지정가")
+        self.assertFalse(limit_price.required)
         sell = next(command for command in tree.commands if command.name == "매도")
         self.assertFalse(next(parameter for parameter in sell.parameters if parameter.name == "자산").autocomplete)
         transfer = next(command for command in tree.commands if command.name == "송금")
@@ -1039,16 +1046,14 @@ class EconomyTests(unittest.TestCase):
         movement_asset = next(parameter for parameter in movement.parameters if parameter.name == "종목")
         self.assertFalse(movement_asset.autocomplete)
         self.assertTrue(movement_asset.required)
-        for command_name, argument_name in {
-            "선물증거금": "선물", "펀드가입": "펀드", "펀드환매": "펀드"
-        }.items():
+        for command_name, argument_name in {"선물증거금": "선물"}.items():
             parameter = next(
                 parameter for parameter in next(command for command in tree.commands if command.name == command_name).parameters
                 if parameter.name == argument_name
             )
             self.assertTrue(parameter.required)
             self.assertFalse(parameter.autocomplete)
-        for name in ("기준금리", "법정최고이자"):
+        for name in ("법정최고이자",):
             parameter = next(command for command in tree.commands if command.name == name).parameters[0]
             self.assertEqual(parameter.name, "국가")
             self.assertTrue(parameter.required)

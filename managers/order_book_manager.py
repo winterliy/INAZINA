@@ -80,7 +80,7 @@ class OrderBookManager:
                 if not asset:
                     return False, "❌ 존재하지 않는 자산 코드입니다."
                 if asset["type"] in {"mutual_fund", "index_fund"}:
-                    return False, "❌ 일반·인덱스 펀드는 `/펀드가입`·`/펀드환매`에서 NAV 기준으로 거래합니다."
+                    return False, "❌ 일반·인덱스 펀드는 `/매수`·`/매도`에서 지정가 없이 NAV 기준으로 거래합니다."
                 if side == "buy" and asset["status"] != "active":
                     return False, "❌ 매수 주문은 현재 거래 중인 자산만 가능합니다."
                 if side == "sell" and asset["status"] not in {"active", "matured"}:
@@ -277,6 +277,12 @@ class OrderBookManager:
                     self._apply_execution_price(
                         conn, incoming["asset_code"], reference_price, now
                     )
+                    conn.execute(
+                        "INSERT INTO assets.market_trade_history "
+                        "(asset_code, side, quantity, price, recorded_epoch) "
+                        "VALUES (?, 'buy', ?, ?, ?)",
+                        (incoming["asset_code"], quantity, reference_price, now),
+                    )
                     fill_count += 1
                     filled_quantity += quantity
                     traded_value += reference_price * quantity
@@ -296,6 +302,11 @@ class OrderBookManager:
             self._reduce_order(conn, sell_order, quantity, now)
             self._apply_execution_price(
                 conn, incoming["asset_code"], execution_price, now
+            )
+            conn.execute(
+                "INSERT INTO assets.market_trade_history "
+                "(asset_code, side, quantity, price, recorded_epoch) VALUES (?, ?, ?, ?, ?)",
+                (incoming["asset_code"], incoming["side"], quantity, execution_price, now),
             )
             fill_count += 1
             filled_quantity += quantity

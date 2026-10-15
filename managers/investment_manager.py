@@ -87,7 +87,7 @@ class InvestmentManager:
                         conn.execute("INSERT INTO product.fund_components VALUES (?, ?, ?, ?)",
                             (code, row["company_code"], weight, float(row["share_price"])))
             return True, f"✅ {PRODUCT_NAMES[product_type]} `{code}`를 등록했습니다. " + (
-                "펀드가입·펀드환매로 NAV 기준 거래합니다." if product_type in FUND_TYPES
+                "/매수·/매도로 지정가 없이 NAV 기준 거래합니다." if product_type in FUND_TYPES
                 else "거래소 매수·매도로 거래합니다.")
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f"❌ 상품 등록 실패: {exc}"

@@ -267,6 +267,12 @@ class UserManager:
                            quantity = quantity + excluded.quantity""",
                     (user_id, asset_code, account_number, quantity, price),
                 )
+                conn.execute(
+                    "INSERT INTO assets.market_trade_history "
+                    "(asset_code, side, quantity, price, recorded_epoch) "
+                    "VALUES (?, 'buy', ?, ?, ?)",
+                    (asset_code, quantity, price, int(time.time())),
+                )
                 if asset["type"] in {"mutual_fund", "index_fund", "corporate_bond"}:
                     product = conn.execute("SELECT issuer_code FROM product.investment WHERE product_code = ?", (asset_code,)).fetchone()
                     if asset["type"] == "corporate_bond":
@@ -365,6 +371,12 @@ class UserManager:
                     qty_left -= take
                 if source == "company":
                     self._refresh_max_shareholder(conn, asset_code)
+                conn.execute(
+                    "INSERT INTO assets.market_trade_history "
+                    "(asset_code, side, quantity, price, recorded_epoch) "
+                    "VALUES (?, 'sell', ?, ?, ?)",
+                    (asset_code, quantity, price, int(time.time())),
+                )
             net_proceeds = max(0, gross_proceeds - total_tax)
             unit = "주" if str(asset["type"]).lower() in {"stock", "주식"} else "좌" if asset["type"] in {"mutual_fund", "index_fund"} else "개"
             return True, (

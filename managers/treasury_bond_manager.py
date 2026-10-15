@@ -234,6 +234,12 @@ class TreasuryBondManager:
                     (marked, bond["product_code"]),
                 )
                 conn.execute(
+                    "INSERT INTO assets.market_trade_history "
+                    "(asset_code, side, quantity, price, recorded_epoch) "
+                    "VALUES (?, 'buy', ?, ?, ?)",
+                    (bond["product_code"], amount // face_value, face_value, now),
+                )
+                conn.execute(
                     "INSERT INTO assets.market_price_history "
                     "(asset_code, price, recorded_epoch) VALUES (?, ?, ?) "
                     "ON CONFLICT(asset_code, recorded_epoch) DO UPDATE SET price = excluded.price",

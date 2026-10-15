@@ -184,14 +184,41 @@ class CurrencyExchangeManager:
                                           "WHERE a.user_id=? AND a.account_type='currency_saving' AND a.quote_currency<>? "
                                           "ORDER BY a.quote_currency", (str(user_id),home))]
 
+    @staticmethod
+    def _source_for_target(conn, target_units, source, target, fee_rate):
+        """Return the smallest source-currency amount that funds an exact target credit."""
+        quantum = 10 ** (6 - CurrencyManager.precision(conn, source))
+        low, high = 1, MAX_UNITS // quantum
+
+        def quote(steps):
+            source_units = steps * quantum
+            fee = CurrencyManager.fee(conn, source_units, source, fee_rate)
+            output = CurrencyManager.exchange_amount(
+                conn, source_units, source, target, fee
+            )
+            return source_units, fee, output
+
+        if quote(high)[2] < target_units:
+            raise ValueError('환전 금액이 저장 한도를 초과합니다.')
+        while low < high:
+            middle = (low + high) // 2
+            if quote(middle)[2] >= target_units:
+                high = middle
+            else:
+                low = middle + 1
+        source_units, fee, output = quote(low)
+        if output < target_units:
+            raise ValueError('환전 결과가 최소 단위 미만이거나 한도를 초과합니다.')
+        return source_units, fee
+
     def transfer(self,user_id,recipient,amount,source_account=None):
-        """Account-addressed transfer; a currency change quotes and settles atomically."""
+        """Transfer atomically; self FX-account deposits use destination-currency amounts."""
         sender = str(user_id)
         recipient = str(recipient).strip()
         if recipient.casefold() in {'국고','treasury',TREASURY_USER_ID.casefold()}:
             recipient = TREASURY_USER_ID
         source_account = str(source_account or '__wallet__').strip()
-        units = amount_units(amount)
+        requested_units = amount_units(amount)
         from managers.user_manager import UserManager
         interest_error = UserManager(self.db)._settle_user_interest(sender)
         if interest_error:
@@ -226,12 +253,15 @@ class CurrencyExchangeManager:
             src,dst = endpoint(source_account,sender),endpoint(recipient)
             if src[:4]==dst[:4]:
                 raise ValueError('같은 계좌로 송금할 수 없습니다.')
-            if src[6]==SCALE and units%SCALE:
-                raise ValueError(f'{src[5]} 국적 통화는 정수 {src[5]} 금액만 사용할 수 있습니다.')
-            CurrencyManager.validate_units(conn,units,src[5])
             self._settle(conn,sender,now)
             if dst[4]!=sender:
                 self._settle(conn,dst[4],now)
+            target_basis = (
+                dst[0] == 'accounts'
+                and dst[1] == 'balance_units'
+                and dst[4] == sender
+                and src[5] != dst[5]
+            )
             fee = 0
             if src[5]!=dst[5]:
                 from managers.market_session_manager import MarketSessionManager
@@ -242,21 +272,37 @@ class CurrencyExchangeManager:
                 rate = Decimal(str(setting[0]))
                 if not rate.is_finite() or not 0<=rate<=100:
                     raise ValueError('환전 수수료 설정이 올바르지 않습니다.')
-                fee = CurrencyManager.fee(conn,units,src[5],rate)
-                output = CurrencyManager.exchange_amount(conn,units,src[5],dst[5],fee)
+                if target_basis:
+                    CurrencyManager.validate_units(conn, requested_units, dst[5])
+                    units, fee = self._source_for_target(
+                        conn, requested_units, src[5], dst[5], rate
+                    )
+                    output = requested_units
+                else:
+                    units = requested_units
+                    CurrencyManager.validate_units(conn, units, src[5])
+                    fee = CurrencyManager.fee(conn,units,src[5],rate)
+                    output = CurrencyManager.exchange_amount(conn,units,src[5],dst[5],fee)
             else:
+                units = requested_units
+                CurrencyManager.validate_units(conn, units, src[5])
                 output = units
             output = output//dst[6]*dst[6]
             if not 1<=output<=MAX_UNITS:
                 raise ValueError('환전 결과가 최소 단위 미만이거나 한도를 초과합니다.')
-            debit,credit = units//src[6],output//dst[6]
+            debit,credit = units,output
+
+            def native_amount(value_units):
+                value = Decimal(int(value_units)) / Decimal(SCALE)
+                return int(value) if value == value.to_integral_value() else float(value)
+
             debited_sources = []
             if src[1] in {'cash','balance'}:
                 preferred = None if src[0]=='users' else src[3]
-                candidates = [(None,int(conn.execute(
+                candidates = [(None,int(Decimal(str(conn.execute(
                     "SELECT cash FROM users WHERE user_id=?",(sender,)
-                ).fetchone()[0] or 0))]
-                candidates += [(str(row['account_number']),int(row['balance'] or 0)) for row in conn.execute(
+                ).fetchone()[0] or 0))*SCALE))]
+                candidates += [(str(row['account_number']),int(Decimal(str(row['balance'] or 0))*SCALE)) for row in conn.execute(
                     "SELECT account_number,balance FROM accounts WHERE user_id=? "
                     "AND account_type IN ('saving','loan_payout')",(sender,)).fetchall()]
                 if dst[4]==sender:
@@ -269,7 +315,9 @@ class CurrencyExchangeManager:
                     remaining = debit
                     for account_number,balance in candidates:
                         take = min(max(0,balance),remaining)
-                        if take and not UserManager._debit_source(conn,sender,account_number,take):
+                        if take and not UserManager._debit_source(
+                            conn, sender, account_number, native_amount(take)
+                        ):
                             raise RuntimeError('출금 잔액이 변경되어 송금을 취소했습니다.')
                         if take:
                             debited_sources.append(account_number or '지갑')
@@ -284,7 +332,14 @@ class CurrencyExchangeManager:
             if not debited:
                 raise ValueError('출금 잔액이 부족합니다.')
             if dst[0]=='accounts' and dst[1]=='balance':
-                changed = conn.execute('UPDATE accounts SET balance=balance+?,principal=COALESCE(principal,0)+?,last_payment_epoch=?,last_payment=CURRENT_TIMESTAMP WHERE account_number=? AND balance<=?',(credit,credit,now,dst[3],MAX_UNITS-credit))
+                native_credit = native_amount(credit)
+                changed = conn.execute('UPDATE accounts SET balance=balance+?,principal=COALESCE(principal,0)+?,last_payment_epoch=?,last_payment=CURRENT_TIMESTAMP WHERE account_number=? AND balance<=?',(native_credit,native_credit,now,dst[3],(2**53-1)-native_credit))
+            elif dst[0]=='users' and dst[1]=='cash':
+                native_credit = native_amount(credit)
+                changed = conn.execute(
+                    'UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?',
+                    (native_credit,dst[3],(2**53-1)-native_credit),
+                )
             else:
                 changed = conn.execute(f'UPDATE {dst[0]} SET {dst[1]}={dst[1]}+? WHERE {dst[2]}=? AND {dst[1]}<=?',(credit,dst[3],MAX_UNITS-credit))
             if changed.rowcount!=1:
@@ -294,6 +349,10 @@ class CurrencyExchangeManager:
                 raise ValueError('국고 잔액 한도를 초과했습니다.')
             destination_label = '국고' if dst[4] == TREASURY_USER_ID else recipient
             sources_label = ', '.join(debited_sources)
-            return (f'✅ 송금 {display_units(units)} {src[5]} → '
+            basis_label = (
+                f'환전 기준 {display_units(requested_units)} {dst[5]} · '
+                if target_basis else ''
+            )
+            return (f'✅ {basis_label}송금 {display_units(units)} {src[5]} → '
                     f'{display_units(output)} {dst[5]} · 받는 곳 {destination_label} · '
                     f'출금 {sources_label} · 환전 수수료 {fee:,} NWX')

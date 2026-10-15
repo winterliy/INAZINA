@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from datetime import datetime
 from decimal import Decimal
+from database.user_db import TREASURY_USER_ID
 from functions.interaction_reliability import (
     retry_discord_request,
     send_interaction_notice,
@@ -719,8 +720,20 @@ class AssetAccountsView(discord.ui.View):
 
 class InfoPanelView(discord.ui.View):
     PAGE_SIZE = 20
+    RANKINGS = {
+        'rank_turnover': 'turnover',
+        'rank_volume': 'volume',
+        'rank_gainers': 'gainers',
+        'rank_losers': 'losers',
+    }
+    ASSET_RANKING = 'asset_ranking'
     CATEGORIES = (
         ("main", "메인"),
+        ("rank_turnover", "실시간차트: 거래대금"),
+        ("rank_volume", "실시간차트: 거래량"),
+        ("rank_gainers", "실시간차트: 급상승"),
+        ("rank_losers", "실시간차트: 급하락"),
+        (ASSET_RANKING, "전체 자산 순위"),
         ("indices", "거래소 지수"),
         ("rates", "기준·시장금리 · 법정최고이자"),
         ("stocks", "주식"),
@@ -848,8 +861,7 @@ class InfoPanelView(discord.ui.View):
                     + (f" · 그래프 `{r['asset_code']}`" if r['asset_code'] else '')
                     for r in CurrencyExchangeManager(self.bot.db).rates() if r['code'] != 'NWX']
         if category == 'indices':
-            return [f"• **{row['exchange_id']} 거래소 지수** · **{float(row['index_value']):,.2f} pt**\n"
-                    f"  ID / 그래프 종목: `{EXCHANGE_INDEX_PREFIX}{row['exchange_id']}`"
+            return [f"• **{row['exchange_id']} 거래소 지수** · **{float(row['index_value']):,.2f} pt**"
                     for row in self.bot.market_mgr.get_exchange_indices()]
         if category == 'rates':
             countries = self.bot.db.currency.execute(
@@ -1050,19 +1062,33 @@ class InfoPanelView(discord.ui.View):
         labels = dict(self.CATEGORIES)
         if self.category == "main":
             stocks, investments = self._market_groups()
-            groups = [(label,self._category_lines(category,(stocks,investments)))
-                      for category,label in self.CATEGORIES if category!='main']
+            groups = []
+            for category, label in self.CATEGORIES:
+                if category == 'main':
+                    continue
+                if category in self.RANKINGS:
+                    value = '최대 100위 · 10개씩'
+                elif category == self.ASSET_RANKING:
+                    value = '20위 · 5명씩'
+                else:
+                    value = f'{len(self._category_lines(category, (stocks, investments))):,}개'
+                groups.append((label, value))
             embed = discord.Embed(
                 title="ℹ️ 메인",
                 description="카테고리를 선택하면 해당 종목 목록과 코드를 확인할 수 있습니다.",
                 color=discord.Color.blue(),
             )
-            for title, lines in groups:
-                embed.add_field(name=title,value=f'{len(lines):,}개',inline=True)
+            for title, value in groups:
+                embed.add_field(name=title, value=value, inline=True)
             self.previous_button.disabled = True
             self.next_button.disabled = True
             embed.set_footer(text="항목별 전체 목록은 선택 메뉴에서 확인하세요.")
             return embed
+
+        if self.category in self.RANKINGS:
+            return self._ranking_embed()
+        if self.category == self.ASSET_RANKING:
+            return self._asset_ranking_embed()
 
         lines = self._category_lines(self.category)
         page_size = (5 if self.category == 'els' else 10 if self.category == 'stocks'
@@ -1084,6 +1110,119 @@ class InfoPanelView(discord.ui.View):
         self.next_button.disabled = self.page >= total_pages - 1
         return embed
 
+    def _ranking_embed(self):
+        now = int(time.time())
+        metric = self.RANKINGS[self.category]
+        rows = self.bot.market_mgr.get_realtime_rankings(metric, self.user_id, now=now)
+        page_size = 10
+        pages = max(1, (len(rows) + page_size - 1) // page_size)
+        self.page = min(max(0, self.page), pages - 1)
+        start = self.page * page_size
+        notes = {
+            'turnover': '오늘 누적 체결대금 · 내 기본화폐 환산 기준',
+            'volume': '오늘 누적 체결 수량 기준',
+            'gainers': '오늘 첫 가격 기록 대비 상승률 기준',
+            'losers': '오늘 첫 가격 기록 대비 하락률 기준',
+        }
+        embed = discord.Embed(
+            title=f'📊 {dict(self.CATEGORIES)[self.category]}',
+            description=f"**{notes[metric]}**\n한국시간 00:00부터 집계 · 갱신 <t:{now}:T>",
+            color=discord.Color.blue(),
+        )
+
+        def money(value, places):
+            if hasattr(value, 'numerator'):
+                value = Decimal(value.numerator) / Decimal(value.denominator)
+            return f'{value:,.{places}f}'
+
+        for rank, row in enumerate(rows[start:start + page_size], start + 1):
+            medal = {1: '🥇', 2: '🥈', 3: '🥉'}.get(rank, '▪️')
+            value = (
+                f"`{row['code'][:100]}` · 현재가 "
+                f"**{money(row['price'], row['decimal_places'])} {row['quote_currency']}**\n"
+            )
+            if metric == 'turnover':
+                value += (
+                    f"💰 거래대금 **{money(row['turnover'], row['home_decimal_places'])} "
+                    f"{row['home_currency']}**"
+                )
+            elif metric == 'volume':
+                value += f"📦 거래량 **{row['volume']:,}**"
+            else:
+                value += (
+                    f"{'🔺' if metric == 'gainers' else '🔻'} 등락률 "
+                    f"**{float(row['change_percent']):+.2f}%**"
+                )
+            embed.add_field(
+                name=f"{medal} {rank}위 · {row['name']}"[:256],
+                value=value[:1024],
+                inline=False,
+            )
+        if not rows:
+            embed.description += '\n\n현재 조건에 해당하는 종목이 없습니다.'
+        span = f'{start + 1}–{min(start + page_size, len(rows))}위 · ' if rows else ''
+        embed.set_footer(
+            text=f'{span}{self.page + 1}/{pages} 페이지 · 최대 100위 · 페이지 이동·새로고침 시 갱신'
+        )
+        self.previous_button.disabled = self.page == 0
+        self.next_button.disabled = self.page >= pages - 1
+        return embed
+
+    def _asset_ranking_embed(self):
+        users = self.bot.db.users.execute(
+            "SELECT user_id,nickname FROM users "
+            "WHERE status='active' AND user_id<>? ORDER BY user_id",
+            (TREASURY_USER_ID,),
+        )
+        ranked = []
+        for user in users:
+            info = self.bot.user_mgr.get_total_assets(str(user['user_id']))
+            ranked.append({
+                'user_id': str(user['user_id']),
+                'nickname': str(user['nickname'] or user['user_id']),
+                'grand_total': int(info['grand_total']),
+                'loan_total': int(info['loan_total']),
+                'net_worth': int(info['net_worth']),
+            })
+        ranked.sort(key=lambda row: (-row['grand_total'], row['user_id']))
+        ranked = ranked[:20]
+        page_size = 5
+        pages = max(1, (len(ranked) + page_size - 1) // page_size)
+        self.page = min(max(0, self.page), pages - 1)
+        start = self.page * page_size
+        embed = discord.Embed(
+            title='🏆 전체 자산 순위',
+            description='총자산 기준 상위 20명입니다.',
+            color=discord.Color.gold(),
+        )
+        for rank, row in enumerate(ranked[start:start + page_size], start + 1):
+            medal = {1: '🥇', 2: '🥈', 3: '🥉'}.get(rank, '▪️')
+            embed.add_field(
+                name=f"{medal} {rank}위 · {row['nickname']}"[:256],
+                value=(
+                    f"총자산 **{row['grand_total']:,} NWX** · "
+                    f"대출 {row['loan_total']:,} NWX · 순자산 {row['net_worth']:,} NWX"
+                ),
+                inline=False,
+            )
+        if not ranked:
+            embed.description += '\n\n등록된 시민이 없습니다.'
+        span = f'{start + 1}–{min(start + page_size, len(ranked))}위 · ' if ranked else ''
+        embed.set_footer(text=f'{span}{self.page + 1}/{pages} 페이지 · 최대 20위 · 5명씩')
+        self.previous_button.disabled = self.page == 0
+        self.next_button.disabled = self.page >= pages - 1
+        return embed
+
+    async def _edit_panel(self, interaction):
+        if self.category in self.RANKINGS or self.category == self.ASSET_RANKING:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+            embed = await asyncio.to_thread(self.build_embed)
+            await interaction.edit_original_response(embed=embed, view=self)
+        else:
+            embed = await asyncio.to_thread(self.build_embed)
+            await interaction.response.edit_message(embed=embed, view=self)
+
     async def select_category(self, interaction: discord.Interaction):
         self.category = self.category_select.values[0]
         self.page = 0
@@ -1093,8 +1232,7 @@ class InfoPanelView(discord.ui.View):
             await asyncio.to_thread(
                 self.bot.interest_mgr.process_user_interests, self.user_id
             )
-        embed = await asyncio.to_thread(self.build_embed)
-        await interaction.response.edit_message(embed=embed, view=self)
+        await self._edit_panel(interaction)
 
     @discord.ui.button(label="◀ 이전", style=discord.ButtonStyle.secondary, row=1)
     async def previous_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1103,8 +1241,7 @@ class InfoPanelView(discord.ui.View):
             await asyncio.to_thread(
                 self.bot.interest_mgr.process_user_interests, self.user_id
             )
-        embed = await asyncio.to_thread(self.build_embed)
-        await interaction.response.edit_message(embed=embed, view=self)
+        await self._edit_panel(interaction)
 
     @discord.ui.button(label="다음 ▶", style=discord.ButtonStyle.secondary, row=1)
     async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1113,8 +1250,11 @@ class InfoPanelView(discord.ui.View):
             await asyncio.to_thread(
                 self.bot.interest_mgr.process_user_interests, self.user_id
             )
-        embed = await asyncio.to_thread(self.build_embed)
-        await interaction.response.edit_message(embed=embed, view=self)
+        await self._edit_panel(interaction)
+
+    @discord.ui.button(label="새로고침", style=discord.ButtonStyle.secondary, row=1)
+    async def refresh_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._edit_panel(interaction)
 
     @discord.ui.button(label="계좌 개설", style=discord.ButtonStyle.success, row=2)
     async def open_account_button(self, interaction: discord.Interaction, button: discord.ui.Button):

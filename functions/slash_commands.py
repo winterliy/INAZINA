@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import discord
 from discord import app_commands
 import io
@@ -10,7 +11,6 @@ from functions.admin_access import BOOTSTRAP_ADMIN_IDS, resolve_user_role
 from functions.interaction_reliability import retry_discord_request
 from functions.shared_actions import execute_shared_action
 from functions.discord_views import (
-    AllAssetsView,
     AccountCloseView,
     AccountOpenView,
     AccountProductOpenView,
@@ -42,14 +42,12 @@ class SlashCommandRegistry:
     def register(self):
         definitions = (
             ("등록", "이용 안내를 확인하고 Inazina 봇에 등록합니다", self.self_register),
-            ("서버등록", "이 서버를 INAZINA 연방국가에 편입합니다", self.register_server),
-            ("서버탈퇴", "이 서버의 INAZINA 연방국가 편입을 해제합니다", self.leave_server),
+            ("서버등록", "이 서버를 INAZINA 시스템에 등록합니다.", self.register_server),
+            ("서버탈퇴", "이 서버를 INAZINA 시스템에 등록해제합니다.", self.leave_server),
             ("도움말", "Inazina 명령어 도움말", self.help),
             ("내지갑", "내 국적·현금·일반/외환통장·투자자산·대출을 확인합니다", self.assets),
-            ("회생신청", "현재 자산 현황과 함께 관리자에게 회생을 신청합니다", self.apply_rehabilitation),
-            ("파산신청", "현재 자산 현황과 함께 관리자에게 파산을 신청합니다", self.apply_bankruptcy),
-            ("전체자산확인", "모든 시민의 자산 현황을 확인합니다", self.all_assets),
-            ("송금", "지갑·일반통장·외환통장 사이에서 송금·환전합니다", self.transfer),
+            ("파산", "현재 자산 현황과 함께 관리자에게 파산을 신청합니다", self.apply_bankruptcy),
+            ("송금", "송금하거나 내 외환통장으로 보내 환전합니다", self.transfer),
             ("도박", "NWX를 걸고 도박합니다", self.gamble),
             ("복권구매", "주간 6/45 복권을 구매합니다", self.lottery_buy),
             ("내복권", "내 복권 번호와 당첨·자동 입금 결과를 확인합니다", self.lottery_tickets),
@@ -57,24 +55,20 @@ class SlashCommandRegistry:
             ("복권규칙", "현재 회차의 가격·마감·추첨·상금 배분을 확인합니다", self.lottery_rules),
             ("옵션체인", "거래 가능한 콜·풋 옵션과 참고 프리미엄을 확인합니다", self.option_chain),
             ("옵션작성", "담보를 맡기고 주식 옵션 매도 호가를 작성합니다", self.option_write),
-            ("기준금리", "국가별 기준금리를 확인합니다", self.base_rate),
             ("법정최고이자", "국가별 법정 최고 이율을 확인합니다", self.legal_max_rate),
-            ("환전", "NWX와 외환통장 또는 외환통장 사이에서 환전합니다", self.currency_exchange),
-            ("펀드가입", "일반·인덱스 펀드를 NAV 기준으로 가입합니다", self.subscribe_fund),
-            ("펀드환매", "보유 일반·인덱스 펀드를 NAV 기준으로 환매합니다", self.redeem_fund),
             ("선물증거금", "보유 주식 선물 포지션에 증거금을 추가합니다", self.future_margin),
-            ("매수", "주식·투자상품·국채·옵션을 지정가 매수합니다", self.buy),
-            ("매도", "보유 주식·투자상품·국채·옵션을 지정가 매도합니다", self.sell),
+            ("매수", "자산을 지정가 매수하거나 펀드를 NAV로 가입합니다", self.buy),
+            ("매도", "자산을 지정가 매도하거나 펀드를 NAV로 환매합니다", self.sell),
             ("호가", "자산의 매수·매도 대기 주문을 확인합니다", self.order_book_view),
             ("내주문", "나의 미체결 및 최근 체결 주문을 확인합니다", self.my_orders),
             ("계좌개설", "일반·외환통장 상품 코드를 입력하여 계좌를 개설합니다", self.open_account),
             ("계좌해지", "보유 통장을 선택해 비밀번호 확인 후 해지합니다", self.close_account),
-            ("대출", "대출 상품 ID를 입력해 신청합니다", self.apply_loan),
+            ("대출신청", "대출 상품 ID를 입력해 신청합니다", self.apply_loan),
             ("대출상환", "상환할 대출과 상환액을 선택합니다", self.repay_loan),
             ("대출연장", "보유 대출 ID의 신용 조건을 확인하여 만기를 연장합니다", self.extend_loan),
-            ("검색", "주식·투자·외환·저축·대출 상품을 검색합니다", self.search),
+            ("검색", "상품·금리·실시간차트·자산순위를 조회합니다", self.search),
             ("그래프", "자산·거래소지수·기준금리·법정최고이자의 변동 그래프를 확인합니다", self.movement),
-            ("주총", "회사 주주총회를 소집하고 주주에게 참석 여부를 묻습니다", self.shareholder_meeting),
+            ("주총소집", "회사 주주총회를 소집하고 주주에게 참석 여부를 묻습니다", self.shareholder_meeting),
         )
         for name, description, callback in definitions:
             command = app_commands.Command(name=name, description=description, callback=callback)
@@ -83,11 +77,8 @@ class SlashCommandRegistry:
 
         self.commands["송금"].autocomplete("수신자")(self.recipient_autocomplete)
         self.commands["송금"].autocomplete("출금계좌")(self.source_account_autocomplete)
-        self.commands["주총"].autocomplete("주식코드")(self.company_autocomplete)
-        for command,argument in (('환전','출금통화'),('환전','입금통화')):
-            self.commands[command].autocomplete(argument)(self.currency_autocomplete)
-        for command in ('기준금리','법정최고이자'):
-            self.commands[command].autocomplete('국가')(self.nationality_autocomplete)
+        self.commands["주총소집"].autocomplete("주식코드")(self.company_autocomplete)
+        self.commands['법정최고이자'].autocomplete('국가')(self.nationality_autocomplete)
         self.commands['서버등록'].autocomplete('국가')(self.nationality_autocomplete)
 
     async def nationality_autocomplete(self, interaction, current):
@@ -429,7 +420,10 @@ class SlashCommandRegistry:
             inline=True,
         )
         # Freeze the complete financial summary before adding category details.
-        summary = discord.Embed.from_dict(embed.to_dict())
+        # discord.Embed.from_dict keeps the field payload by reference.  Take a
+        # deep snapshot so the detail fields assembled below cannot leak back
+        # into the main wallet summary.
+        summary = discord.Embed.from_dict(copy.deepcopy(embed.to_dict()))
         account_lines = [
             f"• {item['product_name']} ({item['number']}): {item['balance']:,.0f} NWX"
             + (f" · 금융기관 정리 완료 · 보험금 {item['insurance_paid']:,} NWX"
@@ -589,17 +583,11 @@ class SlashCommandRegistry:
             result = "⚠️ DM을 받을 관리자를 찾지 못했습니다."
         await self._reply(interaction, content=result)
 
-    async def all_assets(self, interaction: discord.Interaction):
-        await self._prepare(interaction, defer=True)
-        users = self.bot.db.users.execute(
-            "SELECT user_id, nickname FROM users WHERE status = 'active' ORDER BY nickname"
-        )
-        if not users:
-            return await self._reply(interaction, content="등록된 시민이 없습니다.")
-        view = AllAssetsView(self.bot, interaction.user.id, users)
-        embed = await asyncio.to_thread(view.build_embed)
-        await self._reply(interaction, embed=embed, view=view)
-
+    @app_commands.describe(
+        수신자='사용자 ID 또는 수신 계좌(환전은 내 외환통장 선택)',
+        금액='내 외환통장은 입금될 외화 기준, 나머지는 출금 통화 기준',
+        출금계좌='비우면 내 기본화폐 지갑에서 출금',
+    )
     async def transfer(
         self,
         interaction: discord.Interaction,
@@ -692,27 +680,55 @@ class SlashCommandRegistry:
 
 
 
+    @app_commands.describe(지정가='펀드는 비우고, 나머지 자산은 1 이상의 지정가를 입력')
     async def buy(
         self,
         interaction: discord.Interaction,
         자산: str,
         수량: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
-        지정가: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
+        지정가: app_commands.Range[int, 1, MAX_DISCORD_INTEGER] | None = None,
     ):
         user_id, _user_data, _role = await self._prepare(interaction)
+        asset = self.bot.market_mgr.get_asset_info(자산.strip())
+        if asset and asset.get("type") in FUND_TYPES:
+            success, message = await asyncio.to_thread(
+                execute_shared_action, self.bot, user_id, "fund_subscribe", 자산, 수량
+            )
+            return await self._reply(
+                interaction, embed=self._result_embed("📈 펀드 매수", message, success)
+            )
+        if 지정가 is None:
+            return await self._reply(
+                interaction,
+                content="❌ 펀드가 아닌 자산은 지정가를 입력해주세요.",
+            )
         success, message = await asyncio.to_thread(
             execute_shared_action, self.bot, user_id, "buy", 자산, 수량, 지정가
         )
         await self._reply(interaction, embed=self._result_embed("📈 지정가 매수", message, success))
 
+    @app_commands.describe(지정가='펀드는 비우고, 나머지 자산은 1 이상의 지정가를 입력')
     async def sell(
         self,
         interaction: discord.Interaction,
         자산: str,
         수량: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
-        지정가: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
+        지정가: app_commands.Range[int, 1, MAX_DISCORD_INTEGER] | None = None,
     ):
         user_id, _user_data, _role = await self._prepare(interaction)
+        asset = self.bot.market_mgr.get_asset_info(자산.strip())
+        if asset and asset.get("type") in FUND_TYPES:
+            success, message = await asyncio.to_thread(
+                execute_shared_action, self.bot, user_id, "fund_redeem", 자산, 수량
+            )
+            return await self._reply(
+                interaction, embed=self._result_embed("📉 펀드 매도", message, success)
+            )
+        if 지정가 is None:
+            return await self._reply(
+                interaction,
+                content="❌ 펀드가 아닌 자산은 지정가를 입력해주세요.",
+            )
         success, message = await asyncio.to_thread(
             execute_shared_action, self.bot, user_id, "sell", 자산, 수량, 지정가
         )
@@ -725,7 +741,7 @@ class SlashCommandRegistry:
             return await self._reply(interaction, content="❌ 자산 코드를 찾을 수 없습니다.")
         book = self.bot.order_book.get_order_book(자산)
         if asset["type"] in FUND_TYPES:
-            return await self._reply(interaction, content="일반·인덱스 펀드는 `/펀드가입`·`/펀드환매`에서 NAV 기준으로 거래합니다.")
+            return await self._reply(interaction, content="일반·인덱스 펀드는 `/매수`·`/매도`에서 지정가 없이 NAV 기준으로 거래합니다.")
         if asset["type"] == "stock_future":
             gross = self.bot.db.assets.execute_one("SELECT COALESCE(SUM(ABS(quantity)), 0) AS quantity "
                 "FROM futures_positions WHERE product_code = ?", (자산,))["quantity"]
@@ -824,6 +840,7 @@ class SlashCommandRegistry:
 
     async def recipient_autocomplete(self, interaction: discord.Interaction, current: str):
         current = current.strip().casefold()
+        requester_id = str(interaction.user.id)
         try:
             citizens = self.bot.db.users.execute(
                 "SELECT user_id, nickname FROM users WHERE status = 'active' "
@@ -867,15 +884,27 @@ class SlashCommandRegistry:
                 ))
         for row in foreign_accounts:
             number,code,nickname = str(row['account_number']),str(row['currency_code']),str(row['nickname'])
+            own = str(row['user_id']) == requester_id
             if not current or any(current in value.casefold() for value in (number,code,nickname)):
                 candidates.append((number.casefold().startswith(current) if current else False,
-                    app_commands.Choice(name=f"🌐 {nickname} · {code} 외환통장 · {number}"[:100],value=number)))
+                    app_commands.Choice(
+                        name=(f"🌐 내 {code} 외환통장 · {number}" if own else
+                              f"🌐 {nickname} · {code} 외환통장 · {number}")[:100],
+                        value=number,
+                    )))
         candidates.sort(key=lambda item: not item[0])
         if not current:
             # Keep both recipient types discoverable in the initial autocomplete list.
             treasury = [item for item in candidates if item[1].name.startswith("🏛️")][:1]
             users = [item for item in candidates if item[1].name.startswith("👤")][:12]
-            currency_accounts = [item for item in candidates if item[1].name.startswith("🌐")][:5]
+            own_currency_accounts = [
+                item for item in candidates if item[1].name.startswith("🌐 내 ")
+            ][:10]
+            other_currency_accounts = [
+                item for item in candidates
+                if item[1].name.startswith("🌐") and item not in own_currency_accounts
+            ]
+            currency_accounts = (own_currency_accounts + other_currency_accounts)[:10]
             bank_accounts = [item for item in candidates if item[1].name.startswith("🏦")][:12-len(currency_accounts)]
             candidates = treasury + users + bank_accounts + currency_accounts
         return [item[1] for item in candidates[:25]]

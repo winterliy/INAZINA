@@ -1309,6 +1309,13 @@ class MarketManager:
                             for code, (price, shares) in members.items()
                         ],
                     )
+                    conn.execute(
+                        "INSERT INTO assets.market_exchange_index_history "
+                        "(exchange_id, index_value, recorded_epoch) VALUES (?, ?, ?) "
+                        "ON CONFLICT(exchange_id, recorded_epoch) DO UPDATE SET "
+                        "index_value = excluded.index_value",
+                        (exchange_id, index_value, int(now)),
+                    )
         except sqlite3.OperationalError as exc:
             if getattr(self._tick, "conn", None) is not None:
                 raise
@@ -1375,11 +1382,44 @@ class MarketManager:
         return {"exchange_id": exchange_id, "index_value": 1000.0, "updated_epoch": 0}
 
     def get_exchange_index_history(self, exchange_id, since_epoch):
-        return []
+        self._prepare_movement_history_read()
+        return self.db.assets.execute(
+            "SELECT recorded_epoch, index_value FROM market_exchange_index_history "
+            "WHERE exchange_id = ? AND recorded_epoch >= ? ORDER BY recorded_epoch",
+            (str(exchange_id), int(since_epoch)),
+        )
 
     def get_exchange_trade_history(self, exchange_id, since_epoch):
         """Aggregate traded volume for every listed asset on an exchange."""
-        return []
+        self._prepare_movement_history_read()
+        exchange_id = str(exchange_id)
+        codes = []
+        for database, query in (
+            (self.db.companies, "SELECT company_code AS code FROM company WHERE exchange_id = ?"),
+            (self.db.assets, "SELECT code FROM market_assets WHERE exchange_id = ?"),
+            (self.db.products, "SELECT product_code AS code FROM investment WHERE exchange_id = ?"),
+            (self.db.products, "SELECT product_code AS code FROM treasury_bond_products WHERE exchange_id = ?"),
+        ):
+            codes.extend(
+                str(row["code"])
+                for row in database.execute(query, (exchange_id,))
+                if row["code"]
+            )
+        codes = list(dict.fromkeys(codes))
+        totals = {}
+        for offset in range(0, len(codes), 400):
+            batch = codes[offset:offset + 400]
+            placeholders = ",".join("?" for _ in batch)
+            trades = self.db.assets.execute(
+                "SELECT recorded_epoch, SUM(quantity) AS quantity "
+                "FROM market_trade_history WHERE asset_code IN (" + placeholders + ") "
+                "AND recorded_epoch >= ? GROUP BY recorded_epoch ORDER BY recorded_epoch",
+                (*batch, int(since_epoch)),
+            )
+            for trade in trades:
+                epoch = int(trade["recorded_epoch"])
+                totals[epoch] = totals.get(epoch, 0) + float(trade["quantity"] or 0)
+        return [(epoch, totals[epoch]) for epoch in sorted(totals)]
 
     @staticmethod
     def is_exchange_index_code(code):
@@ -1453,3 +1493,107 @@ class MarketManager:
             asset for asset in self.get_market_assets(active_only=True)
             if str(asset["type"]).strip().casefold() in {"stock", "주식"}
         ]
+
+    def get_realtime_rankings(self, metric, user_id, limit=100, now=None):
+        """Rank today's fills and current quotes in one read-only snapshot."""
+        from fractions import Fraction
+        from managers.currency_manager import CurrencyManager
+
+        if metric not in {'turnover', 'volume', 'gainers', 'losers'}:
+            raise ValueError('지원하지 않는 시장 순위입니다.')
+        now = int(time.time() if now is None else now)
+        _, midnight = self.movement_history.day_boundary(now)
+        limit = min(100, max(0, int(limit)))
+        with self.db.readonly() as conn:
+            quotes = self._batch_quotes(conn, now)
+            metadata = {row['code']: dict(row) for row in conn.execute("""
+                WITH listings AS (
+                    SELECT code, name, quote_currency FROM market_assets
+                    UNION ALL SELECT company_code, name, quote_currency FROM company
+                    UNION ALL SELECT product_code, name, quote_currency FROM investment
+                    UNION ALL SELECT product_code, name, quote_currency FROM treasury_bond_products
+                )
+                SELECT * FROM listings
+                UNION ALL SELECT o.contract_code,
+                    COALESCE(l.name, o.underlying_code) || ' ' ||
+                    CASE o.option_type WHEN 'call' THEN '콜' ELSE '풋' END || ' ' || o.strike_price,
+                    COALESCE(l.quote_currency, 'NWX')
+                FROM option_contracts o LEFT JOIN listings l ON l.code=o.underlying_code
+                """)}
+            fills = {row['asset_code']: dict(row) for row in conn.execute("""
+                SELECT asset_code, SUM(quantity) AS volume,
+                    SUM(CAST(price AS REAL) * quantity) AS turnover
+                FROM market_trade_history WHERE recorded_epoch BETWEEN ? AND ?
+                GROUP BY asset_code""", (midnight, now))}
+            openings = {row['asset_code']: int(row['price']) for row in conn.execute("""
+                SELECT h.asset_code, h.price FROM market_price_history h
+                JOIN (SELECT asset_code, MIN(recorded_epoch) AS recorded_epoch
+                      FROM market_price_history WHERE recorded_epoch BETWEEN ? AND ?
+                      GROUP BY asset_code) opening
+                  ON h.asset_code=opening.asset_code AND h.recorded_epoch=opening.recorded_epoch
+                """, (midnight, now))}
+            places = {row['code']: int(row['decimal_places']) for row in conn.execute(
+                'SELECT code, decimal_places FROM currencies')}
+            home = CurrencyManager.home(conn, user_id)
+            rates = {}
+
+            def rate(currency):
+                if currency not in rates:
+                    rates[currency] = CurrencyManager.rate_fraction(conn, currency)
+                return rates[currency]
+
+            ranked = []
+            for code, asset in quotes.items():
+                if asset['status'] != 'active' or asset['type'] == 'els' or asset['price'] <= 0:
+                    continue
+                details = metadata.get(code)
+                if not details:
+                    continue
+                currency = details['quote_currency'] or 'NWX'
+                fill = fills.get(code, {})
+                volume = float(fill.get('volume', 0) or 0)
+                if volume.is_integer():
+                    volume = int(volume)
+                opening = openings.get(code, 0)
+                change = (
+                    Fraction((asset['price'] - opening) * 100, opening)
+                    if opening > 0 else None
+                )
+                if metric in {'turnover', 'volume'} and volume <= 0:
+                    continue
+                if metric == 'gainers' and (change is None or change <= 0):
+                    continue
+                if metric == 'losers' and (change is None or change >= 0):
+                    continue
+                turnover = Fraction(str(fill.get('turnover', 0)))
+                if asset['type'] == 'stock_future':
+                    turnover *= max(1, int(asset.get('contract_size') or 1))
+                if metric == 'turnover':
+                    try:
+                        turnover *= rate(currency) / rate(home)
+                    except ValueError:
+                        continue
+                ranked.append(dict(
+                    code=code,
+                    name=details['name'] or code,
+                    price=asset['price'],
+                    quote_currency=currency,
+                    decimal_places=places.get(currency, 0),
+                    home_currency=home,
+                    home_decimal_places=places.get(home, 0),
+                    volume=volume,
+                    turnover=turnover,
+                    change_percent=change,
+                ))
+        key = {
+            'turnover': 'turnover',
+            'volume': 'volume',
+            'gainers': 'change_percent',
+            'losers': 'change_percent',
+        }[metric]
+        return sorted(
+            ranked,
+            key=lambda row: (
+                row[key] if metric == 'losers' else -row[key], row['code']
+            ),
+        )[:limit]

@@ -105,6 +105,23 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertEqual((account['quote_currency'],account['balance']),('USD',10))
         self.assertEqual(self.db.users.get_user('us-user')['cash'],990)
 
+    def test_transfer_to_own_foreign_account_uses_destination_currency_amount(self):
+        manager = CurrencyExchangeManager(self.db)
+        number = manager.open_account('us-user', 'FX_EUR')
+        self.db.system.set_setting('currency_exchange_fee_percent', '0')
+
+        message = manager.transfer('us-user', number, '3')
+
+        self.assertIn('환전 기준 3 EUR', message)
+        self.assertIn('3.2 USD → 3 EUR', message)
+        self.assertAlmostEqual(self.db.users.get_user('us-user')['cash'], 996.8)
+        self.assertEqual(
+            self.db.accounts.execute_one(
+                'SELECT balance_units FROM accounts WHERE account_number=?', (number,)
+            )[0],
+            3 * SCALE,
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

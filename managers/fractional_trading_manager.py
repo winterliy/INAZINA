@@ -147,7 +147,7 @@ class FractionalTradingManager:
                 if not fractional_enabled(asset) or asset['status'] != 'active' or asset['price'] <= 0:
                     raise ValueError('현재 소수점 거래가 허용된 거래 중 상품이 아닙니다.')
                 if asset['type'] in {'mutual_fund', 'index_fund'}:
-                    raise ValueError('일반·인덱스 펀드는 /펀드가입·/펀드환매에서 거래해주세요.')
+                    raise ValueError('일반·인덱스 펀드는 /매수·/매도에서 지정가 없이 NAV로 거래해주세요.')
                 currency = asset.get('quote_currency') or 'NWX'
                 reserve, account = 0, None
                 if side == 'buy':
@@ -262,6 +262,12 @@ class FractionalTradingManager:
             self._reduce(conn,buyer,units,currency,now)
             qty = quantity_number(Fraction(units,QUANTITY_SCALE))
             self.book._apply_execution_price(conn,asset['code'],price,now)
+            conn.execute(
+                "INSERT INTO assets.market_trade_history "
+                "(asset_code, side, quantity, price, recorded_epoch) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (asset['code'], incoming['side'], qty, price, now),
+            )
             if source == 'company':
                 self.users._refresh_max_shareholder(conn,asset['code'])
             count += 1

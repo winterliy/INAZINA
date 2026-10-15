@@ -17,8 +17,6 @@ def rules_embed(round):
         '등수별 풀 배분 50/10/15/15/10%, 당첨 장수로 균등 분배합니다.\n'
         '무당첨·정수 나눗셈 잔액은 등수별로 이월합니다. 상금은 세금 공제 후 지갑에 자동 입금합니다.\n'
         '1등 확률 1 / 8,145,060 · 게임 NWX 복권입니다.'),color=discord.Color.gold())
-    embed.add_field(name='추첨 사전 약속 SHA-256',value=f"`{round['commitment']}`",inline=False)
-    embed.set_footer(text='OS 난수와 사전 약속 해시를 사용합니다. 운영자가 서버·비밀값을 관리하는 신뢰 한계가 있습니다.')
     return embed
 
 

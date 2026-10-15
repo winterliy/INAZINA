@@ -8,6 +8,7 @@ import discord
 import test_inazina as fixtures
 from functions.discord_views import InfoPanelView, LoanProductApplyView, LoanRequestModal, PriceMovementView
 from functions.indicator_chart import render_chart
+from functions.lottery_views import rules_embed
 from functions.slash_commands import SlashCommandRegistry
 from functions.technical_indicators import KST
 from functions.wallet_views import WalletCategoryView
@@ -16,6 +17,24 @@ from functions.wallet_views import WalletCategoryView
 class UserInterfaceRevisionTests(unittest.TestCase):
     setUp = fixtures.InazinaTests.setUp
     tearDown = fixtures.InazinaTests.tearDown
+
+    def test_lottery_rules_hide_draw_commitment(self):
+        embed = rules_embed({
+            'round_id': 1,
+            'close_epoch': 1,
+            'draw_epoch': 2,
+            'commitment': 'hidden',
+            'rules': {
+                'ticket_price': 1000,
+                'max_tickets': 100,
+                'prize_percent': 70,
+                'treasury_percent': 20,
+            },
+        })
+        text = str(embed.to_dict())
+        self.assertNotIn('사전 약속', text)
+        self.assertNotIn('SHA-256', text)
+        self.assertNotIn('hidden', text)
 
     def test_wallet_main_contains_only_financial_summary(self):
         summary = discord.Embed(description='국적: 낙원')
@@ -31,7 +50,7 @@ class UserInterfaceRevisionTests(unittest.TestCase):
     def test_loan_commands_require_plain_ids_and_amount_view_has_no_select(self):
         commands = []
         SlashCommandRegistry(SimpleNamespace(tree=SimpleNamespace(add_command=commands.append))).register()
-        for name in ('대출', '대출연장'):
+        for name in ('대출신청', '대출연장'):
             command = next(command for command in commands if command.name == name)
             self.assertEqual([(p.name, p.required, p.autocomplete, p.choices) for p in command.parameters], [('id', True, False, [])])
         self.db.products.register_liability('BORROW', '대출 상품', 3, 500000, 30, 86400, 0, '국가')
@@ -45,7 +64,7 @@ class UserInterfaceRevisionTests(unittest.TestCase):
         self.assertEqual(sent['view'].product_code, 'BORROW')
         outsider = SimpleNamespace(user=SimpleNamespace(id='other'), response=SimpleNamespace(send_message=AsyncMock()))
         self.assertFalse(asyncio.run(sent['view'].interaction_check(outsider)))
-        self.assertEqual(len(LoanRequestModal(self.bot, 'citizen').children), 2)
+        self.assertEqual(len(LoanRequestModal(self.bot, 'citizen').children), 5)
 
     def test_loan_extension_passes_personal_loan_id_and_returns_result(self):
         registry = SlashCommandRegistry(self.bot)
@@ -56,12 +75,36 @@ class UserInterfaceRevisionTests(unittest.TestCase):
         extend.assert_called_once_with('citizen', '13')
         self.assertIn('연장됨', registry._reply.call_args.kwargs['embed'].description)
 
+    def test_buy_and_sell_route_nav_funds_without_a_limit_price(self):
+        registry = SlashCommandRegistry(self.bot)
+        registry._prepare = AsyncMock(return_value=('citizen', None, 'user'))
+        registry._reply = AsyncMock()
+        interaction = SimpleNamespace()
+        with patch.object(
+            self.bot.market_mgr,
+            'get_asset_info',
+            return_value={'type': 'index_fund'},
+        ), patch(
+            'functions.slash_commands.execute_shared_action',
+            return_value=(True, '✅ 처리됨'),
+        ) as execute:
+            asyncio.run(registry.buy(interaction, 'IF', 3))
+            execute.assert_called_once_with(
+                self.bot, 'citizen', 'fund_subscribe', 'IF', 3
+            )
+            execute.reset_mock()
+            asyncio.run(registry.sell(interaction, 'IF', 2))
+            execute.assert_called_once_with(
+                self.bot, 'citizen', 'fund_redeem', 'IF', 2
+            )
+
     def test_search_index_and_rates_supply_graph_codes(self):
         self.db.companies.create_company('CO', '법인', '산업', 10000, 100, 100, 'citizen', 'EX')
         panel = InfoPanelView(self.bot, 'citizen')
         self.assertTrue({'indices', 'rates'}.issubset(dict(panel.CATEGORIES)))
         index_lines = '\n'.join(panel._category_lines('indices'))
-        self.assertIn('__exchange_index__:EX', index_lines)
+        self.assertNotIn('__exchange_index__:EX', index_lines)
+        self.assertNotIn('ID / 그래프 종목', index_lines)
         self.assertIn('1,000.00 pt', index_lines)
         rate_lines = '\n'.join(panel._category_lines('rates'))
         self.assertIn('낙원', rate_lines)

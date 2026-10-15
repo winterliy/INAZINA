@@ -12,6 +12,8 @@ class MovementHistoryManager:
     KST = timezone(timedelta(hours=9))
     HISTORY_TABLES = (
         "market_price_history",
+        "market_trade_history",
+        "market_exchange_index_history",
     )
 
     def __init__(self, db):

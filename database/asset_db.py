@@ -144,6 +144,20 @@ class AssetDB(DBManager):
             "ON market_price_history(recorded_epoch)"
         )
         self.enforce_integer_money("market_price_history", ("price",), "history_id")
+        self.execute(
+            """CREATE TABLE IF NOT EXISTS market_trade_history (
+                trade_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                asset_code TEXT NOT NULL,
+                side TEXT NOT NULL CHECK(side IN ('buy', 'sell')),
+                quantity REAL NOT NULL CHECK(quantity > 0),
+                price REAL NOT NULL CHECK(price > 0),
+                recorded_epoch INTEGER NOT NULL
+            )"""
+        )
+        self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_market_trade_history_code_time "
+            "ON market_trade_history(asset_code, recorded_epoch)"
+        )
         # The former latest-trade cache was never updated by order execution.
         # Option marks use an explicit administrator override or the model.
         self.execute("DROP TABLE IF EXISTS market_last_trade")
@@ -169,6 +183,19 @@ class AssetDB(DBManager):
                 total_shares INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY(exchange_id, company_code)
             )"""
+        )
+        self.execute(
+            """CREATE TABLE IF NOT EXISTS market_exchange_index_history (
+                history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                exchange_id TEXT NOT NULL,
+                index_value REAL NOT NULL,
+                recorded_epoch INTEGER NOT NULL,
+                UNIQUE(exchange_id, recorded_epoch)
+            )"""
+        )
+        self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_exchange_index_history_time "
+            "ON market_exchange_index_history(exchange_id, recorded_epoch)"
         )
         self.execute(
             """CREATE TABLE IF NOT EXISTS leveraged_etf_state (
@@ -367,7 +394,11 @@ class AssetDB(DBManager):
         return self.execute_one("SELECT * FROM market_assets WHERE code = ?", (code,))
 
     def get_trade_history(self, code, since_epoch):
-        return []
+        return self.execute(
+            "SELECT recorded_epoch, side, quantity, price FROM market_trade_history "
+            "WHERE asset_code = ? AND recorded_epoch >= ? ORDER BY recorded_epoch, trade_id",
+            (str(code), int(since_epoch)),
+        )
 
     def update_price(self, code, new_price):
         self.execute("UPDATE market_assets SET price = ? WHERE code = ?", (new_price, code))

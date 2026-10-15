@@ -38,7 +38,9 @@ class SearchRankingTests(unittest.TestCase):
         _, midnight = self.bot.market_mgr.movement_history.day_boundary(now)
         with self.db.atomic() as conn:
             conn.execute("INSERT INTO currencies(code,name,reference_rate,decimal_places) VALUES ('USD','달러','1500',2)")
-            conn.execute("INSERT INTO country_currencies VALUES ('미국','USD')")
+            conn.execute(
+                "INSERT INTO country_currencies(nationality,currency_code) VALUES ('미국','USD')"
+            )
         for code, price, currency in [('A',110,'NWX'), ('B',120,'USD'), ('C',85,'NWX'), ('D',80,'NWX'), ('FLAT',100,'NWX'), ('OFF',100000,'NWX')]:
             self.listing(code, price, currency)
             self.db.assets.execute('INSERT INTO market_price_history(asset_code,price,recorded_epoch) VALUES (?,100,?)', (code, midnight))
@@ -63,6 +65,18 @@ class SearchRankingTests(unittest.TestCase):
         self.db.assets.execute("INSERT INTO market_quote_overrides(asset_code,price,updated_epoch,source) VALUES ('A',130,?,'admin')", (now,))
         self.assertEqual(rank('gainers')[0]['code'], 'A')
         self.assertEqual(rank('gainers')[0]['change_percent'], 30)
+
+    def test_fractional_volume_is_not_truncated(self):
+        now = int(time.time())
+        self.listing('FRACTION', 100)
+        self.history('FRACTION', 0.2, 100, now)
+
+        rows = self.bot.market_mgr.get_realtime_rankings(
+            'volume', 'citizen', now=now
+        )
+
+        self.assertEqual(rows[0]['code'], 'FRACTION')
+        self.assertEqual(rows[0]['volume'], 0.2)
 
     def test_categories_top100_pages_and_interactive_refresh(self):
         now = int(time.time())
@@ -140,3 +154,24 @@ class SearchRankingTests(unittest.TestCase):
                 release.set()
             future.result(timeout=2)
         self.assertEqual(self.bot.market_mgr.get_realtime_rankings('gainers','citizen',now=now)[0]['code'], 'R000')
+
+    def test_asset_ranking_is_top20_with_five_people_per_page(self):
+        for index in range(23):
+            self.db.users.create_user(f'rank-{index:02}', f'시민{index:02}', '미국', 0)
+        panel = InfoPanelView(self.bot, 'citizen')
+        panel.category = panel.ASSET_RANKING
+
+        def assets(user_id):
+            score = int(str(user_id).split('-')[-1]) if str(user_id).startswith('rank-') else 0
+            return {'grand_total': score * 100, 'loan_total': score, 'net_worth': score * 99}
+
+        with patch.object(self.bot.user_mgr, 'get_total_assets', side_effect=assets):
+            first = panel.build_embed()
+            self.assertEqual(len(first.fields), 5)
+            self.assertIn('시민22', first.fields[0].name)
+            self.assertIn('1–5위', first.footer.text)
+            panel.page = 99
+            last = panel.build_embed()
+            self.assertEqual(panel.page, 3)
+            self.assertEqual(len(last.fields), 5)
+            self.assertIn('16–20위', last.footer.text)
