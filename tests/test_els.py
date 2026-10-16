@@ -56,6 +56,49 @@ class ELSTests(unittest.TestCase):
             + self.db.products.execute_one('SELECT SUM(locked_amount) FROM els_products')[0]
             + self.db.products.execute_one('SELECT COALESCE(SUM(balance),0) FROM issuer_cash_accounts')[0])
 
+    def test_foreign_citizen_subscribes_and_is_paid_through_fx_account(self):
+        from managers.currency_manager import CurrencyManager, SCALE
+        self.db.currency.execute("INSERT INTO currencies(code,name,reference_rate) VALUES ('AAA','A국 화폐','1')")
+        self.db.currency.execute("INSERT INTO country_currencies(nationality,currency_code) VALUES ('A국','AAA')")
+        with self.db.atomic() as conn:
+            treasury = CurrencyManager.treasury_id(conn, 'A국')
+            conn.execute("UPDATE users SET cash=10000000 WHERE user_id=?", (treasury,))
+            conn.execute("INSERT INTO accounts(account_number,user_id,product_code,balance,last_payment_epoch,principal,account_type,quote_currency) "
+                         "VALUES ('FXAAA','citizen',NULL,0,0,0,'currency_saving','AAA')")
+            conn.execute("UPDATE accounts SET balance_units=? WHERE account_number='FXAAA'", (50000 * SCALE,))
+        with patch('managers.els_manager.time.time', return_value=1000):
+            self.manager.create('admin', 'ELSA', {**self.fields, 'issuer_code': treasury})
+        self.assertEqual(self.manager.get_details('ELSA')['quote_currency'], 'AAA')
+        cash_before = self.db.users.get_user('citizen')['cash']
+        ok, message = self.manager.subscribe('citizen', 'ELSA', 2, now=1001)
+        self.assertTrue(ok, message)
+        self.assertIn('AAA', message)
+        balance = lambda: self.db.accounts.execute_one("SELECT balance_units FROM accounts WHERE account_number='FXAAA'")[0]
+        self.assertEqual(balance(), 30000 * SCALE)
+        self.assertEqual(self.db.users.get_user('citizen')['cash'], cash_before)
+        with self.db.atomic() as conn:
+            conn.execute("UPDATE company SET share_price=100 WHERE company_code='CO'")
+            self.manager.observe(conn, self.issue_epoch)
+            conn.execute("UPDATE company SET share_price=90 WHERE company_code='CO'")
+            self.manager.observe(conn, self.issue_epoch + 30 * DAY)
+        self.manager.process_due(self.issue_epoch + 30 * DAY)
+        self.assertEqual(self.manager.get_details('ELSA')['state'], 'redeemed')
+        self.assertGreater(balance(), 50000 * SCALE)
+        self.assertEqual(self.db.users.get_user('citizen')['cash'], cash_before)
+
+    def test_foreign_els_needs_an_fx_account(self):
+        self.db.currency.execute("INSERT INTO currencies(code,name,reference_rate) VALUES ('AAA','A국 화폐','1')")
+        self.db.currency.execute("INSERT INTO country_currencies(nationality,currency_code) VALUES ('A국','AAA')")
+        from managers.currency_manager import CurrencyManager
+        with self.db.atomic() as conn:
+            treasury = CurrencyManager.treasury_id(conn, 'A국')
+            conn.execute("UPDATE users SET cash=10000000 WHERE user_id=?", (treasury,))
+        with patch('managers.els_manager.time.time', return_value=1000):
+            self.manager.create('admin', 'ELSA', {**self.fields, 'issuer_code': treasury})
+        ok, message = self.manager.subscribe('citizen', 'ELSA', 2, now=1001)
+        self.assertFalse(ok)
+        self.assertIn('외환통장', message)
+
     def test_early_redemption_threshold_tax_conservation_and_idempotency(self):
         total = self.total_money()
         self.subscribe_and_issue()

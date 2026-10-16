@@ -1,4 +1,6 @@
-"""Fully funded NWX step-down ELS for the Inazina game economy."""
+"""Fully funded step-down ELS for the Inazina game economy.
+
+A treasury-issued ELS is denominated in that treasury's currency; a company-issued one in NWX."""
 
 import json
 import math
@@ -10,6 +12,7 @@ from functions.admin_access import resolve_user_role
 from functions.money import parse_money, round_money
 from database.user_db import TREASURY_USER_ID
 from managers.currency_manager import CurrencyManager, SCALE
+from managers.currency_exchange_manager import CurrencyExchangeManager
 from managers.market_session_manager import MarketSessionManager
 
 DAY = 86400
@@ -111,8 +114,6 @@ class ELSManager:
         exchange = str(fields.get("exchange_id", "")).strip()
         if not name or not exchange:
             raise ValueError("상품명과 거래소 ID를 입력해주세요.")
-        if str(fields.get("quote_currency", "NWX")).upper() != "NWX":
-            raise ValueError("ELS는 NWX로만 발행할 수 있습니다.")
         face = self._integer(fields.get("face_value"), "액면가")
         supply = self._integer(fields.get("total_supply"), "발행좌수")
         maturity = self._integer(fields.get("maturity_days"), "만기일수", high=3650)
@@ -143,14 +144,18 @@ class ELSManager:
             if not company or company["share_class"] == "preferred":
                 raise ValueError("발행법인은 거래 중인 보통주 법인 코드를 입력해주세요.")
             conn.execute("INSERT OR IGNORE INTO issuer_cash_accounts(company_code,balance,locked_amount) VALUES (?,0,0)", (issuer,))
+        currency = CurrencyManager.home(conn, issuer) if CurrencyManager.is_treasury(conn, issuer) else 'NWX'
+        requested = str(fields.get("quote_currency") or currency).upper()
+        if requested != currency:
+            raise ValueError(f"이 ELS는 발행자 통화 {currency}로만 발행할 수 있습니다.")
         total = face * supply
         if total + self._coupon(total, coupon, maturity) > MAX_MONEY:
             raise ValueError("원금과 최대 쿠폰 합계가 허용 금액을 초과합니다.")
         now = int(time.time())
         conn.execute("INSERT INTO investment(product_code,name,product_type,total_supply,unit_price,maturity_days,"
             "manager,exchange_id,status,is_fixed,issuer_code,face_value,annual_rate,quote_currency) "
-            "VALUES (?,?,'els',?,?,?,?,?,'active',1,?,?,?,'NWX')",
-            (code, name, supply, face, maturity, str(actor), exchange, issuer, face, coupon))
+            "VALUES (?,?,'els',?,?,?,?,?,'active',1,?,?,?,?)",
+            (code, name, supply, face, maturity, str(actor), exchange, issuer, face, coupon, currency))
         conn.execute("INSERT INTO els_products(product_code,issuer_code,face_value,annual_coupon,maturity_days,"
             "maturity_level,knock_in_level,subscription_end_epoch,created_epoch) VALUES (?,?,?,?,?,?,?,?,?)",
             (code, issuer, face, coupon, maturity, maturity_level, knock_in, now + subscription * DAY, now))
@@ -160,7 +165,12 @@ class ELSManager:
         conditions.append((code, len(days) + 1, maturity, maturity_level, 1))
         conn.executemany("INSERT INTO els_observations(product_code,sequence,observation_day,redemption_level,is_maturity) "
             "VALUES (?,?,?,?,?)", conditions)
-        return f"✅ ELS `{code}`를 등록했습니다. 액면 {face:,} NWX · 연 쿠폰 {coupon:g}% · 모집 {subscription}일"
+        return f"✅ ELS `{code}`를 등록했습니다. 액면 {face:,} {currency} · 연 쿠폰 {coupon:g}% · 모집 {subscription}일"
+
+    @staticmethod
+    def _currency(conn, code):
+        row = conn.execute("SELECT COALESCE(quote_currency,'NWX') FROM investment WHERE product_code=?", (code,)).fetchone()
+        return row[0] if row else 'NWX'
 
     @staticmethod
     def _coupon(principal, annual_coupon, days):
@@ -169,7 +179,10 @@ class ELSManager:
     @staticmethod
     def _reserve_coupon(conn, issuer, coupon, total):
         if CurrencyManager.is_treasury(conn, issuer):
-            CurrencyManager.treasury_pay(conn, issuer, 'NWX', coupon * SCALE)
+            home = CurrencyManager.home(conn, issuer)
+            if CurrencyManager.balance(conn, issuer, home) < coupon * SCALE:
+                raise ValueError("발행자의 최대 쿠폰 예치 재원이 부족합니다.")
+            CurrencyManager.change(conn, issuer, home, -coupon * SCALE)
             return
         else:
             changed = conn.execute("UPDATE issuer_cash_accounts SET balance=balance-?,locked_amount=locked_amount+? "
@@ -181,7 +194,10 @@ class ELSManager:
     @staticmethod
     def _release_reserve(conn, issuer, locked, refund):
         if CurrencyManager.is_treasury(conn, issuer):
-            CurrencyManager.treasury_receive(conn, issuer, 'NWX', refund * SCALE)
+            home = CurrencyManager.home(conn, issuer)
+            if CurrencyManager.balance(conn, issuer, home) + refund * SCALE > MAX_MONEY * SCALE:
+                raise ValueError("발행자 예치금 원장을 확인할 수 없어 정산을 보류합니다.")
+            CurrencyManager.change(conn, issuer, home, refund * SCALE)
             return
         else:
             changed = conn.execute("UPDATE issuer_cash_accounts SET balance=balance+?,locked_amount=locked_amount-? "
@@ -200,7 +216,7 @@ class ELSManager:
                 error = MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=code)
                 if error:
                     return False, error
-                terms = conn.execute("SELECT t.*,i.total_supply FROM els_products t JOIN investment i USING(product_code) "
+                terms = conn.execute("SELECT t.*,i.total_supply,COALESCE(i.quote_currency,'NWX') AS quote_currency FROM els_products t JOIN investment i USING(product_code) "
                     "WHERE t.product_code=? AND i.status='active'", (code,)).fetchone()
                 if not terms or terms["state"] != "subscription" or now >= terms["subscription_end_epoch"]:
                     return False, "❌ 모집 중인 ELS만 청약할 수 있습니다."
@@ -215,13 +231,28 @@ class ELSManager:
                 coupon = self._coupon(principal, terms["annual_coupon"], terms["maturity_days"])
                 if principal + coupon > MAX_MONEY:
                     return False, "❌ 청약금과 최대 쿠폰 합계가 허용 금액을 초과합니다."
-                if account_number is None:
-                    funds = self.users._choose_funds(conn, user_id)
-                    if funds is None or funds[0] < principal:
-                        return False, "❌ 청약금이 부족합니다."
-                    account_number = funds[1]
-                if not self.users._debit_source(conn, user_id, account_number, principal):
-                    raise ValueError("청약금이 부족하거나 본인 계좌가 아닙니다.")
+                currency = terms["quote_currency"]
+                if currency != CurrencyManager.home(conn, user_id):
+                    # Foreign citizens subscribe from their foreign-currency account.
+                    account = conn.execute("SELECT account_number FROM accounts WHERE user_id=? AND quote_currency=? "
+                        "AND account_type='currency_saving' AND (? IS NULL OR account_number=?)",
+                        (user_id, currency, account_number, account_number)).fetchone()
+                    if not account:
+                        return False, f"❌ {currency} 외환통장이 있어야 이 ELS를 청약할 수 있습니다."
+                    account_number = account["account_number"]
+                    CurrencyExchangeManager._settle(conn, user_id, now)
+                    changed = conn.execute("UPDATE accounts SET balance_units=balance_units-? WHERE account_number=? AND balance_units>=?",
+                        (principal * SCALE, account_number, principal * SCALE))
+                    if changed.rowcount != 1:
+                        return False, f"❌ {currency} 외환통장 잔액이 청약금보다 부족합니다."
+                else:
+                    if account_number is None:
+                        funds = self.users._choose_funds(conn, user_id)
+                        if funds is None or funds[0] < principal:
+                            return False, "❌ 청약금이 부족합니다."
+                        account_number = funds[1]
+                    if not self.users._debit_source(conn, user_id, account_number, principal):
+                        raise ValueError("청약금이 부족하거나 본인 계좌가 아닙니다.")
                 self._reserve_coupon(conn, terms["issuer_code"], coupon, principal + coupon)
                 changed = conn.execute("UPDATE els_products SET principal_amount=principal_amount+?,coupon_amount=coupon_amount+?,"
                     "locked_amount=locked_amount+? WHERE product_code=? AND locked_amount+?<=?",
@@ -238,7 +269,7 @@ class ELSManager:
                 else:
                     conn.execute("INSERT INTO user_assets(user_id,asset_code,account_number,quantity,average_cost) VALUES (?,?,?,?,?)",
                         (user_id, code, account_number, quantity, terms["face_value"]))
-            return True, f"✅ ELS `{code}` {quantity:,}좌 청약 · 원금 {principal:,} NWX. 모집 종료 후 기준가가 확정됩니다."
+            return True, f"✅ ELS `{code}` {quantity:,}좌 청약 · 원금 {principal:,} {terms['quote_currency']}. 모집 종료 후 기준가가 확정됩니다."
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f"❌ ELS 청약 실패: {exc}"
 
@@ -268,7 +299,13 @@ class ELSManager:
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f"❌ ELS 발행 취소 실패: {exc}"
 
-    def _safe_credit(self, conn, user_id, account, amount):
+    def _safe_credit(self, conn, user_id, account, amount, currency=None):
+        if currency and currency != CurrencyManager.home(conn, user_id):
+            from managers.foreign_securities_manager import ForeignSecuritiesManager
+            fx = conn.execute("SELECT 1 FROM accounts WHERE account_number=? AND user_id=? AND quote_currency=? "
+                "AND account_type='currency_saving'", (account, user_id, currency)).fetchone() if account else None
+            ForeignSecuritiesManager.credit_units(conn, user_id, currency, amount * SCALE, account if fx else None)
+            return
         row = conn.execute("SELECT balance FROM accounts WHERE account_number=? AND user_id=?", (account, user_id)).fetchone() if account else None
         if not row:
             account = None
@@ -281,7 +318,7 @@ class ELSManager:
         code = terms["product_code"]
         reserve = conn.execute("SELECT * FROM els_products WHERE product_code=?", (code,)).fetchone()
         for subscription in conn.execute("SELECT * FROM els_subscriptions WHERE product_code=? AND status='subscribed'", (code,)).fetchall():
-            self._safe_credit(conn, subscription["user_id"], None, subscription["principal"])
+            self._safe_credit(conn, subscription["user_id"], subscription["account_number"], subscription["principal"], self._currency(conn, code))
         self._release_reserve(conn, terms["issuer_code"], reserve["locked_amount"], reserve["coupon_amount"])
         conn.execute("UPDATE els_subscriptions SET status='cancelled' WHERE product_code=?", (code,))
         conn.execute("DELETE FROM user_assets WHERE asset_code=?", (code,))
@@ -395,13 +432,14 @@ class ELSManager:
             raise ValueError("ELS 예치금이 부족하여 정산을 보류합니다.")
         orders = conn.execute("SELECT * FROM market_orders WHERE asset_code=? AND status IN ('open','partial')", (code,)).fetchall()
         for order in orders:
-            self._safe_credit(conn, order["user_id"], order["funding_account"], order["reserved_cash"])
+            self._safe_credit(conn, order["user_id"], order["funding_account"], order["reserved_cash"], order["quote_currency"] or "NWX")
             conn.execute("UPDATE market_orders SET status='expired',reserved_cash=0,updated_epoch=? WHERE order_id=?", (now, order["order_id"]))
         notifications = []
         for subscription, gross in payments:
-            tax = self.users._tax(conn, subscription["user_id"], "els_profit", max(0, gross - subscription["principal"]))
+            currency = self._currency(conn, code)
+            tax = self.users._tax(conn, subscription["user_id"], "els_profit", max(0, gross - subscription["principal"]), currency)
             net = gross - tax
-            self._safe_credit(conn, subscription["user_id"], None, net)
+            self._safe_credit(conn, subscription["user_id"], subscription["account_number"], net, currency)
             conn.execute(
                 "INSERT INTO els_settlements(product_code,sequence,subscription_id,user_id,quantity,principal,"
                 "gross_amount,tax_amount,net_amount,recorded_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -429,7 +467,7 @@ class ELSManager:
         # Details are used by wallet and catalogue views; they do not mutate
         # settlement state, so keep them off SQLite's single writer.
         with (self.db.readonly() if conn is None else nullcontext(conn)) as conn:
-            row = conn.execute("SELECT t.*,i.name,i.total_supply FROM els_products t JOIN investment i USING(product_code) WHERE product_code=?", (code,)).fetchone()
+            row = conn.execute("SELECT t.*,i.name,i.total_supply,COALESCE(i.quote_currency,'NWX') AS quote_currency FROM els_products t JOIN investment i USING(product_code) WHERE product_code=?", (code,)).fetchone()
             if not row:
                 return None
             details = dict(row)

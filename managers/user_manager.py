@@ -189,8 +189,10 @@ class UserManager:
             )
 
     @staticmethod
-    def _tax(conn, user_id, source, gross_amount):
-        """양수 소득에 시민 국적의 세율을 적용하고 내역을 기록합니다."""
+    def _tax(conn, user_id, source, gross_amount, currency=None):
+        """양수 소득에 시민 국적의 세율을 적용하고 내역을 기록합니다.
+
+        ``currency``: the income's currency when it is not the citizen's own."""
         from database.fund_accounting import account
         if account(conn, user_id):
             return 0  # Fund income stays in NAV; investor gains are taxed on redemption.
@@ -213,12 +215,16 @@ class UserManager:
         if tax_amount > 0:
             from managers.currency_manager import CurrencyManager
             treasury_id = CurrencyManager.user_treasury_id(conn, user_id)
-            treasury = conn.execute(
-                "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
-                (tax_amount, treasury_id),
-            )
-            if treasury.rowcount != 1:
-                raise RuntimeError("국고 계정을 찾을 수 없어 세금 처리를 취소했습니다.")
+            if currency and str(currency).upper() != CurrencyManager.home(conn, user_id):
+                from managers.currency_manager import SCALE
+                CurrencyManager.treasury_receive(conn, treasury_id, currency, int(round(tax_amount * SCALE)))
+            else:
+                treasury = conn.execute(
+                    "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
+                    (tax_amount, treasury_id),
+                )
+                if treasury.rowcount != 1:
+                    raise RuntimeError("국고 계정을 찾을 수 없어 세금 처리를 취소했습니다.")
         conn.execute(
             "INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount) "
             "VALUES (?,?,?,?,?)",
@@ -980,7 +986,7 @@ class UserManager:
         if getattr(self.db,'els',None) is not None:
             from managers.els_manager import ELSManager
             els_positions=ELSManager(self.db,self).get_user_positions(user_id, conn=conn)
-        els_total=sum(int(item.get('principal',0)) for item in els_positions)
+        els_total=sum(int(item.get('principal',0))*currency_rates.get(item.get('quote_currency') or 'NWX',1) for item in els_positions)
         preferred_claims=[]
         if getattr(self.db,'corporate',None) is not None:
             preferred_claims=[{**dict(row),'remaining_amount':int(row['gross_amount'])-int(row['paid_amount'])}

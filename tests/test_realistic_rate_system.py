@@ -468,10 +468,16 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertGreater(loan["collateral_liquidated_value"], 0)
         self.assertLess(loan["collateral_liquidated_value"], 50_000)
         self.assertLess(loan["outstanding_balance"], 100_000)
-        treasury = self.db.assets.execute_one(
-            "SELECT quantity FROM user_assets WHERE user_id='20230216' AND asset_code='COLL'"
+        # The lending bank's head office takes the unsold rest and pays for it.
+        bank = self.db.assets.execute_one(
+            "SELECT b.user_id,u.cash FROM bank_accounts b JOIN users u ON u.user_id=b.user_id "
+            "WHERE b.issuer=(SELECT issuer FROM liability WHERE product_code='ASSETLOAN')"
         )
-        self.assertEqual(treasury["quantity"], 125)
+        held = self.db.assets.execute_one(
+            "SELECT quantity FROM user_assets WHERE user_id=? AND asset_code='COLL'", (bank["user_id"],)
+        )
+        self.assertEqual(held["quantity"], 125)
+        self.assertLess(bank["cash"], 0)
         event = self.db.accounts.execute_one(
             "SELECT * FROM collateral_liquidation_events WHERE loan_id=?", (loan["loan_id"],)
         )

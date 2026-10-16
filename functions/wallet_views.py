@@ -42,7 +42,7 @@ def els_position_lines(positions):
         principal = item.get('principal', quantity * float(item.get('face_value') or 0))
         lines.append(
             f"• **{str(item.get('name') or code)[:70]}** (`{code}`) · {quantity:,}좌 · "
-            f"인수 원금 **{float(principal or 0):,.0f} NWX**\n"
+            f"인수 원금 **{float(principal or 0):,.0f} {item.get('quote_currency') or 'NWX'}**\n"
             f"  {els_status_text(item)} · 연 쿠폰 {float(item.get('annual_coupon') or 0):g}% · "
             f"낙인 **{barrier}** · 다음 평가 {next_text}"
         )

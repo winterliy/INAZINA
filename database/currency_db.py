@@ -85,6 +85,11 @@ class CurrencyDB(DBManager):
         )""")
         self.execute("INSERT OR IGNORE INTO country_treasuries(nationality,user_id) "
                      "VALUES ('낙원','20230216')")
+        # Head-office account of each bank (financial institution) for assets it must hold.
+        self.execute("""CREATE TABLE IF NOT EXISTS bank_accounts (
+            issuer TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL UNIQUE REFERENCES users(user_id)
+        )""")
         self.execute("""CREATE TABLE IF NOT EXISTS financial_holidays (
             nationality TEXT NOT NULL REFERENCES country_currencies(nationality),
             holiday_date TEXT NOT NULL,

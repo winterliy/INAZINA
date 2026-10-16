@@ -71,6 +71,7 @@ class CurrencyManager:
         """Create a neutral baseline when a newly issued currency first gains supply."""
         code = str(code).upper()
         issued, circulating = cls._liquidity_totals(conn, code)
+        issued = min(issued, 2**63 - 1)  # SQLite INTEGER range
         # Treasury deficits can leave circulation above issuance; keep the ratio in range.
         ratio = min(1, max(0, circulating / issued)) if issued > 0 else 0
         conn.execute(
@@ -232,6 +233,26 @@ class CurrencyManager:
         known = conn.execute('SELECT 1 FROM country_currencies WHERE nationality=?', (nationality,)).fetchone()
         return cls.treasury_id(conn, nationality if known else '낙원')
 
+    @staticmethod
+    def is_bank(conn, user_id):
+        exists = conn.execute("SELECT 1 FROM sqlite_master WHERE name='bank_accounts'").fetchone()
+        return bool(exists and conn.execute("SELECT 1 FROM bank_accounts WHERE user_id=?", (str(user_id),)).fetchone())
+
+    @staticmethod
+    def bank_account_id(conn, issuer):
+        """Head-office account of a bank, created on first use in its country's currency."""
+        issuer = str(issuer)
+        row = conn.execute("SELECT user_id FROM bank_accounts WHERE issuer=?", (issuer,)).fetchone()
+        if row:
+            return str(row[0])
+        nationality = conn.execute("SELECT nationality FROM financial_institutions WHERE issuer=?", (issuer,)).fetchone()
+        nationality = nationality[0] if nationality and nationality[0] else '낙원'
+        user_id = f'bank:{issuer}'  # non-decimal namespace: never a Discord ID
+        conn.execute("INSERT OR IGNORE INTO users(user_id,nickname,nationality,cash,status,role) "
+                     "VALUES (?,?,?,0,'active','nation')", (user_id, f'{issuer} 본사', nationality))
+        conn.execute("INSERT INTO bank_accounts(issuer,user_id) VALUES (?,?)", (issuer, user_id))
+        return user_id
+
     @classmethod
     def majority_treasury(cls, conn, asset_codes):
         """Treasury of the country listing most of ``asset_codes`` (ties: the earliest listed)."""
@@ -305,7 +326,7 @@ class CurrencyManager:
         cls.validate_units(conn, int(delta), currency)
         value = cls.balance(conn, user_id, currency) + int(delta)
         limit=(2**53-1)*SCALE if currency == home else MAX_UNITS
-        if abs(value) > limit or (value < 0 and not (allow_deficit and cls.is_treasury(conn, user_id))):
+        if abs(value) > limit or (value < 0 and not (allow_deficit and (cls.is_treasury(conn, user_id) or cls.is_bank(conn, user_id)))):
             raise ValueError(f'{currency} 잔액이 부족하거나 저장 한도를 초과했습니다.')
         if currency == home:
             native = Decimal(int(delta))/Decimal(SCALE)

@@ -1507,11 +1507,21 @@ class BankManager:
             backstop_price = max(0.0, float(mark_price) * (
                 1.0-float(row["haircut"] or 0)-market_impact
             ))
-            gross += round_currency(conn, backstop_price*backstop_quantity, currency)
+            backstop_cost = round_currency(conn, backstop_price*backstop_quantity, currency)
+            gross += backstop_cost
+            # The lending bank's head office buys the unsold rest and pays for it (deficits allowed).
+            from managers.currency_manager import CurrencyManager, SCALE
+            bank = CurrencyManager.bank_account_id(conn, product["issuer"])
+            bank_home = CurrencyManager.home(conn, bank)
+            cost_units = int(round(backstop_cost*SCALE))
+            if currency != bank_home:
+                cost_units = CurrencyManager.convert(conn, cost_units, currency, bank_home)
+            if cost_units:
+                CurrencyManager.change(conn, bank, bank_home, -cost_units, allow_deficit=True)
             existing = conn.execute(
                 "SELECT holding_id,quantity,average_cost FROM assets.user_assets "
                 "WHERE user_id=? AND asset_code=? AND account_number IS NULL",
-                (TREASURY_USER_ID, row["asset_code"]),
+                (bank, row["asset_code"]),
             ).fetchone()
             if existing:
                 old_quantity = float(existing["quantity"])
@@ -1530,7 +1540,7 @@ class BankManager:
                     "INSERT INTO assets.user_assets "
                     "(user_id,asset_code,account_number,quantity,average_cost) "
                     "VALUES (?,?,NULL,?,?)",
-                    (TREASURY_USER_ID, row["asset_code"], backstop_quantity,
+                    (bank, row["asset_code"], backstop_quantity,
                      round_currency(conn, backstop_price, currency)),
                 )
 
