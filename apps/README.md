@@ -76,18 +76,32 @@ convention, buying and rising prices are red; selling and falling prices are blu
 The dashboard uses the glass design prototyped in `glass-dashboard/index.html`
 and follows the system light/dark setting.
 
-- **운영 현황**: counts, per-exchange market state, and open/close/pause/resume
-  for all exchanges or one exchange.
-- **종목 · 상품**: name/price/supply edits, active/inactive status, fund creation.
-- **사용자**: cash, role, and status changes; country account creation.
+- **운영 현황**: counts, per-exchange market state, and open/close/pause/resume.
+- **종목 · 상품** and **금융 상품**: create, edit, stop, and restore every
+  `$상품생성` kind — stocks, preferred shares, assets, ETFs, futures, corporate
+  and treasury bonds, funds, index funds, commodities, options, and ELS; and
+  savings, loans, currencies, and foreign-currency accounts. Forms follow the
+  `$상품생성` argument order (same parser for dividends, periods, and fund
+  components) and expose every other table column under 고급 설정. Each row
+  links to its related commands (price, capital, dividends, split, merger, …).
+- **거래소**: create and delete exchanges, change the owning country, apply
+  open/close/pause/resume, circuit breaker stages 1–3, and sidecar per exchange
+  or for all, and view index components.
+- **사용자 · 국가**: every user field (nickname, nationality, cash, credit score,
+  income, income stability, status, role), web login (set password, HTS ID,
+  expire sessions, remove login), and read-only accounts, loans, and holdings.
+  Countries: create/delete, base rate, legal maximum rate, tax, treasury cash,
+  and the country account's HTS login.
 - **시장 사건**: create good/bad events by percentage or, for one asset, by
   target price (good news at or above the current price, bad news at or below;
   the percentage then sets volatility), and list recent `market_events`.
 - **관리자 명령어**: runs every Discord `$` command. The 관리자 명령어 tab covers
   the 40 `AdminCommandsManager` commands; the 국가 명의 tab covers the 16
   treasury commands (`$매수`, `$송금`, `$계좌개설`, …) with the same form fields.
-  Both keep the Discord validation and audit trail. `$사건` is the 시장 사건 page;
-  `$도움말` and `$주총` (which sends Discord DMs) remain Discord-only.
+  Both keep the Discord validation and audit trail. `$사건` is the 시장 사건 page
+  and `$도움말` is the 도움말 tab. `$주총` must send Discord DMs, so the dashboard
+  queues it in `web_bot_jobs` and the running bot processes it within seconds
+  (`functions/web_jobs.py`); the tab shows each job's status and result.
 - **DB 편집**: replaces the DB Browser workflow described in `docs/` (for
   example `settings`, `country_currencies`, `users` nationality and credit,
   `financial_institutions`, `currency_liquidity_state`, `market_rate_curve`).
@@ -95,7 +109,8 @@ and follows the system light/dark setting.
   on, so database CHECK constraints and triggers still validate them, and each
   change is written to `admin_audit` with before/after values.
   `web_auth_credentials`, `admin_audit`, and `web_chart_drawings` are hidden.
-  Type `NULL` to store NULL.
+  Type `NULL` to store NULL. Password columns are shown as `<hidden>` and
+  never written to the audit trail.
 - **작업 기록**: the latest `admin_audit` entries.
 
 ## API endpoints
@@ -124,6 +139,12 @@ Administrators:
 - `POST /api/admin/funds`, `/api/admin/users/:id` (cash, role, status), `/api/admin/users/country-account`
 - `POST /api/admin/events` (`eventType`, `severity`, `targetPercent`, optional `targetPrice`, `durationSeconds`, `assetCode`)
 - `GET/POST /api/admin/commands` (catalog; run `{ command, arguments }` or `{ national: true, command, values }`)
+- `GET /api/admin/products/catalog`, `/api/admin/products?group=market|finance`, `/api/admin/products/:code`
+- `POST /api/admin/products` (`operation` create/edit, `kind`, `code`, `fields`, `advanced`), `/api/admin/products/:code/status` (`active`)
+- `GET /api/admin/user/:id`; `POST /api/admin/user/:id` (`changes`), `/api/admin/user/:id/web` (`action` password/hts_id/logout/remove)
+- `GET /api/admin/countries`; `POST /api/admin/countries/:nationality` (`action` create/delete/rates/treasury)
+- `GET /api/admin/exchanges`; `POST /api/admin/exchanges/:id` (`action` create/delete/nationality/open/close/pause/resume/circuit/sidecar; `ALL` for every exchange)
+- `GET /api/admin/help`, `/api/admin/bot-jobs`
 - `GET /api/admin/db/tables`, `/api/admin/db/tables/:table?search=&offset=`
 - `POST /api/admin/db/tables/:table/rows` (insert), `/rows/:rowid` (update), `/rows/:rowid/delete`
 

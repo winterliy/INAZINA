@@ -26,7 +26,11 @@ class WebApiTests(unittest.TestCase):
                 CREATE TABLE admin_audit (
                     audit_id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT NOT NULL,
                     action TEXT NOT NULL, payload TEXT NOT NULL, recorded_epoch REAL NOT NULL);
-                CREATE TABLE web_auth_credentials (user_id TEXT PRIMARY KEY, salt TEXT, password_hash TEXT);
+                CREATE TABLE web_auth_credentials (
+                    user_id TEXT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
+                    salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_epoch INTEGER NOT NULL,
+                    updated_epoch INTEGER NOT NULL, auth_version INTEGER NOT NULL DEFAULT 0, hts_id TEXT);
+                CREATE TABLE country_currencies (nationality TEXT PRIMARY KEY, currency_code TEXT NOT NULL);
                 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TRIGGER settings_rate_check BEFORE UPDATE ON settings
                     WHEN NEW.key='base_rate' AND CAST(NEW.value AS REAL) NOT BETWEEN -100 AND 100
@@ -170,7 +174,7 @@ class WebApiTests(unittest.TestCase):
 
     def test_national_commands_validate_before_running(self):
         cases = [
-            ({"command": "주총", "values": ["A", "B"]}, "알 수 없는"),
+            ({"command": "도움말", "values": []}, "알 수 없는"),
             ({"command": "매수", "values": ["A"]}, "입력값"),
             ({"command": "매수", "values": ["A", " ", "1"]}, "수량"),
             ({"command": "매수", "values": ["A", 1, "1"]}, "입력값"),
@@ -178,6 +182,79 @@ class WebApiTests(unittest.TestCase):
         for payload, error in cases:
             with self.subTest(payload=payload), self.assertRaisesRegex(ValueError, error):
                 server.run_national_command("admin-1", payload)
+
+    def test_db_editor_masks_password_columns(self):
+        self.execute("CREATE TABLE accounts (account_number TEXT PRIMARY KEY, user_id TEXT, password TEXT, balance INTEGER)")
+        self.execute("INSERT INTO accounts VALUES ('A1','admin-1','secret',5)")
+        row = server.db_rows("accounts")["rows"][0]
+        self.assertEqual(row["password"], server.HIDDEN_VALUE)
+        updated = server.db_update("admin-1", "accounts", row["__rowid__"],
+                                   {"password": server.HIDDEN_VALUE, "balance": 7})
+        self.assertEqual(updated["balance"], 7)
+        self.assertEqual(self.execute("SELECT password FROM accounts")[0][0], "secret")
+        payload = self.execute("SELECT payload FROM admin_audit")[0][0]
+        self.assertNotIn("secret", payload)
+
+    def test_admin_web_password_and_login_actions(self):
+        message = server.admin_set_web_password("admin-1", "admin-1", "ResetPass1234")
+        self.assertIn("비밀번호", message)
+        self.assertIsNotNone(server.authenticate_password("admin-1", "ResetPass1234"))
+        server.admin_web_login_action("admin-1", "admin-1", "hts_id", "Admin.Web")
+        user, found = server.authenticate_login_identifier("admin.web", "ResetPass1234")
+        self.assertTrue(found)
+        self.assertEqual(user["userId"], "admin-1")
+        version = self.execute("SELECT auth_version FROM web_auth_credentials")[0][0]
+        server.admin_web_login_action("admin-1", "admin-1", "logout")
+        self.assertEqual(self.execute("SELECT auth_version FROM web_auth_credentials")[0][0], version + 1)
+        with self.assertRaisesRegex(ValueError, "password_policy"):
+            server.admin_set_web_password("admin-1", "admin-1", "short")
+        audit = [row[0] for row in self.execute("SELECT payload FROM admin_audit")]
+        self.assertFalse(any("ResetPass1234" in payload for payload in audit))
+
+    def test_shareholder_meetings_are_queued_for_the_bot(self):
+        message = server.queue_shareholder_meeting("admin-1", {"code": "AAA", "place": "회의실"})
+        self.assertIn("#1", message)
+        jobs = server.bot_jobs()
+        self.assertEqual((jobs[0]["kind"], jobs[0]["status"]), ("shareholder_meeting", "pending"))
+        self.assertEqual(json.loads(jobs[0]["payload"]), {"code": "AAA", "place": "회의실"})
+        with self.assertRaisesRegex(ValueError, "주식 코드"):
+            server.queue_shareholder_meeting("admin-1", {"code": "", "place": "x"})
+
+    def test_help_pages_match_the_discord_help_view(self):
+        from functions.admin_help_view import AdminHelpView
+        pages = server.admin_help_pages()
+        self.assertEqual([page["label"] for page in pages], [label for _key, label in AdminHelpView.PAGES])
+        self.assertTrue(any("$상품생성" in field["value"] for page in pages for field in page["fields"]))
+
+    def test_product_catalog_covers_every_creatable_kind(self):
+        from managers.admin_commands_manager import CREATE_ARGS
+        with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
+            for table, key in {("company", "company_code"), ("market_assets", "code"), ("investment", "product_code"),
+                               ("treasury_bond_products", "product_code"), ("saving", "product_code"),
+                               ("liability", "product_code"), ("option_contracts", "contract_code"), ("currencies", "code")}:
+                connection.execute(f"CREATE TABLE {table} ({key} TEXT PRIMARY KEY, name TEXT, status TEXT, extra_setting REAL)")
+        kinds = {item["kind"]: item for item in server.product_catalog()["kinds"]}
+        self.assertEqual(set(kinds), set(CREATE_ARGS))
+        self.assertEqual({kinds[name]["group"] for name in ("saving", "loan", "currency", "currencyproduct")}, {"finance"})
+        self.assertIn("extra_setting", {field["key"] for field in kinds["saving"]["advanced"]})
+        self.assertNotIn("status", {field["key"] for field in kinds["saving"]["advanced"]})
+
+    def test_product_form_values_follow_the_positional_parser(self):
+        fields = server._convert_product_fields(
+            "stock", {"name": "회사", "capital": "1000", "dividend_cycle_seconds": "1주",
+                      "dividend_per_share": "5%", "exchange_id": "INZ", "industry": ""},
+            {"liquidity": "0.5"}, {"liquidity": "REAL"})
+        self.assertEqual(fields["capital"], 1000)
+        self.assertEqual(fields["dividend_cycle_seconds"], 604800)
+        self.assertEqual((fields["dividend_mode"], fields["dividend_percent"]), ("percent", 5.0))
+        self.assertEqual(fields["liquidity"], 0.5)
+        self.assertNotIn("industry", fields)
+        fund = server._convert_product_fields("fund", {"components": "A:0.6, B:0.4"}, {}, {})
+        self.assertEqual(fund["components"], {"A": 0.6, "B": 0.4})
+        for kind, values, advanced in (("stock", {"unknown": "1"}, {}), ("stock", {}, {"status": "x"}),
+                                       ("fund", {"components": "A0.6"}, {})):
+            with self.subTest(values=values, advanced=advanced), self.assertRaises(ValueError):
+                server._convert_product_fields(kind, values, advanced, {"status": "TEXT"})
 
 
 if __name__ == "__main__":

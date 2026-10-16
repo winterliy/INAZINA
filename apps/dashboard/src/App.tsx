@@ -1,20 +1,24 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api, clearToken, type ApiUser } from "../../shared/api";
 import { AuthPanel } from "../../shared/AuthPanel";
+import { plain, type Ctx } from "./common";
+import { ProductsPage } from "./ProductsPage";
+import { UsersPage } from "./UsersPage";
+import { ExchangesPage } from "./ExchangesPage";
 
-type Page = "overview" | "instruments" | "users" | "events" | "commands" | "database" | "audit";
+type Page = "overview" | "instruments" | "finance" | "exchanges" | "users" | "events" | "commands" | "database" | "audit";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
 type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
 type Exchange = { exchange_id: string; status: string; reason: string | null; trading_halted: number; updated_epoch: number | null; resume_epoch: number | null; circuit_stage: number | null };
 type Overview = { activeUsers: number; activeInstruments: number; openOrders: number; market: Exchange[] };
 type Audit = { actorId: string; action: string; payload: Record<string, unknown>; time: number };
-type Citizen = { userId: string; nickname: string; nationality: string; cash: number; creditScore: number; status: string; role: string; accountType: "discord" | "country" };
-type Country = { countryId: string; currencyName: string; currencyCode: string };
 type Event = { event_id: number; asset_code: string | null; event_type: string; severity: number; starts_epoch: number; ends_epoch: number; created_by: string; target_mode: string | null; target_value: number | null; active: boolean };
 type Command = { name: string; usage: string };
 type NationalField = { label: string; default: string; required: boolean; long: boolean };
 type NationalCommand = { name: string; fields: NationalField[] };
+type HelpPage = { label: string; description: string; fields: { name: string; value: string }[] };
+type BotJob = { job_id: number; kind: string; actor_id: string; payload: string; status: "pending" | "running" | "done" | "failed"; result: string | null; created_epoch: number; updated_epoch: number };
 type CommandResult = { command: string; arguments: string; message: string; success: boolean; time: number; national: boolean };
 type Column = { name: string; type: string; notNull: boolean; primaryKey: boolean; default: string | null };
 type TableInfo = { name: string; editable: boolean; columns: Column[] };
@@ -25,7 +29,9 @@ type TablePage = { table: string; editable: boolean; columns: Column[]; total: n
 const pages: { id: Page; label: string; color: string; icon: ReactNode }[] = [
   { id: "overview", label: "운영 현황", color: "#0060d6", icon: <><rect x="3.5" y="3.5" width="7" height="7" rx="2" /><rect x="13.5" y="3.5" width="7" height="7" rx="2" /><rect x="3.5" y="13.5" width="7" height="7" rx="2" /><rect x="13.5" y="13.5" width="7" height="7" rx="2" /></> },
   { id: "instruments", label: "종목 · 상품", color: "#0f7a2e", icon: <path d="M5 20v-7M12 20V5M19 20v-10" /> },
-  { id: "users", label: "사용자", color: "#c24e00", icon: <><circle cx="12" cy="8" r="3.5" /><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6" /></> },
+  { id: "finance", label: "금융 상품", color: "#b8860b", icon: <><rect x="3.5" y="6.5" width="17" height="11" rx="2.5" /><path d="M3.5 10.5h17M7 14.5h4" /></> },
+  { id: "exchanges", label: "거래소", color: "#1f6fe0", icon: <><path d="M4 20h16M5 20V10l7-5 7 5v10" /><path d="M9 20v-6h6v6" /></> },
+  { id: "users", label: "사용자 · 국가", color: "#c24e00", icon: <><circle cx="12" cy="8" r="3.5" /><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6" /></> },
   { id: "events", label: "시장 사건", color: "#c4205f", icon: <path d="M13 3 5 14h6l-1 7 8-11h-6z" /> },
   { id: "commands", label: "관리자 명령어", color: "#7b3fd8", icon: <><path d="m5 8 4 4-4 4" /><path d="M12 17h7" /></> },
   { id: "database", label: "DB 편집", color: "#0a7d8c", icon: <><ellipse cx="12" cy="6" rx="7" ry="2.5" /><path d="M5 6v12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V6" /><path d="M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5" /></> },
@@ -33,34 +39,19 @@ const pages: { id: Page; label: string; color: string; icon: ReactNode }[] = [
 ];
 const subtitles: Record<Page, string> = {
   overview: "시장 상태와 서비스 연결을 확인하고 거래소를 제어합니다.",
-  instruments: "상품 이름·가격·발행량과 거래 상태를 관리합니다.",
-  users: "사용자 현금·권한·계정 상태와 국가 계정을 관리합니다.",
+  instruments: "주식·자산·ETF·선물·채권·펀드·원자재·옵션·ELS를 생성·수정·중지합니다.",
+  finance: "저축·대출·통화·외환통장 상품을 생성·수정·중지합니다.",
+  exchanges: "거래소별 개장·휴장·서킷브레이커와 소속 국가·지수를 관리합니다.",
+  users: "사용자와 국가, 국가 계정의 모든 설정을 관리합니다.",
   events: "호재·악재 사건을 등록하고 최근 사건을 확인합니다.",
-  commands: "Discord $ 관리자 명령어를 같은 검증과 기록으로 실행합니다.",
+  commands: "Discord의 모든 $ 명령어와 도움말을 같은 검증과 기록으로 실행합니다.",
   database: "DB Browser에서 하던 설정 편집을 감사 기록과 함께 처리합니다.",
   audit: "모든 관리자 작업의 최근 기록입니다.",
 };
 const number = (value: number) => new Intl.NumberFormat("ko-KR").format(value);
 const date = (value: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "medium" }).format(value * 1000);
-const fundCategoryName: Record<string, string> = { equity: "주식형", bond: "채권형", mixed: "혼합형", other: "기타형" };
 const marketStatusName: Record<string, string> = { open: "개장", closed: "휴장", paused: "일시 정지", halted: "거래 정지" };
 const message = (cause: unknown, fallback: string) => cause instanceof Error ? cause.message : fallback;
-
-function parseFundComponents(value: string): Record<string, number> {
-  const components: Record<string, number> = {};
-  for (const token of value.split(",")) {
-    const [rawCode, rawWeight, ...rest] = token.split(":");
-    const code = rawCode?.trim();
-    const percent = Number(rawWeight);
-    if (!code || rest.length || !Number.isFinite(percent) || percent <= 0 || percent > 100 || components[code]) {
-      throw new Error("구성은 자산코드:비중% 형식으로 중복 없이 입력해주세요.");
-    }
-    components[code] = percent / 100;
-  }
-  const total = Object.values(components).reduce((sum, weight) => sum + weight, 0);
-  if (Math.abs(total - 1) > 1e-8) throw new Error("구성 비중 합계는 100%여야 합니다.");
-  return components;
-}
 
 // DB Browser semantics: NULL is explicit, numeric columns store numbers.
 function parseCell(input: string, column: Column | undefined): Cell {
@@ -82,11 +73,6 @@ export default function App() {
   const [overview, setOverview] = useState<Overview | null>(null);
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [audit, setAudit] = useState<Audit[]>([]);
-  const [citizens, setCitizens] = useState<Citizen[]>([]);
-  const [countries, setCountries] = useState<Country[]>([]);
-  const [countryId, setCountryId] = useState("");
-  const [countryPassword, setCountryPassword] = useState("");
-  const [countryPasswordConfirm, setCountryPasswordConfirm] = useState("");
   const [events, setEvents] = useState<Event[]>([]);
   const [query, setQuery] = useState("");
   const [eventType, setEventType] = useState("good");
@@ -94,17 +80,13 @@ export default function App() {
   const [eventDuration, setEventDuration] = useState("3600");
   const [eventAsset, setEventAsset] = useState("");
   const [eventTarget, setEventTarget] = useState("");
-  const [fundCode, setFundCode] = useState("");
-  const [fundName, setFundName] = useState("");
-  const [fundPrice, setFundPrice] = useState("1000");
-  const [fundSupply, setFundSupply] = useState("10000");
-  const [fundExchange, setFundExchange] = useState("INZ");
-  const [fundCategory, setFundCategory] = useState("equity");
-  const [fundComponents, setFundComponents] = useState("");
   const [commands, setCommands] = useState<Command[]>([]);
   const [nationalCommands, setNationalCommands] = useState<NationalCommand[]>([]);
   const [discordOnly, setDiscordOnly] = useState<string[]>([]);
-  const [commandScope, setCommandScope] = useState<"admin" | "national">("admin");
+  const [commandScope, setCommandScope] = useState<"admin" | "national" | "help">("admin");
+  const [helpPages, setHelpPages] = useState<HelpPage[]>([]);
+  const [helpPage, setHelpPage] = useState(0);
+  const [jobs, setJobs] = useState<BotJob[]>([]);
   const [nationalCommand, setNationalCommand] = useState("");
   const [nationalValues, setNationalValues] = useState<string[]>([]);
   const [creationHelp, setCreationHelp] = useState("");
@@ -143,17 +125,7 @@ export default function App() {
     if (!user || user.role !== "admin") return;
     try {
       if (page === "overview") setOverview(await api<Overview>("/api/admin/overview"));
-      if (page === "instruments") setInstruments((await api<{ instruments: Instrument[] }>("/api/admin/instruments")).instruments);
       if (page === "audit") setAudit((await api<{ entries: Audit[] }>("/api/admin/audit")).entries);
-      if (page === "users") {
-        const [result, countryResult] = await Promise.all([
-          api<{ users: Citizen[] }>(`/api/admin/users?search=${encodeURIComponent(query)}`),
-          api<{ countries: Country[] }>("/api/auth/countries"),
-        ]);
-        setCitizens(result.users);
-        setCountries(countryResult.countries);
-        setCountryId((current) => current || countryResult.countries[0]?.countryId || "");
-      }
       if (page === "events") {
         const [eventResult, instrumentResult] = await Promise.all([
           api<{ events: Event[] }>("/api/admin/events"),
@@ -171,6 +143,8 @@ export default function App() {
         setCommand((current) => current || result.commands[0]?.name || "");
         setNationalCommand((current) => current || result.national[0]?.name || "");
       }
+      if (page === "commands" && commandScope === "help" && !helpPages.length) setHelpPages((await api<{ pages: HelpPage[] }>("/api/admin/help")).pages);
+      if (page === "commands" && commandScope === "national") setJobs((await api<{ jobs: BotJob[] }>("/api/admin/bot-jobs")).jobs);
       if (page === "database") {
         const [tableList, rows] = await Promise.all([
           tables.length ? Promise.resolve({ tables }) : api<{ tables: TableInfo[] }>("/api/admin/db/tables"),
@@ -183,17 +157,13 @@ export default function App() {
     } catch (cause) {
       say(message(cause, "요청을 처리하지 못했습니다."), true);
     }
-  }, [page, user, query, commands.length, tables, table, tableOffset]);
+  }, [page, user, query, commands.length, tables, table, tableOffset, commandScope, helpPages.length]);
 
   useEffect(() => { void loadSession(); }, [loadSession]);
   useEffect(() => { if (user) void refresh(); }, [user, refresh]);
   useEffect(() => { setQuery(""); setNotice(null); }, [page]);
   useEffect(() => { setTableOffset(0); setNewRow(null); }, [table, query]);
 
-  const filteredInstruments = useMemo(() => {
-    const term = query.trim().toLocaleLowerCase();
-    return instruments.filter((item) => !term || `${item.code} ${item.name} ${item.type} ${fundCategoryName[item.fund_category || ""] || ""}`.toLocaleLowerCase().includes(term));
-  }, [instruments, query]);
   const selectedCommand = commands.find((item) => item.name === command);
   const selectedNational = nationalCommands.find((item) => item.name === nationalCommand);
   const eventInstrument = instruments.find((item) => item.code === eventAsset.trim());
@@ -213,88 +183,25 @@ export default function App() {
     }
   }
 
+  function openCommand(name: string, args: string, national = false) {
+    setPage("commands");
+    if (national) {
+      setCommandScope("national");
+      setNationalCommand(name);
+    } else {
+      setCommandScope("admin");
+      setCommand(name);
+      setCommandArgs(args);
+    }
+  }
+
+  const ctx: Ctx = { busy, run, say, query, openCommand };
+
   function marketAction(action: string, exchangeId?: string) {
     const labels: Record<string, string> = { close: "휴장", open: "개장", pause: "일시 정지", resume: "재개" };
     if (!window.confirm(`${exchangeId ?? "전체 시장"}을 ${labels[action]} 상태로 변경할까요?`)) return;
     void run(() => api<{ message: string }>("/api/admin/market", { method: "POST", body: JSON.stringify({ action, exchangeId }) }),
       "시장 상태를 변경하지 못했습니다.", (result) => say(result.message));
-  }
-
-  function changeInstrument(item: Instrument) {
-    const status = item.status === "active" ? "inactive" : "active";
-    if (!window.confirm(`${item.name} (${item.code})을 ${status === "active" ? "재개" : "중지"}할까요?`)) return;
-    void run(() => api<{ message: string }>(`/api/admin/instruments/${encodeURIComponent(item.code)}/status`, { method: "POST", body: JSON.stringify({ status }) }),
-      "상품 상태를 변경하지 못했습니다.", (result) => say(result.message));
-  }
-
-  function editInstrument(item: Instrument) {
-    const name = window.prompt("상품 이름", item.name);
-    if (name === null) return;
-    const price = window.prompt("현재 가격 (변경하지 않으려면 비우기)", String(item.price));
-    if (price === null) return;
-    const supply = window.prompt("발행량 (변경하지 않으려면 비우기)", "");
-    if (supply === null) return;
-    const changes: Record<string, unknown> = { name: name.trim(), price: price.trim(), supply: supply.trim() };
-    if (item.type === "mutual_fund") {
-      const category = window.prompt("펀드 유형 (equity/bond/mixed/other)", item.fund_category || "equity");
-      if (category === null) return;
-      const currentComponents = (item.components || []).map((component) => `${component.assetCode}:${component.weight * 100}`).join(",");
-      const componentInput = window.prompt("구성 자산과 비중(%)", currentComponents);
-      if (componentInput === null) return;
-      try {
-        changes.fundCategory = category.trim();
-        changes.components = parseFundComponents(componentInput);
-      } catch (cause) {
-        say(message(cause, "펀드 구성을 확인해주세요."), true);
-        return;
-      }
-    }
-    if (!changes.name || (!changes.price && !changes.supply && item.type !== "mutual_fund")) {
-      say("이름을 입력하고 가격 또는 발행량을 하나 이상 입력해주세요.", true);
-      return;
-    }
-    if (!window.confirm(`${item.code} 상품 설정을 저장할까요?`)) return;
-    void run(() => api<{ message: string }>(`/api/admin/instruments/${encodeURIComponent(item.code)}`, { method: "POST", body: JSON.stringify(changes) }),
-      "상품 설정을 변경하지 못했습니다.", (result) => say(result.message));
-  }
-
-  function createFund(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    let components: Record<string, number>;
-    try {
-      components = parseFundComponents(fundComponents);
-    } catch (cause) {
-      say(message(cause, "펀드 구성을 확인해주세요."), true);
-      return;
-    }
-    if (!window.confirm(`${fundName} (${fundCode}) 펀드를 생성할까요?`)) return;
-    void run(() => api<{ message: string }>("/api/admin/funds", {
-      method: "POST",
-      body: JSON.stringify({ code: fundCode.trim(), name: fundName.trim(), unitPrice: fundPrice, totalSupply: fundSupply, exchangeId: fundExchange.trim(), fundCategory, components }),
-    }), "펀드를 생성하지 못했습니다.", (result) => { say(result.message); setFundCode(""); setFundName(""); setFundComponents(""); });
-  }
-
-  function changeCitizen(citizen: Citizen, field: "status" | "role") {
-    const changes = field === "status"
-      ? { status: citizen.status === "active" ? "inactive" : "active" }
-      : { role: citizen.role === "admin" ? "user" : "admin" };
-    const value = Object.values(changes)[0];
-    if (!window.confirm(`${citizen.nickname} (${citizen.userId})의 ${field === "status" ? "계정 상태" : "권한"}을 ${value}로 변경할까요?`)) return;
-    void run(() => api<{ message: string }>(`/api/admin/users/${encodeURIComponent(citizen.userId)}`, { method: "POST", body: JSON.stringify(changes) }),
-      "사용자 설정을 변경하지 못했습니다.", (result) => say(result.message));
-  }
-
-  function changeCash(citizen: Citizen) {
-    const input = window.prompt(`${citizen.nickname}의 현금 잔액을 입력하세요`, String(citizen.cash));
-    if (input === null) return;
-    const cash = Number(input);
-    if (!Number.isSafeInteger(cash) || cash < 0) {
-      say("현금은 0 이상의 안전한 정수로 입력해주세요.", true);
-      return;
-    }
-    if (!window.confirm(`${citizen.nickname}의 현금을 ${number(cash)}(으)로 설정할까요?`)) return;
-    void run(() => api<{ message: string }>(`/api/admin/users/${encodeURIComponent(citizen.userId)}`, { method: "POST", body: JSON.stringify({ cash }) }),
-      "현금 잔액을 변경하지 못했습니다.", (result) => say(result.message));
   }
 
   function createEvent(event: FormEvent<HTMLFormElement>) {
@@ -317,21 +224,6 @@ export default function App() {
     void run(() => api<{ success: boolean; message: string }>("/api/admin/events", {
       method: "POST", body: JSON.stringify({ eventType, severity: Math.round(percent), targetPercent: percent, targetPrice: target, durationSeconds: Number(eventDuration), assetCode: asset || null }),
     }), "시장 사건을 등록하지 못했습니다.", (result) => { say(result.message, !result.success); if (result.success) setEventTarget(""); });
-  }
-
-  function createCountryAccount(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (countryPassword !== countryPasswordConfirm) {
-      say("비밀번호 확인이 일치하지 않습니다.", true);
-      return;
-    }
-    if (countryPassword.length < 12 || countryPassword.length > 128 || !/[A-Za-z]/.test(countryPassword) || !/\d/.test(countryPassword)) {
-      say("비밀번호는 영문과 숫자를 포함해 12~128자로 입력해주세요.", true);
-      return;
-    }
-    if (!window.confirm(`${countryId} 국가 계정을 만들까요? 국가 계정은 국고 잔액으로 거래합니다.`)) return;
-    void run(() => api("/api/admin/users/country-account", { method: "POST", body: JSON.stringify({ countryId, password: countryPassword }) }),
-      "국가 계정을 만들지 못했습니다.", () => { setCountryPassword(""); setCountryPasswordConfirm(""); say(`${countryId} 국가 계정을 생성했습니다.`); });
   }
 
   function runCommand(event: FormEvent<HTMLFormElement>) {
@@ -404,7 +296,7 @@ export default function App() {
 
   const current = pages.find((item) => item.id === page)!;
   const pageIndex = pages.findIndex((item) => item.id === page);
-  const searchable = page === "instruments" || page === "users" || page === "database";
+  const searchable = page === "instruments" || page === "finance" || page === "exchanges" || page === "users" || page === "database";
 
   return <Stage>
     <div className="win">
@@ -456,30 +348,10 @@ export default function App() {
           </section>
         </>}
 
-        {page === "instruments" && <>
-          <section className="glass card mb rise"><div className="card-head"><div><h2>펀드 생성</h2><p className="cap">NAV 가입·환매형 일반 펀드</p></div></div><form className="form-grid" onSubmit={createFund}>
-            <label>코드<input value={fundCode} onChange={(event) => setFundCode(event.target.value)} required /></label>
-            <label>이름<input value={fundName} onChange={(event) => setFundName(event.target.value)} required /></label>
-            <label>기준가격<input type="number" min="1" step="1" value={fundPrice} onChange={(event) => setFundPrice(event.target.value)} required /></label>
-            <label>총 발행 좌수<input type="number" min="1" step="1" value={fundSupply} onChange={(event) => setFundSupply(event.target.value)} required /></label>
-            <label>거래소<input value={fundExchange} onChange={(event) => setFundExchange(event.target.value)} required /></label>
-            <label>유형<select value={fundCategory} onChange={(event) => setFundCategory(event.target.value)}><option value="equity">주식형</option><option value="bond">채권형</option><option value="mixed">혼합형</option><option value="other">기타형</option></select></label>
-            <label className="span-wide">구성 자산 · 비중(%)<input value={fundComponents} onChange={(event) => setFundComponents(event.target.value)} placeholder="INZST001:60,INZCB001:40" required /></label>
-            <button className="btn primary" disabled={busy}>{busy ? "생성 중…" : "펀드 생성"}</button>
-          </form></section>
-          <section className="glass card rise"><div className="card-head"><div><h2>종목 · 상품</h2><p className="cap">{number(filteredInstruments.length)}개</p></div></div><div className="scroll-x tall"><table><thead><tr><th>코드</th><th>이름</th><th>유형</th><th>펀드 분류</th><th className="r">가격</th><th>거래소</th><th>상태</th><th /></tr></thead><tbody>{filteredInstruments.map((item) => <tr key={item.code}><td className="mono">{item.code}</td><td>{item.name}</td><td>{item.type}</td><td>{fundCategoryName[item.fund_category || ""] || "—"}</td><td className="r mono">{number(item.price)}</td><td>{item.exchange_id || "—"}</td><td><span className={item.status === "active" ? "tag ok" : "tag warn"}>{item.status}</span></td><td className="row-actions"><button className="soft small" disabled={busy} onClick={() => editInstrument(item)}>설정</button><button className="soft small" disabled={busy || item.status === "matured"} onClick={() => changeInstrument(item)}>{item.status === "active" ? "중지" : "재개"}</button></td></tr>)}</tbody></table>{!filteredInstruments.length && <p className="empty">표시할 종목이 없습니다.</p>}</div></section>
-        </>}
-
-        {page === "users" && <>
-          <section className="glass card mb rise"><div className="card-head"><div><h2>국가 계정 추가</h2><p className="cap">국가 ID가 사용자 ID가 됩니다. HTS에서 국가 계정으로 로그인하면 국고로 거래합니다.</p></div></div><form className="form-grid" onSubmit={createCountryAccount}>
-            <label>국가 ID<select value={countryId} onChange={(event) => setCountryId(event.target.value)} required>{countries.map((country) => <option key={country.countryId} value={country.countryId}>{country.countryId} · {country.currencyCode}</option>)}</select></label>
-            <label>비밀번호<input type="password" autoComplete="new-password" minLength={12} maxLength={128} value={countryPassword} onChange={(event) => setCountryPassword(event.target.value)} required /></label>
-            <label>비밀번호 확인<input type="password" autoComplete="new-password" minLength={12} maxLength={128} value={countryPasswordConfirm} onChange={(event) => setCountryPasswordConfirm(event.target.value)} required /></label>
-            <button className="btn primary" disabled={busy || !countries.length}>{busy ? "추가 중…" : "국가 계정 추가"}</button>
-          </form><p className="hint">비밀번호는 영문과 숫자를 포함해 12~128자로 입력하세요.</p></section>
-          <section className="glass card rise"><div className="card-head"><div><h2>사용자 계정</h2><p className="cap">최대 100명 · 국적·신용점수 등 그 밖의 값은 DB 편집의 users 테이블에서 수정합니다.</p></div></div><div className="scroll-x tall"><table><thead><tr><th>사용자</th><th>유형</th><th>ID</th><th>국적</th><th className="r">현금</th><th className="r">신용</th><th>권한</th><th>상태</th><th /></tr></thead><tbody>{citizens.map((citizen) => <tr key={citizen.userId}><td>{citizen.nickname}</td><td>{citizen.accountType === "country" ? "국가" : "Discord"}</td><td className="mono">{citizen.userId}</td><td>{citizen.nationality}</td><td className="r mono">{number(citizen.cash)}</td><td className="r">{number(citizen.creditScore)}</td><td>{citizen.role}</td><td><span className={citizen.status === "active" ? "tag ok" : "tag warn"}>{citizen.status}</span></td><td className="row-actions"><button className="soft small" disabled={busy || citizen.userId === user.userId} onClick={() => changeCash(citizen)}>현금</button><button className="soft small" disabled={busy || citizen.userId === user.userId} onClick={() => changeCitizen(citizen, "status")}>{citizen.status === "active" ? "비활성" : "활성화"}</button>{citizen.accountType !== "country" && <button className="soft small" disabled={busy || citizen.userId === user.userId} onClick={() => changeCitizen(citizen, "role")}>{citizen.role === "admin" ? "관리자 해제" : "관리자 지정"}</button>}</td></tr>)}</tbody></table>{!citizens.length && <p className="empty">사용자를 찾지 못했습니다.</p>}</div></section>
-        </>}
-
+        {page === "instruments" && <ProductsPage group="market" ctx={ctx} />}
+        {page === "finance" && <ProductsPage group="finance" ctx={ctx} />}
+        {page === "exchanges" && <ExchangesPage ctx={ctx} />}
+        {page === "users" && <UsersPage ctx={ctx} currentUserId={user.userId} />}
         {page === "events" && <>
           <section className="glass card mb rise"><div className="card-head"><div><h2>시장 사건 등록</h2><p className="cap">기존 시장 사건 검증과 감사 기록을 적용합니다.</p></div></div><form className="form-grid" onSubmit={createEvent}>
             <label>종류<select value={eventType} onChange={(event) => setEventType(event.target.value)}><option value="good">호재</option><option value="bad">악재</option></select></label>
@@ -494,13 +366,20 @@ export default function App() {
         </>}
 
         {page === "commands" && <>
-          <div className="segment-tabs mb" role="tablist" aria-label="명령어 종류"><button role="tab" aria-selected={commandScope === "admin"} className={commandScope === "admin" ? "active" : ""} onClick={() => setCommandScope("admin")}>관리자 명령어 <span>{commands.length}</span></button><button role="tab" aria-selected={commandScope === "national"} className={commandScope === "national" ? "active" : ""} onClick={() => setCommandScope("national")}>국가 명의 <span>{nationalCommands.length}</span></button></div>
+          <div className="segment-tabs mb" role="tablist" aria-label="명령어 종류"><button role="tab" aria-selected={commandScope === "admin"} className={commandScope === "admin" ? "active" : ""} onClick={() => setCommandScope("admin")}>관리자 명령어 <span>{commands.length}</span></button><button role="tab" aria-selected={commandScope === "national"} className={commandScope === "national" ? "active" : ""} onClick={() => setCommandScope("national")}>국가 명의 <span>{nationalCommands.length}</span></button><button role="tab" aria-selected={commandScope === "help"} className={commandScope === "help" ? "active" : ""} onClick={() => setCommandScope("help")}>도움말 ($도움말)</button></div>
+          {commandScope === "help" && <section className="glass card mb rise"><div className="card-head"><div><h2>{helpPages[helpPage]?.label ?? "도움말"}</h2><p className="cap">Discord $도움말과 같은 내용입니다.</p></div><div className="actions"><select aria-label="도움말 페이지" value={helpPage} onChange={(event) => setHelpPage(Number(event.target.value))}>{helpPages.map((item, index) => <option key={item.label} value={index}>{item.label}</option>)}</select></div></div>
+            {helpPages[helpPage] && <div className="help-page"><pre>{plain(helpPages[helpPage].description)}</pre>{helpPages[helpPage].fields.map((field) => <div key={field.name} className="help-field"><h3>{field.name}</h3><pre>{plain(field.value)}</pre></div>)}</div>}
+            {!helpPages.length && <p className="empty">도움말을 불러오는 중입니다.</p>}
+          </section>}
           {commandScope === "national" && <section className="glass card mb rise"><div className="card-head"><div><h2>국가(국고) 명의 실행</h2><p className="cap">Discord `$매수`·`$송금` 등과 같이 국고 계정으로 실행하고 작업 기록에 남깁니다. {discordOnly.length > 0 && `${discordOnly.map((name) => `$${name}`).join(", ")}은(는) Discord 메시지를 보내야 해서 Discord에서만 사용할 수 있습니다.`}</p></div></div>
             <form className="form-grid" onSubmit={runNationalCommand}>
               <label>명령어<select value={nationalCommand} onChange={(event) => setNationalCommand(event.target.value)}>{nationalCommands.map((item) => <option key={item.name} value={item.name}>${item.name}</option>)}</select></label>
               {selectedNational?.fields.map((field, index) => <label key={`${nationalCommand}-${field.label}`} className={field.long ? "span-wide" : undefined}>{field.label}{!field.required && <small>선택</small>}<input className={field.long ? "mono" : undefined} value={nationalValues[index] ?? ""} required={field.required} onChange={(event) => setNationalValues(nationalValues.map((value, position) => position === index ? event.target.value : value))} /></label>)}
               <button className="btn primary" disabled={busy || !selectedNational}>{busy ? "실행 중…" : selectedNational?.fields.length ? "실행" : "조회"}</button>
             </form>
+          </section>}
+          {commandScope === "national" && <section className="glass card mb rise"><div className="card-head"><div><h2>Discord 봇 처리 대기열</h2><p className="cap">$주총처럼 Discord 메시지를 보내야 하는 작업은 실행 중인 봇이 처리합니다. 봇이 꺼져 있으면 대기 상태로 남습니다.</p></div><div className="actions"><button className="soft" type="button" onClick={() => void refresh()}>새로고침</button></div></div>
+            <div className="scroll-x"><table><thead><tr><th>#</th><th>작업</th><th>상태</th><th>요청</th><th>결과</th><th>시각</th></tr></thead><tbody>{jobs.map((job) => <tr key={job.job_id}><td className="mono">#{job.job_id}</td><td>{job.kind === "shareholder_meeting" ? "$주총" : job.kind}</td><td><span className={job.status === "done" ? "tag ok" : job.status === "failed" ? "tag warn" : "tag"}>{{ pending: "대기", running: "처리 중", done: "완료", failed: "실패" }[job.status]}</span></td><td className="mono audit-payload">{job.payload}</td><td className="audit-payload">{job.result ? plain(job.result) : "—"}</td><td>{date(job.updated_epoch)}</td></tr>)}</tbody></table>{!jobs.length && <p className="empty">요청한 작업이 없습니다.</p>}</div>
           </section>}
           {commandScope === "admin" && <section className="glass card mb rise"><div className="card-head"><div><h2>명령어 실행</h2><p className="cap">Discord에서 `$명령어 인자`로 입력하던 것과 같습니다. 인자는 공백으로 구분하고, 공백이 있는 값은 따옴표로 감쌉니다. 시장 사건($사건)은 시장 사건 화면에서 등록합니다.</p></div></div>
             <form className="command-form" onSubmit={runCommand}>
@@ -511,13 +390,13 @@ export default function App() {
             <p className="usage"><span className="mono">${command} {selectedCommand?.usage}</span></p>
             {(command === "상품생성" || command === "상품수정") && <details className="help"><summary>상품 종류별 순서형 인자</summary><pre>{creationHelp}</pre></details>}
           </section>}
-          <section className="glass card mb rise"><div className="card-head"><div><h2>실행 결과</h2><p className="cap">이 화면에서 실행한 최근 20건 · 전체 기록은 작업 기록에서 확인합니다.</p></div></div>
-            {commandResults.map((item) => <div key={item.time} className={item.success ? "result" : "result failed"}><div className="result-head"><span className="mono">{item.national && <span className="tag inline-start">국가</span>}${item.command} {item.arguments}</span><span>{date(item.time)}</span></div><pre>{item.message}</pre></div>)}
+          {commandScope !== "help" && <><section className="glass card mb rise"><div className="card-head"><div><h2>실행 결과</h2><p className="cap">이 화면에서 실행한 최근 20건 · 전체 기록은 작업 기록에서 확인합니다.</p></div></div>
+            {commandResults.map((item) => <div key={item.time} className={item.success ? "result" : "result failed"}><div className="result-head"><span className="mono">{item.national && <span className="tag inline-start">국가</span>}${item.command} {item.arguments}</span><span>{date(item.time)}</span></div><pre>{plain(item.message)}</pre></div>)}
             {!commandResults.length && <p className="empty">아직 실행한 명령어가 없습니다.</p>}
           </section>
           <section className="glass card rise"><div className="card-head"><div><h2>전체 명령어</h2><p className="cap">{commandScope === "admin" ? commands.length : nationalCommands.length}개 · 선택하면 위 입력에 적용됩니다.</p></div></div><div className="command-list">{commandScope === "admin"
             ? commands.map((item) => <button key={item.name} type="button" className={item.name === command ? "command-chip active" : "command-chip"} onClick={() => setCommand(item.name)}><b>${item.name}</b><small>{item.usage || "인자 없음"}</small></button>)
-            : nationalCommands.map((item) => <button key={item.name} type="button" className={item.name === nationalCommand ? "command-chip active" : "command-chip"} onClick={() => setNationalCommand(item.name)}><b>${item.name}</b><small>{item.fields.map((field) => field.label).join(" · ") || "조회"}</small></button>)}</div></section>
+            : nationalCommands.map((item) => <button key={item.name} type="button" className={item.name === nationalCommand ? "command-chip active" : "command-chip"} onClick={() => setNationalCommand(item.name)}><b>${item.name}</b><small>{item.fields.map((field) => field.label).join(" · ") || "조회"}</small></button>)}</div></section></>}
         </>}
 
         {page === "database" && <>
