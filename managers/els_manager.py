@@ -9,6 +9,7 @@ from decimal import Decimal
 from functions.admin_access import resolve_user_role
 from functions.money import parse_money, round_money
 from database.user_db import TREASURY_USER_ID
+from managers.currency_manager import CurrencyManager, SCALE
 from managers.market_session_manager import MarketSessionManager
 
 DAY = 86400
@@ -135,8 +136,9 @@ class ELSManager:
             raise ValueError("조기평가일은 만기 전의 증가하는 날짜이며 상환기준과 개수가 같아야 합니다.")
         if any(a < b for a, b in zip(levels, levels[1:])):
             raise ValueError("스텝다운 상환기준은 뒤 회차가 앞 회차 이하여야 합니다.")
-        issuer = str(fields.get("issuer_code") or TREASURY_USER_ID).strip()
-        if issuer != TREASURY_USER_ID:
+        # Without an issuing company, the treasury of the country listing most underlyings issues it.
+        issuer = str(fields.get("issuer_code") or CurrencyManager.majority_treasury(conn, [info["code"] for info in infos])).strip()
+        if not CurrencyManager.is_treasury(conn, issuer):
             company = conn.execute("SELECT share_class FROM company WHERE company_code=? AND status='active'", (issuer,)).fetchone()
             if not company or company["share_class"] == "preferred":
                 raise ValueError("발행법인은 거래 중인 보통주 법인 코드를 입력해주세요.")
@@ -166,8 +168,9 @@ class ELSManager:
 
     @staticmethod
     def _reserve_coupon(conn, issuer, coupon, total):
-        if issuer == TREASURY_USER_ID:
-            changed = conn.execute("UPDATE users SET cash=cash-? WHERE user_id=? AND cash>=?", (coupon, issuer, coupon))
+        if CurrencyManager.is_treasury(conn, issuer):
+            CurrencyManager.treasury_pay(conn, issuer, 'NWX', coupon * SCALE)
+            return
         else:
             changed = conn.execute("UPDATE issuer_cash_accounts SET balance=balance-?,locked_amount=locked_amount+? "
                 "WHERE company_code=? AND balance>=? AND locked_amount+?<=?",
@@ -177,9 +180,9 @@ class ELSManager:
 
     @staticmethod
     def _release_reserve(conn, issuer, locked, refund):
-        if issuer == TREASURY_USER_ID:
-            changed = conn.execute("UPDATE users SET cash=cash+? WHERE user_id=? AND cash+?<=?",
-                (refund, issuer, refund, MAX_MONEY))
+        if CurrencyManager.is_treasury(conn, issuer):
+            CurrencyManager.treasury_receive(conn, issuer, 'NWX', refund * SCALE)
+            return
         else:
             changed = conn.execute("UPDATE issuer_cash_accounts SET balance=balance+?,locked_amount=locked_amount-? "
                 "WHERE company_code=? AND locked_amount>=? AND balance+?<=?",
@@ -202,7 +205,7 @@ class ELSManager:
                 if not terms or terms["state"] != "subscription" or now >= terms["subscription_end_epoch"]:
                     return False, "❌ 모집 중인 ELS만 청약할 수 있습니다."
                 user = conn.execute("SELECT status FROM users WHERE user_id=?", (user_id,)).fetchone()
-                if not user or (user["status"] != "active" and user_id != TREASURY_USER_ID):
+                if not user or (user["status"] != "active" and not CurrencyManager.is_treasury(conn, user_id)):
                     return False, "❌ 등록된 활성 사용자만 청약할 수 있습니다."
                 sold = conn.execute("SELECT COALESCE(SUM(quantity),0) FROM els_subscriptions "
                     "WHERE product_code=? AND status='subscribed'", (code,)).fetchone()[0]

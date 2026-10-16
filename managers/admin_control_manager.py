@@ -112,7 +112,11 @@ class AdminControlManager:
             keys = {'underlying_code','option_type','strike_price','maturity_days','quantity','limit_price','volatility_percent'}
             if set(extra)-keys:
                 raise ValueError("옵션 작성 필드를 확인해주세요.")
-            result = self.bot.option_mgr.create_and_write(TREASURY_USER_ID,**extra)
+            from managers.currency_manager import CurrencyManager
+            with self.db.atomic() as conn:
+                # The treasury of the country listing the underlying writes the contract.
+                writer = CurrencyManager.exchange_treasury(conn, str(extra.get('underlying_code','')))
+            result = self.bot.option_mgr.create_and_write(writer,**extra)
             if not result[0]:
                 raise ValueError(result[1])
             with self.db.atomic() as conn:

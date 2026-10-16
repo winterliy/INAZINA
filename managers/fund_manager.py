@@ -64,8 +64,14 @@ class FundManager:
                     raise ValueError('기존 펀드의 국고 자금 이전은 관리자만 할 수 있습니다.')
                 if isinstance(expected_funding, bool) or expected_funding != funding:
                     raise ValueError(f'국고에서 {funding:,} NWX를 이전해야 합니다. 현재 전환 금액을 확인하고 승인해주세요.')
-                if not UserManager._change_cash(conn, TREASURY_USER_ID, -funding):
+                from managers.currency_manager import CurrencyManager
+                # The treasury of the country listing the fund funds the conversion.
+                from managers.currency_manager import SCALE
+                treasury = CurrencyManager.exchange_treasury(conn, str(code))
+                home = CurrencyManager.home(conn, treasury)
+                if CurrencyManager.balance(conn, treasury, home) < CurrencyManager.convert(conn, funding * SCALE, 'NWX', home):
                     raise ValueError('기존 펀드의 순자산을 이전할 국고 잔액이 부족합니다.')
+                CurrencyManager.treasury_pay(conn, treasury, 'NWX', funding * SCALE)
             self.create_empty(conn, str(code), funded_conversion=bool(funding))
             if funding:
                 change_cash(conn, PREFIX+str(code), funding, 'conversion', str(actor))

@@ -114,7 +114,14 @@ class FuturesManager:
         actual_pnl = max(-int(position["collateral"]), pnl)
         collateral = int(position["collateral"]) + actual_pnl
         net_pnl = int(position["net_pnl"]) + actual_pnl
-        conn.execute("UPDATE users.users SET cash = cash - ? WHERE user_id = ?", (actual_pnl, TREASURY_USER_ID))
+        # The listing country's treasury is the counterparty to every futures position.
+        from managers.currency_manager import CurrencyManager, SCALE
+        treasury = CurrencyManager.exchange_treasury(conn, product["product_code"])
+        currency = CurrencyManager.home(conn, position["user_id"])
+        if actual_pnl > 0:
+            CurrencyManager.treasury_pay(conn, treasury, currency, actual_pnl * SCALE)
+        elif actual_pnl < 0:
+            CurrencyManager.treasury_receive(conn, treasury, currency, -actual_pnl * SCALE)
         conn.execute("UPDATE assets.futures_positions SET settlement_price = ?, collateral = ?, net_pnl = ?, updated_epoch = ? "
                      "WHERE user_id = ? AND product_code = ?",
                      (price, collateral, net_pnl, now, position["user_id"], product["product_code"]))

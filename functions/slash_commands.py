@@ -57,15 +57,16 @@ async def submit_relief_request(bot, user_id, display_name, request_type):
     }
     admin_ids.update(BOOTSTRAP_ADMIN_IDS)
     investment_total = int(assets["stock_total"]) + int(assets["bond_total"])
+    home = assets.get("national_currency", "NWX")
     message = (
         f"[{display_name} ({user_id})가 {request_type}을 신청했습니다.\n"
         "현재 잔액 (내 자산 페이지 구성 기준 · 미정산 이자/만기정산 제외)\n"
-        f"현금: {int(assets['cash']):,} NWX · "
-        f"통장: {int(assets['account_total']):,} NWX · "
+        f"현금: {int(assets['cash']):,} {home} · "
+        f"통장: {int(assets['account_total']):,} {home} · "
         f"투자자산: {investment_total:,} NWX · "
         f"매수 주문 예치금: {int(assets['order_reserved_total']):,} NWX\n"
         f"총 자산: {int(assets['grand_total']):,} NWX · "
-        f"대출 잔액: {int(assets['loan_total']):,} NWX · "
+        f"대출 잔액: {int(assets['loan_total']):,} {home} · "
         f"순자산: {int(assets['net_worth']):,} NWX]"
     )
 
@@ -565,8 +566,9 @@ class SlashCommandRegistry:
         info = await asyncio.to_thread(self.bot.user_mgr.get_total_assets, user_id)
         embed = discord.Embed(title=f"💰 {display_name}님의 자산 현황", color=discord.Color.gold())
         embed.description = f"국적: **{str(info.get('nationality') or user_data['nationality'])[:100]}** · 기본 통화: **{info.get('national_currency','NWX')}**"
-        embed.add_field(name="💵 현금", value=f"```{info['cash']:,.0f} NWX```", inline=True)
-        embed.add_field(name="🏦 통장 잔액", value=f"```{info['account_total']:,.0f} NWX```", inline=True)
+        home = info.get('national_currency', 'NWX')
+        embed.add_field(name="💵 현금", value=f"```{info['cash']:,.0f} {home}```", inline=True)
+        embed.add_field(name="🏦 통장 잔액", value=f"```{info['account_total']:,.0f} {home}```", inline=True)
         embed.add_field(name="🌐 외환통장 평가액",value=f"```{info.get('currency_total',0):,} NWX```",inline=True)
         investment_total = int(info["stock_total"]) + int(info["bond_total"]) + int(info.get('els_total', 0))
         embed.add_field(name="📈 투자자산 합계", value=f"```{investment_total:,} NWX```", inline=True)
@@ -588,7 +590,7 @@ class SlashCommandRegistry:
             inline=True,
         )
         embed.add_field(name="🏆 총 자산", value=f"```{info['grand_total']:,.0f} NWX```", inline=False)
-        embed.add_field(name="💳 대출 잔액", value=f"```{info['loan_total']:,.0f} NWX```", inline=True)
+        embed.add_field(name="💳 대출 잔액", value=f"```{info['loan_total']:,.0f} {home}```", inline=True)
         embed.add_field(name="🧾 순자산", value=f"```{info['net_worth']:,.0f} NWX```", inline=True)
         try:
             credit_score = int(float(user_data["credit_score"] or 0))
@@ -597,7 +599,7 @@ class SlashCommandRegistry:
         embed.add_field(name="💳 신용 점수", value=f"```{credit_score:,}점```", inline=True)
         embed.add_field(
             name="💼 심사 연소득",
-            value=f"```{int(user_data['annual_income'] or 0):,} NWX```",
+            value=f"```{int(user_data['annual_income'] or 0):,} {home}```",
             inline=True,
         )
         # Freeze the complete financial summary before adding category details.
@@ -606,9 +608,9 @@ class SlashCommandRegistry:
         # into the main wallet summary.
         summary = discord.Embed.from_dict(copy.deepcopy(embed.to_dict()))
         account_lines = [
-            f"• {item['product_name']} ({item['number']}): {item['balance']:,.0f} NWX"
-            + (f" · 금융기관 정리 완료 · 보험금 {item['insurance_paid']:,} NWX"
-               f" · 미보장채권 {item['uninsured_claim']:,} NWX"
+            f"• {item['product_name']} ({item['number']}): {item['balance']:,.0f} {home}"
+            + (f" · 금융기관 정리 완료 · 보험금 {item['insurance_paid']:,} {home}"
+               f" · 미보장채권 {item['uninsured_claim']:,} {home}"
                if item.get('resolution_status') == 'resolved' else '')
             for item in info["accounts"]
         ]
@@ -628,7 +630,7 @@ class SlashCommandRegistry:
             unit = "계약" if item.get("type") == "option" else "주" if is_stock else "개"
             price_text = self.bot.market_mgr.format_price(item["price"], item.get("type"))
             risk = (
-                " · ⚠️ 위험 알림: 100 NWX 이하"
+                f" · ⚠️ 위험 알림: 100 {item.get('quote_currency','NWX')} 이하"
                 if item["price"] <= 100 else ""
             )
             locked = int(item.get("sell_reserved_qty", 0))
@@ -642,13 +644,13 @@ class SlashCommandRegistry:
             )
         positions = "\n".join(position_lines)
         bond_lines = [
-            f"• {item['name']} ({item['product_code']}): 액면 {item['principal']:,} NWX · "
-            f"{item['quantity']:,}매 · 시장가 {item['market_price']:,} NWX/매 · "
-            f"평가액 {item['market_value']:,} NWX · "
-            f"예상 만기 이자 {item['projected_interest']:,} NWX · "
-            f"예상 원리금 {item['projected_total']:,} NWX(세전) · "
+            f"• {item['name']} ({item['product_code']}): 액면 {item['principal']:,} {item['quote_currency']} · "
+            f"{item['quantity']:,}매 · 시장가 {item['market_price']:,} {item['quote_currency']}/매 · "
+            f"평가액 {item['market_value']:,} {item['quote_currency']} · "
+            f"예상 만기 이자 {item['projected_interest']:,} {item['quote_currency']} · "
+            f"예상 원리금 {item['projected_total']:,} {item['quote_currency']}(세전) · "
             f"<t:{item['maturity_epoch']}:D> 만기"
-            + (" · ⚠️ 위험 알림: 100 NWX 이하" if item["market_price"] <= 100 else "")
+            + (f" · ⚠️ 위험 알림: 100 {item['quote_currency']} 이하" if item["market_price"] <= 100 else "")
             for item in info["bonds"]
         ]
         embed.add_field(
@@ -662,7 +664,7 @@ class SlashCommandRegistry:
             inline=False,
         )
         written_lines = [f"• {item['name']} (`{item['contract_code']}`) · 작성 체결 {item['outstanding_contracts']:,}계약 · 미체결 {item['offered']:,}계약 · "
-            f"담보 {item['collateral_quantity']:,}주 / {item['collateral_cash']:,} NWX · 만기 <t:{item['expiration_epoch']}:D>"
+            f"담보 {item['collateral_quantity']:,}주 / {item['collateral_cash']:,} {item['quote_currency']} · 만기 <t:{item['expiration_epoch']}:D>"
             for item in info.get('written_options',[])]
         embed.add_field(name='📄 작성 옵션',value='\n'.join(written_lines)[:1024] or '작성 중인 옵션이 없습니다.',inline=False)
         from functions.wallet_views import WalletCategoryView, els_position_lines, preferred_claim_lines
@@ -680,14 +682,14 @@ class SlashCommandRegistry:
             sections.setdefault(category,[]).append(line)
         for item in info.get('written_options',[]):
             if item['collateral_cash']:
-                sections.setdefault('collateral',[]).append(f"• 풋 현금담보 · {item['contract_code']} · {item['collateral_cash']:,} NWX · 계약 만기까지 잠금")
+                sections.setdefault('collateral',[]).append(f"• 풋 현금담보 · {item['contract_code']} · {item['collateral_cash']:,} {item['quote_currency']} · 계약 만기까지 잠금")
         from functions.wallet_views import load_active_wallet_loans
         loans = await asyncio.to_thread(
             load_active_wallet_loans, self.bot.db, user_id, ordered=True
         )
-        sections['loans']=[f"• {row['name'] or row['product_code']} ({row['product_code']}) · 대출 #{row['loan_id']} · 원금 {row['principal']:,} NWX · 남은 부채 {row['outstanding_balance']:,} NWX"
+        sections['loans']=[f"• {row['name'] or row['product_code']} ({row['product_code']}) · 대출 #{row['loan_id']} · 원금 {row['principal']:,} {row['quote_currency']} · 남은 부채 {row['outstanding_balance']:,} {row['quote_currency']}"
                            +f" · 명목 {float(row['contract_rate'] or 0):g}% · 실효 {float(row['contract_effective_rate'] or row['contract_rate'] or 0):.3f}% · APR {float(row['contract_apr'] or row['contract_rate'] or 0):.3f}% · {row['collection_status']}"
-                           +(f" · 현금담보 {int(row['collateral_amount'] or 0)-int(row['collateral_released'] or 0)-int(row['collateral_seized'] or 0):,} NWX" if row['collateral_amount'] else '')
+                           +(f" · 현금담보 {int(row['collateral_amount'] or 0)-int(row['collateral_released'] or 0)-int(row['collateral_seized'] or 0):,} {row['quote_currency']}" if row['collateral_amount'] else '')
                            +(f" · 자산담보평가 {int(row['collateral_asset_value'] or 0):,} NWX · LTV {float(row['current_ltv'] or 0)*100:.1f}%" if row['collateral_asset_value'] else '')
                            +(f" · 만기 <t:{int(row['maturity_epoch'])}:D> · /대출연장 id:{row['loan_id']}" if row['maturity_epoch'] else '') for row in loans]
         view=WalletCategoryView(user_id,summary,sections,info.get('option_short_liability',0))

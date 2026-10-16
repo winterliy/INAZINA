@@ -138,10 +138,10 @@ def identity(user_id):
         country_account = connection.execute(
             "SELECT 1 FROM country_currencies WHERE nationality=?", (user_id,),
         ).fetchone() if row and row["user_id"] == row["nationality"] else None
+        treasury_id = _country_treasury(connection, row["nationality"]) if country_account else None
         treasury = connection.execute(
-            "SELECT cash FROM users WHERE user_id=? AND nationality=?",
-            (TREASURY_USER_ID, row["nationality"]),
-        ).fetchone() if country_account else None
+            "SELECT cash FROM users WHERE user_id=?", (treasury_id,),
+        ).fetchone() if treasury_id else None
         currency = connection.execute(
             "SELECT currency_code FROM country_currencies WHERE nationality=?", (row["nationality"],),
         ).fetchone() if row else None
@@ -165,13 +165,29 @@ def identity(user_id):
 
 def trading_user_id(user_id):
     with connect_readonly() as connection:
-        country_account = connection.execute(
-            "SELECT 1 FROM users u JOIN country_currencies c ON c.nationality=u.user_id "
-            "JOIN users t ON t.user_id=? AND t.nationality=u.nationality "
+        country = connection.execute(
+            "SELECT u.nationality FROM users u JOIN country_currencies c ON c.nationality=u.user_id "
             "WHERE u.user_id=? AND u.nationality=u.user_id AND u.status='active'",
-            (TREASURY_USER_ID, user_id),
+            (user_id,),
         ).fetchone()
-    return TREASURY_USER_ID if country_account else user_id
+        # A country account trades with its own country's treasury.
+        treasury = _country_treasury(connection, country[0]) if country else None
+    return treasury or user_id
+
+
+def _country_treasury(connection, nationality):
+    has_table = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='country_treasuries'"
+    ).fetchone()
+    row = connection.execute(
+        "SELECT user_id FROM country_treasuries WHERE nationality=?", (nationality,),
+    ).fetchone() if has_table else None
+    if not row:
+        # Before the per-country treasuries existed the shared treasury served its own nationality.
+        row = connection.execute(
+            "SELECT user_id FROM users WHERE user_id=? AND nationality=?", (TREASURY_USER_ID, nationality),
+        ).fetchone()
+    return str(row[0]) if row else None
 
 
 def auth_countries():

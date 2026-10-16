@@ -5,6 +5,29 @@ from contextlib import nullcontext
 
 from database import DatabaseManager
 from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY
+
+
+def _issuer(conn, product_code):
+    """Treasury of the country whose exchange lists the bond, and the bond's currency."""
+    from managers.currency_manager import CurrencyManager
+    row = conn.execute("SELECT p.exchange_id,COALESCE(p.quote_currency,'NWX') AS currency,e.nationality "
+                       "FROM treasury_bond_products p LEFT JOIN market_exchanges e ON e.exchange_id=p.exchange_id "
+                       "WHERE p.product_code=?", (product_code,)).fetchone()
+    nationality = row["nationality"] if row and row["nationality"] else None
+    if not nationality or not conn.execute("SELECT 1 FROM country_currencies WHERE nationality=?", (nationality,)).fetchone():
+        nationality = '낙원'
+    return CurrencyManager.treasury_id(conn, nationality), (row["currency"] if row else 'NWX')
+
+
+def _treasury_move(conn, product_code, amount):
+    """Positive amount: the issuing treasury receives; negative: it pays."""
+    from managers.currency_manager import CurrencyManager, SCALE
+    treasury, currency = _issuer(conn, product_code)
+    units = int(round(amount * SCALE))
+    if units > 0:
+        CurrencyManager.treasury_receive(conn, treasury, currency, units)
+    elif units < 0:
+        CurrencyManager.treasury_pay(conn, treasury, currency, -units)
 from functions.money import parse_money, round_money
 from functions.interest_calc import year_fraction
 from functions.tax_calc import calculate_income_tax
@@ -219,12 +242,7 @@ class TreasuryBondManager:
                      int(bond["coupon_frequency_days"] or 0),
                      bond["day_count_convention"], now),
                 )
-                treasury = conn.execute(
-                    "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
-                    (amount, TREASURY_USER_ID),
-                )
-                if treasury.rowcount != 1:
-                    raise RuntimeError("국고 계정을 찾을 수 없어 국채 매수를 취소했습니다.")
+                _treasury_move(conn, bond["product_code"], amount)
                 marked = max(1, round_money(
                     self.theoretical_price(conn, bond, now=now)["dirty_price"]
                 ))
@@ -301,12 +319,7 @@ class TreasuryBondManager:
                         tax = 0
                     gross_payment = principal + gross_interest
                     net_payment = principal + gross_interest - tax
-                    treasury_debit = conn.execute(
-                        "UPDATE users.users SET cash = cash - ? WHERE user_id = ?",
-                        (gross_payment, TREASURY_USER_ID),
-                    )
-                    if treasury_debit.rowcount != 1:
-                        raise RuntimeError("국고 계정을 찾을 수 없어 국채 상환을 취소했습니다.")
+                    _treasury_move(conn, holding["product_code"], -gross_payment)
                     if tax:
                         from managers.currency_manager import CurrencyManager
                         tax_treasury = CurrencyManager.user_treasury_id(conn, holding['user_id'])
@@ -394,12 +407,7 @@ class TreasuryBondManager:
                 fund = account(conn, holding['user_id'])
                 if fund:
                     tax = 0
-                treasury = conn.execute(
-                    "UPDATE users.users SET cash=cash-? WHERE user_id=?",
-                    (coupon, TREASURY_USER_ID),
-                )
-                if treasury.rowcount != 1:
-                    raise RuntimeError("국고 계정을 찾을 수 없어 쿠폰 지급을 취소했습니다.")
+                _treasury_move(conn, holding["product_code"], -coupon)
                 if tax:
                     from managers.currency_manager import CurrencyManager
                     tax_treasury = CurrencyManager.user_treasury_id(conn, holding['user_id'])

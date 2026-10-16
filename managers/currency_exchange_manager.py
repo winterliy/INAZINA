@@ -263,8 +263,9 @@ class CurrencyExchangeManager:
         """Transfer atomically; self FX-account deposits use destination-currency amounts."""
         sender = str(user_id)
         recipient = str(recipient).strip()
-        if recipient.casefold() in {'국고','treasury',TREASURY_USER_ID.casefold()}:
-            recipient = TREASURY_USER_ID
+        if recipient.casefold() in {'국고','treasury'}:
+            with self.db.atomic() as conn:
+                recipient = CurrencyManager.user_treasury_id(conn, sender)
         source_account = str(source_account or '__wallet__').strip()
         requested_units = amount_units(amount)
         from managers.user_manager import UserManager

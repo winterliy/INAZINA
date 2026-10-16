@@ -110,7 +110,7 @@ class CorporateActionsManager:
             'SELECT user_id,quantity FROM user_assets WHERE asset_code=? UNION ALL '
             'SELECT writer_id user_id,quantity FROM option_collateral_lots WHERE underlying_code=?'
             ') GROUP BY user_id ORDER BY user_id', (code, code)).fetchall()
-        return [(str(row['user_id']), float(row['quantity'])) for row in rows if row['user_id'] != TREASURY_USER_ID]
+        return [(str(row['user_id']), float(row['quantity'])) for row in rows if not CurrencyManager.is_treasury(conn, str(row['user_id']))]
 
     @staticmethod
     def _currency_account(conn, user, currency, now):
@@ -133,11 +133,13 @@ class CorporateActionsManager:
                 raise ValueError('발행법인 현금 배당은 NWX 상품에만 사용할 수 있습니다.')
             row = conn.execute('SELECT balance FROM issuer_cash_accounts WHERE company_code=?', (issuer,)).fetchone()
             return int(row['balance']) if row else 0
-        if currency == 'NWX':
-            row = conn.execute('SELECT cash FROM users WHERE user_id=?', (TREASURY_USER_ID,)).fetchone()
-            return int(row['cash']) if row else 0
-        row = conn.execute("SELECT balance_units FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'", (TREASURY_USER_ID, currency)).fetchone()
-        return int(row['balance_units']) // SCALE if row else 0
+        # The listing country's treasury funds treasury dividends: in that currency
+        # when it holds it, otherwise from its own currency at the current rate.
+        treasury = CurrencyManager.exchange_treasury(conn, issuer)
+        if CurrencyManager._treasury_target(conn, treasury, currency):
+            return CurrencyManager.balance(conn, treasury, currency) // SCALE
+        home = CurrencyManager.home(conn, treasury)
+        return CurrencyManager.convert(conn, max(0, CurrencyManager.balance(conn, treasury, home)), home, currency) // SCALE
 
     def _debit_dividend(self, conn, issuer, funding, currency, gross, counterpart="retained"):
         from database.fund_accounting import change_cash
@@ -154,12 +156,12 @@ class CorporateActionsManager:
             Finance.ensure(conn,issuer)
         if funding == 'issuer':
             changed = conn.execute('UPDATE issuer_cash_accounts SET balance=balance-? WHERE company_code=? AND balance>=?', (gross, issuer, gross))
-        elif currency == 'NWX':
-            changed = conn.execute('UPDATE users SET cash=cash-? WHERE user_id=? AND cash>=?', (gross, TREASURY_USER_ID, gross))
         else:
-            changed = conn.execute("UPDATE accounts SET balance_units=balance_units-? WHERE user_id=? AND quote_currency=? AND account_type='currency_saving' AND balance_units>=?",
-                                   (gross*SCALE, TREASURY_USER_ID, currency, gross*SCALE))
-        if changed.rowcount != 1:
+            if self._source_balance(conn, issuer, funding, currency) < gross:
+                raise ValueError(f'국고의 {currency} 배당 재원이 부족합니다. 필요액 {gross:,} {currency}')
+            CurrencyManager.treasury_pay(conn, CurrencyManager.exchange_treasury(conn, issuer), currency, gross*SCALE)
+            changed = None
+        if changed is not None and changed.rowcount != 1:
             raise ValueError(f'{"법인" if funding == "issuer" else "국고"}의 {currency} 배당 재원이 부족합니다. 필요액 {gross:,} {currency}')
         if tracked:
             Finance.event(conn,issuer,'배당 지급',
@@ -408,14 +410,14 @@ class CorporateActionsManager:
                 if not 0 <= new <= self.MAX_MONEY:
                     raise ValueError('사용 가능한 법인 현금의 한도를 확인해주세요. 잠금 예치금은 사용할 수 없습니다.')
                 delta = new-old
+                # Issuer cash (NWX) moves to/from the listing country's treasury.
+                treasury = CurrencyManager.exchange_treasury(conn, issuer)
                 if delta > 0:
-                    changed = conn.execute('UPDATE users SET cash=cash-? WHERE user_id=? AND cash>=?',(delta,TREASURY_USER_ID,delta))
+                    if self._source_balance(conn, issuer, 'treasury', 'NWX') < delta:
+                        raise ValueError('국고 잔액 또는 반환 후 잔액 한도를 확인해주세요.')
+                    CurrencyManager.treasury_pay(conn, treasury, 'NWX', delta*SCALE)
                 elif delta < 0:
-                    changed = conn.execute('UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?',(-delta,TREASURY_USER_ID,self.MAX_MONEY+delta))
-                else:
-                    changed = None
-                if changed is not None and changed.rowcount != 1:
-                    raise ValueError('국고 잔액 또는 반환 후 잔액 한도를 확인해주세요.')
+                    CurrencyManager.treasury_receive(conn, treasury, 'NWX', -delta*SCALE)
                 conn.execute('UPDATE issuer_cash_accounts SET balance=? WHERE company_code=?',(new,issuer))
                 Finance.event(conn,issuer,'국고와 법인 자본 이체',
                               [('cash',delta),('capital_surplus',-delta)],
@@ -536,7 +538,7 @@ class CorporateActionsManager:
                 # No outside shareholder leaves cash to the treasury as owner of
                 # the unissued residual; preference caps never become residual claims.
                 if balance:
-                    waterfall.append(({'asset':issuer,'user':TREASURY_USER_ID,'quantity':0,'claim':balance,'kind':'unowned_residual'},balance))
+                    waterfall.append(({'asset':issuer,'user':CurrencyManager.exchange_treasury(conn, str(code)),'quantity':0,'claim':balance,'kind':'unowned_residual'},balance))
                     balance = 0
                 if initial > self.MAX_MONEY or any(item['claim']>self.MAX_MONEY for item,_ in waterfall):
                     raise ValueError('청산 채권 또는 지급액이 금액 한도를 초과했습니다.')
@@ -544,7 +546,10 @@ class CorporateActionsManager:
                     taxable = amount if item['kind']=='arrears' else max(0,amount-item.get('principal',amount)) if item['kind']=='debt' else 0
                     tax = UserManager._tax(conn,item['user'],f'liquidation:{item["kind"]}:{issuer}',taxable)
                     net = amount-tax
-                    if not UserManager._change_cash(conn, item['user'], net, maximum=self.MAX_MONEY):
+                    if item['kind']=='unowned_residual':
+                        # The listing country's treasury keeps the residual (in NWX or exchanged).
+                        CurrencyManager.treasury_receive(conn, item['user'], 'NWX', net * SCALE)
+                    elif not UserManager._change_cash(conn, item['user'], net, maximum=self.MAX_MONEY):
                         raise ValueError('청산금을 받을 사용자 또는 잔액 한도를 확인해주세요.')
                     conn.execute('INSERT INTO corporate_liquidation_payments(operation_key,issuer_code,asset_code,user_id,kind,quantity,claim_amount,paid_amount,tax_amount,recorded_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)',
                                  (key,issuer,item['asset'],item['user'],item['kind'],item['quantity'],item['claim'],amount,tax,now))
@@ -586,9 +591,8 @@ class CorporateActionsManager:
         if company and company['dividend_funding'] == 'issuer':
             issuer = company['parent_company_code'] or offering['asset_code']
             proceeds = quantity * price
-            transferred = conn.execute('UPDATE users SET cash=cash-? WHERE user_id=? AND cash>=?', (proceeds, TREASURY_USER_ID, proceeds))
-            if transferred.rowcount != 1:
-                raise ValueError('신주 판매금을 법인 현금으로 이체할 국고 잔액이 부족합니다.')
+            # The listing treasury received the sale; it forwards it to the issuer's cash.
+            CurrencyManager.treasury_pay(conn, CurrencyManager.exchange_treasury(conn, issuer), 'NWX', proceeds*SCALE)
             conn.execute('INSERT OR IGNORE INTO issuer_cash_accounts(company_code) VALUES (?)', (issuer,))
             funded = conn.execute('UPDATE issuer_cash_accounts SET balance=balance+? WHERE company_code=? AND balance<=?', (proceeds, issuer, CorporateActionsManager.MAX_MONEY-proceeds))
             if funded.rowcount != 1:
@@ -666,16 +670,16 @@ class CorporateActionsManager:
                     issue = self._integer(price if issue_price is None else issue_price, '유상 발행가', 1)
                     if quantity * issue > self.MAX_MONEY:
                         raise ValueError('유상증자 모집 금액이 한도를 초과합니다.')
-                    if currency != 'NWX':
-                        self._currency_account(conn, TREASURY_USER_ID, currency, now)
+                    # The listing country's treasury holds and sells the new shares.
+                    seller = CurrencyManager.exchange_treasury(conn, code)
                     conn.execute("INSERT INTO user_assets(user_id,asset_code,quantity,average_cost) VALUES (?,?,?,?) ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET average_cost=(quantity*average_cost+excluded.quantity*excluded.average_cost)/(quantity+excluded.quantity),quantity=quantity+excluded.quantity",
-                                 (TREASURY_USER_ID, code, quantity, issue))
+                                 (seller, code, quantity, issue))
                     order = conn.execute("INSERT INTO market_orders(user_id,asset_code,side,limit_price,quantity,remaining_quantity,order_kind,status,created_epoch,updated_epoch,quote_currency) VALUES (?,?,'sell',?,?,?,'asset','open',?,?,?)",
-                                         (TREASURY_USER_ID, code, issue, quantity, quantity, now, now, currency)).lastrowid
+                                         (seller, code, issue, quantity, quantity, now, now, currency)).lastrowid
                     conn.execute('INSERT INTO corporate_equity_offerings(asset_code,order_id,quantity,issue_price,recorded_epoch) VALUES (?,?,?,?,?)', (code, order, quantity, issue, now))
                     conn.execute('UPDATE company SET total_shares=total_shares+? WHERE company_code=?', (quantity, code))
                     if hasattr(self.bot, 'order_book'):
-                        if currency == 'NWX':
+                        if currency == CurrencyManager.home(conn, seller):
                             self.bot.order_book._match_incoming_order(conn, order, now)
                         else:
                             from managers.foreign_securities_manager import ForeignSecuritiesManager
@@ -698,7 +702,7 @@ class CorporateActionsManager:
                                          (new, round(float(lot['quantity']) * float(lot['average_cost']) / (float(lot['quantity']) + new)), lot['holding_id']))
                     if allocations[-1]:
                         conn.execute("INSERT INTO user_assets(user_id,asset_code,quantity,average_cost) VALUES (?,?,?,0) ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET average_cost=quantity*average_cost/(quantity+excluded.quantity),quantity=quantity+excluded.quantity",
-                                     (TREASURY_USER_ID, code, allocations[-1]))
+                                     (CurrencyManager.exchange_treasury(conn, code), code, allocations[-1]))
                     new_price = max(1, round(Fraction(price * supply, supply + quantity)))
                     conn.execute('UPDATE company SET total_shares=total_shares+?,share_price=? WHERE company_code=?', (quantity, new_price, code))
                     conn.execute('UPDATE fund_components SET base_price=base_price*?/ ? WHERE asset_code=?', (new_price, price, code))
@@ -817,34 +821,29 @@ class CorporateActionsManager:
                     units = int(entitlement)
                     residual = round((entitlement-units)*price_a)
                     allocation = self._allocate(units, [lot['quantity'] for lot in user_lots]) if units else [0] * len(user_lots)
-                    cash += residual if user != TREASURY_USER_ID else 0
+                    cash += residual if not CurrencyManager.is_treasury(conn, user) else 0
                     total_new += units
                     conversions.append((user, user_lots, allocation, residual))
                 unissued = max(0, supply_b - sum(Fraction(str(lot['quantity'])) for lot in lots))
                 new_supply = supply_a + total_new + int(unissued * ratio)
                 if new_supply > self.MAX_MONEY or cash > self.MAX_MONEY:
                     raise ValueError('통합 후 발행량 또는 단주 정산금이 한도를 초과합니다.')
-                if currency == 'NWX':
-                    changed = conn.execute('UPDATE users SET cash=cash-? WHERE user_id=? AND cash>=?', (cash, TREASURY_USER_ID, cash))
-                else:
-                    changed = conn.execute("UPDATE accounts SET balance_units=balance_units-? WHERE user_id=? AND quote_currency=? AND account_type='currency_saving' AND balance_units>=?", (cash * SCALE, TREASURY_USER_ID, currency, cash * SCALE))
-                if changed.rowcount != 1:
-                    raise ValueError('단주 차액을 지급할 국고 잔액이 부족합니다.')
+                # The listing country's treasury pays odd-lot cash in the instrument currency.
+                CurrencyManager.treasury_pay(conn, CurrencyManager.exchange_treasury(conn, surviving_code), currency, cash * SCALE)
                 for user, user_lots, allocation, residual in conversions:
                     for lot, units in zip(user_lots, allocation):
                         if units:
                             cost = max(1, round(Fraction(int(lot['average_cost']), ratio)))
                             conn.execute("INSERT INTO user_assets(user_id,asset_code,account_number,quantity,average_cost) VALUES (?,?,?,?,?) ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET average_cost=(quantity*average_cost+excluded.quantity*excluded.average_cost)/(quantity+excluded.quantity),quantity=quantity+excluded.quantity",
                                          (user, surviving_code, lot['account_number'], units, cost))
-                    if residual and user != TREASURY_USER_ID:
-                        if currency == 'NWX':
-                            if not UserManager._change_cash(conn, user, residual, maximum=self.MAX_MONEY):
-                                raise ValueError('단주 정산금을 받을 계정 또는 잔액 한도를 확인해주세요.')
+                    if residual and not CurrencyManager.is_treasury(conn, user):
+                        if currency == CurrencyManager.home(conn, user):
+                            CurrencyManager.change(conn, user, currency, residual * SCALE)
                         else:
                             CurrencyExchangeManager._settle(conn, user, now)
                             account = self._currency_account(conn, user, currency, now)
                             changed = conn.execute("UPDATE accounts SET balance_units=balance_units+? WHERE account_number=? AND account_type='currency_saving' AND balance_units<=?", (residual * SCALE, account, MAX_UNITS - residual * SCALE))
-                        if currency != 'NWX' and changed.rowcount != 1:
+                        if currency != CurrencyManager.home(conn, user) and changed.rowcount != 1:
                             raise ValueError('단주 정산 수령자의 잔액 한도를 확인해주세요.')
                 conn.execute('DELETE FROM user_assets WHERE asset_code=?', (absorbed_code,))
                 if a['table'] == 'company':

@@ -23,6 +23,11 @@ class UnifiedCursor(sqlite3.Cursor):
         return super().executemany(sql(statement), parameters)
 
 class UnifiedConnection(sqlite3.Connection):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Every Inazina connection enforces declared REFERENCES (see database/integrity.py).
+        super().execute("PRAGMA foreign_keys=ON")
+
     def execute(self, statement, parameters=()):
         return super().execute(sql(statement), parameters)
 

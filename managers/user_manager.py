@@ -914,7 +914,8 @@ class UserManager:
             written_options.append({**dict(written),
                 'name':f"{underlying['name'] if underlying else written['underlying_code']} "
                        f"{'콜' if written['option_type']=='call' else '풋'} {int(written['strike_price']):,}",
-                'price':mark,'theoretical_price':premium,'position_type':'writer'})
+                'price':mark,'theoretical_price':premium,'position_type':'writer',
+                'quote_currency':(underlying.get('quote_currency') if underlying else None) or 'NWX'})
 
         reserved_rows = conn.execute(
             "SELECT quote_currency,COALESCE(SUM(reserved_cash), 0) AS total FROM market_orders "
@@ -947,8 +948,13 @@ class UserManager:
                 "type": "stock_future", "sell_reserved_qty": 0})
 
         bond_details = self.bond_manager.get_user_holdings(user_id, conn=conn)
+        for item in bond_details:
+            # Bonds are denominated in the currency of the country that issued them.
+            row = conn.execute("SELECT COALESCE(quote_currency,'NWX') FROM treasury_bond_products WHERE product_code=?",
+                               (item["product_code"],)).fetchone()
+            item["quote_currency"] = row[0] if row else 'NWX'
         bond_face_total = sum(item["principal"] for item in bond_details)
-        bond_total = sum(item["market_value"] for item in bond_details)
+        bond_total = sum(item["market_value"]*currency_rates.get(item["quote_currency"],1) for item in bond_details)
 
         loan_row = conn.execute(
             "SELECT COALESCE(SUM(outstanding_balance), 0) AS total FROM loans "
@@ -1017,7 +1023,8 @@ class UserManager:
             "futures_unrealized": futures_unrealized,
             "grand_total": grand_total,
             "loan_total": loan_total,
-            "net_worth": grand_total - loan_total,
+            # Loans are owed in the home currency; totals are valued in NWX.
+            "net_worth": grand_total - int(Decimal(loan_total)*Decimal(str(home_rate_nwx))),
         }
 
     def _asset_from_tables(self, code):

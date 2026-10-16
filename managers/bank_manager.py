@@ -352,14 +352,9 @@ class BankManager:
                         balance -= early_penalty
                         if early_penalty:
                             from managers.currency_manager import CurrencyManager, SCALE
-                            treasury_units = CurrencyManager.convert(
-                                conn, int(round(early_penalty*SCALE)),
-                                source_currency, "NWX"
-                            )
-                            conn.execute(
-                                "UPDATE users.users SET cash=cash+? WHERE user_id=?",
-                                (treasury_units/SCALE, TREASURY_USER_ID),
-                            )
+                            CurrencyManager.treasury_receive(
+                                conn, CurrencyManager.user_treasury_id(conn, user_id),
+                                source_currency, int(round(early_penalty*SCALE)))
                 if destination_number:
                     conn.execute(
                         "UPDATE accounts.accounts SET balance_units = balance_units + CAST(ROUND(? * 1000000) AS INTEGER), "
@@ -1403,13 +1398,9 @@ class BankManager:
                 )
                 if paid.rowcount != 1:
                     raise RuntimeError("예금보험금을 받을 사용자를 찾을 수 없습니다.")
-                treasury_units = CurrencyManager.convert(
-                    conn, int(round(covered*SCALE)), account["quote_currency"], "NWX"
-                )
-                conn.execute(
-                    "UPDATE users.users SET cash=cash-? WHERE user_id=?",
-                    (treasury_units//SCALE, TREASURY_USER_ID),
-                )
+                CurrencyManager.treasury_pay(
+                    conn, CurrencyManager.user_treasury_id(conn, user_id),
+                    account["quote_currency"] or "NWX", int(round(covered*SCALE)))
             conn.execute(
                 "UPDATE accounts.accounts SET balance_units=0,principal=0,"
                 "resolution_status='resolved',insurance_paid=?,uninsured_claim=? "

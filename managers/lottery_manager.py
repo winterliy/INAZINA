@@ -175,8 +175,9 @@ class LotteryManager:
             pools = json.loads(round['pools_json'])
             pools = [a+b*quantity for a,b in zip(pools,changes)]
             treasury_amount = treasury * quantity
+            from managers.currency_manager import CurrencyManager
             if not UserManager._change_cash(
-                conn, TREASURY_USER_ID, treasury_amount, maximum=MAX_MONEY
+                conn, CurrencyManager.user_treasury_id(conn, user_id), treasury_amount, maximum=MAX_MONEY
             ):
                 raise ValueError('국고 잔액 한도를 초과했습니다.')
             rng = secrets.SystemRandom()
@@ -262,8 +263,9 @@ class LotteryManager:
                         conn, ticket['user_id'], net, maximum=MAX_MONEY
                     ):
                         raise ValueError('당첨자의 계정 또는 잔액 한도를 확인해주세요. 추첨 결과를 보존하고 지급을 보류합니다.')
+                    from managers.currency_manager import CurrencyManager
                     if not UserManager._change_cash(
-                        conn, TREASURY_USER_ID, tax, maximum=MAX_MONEY
+                        conn, CurrencyManager.user_treasury_id(conn, ticket['user_id']), tax, maximum=MAX_MONEY
                     ):
                         raise ValueError('국고 잔액 한도를 초과하여 지급을 보류합니다.')
                     conn.execute(

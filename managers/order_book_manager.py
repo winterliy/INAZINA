@@ -548,10 +548,17 @@ class OrderBookManager:
             if cursor.rowcount != 1:
                 raise RuntimeError("보유 수량이 변경되어 체결을 취소했습니다.")
             net_proceeds = max(0, execution_price * take - tax_share)
-            self.user_manager._credit_source(
-                conn, seller_id, position["account_number"], net_proceeds,
-                event='asset_sale', reference=str(sell_order['order_id'])
-            )
+            from managers.currency_manager import CurrencyManager, SCALE
+            sale_currency = str(sell_order["quote_currency"] or "NWX")
+            if sale_currency != CurrencyManager.home(conn, seller_id):
+                # The seller lives in another currency (e.g. an order placed from an FX account).
+                from managers.foreign_securities_manager import ForeignSecuritiesManager
+                ForeignSecuritiesManager.credit_units(conn, seller_id, sale_currency, int(round(net_proceeds * SCALE)))
+            else:
+                self.user_manager._credit_source(
+                    conn, seller_id, position["account_number"], net_proceeds,
+                    event='asset_sale', reference=str(sell_order['order_id'])
+                )
             tax_left -= tax_share
             quantity_left -= take
 

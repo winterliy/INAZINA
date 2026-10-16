@@ -23,6 +23,10 @@ class ForeignSecuritiesManager:
             if changed.rowcount!=1:
                 raise ValueError(f'{currency} 현금 잔액 한도를 초과했습니다.')
             return
+        if not account and CurrencyManager.is_treasury(conn, user) and not CurrencyManager._treasury_target(conn, user, currency):
+            # A treasury without an account in this currency exchanges it into its own.
+            CurrencyManager.treasury_receive(conn, user, currency, units)
+            return
         if account:
             changed = conn.execute("UPDATE accounts SET balance_units=balance_units+? WHERE account_number=? AND user_id=? AND quote_currency=? AND account_type='currency_saving' AND balance_units<=?",
                 (units,account,str(user),currency,MAX_UNITS-units))

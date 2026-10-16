@@ -71,7 +71,8 @@ class CurrencyManager:
         """Create a neutral baseline when a newly issued currency first gains supply."""
         code = str(code).upper()
         issued, circulating = cls._liquidity_totals(conn, code)
-        ratio = circulating / issued if issued else 0
+        # Treasury deficits can leave circulation above issuance; keep the ratio in range.
+        ratio = min(1, max(0, circulating / issued)) if issued > 0 else 0
         conn.execute(
             'INSERT OR IGNORE INTO currency_liquidity_state '
             '(currency_code,baseline_supply_units,baseline_circulation_ratio,updated_epoch) '
@@ -230,6 +231,14 @@ class CurrencyManager:
         nationality = row["nationality"] if row and row["nationality"] else '낙원'
         known = conn.execute('SELECT 1 FROM country_currencies WHERE nationality=?', (nationality,)).fetchone()
         return cls.treasury_id(conn, nationality if known else '낙원')
+
+    @classmethod
+    def majority_treasury(cls, conn, asset_codes):
+        """Treasury of the country listing most of ``asset_codes`` (ties: the earliest listed)."""
+        treasuries = [cls.exchange_treasury(conn, code) for code in asset_codes]
+        if not treasuries:
+            return cls.treasury_id(conn, '낙원')
+        return max(treasuries, key=lambda t: (treasuries.count(t), -treasuries.index(t)))
 
     @classmethod
     def _treasury_target(cls, conn, treasury, currency):
