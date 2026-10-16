@@ -1,0 +1,2 @@
+# Runtime dependencies for the Discord bot and the private Python data service.
+discord.py==2.7.1

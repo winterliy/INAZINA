@@ -205,6 +205,7 @@ async function internalRequest(
   path: string,
   userId?: string,
   body?: unknown,
+  timeoutMs = 10_000,
 ): Promise<{ status: number; body: any }> {
   try {
     const result = await fetch(`http://127.0.0.1:${pythonPort}${path}`, {
@@ -215,7 +216,7 @@ async function internalRequest(
         ...(body ? { "content-type": "application/json" } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     const responseText = await result.text();
     try {
@@ -453,8 +454,55 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   const chartMatch = url.pathname.match(/^\/api\/market\/chart\/([^/]+)$/);
   if (request.method === "GET" && chartMatch) {
-    const range = url.searchParams.get("range") ?? "1d";
-    const result = await internalGet(`/internal/market/chart/${encodeURIComponent(decodeURIComponent(chartMatch[1]))}?range=${encodeURIComponent(range)}`, principal.userId);
+    const query = new URLSearchParams({ range: url.searchParams.get("range") ?? "1d" });
+    const interval = url.searchParams.get("interval");
+    if (interval) query.set("interval", interval);
+    const result = await internalGet(`/internal/market/chart/${encodeURIComponent(decodeURIComponent(chartMatch[1]))}?${query}`, principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  const drawingsMatch = url.pathname.match(/^\/api\/market\/drawings\/([^/]+)$/);
+  if (drawingsMatch) {
+    const path = `/internal/market/drawings/${encodeURIComponent(decodeURIComponent(drawingsMatch[1]))}`;
+    const result = request.method === "GET"
+      ? await internalGet(path, principal.userId)
+      : await internalRequest("POST", path, principal.userId, await requestJson(request));
+    send(response, result.status, result.body);
+    return;
+  }
+
+  const dbMatch = url.pathname.match(/^\/api\/admin\/db\/tables(?:\/([^/]+)(\/rows(?:\/(\d+)(\/delete)?)?)?)?$/);
+  if (dbMatch) {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const [, table, rows, rowId, remove] = dbMatch;
+    const tablePath = table ? `/${encodeURIComponent(decodeURIComponent(table))}` : "";
+    let result: { status: number; body: any };
+    if (request.method === "GET" && !rows) {
+      const query = new URLSearchParams({ search: url.searchParams.get("search") ?? "", offset: url.searchParams.get("offset") ?? "0" });
+      result = await internalGet(`/internal/admin/db/tables${tablePath}${table ? `?${query}` : ""}`, principal.userId);
+    } else if (request.method === "POST" && table && rows) {
+      const body = remove ? {} : await requestJson(request);
+      result = await internalRequest("POST", `/internal/admin/db/tables${tablePath}/rows${rowId ? `/${rowId}${remove ? "/delete" : ""}` : ""}`, principal.userId, body);
+    } else {
+      result = { status: 405, body: { error: "method_not_allowed" } };
+    }
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (url.pathname === "/api/admin/commands") {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const result = request.method === "GET"
+      ? await internalGet("/internal/admin/commands", principal.userId)
+      // Bulk commands such as basic income touch every account and can outlast ordinary reads.
+      : await internalRequest("POST", "/internal/admin/commands", principal.userId, await requestJson(request), 60_000);
     send(response, result.status, result.body);
     return;
   }

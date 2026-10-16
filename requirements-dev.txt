@@ -1,0 +1,3 @@
+# Test tooling. The suite is written with unittest; pytest runs it unchanged.
+-r requirements.txt
+pytest==9.0.3

@@ -7,7 +7,6 @@ import math
 import os
 import re
 import secrets
-import re
 import sqlite3
 import sys
 import threading
@@ -66,6 +65,8 @@ class SingleFlightTTL:
 
     def invalidate(self, *keys):
         with self._condition:
+            if not keys:
+                self._values.clear()
             for key in keys:
                 self._values.pop(key, None)
 
@@ -111,6 +112,7 @@ def connect_readonly():
 def connect_db(timeout=2):
     connection = sqlite3.connect(DATABASE, timeout=timeout)
     try:
+        connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA busy_timeout={max(1, int(timeout * 1000))}")
         with connection:
@@ -470,6 +472,9 @@ def domain():
                 from managers.option_manager import OptionManager
                 from managers.order_book_manager import OrderBookManager
                 from managers.user_manager import UserManager
+                from managers.rate_manager import RateManager
+                from managers.currency_exchange_manager import CurrencyExchangeManager
+                from managers.lottery_manager import LotteryManager
 
                 db = DatabaseManager()
                 user_manager = UserManager(db)
@@ -480,16 +485,21 @@ def domain():
                 order_book.futures_manager = futures_manager
                 from managers.admin_manager import AdminManager
 
+                market_manager = MarketManager(db)
+                # The administrator command layer expects the same manager
+                # attributes as the Discord bot object.
                 bot = SimpleNamespace(
                     db=db, user_mgr=user_manager, order_book=order_book,
                     option_mgr=option_manager, futures_mgr=futures_manager,
+                    rate_mgr=RateManager(db), currency_mgr=CurrencyExchangeManager(db),
+                    lottery_mgr=LotteryManager(db), market_mgr=market_manager,
                 )
                 bot.admin_control = AdminControlManager(bot)
                 bot.admin_mgr = AdminManager(db)
                 _domain = SimpleNamespace(
                     db=db, users=user_manager, order_book=order_book,
                     options=option_manager, futures=futures_manager,
-                    market=MarketManager(db), admin_control=bot.admin_control,
+                    market=market_manager, admin_control=bot.admin_control,
                     market_session=MarketSessionManager(db),
                     admin_manager=bot.admin_mgr,
                     bot=bot,
@@ -543,26 +553,124 @@ def book(code):
     return {"bids": bids[:12], "asks": asks[:12]}
 
 
-def chart(code, range_key):
-    ranges = {"1h": 3600, "1d": 86400, "1w": 604800, "1m": 2592000, "all": None}
-    if range_key not in ranges:
+CHART_RANGES = {"1h": 3600, "1d": 86400, "1w": 604800, "1m": 2592000, "all": None}
+# Candle periods mirror the Discord chart: 1m, 5m, 10m, 30m, 1h, 6h, 12h, 1d.
+CANDLE_INTERVALS = (60, 300, 600, 1800, 3600, 21600, 43200, 86400)
+DEFAULT_CANDLE_INTERVAL = {"1h": 60, "1d": 600, "1w": 3600, "1m": 21600, "all": 86400}
+MAX_CANDLES = 500
+
+
+def candles(connection, code, start, interval):
+    """OHLC buckets aggregated in SQLite so long ranges never load every tick."""
+    rows = connection.execute(
+        "WITH buckets AS ("
+        " SELECT (recorded_epoch/?)*? AS bucket,MIN(recorded_epoch) AS first_epoch,"
+        " MAX(recorded_epoch) AS last_epoch,MIN(price) AS low,MAX(price) AS high,COUNT(*) AS ticks"
+        " FROM market_price_history WHERE asset_code=? AND recorded_epoch>=? GROUP BY bucket"
+        " ORDER BY bucket DESC LIMIT ?)"
+        " SELECT b.bucket,o.price AS open,b.high,b.low,c.price AS close,b.ticks FROM buckets b"
+        " JOIN market_price_history o ON o.asset_code=? AND o.recorded_epoch=b.first_epoch"
+        " JOIN market_price_history c ON c.asset_code=? AND c.recorded_epoch=b.last_epoch"
+        " ORDER BY b.bucket",
+        (interval, interval, code, start, MAX_CANDLES, code, code),
+    ).fetchall()
+    return [{"time": int(row["bucket"]), "open": float(row["open"]), "high": float(row["high"]),
+             "low": float(row["low"]), "close": float(row["close"]), "ticks": int(row["ticks"])}
+            for row in rows]
+
+
+def chart(code, range_key, interval=None):
+    if range_key not in CHART_RANGES:
         raise ValueError("unsupported_chart_range")
+    if interval is None:
+        interval = DEFAULT_CANDLE_INTERVAL[range_key]
+    if interval not in CANDLE_INTERVALS:
+        raise ValueError("unsupported_candle_interval")
     item = next((row for row in instruments() if row["code"] == code), None)
     if not item:
         return None
-    start = 0 if ranges[range_key] is None else int(time.time()) - ranges[range_key]
+    start = 0 if CHART_RANGES[range_key] is None else int(time.time()) - CHART_RANGES[range_key]
     with connect_readonly() as connection:
         rows = connection.execute(
             "SELECT recorded_epoch,price FROM market_price_history "
             "WHERE asset_code=? AND recorded_epoch>=? ORDER BY recorded_epoch DESC LIMIT 5000",
             (code, start),
         ).fetchall()
+        candle_rows = candles(connection, code, start, interval)
     points = [{"time": int(row["recorded_epoch"]), "price": float(row["price"])}
               for row in reversed(rows)]
     if len(points) > 1200:
         stride = math.ceil(len(points) / 1200)
         points = points[::stride] + ([points[-1]] if points[-1] != points[::stride][-1] else [])
-    return {"instrument": item, "points": points, "range": range_key}
+    return {"instrument": item, "points": points, "candles": candle_rows,
+            "interval": interval, "range": range_key}
+
+
+MAX_DRAWINGS = 200
+
+
+def ensure_drawings_table(connection):
+    connection.execute("""CREATE TABLE IF NOT EXISTS web_chart_drawings (
+        user_id TEXT NOT NULL, asset_code TEXT NOT NULL, drawings TEXT NOT NULL,
+        updated_epoch INTEGER NOT NULL, PRIMARY KEY(user_id, asset_code))""")
+
+
+def _finite(value, *, positive=False):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError("invalid_drawing")
+    if positive and value <= 0:
+        raise ValueError("invalid_drawing")
+    return float(value)
+
+
+def normalize_drawings(value):
+    """Keep only time/price anchors so drawings survive zoom and interval changes."""
+    if not isinstance(value, list) or len(value) > MAX_DRAWINGS:
+        raise ValueError("invalid_drawing")
+    result = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("invalid_drawing")
+        drawing_id, kind, anchors = item.get("id"), item.get("type"), item.get("anchors")
+        expected = {"trend": 2, "horizontal": 1}.get(kind)
+        if (not isinstance(drawing_id, str) or not 1 <= len(drawing_id) <= 64 or not expected or
+                not isinstance(anchors, list) or len(anchors) != expected):
+            raise ValueError("invalid_drawing")
+        result.append({"id": drawing_id, "type": kind, "anchors": [
+            {"time": _finite(anchor.get("time") if isinstance(anchor, dict) else None),
+             "price": _finite(anchor.get("price") if isinstance(anchor, dict) else None, positive=True)}
+            for anchor in anchors
+        ]})
+    return result
+
+
+def get_drawings(user_id, code):
+    with connect_db(timeout=2) as connection:
+        ensure_drawings_table(connection)
+        row = connection.execute(
+            "SELECT drawings FROM web_chart_drawings WHERE user_id=? AND asset_code=?", (user_id, code),
+        ).fetchone()
+    return json.loads(row[0]) if row else []
+
+
+def save_drawings(user_id, code, drawings):
+    if not isinstance(code, str) or not 1 <= len(code) <= 80:
+        raise ValueError("instrument_not_found")
+    drawings = normalize_drawings(drawings)
+    with connect_db(timeout=2) as connection:
+        ensure_drawings_table(connection)
+        if drawings:
+            connection.execute(
+                "INSERT INTO web_chart_drawings(user_id,asset_code,drawings,updated_epoch) VALUES (?,?,?,?) "
+                "ON CONFLICT(user_id,asset_code) DO UPDATE SET drawings=excluded.drawings,"
+                "updated_epoch=excluded.updated_epoch",
+                (user_id, code, json.dumps(drawings, separators=(",", ":")), int(time.time())),
+            )
+        else:
+            connection.execute(
+                "DELETE FROM web_chart_drawings WHERE user_id=? AND asset_code=?", (user_id, code),
+            )
+    return drawings
 
 
 def execute_order(user_id, payload):
@@ -696,10 +804,209 @@ def admin_users(search):
              "role": row["role"], "accountType": row["account_type"]} for row in rows]
 
 
-def admin_events():
-    # Events are intentionally process-local and are not exposed as durable
-    # database history through the web service.
-    return []
+def _table_exists(connection, name):
+    return connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,),
+    ).fetchone() is not None
+
+
+def admin_events(limit=50):
+    with connect_readonly() as connection:
+        if not _table_exists(connection, "market_events"):
+            return []
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(market_events)")}
+        optional = ",".join(
+            column if column in columns else f"NULL AS {column}"
+            for column in ("target_mode", "target_value", "volatility_percent")
+        )
+        rows = connection.execute(
+            "SELECT event_id,asset_code,event_type,severity,starts_epoch,ends_epoch,created_by,"
+            f"{optional} FROM market_events ORDER BY event_id DESC LIMIT ?", (limit,),
+        ).fetchall()
+    now = int(time.time())
+    return [{**dict(row), "active": row["starts_epoch"] <= now < row["ends_epoch"]} for row in rows]
+
+
+def admin_audit(limit=50):
+    with connect_readonly() as connection:
+        if not _table_exists(connection, "admin_audit"):
+            return []
+        rows = connection.execute(
+            "SELECT actor_id,action,payload,recorded_epoch FROM admin_audit "
+            "ORDER BY audit_id DESC LIMIT ?", (limit,),
+        ).fetchall()
+    entries = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"])
+        except (TypeError, json.JSONDecodeError):
+            payload = {"raw": row["payload"]}
+        entries.append({"actorId": row["actor_id"], "action": row["action"],
+                        "payload": payload, "time": float(row["recorded_epoch"])})
+    return entries
+
+
+def admin_command_catalog():
+    from managers.admin_commands_manager import COMMANDS, USAGE, CREATE_ARGS
+    try:
+        from functions.admin_embeds import creation_argument_lines
+        # The Discord embed text uses Markdown emphasis the dashboard shows as plain text.
+        creation_help = creation_argument_lines().replace("**", "").replace("`", "")
+    except Exception:
+        creation_help = "\n".join(f"{kind}: {' '.join(args)}" for kind, args in CREATE_ARGS.items())
+    return {
+        "commands": [{"name": name, "usage": USAGE.get(name, "")} for name in sorted(COMMANDS)],
+        "creationHelp": creation_help,
+    }
+
+
+# Tables the dashboard must never expose or edit: credentials, the audit trail
+# itself, and per-user web state.
+DB_EDITOR_HIDDEN = {"web_auth_credentials", "admin_audit", "web_chart_drawings"}
+DB_EDITOR_PAGE_SIZE = 50
+DB_VALUE_TYPES = (str, int, float, type(None))
+
+
+def _editable_tables(connection):
+    rows = connection.execute(
+        "SELECT name,sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    ).fetchall()
+    return {row["name"]: "WITHOUT ROWID" not in str(row["sql"] or "").upper()
+            for row in rows if row["name"] not in DB_EDITOR_HIDDEN}
+
+
+def _table_columns(connection, table):
+    return [{"name": row["name"], "type": row["type"] or "", "notNull": bool(row["notnull"]),
+             "primaryKey": bool(row["pk"]), "default": row["dflt_value"]}
+            for row in connection.execute(f'PRAGMA table_info("{table}")')]
+
+
+def _require_table(connection, table):
+    tables = _editable_tables(connection)
+    if not isinstance(table, str) or table not in tables:
+        raise ValueError("table_not_found")
+    return tables[table]
+
+
+def _cell(value):
+    return f"<blob {len(value)} bytes>" if isinstance(value, (bytes, memoryview)) else value
+
+
+def _db_value(value):
+    if isinstance(value, bool):
+        return int(value)
+    if not isinstance(value, DB_VALUE_TYPES) or (isinstance(value, float) and not math.isfinite(value)):
+        raise ValueError("invalid_value")
+    if isinstance(value, str) and len(value) > 20000:
+        raise ValueError("invalid_value")
+    return value
+
+
+def _db_changes(columns, values):
+    names = {column["name"] for column in columns}
+    if not isinstance(values, dict) or not values or set(values) - names:
+        raise ValueError("invalid_columns")
+    return {name: _db_value(value) for name, value in values.items()}
+
+
+def db_tables():
+    with connect_readonly() as connection:
+        tables = _editable_tables(connection)
+        return [{"name": name, "editable": editable, "columns": _table_columns(connection, name)}
+                for name, editable in tables.items()]
+
+
+def db_rows(table, search="", offset=0):
+    offset = max(0, int(offset))
+    with connect_readonly() as connection:
+        has_rowid = _require_table(connection, table)
+        columns = _table_columns(connection, table)
+        where, params = "", []
+        term = str(search or "").strip()
+        if term:
+            where = " WHERE " + " OR ".join(f'CAST("{column["name"]}" AS TEXT) LIKE ?' for column in columns)
+            params = [f"%{term}%"] * len(columns)
+        rowid = "rowid AS __rowid__," if has_rowid else ""
+        order = " ORDER BY rowid DESC" if has_rowid else ""
+        total = connection.execute(f'SELECT COUNT(*) FROM "{table}"{where}', params).fetchone()[0]
+        rows = connection.execute(
+            f'SELECT {rowid}* FROM "{table}"{where}{order} LIMIT ? OFFSET ?',
+            (*params, DB_EDITOR_PAGE_SIZE, offset),
+        ).fetchall()
+    return {"table": table, "editable": has_rowid, "columns": columns, "total": int(total),
+            "offset": offset, "pageSize": DB_EDITOR_PAGE_SIZE,
+            "rows": [{key: _cell(row[key]) for key in row.keys()} for row in rows]}
+
+
+def _audit_db(connection, actor, action, payload):
+    if _table_exists(connection, "admin_audit"):
+        connection.execute(
+            "INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
+            (actor, action, json.dumps(payload, ensure_ascii=False, default=str), time.time()),
+        )
+
+
+def _row_snapshot(connection, table, rowid):
+    row = connection.execute(f'SELECT * FROM "{table}" WHERE rowid=?', (rowid,)).fetchone()
+    if not row:
+        raise ValueError("row_not_found")
+    return {key: _cell(row[key]) for key in row.keys()}
+
+
+def db_update(actor, table, rowid, values):
+    with connect_db(timeout=5) as connection:
+        if not _require_table(connection, table):
+            raise ValueError("table_not_editable")
+        changes = _db_changes(_table_columns(connection, table), values)
+        before = _row_snapshot(connection, table, rowid)
+        assignments = ",".join(f'"{name}"=?' for name in changes)
+        connection.execute(f'UPDATE "{table}" SET {assignments} WHERE rowid=?', (*changes.values(), rowid))
+        after = _row_snapshot(connection, table, rowid)
+        _audit_db(connection, actor, "db.update", {"table": table, "rowid": rowid,
+                  "before": {key: before[key] for key in changes}, "after": {key: after[key] for key in changes}})
+    _read_cache.invalidate()
+    return after
+
+
+def db_insert(actor, table, values):
+    with connect_db(timeout=5) as connection:
+        if not _require_table(connection, table):
+            raise ValueError("table_not_editable")
+        changes = _db_changes(_table_columns(connection, table), values)
+        names = ",".join(f'"{name}"' for name in changes)
+        marks = ",".join("?" for _ in changes)
+        rowid = connection.execute(f'INSERT INTO "{table}"({names}) VALUES ({marks})', tuple(changes.values())).lastrowid
+        row = _row_snapshot(connection, table, rowid)
+        _audit_db(connection, actor, "db.insert", {"table": table, "rowid": rowid, "values": row})
+    _read_cache.invalidate()
+    return {"__rowid__": rowid, **row}
+
+
+def db_delete(actor, table, rowid):
+    with connect_db(timeout=5) as connection:
+        if not _require_table(connection, table):
+            raise ValueError("table_not_editable")
+        before = _row_snapshot(connection, table, rowid)
+        connection.execute(f'DELETE FROM "{table}" WHERE rowid=?', (rowid,))
+        _audit_db(connection, actor, "db.delete", {"table": table, "rowid": rowid, "values": before})
+    _read_cache.invalidate()
+
+
+def run_admin_command(actor, payload):
+    from managers.admin_commands_manager import AdminCommandsManager, COMMANDS
+    command = str(payload.get("command", "")).strip().removeprefix("$")
+    arguments = payload.get("arguments", "")
+    if command not in COMMANDS:
+        raise ValueError("알 수 없는 관리자 명령어입니다.")
+    if not isinstance(arguments, str) or len(arguments) > 8000:
+        raise ValueError("명령어 인자를 확인해주세요.")
+    from decimal import InvalidOperation
+    try:
+        result = AdminCommandsManager(domain().bot).execute(actor, command, arguments)
+    except (KeyError, InvalidOperation, sqlite3.IntegrityError) as exc:
+        raise ValueError(str(exc) or "명령어를 처리하지 못했습니다.") from exc
+    _read_cache.invalidate()
+    return str(result or "완료했습니다.")
 
 
 def update_admin_user(actor, user_id, changes):
@@ -823,7 +1130,33 @@ class Handler(BaseHTTPRequestHandler):
                 if not user or user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
                 else:
-                    self.send_json(200, {"entries": []})
+                    self.send_json(200, {"entries": admin_audit()})
+            elif path == "/internal/admin/commands":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    self.send_json(200, admin_command_catalog())
+            elif path == "/internal/admin/db/tables" or path.startswith("/internal/admin/db/tables/"):
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                elif path == "/internal/admin/db/tables":
+                    self.send_json(200, {"tables": db_tables()})
+                else:
+                    query = parse_qs(parsed.query)
+                    offset = query.get("offset", ["0"])[0]
+                    if not offset.isdecimal():
+                        raise ValueError("invalid_offset")
+                    table = unquote(path.removeprefix("/internal/admin/db/tables/"))
+                    self.send_json(200, db_rows(table, query.get("search", [""])[0], int(offset)))
+            elif path.startswith("/internal/market/drawings/"):
+                user = identity(internal_user_id(self))
+                if not user:
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    code = unquote(path.removeprefix("/internal/market/drawings/"))
+                    self.send_json(200, {"drawings": get_drawings(user["userId"], code)})
             elif path == "/internal/market/orders":
                 user = identity(internal_user_id(self))
                 if not user:
@@ -837,16 +1170,20 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     self.send_json(200, {"orders": orders})
             elif path.startswith("/internal/market/book/"):
-                code = path.removeprefix("/internal/market/book/")
+                code = unquote(path.removeprefix("/internal/market/book/"))
                 result = book(code)
                 if result is None:
                     self.send_json(404, {"error": "instrument_not_found"})
                 else:
                     self.send_json(200, result)
             elif path.startswith("/internal/market/chart/"):
-                code = path.removeprefix("/internal/market/chart/")
-                range_key = parse_qs(parsed.query).get("range", ["1d"])[0]
-                result = chart(code, range_key)
+                code = unquote(path.removeprefix("/internal/market/chart/"))
+                query = parse_qs(parsed.query)
+                range_key = query.get("range", ["1d"])[0]
+                raw_interval = query.get("interval", [""])[0]
+                if raw_interval and not raw_interval.isdecimal():
+                    raise ValueError("unsupported_candle_interval")
+                result = chart(code, range_key, int(raw_interval) if raw_interval else None)
                 if result is None:
                     self.send_json(404, {"error": "instrument_not_found"})
                 else:
@@ -945,6 +1282,35 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     success, message = create_admin_event(user["userId"], payload)
                     self.send_json(200 if success else 400, {"success": success, "message": message})
+            elif path.startswith("/internal/market/drawings/"):
+                code = unquote(path.removeprefix("/internal/market/drawings/"))
+                if not any(row["code"] == code for row in instruments()):
+                    self.send_json(404, {"error": "instrument_not_found"})
+                else:
+                    drawings = save_drawings(user["userId"], code, payload.get("drawings"))
+                    self.send_json(200, {"drawings": drawings})
+            elif path.startswith("/internal/admin/db/tables/"):
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    match = re.fullmatch(r"/internal/admin/db/tables/([^/]+)/rows(?:/(\d+)(/delete)?)?", path)
+                    if not match:
+                        self.send_json(404, {"error": "not_found"})
+                        return
+                    table, rowid, delete = unquote(match.group(1)), match.group(2), match.group(3)
+                    if rowid is None:
+                        self.send_json(201, {"row": db_insert(user["userId"], table, payload.get("values"))})
+                    elif delete:
+                        db_delete(user["userId"], table, int(rowid))
+                        self.send_json(200, {"success": True})
+                    else:
+                        self.send_json(200, {"row": db_update(user["userId"], table, int(rowid), payload.get("values"))})
+            elif path == "/internal/admin/commands":
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    message = run_admin_command(user["userId"], payload)
+                    self.send_json(200, {"success": not message.startswith("❌"), "message": message})
             elif path == "/internal/admin/funds":
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
@@ -976,6 +1342,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(404, {"error": "not_found"})
         except (ValueError, TypeError, OverflowError) as exc:
             self.send_json(400, {"error": str(exc)})
+        except sqlite3.IntegrityError as exc:
+            # Constraint and trigger failures (CHECK, FOREIGN KEY, RAISE) are
+            # validation errors the administrator can act on.
+            self.send_json(400, {"error": "constraint_failed", "message": str(exc)})
+        except sqlite3.OperationalError as exc:
+            if "locked" in str(exc) or "busy" in str(exc):
+                self.send_json(503, {"error": "database_unavailable"})
+            else:
+                self.send_json(400, {"error": "database_rejected", "message": str(exc)})
         except sqlite3.Error:
             self.send_json(503, {"error": "database_unavailable"})
 

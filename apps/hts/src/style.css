@@ -106,3 +106,21 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .account-success { color: #16803c; }.account-error { color: #c9342f; }
 .account-save { color: #fff; border-color: #0071e3; background: #0071e3; }
 @media (max-width: 700px) { .hts-topbar { gap: 7px; padding: 0 8px; }.top-center { gap: 7px; }.top-actions { gap: 4px; }.header-action { padding-inline: 7px; font-size: 9px; }.account-action small { display: none; }.wallet-summary { flex: none; } }
+
+/* Candles, chart mode controls and wallet holdings. */
+.segmented .divider { width: 1px; height: 16px; margin: 0 4px; background: #d8dfd9; }
+.interval-select { height: 27px; margin-left: 4px; padding: 0 6px; border: 1px solid #d8dfd9; border-radius: 6px; background: transparent; color: inherit; font-size: 10px; }
+.candle line { stroke-width: 1; vector-effect: non-scaling-stroke; }
+.candle.up line, .candle.up rect { stroke: #d6453d; fill: #d6453d; }
+.candle.down line, .candle.down rect { stroke: #2f6fd6; fill: #2f6fd6; }
+.candle rect { stroke-width: 1; vector-effect: non-scaling-stroke; }
+.holdings { border-top: 1px solid #edf0ed; }
+.holdings-head { display: flex; justify-content: space-between; padding: 9px 10px 4px; color: #7b867e; font-size: 9px; font-weight: 650; }
+.holding { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; min-height: 40px; padding: 6px 10px; border: 0; border-radius: 0; background: transparent; text-align: left; }
+.holding span { display: grid; gap: 2px; min-width: 0; }
+.holding b { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.holding small { color: #7b867e; font-size: 9px; }
+.holding strong { font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.holding em { color: #7d8880; font-size: 8px; font-style: normal; }
+.asset-total > small + strong + small { color: #7b867e; }
+@media (prefers-color-scheme: dark) { .holdings, .segmented .divider { border-color: #48484a; background: #48484a; } .holdings { background: transparent; } .interval-select { border-color: #636366; } }

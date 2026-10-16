@@ -1,26 +1,48 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { FormEvent, ReactNode } from "react";
 import { api, clearToken, type ApiUser } from "../../shared/api";
 import { AuthPanel } from "../../shared/AuthPanel";
 
-type Page = "overview" | "instruments" | "users" | "events" | "audit";
+type Page = "overview" | "instruments" | "users" | "events" | "commands" | "database" | "audit";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
 type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
-type Overview = { activeUsers: number; activeInstruments: number; openOrders: number; market: { status: string; reason: string; trading_halted: number } | null };
+type Exchange = { exchange_id: string; status: string; reason: string | null; trading_halted: number; updated_epoch: number | null; resume_epoch: number | null; circuit_stage: number | null };
+type Overview = { activeUsers: number; activeInstruments: number; openOrders: number; market: Exchange[] };
 type Audit = { actorId: string; action: string; payload: Record<string, unknown>; time: number };
 type Citizen = { userId: string; nickname: string; nationality: string; cash: number; creditScore: number; status: string; role: string; accountType: "discord" | "country" };
 type Country = { countryId: string; currencyName: string; currencyCode: string };
-type Event = { event_id: number; asset_code: string | null; event_type: string; severity: number; starts_epoch: number; ends_epoch: number; created_by: string; target_mode: string; target_value: number };
+type Event = { event_id: number; asset_code: string | null; event_type: string; severity: number; starts_epoch: number; ends_epoch: number; created_by: string; target_mode: string | null; target_value: number | null; active: boolean };
+type Command = { name: string; usage: string };
+type CommandResult = { command: string; arguments: string; message: string; success: boolean; time: number };
+type Column = { name: string; type: string; notNull: boolean; primaryKey: boolean; default: string | null };
+type TableInfo = { name: string; editable: boolean; columns: Column[] };
+type Cell = string | number | null;
+type Row = Record<string, Cell> & { __rowid__?: number };
+type TablePage = { table: string; editable: boolean; columns: Column[]; total: number; offset: number; pageSize: number; rows: Row[] };
 
-const pages: { id: Page; label: string }[] = [
-  { id: "overview", label: "운영 현황" },
-  { id: "instruments", label: "종목 · 상품" },
-  { id: "users", label: "사용자" },
-  { id: "events", label: "시장 사건" },
-  { id: "audit", label: "작업 기록" },
+const pages: { id: Page; label: string; color: string; icon: ReactNode }[] = [
+  { id: "overview", label: "운영 현황", color: "#0060d6", icon: <><rect x="3.5" y="3.5" width="7" height="7" rx="2" /><rect x="13.5" y="3.5" width="7" height="7" rx="2" /><rect x="3.5" y="13.5" width="7" height="7" rx="2" /><rect x="13.5" y="13.5" width="7" height="7" rx="2" /></> },
+  { id: "instruments", label: "종목 · 상품", color: "#0f7a2e", icon: <path d="M5 20v-7M12 20V5M19 20v-10" /> },
+  { id: "users", label: "사용자", color: "#c24e00", icon: <><circle cx="12" cy="8" r="3.5" /><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6" /></> },
+  { id: "events", label: "시장 사건", color: "#c4205f", icon: <path d="M13 3 5 14h6l-1 7 8-11h-6z" /> },
+  { id: "commands", label: "관리자 명령어", color: "#7b3fd8", icon: <><path d="m5 8 4 4-4 4" /><path d="M12 17h7" /></> },
+  { id: "database", label: "DB 편집", color: "#0a7d8c", icon: <><ellipse cx="12" cy="6" rx="7" ry="2.5" /><path d="M5 6v12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V6" /><path d="M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5" /></> },
+  { id: "audit", label: "작업 기록", color: "#5a5a5f", icon: <><path d="M7 3.5h7l4.5 4.5V20.5H7z" /><path d="M14 3.5V8h4.5M10 13h5M10 16.5h5" /></> },
 ];
+const subtitles: Record<Page, string> = {
+  overview: "시장 상태와 서비스 연결을 확인하고 거래소를 제어합니다.",
+  instruments: "상품 이름·가격·발행량과 거래 상태를 관리합니다.",
+  users: "사용자 현금·권한·계정 상태와 국가 계정을 관리합니다.",
+  events: "호재·악재 사건을 등록하고 최근 사건을 확인합니다.",
+  commands: "Discord $ 관리자 명령어를 같은 검증과 기록으로 실행합니다.",
+  database: "DB Browser에서 하던 설정 편집을 감사 기록과 함께 처리합니다.",
+  audit: "모든 관리자 작업의 최근 기록입니다.",
+};
 const number = (value: number) => new Intl.NumberFormat("ko-KR").format(value);
 const date = (value: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "medium" }).format(value * 1000);
 const fundCategoryName: Record<string, string> = { equity: "주식형", bond: "채권형", mixed: "혼합형", other: "기타형" };
+const marketStatusName: Record<string, string> = { open: "개장", closed: "휴장", paused: "일시 정지", halted: "거래 정지" };
+const message = (cause: unknown, fallback: string) => cause instanceof Error ? cause.message : fallback;
 
 function parseFundComponents(value: string): Record<string, number> {
   const components: Record<string, number> = {};
@@ -38,11 +60,22 @@ function parseFundComponents(value: string): Record<string, number> {
   return components;
 }
 
+// DB Browser semantics: NULL is explicit, numeric columns store numbers.
+function parseCell(input: string, column: Column | undefined): Cell {
+  if (input === "NULL") return null;
+  const numeric = /INT|REAL|NUM|FLOA|DOUB|DEC/i.test(column?.type ?? "");
+  if (numeric && input.trim() !== "" && Number.isFinite(Number(input))) return Number(input);
+  return input;
+}
+const showCell = (value: Cell | undefined) => value === null || value === undefined ? "NULL" : String(value);
+
 export default function App() {
   const [user, setUser] = useState<ApiUser | null>(null);
+  const [checked, setChecked] = useState(false);
   const [page, setPage] = useState<Page>("overview");
   const [health, setHealth] = useState("확인 중");
-  const [error, setError] = useState("");
+  const [connected, setConnected] = useState(false);
+  const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [instruments, setInstruments] = useState<Instrument[]>([]);
@@ -65,33 +98,45 @@ export default function App() {
   const [fundExchange, setFundExchange] = useState("INZ");
   const [fundCategory, setFundCategory] = useState("equity");
   const [fundComponents, setFundComponents] = useState("");
+  const [commands, setCommands] = useState<Command[]>([]);
+  const [creationHelp, setCreationHelp] = useState("");
+  const [command, setCommand] = useState("");
+  const [commandArgs, setCommandArgs] = useState("");
+  const [commandResults, setCommandResults] = useState<CommandResult[]>([]);
+  const [tables, setTables] = useState<TableInfo[]>([]);
+  const [table, setTable] = useState("settings");
+  const [tablePage, setTablePage] = useState<TablePage | null>(null);
+  const [tableOffset, setTableOffset] = useState(0);
+  const [edits, setEdits] = useState<Record<number, Record<string, string>>>({});
+  const [newRow, setNewRow] = useState<Record<string, string> | null>(null);
+
+  const say = (text: string, error = false) => setNotice({ text, error });
 
   const loadSession = useCallback(async () => {
     try {
       const result = await api<{ user: ApiUser }>("/api/auth/session");
       setUser(result.user);
-      setError("");
     } catch {
       setUser(null);
+    } finally {
+      setChecked(true);
     }
   }, []);
 
   const refresh = useCallback(async () => {
-    setError("");
     try {
       const result = await api<{ status: string; python: string }>("/api/health");
+      setConnected(result.python === "connected");
       setHealth(result.python === "connected" ? "API · Python 연결됨" : "Python 연결 끊김");
-      if (!user) return;
-      if (user.role !== "admin") return;
+    } catch {
+      setConnected(false);
+      setHealth("서버 연결 끊김");
+    }
+    if (!user || user.role !== "admin") return;
+    try {
       if (page === "overview") setOverview(await api<Overview>("/api/admin/overview"));
-      if (page === "instruments") {
-        const result = await api<{ instruments: Instrument[] }>("/api/admin/instruments");
-        setInstruments(result.instruments);
-      }
-      if (page === "audit") {
-        const result = await api<{ entries: Audit[] }>("/api/admin/audit");
-        setAudit(result.entries);
-      }
+      if (page === "instruments") setInstruments((await api<{ instruments: Instrument[] }>("/api/admin/instruments")).instruments);
+      if (page === "audit") setAudit((await api<{ entries: Audit[] }>("/api/admin/audit")).entries);
       if (page === "users") {
         const [result, countryResult] = await Promise.all([
           api<{ users: Citizen[] }>(`/api/admin/users?search=${encodeURIComponent(query)}`),
@@ -101,66 +146,67 @@ export default function App() {
         setCountries(countryResult.countries);
         setCountryId((current) => current || countryResult.countries[0]?.countryId || "");
       }
-      if (page === "events") {
-        const result = await api<{ events: Event[] }>("/api/admin/events");
-        setEvents(result.events);
+      if (page === "events") setEvents((await api<{ events: Event[] }>("/api/admin/events")).events);
+      if (page === "commands" && !commands.length) {
+        const result = await api<{ commands: Command[]; creationHelp: string }>("/api/admin/commands");
+        setCommands(result.commands);
+        setCreationHelp(result.creationHelp);
+        setCommand((current) => current || result.commands[0]?.name || "");
+      }
+      if (page === "database") {
+        const [tableList, rows] = await Promise.all([
+          tables.length ? Promise.resolve({ tables }) : api<{ tables: TableInfo[] }>("/api/admin/db/tables"),
+          api<TablePage>(`/api/admin/db/tables/${encodeURIComponent(table)}?${new URLSearchParams({ search: query, offset: String(tableOffset) })}`),
+        ]);
+        setTables(tableList.tables);
+        setTablePage(rows);
+        setEdits({});
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "요청을 처리하지 못했습니다.");
+      say(message(cause, "요청을 처리하지 못했습니다."), true);
     }
-  }, [page, user, query, countryId]);
+  }, [page, user, query, commands.length, tables, table, tableOffset]);
 
-  useEffect(() => {
-    void fetch("/api/health").then((response) => response.json()).then((result) => {
-      setHealth(result.python === "connected" ? "API · Python 연결됨" : "Python 연결 끊김");
-    }).catch(() => setHealth("서버 연결 끊김"));
-    void loadSession();
-  }, [loadSession]);
-
-  useEffect(() => {
-    if (user) void refresh();
-  }, [user, refresh]);
+  useEffect(() => { void loadSession(); }, [loadSession]);
+  useEffect(() => { if (user) void refresh(); }, [user, refresh]);
+  useEffect(() => { setQuery(""); setNotice(null); }, [page]);
+  useEffect(() => { setTableOffset(0); setNewRow(null); }, [table, query]);
 
   const filteredInstruments = useMemo(() => {
     const term = query.trim().toLocaleLowerCase();
     return instruments.filter((item) => !term || `${item.code} ${item.name} ${item.type} ${fundCategoryName[item.fund_category || ""] || ""}`.toLocaleLowerCase().includes(term));
   }, [instruments, query]);
+  const selectedCommand = commands.find((item) => item.name === command);
+  const tableInfo = tables.find((item) => item.name === table);
 
-  async function marketAction(action: string) {
-    const labels: Record<string, string> = { close: "휴장", open: "개장", pause: "일시 정지", resume: "재개" };
-    if (!window.confirm(`시장을 ${labels[action]} 상태로 변경할까요?`)) return;
+  async function run<T>(work: () => Promise<T>, fallback: string, done?: (result: T) => void) {
     setBusy(true);
     try {
-      const result = await api<{ message: string }>("/api/admin/market", {
-        method: "POST", body: JSON.stringify({ action }),
-      });
-      setError(result.message);
+      const result = await work();
+      done?.(result);
       await refresh();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "시장 상태를 변경하지 못했습니다.");
+      say(message(cause, fallback), true);
     } finally {
       setBusy(false);
     }
   }
 
-  async function changeInstrument(item: Instrument) {
+  function marketAction(action: string, exchangeId?: string) {
+    const labels: Record<string, string> = { close: "휴장", open: "개장", pause: "일시 정지", resume: "재개" };
+    if (!window.confirm(`${exchangeId ?? "전체 시장"}을 ${labels[action]} 상태로 변경할까요?`)) return;
+    void run(() => api<{ message: string }>("/api/admin/market", { method: "POST", body: JSON.stringify({ action, exchangeId }) }),
+      "시장 상태를 변경하지 못했습니다.", (result) => say(result.message));
+  }
+
+  function changeInstrument(item: Instrument) {
     const status = item.status === "active" ? "inactive" : "active";
     if (!window.confirm(`${item.name} (${item.code})을 ${status === "active" ? "재개" : "중지"}할까요?`)) return;
-    setBusy(true);
-    try {
-      const result = await api<{ message: string }>(`/api/admin/instruments/${encodeURIComponent(item.code)}/status`, {
-        method: "POST", body: JSON.stringify({ status }),
-      });
-      setError(result.message);
-      await refresh();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "상품 상태를 변경하지 못했습니다.");
-    } finally {
-      setBusy(false);
-    }
+    void run(() => api<{ message: string }>(`/api/admin/instruments/${encodeURIComponent(item.code)}/status`, { method: "POST", body: JSON.stringify({ status }) }),
+      "상품 상태를 변경하지 못했습니다.", (result) => say(result.message));
   }
 
-  async function editInstrument(item: Instrument) {
+  function editInstrument(item: Instrument) {
     const name = window.prompt("상품 이름", item.name);
     if (name === null) return;
     const price = window.prompt("현재 가격 (변경하지 않으려면 비우기)", String(item.price));
@@ -178,132 +224,122 @@ export default function App() {
         changes.fundCategory = category.trim();
         changes.components = parseFundComponents(componentInput);
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : "펀드 구성을 확인해주세요.");
+        say(message(cause, "펀드 구성을 확인해주세요."), true);
         return;
       }
     }
     if (!changes.name || (!changes.price && !changes.supply && item.type !== "mutual_fund")) {
-      setError("이름을 입력하고 가격 또는 발행량을 하나 이상 입력해주세요.");
+      say("이름을 입력하고 가격 또는 발행량을 하나 이상 입력해주세요.", true);
       return;
     }
     if (!window.confirm(`${item.code} 상품 설정을 저장할까요?`)) return;
-    setBusy(true);
-    try {
-      const result = await api<{ message: string }>(`/api/admin/instruments/${encodeURIComponent(item.code)}`, {
-        method: "POST", body: JSON.stringify(changes),
-      });
-      setError(result.message);
-      await refresh();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "상품 설정을 변경하지 못했습니다.");
-    } finally { setBusy(false); }
+    void run(() => api<{ message: string }>(`/api/admin/instruments/${encodeURIComponent(item.code)}`, { method: "POST", body: JSON.stringify(changes) }),
+      "상품 설정을 변경하지 못했습니다.", (result) => say(result.message));
   }
 
-  async function createFund(event: React.FormEvent<HTMLFormElement>) {
+  function createFund(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     let components: Record<string, number>;
     try {
       components = parseFundComponents(fundComponents);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "펀드 구성을 확인해주세요.");
+      say(message(cause, "펀드 구성을 확인해주세요."), true);
       return;
     }
     if (!window.confirm(`${fundName} (${fundCode}) 펀드를 생성할까요?`)) return;
-    setBusy(true);
-    try {
-      const result = await api<{ message: string }>("/api/admin/funds", {
-        method: "POST",
-        body: JSON.stringify({ code: fundCode.trim(), name: fundName.trim(), unitPrice: fundPrice, totalSupply: fundSupply, exchangeId: fundExchange.trim(), fundCategory, components }),
-      });
-      setError(result.message);
-      setFundCode("");
-      setFundName("");
-      setFundComponents("");
-      await refresh();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "펀드를 생성하지 못했습니다.");
-    } finally { setBusy(false); }
+    void run(() => api<{ message: string }>("/api/admin/funds", {
+      method: "POST",
+      body: JSON.stringify({ code: fundCode.trim(), name: fundName.trim(), unitPrice: fundPrice, totalSupply: fundSupply, exchangeId: fundExchange.trim(), fundCategory, components }),
+    }), "펀드를 생성하지 못했습니다.", (result) => { say(result.message); setFundCode(""); setFundName(""); setFundComponents(""); });
   }
 
-  async function changeCitizen(citizen: Citizen, field: "status" | "role") {
+  function changeCitizen(citizen: Citizen, field: "status" | "role") {
     const changes = field === "status"
       ? { status: citizen.status === "active" ? "inactive" : "active" }
       : { role: citizen.role === "admin" ? "user" : "admin" };
     const value = Object.values(changes)[0];
     if (!window.confirm(`${citizen.nickname} (${citizen.userId})의 ${field === "status" ? "계정 상태" : "권한"}을 ${value}로 변경할까요?`)) return;
-    setBusy(true);
-    try {
-      const result = await api<{ message: string }>(`/api/admin/users/${encodeURIComponent(citizen.userId)}`, { method: "POST", body: JSON.stringify(changes) });
-      setError(result.message);
-      await refresh();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "사용자 설정을 변경하지 못했습니다.");
-    } finally { setBusy(false); }
+    void run(() => api<{ message: string }>(`/api/admin/users/${encodeURIComponent(citizen.userId)}`, { method: "POST", body: JSON.stringify(changes) }),
+      "사용자 설정을 변경하지 못했습니다.", (result) => say(result.message));
   }
 
-  async function changeCash(citizen: Citizen) {
-    const input = window.prompt(`${citizen.nickname}의 현금 잔액을 입력하세요 (NWX)`, String(citizen.cash));
+  function changeCash(citizen: Citizen) {
+    const input = window.prompt(`${citizen.nickname}의 현금 잔액을 입력하세요`, String(citizen.cash));
     if (input === null) return;
     const cash = Number(input);
     if (!Number.isSafeInteger(cash) || cash < 0) {
-      setError("현금은 0 이상의 안전한 정수로 입력해주세요.");
+      say("현금은 0 이상의 안전한 정수로 입력해주세요.", true);
       return;
     }
-    if (!window.confirm(`${citizen.nickname}의 현금을 ${number(cash)} NWX로 설정할까요?`)) return;
-    setBusy(true);
-    try {
-      const result = await api<{ message: string }>(`/api/admin/users/${encodeURIComponent(citizen.userId)}`, {
-        method: "POST", body: JSON.stringify({ cash }),
-      });
-      setError(result.message);
-      await refresh();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "현금 잔액을 변경하지 못했습니다.");
-    } finally { setBusy(false); }
+    if (!window.confirm(`${citizen.nickname}의 현금을 ${number(cash)}(으)로 설정할까요?`)) return;
+    void run(() => api<{ message: string }>(`/api/admin/users/${encodeURIComponent(citizen.userId)}`, { method: "POST", body: JSON.stringify({ cash }) }),
+      "현금 잔액을 변경하지 못했습니다.", (result) => say(result.message));
   }
 
-  async function createEvent(event: React.FormEvent<HTMLFormElement>) {
+  function createEvent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const percent = Number(eventSeverity);
     if (!window.confirm(`${eventAsset || "시장 전체"}에 ${eventType === "good" ? "호재" : "악재"} 사건을 적용할까요? 가격에 영향을 줍니다.`)) return;
-    setBusy(true);
-    try {
-      const result = await api<{ message: string }>("/api/admin/events", {
-        method: "POST", body: JSON.stringify({ eventType, severity: Math.round(percent), targetPercent: percent, durationSeconds: Number(eventDuration), assetCode: eventAsset.trim() || null }),
-      });
-      setError(result.message);
-      await refresh();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "시장 사건을 등록하지 못했습니다.");
-    } finally { setBusy(false); }
+    void run(() => api<{ message: string }>("/api/admin/events", {
+      method: "POST", body: JSON.stringify({ eventType, severity: Math.round(percent), targetPercent: percent, durationSeconds: Number(eventDuration), assetCode: eventAsset.trim() || null }),
+    }), "시장 사건을 등록하지 못했습니다.", (result) => say(result.message));
   }
 
-  async function createCountryAccount(event: React.FormEvent<HTMLFormElement>) {
+  function createCountryAccount(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (countryPassword !== countryPasswordConfirm) {
-      setError("비밀번호 확인이 일치하지 않습니다.");
+      say("비밀번호 확인이 일치하지 않습니다.", true);
       return;
     }
-    if (countryPassword.length < 12 || countryPassword.length > 128 ||
-        !/[A-Za-z]/.test(countryPassword) || !/\d/.test(countryPassword)) {
-      setError("비밀번호는 영문과 숫자를 포함해 12~128자로 입력해주세요.");
+    if (countryPassword.length < 12 || countryPassword.length > 128 || !/[A-Za-z]/.test(countryPassword) || !/\d/.test(countryPassword)) {
+      say("비밀번호는 영문과 숫자를 포함해 12~128자로 입력해주세요.", true);
       return;
     }
-    if (!window.confirm(`${countryId} 국가 계정을 만들고 1,000,000 NWX를 지급할까요?`)) return;
-    setBusy(true);
-    try {
-      await api("/api/admin/users/country-account", {
-        method: "POST", body: JSON.stringify({ countryId, password: countryPassword }),
+    if (!window.confirm(`${countryId} 국가 계정을 만들까요? 국가 계정은 국고 잔액으로 거래합니다.`)) return;
+    void run(() => api("/api/admin/users/country-account", { method: "POST", body: JSON.stringify({ countryId, password: countryPassword }) }),
+      "국가 계정을 만들지 못했습니다.", () => { setCountryPassword(""); setCountryPasswordConfirm(""); say(`${countryId} 국가 계정을 생성했습니다.`); });
+  }
+
+  function runCommand(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const text = `$${command}${commandArgs.trim() ? ` ${commandArgs.trim()}` : ""}`;
+    if (!window.confirm(`다음 명령어를 실행할까요?\n\n${text}`)) return;
+    void run(() => api<{ message: string; success: boolean }>("/api/admin/commands", { method: "POST", body: JSON.stringify({ command, arguments: commandArgs }) }),
+      "명령어를 실행하지 못했습니다.", (result) => {
+        setCommandResults((items) => [{ command, arguments: commandArgs.trim(), message: result.message, success: result.success, time: Date.now() / 1000 }, ...items].slice(0, 20));
+        if (result.success) setCommandArgs("");
       });
-      setCountryPassword("");
-      setCountryPasswordConfirm("");
-      await refresh();
-      setError(`${countryId} 국가 계정을 생성했습니다.`);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "국가 계정을 만들지 못했습니다.");
-    } finally {
-      setBusy(false);
+  }
+
+  function saveRow(row: Row) {
+    const rowid = row.__rowid__!;
+    const changes = edits[rowid] ?? {};
+    const values = Object.fromEntries(Object.entries(changes).map(([name, input]) => [name, parseCell(input, tableInfo?.columns.find((column) => column.name === name))]));
+    if (!Object.keys(values).length) return;
+    const summary = Object.entries(values).map(([name, value]) => `${name}: ${showCell(row[name])} → ${showCell(value)}`).join("\n");
+    if (!window.confirm(`${table} #${rowid} 행을 저장할까요?\n\n${summary}`)) return;
+    void run(() => api(`/api/admin/db/tables/${encodeURIComponent(table)}/rows/${rowid}`, { method: "POST", body: JSON.stringify({ values }) }),
+      "행을 저장하지 못했습니다.", () => say(`${table} #${rowid} 행을 저장했습니다.`));
+  }
+
+  function deleteRow(row: Row) {
+    const rowid = row.__rowid__!;
+    if (!window.confirm(`${table} #${rowid} 행을 삭제할까요? 되돌릴 수 없으며 작업 기록에 남습니다.`)) return;
+    void run(() => api(`/api/admin/db/tables/${encodeURIComponent(table)}/rows/${rowid}/delete`, { method: "POST" }),
+      "행을 삭제하지 못했습니다.", () => say(`${table} #${rowid} 행을 삭제했습니다.`));
+  }
+
+  function insertRow(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const values = Object.fromEntries(Object.entries(newRow ?? {}).filter(([, input]) => input !== "")
+      .map(([name, input]) => [name, parseCell(input, tableInfo?.columns.find((column) => column.name === name))]));
+    if (!Object.keys(values).length) {
+      say("한 개 이상의 열 값을 입력해주세요.", true);
+      return;
     }
+    if (!window.confirm(`${table}에 새 행을 추가할까요?`)) return;
+    void run(() => api(`/api/admin/db/tables/${encodeURIComponent(table)}/rows`, { method: "POST", body: JSON.stringify({ values }) }),
+      "행을 추가하지 못했습니다.", () => { setNewRow(null); say(`${table}에 행을 추가했습니다.`); });
   }
 
   function logout() {
@@ -315,72 +351,157 @@ export default function App() {
     setAudit([]);
   }
 
-  if (!user) {
-    return <AuthPanel app="dashboard" onAuthenticated={setUser} />;
-  }
-
+  if (!checked) return <Stage><main className="center-shell"><p className="loading">불러오는 중…</p></main></Stage>;
+  if (!user) return <Stage><AuthPanel app="dashboard" onAuthenticated={setUser} /></Stage>;
   if (user.role !== "admin") {
-    return <main className="login-shell"><section className="login-form"><p className="eyebrow">INAZINA · ACCESS</p><h1>관리자 권한이 필요합니다</h1><p className="muted">현재 계정: {user.nickname}</p><button onClick={logout}>로그아웃</button></section></main>;
+    return <Stage><main className="center-shell"><section className="glass card access-card"><p className="eyebrow">INAZINA · ACCESS</p><h1>관리자 권한이 필요합니다</h1><p className="cap">현재 계정: {user.nickname}</p><button className="btn primary" onClick={logout}>로그아웃</button></section></main></Stage>;
   }
 
-  return <div className="admin-shell">
-    <aside className="sidebar">
-      <a className="brand" href="/"><span className="brand-mark">I</span><span><strong>INAZINA</strong><small>운영 Dashboard</small></span></a>
-      <div className="nav-label">운영</div>
-      <nav>{pages.map((item) => <button key={item.id} className={page === item.id ? "nav-item active" : "nav-item"} onClick={() => setPage(item.id)}>{item.label}</button>)}</nav>
-      <div className="sidebar-foot">로컬 관리 콘솔<br /><span>127.0.0.1</span></div>
-    </aside>
-    <main className="admin-main">
-      <header className="topbar"><div className="crumb">운영 <span>/</span> <b>{pages.find((item) => item.id === page)?.label}</b></div><div className="top-actions"><span className="connection"><i />{health}</span><span>{user.nickname} · 관리자</span><button className="text-button" onClick={logout}>로그아웃</button></div></header>
-      <div className="content">
-        <div className="page-head"><div><p className="eyebrow">LOCAL CONTROL</p><h1>{pages.find((item) => item.id === page)?.label}</h1><p className="subhead">실제 봇 데이터와 관리자 작업을 확인합니다.</p></div><button className="secondary" onClick={() => void refresh()} disabled={busy}>새로고침</button></div>
-        {error && <div className="notice" role="status">{error}</div>}
+  const current = pages.find((item) => item.id === page)!;
+  const pageIndex = pages.findIndex((item) => item.id === page);
+  const searchable = page === "instruments" || page === "users" || page === "database";
+
+  return <Stage>
+    <div className="win">
+      <aside className="sidebar">
+        <div className="brand"><span className="brand-mark">I</span><span><strong>INAZINA</strong><small>운영 Dashboard</small></span></div>
+        <nav aria-label="관리 메뉴">
+          <div className="nav-thumb" aria-hidden="true" style={{ transform: `translateY(${pageIndex * 46}px)` }} />
+          {pages.map((item, index) => <button key={item.id} type="button" className="nav-item" aria-current={page === item.id ? "page" : undefined} style={{ animationDelay: `${200 + index * 60}ms` }} onClick={() => setPage(item.id)}>
+            <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={item.color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">{item.icon}</svg>
+            <span>{item.label}</span>
+          </button>)}
+        </nav>
+        <div className="sidebar-foot"><span className={connected ? "dot ok" : "dot"} />{health}<br /><span className="mono">127.0.0.1</span></div>
+      </aside>
+      <main className="content">
+        <div className="toolbar">
+          <div className="grow" />
+          {searchable && <label className="pill search">
+            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>
+            <input type="search" aria-label="검색" placeholder={page === "users" ? "이름 또는 ID" : page === "database" ? "모든 열에서 검색" : "이름 또는 코드"} value={query} onChange={(event) => setQuery(event.target.value)} />
+          </label>}
+          <span className="pill user-pill">{user.nickname} · 관리자</span>
+          <button className="pill ghost-pill" type="button" onClick={() => void refresh()} disabled={busy}>새로고침</button>
+          <button className="pill ghost-pill" type="button" onClick={logout}>로그아웃</button>
+        </div>
+        <h1 className="title">{current.label}</h1>
+        <p className="sub">{subtitles[page]}</p>
+        {notice && <div className={notice.error ? "notice error" : "notice"} role={notice.error ? "alert" : "status"}><span>{notice.text}</span><button type="button" className="ghost" aria-label="알림 닫기" onClick={() => setNotice(null)}>×</button></div>}
+
         {page === "overview" && <>
-          <section className="metric-grid">
-            <Metric label="활성 사용자" value={overview ? number(overview.activeUsers) : "—"} />
-            <Metric label="거래 중 종목·상품" value={overview ? number(overview.activeInstruments) : "—"} />
-            <Metric label="미체결 주문" value={overview ? number(overview.openOrders) : "—"} />
-            <Metric label="시장 상태" value={overview?.market?.status === "open" ? "개장" : overview?.market?.status ?? "—"} />
+          <section className="row-wrap mb" aria-label="주요 지표">
+            <Metric label="활성 사용자" value={overview ? number(overview.activeUsers) : "—"} delay={0} />
+            <Metric label="거래 중 종목·상품" value={overview ? number(overview.activeInstruments) : "—"} delay={1} />
+            <Metric label="미체결 주문" value={overview ? number(overview.openOrders) : "—"} delay={2} />
+            <Metric label="개장 중 거래소" value={overview ? `${overview.market.filter((item) => item.status === "open" && !item.trading_halted).length} / ${overview.market.length}` : "—"} delay={3} />
           </section>
-          <section className="workspace-row">
-            <div className="section-panel"><div className="section-head"><h2>시장 제어</h2><span className={overview?.market?.status === "open" ? "state open" : "state paused"}>{overview?.market?.reason || (overview?.market?.status === "open" ? "정상 운영" : "확인 필요")}</span></div><p className="muted">변경은 기존 Python 시장 제어 로직을 통해 기록됩니다.</p><div className="actions"><button onClick={() => void marketAction("open")} disabled={busy}>개장</button><button onClick={() => void marketAction("close")} disabled={busy}>휴장</button><button onClick={() => void marketAction("pause")} disabled={busy}>일시 정지</button><button onClick={() => void marketAction("resume")} disabled={busy}>재개</button></div></div>
-            <div className="section-panel"><div className="section-head"><h2>서비스 연결</h2><span className="state open">정상</span></div><dl className="service-list"><div><dt>웹 API</dt><dd>127.0.0.1:4312</dd></div><div><dt>Python 데이터 서비스</dt><dd>127.0.0.1:4313</dd></div><div><dt>데이터베이스</dt><dd>SQLite · 읽기/기존 로직</dd></div></dl></div>
+          <section className="row-wrap mb">
+            <article className="glass card grow-2 rise">
+              <div className="card-head"><div><h2>시장 제어</h2><p className="cap">전체 또는 거래소별로 개장·휴장·정지합니다. 기존 Python 시장 제어와 기록을 거칩니다.</p></div>
+                <div className="actions"><button className="btn primary small" disabled={busy} onClick={() => marketAction("open")}>전체 개장</button><button className="soft" disabled={busy} onClick={() => marketAction("close")}>전체 휴장</button><button className="soft" disabled={busy} onClick={() => marketAction("pause")}>일시 정지</button><button className="soft" disabled={busy} onClick={() => marketAction("resume")}>재개</button></div></div>
+              <div className="scroll-x"><table><thead><tr><th>거래소</th><th>상태</th><th>사유</th><th>서킷</th><th>변경 시각</th><th /></tr></thead><tbody>
+                {(overview?.market ?? []).map((item) => <tr key={item.exchange_id}><td className="mono">{item.exchange_id}</td><td><span className={item.status === "open" && !item.trading_halted ? "tag ok" : "tag warn"}>{item.trading_halted ? "거래 정지" : marketStatusName[item.status] ?? item.status}</span></td><td>{item.reason || "—"}</td><td>{item.circuit_stage ? `${item.circuit_stage}단계` : "—"}</td><td>{item.updated_epoch ? date(item.updated_epoch) : "—"}</td><td className="row-actions">{item.status === "open" ? <button className="soft small" disabled={busy} onClick={() => marketAction("close", item.exchange_id)}>휴장</button> : <button className="soft small" disabled={busy} onClick={() => marketAction("open", item.exchange_id)}>개장</button>}{item.trading_halted ? <button className="soft small" disabled={busy} onClick={() => marketAction("resume", item.exchange_id)}>재개</button> : <button className="soft small" disabled={busy} onClick={() => marketAction("pause", item.exchange_id)}>정지</button>}</td></tr>)}
+              </tbody></table>{overview && !overview.market.length && <p className="empty">등록된 거래소가 없습니다.</p>}</div>
+            </article>
+            <article className="dark-card rise">
+              <h2>서비스 연결</h2><p className="cap">모든 서비스는 이 컴퓨터(127.0.0.1)에서만 열립니다.</p>
+              <dl className="service-list"><div><dt>웹 API</dt><dd>:4312</dd></div><div><dt>Python 데이터 서비스</dt><dd>:4313</dd></div><div><dt>데이터베이스</dt><dd>inazina.db</dd></div><div><dt>상태</dt><dd>{health}</dd></div></dl>
+            </article>
           </section>
-          <section className="section-panel"><div className="section-head"><h2>운영 범위</h2><span className="muted">관리자 작업은 모두 API에서 역할을 재검증합니다.</span></div><p className="muted">시장 상태, 상품 이름·가격·발행량, 사용자 현금·권한·계정 상태, 시장 사건을 관리할 수 있습니다. 각 변경은 기존 Python 검증과 관리자 작업 기록을 거칩니다.</p></section>
         </>}
+
         {page === "instruments" && <>
-          <section className="section-panel fund-create"><div className="section-head"><h2>펀드 생성</h2><span className="muted">NAV 가입·환매형 일반 펀드</span></div><form onSubmit={createFund}>
+          <section className="glass card mb rise"><div className="card-head"><div><h2>펀드 생성</h2><p className="cap">NAV 가입·환매형 일반 펀드</p></div></div><form className="form-grid" onSubmit={createFund}>
             <label>코드<input value={fundCode} onChange={(event) => setFundCode(event.target.value)} required /></label>
             <label>이름<input value={fundName} onChange={(event) => setFundName(event.target.value)} required /></label>
             <label>기준가격<input type="number" min="1" step="1" value={fundPrice} onChange={(event) => setFundPrice(event.target.value)} required /></label>
             <label>총 발행 좌수<input type="number" min="1" step="1" value={fundSupply} onChange={(event) => setFundSupply(event.target.value)} required /></label>
             <label>거래소<input value={fundExchange} onChange={(event) => setFundExchange(event.target.value)} required /></label>
             <label>유형<select value={fundCategory} onChange={(event) => setFundCategory(event.target.value)}><option value="equity">주식형</option><option value="bond">채권형</option><option value="mixed">혼합형</option><option value="other">기타형</option></select></label>
-            <label className="fund-components">구성 자산 · 비중(%)<input value={fundComponents} onChange={(event) => setFundComponents(event.target.value)} placeholder="INZST001:60,INZCB001:40" required /></label>
-            <button className="primary" disabled={busy}>{busy ? "생성 중…" : "펀드 생성"}</button>
+            <label className="span-wide">구성 자산 · 비중(%)<input value={fundComponents} onChange={(event) => setFundComponents(event.target.value)} placeholder="INZST001:60,INZCB001:40" required /></label>
+            <button className="btn primary" disabled={busy}>{busy ? "생성 중…" : "펀드 생성"}</button>
           </form></section>
-          <section className="section-panel"><div className="section-head"><h2>종목 · 상품</h2><input className="search" placeholder="이름 또는 코드 검색" value={query} onChange={(event) => setQuery(event.target.value)} /></div><div className="table-wrap"><table><thead><tr><th>코드</th><th>이름</th><th>유형</th><th>펀드 분류</th><th>가격</th><th>거래소</th><th>상태</th><th></th></tr></thead><tbody>{filteredInstruments.map((item) => <tr key={item.code}><td className="mono">{item.code}</td><td>{item.name}</td><td>{item.type}</td><td>{fundCategoryName[item.fund_category || ""] || "—"}</td><td className="mono">{number(item.price)}</td><td>{item.exchange_id || "—"}</td><td><span className={item.status === "active" ? "state open" : "state paused"}>{item.status}</span></td><td className="user-actions"><button className="table-action" disabled={busy} onClick={() => void editInstrument(item)}>설정</button><button className="table-action" disabled={busy || item.status === "matured"} onClick={() => void changeInstrument(item)}>{item.status === "active" ? "중지" : "재개"}</button></td></tr>)}</tbody></table>{!filteredInstruments.length && <p className="empty">표시할 종목이 없습니다.</p>}</div></section>
+          <section className="glass card rise"><div className="card-head"><div><h2>종목 · 상품</h2><p className="cap">{number(filteredInstruments.length)}개</p></div></div><div className="scroll-x tall"><table><thead><tr><th>코드</th><th>이름</th><th>유형</th><th>펀드 분류</th><th className="r">가격</th><th>거래소</th><th>상태</th><th /></tr></thead><tbody>{filteredInstruments.map((item) => <tr key={item.code}><td className="mono">{item.code}</td><td>{item.name}</td><td>{item.type}</td><td>{fundCategoryName[item.fund_category || ""] || "—"}</td><td className="r mono">{number(item.price)}</td><td>{item.exchange_id || "—"}</td><td><span className={item.status === "active" ? "tag ok" : "tag warn"}>{item.status}</span></td><td className="row-actions"><button className="soft small" disabled={busy} onClick={() => editInstrument(item)}>설정</button><button className="soft small" disabled={busy || item.status === "matured"} onClick={() => changeInstrument(item)}>{item.status === "active" ? "중지" : "재개"}</button></td></tr>)}</tbody></table>{!filteredInstruments.length && <p className="empty">표시할 종목이 없습니다.</p>}</div></section>
         </>}
-        {page === "users" && <section className="section-panel">
-          <div className="section-head"><h2>사용자 계정</h2><input className="search" placeholder="이름 또는 ID 검색" value={query} onChange={(event) => setQuery(event.target.value)} /></div>
-          <div className="country-user-create"><h3>국가 계정 추가</h3><p className="muted">국가 ID가 사용자 ID가 됩니다. HTS에서 국가 계정으로 로그인하며, 시작 잔액은 1,000,000 NWX입니다.</p><form onSubmit={(event) => void createCountryAccount(event)}>
-            <label>국가 ID<select value={countryId} onChange={(event) => setCountryId(event.target.value)} required>{countries.map((country) => <option key={country.countryId} value={country.countryId}>{country.countryId}</option>)}</select></label>
+
+        {page === "users" && <>
+          <section className="glass card mb rise"><div className="card-head"><div><h2>국가 계정 추가</h2><p className="cap">국가 ID가 사용자 ID가 됩니다. HTS에서 국가 계정으로 로그인하면 국고로 거래합니다.</p></div></div><form className="form-grid" onSubmit={createCountryAccount}>
+            <label>국가 ID<select value={countryId} onChange={(event) => setCountryId(event.target.value)} required>{countries.map((country) => <option key={country.countryId} value={country.countryId}>{country.countryId} · {country.currencyCode}</option>)}</select></label>
             <label>비밀번호<input type="password" autoComplete="new-password" minLength={12} maxLength={128} value={countryPassword} onChange={(event) => setCountryPassword(event.target.value)} required /></label>
             <label>비밀번호 확인<input type="password" autoComplete="new-password" minLength={12} maxLength={128} value={countryPasswordConfirm} onChange={(event) => setCountryPasswordConfirm(event.target.value)} required /></label>
-            <button className="primary" disabled={busy || !countries.length}>{busy ? "추가 중…" : "국가 사용자 추가"}</button>
-          </form><p className="auth-hint">비밀번호는 영문과 숫자를 포함해 12~128자로 입력하세요.</p></div>
-          <div className="table-wrap"><table><thead><tr><th>사용자</th><th>계정 유형</th><th>ID</th><th>국적</th><th>현금</th><th>신용</th><th>권한</th><th>상태</th><th></th></tr></thead><tbody>{citizens.map((citizen) => <tr key={citizen.userId}><td>{citizen.nickname}</td><td>{citizen.accountType === "country" ? "국가" : "Discord"}</td><td className="mono">{citizen.userId}</td><td>{citizen.nationality}</td><td className="mono">{number(citizen.cash)}</td><td>{number(citizen.creditScore)}</td><td>{citizen.role}</td><td>{citizen.status}</td><td className="user-actions"><button className="table-action" disabled={busy || citizen.userId === user.userId} onClick={() => void changeCash(citizen)}>현금</button><button className="table-action" disabled={busy || citizen.userId === user.userId} onClick={() => void changeCitizen(citizen, "status")}>{citizen.status === "active" ? "비활성" : "활성화"}</button>{citizen.accountType !== "country" && <button className="table-action" disabled={busy || citizen.userId === user.userId} onClick={() => void changeCitizen(citizen, "role")}>{citizen.role === "admin" ? "관리자 해제" : "관리자 지정"}</button>}</td></tr>)}</tbody></table>{!citizens.length && <p className="empty">사용자를 찾지 못했습니다.</p>}</div>
-        </section>}
-        {page === "events" && <>
-          <section className="section-panel event-create"><div className="section-head"><h2>시장 사건 등록</h2><span className="muted">기존 시장 사건 검증과 감사 기록 적용</span></div><form onSubmit={createEvent}><label>종류<select value={eventType} onChange={(event) => setEventType(event.target.value)}><option value="good">호재</option><option value="bad">악재</option></select></label><label>목표 변동률 (%)<input type="number" min="0" max="100" step="0.1" value={eventSeverity} onChange={(event) => setEventSeverity(event.target.value)} required /></label><label>지속 시간 (초)<input type="number" min="1" max="604800" value={eventDuration} onChange={(event) => setEventDuration(event.target.value)} required /></label><label>대상 종목 코드 (비우면 전체)<input value={eventAsset} onChange={(event) => setEventAsset(event.target.value)} placeholder="예: INZST001" /></label><button className="primary" disabled={busy}>사건 검토 · 등록</button></form></section>
-          <section className="section-panel"><div className="section-head"><h2>최근 사건</h2><span className="muted">최근 50건</span></div><div className="table-wrap"><table><thead><tr><th>ID</th><th>대상</th><th>유형</th><th>강도</th><th>목표</th><th>시작</th><th>종료</th><th>관리자</th></tr></thead><tbody>{events.map((item) => <tr key={item.event_id}><td>#{item.event_id}</td><td>{item.asset_code || "시장 전체"}</td><td>{item.event_type === "good" ? "호재" : "악재"}</td><td>{item.severity}%</td><td>{item.target_mode === "price" ? `${number(item.target_value)} NWX` : `${number(item.target_value)}%`}</td><td>{date(item.starts_epoch)}</td><td>{date(item.ends_epoch)}</td><td className="mono">{item.created_by}</td></tr>)}</tbody></table>{!events.length && <p className="empty">등록된 사건이 없습니다.</p>}</div></section>
+            <button className="btn primary" disabled={busy || !countries.length}>{busy ? "추가 중…" : "국가 계정 추가"}</button>
+          </form><p className="hint">비밀번호는 영문과 숫자를 포함해 12~128자로 입력하세요.</p></section>
+          <section className="glass card rise"><div className="card-head"><div><h2>사용자 계정</h2><p className="cap">최대 100명 · 국적·신용점수 등 그 밖의 값은 DB 편집의 users 테이블에서 수정합니다.</p></div></div><div className="scroll-x tall"><table><thead><tr><th>사용자</th><th>유형</th><th>ID</th><th>국적</th><th className="r">현금</th><th className="r">신용</th><th>권한</th><th>상태</th><th /></tr></thead><tbody>{citizens.map((citizen) => <tr key={citizen.userId}><td>{citizen.nickname}</td><td>{citizen.accountType === "country" ? "국가" : "Discord"}</td><td className="mono">{citizen.userId}</td><td>{citizen.nationality}</td><td className="r mono">{number(citizen.cash)}</td><td className="r">{number(citizen.creditScore)}</td><td>{citizen.role}</td><td><span className={citizen.status === "active" ? "tag ok" : "tag warn"}>{citizen.status}</span></td><td className="row-actions"><button className="soft small" disabled={busy || citizen.userId === user.userId} onClick={() => changeCash(citizen)}>현금</button><button className="soft small" disabled={busy || citizen.userId === user.userId} onClick={() => changeCitizen(citizen, "status")}>{citizen.status === "active" ? "비활성" : "활성화"}</button>{citizen.accountType !== "country" && <button className="soft small" disabled={busy || citizen.userId === user.userId} onClick={() => changeCitizen(citizen, "role")}>{citizen.role === "admin" ? "관리자 해제" : "관리자 지정"}</button>}</td></tr>)}</tbody></table>{!citizens.length && <p className="empty">사용자를 찾지 못했습니다.</p>}</div></section>
         </>}
-        {page === "audit" && <section className="section-panel"><div className="section-head"><h2>최근 관리자 작업</h2><span className="muted">최근 50건</span></div><div className="table-wrap"><table><thead><tr><th>시각</th><th>관리자 ID</th><th>작업</th><th>세부 내용</th></tr></thead><tbody>{audit.map((entry, index) => <tr key={`${entry.time}-${index}`}><td>{date(entry.time)}</td><td className="mono">{entry.actorId}</td><td>{entry.action}</td><td className="audit-payload">{JSON.stringify(entry.payload)}</td></tr>)}</tbody></table>{!audit.length && <p className="empty">기록이 없습니다.</p>}</div></section>}
-      </div>
-    </main>
+
+        {page === "events" && <>
+          <section className="glass card mb rise"><div className="card-head"><div><h2>시장 사건 등록</h2><p className="cap">기존 시장 사건 검증과 감사 기록을 적용합니다.</p></div></div><form className="form-grid" onSubmit={createEvent}>
+            <label>종류<select value={eventType} onChange={(event) => setEventType(event.target.value)}><option value="good">호재</option><option value="bad">악재</option></select></label>
+            <label>목표 변동률 (%)<input type="number" min="0" max="100" step="0.1" value={eventSeverity} onChange={(event) => setEventSeverity(event.target.value)} required /></label>
+            <label>지속 시간 (초)<input type="number" min="1" max="604800" value={eventDuration} onChange={(event) => setEventDuration(event.target.value)} required /></label>
+            <label>대상 종목 코드 (비우면 전체)<input value={eventAsset} onChange={(event) => setEventAsset(event.target.value)} placeholder="예: INZST001" /></label>
+            <button className="btn primary" disabled={busy}>사건 등록</button>
+          </form></section>
+          <section className="glass card rise"><div className="card-head"><div><h2>최근 사건</h2><p className="cap">최근 50건</p></div></div><div className="scroll-x tall"><table><thead><tr><th>ID</th><th>대상</th><th>유형</th><th>강도</th><th>목표</th><th>시작</th><th>종료</th><th>관리자</th></tr></thead><tbody>{events.map((item) => <tr key={item.event_id}><td>#{item.event_id}{item.active && <span className="tag ok inline">진행 중</span>}</td><td>{item.asset_code || "시장 전체"}</td><td><span className={item.event_type === "good" ? "tag up" : "tag down"}>{item.event_type === "good" ? "호재" : "악재"}</span></td><td>{item.severity}%</td><td>{item.target_value === null ? "—" : item.target_mode === "price" ? number(item.target_value) : `${number(item.target_value)}%`}</td><td>{date(item.starts_epoch)}</td><td>{date(item.ends_epoch)}</td><td className="mono">{item.created_by}</td></tr>)}</tbody></table>{!events.length && <p className="empty">등록된 사건이 없습니다.</p>}</div></section>
+        </>}
+
+        {page === "commands" && <>
+          <section className="glass card mb rise"><div className="card-head"><div><h2>명령어 실행</h2><p className="cap">Discord에서 `$명령어 인자`로 입력하던 것과 같습니다. 인자는 공백으로 구분하고, 공백이 있는 값은 따옴표로 감쌉니다.</p></div></div>
+            <form className="command-form" onSubmit={runCommand}>
+              <label>명령어<select value={command} onChange={(event) => setCommand(event.target.value)}>{commands.map((item) => <option key={item.name} value={item.name}>${item.name}</option>)}</select></label>
+              <label className="span-wide">인자<input className="mono" value={commandArgs} onChange={(event) => setCommandArgs(event.target.value)} placeholder={selectedCommand?.usage || "인자 없음"} /></label>
+              <button className="btn primary" disabled={busy || !command}>{busy ? "실행 중…" : "실행"}</button>
+            </form>
+            <p className="usage"><span className="mono">${command} {selectedCommand?.usage}</span></p>
+            {(command === "상품생성" || command === "상품수정") && <details className="help"><summary>상품 종류별 순서형 인자</summary><pre>{creationHelp}</pre></details>}
+          </section>
+          <section className="glass card mb rise"><div className="card-head"><div><h2>실행 결과</h2><p className="cap">이 화면에서 실행한 최근 20건 · 전체 기록은 작업 기록에서 확인합니다.</p></div></div>
+            {commandResults.map((item) => <div key={item.time} className={item.success ? "result" : "result failed"}><div className="result-head"><span className="mono">${item.command} {item.arguments}</span><span>{date(item.time)}</span></div><pre>{item.message}</pre></div>)}
+            {!commandResults.length && <p className="empty">아직 실행한 명령어가 없습니다.</p>}
+          </section>
+          <section className="glass card rise"><div className="card-head"><div><h2>전체 명령어</h2><p className="cap">{commands.length}개 · 선택하면 위 입력에 적용됩니다.</p></div></div><div className="command-list">{commands.map((item) => <button key={item.name} type="button" className={item.name === command ? "command-chip active" : "command-chip"} onClick={() => setCommand(item.name)}><b>${item.name}</b><small>{item.usage || "인자 없음"}</small></button>)}</div></section>
+        </>}
+
+        {page === "database" && <>
+          <section className="glass card mb rise"><div className="card-head"><div><h2>테이블</h2><p className="cap">값을 바꾸면 행의 저장 버튼이 켜집니다. `NULL`을 입력하면 NULL로 저장합니다. DB 제약과 트리거 검증을 그대로 거치며 모든 변경은 작업 기록에 남습니다. 비밀번호·작업 기록 테이블은 표시하지 않습니다.</p></div>
+              <div className="actions"><select aria-label="테이블 선택" value={table} onChange={(event) => setTable(event.target.value)}>{tables.map((item) => <option key={item.name} value={item.name}>{item.name}{item.editable ? "" : " (읽기 전용)"}</option>)}</select><button className="soft" type="button" disabled={busy || !tablePage?.editable} onClick={() => setNewRow(newRow ? null : {})}>{newRow ? "추가 취소" : "행 추가"}</button></div></div>
+            {newRow && tableInfo && <form className="form-grid new-row" onSubmit={insertRow}>{tableInfo.columns.map((column) => <label key={column.name}>{column.name}<small>{column.type || "ANY"}{column.primaryKey ? " · PK" : ""}{column.notNull ? " · 필수" : ""}{column.default !== null ? ` · 기본 ${column.default}` : ""}</small><input value={newRow[column.name] ?? ""} onChange={(event) => setNewRow({ ...newRow, [column.name]: event.target.value })} /></label>)}<button className="btn primary" disabled={busy}>추가</button></form>}
+          </section>
+          <section className="glass card rise">
+            <div className="card-head"><div><h2>{table}</h2><p className="cap">{tablePage ? `${number(tablePage.total)}행 중 ${number(tablePage.total ? tablePage.offset + 1 : 0)}–${number(Math.min(tablePage.total, tablePage.offset + tablePage.rows.length))}` : "—"}</p></div>
+              <div className="actions"><button className="soft" type="button" disabled={busy || !tablePage || tablePage.offset === 0} onClick={() => setTableOffset(Math.max(0, tableOffset - (tablePage?.pageSize ?? 50)))}>이전</button><button className="soft" type="button" disabled={busy || !tablePage || tablePage.offset + tablePage.rows.length >= tablePage.total} onClick={() => setTableOffset(tableOffset + (tablePage?.pageSize ?? 50))}>다음</button></div></div>
+            <div className="scroll-x tall"><table className="grid"><thead><tr><th>rowid</th>{tablePage?.columns.map((column) => <th key={column.name} title={column.type}>{column.name}{column.primaryKey ? " 🔑" : ""}</th>)}<th /></tr></thead><tbody>
+              {tablePage?.rows.map((row) => {
+                const rowid = row.__rowid__ ?? -1;
+                const rowEdits = edits[rowid] ?? {};
+                return <tr key={rowid}><td className="mono muted">{rowid >= 0 ? rowid : "—"}</td>{tablePage.columns.map((column) => {
+                  const edited = column.name in rowEdits;
+                  const value = edited ? rowEdits[column.name] : showCell(row[column.name]);
+                  return <td key={column.name} className={edited ? "cell edited" : "cell"}>{tablePage.editable ? <input aria-label={`${rowid} ${column.name}`} className={row[column.name] === null && !edited ? "mono null" : "mono"} value={value} onChange={(event) => setEdits({ ...edits, [rowid]: { ...rowEdits, [column.name]: event.target.value } })} /> : <span className="mono">{value}</span>}</td>;
+                })}<td className="row-actions">{tablePage.editable && <><button className="btn primary small" disabled={busy || !Object.keys(rowEdits).length} onClick={() => saveRow(row)}>저장</button><button className="soft small" disabled={busy || !Object.keys(rowEdits).length} onClick={() => setEdits(Object.fromEntries(Object.entries(edits).filter(([key]) => Number(key) !== rowid)))}>취소</button><button className="soft small danger" disabled={busy} onClick={() => deleteRow(row)}>삭제</button></>}</td></tr>;
+              })}
+            </tbody></table>{tablePage && !tablePage.rows.length && <p className="empty">행이 없습니다.</p>}</div>
+          </section>
+        </>}
+
+        {page === "audit" && <section className="glass card rise"><div className="card-head"><div><h2>최근 관리자 작업</h2><p className="cap">최근 50건</p></div></div><div className="scroll-x tall"><table><thead><tr><th>시각</th><th>관리자 ID</th><th>작업</th><th>세부 내용</th></tr></thead><tbody>{audit.map((entry, index) => <tr key={`${entry.time}-${index}`}><td>{date(entry.time)}</td><td className="mono">{entry.actorId}</td><td><span className="tag">{entry.action}</span></td><td className="audit-payload mono" title={JSON.stringify(entry.payload)}>{JSON.stringify(entry.payload)}</td></tr>)}</tbody></table>{!audit.length && <p className="empty">기록이 없습니다.</p>}</div></section>}
+        <p className="foot">INAZINA 로컬 관리 콘솔 · 모든 관리자 요청은 API에서 권한을 다시 확인합니다.</p>
+      </main>
+    </div>
+  </Stage>;
+}
+
+function Stage({ children }: { children: ReactNode }) {
+  return <div className="stage">
+    <div className="wall" aria-hidden="true" />
+    <div className="blob b1" aria-hidden="true" />
+    <div className="blob b2" aria-hidden="true" />
+    <div className="blob b3" aria-hidden="true" />
+    {children}
   </div>;
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
-  return <div className="metric"><div className="metric-label">{label}</div><div className="metric-value">{value}</div></div>;
+function Metric({ label, value, delay }: { label: string; value: string; delay: number }) {
+  return <div className="glass kpi rise lift" style={{ animationDelay: `${150 + delay * 80}ms` }}><span className="k-label">{label}</span><span className="k-value">{value}</span></div>;
 }

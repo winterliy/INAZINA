@@ -8,6 +8,10 @@
     "dev:dashboard": "npm run dev --workspace @inazina/dashboard",
     "dev:hts": "npm run dev --workspace @inazina/hts",
     "dev:api": "npm run dev --workspace @inazina/api",
-    "build": "npm run build --workspaces --if-present"
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=24"
   }
 }

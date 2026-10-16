@@ -2,7 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import "./style.css";
-import "../../shared/macos-theme.css";
+import "../../shared/typography.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
