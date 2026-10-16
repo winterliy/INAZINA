@@ -47,15 +47,18 @@ $금리수정 낙원 modify 3
 $법정최고이자수정 낙원 modify 20
 ```
 
-생성 유형은 `company`(주식, `stock` 별칭도 지원), `preferred`(우선주), `asset`(시장 자산), `etf`, `els`, `future`(주식 선물), `corporatebond`(회사채), `fund`(일반 펀드), `indexfund`, `commodity`(현물 원자재), `bond`(국채), `saving`(저축), `loan`(대출), `option`, `currency`(통화), `currencyproduct`(외환통장)다. 한글 유형도 지원한다. 두 번째 인자인 상품종류에 따라 이후 인자의 이름과 순서가 달라진다. 공백이 있는 이름·문자열은 따옴표로 묶는다. 마지막 추가 JSON은 선택 사항이며 `quote_currency`, `is_fixed`, `dividend_is_active` 등 기본 인자 외 설정을 지정할 때만 사용한다. 이미 입력한 기본 인자를 JSON에서 중복 지정할 수 없다. 이전 key=value·전체 JSON 입력은 호환용으로만 유지한다.
+생성 유형은 `company`(주식, `stock` 별칭도 지원), `preferred`(우선주), `asset`(시장 자산), `dr`(주식예탁증서), `etf`, `els`, `future`(주식 선물), `corporatebond`(회사채), `fund`(일반 펀드), `indexfund`, `commodity`(현물 원자재), `bond`(국채), `saving`(저축), `loan`(대출), `option`, `currency`(통화), `currencyproduct`(외환통장)다. 한글 유형도 지원한다. 두 번째 인자인 상품종류에 따라 이후 인자의 이름과 순서가 달라진다. 공백이 있는 이름·문자열은 따옴표로 묶는다. 마지막 추가 JSON은 선택 사항이며 `quote_currency`, `is_fixed`, `dividend_is_active` 등 기본 인자 외 설정을 지정할 때만 사용한다. 이미 입력한 기본 인자를 JSON에서 중복 지정할 수 없다. 이전 key=value·전체 JSON 입력은 호환용으로만 유지한다.
 
 ```text
 $상품생성 SAV saving "새 적금" 3 1000 30 86400 1 Inazina
 $상품생성 USDACC currencyproduct "달러통장" USD 1
 $상품생성 CALL1 option INZST001 call 1500 30 1 100 50
+$상품생성 KOCO_DR_LN dr "KOCO DR" 25 10000 LSE {"underlying_code":"KOCO","underlying_per_receipt":2,"quote_currency":"USD","depositary_bank":"Example Depositary","custodian":"Example Custody","home_exchange_id":"KRX"}
 ```
 
 옵션 생성은 국가의 담보가 필요하다. 기존 상품의 결제 통화와 발행된 파생·채권 계약 조건은 변경하지 않는다. 가격 없는 저축·대출 상품에 `$상품수정`으로 가격을 부여할 수 없다. GARCH 세부 설정·신용·국적 등 별도 명령이 없는 설정은 DB Browser에서 관리한다. 모든 변경과 국가 거래는 `admin_audit`에 기록하며 비밀번호는 기록하지 않는다.
+
+관리자 작업 기록은 데이터베이스 트리거와 웹 대시보드 양쪽에서 수정·삭제할 수 없다(append-only). KYC의 만료일이 지난 확인 완료 건은 준법 화면의 **만료 처리 실행**으로 최대 500건씩 상태를 만료로 전환하고 검토자·시각·사유를 별도 이력과 관리자 감사 기록에 남긴다.
 
 ## 국가 명의 거래
 
@@ -145,6 +148,10 @@ $상품생성 CALL1 option INZST001 call 1500 30 1 100 50
 ## 상품생성 인자 순서
 
 공통 앞부분은 `$상품생성 [id] [상품종류]`이며, 아래 인자를 순서대로 입력한다. `id`는 다른 상품과 겹치지 않는 종목 코드로 이후 검색·거래·수정에서 사용한다. `상품종류`는 아래 표의 유형이며 뒤의 인자 순서를 결정한다. `[ ]` 기호는 직접 입력하지 않는다. 마지막 `[추가 JSON]`은 모든 유형에서 선택 사항이다.
+
+### 주식예탁증서(DR)
+
+`dr`은 별도 상장 자산(`market_assets`)으로 생성하며 기존 원주 회사 코드는 복제하지 않는다. 예시는 `$상품생성 KOCO_DR_LN dr "KOCO DR" 25 10000 LSE {"underlying_code":"KOCO","underlying_per_receipt":2,"quote_currency":"USD","depositary_bank":"Example Depositary","custodian":"Example Custody","home_exchange_id":"KRX"}`이다. 같은 조건은 웹 대시보드의 **종목·상품 → 주식예탁증서(DR)** 입력 화면에서도 설정할 수 있다. 원주는 활성 보통주여야 하고, 활성 DR 프로그램들의 `발행량 × 1증서당 원주 수` 최대 용량 합계는 원주 발행주식 수 이하여야 한다. 사용자는 Discord의 `/DR전환` 또는 웹 HTS의 DR 발행·상환 패널에서 미체결 매도 주문에 예약되지 않은 정수 원주를 예탁해 DR을 발행하거나, 보유 DR을 풀링된 시뮬레이터 보관분에 상환할 수 있다. 요청 참조값으로 중복 실행을 막고, 이동은 수정·삭제 불가 원장에 기록한다. DR은 기존 외화 주문장을 사용하며 DR 자체 가격·배당은 원주와 독립적이다. 이 원장은 게임 내 보유량 잠금일 뿐 실제 예탁기관·수탁사의 보관 증명은 아니며, 원주배당 자동 전달도 없다. 보유·담보·미체결 주문·보관 원주가 0인 경우 관리자 화면에서 프로그램을 영구 종료할 수 있다. 미종료 DR이 연결된 원주는 액면분할·병합·합병할 수 없다.
 
 | 상품종류 | 순서형 인자 |
 |---|---|

@@ -3,6 +3,11 @@
   --font-mono: "SF Mono", SFMono-Regular, ui-monospace, Menlo, monospace;
 }
 
+/* No rubber-band bounce: pulling past the top or bottom must not reveal empty space. */
+html, body { overscroll-behavior: none; }
+/* Inner scroll areas (tables, lists, modals) stop at their edge instead of scrolling the page. */
+.scroll-x, .table-scroll, .search-results, .command-results, .command-list, .sidebar, .modal-backdrop { overscroll-behavior: contain; }
+
 body {
   font-family: var(--font-system);
   font-synthesis: none;

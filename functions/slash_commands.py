@@ -173,6 +173,7 @@ class SlashCommandRegistry:
             ("운용계좌", "내가 운용하는 랩어카운트 계좌 목록을 확인합니다", self.managed_accounts),
             ("매수", "자산을 지정가 매수하거나 펀드를 NAV로 가입합니다", self.buy),
             ("매도", "자산을 지정가 매도하거나 펀드를 NAV로 환매합니다", self.sell),
+            ("DR전환", "기초 보통주를 시뮬레이터 보관 원장에 예탁해 DR을 발행하거나 DR을 원주로 상환합니다", self.convert_dr),
             ("호가", "자산의 매수·매도 대기 주문을 확인합니다", self.order_book_view),
             ("내주문", "나의 미체결 및 최근 체결 주문을 확인합니다", self.my_orders),
             ("계좌개설", "일반·외환통장 상품 코드를 입력하여 계좌를 개설합니다", self.open_account),
@@ -927,6 +928,32 @@ class SlashCommandRegistry:
             execute_shared_action, self.bot, user_id, "sell", 자산, 수량, 지정가
         )
         await self._reply(interaction, embed=self._result_embed("📉 지정가 매도", message, success))
+
+    @app_commands.choices(방향=[
+        app_commands.Choice(name="원주 예탁 → DR 발행", value="issue"),
+        app_commands.Choice(name="DR 반납 → 원주 상환", value="redeem"),
+    ])
+    @app_commands.describe(
+        증서="주식예탁증서(DR) 종목 코드",
+        방향="원주를 예탁해 DR을 발행하거나, 보유 DR을 기초 원주로 상환",
+        수량="전환할 DR 수량 (1 이상의 정수)",
+    )
+    async def convert_dr(
+        self,
+        interaction: discord.Interaction,
+        증서: str,
+        방향: app_commands.Choice[str],
+        수량: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
+    ):
+        user_id, _user_data, _role = await self._prepare(interaction)
+        from managers.depositary_receipt_manager import DepositaryReceiptManager
+        success, message = await asyncio.to_thread(
+            DepositaryReceiptManager(self.bot.db).convert,
+            user_id, 증서.strip(), 방향.value, 수량, str(interaction.id),
+        )
+        await self._reply(
+            interaction, embed=self._result_embed("🏦 DR 전환", message, success)
+        )
 
     async def order_book_view(self, interaction: discord.Interaction, 자산: str):
         _user_id, _user_data, _role = await self._prepare(interaction)

@@ -13,7 +13,7 @@ from functions.shared_actions import execute_shared_action
 from managers.admin_control_manager import ENTITIES, EXAMPLES
 from managers.currency_exchange_manager import display_units
 
-ALIASES = {'주식':'stock','상품등록':'asset','상품':'asset','국채':'bond','회사채':'corporatebond','선물':'future',
+ALIASES = {'주식':'stock','상품등록':'asset','상품':'asset','DR':'dr','dr':'dr','예탁증서':'dr','국채':'bond','회사채':'corporatebond','선물':'future',
            '원자재':'commodity','펀드':'fund','인덱스펀드':'indexfund','옵션':'option','저축':'saving','대출상품':'loan',
            '외환상품':'currencyproduct','통화':'currency','변동성':'volatility','경제':'settings','호재':'사건','악재':'사건',
            '국적':'user','nationality':'user','복권':'lottery'}
@@ -494,7 +494,7 @@ class AdminCommandView(discord.ui.View):
         self.operation = 'edit'
         if command in ENTITIES:
             operations=[('생성','create'),('수정','edit'),('삭제 (거래 중지)','delete'),('재개','restore')]
-            if command in {'stock','asset','etf','future','corporatebond','fund','indexfund','commodity'}:
+            if command in {'stock','asset','dr','etf','future','corporatebond','fund','indexfund','commodity'}:
                 operations.insert(2,('가격·변동성·고정·흐름','market'))
             select = discord.ui.Select(placeholder='상품 작업',options=[discord.SelectOption(label=label,value=value) for label,value in operations])
             async def select_operation(interaction):

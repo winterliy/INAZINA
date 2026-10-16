@@ -8,12 +8,12 @@ type Result = { message: string; success: boolean };
 /**
  * A log table with checkbox selection, "선택 삭제" and "전체 삭제".
  *
- * `log` names the server-side log (events, flows, audit, jobs). Rows that
+ * `log` names the server-side log (events, flows, jobs). Rows that
  * `deletable` rejects (a running event, a pending bot job) cannot be checked,
  * and the server skips them as well.
  */
 export function LogCard<T>({ ctx, log, title, caption, rows, idOf, deletable = () => true, head, row, empty, keepNote, onChanged }: {
-  ctx: Ctx; log: "events" | "flows" | "audit" | "jobs"; title: string; caption: ReactNode;
+  ctx: Ctx; log: "events" | "flows" | "jobs"; title: string; caption: ReactNode;
   rows: T[]; idOf: (item: T) => number; deletable?: (item: T) => boolean;
   head: ReactNode; row: (item: T) => ReactNode; empty: string; keepNote?: string; onChanged: () => void;
 }) {

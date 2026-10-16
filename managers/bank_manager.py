@@ -261,6 +261,16 @@ class BankManager:
                      float(product['early_withdrawal_fee_percent'] or 0),
                      int(product['deposit_insured'] or 0)),
                 )
+                if deposit_amount > 0:
+                    from managers.bank_journal import BankJournal
+                    BankJournal.post(
+                        conn, product["issuer"], "deposit_open",
+                        f"account:{account_number}", home,
+                        [("settlement_asset", "debit", deposit_amount),
+                         ("customer_deposits_payable", "credit", deposit_amount)],
+                        description=f"Deposit account {account_number} opened",
+                        now=opened_epoch,
+                    )
                 if product['product_kind'] == 'wrap':
                     # The named manager trades this account; fees accrue from opening.
                     conn.execute("UPDATE accounts.accounts SET managed_by=?,fee_paid_epoch=? WHERE account_number=?",
@@ -316,9 +326,10 @@ class BankManager:
                     return False, f"❌ 이 계좌 보유자산의 매도 주문 #{wrap_sell['order_id']}이 남아 있습니다. 먼저 취소해주세요."
                 if destination_account:
                     destination = conn.execute(
-                        "SELECT account_number FROM accounts.accounts "
-                        "WHERE account_number = ? AND user_id = ? AND account_number <> ? "
-                        "AND quote_currency=(SELECT quote_currency FROM accounts.accounts "
+                        "SELECT a.account_number,s.issuer FROM accounts.accounts a "
+                        "LEFT JOIN product.saving s ON s.product_code=a.product_code "
+                        "WHERE a.account_number = ? AND a.user_id = ? AND a.account_number <> ? "
+                        "AND a.quote_currency=(SELECT quote_currency FROM accounts.accounts "
                         "WHERE account_number=?)",
                         (str(destination_account), str(user_id), str(account_number),
                          str(account_number)),
@@ -326,16 +337,18 @@ class BankManager:
                     if not destination:
                         return False, "❌ 이관 대상은 본인 명의의 다른 계좌여야 합니다."
                     destination_number = destination["account_number"]
+                    destination_issuer = destination["issuer"]
                 else:
                     destination = conn.execute(
-                        "SELECT account_number FROM accounts.accounts WHERE user_id = ? "
-                        "AND account_number <> ? AND account_type = 'saving' "
-                        "AND quote_currency=(SELECT quote_currency FROM accounts.accounts "
-                        "WHERE account_number=?) "
-                        "ORDER BY balance DESC LIMIT 1",
+                        "SELECT a.account_number,s.issuer FROM accounts.accounts a "
+                        "JOIN product.saving s ON s.product_code=a.product_code "
+                        "WHERE a.user_id = ? AND a.account_number <> ? AND a.account_type = 'saving' "
+                        "AND a.quote_currency=(SELECT quote_currency FROM accounts.accounts "
+                        "WHERE account_number=?) ORDER BY a.balance DESC LIMIT 1",
                         (str(user_id), str(account_number), str(account_number)),
                     ).fetchone()
                     destination_number = destination["account_number"] if destination else None
+                    destination_issuer = destination["issuer"] if destination else None
 
                 source_currency = conn.execute(
                     "SELECT quote_currency FROM accounts.accounts WHERE account_number=?",
@@ -343,6 +356,7 @@ class BankManager:
                 ).fetchone()[0]
                 from managers.currency_manager import CurrencyManager as _Currency, SCALE as _SCALE
                 balance = round_currency(conn, (source["balance_units"] or 0) / _SCALE, source_currency)
+                account_liability = balance
                 early_penalty = 0
                 product = conn.execute(
                     "SELECT maturity_days,day_count_convention,product_kind,issuer FROM product.saving "
@@ -391,6 +405,36 @@ class BankManager:
                             CurrencyManager.treasury_receive(
                                 conn, CurrencyManager.user_treasury_id(conn, user_id),
                                 source_currency, int(round(early_penalty*SCALE)))
+                if product and (account_liability or ima_top_up or early_penalty):
+                    from managers.bank_journal import BankJournal
+                    closing_lines = [
+                        ("customer_deposits_payable", "debit", account_liability),
+                        ("ima_payout_expense", "debit", ima_top_up),
+                        ("customer_deposits_payable" if destination_number
+                         and destination_issuer == product["issuer"]
+                         else "settlement_asset", "credit", balance),
+                        ("treasury_payable", "credit", early_penalty),
+                    ]
+                    BankJournal.post(
+                        conn, product["issuer"], "deposit_close",
+                        f"account:{account_number}", source_currency, closing_lines,
+                        description=f"Deposit account {account_number} closed",
+                        now=time.time(),
+                    )
+                    if (destination_number and destination_issuer
+                            and destination_issuer != product["issuer"] and balance > 0):
+                        # A transfer to another institution closes one liability
+                        # and opens a new one; keep both banks' books in sync.
+                        BankJournal.post(
+                            conn, destination_issuer, "deposit_transfer_in",
+                            f"account:{destination_number}:from:{account_number}",
+                            source_currency,
+                            [("settlement_asset", "debit", balance),
+                             ("customer_deposits_payable", "credit", balance)],
+                            description=(f"Deposit transfer from {account_number} "
+                                         f"to {destination_number}"),
+                            now=time.time(),
+                        )
                 if destination_number:
                     conn.execute(
                         "UPDATE accounts.accounts SET balance_units = balance_units + CAST(ROUND(? * 1000000) AS INTEGER), "
@@ -833,6 +877,14 @@ class BankManager:
                      int(product['prepayment_fee_decline_days'] or 0)),
                 )
                 loan_id = int(inserted.lastrowid)
+                from managers.bank_journal import BankJournal
+                BankJournal.post(
+                    conn, product["issuer"], "loan_origination", f"loan:{loan_id}", home,
+                    [("loans_receivable", "debit", amount),
+                     ("customer_funds_payable", "credit", net_payout),
+                     ("fee_income", "credit", total_finance_fee)],
+                    description=f"Loan {loan_id} originated", now=opened_epoch,
+                )
                 self._pledge_asset_collateral(
                     conn, loan_id, user_id, asset, asset_plan, haircut, opened_epoch
                 )
@@ -1016,6 +1068,7 @@ class BankManager:
                 remaining = round_currency(
                     conn, max(0, outstanding-payment), loan["quote_currency"]
                 )
+                recovery = min(payment, max(0.0, float(loan["provisioned_loss"] or 0)))
                 released = 0
                 if remaining <= 0:
                     released = self._release_collateral(conn, loan["loan_id"], str(user_id))
@@ -1031,16 +1084,30 @@ class BankManager:
                      prepayment_fee, loan["loan_id"]),
                 )
                 if prepayment_fee:
+                    repayment_ref = f"loan:{loan['loan_id']}:payment:{time.time_ns()}"
                     RateManager.record_institution_result(
                         conn, loan["issuer"], prepayment_fee, "prepayment_fee",
-                        f"loan:{loan['loan_id']}:prepayment:{time.time_ns()}",
+                        repayment_ref,
                         now=now, currency_code=loan["quote_currency"],
                     )
-                recovery = min(payment, float(loan["provisioned_loss"] or 0))
+                else:
+                    repayment_ref = f"loan:{loan['loan_id']}:payment:{time.time_ns()}"
+                from managers.bank_journal import BankJournal
+                BankJournal.post(
+                    conn, loan["issuer"], "loan_repayment",
+                    repayment_ref,
+                    loan["quote_currency"],
+                    [("settlement_asset", "debit", total_debit),
+                     ("default_loss_allowance", "debit", recovery),
+                     ("loans_receivable", "credit", payment),
+                     ("credit_loss_recovery_income", "credit", recovery),
+                     ("fee_income", "credit", prepayment_fee)],
+                    description=f"Loan {loan['loan_id']} repayment", now=now,
+                )
                 if recovery:
                     RateManager.record_institution_result(
                         conn, loan["issuer"], recovery, "default_recovery",
-                        f"loan:{loan['loan_id']}:payment:{time.time_ns()}",
+                        repayment_ref,
                         currency_code=loan["quote_currency"],
                     )
                 self._allocate_schedule_payment(
@@ -1094,7 +1161,7 @@ class BankManager:
             with self.db.atomic(("users", "accounts", "product")) as conn:
                 loans = conn.execute(
                     "SELECT l.loan_id, l.user_id, l.product_code, l.outstanding_balance, "
-                    "l.last_repayment_epoch, p.name AS product_name, "
+                    "l.last_repayment_epoch, p.name AS product_name, p.issuer, "
                     "p.repayment_cycle_seconds, p.repayment_amount, l.amortization_type,"
                     "l.quote_currency "
                     "FROM accounts.loans l JOIN product.liability p "
@@ -1171,6 +1238,16 @@ class BankManager:
                             paid_count += 1
                             loan_paid_count += 1
                             loan_paid_amount += payment
+                            from managers.bank_journal import BankJournal
+                            BankJournal.post(
+                                conn, loan["issuer"], "loan_repayment",
+                                f"loan:{loan['loan_id']}:scheduled:{int(last+(processed+1)*cycle)}",
+                                loan["quote_currency"],
+                                [("settlement_asset", "debit", payment),
+                                 ("loans_receivable", "credit", payment)],
+                                description=f"Scheduled repayment for loan {loan['loan_id']}",
+                                now=last+(processed+1)*cycle,
+                            )
                             conn.execute(
                                 "UPDATE accounts.loans SET outstanding_balance = ?, "
                                 "status = CASE WHEN ? <= 0 THEN 'paid' ELSE 'active' END "
@@ -1274,6 +1351,16 @@ class BankManager:
                 balance -= due
                 paid_count += 1
                 paid_amount += due
+                from managers.bank_journal import BankJournal
+                BankJournal.post(
+                    conn, loan["issuer"], "loan_repayment",
+                    f"loan:{loan['loan_id']}:schedule:{row['schedule_id']}",
+                    loan["quote_currency"],
+                    [("settlement_asset", "debit", due),
+                     ("loans_receivable", "credit", due)],
+                    description=f"Scheduled repayment for loan {loan['loan_id']}",
+                    now=now,
+                )
                 conn.execute(
                     "UPDATE accounts.loan_payment_schedule SET amount_paid=amount_paid+?,"
                     "status='paid',paid_epoch=? WHERE schedule_id=?",

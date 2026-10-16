@@ -748,6 +748,7 @@ class InfoPanelView(discord.ui.View):
         ("mutual_fund", "일반 펀드"),
         ("index_fund", "인덱스 펀드"),
         ("commodity_spot", "현물 원자재"),
+        ("depositary_receipt", "주식예탁증서(DR)"),
         ("option", "옵션"),
         ("forex", "외환"),
         ("savings", "저축 상품 (외환통장 포함)"),
@@ -827,6 +828,8 @@ class InfoPanelView(discord.ui.View):
         for table, code_field in (('company', 'company_code'), ('investment', 'product_code'), ('market_assets', 'code')):
             for row in self.bot.db.products.execute(f'SELECT * FROM {table}'):
                 metadata[row[code_field]] = dict(row)
+        dr_metadata = {row['dr_code']: dict(row)
+                       for row in self.bot.db.assets.execute('SELECT * FROM depositary_receipts')}
         for asset in assets:
             details = metadata.get(asset['code'], {})
             for field in ('share_class', 'parent_company_code', 'dividend_cycle_seconds', 'dividend_per_share',
@@ -834,6 +837,8 @@ class InfoPanelView(discord.ui.View):
                           'cumulative_dividend', 'liquidation_value_per_share', 'dividend_funding'):
                 if field in details:
                     asset[field] = details[field]
+            if asset.get('type') == 'depositary_receipt':
+                asset.update(dr_metadata.get(asset['code'], {}))
         stocks = [
             item for item in assets
             if str(item["type"]).strip().casefold() in {"stock", "주식"}
@@ -937,12 +942,14 @@ class InfoPanelView(discord.ui.View):
                     f"{subscription_note}"
                 )
             return lines
-        if category in {"etf", "etn", "treasury_bond", "corporate_bond", "stock_future", "commodity_futures", "mutual_fund", "index_fund", "commodity_spot", "option", "forex"}:
+        if category in {"etf", "etn", "treasury_bond", "corporate_bond", "stock_future", "commodity_futures", "mutual_fund", "index_fund", "commodity_spot", "depositary_receipt", "option", "forex"}:
             def kind(item):
                 value = str(item['type']).casefold()
                 return {"국채": "treasury_bond", "etf": "etf", "옵션": "option"}.get(value, value)
             fund_names = {'equity':'주식형','bond':'채권형','mixed':'혼합형','other':'기타형'}
             return [f"• **{r['name']}** (`{r['code']}`)"
+                    +(f" · 원주 `{r.get('underlying_code')}` · {float(r.get('underlying_per_receipt') or 0):g}주/DR · "
+                      f"상장 {r.get('listing_exchange_id') or r.get('exchange_id')}" if category=='depositary_receipt' else '')
                     +(f" · {fund_names.get(r.get('fund_category'), '미분류')}" if category in {'mutual_fund','index_fund'} else '')
                     +f" · {r['price']:,} {r.get('quote_currency','NWX')} · {r['status']}"
                     +(f" · 액면 {r['face_value']:,} NWX · 연 {r['annual_rate']:g}% · {r['maturity_days']}일" if category=='treasury_bond' else '')

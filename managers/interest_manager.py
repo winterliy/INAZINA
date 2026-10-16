@@ -287,6 +287,18 @@ class InterestManager:
                 f"account:{account['account_number']}:{paid_until}",
                 now=paid_until, currency_code=account["quote_currency"],
             )
+            if gross > 0:
+                from managers.bank_journal import BankJournal
+                BankJournal.post(
+                    conn, product["issuer"], "deposit_interest",
+                    f"account:{account['account_number']}:{paid_until}",
+                    account["quote_currency"],
+                    [("interest_expense", "debit", gross),
+                     ("customer_deposits_payable", "credit", net),
+                     ("tax_payable", "credit", tax)],
+                    description=f"Deposit interest for {account['account_number']}",
+                    now=paid_until,
+                )
             balance += net
             conn.execute('INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount) VALUES (?,?,?,?,?)',
                 (account['user_id'], 'saving_interest', gross, tax, net))
@@ -451,6 +463,16 @@ class InterestManager:
                             f"loan:{loan['loan_id']}:{paid_until}", now=paid_until,
                             currency_code=loan["quote_currency"],
                         )
+                        from managers.bank_journal import BankJournal
+                        BankJournal.post(
+                            conn, product["issuer"], "loan_interest",
+                            f"loan:{loan['loan_id']}:{paid_until}",
+                            loan["quote_currency"],
+                            [("loans_receivable", "debit", whole_interest),
+                             ("interest_income", "credit", whole_interest)],
+                            description=f"Loan interest for {loan['loan_id']}",
+                            now=paid_until,
+                        )
                         balance += whole_interest
                         charged = True
                     if loan["rate_type"] == "floating":
@@ -548,6 +570,14 @@ class InterestManager:
                 f"loan:{loan['loan_id']}:{cursor}:{now}", now=now,
                 currency_code=loan["quote_currency"],
             )
+            from managers.bank_journal import BankJournal
+            BankJournal.post(
+                conn, product["issuer"], "overdue_interest",
+                f"loan:{loan['loan_id']}:{cursor}:{now}", loan["quote_currency"],
+                [("loans_receivable", "debit", whole_interest),
+                 ("interest_income", "credit", whole_interest)],
+                description=f"Overdue interest for loan {loan['loan_id']}", now=now,
+            )
         age_days = (now-maturity)/86400
         grace = int(product["grace_period_days"] or 0)
         acceleration = int(product["acceleration_after_days"] or 0)
@@ -580,6 +610,7 @@ class InterestManager:
                 take = min(available, balance)
                 balance -= take
                 seized += take
+                collateral_recovery = take
                 surplus = available-take
                 if surplus:
                     conn.execute(
@@ -590,9 +621,11 @@ class InterestManager:
                 if balance <= 0:
                     balance, status, state = 0, "paid", "paid"
                 else:
+                    before_asset_recovery = balance
                     balance, _ltv, _liquidated = BankManager.revalue_asset_collateral(
                         conn, loan["loan_id"], balance, product, force=True
                     )
+                    collateral_recovery += max(0.0, before_asset_recovery-balance)
                     if balance <= 0:
                         balance, status, state = 0, "paid", "paid"
                 loss_adjustment = balance-provisioned-ecl_allowance
@@ -601,6 +634,33 @@ class InterestManager:
                         conn, product["issuer"], -loss_adjustment, "credit_loss",
                         f"loan:{loan['loan_id']}:default", now=now,
                         currency_code=loan["quote_currency"],
+                    )
+                from managers.bank_journal import BankJournal
+                default_lines = []
+                if collateral_recovery > 0:
+                    default_lines.extend([
+                        ("collateral_recovery_asset", "debit", collateral_recovery),
+                        ("loans_receivable", "credit", collateral_recovery),
+                    ])
+                if ecl_allowance > 0:
+                    default_lines.append(("ecl_allowance", "debit", ecl_allowance))
+                if balance > provisioned:
+                    default_lines.append(("default_loss_allowance", "credit",
+                                         balance-provisioned))
+                elif provisioned > balance:
+                    default_lines.append(("default_loss_allowance", "debit",
+                                         provisioned-balance))
+                if loss_adjustment > 0:
+                    default_lines.append(("credit_loss_expense", "debit", loss_adjustment))
+                elif loss_adjustment < 0:
+                    default_lines.append(("impairment_reversal", "credit", -loss_adjustment))
+                if default_lines:
+                    BankJournal.post(
+                        conn, product["issuer"], "credit_loss_default",
+                        f"loan:{loan['loan_id']}:default", loan["quote_currency"],
+                        default_lines,
+                        description=f"Default and collateral recovery for loan {loan['loan_id']}",
+                        now=now,
                     )
                 provisioned = balance
                 ecl_allowance = 0.0

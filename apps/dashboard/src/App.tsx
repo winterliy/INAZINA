@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api, clearToken, type ApiUser } from "../../shared/api";
 import { AuthPanel } from "../../shared/AuthPanel";
-import { plain, type Ctx } from "./common";
+import { Card, plain, type Ctx } from "./common";
 import { ProductsPage } from "./ProductsPage";
 import { UsersPage } from "./UsersPage";
 import { ExchangesPage } from "./ExchangesPage";
@@ -11,9 +11,12 @@ import { WarningsCard } from "./WarningsCard";
 import { IdentityCard } from "./IdentityCard";
 import { FeedbackPage } from "./FeedbackPage";
 import { LogCard } from "./LogCard";
+import { BoardAdminPage } from "./BoardAdminPage";
+import { CompliancePage } from "./CompliancePage";
+import { BankJournalPage } from "./BankJournalPage";
 import { COMMAND_FORMS, CommandForm } from "./CommandForm";
 
-type Page = "overview" | "instruments" | "finance" | "exchanges" | "companies" | "users" | "feedback" | "events" | "commands" | "database" | "audit";
+type Page = "overview" | "instruments" | "finance" | "exchanges" | "companies" | "users" | "feedback" | "board" | "compliance" | "accounting" | "events" | "commands" | "database" | "audit";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
 type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
 type Exchange = { exchange_id: string; status: string; reason: string | null; trading_halted: number; updated_epoch: number | null; resume_epoch: number | null; circuit_stage: number | null };
@@ -41,6 +44,9 @@ const pages: { id: Page; label: string; color: string; icon: ReactNode }[] = [
   { id: "companies", label: "법인 자본", color: "#2f7d5b", icon: <><rect x="4" y="7.5" width="16" height="12.5" rx="2" /><path d="M9 7.5V5.5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 5.5v2M4 12.5h16" /></> },
   { id: "users", label: "사용자 · 국가", color: "#c24e00", icon: <><circle cx="12" cy="8" r="3.5" /><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6" /></> },
   { id: "feedback", label: "문의·신고", color: "#d14b3b", icon: <><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" /></> },
+  { id: "board", label: "게시판 관리", color: "#8a5a00", icon: <><path d="M5 4.5h14v11H9l-4 4z" /><path d="M8.5 8.5h7M8.5 11.5h4.5" /></> },
+  { id: "compliance", label: "KYC · AML", color: "#6248a8", icon: <><path d="M12 3.5 19 6v5.5c0 4.2-2.8 7.2-7 9-4.2-1.8-7-4.8-7-9V6z" /><path d="m9 11.5 2 2 4-4" /></> },
+  { id: "accounting", label: "은행 원장", color: "#087e8b", icon: <><path d="M3.5 9 12 4l8.5 5M5 10v8m4-8v8m6-8v8m4-8v8M3.5 20h17" /></> },
   { id: "events", label: "시장 사건", color: "#c4205f", icon: <path d="M13 3 5 14h6l-1 7 8-11h-6z" /> },
   { id: "commands", label: "관리자 명령어", color: "#7b3fd8", icon: <><path d="m5 8 4 4-4 4" /><path d="M12 17h7" /></> },
   { id: "database", label: "DB 편집", color: "#0a7d8c", icon: <><ellipse cx="12" cy="6" rx="7" ry="2.5" /><path d="M5 6v12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V6" /><path d="M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5" /></> },
@@ -53,6 +59,9 @@ const subtitles: Record<Page, string> = {
   exchanges: "거래소별 개장·휴장·서킷브레이커와 소속 국가·지수를 관리합니다.",
   companies: "법인 현금·보유자산·통장·대출을 보고 법인 계정으로 매수·매도·송금·대출을 실행합니다.",
   feedback: "공식 사이트의 Contact·Report로 들어온 문의와 신고를 확인하고 처리합니다.",
+  board: "HTS 게시판의 신고를 처리하고 글을 숨기거나 고정합니다. 익명 글의 실제 작성자와 IP를 확인할 수 있습니다.",
+  compliance: "국적별 KYC 검토 상태와 AML 시뮬레이터 경보·규칙을 관리합니다.",
+  accounting: "금융기관의 이중분개 시산 잔액·불균형·결과 원장 대사를 조회합니다.",
   users: "사용자와 국가, 국가 계정의 모든 설정을 관리합니다.",
   events: "호재·악재 사건을 등록하고 최근 사건을 확인합니다.",
   commands: "Discord의 모든 $ 명령어와 도움말을 같은 검증과 기록으로 실행합니다.",
@@ -114,7 +123,7 @@ export default function App() {
   const [edits, setEdits] = useState<Record<number, Record<string, string>>>({});
   const [newRow, setNewRow] = useState<Record<string, string> | null>(null);
 
-  const say = (text: string, error = false) => setNotice({ text, error });
+  const say = useCallback((text: string, error = false) => setNotice({ text, error }), []);
 
   const loadSession = useCallback(async () => {
     try {
@@ -325,7 +334,7 @@ export default function App() {
 
   const current = pages.find((item) => item.id === page)!;
   const pageIndex = pages.findIndex((item) => item.id === page);
-  const searchable = page === "instruments" || page === "finance" || page === "exchanges" || page === "companies" || page === "users" || page === "feedback" || page === "database";
+  const searchable = page === "instruments" || page === "finance" || page === "exchanges" || page === "companies" || page === "users" || page === "feedback" || page === "board" || page === "database";
 
   return <Stage>
     <div className="win">
@@ -384,6 +393,9 @@ export default function App() {
         {page === "finance" && <ProductsPage group="finance" ctx={ctx} />}
         {page === "exchanges" && <ExchangesPage ctx={ctx} />}
         {page === "companies" && <CompaniesPage ctx={ctx} />}
+        {page === "board" && <BoardAdminPage ctx={ctx} />}
+        {page === "compliance" && <CompliancePage ctx={ctx} />}
+        {page === "accounting" && <BankJournalPage ctx={ctx} />}
         {page === "feedback" && <FeedbackPage ctx={ctx} onChange={() => void loadUnread()} />}
         {page === "users" && <UsersPage ctx={ctx} currentUserId={user.userId} />}
         {page === "events" && <>
@@ -461,10 +473,11 @@ export default function App() {
           </section>
         </>}
 
-        {page === "audit" && <LogCard ctx={ctx} log="audit" title="최근 관리자 작업" caption="최근 50건 · 기록을 삭제하면 삭제했다는 기록 1건이 새로 남습니다." rows={audit} idOf={(entry) => entry.auditId}
-          empty="기록이 없습니다." onChanged={() => void refresh()}
-          head={<><th>시각</th><th>관리자 ID</th><th>작업</th><th>세부 내용</th></>}
-          row={(entry) => <><td>{date(entry.time)}</td><td className="mono">{entry.actorId}</td><td><span className="tag">{entry.action}</span></td><td className="audit-payload mono" title={JSON.stringify(entry.payload)}>{JSON.stringify(entry.payload)}</td></>} />}
+        {page === "audit" && <Card title="최근 관리자 작업" caption="최근 50건 · 작업 기록은 append-only이며 수정·삭제할 수 없습니다.">
+          <div className="scroll-x tall"><table><thead><tr><th>시각</th><th>관리자 ID</th><th>작업</th><th>세부 내용</th></tr></thead><tbody>{audit.map((entry) => <tr key={entry.auditId}>
+            <td>{date(entry.time)}</td><td className="mono">{entry.actorId}</td><td><span className="tag">{entry.action}</span></td><td className="audit-payload mono" title={JSON.stringify(entry.payload)}>{JSON.stringify(entry.payload)}</td>
+          </tr>)}</tbody></table>{!audit.length && <p className="empty">기록이 없습니다.</p>}</div>
+        </Card>}
         <p className="foot">INAZINA 로컬 관리 콘솔 · 모든 관리자 요청은 API에서 권한을 다시 확인합니다.</p>
       </main>
     </div>

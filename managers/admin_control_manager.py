@@ -13,6 +13,7 @@ from functions.money import parse_currency_money
 ENTITIES = {
     'stock': ('company','company_code','share_price','total_shares'),
     'asset': ('market_assets','code','price','total_supply'),
+    'dr': ('market_assets','code','price','total_supply'),
     'etf': ('investment','product_code','unit_price','total_supply'),
     'future': ('investment','product_code','unit_price','total_supply'),
     'corporatebond': ('investment','product_code','unit_price','total_supply'),
@@ -49,6 +50,9 @@ DEPOSIT_CATEGORIES = set(SAVING_KINDS)
 EXAMPLES = {
     'stock': {'industry':'소프트웨어','exchange_id':'INZ','capital':1000000},
     'asset': {'exchange_id':'INZ','type':'stock'},
+    'dr': {'exchange_id':'LSE','type':'depositary_receipt',
+           'underlying_per_receipt':1,'receipt_type':'DR','depositary_bank':'Inazina Depositary',
+           'custodian':'Inazina Custody','home_exchange_id':'INZ','quote_currency':'USD'},
     'etf': {'exchange_id':'INZ','underlying_exchange_id':'INZ','leverage_multiplier':1},
     'future': {'exchange_id':'FUT','underlying_code':'INZST001','maturity_days':90,'contract_size':1},
     'corporatebond': {'exchange_id':'BOND','issuer_code':'INZST001','face_value':1000,'annual_rate':4,'maturity_days':90},
@@ -107,7 +111,7 @@ class AdminControlManager:
 
     def _entity(self,actor,category,operation,code,name='',price='',supply='',extra=None,conn=None):
         self.require(actor)
-        if category not in ENTITIES or operation not in {'create','edit','delete','restore'}:
+        if category not in ENTITIES or operation not in {'create','edit','delete','restore','terminate'}:
             raise ValueError("지원하는 설정을 선택해주세요.")
         code = str(code).strip()
         if category=='currency':
@@ -160,6 +164,32 @@ class AdminControlManager:
                 raise ValueError("이 카테고리의 상품 코드가 아닙니다.")
             if category in BOND_FEATURES and existing and (existing['bond_feature'] or 'plain') != BOND_FEATURES[category]:
                 raise ValueError("이 카테고리의 상품 코드가 아닙니다.")
+            if operation == 'terminate':
+                if category != 'dr' or not existing:
+                    raise ValueError('주식예탁증서(DR) 프로그램만 종료할 수 있습니다.')
+                program = conn.execute(
+                    "SELECT program_status FROM depositary_receipts WHERE dr_code=?", (code,),
+                ).fetchone()
+                if not program or program['program_status'] == 'terminated':
+                    raise ValueError('종료 가능한 DR 프로그램을 찾을 수 없습니다.')
+                outstanding = conn.execute(
+                    "SELECT "
+                    "(SELECT COALESCE(SUM(quantity),0) FROM user_assets WHERE asset_code=?) + "
+                    "(SELECT COALESCE(SUM(quantity),0) FROM option_collateral_lots WHERE underlying_code=?) + "
+                    "(SELECT COALESCE(SUM(quantity),0) FROM accounts.loan_collateral_assets "
+                    " WHERE asset_code=? AND status='pledged') + "
+                    "(SELECT COALESCE(SUM(remaining_quantity),0) FROM market_orders "
+                    " WHERE asset_code=? AND status IN ('scheduled','open','partial')) + "
+                    "(SELECT COALESCE(SUM(CASE WHEN movement_type='issue' THEN underlying_quantity "
+                    "ELSE -underlying_quantity END),0) FROM depositary_receipt_movements WHERE dr_code=?)",
+                    (code, code, code, code, code),
+                ).fetchone()[0]
+                if float(outstanding or 0) > 0:
+                    raise ValueError('보유·담보·주문 또는 시뮬레이터 보관 원주가 남아 있어 DR 프로그램을 종료할 수 없습니다.')
+                conn.execute("UPDATE depositary_receipts SET program_status='terminated' WHERE dr_code=?", (code,))
+                conn.execute("UPDATE market_assets SET status='inactive' WHERE code=?", (code,))
+                self._audit(conn, actor, 'dr.terminate', {'code': code})
+                return '✅ DR 프로그램을 종료했습니다. 이 동작은 복구할 수 없습니다.'
             if operation in {'delete','restore'}:
                 if not existing:
                     raise ValueError("종목 또는 상품을 찾을 수 없습니다.")
@@ -174,6 +204,8 @@ class AdminControlManager:
                         preference=existing['share_class']=='preferred' and existing['liquidation_value_per_share']>0 and conn.execute('SELECT 1 FROM user_assets WHERE asset_code=? AND quantity>0 LIMIT 1',(code,)).fetchone()
                         if unpaid or cash or linked or preference:
                             raise ValueError(f'법인 현금·배당채권·우선주 권리가 남아 있습니다. $법인청산 {issuer}로 정산해주세요.')
+                        if conn.execute("SELECT 1 FROM depositary_receipts WHERE underlying_code=? AND program_status<>'terminated' LIMIT 1",(code,)).fetchone():
+                            raise ValueError('DR 프로그램이 연결된 기초 원주는 삭제할 수 없습니다. DR을 종료한 뒤 다시 시도해주세요.')
                     reservations = conn.execute("SELECT 1 FROM market_orders WHERE asset_code=? AND status IN ('open','partial') LIMIT 1",(code,)).fetchone()
                     claims = conn.execute("SELECT 1 FROM option_contracts WHERE (contract_code=? OR underlying_code=?) AND status='active' LIMIT 1",(code,code)).fetchone()
                     if reservations or claims:
@@ -193,6 +225,14 @@ class AdminControlManager:
                         raise ValueError("기준 통화 NWX는 삭제할 수 없습니다.")
                 # Preserve historical claims/holdings and payout definitions.
                 conn.execute(f'UPDATE "{table}" SET status=? WHERE "{key}"=?',('inactive' if operation=='delete' else 'active',code))
+                if category == 'dr':
+                    program = conn.execute(
+                        "SELECT program_status FROM depositary_receipts WHERE dr_code=?", (code,),
+                    ).fetchone()
+                    if operation == 'restore' and program and program['program_status'] == 'terminated':
+                        raise ValueError('종료된 DR 프로그램은 다시 활성화할 수 없습니다.')
+                    conn.execute("UPDATE depositary_receipts SET program_status=? WHERE dr_code=?",
+                                 ('suspended' if operation=='delete' else 'active', code))
                 self._audit(conn,actor,f'{category}.{operation}',{'code':code})
                 return '✅ 거래 중지 처리했습니다.' if operation=='delete' else '✅ 거래를 재개했습니다.'
             if operation=='create' and (existing or (category!='currency' and self.db.code_locations(conn,code))):
@@ -201,7 +241,10 @@ class AdminControlManager:
                 raise ValueError("수정할 코드를 찾을 수 없습니다.")
             columns = {r['name'] for r in conn.execute(f'PRAGMA table_info("{table}")')}
             protected = {key,'created_at','created_epoch','sold_amount','writer_id','contract_id','issued_contracts','status','product_type'}
-            virtual = {'nationality'} if category=='currency' else {'components'} if category=='fund' else set()
+            virtual = ({'nationality'} if category=='currency' else
+                       {'components'} if category=='fund' else
+                       {'underlying_code','underlying_per_receipt','receipt_type',
+                        'depositary_bank','custodian','home_exchange_id'} if category=='dr' else set())
             if set(extra)-columns-virtual:
                 raise ValueError(f"지원하지 않는 필드: {', '.join(sorted(set(extra)-columns-virtual))}")
             if set(extra)&protected:
@@ -215,12 +258,12 @@ class AdminControlManager:
             if 'quote_currency' in values:
                 values['quote_currency']=str(values['quote_currency']).strip().upper()
                 if category not in {
-                    'stock','asset','commodity','loan', *DEPOSIT_CATEGORIES
+                    'stock','asset','dr','commodity','loan', *DEPOSIT_CATEGORIES
                 } and values['quote_currency']!='NWX':
                     raise ValueError('이 상품 유형은 외화 결제를 지원하지 않습니다.')
                 if not conn.execute("SELECT 1 FROM currencies WHERE code=? AND status='active'",(values['quote_currency'],)).fetchone():
                     raise ValueError('활성 결제 통화를 입력해주세요.')
-                if category=='asset' and values['quote_currency']!='NWX' and extra.get('type',(dict(existing) if existing else {}).get('type','stock')) not in {'stock','주식','commodity_spot'}:
+                if category in {'asset','dr'} and values['quote_currency']!='NWX' and extra.get('type',(dict(existing) if existing else {}).get('type','stock')) not in {'stock','주식','commodity_spot','depositary_receipt'}:
                     raise ValueError('외화 결제 자산은 주식·현물 원자재만 지원합니다.')
                 if existing and values['quote_currency']!=existing['quote_currency']:
                     raise ValueError('기존 종목의 결제 통화는 변경할 수 없습니다. 새 종목을 생성해주세요.')
@@ -241,6 +284,8 @@ class AdminControlManager:
             if operation=='create':
                 values[key] = code
                 values.update({k:v for k,v in EXAMPLES[category].items() if k in columns and k not in values})
+                if category == 'dr':
+                    values['type'] = 'depositary_receipt'
                 if category in DEPOSIT_CATEGORIES:
                     values['product_kind'] = SAVING_KINDS[category]
                 if category in BOND_FEATURES:
@@ -515,8 +560,22 @@ class AdminControlManager:
             if existing and supply_key and supply_key in values:
                 issued = conn.execute("SELECT COALESCE(SUM(quantity),0) FROM user_assets WHERE asset_code=?",(code,)).fetchone()[0]
                 issued += conn.execute("SELECT COALESCE(SUM(quantity),0) FROM option_collateral_lots WHERE underlying_code=?",(code,)).fetchone()[0]
+                issued += conn.execute("SELECT COALESCE(SUM(quantity),0) FROM accounts.loan_collateral_assets WHERE asset_code=? AND status='pledged'",(code,)).fetchone()[0]
+                if category == 'stock':
+                    issued += conn.execute(
+                        "SELECT COALESCE(SUM(CASE WHEN m.movement_type='issue' THEN m.underlying_quantity "
+                        "ELSE -m.underlying_quantity END),0) FROM depositary_receipt_movements m "
+                        "JOIN depositary_receipts d ON d.dr_code=m.dr_code "
+                        "WHERE d.underlying_code=?", (code,),
+                    ).fetchone()[0]
+                    dr_capacity = conn.execute(
+                        "SELECT COALESCE(SUM(deposited_underlying_quantity),0) "
+                        "FROM depositary_receipts WHERE underlying_code=? "
+                        "AND program_status<>'terminated'", (code,),
+                    ).fetchone()[0]
+                    issued = max(float(issued), float(dr_capacity or 0))
                 if values[supply_key] < issued:
-                    raise ValueError("발행량을 이미 보유·담보 설정된 수량보다 작게 줄일 수 없습니다.")
+                    raise ValueError("발행량을 이미 보유·담보·DR 예탁 설정된 수량보다 작게 줄일 수 없습니다.")
             if category in {'etf','indexfund','etn'} and merged.get('underlying_exchange_id'):
                 exchange = merged['underlying_exchange_id']
                 if not conn.execute("SELECT 1 FROM company WHERE exchange_id=? AND status='active' UNION SELECT 1 FROM market_assets WHERE exchange_id=? AND status='active' AND type IN ('stock','주식')",(exchange,exchange)).fetchone():
@@ -585,6 +644,53 @@ class AdminControlManager:
                     raise ValueError("기준 통화 NWX의 환율은 고정됩니다.")
                 if code!='NWX' and not conn.execute("SELECT 1 FROM market_assets WHERE code=? AND type='forex' AND status='active'",(merged.get('asset_code'),)).fetchone():
                     raise ValueError("먼저 $상품생성에서 type=forex 자산을 생성해주세요.")
+            if category == 'dr':
+                if operation != 'create':
+                    immutable = {'underlying_code','underlying_per_receipt','receipt_type',
+                                 'depositary_bank','custodian','home_exchange_id','quote_currency',
+                                 'exchange_id','type'}
+                    if immutable & set(extra) or supply:
+                        raise ValueError('DR 프로그램의 기초·예탁 비율·발행량 조건은 고정됩니다.')
+                    if merged.get('type') != 'depositary_receipt':
+                        raise ValueError('DR 자산 유형은 변경할 수 없습니다.')
+                else:
+                    underlying = str(extra.get('underlying_code') or '').strip()
+                    if not underlying:
+                        raise ValueError('활성 원주 underlying_code가 필요합니다.')
+                    original = conn.execute(
+                        "SELECT company_code,exchange_id,total_shares,status FROM company "
+                        "WHERE company_code=? AND status='active' AND share_class='common'",
+                        (underlying,),
+                    ).fetchone()
+                    if not original:
+                        raise ValueError('underlying_code는 활성 보통주 회사 코드여야 합니다.')
+                    ratio = self._number(extra.get('underlying_per_receipt'), 0.000001, 1_000_000)
+                    dr_supply = int(values.get('total_supply') or supply or 0)
+                    deposited = ratio * dr_supply
+                    already_deposited = conn.execute(
+                        "SELECT COALESCE(SUM(deposited_underlying_quantity),0) "
+                        "FROM depositary_receipts WHERE underlying_code=? AND program_status<>'terminated'",
+                        (underlying,),
+                    ).fetchone()[0]
+                    if (dr_supply <= 0 or already_deposited + deposited
+                            > int(original['total_shares'] or 0)):
+                        raise ValueError('활성 DR 프로그램의 최대 예탁 가능량 합계가 원주 발행량을 초과합니다.')
+                    listing_exchange = str(values.get('exchange_id') or '').strip()
+                    currency = str(values.get('quote_currency') or 'NWX').upper()
+                    if not listing_exchange:
+                        raise ValueError('DR 상장 거래소 exchange_id가 필요합니다.')
+                    if not conn.execute("SELECT 1 FROM currencies WHERE code=? AND status='active'", (currency,)).fetchone():
+                        raise ValueError('활성 DR 결제 통화를 입력해주세요.')
+                    conn.execute(
+                        "INSERT INTO depositary_receipts(dr_code,underlying_code,receipt_type,depositary_bank,"
+                        "custodian,home_exchange_id,listing_exchange_id,quote_currency,underlying_per_receipt,"
+                        "receipt_supply,deposited_underlying_quantity) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (code, underlying, str(extra.get('receipt_type') or 'DR')[:20],
+                         str(extra.get('depositary_bank') or '')[:100] or None,
+                         str(extra.get('custodian') or '')[:100] or None,
+                         str(extra.get('home_exchange_id') or original['exchange_id'] or '')[:40] or None,
+                         listing_exchange, currency, ratio, dr_supply, deposited),
+                    )
             if operation=='create':
                 fields = ','.join(f'"{k}"' for k in values)
                 conn.execute(f'INSERT INTO "{table}" ({fields}) VALUES ({",".join("?" for _ in values)})',tuple(values.values()))

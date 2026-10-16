@@ -7,7 +7,7 @@ import { Card, Field, changed, number, plain, show, text, type Ctx } from "./com
 type KindField = { key: string; label: string; optional: boolean; text: boolean };
 type AdvancedField = { key: string; label: string; type: string };
 type Kind = { kind: string; token: string; label: string; group: "market" | "finance"; family: string; fields: KindField[]; advanced: AdvancedField[]; example: Record<string, unknown>; editable: boolean };
-type Product = { code: string; name: string; kind: string; status: string; exchangeId: string | null; currency: string | null; value: number | null };
+type Product = { code: string; name: string; kind: string; status: string; exchangeId: string | null; currency: string | null; value: number | null; drProgram?: { underlyingCode: string; receiptType: string; depositaryBank: string; custodian: string; underlyingPerReceipt: number; receiptSupply: number; depositedUnderlyingQuantity: number; custodiedUnderlyingQuantity: number; outstandingReceiptQuantity: number; programStatus: string; underlyingPrice?: number; underlyingCurrency?: string; referenceValue?: number; referencePremiumPercent?: number } };
 type Detail = { code: string; kind: string; status: string; values: Record<string, unknown>; row: Record<string, unknown> };
 type Editor = { mode: "create" | "edit"; kind: string; code: string; values: Record<string, string>; advanced: Record<string, string>; original: Detail | null };
 
@@ -60,6 +60,7 @@ const RELATED: Record<string, [string, string][]> = {
   stock: [["상품가격수정", "가격"], ["자본변경", "증자·감자"], ["액면분할병합", "분할·병합"], ["정기배당수정", "배당"], ["정기배당활성", "배당 켜기/끄기"], ["특별배당실시", "특별배당"], ["합병", "합병"], ["법인잔고수정", "법인 현금"], ["법인청산", "청산"], ["상품분위기", "분위기"], ["소수점거래관리", "소수점"]],
   preferred: [["상품가격수정", "가격"], ["정기배당수정", "배당"], ["정기배당활성", "배당 켜기/끄기"], ["특별배당실시", "특별배당"]],
   asset: [["상품가격수정", "가격"], ["정기배당수정", "배당"], ["상품분위기", "분위기"], ["소수점거래관리", "소수점"]],
+  dr: [["상품가격수정", "가격"], ["정기배당수정", "배당"]],
   etf: [["상품가격수정", "가격"], ["소수점거래관리", "소수점"]],
   fund: [["상품가격수정", "가격"], ["정기배당수정", "배당"], ["소수점거래관리", "소수점"]],
   indexfund: [["상품가격수정", "가격"], ["소수점거래관리", "소수점"]],
@@ -158,6 +159,13 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
       "상태를 바꾸지 못했습니다.", async (result) => { say(plain(result.message), !result.success); await load(); });
   }
 
+  function terminateDr(item: Product) {
+    if (!item.drProgram) return;
+    if (!window.confirm(`${item.code} DR 프로그램을 영구 종료할까요? 보유·담보·주문·시뮬레이터 예탁분이 남아 있으면 서버가 거부합니다. 종료 후 재활성화할 수 없습니다.`)) return;
+    void run(() => api<{ message: string; success: boolean }>(`/api/admin/products/${encodeURIComponent(item.code)}/status`, { method: "POST", body: JSON.stringify({ terminate: true }) }),
+      "DR 프로그램을 종료하지 못했습니다.", async (result) => { say(plain(result.message), !result.success); await load(); });
+  }
+
   function purge(item: Product) {
     if (!window.confirm(`${item.name} (${item.code})을 완전히 삭제할까요?\n\n상품 정의와 시세 기록·차트 선이 지워지고 되돌릴 수 없습니다. 주문·배당 같은 과거 기록은 남습니다. 보유자나 미체결 주문, 계좌·대출 등이 남아 있으면 서버가 거부합니다.`)) return;
     void run(() => api<{ message: string; success: boolean }>(`/api/admin/products/${encodeURIComponent(item.code)}/delete`, { method: "POST", body: "{}" }),
@@ -205,15 +213,16 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
         <label className="check"><input type="checkbox" checked={showInactive} onChange={(event) => setShowInactive(event.target.checked)} />중지 포함</label></>}>
       <div className="scroll-x tall"><table><thead><tr><th>코드</th><th>이름</th><th>종류</th><th>거래소</th><th>통화</th><th className="r">{group === "market" ? "가격" : "이율·환율"}</th><th>상태</th><th /></tr></thead><tbody>
         {visible.map((item) => <tr key={`${item.kind}-${item.code}`}>
-          <td className="mono">{item.code}</td><td>{item.name}</td><td>{familyLabel(item.kind)}{item.kind === "currencyproduct" && <span className="tag inline">외환</span>}</td><td>{show(item.exchangeId)}</td><td>{show(item.currency)}</td>
+          <td className="mono">{item.code}</td><td>{item.name}{item.drProgram && <small className="block hint">원주 {item.drProgram.underlyingCode} · 1증서 = {number(item.drProgram.underlyingPerReceipt)}주 · 시뮬레이터 보관 {number(item.drProgram.custodiedUnderlyingQuantity)}주 / 발행 DR 기준 필요 {number(item.drProgram.outstandingReceiptQuantity * item.drProgram.underlyingPerReceipt)}주{item.drProgram.referenceValue !== undefined && <><br />단순 참고가 {number(item.drProgram.referenceValue)} {item.currency} · 현재가 괴리 {number(item.drProgram.referencePremiumPercent ?? 0)}% (환율·비용·유동성 미반영)</>}</small>}</td><td>{familyLabel(item.kind)}{item.kind === "currencyproduct" && <span className="tag inline">외환</span>}</td><td>{show(item.exchangeId)}</td><td>{show(item.currency)}</td>
           <td className="r mono">{item.value === null ? "—" : number(item.value)}</td>
           <td><span className={item.status === "active" ? "tag ok" : "tag warn"}>{item.status}</span></td>
           <td className="row-actions">
             {["fund", "indexfund"].includes(item.kind) && <button className="soft small" disabled={busy} onClick={() => { setFundCode(item.code); window.scrollTo({ top: 0, behavior: "smooth" }); }}>펀드 운용</button>}
             {(RELATED[item.kind] ?? []).length > 0 && <select className="mini-select" aria-label="관련 명령어" value="" onChange={(event) => { if (event.target.value) openCommand(event.target.value, item.code); }}><option value="">명령어…</option>{RELATED[item.kind].map(([command, label]) => <option key={command} value={command}>{label} (${command})</option>)}</select>}
             {kindOf(item.kind)?.editable !== false && <button className="soft small" disabled={busy} onClick={() => void startEdit(item)}>수정</button>}
-            {!["matured", "settled", "cancelled", "expired"].includes(item.status) && <button className="soft small" disabled={busy} onClick={() => toggle(item)}>{item.status === "active" ? (item.kind === "els" ? "취소" : "중지") : "재개"}</button>}
-            {item.status !== "active" && <button className="soft small danger" disabled={busy} title="중지된 상품을 완전히 삭제" onClick={() => purge(item)}>삭제</button>}
+            {!["matured", "settled", "cancelled", "expired"].includes(item.status) && item.drProgram?.programStatus !== "terminated" && <button className="soft small" disabled={busy} onClick={() => toggle(item)}>{item.status === "active" ? (item.kind === "els" ? "취소" : "중지") : "재개"}</button>}
+            {item.kind === "dr" && item.drProgram && item.drProgram.programStatus !== "terminated" && <button className="soft small danger" disabled={busy} onClick={() => terminateDr(item)}>DR 종료</button>}
+            {item.status !== "active" && !item.drProgram && <button className="soft small danger" disabled={busy} title="중지된 상품을 완전히 삭제" onClick={() => purge(item)}>삭제</button>}
           </td>
         </tr>)}
       </tbody></table>{!visible.length && <p className="empty">표시할 상품이 없습니다.</p>}</div>

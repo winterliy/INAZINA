@@ -293,6 +293,12 @@ class AccountDB(DBManager):
         )""")
         self.execute("CREATE INDEX IF NOT EXISTS idx_loan_ecl_day "
                      "ON loan_ecl_assessments(as_of_day,stage)")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS loan_ecl_assessments_no_update
+            BEFORE UPDATE ON loan_ecl_assessments BEGIN
+            SELECT RAISE(ABORT,'ECL assessments are append-only'); END""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS loan_ecl_assessments_no_delete
+            BEFORE DELETE ON loan_ecl_assessments BEGIN
+            SELECT RAISE(ABORT,'ECL assessments are append-only'); END""")
         self.execute("""CREATE TABLE IF NOT EXISTS contract_rate_reset_history (
             reset_id INTEGER PRIMARY KEY AUTOINCREMENT,
             contract_type TEXT NOT NULL CHECK(contract_type IN ('account','loan')),

@@ -105,7 +105,7 @@ class MarketManager:
     @staticmethod
     def type_label(asset_type):
         return {"stock_future": "주식 선물", "corporate_bond": "회사채", "mutual_fund": "일반 펀드",
-                "index_fund": "인덱스 펀드", "commodity_spot": "현물 원자재", "option": "옵션", "els":"ELS", "etn": "ETN"}.get(asset_type, asset_type)
+                "index_fund": "인덱스 펀드", "commodity_spot": "현물 원자재", "depositary_receipt":"주식예탁증서(DR)", "option": "옵션", "els":"ELS", "etn": "ETN"}.get(asset_type, asset_type)
 
     @contextmanager
     def _short_market_transaction(self, alias, *, now=None):
@@ -340,6 +340,7 @@ class MarketManager:
             "stock": dict(liquidity=1.0, trend_sensitivity=1.0, sector_sensitivity=0.0, jump_intensity=0.0, mean_reversion=1.0),
             "주식": dict(liquidity=1.0, trend_sensitivity=1.0, sector_sensitivity=0.0, jump_intensity=0.0, mean_reversion=1.0),
             "commodity_spot": dict(liquidity=1.0, trend_sensitivity=1.0, sector_sensitivity=0.0, jump_intensity=0.0, mean_reversion=1.0),
+            "depositary_receipt": dict(liquidity=1.0, trend_sensitivity=1.0, sector_sensitivity=0.0, jump_intensity=0.0, mean_reversion=1.0),
             "forex": dict(liquidity=1.0, trend_sensitivity=1.0, sector_sensitivity=0.0, jump_intensity=0.0, mean_reversion=1.0),
             "etf": dict(liquidity=1.0, trend_sensitivity=1.0, sector_sensitivity=0.0, jump_intensity=0.0, mean_reversion=1.0),
         }

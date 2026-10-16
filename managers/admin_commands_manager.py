@@ -58,6 +58,7 @@ USAGE.update({'법인잔고수정':'[보통주 법인id] [add/del/modify] [금�
 CREATE_ARGS = {
  'stock':('name','industry','capital','total_shares','share_price','exchange_id'),
  'asset':('name','type','price','total_supply','exchange_id'),
+ 'dr':('name','price','total_supply','exchange_id'),
  'saving':('name','interest_rate','deposit_amount','maturity_days','interest_cycle','compound_type','issuer'),
  'loan':('name','interest_rate','loan_limit','maturity_days','interest_cycle','min_credit_score','issuer'),
  'etf':('name','unit_price','total_supply','underlying_exchange_id','leverage_multiplier','rebalance_cycle_seconds','exchange_id'),
@@ -90,11 +91,15 @@ for _kind in tuple(OPTIONAL_ARGS):
 OPTIONAL_ARGS['loan']=('extension_min_credit_score','extension_days','extension_interest_rate')
 # Foreign-currency accounts accept the same optional saving settings after name/currency/rate.
 OPTIONAL_ARGS['currencyproduct']=('deposit_amount','maturity_days','interest_cycle','compound_type','issuer')
+OPTIONAL_ARGS['dr']=('receipt_type','depositary_bank','custodian','home_exchange_id','quote_currency')
+CREATE_ARGS['dr'] += ('underlying_code','underlying_per_receipt') + OPTIONAL_ARGS['dr']
 for _kind,_fields in OPTIONAL_ARGS.items():
+    if _kind == 'dr':
+        continue
     CREATE_ARGS[_kind]+= _fields
 TEXT_ARGS = {'name','industry','exchange_id','underlying_exchange_id','underlying_code','issuer_code',
              'issuer','type','option_type','asset_code','nationality','currency_code','parent_company_code',
-             'fund_category'}
+             'fund_category','receipt_type','depositary_bank','custodian','home_exchange_id'}
 
 
 def product_profile(kind):

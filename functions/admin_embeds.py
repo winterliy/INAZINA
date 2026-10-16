@@ -93,6 +93,9 @@ ARG_LABELS = {
     'early_withdrawal_fee_percent':'중도해지수수료%',
     'deposit_insured':'예금보호0/1',
     'business_day_convention':'영업일조정규칙',
+    'underlying_per_receipt':'DR당 원주 수량', 'receipt_type':'DR 유형',
+    'depositary_bank':'예탁기관', 'custodian':'수탁기관',
+    'home_exchange_id':'원주 상장거래소', 'quote_currency':'결제 통화',
 }
 
 

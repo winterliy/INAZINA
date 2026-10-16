@@ -27,6 +27,7 @@ BOOTSTRAP_ADMIN_IDS = {"1076861147560542278"}
 sys.path.insert(0, str(ROOT))
 from database.user_db import TREASURY_USER_ID, citizen_filter
 from functions.performance import log_slow
+from web_api import board
 _domain = None
 _domain_lock = threading.Lock()
 
@@ -217,6 +218,72 @@ def validate_password(password):
 # ---------------------------------------------------------------------------
 FEEDBACK_KINDS = {"contact": "문의", "report": "신고"}
 FEEDBACK_STATUSES = {"new", "read", "done"}
+_board_ready = False
+_board_ip_purged = 0.0
+
+
+@contextmanager
+def board_db():
+    """A write connection with the board tables in place.
+
+    At most once an hour it also erases client IPs past their retention period
+    (board.IP_RETENTION_SECONDS, as the privacy policy promises).
+    """
+    global _board_ready, _board_ip_purged
+    with connect_db(timeout=5) as connection:
+        if not _board_ready:
+            board.ensure_tables(connection)
+            _board_ready = True
+        if time.time() - _board_ip_purged >= 3600:
+            board.purge_expired_ips(connection)
+            _board_ip_purged = time.time()
+        yield connection
+
+
+def board_get(path, query, viewer):
+    """Public board reads; ``viewer`` (or None) only marks the viewer's own posts."""
+    first = lambda key, default="": query.get(key, [default])[0]
+    with board_db() as connection:
+        if path == "/internal/board/posts":
+            return board.list_posts(connection, first("board") or None, first("search"), first("asset") or None,
+                                    first("page", "1"), viewer)
+        return {"post": board.read_post(connection, path.removeprefix("/internal/board/posts/"), viewer,
+                                        count_view=first("view") == "1")}
+
+
+def board_post(path, user, payload):
+    ip = payload.get("clientIp")
+    parts = path.removeprefix("/internal/board/").split("/")
+    with board_db() as connection:
+        if parts == ["posts"]:
+            return {"postId": board.create_post(connection, user, payload, ip)}
+        if len(parts) == 3 and parts[0] == "posts":
+            action = parts[2]
+            if action == "edit":
+                board.edit_post(connection, user, parts[1], payload); return {"success": True}
+            if action == "delete":
+                board.delete_post(connection, user, parts[1]); return {"success": True}
+            if action == "comments":
+                return {"commentId": board.add_comment(connection, user, parts[1], payload, ip)}
+            if action == "like":
+                return {"liked": board.toggle_like(connection, user, parts[1])}
+        if len(parts) == 3 and parts[0] == "comments" and parts[2] == "delete":
+            board.delete_comment(connection, user, parts[1]); return {"success": True}
+        if parts == ["reports"]:
+            board.report(connection, user, payload, ip); return {"success": True}
+    raise LookupError("not_found")
+
+
+BOARD_ACTION_NAMES = {"hide": "숨김", "restore": "복원", "pin": "상단 고정", "unpin": "고정 해제", "purge": "영구 삭제", "resolve": "처리 완료"}
+
+
+def admin_board_action(actor, kind, target, action):
+    with board_db() as connection:
+        changed = board.admin_action(connection, kind, target, action)
+        _audit_db(connection, actor, f"board.{kind}.{action}", {"id": target, "changed": changed})
+    return f"✅ {BOARD_ACTION_NAMES.get(action, action)} 처리했습니다." if changed else "❌ 바뀐 것이 없습니다."
+
+
 FEEDBACK_RETENTION_SECONDS = 365 * 86400  # 개인정보 처리방침: 접수 후 1년이 지나면 파기
 
 
@@ -580,6 +647,38 @@ def instruments(include_inactive=False):
         ):
             rows.extend(dict(row) for row in connection.execute(query).fetchall())
         components = {}
+        dr_programs = {
+            row["dr_code"]: {
+                "underlyingCode": row["underlying_code"],
+                "receiptType": row["receipt_type"],
+                "depositaryBank": row["depositary_bank"],
+                "custodian": row["custodian"],
+                "homeExchangeId": row["home_exchange_id"],
+                "listingExchangeId": row["listing_exchange_id"],
+                "underlyingPerReceipt": float(row["underlying_per_receipt"]),
+                "receiptSupply": int(row["receipt_supply"]),
+                "depositedUnderlyingQuantity": float(row["deposited_underlying_quantity"]),
+                "programStatus": row["program_status"],
+            }
+            for row in connection.execute(
+                "SELECT * FROM depositary_receipts ORDER BY dr_code"
+            ).fetchall()
+        }
+        dr_custody = {
+            row["dr_code"]: {
+                "underlying": int(row["underlying_quantity"] or 0),
+                "receipts": int(row["receipt_quantity"] or 0),
+            }
+            for row in connection.execute(
+                "SELECT dr_code,SUM(CASE WHEN movement_type='issue' THEN underlying_quantity "
+                "ELSE -underlying_quantity END) AS underlying_quantity,"
+                "SUM(CASE WHEN movement_type='issue' THEN dr_quantity ELSE -dr_quantity END) AS receipt_quantity "
+                "FROM depositary_receipt_movements GROUP BY dr_code"
+            ).fetchall()
+        }
+        for code, program in dr_programs.items():
+            program["custodiedUnderlyingQuantity"] = max(0, dr_custody.get(code, {}).get("underlying", 0))
+            program["outstandingReceiptQuantity"] = max(0, dr_custody.get(code, {}).get("receipts", 0))
         for row in connection.execute(
             "SELECT product_code,asset_code,weight,asset_class FROM fund_components "
             "ORDER BY product_code,asset_code"
@@ -601,6 +700,8 @@ def instruments(include_inactive=False):
             "SELECT asset_code,SUM(quantity*price),COUNT(*) FROM market_trade_history "
             "WHERE recorded_epoch>=? GROUP BY asset_code", (since,))} if _table_exists(connection, "market_trade_history") else {}
         for row in rows:
+            if row["type"] == "depositary_receipt":
+                row["drProgram"] = dr_programs.get(row["code"])
             start = opening.get(row["code"])
             row["change24h"] = (float(row["price"]) / float(start) - 1) * 100 if start and row["price"] else None
             row["tradeValue24h"], row["trades24h"] = traded.get(row["code"], (0, 0))
@@ -1044,17 +1145,16 @@ def admin_market_flows(limit=100):
 LOG_TABLES = {
     "events": ("market_events", "event_id", "ends_epoch<=:now"),
     "flows": ("market_auto_target_history", "history_id", "1"),
-    "audit": ("admin_audit", "audit_id", "1"),
     "jobs": ("web_bot_jobs", "job_id", "status IN ('done','failed')"),
 }
-LOG_NAMES = {"events": "시장 사건", "flows": "알고리즘 시장 흐름", "audit": "작업 기록", "jobs": "봇 작업"}
+LOG_NAMES = {"events": "시장 사건", "flows": "알고리즘 시장 흐름", "jobs": "봇 작업"}
 
 
 def admin_log_delete(actor, log, payload):
     """Delete log rows: the given ids, or every deletable one with all=true.
 
-    Running market events and pending bot jobs are never deleted. Clearing the
-    work log leaves one audit entry recording the deletion itself.
+    Running market events and pending bot jobs are never deleted. The immutable
+    administrator audit trail is intentionally not exposed by this endpoint.
     """
     if log not in LOG_TABLES:
         raise ValueError("삭제할 기록 종류를 확인해주세요.")
@@ -1075,7 +1175,13 @@ def admin_log_delete(actor, log, payload):
         where = f"({keep}) AND {scope}"
         if log == "events" and _table_exists(connection, "market_event_targets"):
             connection.execute(f"DELETE FROM market_event_targets WHERE event_id IN (SELECT event_id FROM market_events WHERE {where})", params)
+        # The work log refuses deletes unless this transaction holds a grant.
+        grant = log == "audit" and _table_exists(connection, "admin_audit_delete_grant")
+        if grant:
+            connection.execute("INSERT INTO admin_audit_delete_grant(token) VALUES (?)", (secrets.token_hex(8),))
         removed = connection.execute(f"DELETE FROM {table} WHERE {where}", params).rowcount
+        if grant:
+            connection.execute("DELETE FROM admin_audit_delete_grant")
         _audit_db(connection, actor, f"log.{log}.delete", {"all": payload.get("all") is True,
                                                             "ids": payload.get("ids"), "removed": removed})
     skipped = " 진행 중인 사건은 삭제하지 않습니다." if log == "events" else " 대기·처리 중인 작업은 삭제하지 않습니다." if log == "jobs" else ""
@@ -1099,6 +1205,75 @@ def admin_audit(limit=50):
         entries.append({"auditId": row["audit_id"], "actorId": row["actor_id"], "action": row["action"],
                         "payload": payload, "time": float(row["recorded_epoch"])})
     return entries
+
+
+def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
+    """Read-only bank-book controls for an administrator's audit workbench."""
+    from managers.bank_journal import BankJournal
+    with connect_readonly() as connection:
+        if not connection.execute(
+                "SELECT 1 FROM financial_institutions WHERE issuer=?", (str(issuer),)).fetchone():
+            raise ValueError("financial_institution_not_found")
+        trial_balance = BankJournal.trial_balance(connection, issuer, currency)
+        unbalanced = BankJournal.audit_unbalanced(connection, issuer)
+        reconciliation = BankJournal.reconcile_institution_results(
+            connection, issuer, since_epoch=since_epoch,
+        )
+    return {"issuer": str(issuer), "currency": currency,
+            "trialBalance": trial_balance, "unbalancedEntries": unbalanced,
+            "resultReconciliation": reconciliation}
+
+
+def admin_compliance_overview(nationality=None):
+    """Return bounded, privacy-minimal KYC/AML queues for active administrators."""
+    with connect_readonly() as connection:
+        kyc_sql = ("SELECT user_id,status,risk_tier,reviewed_by,reviewed_epoch,expires_epoch,updated_epoch "
+                   "FROM kyc_profiles")
+        alert_sql = ("SELECT alert_id,user_id,nationality,rule_code,reference_key,currency_code,amount,"
+                     "status,outcome_code,opened_epoch,reviewed_by,reviewed_epoch FROM aml_alerts")
+        params = ()
+        if nationality:
+            kyc_sql += " WHERE user_id IN (SELECT user_id FROM users WHERE nationality=?)"
+            alert_sql += " WHERE nationality=?"
+            params = (str(nationality),)
+        kyc_sql += " ORDER BY updated_epoch DESC LIMIT 100"
+        alert_sql += " AND status<>'closed' ORDER BY opened_epoch DESC LIMIT 100" if nationality else " WHERE status<>'closed' ORDER BY opened_epoch DESC LIMIT 100"
+        profiles = [dict(row) for row in connection.execute(kyc_sql, params).fetchall()]
+        alerts = [dict(row) for row in connection.execute(alert_sql, params).fetchall()]
+        rule_sql = "SELECT nationality,currency_code,large_transaction_limit,rolling_24h_amount_limit,rolling_24h_count_limit,enabled,updated_epoch FROM aml_monitoring_rules"
+        if nationality:
+            rule_sql += " WHERE nationality=?"
+        rule_sql += " ORDER BY nationality"
+        rules = [dict(row) for row in connection.execute(rule_sql, params).fetchall()]
+        kyc_event_sql = ("SELECT e.event_id,e.user_id,e.actor_id,e.event_type,e.prior_status,e.new_status,"
+                         "e.prior_risk_tier,e.new_risk_tier,e.reason_code,e.recorded_epoch "
+                         "FROM kyc_profile_events e")
+        aml_event_sql = ("SELECT e.event_id,e.alert_id,e.actor_id,e.event_type,e.prior_status,e.new_status,"
+                         "e.outcome_code,e.recorded_epoch,a.nationality,a.user_id "
+                         "FROM aml_case_events e JOIN aml_alerts a ON a.alert_id=e.alert_id")
+        if nationality:
+            kyc_event_sql += " JOIN users u ON u.user_id=e.user_id WHERE u.nationality=?"
+            aml_event_sql += " WHERE a.nationality=?"
+        kyc_event_sql += " ORDER BY e.recorded_epoch DESC LIMIT 100"
+        aml_event_sql += " ORDER BY e.recorded_epoch DESC LIMIT 100"
+        kyc_events = [dict(row) for row in connection.execute(kyc_event_sql, params).fetchall()]
+        aml_events = [dict(row) for row in connection.execute(aml_event_sql, params).fetchall()]
+        scenario_sql = ("SELECT nationality,scenario_key,probability,pd_multiplier,lgd_multiplier,updated_epoch "
+                        "FROM credit_risk_scenarios")
+        ecl_sql = ("SELECT e.assessment_id,e.loan_id,e.as_of_day,e.stage,e.pd_12m,e.lifetime_pd,e.lgd,"
+                   "e.ead,e.expected_loss,e.quote_currency,e.scenario,e.calculated_epoch,u.nationality "
+                   "FROM accounts.loan_ecl_assessments e JOIN accounts.loans l USING(loan_id) "
+                   "JOIN users.users u ON u.user_id=l.user_id")
+        if nationality:
+            scenario_sql += " WHERE nationality=?"
+            ecl_sql += " WHERE u.nationality=?"
+        scenario_sql += " ORDER BY nationality,CASE scenario_key WHEN 'optimistic' THEN 1 WHEN 'base' THEN 2 ELSE 3 END"
+        ecl_sql += " ORDER BY e.calculated_epoch DESC LIMIT 100"
+        scenarios = [dict(row) for row in connection.execute(scenario_sql, params).fetchall()]
+        ecl_assessments = [dict(row) for row in connection.execute(ecl_sql, params).fetchall()]
+    return {"kycProfiles": profiles, "amlAlerts": alerts, "amlRules": rules,
+            "kycEvents": kyc_events, "amlEvents": aml_events,
+            "creditRiskScenarios": scenarios, "eclAssessments": ecl_assessments}
 
 
 # $도움말 is a Discord view; the dashboard shows the same pages on its own.
@@ -1164,7 +1339,7 @@ def admin_command_catalog():
 
 # Tables the dashboard must never expose or edit: credentials, the audit trail
 # itself, and per-user web state.
-DB_EDITOR_HIDDEN = {"web_auth_credentials", "admin_audit", "web_chart_drawings"}
+DB_EDITOR_HIDDEN = {"web_auth_credentials", "admin_audit", "admin_audit_delete_grant", "web_chart_drawings"}
 DB_EDITOR_PAGE_SIZE = 50
 DB_VALUE_TYPES = (str, int, float, type(None))
 # Secrets stay hidden in the editor and the audit trail; they can still be overwritten.
@@ -1313,6 +1488,7 @@ PRODUCT_KINDS = {
     # profile: (Korean label, dashboard group, $상품생성 kind token)
     "stock": ("회사 주식", "market", "company"), "preferred": ("우선주", "market", "preferred"),
     "asset": ("시장 자산", "market", "asset"), "etf": ("ETF", "market", "etf"),
+    "dr": ("주식예탁증서(DR)", "market", "dr"),
     "future": ("주식선물", "market", "future"), "corporatebond": ("회사채", "market", "corporatebond"),
     "fund": ("일반 펀드", "market", "fund"), "indexfund": ("인덱스 펀드", "market", "indexfund"),
     "commodity": ("현물 원자재", "market", "commodity"), "bond": ("국채", "market", "bond"),
@@ -1363,7 +1539,7 @@ def product_catalog():
             columns = {row["name"]: row["type"] or "" for row in connection.execute(f'PRAGMA table_info("{table}")')}
             fields = [{"key": field,
                        "label": "발행총액" if profile == "bond" and field == "total_supply"
-                                else "통장 화폐" if field == "quote_currency" else ARG_LABELS.get(field, field),
+                                else ("결제 통화" if profile == "dr" else "통장 화폐") if field == "quote_currency" else ARG_LABELS.get(field, field),
                        "optional": field in OPTIONAL_ARGS.get(profile, ()),
                        "text": field in TEXT_ARGS or field == "quote_currency"} for field in _form_fields(profile)]
             listed = {field["key"] for field in fields} | {key}
@@ -1389,6 +1565,8 @@ def _product_kind(source, row):
     if source == "saving":
         kind = row.get("product_kind") or "saving"
         return next((name for name, value in SAVING_KINDS.items() if value == kind), "saving")
+    if source == "market_assets" and row.get("type") == "depositary_receipt":
+        return "dr"
     return {"market_assets": "asset", "treasury_bond_products": "bond", "option_contracts": "option",
             "liability": "loan", "currencies": "currency"}.get(source)
 
@@ -1414,10 +1592,59 @@ def product_list(group):
                 kind = _product_kind(table, item)
                 if not kind or PRODUCT_KINDS[kind][1] != group:
                     continue
-                rows.append({"code": str(item[key]), "name": str(item.get("name") or item.get("underlying_code") or item[key]),
+                product = {"code": str(item[key]), "name": str(item.get("name") or item.get("underlying_code") or item[key]),
                              "kind": kind, "status": item.get("status") or "active",
                              "exchangeId": item.get("exchange_id"), "currency": item.get("quote_currency"),
-                             "value": item.get(headline)})
+                             "value": item.get(headline)}
+                if source == "market_assets" and item.get("type") == "depositary_receipt":
+                    program = connection.execute(
+                        "SELECT * FROM depositary_receipts WHERE dr_code=?", (str(item[key]),)
+                    ).fetchone()
+                    if program:
+                        dr_program = {
+                            "underlyingCode": program["underlying_code"],
+                            "receiptType": program["receipt_type"],
+                            "depositaryBank": program["depositary_bank"],
+                            "custodian": program["custodian"],
+                            "underlyingPerReceipt": float(program["underlying_per_receipt"]),
+                            "receiptSupply": int(program["receipt_supply"]),
+                            "depositedUnderlyingQuantity": float(program["deposited_underlying_quantity"]),
+                            "programStatus": program["program_status"],
+                        }
+                        custody = connection.execute(
+                            "SELECT COALESCE(SUM(CASE WHEN movement_type='issue' THEN underlying_quantity "
+                            "ELSE -underlying_quantity END),0) AS underlying_quantity,"
+                            "COALESCE(SUM(CASE WHEN movement_type='issue' THEN dr_quantity "
+                            "ELSE -dr_quantity END),0) AS receipt_quantity "
+                            "FROM depositary_receipt_movements WHERE dr_code=?", (str(item[key]),),
+                        ).fetchone()
+                        dr_program["custodiedUnderlyingQuantity"] = max(0, int(custody["underlying_quantity"] or 0))
+                        dr_program["outstandingReceiptQuantity"] = max(0, int(custody["receipt_quantity"] or 0))
+                        underlying = connection.execute(
+                            "SELECT share_price AS price,quote_currency FROM company WHERE company_code=? "
+                            "UNION ALL SELECT price,quote_currency FROM market_assets WHERE code=? LIMIT 1",
+                            (program["underlying_code"], program["underlying_code"]),
+                        ).fetchone()
+                        if underlying and float(underlying["price"] or 0) > 0:
+                            dr_program["underlyingPrice"] = float(underlying["price"])
+                            dr_program["underlyingCurrency"] = str(underlying["quote_currency"] or "NWX")
+                            try:
+                                from managers.currency_manager import CurrencyManager
+                                fx = float(CurrencyManager.quote(
+                                    connection, dr_program["underlyingCurrency"],
+                                    str(item.get("quote_currency") or "NWX"),
+                                ))
+                                fair_value = (dr_program["underlyingPrice"] *
+                                              dr_program["underlyingPerReceipt"] * fx)
+                                dr_program["referenceValue"] = fair_value
+                                if fair_value > 0 and float(item.get("price") or 0) > 0:
+                                    dr_program["referencePremiumPercent"] = (
+                                        float(item["price"]) / fair_value - 1
+                                    ) * 100
+                            except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError):
+                                pass
+                        product["drProgram"] = dr_program
+                rows.append(product)
     return sorted(rows, key=lambda item: (item["kind"], item["name"].casefold(), item["code"]))
 
 
@@ -1453,6 +1680,14 @@ def product_detail(code):
                 values[field] = row.get("interest_rate")
             else:
                 values[field] = row.get(field)
+        if kind == "dr":
+            program = connection.execute(
+                "SELECT * FROM depositary_receipts WHERE dr_code=?", (code,),
+            ).fetchone()
+            if program:
+                for field in ("underlying_code", "underlying_per_receipt", "receipt_type",
+                              "depositary_bank", "custodian", "home_exchange_id", "quote_currency"):
+                    values[field] = program[field]
     return {"code": code, "kind": kind, "status": row.get("status") or "active",
             "values": {key: _cell(value) for key, value in values.items()},
             "row": _masked(row)}
@@ -1525,6 +1760,14 @@ def product_save(actor, payload):
     else:
         with connect_readonly() as connection:
             kind, row = _locate_product(connection, code, profile)
+            if kind == "dr":
+                program = connection.execute(
+                    "SELECT underlying_code,underlying_per_receipt,receipt_type,depositary_bank,"
+                    "custodian,home_exchange_id,quote_currency FROM depositary_receipts WHERE dr_code=?",
+                    (code,),
+                ).fetchone()
+                if program:
+                    row.update(dict(program))
         if kind == "els":
             raise ValueError("ELS 발행조건은 변경할 수 없습니다. 모집 중 취소 후 새 상품을 생성해주세요.")
         fields = {key: value for key, value in fields.items() if key not in row or row[key] != value}
@@ -1542,10 +1785,13 @@ def product_save(actor, payload):
     return str(result)
 
 
-def product_status(actor, code, active):
+def product_status(actor, code, active, terminate=False):
     with connect_readonly() as connection:
-        kind, _row = _locate_product(connection, code)
-    result = domain().bot.admin_control.entity(actor, _profile_category(kind), "restore" if active else "delete", code)
+        kind, row = _locate_product(connection, code)
+    if row.get("type") == "depositary_receipt":
+        kind = "dr"
+    operation = "terminate" if terminate else "restore" if active else "delete"
+    result = domain().bot.admin_control.entity(actor, _profile_category(kind), operation, code)
     _read_cache.invalidate()
     return str(result)
 
@@ -1592,6 +1838,8 @@ def product_delete(actor, code):
     with connect_db(timeout=5) as connection:
         kind, row = _locate_product(connection, code)
         table, key = PRODUCT_TABLE.get(kind, ("investment", "product_code"))
+        if kind == "dr" or (kind == "asset" and row.get("type") == "depositary_receipt"):
+            raise ValueError("DR 프로그램 정의·불변 전환 원장은 삭제하지 않습니다. 보유분을 상환하고 관리자 화면에서 프로그램 종료를 사용해주세요.")
         if (row.get("status") or "active") not in DELETED_STATES:
             raise ValueError("거래 중인 상품입니다. 먼저 중지한 뒤 삭제해주세요.")
         reasons = []
@@ -2127,6 +2375,18 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     self.send_json(200, {"user": user})
+            elif path == "/internal/board/posts" or path.startswith("/internal/board/posts/"):
+                viewer = identity(internal_user_id(self)) if internal_user_id(self) else None
+                self.send_json(200, board_get(path, parse_qs(parsed.query), viewer["userId"] if viewer else None))
+            elif path == "/internal/admin/board":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    query = parse_qs(parsed.query)
+                    with board_db() as connection:
+                        self.send_json(200, board.admin_list(connection, query.get("status", ["all"])[0],
+                                                             query.get("reported", ["0"])[0] == "1", query.get("search", [""])[0]))
             elif path == "/internal/hts/account":
                 user_id = internal_user_id(self)
                 if not identity(user_id):
@@ -2189,6 +2449,29 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "admin_required"})
                 else:
                     self.send_json(200, {"entries": admin_audit()})
+            elif path == "/internal/admin/bank-journal":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    query = parse_qs(parsed.query)
+                    issuer = query.get("issuer", [""])[0].strip()
+                    currency = query.get("currency", [None])[0]
+                    currency = currency.strip().upper() if currency else None
+                    raw_since = query.get("since", [None])[0]
+                    since = float(raw_since) if raw_since else None
+                    if raw_since and (not math.isfinite(since) or since < 0):
+                        raise ValueError("invalid_since_epoch")
+                    if not issuer or len(issuer) > 100 or (currency and len(currency) > 12):
+                        raise ValueError("invalid_bank_journal_filter")
+                    self.send_json(200, admin_bank_journal_report(issuer, currency, since))
+            elif path == "/internal/admin/compliance":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    nationality = parse_qs(parsed.query).get("nationality", [None])[0]
+                    self.send_json(200, admin_compliance_overview(nationality))
             elif path == "/internal/admin/commands":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -2361,6 +2644,87 @@ class Handler(BaseHTTPRequestHandler):
             if not user:
                 self.send_json(403, {"error": "active_user_required"})
                 return
+            if path == "/internal/dr/convert":
+                allowed = {"drCode", "action", "quantity", "referenceKey"}
+                if set(payload) != allowed:
+                    raise ValueError("invalid_dr_conversion_payload")
+                from managers.depositary_receipt_manager import DepositaryReceiptManager
+                bot = domain().bot
+                success, message = DepositaryReceiptManager(bot.db).convert(
+                    user["userId"], payload["drCode"], payload["action"],
+                    payload["quantity"], payload["referenceKey"],
+                )
+                self.send_json(200 if success else 400, {"success": success, "message": message})
+                return
+            if path == "/internal/admin/compliance":
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                    return
+                from managers.compliance_manager import ComplianceManager
+                action = str(payload.get("action") or "")
+                with connect_db(timeout=4) as connection:
+                    if action == "kyc_review":
+                        allowed = {"action", "userId", "status", "riskTier", "reasonCode", "expiresEpoch"}
+                        if set(payload) - allowed or not {"userId", "status", "reasonCode"}.issubset(payload):
+                            raise ValueError("invalid_kyc_review_payload")
+                        result = ComplianceManager.set_kyc_status(
+                            connection, payload["userId"], user["userId"], payload["status"],
+                            risk_tier=payload.get("riskTier", "standard"),
+                            reason_code=payload["reasonCode"],
+                            expires_epoch=payload.get("expiresEpoch"),
+                        )
+                    elif action == "kyc_expire_due":
+                        if set(payload) != {"action"}:
+                            raise ValueError("invalid_kyc_expiry_payload")
+                        result = ComplianceManager.expire_due_kyc_profiles(
+                            connection, user["userId"],
+                        )
+                    elif action == "aml_rule":
+                        allowed = {"action", "nationality", "largeTransactionLimit",
+                                   "rolling24hAmountLimit", "rolling24hCountLimit", "enabled"}
+                        if set(payload) - allowed or "nationality" not in payload:
+                            raise ValueError("invalid_aml_rule_payload")
+                        result = ComplianceManager.configure_aml_rule(
+                            connection, payload["nationality"], user["userId"],
+                            large_transaction_limit=payload.get("largeTransactionLimit", 0),
+                            rolling_24h_amount_limit=payload.get("rolling24hAmountLimit", 0),
+                            rolling_24h_count_limit=payload.get("rolling24hCountLimit", 0),
+                            enabled=payload.get("enabled", False),
+                        )
+                    elif action == "aml_review":
+                        if set(payload) != {"action", "alertId", "status", "outcomeCode"}:
+                            raise ValueError("invalid_aml_review_payload")
+                        result = ComplianceManager.review_aml_alert(
+                            connection, payload["alertId"], user["userId"],
+                            payload["status"], payload["outcomeCode"],
+                        )
+                    elif action == "credit_risk_scenarios":
+                        if set(payload) != {"action", "nationality", "scenarios"}:
+                            raise ValueError("invalid_credit_risk_scenarios_payload")
+                        from managers.credit_risk_manager import CreditRiskManager
+                        result = CreditRiskManager.configure_scenarios(
+                            connection, payload["nationality"], user["userId"], payload["scenarios"],
+                        )
+                    else:
+                        raise ValueError("unsupported_compliance_action")
+                self.send_json(200, {"success": True, "result": result})
+                return
+            if path.startswith("/internal/board/"):
+                try:
+                    self.send_json(200, board_post(path, user, payload))
+                except LookupError:
+                    self.send_json(404, {"error": "not_found"})
+                return
+            if path.startswith("/internal/admin/board/"):
+                parts = path.removeprefix("/internal/admin/board/").split("/")
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                elif len(parts) != 2:
+                    self.send_json(404, {"error": "not_found"})
+                else:
+                    message = admin_board_action(user["userId"], parts[0], parts[1], payload.get("action"))
+                    self.send_json(200, {"success": not message.startswith("❌"), "message": message})
+                return
             if path == "/internal/hts/commands":
                 success, message, data = run_user_command(user, payload)
                 self.send_json(200 if success else 400, {"success": success, "message": message, "data": data})
@@ -2444,7 +2808,8 @@ class Handler(BaseHTTPRequestHandler):
                 if parts == ["products"]:
                     message = product_save(actor, payload)
                 elif len(parts) == 3 and parts[0] == "products" and parts[2] == "status":
-                    message = product_status(actor, parts[1], bool(payload.get("active")))
+                    message = product_status(actor, parts[1], bool(payload.get("active")),
+                                             payload.get("terminate") is True)
                 elif len(parts) == 3 and parts[0] == "products" and parts[2] == "delete":
                     message = product_delete(actor, parts[1])
                 elif len(parts) == 2 and parts[0] == "countries":

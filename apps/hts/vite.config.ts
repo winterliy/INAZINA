@@ -8,7 +8,8 @@ export default defineConfig({
     port: 4311,
     strictPort: true,
     proxy: {
-      "/api": "http://127.0.0.1:4312",
+      // xfwd passes the browser's address on (X-Forwarded-For) for the board's IP records.
+      "/api": { target: "http://127.0.0.1:4312", xfwd: true },
     },
   },
 });

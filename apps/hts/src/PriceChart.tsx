@@ -7,6 +7,7 @@ export type Drawing = { id: string; type: "trend" | "horizontal"; anchors: Point
 export type Tool = "select" | "trend" | "horizontal";
 type View = { minTime: number; maxTime: number; minPrice: number; maxPrice: number };
 type Gesture =
+  | { kind: "pan"; start: { x: number; y: number }; view: View }
   | { kind: "draw"; start: Point }
   | { kind: "move"; start: Point; drawing: Drawing; anchor: number | null };
 
@@ -18,8 +19,9 @@ const money = (value: number) => new Intl.NumberFormat("ko-KR", { maximumFractio
 /**
  * Price chart with persistent drawings.
  *
- * Dragging the empty chart does nothing (no panning); use ←/→ and the wheel.
- * Any interaction (drawing, moving, zooming) freezes the axes, so new
+ * Dragging the empty chart pans it. Pressing on the chart never selects page
+ * text or other elements: pointer and mouse defaults are cancelled.
+ * Any interaction (drawing, moving, panning, zooming) freezes the axes, so new
  * quotes arriving every few seconds no longer rescale the chart under the lines.
  * "실시간" returns to the auto-fitted, live-following view.
  */
@@ -124,21 +126,22 @@ export function PriceChart({ points, candles, candleInterval, mode, fallbackPric
 
   function down(event: ReactPointerEvent<SVGSVGElement>) {
     if (event.button !== 0) return;
+    event.preventDefault();
     const at = local(event), point = toPoint(at.x, at.y);
-    if (tool === "select") { setSelected(""); return; }
     freeze();
     if (tool === "horizontal") {
       commit([...drawings, { id: crypto.randomUUID(), type: "horizontal", anchors: [point] }]);
       onToolChange("select");
       return;
     }
-    gesture.current = { kind: "draw", start: point };
-    setDraft([point, point]);
+    gesture.current = tool === "trend" ? { kind: "draw", start: point } : { kind: "pan", start: at, view: view ?? auto };
+    if (tool === "trend") setDraft([point, point]); else setSelected("");
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
   function startMove(event: ReactPointerEvent<SVGElement>, drawing: Drawing, anchor: number | null) {
     if (tool !== "select" || event.button !== 0) return;
+    event.preventDefault();
     event.stopPropagation();
     freeze();
     setSelected(drawing.id);
@@ -153,7 +156,11 @@ export function PriceChart({ points, candles, candleInterval, mode, fallbackPric
     setHover(at);
     const active = gesture.current;
     if (!active) return;
-    if (active.kind === "draw") {
+    if (active.kind === "pan") {
+      const dt = ((at.x - active.start.x) / (R - LEFT)) * (active.view.maxTime - active.view.minTime);
+      const dp = ((at.y - active.start.y) / (B - TOP)) * (active.view.maxPrice - active.view.minPrice);
+      setView({ minTime: active.view.minTime - dt, maxTime: active.view.maxTime - dt, minPrice: active.view.minPrice + dp, maxPrice: active.view.maxPrice + dp });
+    } else if (active.kind === "draw") {
       setDraft([active.start, toPoint(at.x, at.y)]);
     } else {
       const now = toPoint(at.x, at.y);
@@ -228,7 +235,7 @@ export function PriceChart({ points, candles, candleInterval, mode, fallbackPric
         <button title="축소 (휠)" onClick={() => zoom(1.5)}>－</button>
         <button className={view ? "live" : "live selected"} title="자동 맞춤 · 최신 시세 따라가기" onClick={() => setView(null)}>{view ? "실시간" : "● 실시간"}</button>
         <span className="divider" aria-hidden="true" />
-        <button className={tool === "select" ? "selected" : ""} title="선택 · 선 이동 · 끝점 조절" onClick={() => onToolChange("select")}>선택</button>
+        <button className={tool === "select" ? "selected" : ""} title="선택 · 선 이동 · 끝점 조절 · 빈 곳 드래그로 이동" onClick={() => onToolChange("select")}>선택</button>
         <button className={tool === "trend" ? "selected" : ""} title="드래그해서 추세선" onClick={() => onToolChange("trend")}>추세선</button>
         <button className={tool === "horizontal" ? "selected" : ""} title="클릭한 가격에 수평선" onClick={() => onToolChange("horizontal")}>수평선</button>
         <button title="되돌리기 (Ctrl/⌘+Z)" disabled={!history.current.length} onClick={undo}>되돌리기</button>
@@ -238,8 +245,8 @@ export function PriceChart({ points, candles, candleInterval, mode, fallbackPric
     </div>
     <div className="chart-canvas" ref={wrapRef}>
       <svg ref={svgRef} width={size.w} height={size.h} viewBox={`0 0 ${size.w} ${size.h}`} role="img" aria-label={`${label} 차트`}
-        className={`chart-svg ${tool !== "select" ? "drawing-mode" : ""}`}
-        onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={() => { gesture.current = null; setDraft(null); }} onPointerLeave={() => setHover(null)} onWheel={wheel} onDoubleClick={() => setView(null)}>
+        className={`chart-svg ${tool !== "select" ? "drawing-mode" : gesture.current?.kind === "pan" ? "panning" : ""}`}
+        onPointerDown={down} onMouseDown={(event) => event.preventDefault()} onDragStart={(event) => event.preventDefault()} onPointerMove={move} onPointerUp={up} onPointerCancel={() => { gesture.current = null; setDraft(null); }} onPointerLeave={() => setHover(null)} onWheel={wheel} onDoubleClick={() => setView(null)}>
         <defs><clipPath id="plot"><rect x={LEFT} y={TOP} width={R - LEFT} height={B - TOP} /></clipPath></defs>
         {Array.from({ length: 5 }, (_, index) => { const y = TOP + ((B - TOP) / 4) * index; return <g key={`y${index}`}><line x1={LEFT} x2={R} y1={y} y2={y} className="grid-line" /><text x={R + 8} y={y + 4} className="axis-label">{money(v.maxPrice - ((v.maxPrice - v.minPrice) / 4) * index)}</text></g>; })}
         {Array.from({ length: 5 }, (_, index) => { const x = LEFT + ((R - LEFT) / 4) * index; return <g key={`x${index}`}><line x1={x} x2={x} y1={TOP} y2={B} className="grid-line vertical" /><text x={x} y={size.h - 8} textAnchor={index === 0 ? "start" : index === 4 ? "end" : "middle"} className="axis-label">{timeText(v.minTime + (span / 4) * index)}</text></g>; })}

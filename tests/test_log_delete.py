@@ -28,11 +28,12 @@ class LogDeleteTests(unittest.TestCase):
         self.assertEqual([row[0] for row in self.execute("SELECT event_id FROM market_events")], [3])
         self.assertEqual(self.execute("SELECT action FROM admin_audit")[-1][0], "log.events.delete")
 
-    def test_clearing_audit_leaves_one_entry_for_the_deletion(self):
+    def test_audit_trail_cannot_be_cleared(self):
         for n in range(3):
             self.execute("INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES ('admin-1','x','{}',?)", (n,))
-        server.admin_log_delete("admin-1", "audit", {"all": True})
-        self.assertEqual([row[0] for row in self.execute("SELECT action FROM admin_audit")], ["log.audit.delete"])
+        with self.assertRaises(ValueError):
+            server.admin_log_delete("admin-1", "audit", {"all": True})
+        self.assertEqual([row[0] for row in self.execute("SELECT action FROM admin_audit")], ["x", "x", "x"])
 
     def test_flows_are_listed_and_deleted(self):
         self.execute("CREATE TABLE market_auto_target_history (history_id INTEGER PRIMARY KEY AUTOINCREMENT, asset_code TEXT NOT NULL, "
@@ -50,3 +51,42 @@ class LogDeleteTests(unittest.TestCase):
             server.admin_log_delete("admin-1", "users", {"all": True})
         with self.assertRaises(ValueError):
             server.admin_log_delete("admin-1", "events", {"ids": ["1; DROP TABLE users"]})
+
+
+class AuditDeleteGuardTests(unittest.TestCase):
+    """The real schema refuses audit edits and deletes from every client."""
+
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from database import DatabaseManager
+        from database.db_manager import DBManager
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old_dir, self.old_database = DBManager.database_dir, server.DATABASE
+        DBManager.database_dir = Path(self.tmp.name)
+        self.db = DatabaseManager()
+        server.DATABASE = Path(self.tmp.name) / "inazina.db"
+        for n in range(3):
+            self.db.system.execute("INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES ('a','x','{}',?)", (n,))
+
+    def tearDown(self):
+        from database.db_manager import DBManager
+        self.db.close()
+        DBManager.database_dir, server.DATABASE = self.old_dir, self.old_database
+        self.tmp.cleanup()
+
+    def test_direct_edit_and_delete_are_refused(self):
+        import sqlite3
+        with self.assertRaisesRegex(sqlite3.DatabaseError, "edited"):
+            self.db.system.execute("UPDATE admin_audit SET action='y'")
+        with self.assertRaisesRegex(sqlite3.DatabaseError, "cannot be deleted"):
+            self.db.system.execute("DELETE FROM admin_audit")
+
+    def test_work_log_endpoint_cannot_delete(self):
+        with self.assertRaises(ValueError):
+            server.admin_log_delete("admin-1", "audit", {"all": True})
+        actions = [row[0] for row in self.db.system.execute("SELECT action FROM admin_audit ORDER BY audit_id")]
+        self.assertEqual(actions, ["x", "x", "x"])
+        import sqlite3
+        with self.assertRaisesRegex(sqlite3.DatabaseError, "cannot be deleted"):
+            self.db.system.execute("DELETE FROM admin_audit")

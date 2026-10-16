@@ -53,7 +53,7 @@ class ForeignSecuritiesManager:
                 )
                 if limit_price <= 0 or limit_price > self.book.MAX_LIMIT_PRICE:
                     raise ValueError('지정가를 확인해주세요.')
-                if source not in {'company','market_assets','investment'} or asset['type'] not in {'stock','주식','commodity_spot'}:
+                if source not in {'company','market_assets','investment'} or asset['type'] not in {'stock','주식','commodity_spot','depositary_receipt'}:
                     raise ValueError('외화 결제는 현재 주식·현물 원자재에 지원합니다.')
                 if asset['status']!='active' or asset['price']<=0:
                     raise ValueError('현재 거래할 수 없는 종목입니다.')

@@ -1,0 +1,158 @@
+"""Append-only, currency-minor-unit journal for financial institutions."""
+
+from decimal import Decimal
+import time
+
+
+class BankJournal:
+    @staticmethod
+    def reconcile_institution_results(conn, issuer, *, since_epoch=None):
+        """Compare native-currency P&L journal movement with legacy result rows.
+
+        Unmapped legacy events are reported, not silently treated as balanced.
+        Multiple result types sharing a transaction reference are consolidated.
+        """
+        from functions.money import currency_precision, round_currency
+
+        query = (
+            "SELECT reference_key,currency_code,SUM(amount) ledger_amount,"
+            "MIN(created_epoch) first_epoch FROM financial_institution_ledger "
+            "WHERE issuer=?"
+        )
+        params = [str(issuer)]
+        if since_epoch is not None:
+            query += " AND created_epoch>=?"
+            params.append(float(since_epoch))
+        query += " GROUP BY reference_key,currency_code ORDER BY first_epoch,reference_key"
+        pnl_accounts = (
+            "interest_income", "interest_expense", "fee_income",
+            "impairment_expense", "impairment_reversal",
+            "credit_loss_expense", "credit_loss_recovery_income",
+        )
+        placeholders = ",".join("?" for _ in pnl_accounts)
+        results = []
+        for ledger in conn.execute(query, params).fetchall():
+            journal = conn.execute(
+                "SELECT COUNT(DISTINCT e.entry_id) entry_count,"
+                "COALESCE(SUM(l.credit_units-l.debit_units),0) pnl_units "
+                "FROM bank_journal_entries e JOIN bank_journal_lines l USING(entry_id) "
+                f"WHERE e.issuer=? AND e.reference_key=? AND e.currency_code=? "
+                f"AND e.status='posted' AND l.account_code IN ({placeholders})",
+                (str(issuer), str(ledger["reference_key"]),
+                 str(ledger["currency_code"]), *pnl_accounts),
+            ).fetchone()
+            if not int(journal["entry_count"] or 0):
+                results.append({
+                    "reference_key": ledger["reference_key"],
+                    "currency_code": ledger["currency_code"],
+                    "ledger_amount": ledger["ledger_amount"],
+                    "journal_amount": None,
+                    "difference": None,
+                    "status": "missing_journal",
+                })
+                continue
+            places = currency_precision(conn, ledger["currency_code"])
+            journal_amount = Decimal(int(journal["pnl_units"]))/Decimal(10**places)
+            difference = round_currency(
+                conn, Decimal(str(ledger["ledger_amount"]))-journal_amount,
+                ledger["currency_code"],
+            )
+            results.append({
+                "reference_key": ledger["reference_key"],
+                "currency_code": ledger["currency_code"],
+                "ledger_amount": ledger["ledger_amount"],
+                "journal_amount": float(journal_amount),
+                "difference": difference,
+                "status": "matched" if difference == 0 else "mismatch",
+            })
+        return results
+
+    @staticmethod
+    def trial_balance(conn, issuer, currency_code=None):
+        """Return posted account balances in debit-positive minor units."""
+        sql = (
+            "SELECT e.currency_code,l.account_code,"
+            "SUM(l.debit_units) debit_units,SUM(l.credit_units) credit_units,"
+            "SUM(l.debit_units-l.credit_units) balance_units "
+            "FROM bank_journal_entries e JOIN bank_journal_lines l USING(entry_id) "
+            "WHERE e.issuer=? AND e.status='posted'"
+        )
+        params = [str(issuer)]
+        if currency_code:
+            sql += " AND e.currency_code=?"
+            params.append(str(currency_code).upper())
+        sql += " GROUP BY e.currency_code,l.account_code ORDER BY e.currency_code,l.account_code"
+        return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+    @staticmethod
+    def audit_unbalanced(conn, issuer=None):
+        """Find any persisted posted entries that fail the double-entry invariant."""
+        sql = (
+            "SELECT e.entry_id,e.issuer,e.event_type,e.reference_key,e.currency_code,"
+            "COUNT(l.line_id) line_count,COALESCE(SUM(l.debit_units),0) debit_units,"
+            "COALESCE(SUM(l.credit_units),0) credit_units "
+            "FROM bank_journal_entries e LEFT JOIN bank_journal_lines l USING(entry_id) "
+            "WHERE e.status='posted'"
+        )
+        params = []
+        if issuer is not None:
+            sql += " AND e.issuer=?"
+            params.append(str(issuer))
+        sql += " GROUP BY e.entry_id HAVING line_count<2 OR debit_units<>credit_units"
+        return [dict(row) for row in conn.execute(sql, params).fetchall()]
+
+    @staticmethod
+    def post(conn, issuer, event_type, reference_key, currency_code, lines,
+             *, description="", now=None):
+        """Post balanced lines; ``lines`` is [(account, side, amount), ...].
+
+        Each amount is rounded to the currency's configured precision before it
+        is converted to integer minor units. Duplicate references are idempotent.
+        """
+        if not issuer or not reference_key:
+            return False
+        from functions.money import currency_precision, round_currency
+
+        currency = str(currency_code or "").upper()
+        places = currency_precision(conn, currency)
+        scale = 10 ** places
+        normalized = []
+        debit_total = credit_total = 0
+        for account, side, amount in lines:
+            rounded = round_currency(conn, amount, currency)
+            units = int(Decimal(str(rounded)) * scale)
+            if units <= 0:
+                continue
+            side = str(side).lower()
+            if side == "debit":
+                debit_total += units
+                normalized.append((str(account), units, 0))
+            elif side == "credit":
+                credit_total += units
+                normalized.append((str(account), 0, units))
+            else:
+                raise ValueError("분개 차변/대변 방향이 올바르지 않습니다.")
+        if debit_total == 0 or debit_total != credit_total or len(normalized) < 2:
+            raise ValueError("금융기관 분개가 통화 최소단위 기준으로 균형을 이루지 않습니다.")
+        cursor = conn.execute(
+            "INSERT OR IGNORE INTO bank_journal_entries "
+            "(issuer,event_type,reference_key,currency_code,created_epoch,description) "
+            "VALUES (?,?,?,?,?,?)",
+            (str(issuer), str(event_type), str(reference_key), currency,
+             float(now) if now is not None else time.time(),
+             str(description or "")),
+        )
+        if cursor.rowcount != 1:
+            return False
+        entry_id = int(cursor.lastrowid)
+        conn.executemany(
+            "INSERT INTO bank_journal_lines(entry_id,account_code,debit_units,credit_units) "
+            "VALUES (?,?,?,?)",
+            [(entry_id, account, debit, credit)
+             for account, debit, credit in normalized],
+        )
+        conn.execute(
+            "UPDATE bank_journal_entries SET status='posted' WHERE entry_id=?",
+            (entry_id,),
+        )
+        return True

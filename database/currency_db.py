@@ -94,6 +94,51 @@ class CurrencyDB(DBManager):
         )""")
         self.execute("INSERT OR IGNORE INTO country_treasuries(nationality,user_id) "
                      "VALUES ('낙원','20230216')")
+        self.execute("""CREATE TABLE IF NOT EXISTS aml_monitoring_rules (
+            nationality TEXT PRIMARY KEY REFERENCES country_currencies(nationality),
+            currency_code TEXT NOT NULL REFERENCES currencies(code),
+            large_transaction_limit REAL NOT NULL DEFAULT 0 CHECK(large_transaction_limit >= 0),
+            rolling_24h_amount_limit REAL NOT NULL DEFAULT 0 CHECK(rolling_24h_amount_limit >= 0),
+            rolling_24h_count_limit INTEGER NOT NULL DEFAULT 0 CHECK(rolling_24h_count_limit >= 0),
+            enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+            updated_epoch REAL NOT NULL DEFAULT 0
+        )""")
+        self.execute("""INSERT OR IGNORE INTO aml_monitoring_rules(nationality,currency_code)
+            SELECT nationality,currency_code FROM country_currencies""")
+        self.execute("""CREATE TABLE IF NOT EXISTS aml_alerts (
+            alert_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            nationality TEXT NOT NULL,
+            rule_code TEXT NOT NULL,
+            reference_key TEXT NOT NULL,
+            currency_code TEXT NOT NULL,
+            amount REAL NOT NULL CHECK(amount >= 0),
+            status TEXT NOT NULL DEFAULT 'open'
+                CHECK(status IN ('open','reviewing','closed')),
+            outcome_code TEXT,
+            opened_epoch REAL NOT NULL,
+            reviewed_by TEXT,
+            reviewed_epoch REAL,
+            UNIQUE(user_id,rule_code,reference_key)
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_aml_alerts_opened "
+                     "ON aml_alerts(status,opened_epoch)")
+        self.execute("""CREATE TABLE IF NOT EXISTS aml_case_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            alert_id INTEGER NOT NULL REFERENCES aml_alerts(alert_id),
+            actor_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            prior_status TEXT,
+            new_status TEXT NOT NULL,
+            outcome_code TEXT,
+            recorded_epoch REAL NOT NULL
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_aml_case_events_alert_time "
+                     "ON aml_case_events(alert_id,recorded_epoch)")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_aml_case_events_immutable_{operation.lower()}
+                BEFORE {operation} ON aml_case_events
+                BEGIN SELECT RAISE(ABORT,'AML case history is append-only'); END""")
         # Head-office account of each bank (financial institution) for assets it must hold.
         self.execute("""CREATE TABLE IF NOT EXISTS bank_accounts (
             issuer TEXT PRIMARY KEY,
@@ -576,6 +621,51 @@ class CurrencyDB(DBManager):
             "CREATE INDEX IF NOT EXISTS idx_financial_institution_ledger "
             "ON financial_institution_ledger(issuer,created_epoch,event_type)"
         )
+        self.execute("""CREATE TABLE IF NOT EXISTS bank_journal_entries (
+            entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            issuer TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            reference_key TEXT NOT NULL,
+            currency_code TEXT NOT NULL,
+            created_epoch REAL NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','posted')),
+            UNIQUE(issuer,event_type,reference_key)
+        )""")
+        self.execute("""CREATE TABLE IF NOT EXISTS bank_journal_lines (
+            line_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id INTEGER NOT NULL REFERENCES bank_journal_entries(entry_id),
+            account_code TEXT NOT NULL,
+            debit_units INTEGER NOT NULL DEFAULT 0 CHECK(debit_units >= 0),
+            credit_units INTEGER NOT NULL DEFAULT 0 CHECK(credit_units >= 0),
+            CHECK((debit_units > 0 AND credit_units = 0) OR
+                  (credit_units > 0 AND debit_units = 0))
+        )""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_bank_journal_post_balanced
+            BEFORE UPDATE OF status ON bank_journal_entries
+            WHEN NEW.status='posted' AND OLD.status='draft'
+            BEGIN
+                SELECT CASE WHEN
+                    (SELECT COUNT(*) FROM bank_journal_lines WHERE entry_id=NEW.entry_id)<2
+                    OR (SELECT COALESCE(SUM(debit_units),0)-COALESCE(SUM(credit_units),0)
+                        FROM bank_journal_lines WHERE entry_id=NEW.entry_id)<>0
+                THEN RAISE(ABORT,'unbalanced bank journal entry') END;
+            END""")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_bank_journal_lines_immutable_{operation.lower()}
+                BEFORE {operation} ON bank_journal_lines
+                WHEN (SELECT status FROM bank_journal_entries WHERE entry_id=OLD.entry_id)='posted'
+                BEGIN SELECT RAISE(ABORT,'posted bank journal lines are immutable'); END""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_bank_journal_entry_immutable
+            BEFORE UPDATE ON bank_journal_entries WHEN OLD.status='posted'
+            BEGIN SELECT RAISE(ABORT,'posted bank journal entries are immutable'); END""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_bank_journal_entry_no_delete
+            BEFORE DELETE ON bank_journal_entries WHEN OLD.status='posted'
+            BEGIN SELECT RAISE(ABORT,'posted bank journal entries are immutable'); END""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_bank_journal_line_no_late_insert
+            BEFORE INSERT ON bank_journal_lines
+            WHEN (SELECT status FROM bank_journal_entries WHERE entry_id=NEW.entry_id)='posted'
+            BEGIN SELECT RAISE(ABORT,'posted bank journal lines are immutable'); END""")
         self.execute("""INSERT OR IGNORE INTO financial_institutions(issuer,nationality)
             SELECT DISTINCT p.issuer,COALESCE(p.rate_nationality,
                 (SELECT MIN(c.nationality) FROM country_currencies c

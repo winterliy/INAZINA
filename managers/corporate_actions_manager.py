@@ -17,7 +17,7 @@ from managers.financial_manager import FinancialManager as Finance
 class CorporateActionsManager:
     MAX_MONEY = 2**53 - 1
     RECORD_LEAD = 600  # the shareholder register closes 10 minutes before payment
-    DIVIDEND_TYPES = {'stock', '주식', 'etf', 'mutual_fund', 'index_fund', 'commodity_spot'}
+    DIVIDEND_TYPES = {'stock', '주식', 'etf', 'mutual_fund', 'index_fund', 'commodity_spot', 'depositary_receipt'}
 
     def __init__(self, bot):
         self.bot, self.db = bot, bot.db
@@ -829,6 +829,12 @@ class CorporateActionsManager:
                 listing = self._listing(conn, code)
                 if listing['table'] != 'company' or listing['status'] != 'active':
                     raise ValueError('활성 주식 종목만 액면분할·병합할 수 있습니다.')
+                dr_program = conn.execute(
+                    "SELECT dr_code FROM depositary_receipts WHERE underlying_code=? "
+                    "AND program_status<>'terminated' LIMIT 1", (code,),
+                ).fetchone()
+                if dr_program:
+                    raise ValueError('기초주식에 미종료 DR 프로그램이 있습니다. 먼저 DR을 상환하고 프로그램을 종료해주세요.')
                 self._unencumbered(conn, [code], allow_orders=True)
                 price, shares = int(listing['share_price']), int(listing['total_shares'])
                 if action == '분할':
@@ -871,6 +877,13 @@ class CorporateActionsManager:
                     return self._merge_nonmarket(conn, actor, surviving_code, absorbed_code, now)
                 if a['table'] != b['table'] or a['type'] != b['type'] or a['status'] != 'active' or b['status'] != 'active':
                     raise ValueError('거래 중인 같은 종류의 상품끼리 통합할 수 있습니다.')
+                if a['type'] == 'depositary_receipt' or b['type'] == 'depositary_receipt':
+                    raise ValueError('DR 프로그램 간 합병은 상환·예탁 비율 승계 규칙이 없어 지원하지 않습니다.')
+                if a['table'] == 'company' and conn.execute(
+                        "SELECT 1 FROM depositary_receipts WHERE underlying_code IN (?,?) "
+                        "AND program_status<>'terminated' LIMIT 1", (surviving_code, absorbed_code),
+                ).fetchone():
+                    raise ValueError('기초주식에 미종료 DR 프로그램이 있습니다. 먼저 DR을 상환하고 프로그램을 종료해주세요.')
                 if a['type'] == 'forex' or conn.execute('SELECT 1 FROM currencies WHERE asset_code IN (?,?) LIMIT 1', (surviving_code, absorbed_code)).fetchone():
                     raise ValueError('환율 종목은 통합할 수 없습니다. 환율수정·환전으로 통화를 관리해주세요.')
                 if a['table'] == 'company' and a['share_class'] != b['share_class']:

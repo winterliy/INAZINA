@@ -308,6 +308,46 @@ class SystemDB(DBManager):
             payload TEXT NOT NULL,
             recorded_epoch REAL NOT NULL
         )""")
+        # The administrator audit trail is append-only across every database
+        # client; no UI or maintenance grant may rewrite or delete history.
+        self.execute("CREATE TABLE IF NOT EXISTS admin_audit_delete_grant (token TEXT PRIMARY KEY)")
+        self.execute("DELETE FROM admin_audit_delete_grant")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_admin_audit_immutable_update
+            BEFORE UPDATE ON admin_audit
+            BEGIN SELECT RAISE(ABORT,'Administrator audit history cannot be edited'); END""")
+        self.execute("DROP TRIGGER IF EXISTS trg_admin_audit_guarded_delete")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_admin_audit_immutable_delete
+            BEFORE DELETE ON admin_audit
+            BEGIN SELECT RAISE(ABORT,'Administrator audit history cannot be deleted'); END""")
+        self.execute("""CREATE TABLE IF NOT EXISTS kyc_profiles (
+            user_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'not_started'
+                CHECK(status IN ('not_started','pending','verified','rejected','expired')),
+            risk_tier TEXT NOT NULL DEFAULT 'standard'
+                CHECK(risk_tier IN ('standard','enhanced','restricted')),
+            reviewed_by TEXT,
+            reviewed_epoch REAL,
+            expires_epoch REAL,
+            updated_epoch REAL NOT NULL
+        )""")
+        self.execute("""CREATE TABLE IF NOT EXISTS kyc_profile_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            actor_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            prior_status TEXT NOT NULL,
+            new_status TEXT NOT NULL,
+            prior_risk_tier TEXT NOT NULL,
+            new_risk_tier TEXT NOT NULL,
+            reason_code TEXT NOT NULL,
+            recorded_epoch REAL NOT NULL
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_kyc_events_user_time "
+                     "ON kyc_profile_events(user_id,recorded_epoch)")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_kyc_profile_events_immutable_{operation.lower()}
+                BEFORE {operation} ON kyc_profile_events
+                BEGIN SELECT RAISE(ABORT,'KYC review history is append-only'); END""")
 
     def _init_rate_triggers(self):
         """Keep browser edits to policy/default rate settings valid."""

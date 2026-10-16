@@ -25,6 +25,8 @@
 
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; scroll-padding-top: 120px; }
+/* No rubber-band bounce past the top or bottom of the page. */
+html, body { overscroll-behavior: none; }
 body {
   margin: 0;
   background: var(--paper);

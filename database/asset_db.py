@@ -55,6 +55,60 @@ class AssetDB(DBManager):
                 total_supply INTEGER DEFAULT NULL
             )"""
         )
+        self.execute("""CREATE TABLE IF NOT EXISTS depositary_receipts (
+            dr_code TEXT PRIMARY KEY,
+            underlying_code TEXT NOT NULL,
+            receipt_type TEXT NOT NULL DEFAULT 'DR',
+            depositary_bank TEXT,
+            custodian TEXT,
+            home_exchange_id TEXT,
+            listing_exchange_id TEXT NOT NULL,
+            quote_currency TEXT NOT NULL DEFAULT 'NWX',
+            underlying_per_receipt REAL NOT NULL CHECK(underlying_per_receipt > 0),
+            receipt_supply INTEGER NOT NULL CHECK(receipt_supply > 0),
+            deposited_underlying_quantity REAL NOT NULL CHECK(deposited_underlying_quantity >= 0),
+            program_status TEXT NOT NULL DEFAULT 'active'
+                CHECK(program_status IN ('active','suspended','terminated'))
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_depositary_receipts_underlying "
+                     "ON depositary_receipts(underlying_code,program_status)")
+        self.execute("""CREATE TABLE IF NOT EXISTS depositary_receipt_movements (
+            movement_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reference_key TEXT NOT NULL UNIQUE,
+            dr_code TEXT NOT NULL REFERENCES depositary_receipts(dr_code),
+            user_id TEXT NOT NULL,
+            movement_type TEXT NOT NULL CHECK(movement_type IN ('issue','redeem')),
+            dr_quantity INTEGER NOT NULL CHECK(dr_quantity > 0),
+            underlying_quantity INTEGER NOT NULL CHECK(underlying_quantity > 0),
+            underlying_average_cost INTEGER NOT NULL DEFAULT 0 CHECK(underlying_average_cost >= 0),
+            recorded_epoch REAL NOT NULL
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_dr_movements_program "
+                     "ON depositary_receipt_movements(dr_code,recorded_epoch)")
+        self.enforce_integer_money(
+            "depositary_receipt_movements", ("underlying_average_cost",), "movement_id"
+        )
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_dr_movements_immutable_{operation.lower()}
+                BEFORE {operation} ON depositary_receipt_movements
+                BEGIN SELECT RAISE(ABORT,'DR custody movements are append-only'); END""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_dr_requires_program_insert
+            BEFORE INSERT ON market_assets WHEN NEW.type='depositary_receipt'
+            AND NOT EXISTS (SELECT 1 FROM depositary_receipts WHERE dr_code=NEW.code)
+            BEGIN SELECT RAISE(ABORT,'DR asset requires a depositary receipt program'); END""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_dr_requires_program_update
+            BEFORE UPDATE OF type ON market_assets WHEN NEW.type='depositary_receipt'
+            AND NOT EXISTS (SELECT 1 FROM depositary_receipts WHERE dr_code=NEW.code)
+            BEGIN SELECT RAISE(ABORT,'DR asset requires a depositary receipt program'); END""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_dr_program_no_delete
+            BEFORE DELETE ON depositary_receipts
+            BEGIN SELECT RAISE(ABORT,'DR programs are retained; suspend instead'); END""")
+        for field in ("underlying_code", "receipt_type", "depositary_bank", "custodian",
+                      "home_exchange_id", "listing_exchange_id", "quote_currency",
+                      "underlying_per_receipt", "receipt_supply", "deposited_underlying_quantity"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_dr_program_immutable_{field}
+                BEFORE UPDATE OF {field} ON depositary_receipts
+                BEGIN SELECT RAISE(ABORT,'DR issuance terms are immutable'); END""")
         market_columns = {row[1] for row in self.execute("PRAGMA table_info(market_assets)")}
         if "is_fixed" not in market_columns:
             self.execute("ALTER TABLE market_assets ADD COLUMN is_fixed INTEGER NOT NULL DEFAULT 0")

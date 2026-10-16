@@ -233,6 +233,30 @@ async function internalRequest(
 }
 
 const internalGet = (path: string, userId?: string) => internalRequest("GET", path, userId);
+// The browser's address. Behind the local Vite proxy (loopback peer) it is the
+// LAST X-Forwarded-For entry: the proxy appends the address it saw, while every
+// earlier entry came from the client and can be forged. Any other peer is used
+// as is. Re-check this if another proxy is ever placed in front of Vite.
+function clientIp(request: IncomingMessage): string {
+  const peer = request.socket.remoteAddress ?? "unknown";
+  const header = request.headers["x-forwarded-for"];
+  const forwarded = (Array.isArray(header) ? header.join(",") : header ?? "").split(",").map((part) => part.trim()).filter(Boolean);
+  const loopback = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1";
+  return (loopback && forwarded.length ? forwarded[forwarded.length - 1] : peer).slice(0, 64);
+}
+
+// A post's view count rises at most once per address every 10 minutes.
+const boardViews = new Map<string, number>();
+function countBoardView(ip: string, postId: string): boolean {
+  const now = Date.now();
+  if (boardViews.size > 20_000) for (const [key, time] of boardViews) if (now - time > 10 * 60_000) boardViews.delete(key);
+  const key = `${ip}:${postId}`;
+  const last = boardViews.get(key);
+  if (last && now - last < 10 * 60_000) return false;
+  boardViews.set(key, now);
+  return true;
+}
+
 // Site form submissions per client address (at most 5 per 10 minutes).
 const feedbackSubmissions = new Map<string, number[]>();
 
@@ -318,6 +342,20 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     }
     const result = await internalRequest("POST", "/internal/site/feedback", undefined, await requestJson(request));
     if (result.status === 201) feedbackSubmissions.set(key, [...recent, now]);
+    send(response, result.status, result.body);
+    return;
+  }
+  // HTS board: anyone may read; the session (if any) only marks the reader's own posts.
+  if (request.method === "GET" && (url.pathname === "/api/board/posts" || /^\/api\/board\/posts\/\d+$/.test(url.pathname))) {
+    const viewer = principalFor(request)?.userId;
+    const postId = url.pathname.split("/")[4];
+    const query = new URLSearchParams();
+    for (const key of ["board", "search", "asset", "page"]) {
+      const value = url.searchParams.get(key);
+      if (value) query.set(key, value);
+    }
+    if (postId && countBoardView(clientIp(request), postId)) query.set("view", "1");
+    const result = await internalGet(`/internal/board/posts${postId ? `/${postId}` : ""}?${query}`, viewer);
     send(response, result.status, result.body);
     return;
   }
@@ -558,6 +596,13 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  if (request.method === "POST" && url.pathname === "/api/dr/convert") {
+    const body = await requestJson(request);
+    const result = await internalRequest("POST", "/internal/dr/convert", principal.userId, body);
+    send(response, result.status, result.body);
+    return;
+  }
+
   const cancelMatch = url.pathname.match(/^\/api\/market\/orders\/(\d+)\/cancel$/);
   if (request.method === "POST" && cancelMatch) {
     const result = await internalRequest("POST", `/internal/market/orders/${cancelMatch[1]}/cancel`, principal.userId, {});
@@ -664,8 +709,28 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  // HTS board writes: the author's address is recorded with every post, comment and report.
+  if (request.method === "POST" && /^\/api\/board\/(posts|posts\/\d+\/(edit|delete|comments|like)|comments\/\d+\/delete|reports)$/.test(url.pathname)) {
+    const body = await requestJson(request);
+    const result = await internalRequest("POST", url.pathname.replace(/^\/api\//, "/internal/"), principal.userId,
+      { ...(body && typeof body === "object" ? body : {}), clientIp: clientIp(request) });
+    send(response, result.status, result.body);
+    return;
+  }
+  if (url.pathname === "/api/admin/board" || /^\/api\/admin\/board\/(post|comment|report)\/\d+$/.test(url.pathname)) {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const result = request.method === "GET"
+      ? await internalGet(`/internal/admin/board${url.search}`, principal.userId)
+      : await internalRequest("POST", url.pathname.replace(/^\/api\//, "/internal/"), principal.userId, await requestJson(request));
+    send(response, result.status, result.body);
+    return;
+  }
+
   // Product, country, exchange, user-detail, help and bot-job administration.
-  const adminMatch = url.pathname.match(/^\/api\/admin\/((?:products|countries|exchanges|help|bot-jobs|user|companies|warnings|feedback|logs)(?:\/[^/]+){0,2})$/);
+  const adminMatch = url.pathname.match(/^\/api\/admin\/((?:products|countries|exchanges|help|bot-jobs|user|companies|warnings|feedback|logs|compliance|bank-journal)(?:\/[^/]+){0,2})$/);
   if (adminMatch) {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });

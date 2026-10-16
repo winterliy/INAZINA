@@ -2,11 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api, clearToken, type ApiUser } from "../../shared/api";
 import { AuthPanel } from "../../shared/AuthPanel";
+import { BoardPanel } from "./BoardPanel";
 import { PriceChart, type Candle, type Drawing, type Point, type Tool } from "./PriceChart";
 import { CommandPanel } from "./CommandPanel";
 
 type Warning = { level: "caution" | "warning" | "danger"; label: string; reason: string; expiresEpoch: number | null };
-type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; quote_currency?: string; fund_category?: string | null; warning?: Warning; change24h?: number | null; tradeValue24h?: number; trades24h?: number };
+type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; quote_currency?: string; fund_category?: string | null; drProgram?: { underlyingCode: string; underlyingPerReceipt: number; receiptType: string; programStatus: string }; warning?: Warning; change24h?: number | null; tradeValue24h?: number; trades24h?: number };
 
 // Administrator trading warnings (투자주의·경고·위험).
 const WarningBadge = ({ warning }: { warning?: Warning }) => warning ? <span className={`warn-badge ${warning.level}`} title={warning.reason || warning.label}>{warning.label}</span> : null;
@@ -50,6 +51,8 @@ export default function App() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchTabValue, setSearchTabValue] = useState<SearchTab>("recommended");
   const [commandsOpen, setCommandsOpen] = useState<string | null>(null);
+  // null: closed; "" : every board; a code: that instrument's market discussion.
+  const [boardAsset, setBoardAsset] = useState<string | null>(null);
   const [accountSettingsOpen, setAccountSettingsOpen] = useState(false);
   const [htsId, setHtsId] = useState("");
   const [htsIdInput, setHtsIdInput] = useState("");
@@ -69,6 +72,7 @@ export default function App() {
   const [book, setBook] = useState<Book>({ bids: [], asks: [] });
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [quantity, setQuantity] = useState("1");
+  const [drQuantity, setDrQuantity] = useState("1");
   const [price, setPrice] = useState("");
   const [review, setReview] = useState(false);
   const [tool, setTool] = useState<Tool>("select");
@@ -214,6 +218,25 @@ export default function App() {
     }
   }
 
+  async function convertDr(action: "issue" | "redeem") {
+    if (!selected || selected.type !== "depositary_receipt") return;
+    const qty = Number(drQuantity);
+    if (!Number.isSafeInteger(qty) || qty < 1) { setNotice("DR 수량은 1 이상의 정수여야 합니다."); return; }
+    const verb = action === "issue" ? "원주를 예탁해 DR을 발행" : "보유 DR을 원주로 상환";
+    if (!window.confirm(`${selected.code} ${qty} DR을 ${verb}할까요?`)) return;
+    setBusy(true);
+    try {
+      const result = await api<{ message: string }>("/api/dr/convert", { method: "POST", body: JSON.stringify({
+        drCode: selected.code, action, quantity: qty,
+        referenceKey: typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      }) });
+      setNotice(result.message);
+      await Promise.all([refreshAccount(), refreshMarket(selectedCode, range, interval)]);
+    } catch (cause) {
+      setNotice(errorText(cause, "DR 전환을 처리하지 못했습니다."));
+    } finally { setBusy(false); }
+  }
+
   async function cancelOrder(order: Order) {
     if (!window.confirm(`주문 #${order.order_id} (${order.asset_code} ${order.side === "buy" ? "매수" : "매도"} 잔량 ${money(order.remaining_quantity, 3)})을 취소할까요?\n매수 예치금이나 매도 수량은 바로 돌려받습니다.`)) return;
     setBusy(true);
@@ -255,7 +278,10 @@ export default function App() {
     setSearchOpen(false);
   }
 
-  if (!user) return <div className="stage"><Backdrop /><AuthPanel app="hts" onAuthenticated={setUser} /></div>;
+  if (!user) return <div className="stage"><Backdrop /><AuthPanel app="hts" onAuthenticated={setUser} />
+    <button type="button" className="board-guest-button" onClick={() => setBoardAsset("")}>로그인 없이 게시판 보기</button>
+    {boardAsset !== null && <BoardPanel user={null} initialAsset={boardAsset} onClose={() => setBoardAsset(null)} onLogin={() => setBoardAsset(null)} />}
+  </div>;
 
   const current = points.at(-1)?.price ?? selected?.price ?? 0;
   // Amounts follow the account's nationality; instrument prices keep their trading currency.
@@ -274,6 +300,7 @@ export default function App() {
       <div className="top-center"><span className="connection"><i />API {health}</span><span>{user.nickname}</span></div>
       <div className="top-actions">
         <button className="header-action" title="종목 검색 (시장 목록)" onClick={() => setSearchOpen(true)}>종목 검색</button>
+        <button className="header-action" title="공지 · 자유 · 시장 토론" onClick={() => setBoardAsset("")}>게시판</button>
         <button className="header-action" title="Discord 사용자 명령어" onClick={() => setCommandsOpen("")}>명령어</button>
         <button className="header-action account-action" onClick={() => { setSettingsMessage(""); setSettingsError(""); setAccountSettingsOpen(true); }}>계정 <small>{htsId || "아이디 만들기"}</small></button>
         <button className="icon-button" title="로그아웃" onClick={() => { clearToken(); void api("/api/auth/logout", { method: "POST" }); setUser(null); }}>로그아웃</button>
@@ -311,8 +338,8 @@ export default function App() {
         </section>
       </aside>
       <section className="main-market">
-        <div className="quote-strip"><div><p className="eyebrow">{selected?.exchange_id || "MARKET"} · {selected ? instrumentType(selected) : "—"}</p><h1>{selected?.name || "종목을 선택하세요"}<small>{selected?.code}</small><WarningBadge warning={selected?.warning} /></h1>{selected?.warning?.reason && <p className="warn-reason">⚠️ {selected.warning.label} · {selected.warning.reason}</p>}</div>
-          <div className="quote-side"><div className="quote-value"><strong>{money(current)}</strong><span>{selected?.quote_currency || "NWX"}</span></div><button className="quote-switch" onClick={() => setSearchOpen(true)}>종목 바꾸기</button></div></div>
+        <div className="quote-strip"><div><p className="eyebrow">{selected?.exchange_id || "MARKET"} · {selected ? instrumentType(selected) : "—"}</p><h1>{selected?.name || "종목을 선택하세요"}<small>{selected?.code}</small><WarningBadge warning={selected?.warning} /></h1>{selected?.drProgram && <p className="orders-hint">{selected.drProgram.receiptType} · 원주 {selected.drProgram.underlyingCode} · 1 DR = {money(selected.drProgram.underlyingPerReceipt, 6)}주</p>}{selected?.warning?.reason && <p className="warn-reason">⚠️ {selected.warning.label} · {selected.warning.reason}</p>}</div>
+          <div className="quote-side"><div className="quote-value"><strong>{money(current)}</strong><span>{selected?.quote_currency || "NWX"}</span></div><button className="quote-switch" onClick={() => setSearchOpen(true)}>종목 바꾸기</button>{selected && <button className="quote-switch" onClick={() => setBoardAsset(selected.code)}>종목 토론</button>}</div></div>
         <PriceChart points={points} candles={candles} candleInterval={candleInterval} mode={chartMode} fallbackPrice={selected?.price ?? 1}
           drawings={drawings} onDrawingsChange={setDrawings} tool={tool} onToolChange={setTool} resetKey={`${selectedCode}-${range}-${interval}-${chartMode}`} label={selected?.name || "가격"}
           controls={<>{ranges.map((item) => <button key={item} className={range === item ? "selected" : ""} onClick={() => setRange(item)}>{rangeNames[item]}</button>)}
@@ -323,9 +350,9 @@ export default function App() {
         <section className="data-panel orders-panel">
           <div className="panel-title"><h2>주문 · 체결</h2><div className="order-tabs" role="tablist" aria-label="주문 필터"><button role="tab" aria-selected={orderFilter === "open"} className={orderFilter === "open" ? "selected" : ""} onClick={() => setOrderFilter("open")}>미체결 {openCount}</button><button role="tab" aria-selected={orderFilter === "all"} className={orderFilter === "all" ? "selected" : ""} onClick={() => setOrderFilter("all")}>전체</button></div></div>
           <p className="orders-hint">미체결·부분 체결·예약 주문은 오른쪽 <b>취소</b> 버튼으로 바로 취소할 수 있어요. 남은 예치금과 수량은 즉시 돌려받습니다.</p>
-          <div className="table-scroll"><table><thead><tr><th>주문</th><th>종목</th><th>구분</th><th>가격</th><th>수량</th><th>체결</th><th>잔량</th><th>상태</th><th /></tr></thead><tbody>{visibleOrders.map((order) => <tr key={order.order_id}>
+          <div className="table-scroll"><table><thead><tr><th>주문</th><th>종목</th><th>구분</th><th className="r">가격</th><th className="r">수량</th><th className="r">체결</th><th className="r">잔량</th><th>상태</th><th /></tr></thead><tbody>{visibleOrders.map((order) => <tr key={order.order_id}>
             <td className="mono">#{order.order_id}</td><td><button className="link" onClick={() => chooseInstrument(order.asset_code)}>{order.asset_code}</button></td>
-            <td className={order.side === "buy" ? "buy-text" : "sell-text"}>{order.side === "buy" ? "매수" : "매도"}</td><td>{money(order.limit_price, 2)}</td><td>{money(order.quantity, 3)}</td><td>{money(order.filled_quantity, 3)}</td><td>{money(order.remaining_quantity, 3)}</td>
+            <td className={order.side === "buy" ? "buy-text" : "sell-text"}>{order.side === "buy" ? "매수" : "매도"}</td><td className="r">{money(order.limit_price, 2)}</td><td className="r">{money(order.quantity, 3)}</td><td className="r">{money(order.filled_quantity, 3)}</td><td className="r">{money(order.remaining_quantity, 3)}</td>
             <td><span className={OPEN.has(order.status) ? "status open" : "status"}>{STATUS[order.status] ?? order.status}</span></td>
             <td>{OPEN.has(order.status) && <button className="cancel-button" disabled={busy} onClick={() => void cancelOrder(order)}>취소</button>}</td>
           </tr>)}</tbody></table>{!visibleOrders.length && <p className="empty">{orderFilter === "open" ? "미체결 주문이 없습니다." : "최근 주문이 없습니다."}</p>}</div>
@@ -337,6 +364,11 @@ export default function App() {
           <div className="book-current"><span>현재가</span><strong>{money(current)}</strong></div>
           <div className="book-side bids">{book.bids.map((item, index) => <button type="button" className="book-row" key={`${item.limit_price}-${index}`} title="이 가격으로 주문" onClick={() => setPrice(String(item.limit_price))}><span>{money(item.quantity, 3)}</span><b>{money(item.limit_price, 2)}</b></button>)}</div>
         </section>
+        {selected?.type === "depositary_receipt" && <section className="data-panel order-entry dr-conversion"><div className="panel-title"><h2>DR 발행 · 상환</h2><span>기초주식 예탁 방식</span></div>
+          <p className="orders-hint">DR 수량을 입력하세요. 발행은 보유 원주를 잠그고 DR을 지급하며, 상환은 보유 DR을 소각하고 보관 원주를 지급합니다.</p>
+          <label>전환할 DR 수량<input inputMode="numeric" value={drQuantity} onChange={(event) => setDrQuantity(event.target.value.replace(/[^\d]/g, ""))} /></label>
+          <div className="actions"><button className="submit buy-submit" disabled={busy || !Number(drQuantity)} onClick={() => void convertDr("issue")}>원주 예탁 · DR 발행</button><button className="submit sell-submit" disabled={busy || !Number(drQuantity)} onClick={() => void convertDr("redeem")}>DR 반납 · 원주 상환</button></div>
+        </section>}
         <section className="data-panel order-entry"><div className="panel-title"><h2>주문 입력</h2><span>지정가</span></div>
           <div className="order-sides"><button className={side === "buy" ? "buy active" : "buy"} onClick={() => setSide("buy")}>매수</button><button className={side === "sell" ? "sell active" : "sell"} onClick={() => setSide("sell")}>매도</button></div>
           <label>지정가 ({selected?.quote_currency || "NWX"})<input inputMode="numeric" value={price} onChange={(event) => setPrice(event.target.value.replace(/[^\d]/g, ""))} /></label>
@@ -349,6 +381,7 @@ export default function App() {
     </main>
     {review && <div className="modal-backdrop"><section className="review-modal" role="dialog" aria-modal="true" aria-labelledby="review-title"><p className="eyebrow">ORDER REVIEW</p><h2 id="review-title">주문을 확인하세요</h2><dl><div><dt>종목</dt><dd>{selected?.name} ({selectedCode}) <WarningBadge warning={selected?.warning} /></dd></div><div><dt>유형</dt><dd className={side === "buy" ? "buy-text" : "sell-text"}>{side === "buy" ? "지정가 매수" : "지정가 매도"}</dd></div><div><dt>지정가</dt><dd>{money(Number(price), 2)} {selected?.quote_currency || "NWX"}</dd></div><div><dt>수량</dt><dd>{money(Number(quantity), 3)}</dd></div><div><dt>예상 금액</dt><dd>{money(Number(price) * Number(quantity), 2)} {selected?.quote_currency || "NWX"}</dd></div></dl><div className="modal-actions"><button disabled={busy} onClick={() => setReview(false)}>돌아가기</button><button className={side === "buy" ? "buy-confirm" : "sell-confirm"} disabled={busy} onClick={() => void submitOrder()}>{busy ? "제출 중" : "주문 확정"}</button></div></section></div>}
     {searchOpen && <div className="modal-backdrop search-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSearchOpen(false); }}><section className="search-modal" role="dialog" aria-modal="true" aria-labelledby="search-title"><div className="search-modal-head"><h2 id="search-title">종목 검색</h2><button type="button" title="닫기" onClick={() => setSearchOpen(false)}>닫기</button></div><label className="search-field"><span aria-hidden="true">⌕</span><input ref={searchInputRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="종목명 또는 코드" /></label>{!search.trim() && <div className="search-tabs" role="tablist" aria-label="상품 종류">{SEARCH_TABS.filter(([id]) => id === "recommended" || tabCounts[id]).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={searchTabValue === id} className={searchTabValue === id ? "active" : ""} onClick={() => setSearchTabValue(id)}>{label}<span>{tabCounts[id] ?? 0}</span></button>)}</div>}{!search.trim() && searchTabValue === "recommended" && <p className="search-caption">최근 24시간 거래대금이 많은 순, 같으면 등락폭이 큰 순</p>}<div className="search-results">{filtered.slice(0, 200).map((item, index) => <button type="button" key={item.code} className={selectedCode === item.code ? "search-result active" : "search-result"} onClick={() => chooseInstrument(item.code)}><span>{!search.trim() && searchTabValue === "recommended" && <em className="search-rank">{index + 1}</em>}<span className="search-name"><b>{item.name} <WarningBadge warning={item.warning} /></b><small>{item.code} · {instrumentType(item)}{item.trades24h ? ` · 24시간 ${money(item.trades24h)}건` : ""}</small></span></span><span className="search-price"><strong>{money(item.price, 2)} {item.quote_currency || "NWX"}</strong>{item.change24h !== null && item.change24h !== undefined && <small className={item.change24h > 0 ? "up" : item.change24h < 0 ? "down" : undefined}>{item.change24h > 0 ? "+" : ""}{item.change24h.toFixed(2)}%</small>}</span></button>)}{!filtered.length && <p className="empty">{search.trim() ? "검색 결과가 없습니다." : "이 종류의 상품이 없습니다."}</p>}</div></section></div>}
+    {boardAsset !== null && <BoardPanel user={user} initialAsset={boardAsset} onClose={() => setBoardAsset(null)} onLogin={() => setBoardAsset(null)} />}
     {commandsOpen !== null && <CommandPanel initial={commandsOpen} instruments={instruments} portfolio={portfolio} orders={orders} homeCurrency={portfolio?.national_currency || user.currency || "NWX"} onClose={() => setCommandsOpen(null)} onDone={() => void refreshAccount().catch(() => undefined)} />}
     {accountSettingsOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setAccountSettingsOpen(false); }}><section className="account-modal" role="dialog" aria-modal="true" aria-labelledby="account-title"><div className="account-modal-head"><div><p className="eyebrow">HTS ACCOUNT</p><h2 id="account-title">아이디 설정</h2></div><button type="button" title="닫기" onClick={() => setAccountSettingsOpen(false)}>닫기</button></div><p className="account-description">로그인에 사용할 아이디를 설정합니다.</p><form className="account-form" onSubmit={saveHtsId}><label>아이디<input autoComplete="username" minLength={3} maxLength={32} pattern="[A-Za-z0-9_.\-]{3,32}" value={htsIdInput} onChange={(event) => setHtsIdInput(event.target.value)} placeholder="예: inazina_user" required /></label><p className="account-hint">영문, 숫자, 점, 밑줄, 하이픈으로 3~32자</p><label>현재 비밀번호<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label>{settingsMessage && <p className="account-success" role="status">{settingsMessage}</p>}{settingsError && <p className="account-error" role="alert">{settingsError}</p>}<div className="modal-actions"><button type="button" disabled={settingsBusy} onClick={() => setAccountSettingsOpen(false)}>닫기</button><button className="account-save" disabled={settingsBusy || !htsIdInput}>{settingsBusy ? "저장 중…" : htsId ? "아이디 변경" : "아이디 설정"}</button></div></form></section></div>}
   </div>;
