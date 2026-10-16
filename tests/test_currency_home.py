@@ -41,37 +41,29 @@ class CurrencyHomeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'등록 서버'):cm.register_user('dm','DM',None)
         self.assertIsNone(self.db.users.get_user('dm'))
 
-    def test_income_native_credit_treasury_debit_and_quote_snapshot(self):
+    def test_income_pays_only_that_country_in_its_currency_from_its_treasury(self):
         cmd=self.configure()
-        message=cmd.execute('admin','기본소득','10000 NWX')
-        self.assertIn('✅',message)
-        self.assertEqual(self.db.users.get_user('admin')['cash'],1_010_000)
-        self.assertEqual(self.db.users.get_user('citizen')['cash'],1_030_000)
+        message=cmd.execute('admin','기본소득','미국 30000')
+        self.assertIn('✅',message); self.assertIn('AAA',message)
         with self.db.atomic() as conn:
             self.assertEqual(CurrencyManager.balance(conn,'citizen','AAA'),1_030_000*SCALE)
-        self.assertEqual(self.db.users.get_treasury_balance(),9_980_000)
-        rows=self.db.currency.execute('SELECT * FROM basic_income_payments')
-        self.assertEqual(len(rows),2)
-        self.assertEqual({r['source_currency'] for r in rows},{'NWX'})
-        self.assertEqual(len({r['batch_id'] for r in rows}),1)
-        cmd.execute('admin','환율수정','NWX AAA 4')
-        self.assertEqual(self.db.currency.execute_one("SELECT target_units FROM basic_income_payments WHERE user_id='citizen'")[0],30_000*SCALE)
-
-    def test_missing_quote_rolls_back_all_recipients_and_budget(self):
-        self.configure()
-        self.db.currency.execute("INSERT INTO currencies(code,name) VALUES ('BAD','환율 없음')")
-        self.db.currency.execute("UPDATE country_currencies SET currency_code='BAD' WHERE nationality='미국'")
-        before=self.db.users.get_treasury_balance()
-        ok,msg=self.bot.admin_mgr.distribute_basic_income(10000,currency_code='NWX')
-        self.assertFalse(ok,msg)
-        self.assertEqual(self.db.users.get_treasury_balance(),before)
+            treasury=CurrencyManager.treasury_id(conn,'미국')
+            self.assertEqual(CurrencyManager.balance(conn,treasury,'AAA'),-30_000*SCALE)
         self.assertEqual(self.db.users.get_user('admin')['cash'],1_000_000)
+        self.assertEqual(self.db.users.get_treasury_balance(),10_000_000)
+        rows=self.db.currency.execute('SELECT * FROM basic_income_payments')
+        self.assertEqual([(r['user_id'],r['source_currency'],r['target_currency']) for r in rows],[('citizen','AAA','AAA')])
+
+    def test_income_rejects_unknown_country_and_old_usage(self):
+        cmd=self.configure()
+        ok,msg=self.bot.admin_mgr.distribute_basic_income('없는나라',10000)
+        self.assertFalse(ok,msg)
         self.assertEqual(self.db.currency.execute_one('SELECT COUNT(*) FROM basic_income_payments')[0],0)
+        with self.assertRaisesRegex(ValueError,r'\[국가\] \[금액\]'):cmd.execute('admin','기본소득','10000')
 
     def test_default_income_and_admin_balance_use_actors_home_currency(self):
         cmd=self.configure()
         self.db.users.execute("UPDATE users SET nationality='A국' WHERE user_id='admin'")
-        self.assertIn('AAA',cmd.execute('admin','기본소득','10000'))
         cmd.execute('admin','잔고수정','citizen modify 5.5')
         cmd.execute('admin','잔고수정','citizen add 2')
         cmd.execute('admin','잔고수정','citizen del 1')
@@ -80,7 +72,7 @@ class CurrencyHomeTests(unittest.TestCase):
         self.assertEqual(self.db.users.get_user('citizen')['cash'],6.5)
 
     def test_wallet_and_search_classify_nwx_as_foreign_and_value_in_home(self):
-        cmd=self.configure();cmd.execute('admin','기본소득','10000 NWX')
+        cmd=self.configure();cmd.execute('admin','기본소득','미국 30000')
         info=self.bot.user_mgr.get_total_assets('citizen',settle=False)
         self.assertEqual(info['national_currency'],'AAA')
         self.assertEqual(info['home_cash_units'],1_030_000*SCALE)
@@ -97,7 +89,8 @@ class CurrencyHomeTests(unittest.TestCase):
         self.assertFalse(any('(AAA)' in line for line in lines))
 
     def test_native_wallet_exchange_transfer_and_source_wallet_preserve_denominations(self):
-        cmd=self.configure();cmd.execute('admin','기본소득','10000 NWX')
+        cmd=self.configure();cmd.execute('admin','기본소득','미국 30000')
+        cmd.execute('admin','기본소득','낙원 10000')
         self.db.system.set_setting('currency_exchange_fee_percent','0')
         msg=self.bot.currency_mgr.transfer('citizen','admin','300')
         self.assertIn('300 AAA → 100 NWX',msg)
@@ -150,13 +143,19 @@ class CurrencyHomeTests(unittest.TestCase):
             self.bot.currency_mgr.exchange('citizen','KRW','AAA','0.1')
 
     def test_native_stock_order_and_cancel_use_home_cash_not_nwx(self):
-        cmd=self.configure();cmd.execute('admin','기본소득','10000 NWX')
+        cmd=self.configure();cmd.execute('admin','기본소득','미국 30000')
         self.bot.admin_control.entity('admin','stock','create','AAA_ST','A국 주식',100,1000,{'quote_currency':'AAA','exchange_id':'A'})
+        # Exchange A belongs to A국, so A국's treasury sells the primary issue in its own AAA.
+        self.db.system.execute("INSERT INTO market_exchanges(exchange_id,status,updated_epoch,trading_halted,nationality) "
+                               "VALUES ('A','open',0,0,'A국') ON CONFLICT(exchange_id) DO UPDATE SET nationality='A국'")
+        with self.db.atomic() as conn:
+            a_treasury=CurrencyManager.treasury_id(conn,'A국')
+            before=CurrencyManager.balance(conn,a_treasury,'AAA')
         ok,msg=self.bot.order_book.place_limit_order('citizen','AAA_ST','buy',5,100)
         self.assertTrue(ok,msg)
         with self.db.atomic() as conn:
             self.assertEqual(CurrencyManager.balance(conn,'citizen','AAA'),1_029_500*SCALE)
-            self.assertEqual(CurrencyManager.balance(conn,TREASURY_USER_ID,'AAA'),500*SCALE)
+            self.assertEqual(CurrencyManager.balance(conn,a_treasury,'AAA')-before,500*SCALE)
         self.assertEqual(self.db.users.get_user('citizen')['cash'],1_029_500)
         ok,msg=self.bot.order_book.place_limit_order('citizen','AAA_ST','buy',5,50)
         self.assertTrue(ok,msg)

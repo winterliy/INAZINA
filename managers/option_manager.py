@@ -6,7 +6,7 @@ import time
 from contextlib import nullcontext
 
 from database import DatabaseManager
-from database.user_db import TREASURY_USER_ID
+from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY
 from functions.money import round_money
 from managers.market_session_manager import MarketSessionManager
 from managers.order_validation import validate_limit_order
@@ -293,7 +293,7 @@ class OptionManager:
     @staticmethod
     def _available_cash(conn, user_id):
         user = conn.execute(
-            f"SELECT cash FROM users.users WHERE user_id = ? AND (status = 'active' OR user_id='{TREASURY_USER_ID}')",
+            f"SELECT cash FROM users.users WHERE user_id = ? AND {ACTIVE_OR_TREASURY}",
             (str(user_id),),
         ).fetchone()
         if not user:
@@ -309,7 +309,7 @@ class OptionManager:
         user_id = str(user_id)
         amount = int(amount)
         user = conn.execute(
-            f"SELECT cash FROM users.users WHERE user_id = ? AND (status = 'active' OR user_id='{TREASURY_USER_ID}')",
+            f"SELECT cash FROM users.users WHERE user_id = ? AND {ACTIVE_OR_TREASURY}",
             (user_id,),
         ).fetchone()
         if not user:
@@ -557,7 +557,7 @@ class OptionManager:
                 raise RuntimeError("매도 예약 옵션 수량이 변경되어 체결을 취소했습니다.")
             self._add_option_position(conn, contract["contract_id"], buyer_id, quantity, price)
         conn.execute(
-            f"UPDATE users.users SET cash = cash + ? WHERE user_id = ? AND (status = 'active' OR user_id='{TREASURY_USER_ID}')",
+            f"UPDATE users.users SET cash = cash + ? WHERE user_id = ? AND {ACTIVE_OR_TREASURY}",
             (price * quantity, seller_id),
         )
         if conn.execute("SELECT changes()").fetchone()[0] != 1:
@@ -595,7 +595,7 @@ class OptionManager:
             return
         if account_number is None:
             cursor = conn.execute(
-                f"UPDATE users.users SET cash = cash + ? WHERE user_id = ? AND (status = 'active' OR user_id='{TREASURY_USER_ID}')",
+                f"UPDATE users.users SET cash = cash + ? WHERE user_id = ? AND {ACTIVE_OR_TREASURY}",
                 (int(amount), str(user_id)),
             )
         else:
@@ -859,7 +859,7 @@ class OptionManager:
         user_id = str(user_id)
         left = int(amount)
         user = conn.execute(
-            f"SELECT cash FROM users.users WHERE user_id = ? AND (status = 'active' OR user_id='{TREASURY_USER_ID}')",
+            f"SELECT cash FROM users.users WHERE user_id = ? AND {ACTIVE_OR_TREASURY}",
             (user_id,),
         ).fetchone()
         if not user:

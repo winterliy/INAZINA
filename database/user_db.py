@@ -5,6 +5,12 @@ TREASURY_USER_ID = "20230216"
 LEGACY_TREASURY_USER_IDS = ("__treasury__", "20230219")
 
 
+# Accounts that may move money although they are not ordinary active citizens:
+# every country's treasury (not only 낙원's).
+ACTIVE_OR_TREASURY = (f"(status = 'active' OR user_id = '{TREASURY_USER_ID}' "
+                      "OR user_id IN (SELECT user_id FROM country_treasuries))")
+
+
 def citizen_filter(alias="users"):
     """SQL condition for real citizens: not a treasury and not a country login account.
 

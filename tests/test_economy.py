@@ -368,8 +368,9 @@ class EconomyTests(unittest.TestCase):
         self.assertEqual(self.db.users.get_user("citizen-1")["cash"], 123)
 
     def test_basic_income_can_drive_treasury_balance_negative(self):
+        self.db.users.execute("UPDATE users SET nationality='낙원' WHERE user_id LIKE 'citizen-%'")
         self.db.users.update_cash(TREASURY_USER_ID, 100)
-        success, message = self.admin.distribute_basic_income(25)
+        success, message = self.admin.distribute_basic_income("낙원", 25)
         self.assertTrue(success, message)
         self.assertAlmostEqual(self.db.users.get_user("citizen-1")["cash"], 10025)
         self.assertAlmostEqual(self.db.users.get_user("citizen-2")["cash"], 25)
@@ -377,7 +378,7 @@ class EconomyTests(unittest.TestCase):
 
         self.db.users.update_cash(TREASURY_USER_ID, -99)
         before = self.db.users.get_user("citizen-1")["cash"]
-        success, message = self.admin.distribute_basic_income(1)
+        success, message = self.admin.distribute_basic_income("낙원", 1)
         self.assertTrue(success, message)
         self.assertIn("적자", message)
         self.assertEqual(self.db.users.get_user("citizen-1")["cash"], before + 1)

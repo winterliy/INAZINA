@@ -4,7 +4,7 @@ import time
 from contextlib import nullcontext
 
 from database import DatabaseManager
-from database.user_db import TREASURY_USER_ID
+from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY
 from functions.money import parse_money, round_money
 from functions.interest_calc import year_fraction
 from functions.tax_calc import calculate_income_tax
@@ -125,7 +125,7 @@ class TreasuryBondManager:
     @staticmethod
     def _debit_funds(conn, user_id, amount):
         user = conn.execute(
-            f"SELECT cash FROM users.users WHERE user_id = ? AND (status = 'active' OR user_id='{TREASURY_USER_ID}')",
+            f"SELECT cash FROM users.users WHERE user_id = ? AND {ACTIVE_OR_TREASURY}",
             (user_id,),
         ).fetchone()
         if not user:

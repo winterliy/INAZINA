@@ -1,7 +1,7 @@
 """A small, price/time-priority limit order book backed by SQLite."""
 
 import time
-from database.user_db import TREASURY_USER_ID
+from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY
 from functions.money import (round_money, parse_money, round_currency,
                              parse_currency_money)
 from managers.market_session_manager import MarketSessionManager
@@ -45,7 +45,7 @@ class OrderBookManager:
                 return False, error
             if side!='buy':return False,'❌ ELS는 모집 중 액면 청약만 가능합니다. 중도 매도·환매는 지원하지 않습니다.'
             if isinstance(limit_price,bool) or not isinstance(limit_price,int) or not 1 <= limit_price <= self.MAX_LIMIT_PRICE:
-                return False,'❌ 지정가는 1 이상의 정수 NWX여야 합니다.'
+                return False,'❌ 지정가는 1 이상의 정수여야 합니다.'
             if limit_price < product['face_value']:return False,'❌ ELS 청약 지정가는 액면가 이상이어야 합니다.'
             from managers.els_manager import ELSManager
             return ELSManager(self.db,self.user_manager).subscribe(user_id,asset_code,quantity)
@@ -58,7 +58,8 @@ class OrderBookManager:
                     home = CurrencyManager.home(conn,user_id)
             except ValueError:
                 pass
-        if foreign and (foreign['quote_currency']!='NWX' or foreign['quote_currency']!=home):
+        # Instruments in the user's own currency settle from cash/home accounts; others via FX accounts.
+        if foreign and (foreign['quote_currency'] or 'NWX') != home:
             from managers.foreign_securities_manager import ForeignSecuritiesManager
             return ForeignSecuritiesManager(self).order(user_id,asset_code,side,quantity,limit_price)
         if self.futures_manager and self.futures_manager.is_future(asset_code):
@@ -103,6 +104,8 @@ class OrderBookManager:
                     return False, "❌ 현재 매도 주문이 불가능한 자산입니다."
                 if float(asset["price"] or 0) <= 0:
                     return False, "❌ 자산 가격이 올바르지 않습니다."
+                # This path settles in the user's own currency, which is the instrument's.
+                currency = str(asset.get("quote_currency") or "NWX")
 
                 funding_account = None
                 reserved_cash = 0
@@ -157,7 +160,7 @@ class OrderBookManager:
                     ):
                         return False, (
                             f"❌ 잔액이 부족합니다. 지정가 기준 예치 필요액: "
-                            f"{reserved_cash:,.0f} NWX"
+                            f"{reserved_cash:,.0f} {currency}"
                         )
                 else:
                     if source == "treasury_bond":
@@ -185,12 +188,12 @@ class OrderBookManager:
                 cursor = conn.execute(
                     "INSERT INTO assets.market_orders "
                     "(user_id, asset_code, side, limit_price, quantity, remaining_quantity, "
-                    "reserved_cash, funding_account, order_kind, status, created_epoch, updated_epoch, activation_epoch, scheduled_reason) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'asset', ?, ?, ?, ?, ?)",
+                    "reserved_cash, funding_account, order_kind, status, created_epoch, updated_epoch, activation_epoch, scheduled_reason, quote_currency) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'asset', ?, ?, ?, ?, ?, ?)",
                     (user_id, asset_code, side, limit_price, quantity, quantity,
                      reserved_cash, funding_account, 'scheduled' if deferred else 'open', now, now,
                      state.get('resume_epoch') if deferred else now,
-                     state.get('reason') if deferred else None),
+                     state.get('reason') if deferred else None, currency),
                 )
                 order_id = int(cursor.lastrowid)
                 fill_count, filled_quantity, traded_value = (0, 0, 0) if deferred else self._match_incoming_order(conn, order_id, now)
@@ -201,23 +204,23 @@ class OrderBookManager:
 
             if deferred:
                 return True, (f"✅ 예약 주문 #{order_id} 접수 ({'매수' if side == 'buy' else '매도'} · "
-                              f"지정가 {limit_price:,} NWX · {quantity:,}개)\n"
+                              f"지정가 {limit_price:,} {currency} · {quantity:,}개)\n"
                               f"`{exchange_id}` 거래소가 {state.get('reason') or '정지'} 상태라 개장·재개 시 호가장에 등록됩니다.\n"
-                              + (f"매수 예치액 {int(order['reserved_cash']):,} NWX는 잠금 상태입니다." if side == 'buy' else "매도 수량은 잠금 상태입니다."))
-            filled_text = f"즉시 체결 {filled_quantity:,}개 · 체결대금 {traded_value:,.0f} NWX"
+                              + (f"매수 예치액 {int(order['reserved_cash']):,} {currency}는 잠금 상태입니다." if side == 'buy' else "매도 수량은 잠금 상태입니다."))
+            filled_text = f"즉시 체결 {filled_quantity:,}개 · 체결대금 {traded_value:,.0f} {currency}"
             if order["remaining_quantity"]:
                 pending_text = (
                     f"미체결 {int(order['remaining_quantity']):,}개는 호가에 남았습니다."
                 )
                 if side == "buy":
-                    pending_text += f" 매수 예치액 {float(order['reserved_cash']):,.0f} NWX는 잠금 상태입니다."
+                    pending_text += f" 매수 예치액 {float(order['reserved_cash']):,.0f} {currency}는 잠금 상태입니다."
                 else:
                     pending_text += " 미체결 수량은 다른 매도에 사용할 수 없습니다."
             else:
                 pending_text = "주문이 전량 체결되었습니다."
             return True, (
                 f"✅ 주문 #{order_id} 등록 ({'매수' if side == 'buy' else '매도'} · "
-                f"지정가 {limit_price:,} NWX · {quantity:,}개)\n"
+                f"지정가 {limit_price:,} {currency} · {quantity:,}개)\n"
                 f"{filled_text}\n{pending_text}"
             )
         except ValueError as exc:
@@ -362,12 +365,11 @@ class OrderBookManager:
                  int(asset["maturity_days"]), principal, face_value,
                  int(price) * int(quantity), int(now), maturity),
             )
-            treasury = conn.execute(
-                "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
-                (principal, TREASURY_USER_ID),
-            )
-            if treasury.rowcount != 1:
-                raise RuntimeError("국고 계정을 찾을 수 없어 국채 매수를 취소했습니다.")
+            from managers.currency_manager import CurrencyManager, SCALE
+            # The listing country's treasury issues the bond and receives the principal.
+            CurrencyManager.treasury_receive(
+                conn, CurrencyManager.exchange_treasury(conn, asset["code"]),
+                asset.get("quote_currency") or "NWX", int(round(principal * SCALE)))
             return
         conn.execute(
             """INSERT INTO assets.user_assets
@@ -393,8 +395,16 @@ class OrderBookManager:
                 cash_credit=conn.execute('UPDATE issuer_cash_accounts SET balance=balance+? WHERE company_code=? AND balance<=?',(proceeds,product['issuer_code'],self.MAX_LIMIT_PRICE-proceeds))
                 if cash_credit.rowcount!=1:raise ValueError('법인 현금 한도를 초과합니다.')
         else:
-            cursor = conn.execute("UPDATE users.users SET cash = cash + ? WHERE user_id = ?", (proceeds, TREASURY_USER_ID))
-        if cursor.rowcount != 1:
+            from managers.currency_manager import CurrencyManager, SCALE
+            asset_currency = conn.execute(
+                "SELECT quote_currency FROM market_assets WHERE code=? UNION ALL SELECT quote_currency FROM company "
+                "WHERE company_code=? UNION ALL SELECT quote_currency FROM investment WHERE product_code=? LIMIT 1",
+                (buy_order["asset_code"],) * 3).fetchone()
+            CurrencyManager.treasury_receive(
+                conn, CurrencyManager.exchange_treasury(conn, buy_order["asset_code"]),
+                (asset_currency[0] if asset_currency else None) or "NWX", proceeds * SCALE)
+            cursor = None
+        if cursor is not None and cursor.rowcount != 1:
             raise RuntimeError("국고 계정을 찾을 수 없어 발행주식 매수를 취소했습니다.")
         if source == "company":
             self.user_manager._refresh_max_shareholder(conn, buy_order["asset_code"])
@@ -562,7 +572,7 @@ class OrderBookManager:
             return
         if account_number is None:
             cursor = conn.execute(
-                f"UPDATE users.users SET cash = cash + ? WHERE user_id = ? AND (status = 'active' OR user_id='{TREASURY_USER_ID}')",
+                f"UPDATE users.users SET cash = cash + ? WHERE user_id = ? AND {ACTIVE_OR_TREASURY}",
                 (amount, user_id),
             )
         else:
@@ -663,7 +673,9 @@ class OrderBookManager:
         refund = (round_currency(conn, order['reserved_cash'] or 0, currency)
                   if order['side'] == 'buy' else 0)
         if refund:
-            if currency == 'NWX':
+            from managers.currency_manager import CurrencyManager
+            # The user's own (nationality) currency sits in cash/home accounts; others in FX accounts.
+            if currency == CurrencyManager.home(conn, order['user_id']):
                 self._credit_reserved_source(conn, order['user_id'], order['funding_account'], refund, now)
             else:
                 from managers.foreign_securities_manager import ForeignSecuritiesManager
@@ -712,7 +724,8 @@ class OrderBookManager:
                     conn.execute("UPDATE market_orders SET status='open', activation_epoch=?, scheduled_reason=NULL, updated_epoch=? "
                                  "WHERE order_id=?", (now, now, order['order_id']))
                     currency = str(order['quote_currency'] or 'NWX')
-                    if currency == 'NWX':
+                    from managers.currency_manager import CurrencyManager
+                    if currency == CurrencyManager.home(conn, order['user_id']):
                         self._match_incoming_order(conn, order['order_id'], now)
                     else:
                         from managers.foreign_securities_manager import ForeignSecuritiesManager

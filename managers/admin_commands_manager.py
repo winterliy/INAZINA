@@ -28,7 +28,7 @@ USAGE = {
  '상품수정':'[id] [상품종류] [유형별 순서형 인자 ...] [추가 JSON(선택)]',
  '상품가격수정':'[종목id] [add/del/modify] [금액]',
  '상품생성':'[id] [상품종류] [유형별 순서형 인자 ...] [추가 JSON(선택)]',
- '상품삭제':'[id]', '기본소득':'[금액]', '서버설치':'[서버ID] [국적] [통화]', '잔고수정':'[user_id/계좌번호] [add/del/modify] [금액]',
+ '상품삭제':'[id]', '기본소득':'[국가] [금액]', '서버설치':'[서버ID] [국적] [통화]', '잔고수정':'[user_id/계좌번호] [add/del/modify] [금액]',
  '등록':'[user_id]', '도박확률':'[0~100]', '도박리턴값':'[리턴 퍼센트]',
  '시장분위기':'[bull/flat/bear]', '상품분위기':'[종목id] [bull/flat/bear]',
  '복권당첨번호보기':'', '복권당첨번호변경':'[서로 다른 1~45 번호 6개] [보너스 번호(선택)]',
@@ -237,15 +237,14 @@ class AdminCommandsManager:
             args=shlex.split(raw)
             if command=='서버설치' and len(args)==2 and guild_id is not None:
                 args.insert(0,str(guild_id))
-            count={'상품가격수정':3,'상품삭제':1,'기본소득':1,'잔고수정':3,'등록':1,
+            count={'상품가격수정':3,'상품삭제':1,'기본소득':2,'잔고수정':3,'등록':1,
                    '도박확률':1,'도박리턴값':1,'시장분위기':1,'상품분위기':2,
                    '복권당첨번호보기':0,'환율수정':3,'복권가격설정':1,'서버설치':3,
                    '국가삭제':1,
                    '금리수정':3,'시장금리수정':4,'법정최고이자수정':3,'정기배당수정':3,'정기배당활성':2,'특별배당실시':2,'합병':3,'액면분할병합':3,
                    '휴장':1,'개장':1,'장일시정지':1,'장재개':1,'서킷브레이커':2,'사이드카':1}
             count.update({'법인잔고수정':3,'법인청산':1,'ELS취소':1,'소수점거래관리':2,'상품이율수정':3})
-            flexible = ((command=='기본소득' and len(args) in {1,2})
-                        or (command=='자본변경' and len(args) in {4,5})
+            flexible = ((command=='자본변경' and len(args) in {4,5})
                         or (command=='증자' and len(args) in {3,4})
                         or (command=='국가생성' and len(args) in {2,3,4,5})
                         or (command=='세율' and len(args) in {1,2})
@@ -298,9 +297,7 @@ class AdminCommandsManager:
                 else:result=manager.merge(actor,args[0],args[1],args[2] if len(args)==3 else '1')
                 return self.result_text(result)
             if command=='기본소득':
-                result=self.bot.admin_mgr.distribute_basic_income(
-                    args[0],actor=actor,currency_code=args[1] if len(args)==2 else None
-                )
+                result=self.bot.admin_mgr.distribute_basic_income(args[0],args[1],actor=actor)
                 return result[1] if isinstance(result,tuple) else result
             if command=='등록':
                 return self.control.setup(actor,args[0],args[0],'낙원')

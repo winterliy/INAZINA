@@ -29,7 +29,7 @@ export const COMMAND_FORMS: Record<string, { group: string; fields: Spec[]; note
   법인잔고수정: { group: "기업 · 배당", fields: [{ key: "code", label: "보통주 법인", source: "stock" }, { key: "op", label: "작업", type: "select", options: OP }, { key: "amount", label: "금액", type: "number" }] },
   법인청산: { group: "기업 · 배당", fields: [{ key: "code", label: "보통주 법인", source: "stock" }], note: "회사채 → 미지급 배당 → 우선주 → 보통주 순으로 배분합니다." },
   잔고수정: { group: "시민 · 잔고", fields: [{ key: "target", label: "사용자 ID 또는 계좌번호", source: "user" }, { key: "op", label: "작업", type: "select", options: OP }, { key: "amount", label: "금액", type: "number", hint: "국적 통화 기준" }] },
-  기본소득: { group: "시민 · 잔고", fields: [{ key: "amount", label: "1인당 금액", type: "number" }, { key: "currency", label: "금액 기준 통화", source: "currency", optional: true, hint: "비우면 관리자 국적 통화" }] },
+  기본소득: { group: "시민 · 잔고", fields: [{ key: "country", label: "국가", source: "country" }, { key: "amount", label: "1인당 금액", type: "number", hint: "그 국가의 화폐 기준" }], note: "해당 국가 국고에서 그 국가 시민에게만 지급합니다." },
   등록: { group: "시민 · 잔고", fields: [{ key: "user", label: "Discord 사용자 ID" }] },
   서버설치: { group: "시민 · 잔고", fields: [{ key: "guild", label: "Discord 서버 ID" }, { key: "country", label: "국적", source: "country" }, { key: "currency", label: "통화", source: "currency" }] },
   국가생성: { group: "국가 · 금리", fields: [{ key: "name", label: "국가명" }, { key: "currency", label: "통화", source: "currency" }, { key: "base", label: "기준금리 %", type: "number", optional: true }, { key: "max", label: "법정최고이자 %", type: "number", optional: true }, { key: "tax", label: "세율 %", type: "number", optional: true }] },

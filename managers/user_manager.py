@@ -4,7 +4,7 @@ import time
 from decimal import Decimal
 from datetime import datetime, timezone
 from database import DatabaseManager
-from database.user_db import TREASURY_USER_ID
+from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY
 from functions.tax_calc import calculate_income_tax
 from functions.money import parse_money, round_money
 from managers.treasury_bond_manager import TreasuryBondManager
@@ -98,7 +98,7 @@ class UserManager:
         if fund:
             return None if exclude_wallet else (fund['cash'], None)
         user = conn.execute(
-            f"SELECT cash FROM users.users WHERE user_id = ? AND (status = 'active' OR user_id='{TREASURY_USER_ID}')", (user_id,)
+            f"SELECT cash FROM users.users WHERE user_id = ? AND {ACTIVE_OR_TREASURY}", (user_id,)
         ).fetchone()
         if not user:
             return None
@@ -153,7 +153,7 @@ class UserManager:
         if account_number is None:
             cursor = conn.execute(
                 "UPDATE users.users SET cash = cash - ? "
-                f"WHERE user_id = ? AND (status = 'active' OR user_id='{TREASURY_USER_ID}') AND cash >= ?",
+                f"WHERE user_id = ? AND {ACTIVE_OR_TREASURY} AND cash >= ?",
                 (amount, user_id, amount),
             )
         else:
@@ -265,8 +265,10 @@ class UserManager:
                 asset, source = self._asset_row(conn, asset_code)
                 if not asset:
                     return False, "❌ 존재하지 않는 자산 코드입니다."
-                if asset.get("quote_currency", "NWX") != "NWX":
-                    return False, "❌ 외화 종목은 해당 외환통장을 개설하고 거래소 지정가 매수·매도로 거래해주세요."
+                from managers.currency_manager import CurrencyManager, SCALE
+                currency = asset.get("quote_currency") or "NWX"
+                if currency != CurrencyManager.home(conn, user_id):
+                    return False, "❌ 자국 통화가 아닌 종목은 해당 외환통장을 개설하고 거래소 지정가 매수·매도로 거래해주세요."
                 if asset["type"] == "stock_future":
                     return False, "❌ 주식 선물은 거래소의 지정가 매수·매도로 거래해주세요."
                 if asset["status"] != "active":
@@ -292,7 +294,7 @@ class UserManager:
                     return False, "❌ 등록된 사용자만 거래할 수 있습니다."
                 balance, account_number = funds
                 if balance < total_cost or not self._debit_source(conn, user_id, account_number, total_cost):
-                    return False, f"❌ 잔액이 부족합니다. (필요 금액: {total_cost:,} NWX)"
+                    return False, f"❌ 잔액이 부족합니다. (필요 금액: {total_cost:,} {currency})"
                 conn.execute(
                     """INSERT INTO assets.user_assets
                        (user_id, asset_code, account_number, quantity, average_cost)
@@ -315,11 +317,13 @@ class UserManager:
                     if asset["type"] == "corporate_bond":
                         conn.execute("UPDATE company.company SET capital = capital + ? WHERE company_code = ?", (total_cost, product["issuer_code"]))
                     else:
-                        conn.execute("UPDATE users.users SET cash = cash + ? WHERE user_id = ?", (total_cost, TREASURY_USER_ID))
+                        # The listing country's treasury is the counterparty.
+                        CurrencyManager.treasury_receive(
+                            conn, CurrencyManager.exchange_treasury(conn, asset_code), currency, total_cost * SCALE)
                 if source == "company":
                     self._refresh_max_shareholder(conn, asset_code)
                 unit = "주" if str(asset["type"]).lower() in {"stock", "주식"} else "좌" if asset["type"] in {"mutual_fund", "index_fund"} else "개"
-            return True, f"✅ {asset['name']} {quantity:,}{unit}를 {total_cost:,} NWX에 매수했습니다."
+            return True, f"✅ {asset['name']} {quantity:,}{unit}를 {total_cost:,} {currency}에 매수했습니다."
         except ValueError as exc:
             return False, f"❌ {exc}"
         except Exception as exc:
@@ -346,8 +350,10 @@ class UserManager:
                 asset, source = self._asset_row(conn, asset_code)
                 if not asset:
                     return False, "❌ 존재하지 않는 자산 코드입니다."
-                if asset.get("quote_currency", "NWX") != "NWX":
-                    return False, "❌ 외화 종목은 거래소 지정가 매수·매도로 거래해주세요."
+                from managers.currency_manager import CurrencyManager, SCALE
+                currency = asset.get("quote_currency") or "NWX"
+                if currency != CurrencyManager.home(conn, user_id):
+                    return False, "❌ 자국 통화가 아닌 종목은 거래소 지정가 매수·매도로 거래해주세요."
                 if asset["status"] not in ("active", "matured"):
                     return False, "❌ 현재 거래가 중지된 자산입니다."
                 if asset["type"] in {"stock_future", "corporate_bond"}:
@@ -386,7 +392,8 @@ class UserManager:
 
                 gross_proceeds = price * quantity
                 if asset["type"] in {"mutual_fund", "index_fund"}:
-                    conn.execute("UPDATE users.users SET cash = cash - ? WHERE user_id = ?", (gross_proceeds, TREASURY_USER_ID))
+                    CurrencyManager.treasury_pay(
+                        conn, CurrencyManager.exchange_treasury(conn, asset_code), currency, gross_proceeds * SCALE)
                 total_tax = self._tax(conn, user_id, "stock_sale_gain", taxable_gain)
                 tax_left = total_tax
                 qty_left = quantity
@@ -452,7 +459,10 @@ class UserManager:
         sender_id = str(from_user_id)
         recipient = str(recipient).strip()
         if recipient.casefold() in {"국고", "treasury", TREASURY_USER_ID.casefold()}:
-            recipient = TREASURY_USER_ID
+            # "국고" means the sender's own nationality treasury.
+            from managers.currency_manager import CurrencyManager
+            with self.db.atomic(("users",)) as conn:
+                recipient = CurrencyManager.user_treasury_id(conn, sender_id)
         if not recipient:
             return False, "❌ 받는 사람의 사용자 ID 또는 계좌번호를 입력해주세요."
         destination_hint = self.db.accounts.execute_one(
@@ -472,10 +482,10 @@ class UserManager:
 
         try:
             with self.db.atomic(("users", "accounts")) as conn:
-                if recipient == TREASURY_USER_ID:
+                from managers.currency_manager import CurrencyManager
+                if CurrencyManager.is_treasury(conn, recipient):
                     recipient_user = conn.execute(
-                        "SELECT user_id FROM users.users WHERE user_id = ? AND status = 'nation'",
-                        (TREASURY_USER_ID,),
+                        "SELECT user_id FROM users.users WHERE user_id = ?", (recipient,),
                     ).fetchone()
                 else:
                     recipient_user = conn.execute(
@@ -506,7 +516,7 @@ class UserManager:
                     return False, "❌ 같은 계좌로는 이체할 수 없습니다. 출금·입금 계좌를 다르게 선택해주세요."
 
                 wallet = conn.execute(
-                    f"SELECT cash FROM users.users WHERE user_id = ? AND (status = 'active' OR user_id='{TREASURY_USER_ID}')",
+                    f"SELECT cash FROM users.users WHERE user_id = ? AND {ACTIVE_OR_TREASURY}",
                     (sender_id,),
                 ).fetchone()
                 if not wallet:
@@ -579,11 +589,10 @@ class UserManager:
                         raise RuntimeError("입금 대상 계좌가 변경되어 송금을 취소했습니다.")
                     destination = f"계좌 `{target_account_number}`"
                 else:
-                    if target_user_id == TREASURY_USER_ID:
+                    if CurrencyManager.is_treasury(conn, target_user_id):
                         cursor = conn.execute(
-                            "UPDATE users.users SET cash = cash + ? "
-                            "WHERE user_id = ? AND status = 'nation'",
-                            (amount, TREASURY_USER_ID),
+                            "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
+                            (amount, target_user_id),
                         )
                         destination = "국고"
                     else:
@@ -646,18 +655,20 @@ class UserManager:
                 if won:
                     tax = self._tax(conn, str(user_id), "gambling_winnings", payout_before_tax)
                     self._credit_source(conn, str(user_id), account_number, payout_before_tax - tax)
+                    from managers.currency_manager import CurrencyManager
                     treasury = conn.execute(
                         "UPDATE users.users SET cash = cash - ? WHERE user_id = ?",
-                        (payout_before_tax, TREASURY_USER_ID),
+                        (payout_before_tax, CurrencyManager.user_treasury_id(conn, str(user_id))),
                     )
                     if treasury.rowcount != 1:
                         raise RuntimeError("국고 계정을 찾을 수 없어 당첨금 지급을 취소했습니다.")
                 else:
                     if not self._debit_source(conn, str(user_id), account_number, amount):
                         return False, "❌ 잔액이 부족합니다."
+                    from managers.currency_manager import CurrencyManager
                     treasury = conn.execute(
                         "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
-                        (amount, TREASURY_USER_ID),
+                        (amount, CurrencyManager.user_treasury_id(conn, str(user_id))),
                     )
                     if treasury.rowcount != 1:
                         raise RuntimeError("국고 계정을 찾을 수 없어 도박 처리를 취소했습니다.")

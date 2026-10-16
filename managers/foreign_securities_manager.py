@@ -23,8 +23,6 @@ class ForeignSecuritiesManager:
             if changed.rowcount!=1:
                 raise ValueError(f'{currency} 현금 잔액 한도를 초과했습니다.')
             return
-        if not account and str(user) == TREASURY_USER_ID:
-            ForeignSecuritiesManager.treasury_currency_account(conn,currency,time.time())
         if account:
             changed = conn.execute("UPDATE accounts SET balance_units=balance_units+? WHERE account_number=? AND user_id=? AND quote_currency=? AND account_type='currency_saving' AND balance_units<=?",
                 (units,account,str(user),currency,MAX_UNITS-units))
@@ -142,12 +140,11 @@ class ForeignSecuritiesManager:
                 self.credit_units(conn,buy['user_id'],currency,improvement*SCALE)
             self.add_position(conn,buy['user_id'],asset['code'],buy['funding_account'],quantity,price)
             if primary:
-                if CurrencyManager.home(conn,TREASURY_USER_ID) != currency:
-                    self.treasury_currency_account(conn,currency,now)
-                self.credit_units(
-                    conn,TREASURY_USER_ID,currency,
-                    int(round(round_currency(conn,quantity*price,currency)*SCALE))
-                )
+                # The listing country's treasury sells the primary issue; without an
+                # account in this currency it exchanges the proceeds into its own.
+                CurrencyManager.treasury_receive(
+                    conn, CurrencyManager.exchange_treasury(conn, asset['code']), currency,
+                    int(round(round_currency(conn,quantity*price,currency)*SCALE)))
             else:
                 positions=conn.execute('SELECT * FROM user_assets WHERE user_id=? AND asset_code=? ORDER BY holding_id',(sell['user_id'],asset['code'])).fetchall()
                 left,gain = quantity,0

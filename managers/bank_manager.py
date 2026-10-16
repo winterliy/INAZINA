@@ -7,7 +7,7 @@ import random
 import time
 from datetime import datetime, timezone
 from database import DatabaseManager
-from database.user_db import TREASURY_USER_ID
+from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY
 from functions.money import (round_money, round_currency, parse_currency_money,
                              currency_precision)
 from functions.interest_calc import year_fraction
@@ -222,7 +222,7 @@ class BankManager:
                     return False, f"❌ 최소 예치금은 {minimum:,} {home}입니다."
                 cursor = conn.execute(
                     "UPDATE users.users SET cash = cash - ? "
-                    f"WHERE user_id = ? AND (status = 'active' OR user_id='{TREASURY_USER_ID}') AND cash >= ?",
+                    f"WHERE user_id = ? AND {ACTIVE_OR_TREASURY} AND cash >= ?",
                     (deposit_amount, str(user_id), deposit_amount),
                 )
                 if cursor.rowcount != 1:
@@ -614,7 +614,7 @@ class BankManager:
                 user = conn.execute(
                     f"SELECT credit_score,nationality,annual_income,income_stability "
                     f"FROM users.users WHERE user_id = ? AND "
-                    f"(status = 'active' OR user_id='{TREASURY_USER_ID}')",
+                    f"{ACTIVE_OR_TREASURY}",
                     (str(user_id),),
                 ).fetchone()
                 if not user:
@@ -878,7 +878,7 @@ class BankManager:
             self._settle_user_interest(user_id, now=now)
             with self.db.atomic() as conn:
                 user = conn.execute("SELECT credit_score FROM users WHERE user_id=? AND "
-                    f"(status='active' OR user_id='{TREASURY_USER_ID}')", (str(user_id),)).fetchone()
+                    f"{ACTIVE_OR_TREASURY}", (str(user_id),)).fetchone()
                 if not user:
                     return False, '❌ 등록된 사용자만 대출을 연장할 수 있습니다.'
                 # Product IDs are accepted as well as the individual loan number;

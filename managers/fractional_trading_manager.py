@@ -243,7 +243,7 @@ class FractionalTradingManager:
             if seller:
                 sold, gain = self._remove_lots(conn,seller['user_id'],asset['code'],units,price)
                 self._pay_seller(conn,seller['user_id'],asset['code'],currency,gross,sold,gain,now)
-                self._credit(conn,TREASURY_USER_ID,currency,spent-gross,now=now)
+                CurrencyManager.treasury_receive(conn, CurrencyManager.exchange_treasury(conn, asset['code']), currency, spent-gross)
                 if source == 'company':
                     from managers.corporate_actions_manager import CorporateActionsManager
                     CorporateActionsManager.record_issue_fill(conn,seller['order_id'],quantity_number(Fraction(units,QUANTITY_SCALE)),price)
@@ -255,7 +255,8 @@ class FractionalTradingManager:
                 if changed.rowcount != 1:
                     raise ValueError('발행 법인의 현금 한도를 초과했습니다.')
             else:
-                self._credit(conn,TREASURY_USER_ID,currency,spent,now=now)
+                # The listing country's treasury sells primary shares.
+                CurrencyManager.treasury_receive(conn, CurrencyManager.exchange_treasury(conn, asset['code']), currency, spent)
             if not seller and source=='company':
                 share=conn.execute('SELECT dividend_funding FROM company WHERE company_code=?',(asset['code'],)).fetchone()
                 amount=Decimal(spent)/SCALE
@@ -314,8 +315,7 @@ class FractionalTradingManager:
                     if self._held(conn,code,user)-self._reserved(conn,code,user,'sell')<units:
                         raise ValueError('매도 가능 수량이 부족합니다.')
                     gross=raw//quantum*quantum
-                    treasury_account=self._funds(conn,TREASURY_USER_ID,currency,gross,now)
-                    self._debit(conn,TREASURY_USER_ID,currency,gross,treasury_account)
+                    CurrencyManager.treasury_pay(conn, CurrencyManager.exchange_treasury(conn, code), currency, gross)
                     sold,gain=self._remove_lots(conn,user,code,units,price)
                     self._pay_seller(conn,user,code,currency,gross,sold,gain,now)
                 else:
@@ -324,7 +324,7 @@ class FractionalTradingManager:
                     gross=self._ceil(raw,quantum)
                     account=self._funds(conn,user,currency,gross,now)
                     self._debit(conn,user,currency,gross,account)
-                    self._credit(conn,TREASURY_USER_ID,currency,gross,now=now)
+                    CurrencyManager.treasury_receive(conn, CurrencyManager.exchange_treasury(conn, code), currency, gross)
                     self._add_lot(conn,user,code,account,units,price)
                 if source=='company':
                     self.users._refresh_max_shareholder(conn,code)

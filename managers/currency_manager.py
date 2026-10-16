@@ -217,15 +217,71 @@ class CurrencyManager:
             "SELECT 1 FROM country_treasuries WHERE user_id=?", (user_id,)).fetchone() is not None
 
     @classmethod
+    def exchange_treasury(cls, conn, asset_code):
+        """Treasury of the country whose exchange lists ``asset_code``.
+
+        Primary issues, fund NAV dealing, treasury bonds and other trades where
+        the state is the counterparty settle with this treasury.
+        """
+        from managers.market_session_manager import MarketSessionManager
+        exchange = MarketSessionManager.exchange_for_asset(conn, asset_code)
+        row = conn.execute("SELECT nationality FROM market_exchanges WHERE exchange_id=?",
+                           (exchange,)).fetchone() if exchange else None
+        nationality = row["nationality"] if row and row["nationality"] else '낙원'
+        known = conn.execute('SELECT 1 FROM country_currencies WHERE nationality=?', (nationality,)).fetchone()
+        return cls.treasury_id(conn, nationality if known else '낙원')
+
+    @classmethod
+    def _treasury_target(cls, conn, treasury, currency):
+        """Where a treasury holds ``currency``: its cash, its FX account, or (None) neither."""
+        currency = str(currency).upper()
+        if currency == cls.home(conn, treasury):
+            return 'cash'
+        account = conn.execute("SELECT 1 FROM accounts WHERE user_id=? AND quote_currency=? "
+                               "AND account_type='currency_saving'", (str(treasury), currency)).fetchone()
+        return 'fx' if account else None
+
+    @classmethod
+    def treasury_receive(cls, conn, treasury, currency, units):
+        """Credit a treasury: kept in that currency if it holds it, else exchanged to its own."""
+        units = int(units)
+        if not units:
+            return 0
+        currency = str(currency).upper()
+        if cls._treasury_target(conn, treasury, currency):
+            cls.change(conn, treasury, currency, units, allow_deficit=True)
+            return units
+        home = cls.home(conn, treasury)
+        converted = cls.convert(conn, units, currency, home)
+        if converted:
+            cls.change(conn, treasury, home, converted, allow_deficit=True)
+        return converted
+
+    @classmethod
+    def treasury_pay(cls, conn, treasury, currency, units):
+        """Debit a treasury for a payment made in ``currency`` (deficits allowed)."""
+        units = int(units)
+        if not units:
+            return 0
+        currency = str(currency).upper()
+        if cls._treasury_target(conn, treasury, currency):
+            cls.change(conn, treasury, currency, -units, allow_deficit=True)
+            return units
+        home = cls.home(conn, treasury)
+        exact = Fraction(units) * cls.quote(conn, currency, home)
+        quantum = 10 ** (6 - cls.precision(conn, home))
+        ceiling = -(-exact.numerator // exact.denominator)
+        cost = -(-ceiling // quantum) * quantum
+        cls.change(conn, treasury, home, -cost, allow_deficit=True)
+        return cost
+
+    @classmethod
     def credit_treasury_fee(cls, conn, user_id, fee_nwx):
         """Exchange fees (quoted in NWX) go to the user's nationality treasury, in its currency."""
         if not fee_nwx:
             return None
         treasury = cls.user_treasury_id(conn, user_id)
-        home = cls.home(conn, treasury)
-        amount = cls.convert(conn, int(fee_nwx) * SCALE, 'NWX', home)
-        if amount:
-            cls.change(conn, treasury, home, amount)
+        cls.treasury_receive(conn, treasury, 'NWX', int(fee_nwx) * SCALE)
         return treasury
 
     @classmethod

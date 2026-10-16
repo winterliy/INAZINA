@@ -127,7 +127,7 @@ class ActionModal(CheckedModal):
             fields = {
                 'setup':[('사용자 ID',''),('닉네임',''),('국적','낙원')],
                 'register':[('확인: 이 서버를 입력','')],
-                '기본소득':[('1인당 지급액 NWX','1000')],
+                '기본소득':[('국가',''),('1인당 지급액 (국가 화폐)','1000')],
                 'settings':[('경제 설정 JSON','{"market_volatility":0.3}')],
                 'volatility':[('변동성·GARCH·자동 목표 설정 JSON','{"market_volatility":0.3,"auto_target_noise_multiplier":6}')],
                 'user':[('사용자 ID',''),('수정 JSON','{"nationality":"낙원"}')],
@@ -203,7 +203,7 @@ class ActionModal(CheckedModal):
                 raise ValueError('Discord 사용자 ID를 입력해주세요.')
             result = bot.admin_control.setup(self.owner,v[0],v[1],v[2])
         elif c=='기본소득':
-            result = bot.admin_mgr.distribute_basic_income(v[0])
+            result = bot.admin_mgr.distribute_basic_income(v[0],v[1],actor=self.owner)
         elif c in {'settings','volatility'}:
             return bot.admin_control.settings(self.owner,json.loads(v[0]))
         elif c=='user':
