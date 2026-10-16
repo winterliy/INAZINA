@@ -2063,13 +2063,39 @@ class Handler(BaseHTTPRequestHandler):
         return
 
 
-if __name__ == "__main__":
+def main():
+    """Serve until SIGINT/SIGTERM, then stop cleanly.
+
+    Ctrl+C in the start_all terminal reaches this child process directly (same
+    process group) as well as through the Node API's SIGTERM; both now end the
+    service quietly instead of printing a KeyboardInterrupt traceback.
+    """
+    import signal
     if not INTERNAL_TOKEN:
         raise SystemExit("INAZINA_INTERNAL_TOKEN is required")
-    domain()
+    try:
+        domain()
+    except KeyboardInterrupt:
+        print("INAZINA Python data service stopped during startup.", flush=True)
+        return
     server = BoundedThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    stopping = threading.Event()
+
+    def stop(_signum, _frame):
+        if not stopping.is_set():
+            stopping.set()
+            # shutdown() waits for serve_forever(), so it must run off this thread.
+            threading.Thread(target=server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGTERM, stop)
     print(f"INAZINA Python data service listening at http://127.0.0.1:{PORT}", flush=True)
     try:
         server.serve_forever()
     finally:
         server.server_close()
+    print("INAZINA Python data service stopped.", flush=True)
+
+
+if __name__ == "__main__":
+    main()

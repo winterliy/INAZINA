@@ -61,8 +61,9 @@ The HTS shares the dashboard's Apple-style glass design in a denser trading
 layout and follows the system light/dark setting. Following Korean market
 convention, buying and rising prices are red; selling and falling prices are blue.
 
-- **Left rail — my wallet**: cash and totals in the home currency (as Discord
-  `/내지갑`), foreign-currency wallets, accounts, investments, order deposits,
+- **Left rail — my wallet**: cash, totals, and holding values in the account's home
+  currency (its nationality; as Discord `/내지갑`); instrument prices and order amounts
+  stay in the instrument's trading currency, foreign-currency wallets, accounts, investments, order deposits,
   loans, net worth, and holdings (click to open the chart). Markets are reached
   through 종목 검색; dedicated market pages can come later.
 - **Chart**: candle (default) or line; periods 1m–1d or 자동. Any interaction
@@ -74,7 +75,10 @@ convention, buying and rising prices are red; selling and falling prices are blu
 - **Orders**: 미체결/전체 tabs; open, partial, and scheduled orders have a red
   취소 button (deposit and quantity return immediately). Clicking an order-book
   row fills the limit price.
-- **명령어**: every Discord user command as a form — 매수/매도 (incl. funds and
+- **명령어**: every Discord user command as a guided form (description and tips, pickers for
+  instruments, holdings, open orders, my accounts and loans, savings/loan products and
+  countries, button groups for choices) with results laid out as cards and tables
+  instead of raw JSON — 매수/매도 (incl. funds and
   fractional quantities), 주문취소, 내주문, 호가, 송금, 도박, 계좌개설/해지,
   대출신청/상환/연장, 선물증거금, 옵션체인/작성, 복권구매/내복권/복권결과/복권규칙,
   법정최고이자, 재무, 파산, 주총소집 (`functions/user_actions.py`). 파산 and 주총소집
@@ -85,7 +89,8 @@ convention, buying and rising prices are red; selling and falling prices are blu
 ## Dashboard
 
 The dashboard uses the glass design prototyped in `glass-dashboard/index.html`
-and follows the system light/dark setting.
+and follows the system light/dark setting. Both apps share the slowly drifting
+mesh wallpaper in `apps/shared/backdrop.css`.
 
 - **운영 현황**: citizen counts (treasuries and country login accounts excluded), per-exchange market state, open/close/pause/resume, sidecar, and circuit breaker.
 - **종목 · 상품** and **금융 상품**: create, edit, stop, and restore every
