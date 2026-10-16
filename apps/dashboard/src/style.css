@@ -198,6 +198,9 @@ tr.selected { background: rgba(0, 113, 227, .1); }
 .command-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
 .command-bar .preview { flex: 1 1 260px; min-width: 0; overflow: hidden; padding: 10px 14px; border-radius: 12px; background: rgba(var(--glass-rgb), .55); box-shadow: inset 0 0 0 1px var(--line); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 
+.saving-mode { margin-bottom: 16px; }
+.saving-mode .hint { margin-top: 8px; }
+
 /* Tables */
 .scroll-x { overflow: auto; margin: 0 -4px; padding: 0 4px; }
 .scroll-x.tall { max-height: calc(100vh - 260px); }

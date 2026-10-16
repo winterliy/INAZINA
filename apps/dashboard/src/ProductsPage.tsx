@@ -5,7 +5,7 @@ import { Card, Field, changed, number, plain, show, text, type Ctx } from "./com
 
 type KindField = { key: string; label: string; optional: boolean; text: boolean };
 type AdvancedField = { key: string; label: string; type: string };
-type Kind = { kind: string; token: string; label: string; group: "market" | "finance"; fields: KindField[]; advanced: AdvancedField[]; example: Record<string, unknown>; editable: boolean };
+type Kind = { kind: string; token: string; label: string; group: "market" | "finance"; family: string; fields: KindField[]; advanced: AdvancedField[]; example: Record<string, unknown>; editable: boolean };
 type Product = { code: string; name: string; kind: string; status: string; exchangeId: string | null; currency: string | null; value: number | null };
 type Detail = { code: string; kind: string; status: string; values: Record<string, unknown>; row: Record<string, unknown> };
 type Editor = { mode: "create" | "edit"; kind: string; code: string; values: Record<string, string>; advanced: Record<string, string>; original: Detail | null };
@@ -52,17 +52,20 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
   }, [load]);
 
   const kindOf = (kind: string) => kinds.find((item) => item.kind === kind);
+  // Savings and foreign-currency accounts are one family: same form, different account currency.
+  const familyLabel = (kind: string) => kindOf(kind)?.family === "saving" ? "저축" : kindOf(kind)?.label ?? kind;
+  const families = useMemo(() => kinds.filter((kind, index) => kinds.findIndex((other) => other.family === kind.family) === index), [kinds]);
   const visible = useMemo(() => {
     const term = query.trim().toLocaleLowerCase();
-    return products.filter((item) => (filter === "all" || item.kind === filter) && (showInactive || item.status === "active") &&
-      (!term || `${item.code} ${item.name} ${kindOf(item.kind)?.label ?? ""} ${item.exchangeId ?? ""}`.toLocaleLowerCase().includes(term)));
+    return products.filter((item) => (filter === "all" || kindOf(item.kind)?.family === filter) && (showInactive || item.status === "active") &&
+      (!term || `${item.code} ${item.name} ${familyLabel(item.kind)} ${item.currency ?? ""} ${item.exchangeId ?? ""}`.toLocaleLowerCase().includes(term)));
   }, [products, filter, query, showInactive, kinds]);
 
-  function startCreate(kind: string) {
+  function startCreate(kind: string, keep?: Record<string, string>) {
     const spec = kindOf(kind);
     if (!spec) return;
-    setEditor({ mode: "create", kind, code: "", original: null,
-      values: Object.fromEntries(spec.fields.map((field) => [field.key, text(spec.example[field.key])])), advanced: {} });
+    setEditor({ mode: "create", kind, code: editor?.mode === "create" ? editor.code : "", original: null,
+      values: Object.fromEntries(spec.fields.map((field) => [field.key, keep?.[field.key] ?? text(spec.example[field.key])])), advanced: {} });
   }
 
   async function startEdit(item: Product) {
@@ -106,16 +109,26 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
       "상태를 바꾸지 못했습니다.", async (result) => { say(plain(result.message), !result.success); await load(); });
   }
 
+  function purge(item: Product) {
+    if (!window.confirm(`${item.name} (${item.code})을 완전히 삭제할까요?\n\n상품 정의와 시세 기록·차트 선이 지워지고 되돌릴 수 없습니다. 주문·배당 같은 과거 기록은 남습니다. 보유자나 미체결 주문, 계좌·대출 등이 남아 있으면 서버가 거부합니다.`)) return;
+    void run(() => api<{ message: string; success: boolean }>(`/api/admin/products/${encodeURIComponent(item.code)}/delete`, { method: "POST", body: "{}" }),
+      "상품을 삭제하지 못했습니다.", async (result) => { say(plain(result.message), !result.success); if (editor?.code === item.code) setEditor(null); await load(); });
+  }
+
   const spec = editor ? kindOf(editor.kind) : undefined;
-  const counts = Object.fromEntries(kinds.map((kind) => [kind.kind, products.filter((item) => item.kind === kind.kind).length]));
+  const counts = Object.fromEntries(families.map((kind) => [kind.family, products.filter((item) => kindOf(item.kind)?.family === kind.family).length]));
 
   return <>
-    <Card title="새 상품" caption={`${kinds.map((kind) => kind.label).join(" · ")} — 종류를 고르면 $상품생성과 같은 입력 칸이 나옵니다.`}>
-      <div className="kind-grid">{kinds.map((kind) => <button key={kind.kind} type="button" className={editor?.mode === "create" && editor.kind === kind.kind ? "command-chip active" : "command-chip"} onClick={() => startCreate(kind.kind)}><b>{kind.label}</b><small>{kind.token} · {counts[kind.kind] ?? 0}개</small></button>)}</div>
+    <Card title="새 상품" caption={`${families.map((kind) => familyLabel(kind.kind)).join(" · ")} — 종류를 고르면 $상품생성과 같은 입력 칸이 나옵니다.`}>
+      <div className="kind-grid">{families.map((kind) => <button key={kind.family} type="button" className={editor?.mode === "create" && kindOf(editor.kind)?.family === kind.family ? "command-chip active" : "command-chip"} onClick={() => startCreate(kind.kind)}><b>{familyLabel(kind.kind)}</b><small>{kind.family === "saving" ? "saving · 국적 통화/외환" : kind.token} · {counts[kind.family] ?? 0}개</small></button>)}</div>
     </Card>
 
     {editor && spec && <Card title={editor.mode === "create" ? `${spec.label} 생성` : `${editor.code} 수정`} caption={editor.mode === "create" ? "선택 항목은 비워 둘 수 있습니다. 배당주기는 초 또는 1일·1주·1달, 배당은 5 또는 5%처럼 입력합니다." : "바꾼 값만 저장합니다. 결제 통화와 발행된 계약 조건처럼 바꿀 수 없는 값은 서버가 거부합니다."}
       actions={<button className="soft" type="button" onClick={() => setEditor(null)}>닫기</button>}>
+      {spec.family === "saving" && <div className="saving-mode">
+        <div className="segment-tabs" role="radiogroup" aria-label="통장 방식">{kinds.filter((kind) => kind.family === "saving").map((kind) => <button key={kind.kind} type="button" role="radio" aria-checked={editor.kind === kind.kind} className={editor.kind === kind.kind ? "active" : ""} disabled={editor.mode === "edit"} onClick={() => startCreate(kind.kind, editor.values)}>{kind.kind === "saving" ? "국적 통화 저축" : "외환통장"}</button>)}</div>
+        <p className="hint">{editor.kind === "saving" ? "통장 화폐가 국적 통화인 시민이 비밀번호·예치금을 넣고 여는 저축입니다." : "통장 화폐가 국적 통화가 아닌 시민이 여는 저축입니다. 통화마다 한 사람당 하나만 열 수 있어요."} 입력 항목은 같고 통장 화폐만 다릅니다.</p>
+      </div>}
       <form className="form-grid" onSubmit={save}>
         <Field label="상품 코드" hint={editor.mode === "edit" ? "변경 불가" : "공백 없이"}><input className="mono" value={editor.code} readOnly={editor.mode === "edit"} required={editor.kind !== "option"} onChange={(event) => setEditor({ ...editor, code: event.target.value })} /></Field>
         {spec.fields.map((field) => <Field key={field.key} label={field.label} hint={`${field.key}${field.optional ? " · 선택" : ""}`} wide={field.key === "components" || field.key === "underlyings"}>
@@ -131,18 +144,19 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
       </details>}
     </Card>}
 
-    <Card title={group === "market" ? "종목 · 상품" : "금융 상품"} caption={`${number(visible.length)}개 표시 · 중지는 기록을 지우지 않고 거래만 멈춥니다.`}
-      actions={<><select aria-label="종류" value={filter} onChange={(event) => setFilter(event.target.value)}><option value="all">전체 종류</option>{kinds.map((kind) => <option key={kind.kind} value={kind.kind}>{kind.label} ({counts[kind.kind] ?? 0})</option>)}</select>
+    <Card title={group === "market" ? "종목 · 상품" : "금융 상품"} caption={`${number(visible.length)}개 표시 · 중지는 거래만 멈추고, 중지된 상품은 아무도 보유·이용하지 않으면 삭제로 완전히 지울 수 있습니다.`}
+      actions={<><select aria-label="종류" value={filter} onChange={(event) => setFilter(event.target.value)}><option value="all">전체 종류</option>{families.map((kind) => <option key={kind.family} value={kind.family}>{familyLabel(kind.kind)} ({counts[kind.family] ?? 0})</option>)}</select>
         <label className="check"><input type="checkbox" checked={showInactive} onChange={(event) => setShowInactive(event.target.checked)} />중지 포함</label></>}>
       <div className="scroll-x tall"><table><thead><tr><th>코드</th><th>이름</th><th>종류</th><th>거래소</th><th>통화</th><th className="r">{group === "market" ? "가격" : "이율·환율"}</th><th>상태</th><th /></tr></thead><tbody>
         {visible.map((item) => <tr key={`${item.kind}-${item.code}`}>
-          <td className="mono">{item.code}</td><td>{item.name}</td><td>{kindOf(item.kind)?.label ?? item.kind}</td><td>{show(item.exchangeId)}</td><td>{show(item.currency)}</td>
+          <td className="mono">{item.code}</td><td>{item.name}</td><td>{familyLabel(item.kind)}{item.kind === "currencyproduct" && <span className="tag inline">외환</span>}</td><td>{show(item.exchangeId)}</td><td>{show(item.currency)}</td>
           <td className="r mono">{item.value === null ? "—" : number(item.value)}</td>
           <td><span className={item.status === "active" ? "tag ok" : "tag warn"}>{item.status}</span></td>
           <td className="row-actions">
             {(RELATED[item.kind] ?? []).length > 0 && <select className="mini-select" aria-label="관련 명령어" value="" onChange={(event) => { if (event.target.value) openCommand(event.target.value, item.code); }}><option value="">명령어…</option>{RELATED[item.kind].map(([command, label]) => <option key={command} value={command}>{label} (${command})</option>)}</select>}
             {kindOf(item.kind)?.editable !== false && <button className="soft small" disabled={busy} onClick={() => void startEdit(item)}>수정</button>}
             {!["matured", "settled", "cancelled", "expired"].includes(item.status) && <button className="soft small" disabled={busy} onClick={() => toggle(item)}>{item.status === "active" ? (item.kind === "els" ? "취소" : "중지") : "재개"}</button>}
+            {item.status !== "active" && <button className="soft small danger" disabled={busy} title="중지된 상품을 완전히 삭제" onClick={() => purge(item)}>삭제</button>}
           </td>
         </tr>)}
       </tbody></table>{!visible.length && <p className="empty">표시할 상품이 없습니다.</p>}</div>

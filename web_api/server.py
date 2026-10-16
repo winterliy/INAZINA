@@ -1072,9 +1072,14 @@ PRODUCT_KINDS = {
     "fund": ("일반 펀드", "market", "fund"), "indexfund": ("인덱스 펀드", "market", "indexfund"),
     "commodity": ("현물 원자재", "market", "commodity"), "bond": ("국채", "market", "bond"),
     "option": ("옵션", "market", "option"), "els": ("ELS", "market", "els"),
-    "saving": ("저축", "finance", "saving"), "loan": ("대출", "finance", "loan"),
-    "currency": ("통화", "finance", "currency"), "currencyproduct": ("외환통장", "finance", "currencyproduct"),
+    "saving": ("저축 · 국적 통화", "finance", "saving"), "loan": ("대출", "finance", "loan"),
+    "currency": ("통화", "finance", "currency"), "currencyproduct": ("저축 · 외환통장", "finance", "currencyproduct"),
 }
+# Savings and foreign-currency accounts share one form in the dashboard; only the
+# account currency (and therefore who can open it) differs.
+SAVING_FAMILY = {"saving", "currencyproduct"}
+SAVING_FIELDS = ("name", "quote_currency", "interest_rate", "deposit_amount", "maturity_days",
+                 "interest_cycle", "compound_type", "issuer")
 PRODUCT_PROTECTED = {"created_at", "created_epoch", "sold_amount", "writer_id", "contract_id",
                      "issued_contracts", "status", "product_type", "outstanding_contracts",
                      "collateral_account", "settled_epoch", "max_shareholder_id"}
@@ -1090,8 +1095,13 @@ def _profile_table(profile):
     return table, key
 
 
+def _form_fields(profile):
+    from managers.admin_commands_manager import CREATE_ARGS
+    return SAVING_FIELDS if profile in SAVING_FAMILY else CREATE_ARGS[profile]
+
+
 def product_catalog():
-    from managers.admin_commands_manager import CREATE_ARGS, OPTIONAL_ARGS, TEXT_ARGS
+    from managers.admin_commands_manager import OPTIONAL_ARGS, TEXT_ARGS
     from managers.admin_control_manager import EXAMPLES
     from functions.admin_embeds import ARG_LABELS
     kinds = []
@@ -1100,13 +1110,15 @@ def product_catalog():
             table, key = _profile_table(profile)
             columns = {row["name"]: row["type"] or "" for row in connection.execute(f'PRAGMA table_info("{table}")')}
             fields = [{"key": field,
-                       "label": "발행총액" if profile == "bond" and field == "total_supply" else ARG_LABELS.get(field, field),
+                       "label": "발행총액" if profile == "bond" and field == "total_supply"
+                                else "통장 화폐" if field == "quote_currency" else ARG_LABELS.get(field, field),
                        "optional": field in OPTIONAL_ARGS.get(profile, ()),
-                       "text": field in TEXT_ARGS} for field in CREATE_ARGS[profile]]
+                       "text": field in TEXT_ARGS or field == "quote_currency"} for field in _form_fields(profile)]
             listed = {field["key"] for field in fields} | {key}
             advanced = [{"key": name, "label": ARG_LABELS.get(name, name), "type": kind}
                         for name, kind in columns.items() if name not in listed and name not in PRODUCT_PROTECTED]
             kinds.append({"kind": profile, "token": token, "label": label, "group": group,
+                          "family": "saving" if profile in SAVING_FAMILY else profile,
                           "fields": fields, "advanced": advanced,
                           "example": EXAMPLES.get(_profile_category(profile), {}),
                           "editable": profile not in {"els"}})
@@ -1166,11 +1178,10 @@ def _locate_product(connection, code, kind=None):
 
 
 def product_detail(code):
-    from managers.admin_commands_manager import CREATE_ARGS
     with connect_readonly() as connection:
         kind, row = _locate_product(connection, code)
         values = {}
-        for field in CREATE_ARGS[kind]:
+        for field in _form_fields(kind):
             if field == "components":
                 values[field] = ",".join(f"{item['asset_code']}:{item['weight']:g}" for item in connection.execute(
                     "SELECT asset_code,weight FROM fund_components WHERE product_code=? ORDER BY asset_code", (code,)))
@@ -1193,9 +1204,9 @@ def product_detail(code):
 
 def _convert_product_fields(profile, fields, advanced, columns):
     """Mirror the positional $상품생성 parser for form values, then add raw columns."""
-    from managers.admin_commands_manager import CREATE_ARGS, TEXT_ARGS, duration_seconds
+    from managers.admin_commands_manager import TEXT_ARGS, duration_seconds
     from managers.corporate_actions_manager import CorporateActionsManager
-    allowed = set(CREATE_ARGS[profile])
+    allowed = set(_form_fields(profile))
     if not isinstance(fields, dict) or set(fields) - allowed or not isinstance(advanced, dict):
         raise ValueError("상품 설정 필드를 확인해주세요.")
     result = {}
@@ -1216,8 +1227,8 @@ def _convert_product_fields(profile, fields, advanced, columns):
             result.update(CorporateActionsManager.dividend_terms(value))
         elif profile == "els" and key in {"underlyings", "observation_days", "redemption_levels"}:
             result[key] = value
-        elif key in TEXT_ARGS:
-            result[key] = value
+        elif key in TEXT_ARGS or key == "quote_currency":
+            result[key] = value.upper() if key == "quote_currency" else value
         else:
             try:
                 result[key] = json.loads(value)
@@ -1281,6 +1292,77 @@ def product_status(actor, code, active):
     result = domain().bot.admin_control.entity(actor, _profile_category(kind), "restore" if active else "delete", code)
     _read_cache.invalidate()
     return str(result)
+
+
+# Live obligations that make a product impossible to delete: (table, condition, reason).
+PRODUCT_BLOCKERS = (
+    ("user_assets", "asset_code=? AND quantity<>0", "보유 중인 사용자가 있습니다"),
+    ("market_orders", "asset_code=? AND status IN ('open','partial','scheduled')", "미체결·예약 주문이 있습니다"),
+    ("accounts", "product_code=?", "이 상품으로 연 계좌가 있습니다"),
+    ("loans", "product_code=? AND outstanding_balance>0", "상환되지 않은 대출이 있습니다"),
+    ("treasury_bond_holdings", "product_code=?", "국채 보유분이 있습니다"),
+    ("futures_positions", "product_code=?", "선물 포지션이 있습니다"),
+    ("option_contracts", "underlying_code=? AND status='active'", "이 종목을 기초로 한 진행 중 옵션이 있습니다"),
+    ("option_collateral_lots", "underlying_code=?", "옵션 담보로 잡힌 수량이 있습니다"),
+    ("loan_collateral_assets", "asset_code=?", "대출 담보로 잡혀 있습니다"),
+    ("fund_components", "asset_code=?", "다른 펀드의 구성 종목입니다"),
+    ("investment", "(underlying_code=? OR issuer_code=?) AND status='active'", "이 종목을 기초·발행사로 하는 거래 중 상품이 있습니다"),
+    ("company", "parent_company_code=? AND status='active'", "연결된 거래 중 우선주가 있습니다"),
+    ("els_underlyings", "underlying_code=?", "ELS 기초자산으로 쓰입니다"),
+    ("preferred_dividend_claims", "(asset_code=? OR issuer_code=?) AND status IN ('unpaid','partial')", "미지급 배당 권리가 남아 있습니다"),
+    ("issuer_cash_accounts", "company_code=? AND (balance>0 OR locked_amount>0)", "법인 현금이 남아 있습니다 ($법인청산)"),
+    ("currencies", "asset_code=?", "통화 환율 종목으로 쓰입니다"),
+)
+# Market data owned by the product, removed with it. Orders, trades, dividends and
+# financial statements stay as history.
+PRODUCT_RUNTIME = (
+    ("market_price_history", "asset_code"), ("market_simulation_state", "asset_code"),
+    ("market_quote_overrides", "asset_code"), ("market_auto_targets", "asset_code"),
+    ("market_event_targets", "asset_code"), ("market_last_trade", "asset_code"),
+    ("web_chart_drawings", "asset_code"), ("fund_components", "product_code"),
+    ("leveraged_etf_state", "product_code"), ("market_exchange_index_components", "company_code"),
+)
+PRODUCT_TABLE = {"stock": ("company", "company_code"), "preferred": ("company", "company_code"),
+                 "asset": ("market_assets", "code"), "bond": ("treasury_bond_products", "product_code"),
+                 "option": ("option_contracts", "contract_code"), "saving": ("saving", "product_code"),
+                 "currencyproduct": ("saving", "product_code"), "loan": ("liability", "product_code"),
+                 "currency": ("currencies", "code")}
+DELETED_STATES = {"inactive", "cancelled", "settled", "expired", "matured", "redeemed", "defaulted"}
+
+
+def product_delete(actor, code):
+    """Permanently remove a stopped product nobody holds or depends on."""
+    with connect_db(timeout=5) as connection:
+        kind, row = _locate_product(connection, code)
+        table, key = PRODUCT_TABLE.get(kind, ("investment", "product_code"))
+        if (row.get("status") or "active") not in DELETED_STATES:
+            raise ValueError("거래 중인 상품입니다. 먼저 중지한 뒤 삭제해주세요.")
+        reasons = []
+        for blocker, condition, reason in PRODUCT_BLOCKERS:
+            if not _table_exists(connection, blocker):
+                continue
+            params = (code,) * condition.count("?")
+            if connection.execute(f"SELECT 1 FROM {blocker} WHERE {condition} LIMIT 1", params).fetchone():
+                reasons.append(reason)
+        if kind == "currency":
+            for other, column in (("country_currencies", "currency_code"), ("accounts", "quote_currency"),
+                                  ("company", "quote_currency"), ("market_assets", "quote_currency"),
+                                  ("investment", "quote_currency"), ("saving", "quote_currency"),
+                                  ("liability", "quote_currency")):
+                if _table_exists(connection, other) and connection.execute(
+                        f"SELECT 1 FROM {other} WHERE {column}=? LIMIT 1", (code,)).fetchone():
+                    reasons.append(f"{other}에서 이 통화를 사용합니다")
+            if code == "NWX":
+                reasons.append("기준 통화 NWX는 삭제할 수 없습니다")
+        if reasons:
+            raise ValueError("삭제할 수 없습니다: " + " · ".join(dict.fromkeys(reasons)))
+        for runtime, column in PRODUCT_RUNTIME:
+            if _table_exists(connection, runtime):
+                connection.execute(f"DELETE FROM {runtime} WHERE {column}=?", (code,))
+        connection.execute(f'DELETE FROM "{table}" WHERE "{key}"=?', (code,))
+        _audit_db(connection, actor, "product.purge", {"code": code, "kind": kind, "row": _masked(row)})
+    _read_cache.invalidate()
+    return f"✅ {code} 상품을 완전히 삭제했습니다. 주문·배당 등 과거 기록은 남아 있습니다."
 
 
 # ---------------------------------------------------------------------------
@@ -1503,12 +1585,14 @@ def admin_exchange_action(actor, exchange_id, payload):
                 raise ValueError("거래소를 찾을 수 없습니다.")
             if exchange_id == "CURRENCY":
                 raise ValueError("외환 거래소 CURRENCY는 삭제할 수 없습니다.")
-            used = any(connection.execute(f"SELECT 1 FROM {table} WHERE exchange_id=? LIMIT 1", (exchange_id,)).fetchone()
-                       for table, _key in EXCHANGE_PRODUCT_TABLES if _table_exists(connection, table))
-            used = used or connection.execute(
-                "SELECT 1 FROM investment WHERE underlying_exchange_id=? LIMIT 1", (exchange_id,)).fetchone()
-            if used:
-                raise ValueError("이 거래소에 상장되었거나 연동된 상품이 있어 삭제할 수 없습니다.")
+            listed = [row[0] for table, key in EXCHANGE_PRODUCT_TABLES if _table_exists(connection, table)
+                      for row in connection.execute(f"SELECT {key} FROM {table} WHERE exchange_id=?", (exchange_id,))]
+            linked = [row[0] for row in connection.execute(
+                "SELECT product_code FROM investment WHERE underlying_exchange_id=?", (exchange_id,))]
+            if listed or linked:
+                shown = ", ".join((listed + linked)[:8]) + (" 외" if len(listed + linked) > 8 else "")
+                raise ValueError(f"이 거래소에 상장·연동된 상품 {len(listed + linked)}개가 있어 삭제할 수 없습니다: {shown}. "
+                                 "상품을 다른 거래소로 옮기거나 중지 후 완전 삭제한 뒤 다시 시도해주세요.")
             connection.execute("DELETE FROM market_exchange_index_components WHERE exchange_id=?", (exchange_id,))
             connection.execute("DELETE FROM market_exchanges WHERE exchange_id=?", (exchange_id,))
             _audit_db(connection, actor, "exchange.delete", {"exchange_id": exchange_id})
@@ -1993,6 +2077,8 @@ class Handler(BaseHTTPRequestHandler):
                     message = product_save(actor, payload)
                 elif len(parts) == 3 and parts[0] == "products" and parts[2] == "status":
                     message = product_status(actor, parts[1], bool(payload.get("active")))
+                elif len(parts) == 3 and parts[0] == "products" and parts[2] == "delete":
+                    message = product_delete(actor, parts[1])
                 elif len(parts) == 2 and parts[0] == "countries":
                     message = admin_country_action(actor, parts[1], payload)
                 elif len(parts) == 2 and parts[0] == "exchanges":

@@ -256,6 +256,31 @@ class WebApiTests(unittest.TestCase):
             with self.subTest(values=values, advanced=advanced), self.assertRaises(ValueError):
                 server._convert_product_fields(kind, values, advanced, {"status": "TEXT"})
 
+    def test_products_are_purged_only_when_stopped_and_unused(self):
+        self.execute("CREATE TABLE market_assets (code TEXT PRIMARY KEY, name TEXT, status TEXT, quote_currency TEXT)")
+        self.execute("CREATE TABLE user_assets (user_id TEXT, asset_code TEXT, quantity REAL)")
+        self.execute("CREATE TABLE market_orders (order_id INTEGER PRIMARY KEY, asset_code TEXT, status TEXT)")
+        self.execute("INSERT INTO market_assets VALUES ('AAA','에이','active','NWX'), ('BBB','비','inactive','NWX')")
+        self.execute("INSERT INTO market_price_history(asset_code,price,recorded_epoch) VALUES ('AAA',1,1), ('BBB',1,1)")
+        self.execute("INSERT INTO user_assets VALUES ('u','BBB',1)")
+        self.execute("INSERT INTO market_orders VALUES (1,'BBB','filled')")
+        with self.assertRaisesRegex(ValueError, "먼저 중지"):
+            server.product_delete("admin-1", "AAA")
+        with self.assertRaisesRegex(ValueError, "보유 중인 사용자"):
+            server.product_delete("admin-1", "BBB")
+        self.execute("DELETE FROM user_assets")
+        self.assertIn("완전히 삭제", server.product_delete("admin-1", "BBB"))
+        self.assertEqual(self.execute("SELECT code FROM market_assets"), [("AAA",)])
+        self.assertEqual(self.execute("SELECT asset_code FROM market_price_history"), [("AAA",)])
+        self.assertEqual(self.execute("SELECT COUNT(*) FROM market_orders")[0][0], 1)
+        self.assertEqual(self.execute("SELECT action FROM admin_audit")[-1][0], "product.purge")
+
+    def test_savings_and_fx_accounts_share_one_form(self):
+        self.assertEqual(server._form_fields("saving"), server._form_fields("currencyproduct"))
+        fields = server._convert_product_fields("currencyproduct", {"name": "달러", "quote_currency": "usd", "interest_rate": "2"},
+                                                {}, {})
+        self.assertEqual(fields, {"name": "달러", "quote_currency": "USD", "interest_rate": 2})
+
 
 if __name__ == "__main__":
     unittest.main()

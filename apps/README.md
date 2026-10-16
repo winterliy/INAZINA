@@ -93,14 +93,20 @@ and follows the system light/dark setting. Both apps share the slowly drifting
 mesh wallpaper in `apps/shared/backdrop.css`.
 
 - **운영 현황**: citizen counts (treasuries and country login accounts excluded), per-exchange market state, open/close/pause/resume, sidecar, and circuit breaker.
-- **종목 · 상품** and **금융 상품**: create, edit, stop, and restore every
+- **종목 · 상품** and **금융 상품**: create, edit, stop, restore, and permanently delete every
   `$상품생성` kind — stocks, preferred shares, assets, ETFs, futures, corporate
   and treasury bonds, funds, index funds, commodities, options, and ELS; and
   savings, loans, currencies, and foreign-currency accounts. Forms follow the
   `$상품생성` argument order (same parser for dividends, periods, and fund
   components) and expose every other table column under 고급 설정. Each row
   links to its related commands (price, capital, dividends, split, merger, …).
-- **거래소**: create and delete exchanges, change the owning country, apply
+  Savings and foreign-currency accounts are one 저축 family with the same fields;
+  only the account currency (and so who can open it) differs. Delete works on
+  stopped products that nobody holds or depends on (holdings, open orders,
+  accounts, loans, positions, options, fund/ELS/preferred links); it removes the
+  product and its market data but keeps order, dividend, and statement history.
+- **거래소**: create and delete exchanges (from the list or detail; blocked with the
+  listed product codes while products are listed or linked), change the owning country, apply
   open/close/pause/resume, circuit breaker stages 1–3, and sidecar per exchange
   or for all, and view index components.
 - **사용자 · 국가**: every user field (nickname, nationality, cash, credit score,
@@ -160,7 +166,7 @@ Administrators:
 - `POST /api/admin/events` (`eventType`, `severity`, `targetPercent`, optional `targetPrice`, `durationSeconds`, `assetCode`)
 - `GET/POST /api/admin/commands` (catalog; run `{ command, arguments }` or `{ national: true, command, values }`)
 - `GET /api/admin/products/catalog`, `/api/admin/products?group=market|finance`, `/api/admin/products/:code`
-- `POST /api/admin/products` (`operation` create/edit, `kind`, `code`, `fields`, `advanced`), `/api/admin/products/:code/status` (`active`)
+- `POST /api/admin/products` (`operation` create/edit, `kind`, `code`, `fields`, `advanced`), `/api/admin/products/:code/status` (`active`), `/api/admin/products/:code/delete`
 - `GET /api/admin/user/:id`; `POST /api/admin/user/:id` (`changes`), `/api/admin/user/:id/web` (`action` password/hts_id/logout/remove)
 - `GET /api/admin/countries`; `POST /api/admin/countries/:nationality` (`action` create/delete/rates/treasury)
 - `GET /api/admin/exchanges`; `POST /api/admin/exchanges/:id` (`action` create/delete/nationality/open/close/pause/resume/circuit/sidecar; `ALL` for every exchange)
