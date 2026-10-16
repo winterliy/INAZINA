@@ -17,20 +17,19 @@ export function landingPage(reason: LandingReason, path: string, pythonConnected
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<meta name="theme-color" content="#ffd6c4">
+<meta name="theme-color" content="#f8e9ee">
 <title>INAZINA API</title>
 <style>
-:root{color-scheme:light;--ink:#1d1d1f;--ink2:#515154;--accent:#0071e3;--glass:255,255,255;--a1:.82;--a2:.7;--line:rgba(0,0,0,.08);--wall:linear-gradient(115deg,#ffc79a 0%,#ff9cba 20%,#c9b6ff 40%,#9ad6ff 60%,#ffd3a8 80%,#ffc79a 100%);--ease:cubic-bezier(.22,1,.36,1);--spring:cubic-bezier(.34,1.56,.64,1)}
-@media (prefers-color-scheme:dark){:root{color-scheme:dark;--ink:#f5f5f7;--ink2:#c7c7cc;--accent:#0a84ff;--glass:40,40,52;--a1:.66;--a2:.56;--line:rgba(255,255,255,.12);--wall:linear-gradient(115deg,#3b1f4d 0%,#5a1f3d 20%,#22285c 40%,#0f3a5a 60%,#3d2a1c 80%,#3b1f4d 100%)}}
+:root{color-scheme:light;--ink:#1d1d1f;--ink2:#515154;--accent:#0071e3;--glass:255,255,255;--a1:.82;--a2:.7;--line:rgba(0,0,0,.08);--base:#f8e9ee;--m1:rgba(255,178,130,.9);--m2:rgba(198,180,255,.85);--m3:rgba(140,204,255,.8);--m4:rgba(255,162,192,.8);--m5:rgba(255,233,212,.9);--ease:cubic-bezier(.22,1,.36,1);--spring:cubic-bezier(.34,1.56,.64,1)}
+@media (prefers-color-scheme:dark){:root{color-scheme:dark;--ink:#f5f5f7;--ink2:#c7c7cc;--accent:#0a84ff;--glass:40,40,52;--a1:.66;--a2:.56;--line:rgba(255,255,255,.12);--base:#17121f;--m1:rgba(120,58,150,.55);--m2:rgba(42,64,150,.55);--m3:rgba(16,92,128,.5);--m4:rgba(130,40,80,.45);--m5:rgba(60,40,90,.5)}}
 *{box-sizing:border-box}
 html,body{margin:0;min-height:100%}
-body{min-height:100vh;display:grid;place-items:center;padding:24px 16px;color:var(--ink);background:#ffd6c4;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Apple SD Gothic Neo","Noto Sans KR",system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow-x:clip}
-@media (prefers-color-scheme:dark){body{background:#1a1424}}
-.wall{position:fixed;inset:0;background:var(--wall);background-size:300% 300%;animation:wall 24s ease-in-out infinite}
-.blob{position:fixed;border-radius:50%;pointer-events:none;animation:drift 22s ease-in-out infinite alternate}
-.b1{left:-120px;top:80px;width:440px;height:440px;background:radial-gradient(circle,rgba(255,140,60,.85),rgba(255,140,60,0) 68%)}
-.b2{right:-100px;bottom:-80px;width:460px;height:460px;background:radial-gradient(circle,rgba(90,170,255,.8),rgba(90,170,255,0) 68%);animation-delay:-8s}
-@media (prefers-color-scheme:dark){.blob{opacity:.45}}
+body{min-height:100vh;display:grid;place-items:center;padding:24px 16px;color:var(--ink);background:var(--base);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Apple SD Gothic Neo","Noto Sans KR",system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow-x:clip}
+@media (prefers-color-scheme:dark){body{background:var(--base)}}
+.wall{position:fixed;inset:-18%;background:radial-gradient(42% 46% at 20% 26%,var(--m1),transparent 70%),radial-gradient(40% 44% at 80% 20%,var(--m2),transparent 72%),radial-gradient(46% 50% at 74% 78%,var(--m3),transparent 72%),radial-gradient(42% 46% at 24% 80%,var(--m4),transparent 70%),radial-gradient(60% 60% at 50% 50%,var(--m5),transparent 80%),var(--base);filter:blur(24px) saturate(112%);animation:mesh 70s ease-in-out infinite alternate}
+.blob{position:fixed;border-radius:50%;pointer-events:none;filter:blur(60px);opacity:.5;animation:drift 48s ease-in-out infinite alternate}
+.b1{left:-10%;top:4%;width:46vmax;height:46vmax;background:radial-gradient(circle,var(--m1),transparent 65%)}
+.b2{right:-12%;bottom:-14%;width:52vmax;height:52vmax;background:radial-gradient(circle,var(--m3),transparent 65%);animation-delay:-16s}
 main{position:relative;z-index:1;width:min(520px,100%);padding:36px 32px 28px;border-radius:28px;background:linear-gradient(135deg,rgba(var(--glass),var(--a1)),rgba(var(--glass),var(--a2)));box-shadow:inset 0 1px 0 rgba(255,255,255,.55),inset 0 0 0 1px rgba(255,255,255,.3),0 24px 60px rgba(60,30,100,.22);backdrop-filter:blur(30px) saturate(130%);-webkit-backdrop-filter:blur(30px) saturate(130%);animation:rise 800ms var(--ease) backwards}
 .brand{display:flex;align-items:center;gap:10px;margin-bottom:26px;font-size:14px;font-weight:700;letter-spacing:.02em}
 .mark{display:grid;place-items:center;width:36px;height:36px;border-radius:11px;color:#fff;background:var(--accent);box-shadow:inset 0 1px 0 rgba(255,255,255,.4),0 6px 16px rgba(0,80,200,.3)}
@@ -51,8 +50,8 @@ footer{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-betw
 .status{display:inline-flex;align-items:center;gap:7px}
 .dot{width:8px;height:8px;border-radius:50%;background:${pythonConnected ? "#1e8e3e" : "#d93025"};box-shadow:0 0 0 3px ${pythonConnected ? "rgba(30,142,62,.18)" : "rgba(217,48,37,.18)"}}
 footer a{color:var(--accent);text-decoration:none}footer a:hover{text-decoration:underline}
-@keyframes wall{0%,100%{background-position:0% 40%}50%{background-position:100% 60%}}
-@keyframes drift{to{transform:translate3d(120px,-80px,0) scale(1.2)}}
+@keyframes mesh{0%{transform:translate3d(0,0,0) rotate(0) scale(1)}50%{transform:translate3d(-2.5%,1.5%,0) rotate(5deg) scale(1.05)}100%{transform:translate3d(2.5%,-1.5%,0) rotate(-3deg) scale(1.02)}}
+@keyframes drift{to{transform:translate3d(6vmax,-4vmax,0) scale(1.12)}}
 @keyframes rise{from{opacity:0;transform:translateY(18px)}}
 @media (max-width:480px){main{padding:28px 20px 22px}h1{font-size:25px}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}

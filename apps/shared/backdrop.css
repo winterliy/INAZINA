@@ -1,0 +1,57 @@
+/* Shared wallpaper: soft overlapping radial glows that drift slowly, instead of a
+   banded linear gradient sliding across the screen. Used by the dashboard and HTS. */
+:root {
+  --mesh-base: #f8e9ee;
+  --mesh-1: rgba(255, 178, 130, .9);
+  --mesh-2: rgba(198, 180, 255, .85);
+  --mesh-3: rgba(140, 204, 255, .8);
+  --mesh-4: rgba(255, 162, 192, .8);
+  --mesh-5: rgba(255, 233, 212, .9);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --mesh-base: #17121f;
+    --mesh-1: rgba(120, 58, 150, .55);
+    --mesh-2: rgba(42, 64, 150, .55);
+    --mesh-3: rgba(16, 92, 128, .5);
+    --mesh-4: rgba(130, 40, 80, .45);
+    --mesh-5: rgba(60, 40, 90, .5);
+  }
+}
+.wall {
+  position: fixed;
+  inset: -18%;
+  background:
+    radial-gradient(42% 46% at 20% 26%, var(--mesh-1), transparent 70%),
+    radial-gradient(40% 44% at 80% 20%, var(--mesh-2), transparent 72%),
+    radial-gradient(46% 50% at 74% 78%, var(--mesh-3), transparent 72%),
+    radial-gradient(42% 46% at 24% 80%, var(--mesh-4), transparent 70%),
+    radial-gradient(60% 60% at 50% 50%, var(--mesh-5), transparent 80%),
+    var(--mesh-base);
+  filter: blur(24px) saturate(112%);
+  animation: meshDrift 70s ease-in-out infinite alternate;
+  will-change: transform;
+  pointer-events: none;
+}
+.blob {
+  position: fixed;
+  border-radius: 50%;
+  pointer-events: none;
+  filter: blur(60px);
+  opacity: .5;
+  animation: blobDrift 48s ease-in-out infinite alternate;
+  will-change: transform;
+}
+.b1 { left: -10%; top: 4%; width: 46vmax; height: 46vmax; background: radial-gradient(circle, var(--mesh-1), transparent 65%); }
+.b2 { right: -12%; bottom: -14%; width: 52vmax; height: 52vmax; background: radial-gradient(circle, var(--mesh-3), transparent 65%); animation-delay: -16s; animation-duration: 56s; }
+.b3 { left: 30%; bottom: -20%; width: 44vmax; height: 40vmax; background: radial-gradient(circle, var(--mesh-4), transparent 65%); animation-delay: -30s; animation-duration: 62s; }
+@keyframes meshDrift {
+  0% { transform: translate3d(0, 0, 0) rotate(0deg) scale(1); }
+  50% { transform: translate3d(-2.5%, 1.5%, 0) rotate(5deg) scale(1.05); }
+  100% { transform: translate3d(2.5%, -1.5%, 0) rotate(-3deg) scale(1.02); }
+}
+@keyframes blobDrift {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(6vmax, -4vmax, 0) scale(1.12); }
+}
+@media (prefers-reduced-motion: reduce) { .wall, .blob { animation: none; } }

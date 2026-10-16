@@ -1581,20 +1581,36 @@ def run_user_command(user, payload):
     values = user_actions.parse_values(command, payload.get("values") or {})
     if command == "파산":
         job = queue_bot_job("relief_request", user["userId"], {"type": "파산", "name": user["nickname"]})
-        return True, f"⏳ 파산 신청을 Discord 봇에 전달했습니다 (#{job}). 봇이 관리자에게 DM으로 알립니다."
+        return True, f"⏳ 파산 신청을 Discord 봇에 전달했습니다 (#{job}). 봇이 관리자에게 DM으로 알립니다.", None
     if command == "주총소집":
         job = queue_bot_job("user_shareholder_meeting", user["userId"], {"code": values["code"], "place": values["place"]})
-        return True, f"⏳ 주주총회 소집을 Discord 봇에 전달했습니다 (#{job}). 봇이 주주들에게 DM을 보냅니다."
+        return True, f"⏳ 주주총회 소집을 Discord 봇에 전달했습니다 (#{job}). 봇이 주주들에게 DM을 보냅니다.", None
     from decimal import InvalidOperation
     trader = trading_user_id(user["userId"])
     try:
-        success, message = user_actions.execute(domain().bot, trader, command, values)
+        success, message, data = user_actions.execute(domain().bot, trader, command, values)
     except (KeyError, InvalidOperation, sqlite3.IntegrityError) as exc:
         raise ValueError(str(exc) or "명령어를 처리하지 못했습니다.") from exc
     except RuntimeError as exc:
         raise ValueError(str(exc)) from exc
     _read_cache.invalidate(("portfolio", trader), ("orders", trader))
-    return success, message
+    return success, message, data
+
+
+def user_lookups(user):
+    """Choices for the HTS command forms: products, the user's accounts and loans, countries."""
+    trader = trading_user_id(user["userId"])
+    with connect_readonly() as connection:
+        def rows(sql, params=()):
+            return [dict(row) for row in connection.execute(sql, params)] if _table_exists(connection, sql.split(" FROM ")[1].split()[0]) else []
+        return {
+            "savingProducts": rows("SELECT product_code AS code,name,interest_rate,deposit_amount,maturity_days,quote_currency,product_kind FROM saving WHERE status='active' ORDER BY product_kind,name"),
+            "loanProducts": rows("SELECT product_code AS code,name,interest_rate,loan_limit,maturity_days,min_credit_score,quote_currency FROM liability WHERE status='active' ORDER BY name"),
+            "accounts": [_masked(row) for row in rows("SELECT account_number,product_code,account_type,quote_currency,balance,balance_units FROM accounts WHERE user_id=? ORDER BY account_number", (trader,))],
+            "loans": rows("SELECT loan_id,product_code,outstanding_balance,quote_currency,maturity_epoch,status FROM loans WHERE user_id=? AND outstanding_balance>0 ORDER BY loan_id", (trader,)),
+            "futures": rows("SELECT product_code AS code,name FROM investment WHERE product_type='stock_future' AND status='active' ORDER BY name"),
+            "countries": [row["nationality"] for row in rows("SELECT nationality FROM country_currencies ORDER BY nationality")],
+        }
 
 
 def bot_jobs(limit=20):
@@ -1703,7 +1719,11 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, {"htsId": get_hts_login_id(user_id)})
             elif path == "/internal/hts/commands":
                 from functions.user_actions import catalog
-                self.send_json(200, {"commands": catalog()})
+                user = identity(internal_user_id(self))
+                if not user:
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    self.send_json(200, {"commands": catalog(), "lookups": user_lookups(user)})
             elif path == "/internal/market/instruments":
                 self.send_json(200, {"instruments": instruments()})
             elif path == "/internal/market/portfolio":
@@ -1896,8 +1916,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(403, {"error": "active_user_required"})
                 return
             if path == "/internal/hts/commands":
-                success, message = run_user_command(user, payload)
-                self.send_json(200 if success else 400, {"success": success, "message": message})
+                success, message, data = run_user_command(user, payload)
+                self.send_json(200 if success else 400, {"success": success, "message": message, "data": data})
             elif path == "/internal/hts/account":
                 hts_id = set_hts_login_id(user["userId"], payload.get("htsId"), payload.get("password"))
                 self.send_json(200, {"htsId": hts_id})
