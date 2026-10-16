@@ -136,6 +136,30 @@ class CountryAccountTests(unittest.TestCase):
         handler = SimpleNamespace(headers={"x-inazina-user-id": "%EB%82%99%EC%9B%90"})
         self.assertEqual(server.internal_user_id(handler), "낙원")
 
+    def _get(self, path, accept):
+        handler = object.__new__(server.Handler)
+        handler.path = path
+        handler.headers = {"accept": accept}
+        handler.send_response = Mock()
+        handler.send_header = Mock()
+        handler.end_headers = Mock()
+        handler.wfile = Mock()
+        handler.do_GET()
+        return handler.send_response.call_args[0][0], b"".join(call.args[0] for call in handler.wfile.write.call_args_list)
+
+    def test_browser_on_data_service_port_gets_a_page_not_json(self):
+        status, body = self._get("/", "text/html,application/xhtml+xml")
+        self.assertEqual(status, 200)
+        self.assertIn("내부 데이터 서비스".encode(), body)
+        self.assertIn(b"127.0.0.1:4313", body)
+        status, body = self._get("/internal/me", "text/html")
+        self.assertEqual(status, 404)
+        self.assertIn(b"/internal/me", body)
+        # Programmatic callers without the internal token still get the JSON error.
+        status, body = self._get("/internal/me", "*/*")
+        self.assertEqual(status, 401)
+        self.assertIn(b"internal_authentication_required", body)
+
     def test_json_response_ignores_client_disconnect_during_headers(self):
         handler = object.__new__(server.Handler)
         handler.send_response = Mock()

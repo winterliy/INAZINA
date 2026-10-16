@@ -1933,6 +1933,11 @@ class Handler(BaseHTTPRequestHandler):
         if not INTERNAL_TOKEN or not hmac.compare_digest(
             self.headers.get("x-inazina-internal-token", ""), INTERNAL_TOKEN
         ):
+            # A person who opens this port in a browser gets a page, not raw JSON;
+            # the API server always calls with the token and Accept: */*.
+            if "text/html" in self.headers.get("accept", ""):
+                self.send_landing(urlsplit(self.path).path)
+                return
             self.send_json(401, {"error": "internal_authentication_required"})
             return
 
@@ -2322,6 +2327,29 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(400, {"error": "database_rejected", "message": str(exc)})
         except sqlite3.Error:
             self.send_json(503, {"error": "database_unavailable"})
+
+    def send_landing(self, path):
+        from web_api.landing import landing_page
+        try:
+            with connect_readonly() as connection:
+                connection.execute("SELECT 1").fetchone()
+            database_ok = True
+        except sqlite3.Error:
+            database_ok = False
+        home = path in {"", "/", "/internal", "/internal/"}
+        body = landing_page("home" if home else "not_found", path, database_ok).encode("utf-8")
+        try:
+            self.send_response(200 if home else 404)
+            self.send_header("content-type", "text/html; charset=utf-8")
+            self.send_header("cache-control", "no-store")
+            self.send_header("content-security-policy",
+                             "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'")
+            self.send_header("x-content-type-options", "nosniff")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def send_json(self, status, payload):
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
