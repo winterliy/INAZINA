@@ -19,13 +19,14 @@ class LoanRateTests(unittest.TestCase):
         return AdminCommandsManager(self.bot).execute('admin', name, args)
 
     def loan(self, original=10, extension=20):
+        self.db.currency.execute("UPDATE country_currencies SET legal_max_rate=100 WHERE nationality='낙원'")
         args = 'LN loan 대출 %s 1000000 2 86400 0 Inazina 0 7' % original
         if extension is not None:
             args += ' %s' % extension
         self.command('상품생성', args)
         self.assertTrue(self.bot.bank_mgr.apply_loan('citizen', 'LN', 365000)[0])
         start = time.time() - 100 * 86400
-        self.db.accounts.execute("UPDATE loans SET created_at=datetime(?,'unixepoch'),last_payment_epoch=?,maturity_epoch=?,last_statutory_epoch=?", (start, start, start+2*86400, start))
+        self.db.accounts.execute("UPDATE loans SET created_at=datetime(?,'unixepoch'),last_payment_epoch=?,maturity_epoch=?", (start, start, start+2*86400))
         return start
 
     def balance(self):
@@ -126,7 +127,7 @@ class LoanRateTests(unittest.TestCase):
         self.assertIn('20%', registry._reply.call_args.kwargs['embed'].description)
         self.assertTrue(self.bot.bank_mgr.apply_loan(TREASURY_USER_ID, 'LN', 365000)[0])
         self.db.users.execute("UPDATE users SET credit_score=800 WHERE user_id=?", (TREASURY_USER_ID,))
-        self.db.accounts.execute("UPDATE loans SET created_at=datetime(?,'unixepoch'),last_payment_epoch=?,maturity_epoch=?,last_statutory_epoch=? WHERE user_id=?", (start, start, start+2*86400, start, TREASURY_USER_ID))
+        self.db.accounts.execute("UPDATE loans SET created_at=datetime(?,'unixepoch'),last_payment_epoch=?,maturity_epoch=? WHERE user_id=?", (start, start, start+2*86400, TREASURY_USER_ID))
         async def national():
             return ActionModal(self.bot, 'admin', '대출연장').execute(['LN'])
         with patch('managers.bank_manager.time.time', return_value=now):

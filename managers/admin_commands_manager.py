@@ -11,7 +11,7 @@ from managers.currency_exchange_manager import SCALE, MAX_UNITS, amount_units, d
 from managers.rate_manager import RateManager
 from functions.money import parse_currency_money
 
-COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값','서버설치',
+COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값','서버설치','소수점거래관리','상품이율수정',
             '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','환율수정',
             '국가생성','국가삭제',
             '복권가격설정','금리수정','시장금리수정','법정최고이자수정','자본변경','증자','정기배당수정','정기배당활성','특별배당실시','합병','액면분할병합',
@@ -23,6 +23,8 @@ TYPES = {'company':'stock','주식':'stock','자산':'asset','ETF':'etf','선물
          'preferred':'stock','preferredstock':'stock','우선주':'stock',
          **{k:k for k in ENTITIES}, **{v:k for k,v in KINDS.items()}}
 USAGE = {
+ '소수점거래관리':'[id] [0:on/1:off]',
+ '상품이율수정':'[대출상품id] [원이율%] [연장이율% · 0은 원이율 적용]',
  '상품수정':'[id] [상품종류] [유형별 순서형 인자 ...] [추가 JSON(선택)]',
  '상품가격수정':'[종목id] [add/del/modify] [금액]',
  '상품생성':'[id] [상품종류] [유형별 순서형 인자 ...] [추가 JSON(선택)]',
@@ -69,7 +71,9 @@ CREATE_ARGS = {
 }
 OPTIONAL_ARGS = {kind:('dividend_cycle_seconds','dividend_per_share')
                  for kind in ('stock','preferred','asset','etf','fund','indexfund','commodity')}
-OPTIONAL_ARGS['loan']=('extension_min_credit_score','extension_days')
+for _kind in tuple(OPTIONAL_ARGS):
+    OPTIONAL_ARGS[_kind] += ('Fractal',)
+OPTIONAL_ARGS['loan']=('extension_min_credit_score','extension_days','extension_interest_rate')
 for _kind,_fields in OPTIONAL_ARGS.items():
     CREATE_ARGS[_kind]+= _fields
 TEXT_ARGS = {'name','industry','exchange_id','underlying_exchange_id','underlying_code','issuer_code',
@@ -231,7 +235,7 @@ class AdminCommandsManager:
                    '국가삭제':1,
                    '금리수정':3,'시장금리수정':4,'법정최고이자수정':3,'정기배당수정':3,'정기배당활성':2,'특별배당실시':2,'합병':3,'액면분할병합':3,
                    '휴장':1,'개장':1,'장일시정지':1,'장재개':1,'서킷브레이커':2,'사이드카':1}
-            count.update({'법인잔고수정':3,'법인청산':1,'ELS취소':1})
+            count.update({'법인잔고수정':3,'법인청산':1,'ELS취소':1,'소수점거래관리':2,'상품이율수정':3})
             flexible = ((command=='기본소득' and len(args) in {1,2})
                         or (command=='자본변경' and len(args) in {4,5})
                         or (command=='증자' and len(args) in {3,4})
@@ -242,6 +246,23 @@ class AdminCommandsManager:
                         or (command=='서킷브레이커' and len(args) in {1,2}))
             if not flexible and command not in {'복권당첨번호변경'} and len(args)!=count.get(command,-1):
                 raise ValueError(f'사용법: ${command} {USAGE.get(command,"")}')
+            if command=='소수점거래관리':
+                if args[1] not in {'0','1'}:
+                    raise ValueError('0은 켜기, 1은 끄기입니다.')
+                with self.db.atomic() as conn:
+                    category, row = self.locate(conn,args[0])
+                    if category not in {'stock','asset','etf','fund','indexfund','commodity'}:
+                        raise ValueError('주식·우선주·ETF·펀드·현물 원자재만 소수점 거래를 지원합니다.')
+                    return self.control.entity(actor,category,'edit',args[0],extra={'Fractal':1-int(args[1])},conn=conn)
+            if command=='상품이율수정':
+                base = self.control._number(args[1],0,100)
+                extension = self.control._number(args[2],0,100)
+                from managers.interest_manager import InterestManager
+                with self.db.atomic() as conn:
+                    InterestManager(self.db).settle_product_rate_boundary(conn,args[0],time.time())
+                    self.control.entity(actor,'loan','edit',args[0],extra={'interest_rate':base,'extension_interest_rate':extension},conn=conn)
+                    conn.execute("UPDATE loans SET contract_rate=CASE WHEN extension_count>0 AND ?>0 THEN ? ELSE ? END WHERE product_code=? AND status='active' AND rate_type='fixed'", (extension,extension,base,args[0]))
+                return f'✅ {args[0]} 원이율 연 {base:g}% · 연장이율 {extension:g}%로 수정했습니다.'
             if command in {'휴장','개장','장일시정지','장재개','서킷브레이커','사이드카'}:
                 from managers.market_session_manager import MarketSessionManager
                 actions={'휴장':'close','개장':'open','장일시정지':'pause','장재개':'resume','서킷브레이커':'circuit','사이드카':'sidecar'}
@@ -427,9 +448,11 @@ class AdminCommandsManager:
             else:
                 order=CREATE_ARGS[profile]
                 optional=OPTIONAL_ARGS.get(profile,())
-                if len(tokens) not in {len(order),len(order)-len(optional)}:
+                if len(tokens) not in range(len(order)-len(optional), len(order)+1):
                     raise ValueError('사용법: '+creation_usage(kind,'상품수정' if operation=='edit' else '상품생성'))
                 fields={}
+                if 'Fractal' in optional and len(tokens)==len(order)-len(optional)+1:
+                    fields['Fractal']=int(tokens.pop())
                 for key,value in zip(order,tokens):
                     if key=='components':
                         fields[key]={}
@@ -508,7 +531,7 @@ class AdminCommandsManager:
         with self.db.atomic() as conn:
             self.control.require(actor,conn)
             currency_account=conn.execute("SELECT *,quote_currency AS currency_code FROM accounts WHERE account_number=? AND account_type='currency_saving'",(identity,)).fetchone()
-            bank=conn.execute('SELECT * FROM accounts WHERE account_number=?',(identity,)).fetchone()
+            bank=conn.execute("SELECT * FROM accounts WHERE account_number=? AND account_type<>'currency_saving'",(identity,)).fetchone()
             user=conn.execute('SELECT * FROM users WHERE user_id=?',(identity,)).fetchone()
             if sum(bool(x) for x in (currency_account,bank,user))!=1:
                 raise ValueError('사용자 ID 또는 계좌번호를 확인해주세요.')
@@ -547,17 +570,28 @@ class AdminCommandsManager:
 
     def currency(self,conn,actor,a,b,raw_ratio):
         a,b=a.upper(),b.upper()
-        if a==b or a=='NWX':raise ValueError('서로 다른 통화를 입력하고, 변경 대상 A는 외화로 입력해주세요.')
+        if a==b:raise ValueError('서로 다른 통화를 입력해주세요.')
         ratio=Decimal(raw_ratio)
         if not ratio.is_finite() or ratio<=0:raise ValueError('비율은 0보다 큰 유한한 값이어야 합니다.')
+        if a == 'NWX':
+            a,b,ratio = b,a,Decimal(1)/ratio
         ar=self.bot.currency_mgr._rate(conn,a);br=self.bot.currency_mgr._rate(conn,b)
-        row=conn.execute("SELECT asset_code FROM currencies WHERE code=? AND status='active'",(a,)).fetchone()
+        row=conn.execute("SELECT * FROM currencies WHERE code=? AND status='active'",(a,)).fetchone()
+        if row['reference_rate'] is not None or br*ratio < 1:
+            from managers.currency_manager import CurrencyManager
+            from fractions import Fraction
+            current = CurrencyManager.rate_fraction(conn,a)
+            target_rate = CurrencyManager.rate_fraction(conn,b)*Fraction(ratio)
+            multiplier = Fraction(str(row['rate_multiplier']))*target_rate/current
+            conn.execute('UPDATE currencies SET rate_multiplier=? WHERE code=?',(str(multiplier),a))
+            self.control._audit(conn,actor,'currency.cross_rate',{'a':a,'b':b,'ratio':str(ratio)})
+            return f'✅ 1 {a} = {ratio:.12g} {b}'
         target=int((br*ratio).to_integral_value(rounding=ROUND_HALF_UP))
         self.control._number(target,1,integer=True)
-        conn.execute('UPDATE market_assets SET price=? WHERE code=?',(target,row[0]))
-        conn.execute('DELETE FROM market_simulation_state WHERE asset_code=?',(row[0],))
+        conn.execute('UPDATE market_assets SET price=? WHERE code=?',(target,row['asset_code']))
+        conn.execute('DELETE FROM market_simulation_state WHERE asset_code=?',(row['asset_code'],))
         from managers.market_manager import MarketManager
-        MarketManager(self.db).clear_runtime_targets(row[0],conn=conn)
+        MarketManager(self.db).clear_runtime_targets(row['asset_code'],conn=conn)
         self.control._audit(conn,actor,'currency.cross_rate',{'a':a,'b':b,'ratio':str(ratio),'before':str(ar),'after':target})
         return f'✅ 1 {a} = {Decimal(target)/br:.12g} {b} · {a} 시세 {target:,} NWX (정수 호가 반올림)'
 

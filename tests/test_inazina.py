@@ -55,6 +55,8 @@ class InazinaTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def seed(self):
+        # FX scenarios require a home currency distinct from the USD account.
+        self.db.users.execute("UPDATE users SET nationality='낙원' WHERE user_id='citizen'")
         return CatalogManager(self.db).seed()
 
     def test_only_one_database_and_cross_manager_atomic_rollback(self):
@@ -97,7 +99,7 @@ class InazinaTests(unittest.TestCase):
         self.assertEqual(self.db.users.get_user('citizen')['cash'],985000)
         self.assertEqual(self.db.accounts.execute_one("SELECT balance_units FROM accounts WHERE user_id='citizen' AND account_type='currency_saving'")[0],9_990_000)
         self.assertEqual(self.db.users.get_treasury_balance(),10000015)
-        self.assertEqual(self.bot.currency_mgr.national_currency('citizen'),('미국','USD'))
+        self.assertEqual(self.bot.currency_mgr.national_currency('citizen'),('낙원','NWX'))
         self.db.assets.update_price('CUR_USD',1600)
         rows=self.bot.currency_mgr.accounts('citizen')
         self.assertEqual(rows[0]['value_nwx'],15984)
@@ -355,6 +357,7 @@ class InazinaTests(unittest.TestCase):
 
     def test_linked_event_replacement_uses_displayed_overlay_and_currency_prefers_nationality(self):
         self.seed()
+        self.db.users.execute("UPDATE users SET nationality='미국' WHERE user_id='citizen'")
         now=int(time.time())
         self.db.assets.execute("INSERT INTO market_quote_overrides VALUES ('INZCB001',1400,?,'event')",(now,))
         success,message=self.bot.admin_mgr.create_market_event('admin','good',50,'INZCB001',10,now=now)

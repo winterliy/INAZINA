@@ -230,6 +230,15 @@ class AdminControlManager:
                         raise ValueError('현재 인덱스 펀드는 주식 거래소 지수만 추종하므로 주식형만 지원합니다.')
                     values['fund_category'] = 'equity'
             merged = {**(dict(existing) if existing else {}),**values}
+            if 'Fractal' in values or merged.get('Fractal') == 1:
+                from functions.quantities import validate_fractional_setting
+                asset_type = 'stock' if category == 'stock' else KINDS.get(category, merged.get('type'))
+                enabled = validate_fractional_setting(conn, table, key, code,
+                    values.get('Fractal', merged.get('Fractal', 0)), asset_type, merged.get(supply_key))
+                if 'Fractal' in values:
+                    values['Fractal'] = enabled
+            if 'extension_interest_rate' in values and values['extension_interest_rate'] is not None:
+                values['extension_interest_rate'] = self._number(values['extension_interest_rate'], 0, 100)
             money_fields = {
                 'stock': {'capital','share_price','liquidation_value_per_share','dividend_per_share'},
                 'asset': {'price','dividend_per_share'},

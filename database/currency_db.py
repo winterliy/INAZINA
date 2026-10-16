@@ -21,6 +21,17 @@ class CurrencyDB(DBManager):
                 self.execute(f"ALTER TABLE currencies ADD COLUMN {column} {definition}")
         self.execute("INSERT OR IGNORE INTO currencies(code,name) VALUES ('NWX','낙원자화')")
         self.execute("UPDATE currencies SET decimal_places=0 WHERE code='NWX'")
+        self.execute("""CREATE TABLE IF NOT EXISTS currency_transactions (
+            transaction_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
+            source_currency TEXT NOT NULL, target_currency TEXT NOT NULL,
+            source_units INTEGER NOT NULL, target_units INTEGER NOT NULL,
+            fee_nwx INTEGER NOT NULL, recorded_epoch REAL NOT NULL)""")
+        self.execute("""CREATE TABLE IF NOT EXISTS currency_transfer_transactions (
+            transaction_id INTEGER PRIMARY KEY AUTOINCREMENT, sender_id TEXT NOT NULL,
+            recipient_id TEXT NOT NULL, source_account TEXT, target_account TEXT,
+            source_currency TEXT NOT NULL, target_currency TEXT NOT NULL,
+            source_units INTEGER NOT NULL, target_units INTEGER NOT NULL,
+            fee_nwx INTEGER NOT NULL, recorded_epoch REAL NOT NULL)""")
         self.execute("""CREATE TABLE IF NOT EXISTS basic_income_payments (
             payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
             batch_id TEXT NOT NULL, user_id TEXT NOT NULL,

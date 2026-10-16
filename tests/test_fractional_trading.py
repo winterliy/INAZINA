@@ -124,12 +124,14 @@ class FractionalTradingTests(unittest.TestCase):
     def test_foreign_currency_minor_units_and_national_trade(self):
         with self.db.atomic() as conn:
             conn.execute("INSERT INTO currencies(code,name,reference_rate,decimal_places) VALUES ('USD','달러','1500',2)")
-            conn.execute("INSERT INTO country_currencies VALUES ('미국','USD')")
+            conn.execute("INSERT INTO country_currencies(nationality,currency_code) VALUES ('미국','USD')")
+            conn.execute("UPDATE users SET nationality='낙원' WHERE user_id='citizen'")
+            conn.execute("INSERT INTO accounts(account_number,user_id,product_code,account_type,quote_currency,balance_units) VALUES ('USD_ACCOUNT','citizen','USD_SAVE','currency_saving','USD',0)")
             CurrencyManager.change(conn, 'citizen', 'USD', 10*SCALE)
         self.stock(price=1)
         self.command('상품생성', 'US company 미국주식 게임 100000 10 1 EX 1 {"quote_currency":"USD"}')
         self.assertTrue(self.bot.order_book.place_limit_order('citizen', 'US', 'buy', '.005', 1)[0])
-        self.assertEqual(self.db.currency.execute_one("SELECT balance_units FROM currency_wallets WHERE user_id='citizen' AND currency_code='USD'")[0], 9990000)
+        self.assertEqual(self.db.accounts.execute_one("SELECT balance_units FROM accounts WHERE account_number='USD_ACCOUNT'")[0], 9990000)
         self.assertEqual(self.holding('citizen', 'US'), .005)
         async def national():
             return ActionModal(self.bot, 'admin', '매수').execute(['ST', '.5', '1'])

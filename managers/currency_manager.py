@@ -277,7 +277,8 @@ class CurrencyManager:
         mapping = conn.execute("SELECT n.currency_code FROM country_currencies n JOIN currencies c ON c.code=n.currency_code WHERE nationality=? AND c.status='active'",(nationality,)).fetchone()
         if not mapping:
             raise ValueError('등록 국가의 활성 통화를 먼저 설정해주세요.')
-        source=conn.execute("SELECT value FROM settings WHERE key='default_currency'").fetchone()[0]
+        default = conn.execute("SELECT value FROM settings WHERE key='default_currency'").fetchone()
+        source = default[0] if default else 'NWX'
         home=mapping[0]
         grant=cls.convert(conn,1_000_000*SCALE,source,home)
         if grant <= 0:
@@ -296,22 +297,51 @@ class CurrencyReadSnapshot:
 
     def __init__(self, conn):
         self.conn = conn
-        self.rows = {r['code']: dict(r) for r in conn.execute(
-            "SELECT c.*, a.price AS asset_price, "
-            "(SELECT GROUP_CONCAT(n.nationality, ', ') FROM country_currencies n "
-            "WHERE n.currency_code=c.code ORDER BY n.nationality) AS countries "
-            "FROM currencies c "
-            "LEFT JOIN market_assets a ON a.code=c.asset_code AND a.status='active' "
-            "WHERE c.status='active' ORDER BY c.code")}
+        self.rows = {r['code']: dict(r) for r in conn.execute("""
+            WITH cash AS (
+                SELECT n.currency_code, SUM(u.cash) AS total,
+                    SUM(CASE WHEN u.user_id=? THEN u.cash ELSE 0 END) AS treasury
+                FROM users u JOIN country_currencies n ON n.nationality=u.nationality
+                GROUP BY n.currency_code
+            ), savings AS (
+                SELECT n.currency_code, SUM(a.balance) AS total,
+                    SUM(CASE WHEN a.user_id=? THEN a.balance ELSE 0 END) AS treasury
+                FROM accounts a JOIN users u ON u.user_id=a.user_id
+                JOIN country_currencies n ON n.nationality=u.nationality
+                WHERE a.account_type<>'currency_saving' GROUP BY n.currency_code
+            ), foreign_savings AS (
+                SELECT quote_currency AS currency_code, SUM(balance_units) AS total,
+                    SUM(CASE WHEN user_id=? THEN balance_units ELSE 0 END) AS treasury
+                FROM accounts WHERE account_type='currency_saving' GROUP BY quote_currency
+            )
+            SELECT c.*, a.price AS asset_price,
+                (SELECT GROUP_CONCAT(n.nationality, ', ') FROM country_currencies n
+                 WHERE n.currency_code=c.code ORDER BY n.nationality) AS countries,
+                cash.total AS cash_total, cash.treasury AS cash_treasury,
+                savings.total AS savings_total, savings.treasury AS savings_treasury,
+                foreign_savings.total AS foreign_total, foreign_savings.treasury AS foreign_treasury,
+                s.baseline_supply_units, s.baseline_circulation_ratio,
+                s.issuance_elasticity, s.circulation_elasticity, s.min_multiplier, s.max_multiplier
+            FROM currencies c
+            LEFT JOIN market_assets a ON a.code=c.asset_code AND a.status='active'
+            LEFT JOIN cash ON cash.currency_code=c.code
+            LEFT JOIN savings ON savings.currency_code=c.code
+            LEFT JOIN foreign_savings ON foreign_savings.currency_code=c.code
+            LEFT JOIN currency_liquidity_state s ON s.currency_code=c.code
+            WHERE c.status='active' ORDER BY c.code
+            """, (TREASURY_USER_ID, TREASURY_USER_ID, TREASURY_USER_ID))}
         self._rates = {}
-        self._liquidity_states = {
-            row['currency_code']: dict(row)
-            for row in conn.execute('SELECT * FROM currency_liquidity_state')
-        }
-        self._liquidity_totals = {
-            code: CurrencyManager._liquidity_totals(conn, code)
-            for code in self.rows
-        }
+        self._liquidity_states = {}
+        self._liquidity_totals = {}
+        for code, row in self.rows.items():
+            self._liquidity_states[code] = row if row['baseline_supply_units'] is not None else {}
+            total = (int(Decimal(str(row['cash_total'] or 0))*SCALE)
+                     + int(Decimal(str(row['savings_total'] or 0))*SCALE)
+                     + int(row['foreign_total'] or 0))
+            treasury = (int(Decimal(str(row['cash_treasury'] or 0))*SCALE)
+                        + int(Decimal(str(row['savings_treasury'] or 0))*SCALE)
+                        + int(row['foreign_treasury'] or 0))
+            self._liquidity_totals[code] = max(0, total), max(0, total-treasury)
 
     def row(self, code):
         row = self.rows.get(str(code).upper())

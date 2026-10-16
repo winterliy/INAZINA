@@ -13,6 +13,10 @@ class CurrencyLiquidityTests(unittest.TestCase):
         self.db.currency.execute(
             "INSERT INTO currencies(code,name,reference_rate) VALUES ('LQD','유동화폐','100')"
         )
+        # Foreign balances are now held in explicit currency-saving accounts.
+        self.db.accounts.execute("INSERT INTO saving(product_code,name,product_kind,quote_currency,interest_rate,issuer) VALUES ('LQD_SAVE','유동화폐 통장','currency_saving','LQD',0,'Bank')")
+        self.bot.currency_mgr.open_account('citizen', 'LQD_SAVE')
+        self.bot.currency_mgr.open_account(TREASURY_USER_ID, 'LQD_SAVE')
 
     def test_supply_expansion_weakens_quote_from_first_issuance_baseline(self):
         self._currency()

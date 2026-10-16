@@ -17,7 +17,7 @@ from functions.interaction_reliability import (
 )
 from functions.interaction_checks import owner_interaction_check
 from functions.price_chart import render_price_chart, render_rate_chart
-from functions.technical_indicators import UPPER_INDICATORS, LOWER_INDICATORS, candle_interval, KST
+from functions.technical_indicators import UPPER_INDICATORS, LOWER_INDICATORS, candle_interval, build_candles, KST
 from managers.market_manager import EXCHANGE_INDEX_PREFIX
 from managers.rate_manager import RateManager
 from managers.currency_exchange_manager import CurrencyExchangeManager
@@ -1564,6 +1564,8 @@ class PriceMovementView(discord.ui.View):
             trades=None if is_exchange_index else [(int(row["recorded_epoch"]), int(row["quantity"]), float(row["price"])) for row in trade_rows],
             candle_seconds=self.period_seconds,
             horizontal_levels=els_levels,
+            price_candles=[{key: value for key, value in candle.items() if key != 'volume'}
+                           for candle in build_candles(points, [], self.period_seconds)],
         )
         visible_points = [(epoch, price) for epoch, price in points if epoch >= since] or [(now, current_price)]
         first_price, last_price = visible_points[0][1], visible_points[-1][1]
@@ -1744,7 +1746,7 @@ class MyOrdersView(discord.ui.View):
                 options.append(discord.SelectOption(
                     label=f"#{order['order_id']} {side} · {order['asset_code']}"[:100],
                     description=(
-                        f"잔량 {int(order['remaining_quantity']):,} · "
+                        f"잔량 {order['remaining_quantity']:,} · "
                         f"지정가 {int(order['limit_price']):,} {order.get('quote_currency','NWX')}"
                     )[:100],
                     value=str(order["order_id"]),
@@ -1796,9 +1798,9 @@ class MyOrdersView(discord.ui.View):
             )
             lines.append(
                 f"**#{order['order_id']} {side} · {status_names.get(order['status'], order['status'])}** "
-                f"`{order['asset_code']}` · 체결 {int(order['filled_quantity']):,}/"
-                f"{int(order['quantity']):,}{unit}"
-                + (f" · 잔량 {int(order['remaining_quantity']):,}{unit}" if active else "")
+                f"`{order['asset_code']}` · 체결 {order['filled_quantity']:,}/"
+                f"{order['quantity']:,}{unit}"
+                + (f" · 잔량 {order['remaining_quantity']:,}{unit}" if active else "")
                 + (f" · {order.get('scheduled_reason') or '개장 대기'}" if order['status'] == 'scheduled' else "")
                 + f" · 지정가 {int(order['limit_price']):,} {order.get('quote_currency','NWX')}{reserve}"
             )

@@ -1,5 +1,6 @@
 """Foreign-currency stock/spot orders using the common price-time order book."""
 import time
+from decimal import Decimal
 from database.user_db import TREASURY_USER_ID
 from managers.currency_exchange_manager import CurrencyExchangeManager,SCALE,MAX_UNITS
 from managers.currency_manager import CurrencyManager
@@ -122,6 +123,9 @@ class ForeignSecuritiesManager:
                 self.credit_units(conn,buy['user_id'],currency,improvement*SCALE)
             self.add_position(conn,buy['user_id'],asset['code'],buy['funding_account'],quantity,price)
             if primary:
+                if CurrencyManager.home(conn,TREASURY_USER_ID) != currency:
+                    from managers.corporate_actions_manager import CorporateActionsManager
+                    CorporateActionsManager._currency_account(conn,TREASURY_USER_ID,currency,now)
                 self.credit_units(
                     conn,TREASURY_USER_ID,currency,
                     int(round(round_currency(conn,quantity*price,currency)*SCALE))
@@ -144,7 +148,7 @@ class ForeignSecuritiesManager:
                 if left:
                     raise ValueError('매도 예약 수량과 보유 수량이 달라 체결을 취소했습니다.')
                 rate=CurrencyExchangeManager._rate(conn,currency)
-                tax=self.users._tax(conn,sell['user_id'],'foreign_security_sale_gain',gain*rate)
+                tax=self.users._tax(conn,sell['user_id'],'foreign_security_sale_gain',Decimal(str(gain))*rate)
                 tax_units=(tax*SCALE+rate-1)//rate
                 proceeds_units = int(round(
                     round_currency(conn,quantity*price,currency)*SCALE

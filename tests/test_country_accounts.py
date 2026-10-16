@@ -163,7 +163,7 @@ class CountryAccountTests(unittest.TestCase):
         users = UserDB()
         treasury = users.get_user(TREASURY_USER_ID)
         self.assertEqual(treasury["cash"], 98765)
-        self.assertEqual(treasury["status"], "nation")
+        self.assertEqual(treasury["status"], "active")
         self.assertEqual(treasury["role"], "nation")
         users.close()
 

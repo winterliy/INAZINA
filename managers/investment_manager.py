@@ -288,6 +288,10 @@ class InvestmentManager:
         product = self.db.products.get_investment(code)
         if not product or product["product_type"] not in FUND_TYPES:
             return False, "❌ 일반·인덱스 펀드 코드를 입력해주세요."
+        if product['Fractal']:
+            from managers.fractional_trading_manager import FractionalTradingManager
+            from managers.order_book_manager import OrderBookManager
+            return FractionalTradingManager(OrderBookManager(self.db,self.users)).trade_at_nav(str(user_id),str(code),quantity,sell=redeem)
         if isinstance(quantity, bool) or not isinstance(quantity, int) or not 1 <= quantity <= 2**53 - 1:
             return False, "❌ 좌수는 1 이상의 정수여야 합니다."
         # UserManager's fund paths include NAV cash settlement with the game treasury.

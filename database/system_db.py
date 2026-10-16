@@ -185,8 +185,8 @@ class SystemDB(DBManager):
         )}
         if "market_exchange_indices" in legacy_tables:
             self.execute("""INSERT OR IGNORE INTO market_exchanges
-                (exchange_id, index_value, index_updated_epoch)
-                SELECT exchange_id, index_value, updated_epoch
+                (exchange_id, index_value, index_updated_epoch,status,updated_epoch)
+                SELECT exchange_id, index_value, updated_epoch,'open',updated_epoch
                 FROM market_exchange_indices""")
             self.execute("""UPDATE market_exchanges
                 SET index_value=(SELECT index_value FROM market_exchange_indices old

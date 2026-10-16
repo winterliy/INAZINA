@@ -9,7 +9,7 @@ import shlex
 
 from database.user_db import TREASURY_USER_ID
 from functions.admin_access import BOOTSTRAP_ADMIN_IDS, resolve_user_role
-from functions.interaction_reliability import discord_request
+from functions.interaction_reliability import discord_request, retry_discord_request
 from functions.shared_actions import execute_shared_action
 from functions.discord_views import (
     AccountCloseView,
@@ -1119,7 +1119,6 @@ class SlashCommandRegistry:
 
     async def search(self, interaction: discord.Interaction):
         user_id, _user_data, _role = await self._prepare(interaction)
-        await asyncio.to_thread(self.bot.interest_mgr.process_user_interests, user_id)
         view = InfoPanelView(self.bot, user_id)
         try:
             await self._reply(interaction, embed=view.build_embed(), view=view)

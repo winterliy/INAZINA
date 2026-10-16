@@ -171,6 +171,8 @@ class CurrencyExchangeManager:
             treasury = conn.execute("UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?", (fee,TREASURY_USER_ID,MAX_UNITS-fee))
             if treasury.rowcount != 1:
                 raise ValueError("국고 잔액 한도를 초과했습니다.")
+            conn.execute('INSERT INTO currency_transactions(user_id,source_currency,target_currency,source_units,target_units,fee_nwx,recorded_epoch) VALUES (?,?,?,?,?,?,?)',
+                (str(user_id),source,target,units,output,fee,now))
             return f"✅ {display_units(units)} {source} → {display_units(output)} {target} · 수수료 {fee:,} NWX"
 
     def accounts(self, user_id):
@@ -287,7 +289,8 @@ class CurrencyExchangeManager:
                 units = requested_units
                 CurrencyManager.validate_units(conn, units, src[5])
                 output = units
-            output = output//dst[6]*dst[6]
+            quantum = 10**(6-CurrencyManager.precision(conn,dst[5]))
+            output = output//quantum*quantum
             if not 1<=output<=MAX_UNITS:
                 raise ValueError('환전 결과가 최소 단위 미만이거나 한도를 초과합니다.')
             debit,credit = units,output
@@ -348,6 +351,8 @@ class CurrencyExchangeManager:
             if changed.rowcount!=1:
                 raise ValueError('국고 잔액 한도를 초과했습니다.')
             destination_label = '국고' if dst[4] == TREASURY_USER_ID else recipient
+            conn.execute('INSERT INTO currency_transfer_transactions(sender_id,recipient_id,source_account,target_account,source_currency,target_currency,source_units,target_units,fee_nwx,recorded_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                (sender,dst[4],source_account,recipient,src[5],dst[5],units,output,fee,now))
             sources_label = ', '.join(debited_sources)
             basis_label = (
                 f'환전 기준 {display_units(requested_units)} {dst[5]} · '

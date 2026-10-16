@@ -96,14 +96,14 @@ class MarketSessionTests(unittest.TestCase):
         self.db.close()
         self.db = DatabaseManager()
         restored = MarketSessionManager(self.db)
-        self.assertEqual(restored.get_state(now=1309)["status"], "paused")
-        self.assertEqual(restored.get_state(now=1400)["status"], "open")
+        self.assertEqual(restored.get_state('EX',now=1309)["status"], "paused")
+        self.assertEqual(restored.get_state('EX',now=1400)["status"], "open")
         target = self.db.system.execute_one("SELECT * FROM market_event_targets")
         self.assertEqual((target["start_epoch"], target["end_epoch"]), (1300, 1420))
-        audit = self.db.system.execute("SELECT * FROM admin_audit WHERE action='market_auto_resume'")
+        audit = self.db.system.execute("SELECT * FROM admin_audit WHERE action='market_auto_resume' AND json_extract(payload,'$.exchange_id')='EX'")
         self.assertEqual(len(audit), 1)
         restored.process_due(now=1500)
-        self.assertEqual(len(self.db.system.execute("SELECT * FROM admin_audit WHERE action='market_auto_resume'")), 1)
+        self.assertEqual(len(self.db.system.execute("SELECT * FROM admin_audit WHERE action='market_auto_resume' AND json_extract(payload,'$.exchange_id')='EX'")), 1)
 
     def test_event_created_during_pause_begins_at_reopen(self):
         self.session.control("admin", "pause", now=1000)
@@ -149,18 +149,18 @@ class MarketSessionTests(unittest.TestCase):
             self.session.control("admin", "open", now=1000)
             ok, message = self.session.control("admin", "circuit", stage=stage, now=1000)
             self.assertTrue(ok, message)
-            self.assertEqual(self.session.get_state(now=1000)["resume_epoch"], 2200)
+            self.assertEqual(self.session.get_state('EX',now=1000)["resume_epoch"], 2200)
             self.assertFalse(self.session.control("admin", "sidecar", now=1100)[0])
-            self.assertEqual(self.session.get_state(now=2199)["status"], "paused")
-            self.assertEqual(self.session.get_state(now=2200)["status"], "open")
+            self.assertEqual(self.session.get_state('EX',now=2199)["status"], "paused")
+            self.assertEqual(self.session.get_state('EX',now=2200)["status"], "open")
         now = 1791000000
         self.assertTrue(self.session.control("admin", "circuit", stage=3, now=now)[0])
-        deadline = self.session.get_state(now=now)["resume_epoch"]
+        deadline = self.session.get_state('EX',now=now)["resume_epoch"]
         self.assertEqual(deadline, MarketSessionManager.next_day_epoch(now))
-        self.assertEqual(self.session.get_state(now=deadline)["status"], "open")
+        self.assertEqual(self.session.get_state('EX',now=deadline)["status"], "open")
         self.session.control("admin", "close", now=deadline)
         self.assertFalse(self.session.control("admin", "sidecar", now=deadline)[0])
-        self.assertEqual(self.session.get_state(now=deadline+999999)["status"], "closed")
+        self.assertEqual(self.session.get_state('EX',now=deadline+999999)["status"], "closed")
 
     def test_new_trades_are_blocked_without_debits_and_cancel_refunds_during_halt(self):
         cash = self.db.users.get_user("alice")["cash"]
@@ -170,18 +170,24 @@ class MarketSessionTests(unittest.TestCase):
         self.assertEqual(after_reserve, cash-10)
         self.session.control("admin", "pause")
         for trade in (
-            lambda: self.book.place_limit_order("alice", "CO", "buy", 1, 10000),
             lambda: self.users.buy_asset("alice", "CO", 1),
             lambda: self.users.sell_asset("alice", "CO", 1),
             lambda: self.options.create_and_write("alice", "CO", "put", 10000, 1, 1, 100),
         ):
             ok, message = trade()
             self.assertFalse(ok)
-            self.assertIn("시장", message)
+            self.assertIn("거래소", message)
         self.assertEqual(self.db.users.get_user("alice")["cash"], after_reserve)
         self.assertTrue(self.book.cancel_order("alice", order_id)[0])
         self.assertEqual(self.db.users.get_user("alice")["cash"], cash)
         self.assertEqual(self.db.assets.execute_one("SELECT COUNT(*) FROM user_assets")[0], 0)
+        # Limit orders may be reserved during a halt, but cannot execute.
+        self.assertTrue(self.book.place_limit_order('alice','CO','buy',1,10000)[0])
+        scheduled = self.db.assets.execute_one("SELECT * FROM market_orders WHERE status='scheduled'")
+        self.assertEqual(scheduled['remaining_quantity'],1)
+        self.assertEqual(self.db.users.get_user('alice')['cash'],cash-10000)
+        self.assertTrue(self.book.cancel_order('alice',scheduled['order_id'])[0])
+        self.assertEqual(self.db.users.get_user('alice')['cash'],cash)
 
     def test_foreign_option_and_fund_native_entry_points_cannot_bypass_halt(self):
         self.assertTrue(self.products.issue("admin", "MF", "Fund", "mutual_fund",
@@ -193,14 +199,15 @@ class MarketSessionTests(unittest.TestCase):
         self.session.control("admin", "close")
         for action in (
             lambda: self.options.place_limit_order("bob", code, "buy", 1, 100),
-            lambda: ForeignSecuritiesManager(self.book).order("bob", "CO", "buy", 1, 100),
             lambda: self.products.trade_fund("bob", "MF", 1),
             lambda: self.products.trade_fund("alice", "MF", 1, redeem=True),
         ):
             ok, message = action()
             self.assertFalse(ok, message)
-            self.assertIn("시장", message)
+            self.assertIn("거래소", message)
         self.assertEqual(self.db.users.get_user("bob")["cash"], cash)
+        self.assertTrue(ForeignSecuritiesManager(self.book).order('bob','CO','buy',1,100)[0])
+        self.assertEqual(self.db.assets.execute_one("SELECT status FROM market_orders WHERE user_id='bob'")[0],'scheduled')
 
     def test_option_maturity_release_and_bond_maturity_redemption_continue(self):
         self.assertTrue(self.users.buy_asset("alice", "CO", 1)[0])
@@ -244,7 +251,7 @@ class MarketSessionTests(unittest.TestCase):
                 for elapsed in range(1, 121):
                     now = 1000+elapsed
                     shock = 30 if elapsed % 10 < 5 else -30
-                    price = MarketManager._event_target_price(conn, "CO", previous, now, (),
+                    price = self.market._event_target_price(conn, "CO", previous, now, (),
                                                              sample_noise=lambda target: (shock, 0))
                     baseline = 10000 + (goal-10000)*elapsed/120
                     radius = min(baseline*.10, max(abs(goal-10000)*.12, baseline*.02))

@@ -1,4 +1,5 @@
 """European, physically settled options backed by segregated collateral."""
+from functions.quantities import quantity_number
 
 import math
 import time
@@ -195,7 +196,7 @@ class OptionManager:
                         "AND status IN ('open', 'partial')",
                         (writer_id, underlying_code),
                     ).fetchone()
-                    available = sum(int(row["quantity"]) for row in positions) - int(reserved["quantity"] or 0)
+                    available = quantity_number(sum(quantity_number(row["quantity"]) for row in positions) - quantity_number(reserved["quantity"] or 0))
                     if available < quantity:
                         return False, (
                             f"❌ 커버드 콜 담보 주식이 부족합니다. 필요 {quantity:,}주, "
@@ -203,10 +204,10 @@ class OptionManager:
                         )
                     left = quantity
                     for position in positions:
-                        take = min(left, int(position["quantity"]))
+                        take = min(left, quantity_number(position["quantity"]))
                         if take:
                             call_lots.append((position, take))
-                            left -= take
+                            left = quantity_number(left-take)
                         if left == 0:
                             break
                 else:
@@ -237,7 +238,7 @@ class OptionManager:
 
                 if option_type == "call":
                     for position, take in call_lots:
-                        current = int(position["quantity"])
+                        current = quantity_number(position["quantity"])
                         if take == current:
                             changed = conn.execute(
                                 "DELETE FROM assets.user_assets WHERE holding_id = ? AND quantity = ?",
@@ -665,11 +666,11 @@ class OptionManager:
             "ON CONFLICT(user_id, asset_code, IFNULL(account_number, '')) DO UPDATE SET "
             "average_cost = ((quantity * average_cost) + (excluded.quantity * excluded.average_cost)) "
             "/ (quantity + excluded.quantity), quantity = quantity + excluded.quantity",
-            (str(user_id), code, account_number, int(quantity), int(unit_cost)),
+            (str(user_id), code, account_number, quantity_number(quantity), int(unit_cost)),
         )
 
     def _take_share_collateral(self, conn, contract_id, quantity):
-        left = int(quantity)
+        left = quantity_number(quantity)
         taken = []
         rows = conn.execute(
             "SELECT * FROM assets.option_collateral_lots WHERE contract_id = ? "
@@ -677,10 +678,10 @@ class OptionManager:
             (contract_id,),
         ).fetchall()
         for row in rows:
-            take = min(left, int(row["quantity"]))
+            take = min(left, quantity_number(row["quantity"]))
             if take <= 0:
                 continue
-            if take == int(row["quantity"]):
+            if take == quantity_number(row["quantity"]):
                 conn.execute(
                     "DELETE FROM assets.option_collateral_lots WHERE collateral_id = ?",
                     (row["collateral_id"],),
@@ -691,8 +692,8 @@ class OptionManager:
                     "WHERE collateral_id = ?",
                     (take, row["collateral_id"]),
                 )
-            taken.append((int(take), int(row["average_cost"] or 0)))
-            left -= take
+            taken.append((quantity_number(take), int(row["average_cost"] or 0)))
+            left = quantity_number(left-take)
             if left == 0:
                 break
         if left:
@@ -711,13 +712,13 @@ class OptionManager:
             "ORDER BY collateral_id",
             (contract_id,),
         ).fetchall()
-        left = sum(int(row["quantity"]) for row in rows) if quantity is None else int(quantity)
+        left = sum(quantity_number(row["quantity"]) for row in rows) if quantity is None else quantity_number(quantity)
         to_release = left
         for row in rows:
-            take = min(left, int(row["quantity"]))
+            take = min(left, quantity_number(row["quantity"]))
             if take <= 0:
                 continue
-            if take == int(row["quantity"]):
+            if take == quantity_number(row["quantity"]):
                 conn.execute(
                     "DELETE FROM assets.option_collateral_lots WHERE collateral_id = ?",
                     (row["collateral_id"],),
@@ -733,7 +734,7 @@ class OptionManager:
                 int(row["average_cost"] or 0),
                 self._live_account_or_wallet(conn, contract["writer_id"], row["account_number"]),
             )
-            left -= take
+            left = quantity_number(left-take)
             if left == 0:
                 break
         if left:
@@ -825,18 +826,19 @@ class OptionManager:
             "AND asset_code = ? AND side = 'sell' AND status IN ('open', 'partial')",
             (user_id, underlying_code),
         ).fetchone()
-        available = sum(int(row["quantity"]) for row in rows) - int(reserved["quantity"] or 0)
-        left = min(int(quantity), max(0, available))
+        available = quantity_number(sum(quantity_number(row["quantity"]) for row in rows) - quantity_number(reserved["quantity"] or 0))
+        # Exercise whole option contracts while allowing delivery from fractional lots.
+        left = min(int(quantity), int(max(0, available)))
         target = left
         lots = []
         for row in rows:
-            take = min(left, int(row["quantity"]))
+            take = min(left, quantity_number(row["quantity"]))
             if take <= 0:
                 continue
-            if take == int(row["quantity"]):
+            if take == quantity_number(row["quantity"]):
                 changed = conn.execute(
                     "DELETE FROM assets.user_assets WHERE holding_id = ? AND quantity = ?",
-                    (row["holding_id"], int(row["quantity"])),
+                    (row["holding_id"], quantity_number(row["quantity"])),
                 )
             else:
                 changed = conn.execute(
@@ -847,7 +849,7 @@ class OptionManager:
             if changed.rowcount != 1:
                 raise RuntimeError("기초주식 보유량이 변경되어 옵션 행사를 취소했습니다.")
             lots.append((take, int(row["average_cost"] or 0), row["account_number"]))
-            left -= take
+            left = quantity_number(left-take)
             if left == 0:
                 break
         return target, lots

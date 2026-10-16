@@ -1,6 +1,7 @@
 """Per-exchange trading halts with restart-safe automatic reopening."""
 
 import time
+import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -30,8 +31,10 @@ class MarketSessionManager:
     @classmethod
     def exchange_ids(cls, conn):
         return [str(row["exchange_id"]) for row in conn.execute(
-            "SELECT exchange_id FROM market_exchanges ORDER BY exchange_id"
-        )]
+            "SELECT exchange_id FROM market_exchanges UNION SELECT exchange_id FROM company "
+            "UNION SELECT exchange_id FROM market_assets UNION SELECT exchange_id FROM investment "
+            "UNION SELECT exchange_id FROM treasury_bond_products ORDER BY exchange_id"
+        ) if row['exchange_id']]
 
     @classmethod
     def exchange_for_asset(cls, conn, asset_code):
@@ -79,9 +82,15 @@ class MarketSessionManager:
     def _resume(cls, conn, exchange_id, state, resume_at):
         start = int(state["halt_started_epoch"] if state["halt_started_epoch"] is not None else resume_at)
         if resume_at > start:
-            # Event and automatic target paths are process-local.  Prices stay
-            # persisted; a restart or resumed exchange starts a fresh path.
+            if not conn.execute("SELECT 1 FROM market_exchanges WHERE status='open' LIMIT 1").fetchone():
+                conn.execute('UPDATE market_factor_state SET last_epoch=last_epoch+?', (resume_at-start,))
             scope, params = cls._asset_scope(exchange_id)
+            conn.execute(f"UPDATE market_auto_targets SET start_epoch=start_epoch+?,end_epoch=end_epoch+? WHERE asset_code IN ({scope})", (resume_at-start,resume_at-start,*params))
+            conn.execute(f"UPDATE market_event_targets SET "
+                "end_epoch=end_epoch+?-MAX(start_epoch,?),"
+                "last_tick_epoch=COALESCE(last_tick_epoch,start_epoch)+?-MAX(start_epoch,?),"
+                f"start_epoch=start_epoch+?-MAX(start_epoch,?) WHERE state='active' AND asset_code IN ({scope})",
+                (resume_at,start,resume_at,start,resume_at,start,*params))
             conn.execute(f"UPDATE market_simulation_state SET last_epoch=last_epoch+? WHERE asset_code IN ({scope})", (resume_at - start, *params))
         conn.execute("""UPDATE market_exchanges SET status='open', reason='', halt_started_epoch=NULL,
             resume_epoch=NULL, circuit_stage=NULL, updated_epoch=?, trading_halted=0 WHERE exchange_id=?""", (resume_at, exchange_id))
@@ -95,6 +104,8 @@ class MarketSessionManager:
         state = cls._row(conn, exchange_id)
         if state["status"] != "open" and state["resume_epoch"] is not None and int(state["resume_epoch"]) <= now:
             cls._resume(conn, exchange_id, state, int(state["resume_epoch"]))
+            conn.execute('INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)',
+                ('system','market_auto_resume',json.dumps({'exchange_id':exchange_id}),state['resume_epoch']))
             state = cls._row(conn, exchange_id)
         return state
 
@@ -139,7 +150,10 @@ class MarketSessionManager:
         return message
 
     def trading_error(self, conn=None, now=None, *, asset_code=None, exchange_id=None):
-        exchange_id = exchange_id or (self.exchange_for_asset(conn, asset_code) if conn is not None else None)
+        if conn is None:
+            with self.db.atomic(("system",)) as transaction:
+                return self.trading_error(transaction, now, asset_code=asset_code, exchange_id=exchange_id)
+        exchange_id = exchange_id or self.exchange_for_asset(conn, asset_code)
         if exchange_id is None:
             return None
         if conn is None:

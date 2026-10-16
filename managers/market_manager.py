@@ -143,6 +143,7 @@ class MarketManager:
                 "exchange_id": row["exchange_id"],
                 "price": MarketManager.normalize_market_price(row["share_price"]),
                 "type": "stock", "status": row["status"],
+                "Fractal": int(row['Fractal']),
                 "is_fixed": int(row["is_fixed"] or 0), "source": source,
                 "total_supply": int(row["total_shares"] or 0),
                 "quote_currency":row['quote_currency'],
@@ -156,6 +157,7 @@ class MarketManager:
                 "exchange_id": row["exchange_id"],
                 "price": MarketManager.normalize_market_price(row["unit_price"]),
                 "type": row["product_type"], "status": status,
+                "Fractal": int(row['Fractal']),
                 "is_fixed": int(row["is_fixed"] or 0), "source": source,
                 "total_supply": int(row["total_supply"] or 0),
                 "quote_currency":row['quote_currency'],
@@ -190,6 +192,7 @@ class MarketManager:
             "code": row["code"], "name": row["name"],
             "exchange_id": row["exchange_id"], "price": price,
             "type": asset_type, "status": row["status"],
+            "Fractal": int(row['Fractal']),
             "is_fixed": int(row["is_fixed"] or 0), "source": source,
             "total_supply": int(row["total_supply"]) if row["total_supply"] is not None else None,
             "quote_currency":row['quote_currency'],
@@ -1324,6 +1327,32 @@ class MarketManager:
             "WHERE asset_code = ? AND recorded_epoch >= ? ORDER BY recorded_epoch",
             (str(asset_code), int(since_epoch)),
         )
+
+    def get_chart_candles(self, code, since_epoch, visible_since, interval, *, index=False):
+        interval = int(interval)
+        if interval <= 0:
+            raise ValueError('봉 간격은 양수여야 합니다.')
+        self._prepare_movement_history_read()
+        table, key, price = (('market_exchange_index_history', 'exchange_id', 'index_value')
+                             if index else ('market_price_history', 'asset_code', 'price'))
+        with self.db.readonly() as conn:
+            return conn.execute(f"""
+                WITH buckets AS (
+                    SELECT CAST(recorded_epoch / ? AS INTEGER)*? AS time,
+                        MIN(recorded_epoch) AS first_epoch, MAX(recorded_epoch) AS last_epoch,
+                        MIN({price}) AS low, MAX({price}) AS high,
+                        SUM(recorded_epoch>=?) AS visible_count,
+                        MIN(CASE WHEN recorded_epoch>=? THEN recorded_epoch END) AS visible_epoch
+                    FROM {table} WHERE {key}=? AND recorded_epoch>=? GROUP BY time
+                )
+                SELECT b.*, o.{price} AS open, c.{price} AS close, v.{price} AS visible_open
+                FROM buckets b
+                JOIN {table} o ON o.{key}=? AND o.recorded_epoch=b.first_epoch
+                JOIN {table} c ON c.{key}=? AND c.recorded_epoch=b.last_epoch
+                LEFT JOIN {table} v ON v.{key}=? AND v.recorded_epoch=b.visible_epoch
+                ORDER BY b.time
+                """, (interval, interval, visible_since, visible_since, code, since_epoch,
+                      code, code, code)).fetchall()
 
     def get_trade_history(self, asset_code, since_epoch):
         self._prepare_movement_history_read()

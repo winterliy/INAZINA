@@ -44,7 +44,7 @@ class FractionalTradingManager:
         if units == 0:
             return
         if currency == CurrencyManager.home(conn,user):
-            if not self.users._debit_source(conn, str(user), account, units//SCALE):
+            if not self.users._debit_source(conn, str(user), account, self._native(units)):
                 raise ValueError('결제 잔액이 부족합니다.')
         else:
             changed = conn.execute("UPDATE accounts SET balance_units=balance_units-? WHERE account_number=? AND user_id=? AND quote_currency=? AND account_type='currency_saving' AND balance_units>=?",
@@ -62,7 +62,7 @@ class FractionalTradingManager:
                 (account,str(user)),
             ).fetchone():
                 account = None
-            self.book._credit_reserved_source(conn, str(user), account, units//SCALE, int(now or time.time()))
+            self.book._credit_reserved_source(conn, str(user), account, self._native(units), int(now or time.time()))
         else:
             from managers.foreign_securities_manager import ForeignSecuritiesManager
             ForeignSecuritiesManager.credit_units(conn, str(user), currency, units, account)
@@ -293,7 +293,7 @@ class FractionalTradingManager:
                 return False,error
             now=int(time.time())
             with self.db.atomic() as conn:
-                error=MarketSessionManager(self.db).trading_error(conn=conn,now=now)
+                error=MarketSessionManager(self.db).trading_error(conn=conn,now=now,asset_code=code)
                 if error:
                     return False,error
                 asset,source=self.users._asset_row(conn,code)

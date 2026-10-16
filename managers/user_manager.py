@@ -46,19 +46,19 @@ class UserManager:
         matches = []
         row = conn.execute(
             "SELECT code, name, exchange_id, price, type, status, is_fixed, total_supply AS supply "
-            ", quote_currency FROM assets.market_assets WHERE code = ?", (code,)
+            ", quote_currency, Fractal FROM assets.market_assets WHERE code = ?", (code,)
         ).fetchone()
         if row:
             matches.append((dict(row), "market_assets"))
         row = conn.execute(
             "SELECT company_code AS code, name, exchange_id, share_price AS price, 'stock' AS type, "
-            "status, is_fixed, total_shares AS supply, quote_currency FROM company.company WHERE company_code = ?", (code,)
+            "status, is_fixed, total_shares AS supply, quote_currency, Fractal FROM company.company WHERE company_code = ?", (code,)
         ).fetchone()
         if row:
             matches.append((dict(row), "company"))
         row = conn.execute(
             "SELECT product_code AS code, name, exchange_id, unit_price AS price, product_type AS type, "
-            "status, is_fixed, total_supply AS supply, maturity_days, created_at, quote_currency "
+            "status, is_fixed, total_supply AS supply, maturity_days, created_at, quote_currency, Fractal "
             "FROM product.investment WHERE product_code = ?", (code,)
         ).fetchone()
         if row:
@@ -725,7 +725,7 @@ class UserManager:
         stock_details = []
         total_stock_value = 0
         sell_reservations = {
-            str(row["asset_code"]): int(row["quantity"] or 0)
+            str(row["asset_code"]): float(row["quantity"] or 0)
             for row in conn.execute(
                 "SELECT asset_code, SUM(remaining_quantity) AS quantity "
                 "FROM market_orders WHERE order_kind = 'asset' AND user_id = ? AND side = 'sell' "
@@ -737,7 +737,7 @@ class UserManager:
             "SELECT asset_code,SUM(quantity) AS quantity FROM user_assets "
             "WHERE user_id=? GROUP BY asset_code ORDER BY asset_code", (str(user_id),)
         ):
-            code, quantity = position["asset_code"], int(position["quantity"])
+            code, quantity = position["asset_code"], float(position["quantity"])
             asset = wallet_asset(code)
             if asset and asset.get('type')=='els':
                 continue

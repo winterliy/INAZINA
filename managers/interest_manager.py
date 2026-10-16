@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from contextlib import nullcontext
 import math
 import time
 from database import DatabaseManager
@@ -142,7 +143,27 @@ class InterestManager:
                  installments_recast if index == len(resets)-1 else 0),
             )
 
-    def process_all_interests(self, now=None, user_id=None):
+    def settle_product_rate_boundary(self, conn, product_code, now):
+        self.process_all_interests(now=now, conn=conn, product_code=product_code)
+        product = conn.execute('SELECT * FROM liability WHERE product_code=?', (product_code,)).fetchone()
+        for loan in conn.execute("SELECT * FROM loans WHERE product_code=? AND status='active'", (product_code,)).fetchall():
+            self.settle_loan_rate_boundary(conn, loan, product, now)
+
+    @classmethod
+    def settle_loan_rate_boundary(cls, conn, loan, product, now):
+        last = cls._number(loan['last_payment_epoch'], now)
+        end = min(now, float(loan['maturity_epoch'])) if loan['maturity_epoch'] is not None else now
+        elapsed = max(0, end-last)
+        rate = cls._number(loan['contract_rate'], float(product['interest_rate']))
+        cycle = float(product['interest_cycle'])
+        accrued = float(loan['interest_remainder'] or 0)
+        if elapsed and rate:
+            accrued += float(loan['outstanding_balance'])*math.expm1(elapsed/cycle*math.log1p(rate/100*cycle/cls.YEAR_SECONDS))
+        whole = round_currency(conn, accrued, loan['quote_currency'])
+        conn.execute('UPDATE loans SET outstanding_balance=outstanding_balance+?,interest_remainder=?,last_payment_epoch=? WHERE loan_id=?',
+            (whole, accrued-whole, max(last, now), loan['loan_id']))
+
+    def process_all_interests(self, now=None, user_id=None, *, conn=None, product_code=None):
         """Accrue due savings/loan interest, optionally for one user only.
 
         The account/loan last-payment epoch is the persisted cursor. A call compares
@@ -156,7 +177,7 @@ class InterestManager:
         account_count = 0
         loan_count = 0
         try:
-            with self.db.atomic(("users", "accounts", "product", "tax", "system")) as conn:
+            with (self.db.atomic(("users", "accounts", "product", "tax", "system")) if conn is None else nullcontext(conn)) as conn:
                 accounts = conn.execute(
                     "SELECT account_number, user_id, product_code, balance, principal, "
                     "created_at, last_payment, last_payment_epoch,contract_rate,rate_type,"
@@ -164,8 +185,8 @@ class InterestManager:
                     "next_repricing_epoch,benchmark_key,benchmark_tenor_days,repricing_lag_seconds,"
                     "contract_effective_rate,quote_currency "
                     "FROM accounts.accounts "
-                    "WHERE resolution_status='active' AND (? IS NULL OR user_id = ?)",
-                    (user_id, user_id),
+                    "WHERE resolution_status='active' AND (? IS NULL OR user_id = ?) AND (? IS NULL OR product_code=?)",
+                    (user_id, user_id, product_code, product_code),
                 ).fetchall()
                 for account in accounts:
                     product = conn.execute(
@@ -245,6 +266,8 @@ class InterestManager:
                             now=paid_until, currency_code=account["quote_currency"],
                         )
                         balance += net
+                        conn.execute('INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount) VALUES (?,?,?,?,?)',
+                            (account['user_id'], 'saving_interest', gross, tax, net))
                         if tax > 0:
                             from managers.currency_manager import CurrencyManager, SCALE
                             tax_units = int(round(float(tax)*SCALE))
@@ -283,11 +306,11 @@ class InterestManager:
                     "repricing_lag_seconds,maturity_epoch,overdue_since_epoch,overdue_last_epoch,"
                     "overdue_interest_remainder,collection_status,accelerated_epoch,defaulted_epoch,"
                     "collateral_amount,collateral_released,collateral_seized,origination_fee,mandatory_cost_fee,"
-                    "provisioned_loss "
+                    "provisioned_loss,interest_remainder "
                     ",day_count_convention,amortization_type,payment_frequency_days,quote_currency "
                     "FROM accounts.loans WHERE status IN ('active','defaulted') "
-                    "AND (? IS NULL OR user_id = ?)",
-                    (user_id, user_id),
+                    "AND (? IS NULL OR user_id = ?) AND (? IS NULL OR product_code=?)",
+                    (user_id, user_id, product_code, product_code),
                 ).fetchall()
                 for loan in loans:
                     product = conn.execute(
@@ -326,7 +349,9 @@ class InterestManager:
                         continue
                     maturity_days = self._number(product["maturity_days"], 0)
                     end = now
-                    if maturity_days and maturity_days > 0 and created is not None:
+                    if loan['maturity_epoch'] is not None:
+                        end = min(now, float(loan['maturity_epoch']))
+                    elif maturity_days and maturity_days > 0 and created is not None:
                         end = min(now, created + maturity_days * 86400)
                     if end <= last:
                         self._process_overdue(conn, loan, product, now)

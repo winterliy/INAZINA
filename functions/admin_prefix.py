@@ -316,6 +316,8 @@ class ActionModal(CheckedModal):
         sent=failed=0
         for holder in holders:
             bot.admin_control.require(self.owner)
+            if str(holder['user_id']) == TREASURY_USER_ID:
+                continue
             if not str(holder['user_id']).isdecimal():continue
             try:
                 target=bot.get_user(int(holder['user_id'])) or await bot.fetch_user(int(holder['user_id']))

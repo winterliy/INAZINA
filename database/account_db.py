@@ -141,6 +141,7 @@ class AccountDB(DBManager):
             ("extension_count", "INTEGER NOT NULL DEFAULT 0"),
             ("last_extended_epoch", "REAL"),
             ("extension_eligible_epoch", "REAL"),
+            ("interest_remainder", "REAL NOT NULL DEFAULT 0"),
             ("contract_rate", "REAL"),
             ("rate_type", "TEXT NOT NULL DEFAULT 'fixed' CHECK(rate_type IN ('fixed','floating'))"),
             ("rate_nationality", "TEXT"),

@@ -888,13 +888,20 @@ class BankManager:
                 eligible=loan['extension_eligible_epoch']
                 if eligible is not None and now < float(eligible):
                     return False, '❌ 이미 연장한 대출입니다. 이전 만기 이후 다시 신청해주세요.'
+                from managers.interest_manager import InterestManager
+                product = conn.execute('SELECT * FROM liability WHERE product_code=?', (loan['product_code'],)).fetchone()
+                InterestManager.settle_loan_rate_boundary(conn, loan, product, now)
+                extension = float(product['extension_interest_rate'] or 0)
+                applied = extension if extension > 0 else float(loan['contract_rate'] if loan['contract_rate'] is not None else product['interest_rate'])
+                RateManager.require_legal_rate(conn, applied, nationality=loan['rate_nationality'], currency_code=loan['quote_currency'])
+                conn.execute('UPDATE loans SET contract_rate=? WHERE loan_id=?', (applied, loan['loan_id']))
                 after = max(float(before), now)+days*86400
                 conn.execute("UPDATE loans SET maturity_epoch=?,extension_count=extension_count+1,"
                     "last_extended_epoch=?,extension_eligible_epoch=?,collection_status='current',"
                     "overdue_since_epoch=NULL,overdue_last_epoch=NULL,overdue_interest_remainder=0 "
                     "WHERE loan_id=?",
                     (after,now,max(float(before),now+days*86400),loan['loan_id']))
-            return True, f"✅ 대출 #{loan['loan_id']} 만기를 {days}일 연장했습니다.\n변경 만기: <t:{int(after)}:F>"
+            return True, f"✅ 대출 #{loan['loan_id']} 만기를 {days}일 연장했습니다.\n변경 만기: <t:{int(after)}:F> · 적용 연이율: {applied:g}%"
         except (TypeError, ValueError, OverflowError) as exc:
             return False, f'❌ 대출연장 설정을 확인해주세요: {exc}'
 

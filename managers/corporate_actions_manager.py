@@ -110,7 +110,7 @@ class CorporateActionsManager:
             'SELECT user_id,quantity FROM user_assets WHERE asset_code=? UNION ALL '
             'SELECT writer_id user_id,quantity FROM option_collateral_lots WHERE underlying_code=?'
             ') GROUP BY user_id ORDER BY user_id', (code, code)).fetchall()
-        return [(str(row['user_id']), int(row['quantity'])) for row in rows if row['user_id'] != TREASURY_USER_ID]
+        return [(str(row['user_id']), float(row['quantity'])) for row in rows if row['user_id'] != TREASURY_USER_ID]
 
     @staticmethod
     def _currency_account(conn, user, currency, now):
@@ -219,7 +219,7 @@ class CorporateActionsManager:
         holders = self._holders(conn, listing['code'])
         mode = 'percent' if percent is not None else 'fixed'
         unit_amount = Decimal(reference_price)*Decimal(str(percent))/100 if percent is not None else Decimal(per_share)
-        payments = [(user,quantity,int((quantity*unit_amount).quantize(Decimal('1'),rounding=ROUND_HALF_UP))) for user,quantity in holders]
+        payments = [(user,quantity,int((Decimal(str(quantity))*unit_amount).quantize(Decimal('1'),rounding=ROUND_HALF_UP))) for user,quantity in holders]
         owed = sum(amount for _,_,amount in payments)
         currency = listing.get('quote_currency') or 'NWX'
         rate = CurrencyExchangeManager._rate(conn, currency)
@@ -501,9 +501,9 @@ class CorporateActionsManager:
                 common = []
                 for stock in shares:
                     for holder in conn.execute('SELECT user_id,SUM(quantity) quantity FROM user_assets WHERE asset_code=? GROUP BY user_id ORDER BY user_id',(stock['company_code'],)).fetchall():
-                        record = {'asset':stock['company_code'],'user':holder['user_id'],'quantity':int(holder['quantity']),'kind':'preferred' if stock['share_class']=='preferred' else 'common'}
+                        record = {'asset':stock['company_code'],'user':holder['user_id'],'quantity':float(holder['quantity']),'kind':'preferred' if stock['share_class']=='preferred' else 'common'}
                         if stock['share_class']=='preferred':
-                            record['claim'] = record['quantity']*int(stock['liquidation_value_per_share'])
+                            record['claim'] = int((Decimal(str(record['quantity']))*Decimal(str(stock['liquidation_value_per_share']))).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
                             equity[int(stock['dividend_priority'])].append(record)
                         else:
                             record['claim'] = record['quantity']
@@ -614,6 +614,8 @@ class CorporateActionsManager:
 
     @staticmethod
     def _allocate(total, weights):
+        total = int(total)
+        weights = [Fraction(str(weight)) for weight in weights]
         denominator = sum(weights)
         if denominator <= 0:
             raise ValueError('배정 기준 수량이 없습니다.')
@@ -672,15 +674,16 @@ class CorporateActionsManager:
                     if issue_price is not None:
                         raise ValueError('무상증자에는 발행가를 입력하지 않습니다.')
                     lots = conn.execute('SELECT * FROM user_assets WHERE asset_code=? ORDER BY holding_id', (code,)).fetchall()
-                    owned = sum(int(lot['quantity']) for lot in lots)
+                    owned = sum(float(lot['quantity']) for lot in lots)
                     if owned > supply:
                         raise ValueError('보유 수량이 총 발행량을 초과합니다.')
-                    weights = [int(lot['quantity']) for lot in lots] + [supply - owned]
-                    allocations = self._allocate(quantity, weights)
+                    weights = [float(lot['quantity']) for lot in lots] + [supply - owned]
+                    scale = 1000 if listing.get('Fractal') else 1
+                    allocations = [value / scale for value in self._allocate(quantity*scale, weights)]
                     for lot, new in zip(lots, allocations):
                         if new:
                             conn.execute('UPDATE user_assets SET quantity=quantity+?,average_cost=? WHERE holding_id=?',
-                                         (new, round(int(lot['quantity']) * int(lot['average_cost']) / (int(lot['quantity']) + new)), lot['holding_id']))
+                                         (new, round(float(lot['quantity']) * float(lot['average_cost']) / (float(lot['quantity']) + new)), lot['holding_id']))
                     if allocations[-1]:
                         conn.execute("INSERT INTO user_assets(user_id,asset_code,quantity,average_cost) VALUES (?,?,?,0) ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET average_cost=quantity*average_cost/(quantity+excluded.quantity),quantity=quantity+excluded.quantity",
                                      (TREASURY_USER_ID, code, allocations[-1]))
@@ -797,14 +800,16 @@ class CorporateActionsManager:
                     groups[str(lot['user_id'])].append(lot)
                 conversions, total_new, cash = [], 0, 0
                 for user, user_lots in groups.items():
-                    quantity = sum(int(lot['quantity']) for lot in user_lots)
-                    units, residual = quantity * ratio, 0
-                    allocation = self._allocate(units, [int(lot['quantity']) for lot in user_lots]) if units else [0] * len(user_lots)
+                    quantity = sum(Fraction(str(lot['quantity'])) for lot in user_lots)
+                    entitlement = quantity * ratio
+                    units = int(entitlement)
+                    residual = round((entitlement-units)*price_a)
+                    allocation = self._allocate(units, [lot['quantity'] for lot in user_lots]) if units else [0] * len(user_lots)
                     cash += residual if user != TREASURY_USER_ID else 0
                     total_new += units
                     conversions.append((user, user_lots, allocation, residual))
-                unissued = max(0, supply_b - sum(int(lot['quantity']) for lot in lots))
-                new_supply = supply_a + total_new + unissued * ratio
+                unissued = max(0, supply_b - sum(Fraction(str(lot['quantity'])) for lot in lots))
+                new_supply = supply_a + total_new + int(unissued * ratio)
                 if new_supply > self.MAX_MONEY or cash > self.MAX_MONEY:
                     raise ValueError('통합 후 발행량 또는 단주 정산금이 한도를 초과합니다.')
                 if currency == 'NWX':

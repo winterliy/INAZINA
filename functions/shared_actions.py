@@ -1,12 +1,18 @@
 """Business actions used by both slash commands and administrator commands."""
+from functions.quantities import parse_quantity
+from decimal import Decimal
 
 
 def execute_shared_action(bot, user_id, action, *values):
     user_id = str(user_id)
     if action in {"buy", "sell"}:
         asset, quantity, price = values
+        price = Decimal(str(price))
+        if not price.is_finite():
+            raise ValueError('지정가는 유한한 숫자로 입력해주세요.')
         return bot.order_book.place_limit_order(
-            user_id, asset, action, int(quantity), int(price)
+            user_id, asset, action, parse_quantity(quantity, fractional=True),
+            int(price) if price == price.to_integral_value() else float(price)
         )
     if action == "transfer":
         recipient, amount, source_account = values
@@ -16,7 +22,7 @@ def execute_shared_action(bot, user_id, action, *values):
     if action in {"fund_subscribe", "fund_redeem"}:
         fund, quantity = values
         return bot.investment_mgr.trade_fund(
-            user_id, fund, int(quantity), action == "fund_redeem"
+            user_id, fund, parse_quantity(quantity, fractional=True), action == "fund_redeem"
         )
     if action == "option_write":
         (parameters,) = values

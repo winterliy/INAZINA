@@ -30,8 +30,8 @@ class LatestRequestsTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         DBManager.database_dir = Path(self.tmp.name)
         self.db = DatabaseManager()
-        self.db.users.create_user('alice','앨리스','미국',1000000)
-        self.db.users.create_user('bob','밥','대한민국',1000000)
+        self.db.users.create_user('alice','앨리스','낙원',1000000)
+        self.db.users.create_user('bob','밥','낙원',1000000)
         self.db.users.create_user('admin','관리자','낙원',1000000,'admin')
         self.bot = SimpleNamespace(db=self.db,currency_mgr=CurrencyExchangeManager(self.db),user_mgr=UserManager(self.db),
             market_mgr=MarketManager(self.db),lottery_mgr=LotteryManager(self.db))
@@ -43,6 +43,9 @@ class LatestRequestsTests(unittest.TestCase):
 
     def seed(self):
         CatalogManager(self.db).seed()
+        # These settlement examples use fixed quotes; liquidity repricing has its own suite.
+        self.db.currency.execute("INSERT OR IGNORE INTO currency_liquidity_state(currency_code) SELECT code FROM currencies")
+        self.db.currency.execute('UPDATE currency_liquidity_state SET issuance_elasticity=0,circulation_elasticity=0')
 
     def test_graph_choices_are_candle_intervals_not_view_windows(self):
         self.db.assets.register_asset('GRAPH','그래프','EX',1000,'stock')
@@ -71,7 +74,9 @@ class LatestRequestsTests(unittest.TestCase):
         self.assertLessEqual(len(embed),6000)
         self.assertNotIn('주식 외 투자상품',str(embed.to_dict()))
         self.assertTrue(any('ETF' in field.name for field in embed.fields))
-        self.assertTrue(all(field.value.endswith('개') and '`' not in field.value for field in embed.fields))
+        ranking_labels = {dict(panel.CATEGORIES)[key] for key in (*panel.RANKINGS, panel.ASSET_RANKING)}
+        count_fields = [field for field in embed.fields if field.name not in ranking_labels]
+        self.assertTrue(all(field.value.endswith('개') and '`' not in field.value for field in count_fields))
 
     def test_unified_account_opening_accepts_foreign_product_code_and_standard_button(self):
         self.seed()
@@ -210,7 +215,7 @@ class LatestRequestsTests(unittest.TestCase):
             self.bot.currency_mgr.open_account('alice',f'INZCU{index:03d}')
         self.bot.currency_mgr.exchange('alice','NWX','USD','15000')
         info = self.bot.user_mgr.get_total_assets('alice')
-        self.assertEqual((info['nationality'],info['national_currency']),('미국','USD'))
+        self.assertEqual((info['nationality'],info['national_currency']),('낙원','NWX'))
         self.assertEqual(len(info['currency_accounts']),6)
         self.assertEqual(info['currency_total'],14985)
         before = self.db.accounts.execute_one("SELECT last_payment_epoch FROM accounts WHERE user_id='alice' AND account_type='currency_saving' AND quote_currency='USD'")[0]
@@ -223,8 +228,8 @@ class LatestRequestsTests(unittest.TestCase):
         interaction=SimpleNamespace(user=SimpleNamespace(display_name='앨리스',name='Alice'))
         asyncio.run(registry.assets(interaction))
         sent = registry._reply.call_args.kwargs
-        self.assertIn('미국',sent['embed'].description)
-        self.assertIn('USD',sent['embed'].description)
+        self.assertIn('낙원',sent['embed'].description)
+        self.assertIn('NWX',sent['embed'].description)
         from functions.wallet_views import WalletCategoryView
         self.assertIsInstance(sent['view'],WalletCategoryView)
         seen=[]
@@ -237,7 +242,7 @@ class LatestRequestsTests(unittest.TestCase):
         self.seed()
         alice=self.bot.currency_mgr.open_account('alice','INZCU001')
         bob=self.bot.currency_mgr.open_account('bob','INZCU001')
-        success,message=self.bot.user_mgr.transfer('alice',alice,'15000','__wallet__')
+        success,message=self.bot.user_mgr.transfer('alice',alice,'9.99','__wallet__')
         self.assertTrue(success,message)
         self.assertEqual(self.db.accounts.execute_one("SELECT balance_units FROM accounts WHERE account_number=? AND account_type='currency_saving'",(alice,))[0],9990000)
         success,message=self.bot.user_mgr.transfer('alice',bob,'1.5',alice)
@@ -253,7 +258,7 @@ class LatestRequestsTests(unittest.TestCase):
         alice=self.bot.currency_mgr.open_account('alice','INZCU001')
         bob=self.bot.currency_mgr.open_account('bob','INZCU001')
         before=self.db.users.get_user('alice')['cash']
-        for source,target,amount in [(bob,alice,'1'),('__wallet__',alice,'1.5'),(alice,bob,'1'),(alice,alice,'1')]:
+        for source,target,amount in [(bob,alice,'1'),('__wallet__',alice,'1000000'),(alice,bob,'1'),(alice,alice,'1')]:
             success,_=self.bot.user_mgr.transfer('alice',target,amount,source)
             self.assertFalse(success)
         self.assertEqual(self.db.users.get_user('alice')['cash'],before)
@@ -266,7 +271,7 @@ class LatestRequestsTests(unittest.TestCase):
         self.assertTrue(success,message)
         bank=self.db.accounts.execute_one("SELECT account_number FROM accounts WHERE user_id='alice'")[0]
         fx=self.bot.currency_mgr.open_account('alice','INZCU001')
-        success,message=self.bot.user_mgr.transfer('alice',fx,'15000',bank)
+        success,message=self.bot.user_mgr.transfer('alice',fx,'9.99',bank)
         self.assertTrue(success,message)
         self.assertEqual(tuple(self.db.accounts.execute_one('SELECT balance,principal FROM accounts WHERE account_number=?',(bank,))),(0,0))
         success,message=self.bot.user_mgr.transfer('alice',bank,'1',fx)

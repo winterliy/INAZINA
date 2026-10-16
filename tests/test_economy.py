@@ -254,7 +254,7 @@ class EconomyTests(unittest.TestCase):
 
     def test_government_bond_sale_funds_treasury_and_maturity_redeems_integer_nwx(self):
         bonds = self.users.bond_manager
-        success, message = bonds.issue("GOV1", "시민 국채", 365, 1, 1000, 20000)
+        success, message = bonds.issue("GOV1", "시민 국채", 36.5, 10, 1000, 20000)
         self.assertTrue(success, message)
         success, message = bonds.buy("citizen-1", "GOV1", 1500)
         self.assertFalse(success)
@@ -271,7 +271,7 @@ class EconomyTests(unittest.TestCase):
         self.db.accounts.execute(
             "UPDATE treasury_bond_holdings SET purchased_epoch = ?, maturity_epoch = ? "
             "WHERE holding_id = ?",
-            (now - 86401, now - 1, holding["holding_id"]),
+            (now - 864001, now - 1, holding["holding_id"]),
         )
 
         redeemed = bonds.redeem_matured("citizen-1", now=now)
@@ -323,7 +323,7 @@ class EconomyTests(unittest.TestCase):
         self.db.users.update_cash("citizen-2", 10000)
         bonds = self.users.bond_manager
         success, message = bonds.issue(
-            "EXBOND", "거래소 국채", 365, 1, 1000, 2000, "EX-BOND"
+            "EXBOND", "거래소 국채", 36.5, 10, 1000, 2000, "EX-BOND"
         )
         self.assertTrue(success, message)
 
@@ -361,7 +361,7 @@ class EconomyTests(unittest.TestCase):
     def test_fractional_money_input_is_rejected_and_direct_sql_amounts_are_rounded(self):
         success, message = self.users.transfer("citizen-1", "citizen-2", "1.5")
         self.assertFalse(success)
-        self.assertIn("정수 NWX", message)
+        self.assertIn("NWX 금액은 소수점 0자리", message)
         self.db.users.execute(
             "UPDATE users SET cash = 123.4 WHERE user_id = 'citizen-1'"
         )
@@ -1302,7 +1302,8 @@ class EconomyTests(unittest.TestCase):
         asyncio.run(bot.ensure_user("citizen-new", "New Citizen"))
         self.assertIsNone(self.db.users.get_user("citizen-new"))
 
-        created = asyncio.run(bot.register_user("citizen-new", "New Citizen"))
+        self.db.currency.execute("INSERT INTO guild_countries(guild_id,nationality) VALUES ('123','낙원')")
+        created = asyncio.run(bot.register_user("citizen-new", "New Citizen", 123))
         self.assertTrue(created)
         user = self.db.users.get_user("citizen-new")
         self.assertEqual(user["nickname"], "New Citizen")
