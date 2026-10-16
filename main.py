@@ -156,6 +156,8 @@ class InazinaBot(discord.Client):
             )
             self.loop.create_task(self.market_update_loop(), name="market-price-worker")
             self.loop.create_task(self.scheduled_loan_payment_loop(), name="scheduled-loan-worker")
+            from functions.web_jobs import web_job_loop
+            self.loop.create_task(web_job_loop(self), name="dashboard-job-worker")
 
     async def on_member_update(self, before, after):
         if not after.bot and before.display_name != after.display_name:

@@ -7,6 +7,7 @@ import math
 import os
 import re
 import secrets
+import shlex
 import sqlite3
 import sys
 import threading
@@ -850,9 +851,9 @@ def admin_audit(limit=50):
     return entries
 
 
-# National ($ treasury) commands that need a live Discord client: help is a
-# Discord view and 주총 sends DM invitations to shareholders.
-NATIONAL_DISCORD_ONLY = {"도움말", "주총"}
+# $도움말 is a Discord view; the dashboard shows the same pages on its own.
+# $주총 sends Discord DMs, so it is queued for the running bot (web_bot_jobs).
+NATIONAL_DISCORD_ONLY = {"도움말"}
 
 
 def national_command_specs():
@@ -881,6 +882,8 @@ def run_national_command(actor, payload):
     for field, value in zip(fields, values):
         if field["required"] and not value:
             raise ValueError(f"{field['label']}을(를) 입력해주세요.")
+    if command == "주총":
+        return queue_shareholder_meeting(actor, {"code": values[0], "place": values[1]})
     from decimal import InvalidOperation
     from database.db_manager import DBManager
     form = SimpleNamespace(bot=domain().bot, command=command, owner=actor)
@@ -914,6 +917,9 @@ def admin_command_catalog():
 DB_EDITOR_HIDDEN = {"web_auth_credentials", "admin_audit", "web_chart_drawings"}
 DB_EDITOR_PAGE_SIZE = 50
 DB_VALUE_TYPES = (str, int, float, type(None))
+# Secrets stay hidden in the editor and the audit trail; they can still be overwritten.
+SENSITIVE_COLUMNS = {"password", "password_hash", "salt"}
+HIDDEN_VALUE = "<hidden>"
 
 
 def _editable_tables(connection):
@@ -939,6 +945,11 @@ def _require_table(connection, table):
 
 def _cell(value):
     return f"<blob {len(value)} bytes>" if isinstance(value, (bytes, memoryview)) else value
+
+
+def _masked(row):
+    return {key: HIDDEN_VALUE if key in SENSITIVE_COLUMNS and value is not None else _cell(value)
+            for key, value in row.items()}
 
 
 def _db_value(value):
@@ -984,7 +995,7 @@ def db_rows(table, search="", offset=0):
         ).fetchall()
     return {"table": table, "editable": has_rowid, "columns": columns, "total": int(total),
             "offset": offset, "pageSize": DB_EDITOR_PAGE_SIZE,
-            "rows": [{key: _cell(row[key]) for key in row.keys()} for row in rows]}
+            "rows": [_masked({key: row[key] for key in row.keys()}) for row in rows]}
 
 
 def _audit_db(connection, actor, action, payload):
@@ -999,7 +1010,7 @@ def _row_snapshot(connection, table, rowid):
     row = connection.execute(f'SELECT * FROM "{table}" WHERE rowid=?', (rowid,)).fetchone()
     if not row:
         raise ValueError("row_not_found")
-    return {key: _cell(row[key]) for key in row.keys()}
+    return _masked({key: row[key] for key in row.keys()})
 
 
 def db_update(actor, table, rowid, values):
@@ -1007,6 +1018,10 @@ def db_update(actor, table, rowid, values):
         if not _require_table(connection, table):
             raise ValueError("table_not_editable")
         changes = _db_changes(_table_columns(connection, table), values)
+        changes = {key: value for key, value in changes.items()
+                   if not (key in SENSITIVE_COLUMNS and value == HIDDEN_VALUE)}
+        if not changes:
+            raise ValueError("invalid_columns")
         before = _row_snapshot(connection, table, rowid)
         assignments = ",".join(f'"{name}"=?' for name in changes)
         connection.execute(f'UPDATE "{table}" SET {assignments} WHERE rowid=?', (*changes.values(), rowid))
@@ -1039,6 +1054,517 @@ def db_delete(actor, table, rowid):
         connection.execute(f'DELETE FROM "{table}" WHERE rowid=?', (rowid,))
         _audit_db(connection, actor, "db.delete", {"table": table, "rowid": rowid, "values": before})
     _read_cache.invalidate()
+
+
+# ---------------------------------------------------------------------------
+# Product management for every product kind ($상품생성/$상품수정/$상품삭제)
+# ---------------------------------------------------------------------------
+PRODUCT_KINDS = {
+    # profile: (Korean label, dashboard group, $상품생성 kind token)
+    "stock": ("회사 주식", "market", "company"), "preferred": ("우선주", "market", "preferred"),
+    "asset": ("시장 자산", "market", "asset"), "etf": ("ETF", "market", "etf"),
+    "future": ("주식선물", "market", "future"), "corporatebond": ("회사채", "market", "corporatebond"),
+    "fund": ("일반 펀드", "market", "fund"), "indexfund": ("인덱스 펀드", "market", "indexfund"),
+    "commodity": ("현물 원자재", "market", "commodity"), "bond": ("국채", "market", "bond"),
+    "option": ("옵션", "market", "option"), "els": ("ELS", "market", "els"),
+    "saving": ("저축", "finance", "saving"), "loan": ("대출", "finance", "loan"),
+    "currency": ("통화", "finance", "currency"), "currencyproduct": ("외환통장", "finance", "currencyproduct"),
+}
+PRODUCT_PROTECTED = {"created_at", "created_epoch", "sold_amount", "writer_id", "contract_id",
+                     "issued_contracts", "status", "product_type", "outstanding_contracts",
+                     "collateral_account", "settled_epoch", "max_shareholder_id"}
+
+
+def _profile_category(profile):
+    return "stock" if profile == "preferred" else profile
+
+
+def _profile_table(profile):
+    from managers.admin_control_manager import ENTITIES
+    table, key, _price, _supply = ENTITIES[_profile_category(profile)]
+    return table, key
+
+
+def product_catalog():
+    from managers.admin_commands_manager import CREATE_ARGS, OPTIONAL_ARGS, TEXT_ARGS
+    from managers.admin_control_manager import EXAMPLES
+    from functions.admin_embeds import ARG_LABELS
+    kinds = []
+    with connect_readonly() as connection:
+        for profile, (label, group, token) in PRODUCT_KINDS.items():
+            table, key = _profile_table(profile)
+            columns = {row["name"]: row["type"] or "" for row in connection.execute(f'PRAGMA table_info("{table}")')}
+            fields = [{"key": field,
+                       "label": "발행총액" if profile == "bond" and field == "total_supply" else ARG_LABELS.get(field, field),
+                       "optional": field in OPTIONAL_ARGS.get(profile, ()),
+                       "text": field in TEXT_ARGS} for field in CREATE_ARGS[profile]]
+            listed = {field["key"] for field in fields} | {key}
+            advanced = [{"key": name, "label": ARG_LABELS.get(name, name), "type": kind}
+                        for name, kind in columns.items() if name not in listed and name not in PRODUCT_PROTECTED]
+            kinds.append({"kind": profile, "token": token, "label": label, "group": group,
+                          "fields": fields, "advanced": advanced,
+                          "example": EXAMPLES.get(_profile_category(profile), {}),
+                          "editable": profile not in {"els"}})
+    return {"kinds": kinds}
+
+
+def _product_kind(source, row):
+    from managers.admin_control_manager import KINDS
+    if source == "company":
+        return "preferred" if row.get("share_class") == "preferred" else "stock"
+    if source == "investment":
+        return next((kind for kind, value in KINDS.items() if value == row.get("product_type")), None)
+    if source == "saving":
+        return "currencyproduct" if row.get("product_kind") == "currency_saving" else "saving"
+    return {"market_assets": "asset", "treasury_bond_products": "bond", "option_contracts": "option",
+            "liability": "loan", "currencies": "currency"}.get(source)
+
+
+PRODUCT_SOURCES = (
+    ("company", "company_code", "share_price"), ("market_assets", "code", "price"),
+    ("investment", "product_code", "unit_price"), ("treasury_bond_products", "product_code", "market_price"),
+    ("option_contracts", "contract_code", "strike_price"), ("saving", "product_code", "interest_rate"),
+    ("liability", "product_code", "interest_rate"), ("currencies", "code", "reference_rate"),
+)
+
+
+def product_list(group):
+    if group not in {"market", "finance"}:
+        raise ValueError("invalid_group")
+    rows = []
+    with connect_readonly() as connection:
+        for table, key, headline in PRODUCT_SOURCES:
+            if not _table_exists(connection, table):
+                continue
+            for row in connection.execute(f'SELECT * FROM "{table}"'):
+                item = dict(row)
+                kind = _product_kind(table, item)
+                if not kind or PRODUCT_KINDS[kind][1] != group:
+                    continue
+                rows.append({"code": str(item[key]), "name": str(item.get("name") or item.get("underlying_code") or item[key]),
+                             "kind": kind, "status": item.get("status") or "active",
+                             "exchangeId": item.get("exchange_id"), "currency": item.get("quote_currency"),
+                             "value": item.get(headline)})
+    return sorted(rows, key=lambda item: (item["kind"], item["name"].casefold(), item["code"]))
+
+
+def _locate_product(connection, code, kind=None):
+    for table, key, _headline in PRODUCT_SOURCES:
+        if not _table_exists(connection, table):
+            continue
+        row = connection.execute(f'SELECT * FROM "{table}" WHERE "{key}"=?', (code,)).fetchone()
+        if row:
+            found = _product_kind(table, dict(row))
+            if found and (kind is None or found == kind):
+                return found, dict(row)
+    raise ValueError("상품 코드를 찾을 수 없습니다.")
+
+
+def product_detail(code):
+    from managers.admin_commands_manager import CREATE_ARGS
+    with connect_readonly() as connection:
+        kind, row = _locate_product(connection, code)
+        values = {}
+        for field in CREATE_ARGS[kind]:
+            if field == "components":
+                values[field] = ",".join(f"{item['asset_code']}:{item['weight']:g}" for item in connection.execute(
+                    "SELECT asset_code,weight FROM fund_components WHERE product_code=? ORDER BY asset_code", (code,)))
+            elif field == "dividend_per_share":
+                values[field] = (f"{row.get('dividend_percent') or 0:g}%" if row.get("dividend_mode") == "percent"
+                                 else row.get("dividend_per_share"))
+            elif field == "nationality" and kind == "currency":
+                found = connection.execute("SELECT nationality FROM country_currencies WHERE currency_code=? LIMIT 1", (code,)).fetchone()
+                values[field] = found[0] if found else None
+            elif field == "currency_code" and kind == "currencyproduct":
+                values[field] = row.get("quote_currency")
+            elif field == "annual_rate" and kind == "currencyproduct":
+                values[field] = row.get("interest_rate")
+            else:
+                values[field] = row.get(field)
+    return {"code": code, "kind": kind, "status": row.get("status") or "active",
+            "values": {key: _cell(value) for key, value in values.items()},
+            "row": _masked(row)}
+
+
+def _convert_product_fields(profile, fields, advanced, columns):
+    """Mirror the positional $상품생성 parser for form values, then add raw columns."""
+    from managers.admin_commands_manager import CREATE_ARGS, TEXT_ARGS, duration_seconds
+    from managers.corporate_actions_manager import CorporateActionsManager
+    allowed = set(CREATE_ARGS[profile])
+    if not isinstance(fields, dict) or set(fields) - allowed or not isinstance(advanced, dict):
+        raise ValueError("상품 설정 필드를 확인해주세요.")
+    result = {}
+    for key, raw in fields.items():
+        value = str(raw if raw is not None else "").strip()
+        if value == "":
+            continue
+        if key == "components":
+            result[key] = {}
+            for component in value.split(","):
+                asset, separator, weight = component.strip().rpartition(":")
+                if not separator or not asset or asset in result[key]:
+                    raise ValueError("구성 종목은 종목코드:비중,종목코드:비중 형식입니다.")
+                result[key][asset] = float(weight)
+        elif key == "dividend_cycle_seconds":
+            result[key] = duration_seconds(value)
+        elif key == "dividend_per_share":
+            result.update(CorporateActionsManager.dividend_terms(value))
+        elif profile == "els" and key in {"underlyings", "observation_days", "redemption_levels"}:
+            result[key] = value
+        elif key in TEXT_ARGS:
+            result[key] = value
+        else:
+            try:
+                result[key] = json.loads(value)
+            except json.JSONDecodeError:
+                result[key] = value
+    for key, raw in advanced.items():
+        if key not in columns or key in PRODUCT_PROTECTED or key in result:
+            raise ValueError(f"고급 설정 필드를 확인해주세요: {key}")
+        value = _db_value(raw)
+        if isinstance(value, str) and re.search(r"INT|REAL|NUM|FLOA|DOUB", columns[key], re.I):
+            try:
+                value = json.loads(value) if value.strip() else None
+            except json.JSONDecodeError:
+                pass
+        result[key] = value
+    return result
+
+
+def product_save(actor, payload):
+    from managers.admin_commands_manager import AdminCommandsManager
+    from managers.admin_control_manager import ENTITIES
+    operation = payload.get("operation")
+    profile = payload.get("kind")
+    code = str(payload.get("code", "")).strip()
+    if operation not in {"create", "edit"} or profile not in PRODUCT_KINDS:
+        raise ValueError("상품 종류와 작업을 확인해주세요.")
+    if (not code and profile != "option") or len(code) > 80 or re.search(r"\s", code):
+        raise ValueError("상품 코드는 공백 없이 1~80자로 입력해주세요.")
+    table, _key = _profile_table(profile)
+    with connect_readonly() as connection:
+        columns = {row["name"]: row["type"] or "" for row in connection.execute(f'PRAGMA table_info("{table}")')}
+    fields = _convert_product_fields(profile, payload.get("fields") or {}, payload.get("advanced") or {}, columns)
+    bot = domain().bot
+    if operation == "create":
+        token = PRODUCT_KINDS[profile][2]
+        raw = f"{code} {token} {json.dumps(fields, ensure_ascii=False)}"
+        result = AdminCommandsManager(bot).execute(actor, "상품생성", raw)
+    else:
+        with connect_readonly() as connection:
+            kind, row = _locate_product(connection, code, profile)
+        if kind == "els":
+            raise ValueError("ELS 발행조건은 변경할 수 없습니다. 모집 중 취소 후 새 상품을 생성해주세요.")
+        fields = {key: value for key, value in fields.items() if key not in row or row[key] != value}
+        if not fields:
+            raise ValueError("변경된 값이 없습니다.")
+        category = _profile_category(profile)
+        price_key, supply_key = ENTITIES[category][2:]
+        if price_key and price_key in fields:
+            fields["price"] = fields.pop(price_key)
+        if supply_key and supply_key in fields:
+            fields["supply"] = fields.pop(supply_key)
+        name, price, supply = fields.pop("name", ""), fields.pop("price", ""), fields.pop("supply", "")
+        result = bot.admin_control.entity(actor, category, "edit", code, str(name), str(price), str(supply), fields)
+    _read_cache.invalidate()
+    return str(result)
+
+
+def product_status(actor, code, active):
+    with connect_readonly() as connection:
+        kind, _row = _locate_product(connection, code)
+    result = domain().bot.admin_control.entity(actor, _profile_category(kind), "restore" if active else "delete", code)
+    _read_cache.invalidate()
+    return str(result)
+
+
+# ---------------------------------------------------------------------------
+# Users, web logins and countries
+# ---------------------------------------------------------------------------
+USER_FIELDS = ("nickname", "nationality", "cash", "credit_score", "annual_income", "income_stability", "status", "role")
+
+
+def admin_user_detail(user_id):
+    with connect_readonly() as connection:
+        row = connection.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if not row:
+            raise ValueError("사용자를 찾을 수 없습니다.")
+        credential = connection.execute(
+            "SELECT hts_id,created_epoch,updated_epoch,auth_version FROM web_auth_credentials WHERE user_id=?", (user_id,),
+        ).fetchone() if _table_exists(connection, "web_auth_credentials") else None
+        accounts = [dict(item) for item in connection.execute(
+            "SELECT * FROM accounts WHERE user_id=? ORDER BY account_number", (user_id,))] if _table_exists(connection, "accounts") else []
+        loans = [dict(item) for item in connection.execute(
+            "SELECT * FROM loans WHERE user_id=? ORDER BY 1 DESC LIMIT 50", (user_id,))] if _table_exists(connection, "loans") else []
+        holdings = [dict(item) for item in connection.execute(
+            "SELECT asset_code,quantity FROM user_assets WHERE user_id=? AND quantity<>0 ORDER BY asset_code", (user_id,))] if _table_exists(connection, "user_assets") else []
+        country = connection.execute(
+            "SELECT 1 FROM country_currencies WHERE nationality=?", (user_id,)).fetchone()
+    user = {key: _cell(row[key]) for key in row.keys()}
+    return {"user": user, "accountType": "country" if country and row["nationality"] == user_id else "discord",
+            "webLogin": dict(credential) if credential else None,
+            "accounts": [_masked(item) for item in accounts],
+            "loans": [_masked(item) for item in loans],
+            "holdings": holdings}
+
+
+def admin_update_user(actor, user_id, changes):
+    if not isinstance(changes, dict) or not changes or set(changes) - set(USER_FIELDS):
+        raise ValueError("허용된 사용자 필드를 입력해주세요.")
+    result = domain().admin_control.user(actor, user_id, dict(changes))
+    _read_cache.invalidate()
+    return result
+
+
+def admin_set_web_password(actor, user_id, password):
+    validate_password(password)
+    salt = secrets.token_bytes(16).hex()
+    digest = password_hash(password, salt)
+    now = int(time.time())
+    with connect_db(timeout=5) as connection:
+        ensure_auth_table(connection)
+        if not connection.execute("SELECT 1 FROM users WHERE user_id=?", (user_id,)).fetchone():
+            raise ValueError("사용자를 찾을 수 없습니다.")
+        connection.execute(
+            "INSERT INTO web_auth_credentials(user_id,salt,password_hash,created_epoch,updated_epoch) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET salt=excluded.salt,password_hash=excluded.password_hash,"
+            "updated_epoch=excluded.updated_epoch,auth_version=web_auth_credentials.auth_version+1",
+            (user_id, salt, digest, now, now),
+        )
+        _audit_db(connection, actor, "web.password_reset", {"user_id": user_id})
+    return "✅ 웹 비밀번호를 설정했습니다. 기존 로그인은 모두 만료됩니다."
+
+
+def admin_web_login_action(actor, user_id, action, hts_id=None):
+    with connect_db(timeout=5) as connection:
+        ensure_auth_table(connection)
+        if not connection.execute("SELECT 1 FROM web_auth_credentials WHERE user_id=?", (user_id,)).fetchone():
+            raise ValueError("웹 로그인이 없는 사용자입니다.")
+        if action == "logout":
+            connection.execute("UPDATE web_auth_credentials SET auth_version=auth_version+1 WHERE user_id=?", (user_id,))
+            message = "✅ 이 사용자의 모든 웹 로그인을 만료했습니다."
+        elif action == "remove":
+            connection.execute("DELETE FROM web_auth_credentials WHERE user_id=?", (user_id,))
+            message = "✅ 웹 로그인을 삭제했습니다. 다시 가입하거나 관리자가 비밀번호를 설정해야 합니다."
+        elif action == "hts_id":
+            value = normalize_hts_id(hts_id) if hts_id else None
+            if value and connection.execute(
+                    "SELECT 1 FROM web_auth_credentials WHERE hts_id=? AND user_id<>? UNION ALL "
+                    "SELECT 1 FROM users WHERE lower(user_id)=? AND user_id<>?", (value, user_id, value, user_id)).fetchone():
+                raise ValueError("hts_id_taken")
+            connection.execute("UPDATE web_auth_credentials SET hts_id=?,updated_epoch=? WHERE user_id=?",
+                               (value, int(time.time()), user_id))
+            message = "✅ HTS ID를 변경했습니다." if value else "✅ HTS ID를 지웠습니다."
+        else:
+            raise ValueError("invalid_action")
+        _audit_db(connection, actor, f"web.{action}", {"user_id": user_id, "hts_id": hts_id})
+    return message
+
+
+def admin_countries():
+    with connect_readonly() as connection:
+        rows = connection.execute(
+            "SELECT n.*,c.name AS currency_name,c.status AS currency_status FROM country_currencies n "
+            "LEFT JOIN currencies c ON c.code=n.currency_code ORDER BY n.nationality").fetchall()
+        result = []
+        for row in rows:
+            nationality = row["nationality"]
+            treasury = connection.execute(
+                "SELECT u.user_id,u.cash FROM country_treasuries t JOIN users u ON u.user_id=t.user_id WHERE t.nationality=?",
+                (nationality,)).fetchone() if _table_exists(connection, "country_treasuries") else None
+            citizens = connection.execute("SELECT COUNT(*) FROM users WHERE nationality=? AND user_id<>?",
+                                          (nationality, TREASURY_USER_ID)).fetchone()[0]
+            guilds = [item[0] for item in connection.execute(
+                "SELECT guild_id FROM guild_countries WHERE nationality=?", (nationality,))] if _table_exists(connection, "guild_countries") else []
+            exchanges = [item[0] for item in connection.execute(
+                "SELECT exchange_id FROM market_exchanges WHERE nationality=? ORDER BY exchange_id", (nationality,))] if _table_exists(connection, "market_exchanges") else []
+            account = connection.execute(
+                "SELECT u.status,u.role,w.hts_id FROM users u LEFT JOIN web_auth_credentials w ON w.user_id=u.user_id "
+                "WHERE u.user_id=? AND u.nationality=?", (nationality, nationality)).fetchone() if _table_exists(connection, "web_auth_credentials") else None
+            result.append({**{key: row[key] for key in row.keys()},
+                           "treasuryId": treasury["user_id"] if treasury else None,
+                           "treasuryCash": treasury["cash"] if treasury else None,
+                           "citizens": int(citizens), "guilds": guilds, "exchanges": exchanges,
+                           "account": dict(account) if account else None})
+    return result
+
+
+def admin_country_action(actor, nationality, payload):
+    """Country settings through the same managers as $금리수정·$법정최고이자수정·$세율·$국고."""
+    from managers.admin_commands_manager import AdminCommandsManager
+    bot = domain().bot
+    action = payload.get("action")
+    nationality = str(nationality or "").strip()
+    quote = lambda value: shlex.quote(str(value))
+    if action == "create":
+        args = [payload.get("currencyCode", ""), payload.get("baseRate", ""), payload.get("legalMaxRate", ""), payload.get("taxPercent", "")]
+        args = [str(value).strip() for value in args]
+        while args and not args[-1]:
+            args.pop()
+        result = AdminCommandsManager(bot).execute(actor, "국가생성", " ".join(quote(value) for value in [nationality, *args]))
+    elif action == "delete":
+        result = AdminCommandsManager(bot).execute(actor, "국가삭제", quote(nationality))
+    elif action == "rates":
+        messages = []
+        commands = {"baseRate": "금리수정", "legalMaxRate": "법정최고이자수정"}
+        for key, command in commands.items():
+            if str(payload.get(key, "")).strip() != "":
+                messages.append(AdminCommandsManager(bot).execute(actor, command, f"{quote(nationality)} modify {quote(payload[key])}"))
+        if str(payload.get("taxPercent", "")).strip() != "":
+            messages.append(AdminCommandsManager(bot).execute(actor, "세율", f"{quote(nationality)} {quote(payload['taxPercent'])}"))
+        if not messages:
+            raise ValueError("변경할 값을 입력해주세요.")
+        result = "\n".join(str(message) for message in messages)
+    elif action == "treasury":
+        from functions.admin_prefix import ActionModal
+        from database.db_manager import DBManager
+        with connect_readonly() as connection:
+            treasury = connection.execute(
+                "SELECT user_id FROM country_treasuries WHERE nationality=?", (nationality,)).fetchone()
+        if not treasury:
+            raise ValueError("국고를 찾을 수 없습니다.")
+        amount = bot.admin_control._number(payload.get("amount"), -2**53 + 1, 2**53 - 1, integer=True)
+        reason = str(payload.get("reason", "")).strip()[:200]
+        with bot.db.atomic() as connection:
+            bot.admin_control.require(actor, connection)
+            connection.execute("UPDATE users SET cash=? WHERE user_id=?", (amount, treasury[0]))
+            bot.admin_control._audit(connection, actor, "treasury.set",
+                                     {"nationality": nationality, "amount": amount, "reason": reason})
+        result = f"✅ {nationality} 국고 현금 {amount:,}"
+    else:
+        raise ValueError("invalid_action")
+    _read_cache.invalidate()
+    return str(result)
+
+
+# ---------------------------------------------------------------------------
+# Exchanges
+# ---------------------------------------------------------------------------
+EXCHANGE_PRODUCT_TABLES = (("company", "company_code"), ("market_assets", "code"),
+                           ("investment", "product_code"), ("treasury_bond_products", "product_code"))
+
+
+def admin_exchanges():
+    with connect_readonly() as connection:
+        rows = [dict(row) for row in connection.execute("SELECT * FROM market_exchanges ORDER BY exchange_id")]
+        for row in rows:
+            exchange = row["exchange_id"]
+            row["products"] = sum(connection.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE exchange_id=? AND status='active'", (exchange,)).fetchone()[0]
+                for table, _key in EXCHANGE_PRODUCT_TABLES if _table_exists(connection, table))
+            row["components"] = [dict(item) for item in connection.execute(
+                "SELECT i.company_code,i.previous_price,i.total_shares,c.name FROM market_exchange_index_components i "
+                "LEFT JOIN company c ON c.company_code=i.company_code WHERE i.exchange_id=? ORDER BY i.company_code",
+                (exchange,))] if _table_exists(connection, "market_exchange_index_components") else []
+        countries = [row[0] for row in connection.execute("SELECT nationality FROM country_currencies ORDER BY nationality")]
+    return {"exchanges": rows, "countries": countries}
+
+
+def admin_exchange_action(actor, exchange_id, payload):
+    action = payload.get("action")
+    exchange_id = str(exchange_id or "").strip()
+    if not exchange_id or len(exchange_id) > 100 or re.search(r"\s", exchange_id):
+        raise ValueError("거래소 ID는 공백 없이 1~100자로 입력해주세요.")
+    if action in {"open", "close", "pause", "resume", "circuit", "sidecar"}:
+        stage = payload.get("stage")
+        success, message = domain().market_session.control(actor, action, stage=stage, exchange_id=exchange_id)
+        if not success:
+            raise ValueError(message.removeprefix("❌ "))
+        return message
+    with connect_db(timeout=5) as connection:
+        role = connection.execute("SELECT role FROM users WHERE user_id=?", (actor,)).fetchone()
+        if actor not in BOOTSTRAP_ADMIN_IDS and (not role or str(role["role"]).strip().lower() != "admin"):
+            raise ValueError("admin_required")
+        exists = connection.execute("SELECT * FROM market_exchanges WHERE exchange_id=?", (exchange_id,)).fetchone()
+        if action in {"create", "nationality"}:
+            nationality = str(payload.get("nationality", "")).strip()
+            if not connection.execute("SELECT 1 FROM country_currencies WHERE nationality=?", (nationality,)).fetchone():
+                raise ValueError("등록된 국가를 선택해주세요.")
+            if action == "create":
+                if exists:
+                    raise ValueError("이미 있는 거래소 ID입니다.")
+                connection.execute(
+                    "INSERT INTO market_exchanges(exchange_id,status,updated_epoch,trading_halted,nationality) VALUES (?,?,?,?,?)",
+                    (exchange_id, "open", int(time.time()), 0, nationality))
+                message = f"✅ 거래소 {exchange_id}를 만들었습니다. 상품 생성 시 거래소ID로 지정하세요."
+            else:
+                if not exists:
+                    raise ValueError("거래소를 찾을 수 없습니다.")
+                connection.execute("UPDATE market_exchanges SET nationality=? WHERE exchange_id=?", (nationality, exchange_id))
+                message = f"✅ {exchange_id} 거래소 국가를 {nationality}(으)로 변경했습니다."
+            _audit_db(connection, actor, f"exchange.{action}", {"exchange_id": exchange_id, "nationality": nationality})
+        elif action == "delete":
+            if not exists:
+                raise ValueError("거래소를 찾을 수 없습니다.")
+            if exchange_id == "CURRENCY":
+                raise ValueError("외환 거래소 CURRENCY는 삭제할 수 없습니다.")
+            used = any(connection.execute(f"SELECT 1 FROM {table} WHERE exchange_id=? LIMIT 1", (exchange_id,)).fetchone()
+                       for table, _key in EXCHANGE_PRODUCT_TABLES if _table_exists(connection, table))
+            used = used or connection.execute(
+                "SELECT 1 FROM investment WHERE underlying_exchange_id=? LIMIT 1", (exchange_id,)).fetchone()
+            if used:
+                raise ValueError("이 거래소에 상장되었거나 연동된 상품이 있어 삭제할 수 없습니다.")
+            connection.execute("DELETE FROM market_exchange_index_components WHERE exchange_id=?", (exchange_id,))
+            connection.execute("DELETE FROM market_exchanges WHERE exchange_id=?", (exchange_id,))
+            _audit_db(connection, actor, "exchange.delete", {"exchange_id": exchange_id})
+            message = f"✅ 거래소 {exchange_id}를 삭제했습니다."
+        else:
+            raise ValueError("invalid_action")
+    _read_cache.invalidate()
+    return message
+
+
+# ---------------------------------------------------------------------------
+# $도움말 pages and Discord-only work queued for the bot ($주총)
+# ---------------------------------------------------------------------------
+def admin_help_pages():
+    import asyncio
+    from functions.admin_help_view import AdminHelpView
+    from functions.admin_prefix import NATIONAL_COMMANDS
+
+    async def build():
+        view = AdminHelpView(SimpleNamespace(), "0", NATIONAL_COMMANDS)
+        pages = []
+        for index, (_key, label) in enumerate(view.PAGES):
+            view.page = index
+            embed = view.build_embed()
+            pages.append({"label": label, "description": embed.description or "",
+                          "fields": [{"name": field.name, "value": field.value} for field in embed.fields]})
+        view.stop()
+        return pages
+
+    # discord.ui.View needs an event loop; the handler thread has none.
+    return asyncio.run(build())
+
+
+def ensure_bot_jobs_table(connection):
+    connection.execute("""CREATE TABLE IF NOT EXISTS web_bot_jobs (
+        job_id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, actor_id TEXT NOT NULL,
+        payload TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending'
+            CHECK(status IN ('pending','running','done','failed')),
+        result TEXT, created_epoch INTEGER NOT NULL, updated_epoch INTEGER NOT NULL)""")
+
+
+def queue_shareholder_meeting(actor, payload):
+    code = str(payload.get("code", "")).strip()
+    place = str(payload.get("place", "")).strip()
+    if not code or not place or len(code) > 80 or len(place) > 1000:
+        raise ValueError("주식 코드와 장소를 입력해주세요.")
+    now = int(time.time())
+    with connect_db(timeout=5) as connection:
+        ensure_bot_jobs_table(connection)
+        job_id = connection.execute(
+            "INSERT INTO web_bot_jobs(kind,actor_id,payload,created_epoch,updated_epoch) VALUES ('shareholder_meeting',?,?,?,?)",
+            (actor, json.dumps({"code": code, "place": place}, ensure_ascii=False), now, now)).lastrowid
+        _audit_db(connection, actor, "national.주총.queued", {"job_id": job_id, "code": code})
+    return f"⏳ 주총 소집을 Discord 봇에 요청했습니다 (#{job_id}). 봇이 실행 중이면 몇 초 안에 안내 DM을 보냅니다."
+
+
+def bot_jobs(limit=20):
+    with connect_db(timeout=2) as connection:
+        ensure_bot_jobs_table(connection)
+        return [dict(row) for row in connection.execute(
+            "SELECT * FROM web_bot_jobs ORDER BY job_id DESC LIMIT ?", (limit,))]
 
 
 def run_admin_command(actor, payload):
@@ -1186,6 +1712,32 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "admin_required"})
                 else:
                     self.send_json(200, admin_command_catalog())
+            elif path.startswith("/internal/admin/") and path.split("/")[3] in {
+                    "products", "countries", "exchanges", "help", "bot-jobs", "user"}:
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                    return
+                parts = [unquote(part) for part in path.split("/")[3:]]
+                query = parse_qs(parsed.query)
+                if parts == ["products", "catalog"]:
+                    self.send_json(200, product_catalog())
+                elif parts == ["products"]:
+                    self.send_json(200, {"products": product_list(query.get("group", ["market"])[0])})
+                elif len(parts) == 2 and parts[0] == "products":
+                    self.send_json(200, product_detail(parts[1]))
+                elif parts == ["countries"]:
+                    self.send_json(200, {"countries": admin_countries()})
+                elif parts == ["exchanges"]:
+                    self.send_json(200, admin_exchanges())
+                elif parts == ["help"]:
+                    self.send_json(200, {"pages": admin_help_pages()})
+                elif parts == ["bot-jobs"]:
+                    self.send_json(200, {"jobs": bot_jobs()})
+                elif len(parts) == 2 and parts[0] == "user":
+                    self.send_json(200, admin_user_detail(parts[1]))
+                else:
+                    self.send_json(404, {"error": "not_found"})
             elif path == "/internal/admin/db/tables" or path.startswith("/internal/admin/db/tables/"):
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -1367,6 +1919,32 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     success, message = create_fund(user["userId"], payload)
                     self.send_json(201 if success else 400, {"success": success, "message": message})
+            elif path.startswith("/internal/admin/") and path.split("/")[3] in {
+                    "products", "countries", "exchanges", "user"}:
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                    return
+                parts = [unquote(part) for part in path.split("/")[3:]]
+                actor = user["userId"]
+                if parts == ["products"]:
+                    message = product_save(actor, payload)
+                elif len(parts) == 3 and parts[0] == "products" and parts[2] == "status":
+                    message = product_status(actor, parts[1], bool(payload.get("active")))
+                elif len(parts) == 2 and parts[0] == "countries":
+                    message = admin_country_action(actor, parts[1], payload)
+                elif len(parts) == 2 and parts[0] == "exchanges":
+                    message = admin_exchange_action(actor, parts[1], payload)
+                elif len(parts) == 2 and parts[0] == "user":
+                    message = admin_update_user(actor, parts[1], payload.get("changes"))
+                elif len(parts) == 3 and parts[0] == "user" and parts[2] == "web":
+                    action = payload.get("action")
+                    message = (admin_set_web_password(actor, parts[1], payload.get("password"))
+                               if action == "password" else
+                               admin_web_login_action(actor, parts[1], action, payload.get("htsId")))
+                else:
+                    self.send_json(404, {"error": "not_found"})
+                    return
+                self.send_json(200, {"success": not str(message).startswith("❌"), "message": str(message)})
             elif path.startswith("/internal/admin/users/"):
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})

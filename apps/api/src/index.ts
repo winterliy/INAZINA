@@ -604,6 +604,21 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  // Product, country, exchange, user-detail, help and bot-job administration.
+  const adminMatch = url.pathname.match(/^\/api\/admin\/((?:products|countries|exchanges|help|bot-jobs|user)(?:\/[^/]+){0,2})$/);
+  if (adminMatch) {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const path = `/internal/admin/${adminMatch[1].split("/").map((part) => encodeURIComponent(decodeURIComponent(part))).join("/")}${url.search}`;
+    const result = request.method === "GET"
+      ? await internalGet(path, principal.userId)
+      : await internalRequest("POST", path, principal.userId, await requestJson(request), 60_000);
+    send(response, result.status, result.body);
+    return;
+  }
+
   send(response, 404, { error: "not_found" });
 }
 

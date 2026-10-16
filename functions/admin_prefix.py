@@ -297,39 +297,44 @@ class ActionModal(CheckedModal):
         return result
 
     async def national_meeting(self,interaction,values):
-        from functions.discord_views import ShareholderMeetingResponseView
-        bot=self.bot
-        bot.admin_control.require(self.owner)
-        company=bot.db.companies.get_company(values[0])
-        if not company:
-            raise ValueError('회사 주식 코드를 확인해주세요.')
-        if dict(company).get('share_class')=='preferred':
-            raise ValueError('우선주는 의결권이 없습니다. 보통주 법인 id로 주총을 소집해주세요.')
-        holders=bot.db.assets.execute("SELECT user_id,SUM(quantity) shares FROM ("
-            "SELECT user_id,quantity FROM user_assets WHERE asset_code=? UNION ALL "
-            "SELECT writer_id,quantity FROM option_collateral_lots WHERE underlying_code=?) "
-            "GROUP BY user_id ORDER BY shares DESC",(values[0],values[0]))
-        if not holders or not any(str(r['user_id'])==TREASURY_USER_ID and r['shares']==holders[0]['shares'] for r in holders):
-            raise ValueError('국가가 최대주주인 회사만 국가 명의로 소집할 수 있습니다.')
-        notice=discord.Embed(title=f"📣 {company['name']} 국가 소집 주주총회",description='국가(국고)가 소집했습니다. 아래 버튼에서 참석 여부를 선택해주세요.')
-        notice.add_field(name='장소',value=values[1][:1024],inline=False)
-        sent=failed=0
-        for holder in holders:
-            bot.admin_control.require(self.owner)
-            if str(holder['user_id']) == TREASURY_USER_ID:
-                continue
-            if not str(holder['user_id']).isdecimal():continue
-            try:
-                target=bot.get_user(int(holder['user_id'])) or await bot.fetch_user(int(holder['user_id']))
-                view=ShareholderMeetingResponseView(bot,int(holder['user_id']),int(self.owner),company['name'],values[0],values[1])
-                view.message=await target.send(embed=notice,view=view)
-                sent+=1
-            except discord.HTTPException:
-                failed+=1
-        with bot.db.atomic() as conn:
-            bot.admin_control.require(self.owner,conn)
-            bot.admin_control._audit(conn,self.owner,'national.주총',{'code':values[0],'sent':sent,'failed':failed})
-        await interaction.followup.send(**admin_response(f'✅ 국가 소집 안내 {sent}명 성공 · {failed}명 실패. 참석 회신은 이 창을 연 관리자에게 전달됩니다.','Inazina · $주총'),ephemeral=True)
+        message=await convene_national_meeting(self.bot,self.owner,values[0],values[1])
+        await interaction.followup.send(**admin_response(message,'Inazina · $주총'),ephemeral=True)
+
+async def convene_national_meeting(bot,owner,code,place):
+    """Shared by $주총 and dashboard requests queued for the bot."""
+    values=[code,place]
+    from functions.discord_views import ShareholderMeetingResponseView
+    bot.admin_control.require(owner)
+    company=bot.db.companies.get_company(values[0])
+    if not company:
+        raise ValueError('회사 주식 코드를 확인해주세요.')
+    if dict(company).get('share_class')=='preferred':
+        raise ValueError('우선주는 의결권이 없습니다. 보통주 법인 id로 주총을 소집해주세요.')
+    holders=bot.db.assets.execute("SELECT user_id,SUM(quantity) shares FROM ("
+        "SELECT user_id,quantity FROM user_assets WHERE asset_code=? UNION ALL "
+        "SELECT writer_id,quantity FROM option_collateral_lots WHERE underlying_code=?) "
+        "GROUP BY user_id ORDER BY shares DESC",(values[0],values[0]))
+    if not holders or not any(str(r['user_id'])==TREASURY_USER_ID and r['shares']==holders[0]['shares'] for r in holders):
+        raise ValueError('국가가 최대주주인 회사만 국가 명의로 소집할 수 있습니다.')
+    notice=discord.Embed(title=f"📣 {company['name']} 국가 소집 주주총회",description='국가(국고)가 소집했습니다. 아래 버튼에서 참석 여부를 선택해주세요.')
+    notice.add_field(name='장소',value=values[1][:1024],inline=False)
+    sent=failed=0
+    for holder in holders:
+        bot.admin_control.require(owner)
+        if str(holder['user_id']) == TREASURY_USER_ID:
+            continue
+        if not str(holder['user_id']).isdecimal():continue
+        try:
+            target=bot.get_user(int(holder['user_id'])) or await bot.fetch_user(int(holder['user_id']))
+            view=ShareholderMeetingResponseView(bot,int(holder['user_id']),int(owner),company['name'],values[0],values[1])
+            view.message=await target.send(embed=notice,view=view)
+            sent+=1
+        except discord.HTTPException:
+            failed+=1
+    with bot.db.atomic() as conn:
+        bot.admin_control.require(owner,conn)
+        bot.admin_control._audit(conn,owner,'national.주총',{'code':values[0],'sent':sent,'failed':failed})
+    return f'✅ 국가 소집 안내 {sent}명 성공 · {failed}명 실패. 참석 회신은 이 창을 연 관리자에게 전달됩니다.'
 
 class MarketSettingsModal(CheckedModal):
     def __init__(self,bot,owner,category):
