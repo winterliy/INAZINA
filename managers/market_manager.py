@@ -105,7 +105,7 @@ class MarketManager:
     @staticmethod
     def type_label(asset_type):
         return {"stock_future": "주식 선물", "corporate_bond": "회사채", "mutual_fund": "일반 펀드",
-                "index_fund": "인덱스 펀드", "commodity_spot": "현물 원자재", "option": "옵션", "els":"ELS"}.get(asset_type, asset_type)
+                "index_fund": "인덱스 펀드", "commodity_spot": "현물 원자재", "option": "옵션", "els":"ELS", "etn": "ETN"}.get(asset_type, asset_type)
 
     @contextmanager
     def _short_market_transaction(self, alias, *, now=None):
@@ -994,6 +994,9 @@ class MarketManager:
             with self._short_market_transaction(("assets", "product", "company")) as conn:
                 prices = {r['code']: r for r in conn.execute('SELECT code,price FROM market_assets')}
                 prices.update({r['code']: r for r in conn.execute('SELECT company_code code,share_price price FROM company')})
+                # Bond, fund, ETF and ETN components (fund of funds) price from the last tick.
+                prices.update({r['code']: r for r in conn.execute('SELECT product_code code,unit_price price FROM investment')})
+                prices.update({r['code']: r for r in conn.execute('SELECT product_code code,market_price price FROM treasury_bond_products')})
                 components = {}
                 for row in conn.execute('SELECT * FROM fund_components'):
                     components.setdefault(row['product_code'], []).append(row)
@@ -1010,9 +1013,12 @@ class MarketManager:
                     if int(product["is_fixed"] or 0):
                         continue
                     rate = RateManager.for_exchange(conn, 'base_rate', product['exchange_id'])
-                    price = InvestmentManager.linked_price(conn, product, rate, now,
-                        prices=prices, fund_components=components)
-                    if price is None:
+                    try:
+                        price = InvestmentManager.linked_price(conn, product, rate, now,
+                            prices=prices, fund_components=components)
+                    except (ValueError, ArithmeticError):
+                        continue  # a non-finite or out-of-range quote must not stop the tick
+                    if price is None or not math.isfinite(price) or not 0 < price <= 2**53 - 1:
                         continue
                     if price != product['unit_price']:
                         updates.append((price, product['product_code']))

@@ -52,6 +52,48 @@ NATIONAL = {
 }
 READ_ONLY = {command for command,fields in NATIONAL.items() if not fields}
 
+def national_identity(bot,owner):
+    """(treasury user id, nationality) the administrator acts for; 낙원 until $login."""
+    row=bot.db.system.execute_one('SELECT treasury_id,nationality FROM admin_national_sessions WHERE admin_id=?',(str(owner),))
+    return (str(row['treasury_id']),str(row['nationality'])) if row else (TREASURY_USER_ID,'낙원')
+
+
+def national_login(bot,owner,nation):
+    """$login [국가 ID]: later national commands act for that country's treasury."""
+    import time
+    from managers.currency_manager import CurrencyManager
+    nation=str(nation or '').strip()
+    if not nation:
+        raise ValueError('사용법: $login [국가 ID]')
+    with bot.db.atomic() as conn:
+        bot.admin_control.require(owner,conn)
+        # A country account's ID is its country name; a company acts through its capital account.
+        if conn.execute('SELECT 1 FROM country_currencies WHERE nationality=?',(nation,)).fetchone():
+            treasury=CurrencyManager.treasury_id(conn,nation)
+        elif conn.execute("SELECT 1 FROM company WHERE company_code=? AND status='active'",(nation,)).fetchone():
+            from managers.company_account_manager import CompanyAccounts
+            treasury=CompanyAccounts.account_id(conn,nation)
+            nation=f'법인 {nation}'
+        else:
+            raise ValueError('등록된 국가 ID 또는 법인 ID를 입력해주세요.')
+        conn.execute('INSERT INTO admin_national_sessions(admin_id,nationality,treasury_id,logged_in_epoch) VALUES (?,?,?,?) '
+                     'ON CONFLICT(admin_id) DO UPDATE SET nationality=excluded.nationality,treasury_id=excluded.treasury_id,'
+                     'logged_in_epoch=excluded.logged_in_epoch',(str(owner),nation,treasury,time.time()))
+        bot.admin_control._audit(conn,owner,'national.login',{'nationality':nation,'treasury':treasury})
+    return f'✅ {nation}(으)로 로그인했습니다. 이제 국가 명의 명령어는 `{treasury}` 계정으로 실행됩니다. $logout으로 해제하세요.'
+
+
+def national_logout(bot,owner):
+    with bot.db.atomic() as conn:
+        bot.admin_control.require(owner,conn)
+        row=conn.execute('SELECT nationality FROM admin_national_sessions WHERE admin_id=?',(str(owner),)).fetchone()
+        conn.execute('DELETE FROM admin_national_sessions WHERE admin_id=?',(str(owner),))
+        bot.admin_control._audit(conn,owner,'national.logout',{'nationality':row['nationality'] if row else None})
+    if not row:
+        return 'ℹ️ 로그인한 국가가 없습니다. 국가 명의 명령어는 기본값인 낙원 국고로 실행됩니다.'
+    return f'✅ {row["nationality"]}에서 로그아웃했습니다. 국가 명의 명령어는 기본값인 낙원 국고로 실행됩니다.'
+
+
 def admin_allowed(bot,user_id):
     user = bot.db.users.get_user(str(user_id))
     return bool(user and str(user['role']).strip().lower()=='admin')
@@ -159,7 +201,7 @@ class ActionModal(CheckedModal):
                     view=AllAssetsView(self.bot,self.owner,rows)
                     await interaction.followup.send(embed=await asyncio.to_thread(view.build_embed),view=view,ephemeral=True)
                     return
-                view = (InfoPanelView(self.bot,self.owner,subject_id=TREASURY_USER_ID) if self.command=='검색'
+                view = (InfoPanelView(self.bot,self.owner,subject_id=national_identity(self.bot,self.owner)[0]) if self.command=='검색'
                         else PriceMovementView(self.bot,self.owner,values[0]))
                 if self.command=='검색':
                     await interaction.followup.send(embed=await asyncio.to_thread(view.build_embed),view=view,ephemeral=True)
@@ -183,7 +225,7 @@ class ActionModal(CheckedModal):
                 await interaction.followup.send(embed=view.build_embed(),view=view,ephemeral=True)
             elif self.command=='환율':
                 from functions.discord_views import FXRatesView
-                view = FXRatesView(self.bot,self.owner,subject_id=TREASURY_USER_ID)
+                view = FXRatesView(self.bot,self.owner,subject_id=national_identity(self.bot,self.owner)[0])
                 await interaction.followup.send(embed=await asyncio.to_thread(view.build_embed),view=view,ephemeral=True)
             else:
                 await interaction.followup.send(**admin_response(result,f'Inazina · ${self.command}'),ephemeral=True)
@@ -196,7 +238,8 @@ class ActionModal(CheckedModal):
             return self._execute(v)
 
     def _execute(self,v):
-        bot,c,uid = self.bot,self.command,TREASURY_USER_ID
+        bot,c = self.bot,self.command
+        uid = national_identity(bot,self.owner)[0]
         bot.admin_control.require(self.owner)
         if c=='setup':
             if not v[0].isdecimal():
@@ -309,15 +352,16 @@ async def convene_national_meeting(bot,owner,code,place):
     holders=bot.db.assets.execute("SELECT user_id,SUM(quantity) shares FROM ("
         "SELECT user_id,quantity FROM user_assets WHERE asset_code=? UNION ALL "
         "SELECT writer_id,quantity FROM option_collateral_lots WHERE underlying_code=?) "
-        "GROUP BY user_id ORDER BY shares DESC",(values[0],values[0]))
-    if not holders or not any(str(r['user_id'])==TREASURY_USER_ID and r['shares']==holders[0]['shares'] for r in holders):
+        "WHERE user_id<>? GROUP BY user_id ORDER BY shares DESC",(values[0],values[0],'company:'+values[0]))
+    identity=national_identity(bot,owner)[0]
+    if not holders or not any(str(r['user_id'])==identity and r['shares']==holders[0]['shares'] for r in holders):
         raise ValueError('국가가 최대주주인 회사만 국가 명의로 소집할 수 있습니다.')
     notice=discord.Embed(title=f"📣 {company['name']} 국가 소집 주주총회",description='국가(국고)가 소집했습니다. 아래 버튼에서 참석 여부를 선택해주세요.')
     notice.add_field(name='장소',value=values[1][:1024],inline=False)
     sent=failed=0
     for holder in holders:
         bot.admin_control.require(owner)
-        if str(holder['user_id']) == TREASURY_USER_ID:
+        if str(holder['user_id']) == identity:
             continue
         if not str(holder['user_id']).isdecimal():continue
         try:
@@ -388,7 +432,7 @@ class TreasuryAssetsView(discord.ui.View):
             self.sections['written'].append((f"작성 옵션 · {item['name']}",f"{item['contract_code']} · 체결 {item['outstanding_contracts']:,} / 미체결 {item['offered']:,}계약\n담보 {item['collateral_quantity']:,}주 / {item['collateral_cash']:,} NWX · 만기 <t:{item['expiration_epoch']}:D>"))
         from functions.wallet_views import load_active_wallet_loans
         for loan in load_active_wallet_loans(
-            bot.db, TREASURY_USER_ID, require_product=True
+            bot.db, national_identity(bot,owner)[0], require_product=True
         ):
             maturity=f"<t:{int(loan['maturity_epoch'])}:D>" if loan['maturity_epoch'] else '없음'
             self.sections['loans'].append((f"대출 · {loan['name']}",f"#{loan['loan_id']} · {loan['product_code']}\n잔액 {loan['outstanding_balance']:,} NWX · 만기 {maturity}"))
@@ -503,7 +547,39 @@ class AdminPrefixRegistry:
                 +'\n$사건 — DM 버튼으로 사건 모달 열기\n\n**국가 명의 일반 기능**\n'
                 +' '.join('$'+name for name in sorted(NATIONAL_COMMANDS))
                 +'\n국가 거래는 국고 잔액·보유자산·담보를 사용합니다. 인자가 없으면 DM에서 입력 창을 엽니다.\n'
+                +'$login [국가 ID 또는 법인 ID] — 이후 국가 명의 명령어를 그 국고·법인 계정으로 실행 · $logout — 해제(기본: 낙원 국고)\n'
+                +'$법인 — 법인 자본 목록 · $법인 [법인ID] — 자본 현황 · $법인 [법인ID] [명령어] [인자 ...] — 법인 계정으로 매수·매도·송금·계좌·대출 등 실행\n'
                 +'상품생성 예: $상품생성 NEW company "새 주식" 소프트웨어 100000000 100000 1000 INZ')
+
+    def company_command(self,owner,arguments):
+        """$법인 · $법인 [법인ID] · $법인 [법인ID] [명령어] [인자 ...]"""
+        import shlex
+        from functions import company_actions
+        from managers.company_account_manager import CompanyAccounts
+        self.bot.admin_control.require(owner)
+        parts=shlex.split(arguments)
+        with self.bot.db.atomic() as conn:
+            summary={row['company_code']:row for row in CompanyAccounts.summary(conn)}
+        if not parts:
+            return '\n'.join(f"`{code}` {row['name']} · 현금 {int(row['cash']):,} NWX · 보유 {len(row['holdings'])}종목 · "
+                             f"통장 {row['accounts']} · 대출 {int(row['loans']):,}"
+                             + (' · 모회사 '+', '.join(f"{p['code']} {p['percent']:.1f}%" for p in row['parents']) if row['parents'] else '')
+                             for code,row in summary.items()) or '거래 중인 법인이 없습니다.'
+        code=parts[0]
+        if len(parts)==1:
+            row=summary.get(code)
+            if not row:
+                raise ValueError('거래 중인 보통주 법인 ID를 입력해주세요.')
+            account=company_actions.company_account(self.bot,code)
+            info=self.bot.user_mgr.get_total_assets(account)
+            lines=[f"**{row['name']}** (`{code}`) · 계정 `{account}`",f"현금 {int(row['cash']):,} NWX · 잠금 예치금 {int(row['locked']):,}",
+                   f"총자산 {int(info['grand_total']):,} NWX · 대출 {int(info['loan_total']):,} · 순자산 {int(info['net_worth']):,}"]
+            lines+=[f"• {s['name']} ({s['code']}) {s['qty']:,} · 평가 {int(s['value']):,}"
+                    +(' · 자기주식' if s['code']==code else '') for s in info['stocks']]
+            lines+=[f"• 통장 {a['product_name']} ({a['number']}) {a['balance']:,.0f}" for a in info['accounts']]
+            return '\n'.join(lines)
+        success,message,_=company_actions.run_positional(self.bot,owner,code,parts[1],parts[2:])
+        return message if success or str(message).startswith('❌') else '❌ '+str(message)
 
     async def send_result(self,author,result,command=None,**kwargs):
         title=f'Inazina · ${command}' if command else 'Inazina · 관리자'
@@ -524,13 +600,26 @@ class AdminPrefixRegistry:
             raw=message.content[1:].strip().split(maxsplit=1)
             command=raw[0] if raw else 'help'
             arguments=raw[1] if len(raw)>1 else ''
-            supported=COMMANDS|NATIONAL_COMMANDS|{'help','사건'}
+            supported=COMMANDS|NATIONAL_COMMANDS|{'help','사건','login','logout','법인'}
             if command not in supported:
                 await self.send_result(message.author,'❌ 알 수 없는 관리자 명령어입니다. $help를 사용해주세요.')
                 return
             # Verify DM delivery before performing any operation with chat arguments.
             session=await message.author.send(embed=admin_embed('요청을 처리하고 있습니다.',f'Inazina · ${command}',pending=True),delete_after=300)
-            if command in {'help','도움말'}:
+            if command=='법인':
+                result=await asyncio.to_thread(self.company_command,str(message.author.id),arguments)
+                response=admin_response(result,'Inazina · $법인')
+                if 'file' in response:
+                    await self.send_result(message.author,result,command)
+                else:
+                    await session.edit(embed=response['embed'])
+                session = None
+            elif command in {'login','logout'}:
+                result=await asyncio.to_thread(national_login if command=='login' else national_logout,
+                                               self.bot,str(message.author.id),*([arguments] if command=='login' else []))
+                await session.edit(embed=admin_response(result,f'Inazina · ${command}')['embed'])
+                session = None
+            elif command in {'help','도움말'}:
                 from functions.admin_help_view import AdminHelpView
                 view=AdminHelpView(self.bot,message.author.id,NATIONAL_COMMANDS,message.guild)
                 await session.edit(embed=view.build_embed(),view=view)

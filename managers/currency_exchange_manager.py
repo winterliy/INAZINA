@@ -398,6 +398,15 @@ class CurrencyExchangeManager:
             destination_label = '국고' if CurrencyManager.is_treasury(conn, dst[4]) else recipient
             conn.execute('INSERT INTO currency_transfer_transactions(sender_id,recipient_id,source_account,target_account,source_currency,target_currency,source_units,target_units,fee_nwx,recorded_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)',
                 (sender,dst[4],source_account,recipient,src[5],dst[5],units,output,fee,now))
+            if sender != dst[4]:
+                # Company books classify transfers as 영업외 income/expense (and consolidation eliminates intra-group ones).
+                from managers.company_account_manager import CompanyAccounts
+                if CompanyAccounts.is_company(conn, sender):
+                    CompanyAccounts.log_income(conn, sender, 'transfer_out', CurrencyManager.convert(conn, units, src[5], 'NWX')//SCALE,
+                                               counterparty=CompanyAccounts.issuer_of(conn, dst[4]) or dst[4])
+                if CompanyAccounts.is_company(conn, dst[4]):
+                    CompanyAccounts.log_income(conn, dst[4], 'transfer_in', CurrencyManager.convert(conn, output, dst[5], 'NWX')//SCALE,
+                                               counterparty=CompanyAccounts.issuer_of(conn, sender) or sender)
             sources_label = ', '.join(debited_sources)
             basis_label = (
                 f'환전 기준 {display_units(requested_units)} {dst[5]} · '

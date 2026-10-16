@@ -32,13 +32,16 @@ ACCOUNTS = {
     'revenue': ('매출액', 'revenue'),
     'other_income': ('영업외수익', 'revenue'),
     'interest_income': ('이자수익', 'revenue'),
+    'investment_gain': ('투자자산처분이익', 'revenue'),
     'cogs': ('매출원가', 'expense'),
     'sga': ('판매비와관리비', 'expense'),
     'depreciation': ('감가상각비', 'expense'),
     'amortization': ('무형자산상각비', 'expense'),
     'interest_expense': ('이자비용', 'expense'),
+    'overdue_interest': ('연체이자비용', 'expense'),
     'currency_rounding': ('통화환산 반올림차이', 'expense'),
     'other_expense': ('영업외비용', 'expense'),
+    'investment_loss': ('투자자산처분손실', 'expense'),
     'income_tax': ('법인세비용', 'expense'),
 }
 

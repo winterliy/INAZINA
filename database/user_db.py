@@ -11,6 +11,11 @@ ACTIVE_OR_TREASURY = (f"(status = 'active' OR user_id = '{TREASURY_USER_ID}' "
                       "OR user_id IN (SELECT user_id FROM country_treasuries))")
 
 
+# Treasuries may always pay: their balance can go negative without limit.
+IS_TREASURY = (f"(user_id = '{TREASURY_USER_ID}' "
+               "OR user_id IN (SELECT user_id FROM country_treasuries))")
+
+
 def citizen_filter(alias="users"):
     """SQL condition for real citizens: not a treasury and not a country login account.
 
@@ -20,7 +25,7 @@ def citizen_filter(alias="users"):
     return (f"{alias}.user_id<>'{TREASURY_USER_ID}' "
             f"AND {alias}.user_id NOT IN (SELECT user_id FROM country_treasuries) "
             f"AND {alias}.user_id NOT IN (SELECT nationality FROM country_currencies) "
-            f"AND COALESCE({alias}.role,'user')<>'nation'")
+            f"AND COALESCE({alias}.role,'user') NOT IN ('nation','company')")
 
 
 class UserDB(DBManager):

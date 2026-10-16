@@ -121,7 +121,7 @@ class FundAccountingTests(unittest.TestCase):
         self.ok(self.users.buy_asset('alice', 'FD', 10))
         self.ok(fund.order('admin', 'FD', 'CO', 'buy', 6, 100))
         admin_cash = self.db.users.get_user('admin')['cash']
-        self.ok(CorporateActionsManager(SimpleNamespace(db=self.db)).special_dividend('admin', 'CO', 5, 'fund-dividend'))
+        self.ok(CorporateActionsManager(SimpleNamespace(db=self.db)).special_dividend('admin', 'CO', 5, 'fund-dividend', delay=0))
         self.assertEqual(fund.snapshot('FD')['availableCash'], 430)
         self.assertEqual(self.db.users.get_user('admin')['cash'], admin_cash)
         self.assertEqual(fund.snapshot('FD')['nav'], 103)
@@ -173,11 +173,11 @@ class FundAccountingTests(unittest.TestCase):
         self.ok(self.users.buy_asset('alice', 'FD', 10))
         treasury = self.db.users.get_treasury_balance()
         corporate = CorporateActionsManager(SimpleNamespace(db=self.db))
-        self.ok(corporate.special_dividend('admin', 'FD', 5, 'fund-distribution'))
+        self.ok(corporate.special_dividend('admin', 'FD', 5, 'fund-distribution', delay=0))
         self.assertEqual(fund.snapshot('FD')['availableCash'], 950)
         self.assertGreaterEqual(self.db.users.get_treasury_balance(), treasury)  # Investor tax only.
         self.assertEqual(fund.snapshot('FD')['nav'], 95)
-        self.ok(corporate.special_dividend('admin', 'FD', 5, 'fund-distribution'))
+        self.ok(corporate.special_dividend('admin', 'FD', 5, 'fund-distribution', delay=0))
         self.assertEqual(fund.snapshot('FD')['availableCash'], 950)
 
     def test_cash_or_position_failure_rolls_back_subscription(self):

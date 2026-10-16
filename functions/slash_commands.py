@@ -107,8 +107,9 @@ async def convene_shareholder_meeting(bot, user_id, role, 주식코드, 장소):
         "SELECT user_id, quantity FROM user_assets WHERE asset_code = ? AND quantity > 0 "
         "UNION ALL SELECT writer_id AS user_id, quantity FROM option_collateral_lots "
         "WHERE underlying_code = ? AND quantity > 0) "
-        "GROUP BY user_id ORDER BY shares DESC, user_id ASC",
-        (주식코드, 주식코드),
+        # Treasury stock (the company's own shares) carries no vote.
+        "WHERE user_id <> ? GROUP BY user_id ORDER BY shares DESC, user_id ASC",
+        (주식코드, 주식코드, "company:" + 주식코드),
     )
     if not holders:
         return "❌ 해당 주식을 보유한 주주가 없습니다."
@@ -165,6 +166,11 @@ class SlashCommandRegistry:
             ("옵션작성", "담보를 맡기고 주식 옵션 매도 호가를 작성합니다", self.option_write),
             ("법정최고이자", "국가별 법정 최고 이율을 확인합니다", self.legal_max_rate),
             ("선물증거금", "보유 주식 선물 포지션에 증거금을 추가합니다", self.future_margin),
+            ("전환청구", "전환사채(CB)를 발행회사 주식으로 전환합니다", self.convert_bond),
+            ("신주인수권행사", "신주인수권부사채(BW)의 신주인수권을 행사합니다", self.exercise_warrant),
+            ("스왑", "국고와 금리스왑을 체결·해지하거나 내 스왑을 확인합니다", self.swap),
+            ("랩주문", "내가 운용하는 랩어카운트 계좌로 주문합니다", self.wrap_order),
+            ("운용계좌", "내가 운용하는 랩어카운트 계좌 목록을 확인합니다", self.managed_accounts),
             ("매수", "자산을 지정가 매수하거나 펀드를 NAV로 가입합니다", self.buy),
             ("매도", "자산을 지정가 매도하거나 펀드를 NAV로 환매합니다", self.sell),
             ("호가", "자산의 매수·매도 대기 주문을 확인합니다", self.order_book_view),
@@ -356,6 +362,66 @@ class SlashCommandRegistry:
         user_id, _, _ = await self._prepare(interaction)
         success, message = await asyncio.to_thread(self.bot.futures_mgr.add_margin, user_id, 선물, 금액)
         await self._reply(interaction, embed=self._result_embed("선물 증거금", message, success))
+
+    @app_commands.describe(사채="전환사채 코드", 수량="전환할 사채 수량")
+    async def convert_bond(self, interaction: discord.Interaction, 사채: str, 수량: app_commands.Range[int, 1, MAX_DISCORD_INTEGER]):
+        user_id, _, _ = await self._prepare(interaction)
+        success, message = await asyncio.to_thread(self.bot.capital_markets.convert_bond, user_id, 사채, 수량)
+        await self._reply(interaction, embed=self._result_embed("전환청구", message, success))
+
+    @app_commands.describe(사채="신주인수권부사채 코드", 수량="행사할 사채 수량")
+    async def exercise_warrant(self, interaction: discord.Interaction, 사채: str, 수량: app_commands.Range[int, 1, MAX_DISCORD_INTEGER]):
+        user_id, _, _ = await self._prepare(interaction)
+        success, message = await asyncio.to_thread(self.bot.capital_markets.exercise_warrant, user_id, 사채, 수량)
+        await self._reply(interaction, embed=self._result_embed("신주인수권 행사", message, success))
+
+    @app_commands.describe(작업="체결·해지·조회", 방향="체결 시 고정지급 또는 고정수취", 명목금액="체결 시 명목금액",
+                           만기일수="체결 시 1~3650일", 스왑번호="해지할 스왑 번호")
+    @app_commands.choices(작업=[app_commands.Choice(name=n, value=n) for n in ("체결", "해지", "조회")],
+                          방향=[app_commands.Choice(name=n, value=n) for n in ("고정지급", "고정수취")])
+    async def swap(self, interaction: discord.Interaction, 작업: str, 방향: str | None = None,
+                   명목금액: app_commands.Range[int, 1, MAX_DISCORD_INTEGER] | None = None,
+                   만기일수: app_commands.Range[int, 1, 3650] | None = None,
+                   스왑번호: app_commands.Range[int, 1, MAX_DISCORD_INTEGER] | None = None):
+        user_id, _, _ = await self._prepare(interaction)
+        markets = self.bot.capital_markets
+        if 작업 == "체결":
+            if not (방향 and 명목금액 and 만기일수):
+                success, message = False, "❌ 체결에는 방향·명목금액·만기일수가 필요합니다."
+            else:
+                success, message = await asyncio.to_thread(markets.open_swap, user_id, 명목금액, 방향, 만기일수)
+        elif 작업 == "해지":
+            success, message = (await asyncio.to_thread(markets.close_swap, user_id, 스왑번호)) if 스왑번호 \
+                else (False, "❌ 해지할 스왑 번호를 입력해주세요.")
+        else:
+            rows = await asyncio.to_thread(markets.swaps, user_id)
+            success = True
+            message = "\n".join(
+                f"#{row['swap_id']} · {'고정지급' if row['side'] == 'pay_fixed' else '고정수취'} · "
+                f"명목 {row['notional']:,} {row['currency']} · 고정 {row['fixed_rate']:.3f}%"
+                + (f" · 변동 {row['floating_rate']:.3f}%" if 'floating_rate' in row else '')
+                + f" · 누적 {row['realized']:+,} · {row['status']} · 만기 <t:{int(row['maturity_epoch'])}:D>"
+                for row in rows) or "체결한 스왑이 없습니다."
+        await self._reply(interaction, embed=self._result_embed("금리스왑", message[:4000], success))
+
+    @app_commands.describe(계좌="운용하는 랩 계좌번호", 종목="종목 코드", 방향="매수 또는 매도",
+                           수량="주문 수량", 지정가="지정가")
+    @app_commands.choices(방향=[app_commands.Choice(name="매수", value="buy"), app_commands.Choice(name="매도", value="sell")])
+    async def wrap_order(self, interaction: discord.Interaction, 계좌: str, 종목: str, 방향: str,
+                         수량: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
+                         지정가: app_commands.Range[int, 1, MAX_DISCORD_INTEGER]):
+        user_id, _, _ = await self._prepare(interaction)
+        success, message = await asyncio.to_thread(
+            self.bot.capital_markets.wrap_order, user_id, 계좌, 종목, 방향, 수량, 지정가)
+        await self._reply(interaction, embed=self._result_embed("랩어카운트 주문", message, success))
+
+    async def managed_accounts(self, interaction: discord.Interaction):
+        user_id, _, _ = await self._prepare(interaction)
+        rows = await asyncio.to_thread(self.bot.capital_markets.managed_accounts, user_id)
+        message = "\n".join(f"`{row['account_number']}` · 고객 {row['user_id']} · {row['product_code']} · "
+                            f"현금 {float(row['balance'] or 0):,.0f} {row['quote_currency']}" for row in rows) \
+            or "운용 중인 랩어카운트가 없습니다."
+        await self._reply(interaction, embed=self._result_embed("운용계좌", message[:4000], True))
 
     async def _prepare(self, interaction, *, defer=False):
         # Most commands complete well inside Discord's response deadline. Avoid

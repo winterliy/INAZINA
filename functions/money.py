@@ -36,8 +36,8 @@ def currency_precision(conn, currency_code):
     if not row:
         raise ValueError(f"통화를 확인해주세요: {currency_code}")
     places = int(row[0])
-    if not 0 <= places <= 6:
-        raise ValueError("통화 소수 자릿수는 0~6이어야 합니다.")
+    if not 0 <= places <= 2:
+        raise ValueError("통화 소수 자릿수는 0~2여야 합니다.")
     return places
 
 

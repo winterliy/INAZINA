@@ -8,7 +8,7 @@ from database.financial_db import ACCOUNTS
 from managers.financial_manager import FinancialManager, month
 
 PAGES = [('main','🏢 메인'),('balance','📊 재무상태표'),('income','💹 손익계산서'),
-         ('cash','💵 현금흐름표'),('equity','🏦 자본변동표'),('liquidity','💧 유동성비율'),
+         ('cash','💵 현금흐름표'),('equity','🏦 자본변동표'),('consolidated','🧩 연결재무제표'),('liquidity','💧 유동성비율'),
          ('profitability','📈 수익성비율'),('stability','🛡️ 안정성비율'),('activity','🔄 활동성비율'),('notes','📝 주석')]
 
 
@@ -81,6 +81,20 @@ class FinancialReportView(discord.ui.View):
             for k,(name,category) in ACCOUNTS.items():
                 if category=='equity' and r['changes'][k]:amount(name+' 변동',-r['changes'][k])
             amount('당기순이익',inc['profit']); amount('기말 자기자본',s['equity'])
+        elif self.page=='consolidated':
+            c=r.get('consolidated')
+            if not c or not c.get('subsidiaries'):
+                field('연결 대상','과반 지분을 가진 자회사가 없습니다.' + ('\n'+'\n'.join(c['notes']) if c and c.get('notes') else ''),False)
+            else:
+                cs=c['summary']
+                for name,value in [('연결 총자산',cs['assets']),('연결 총부채',cs['liabilities']),('연결 자본',cs['equity']),
+                                   ('지배기업 소유주지분',cs['parent_equity']),('비지배지분',cs['noncontrolling_interest']),('영업권',cs['goodwill'])]:amount(name,value)
+                for name,key in [('연결 매출액','revenue'),('연결 영업이익','operating'),('연결 당기순이익','profit')]:amount(name,c['income'][key])
+                amount('지배기업 귀속 순이익',c['profit_attributable']['parent']);amount('비지배지분 귀속 순이익',c['profit_attributable']['noncontrolling'])
+                field('연결 자회사','\n'.join(f"{'  '*(m.get('depth',1)-1)}└ {m['name']} ({m['code']}) · {m['parent']}의 {m['ownership']:.1f}% · {m['currency']} · 영업권 {self.money(m['goodwill'])}" for m in c['subsidiaries'])[:1000],False)
+                e=c.get('eliminations') or {}
+                field('내부거래 제거',f"그룹 내 배당 {self.money(e.get('dividends',0))}\n그룹 내 송금 {self.money(e.get('transfers',0))}\n상호주(자기주식 처리) {self.money(e.get('cross_holdings',0))}",False)
+                field('연결 기준','\n'.join(c['notes'])[:1000],False)
         elif self.page=='notes':
             field('적용 기준','\n'.join(r['notes']),False)
             amount('도입 전 미확인 잔액',-b.get('opening_adjustment',0))

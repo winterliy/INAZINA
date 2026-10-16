@@ -52,6 +52,19 @@ USER_ACTIONS = {
     "옵션작성": ("파생", "담보를 맡기고 옵션 매도 호가를 냅니다.",
              "콜은 기초 주식을, 풋은 행사가만큼 현금을 담보로 맡겨요. 만기까지 의무가 남고 프리미엄은 체결될 때 받습니다.",
              [("underlying", "기초 주식", "text", False, "", "stocks"), ("type", "유형", "select:call,put", False, "call = 살 권리 · put = 팔 권리", None), ("strike", "행사가", "number", False, "", None), ("days", "만기일수", "number", False, "1~365일", None), ("contracts", "계약수", "number", False, "", None), ("premium", "지정 프리미엄", "number", False, "계약당 받을 가격", None), ("volatility", "변동성 %", "number", True, "기본 50", None)]),
+    "전환청구": ("채권", "전환사채(CB)를 발행회사 주식으로 바꿉니다.",
+             "액면 ÷ 전환가격만큼 신주를 받고 사채는 소멸해요. 1주가 안 되는 단주는 회사가 현금으로 줍니다.",
+             [("bond", "전환사채", "text", False, "", "holdings"), ("quantity", "사채 수량", "number", False, "", None)]),
+    "신주인수권행사": ("채권", "신주인수권부사채(BW)의 신주인수권을 행사합니다.",
+                "사채 1매당 액면 ÷ 행사가격만큼 신주를 행사가로 삽니다. 대금은 지갑·통장에서 나가고 사채는 그대로 남아요. 1매당 한 번만 행사할 수 있어요.",
+                [("bond", "신주인수권부사채", "text", False, "", "holdings"), ("quantity", "사채 수량", "number", False, "", None)]),
+    "스왑": ("파생", "국고와 금리스왑(고정↔변동)을 체결·해지하거나 내 스왑을 봅니다.",
+           "고정지급은 고정금리를 내고 기준금리를 받아 금리 상승에 대비해요. 고정수취는 그 반대입니다. 명목금액의 5%를 증거금으로 맡기고 매일 차액을 정산해요. 해지하면 남은 기간의 금리 차이를 현재 시세로 정산합니다.",
+           [("action", "작업", "select:체결,해지,조회", False, "", None), ("side", "방향", "select:고정지급,고정수취", True, "체결 시 · 고정지급 = 금리 상승 때 이익", None), ("notional", "명목금액", "number", True, "체결 시", None), ("days", "만기일수", "number", True, "체결 시 1~3650일", None), ("swap", "스왑 번호", "number", True, "해지 시", None)]),
+    "랩주문": ("운용", "내가 운용하는 랩어카운트로 주문합니다.",
+            "고객 랩 계좌의 현금과 보유자산으로만 사고팔아요. 계좌 통화로 결제하는 종목만 가능합니다.",
+            [("account", "랩 계좌번호", "text", False, "", None), ("asset", "종목", "text", False, "", "instruments"), ("side", "방향", "select:buy,sell", False, "buy = 매수 · sell = 매도", None), ("quantity", "수량", "number", False, "", None), ("price", "지정가", "number", False, "", None)]),
+    "운용계좌": ("운용", "내가 운용하는 랩어카운트 목록을 봅니다.", "", []),
     "복권구매": ("복권", "주간 6/45 복권을 삽니다.", "번호를 비우면 자동으로 뽑아요. 직접 고를 때는 1~45 중 서로 다른 6개를 쉼표로 적으세요.",
              [("quantity", "장 수", "number", False, "1~1000", None), ("numbers", "번호", "text", True, "비우면 자동 · 예: 3,11,19,27,35,42", None)]),
     "내복권": ("복권", "내 복권 번호와 당첨 결과를 봅니다.", "회차를 비우면 현재 회차를 보여 줍니다.",
@@ -175,6 +188,25 @@ def execute(bot, user_id, command, values):
             v["underlying"], v["type"], _integer(v["strike"], "행사가"), _integer(v["days"], "만기일수"),
             _integer(v["contracts"], "계약수"), _integer(v["premium"], "지정 프리미엄"),
             _integer(v["volatility"] or "50", "변동성"))))
+    if command == "전환청구":
+        return _text(bot.capital_markets.convert_bond(user_id, v["bond"], _integer(v["quantity"], "사채 수량")))
+    if command == "신주인수권행사":
+        return _text(bot.capital_markets.exercise_warrant(user_id, v["bond"], _integer(v["quantity"], "사채 수량")))
+    if command == "스왑":
+        if v["action"] == "체결":
+            if not (v["side"] and v["notional"] and v["days"]):
+                raise ValueError("체결에는 방향·명목금액·만기일수가 필요합니다.")
+            return _text(bot.capital_markets.open_swap(user_id, _integer(v["notional"], "명목금액"), v["side"], _integer(v["days"], "만기일수")))
+        if v["action"] == "해지":
+            if not v["swap"]:
+                raise ValueError("해지할 스왑 번호를 입력해주세요.")
+            return _text(bot.capital_markets.close_swap(user_id, _integer(v["swap"], "스왑 번호")))
+        return _text(bot.capital_markets.swaps(user_id))
+    if command == "랩주문":
+        return _text(bot.capital_markets.wrap_order(user_id, v["account"], v["asset"], v["side"],
+                                                    _integer(v["quantity"], "수량"), _integer(v["price"], "지정가")))
+    if command == "운용계좌":
+        return _text(bot.capital_markets.managed_accounts(user_id))
     if command == "복권구매":
         current = bot.lottery_mgr.current()
         numbers = v["numbers"] or "자동"

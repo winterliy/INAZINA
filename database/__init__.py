@@ -55,6 +55,8 @@ class DatabaseManager:
             self.corporate = CorporateDB()
             self.els = ELSDB()
             self.financial = FinancialDB()
+            from .numeric_guards import install as install_numeric_guards
+            install_numeric_guards(self.users)
             # Refresh planner statistics opportunistically after schema/index
             # initialization. SQLite decides internally when analysis is needed.
             self.users.execute("PRAGMA optimize")

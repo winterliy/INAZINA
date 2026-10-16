@@ -168,7 +168,7 @@ class CurrencyManager:
         row=conn.execute("SELECT decimal_places FROM currencies WHERE code=? AND status='active'",(code,)).fetchone()
         if not row:raise ValueError(f'활성 통화를 확인해주세요: {code}')
         places=int(row[0])
-        if not 0<=places<=6:raise ValueError('통화 소수 자릿수는 0~6으로 설정해주세요.')
+        if not 0<=places<=2:raise ValueError('통화 소수 자릿수는 0~2로 설정해주세요.')
         if code=='NWX' and places!=0:raise ValueError('기존 NWX 현금은 정수 단위로 설정해주세요.')
         return places
 
@@ -205,8 +205,8 @@ class CurrencyManager:
     def balance(conn, user_id, currency):
         currency = str(currency).upper()
         if currency == CurrencyManager.home(conn, user_id):
-            row = conn.execute('SELECT cash FROM users WHERE user_id=?', (str(user_id),)).fetchone()
-            return int(Decimal(str(row[0] or 0))*SCALE) if row else 0
+            row = conn.execute('SELECT cash_minor FROM users WHERE user_id=?', (str(user_id),)).fetchone()
+            return int(row[0] or 0) * 10 ** (6 - CurrencyManager.precision(conn, currency)) if row else 0
         row = conn.execute("SELECT balance_units FROM accounts WHERE user_id=? AND quote_currency=? "
                            "AND account_type='currency_saving'", (str(user_id), currency)).fetchone()
         return int(row[0]) if row else 0
@@ -326,13 +326,12 @@ class CurrencyManager:
         cls.validate_units(conn, int(delta), currency)
         value = cls.balance(conn, user_id, currency) + int(delta)
         limit=(2**53-1)*SCALE if currency == home else MAX_UNITS
-        if abs(value) > limit or (value < 0 and not (allow_deficit and (cls.is_treasury(conn, user_id) or cls.is_bank(conn, user_id)))):
+        if abs(value) > limit or (value < 0 and not (cls.is_treasury(conn, user_id) or (allow_deficit and cls.is_bank(conn, user_id)))):
             raise ValueError(f'{currency} 잔액이 부족하거나 저장 한도를 초과했습니다.')
         if currency == home:
-            native = Decimal(int(delta))/Decimal(SCALE)
-            conn.execute('UPDATE users SET cash=cash+? WHERE user_id=?',
-                         (int(native) if native == native.to_integral_value() else float(native),
-                          user_id))
+            # Exact integer arithmetic on the minor unit; ``cash`` follows by trigger.
+            minor = int(delta) // 10 ** (6 - cls.precision(conn, home))
+            conn.execute('UPDATE users SET cash_minor=cash_minor+? WHERE user_id=?', (minor, user_id))
         else:
             changed = conn.execute("UPDATE accounts SET balance_units=? WHERE user_id=? AND quote_currency=? "
                                    "AND account_type='currency_saving'", (value,user_id,currency))

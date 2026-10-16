@@ -4,7 +4,7 @@ import time
 from contextlib import nullcontext
 
 from database import DatabaseManager
-from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY
+from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY, IS_TREASURY
 
 
 def _issuer(conn, product_code):
@@ -167,7 +167,7 @@ class TreasuryBondManager:
         if account_number is None:
             cursor = conn.execute(
                 "UPDATE users.users SET cash = cash - ? "
-                "WHERE user_id = ? AND status = 'active' AND cash >= ?",
+                f"WHERE user_id = ? AND {ACTIVE_OR_TREASURY} AND (cash >= ? OR {IS_TREASURY})",
                 (amount, user_id, amount),
             )
         else:

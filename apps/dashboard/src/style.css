@@ -267,3 +267,14 @@ td { padding: 12px 12px 12px 0; vertical-align: middle; }
   .card, .dark-card { padding: 18px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+
+/* Key figures in a row (company capital). */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.stats > div { display: grid; gap: 4px; padding: 12px 14px; border-radius: 14px; background: rgba(var(--glass-rgb), .55); box-shadow: inset 0 0 0 1px var(--line); }
+.stats small { color: var(--ink2); font-size: 12px; }
+.stats b { font-size: 17px; font-variant-numeric: tabular-nums; }
+
+.warn-card { box-shadow: inset 0 0 0 2px rgba(215, 38, 38, .45); }
+
+.ratio-panel { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.ratio-panel input { width: 100%; }

@@ -6,7 +6,7 @@ import time
 from contextlib import nullcontext
 
 from database import DatabaseManager
-from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY
+from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY, IS_TREASURY
 from functions.money import round_money
 from managers.market_session_manager import MarketSessionManager
 from managers.order_validation import validate_limit_order
@@ -331,7 +331,7 @@ class OptionManager:
                 continue
             if account_number is None:
                 changed = conn.execute(
-                    "UPDATE users.users SET cash = cash - ? WHERE user_id = ? AND cash >= ?",
+                    f"UPDATE users.users SET cash = cash - ? WHERE user_id = ? AND (cash >= ? OR {IS_TREASURY})",
                     (take, user_id, take),
                 )
             else:
@@ -881,7 +881,7 @@ class OptionManager:
                 continue
             if account_number is None:
                 changed = conn.execute(
-                    "UPDATE users.users SET cash = cash - ? WHERE user_id = ? AND cash >= ?",
+                    f"UPDATE users.users SET cash = cash - ? WHERE user_id = ? AND (cash >= ? OR {IS_TREASURY})",
                     (take, user_id, take),
                 )
             else:

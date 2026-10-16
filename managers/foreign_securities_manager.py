@@ -2,7 +2,7 @@
 import time
 import uuid
 from decimal import Decimal
-from database.user_db import TREASURY_USER_ID
+from database.user_db import TREASURY_USER_ID, IS_TREASURY
 from managers.currency_exchange_manager import CurrencyExchangeManager,SCALE,MAX_UNITS
 from managers.currency_manager import CurrencyManager
 from managers.market_session_manager import MarketSessionManager
@@ -76,7 +76,7 @@ class ForeignSecuritiesManager:
                     raise ValueError('주문 예치금 한도를 초과했습니다.')
                 if side=='buy':
                     if currency == home:
-                        changed=conn.execute("UPDATE users SET cash=cash-? WHERE user_id=? AND cash>=?",(cash,str(user_id),cash))
+                        changed=conn.execute(f"UPDATE users SET cash=cash-? WHERE user_id=? AND (cash>=? OR {IS_TREASURY})",(cash,str(user_id),cash))
                     else:
                         changed=conn.execute("UPDATE accounts SET balance_units=balance_units-? WHERE account_number=? AND account_type='currency_saving' AND balance_units>=?",(cash_units,account_number,cash_units))
                     if changed.rowcount!=1:

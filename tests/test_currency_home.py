@@ -80,7 +80,7 @@ class CurrencyHomeTests(unittest.TestCase):
         self.assertFalse(any(r['currency_code']=='NWX' for r in info['wallets']))
         embed=discord.Embed();embed.add_field(name='💵 현금',value='```0 NWX```')
         native_summary(embed,info)
-        self.assertEqual(embed.fields[0].value,'```1,030,000.000000 AAA```')
+        self.assertEqual(embed.fields[0].value,'```1,030,000.00 AAA```')
         async def panel():
             view=InfoPanelView(self.bot,'citizen')
             return view._category_lines('forex')
@@ -184,7 +184,7 @@ class CurrencyHomeTests(unittest.TestCase):
             money_display=display
             @relative_embed
             def build_embed(self):return discord.Embed(description='평가액 100 NWX')
-        self.assertEqual(Page().build_embed().description,'평가액 300.000000 AAA')
+        self.assertEqual(Page().build_embed().description,'평가액 300.00 AAA')
 
     def test_native_currency_deposit_is_a_home_account_not_foreign_account(self):
         self.configure()
@@ -199,7 +199,7 @@ class CurrencyHomeTests(unittest.TestCase):
         self.assertEqual(info['foreign_account_total_home'],0)
         embed=discord.Embed();embed.add_field(name='🏦 통장 잔액',value='```0 NWX```')
         native_summary(embed,info)
-        self.assertEqual(embed.fields[0].value,'```100.000000 AAA```')
+        self.assertEqual(embed.fields[0].value,'```100.00 AAA```')
 
     def test_product_edit_tells_savings_and_currency_accounts_apart(self):
         cmd=self.configure()

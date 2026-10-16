@@ -276,6 +276,22 @@ class SystemDB(DBManager):
                                    ("jump_applied_epoch", "INTEGER")):
             if column not in target_columns:
                 self.execute(f"ALTER TABLE market_event_targets ADD COLUMN {column} {definition}")
+        # Administrator trading warnings (투자주의/경고/위험) shown with an instrument.
+        self.execute("""CREATE TABLE IF NOT EXISTS trading_warnings (
+            asset_code TEXT PRIMARY KEY,
+            level TEXT NOT NULL CHECK(level IN ('caution','warning','danger')),
+            reason TEXT NOT NULL DEFAULT '',
+            set_by TEXT NOT NULL,
+            created_epoch REAL NOT NULL,
+            expires_epoch REAL
+        )""")
+        # $login: which country an administrator acts for with national commands.
+        self.execute("""CREATE TABLE IF NOT EXISTS admin_national_sessions (
+            admin_id TEXT PRIMARY KEY,
+            nationality TEXT NOT NULL,
+            treasury_id TEXT NOT NULL,
+            logged_in_epoch REAL NOT NULL
+        )""")
         self.execute("""CREATE TABLE IF NOT EXISTS admin_audit (
             audit_id INTEGER PRIMARY KEY AUTOINCREMENT,
             actor_id TEXT NOT NULL,

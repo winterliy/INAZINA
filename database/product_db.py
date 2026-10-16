@@ -32,6 +32,15 @@ class ProductDB(DBManager):
         if "product_kind" not in saving_columns:
             self.execute("ALTER TABLE saving ADD COLUMN product_kind TEXT NOT NULL DEFAULT 'saving'")
         self._init_rate_pricing_columns("saving", saving_columns)
+        # CMA / IMA / wrap accounts are savings products with extra terms.
+        for column, declaration in {
+            "reference_code": "TEXT",  # IMA: product whose return is shared
+            "participation_percent": "REAL NOT NULL DEFAULT 100 CHECK(participation_percent BETWEEN 0 AND 1000)",
+            "manager_id": "TEXT",  # wrap: who may trade the account
+            "management_fee_percent": "REAL NOT NULL DEFAULT 0 CHECK(management_fee_percent BETWEEN 0 AND 100)",
+        }.items():
+            if column not in saving_columns:
+                self.execute(f"ALTER TABLE saving ADD COLUMN {column} {declaration}")
         # 대출 상품 (Liability)
         self.execute('''
             CREATE TABLE IF NOT EXISTS liability (
@@ -110,11 +119,26 @@ class ProductDB(DBManager):
             "day_count_convention": "TEXT NOT NULL DEFAULT 'ACT/365' CHECK(day_count_convention IN ('ACT/365','ACT/360','30/360'))",
             "last_coupon_epoch": "INTEGER",
             "next_coupon_epoch": "INTEGER",
+            # Corporate-bond variants: convertible (CB), with warrant (BW), asset-backed
+            # (ABS/MBS) and asset-backed commercial paper (ABCP).
+            "bond_feature": "TEXT NOT NULL DEFAULT 'plain' CHECK(bond_feature IN ('plain','convertible','warrant','abs','mbs','abcp'))",
+            "conversion_price": "INTEGER NOT NULL DEFAULT 0 CHECK(conversion_price >= 0)",
+            "warrant_exercise_price": "INTEGER NOT NULL DEFAULT 0 CHECK(warrant_exercise_price >= 0)",
+            "collateral_note": "TEXT",
         }
         for column, declaration in extra_columns.items():
             if column not in investment_columns:
                 self.execute(f"ALTER TABLE investment ADD COLUMN {column} {declaration}")
         self.initialize_dividend_activation("investment", "product_code")
+        self.execute("""CREATE TABLE IF NOT EXISTS hybrid_bond_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL, product_code TEXT NOT NULL,
+            kind TEXT NOT NULL CHECK(kind IN ('conversion','warrant')),
+            bond_units INTEGER NOT NULL CHECK(bond_units > 0),
+            shares INTEGER NOT NULL CHECK(shares > 0),
+            cash INTEGER NOT NULL DEFAULT 0,
+            recorded_epoch REAL NOT NULL
+        )""")
         self.execute("""CREATE TABLE IF NOT EXISTS fund_components (
             product_code TEXT NOT NULL, asset_code TEXT NOT NULL,
             weight REAL NOT NULL CHECK(weight > 0), base_price REAL NOT NULL CHECK(base_price > 0),

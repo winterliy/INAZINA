@@ -6,13 +6,16 @@ import { plain, type Ctx } from "./common";
 import { ProductsPage } from "./ProductsPage";
 import { UsersPage } from "./UsersPage";
 import { ExchangesPage } from "./ExchangesPage";
+import { CompaniesPage } from "./CompaniesPage";
+import { WarningsCard } from "./WarningsCard";
+import { IdentityCard } from "./IdentityCard";
 import { COMMAND_FORMS, CommandForm } from "./CommandForm";
 
-type Page = "overview" | "instruments" | "finance" | "exchanges" | "users" | "events" | "commands" | "database" | "audit";
+type Page = "overview" | "instruments" | "finance" | "exchanges" | "companies" | "users" | "events" | "commands" | "database" | "audit";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
 type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
 type Exchange = { exchange_id: string; status: string; reason: string | null; trading_halted: number; updated_epoch: number | null; resume_epoch: number | null; circuit_stage: number | null };
-type Overview = { activeUsers: number; activeInstruments: number; openOrders: number; market: Exchange[] };
+type Overview = { activeUsers: number; activeInstruments: number; openOrders: number; market: Exchange[]; bankDeficits?: { issuer: string; account: string; cash: number; nationality: string }[] };
 type Audit = { actorId: string; action: string; payload: Record<string, unknown>; time: number };
 type Event = { event_id: number; asset_code: string | null; event_type: string; severity: number; starts_epoch: number; ends_epoch: number; created_by: string; target_mode: string | null; target_value: number | null; active: boolean };
 type Command = { name: string; usage: string };
@@ -32,6 +35,7 @@ const pages: { id: Page; label: string; color: string; icon: ReactNode }[] = [
   { id: "instruments", label: "종목 · 상품", color: "#0f7a2e", icon: <path d="M5 20v-7M12 20V5M19 20v-10" /> },
   { id: "finance", label: "금융 상품", color: "#b8860b", icon: <><rect x="3.5" y="6.5" width="17" height="11" rx="2.5" /><path d="M3.5 10.5h17M7 14.5h4" /></> },
   { id: "exchanges", label: "거래소", color: "#1f6fe0", icon: <><path d="M4 20h16M5 20V10l7-5 7 5v10" /><path d="M9 20v-6h6v6" /></> },
+  { id: "companies", label: "법인 자본", color: "#2f7d5b", icon: <><rect x="4" y="7.5" width="16" height="12.5" rx="2" /><path d="M9 7.5V5.5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 5.5v2M4 12.5h16" /></> },
   { id: "users", label: "사용자 · 국가", color: "#c24e00", icon: <><circle cx="12" cy="8" r="3.5" /><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6" /></> },
   { id: "events", label: "시장 사건", color: "#c4205f", icon: <path d="M13 3 5 14h6l-1 7 8-11h-6z" /> },
   { id: "commands", label: "관리자 명령어", color: "#7b3fd8", icon: <><path d="m5 8 4 4-4 4" /><path d="M12 17h7" /></> },
@@ -43,6 +47,7 @@ const subtitles: Record<Page, string> = {
   instruments: "주식·자산·ETF·선물·채권·펀드·원자재·옵션·ELS를 생성·수정·중지합니다.",
   finance: "저축·대출·통화·외환통장 상품을 생성·수정·중지합니다.",
   exchanges: "거래소별 개장·휴장·서킷브레이커와 소속 국가·지수를 관리합니다.",
+  companies: "법인 현금·보유자산·통장·대출을 보고 법인 계정으로 매수·매도·송금·대출을 실행합니다.",
   users: "사용자와 국가, 국가 계정의 모든 설정을 관리합니다.",
   events: "호재·악재 사건을 등록하고 최근 사건을 확인합니다.",
   commands: "Discord의 모든 $ 명령어와 도움말을 같은 검증과 기록으로 실행합니다.",
@@ -296,7 +301,7 @@ export default function App() {
 
   const current = pages.find((item) => item.id === page)!;
   const pageIndex = pages.findIndex((item) => item.id === page);
-  const searchable = page === "instruments" || page === "finance" || page === "exchanges" || page === "users" || page === "database";
+  const searchable = page === "instruments" || page === "finance" || page === "exchanges" || page === "companies" || page === "users" || page === "database";
 
   return <Stage>
     <div className="win">
@@ -333,6 +338,8 @@ export default function App() {
             <Metric label="미체결 주문" value={overview ? number(overview.openOrders) : "—"} delay={2} />
             <Metric label="개장 중 거래소" value={overview ? `${overview.market.filter((item) => item.status === "open" && !item.trading_halted).length} / ${overview.market.length}` : "—"} delay={3} />
           </section>
+          {!!overview?.bankDeficits?.length && <section className="glass card mb rise warn-card" role="alert"><div className="card-head"><div><h2>⚠️ 은행 본사 계좌 적자</h2><p className="cap">적자는 허용되지만 자본 확충을 검토하세요. 처음 적자가 될 때 관리자에게 Discord DM으로도 알립니다.</p></div></div>
+            <div className="scroll-x"><table><thead><tr><th>은행</th><th>본사 계좌</th><th>국가</th><th className="r">잔액</th></tr></thead><tbody>{overview.bankDeficits.map((bank) => <tr key={bank.issuer}><td>{bank.issuer}</td><td className="mono">{bank.account}</td><td>{bank.nationality}</td><td className="r mono">{number(Math.round(bank.cash))}</td></tr>)}</tbody></table></div></section>}
           <section className="row-wrap mb">
             <article className="glass card grow-2 rise">
               <div className="card-head"><div><h2>시장 제어</h2><p className="cap">전체 또는 거래소별로 개장·휴장·정지합니다. 기존 Python 시장 제어와 기록을 거칩니다.</p></div>
@@ -348,9 +355,10 @@ export default function App() {
           </section>
         </>}
 
-        {page === "instruments" && <ProductsPage group="market" ctx={ctx} />}
+        {page === "instruments" && <><ProductsPage group="market" ctx={ctx} /><WarningsCard ctx={ctx} /></>}
         {page === "finance" && <ProductsPage group="finance" ctx={ctx} />}
         {page === "exchanges" && <ExchangesPage ctx={ctx} />}
+        {page === "companies" && <CompaniesPage ctx={ctx} />}
         {page === "users" && <UsersPage ctx={ctx} currentUserId={user.userId} />}
         {page === "events" && <>
           <section className="glass card mb rise"><div className="card-head"><div><h2>시장 사건 등록</h2><p className="cap">기존 시장 사건 검증과 감사 기록을 적용합니다.</p></div></div><form className="form-grid" onSubmit={createEvent}>
@@ -371,6 +379,7 @@ export default function App() {
             {helpPages[helpPage] && <div className="help-page"><pre>{plain(helpPages[helpPage].description)}</pre>{helpPages[helpPage].fields.map((field) => <div key={field.name} className="help-field"><h3>{field.name}</h3><pre>{plain(field.value)}</pre></div>)}</div>}
             {!helpPages.length && <p className="empty">도움말을 불러오는 중입니다.</p>}
           </section>}
+          {commandScope === "national" && <IdentityCard ctx={ctx} />}
           {commandScope === "national" && <section className="glass card mb rise"><div className="card-head"><div><h2>국가(국고) 명의 실행</h2><p className="cap">Discord `$매수`·`$송금` 등과 같이 국고 계정으로 실행하고 작업 기록에 남깁니다. {discordOnly.length > 0 && `${discordOnly.map((name) => `$${name}`).join(", ")}은(는) Discord 메시지를 보내야 해서 Discord에서만 사용할 수 있습니다.`}</p></div></div>
             <form className="form-grid" onSubmit={runNationalCommand}>
               <label>명령어<select value={nationalCommand} onChange={(event) => setNationalCommand(event.target.value)}>{nationalCommands.map((item) => <option key={item.name} value={item.name}>${item.name}</option>)}</select></label>

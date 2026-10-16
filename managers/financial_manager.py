@@ -27,6 +27,10 @@ def period_bounds(period):
     return int(start.timestamp()), int(end.timestamp())
 
 
+def cls_money(units, places):
+    return f'{units / 10 ** places:,.{places}f}'
+
+
 class FinancialManager:
     def __init__(self, db):
         self.db = db
@@ -179,7 +183,7 @@ class FinancialManager:
                     equity=-sums['equity']+net, cumulative_profit=net)
 
     @classmethod
-    def build(cls, conn, code, period):
+    def build(cls, conn, code, period, consolidate=True):
         start,end = period_bounds(period)
         ent = cls.entity(conn,code)
         company = cls.resolve(conn,code)
@@ -190,7 +194,8 @@ class FinancialManager:
         revenue = -changes['revenue']
         gross = revenue-changes['cogs']
         operating = gross-sum(changes[k] for k in ('sga','depreciation','amortization'))
-        pretax = operating-sum(changes[k] for k in ('other_income','interest_income','other_expense','interest_expense','currency_rounding'))
+        pretax = operating-sum(changes[k] for k in ('other_income','interest_income','investment_gain','other_expense',
+                                                    'investment_loss','interest_expense','overdue_interest','currency_rounding'))
         profit = pretax-changes['income_tax']
         flow_values = {r['cash_flow']:int(r['amount']) for r in conn.execute('''SELECT e.cash_flow,SUM(l.amount) amount
             FROM financial_entries e JOIN financial_lines l ON l.entry_id=e.entry_id
@@ -209,7 +214,7 @@ class FinancialManager:
         for label,value in [('매출액영업이익률',operating),('매출액세전순이익률',pretax),('매출액순이익률',profit)]:r(label,value,revenue)
         for label,value in [('부채비율',s['liabilities']),('유동부채비율',s['current_liabilities']),('고정부채비율',s['noncurrent_liabilities']),('고정비율',s['noncurrent_assets'])]:r(label,value,s['equity'])
         r('자기자본비율',s['equity'],s['assets']); r('고정장기적합률',s['noncurrent_assets'],s['equity']+s['noncurrent_liabilities'])
-        r('이자보상배율',operating,changes['interest_expense'],False)
+        r('이자보상배율',operating,changes['interest_expense']+changes['overdue_interest'],False)
         for label,field in [('총자본회전율','assets'),('자기자본회전율','equity'),('고정자산회전율','noncurrent_assets')]:r(label,revenue,average(field),False)
         for label,account,n in [('유형자산회전율','ppe',revenue),('재고자산회전율','inventory',changes['cogs']),('매출채권회전율','receivables',revenue)]:
             avg=(b.get(account,0)+opening.get(account,0))/2 if ent['opened_epoch']<start else None
@@ -226,7 +231,7 @@ class FinancialManager:
         actual = cls.cash_state(conn,code)
         cash_matches = None if ent['currency']!='NWX' or period!=month() else b.get('cash',0)==actual[0]*10**ent['decimal_places']
         count = conn.execute("SELECT COUNT(*) FROM financial_entries WHERE company_code=? AND period=? AND status='posted'",(code,period)).fetchone()[0]
-        return dict(code=code,name=company['name'],currency=ent['currency'],places=ent['decimal_places'],period=period,
+        report = dict(code=code,name=company['name'],currency=ent['currency'],places=ent['decimal_places'],period=period,
             opened_epoch=ent['opened_epoch'],balances=b,opening=opening,changes=changes,summary=s,previous=previous,
             income=dict(revenue=revenue,gross=gross,operating=operating,pretax=pretax,tax=changes['income_tax'],profit=profit,
                         ebitda=operating+changes['depreciation']+changes['amortization']),
@@ -240,6 +245,166 @@ class FinancialManager:
                    '기타포괄손익 미지원: 총포괄손익은 당기순이익과 같습니다.',
                    '기존 NWX 법인현금은 거래 시 환율로 회사 통화에 환산합니다. 기말환산·외화 현금대사는 미지원입니다.',
                    '회사채 이자는 기존 만기 지급 시점에 인식합니다. 발행차금은 만기 일괄 상각합니다.'])
+        report['consolidated'] = cls.consolidate(conn, code, period, report) if consolidate else None
+        return report
+
+    @classmethod
+    def subsidiaries(cls, conn, code):
+        """Companies whose voting shares are more than half held by ``code``'s capital account."""
+        account = conn.execute('SELECT user_id FROM company_accounts WHERE company_code=?', (code,)).fetchone() \
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE name='company_accounts'").fetchone() else None
+        if not account:
+            return []
+        result = []
+        for row in conn.execute(
+                "SELECT c.company_code,c.name,c.total_shares,SUM(u.quantity) held,SUM(u.quantity*u.average_cost) cost "
+                "FROM user_assets u JOIN company c ON c.company_code=u.asset_code "
+                "WHERE u.user_id=? AND COALESCE(c.share_class,'common')='common' AND c.company_code<>? "
+                "GROUP BY c.company_code", (account[0], code)).fetchall():
+            own = conn.execute("SELECT COALESCE(SUM(quantity),0) FROM user_assets WHERE user_id=?",
+                               ('company:' + row['company_code'],)).fetchone()[0]
+            outstanding = float(row['total_shares'] or 0) - float(own or 0)  # treasury stock has no vote
+            if outstanding > 0 and float(row['held']) / outstanding > 0.5:
+                result.append({'code': row['company_code'], 'name': row['name'],
+                               'ownership': float(row['held']) / outstanding, 'cost': float(row['cost'] or 0)})
+        return result
+
+    @staticmethod
+    def _translation(conn, source, target, source_places, target_places):
+        """Factor turning ``source`` minor units into ``target`` minor units at today's rate."""
+        from fractions import Fraction
+        from managers.currency_manager import CurrencyManager
+        rate = Fraction(1) if source == target else CurrencyManager.quote(conn, source, target)
+        return rate * Fraction(10 ** target_places, 10 ** source_places)
+
+    @classmethod
+    def consolidate(cls, conn, code, period, report, _visited=None):
+        """Consolidated statements of ``code`` and every company it controls, at any depth.
+
+        - Control: more than half of the voting shares (treasury stock excluded).
+        - Each subsidiary enters with its own consolidated figures (so a subsidiary's
+          subsidiaries are included), translated into the parent's currency at the
+          current rate (closing-rate method).
+        - The parent's investment (at cost) is replaced by the subsidiary's net
+          assets: goodwill is the excess of cost over the parent's share, the outside
+          share is the non-controlling interest (비지배지분).
+        - Intra-group dividends and transfers, and shares a subsidiary holds in a
+          group member (상호주, treated as treasury stock) are eliminated.
+        """
+        top = _visited is None
+        visited = set(_visited or ()) | {code}
+        subsidiaries = [sub for sub in cls.subsidiaries(conn, code) if sub['code'] not in visited]
+        if not subsidiaries:
+            return None
+        places, currency = report['places'], report['currency']
+        balances = dict(report['balances'])
+        income = dict(report['income'])
+        assets, liabilities = report['summary']['assets'], report['summary']['liabilities']
+        goodwill = nci = nci_profit = 0
+        members, notes, group = [], [], {code}
+        for sub in subsidiaries:
+            entity = cls.entity(conn, sub['code'])
+            if not entity:
+                notes.append(f"{sub['code']}: 회계 원장이 아직 없어 연결에서 제외했습니다. /재무로 한 번 조회하면 개설됩니다.")
+                continue
+            sub_report = cls.build(conn, sub['code'], period, consolidate=False)
+            inner = cls.consolidate(conn, sub['code'], period, sub_report, visited) or {}
+            if inner.get('subsidiaries'):
+                figures = dict(inner['summary'], income=inner['income'], balances=inner['balances'],
+                               profit_parent=inner['profit_attributable']['parent'],
+                               profit_nci=inner['profit_attributable']['noncontrolling'])
+                group |= set(inner.get('group', []))
+                notes += [f"{sub['code']} › {note}" for note in inner.get('member_notes', [])]
+            else:
+                summary = sub_report['summary']
+                figures = dict(assets=summary['assets'], liabilities=summary['liabilities'], equity=summary['equity'],
+                               parent_equity=summary['equity'], noncontrolling_interest=0, goodwill=0,
+                               income=sub_report['income'], balances=sub_report['balances'],
+                               profit_parent=sub_report['income']['profit'], profit_nci=0)
+            try:
+                factor = cls._translation(conn, entity['currency'], currency, int(entity['decimal_places']), places)
+                cost_factor = cls._translation(conn, sub.get('currency') or entity['currency'], currency, 0, places)
+            except ValueError:
+                notes.append(f"{sub['code']}: {entity['currency']} 환율이 없어 연결에서 제외했습니다.")
+                continue
+            convert = lambda value: int(round(value * factor))
+            if entity['currency'] != currency:
+                notes.append(f"{sub['code']}: {entity['currency']} 재무제표를 현재 환율로 {currency} 환산했습니다 (환산차이는 자본에 포함).")
+            ownership = sub['ownership']
+            cost = int(round(sub['cost'] * cost_factor))
+            parent_equity = convert(figures['parent_equity'])
+            share = int(round(parent_equity * ownership))
+            member_goodwill = max(0, cost - share)
+            member_nci = convert(figures['noncontrolling_interest']) + parent_equity - share
+            for account, value in figures['balances'].items():
+                if account == 'goodwill' or ACCOUNTS.get(account, ('', 'equity'))[1] not in {'equity', 'revenue', 'expense'}:
+                    balances[account] = balances.get(account, 0) + convert(value)
+            balances['short_investments'] = balances.get('short_investments', 0) - cost
+            assets += convert(figures['assets']) - cost + member_goodwill
+            liabilities += convert(figures['liabilities'])
+            goodwill += member_goodwill
+            nci += member_nci
+            nci_profit += convert(figures['profit_nci']) + int(round(convert(figures['profit_parent']) * (1 - ownership)))
+            for key in ('revenue', 'gross', 'operating', 'pretax', 'tax', 'profit', 'ebitda'):
+                income[key] = income.get(key, 0) + convert(figures['income'][key])
+            if cost < share:
+                notes.append(f"{sub['code']}: 취득원가가 지분 순자산보다 {cls_money(share - cost, places)} 작아 염가매수차익으로 자본에 반영했습니다.")
+            group.add(sub['code'])
+            members.append({'code': sub['code'], 'name': sub['name'], 'parent': code, 'ownership': ownership * 100,
+                            'currency': entity['currency'], 'cost': cost, 'equity': parent_equity,
+                            'goodwill': member_goodwill, 'nci': member_nci})
+            members += [dict(member, depth=member.get('depth', 1) + 1) for member in inner.get('subsidiaries', [])]
+        if not members:
+            return {'subsidiaries': [], 'notes': notes}
+        eliminations = cls._eliminations(conn, group, period, currency, places) if top else {}
+        profit_cut = eliminations.get('dividends', 0)
+        for key in ('pretax', 'profit'):
+            income[key] = income.get(key, 0) - profit_cut
+        cross = eliminations.get('cross_holdings', 0)
+        assets -= cross
+        balances['short_investments'] = balances.get('short_investments', 0) - cross
+        balances['goodwill'] = balances.get('goodwill', 0) + goodwill
+        goodwill_total = balances['goodwill']
+        equity_total = assets - liabilities
+        result = {
+            'subsidiaries': members, 'balances': balances, 'income': income, 'group': sorted(group),
+            'summary': {'assets': assets, 'liabilities': liabilities, 'equity': equity_total,
+                        'parent_equity': equity_total - nci, 'noncontrolling_interest': nci,
+                        'goodwill': goodwill_total},
+            'profit_attributable': {'parent': income['profit'] - nci_profit, 'noncontrolling': nci_profit},
+            'eliminations': eliminations,
+            'member_notes': notes,
+        }
+        result['notes'] = notes + [
+            '지배력: 자기주식을 뺀 의결권 과반. 자회사의 자회사까지 모두 연결합니다.',
+            '모회사 투자주식은 취득원가로 제거하고 자회사 순자산으로 대체합니다. 영업권 = 취득원가 − 지분율 × 자회사 순자산. 비지배지분 = 외부 지분율 × 자회사 순자산.',
+            '외화 자회사는 현재 환율로 환산합니다(현행환율법).',
+            '내부거래 제거: 그룹 내 배당금수익, 그룹 내 송금(수익·비용 상계), 자회사가 보유한 그룹 법인 주식(상호주 → 자기주식).',
+        ] if top else notes
+        return result
+
+    @classmethod
+    def _eliminations(cls, conn, group, period, currency, places):
+        """Intra-group flows of the period and cross-holdings, in the parent's minor units."""
+        start, end = period_bounds(period)
+        marks = ','.join('?' for _ in group)
+        factor = cls._translation(conn, 'NWX', currency, 0, places)
+        rows = conn.execute(
+            f"SELECT kind,COALESCE(SUM(gross_nwx),0) amount FROM company_income_log WHERE company_code IN ({marks}) "
+            f"AND counterparty IN ({marks}) AND recorded_epoch>=? AND recorded_epoch<? GROUP BY kind",
+            (*group, *group, start, end)).fetchall() if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='company_income_log'").fetchone() else []
+        flows = {row['kind']: int(round(row['amount'] * factor)) for row in rows}
+        cross = 0
+        for row in conn.execute(
+                f"SELECT a.company_code holder,u.asset_code,u.quantity*u.average_cost cost FROM user_assets u "
+                f"JOIN company_accounts a ON a.user_id=u.user_id WHERE a.company_code IN ({marks}) "
+                f"AND u.asset_code IN ({marks}) AND u.asset_code<>a.company_code", (*group, *group)).fetchall():
+            # Shares of a group member that are not the parent's consolidated investment
+            # (e.g. a subsidiary holding its parent) are treasury stock of the group.
+            if not any(sub['code'] == row['asset_code'] for sub in cls.subsidiaries(conn, row['holder'])):
+                cross += int(round(float(row['cost']) * float(factor)))
+        return {'dividends': flows.get('dividend', 0), 'transfers': flows.get('transfer_in', 0), 'cross_holdings': cross}
 
     def report(self, code, period=None):
         period = period or month()

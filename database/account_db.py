@@ -61,6 +61,9 @@ class AccountDB(DBManager):
             "resolution_status": "TEXT NOT NULL DEFAULT 'active'",
             "insurance_paid": "INTEGER NOT NULL DEFAULT 0",
             "uninsured_claim": "INTEGER NOT NULL DEFAULT 0",
+            "reference_price": "REAL",  # IMA: reference product price at opening
+            "fee_paid_epoch": "REAL",  # wrap: management fee charged up to here
+            "managed_by": "TEXT",  # wrap: manager allowed to trade this account
         }
         for column, declaration in account_rate_columns.items():
             if column not in columns:
@@ -416,6 +419,25 @@ class AccountDB(DBManager):
             ("principal", "face_value", "acquisition_cost"),
             "holding_id",
         )
+        # Interest-rate swaps against the citizen's nationality treasury.
+        self.execute("""CREATE TABLE IF NOT EXISTS swap_contracts (
+            swap_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            nationality TEXT NOT NULL,
+            currency TEXT NOT NULL,
+            notional INTEGER NOT NULL CHECK(notional > 0),
+            side TEXT NOT NULL CHECK(side IN ('pay_fixed','receive_fixed')),
+            fixed_rate REAL NOT NULL,
+            tenor_days INTEGER NOT NULL CHECK(tenor_days > 0),
+            start_epoch REAL NOT NULL,
+            maturity_epoch REAL NOT NULL,
+            last_settle_epoch REAL NOT NULL,
+            margin INTEGER NOT NULL DEFAULT 0 CHECK(margin >= 0),
+            realized INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','closed','matured','defaulted')),
+            closed_epoch REAL
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_swaps_open ON swap_contracts(status, user_id)")
 
     def _migrate_plaintext_passwords(self):
         """기존 평문 비밀번호를 저장 즉시 PBKDF2-SHA256 형식으로 변환합니다."""

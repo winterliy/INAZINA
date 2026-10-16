@@ -4,7 +4,7 @@ import time
 from decimal import Decimal
 from datetime import datetime, timezone
 from database import DatabaseManager
-from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY
+from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY, IS_TREASURY
 from functions.tax_calc import calculate_income_tax
 from functions.money import parse_money, round_money
 from managers.treasury_bond_manager import TreasuryBondManager
@@ -102,12 +102,14 @@ class UserManager:
         ).fetchone()
         if not user:
             return None
+        if not exclude_wallet and conn.execute(f"SELECT 1 FROM users.users WHERE user_id=? AND {IS_TREASURY}", (str(user_id),)).fetchone():
+            return (2**53 - 1, None)  # a treasury can always pay from its wallet
         sources = [] if exclude_wallet else [(int(round(user["cash"] or 0)), None)]
         sources.extend(
             (int(round(row["balance"] or 0)), row["account_number"])
             for row in conn.execute(
                 "SELECT account_number, balance FROM accounts.accounts WHERE user_id = ? "
-                "AND (? IS NULL OR account_number <> ?)",
+                "AND (? IS NULL OR account_number <> ?) AND managed_by IS NULL",
                 (user_id, exclude_account, exclude_account),
             ).fetchall()
         )
@@ -126,7 +128,7 @@ class UserManager:
         amount = int(amount)
         if amount < 0:
             cursor = conn.execute(
-                "UPDATE users.users SET cash = cash + ? WHERE user_id = ? AND cash >= ?",
+                f"UPDATE users.users SET cash = cash + ? WHERE user_id = ? AND (cash >= ? OR {IS_TREASURY})",
                 (amount, str(user_id), -amount),
             )
         elif maximum is None:
@@ -153,7 +155,7 @@ class UserManager:
         if account_number is None:
             cursor = conn.execute(
                 "UPDATE users.users SET cash = cash - ? "
-                f"WHERE user_id = ? AND {ACTIVE_OR_TREASURY} AND cash >= ?",
+                f"WHERE user_id = ? AND {ACTIVE_OR_TREASURY} AND (cash >= ? OR {IS_TREASURY})",
                 (amount, user_id, amount),
             )
         else:
@@ -242,11 +244,13 @@ class UserManager:
                        SELECT writer_id AS user_id, quantity
                        FROM assets.option_collateral_lots WHERE underlying_code = ?
                    )
+                   -- Treasury stock (the company's own shares) carries no vote.
+                   WHERE user_id <> 'company:' || ?
                    GROUP BY user_id
                    ORDER BY SUM(quantity) DESC, user_id ASC
                    LIMIT 1
                ) WHERE company_code = ?""",
-            (asset_code, asset_code, asset_code),
+            (asset_code, asset_code, asset_code, asset_code),
         )
 
     def buy_asset(self, user_id, asset_code, quantity):

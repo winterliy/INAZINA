@@ -155,11 +155,11 @@ class ELSTests(unittest.TestCase):
         self.assertEqual(self.manager.get_details('ELS1')['state'], 'cancelled')
         self.assertFalse(self.manager.cancel('admin', 'ELS1')[0])
 
-    def test_coupon_insufficiency_and_unauthorized_actions_roll_back(self):
+    def test_treasury_reserves_coupons_even_in_deficit_and_unauthorized_actions_roll_back(self):
+        # A treasury can always pay: an empty treasury still backs the coupon reserve.
         self.db.users.execute("UPDATE users SET cash=0 WHERE user_id=?", (TREASURY_USER_ID,))
-        self.assertFalse(self.manager.subscribe('citizen', 'ELS1', 2, now=1001)[0])
-        self.assertEqual(self.db.users.get_user('citizen')['cash'], 1000000)
-        self.assertEqual(self.db.products.execute_one('SELECT COUNT(*) FROM els_subscriptions')[0], 0)
+        self.assertTrue(self.manager.subscribe('citizen', 'ELS1', 2, now=1001)[0])
+        self.assertLess(self.db.users.get_user(TREASURY_USER_ID)['cash'], 0)
         with self.assertRaises(ValueError):
             self.manager.create('citizen', 'BAD', self.fields)
         self.assertFalse(self.manager.cancel('citizen', 'ELS1')[0])

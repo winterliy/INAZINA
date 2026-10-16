@@ -16,6 +16,7 @@ from managers.financial_manager import FinancialManager as Finance
 
 class CorporateActionsManager:
     MAX_MONEY = 2**53 - 1
+    RECORD_LEAD = 600  # the shareholder register closes 10 minutes before payment
     DIVIDEND_TYPES = {'stock', '주식', 'etf', 'mutual_fund', 'index_fund', 'commodity_spot'}
 
     def __init__(self, bot):
@@ -110,7 +111,11 @@ class CorporateActionsManager:
             'SELECT user_id,quantity FROM user_assets WHERE asset_code=? UNION ALL '
             'SELECT writer_id user_id,quantity FROM option_collateral_lots WHERE underlying_code=?'
             ') GROUP BY user_id ORDER BY user_id', (code, code)).fetchall()
-        return [(str(row['user_id']), float(row['quantity'])) for row in rows if not CurrencyManager.is_treasury(conn, str(row['user_id']))]
+        # Treasuries and a company's own (treasury) shares receive no dividend.
+        from managers.company_account_manager import CompanyAccounts
+        return [(str(row['user_id']), float(row['quantity'])) for row in rows
+                if not CurrencyManager.is_treasury(conn, str(row['user_id']))
+                and not CompanyAccounts.own_shares(conn, str(row['user_id']), code)]
 
     @staticmethod
     def _currency_account(conn, user, currency, now):
@@ -133,13 +138,8 @@ class CorporateActionsManager:
                 raise ValueError('발행법인 현금 배당은 NWX 상품에만 사용할 수 있습니다.')
             row = conn.execute('SELECT balance FROM issuer_cash_accounts WHERE company_code=?', (issuer,)).fetchone()
             return int(row['balance']) if row else 0
-        # The listing country's treasury funds treasury dividends: in that currency
-        # when it holds it, otherwise from its own currency at the current rate.
-        treasury = CurrencyManager.exchange_treasury(conn, issuer)
-        if CurrencyManager._treasury_target(conn, treasury, currency):
-            return CurrencyManager.balance(conn, treasury, currency) // SCALE
-        home = CurrencyManager.home(conn, treasury)
-        return CurrencyManager.convert(conn, max(0, CurrencyManager.balance(conn, treasury, home)), home, currency) // SCALE
+        # The listing country's treasury funds treasury dividends and can always pay.
+        return self.MAX_MONEY
 
     def _debit_dividend(self, conn, issuer, funding, currency, gross, counterpart="retained"):
         from database.fund_accounting import change_cash
@@ -157,8 +157,7 @@ class CorporateActionsManager:
         if funding == 'issuer':
             changed = conn.execute('UPDATE issuer_cash_accounts SET balance=balance-? WHERE company_code=? AND balance>=?', (gross, issuer, gross))
         else:
-            if self._source_balance(conn, issuer, funding, currency) < gross:
-                raise ValueError(f'국고의 {currency} 배당 재원이 부족합니다. 필요액 {gross:,} {currency}')
+            # A treasury can always pay, even into deficit.
             CurrencyManager.treasury_pay(conn, CurrencyManager.exchange_treasury(conn, issuer), currency, gross*SCALE)
             changed = None
         if changed is not None and changed.rowcount != 1:
@@ -191,6 +190,11 @@ class CorporateActionsManager:
                                    (net_units, account, MAX_UNITS-net_units))
         if changed.rowcount != 1:
             raise ValueError('배당 수령자의 계정 또는 잔액 한도를 확인해주세요.')
+        from managers.company_account_manager import CompanyAccounts
+        if CompanyAccounts.is_company(conn, user):
+            # A company's dividend income is 영업외수익 in its statements.
+            listing = conn.execute('SELECT COALESCE(parent_company_code,company_code) FROM company WHERE company_code=?', (code,)).fetchone()
+            CompanyAccounts.log_income(conn, user, 'dividend', amount*rate, tax, counterparty=listing[0] if listing else code)
         return tax, net_units
 
     def _settle_claims(self, conn, issuer, now):
@@ -222,6 +226,28 @@ class CorporateActionsManager:
             return True
         return bool(conn.execute("SELECT 1 FROM company WHERE status='active' AND COALESCE(parent_company_code,company_code)=? AND dividend_priority>? AND dividend_is_active=1 AND dividend_cycle_seconds>0 AND dividend_next_epoch<=? AND ((dividend_mode='fixed' AND dividend_per_share>0) OR (dividend_mode='percent' AND dividend_percent>0)) LIMIT 1", (issuer,priority,now)).fetchone())
 
+    def _close_register(self, conn, listing, kind, key, pay_epoch, now, per_share=0, actor=None):
+        """Snapshot the entitled holders once; later trades do not change the register."""
+        row = conn.execute('SELECT register_id FROM shareholder_registers WHERE operation_key=?', (str(key),)).fetchone()
+        if row:
+            return row['register_id']
+        register = conn.execute(
+            'INSERT INTO shareholder_registers(operation_key,asset_code,dividend_kind,record_epoch,pay_epoch,'
+            'per_share,actor_id,created_epoch) VALUES (?,?,?,?,?,?,?,?)',
+            (str(key), listing['code'], kind, int(now), int(pay_epoch), int(per_share), actor, int(now))).lastrowid
+        conn.executemany('INSERT INTO shareholder_register_entries(register_id,user_id,quantity) VALUES (?,?,?)',
+                         [(register, user, quantity) for user, quantity in self._holders(conn, listing['code']) if quantity > 0])
+        return register
+
+    @staticmethod
+    def _register_holders(conn, key):
+        row = conn.execute('SELECT register_id FROM shareholder_registers WHERE operation_key=?', (str(key),)).fetchone()
+        if not row:
+            return None
+        return [(str(entry['user_id']), float(entry['quantity'])) for entry in conn.execute(
+            'SELECT user_id,quantity FROM shareholder_register_entries WHERE register_id=? ORDER BY user_id',
+            (row['register_id'],))]
+
     def _distribute(self, conn, listing, per_share, kind, due, key, now, *, percent=None, reference_price=None):
         existing = conn.execute(
             'SELECT distribution_id,gross_amount FROM dividend_distributions WHERE operation_key=?',
@@ -231,7 +257,11 @@ class CorporateActionsManager:
             return int(existing['gross_amount']), True
         if self._priority_blocked(conn, listing, now):
             raise ValueError('이 법인의 우선순위가 높은 주식에 미지급 배당이 있어 배당을 보류합니다.')
-        holders = self._holders(conn, listing['code'])
+        # Pay whoever the closed register lists; close it now if it never was.
+        holders = self._register_holders(conn, key)
+        if holders is None:
+            self._close_register(conn, listing, kind, key, now, now, per_share)
+            holders = self._register_holders(conn, key)
         mode = 'percent' if percent is not None else 'fixed'
         unit_amount = Decimal(reference_price)*Decimal(str(percent))/100 if percent is not None else Decimal(per_share)
         payments = [(user,quantity,int((Decimal(str(quantity))*unit_amount).quantize(Decimal('1'),rounding=ROUND_HALF_UP))) for user,quantity in holders]
@@ -270,6 +300,7 @@ class CorporateActionsManager:
             Finance.event(conn,issuer,'우선주 미지급배당 확정',
                           [('retained',owed-gross),('dividend_payable',gross-owed)],
                           now=now,currency=currency)
+        conn.execute("UPDATE shareholder_registers SET status='paid' WHERE operation_key=?", (str(key),))
         self._record(conn,key,f'{kind}_dividend',listing['code'],None,
                      {'distribution_id':distribution,'per_share':per_share,'mode':mode,'percent':percent,'reference_price':reference_price,
                       'gross_amount':gross,'entitlement':owed,'deferred_amount':owed-gross,'currency':currency,'funding':funding,'issuer':issuer},now)
@@ -312,10 +343,28 @@ class CorporateActionsManager:
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f'❌ {exc}'
 
-    def special_dividend(self, actor, code, per_share, operation_key=None):
+    def special_dividend(self, actor, code, per_share, operation_key=None, *, delay=None):
+        """Close the shareholder register now and pay ``delay`` seconds later (10 minutes).
+
+        ``delay=0`` pays in the same transaction.
+        """
+        delay = self.RECORD_LEAD if delay is None else int(delay)
         try:
             amount = self._integer(per_share, '주당 특별배당금', 1)
             now, key = int(time.time()), operation_key or 'special:' + uuid.uuid4().hex
+            if delay > 0:
+                with DBManager.admin_scope(actor), self.db.atomic() as conn:
+                    self._require(conn, actor)
+                    listing = self._dividend_listing(conn, code)
+                    existing = conn.execute('SELECT pay_epoch FROM shareholder_registers WHERE operation_key=?', (key,)).fetchone()
+                    pay_epoch = int(existing['pay_epoch']) if existing else now + delay
+                    self._close_register(conn, listing, 'special', key, pay_epoch, now, amount, actor)
+                    holders = len(self._register_holders(conn, key))
+                    if not existing:
+                        self._audit(conn, actor, 'dividend.special.register', str(code),
+                                    {'per_share': amount, 'operation_key': key, 'pay_epoch': pay_epoch, 'holders': holders}, now)
+                return True, (f'✅ `{code}` 특별배당 주주명부를 마감했습니다 (주주 {holders:,}명). '
+                              f'<t:{pay_epoch}:T>에 주당 {amount:,} {listing.get("quote_currency") or "NWX"}를 장부대로 지급합니다.')
             with DBManager.admin_scope(actor), self.db.atomic() as conn:
                 self._require(conn, actor)
                 listing = self._dividend_listing(conn, code)
@@ -343,6 +392,8 @@ class CorporateActionsManager:
             if due is None:
                 conn.execute(f'UPDATE {listing["table"]} SET dividend_next_epoch=? WHERE {listing["key"]}=?',(now+cycle,code))
                 break
+            if due - self.RECORD_LEAD <= now < due:
+                self._close_register(conn, listing, 'regular', f'regular:{code}:{due}', due, now)
             if due > now:
                 break
             percent = listing['dividend_percent'] if listing['dividend_mode']=='percent' else None
@@ -388,6 +439,36 @@ class CorporateActionsManager:
                 results.extend(pending)
             except (ValueError,OverflowError) as exc:
                 results.extend((code,False,str(exc)) for _,code in items)
+        results.extend(self._pay_due_specials(now))
+        return results
+
+    def _pay_due_specials(self, now):
+        results = []
+        due = self.db.corporate.execute(
+            "SELECT * FROM shareholder_registers WHERE dividend_kind='special' AND status='closed' AND pay_epoch<=? "
+            "ORDER BY pay_epoch,register_id", (now,))
+        for register in due:
+            code, key = register['asset_code'], register['operation_key']
+            try:
+                with self.db.atomic() as conn:
+                    listing = self._dividend_listing(conn, code)
+                    if listing['table'] == 'company':
+                        issuer = self._issuer_code(listing)
+                        self._settle_claims(conn, issuer, now)
+                        for preferred in conn.execute("SELECT company_code FROM company WHERE status='active' AND COALESCE(parent_company_code,company_code)=? AND dividend_priority>? AND dividend_is_active=1 AND dividend_next_epoch<=? ORDER BY dividend_priority DESC,company_code",
+                                                      (issuer, listing['dividend_priority'], now)).fetchall():
+                            self._regular_due(conn, preferred['company_code'], now)
+                    gross, duplicate = self._distribute(conn, listing, int(register['per_share']), 'special',
+                                                        int(register['pay_epoch']), key, now)
+                    if not duplicate:
+                        self._audit(conn, register['actor_id'] or 'system', 'dividend.special', str(code),
+                                    {'per_share': int(register['per_share']), 'gross_amount': gross, 'operation_key': key}, now)
+                results.append((code, True, gross))
+            except (ValueError, OverflowError) as exc:
+                with self.db.atomic() as conn:
+                    conn.execute("UPDATE shareholder_registers SET status='failed',note=? WHERE register_id=?",
+                                 (str(exc)[:500], register['register_id']))
+                results.append((code, False, str(exc)))
         return results
 
     def fund_issuer(self, actor, code, operation, value):
@@ -413,8 +494,6 @@ class CorporateActionsManager:
                 # Issuer cash (NWX) moves to/from the listing country's treasury.
                 treasury = CurrencyManager.exchange_treasury(conn, issuer)
                 if delta > 0:
-                    if self._source_balance(conn, issuer, 'treasury', 'NWX') < delta:
-                        raise ValueError('국고 잔액 또는 반환 후 잔액 한도를 확인해주세요.')
                     CurrencyManager.treasury_pay(conn, treasury, 'NWX', delta*SCALE)
                 elif delta < 0:
                     CurrencyManager.treasury_receive(conn, treasury, 'NWX', -delta*SCALE)
@@ -483,7 +562,7 @@ class CorporateActionsManager:
                     raise ValueError('법인의 잠금 예치금을 먼저 정산해주세요.')
                 balance = int(cash['balance']) if cash else 0
                 initial = balance
-                bonds = conn.execute(f"SELECT * FROM investment WHERE product_type='corporate_bond' AND status IN ('active','defaulted') AND issuer_code IN ({placeholders})",tuple(codes)).fetchall()
+                bonds = conn.execute(f"SELECT * FROM investment WHERE product_type IN ('corporate_bond','etn') AND status IN ('active','defaulted') AND issuer_code IN ({placeholders})",tuple(codes)).fetchall()
                 if any((bond['quote_currency'] or 'NWX')!='NWX' for bond in bonds):
                     raise ValueError('외화 회사채를 먼저 정산해주세요.')
                 debt_codes = [str(row['product_code']) for row in bonds]
@@ -497,7 +576,15 @@ class CorporateActionsManager:
                         conn.execute("UPDATE market_orders SET status='cancelled',reserved_cash=0,updated_epoch=? WHERE order_id=?",(now,order['order_id']))
                 waterfall = []
                 debt = []
+                secured = []  # asset-backed paper is repaid from its pool before other debt
                 for bond in bonds:
+                    if bond['product_type'] == 'etn':
+                        # ETN holders are unsecured creditors for the note's current value.
+                        for holder in conn.execute('SELECT user_id,SUM(quantity) quantity FROM user_assets WHERE asset_code=? GROUP BY user_id ORDER BY user_id',(bond['product_code'],)).fetchall():
+                            value = int(Decimal(str(holder['quantity']))*int(bond['unit_price']))
+                            debt.append({'asset':bond['product_code'],'user':holder['user_id'],'quantity':holder['quantity'],'claim':value,'principal':value,'kind':'debt'})
+                        continue
+                    target = secured if (bond['bond_feature'] or 'plain') in {'abs','mbs','abcp'} else debt
                     maturity = int(bond['maturity_epoch'] or now)
                     duration = max(0,int(bond['maturity_days'] or 0))*86400
                     elapsed = max(0,min(duration,now-(maturity-duration)))
@@ -505,7 +592,7 @@ class CorporateActionsManager:
                         quantity = int(holder['quantity'])
                         principal = quantity*int(bond['face_value'])
                         coupon = int((Decimal(principal)*Decimal(str(bond['annual_rate']))/100*Decimal(elapsed)/Decimal(365*86400)).quantize(Decimal('1'),rounding=ROUND_HALF_UP))
-                        debt.append({'asset':bond['product_code'],'user':holder['user_id'],'quantity':quantity,'claim':principal+coupon,'principal':principal,'kind':'debt'})
+                        target.append({'asset':bond['product_code'],'user':holder['user_id'],'quantity':quantity,'claim':principal+coupon,'principal':principal,'kind':'debt'})
                 claims = []
                 for claim in conn.execute("SELECT * FROM preferred_dividend_claims WHERE issuer_code=? AND status IN ('unpaid','partial') ORDER BY claim_id",(issuer,)).fetchall():
                     if claim['quote_currency']!='NWX':
@@ -523,7 +610,7 @@ class CorporateActionsManager:
                         else:
                             record['claim'] = record['quantity']
                             common.append(record)
-                tiers = [debt,claims]+[equity[priority] for priority in sorted(equity,reverse=True)]
+                tiers = [secured,debt,claims]+[equity[priority] for priority in sorted(equity,reverse=True)]
                 for tier in tiers:
                     total = sum(item['claim'] for item in tier)
                     payout = min(balance,total)

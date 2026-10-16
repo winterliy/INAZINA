@@ -11,6 +11,50 @@ type Product = { code: string; name: string; kind: string; status: string; excha
 type Detail = { code: string; kind: string; status: string; values: Record<string, unknown>; row: Record<string, unknown> };
 type Editor = { mode: "create" | "edit"; kind: string; code: string; values: Record<string, string>; advanced: Record<string, string>; original: Detail | null };
 
+// Ratios an administrator tunes on a live product (saved through the same 상품수정 path).
+const RATIOS: Record<string, [string, string, string][]> = {
+  etf: [["leverage_multiplier", "레버리지 배율", "−10~10 · 음수는 인버스 (−1 = 인버스, 2 = 2배)"], ["rebalance_cycle_seconds", "리밸런싱 주기 (초)", "86400 = 하루"]],
+  etn: [["leverage_multiplier", "레버리지 배율", "−10~10 · 음수는 인버스"], ["rebalance_cycle_seconds", "리밸런싱 주기 (초)", "86400 = 하루"]],
+  future: [["initial_margin", "초기 증거금률", "0~1 · 0.2 = 20%"], ["maintenance_margin", "유지 증거금률", "0~1 · 초기 증거금률 이하"]],
+  option: [["implied_volatility", "내재변동성", "0~5 · 0.6 = 60%"]],
+};
+
+function RatioPanel({ editor, spec, busy, submit }: { editor: Editor; spec: Kind; busy: boolean; submit: (fields: Record<string, string>, advanced: Record<string, string>, summary: string) => void }) {
+  const ratios = RATIOS[editor.kind] ?? [];
+  const isFund = editor.kind === "fund";
+  const current = (key: string) => text(editor.original?.values[key] ?? editor.original?.row[key]);
+  const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries(ratios.map(([key]) => [key, current(key)])));
+  const parse = (raw: string) => raw.split(",").map((part) => part.trim()).filter(Boolean).map((part) => { const index = part.lastIndexOf(":"); return { asset: part.slice(0, index), weight: part.slice(index + 1) }; });
+  const [rows, setRows] = useState(() => parse(current("components")));
+  if (!ratios.length && !isFund) return null;
+  const total = rows.reduce((sum, row) => sum + (Number(row.weight) || 0), 0);
+  function apply() {
+    const fields: Record<string, string> = {}; const advanced: Record<string, string> = {};
+    for (const [key] of ratios) if (values[key] !== current(key)) (spec.fields.some((field) => field.key === key) ? fields : advanced)[key] = values[key];
+    if (isFund) fields.components = rows.filter((row) => row.asset.trim()).map((row) => `${row.asset.trim()}:${row.weight}`).join(",");
+    const summary = [...ratios.filter(([key]) => values[key] !== current(key)).map(([key, label]) => `${label}: ${current(key) || "—"} → ${values[key]}`),
+      ...(isFund ? [`구성 비중: ${fields.components}`] : [])].join("\n");
+    submit(fields, advanced, summary);
+  }
+  return <section className="ratio-panel">
+    <h3 className="sub-head">비율 조정</h3>
+    <p className="hint">{isFund ? "구성 종목과 비중(합계 1)을 바꾸면 현재 기준가에서 다시 출발합니다. 다른 펀드·ETF·ETN도 담을 수 있습니다(재간접)." : editor.kind === "future" ? "증거금률은 다음 정산부터 적용됩니다. 계약 승수·만기 같은 발행 조건은 바꿀 수 없습니다." : editor.kind === "option" ? "내재변동성은 이론 프리미엄 계산에 쓰입니다. 행사가·만기는 바꿀 수 없습니다." : "배율을 바꾸면 현재 가격을 기준으로 추종을 다시 시작합니다."}</p>
+    {ratios.length > 0 && <div className="form-grid">{ratios.map(([key, label, hint]) => <Field key={key} label={label} hint={`${hint} · 현재 ${current(key) || "—"}`}>
+      <input className="mono" inputMode="decimal" value={values[key] ?? ""} onChange={(event) => setValues({ ...values, [key]: event.target.value })} /></Field>)}</div>}
+    {isFund && <div className="scroll-x"><table><thead><tr><th>구성 종목</th><th className="r">비중</th><th /></tr></thead><tbody>
+      {rows.map((row, index) => <tr key={index}>
+        <td><input className="mono" value={row.asset} onChange={(event) => setRows(rows.map((item, i) => i === index ? { ...item, asset: event.target.value } : item))} /></td>
+        <td className="r"><input className="mono" inputMode="decimal" value={row.weight} onChange={(event) => setRows(rows.map((item, i) => i === index ? { ...item, weight: event.target.value } : item))} /></td>
+        <td className="row-actions"><button type="button" className="soft small" onClick={() => setRows(rows.filter((_, i) => i !== index))}>빼기</button></td>
+      </tr>)}
+    </tbody></table>
+      <div className="actions"><button type="button" className="soft small" onClick={() => setRows([...rows, { asset: "", weight: "0" }])}>종목 추가</button>
+        <button type="button" className="soft small" disabled={!rows.length} onClick={() => setRows(rows.map((row) => ({ ...row, weight: String(Math.round(1 / rows.length * 1e6) / 1e6) })))}>균등 배분</button>
+        <span className={Math.abs(total - 1) < 1e-6 ? "tag ok" : "tag warn"}>합계 {number(total)}</span></div></div>}
+    <button type="button" className="btn primary" disabled={busy || (isFund && Math.abs(total - 1) > 1e-6)} onClick={apply}>비율 저장</button>
+  </section>;
+}
+
 // Corporate actions and price changes stay commands; the list links to them.
 const RELATED: Record<string, [string, string][]> = {
   stock: [["상품가격수정", "가격"], ["자본변경", "증자·감자"], ["액면분할병합", "분할·병합"], ["정기배당수정", "배당"], ["정기배당활성", "배당 켜기/끄기"], ["특별배당실시", "특별배당"], ["합병", "합병"], ["법인잔고수정", "법인 현금"], ["법인청산", "청산"], ["상품분위기", "분위기"], ["소수점거래관리", "소수점"]],
@@ -22,6 +66,9 @@ const RELATED: Record<string, [string, string][]> = {
   commodity: [["상품가격수정", "가격"], ["상품분위기", "분위기"], ["소수점거래관리", "소수점"]],
   future: [["상품가격수정", "가격"]],
   corporatebond: [["상품가격수정", "가격"]],
+  convertiblebond: [["상품가격수정", "가격"]], warrantbond: [["상품가격수정", "가격"]],
+  abs: [["상품가격수정", "가격"]], mbs: [["상품가격수정", "가격"]], abcp: [["상품가격수정", "가격"]],
+  etn: [["상품가격수정", "가격"]],
   bond: [["상품가격수정", "가격"]],
   option: [["상품가격수정", "프리미엄"]],
   els: [["ELS취소", "모집 취소"]],
@@ -139,6 +186,12 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
         </Field>)}
         <button className="btn primary" disabled={busy}>{busy ? "저장 중…" : editor.mode === "create" ? "생성" : "저장"}</button>
       </form>
+      {editor.mode === "edit" && <RatioPanel key={editor.code} editor={editor} spec={spec} busy={busy} submit={(fields, advanced, summary) => {
+        if (!Object.keys(fields).length && !Object.keys(advanced).length) { say("변경된 비율이 없습니다.", true); return; }
+        if (!window.confirm(`${editor.code} 비율을 바꿀까요?\n\n${summary}`)) return;
+        void run(() => api<{ message: string; success: boolean }>("/api/admin/products", { method: "POST", body: JSON.stringify({ operation: "edit", kind: editor.kind, code: editor.code, fields, advanced }) }),
+          "비율을 저장하지 못했습니다.", async (result) => { say(plain(result.message), !result.success); if (result.success) { setEditor(null); await load(); } });
+      }} />}
       {spec.advanced.length > 0 && editor.kind !== "els" && <details className="help advanced"><summary>고급 설정 ({spec.advanced.length}개 열)</summary>
         <p className="hint">{editor.mode === "create" ? "필요한 항목만 입력하세요. 비우면 기본값을 씁니다." : "현재 값입니다. 바꾼 칸만 저장합니다."}</p>
         <div className="form-grid">{spec.advanced.map((field) => <Field key={field.key} label={field.label} hint={`${field.key} · ${field.type || "ANY"}`}>

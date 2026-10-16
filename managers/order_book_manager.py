@@ -18,7 +18,22 @@ class OrderBookManager:
         self.option_manager = None
         self.futures_manager = None
 
-    def place_limit_order(self, user_id, asset_code, side, quantity, limit_price):
+    # A wrap account's lots are sold only by orders for that account; ordinary
+    # orders never touch them. Parameters: (wrap account, wrap account).
+    LOT_SCOPE = ("(CASE WHEN ? IS NOT NULL THEN account_number = ? ELSE "
+                 "(account_number IS NULL OR account_number NOT IN "
+                 "(SELECT account_number FROM accounts.accounts WHERE managed_by IS NOT NULL)) END)")
+
+    def place_limit_order(self, user_id, asset_code, side, quantity, limit_price, *, funding_account=None):
+        """``funding_account``: a wrap account the manager trades (its cash and holdings only)."""
+        success, message = self._place_limit_order(user_id, asset_code, side, quantity, limit_price,
+                                                   funding_account=funding_account)
+        if success:
+            from managers.trading_warning_manager import TradingWarnings
+            message += TradingWarnings(self.db).notice(str(asset_code).strip())
+        return success, message
+
+    def _place_limit_order(self, user_id, asset_code, side, quantity, limit_price, *, funding_account=None):
         user_id = str(user_id)
         asset_code = str(asset_code).strip()
         side = str(side).casefold()
@@ -29,7 +44,7 @@ class OrderBookManager:
         except ValueError as exc:
             return False, f'❌ {exc}'
         flagged = self.db.assets.execute_one('SELECT Fractal FROM market_assets WHERE code=? UNION ALL SELECT Fractal FROM company WHERE company_code=? UNION ALL SELECT Fractal FROM investment WHERE product_code=?', (asset_code,)*3)
-        if flagged and flagged[0] == 1:
+        if flagged and flagged[0] == 1 and funding_account is None:
             from managers.fractional_trading_manager import FractionalTradingManager
             return FractionalTradingManager(self).order(user_id, asset_code, side, quantity, limit_price)
         from functions.quantities import parse_quantity
@@ -60,8 +75,14 @@ class OrderBookManager:
                 pass
         # Instruments in the user's own currency settle from cash/home accounts; others via FX accounts.
         if foreign and (foreign['quote_currency'] or 'NWX') != home:
+            if funding_account is not None:
+                return False, "❌ 랩어카운트는 계좌 통화로 결제하는 종목만 운용할 수 있습니다."
             from managers.foreign_securities_manager import ForeignSecuritiesManager
             return ForeignSecuritiesManager(self).order(user_id,asset_code,side,quantity,limit_price)
+        if funding_account is not None and (
+                (self.futures_manager and self.futures_manager.is_future(asset_code))
+                or (self.option_manager and self.option_manager.is_option(asset_code))):
+            return False, "❌ 랩어카운트로는 선물·옵션을 거래할 수 없습니다."
         if self.futures_manager and self.futures_manager.is_future(asset_code):
             return self.futures_manager.place_limit_order(user_id, asset_code, side, quantity, limit_price)
         if self.option_manager and self.option_manager.is_option(asset_code):
@@ -107,6 +128,7 @@ class OrderBookManager:
                 # This path settles in the user's own currency, which is the instrument's.
                 currency = str(asset.get("quote_currency") or "NWX")
 
+                wrap_account = funding_account
                 funding_account = None
                 reserved_cash = 0
                 if side == "buy":
@@ -151,7 +173,12 @@ class OrderBookManager:
                                 f"{additional_capacity:,}개입니다."
                             )
                     reserved_cash = limit_price * quantity
-                    funds = self.user_manager._choose_funds(conn, user_id)
+                    if wrap_account is not None:
+                        row = conn.execute("SELECT balance FROM accounts.accounts WHERE account_number=? AND user_id=?",
+                                           (wrap_account, user_id)).fetchone()
+                        funds = (int(row["balance"] or 0), wrap_account) if row else None
+                    else:
+                        funds = self.user_manager._choose_funds(conn, user_id)
                     if not funds:
                         return False, "❌ 등록된 사용자만 주문할 수 있습니다."
                     balance, funding_account = funds
@@ -170,17 +197,20 @@ class OrderBookManager:
                     else:
                         positions = conn.execute(
                             "SELECT COALESCE(SUM(quantity), 0) AS quantity "
-                            "FROM assets.user_assets WHERE user_id = ? AND asset_code = ?",
-                            (user_id, asset_code),
+                            "FROM assets.user_assets WHERE user_id = ? AND asset_code = ? AND "
+                            + self.LOT_SCOPE,
+                            (user_id, asset_code, wrap_account, wrap_account),
                         ).fetchone()
                         owned_quantity = int(positions["quantity"] or 0)
                     already_reserved = conn.execute(
                         "SELECT COALESCE(SUM(remaining_quantity), 0) AS quantity "
                         "FROM assets.market_orders WHERE order_kind = 'asset' "
                         "AND user_id = ? AND asset_code = ? "
-                        "AND side = 'sell' AND status IN ('scheduled', 'open', 'partial')",
-                        (user_id, asset_code),
+                        "AND side = 'sell' AND status IN ('scheduled', 'open', 'partial') "
+                        "AND funding_account IS ?",
+                        (user_id, asset_code, wrap_account),
                     ).fetchone()
+                    funding_account = wrap_account
                     available = owned_quantity - int(already_reserved["quantity"] or 0)
                     if available < quantity:
                         return False, f"❌ 매도 가능 수량이 부족합니다. (주문 가능 {max(0, available):,}개)"
@@ -506,9 +536,9 @@ class OrderBookManager:
 
         positions = conn.execute(
             "SELECT holding_id, account_number, quantity, average_cost "
-            "FROM assets.user_assets WHERE user_id = ? AND asset_code = ? "
-            "ORDER BY holding_id",
-            (seller_id, sell_order["asset_code"]),
+            "FROM assets.user_assets WHERE user_id = ? AND asset_code = ? AND "
+            + self.LOT_SCOPE + " ORDER BY holding_id",
+            (seller_id, sell_order["asset_code"], sell_order["funding_account"], sell_order["funding_account"]),
         ).fetchall()
         left = quantity
         sold = []

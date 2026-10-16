@@ -6,7 +6,7 @@ import secrets
 from decimal import Decimal, ROUND_HALF_UP
 from database.db_manager import DBManager
 from database.user_db import TREASURY_USER_ID
-from managers.admin_control_manager import ENTITIES, KINDS
+from managers.admin_control_manager import ENTITIES, KINDS, BOND_FEATURES, SAVING_KINDS
 from managers.currency_exchange_manager import SCALE, MAX_UNITS, amount_units, display_units
 from managers.rate_manager import RateManager
 from functions.money import parse_currency_money
@@ -15,13 +15,17 @@ COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','�
             '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','환율수정',
             '국가생성','국가삭제',
             '복권가격설정','금리수정','시장금리수정','법정최고이자수정','자본변경','증자','정기배당수정','정기배당활성','특별배당실시','합병','액면분할병합',
-            '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소'}
+            '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소','거래경고'}
 TYPES = {'company':'stock','주식':'stock','자산':'asset','ETF':'etf','선물':'future','주식선물':'future',
          '회사채':'corporatebond','일반펀드':'fund','펀드':'fund','인덱스펀드':'indexfund',
          '현물원자재':'commodity','원자재':'commodity','국채':'bond','저축':'saving',
          '대출':'loan','옵션':'option','통화':'currency','외환통장':'currencyproduct','ELS':'els',
          'preferred':'stock','preferredstock':'stock','우선주':'stock',
-         **{k:k for k in ENTITIES}, **{v:k for k,v in KINDS.items()}}
+         'ETN':'etn','전환사채':'convertiblebond','CB':'convertiblebond','신주인수권부사채':'warrantbond','BW':'warrantbond',
+         '자산유동화증권':'abs','ABS':'abs','MBS':'mbs','모기지':'mbs','ABCP':'abcp','자산유동화기업어음':'abcp',
+         'CMA':'cma','IMA':'ima','종합투자계좌':'ima','랩':'wrap','랩어카운트':'wrap',
+         '인버스':'etf','인버스ETF':'etf','재간접펀드':'fund',
+         **{k:k for k in ENTITIES}, **{v:k for k,v in KINDS.items()}, 'corporate_bond':'corporatebond'}
 USAGE = {
  '소수점거래관리':'[id] [0:on/1:off]',
  '상품이율수정':'[대출상품id] [원이율%] [연장이율% · 0은 원이율 적용]',
@@ -47,7 +51,8 @@ USAGE = {
  '휴장':'[거래소ID(선택)]', '개장':'[거래소ID(선택)]', '장일시정지':'[거래소ID(선택)]', '장재개':'[거래소ID(선택)]',
  '서킷브레이커':'[거래소ID(선택)] [1/2/3단계]', '사이드카':'[거래소ID(선택)]'}
 USAGE.update({'법인잔고수정':'[보통주 법인id] [add/del/modify] [금액]',
-              '법인청산':'[보통주 법인id]', 'ELS취소':'[ELS id]'})
+              '법인청산':'[보통주 법인id]', 'ELS취소':'[ELS id]',
+              '거래경고':'[종목id] [주의/경고/위험/해제] [사유(선택)] [기간 일수(선택)]'})
 
 # Core positional arguments vary by product type; extra JSON is always optional.
 CREATE_ARGS = {
@@ -61,6 +66,15 @@ CREATE_ARGS = {
  'fund':('name','unit_price','total_supply','components','exchange_id'),
  'indexfund':('name','unit_price','total_supply','underlying_exchange_id','exchange_id'),
  'commodity':('name','unit_price','total_supply','exchange_id'),
+ 'etn':('name','unit_price','total_supply','issuer_code','underlying_exchange_id','leverage_multiplier','exchange_id'),
+ 'convertiblebond':('name','unit_price','total_supply','issuer_code','face_value','annual_rate','maturity_days','conversion_price','exchange_id'),
+ 'warrantbond':('name','unit_price','total_supply','issuer_code','face_value','annual_rate','maturity_days','warrant_exercise_price','exchange_id'),
+ 'abs':('name','unit_price','total_supply','issuer_code','face_value','annual_rate','maturity_days','collateral_note','exchange_id'),
+ 'mbs':('name','unit_price','total_supply','issuer_code','face_value','annual_rate','maturity_days','collateral_note','exchange_id'),
+ 'abcp':('name','unit_price','total_supply','issuer_code','face_value','annual_rate','maturity_days','collateral_note','exchange_id'),
+ 'cma':('name','interest_rate','deposit_amount','interest_cycle','compound_type','issuer'),
+ 'ima':('name','reference_code','participation_percent','deposit_amount','maturity_days','issuer'),
+ 'wrap':('name','manager_id','management_fee_percent','deposit_amount','issuer'),
  'bond':('name','market_price','total_supply','face_value','annual_rate','maturity_days','exchange_id'),
  'option':('underlying_code','option_type','strike_price','maturity_days','quantity','limit_price','volatility_percent'),
  'currency':('name','asset_code','nationality'),
@@ -147,14 +161,16 @@ class AdminCommandsManager:
             if category in KINDS:
                 continue
             row=conn.execute(f'SELECT * FROM "{table}" WHERE "{key}"=?',(code,)).fetchone()
-            # Savings and foreign-currency accounts share the saving table.
-            if row and table=='saving' and (row['product_kind']=='currency_saving')!=(category=='currencyproduct'):
+            # Savings, FX, CMA, IMA and wrap accounts share the saving table.
+            if row and table=='saving' and (row['product_kind'] or 'saving')!=SAVING_KINDS.get(category):
                 row=None
             if row:
                 matches.append((category,dict(row)))
         row=conn.execute('SELECT * FROM investment WHERE product_code=?',(code,)).fetchone()
         if row:
             category=next((k for k,v in KINDS.items() if v==row['product_type']),None)
+            if row['product_type']=='corporate_bond':
+                category=next(k for k,v in BOND_FEATURES.items() if v==(row['bond_feature'] or 'plain'))
             if not category:
                 raise ValueError('이 투자상품 유형은 통합 상품 관리에서 지원하지 않습니다.')
             matches.append((category,dict(row)))
@@ -250,7 +266,8 @@ class AdminCommandsManager:
                         or (command=='세율' and len(args) in {1,2})
                         or (command=='합병' and len(args) in {2,3})
                         or (command in {'휴장','개장','장일시정지','장재개','사이드카'} and len(args) in {0,1})
-                        or (command=='서킷브레이커' and len(args) in {1,2}))
+                        or (command=='서킷브레이커' and len(args) in {1,2})
+                        or (command=='거래경고' and len(args) in {2,3,4}))
             if not flexible and command not in {'복권당첨번호변경'} and len(args)!=count.get(command,-1):
                 raise ValueError(f'사용법: ${command} {USAGE.get(command,"")}')
             if command=='소수점거래관리':
@@ -277,6 +294,9 @@ class AdminCommandsManager:
                 stage=int(args[-1].removesuffix('단계')) if command=='서킷브레이커' else None
                 result=MarketSessionManager(self.db).control(actor,actions[command],stage=stage,exchange_id=exchange_id)
                 return self.result_text(result)
+            if command=='거래경고':
+                from managers.trading_warning_manager import TradingWarnings
+                return TradingWarnings(self.db).set(actor,args[0],args[1],args[2] if len(args)>2 else '',args[3] if len(args)>3 else None)
             if command=='ELS취소':
                 from managers.els_manager import ELSManager
                 return self.result_text(ELSManager(self.db,self.bot.user_mgr).cancel(actor,args[0]))
@@ -430,12 +450,12 @@ class AdminCommandsManager:
     def create(self,actor,raw,operation='create'):
         parts=raw.split(maxsplit=2)
         if len(parts)<2:
-            raise ValueError('$상품생성 '+USAGE['상품생성']+' · 상품종류: company, preferred, saving, loan, asset, etf, future, corporatebond, fund, indexfund, commodity, bond, option, currency, currencyproduct, els')
+            raise ValueError('$상품생성 '+USAGE['상품생성']+' · 상품종류: company, preferred, saving, cma, ima, wrap, loan, asset, etf, etn, future, corporatebond, convertiblebond, warrantbond, abs, mbs, abcp, fund, indexfund, commodity, bond, option, currency, currencyproduct, els')
         code,kind=parts[:2]
         category=TYPES.get(kind,TYPES.get(kind.lower()))
         profile=product_profile(kind)
         if category is None:
-            raise ValueError('상품종류: company, preferred, saving, loan, asset, etf, future, corporatebond, fund, indexfund, commodity, bond, option, currency, currencyproduct, els')
+            raise ValueError('상품종류: company, preferred, saving, cma, ima, wrap, loan, asset, etf, etn, future, corporatebond, convertiblebond, warrantbond, abs, mbs, abcp, fund, indexfund, commodity, bond, option, currency, currencyproduct, els')
         if len(parts)!=3:raise ValueError('사용법: '+creation_usage(kind,'상품수정' if operation=='edit' else '상품생성'))
         tail=parts[2]
         # Existing structured invocations remain compatible; the documented interface is positional.

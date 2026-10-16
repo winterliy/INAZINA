@@ -107,7 +107,7 @@ class FractionalTradingTests(unittest.TestCase):
         self.assertTrue(self.bot.order_book.place_limit_order('citizen', 'ST', 'buy', '1.5', 100)[0])
         manager = CorporateActionsManager(self.bot)
         before = self.db.users.get_user('citizen')['cash']
-        result = manager.special_dividend('admin', 'ST', 10)
+        result = manager.special_dividend('admin', 'ST', 10, delay=0)
         self.assertTrue(result[0], result[1])
         self.assertEqual(self.db.users.get_user('citizen')['cash']-before, 15)
         result = self.bot.option_mgr.create_and_write('citizen', 'ST', 'call', 100, 1, 1, 10)

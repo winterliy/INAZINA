@@ -1,5 +1,6 @@
 import discord
 import asyncio
+import time
 from discord import app_commands
 from database import DatabaseManager
 from managers.user_manager import UserManager
@@ -16,6 +17,7 @@ from managers.currency_exchange_manager import CurrencyExchangeManager
 from managers.admin_control_manager import AdminControlManager
 from managers.corporate_actions_manager import CorporateActionsManager
 from managers.els_manager import ELSManager
+from managers.capital_markets_manager import CapitalMarketsManager
 from managers.market_session_manager import MarketSessionManager
 from functions.admin_prefix import AdminPrefixRegistry
 from functions.admin_access import BOOTSTRAP_ADMIN_IDS
@@ -30,6 +32,8 @@ class InazinaBot(discord.Client):
     MARKET_UPDATE_INTERVAL_SECONDS = 1
     LOAN_PAYMENT_POLL_INTERVAL_SECONDS = 5
     BACKGROUND_ERROR_LOG_INTERVAL_SECONDS = 60
+    BACKUP_INTERVAL_SECONDS = 86400
+    _last_backup = 0.0
 
     def __init__(self, token):
         intents = discord.Intents.default()
@@ -60,6 +64,7 @@ class InazinaBot(discord.Client):
         self.admin_control = AdminControlManager(self)
         self.corporate_actions = CorporateActionsManager(self)
         self.els_mgr = ELSManager(self.db,self.user_mgr)
+        self.capital_markets = CapitalMarketsManager(self.db,self.user_mgr,self.order_book)
         self.market_session = MarketSessionManager(self.db)
         self.prefix_registry = AdminPrefixRegistry(self)
         self._guild_commands_cleaned = False
@@ -72,6 +77,20 @@ class InazinaBot(discord.Client):
         # SQLite has one writer.  The market tick and scheduled settlement loop
         # must therefore never enter their write phases at the same time.
         self._background_write_lock = asyncio.Lock()
+
+    async def _warn_admins(self, title, description):
+        """DM every administrator (role=admin and bootstrap IDs) an automatic warning."""
+        rows = await asyncio.to_thread(self.db.users.execute, "SELECT user_id FROM users WHERE LOWER(role)='admin'")
+        targets = {str(row["user_id"]) for row in rows} | set(BOOTSTRAP_ADMIN_IDS)
+        embed = discord.Embed(title=f"⚠️ {title}", description=description, color=discord.Color.red())
+        for target in targets:
+            if not target.isdecimal():
+                continue
+            try:
+                user = self.get_user(int(target)) or await self.fetch_user(int(target))
+                await user.send(embed=embed)
+            except discord.HTTPException:
+                pass
 
     async def _run_background_write(self, callback, *args):
         """Run one blocking background mutation without overlapping another one."""
@@ -212,7 +231,8 @@ class InazinaBot(discord.Client):
                     settlement_results = []
                     for label, settle in (('ELS',self.els_mgr.process_due),
                                           ('Futures',self.futures_mgr.settle_positions),
-                                          ('Corporate Bond',self.investment_mgr.redeem_corporate_bonds)):
+                                          ('Corporate Bond',self.investment_mgr.redeem_corporate_bonds),
+                                          ('Swap/Wrap',self.capital_markets.process_due)):
                         try:
                             settlement_results.extend(await self._run_background_write(settle))
                             if label=='ELS' and self.els_mgr.last_settlement_errors:
@@ -238,6 +258,23 @@ class InazinaBot(discord.Client):
                     if now - self._last_product_error_log >= self.BACKGROUND_ERROR_LOG_INTERVAL_SECONDS:
                         self._last_product_error_log = now
                         print(f"[Product Worker] {type(exc).__name__}: {exc}")
+                if time.time() - self._last_backup >= self.BACKUP_INTERVAL_SECONDS:
+                    # Daily consistent snapshot; keeps the newest 14 in database/backups.
+                    self._last_backup = time.time()
+                    try:
+                        from database.backup import backup
+                        print(f"[Backup] {await asyncio.to_thread(backup, self.db.users.db_path)}")
+                    except Exception as exc:
+                        print(f"[Backup] {type(exc).__name__}: {exc}")
+                try:
+                    for alert in await self._run_background_write(self.capital_markets.bank_deficit_alerts):
+                        await self._warn_admins(
+                            "🏦 은행 본사 계좌 적자",
+                            f"`{alert['issuer']}` 본사 계좌(`{alert['account']}`)가 "
+                            f"**{alert['cash']:,.0f} {alert['currency']}**로 적자입니다. "
+                            "IMA 성과 분배나 담보 처분 보증물량 대금이 원인일 수 있습니다. 자본 확충을 검토해주세요.")
+                except Exception as exc:
+                    print(f"[Bank Deficit Alert] {type(exc).__name__}: {exc}")
                 try:
                     option_expirations = await self._run_background_write(
                         self.option_mgr.expire_matured

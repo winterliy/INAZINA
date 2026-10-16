@@ -413,3 +413,16 @@ button.book-row:hover:not(:disabled) { filter: brightness(1.04); }
   .command-group button small { display: none; }
   .orders-panel .panel-title { flex-wrap: wrap; }
 }
+
+/* Administrator trading warnings: 투자주의 (yellow) · 투자경고 (orange) · 투자위험 (red). */
+.warn-badge { display: inline-flex; align-items: center; margin-left: 8px; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; letter-spacing: 0; vertical-align: middle; white-space: nowrap; }
+.warn-badge.caution { background: rgba(214, 160, 0, .16); color: #9a6f00; }
+.warn-badge.warning { background: rgba(230, 110, 0, .18); color: #b45200; }
+.warn-badge.danger { background: rgba(215, 38, 38, .18); color: #c01d1d; }
+.warn-reason { margin: 4px 0 0; color: #b45200; font-size: 12px; }
+@media (prefers-color-scheme: dark) {
+  .warn-badge.caution { color: #f2c94c; }
+  .warn-badge.warning { color: #ff9f43; }
+  .warn-badge.danger { color: #ff6b6b; }
+  .warn-reason { color: #ff9f43; }
+}

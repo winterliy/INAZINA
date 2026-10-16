@@ -70,7 +70,7 @@ def preferred_claim_lines(claims):
 class WalletCategoryView(discord.ui.View):
     PAGE_SIZE=10
     CATEGORIES=(('main','메인'),('accounts','통장'),('stocks','주식'),
-                ('etf','ETF'),('els','ELS'),('preferred_claims','우선주 미지급 배당'),('treasury_bond','국채'),('corporate_bond','회사채'),
+                ('etf','ETF'),('etn','ETN'),('els','ELS'),('preferred_claims','우선주 미지급 배당'),('treasury_bond','국채'),('corporate_bond','회사채'),
                 ('stock_future','주식 선물'),('commodity_futures','원자재 선물'),
                 ('mutual_fund','일반 펀드'),('index_fund','인덱스 펀드'),('commodity_spot','현물 원자재'),
                 ('option','보유 옵션'),('written','작성 옵션'),('collateral','옵션 담보'),('loans','대출'),('other','기타'))

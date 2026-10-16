@@ -162,6 +162,15 @@ class InterestManager:
         whole = round_currency(conn, accrued, loan['quote_currency'])
         conn.execute('UPDATE loans SET outstanding_balance=outstanding_balance+?,interest_remainder=?,last_payment_epoch=? WHERE loan_id=?',
             (whole, accrued-whole, max(last, now), loan['loan_id']))
+        cls._log_company_interest(conn, loan['user_id'], 'interest_expense', whole, 0, loan['quote_currency'], product['issuer'])
+
+    @staticmethod
+    def _log_company_interest(conn, user_id, kind, gross, tax, currency, issuer):
+        """A company's deposit/loan interest is 이자수익/이자비용 in its statements."""
+        from managers.company_account_manager import CompanyAccounts
+        if gross and CompanyAccounts.is_company(conn, user_id):
+            CompanyAccounts.log_income(conn, user_id, kind, CompanyAccounts._nwx(conn, gross, currency),
+                                       CompanyAccounts._nwx(conn, tax, currency), counterparty=issuer)
 
     FX_INTEREST_MIGRATION = "fx_interest_unified_v1"
 
@@ -281,6 +290,7 @@ class InterestManager:
             balance += net
             conn.execute('INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount) VALUES (?,?,?,?,?)',
                 (account['user_id'], 'saving_interest', gross, tax, net))
+            cls._log_company_interest(conn, account['user_id'], 'interest_income', gross, tax, account['quote_currency'], product['issuer'])
             if tax > 0:
                 from managers.currency_manager import CurrencyManager, SCALE
                 tax_units = int(round(float(tax)*SCALE))
@@ -434,6 +444,8 @@ class InterestManager:
                             "last_payment_epoch=? WHERE loan_id=? AND status='active'",
                             (whole_interest, paid_until, loan["loan_id"]),
                         )
+                        self._log_company_interest(conn, loan["user_id"], "interest_expense", whole_interest, 0,
+                                                   loan["quote_currency"], product["issuer"])
                         RateManager.record_institution_result(
                             conn, product["issuer"], whole_interest, "loan_interest",
                             f"loan:{loan['loan_id']}:{paid_until}", now=paid_until,
@@ -525,6 +537,8 @@ class InterestManager:
         remainder = 0
         if whole_interest:
             balance += whole_interest
+            cls._log_company_interest(conn, loan["user_id"], "overdue_interest", whole_interest, 0,
+                                      loan["quote_currency"], product["issuer"])
             RateManager.record_institution_result(
                 conn, product["issuer"], whole_interest, "overdue_interest",
                 f"loan:{loan['loan_id']}:{cursor}:{now}", now=now,

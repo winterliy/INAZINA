@@ -21,6 +21,15 @@ class CurrencyDB(DBManager):
                 self.execute(f"ALTER TABLE currencies ADD COLUMN {column} {definition}")
         self.execute("INSERT OR IGNORE INTO currencies(code,name) VALUES ('NWX','낙원자화')")
         self.execute("UPDATE currencies SET decimal_places=0 WHERE code='NWX'")
+        # Currencies have at most two decimal places (cents). The column's legacy
+        # default is 6, so new rows are clamped and explicit larger values refused.
+        self.execute("UPDATE currencies SET decimal_places=2 WHERE decimal_places>2")
+        self.execute('''CREATE TRIGGER IF NOT EXISTS currencies_places_default
+            AFTER INSERT ON currencies WHEN NEW.decimal_places>2
+            BEGIN UPDATE currencies SET decimal_places=2 WHERE code=NEW.code; END''')
+        self.execute('''CREATE TRIGGER IF NOT EXISTS currencies_places_limit
+            BEFORE UPDATE OF decimal_places ON currencies WHEN NEW.decimal_places>2
+            BEGIN SELECT RAISE(ABORT,'통화 소수 자릿수는 0~2로 설정해주세요.'); END''')
         self.execute("""CREATE TABLE IF NOT EXISTS currency_transactions (
             transaction_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
             source_currency TEXT NOT NULL, target_currency TEXT NOT NULL,
@@ -89,6 +98,12 @@ class CurrencyDB(DBManager):
         self.execute("""CREATE TABLE IF NOT EXISTS bank_accounts (
             issuer TEXT PRIMARY KEY,
             user_id TEXT NOT NULL UNIQUE REFERENCES users(user_id)
+        )""")
+        # A head office may run a deficit; administrators are warned once per episode.
+        self.execute("""CREATE TABLE IF NOT EXISTS bank_deficit_alerts (
+            issuer TEXT PRIMARY KEY,
+            cash REAL NOT NULL,
+            alerted_epoch REAL NOT NULL
         )""")
         self.execute("""CREATE TABLE IF NOT EXISTS financial_holidays (
             nationality TEXT NOT NULL REFERENCES country_currencies(nationality),
@@ -189,6 +204,74 @@ class CurrencyDB(DBManager):
             if available:
                 self.enforce_currency_money(table, available, key, currency)
         self._ensure_account_units()
+        self._ensure_cash_minor()
+        self._ensure_money_snaps()
+
+    # Minor units of a citizen's home currency: x1 for 0 decimal places, x10, x100.
+    PLACES = ("(SELECT COALESCE(MAX(c.decimal_places),0) FROM country_currencies n "
+              "JOIN currencies c ON c.code=n.currency_code WHERE n.nationality={who})")
+    FACTOR = "(CASE {places} WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END)"
+
+    def _ensure_cash_minor(self):
+        """Wallet cash is stored exactly as an integer of the home currency's minor unit.
+
+        ``users.cash_minor`` is authoritative; ``users.cash`` is its mirror in native
+        units for existing readers. Code that still writes ``cash`` is snapped to the
+        currency's minor unit (e.g. cents) at once, so float error never accumulates.
+        """
+        columns = {row[1] for row in self.execute("PRAGMA table_info(users)")}
+        if "cash_minor" not in columns:
+            self.execute("ALTER TABLE users ADD COLUMN cash_minor INTEGER NOT NULL DEFAULT 0")
+        factor = self.FACTOR.format(places=self.PLACES.format(who="NEW.nationality"))
+        mirror = (f"CASE WHEN NEW.cash_minor % {factor} = 0 THEN NEW.cash_minor / {factor} "
+                  f"ELSE NEW.cash_minor * 1.0 / {factor} END")
+        for name in ("trg_users_cash_minor_mirror", "trg_users_cash_snap", "trg_users_cash_insert"):
+            self.execute(f"DROP TRIGGER IF EXISTS {name}")
+        self.execute(f"""CREATE TRIGGER trg_users_cash_minor_mirror AFTER UPDATE OF cash_minor ON users
+            WHEN NEW.cash_minor IS NOT OLD.cash_minor
+            BEGIN UPDATE users SET cash={mirror} WHERE user_id=NEW.user_id; END""")
+        self.execute(f"""CREATE TRIGGER trg_users_cash_snap AFTER UPDATE OF cash ON users
+            WHEN NEW.cash IS NOT OLD.cash
+             AND CAST(ROUND(COALESCE(NEW.cash,0) * {factor}) AS INTEGER) IS NOT NEW.cash_minor
+            BEGIN UPDATE users SET cash_minor=CAST(ROUND(COALESCE(NEW.cash,0) * {factor}) AS INTEGER)
+                  WHERE user_id=NEW.user_id; END""")
+        self.execute(f"""CREATE TRIGGER trg_users_cash_insert AFTER INSERT ON users
+            BEGIN UPDATE users SET cash_minor=CAST(ROUND(COALESCE(NEW.cash,0) * {factor}) AS INTEGER)
+                  WHERE user_id=NEW.user_id; END""")
+        # A citizen's minor unit changes with a currency's decimal places or a nationality.
+        self.execute("DROP TRIGGER IF EXISTS trg_currency_places_rescale")
+        self.execute("DROP TRIGGER IF EXISTS trg_users_nationality_rescale")
+        self.execute(f"""CREATE TRIGGER trg_currency_places_rescale AFTER UPDATE OF decimal_places ON currencies
+            BEGIN UPDATE users SET cash_minor=CAST(ROUND(COALESCE(cash,0) *
+                    {self.FACTOR.format(places=self.PLACES.format(who="users.nationality"))}) AS INTEGER)
+                  WHERE nationality IN (SELECT nationality FROM country_currencies WHERE currency_code=NEW.code); END""")
+        self.execute(f"""CREATE TRIGGER trg_users_nationality_rescale AFTER UPDATE OF nationality ON users
+            WHEN NEW.nationality IS NOT OLD.nationality
+            BEGIN UPDATE users SET cash_minor=CAST(ROUND(COALESCE(NEW.cash,0) * {factor}) AS INTEGER)
+                  WHERE user_id=NEW.user_id; END""")
+        rescale = (f"UPDATE users SET cash_minor=CAST(ROUND(COALESCE(cash,0) * "
+                   f"{self.FACTOR.format(places=self.PLACES.format(who='users.nationality'))}) AS INTEGER) "
+                   "WHERE nationality=NEW.nationality;")
+        for name, event in (("trg_country_currency_insert", "AFTER INSERT ON country_currencies"),
+                            ("trg_country_currency_update", "AFTER UPDATE OF currency_code ON country_currencies")):
+            self.execute(f"DROP TRIGGER IF EXISTS {name}")
+            self.execute(f"CREATE TRIGGER {name} {event} BEGIN {rescale} END")
+        self.execute(f"UPDATE users SET cash_minor=CAST(ROUND(COALESCE(cash,0) * "
+                     f"{self.FACTOR.format(places=self.PLACES.format(who='users.nationality'))}) AS INTEGER)")
+
+    def _ensure_money_snaps(self):
+        """Money held in other tables is kept at its currency's minor unit (no float drift)."""
+        for table, column in (("market_orders", "reserved_cash"), ("loans", "outstanding_balance")):
+            if not self.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)):
+                continue
+            places = "(SELECT COALESCE(MAX(decimal_places),0) FROM currencies WHERE code=COALESCE(NEW.quote_currency,'NWX'))"
+            key = "rowid"
+            for event, name in ((f"AFTER UPDATE OF {column} ON {table}", f"trg_{table}_{column}_snap"),
+                                (f"AFTER INSERT ON {table}", f"trg_{table}_{column}_snap_insert")):
+                self.execute(f"DROP TRIGGER IF EXISTS {name}")
+                self.execute(f"""CREATE TRIGGER {name} {event}
+                    WHEN NEW.{column} IS NOT NULL AND NEW.{column} <> ROUND(NEW.{column}, {places})
+                    BEGIN UPDATE {table} SET {column}=ROUND(NEW.{column}, {places}) WHERE {key}=NEW.{key}; END""")
 
     def _ensure_account_units(self):
         """balance_units is every account's exact balance; balance only mirrors it.

@@ -120,7 +120,9 @@ class AdminExpansionTests(unittest.TestCase):
         with patch('managers.corporate_actions_manager.time.time', return_value=resumed+10):
             self.command('정기배당활성', 'ST 1')
         self.assertEqual(self.db.companies.get_company('ST')['dividend_next_epoch'], due)
-        self.assertEqual(manager.process_due(now=due-1), [])
+        # The special dividend's register closed at the command; it pays 10 minutes later.
+        self.assertEqual(manager.process_due(now=resumed+599), [])
+        self.assertEqual(manager.process_due(now=due-1), [('ST', True, 6)])
         self.assertEqual(manager.process_due(now=due), [('ST', True, 14)])
         self.command('정기배당활성', 'ST off')
         row = self.db.companies.get_company('ST')

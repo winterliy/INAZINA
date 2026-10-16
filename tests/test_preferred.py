@@ -65,8 +65,8 @@ class PreferredTests(unittest.TestCase):
         admin_cash = self.db.users.get_user('admin')['cash']
         citizen_cash = self.db.users.get_user('citizen')['cash']
         with patch('managers.corporate_actions_manager.time.time',return_value=100):
-            self.assertTrue(self.manager.special_dividend('admin','CO',2,'special:test')[0])
-            self.assertTrue(self.manager.special_dividend('admin','CO',2,'special:test')[0])
+            self.assertTrue(self.manager.special_dividend('admin','CO',2,'special:test', delay=0)[0])
+            self.assertTrue(self.manager.special_dividend('admin','CO',2,'special:test', delay=0)[0])
         self.assertEqual(self.db.users.get_user('admin')['cash']-admin_cash,20)
         self.assertEqual(self.db.users.get_user('citizen')['cash']-citizen_cash,20)
         self.assertEqual(self.db.corporate.execute_one('SELECT balance FROM issuer_cash_accounts')[0],0)

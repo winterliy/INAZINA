@@ -1,0 +1,72 @@
+"""Dividends are paid to the shareholder register, closed before payment."""
+import unittest
+from unittest.mock import patch
+
+import test_inazina as fixtures
+from managers.corporate_actions_manager import CorporateActionsManager
+
+
+class ShareholderRegisterTests(unittest.TestCase):
+    setUp = fixtures.InazinaTests.setUp
+    tearDown = fixtures.InazinaTests.tearDown
+
+    def prepare(self, due=None):
+        self.db.system.set_setting('tax_percent', 0)
+        self.db.companies.create_company('CO', 'CO', '게임', 100000, 1000, 100, 'admin', 'INZ')
+        if due:
+            self.db.companies.execute("UPDATE company SET dividend_cycle_seconds=86400,dividend_per_share=5,"
+                                      "dividend_next_epoch=? WHERE company_code='CO'", (due,))
+        self.db.assets.add_user_asset('citizen', 'CO', 10)
+        self.manager = CorporateActionsManager(self.bot)
+
+    def cash(self, user):
+        return self.db.users.get_user(user)['cash']
+
+    def move_shares(self, quantity):
+        self.db.assets.execute("UPDATE user_assets SET quantity=quantity-? WHERE user_id='citizen' AND asset_code='CO'", (quantity,))
+        self.db.assets.add_user_asset('admin', 'CO', quantity)
+
+    def test_regular_register_closes_ten_minutes_before_payment(self):
+        due = 100_000
+        self.prepare(due)
+        self.assertEqual(self.manager.process_due(now=due - 601), [])
+        self.assertIsNone(self.db.corporate.execute_one('SELECT 1 FROM shareholder_registers'))
+        self.manager.process_due(now=due - 600)  # register closes; nothing is paid yet
+        register = self.db.corporate.execute_one('SELECT * FROM shareholder_registers')
+        self.assertEqual((register['dividend_kind'], register['status'], register['pay_epoch']), ('regular', 'closed', due))
+        # Shares bought after the register closed do not carry this dividend.
+        self.move_shares(4)
+        citizen, admin = self.cash('citizen'), self.cash('admin')
+        self.assertEqual(self.manager.process_due(now=due), [('CO', True, 50)])
+        self.assertEqual(self.cash('citizen') - citizen, 50)
+        self.assertEqual(self.cash('admin') - admin, 0)
+        self.assertEqual(self.db.corporate.execute_one('SELECT status FROM shareholder_registers')[0], 'paid')
+
+    def test_regular_dividend_without_a_closed_register_uses_holders_at_payment(self):
+        due = 100_000
+        self.prepare(due)
+        citizen = self.cash('citizen')
+        self.assertEqual(self.manager.process_due(now=due), [('CO', True, 50)])
+        self.assertEqual(self.cash('citizen') - citizen, 50)
+
+    def test_special_dividend_closes_register_now_and_pays_ten_minutes_later(self):
+        self.prepare()
+        with patch('managers.corporate_actions_manager.time.time', return_value=1000):
+            ok, message = self.manager.special_dividend('admin', 'CO', 3, 'special:one')
+        self.assertTrue(ok, message)
+        self.assertIn('주주명부', message)
+        self.move_shares(9)  # sold after the record time: the seller still receives it
+        citizen = self.cash('citizen')
+        self.assertEqual(self.manager.process_due(now=1599), [])
+        self.assertEqual(self.manager.process_due(now=1600), [('CO', True, 30)])
+        self.assertEqual(self.cash('citizen') - citizen, 30)
+        self.assertEqual(self.manager.process_due(now=1700), [])
+        # Repeating the command with the same key neither re-registers nor re-pays.
+        with patch('managers.corporate_actions_manager.time.time', return_value=1800):
+            self.assertTrue(self.manager.special_dividend('admin', 'CO', 3, 'special:one')[0])
+        self.assertEqual(self.manager.process_due(now=5000), [])
+        self.assertEqual(self.db.corporate.execute_one('SELECT COUNT(*) FROM dividend_distributions')[0], 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -7,7 +7,7 @@ import random
 import time
 from datetime import datetime, timezone
 from database import DatabaseManager
-from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY
+from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY, IS_TREASURY
 from functions.money import (round_money, round_currency, parse_currency_money,
                              currency_precision)
 from functions.interest_calc import year_fraction
@@ -222,7 +222,7 @@ class BankManager:
                     return False, f"❌ 최소 예치금은 {minimum:,} {home}입니다."
                 cursor = conn.execute(
                     "UPDATE users.users SET cash = cash - ? "
-                    f"WHERE user_id = ? AND {ACTIVE_OR_TREASURY} AND cash >= ?",
+                    f"WHERE user_id = ? AND {ACTIVE_OR_TREASURY} AND (cash >= ? OR {IS_TREASURY})",
                     (deposit_amount, str(user_id), deposit_amount),
                 )
                 if cursor.rowcount != 1:
@@ -261,6 +261,17 @@ class BankManager:
                      float(product['early_withdrawal_fee_percent'] or 0),
                      int(product['deposit_insured'] or 0)),
                 )
+                if product['product_kind'] == 'wrap':
+                    # The named manager trades this account; fees accrue from opening.
+                    conn.execute("UPDATE accounts.accounts SET managed_by=?,fee_paid_epoch=? WHERE account_number=?",
+                                 (product['manager_id'], opened_epoch, account_number))
+                elif product['product_kind'] == 'ima':
+                    from managers.investment_manager import InvestmentManager
+                    quote = InvestmentManager.component_quote(conn, product['reference_code'])
+                    if not quote or float(quote['price'] or 0) <= 0:
+                        raise ValueError('IMA 연동 종목의 가격을 확인할 수 없습니다.')
+                    conn.execute("UPDATE accounts.accounts SET reference_price=? WHERE account_number=?",
+                                 (float(quote['price']), account_number))
                 RateManager.refresh_all_market_pressure(conn, now=opened_epoch)
             return True, (
                 f"✅ {product['name']} 계좌가 개설되었습니다.\n"
@@ -276,7 +287,7 @@ class BankManager:
             with self.db.atomic(("users", "accounts", "assets")) as conn:
                 source = conn.execute(
                     "SELECT account_number,user_id,balance,balance_units,password,principal,created_at,"
-                    "early_withdrawal_rate,early_withdrawal_fee_percent,product_code,account_type "
+                    "early_withdrawal_rate,early_withdrawal_fee_percent,product_code,account_type,reference_price "
                     "FROM accounts.accounts "
                     "WHERE account_number = ? AND user_id = ? AND account_type IN ('saving','currency_saving')",
                     (str(account_number), str(user_id)),
@@ -297,6 +308,12 @@ class BankManager:
                         f"❌ 이 계좌에 매수 주문 #{reserved_order['order_id']}의 예치금이 잠겨 있습니다. "
                         "먼저 주문을 취소하거나 체결을 기다려주세요."
                     )
+                wrap_sell = conn.execute(
+                    "SELECT order_id FROM assets.market_orders WHERE funding_account = ? AND side = 'sell' "
+                    "AND status IN ('scheduled','open','partial') LIMIT 1", (str(account_number),),
+                ).fetchone()
+                if wrap_sell:
+                    return False, f"❌ 이 계좌 보유자산의 매도 주문 #{wrap_sell['order_id']}이 남아 있습니다. 먼저 취소해주세요."
                 if destination_account:
                     destination = conn.execute(
                         "SELECT account_number FROM accounts.accounts "
@@ -328,9 +345,28 @@ class BankManager:
                 balance = round_currency(conn, (source["balance_units"] or 0) / _SCALE, source_currency)
                 early_penalty = 0
                 product = conn.execute(
-                    "SELECT maturity_days,day_count_convention FROM product.saving "
+                    "SELECT maturity_days,day_count_convention,product_kind,issuer FROM product.saving "
                     "WHERE product_code=?", (source["product_code"],)
                 ).fetchone()
+                matured = True
+                if product and int(product["maturity_days"] or 0) > 0:
+                    opened_at = datetime.strptime(
+                        source["created_at"], "%Y-%m-%d %H:%M:%S"
+                    ).replace(tzinfo=timezone.utc).timestamp()
+                    matured = time.time() >= opened_at + int(product["maturity_days"]) * 86400
+                ima_top_up = 0
+                if product and product["product_kind"] == "ima" and matured:
+                    # Principal protected plus the reference gain share; the bank pays the excess.
+                    from managers.capital_markets_manager import CapitalMarketsManager
+                    balance, ima_top_up = CapitalMarketsManager.ima_settlement(conn, source, balance)
+                    if ima_top_up:
+                        from managers.currency_manager import CurrencyManager as _CM
+                        bank = _CM.bank_account_id(conn, product["issuer"])
+                        bank_home = _CM.home(conn, bank)
+                        cost = int(round(ima_top_up * _SCALE))
+                        if source_currency != bank_home:
+                            cost = _CM.convert(conn, cost, source_currency, bank_home)
+                        _CM.change(conn, bank, bank_home, -cost, allow_deficit=True)
                 if product and int(product["maturity_days"] or 0) > 0:
                     opened = datetime.strptime(
                         source["created_at"], "%Y-%m-%d %H:%M:%S"
@@ -412,7 +448,7 @@ class BankManager:
             penalty_text = (
                 f" 중도해지 조정 {early_penalty:,} {source_currency}를 차감했습니다."
                 if early_penalty else ""
-            )
+            ) + (f" IMA 성과 분배 {ima_top_up:,} {source_currency}를 더했습니다." if ima_top_up else "")
             return True, (
                 f"✅ 계좌를 해지했습니다. 잔액과 보유 자산을 {target_text}(으)로 이관했습니다."
                 f"{penalty_text}"
@@ -1662,7 +1698,7 @@ class UserFunds:
     def debit(conn, user_id, account_number, amount):
         if account_number is None:
             cursor = conn.execute(
-                "UPDATE users.users SET cash = cash - ? WHERE user_id = ? AND cash >= ?",
+                f"UPDATE users.users SET cash = cash - ? WHERE user_id = ? AND (cash >= ? OR {IS_TREASURY})",
                 (amount, user_id, amount),
             )
         else:

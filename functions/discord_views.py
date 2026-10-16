@@ -739,6 +739,7 @@ class InfoPanelView(discord.ui.View):
         ("rates", "기준·시장금리 · 법정최고이자"),
         ("stocks", "주식"),
         ("etf", "ETF"),
+        ("etn", "ETN"),
         ("els", "ELS"),
         ("treasury_bond", "국채"),
         ("corporate_bond", "회사채"),
@@ -756,6 +757,7 @@ class InfoPanelView(discord.ui.View):
     def __init__(self, bot, user_id, subject_id=None):
         super().__init__(timeout=300)
         self.bot = bot
+        InfoPanelView._bot_db = bot.db  # read source for the trading-warning badges
         self.owner_id = str(user_id)
         self.user_id = str(subject_id if subject_id is not None else user_id)
         self.category = "main"
@@ -841,6 +843,24 @@ class InfoPanelView(discord.ui.View):
 
     @staticmethod
     def _dividend_note(item):
+        return InfoPanelView._dividend_text(item) + InfoPanelView._warning_note(item.get('code'))
+
+    _warnings, _warnings_at = {}, 0.0
+
+    @classmethod
+    def _warning_note(cls, code):
+        """Administrator trading warning (투자주의·경고·위험) for an instrument line."""
+        from managers.trading_warning_manager import TradingWarnings
+        if time.time() - cls._warnings_at > 5 and cls._bot_db is not None:
+            with cls._bot_db.readonly() as conn:
+                cls._warnings, cls._warnings_at = TradingWarnings.active(conn), time.time()
+        warning = cls._warnings.get(str(code))
+        return f" · **{TradingWarnings.label(warning)}**" if warning else ""
+
+    _bot_db = None
+
+    @staticmethod
+    def _dividend_text(item):
         cycle = float(item.get('dividend_cycle_seconds') or 0)
         per_share = float(item.get('dividend_per_share') or 0)
         percent = float(item.get('dividend_percent') or 0)
@@ -917,7 +937,7 @@ class InfoPanelView(discord.ui.View):
                     f"{subscription_note}"
                 )
             return lines
-        if category in {"etf", "treasury_bond", "corporate_bond", "stock_future", "commodity_futures", "mutual_fund", "index_fund", "commodity_spot", "option", "forex"}:
+        if category in {"etf", "etn", "treasury_bond", "corporate_bond", "stock_future", "commodity_futures", "mutual_fund", "index_fund", "commodity_spot", "option", "forex"}:
             def kind(item):
                 value = str(item['type']).casefold()
                 return {"국채": "treasury_bond", "etf": "etf", "옵션": "option"}.get(value, value)

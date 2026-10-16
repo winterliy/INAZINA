@@ -17,7 +17,7 @@ FUND_CATEGORY_NAMES = {
     "equity": "주식형", "bond": "채권형", "mixed": "혼합형", "other": "기타형",
 }
 PRODUCT_NAMES = {"stock_future": "주식 선물", "corporate_bond": "회사채", "mutual_fund": "일반 펀드",
-                 "index_fund": "인덱스 펀드", "commodity_spot": "현물 원자재"}
+                 "index_fund": "인덱스 펀드", "commodity_spot": "현물 원자재", "etn": "ETN"}
 
 
 class InvestmentManager:
@@ -56,6 +56,18 @@ class InvestmentManager:
         ).fetchone()
         if row:
             return dict(row, asset_source="investment", asset_class="bond")
+        # Fund of funds: other funds, ETFs and ETNs may be components. They count
+        # toward the asset class they invest in (index trackers are equity).
+        row = conn.execute(
+            "SELECT product_code code,unit_price price,status,quote_currency,product_type,fund_category "
+            "FROM product.investment WHERE product_code=? "
+            "AND product_type IN ('mutual_fund','index_fund','etf','etn')" + status_clause,
+            (code,),
+        ).fetchone()
+        if row:
+            category = row["fund_category"] if row["product_type"] == "mutual_fund" else "equity"
+            asset_class = {"equity": "equity", "bond": "bond"}.get(category, "special_asset")
+            return dict(row, asset_source="investment", asset_class=asset_class)
         row = conn.execute(
             "SELECT product_code code,market_price price,status,quote_currency "
             "FROM product.treasury_bond_products WHERE product_code=?" + status_clause,
@@ -78,7 +90,7 @@ class InvestmentManager:
         return None
 
     @classmethod
-    def validate_fund_components(cls, conn, weights, requested_category=None):
+    def validate_fund_components(cls, conn, weights, requested_category=None, fund_code=None):
         if not isinstance(weights, dict) or not weights:
             raise ValueError("components에 종목별 비중을 입력해주세요.")
         parsed, totals = [], {"equity": Decimal(0), "bond": Decimal(0), "other": Decimal(0)}
@@ -93,6 +105,8 @@ class InvestmentManager:
             if not weight.is_finite() or weight <= 0 or weight > 1:
                 raise ValueError("펀드 구성 비중은 0보다 크고 1 이하여야 합니다.")
             quote = cls.component_quote(conn, asset_code)
+            if fund_code is not None and str(asset_code) == str(fund_code):
+                raise ValueError("펀드는 자기 자신을 구성 자산으로 담을 수 없습니다.")
             if not quote or float(quote["price"] or 0) <= 0:
                 raise ValueError(f"활성 펀드 구성 자산을 확인해주세요: {asset_code}")
             if str(quote.get("quote_currency") or "NWX").upper() != "NWX":

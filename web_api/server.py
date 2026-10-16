@@ -149,7 +149,7 @@ def identity(user_id):
             (auth_table and credential is None)):
         return None
     role = "admin" if user_id in BOOTSTRAP_ADMIN_IDS else str(row["role"] or "user").strip().lower()
-    if role not in {"admin", "user", "nation"}:
+    if role not in {"admin", "user", "nation", "company"}:
         role = "user"
     return {
         "userId": str(row["user_id"]),
@@ -426,7 +426,28 @@ def authenticate_country_password(country_id, password):
     return authenticate_password(country_id, password)
 
 
+def create_company_login(actor_id, code, password):
+    """Give a company's capital account a web/HTS login: ID = the company code."""
+    validate_password(password)
+    from functions import company_actions
+    bot = domain().bot
+    bot.admin_control.require(actor_id)
+    account = company_actions.company_account(bot, str(code or "").strip())
+    message = admin_set_web_password(actor_id, account, password)
+    return {"companyId": str(code).strip(), "userId": account, "message": message}
+
+
 def authenticate_login_identifier(identifier, password):
+    if identifier.startswith("company:") or (identifier and not identifier.isdecimal()):
+        account = identifier if identifier.startswith("company:") else "company:" + identifier
+        with connect_db(timeout=2) as connection:
+            ensure_auth_table(connection)
+            company_account = connection.execute(
+                "SELECT 1 FROM users u JOIN web_auth_credentials w ON w.user_id=u.user_id "
+                "WHERE u.user_id=? AND u.role='company' AND u.status='active'", (account,),
+            ).fetchone()
+        if company_account:
+            return authenticate_password(account, password), True
     with connect_db(timeout=2) as connection:
         ensure_auth_table(connection)
         connection.row_factory = sqlite3.Row
@@ -474,9 +495,17 @@ def instruments(include_inactive=False):
                 "assetCode": row["asset_code"], "weight": float(row["weight"]),
                 "assetClass": row["asset_class"],
             })
+        from managers.trading_warning_manager import TradingWarnings, LEVELS
+        has_warnings = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='trading_warnings'").fetchone()
+        warnings = TradingWarnings.active(connection) if has_warnings else {}
         for row in rows:
             if row["type"] == "mutual_fund":
                 row["components"] = components.get(row["code"], [])
+            warning = warnings.get(row["code"])
+            if warning:
+                row["warning"] = {"level": warning["level"], "label": LEVELS[warning["level"]],
+                                  "reason": warning["reason"], "expiresEpoch": warning["expires_epoch"]}
     return sorted(rows, key=lambda row: (str(row["name"]).casefold(), row["code"]))
 
 
@@ -523,6 +552,8 @@ def domain():
                 bot.interest_mgr = InterestManager(db)
                 bot.admin_control = AdminControlManager(bot)
                 bot.admin_mgr = AdminManager(db)
+                from managers.capital_markets_manager import CapitalMarketsManager
+                bot.capital_markets = CapitalMarketsManager(db, user_manager, order_book)
                 _domain = SimpleNamespace(
                     db=db, users=user_manager, order_book=order_book,
                     options=option_manager, futures=futures_manager,
@@ -552,11 +583,14 @@ def admin_overview():
             "SELECT exchange_id,status,reason,trading_halted,updated_epoch,resume_epoch,circuit_stage "
             "FROM market_exchanges ORDER BY exchange_id"
         ).fetchall()
+        from managers.capital_markets_manager import CapitalMarketsManager
+        deficits = CapitalMarketsManager.bank_deficits(connection)
     return {
         "activeUsers": int(active_users),
         "activeInstruments": int(active_assets),
         "openOrders": int(open_orders),
         "market": [dict(session) for session in sessions],
+        "bankDeficits": deficits,
     }
 
 
@@ -734,14 +768,7 @@ def set_instrument_status(actor, code, payload):
     item = next((row for row in instruments(include_inactive=True) if row["code"] == code), None)
     if not item:
         return False, "자산 코드를 찾을 수 없습니다."
-    category = {
-            "company": "stock", "market_assets": "asset", "investment": {
-            "mutual_fund": "fund", "index_fund": "indexfund", "stock_future": "future",
-            "corporate_bond": "corporatebond", "commodity_spot": "commodity", "etf": "etf",
-            "els": "els",
-        }.get(item.get("type")),
-        "treasury_bond": "bond", "option_contracts": "option",
-    }.get(item.get("source"))
+    category = _instrument_category(code, item, allow_option=True)
     if not category:
         return False, "이 상품 유형의 상태 변경은 아직 지원하지 않습니다."
     result = domain().admin_control.entity(
@@ -750,21 +777,33 @@ def set_instrument_status(actor, code, payload):
     return True, result
 
 
+def _instrument_category(code, item, allow_option=False):
+    """Admin category of a listed instrument (bond variants by their feature)."""
+    source = item.get("source")
+    if source == "investment":
+        if item.get("type") == "corporate_bond":
+            from managers.admin_control_manager import BOND_FEATURES
+            with connect_readonly() as connection:
+                row = connection.execute(
+                    "SELECT bond_feature FROM investment WHERE product_code=?", (code,)
+                ).fetchone()
+            feature = (row[0] if row else None) or "plain"
+            return next((k for k, v in BOND_FEATURES.items() if v == feature), "corporatebond")
+        return {
+            "mutual_fund": "fund", "index_fund": "indexfund", "stock_future": "future",
+            "commodity_spot": "commodity", "etf": "etf", "etn": "etn", "els": "els",
+        }.get(item.get("type"))
+    return {"company": "stock", "market_assets": "asset", "treasury_bond": "bond",
+            **({"option_contracts": "option"} if allow_option else {})}.get(source)
+
+
 def edit_instrument(actor, code, payload):
     if not isinstance(payload, dict) or set(payload) - {"name", "price", "supply", "fundCategory", "components"}:
         raise ValueError("상품 설정 필드를 확인해주세요.")
     item = next((row for row in instruments(include_inactive=True) if row["code"] == code), None)
     if not item:
         return False, "자산 코드를 찾을 수 없습니다."
-    category = {
-        "company": "stock", "market_assets": "asset",
-        "investment": {
-            "mutual_fund": "fund", "index_fund": "indexfund",
-            "stock_future": "future", "corporate_bond": "corporatebond",
-            "commodity_spot": "commodity", "etf": "etf", "els": "els",
-        }.get(item.get("type")),
-        "treasury_bond": "bond",
-    }.get(item.get("source"))
+    category = _instrument_category(code, item)
     if not category:
         return False, "이 상품 유형의 설정 변경은 아직 지원하지 않습니다."
     extra = {}
@@ -1112,6 +1151,13 @@ PRODUCT_KINDS = {
     "option": ("옵션", "market", "option"), "els": ("ELS", "market", "els"),
     "saving": ("저축 · 국적 통화", "finance", "saving"), "loan": ("대출", "finance", "loan"),
     "currency": ("통화", "finance", "currency"), "currencyproduct": ("저축 · 외환통장", "finance", "currencyproduct"),
+    "etn": ("ETN", "market", "etn"),
+    "convertiblebond": ("전환사채 (CB)", "market", "convertiblebond"),
+    "warrantbond": ("신주인수권부사채 (BW)", "market", "warrantbond"),
+    "abs": ("자산유동화증권 (ABS)", "market", "abs"), "mbs": ("주택저당증권 (MBS)", "market", "mbs"),
+    "abcp": ("자산유동화기업어음 (ABCP)", "market", "abcp"),
+    "cma": ("CMA", "finance", "cma"), "ima": ("IMA (종합투자계좌)", "finance", "ima"),
+    "wrap": ("랩어카운트", "finance", "wrap"),
 }
 # Savings and foreign-currency accounts share one form in the dashboard; only the
 # account currency (and therefore who can open it) differs.
@@ -1164,13 +1210,17 @@ def product_catalog():
 
 
 def _product_kind(source, row):
-    from managers.admin_control_manager import KINDS
+    from managers.admin_control_manager import KINDS, BOND_FEATURES, SAVING_KINDS
     if source == "company":
         return "preferred" if row.get("share_class") == "preferred" else "stock"
     if source == "investment":
+        if row.get("product_type") == "corporate_bond":
+            feature = row.get("bond_feature") or "plain"
+            return next((kind for kind, value in BOND_FEATURES.items() if value == feature), "corporatebond")
         return next((kind for kind, value in KINDS.items() if value == row.get("product_type")), None)
     if source == "saving":
-        return "currencyproduct" if row.get("product_kind") == "currency_saving" else "saving"
+        kind = row.get("product_kind") or "saving"
+        return next((name for name, value in SAVING_KINDS.items() if value == kind), "saving")
     return {"market_assets": "asset", "treasury_bond_products": "bond", "option_contracts": "option",
             "liability": "loan", "currencies": "currency"}.get(source)
 
@@ -1697,6 +1747,74 @@ def queue_bot_job(kind, actor, payload):
             (kind, actor, json.dumps(payload, ensure_ascii=False), now, now)).lastrowid
 
 
+def admin_warnings():
+    from managers.trading_warning_manager import TradingWarnings
+    return {"warnings": TradingWarnings(domain().db).list()}
+
+
+def admin_warning_action(actor, code, payload):
+    from managers.trading_warning_manager import TradingWarnings
+    return TradingWarnings(domain().db).set(actor, code, payload.get("level", ""), payload.get("reason", ""),
+                                            payload.get("days") or None)
+
+
+def admin_companies():
+    from functions import user_actions
+    from managers.company_account_manager import CompanyAccounts
+    with connect_readonly() as connection:
+        companies = CompanyAccounts.summary(connection)
+    commands = [item for item in user_actions.catalog() if not item["job"]]
+    return {"companies": companies, "commands": commands}
+
+
+def admin_company_detail(code):
+    from functions import company_actions
+    bot = domain().bot
+    account = company_actions.company_account(bot, code)
+    info = bot.user_mgr.get_total_assets(account)
+    with connect_db(timeout=2) as connection:
+        ensure_auth_table(connection)
+        login = connection.execute("SELECT updated_epoch FROM web_auth_credentials WHERE user_id=?", (account,)).fetchone()
+    return {"account": account, "webLogin": bool(login), "loginId": code, "assets": json.loads(json.dumps(info, default=lambda value: dict(value) if hasattr(value, "keys") else str(value)))}
+
+
+def admin_identity(actor):
+    """Which treasury/company the administrator's national commands act for ($login)."""
+    from functions.admin_prefix import national_identity
+    bot = domain().bot
+    account, name = national_identity(bot, actor)
+    with connect_readonly() as connection:
+        countries = [row[0] for row in connection.execute("SELECT nationality FROM country_currencies ORDER BY nationality")]
+        companies = [{"code": row[0], "name": row[1]} for row in connection.execute(
+            "SELECT company_code,name FROM company WHERE status='active' AND COALESCE(share_class,'common')='common' "
+            "ORDER BY company_code")]
+    return {"identity": {"account": account, "name": name}, "countries": countries, "companies": companies}
+
+
+def admin_identity_action(actor, payload):
+    from functions.admin_prefix import national_login, national_logout
+    target = str(payload.get("target") or "").strip()
+    return national_login(domain().bot, actor, target) if target else national_logout(domain().bot, actor)
+
+
+def admin_company_financial(code, period=None):
+    from managers.financial_manager import FinancialManager
+    manager = FinancialManager(domain().db)
+    return {"report": manager.report(code, period or None), "periods": manager.periods(code)}
+
+
+def admin_company_command(actor, code, payload):
+    from decimal import InvalidOperation
+    from functions import company_actions, user_actions
+    command = str(payload.get("command", ""))
+    values = user_actions.parse_values(command, payload.get("values") or {})
+    try:
+        success, message, _ = company_actions.run(domain().bot, actor, code, command, values)
+    except (KeyError, InvalidOperation, sqlite3.IntegrityError, RuntimeError) as exc:
+        raise ValueError(str(exc) or "명령어를 처리하지 못했습니다.") from exc
+    return message if success or str(message).startswith("❌") else "❌ " + str(message)
+
+
 def run_user_command(user, payload):
     """HTS form for a Discord user command, run as the user's trading identity."""
     from functions import user_actions
@@ -1902,7 +2020,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.send_json(200, admin_command_catalog())
             elif path.startswith("/internal/admin/") and path.split("/")[3] in {
-                    "products", "countries", "exchanges", "help", "bot-jobs", "user"}:
+                    "products", "countries", "exchanges", "help", "bot-jobs", "user", "companies", "warnings"}:
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
@@ -1925,6 +2043,16 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, {"jobs": bot_jobs()})
                 elif len(parts) == 2 and parts[0] == "user":
                     self.send_json(200, admin_user_detail(parts[1]))
+                elif parts == ["companies"]:
+                    self.send_json(200, admin_companies())
+                elif parts == ["companies", "identity"]:
+                    self.send_json(200, admin_identity(user["userId"]))
+                elif len(parts) == 3 and parts[0] == "companies" and parts[2] == "financial":
+                    self.send_json(200, admin_company_financial(parts[1], query.get("period", [None])[0]))
+                elif parts == ["warnings"]:
+                    self.send_json(200, admin_warnings())
+                elif len(parts) == 2 and parts[0] == "companies":
+                    self.send_json(200, admin_company_detail(parts[1]))
                 else:
                     self.send_json(404, {"error": "not_found"})
             elif path == "/internal/admin/db/tables" or path.startswith("/internal/admin/db/tables/"):
@@ -2029,6 +2157,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {"success": True})
                 return
 
+            if path == "/internal/admin/companies/login":
+                user = identity(verified_id)
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                    return
+                self.send_json(201, {"account": create_company_login(user["userId"], payload.get("companyId"), payload.get("password"))})
+                return
             if path == "/internal/admin/users/country-account":
                 user = identity(verified_id)
                 if not user or user["role"] != "admin":
@@ -2118,7 +2253,7 @@ class Handler(BaseHTTPRequestHandler):
                     success, message = create_fund(user["userId"], payload)
                     self.send_json(201 if success else 400, {"success": success, "message": message})
             elif path.startswith("/internal/admin/") and path.split("/")[3] in {
-                    "products", "countries", "exchanges", "user"}:
+                    "products", "countries", "exchanges", "user", "companies", "warnings"}:
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
                     return
@@ -2134,6 +2269,12 @@ class Handler(BaseHTTPRequestHandler):
                     message = admin_country_action(actor, parts[1], payload)
                 elif len(parts) == 2 and parts[0] == "exchanges":
                     message = admin_exchange_action(actor, parts[1], payload)
+                elif parts == ["companies", "identity"]:
+                    message = admin_identity_action(actor, payload)
+                elif len(parts) == 2 and parts[0] == "companies":
+                    message = admin_company_command(actor, parts[1], payload)
+                elif len(parts) == 2 and parts[0] == "warnings":
+                    message = admin_warning_action(actor, parts[1], payload)
                 elif len(parts) == 2 and parts[0] == "user":
                     message = admin_update_user(actor, parts[1], payload.get("changes"))
                 elif len(parts) == 3 and parts[0] == "user" and parts[2] == "web":

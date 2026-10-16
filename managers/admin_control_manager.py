@@ -26,9 +26,26 @@ ENTITIES = {
     'option': ('option_contracts','contract_code',None,None),
     'currency': ('currencies','code',None,None),
     'currencyproduct': ('saving','product_code',None,None),
+    'etn': ('investment','product_code','unit_price','total_supply'),
+    'convertiblebond': ('investment','product_code','unit_price','total_supply'),
+    'warrantbond': ('investment','product_code','unit_price','total_supply'),
+    'abs': ('investment','product_code','unit_price','total_supply'),
+    'mbs': ('investment','product_code','unit_price','total_supply'),
+    'abcp': ('investment','product_code','unit_price','total_supply'),
+    'cma': ('saving','product_code',None,None),
+    'ima': ('saving','product_code',None,None),
+    'wrap': ('saving','product_code',None,None),
 }
 KINDS = {'etf':'etf','future':'stock_future','corporatebond':'corporate_bond',
-         'fund':'mutual_fund','indexfund':'index_fund','commodity':'commodity_spot','els':'els'}
+         'fund':'mutual_fund','indexfund':'index_fund','commodity':'commodity_spot','els':'els',
+         'etn':'etn','convertiblebond':'corporate_bond','warrantbond':'corporate_bond',
+         'abs':'corporate_bond','mbs':'corporate_bond','abcp':'corporate_bond'}
+# Corporate-bond variants share the corporate_bond engine (coupons, redemption, pricing).
+BOND_FEATURES = {'corporatebond':'plain','convertiblebond':'convertible','warrantbond':'warrant',
+                 'abs':'abs','mbs':'mbs','abcp':'abcp'}
+# Savings-table products told apart by product_kind.
+SAVING_KINDS = {'saving':'saving','currencyproduct':'currency_saving','cma':'cma','ima':'ima','wrap':'wrap'}
+DEPOSIT_CATEGORIES = set(SAVING_KINDS)
 EXAMPLES = {
     'stock': {'industry':'소프트웨어','exchange_id':'INZ','capital':1000000},
     'asset': {'exchange_id':'INZ','type':'stock'},
@@ -44,6 +61,15 @@ EXAMPLES = {
     'option': {'underlying_code':'INZST001','option_type':'call','strike_price':1120,'maturity_days':30,'quantity':1,'limit_price':100,'volatility_percent':60},
     'currency': {'asset_code':'CUR_NEW','nationality':'새 국가'},
     'currencyproduct': {'quote_currency':'USD','interest_rate':1,'deposit_amount':0,'maturity_days':0,'interest_cycle':86400,'compound_type':0,'issuer':'Inazina','product_kind':'currency_saving','rate_type':'fixed'},
+    'etn': {'exchange_id':'INZ','issuer_code':'INZST001','underlying_exchange_id':'INZ','leverage_multiplier':1},
+    'convertiblebond': {'exchange_id':'BOND','issuer_code':'INZST001','face_value':1000,'annual_rate':1,'maturity_days':365},
+    'warrantbond': {'exchange_id':'BOND','issuer_code':'INZST001','face_value':1000,'annual_rate':1.5,'maturity_days':365},
+    'abs': {'exchange_id':'BOND','issuer_code':'INZST001','face_value':1000,'annual_rate':3,'maturity_days':365,'collateral_note':'매출채권 풀'},
+    'mbs': {'exchange_id':'BOND','issuer_code':'INZST001','face_value':1000,'annual_rate':3,'maturity_days':1095,'collateral_note':'주택담보대출 풀'},
+    'abcp': {'exchange_id':'BOND','issuer_code':'INZST001','face_value':1000,'annual_rate':3.5,'maturity_days':90,'collateral_note':'단기 매출채권'},
+    'cma': {'interest_rate':2,'deposit_amount':0,'maturity_days':0,'interest_cycle':86400,'compound_type':1,'issuer':'Inazina','rate_type':'fixed'},
+    'ima': {'interest_rate':0,'deposit_amount':10000,'maturity_days':365,'interest_cycle':86400,'compound_type':0,'issuer':'Inazina','rate_type':'fixed','reference_code':'INZST001','participation_percent':70},
+    'wrap': {'interest_rate':0,'deposit_amount':10000,'maturity_days':0,'interest_cycle':86400,'compound_type':0,'issuer':'Inazina','rate_type':'fixed','management_fee_percent':1},
     'els': {'face_value':1000,'annual_coupon':12,'maturity_days':180,'underlyings':['INZST001'],
             'observation_days':[30,60,90],'redemption_levels':[90,85,80],
             'maturity_level':75,'knock_in_level':60,'subscription_days':1,'exchange_id':'INZ'},
@@ -125,12 +151,14 @@ class AdminControlManager:
         table,key,price_key,supply_key = ENTITIES[category]
         with (self.db.atomic() if conn is None else nullcontext(conn)) as conn:
             self.require(actor,conn)
-            existing = conn.execute(
-                f'SELECT * FROM "{table}" WHERE "{key}"=?' +
-                (" AND product_kind='currency_saving'" if category == 'currencyproduct' else ''),
-                (code,),
-            ).fetchone()
+            existing = conn.execute(f'SELECT * FROM "{table}" WHERE "{key}"=?', (code,)).fetchone()
+            if category in DEPOSIT_CATEGORIES and existing and (existing['product_kind'] or 'saving') != SAVING_KINDS[category]:
+                existing = None if operation == 'create' else existing
+                if existing:
+                    raise ValueError("이 카테고리의 상품 코드가 아닙니다.")
             if category in KINDS and existing and existing['product_type']!=KINDS[category]:
+                raise ValueError("이 카테고리의 상품 코드가 아닙니다.")
+            if category in BOND_FEATURES and existing and (existing['bond_feature'] or 'plain') != BOND_FEATURES[category]:
                 raise ValueError("이 카테고리의 상품 코드가 아닙니다.")
             if operation in {'delete','restore'}:
                 if not existing:
@@ -150,7 +178,7 @@ class AdminControlManager:
                     claims = conn.execute("SELECT 1 FROM option_contracts WHERE (contract_code=? OR underlying_code=?) AND status='active' LIMIT 1",(code,code)).fetchone()
                     if reservations or claims:
                         raise ValueError("미체결 주문·옵션 의무가 남아 있습니다. 주문 취소와 만기 정산 후 삭제해주세요.")
-                    if category in {'corporatebond','future'} and (
+                    if (category == 'future' or category in BOND_FEATURES or category == 'etn') and (
                         conn.execute("SELECT 1 FROM user_assets WHERE asset_code=? LIMIT 1",(code,)).fetchone()
                         or conn.execute("SELECT 1 FROM futures_positions WHERE product_code=? LIMIT 1",(code,)).fetchone()):
                         raise ValueError("미상환 채권·선물 포지션을 먼저 정산해주세요.")
@@ -187,7 +215,7 @@ class AdminControlManager:
             if 'quote_currency' in values:
                 values['quote_currency']=str(values['quote_currency']).strip().upper()
                 if category not in {
-                    'stock','asset','commodity','currencyproduct','saving','loan'
+                    'stock','asset','commodity','loan', *DEPOSIT_CATEGORIES
                 } and values['quote_currency']!='NWX':
                     raise ValueError('이 상품 유형은 외화 결제를 지원하지 않습니다.')
                 if not conn.execute("SELECT 1 FROM currencies WHERE code=? AND status='active'",(values['quote_currency'],)).fetchone():
@@ -213,8 +241,10 @@ class AdminControlManager:
             if operation=='create':
                 values[key] = code
                 values.update({k:v for k,v in EXAMPLES[category].items() if k in columns and k not in values})
-                if category == 'currencyproduct':
-                    values['product_kind'] = 'currency_saving'
+                if category in DEPOSIT_CATEGORIES:
+                    values['product_kind'] = SAVING_KINDS[category]
+                if category in BOND_FEATURES:
+                    values['bond_feature'] = BOND_FEATURES[category]
                 if 'name' in columns and not values.get('name'):
                     raise ValueError("상품 이름을 입력해주세요.")
                 if price_key and not values.get(price_key):
@@ -248,6 +278,10 @@ class AdminControlManager:
                 'asset': {'price','dividend_per_share'},
                 'saving': {'deposit_amount'},
                 'currencyproduct': {'deposit_amount'},
+                'cma': {'deposit_amount'}, 'ima': {'deposit_amount'}, 'wrap': {'deposit_amount'},
+                'etn': {'unit_price','dividend_per_share'},
+                **{bond: {'unit_price','face_value','conversion_price','warrant_exercise_price'}
+                   for bond in BOND_FEATURES if bond != 'corporatebond'},
                 'loan': {'loan_limit','repayment_amount'},
                 'etf': {'unit_price','face_value','dividend_per_share'},
                 'future': {'unit_price','face_value','dividend_per_share'},
@@ -263,7 +297,7 @@ class AdminControlManager:
                     conn, values[field], denomination, minimum=0
                 )
             merged = {**merged, **values}
-            if category in {'saving','loan','currencyproduct'}:
+            if category in DEPOSIT_CATEGORIES or category == 'loan':
                 rate_type = str(merged.get('rate_type') or 'fixed').strip().lower()
                 if rate_type not in {'fixed','floating'}:
                     raise ValueError("rate_type은 fixed 또는 floating이어야 합니다.")
@@ -483,13 +517,13 @@ class AdminControlManager:
                 issued += conn.execute("SELECT COALESCE(SUM(quantity),0) FROM option_collateral_lots WHERE underlying_code=?",(code,)).fetchone()[0]
                 if values[supply_key] < issued:
                     raise ValueError("발행량을 이미 보유·담보 설정된 수량보다 작게 줄일 수 없습니다.")
-            if category in {'etf','indexfund'} and merged.get('underlying_exchange_id'):
+            if category in {'etf','indexfund','etn'} and merged.get('underlying_exchange_id'):
                 exchange = merged['underlying_exchange_id']
                 if not conn.execute("SELECT 1 FROM company WHERE exchange_id=? AND status='active' UNION SELECT 1 FROM market_assets WHERE exchange_id=? AND status='active' AND type IN ('stock','주식')",(exchange,exchange)).fetchone():
                     raise ValueError("기초 지수에 사용할 주식 거래소를 확인해주세요.")
             for field in ('interest_rate','annual_rate'):
                 if field in merged:
-                    minimum = -100 if field == 'interest_rate' and category in {'saving','currencyproduct'} else 0
+                    minimum = -100 if field == 'interest_rate' and category in DEPOSIT_CATEGORIES else 0
                     values[field] = self._number(merged[field],minimum,100)
             if category == 'loan':
                 RateManager.require_legal_rate(
@@ -525,7 +559,8 @@ class AdminControlManager:
                 values['rebalance_cycle_seconds'] = self._number(merged['rebalance_cycle_seconds'],1,365*86400,integer=True)
             if 'market_condition' in values and values['market_condition']:
                 self.bot.market_mgr._normalize_market_condition(values['market_condition'])
-            if category in {'future','corporatebond'}:
+            self._validate_variant(conn, category, merged, existing, extra)
+            if category == 'future' or category in BOND_FEATURES:
                 underlying = merged.get('underlying_code') if category=='future' else merged.get('issuer_code')
                 if not conn.execute("SELECT 1 FROM company WHERE company_code=? AND status='active'",(underlying,)).fetchone():
                     raise ValueError("활성 회사 주식 코드를 기초/발행 회사로 입력해주세요.")
@@ -535,7 +570,8 @@ class AdminControlManager:
                     raise ValueError("만기일수는 1~3650일입니다.")
                 if operation=='create':
                     values['maturity_epoch'] = int(time.time())+int(merged['maturity_days'])*86400
-                elif any(k in extra for k in ('underlying_code','issuer_code','maturity_days','face_value','contract_size','maturity_epoch')):
+                elif any(k in extra for k in ('underlying_code','issuer_code','maturity_days','face_value','contract_size','maturity_epoch',
+                                              'conversion_price','warrant_exercise_price')):
                     raise ValueError("발행된 파생·채권 계약 조건은 변경할 수 없습니다. 새 상품을 생성해주세요.")
             if category=='currencyproduct' and not conn.execute("SELECT 1 FROM currencies WHERE code=? AND status='active'",(merged.get('quote_currency'),)).fetchone():
                 raise ValueError("활성 통화 코드를 입력해주세요.")
@@ -582,7 +618,7 @@ class AdminControlManager:
                 if requested is None and existing:
                     requested = existing['fund_category']
                 inferred, components = InvestmentManager.validate_fund_components(
-                    conn, weights, requested
+                    conn, weights, requested, fund_code=code
                 )
                 if operation != 'create' and 'components' in extra:
                     # Re-anchor at the current NAV so replacing the reference basket
@@ -603,6 +639,35 @@ class AdminControlManager:
                 FundManager.create_empty(conn, code)
             self._audit(conn,actor,f'{category}.{operation}',{'code':code,**values})
             return '✅ 설정을 저장했습니다.'
+
+    @staticmethod
+    def _validate_variant(conn, category, merged, existing, extra):
+        """Terms specific to ETN, hybrid/asset-backed bonds and CMA/IMA/wrap accounts."""
+        if category == 'etn':
+            issuer = conn.execute("SELECT share_class FROM company WHERE company_code=? AND status='active'",
+                                  (merged.get('issuer_code'),)).fetchone()
+            if not issuer or issuer['share_class'] == 'preferred':
+                raise ValueError('ETN의 issuer_code에는 발행 증권사(활성 보통주 법인) 코드를 입력해주세요.')
+            if not merged.get('underlying_exchange_id'):
+                raise ValueError('ETN은 추종할 거래소 지수(underlying_exchange_id)가 필요합니다.')
+            if existing and 'issuer_code' in extra and extra['issuer_code'] != existing['issuer_code']:
+                raise ValueError('ETN 발행사는 변경할 수 없습니다.')
+        if category == 'convertiblebond' and int(merged.get('conversion_price') or 0) <= 0:
+            raise ValueError('전환사채는 전환가격(conversion_price)이 필요합니다.')
+        if category == 'warrantbond' and int(merged.get('warrant_exercise_price') or 0) <= 0:
+            raise ValueError('신주인수권부사채는 행사가격(warrant_exercise_price)이 필요합니다.')
+        if category == 'abcp' and int(merged.get('maturity_days') or 0) > 365:
+            raise ValueError('ABCP(자산유동화기업어음)는 만기 365일 이하 단기물입니다.')
+        if category in {'abs', 'mbs', 'abcp'} and not str(merged.get('collateral_note') or '').strip():
+            raise ValueError('자산유동화증권은 기초자산 풀 설명(collateral_note)이 필요합니다.')
+        if category == 'ima':
+            from managers.investment_manager import InvestmentManager
+            if not InvestmentManager.component_quote(conn, merged.get('reference_code') or ''):
+                raise ValueError('IMA는 성과를 연동할 활성 종목·펀드(reference_code)가 필요합니다.')
+        if category == 'wrap':
+            manager = merged.get('manager_id')
+            if not manager or not conn.execute("SELECT 1 FROM users WHERE user_id=?", (str(manager),)).fetchone():
+                raise ValueError('랩어카운트는 운용 담당자(manager_id) 사용자 ID가 필요합니다.')
 
     def settings(self,actor,changes):
         with self.db.atomic(('system','users','pot')) as conn:

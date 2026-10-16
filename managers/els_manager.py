@@ -180,8 +180,6 @@ class ELSManager:
     def _reserve_coupon(conn, issuer, coupon, total):
         if CurrencyManager.is_treasury(conn, issuer):
             home = CurrencyManager.home(conn, issuer)
-            if CurrencyManager.balance(conn, issuer, home) < coupon * SCALE:
-                raise ValueError("발행자의 최대 쿠폰 예치 재원이 부족합니다.")
             CurrencyManager.change(conn, issuer, home, -coupon * SCALE)
             return
         else:
