@@ -159,6 +159,26 @@ class WebApiTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "알 수 없는"):
             server.run_admin_command("admin-1", {"command": "rm", "arguments": ""})
 
+    def test_national_commands_cover_discord_treasury_commands(self):
+        from functions.admin_prefix import NATIONAL_COMMANDS
+        catalog = server.admin_command_catalog()
+        national = {item["name"] for item in catalog["national"]}
+        self.assertEqual(national | set(catalog["discordOnly"]), NATIONAL_COMMANDS)
+        self.assertIn("매수", national)
+        transfer = next(item for item in catalog["national"] if item["name"] == "송금")
+        self.assertEqual([field["required"] for field in transfer["fields"]], [True, True, False])
+
+    def test_national_commands_validate_before_running(self):
+        cases = [
+            ({"command": "주총", "values": ["A", "B"]}, "알 수 없는"),
+            ({"command": "매수", "values": ["A"]}, "입력값"),
+            ({"command": "매수", "values": ["A", " ", "1"]}, "수량"),
+            ({"command": "매수", "values": ["A", 1, "1"]}, "입력값"),
+        ]
+        for payload, error in cases:
+            with self.subTest(payload=payload), self.assertRaisesRegex(ValueError, error):
+                server.run_national_command("admin-1", payload)
+
 
 if __name__ == "__main__":
     unittest.main()

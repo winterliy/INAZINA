@@ -475,6 +475,8 @@ def domain():
                 from managers.rate_manager import RateManager
                 from managers.currency_exchange_manager import CurrencyExchangeManager
                 from managers.lottery_manager import LotteryManager
+                from managers.bank_manager import BankManager
+                from managers.investment_manager import InvestmentManager
 
                 db = DatabaseManager()
                 user_manager = UserManager(db)
@@ -493,6 +495,8 @@ def domain():
                     option_mgr=option_manager, futures_mgr=futures_manager,
                     rate_mgr=RateManager(db), currency_mgr=CurrencyExchangeManager(db),
                     lottery_mgr=LotteryManager(db), market_mgr=market_manager,
+                    bank_mgr=BankManager(db), investment_mgr=InvestmentManager(db, user_manager),
+                    treasury_bond_mgr=user_manager.bond_manager,
                 )
                 bot.admin_control = AdminControlManager(bot)
                 bot.admin_mgr = AdminManager(db)
@@ -846,6 +850,49 @@ def admin_audit(limit=50):
     return entries
 
 
+# National ($ treasury) commands that need a live Discord client: help is a
+# Discord view and 주총 sends DM invitations to shareholders.
+NATIONAL_DISCORD_ONLY = {"도움말", "주총"}
+
+
+def national_command_specs():
+    from functions.admin_prefix import NATIONAL, NATIONAL_COMMANDS
+    return {
+        name: [{"label": label, "default": default,
+                "required": not ("비우면" in label or "선택" in label), "long": "JSON" in label}
+               for label, default in NATIONAL[name]]
+        for name in sorted(NATIONAL_COMMANDS - NATIONAL_DISCORD_ONLY)
+    }
+
+
+def run_national_command(actor, payload):
+    """Run a $ national command as the treasury, exactly like the Discord form."""
+    from functions.admin_prefix import ActionModal
+    command = str(payload.get("command", "")).strip().removeprefix("$")
+    specs = national_command_specs()
+    if command not in specs:
+        raise ValueError("알 수 없는 국가 명의 명령어입니다.")
+    values = payload.get("values", [])
+    fields = specs[command]
+    if (not isinstance(values, list) or len(values) != len(fields) or
+            any(not isinstance(value, str) or len(value) > 4000 for value in values)):
+        raise ValueError("입력값을 확인해주세요.")
+    values = [value.strip() for value in values]
+    for field, value in zip(fields, values):
+        if field["required"] and not value:
+            raise ValueError(f"{field['label']}을(를) 입력해주세요.")
+    from decimal import InvalidOperation
+    from database.db_manager import DBManager
+    form = SimpleNamespace(bot=domain().bot, command=command, owner=actor)
+    try:
+        with DBManager.admin_scope(actor):
+            result = ActionModal._execute(form, values)
+    except (KeyError, InvalidOperation, sqlite3.IntegrityError) as exc:
+        raise ValueError(str(exc) or "명령어를 처리하지 못했습니다.") from exc
+    _read_cache.invalidate()
+    return str(result or "완료했습니다.")
+
+
 def admin_command_catalog():
     from managers.admin_commands_manager import COMMANDS, USAGE, CREATE_ARGS
     try:
@@ -856,6 +903,8 @@ def admin_command_catalog():
         creation_help = "\n".join(f"{kind}: {' '.join(args)}" for kind, args in CREATE_ARGS.items())
     return {
         "commands": [{"name": name, "usage": USAGE.get(name, "")} for name in sorted(COMMANDS)],
+        "national": [{"name": name, "fields": fields} for name, fields in national_command_specs().items()],
+        "discordOnly": sorted(NATIONAL_DISCORD_ONLY),
         "creationHelp": creation_help,
     }
 
@@ -1309,7 +1358,8 @@ class Handler(BaseHTTPRequestHandler):
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
                 else:
-                    message = run_admin_command(user["userId"], payload)
+                    runner = run_national_command if payload.get("national") else run_admin_command
+                    message = runner(user["userId"], payload)
                     self.send_json(200, {"success": not message.startswith("❌"), "message": message})
             elif path == "/internal/admin/funds":
                 if user["role"] != "admin":

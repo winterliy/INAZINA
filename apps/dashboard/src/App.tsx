@@ -13,7 +13,9 @@ type Citizen = { userId: string; nickname: string; nationality: string; cash: nu
 type Country = { countryId: string; currencyName: string; currencyCode: string };
 type Event = { event_id: number; asset_code: string | null; event_type: string; severity: number; starts_epoch: number; ends_epoch: number; created_by: string; target_mode: string | null; target_value: number | null; active: boolean };
 type Command = { name: string; usage: string };
-type CommandResult = { command: string; arguments: string; message: string; success: boolean; time: number };
+type NationalField = { label: string; default: string; required: boolean; long: boolean };
+type NationalCommand = { name: string; fields: NationalField[] };
+type CommandResult = { command: string; arguments: string; message: string; success: boolean; time: number; national: boolean };
 type Column = { name: string; type: string; notNull: boolean; primaryKey: boolean; default: string | null };
 type TableInfo = { name: string; editable: boolean; columns: Column[] };
 type Cell = string | number | null;
@@ -91,6 +93,7 @@ export default function App() {
   const [eventSeverity, setEventSeverity] = useState("5");
   const [eventDuration, setEventDuration] = useState("3600");
   const [eventAsset, setEventAsset] = useState("");
+  const [eventTarget, setEventTarget] = useState("");
   const [fundCode, setFundCode] = useState("");
   const [fundName, setFundName] = useState("");
   const [fundPrice, setFundPrice] = useState("1000");
@@ -99,6 +102,11 @@ export default function App() {
   const [fundCategory, setFundCategory] = useState("equity");
   const [fundComponents, setFundComponents] = useState("");
   const [commands, setCommands] = useState<Command[]>([]);
+  const [nationalCommands, setNationalCommands] = useState<NationalCommand[]>([]);
+  const [discordOnly, setDiscordOnly] = useState<string[]>([]);
+  const [commandScope, setCommandScope] = useState<"admin" | "national">("admin");
+  const [nationalCommand, setNationalCommand] = useState("");
+  const [nationalValues, setNationalValues] = useState<string[]>([]);
   const [creationHelp, setCreationHelp] = useState("");
   const [command, setCommand] = useState("");
   const [commandArgs, setCommandArgs] = useState("");
@@ -146,12 +154,22 @@ export default function App() {
         setCountries(countryResult.countries);
         setCountryId((current) => current || countryResult.countries[0]?.countryId || "");
       }
-      if (page === "events") setEvents((await api<{ events: Event[] }>("/api/admin/events")).events);
+      if (page === "events") {
+        const [eventResult, instrumentResult] = await Promise.all([
+          api<{ events: Event[] }>("/api/admin/events"),
+          api<{ instruments: Instrument[] }>("/api/admin/instruments"),
+        ]);
+        setEvents(eventResult.events);
+        setInstruments(instrumentResult.instruments);
+      }
       if (page === "commands" && !commands.length) {
-        const result = await api<{ commands: Command[]; creationHelp: string }>("/api/admin/commands");
+        const result = await api<{ commands: Command[]; national: NationalCommand[]; discordOnly: string[]; creationHelp: string }>("/api/admin/commands");
         setCommands(result.commands);
+        setNationalCommands(result.national);
+        setDiscordOnly(result.discordOnly);
         setCreationHelp(result.creationHelp);
         setCommand((current) => current || result.commands[0]?.name || "");
+        setNationalCommand((current) => current || result.national[0]?.name || "");
       }
       if (page === "database") {
         const [tableList, rows] = await Promise.all([
@@ -177,6 +195,9 @@ export default function App() {
     return instruments.filter((item) => !term || `${item.code} ${item.name} ${item.type} ${fundCategoryName[item.fund_category || ""] || ""}`.toLocaleLowerCase().includes(term));
   }, [instruments, query]);
   const selectedCommand = commands.find((item) => item.name === command);
+  const selectedNational = nationalCommands.find((item) => item.name === nationalCommand);
+  const eventInstrument = instruments.find((item) => item.code === eventAsset.trim());
+  useEffect(() => { setNationalValues(selectedNational?.fields.map((field) => field.default) ?? []); }, [selectedNational]);
   const tableInfo = tables.find((item) => item.name === table);
 
   async function run<T>(work: () => Promise<T>, fallback: string, done?: (result: T) => void) {
@@ -279,10 +300,23 @@ export default function App() {
   function createEvent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const percent = Number(eventSeverity);
-    if (!window.confirm(`${eventAsset || "시장 전체"}에 ${eventType === "good" ? "호재" : "악재"} 사건을 적용할까요? 가격에 영향을 줍니다.`)) return;
-    void run(() => api<{ message: string }>("/api/admin/events", {
-      method: "POST", body: JSON.stringify({ eventType, severity: Math.round(percent), targetPercent: percent, durationSeconds: Number(eventDuration), assetCode: eventAsset.trim() || null }),
-    }), "시장 사건을 등록하지 못했습니다.", (result) => say(result.message));
+    const asset = eventAsset.trim();
+    const target = eventTarget.trim() ? Number(eventTarget) : null;
+    // Same rules as the Discord $사건 form: a target price needs one asset and
+    // must lie above the current price for good news, below it for bad news.
+    if (target !== null) {
+      if (!Number.isSafeInteger(target) || target < 1) { say("목표가는 1 이상의 정수로 입력해주세요.", true); return; }
+      if (!asset) { say("목표가를 지정하려면 대상 종목 코드를 입력해주세요.", true); return; }
+      if (eventInstrument && (eventType === "good" ? target < eventInstrument.price : target > eventInstrument.price)) {
+        say(`${eventType === "good" ? "호재 목표가는 현재가 이상" : "악재 목표가는 현재가 이하"}로 입력해주세요. (현재가 ${number(eventInstrument.price)})`, true);
+        return;
+      }
+    }
+    const goal = target !== null ? `목표가 ${number(target)}` : `변동률 ${percent}%`;
+    if (!window.confirm(`${asset || "시장 전체"}에 ${eventType === "good" ? "호재" : "악재"} 사건(${goal})을 적용할까요? 가격에 영향을 줍니다.`)) return;
+    void run(() => api<{ success: boolean; message: string }>("/api/admin/events", {
+      method: "POST", body: JSON.stringify({ eventType, severity: Math.round(percent), targetPercent: percent, targetPrice: target, durationSeconds: Number(eventDuration), assetCode: asset || null }),
+    }), "시장 사건을 등록하지 못했습니다.", (result) => { say(result.message, !result.success); if (result.success) setEventTarget(""); });
   }
 
   function createCountryAccount(event: FormEvent<HTMLFormElement>) {
@@ -306,8 +340,19 @@ export default function App() {
     if (!window.confirm(`다음 명령어를 실행할까요?\n\n${text}`)) return;
     void run(() => api<{ message: string; success: boolean }>("/api/admin/commands", { method: "POST", body: JSON.stringify({ command, arguments: commandArgs }) }),
       "명령어를 실행하지 못했습니다.", (result) => {
-        setCommandResults((items) => [{ command, arguments: commandArgs.trim(), message: result.message, success: result.success, time: Date.now() / 1000 }, ...items].slice(0, 20));
+        setCommandResults((items) => [{ command, arguments: commandArgs.trim(), message: result.message, success: result.success, time: Date.now() / 1000, national: false }, ...items].slice(0, 20));
         if (result.success) setCommandArgs("");
+      });
+  }
+
+  function runNationalCommand(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedNational) return;
+    const summary = selectedNational.fields.map((field, index) => `${field.label}: ${nationalValues[index] || "—"}`).join("\n");
+    if (!window.confirm(`국가(국고) 명의로 $${nationalCommand}을(를) 실행할까요?\n\n${summary}`)) return;
+    void run(() => api<{ message: string; success: boolean }>("/api/admin/commands", { method: "POST", body: JSON.stringify({ national: true, command: nationalCommand, values: nationalValues }) }),
+      "명령어를 실행하지 못했습니다.", (result) => {
+        setCommandResults((items) => [{ command: nationalCommand, arguments: nationalValues.filter(Boolean).join(" "), message: result.message, success: result.success, time: Date.now() / 1000, national: true }, ...items].slice(0, 20));
       });
   }
 
@@ -438,16 +483,26 @@ export default function App() {
         {page === "events" && <>
           <section className="glass card mb rise"><div className="card-head"><div><h2>시장 사건 등록</h2><p className="cap">기존 시장 사건 검증과 감사 기록을 적용합니다.</p></div></div><form className="form-grid" onSubmit={createEvent}>
             <label>종류<select value={eventType} onChange={(event) => setEventType(event.target.value)}><option value="good">호재</option><option value="bad">악재</option></select></label>
-            <label>목표 변동률 (%)<input type="number" min="0" max="100" step="0.1" value={eventSeverity} onChange={(event) => setEventSeverity(event.target.value)} required /></label>
+            <label>{eventTarget.trim() ? "변동성 (%)" : "목표 변동률 (%)"}<input type="number" min="0" max="100" step="0.1" value={eventSeverity} onChange={(event) => setEventSeverity(event.target.value)} required /></label>
             <label>지속 시간 (초)<input type="number" min="1" max="604800" value={eventDuration} onChange={(event) => setEventDuration(event.target.value)} required /></label>
-            <label>대상 종목 코드 (비우면 전체)<input value={eventAsset} onChange={(event) => setEventAsset(event.target.value)} placeholder="예: INZST001" /></label>
+            <label>대상 종목 코드 (비우면 전체)<input list="event-assets" value={eventAsset} onChange={(event) => setEventAsset(event.target.value)} placeholder="예: INZST001" /></label>
+            <label>목표가 (선택 · 개별 종목)<input type="number" min="1" step="1" inputMode="numeric" value={eventTarget} disabled={!eventAsset.trim()} onChange={(event) => setEventTarget(event.target.value)} placeholder={eventInstrument ? `현재가 ${number(eventInstrument.price)}` : "종목을 먼저 입력"} /></label>
             <button className="btn primary" disabled={busy}>사건 등록</button>
-          </form></section>
+            <datalist id="event-assets">{instruments.filter((item) => item.status === "active").map((item) => <option key={item.code} value={item.code}>{item.name} · {number(item.price)}</option>)}</datalist>
+          </form><p className="hint">목표가를 비우면 변동률만큼 오르거나(호재) 내립니다. 목표가를 넣으면 그 가격을 향해 움직이고, 변동률은 움직이는 동안의 변동성으로 쓰입니다. 호재는 현재가 이상, 악재는 현재가 이하로 입력하세요.{eventInstrument && ` · ${eventInstrument.name} 현재가 ${number(eventInstrument.price)}`}</p></section>
           <section className="glass card rise"><div className="card-head"><div><h2>최근 사건</h2><p className="cap">최근 50건</p></div></div><div className="scroll-x tall"><table><thead><tr><th>ID</th><th>대상</th><th>유형</th><th>강도</th><th>목표</th><th>시작</th><th>종료</th><th>관리자</th></tr></thead><tbody>{events.map((item) => <tr key={item.event_id}><td>#{item.event_id}{item.active && <span className="tag ok inline">진행 중</span>}</td><td>{item.asset_code || "시장 전체"}</td><td><span className={item.event_type === "good" ? "tag up" : "tag down"}>{item.event_type === "good" ? "호재" : "악재"}</span></td><td>{item.severity}%</td><td>{item.target_value === null ? "—" : item.target_mode === "price" ? number(item.target_value) : `${number(item.target_value)}%`}</td><td>{date(item.starts_epoch)}</td><td>{date(item.ends_epoch)}</td><td className="mono">{item.created_by}</td></tr>)}</tbody></table>{!events.length && <p className="empty">등록된 사건이 없습니다.</p>}</div></section>
         </>}
 
         {page === "commands" && <>
-          <section className="glass card mb rise"><div className="card-head"><div><h2>명령어 실행</h2><p className="cap">Discord에서 `$명령어 인자`로 입력하던 것과 같습니다. 인자는 공백으로 구분하고, 공백이 있는 값은 따옴표로 감쌉니다.</p></div></div>
+          <div className="segment-tabs mb" role="tablist" aria-label="명령어 종류"><button role="tab" aria-selected={commandScope === "admin"} className={commandScope === "admin" ? "active" : ""} onClick={() => setCommandScope("admin")}>관리자 명령어 <span>{commands.length}</span></button><button role="tab" aria-selected={commandScope === "national"} className={commandScope === "national" ? "active" : ""} onClick={() => setCommandScope("national")}>국가 명의 <span>{nationalCommands.length}</span></button></div>
+          {commandScope === "national" && <section className="glass card mb rise"><div className="card-head"><div><h2>국가(국고) 명의 실행</h2><p className="cap">Discord `$매수`·`$송금` 등과 같이 국고 계정으로 실행하고 작업 기록에 남깁니다. {discordOnly.length > 0 && `${discordOnly.map((name) => `$${name}`).join(", ")}은(는) Discord 메시지를 보내야 해서 Discord에서만 사용할 수 있습니다.`}</p></div></div>
+            <form className="form-grid" onSubmit={runNationalCommand}>
+              <label>명령어<select value={nationalCommand} onChange={(event) => setNationalCommand(event.target.value)}>{nationalCommands.map((item) => <option key={item.name} value={item.name}>${item.name}</option>)}</select></label>
+              {selectedNational?.fields.map((field, index) => <label key={`${nationalCommand}-${field.label}`} className={field.long ? "span-wide" : undefined}>{field.label}{!field.required && <small>선택</small>}<input className={field.long ? "mono" : undefined} value={nationalValues[index] ?? ""} required={field.required} onChange={(event) => setNationalValues(nationalValues.map((value, position) => position === index ? event.target.value : value))} /></label>)}
+              <button className="btn primary" disabled={busy || !selectedNational}>{busy ? "실행 중…" : selectedNational?.fields.length ? "실행" : "조회"}</button>
+            </form>
+          </section>}
+          {commandScope === "admin" && <section className="glass card mb rise"><div className="card-head"><div><h2>명령어 실행</h2><p className="cap">Discord에서 `$명령어 인자`로 입력하던 것과 같습니다. 인자는 공백으로 구분하고, 공백이 있는 값은 따옴표로 감쌉니다. 시장 사건($사건)은 시장 사건 화면에서 등록합니다.</p></div></div>
             <form className="command-form" onSubmit={runCommand}>
               <label>명령어<select value={command} onChange={(event) => setCommand(event.target.value)}>{commands.map((item) => <option key={item.name} value={item.name}>${item.name}</option>)}</select></label>
               <label className="span-wide">인자<input className="mono" value={commandArgs} onChange={(event) => setCommandArgs(event.target.value)} placeholder={selectedCommand?.usage || "인자 없음"} /></label>
@@ -455,12 +510,14 @@ export default function App() {
             </form>
             <p className="usage"><span className="mono">${command} {selectedCommand?.usage}</span></p>
             {(command === "상품생성" || command === "상품수정") && <details className="help"><summary>상품 종류별 순서형 인자</summary><pre>{creationHelp}</pre></details>}
-          </section>
+          </section>}
           <section className="glass card mb rise"><div className="card-head"><div><h2>실행 결과</h2><p className="cap">이 화면에서 실행한 최근 20건 · 전체 기록은 작업 기록에서 확인합니다.</p></div></div>
-            {commandResults.map((item) => <div key={item.time} className={item.success ? "result" : "result failed"}><div className="result-head"><span className="mono">${item.command} {item.arguments}</span><span>{date(item.time)}</span></div><pre>{item.message}</pre></div>)}
+            {commandResults.map((item) => <div key={item.time} className={item.success ? "result" : "result failed"}><div className="result-head"><span className="mono">{item.national && <span className="tag inline-start">국가</span>}${item.command} {item.arguments}</span><span>{date(item.time)}</span></div><pre>{item.message}</pre></div>)}
             {!commandResults.length && <p className="empty">아직 실행한 명령어가 없습니다.</p>}
           </section>
-          <section className="glass card rise"><div className="card-head"><div><h2>전체 명령어</h2><p className="cap">{commands.length}개 · 선택하면 위 입력에 적용됩니다.</p></div></div><div className="command-list">{commands.map((item) => <button key={item.name} type="button" className={item.name === command ? "command-chip active" : "command-chip"} onClick={() => setCommand(item.name)}><b>${item.name}</b><small>{item.usage || "인자 없음"}</small></button>)}</div></section>
+          <section className="glass card rise"><div className="card-head"><div><h2>전체 명령어</h2><p className="cap">{commandScope === "admin" ? commands.length : nationalCommands.length}개 · 선택하면 위 입력에 적용됩니다.</p></div></div><div className="command-list">{commandScope === "admin"
+            ? commands.map((item) => <button key={item.name} type="button" className={item.name === command ? "command-chip active" : "command-chip"} onClick={() => setCommand(item.name)}><b>${item.name}</b><small>{item.usage || "인자 없음"}</small></button>)
+            : nationalCommands.map((item) => <button key={item.name} type="button" className={item.name === nationalCommand ? "command-chip active" : "command-chip"} onClick={() => setNationalCommand(item.name)}><b>${item.name}</b><small>{item.fields.map((field) => field.label).join(" · ") || "조회"}</small></button>)}</div></section>
         </>}
 
         {page === "database" && <>

@@ -80,10 +80,14 @@ and follows the system light/dark setting.
   for all exchanges or one exchange.
 - **종목 · 상품**: name/price/supply edits, active/inactive status, fund creation.
 - **사용자**: cash, role, and status changes; country account creation.
-- **시장 사건**: create good/bad events and list recent `market_events`.
-- **관리자 명령어**: runs every Discord `$` administrator command
-  (`AdminCommandsManager`) with the same validation and audit trail, and shows
-  usage and creation arguments. Treasury trades use a country account in HTS.
+- **시장 사건**: create good/bad events by percentage or, for one asset, by
+  target price (good news at or above the current price, bad news at or below;
+  the percentage then sets volatility), and list recent `market_events`.
+- **관리자 명령어**: runs every Discord `$` command. The 관리자 명령어 tab covers
+  the 40 `AdminCommandsManager` commands; the 국가 명의 tab covers the 16
+  treasury commands (`$매수`, `$송금`, `$계좌개설`, …) with the same form fields.
+  Both keep the Discord validation and audit trail. `$사건` is the 시장 사건 page;
+  `$도움말` and `$주총` (which sends Discord DMs) remain Discord-only.
 - **DB 편집**: replaces the DB Browser workflow described in `docs/` (for
   example `settings`, `country_currencies`, `users` nationality and credit,
   `financial_institutions`, `currency_liquidity_state`, `market_rate_curve`).
@@ -117,8 +121,9 @@ Administrators:
 - `GET /api/admin/overview`, `/api/admin/instruments`, `/api/admin/users?search=`, `/api/admin/events`, `/api/admin/audit`
 - `POST /api/admin/market` (`action`, optional `exchangeId`)
 - `POST /api/admin/instruments/:code` (name, price, supply, fund settings), `/api/admin/instruments/:code/status`
-- `POST /api/admin/funds`, `/api/admin/users/:id` (cash, role, status), `/api/admin/users/country-account`, `/api/admin/events`
-- `GET/POST /api/admin/commands` (catalog; run `{ command, arguments }`)
+- `POST /api/admin/funds`, `/api/admin/users/:id` (cash, role, status), `/api/admin/users/country-account`
+- `POST /api/admin/events` (`eventType`, `severity`, `targetPercent`, optional `targetPrice`, `durationSeconds`, `assetCode`)
+- `GET/POST /api/admin/commands` (catalog; run `{ command, arguments }` or `{ national: true, command, values }`)
 - `GET /api/admin/db/tables`, `/api/admin/db/tables/:table?search=&offset=`
 - `POST /api/admin/db/tables/:table/rows` (insert), `/rows/:rowid` (update), `/rows/:rowid/delete`
 
