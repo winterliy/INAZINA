@@ -57,6 +57,10 @@ services on loopback; router port forwarding is not part of this setup.
 
 ## HTS
 
+The HTS shares the dashboard's Apple-style glass design in a denser trading
+layout and follows the system light/dark setting. Following Korean market
+convention, buying and rising prices are red; selling and falling prices are blue.
+
 - Candle (default) and line charts. Candles are aggregated in SQLite per
   period (1m, 5m, 10m, 30m, 1h, 6h, 12h, 1d); "자동" picks a period from the
   selected range. Rising candles are red and falling candles blue.
