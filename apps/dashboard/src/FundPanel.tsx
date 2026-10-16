@@ -6,6 +6,7 @@ type Fund = {
   code: string; mode: "synthetic" | "backed"; availableCash?: number; reservedCash?: number;
   netAssets?: number; issuedUnits?: number; nav?: number; ledgerBalanced?: boolean; conversionCash?: number; receivables?: number;
   positions?: { code: string; quantity: number; price: number; value: number }[];
+  allocations?: { code: string; weight: number; targetValue: number; actualValue: number; actualWeight: number }[];
   orders: { order_id: number; asset_code: string; side: string; remaining_quantity: number; reserved_cash: number }[];
   ledger: { entry_id: number; event: string; amount: number; balance: number; reference: string | null }[];
 };
@@ -44,6 +45,14 @@ export function FundPanel({ code, ctx, close }: { code: string; ctx: Ctx; close:
     </> : <>
       <p>사용 가능 현금 {number(fund.availableCash ?? 0)} · 주문 예약금 {number(fund.reservedCash ?? 0)} · 미수배당 {number(fund.receivables ?? 0)} · 순자산 {number(fund.netAssets ?? 0)} · 발행좌수 {number(fund.issuedUnits ?? 0)} · NAV {number(fund.nav ?? 0)}</p>
       <p className="hint">원장 대사: {fund.ledgerBalanced ? "일치" : "불일치 — 거래 중단 필요"}. 현금이 부족한 환매는 거절되며, 매도 체결 또는 매수 주문 취소 후 다시 요청해야 합니다.</p>
+      <h3>목표 비중과 실제 비중</h3>
+      <div className="scroll-x"><table><thead><tr><th>구성자산</th><th>목표</th><th>실제</th><th>목표 평가액</th><th>현재 평가액</th></tr></thead><tbody>
+        {fund.allocations?.map((item) => <tr key={item.code}><td>{item.code}</td><td>{number(item.weight * 100)}%</td><td>{number(item.actualWeight * 100)}%</td><td>{number(item.targetValue)}</td><td>{number(item.actualValue)}</td></tr>)}
+      </tbody></table></div>
+      <p className="hint">리밸런싱은 아래 버튼을 눌렀을 때 실행되며, 구성자산별 현재 가격으로 기존 거래소 지정가 주문을 제출합니다. 미체결 주문이 있으면 재실행할 수 없습니다.</p>
+      <button className="soft" disabled={ctx.busy || !fund.ledgerBalanced || Boolean(fund.orders.length)} onClick={() => {
+        if (window.confirm(`${code} 펀드의 목표 비중에 맞춰 초과 보유분을 먼저 매도하고 부족분을 매수할까요? 주문은 기존 거래소 규칙을 따르며 미체결분은 호가장에 남습니다.`)) act({ action: "rebalance" });
+      }}>목표 비중으로 리밸런싱</button>
       <form className="form-grid" onSubmit={(event) => {
         event.preventDefault();
         if (window.confirm(`${code}의 자금으로 ${asset} ${quantity}개를 ${price} NWX 지정가에 ${side === "buy" ? "매수" : "매도"}할까요?`)) {

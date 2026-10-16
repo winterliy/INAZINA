@@ -108,6 +108,15 @@ class SystemDB(DBManager):
             start_epoch INTEGER NOT NULL,
             end_epoch INTEGER NOT NULL CHECK(end_epoch > start_epoch)
         )""")
+        # Every automatic target the price engine draws, for the market event log.
+        self.execute("""CREATE TABLE IF NOT EXISTS market_auto_target_history (
+            history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            asset_code TEXT NOT NULL,
+            anchor_price REAL NOT NULL,
+            target_price REAL NOT NULL,
+            start_epoch INTEGER NOT NULL,
+            end_epoch INTEGER NOT NULL
+        )""")
         for key, value in (("base_rate", "3"), ("legal_max_rate", "20"), ("tax_percent", "3")):
             self.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
         # The former statutory rate accrued extra interest after loan maturity.

@@ -110,6 +110,9 @@ class FundManager:
             funding = int((issued * Decimal(str(product['unit_price']))).to_integral_value(rounding=ROUND_CEILING)) if product else 0
             return {'code': code, 'mode': 'synthetic', 'issuedUnits': float(issued), 'conversionCash': funding}
         owner = fund['owner_id']
+        product = conn.execute('SELECT * FROM investment WHERE product_code=?', (code,)).fetchone()
+        targets = FundManager.target_weights(conn, product)
+        target_map = {item['code']: item['weight'] for item in targets}
         positions = []
         value = Decimal(0)
         for row in conn.execute('SELECT asset_code,SUM(quantity) quantity FROM user_assets WHERE user_id=? GROUP BY asset_code', (owner,)):
@@ -137,12 +140,156 @@ class FundManager:
         net = value + fund['cash'] + reserved + receivables
         nav = net / issued if issued else Decimal(fund['initial_nav'])
         ledger = conn.execute('SELECT COALESCE(SUM(amount),0) FROM fund_cash_ledger WHERE product_code=?', (code,)).fetchone()[0]
+        for position in positions:
+            position['targetWeight'] = target_map.get(position['code'], 0.0)
+            position['actualWeight'] = float(Decimal(str(position['value'])) / net) if net else 0.0
+        allocations = []
+        for target in targets:
+            position = next((item for item in positions if item['code'] == target['code']), None)
+            allocations.append({**target, 'actualValue': position['value'] if position else 0.0,
+                               'targetValue': float(net * Decimal(str(target['weight']))),
+                               'actualWeight': position['actualWeight'] if position else 0.0})
         return {'code': code, 'mode': 'backed', 'ownerId': owner, 'availableCash': fund['cash'],
                 'reservedCash': float(reserved), 'cash': float(reserved + fund['cash']),
                 'receivables': float(receivables),
                 'assetValue': float(value), 'netAssets': net if exact else float(net),
                 'issuedUnits': issued if exact else float(issued),
-                'nav': nav if exact else float(nav), 'positions': positions, 'ledgerBalanced': ledger == fund['cash']}
+                'nav': nav if exact else float(nav), 'positions': positions, 'allocations': allocations,
+                'ledgerBalanced': ledger == fund['cash']}
+
+    @staticmethod
+    def target_weights(conn, product):
+        if not product:
+            return []
+        if product['product_type'] == 'mutual_fund':
+            rows = conn.execute("SELECT asset_code,weight FROM fund_components WHERE product_code=? ORDER BY asset_code",
+                                (product['product_code'],)).fetchall()
+            return [{'code': row['asset_code'], 'weight': float(row['weight'])} for row in rows]
+        if product['product_type'] == 'index_fund':
+            rows = conn.execute("SELECT company_code AS code,share_price AS price,total_shares AS shares "
+                                "FROM company WHERE exchange_id=? AND status='active' AND share_price>0 "
+                                "ORDER BY company_code", (product['underlying_exchange_id'],)).fetchall()
+            if not rows:
+                return []
+            caps = [Decimal(str(row['price'])) * max(0, int(row['shares'] or 0)) for row in rows]
+            total = sum(caps, Decimal(0))
+            if total <= 0:
+                weight = Decimal(1) / Decimal(len(rows))
+                return [{'code': row['code'], 'weight': float(weight)} for row in rows]
+            return [{'code': row['code'], 'weight': float(cap / total)}
+                    for row, cap in zip(rows, caps) if cap > 0]
+        return []
+
+    @staticmethod
+    def _order_quantity(value, price, *, fractional):
+        quantum = Decimal('0.001') if fractional else Decimal(1)
+        count = (Decimal(str(value)) / Decimal(str(price)) / quantum).to_integral_value(rounding=ROUND_FLOOR)
+        quantity = count * quantum
+        if quantity <= 0:
+            return None
+        return f'{quantity:f}'.rstrip('0').rstrip('.') if fractional else int(quantity)
+
+    def rebalance(self, actor, code):
+        """Trade toward target weights using ordinary limit orders; never borrow or mint cash."""
+        from managers.order_book_manager import OrderBookManager
+        from managers.user_manager import UserManager
+        from managers.market_session_manager import MarketSessionManager
+        users = UserManager(self.db)
+        book = OrderBookManager(self.db, users)
+        owner = PREFIX + str(code)
+        try:
+            with self.db.atomic() as conn:
+                product = self._require(conn, actor, code)
+                if not account(conn, owner):
+                    raise ValueError('실보유형 펀드만 리밸런싱할 수 있습니다.')
+                if product['status'] != 'active':
+                    raise ValueError('거래 중인 펀드만 리밸런싱할 수 있습니다.')
+                pending = conn.execute("SELECT COUNT(*) FROM market_orders WHERE user_id=? "
+                    "AND status IN ('open','partial','scheduled')", (owner,)).fetchone()[0]
+                if pending:
+                    raise ValueError('펀드의 미체결 주문을 먼저 체결시키거나 취소해주세요.')
+                state = self.snapshot_conn(conn, code)
+                targets = self.target_weights(conn, product)
+                if not targets:
+                    raise ValueError('리밸런싱할 수 있는 목표 구성자산이 없습니다.')
+                ledger = conn.execute('SELECT COALESCE(SUM(amount),0) FROM fund_cash_ledger WHERE product_code=?',
+                                     (code,)).fetchone()[0]
+                if ledger != conn.execute('SELECT cash FROM fund_accounts WHERE product_code=?', (code,)).fetchone()[0]:
+                    raise ValueError('현금 원장 대사 후 리밸런싱해주세요.')
+                error = MarketSessionManager(self.db).trading_error(conn=conn, asset_code=code)
+                if error:
+                    raise ValueError(error)
+            # Sell overweight/removed holdings first. Regular exchange orders
+            # enforce supply, sessions, reservations, and order-price rules.
+            target = {item['code']: Decimal(str(item['weight'])) for item in targets}
+            orders = []
+            sold_codes = []
+            for position in state['positions']:
+                code_value = position['code']
+                price = int(round_money(position['price']))
+                desired = Decimal(str(state['netAssets'])) * target.get(code_value, Decimal(0))
+                excess = max(Decimal(0), Decimal(str(position['value'])) - desired)
+                if excess < price:
+                    continue
+                asset = self.db.users.execute_one(
+                    "SELECT type,Fractal FROM market_assets WHERE code=? UNION ALL "
+                    "SELECT 'stock',Fractal FROM company WHERE company_code=? UNION ALL "
+                    "SELECT product_type,Fractal FROM investment WHERE product_code=? UNION ALL "
+                    "SELECT 'bond',0 FROM treasury_bond_products WHERE product_code=?",
+                    (code_value, code_value, code_value, code_value),
+                )
+                if not asset:
+                    continue
+                quantity = self._order_quantity(min(excess, Decimal(str(position['value']))), price,
+                                                fractional=bool(asset['Fractal'] and asset['type'] in {'stock','mutual_fund','index_fund','commodity_spot'}))
+                if not quantity:
+                    continue
+                result = book.place_limit_order(owner, code_value, 'sell', quantity, price)
+                orders.append({'assetCode': code_value, 'side': 'sell', 'quantity': quantity,
+                               'success': bool(result[0]), 'message': result[1]})
+                if result[0]:
+                    sold_codes.append(code_value)
+            # Spend only cash available after real fills, capped by each deficit.
+            refreshed = self.snapshot(code)
+            current_values = {item['code']: Decimal(str(item['value'])) for item in refreshed['positions']}
+            used_codes = set(sold_codes)
+            for item in sorted(targets, key=lambda row: (
+                -(Decimal(str(refreshed['netAssets'])) * Decimal(str(row['weight']))
+                  - current_values.get(row['code'], Decimal(0))), row['code'])):
+                if item['code'] in used_codes or refreshed['availableCash'] <= 0:
+                    continue
+                quote = self.db.products.execute_one(
+                    "SELECT share_price AS price,Fractal FROM company WHERE company_code=? "
+                    "UNION ALL SELECT unit_price,Fractal FROM investment WHERE product_code=? "
+                    "UNION ALL SELECT price,0 FROM market_assets WHERE code=? "
+                    "UNION ALL SELECT market_price,0 FROM treasury_bond_products WHERE product_code=?",
+                    (item['code'], item['code'], item['code'], item['code']),
+                )
+                if not quote or float(quote['price'] or 0) <= 0:
+                    continue
+                price = max(1, round_money(quote['price']))
+                desired = Decimal(str(refreshed['netAssets'])) * Decimal(str(item['weight']))
+                deficit = max(Decimal(0), desired - current_values.get(item['code'], Decimal(0)))
+                amount = min(deficit, Decimal(str(refreshed['availableCash'])))
+                quantity = self._order_quantity(amount, price, fractional=bool(quote['Fractal']))
+                if not quantity:
+                    continue
+                result = book.place_limit_order(owner, item['code'], 'buy', quantity, price)
+                orders.append({'assetCode': item['code'], 'side': 'buy', 'quantity': quantity,
+                               'success': bool(result[0]), 'message': result[1]})
+                used_codes.add(item['code'])
+                refreshed = self.snapshot(code)
+                current_values = {row['code']: Decimal(str(row['value'])) for row in refreshed['positions']}
+            refreshed = self.snapshot(code)
+            pending = bool(refreshed['orders'])
+            failed = any(not row['success'] for row in orders)
+            message = ('일부 주문이 거절되었습니다. 주문별 결과를 확인한 뒤 다시 실행해주세요.' if failed else
+                       '리밸런싱 주문을 제출했습니다. 미체결 주문은 체결되거나 취소될 때까지 재실행할 수 없습니다.'
+                       if pending else '리밸런싱을 완료했습니다. 소수 단위·발행 한도 때문에 작은 비중 차이는 남을 수 있습니다.')
+            return {'success': True, 'message': message, 'orders': orders, 'fund': refreshed,
+                    'pending': pending, 'partial': failed}
+        except (ValueError, TypeError, OverflowError) as exc:
+            raise ValueError(str(exc)) from exc
 
     def snapshot(self, code):
         with self.db.readonly() as conn:

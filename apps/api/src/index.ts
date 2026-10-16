@@ -233,6 +233,8 @@ async function internalRequest(
 }
 
 const internalGet = (path: string, userId?: string) => internalRequest("GET", path, userId);
+// Site form submissions per client address (at most 5 per 10 minutes).
+const feedbackSubmissions = new Map<string, number[]>();
 
 async function sendLanding(response: ServerResponse, reason: LandingReason, path: string, status?: number): Promise<void> {
   const health = await internalGet("/internal/health");
@@ -303,6 +305,20 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     } else {
       send(response, 200, { userId: verification.userId, nickname: verification.nickname, purpose: verification.purpose });
     }
+    return;
+  }
+  // Official site (apps/site): public Contact/Report forms, shown in the dashboard.
+  if (request.method === "POST" && url.pathname === "/api/site/feedback") {
+    const key = request.socket.remoteAddress ?? "local";
+    const now = Date.now();
+    const recent = (feedbackSubmissions.get(key) ?? []).filter((time) => now - time < 10 * 60_000);
+    if (recent.length >= 5) {
+      send(response, 429, { error: "feedback_rate_limited" });
+      return;
+    }
+    const result = await internalRequest("POST", "/internal/site/feedback", undefined, await requestJson(request));
+    if (result.status === 201) feedbackSubmissions.set(key, [...recent, now]);
+    send(response, result.status, result.body);
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/auth/countries") {
@@ -445,7 +461,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       return;
     }
     const search = encodeURIComponent(url.searchParams.get("search") ?? "");
-    const result = await internalGet(`/internal/admin/users?search=${search}`, principal.userId);
+    const kind = url.searchParams.get("kind") === "company" ? "&kind=company" : "";
+    const result = await internalGet(`/internal/admin/users?search=${search}${kind}`, principal.userId);
     send(response, result.status, result.body);
     return;
   }
@@ -648,7 +665,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   // Product, country, exchange, user-detail, help and bot-job administration.
-  const adminMatch = url.pathname.match(/^\/api\/admin\/((?:products|countries|exchanges|help|bot-jobs|user|companies|warnings)(?:\/[^/]+){0,2})$/);
+  const adminMatch = url.pathname.match(/^\/api\/admin\/((?:products|countries|exchanges|help|bot-jobs|user|companies|warnings|feedback|logs)(?:\/[^/]+){0,2})$/);
   if (adminMatch) {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });

@@ -235,6 +235,62 @@ class FundAccountingTests(unittest.TestCase):
         self.assertEqual(self.db.users.get_treasury_balance(), treasury-500)
         self.assertEqual(fund.snapshot('FD')['nav'], 100)
 
+    def test_rebalance_buys_to_target_and_updates_real_positions(self):
+        fund = self.fund()
+        self.ok(self.users.buy_asset('alice', 'FD', 10))
+        result = fund.rebalance('admin', 'FD')
+        self.assertTrue(result['success'], result)
+        self.assertFalse(result['pending'])
+        self.assertEqual([(row['side'], row['quantity']) for row in result['orders']], [('buy', 10)])
+        state = result['fund']
+        self.assertEqual(state['availableCash'], 0)
+        self.assertEqual(state['positions'][0]['quantity'], 10)
+        self.assertAlmostEqual(state['allocations'][0]['actualWeight'], 1)
+
+    def test_rebalance_sells_overweight_then_buys_after_fill(self):
+        self.db.assets.register_asset('GOLD', 'Gold', 'EX', 100, 'commodity_spot', 1000)
+        fund = self.fund(components={'CO': .5, 'GOLD': .5}, category='other')
+        self.ok(self.users.buy_asset('alice', 'FD', 10))
+        self.ok(fund.order('admin', 'FD', 'CO', 'buy', 8, 100))
+        result = fund.rebalance('admin', 'FD')
+        self.assertTrue(result['pending'])
+        self.assertEqual([(row['side'], row['quantity']) for row in result['orders']], [('sell', 3), ('buy', 2)])
+        with self.assertRaisesRegex(ValueError, '미체결 주문'):
+            fund.rebalance('admin', 'FD')
+        self.ok(self.book.place_limit_order('bob', 'CO', 'buy', 3, 100))
+        result = fund.rebalance('admin', 'FD')
+        self.assertFalse(result['pending'])
+        self.assertEqual([(row['assetCode'], row['side'], row['quantity']) for row in result['orders']], [('GOLD', 'buy', 3)])
+        allocations = {row['code']: row for row in result['fund']['allocations']}
+        self.assertAlmostEqual(allocations['CO']['actualWeight'], .5)
+        self.assertAlmostEqual(allocations['GOLD']['actualWeight'], .5)
+        self.assertEqual(result['fund']['availableCash'], 0)
+
+    def test_rebalance_uses_market_cap_weights_for_index_fund(self):
+        self.db.companies.create_company('CO2', 'Second', 'Industry', 100000, 300, 100, 'admin', 'EX')
+        self.issue('IF', 'index_fund', underlying='EX', days=0)
+        investment = FundManager(self.db)
+        self.ok(self.users.buy_asset('alice', 'IF', 10))
+        result = investment.rebalance('admin', 'IF')
+        self.assertTrue(result['success'], result)
+        self.assertEqual({row['assetCode']: row['quantity'] for row in result['orders']}, {'CO': 7, 'CO2': 2})
+        self.assertEqual(sum(row['value'] for row in result['fund']['positions']) + result['fund']['availableCash'], 1000)
+
+    def test_rebalance_requires_quiescent_fund_and_never_borrows(self):
+        fund = self.fund()
+        self.ok(self.users.buy_asset('alice', 'FD', 10))
+        self.ok(fund.order('admin', 'FD', 'CO', 'buy', 2, 90))
+        with self.assertRaisesRegex(ValueError, '미체결 주문'):
+            fund.rebalance('admin', 'FD')
+        self.ok(fund.cancel('admin', 'FD', self.db.assets.execute_one(
+            "SELECT order_id FROM market_orders WHERE user_id=? AND status='open'", (PREFIX+'FD',))[0]))
+        result = fund.rebalance('admin', 'FD')
+        self.assertEqual(result['fund']['availableCash'], 0)
+        self.assertEqual(sum(row['value'] for row in result['fund']['positions']), 1000)
+        self.assertTrue(result['fund']['ledgerBalanced'])
+        with self.assertRaises(ValueError):
+            fund.rebalance('alice', 'FD')
+
     def test_web_service_actions_and_ownership(self):
         from web_api import server
         self.fund()

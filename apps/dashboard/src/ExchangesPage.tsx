@@ -74,10 +74,10 @@ export function ExchangesPage({ ctx }: { ctx: Ctx }) {
       </form>
     </Card>
 
-    <Card title="거래소" caption="행을 누르면 거래 상태·국가·지수를 설정합니다. 상장·연동 상품이 없는 거래소는 삭제할 수 있습니다(CURRENCY 제외).">
+    <Card title="거래소" caption="행을 누르면 거래 상태·국가·지수를 설정합니다. 상장·연동 상품이 없는 거래소는 삭제할 수 있습니다. CURRENCY는 환전·통화쌍 시세용 시스템 거래소라 삭제할 수 없고, 휴장·정지하면 환전이 멈춥니다.">
       <div className="scroll-x tall"><table><thead><tr><th>거래소</th><th>국가</th><th>상태</th><th>사유</th><th>자동 재개</th><th className="r">지수</th><th className="r">상품</th><th className="r">지수 종목</th><th /></tr></thead><tbody>
         {visible.map((item) => <tr key={item.exchange_id} className={item.exchange_id === selected ? "clickable selected" : "clickable"} tabIndex={0} onClick={() => setSelected(item.exchange_id)} onKeyDown={(event) => { if (event.key === "Enter") setSelected(item.exchange_id); }}>
-          <td className="mono">{item.exchange_id}</td><td>{item.nationality}</td>
+          <td className="mono">{item.exchange_id}{item.exchange_id === "CURRENCY" && <span className="tag inline" title="환전과 통화쌍 시세(CUR_…)가 속한 시스템 거래소입니다. 휴장·정지하면 환전이 멈춥니다.">외환시장</span>}</td><td>{item.nationality}</td>
           <td><span className={item.status === "open" && !item.trading_halted ? "tag ok" : "tag warn"}>{item.circuit_stage ? `서킷 ${item.circuit_stage}단계` : STATUS[item.status] ?? item.status}</span></td>
           <td>{item.reason || "—"}</td><td>{item.resume_epoch ? date(item.resume_epoch) : "—"}</td>
           <td className="r mono">{number(item.index_value)}</td><td className="r">{number(item.products)}</td><td className="r">{number(item.components.length)}</td>

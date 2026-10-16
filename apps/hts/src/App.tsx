@@ -6,7 +6,7 @@ import { PriceChart, type Candle, type Drawing, type Point, type Tool } from "./
 import { CommandPanel } from "./CommandPanel";
 
 type Warning = { level: "caution" | "warning" | "danger"; label: string; reason: string; expiresEpoch: number | null };
-type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; quote_currency?: string; fund_category?: string | null; warning?: Warning };
+type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; quote_currency?: string; fund_category?: string | null; warning?: Warning; change24h?: number | null; tradeValue24h?: number; trades24h?: number };
 
 // Administrator trading warnings (투자주의·경고·위험).
 const WarningBadge = ({ warning }: { warning?: Warning }) => warning ? <span className={`warn-badge ${warning.level}`} title={warning.reason || warning.label}>{warning.label}</span> : null;
@@ -25,6 +25,18 @@ const UNIT_SCALE = 1_000_000;
 const money = (value: number, digits = 0) => new Intl.NumberFormat("ko-KR", { maximumFractionDigits: digits }).format(value || 0);
 const fundCategoryName: Record<string, string> = { equity: "주식형", bond: "채권형", mixed: "혼합형", other: "기타형" };
 const instrumentType = (item: Instrument) => fundCategoryName[item.fund_category || ""] || item.type;
+// Search tabs shown while the search box is empty. "추천" is the starting tab.
+type SearchTab = "recommended" | "stock" | "fund" | "bond" | "commodity" | "other";
+const SEARCH_TABS: [SearchTab, string][] = [["recommended", "실시간 추천"], ["stock", "주식"], ["fund", "ETF·펀드"], ["bond", "채권"], ["commodity", "원자재·외환"], ["other", "기타"]];
+const searchTab = (item: Instrument): Exclude<SearchTab, "recommended"> =>
+  item.type === "stock" || item.type === "preferred" ? "stock"
+    : ["etf", "etn", "mutual_fund", "index_fund", "leveraged_etf", "inverse_etf", "reit"].includes(item.type) ? "fund"
+      : item.type === "국채" || item.type.includes("bond") ? "bond"
+        : item.type === "commodity" || item.type === "forex" ? "commodity" : "other";
+// Most traded value in 24 hours first, then the biggest movers.
+const recommended = (items: Instrument[]) => [...items]
+  .sort((a, b) => (b.tradeValue24h ?? 0) - (a.tradeValue24h ?? 0) || Math.abs(b.change24h ?? 0) - Math.abs(a.change24h ?? 0))
+  .slice(0, 20);
 const errorText = (cause: unknown, fallback: string) => cause instanceof Error ? cause.message : fallback;
 
 export default function App() {
@@ -36,6 +48,7 @@ export default function App() {
   const [selectedCode, setSelectedCode] = useState("");
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [searchTabValue, setSearchTabValue] = useState<SearchTab>("recommended");
   const [commandsOpen, setCommandsOpen] = useState<string | null>(null);
   const [accountSettingsOpen, setAccountSettingsOpen] = useState(false);
   const [htsId, setHtsId] = useState("");
@@ -68,8 +81,14 @@ export default function App() {
   const selected = instruments.find((item) => item.code === selectedCode) ?? null;
   const filtered = useMemo(() => {
     const term = search.trim().toLocaleLowerCase();
-    return instruments.filter((item) => !term || `${item.code} ${item.name} ${item.type} ${instrumentType(item)}`.toLocaleLowerCase().includes(term));
-  }, [instruments, search]);
+    if (!term) return searchTabValue === "recommended" ? recommended(instruments) : instruments.filter((item) => searchTab(item) === searchTabValue);
+    return instruments.filter((item) => `${item.code} ${item.name} ${item.type} ${instrumentType(item)}`.toLocaleLowerCase().includes(term));
+  }, [instruments, search, searchTabValue]);
+  const tabCounts = useMemo(() => {
+    const counts: Partial<Record<SearchTab, number>> = { recommended: Math.min(20, instruments.length) };
+    for (const item of instruments) counts[searchTab(item)] = (counts[searchTab(item)] ?? 0) + 1;
+    return counts;
+  }, [instruments]);
 
   const authenticate = useCallback(async () => {
     try {
@@ -116,6 +135,7 @@ export default function App() {
 
   useEffect(() => {
     if (!searchOpen) { setSearch(""); return; }
+    setSearchTabValue("recommended");
     searchInputRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") setSearchOpen(false); };
     window.addEventListener("keydown", onKeyDown);
@@ -328,7 +348,7 @@ export default function App() {
       </aside>
     </main>
     {review && <div className="modal-backdrop"><section className="review-modal" role="dialog" aria-modal="true" aria-labelledby="review-title"><p className="eyebrow">ORDER REVIEW</p><h2 id="review-title">주문을 확인하세요</h2><dl><div><dt>종목</dt><dd>{selected?.name} ({selectedCode}) <WarningBadge warning={selected?.warning} /></dd></div><div><dt>유형</dt><dd className={side === "buy" ? "buy-text" : "sell-text"}>{side === "buy" ? "지정가 매수" : "지정가 매도"}</dd></div><div><dt>지정가</dt><dd>{money(Number(price), 2)} {selected?.quote_currency || "NWX"}</dd></div><div><dt>수량</dt><dd>{money(Number(quantity), 3)}</dd></div><div><dt>예상 금액</dt><dd>{money(Number(price) * Number(quantity), 2)} {selected?.quote_currency || "NWX"}</dd></div></dl><div className="modal-actions"><button disabled={busy} onClick={() => setReview(false)}>돌아가기</button><button className={side === "buy" ? "buy-confirm" : "sell-confirm"} disabled={busy} onClick={() => void submitOrder()}>{busy ? "제출 중" : "주문 확정"}</button></div></section></div>}
-    {searchOpen && <div className="modal-backdrop search-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSearchOpen(false); }}><section className="search-modal" role="dialog" aria-modal="true" aria-labelledby="search-title"><div className="search-modal-head"><h2 id="search-title">종목 검색</h2><button type="button" title="닫기" onClick={() => setSearchOpen(false)}>닫기</button></div><label className="search-field"><span aria-hidden="true">⌕</span><input ref={searchInputRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="종목명 또는 코드" /></label><div className="search-results">{filtered.slice(0, 200).map((item) => <button type="button" key={item.code} className={selectedCode === item.code ? "search-result active" : "search-result"} onClick={() => chooseInstrument(item.code)}><span><b>{item.name} <WarningBadge warning={item.warning} /></b><small>{item.code} · {instrumentType(item)}</small></span><strong>{money(item.price, 2)} {item.quote_currency || "NWX"}</strong></button>)}{!filtered.length && <p className="empty">검색 결과가 없습니다.</p>}</div></section></div>}
+    {searchOpen && <div className="modal-backdrop search-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSearchOpen(false); }}><section className="search-modal" role="dialog" aria-modal="true" aria-labelledby="search-title"><div className="search-modal-head"><h2 id="search-title">종목 검색</h2><button type="button" title="닫기" onClick={() => setSearchOpen(false)}>닫기</button></div><label className="search-field"><span aria-hidden="true">⌕</span><input ref={searchInputRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="종목명 또는 코드" /></label>{!search.trim() && <div className="search-tabs" role="tablist" aria-label="상품 종류">{SEARCH_TABS.filter(([id]) => id === "recommended" || tabCounts[id]).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={searchTabValue === id} className={searchTabValue === id ? "active" : ""} onClick={() => setSearchTabValue(id)}>{label}<span>{tabCounts[id] ?? 0}</span></button>)}</div>}{!search.trim() && searchTabValue === "recommended" && <p className="search-caption">최근 24시간 거래대금이 많은 순, 같으면 등락폭이 큰 순</p>}<div className="search-results">{filtered.slice(0, 200).map((item, index) => <button type="button" key={item.code} className={selectedCode === item.code ? "search-result active" : "search-result"} onClick={() => chooseInstrument(item.code)}><span>{!search.trim() && searchTabValue === "recommended" && <em className="search-rank">{index + 1}</em>}<span className="search-name"><b>{item.name} <WarningBadge warning={item.warning} /></b><small>{item.code} · {instrumentType(item)}{item.trades24h ? ` · 24시간 ${money(item.trades24h)}건` : ""}</small></span></span><span className="search-price"><strong>{money(item.price, 2)} {item.quote_currency || "NWX"}</strong>{item.change24h !== null && item.change24h !== undefined && <small className={item.change24h > 0 ? "up" : item.change24h < 0 ? "down" : undefined}>{item.change24h > 0 ? "+" : ""}{item.change24h.toFixed(2)}%</small>}</span></button>)}{!filtered.length && <p className="empty">{search.trim() ? "검색 결과가 없습니다." : "이 종류의 상품이 없습니다."}</p>}</div></section></div>}
     {commandsOpen !== null && <CommandPanel initial={commandsOpen} instruments={instruments} portfolio={portfolio} orders={orders} homeCurrency={portfolio?.national_currency || user.currency || "NWX"} onClose={() => setCommandsOpen(null)} onDone={() => void refreshAccount().catch(() => undefined)} />}
     {accountSettingsOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setAccountSettingsOpen(false); }}><section className="account-modal" role="dialog" aria-modal="true" aria-labelledby="account-title"><div className="account-modal-head"><div><p className="eyebrow">HTS ACCOUNT</p><h2 id="account-title">아이디 설정</h2></div><button type="button" title="닫기" onClick={() => setAccountSettingsOpen(false)}>닫기</button></div><p className="account-description">로그인에 사용할 아이디를 설정합니다.</p><form className="account-form" onSubmit={saveHtsId}><label>아이디<input autoComplete="username" minLength={3} maxLength={32} pattern="[A-Za-z0-9_.\-]{3,32}" value={htsIdInput} onChange={(event) => setHtsIdInput(event.target.value)} placeholder="예: inazina_user" required /></label><p className="account-hint">영문, 숫자, 점, 밑줄, 하이픈으로 3~32자</p><label>현재 비밀번호<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label>{settingsMessage && <p className="account-success" role="status">{settingsMessage}</p>}{settingsError && <p className="account-error" role="alert">{settingsError}</p>}<div className="modal-actions"><button type="button" disabled={settingsBusy} onClick={() => setAccountSettingsOpen(false)}>닫기</button><button className="account-save" disabled={settingsBusy || !htsIdInput}>{settingsBusy ? "저장 중…" : htsId ? "아이디 변경" : "아이디 설정"}</button></div></form></section></div>}
   </div>;

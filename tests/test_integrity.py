@@ -38,3 +38,24 @@ class IntegrityTests(unittest.TestCase):
         self.db.assets.execute("INSERT INTO market_orders(user_id,asset_code,side,limit_price,quantity,remaining_quantity,status,created_epoch,updated_epoch) "
                                "VALUES ('citizen','GONE','buy',1,1,0,'cancelled',0,0)")
         self.assertEqual(integrity.check(self.db.users.conn), [])
+
+
+class MarketFlowHistoryTests(unittest.TestCase):
+    setUp = fixtures.InazinaTests.setUp
+    tearDown = fixtures.InazinaTests.tearDown
+    seed = fixtures.InazinaTests.seed
+
+    def test_price_engine_records_each_new_auto_target(self):
+        import time
+        self.seed()
+        now = int(time.time())
+        self.bot.market_mgr.update_prices(now=now)
+        count = lambda: self.db.system.execute_one("SELECT COUNT(*) FROM market_auto_target_history")[0]
+        first = count()
+        self.assertGreater(first, 0)
+        current = self.db.system.execute("SELECT asset_code,target_price FROM market_auto_targets ORDER BY 1")
+        logged = self.db.system.execute("SELECT asset_code,target_price FROM market_auto_target_history ORDER BY 1")
+        self.assertTrue(set(map(tuple, current)) <= set(map(tuple, logged)))
+        # Within the same cycle no new targets are drawn.
+        self.bot.market_mgr.update_prices(now=now + 1)
+        self.assertEqual(count(), first)

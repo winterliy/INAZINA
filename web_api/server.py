@@ -212,6 +212,99 @@ def validate_password(password):
         raise ValueError("password_policy")
 
 
+# ---------------------------------------------------------------------------
+# Official site (apps/site): Contact and Report forms, read in the dashboard.
+# ---------------------------------------------------------------------------
+FEEDBACK_KINDS = {"contact": "문의", "report": "신고"}
+FEEDBACK_STATUSES = {"new", "read", "done"}
+FEEDBACK_RETENTION_SECONDS = 365 * 86400  # 개인정보 처리방침: 접수 후 1년이 지나면 파기
+
+
+def ensure_feedback_table(connection):
+    connection.execute("""CREATE TABLE IF NOT EXISTS site_feedback (
+        feedback_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL CHECK(kind IN ('contact','report')),
+        title TEXT NOT NULL, body TEXT NOT NULL,
+        discord_id TEXT NOT NULL, email TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new','read','done')),
+        created_epoch INTEGER NOT NULL, handled_by TEXT, handled_epoch INTEGER)""")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_site_feedback_status ON site_feedback(status, feedback_id)")
+    # Personal data in submissions is destroyed once its retention period ends.
+    connection.execute("DELETE FROM site_feedback WHERE created_epoch < ?",
+                       (int(time.time()) - FEEDBACK_RETENTION_SECONDS,))
+
+
+def submit_feedback(payload):
+    """A public Contact/Report submission: every field is required, as on the Notion forms."""
+    kind = str(payload.get("kind", "")).strip()
+    if kind not in FEEDBACK_KINDS:
+        raise ValueError("invalid_kind")
+    if payload.get("consent") not in (True, "on", "true"):
+        raise ValueError("consent_required")  # 개인정보 수집·이용 동의
+    limits = {"title": 120, "body": 4000, "discordId": 64, "email": 254}
+    values = {}
+    for key, limit in limits.items():
+        value = payload.get(key)
+        if not isinstance(value, str) or not value.strip() or len(value.strip()) > limit:
+            raise ValueError(f"invalid_{key}")
+        values[key] = value.strip()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", values["email"]):
+        raise ValueError("invalid_email")
+    with connect_db(timeout=5) as connection:
+        ensure_feedback_table(connection)
+        feedback_id = connection.execute(
+            "INSERT INTO site_feedback(kind,title,body,discord_id,email,created_epoch) VALUES (?,?,?,?,?,?)",
+            (kind, values["title"], values["body"], values["discordId"], values["email"], int(time.time())),
+        ).lastrowid
+    return {"id": feedback_id, "kind": kind}
+
+
+def admin_feedback(status=None):
+    with connect_db(timeout=5) as connection:
+        ensure_feedback_table(connection)
+        rows = connection.execute(
+            "SELECT * FROM site_feedback WHERE (? IS NULL OR status=?) ORDER BY feedback_id DESC LIMIT 200",
+            (status, status),
+        ).fetchall()
+        unread = connection.execute("SELECT COUNT(*) FROM site_feedback WHERE status='new'").fetchone()[0]
+    return {"items": [dict(row) for row in rows], "unread": int(unread)}
+
+
+def admin_feedback_delete(actor, payload):
+    """Delete read submissions: the given ids, or every read one with all=true. New ones stay."""
+    with connect_db(timeout=5) as connection:
+        ensure_feedback_table(connection)
+        if payload.get("all") is True:
+            removed = connection.execute("DELETE FROM site_feedback WHERE status<>'new'").rowcount
+        else:
+            ids = payload.get("ids")
+            if (not isinstance(ids, list) or not ids or len(ids) > 500
+                    or any(isinstance(i, bool) or not isinstance(i, int) for i in ids)):
+                raise ValueError("삭제할 문의·신고를 골라 주세요.")
+            marks = ",".join("?" for _ in ids)
+            removed = connection.execute(
+                f"DELETE FROM site_feedback WHERE status<>'new' AND feedback_id IN ({marks})", ids).rowcount
+        _audit_db(connection, actor, "site.feedback.delete", {"all": payload.get("all") is True,
+                                                               "ids": payload.get("ids"), "removed": removed})
+    return f"✅ 읽은 문의·신고 {removed}건을 삭제했습니다." + ("" if removed else " (새 알림은 먼저 열어 확인해야 삭제할 수 있습니다.)")
+
+
+def admin_feedback_action(actor, feedback_id, payload):
+    status = payload.get("status")
+    if status not in FEEDBACK_STATUSES:
+        raise ValueError("상태는 new·read·done 중 하나입니다.")
+    with connect_db(timeout=5) as connection:
+        ensure_feedback_table(connection)
+        changed = connection.execute(
+            "UPDATE site_feedback SET status=?,handled_by=?,handled_epoch=? WHERE feedback_id=?",
+            (status, actor, int(time.time()), int(feedback_id)),
+        ).rowcount
+        if not changed:
+            raise ValueError("문의·신고를 찾을 수 없습니다.")
+        _audit_db(connection, actor, "site.feedback", {"id": int(feedback_id), "status": status})
+    return "✅ 처리 상태를 바꿨습니다."
+
+
 def ensure_auth_table(connection):
     connection.execute("""CREATE TABLE IF NOT EXISTS web_auth_credentials (
         user_id TEXT PRIMARY KEY REFERENCES users(user_id) ON DELETE CASCADE,
@@ -499,7 +592,18 @@ def instruments(include_inactive=False):
         has_warnings = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='trading_warnings'").fetchone()
         warnings = TradingWarnings.active(connection) if has_warnings else {}
+        # 24-hour activity for the HTS "실시간 추천" list: price change and traded value.
+        since = int(time.time()) - 86400
+        opening = {code: price for code, price, _ in connection.execute(
+            "SELECT asset_code,price,MIN(recorded_epoch) FROM market_price_history "
+            "WHERE recorded_epoch>=? GROUP BY asset_code", (since,))} if _table_exists(connection, "market_price_history") else {}
+        traded = {code: (value, count) for code, value, count in connection.execute(
+            "SELECT asset_code,SUM(quantity*price),COUNT(*) FROM market_trade_history "
+            "WHERE recorded_epoch>=? GROUP BY asset_code", (since,))} if _table_exists(connection, "market_trade_history") else {}
         for row in rows:
+            start = opening.get(row["code"])
+            row["change24h"] = (float(row["price"]) / float(start) - 1) * 100 if start and row["price"] else None
+            row["tradeValue24h"], row["trades24h"] = traded.get(row["code"], (0, 0))
             if row["type"] == "mutual_fund":
                 row["components"] = components.get(row["code"], [])
             warning = warnings.get(row["code"])
@@ -865,30 +969,39 @@ def manage_fund(actor, code, payload=None):
                                          payload['side'], payload['quantity'], payload['price'])
     elif action == 'cancel' and set(payload) == {'action', 'orderId'}:
         success, message = manager.cancel(actor, code, payload['orderId'])
+    elif action == 'rebalance' and set(payload) == {'action'}:
+        return manager.rebalance(actor, code)
     else:
         raise ValueError('펀드 작업 또는 입력 필드를 확인해주세요.')
     return {'success': success, 'message': message, 'fund': manager.snapshot(code)}
 
 
-def admin_users(search):
+def admin_users(search, kind="people"):
+    """People and country accounts (``kind='people'``) or company capital accounts (``kind='company'``)."""
     term = f"%{search.strip()}%"
     with connect_readonly() as connection:
+        has_companies = _table_exists(connection, "company_accounts")
+        company = "EXISTS(SELECT 1 FROM company_accounts a WHERE a.user_id=users.user_id)" if has_companies else "0"
         rows = connection.execute(
             "SELECT user_id,nickname,nationality,"
             "CASE WHEN user_id=nationality AND EXISTS(SELECT 1 FROM country_currencies c "
             "WHERE c.nationality=users.user_id) THEN COALESCE((SELECT t.cash FROM users t "
             "WHERE t.user_id=? AND t.nationality=users.nationality),cash) "
             "ELSE cash END AS cash,credit_score,status,role, "
-            "CASE WHEN user_id=nationality AND EXISTS(SELECT 1 FROM country_currencies c "
-            "WHERE c.nationality=users.user_id) THEN 'country' ELSE 'discord' END AS account_type "
-            "FROM users WHERE user_id<>? AND (user_id LIKE ? OR nickname LIKE ?) "
+            f"CASE WHEN {company} THEN 'company' "
+            "WHEN user_id=nationality AND EXISTS(SELECT 1 FROM country_currencies c "
+            "WHERE c.nationality=users.user_id) THEN 'country' ELSE 'discord' END AS account_type, "
+            + ("(SELECT a.company_code FROM company_accounts a WHERE a.user_id=users.user_id)" if has_companies else "NULL")
+            + " AS company_code FROM users WHERE user_id<>? AND (user_id LIKE ? OR nickname LIKE ?) "
+            f"AND {'' if kind == 'company' else 'NOT '}{company} "
             "ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END,nickname LIMIT 100",
             (TREASURY_USER_ID, TREASURY_USER_ID, term, term),
         ).fetchall()
     return [{"userId": row["user_id"], "nickname": row["nickname"],
              "nationality": row["nationality"], "cash": int(row["cash"] or 0),
              "creditScore": int(row["credit_score"] or 0), "status": row["status"],
-             "role": row["role"], "accountType": row["account_type"]} for row in rows]
+             "role": row["role"], "accountType": row["account_type"],
+             "companyCode": row["company_code"]} for row in rows]
 
 
 def _table_exists(connection, name):
@@ -914,12 +1027,67 @@ def admin_events(limit=50):
     return [{**dict(row), "active": row["starts_epoch"] <= now < row["ends_epoch"]} for row in rows]
 
 
+def admin_market_flows(limit=100):
+    """Automatic price targets drawn by the market engine, newest first."""
+    with connect_readonly() as connection:
+        if not _table_exists(connection, "market_auto_target_history"):
+            return []
+        rows = connection.execute(
+            "SELECT history_id,asset_code,anchor_price,target_price,start_epoch,end_epoch "
+            "FROM market_auto_target_history ORDER BY history_id DESC LIMIT ?", (limit,)).fetchall()
+    now = int(time.time())
+    return [{**dict(row), "change_percent": (row["target_price"] / row["anchor_price"] - 1) * 100,
+             "active": row["start_epoch"] <= now < row["end_epoch"]} for row in rows]
+
+
+# Log tables an administrator may clear: (table, id column, condition that keeps a row deletable).
+LOG_TABLES = {
+    "events": ("market_events", "event_id", "ends_epoch<=:now"),
+    "flows": ("market_auto_target_history", "history_id", "1"),
+    "audit": ("admin_audit", "audit_id", "1"),
+    "jobs": ("web_bot_jobs", "job_id", "status IN ('done','failed')"),
+}
+LOG_NAMES = {"events": "시장 사건", "flows": "알고리즘 시장 흐름", "audit": "작업 기록", "jobs": "봇 작업"}
+
+
+def admin_log_delete(actor, log, payload):
+    """Delete log rows: the given ids, or every deletable one with all=true.
+
+    Running market events and pending bot jobs are never deleted. Clearing the
+    work log leaves one audit entry recording the deletion itself.
+    """
+    if log not in LOG_TABLES:
+        raise ValueError("삭제할 기록 종류를 확인해주세요.")
+    table, key, keep = LOG_TABLES[log]
+    params = {"now": int(time.time())}
+    if payload.get("all") is True:
+        scope = "1"
+    else:
+        ids = payload.get("ids")
+        if (not isinstance(ids, list) or not ids or len(ids) > 1000
+                or any(isinstance(i, bool) or not isinstance(i, int) for i in ids)):
+            raise ValueError("삭제할 기록을 골라 주세요.")
+        scope = f"{key} IN ({','.join(f':i{n}' for n in range(len(ids)))})"
+        params.update({f"i{n}": value for n, value in enumerate(ids)})
+    with connect_db(timeout=5) as connection:
+        if not _table_exists(connection, table):
+            return f"✅ 삭제할 {LOG_NAMES[log]}이 없습니다."
+        where = f"({keep}) AND {scope}"
+        if log == "events" and _table_exists(connection, "market_event_targets"):
+            connection.execute(f"DELETE FROM market_event_targets WHERE event_id IN (SELECT event_id FROM market_events WHERE {where})", params)
+        removed = connection.execute(f"DELETE FROM {table} WHERE {where}", params).rowcount
+        _audit_db(connection, actor, f"log.{log}.delete", {"all": payload.get("all") is True,
+                                                            "ids": payload.get("ids"), "removed": removed})
+    skipped = " 진행 중인 사건은 삭제하지 않습니다." if log == "events" else " 대기·처리 중인 작업은 삭제하지 않습니다." if log == "jobs" else ""
+    return f"✅ {LOG_NAMES[log]} {removed}건을 삭제했습니다.{skipped if not removed or payload.get('all') is True else ''}"
+
+
 def admin_audit(limit=50):
     with connect_readonly() as connection:
         if not _table_exists(connection, "admin_audit"):
             return []
         rows = connection.execute(
-            "SELECT actor_id,action,payload,recorded_epoch FROM admin_audit "
+            "SELECT audit_id,actor_id,action,payload,recorded_epoch FROM admin_audit "
             "ORDER BY audit_id DESC LIMIT ?", (limit,),
         ).fetchall()
     entries = []
@@ -928,7 +1096,7 @@ def admin_audit(limit=50):
             payload = json.loads(row["payload"])
         except (TypeError, json.JSONDecodeError):
             payload = {"raw": row["payload"]}
-        entries.append({"actorId": row["actor_id"], "action": row["action"],
+        entries.append({"auditId": row["audit_id"], "actorId": row["actor_id"], "action": row["action"],
                         "payload": payload, "time": float(row["recorded_epoch"])})
     return entries
 
@@ -1476,8 +1644,10 @@ def admin_user_detail(user_id):
             "SELECT asset_code,quantity FROM user_assets WHERE user_id=? AND quantity<>0 ORDER BY asset_code", (user_id,))] if _table_exists(connection, "user_assets") else []
         country = connection.execute(
             "SELECT 1 FROM country_currencies WHERE nationality=?", (user_id,)).fetchone()
+        company = _table_exists(connection, "company_accounts") and connection.execute(
+            "SELECT 1 FROM company_accounts WHERE user_id=?", (user_id,)).fetchone()
     user = {key: _cell(row[key]) for key in row.keys()}
-    return {"user": user, "accountType": "country" if country and row["nationality"] == user_id else "discord",
+    return {"user": user, "accountType": "company" if company else "country" if country and row["nationality"] == user_id else "discord",
             "webLogin": dict(credential) if credential else None,
             "accounts": [_masked(item) for item in accounts],
             "loans": [_masked(item) for item in loans],
@@ -2004,14 +2174,15 @@ class Handler(BaseHTTPRequestHandler):
                 if not user or user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
                 else:
-                    search = parse_qs(parsed.query).get("search", [""])[0]
-                    self.send_json(200, {"users": admin_users(search)})
+                    query = parse_qs(parsed.query)
+                    kind = "company" if query.get("kind", [""])[0] == "company" else "people"
+                    self.send_json(200, {"users": admin_users(query.get("search", [""])[0], kind)})
             elif path == "/internal/admin/events":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
                 else:
-                    self.send_json(200, {"events": admin_events()})
+                    self.send_json(200, {"events": admin_events(), "flows": admin_market_flows()})
             elif path == "/internal/admin/audit":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -2025,7 +2196,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.send_json(200, admin_command_catalog())
             elif path.startswith("/internal/admin/") and path.split("/")[3] in {
-                    "products", "countries", "exchanges", "help", "bot-jobs", "user", "companies", "warnings"}:
+                    "products", "countries", "exchanges", "help", "bot-jobs", "user", "companies", "warnings", "feedback"}:
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
@@ -2056,6 +2227,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, admin_company_financial(parts[1], query.get("period", [None])[0]))
                 elif parts == ["warnings"]:
                     self.send_json(200, admin_warnings())
+                elif parts == ["feedback"]:
+                    self.send_json(200, admin_feedback(query.get("status", [None])[0]))
                 elif len(parts) == 2 and parts[0] == "companies":
                     self.send_json(200, admin_company_detail(parts[1]))
                 else:
@@ -2162,6 +2335,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {"success": True})
                 return
 
+            if path == "/internal/site/feedback":
+                # Public: the official site's Contact/Report forms (no login).
+                self.send_json(201, {"feedback": submit_feedback(payload)})
+                return
             if path == "/internal/admin/companies/login":
                 user = identity(verified_id)
                 if not user or user["role"] != "admin":
@@ -2258,7 +2435,7 @@ class Handler(BaseHTTPRequestHandler):
                     success, message = create_fund(user["userId"], payload)
                     self.send_json(201 if success else 400, {"success": success, "message": message})
             elif path.startswith("/internal/admin/") and path.split("/")[3] in {
-                    "products", "countries", "exchanges", "user", "companies", "warnings"}:
+                    "products", "countries", "exchanges", "user", "companies", "warnings", "feedback", "logs"}:
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
                     return
@@ -2280,6 +2457,12 @@ class Handler(BaseHTTPRequestHandler):
                     message = admin_company_command(actor, parts[1], payload)
                 elif len(parts) == 2 and parts[0] == "warnings":
                     message = admin_warning_action(actor, parts[1], payload)
+                elif len(parts) == 3 and parts[0] == "logs" and parts[2] == "delete":
+                    message = admin_log_delete(actor, parts[1], payload)
+                elif parts == ["feedback", "delete"]:
+                    message = admin_feedback_delete(actor, payload)
+                elif len(parts) == 2 and parts[0] == "feedback":
+                    message = admin_feedback_action(actor, parts[1], payload)
                 elif len(parts) == 2 and parts[0] == "user":
                     message = admin_update_user(actor, parts[1], payload.get("changes"))
                 elif len(parts) == 3 and parts[0] == "user" and parts[2] == "web":

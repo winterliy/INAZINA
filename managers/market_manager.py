@@ -550,7 +550,20 @@ class MarketManager:
                          "ON CONFLICT(asset_code) DO UPDATE SET anchor_price = excluded.anchor_price, "
                          "target_price = excluded.target_price, start_epoch = excluded.start_epoch, end_epoch = excluded.end_epoch",
                          (code, cycle.anchor_price, cycle.target_price, cycle.start_epoch, cycle.end_epoch))
+            self._record_auto_targets(conn, [(code, cycle.anchor_price, cycle.target_price, cycle.start_epoch, cycle.end_epoch)])
         return cycle
+
+    # The event log keeps this many automatic targets; older ones are pruned.
+    AUTO_TARGET_HISTORY_LIMIT = 5000
+
+    def _record_auto_targets(self, conn, rows):
+        rows = list(rows)
+        if not rows:
+            return
+        conn.executemany('INSERT INTO system.market_auto_target_history '
+                         '(asset_code,anchor_price,target_price,start_epoch,end_epoch) VALUES (?,?,?,?,?)', rows)
+        conn.execute('DELETE FROM system.market_auto_target_history WHERE history_id <= '
+                     '(SELECT MAX(history_id) FROM system.market_auto_target_history) - ?', (self.AUTO_TARGET_HISTORY_LIMIT,))
 
     def _stochastic_price(self, conn, code, price, now, settings, volatility, condition, legacy_events, profile=None, sector_key=None):
         profile = profile or {}
@@ -695,6 +708,7 @@ class MarketManager:
             'ON CONFLICT(asset_code) DO UPDATE SET anchor_price=excluded.anchor_price, '
             'target_price=excluded.target_price,start_epoch=excluded.start_epoch,end_epoch=excluded.end_epoch',
             batch['target_updates'].values())
+        self._record_auto_targets(conn, batch['target_updates'].values())
         conn.executemany('INSERT INTO market_simulation_state '
             '(asset_code,variance,innovation,latent_price,last_epoch,last_display_price,event_id) VALUES (?,?,?,?,?,?,?) '
             'ON CONFLICT(asset_code) DO UPDATE SET variance=excluded.variance,innovation=excluded.innovation, '

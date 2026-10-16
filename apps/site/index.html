@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="NACURI — Discord 서버 안에서 국가·화폐·은행·거래소·회사를 운영하는 경제 시뮬레이션 봇">
+  <meta name="theme-color" content="#485c10">
+  <title>NACURI 3.0.0a</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Crimson+Text:ital,wght@0,400;0,600;1,400&family=DM+Mono:wght@400;500&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&family=Noto+Sans+KR:wght@400;500;700&family=Noto+Serif+KR:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+  <a class="skip" href="#main">본문으로 건너뛰기</a>
+
+  <header class="nav-bar">
+    <a class="brand" href="#top" aria-label="NACURI 처음으로">NACURI</a>
+    <nav class="nav-pill" aria-label="주요 메뉴">
+      <a href="#introduction">소개</a>
+      <a href="#update">업데이트</a>
+      <a href="#invite">초대</a>
+      <a href="#support">고객지원</a>
+      <a href="#links">문서</a>
+    </nav>
+    <a class="btn linkout" href="https://discord.com/oauth2/authorize?client_id=1514653320571260990&permissions=8&integration_type=0&scope=bot" target="_blank" rel="noopener">Make a Friend <span aria-hidden="true">↗</span></a>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top">
+      <h1>Meet NACURI.</h1>
+      <div class="hero-stage">
+        <figure class="embed" aria-label="Discord에서 /내지갑을 실행한 예시">
+          <div class="embed-head"><span class="bot-avatar" aria-hidden="true">N</span><b>Inazina</b><span class="badge">앱</span><time>오늘 오후 9:41</time></div>
+          <div class="embed-card">
+            <strong>💰 시민님의 자산 현황</strong>
+            <p>국적: <b>낙원</b> · 기본 통화: <b>NWX</b></p>
+            <dl>
+              <div><dt>💵 현금</dt><dd>1,284,500 NWX</dd></div>
+              <div><dt>🏦 통장 잔액</dt><dd>350,000 NWX</dd></div>
+              <div><dt>📈 투자자산</dt><dd>2,018,300 NWX</dd></div>
+              <div><dt>🧾 순자산</dt><dd>3,652,800 NWX</dd></div>
+            </dl>
+          </div>
+          <figcaption><kbd>/내지갑</kbd> 한 줄이면 내 경제가 보입니다.</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="strip" aria-label="NACURI 정보">
+      <p class="label">Runs on:</p>
+      <ul class="chips">
+        <li><b>3.0.0a</b><span>현재 버전</span></li>
+        <li><b>Discord</b><span>슬래시 명령어</span></li>
+        <li><b>HTS</b><span>웹 거래 화면</span></li>
+        <li><b>Dashboard</b><span>운영진 관리</span></li>
+        <li><b>24/7</b><span>실시간 시세</span></li>
+      </ul>
+    </section>
+
+    <section class="benefits" id="introduction">
+      <div class="section-text">
+        <p class="eyebrow">Introduction</p>
+        <h2>안녕하세요!</h2>
+        <p class="lead">NACURI는 Discord 서버 안에 작은 경제를 세우는 봇입니다. 서버마다 나라와 화폐를 갖고, 시민은 은행에 예금하고, 거래소에서 주식을 사고, 회사를 키우며 배당을 받습니다. 봇의 이름은 <b>Inazina</b>예요.</p>
+      </div>
+      <ul class="icons">
+        <li>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z"/></svg>
+          <h3>나라와 화폐</h3>
+          <p>서버를 등록하면 나라가 됩니다. 나라마다 자기 화폐·기준금리·세율·국고가 있고, 다른 나라 화폐는 환율로 환전합니다.</p>
+        </li>
+        <li>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>
+          <h3>살아 있는 거래소</h3>
+          <p>주식·ETF·펀드·채권·선물·옵션·ELS를 지정가로 사고팝니다. 시세는 호가와 시장 흐름에 따라 실시간으로 움직입니다.</p>
+        </li>
+        <li>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10l9-6 9 6M5 10v8M9.5 10v8M14.5 10v8M19 10v8M3 20h18"/></svg>
+          <h3>은행과 신용</h3>
+          <p>예금·CMA·외환통장으로 이자를 받고, 신용점수와 상환 능력을 심사받아 대출을 씁니다. 연체하면 신용이 떨어져요.</p>
+        </li>
+        <li>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 21V7l8-4 8 4v14M9 21v-6h6v6M9 10h.01M15 10h.01"/></svg>
+          <h3>회사와 배당</h3>
+          <p>회사는 증자·배당·합병을 하고 재무제표를 냅니다. 최대주주는 주주총회를 소집할 수 있어요.</p>
+        </li>
+      </ul>
+      <img class="wide-image" src="/assets/landscape.jpg" alt="능선이 겹겹이 이어진 산악 풍경" width="1800" height="1012" loading="lazy">
+    </section>
+
+    <section class="features">
+      <div class="features-text">
+        <h2>See the Big Picture</h2>
+        <p class="lead">명령어 하나로 내 지갑부터 나라 경제까지 한눈에 봅니다. 숫자를 뒤질 필요가 없어요.</p>
+        <ol class="numbered">
+          <li><b>01</b><span><strong>한 줄로 시작:</strong> <kbd>/등록</kbd> 후 바로 지갑과 거래소를 씁니다.</span></li>
+          <li><b>02</b><span><strong>디스코드와 웹을 함께:</strong> 같은 계정으로 HTS 웹 화면에서 차트를 보며 주문합니다.</span></li>
+          <li><b>03</b><span><strong>공정한 시장:</strong> 모든 거래는 호가로 체결되고, 이상 급등 종목에는 투자경고가 붙습니다.</span></li>
+          <li><b>04</b><span><strong>운영진이 지키는 규칙:</strong> 세금·금리·서킷브레이커를 운영진이 관리합니다.</span></li>
+        </ol>
+        <button class="btn primary" type="button" data-doc="help">명령어 보기</button>
+      </div>
+      <figure class="feature-image"><img src="/assets/pedestals.jpg" alt="크기가 다른 원기둥 받침대들" width="1800" height="1440" loading="lazy"></figure>
+    </section>
+
+    <section class="update" id="update">
+      <div class="section-text narrow">
+        <p class="mono-label">Update</p>
+        <h2>What's new</h2>
+        <p class="lead">NACURI 3.0.0a에서 달라진 점입니다. (+)는 추가·개선, (−)는 정리된 항목이에요.</p>
+      </div>
+      <div class="update-table">
+        <article class="update-column highlight">
+          <header><span class="date">📣 2026. 10. 05</span><b>3.0.0a</b></header>
+          <ul>
+            <li><span class="plus">+</span>최적화 업데이트</li>
+            <li class="sub"><span class="plus">+</span>버그 수정</li>
+            <li class="sub"><span class="minus">−</span>명령어 간단화</li>
+            <li><span class="minus">−</span>일부 중복 기능 정리</li>
+          </ul>
+        </article>
+        <article class="update-column">
+          <header><span class="date">Economy</span><b>경제</b></header>
+          <ul>
+            <li><span class="plus">+</span>나라마다 다른 화폐와 국고</li>
+            <li><span class="plus">+</span>외환통장과 실시간 환율</li>
+            <li><span class="plus">+</span>CMA · IMA · 랩어카운트</li>
+            <li><span class="plus">+</span>금리스왑</li>
+          </ul>
+        </article>
+        <article class="update-column">
+          <header><span class="date">Market</span><b>시장</b></header>
+          <ul>
+            <li><span class="plus">+</span>ETN · 전환사채 · 신주인수권부사채</li>
+            <li><span class="plus">+</span>주주명부 기반 배당</li>
+            <li><span class="plus">+</span>투자주의 · 경고 · 위험 표시</li>
+            <li><span class="plus">+</span>HTS 웹 거래 화면</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="quote-section">
+      <img src="/assets/balance.jpg" alt="크고 작은 돌 구슬이 균형을 이루며 쌓인 조각" width="1800" height="900" loading="lazy">
+      <blockquote>
+        <p>“NACURI는 숫자를 모으는 게임이 아니라, 서로 거래하고 빌려주고 함께 회사를 키우는 작은 사회예요. 균형은 시민과 운영진이 같이 지킵니다.”</p>
+        <footer><b>NACURI 운영팀</b><span>Inazina Bot</span></footer>
+      </blockquote>
+    </section>
+
+    <section class="how" id="invite">
+      <div class="how-head">
+        <h2>How to invite</h2>
+        <a class="btn primary" href="https://discord.com/oauth2/authorize?client_id=1514653320571260990&permissions=8&integration_type=0&scope=bot" target="_blank" rel="noopener">Make a Friend</a>
+      </div>
+      <ol class="steps">
+        <li><span class="step-no">01</span><h3>Make a Friend</h3><p>위 버튼을 누르고, 봇을 들일 내 Discord 서버를 고릅니다.</p></li>
+        <li><span class="step-no">02</span><h3>서버 등록</h3><p>서버 관리자가 <kbd>/설치</kbd>로 신청하면 운영진이 나라와 화폐를 연결해 줍니다.</p></li>
+        <li><span class="step-no">03</span><h3>/등록</h3><p>시민 한 명 한 명이 <kbd>/등록</kbd>을 실행하면 지갑이 열리고 경제가 시작됩니다.</p></li>
+      </ol>
+    </section>
+
+    <figure class="wide-figure"><img src="/assets/coast.jpg" alt="해안 언덕을 굽이굽이 가로지르는 길" width="1800" height="1012" loading="lazy"></figure>
+
+    <section class="cta" id="support">
+      <h2>🔔 Customer Support</h2>
+      <p class="lead">궁금한 점은 Contact로, 버그·악용·규칙 위반은 Report로 알려 주세요. 운영진 대시보드로 바로 전달됩니다.</p>
+      <div class="cta-buttons">
+        <button class="btn linkout wide" type="button" data-form="contact">📞 Contact</button>
+        <button class="btn linkout wide" type="button" data-form="report">🚨 Report</button>
+      </div>
+    </section>
+
+    <section class="links" id="links">
+      <h2>➡️ LINK to</h2>
+      <ul class="doc-list">
+        <li><button type="button" data-doc="help"><span>📢 HELP - 명령어 도움말</span><span aria-hidden="true">→</span></button></li>
+        <li><button type="button" data-doc="privacy"><span>📢 개인정보 처리방침</span><span aria-hidden="true">→</span></button></li>
+        <li><button type="button" data-doc="terms"><span>📢 서비스 이용약관</span><span aria-hidden="true">→</span></button></li>
+        <li><button type="button" data-doc="operations"><span>📢 서비스 운영규칙</span><span aria-hidden="true">→</span></button></li>
+        <li><button type="button" data-doc="internal"><span>📢 서비스 내부규칙</span><span aria-hidden="true">→</span></button></li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <nav aria-label="바닥글 메뉴">
+      <a href="#introduction">소개</a><a href="#update">업데이트</a><a href="#invite">초대</a><a href="#support">고객지원</a>
+    </nav>
+    <div class="credits"><span class="mark" aria-hidden="true">N</span><span>© NACURI.</span><span>2026</span><span class="spacer"></span><span>All Rights Reserved</span></div>
+  </footer>
+
+  <dialog id="doc-dialog" aria-labelledby="doc-title">
+    <div class="dialog-head"><h2 id="doc-title">문서</h2><button type="button" class="close" data-close aria-label="닫기">✕</button></div>
+    <div id="doc-body" class="doc-body"></div>
+  </dialog>
+
+  <dialog id="form-dialog" aria-labelledby="form-title">
+    <form id="feedback-form" method="dialog" novalidate>
+      <div class="dialog-head"><h2 id="form-title">Contact</h2><button type="button" class="close" data-close aria-label="닫기">✕</button></div>
+      <input type="hidden" name="kind" value="contact">
+      <label>제목 <span class="req">*</span><input name="title" required maxlength="120" autocomplete="off"></label>
+      <label>내용 <span class="req">*</span><textarea name="body" required maxlength="4000" rows="6"></textarea></label>
+      <label>디스코드 아이디 <span class="req">*</span><input name="discordId" required maxlength="64" autocomplete="off">
+        <small data-hint="discord">* 작성자 본인의 디스코드 아이디를 요구합니다. 미입력 시 처리가 어렵습니다.</small></label>
+      <label>이메일 <span class="req">*</span><input name="email" type="email" required maxlength="254" autocomplete="email">
+        <small>* 작성자 본인의 이메일을 요구합니다. 미입력 시 처리가 어렵습니다.</small></label>
+      <fieldset class="consent">
+        <legend>개인정보 수집·이용 동의 <span class="req">*</span></legend>
+        <p>수집 항목: 디스코드 아이디, 이메일, 작성 내용 · 목적: 문의·신고 확인과 답변, 부정 이용 조사 · 보유 기간: 접수 후 1년 (이후 파기)</p>
+        <p>동의하지 않을 수 있으며, 이 경우 양식으로 문의·신고를 보낼 수 없습니다. 자세한 내용은 <button type="button" class="text-link" data-doc="privacy">개인정보 처리방침</button>을 확인해 주세요.</p>
+        <label class="check"><input type="checkbox" name="consent" required> 위 내용에 동의합니다.</label>
+      </fieldset>
+      <p class="form-status" role="status" aria-live="polite"></p>
+      <button class="btn primary" type="submit">보내기</button>
+    </form>
+  </dialog>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

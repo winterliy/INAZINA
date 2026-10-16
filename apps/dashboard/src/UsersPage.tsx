@@ -3,9 +3,9 @@ import type { FormEvent } from "react";
 import { api } from "../../shared/api";
 import { Card, Field, Tabs, changed, date, number, plain, show, text, type Ctx } from "./common";
 
-type Citizen = { userId: string; nickname: string; nationality: string; cash: number; creditScore: number; status: string; role: string; accountType: "discord" | "country" };
+type Citizen = { userId: string; nickname: string; nationality: string; cash: number; creditScore: number; status: string; role: string; accountType: "discord" | "country" | "company"; companyCode: string | null };
 type WebLogin = { hts_id: string | null; created_epoch: number; updated_epoch: number; auth_version: number };
-type UserDetail = { user: Record<string, string | number | null>; accountType: "discord" | "country"; webLogin: WebLogin | null; accounts: Record<string, unknown>[]; loans: Record<string, unknown>[]; holdings: { asset_code: string; quantity: number }[] };
+type UserDetail = { user: Record<string, string | number | null>; accountType: "discord" | "country" | "company"; webLogin: WebLogin | null; accounts: Record<string, unknown>[]; loans: Record<string, unknown>[]; holdings: { asset_code: string; quantity: number }[] };
 type Country = { nationality: string; currency_code: string; currency_name: string | null; base_rate: number; legal_max_rate: number; tax_percent: number; treasuryId: string | null; treasuryCash: number | null; citizens: number; guilds: string[]; exchanges: string[]; account: { status: string; role: string; hts_id: string | null } | null };
 type Result = { message: string; success: boolean };
 
@@ -15,17 +15,18 @@ const USER_FIELDS: [string, string, string?][] = [
 ];
 
 export function UsersPage({ ctx, currentUserId }: { ctx: Ctx; currentUserId: string }) {
-  const [tab, setTab] = useState<"users" | "countries">("users");
+  const [tab, setTab] = useState<"users" | "companies" | "countries">("users");
   const [countries, setCountries] = useState<Country[]>([]);
   const loadCountries = useCallback(async () => setCountries((await api<{ countries: Country[] }>("/api/admin/countries")).countries), []);
   useEffect(() => { loadCountries().catch((cause) => ctx.say(cause instanceof Error ? cause.message : "국가를 불러오지 못했습니다.", true)); }, [loadCountries]);
   return <>
-    <Tabs label="사용자 종류" value={tab} onChange={setTab} options={[["users", "사용자"], ["countries", "국가 · 국가 계정", countries.length]]} />
-    {tab === "users" ? <UserTab ctx={ctx} countries={countries} currentUserId={currentUserId} /> : <CountryTab ctx={ctx} countries={countries} reload={loadCountries} />}
+    <Tabs label="사용자 종류" value={tab} onChange={setTab} options={[["users", "사용자"], ["companies", "법인"], ["countries", "국가 · 국가 계정", countries.length]]} />
+    {tab === "countries" ? <CountryTab ctx={ctx} countries={countries} reload={loadCountries} />
+      : <UserTab key={tab} ctx={ctx} countries={countries} currentUserId={currentUserId} companies={tab === "companies"} />}
   </>;
 }
 
-function UserTab({ ctx, countries, currentUserId }: { ctx: Ctx; countries: Country[]; currentUserId: string }) {
+function UserTab({ ctx, countries, currentUserId, companies }: { ctx: Ctx; countries: Country[]; currentUserId: string; companies: boolean }) {
   const { busy, run, say, query, openCommand } = ctx;
   const [citizens, setCitizens] = useState<Citizen[]>([]);
   const [detail, setDetail] = useState<UserDetail | null>(null);
@@ -34,7 +35,7 @@ function UserTab({ ctx, countries, currentUserId }: { ctx: Ctx; countries: Count
   const [htsId, setHtsId] = useState("");
   const [nationality, setNationality] = useState("");
 
-  const loadList = useCallback(async () => setCitizens((await api<{ users: Citizen[] }>(`/api/admin/users?search=${encodeURIComponent(query)}`)).users), [query]);
+  const loadList = useCallback(async () => setCitizens((await api<{ users: Citizen[] }>(`/api/admin/users?search=${encodeURIComponent(query)}${companies ? "&kind=company" : ""}`)).users), [query, companies]);
   useEffect(() => { loadList().catch((cause) => say(cause instanceof Error ? cause.message : "사용자를 불러오지 못했습니다.", true)); }, [loadList]);
 
   async function open(userId: string) {
@@ -85,7 +86,7 @@ function UserTab({ ctx, countries, currentUserId }: { ctx: Ctx; countries: Count
   const id = detail ? String(detail.user.user_id) : "";
   return <>
     {detail && <>
-      <Card title={`${detail.user.nickname} 설정`} caption={<><span className="mono">{id}</span> · {detail.accountType === "country" ? "국가 계정" : "Discord 사용자"}</>}
+      <Card title={`${detail.user.nickname} 설정`} caption={<><span className="mono">{id}</span> · {detail.accountType === "country" ? "국가 계정" : detail.accountType === "company" ? "법인 자본 계정" : "Discord 사용자"}</>}
         actions={<><button className="soft" type="button" onClick={() => openCommand("잔고수정", id)}>잔고 가감 ($잔고수정)</button><button className="soft" type="button" onClick={() => setDetail(null)}>닫기</button></>}>
         <form className="form-grid" onSubmit={saveUser}>
           {USER_FIELDS.map(([key, label, hint]) => <Field key={key} label={label} hint={hint}>
@@ -96,7 +97,7 @@ function UserTab({ ctx, countries, currentUserId }: { ctx: Ctx; countries: Count
           <button className="btn primary" disabled={busy}>저장</button>
         </form>
       </Card>
-      <Card title="국적 변경" caption="국적을 바꾸면 모든 자산을 이전 국적 통화로 정리한 뒤 새 국적 통화로 환전합니다.">
+      {detail.accountType !== "company" && <><Card title="국적 변경" caption="국적을 바꾸면 모든 자산을 이전 국적 통화로 정리한 뒤 새 국적 통화로 환전합니다.">
         <div className="form-grid">
           <Field label="새 국적" hint={`현재 ${detail.user.nationality}`}><select value={nationality} onChange={(event) => setNationality(event.target.value)}>{countries.map((country) => <option key={country.nationality} value={country.nationality}>{country.nationality} · {country.currency_code}</option>)}</select></Field>
           <button className="btn primary" type="button" disabled={busy || !nationality || nationality === detail.user.nationality || detail.accountType === "country"} onClick={changeNationality}>국적 변경</button>
@@ -120,19 +121,19 @@ function UserTab({ ctx, countries, currentUserId }: { ctx: Ctx; countries: Count
             <button className="soft danger" type="button" disabled={busy || id === currentUserId} onClick={() => web("remove")}>웹 로그인 삭제</button>
           </>}
         </div>
-      </Card>
+      </Card></>}
       <Card title="계좌 · 대출 · 보유 자산" caption="읽기 전용입니다. 계좌 잔액은 $잔고수정, 그 밖의 값은 DB 편집에서 바꿉니다.">
         <div className="scroll-x"><table><thead><tr><th>계좌번호</th><th>상품</th><th>종류</th><th>통화</th><th className="r">잔액</th><th /></tr></thead><tbody>{detail.accounts.map((account) => <tr key={String(account.account_number)}><td className="mono">{show(account.account_number)}</td><td>{show(account.product_code)}</td><td>{show(account.account_type)}</td><td>{show(account.quote_currency)}</td><td className="r mono">{show(account.balance)}</td><td className="row-actions"><button className="soft small" onClick={() => openCommand("잔고수정", String(account.account_number))}>잔고</button></td></tr>)}</tbody></table>{!detail.accounts.length && <p className="empty">계좌가 없습니다.</p>}</div>
         <div className="scroll-x"><table><thead><tr><th>대출</th><th>상품</th><th>상태</th><th className="r">원금</th><th className="r">잔액</th><th>만기</th></tr></thead><tbody>{detail.loans.map((loan) => <tr key={String(loan.loan_id)}><td className="mono">#{show(loan.loan_id)}</td><td>{show(loan.product_code)}</td><td>{show(loan.status)}</td><td className="r mono">{show(loan.principal)}</td><td className="r mono">{show(loan.outstanding_balance)}</td><td>{loan.maturity_epoch ? date(Number(loan.maturity_epoch)) : "—"}</td></tr>)}</tbody></table>{!detail.loans.length && <p className="empty">대출이 없습니다.</p>}</div>
         <div className="chips">{detail.holdings.map((item) => <span key={item.asset_code} className="tag">{item.asset_code} · {number(item.quantity)}</span>)}{!detail.holdings.length && <span className="hint">보유 자산이 없습니다.</span>}</div>
       </Card>
     </>}
-    <Card title="사용자 계정" caption="최대 100명 · 행을 누르면 모든 설정을 엽니다. 서버 시민 등록은 관리자 명령어의 $등록·$서버설치를 사용합니다.">
-      <div className="scroll-x tall"><table><thead><tr><th>사용자</th><th>유형</th><th>ID</th><th>국적</th><th className="r">현금</th><th className="r">신용</th><th>권한</th><th>상태</th></tr></thead><tbody>
+    <Card title={companies ? "법인 계정" : "사용자 계정"} caption={companies ? "법인 자본 계정은 회사가 처음 거래·예금·대출할 때 만들어집니다. 행을 누르면 계좌·대출·보유 자산을 봅니다. 자본 변경은 법인 자본 화면에서 합니다." : "최대 100명 · 행을 누르면 모든 설정을 엽니다. 서버 시민 등록은 관리자 명령어의 $등록·$서버설치를 사용합니다."}>
+      <div className="scroll-x tall"><table><thead><tr><th>{companies ? "법인" : "사용자"}</th><th>{companies ? "회사 코드" : "유형"}</th><th>ID</th><th>국적</th><th className="r">현금</th><th className="r">신용</th><th>권한</th><th>상태</th></tr></thead><tbody>
         {citizens.map((citizen) => <tr key={citizen.userId} className={citizen.userId === id ? "clickable selected" : "clickable"} tabIndex={0} onClick={() => void select(citizen.userId)} onKeyDown={(event) => { if (event.key === "Enter") void select(citizen.userId); }}>
-          <td>{citizen.nickname}</td><td>{citizen.accountType === "country" ? "국가" : "Discord"}</td><td className="mono">{citizen.userId}</td><td>{citizen.nationality}</td><td className="r mono">{number(citizen.cash)}</td><td className="r">{number(citizen.creditScore)}</td><td>{citizen.role}</td><td><span className={citizen.status === "active" ? "tag ok" : "tag warn"}>{citizen.status}</span></td>
+          <td>{citizen.nickname}</td><td className={companies ? "mono" : undefined}>{companies ? citizen.companyCode : citizen.accountType === "country" ? "국가" : "Discord"}</td><td className="mono">{citizen.userId}</td><td>{citizen.nationality}</td><td className="r mono">{number(citizen.cash)}</td><td className="r">{number(citizen.creditScore)}</td><td>{citizen.role}</td><td><span className={citizen.status === "active" ? "tag ok" : "tag warn"}>{citizen.status}</span></td>
         </tr>)}
-      </tbody></table>{!citizens.length && <p className="empty">사용자를 찾지 못했습니다.</p>}</div>
+      </tbody></table>{!citizens.length && <p className="empty">{companies ? "법인 계정이 없습니다." : "사용자를 찾지 못했습니다."}</p>}</div>
     </Card>
   </>;
 }

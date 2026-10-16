@@ -123,6 +123,7 @@ class CurrencyDB(DBManager):
                      "(SELECT CAST(value AS REAL) FROM settings WHERE key='tax_percent'),3)")
         self._init_country_rate_history()
         self._init_market_rate_structure()
+        self._init_credit_risk_scenarios()
         self._migrate_currency_wallets()
         self._normalize_home_currency_accounts()
         self.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('currency_exchange_fee_percent','0.1')")
@@ -154,6 +155,7 @@ class CurrencyDB(DBManager):
                        "mandatory_cost_fee", "collateral_amount", "collateral_seized",
                        "collateral_asset_value", "collateral_liquidated_value",
                        "provisioned_loss", "underwriting_income",
+                       "ecl_allowance",
                        "prepayment_fees_paid"),
              "loan_id", "NEW.quote_currency"),
             ("market_orders", ("limit_price", "reserved_cash"), "order_id",
@@ -172,6 +174,8 @@ class CurrencyDB(DBManager):
              "SELECT currency_code FROM country_currencies WHERE nationality=NEW.nationality"),
             ("loan_payment_schedule",
              ("principal_due", "interest_due", "fee_due", "amount_paid"), "schedule_id",
+             "SELECT quote_currency FROM loans WHERE loan_id=NEW.loan_id"),
+            ("loan_ecl_assessments", ("ead", "expected_loss"), "assessment_id",
              "SELECT quote_currency FROM loans WHERE loan_id=NEW.loan_id"),
             ("loan_collateral_assets",
              ("average_cost", "last_price", "last_value", "liquidation_price",
@@ -525,6 +529,7 @@ class CurrencyDB(DBManager):
             target_margin REAL NOT NULL DEFAULT 1 CHECK(target_margin BETWEEN -100 AND 100),
             competition_adjustment REAL NOT NULL DEFAULT 0 CHECK(competition_adjustment BETWEEN -100 AND 100)
         )""")
+
         institution_columns = {
             row[1] for row in self.execute("PRAGMA table_info(financial_institutions)")
         }
@@ -615,6 +620,38 @@ class CurrencyDB(DBManager):
                         WHERE f.issuer=liability.issuer),1.7)))
                 WHERE rate_type='floating' AND rate_nationality=NEW.nationality
                   AND benchmark_key=NEW.benchmark_key AND benchmark_tenor_days=NEW.tenor_days;
+            END""")
+
+    def _init_credit_risk_scenarios(self):
+        """Seed configurable forward-looking ECL scenarios for each country."""
+        self.execute("""CREATE TABLE IF NOT EXISTS credit_risk_scenarios (
+            nationality TEXT NOT NULL REFERENCES country_currencies(nationality),
+            scenario_key TEXT NOT NULL CHECK(scenario_key IN ('optimistic','base','downside')),
+            probability REAL NOT NULL CHECK(probability BETWEEN 0 AND 1),
+            pd_multiplier REAL NOT NULL CHECK(pd_multiplier BETWEEN 0 AND 20),
+            lgd_multiplier REAL NOT NULL CHECK(lgd_multiplier BETWEEN 0 AND 5),
+            updated_epoch REAL NOT NULL DEFAULT 0,
+            PRIMARY KEY(nationality,scenario_key)
+        )""")
+        defaults = (("optimistic", .20, .80, .90),
+                    ("base", .60, 1.00, 1.00),
+                    ("downside", .20, 2.00, 1.15))
+        for row in self.execute("SELECT nationality FROM country_currencies"):
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO credit_risk_scenarios "
+                "(nationality,scenario_key,probability,pd_multiplier,lgd_multiplier) "
+                "VALUES (?,?,?,?,?)",
+                [(row["nationality"], key, weight, pd_mult, lgd_mult)
+                 for key, weight, pd_mult, lgd_mult in defaults],
+            )
+        self.execute('DROP TRIGGER IF EXISTS trg_country_credit_scenario_seed')
+        self.execute("""CREATE TRIGGER trg_country_credit_scenario_seed
+            AFTER INSERT ON country_currencies BEGIN
+            INSERT OR IGNORE INTO credit_risk_scenarios
+            (nationality,scenario_key,probability,pd_multiplier,lgd_multiplier)
+            VALUES (NEW.nationality,'optimistic',.20,.80,.90),
+                   (NEW.nationality,'base',.60,1.00,1.00),
+                   (NEW.nationality,'downside',.20,2.00,1.15);
             END""")
 
     def _init_legal_rate_caps(self):

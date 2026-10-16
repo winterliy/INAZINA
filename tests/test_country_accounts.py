@@ -160,6 +160,33 @@ class CountryAccountTests(unittest.TestCase):
         self.assertEqual(status, 401)
         self.assertIn(b"internal_authentication_required", body)
 
+    def test_site_contact_and_report_reach_the_dashboard(self):
+        form = {"kind": "report", "title": "버그", "body": "송금이 두 번 됐어요", "discordId": "user#1", "email": "a@b.co",
+                "consent": True}
+        created = server.submit_feedback(form)
+        self.assertEqual(created["kind"], "report")
+        server.submit_feedback({**form, "kind": "contact", "title": "문의"})
+        listing = server.admin_feedback()
+        self.assertEqual((listing["unread"], len(listing["items"])), (2, 2))
+        for bad in ({**form, "consent": False}, {**form, "kind": "spam"}, {**form, "email": "nope"}, {**form, "title": " "}, {**form, "body": "x" * 4001}):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                server.submit_feedback(bad)
+        self.assertIn("✅", server.admin_feedback_action("admin-1", created["id"], {"status": "done"}))
+        self.assertEqual(server.admin_feedback()["unread"], 1)
+        self.assertEqual([item["kind"] for item in server.admin_feedback("done")["items"]], ["report"])
+        with self.assertRaises(ValueError):
+            server.admin_feedback_action("admin-1", created["id"], {"status": "deleted"})
+        # Only read submissions can be deleted; a new one stays until it is opened.
+        unread_id = server.admin_feedback("new")["items"][0]["feedback_id"]
+        self.assertIn("0건", server.admin_feedback_delete("admin-1", {"ids": [unread_id]}))
+        self.assertIn("1건", server.admin_feedback_delete("admin-1", {"ids": [created["id"]]}))
+        server.submit_feedback(form)
+        server.admin_feedback_action("admin-1", unread_id, {"status": "read"})
+        self.assertIn("1건", server.admin_feedback_delete("admin-1", {"all": True}))
+        self.assertEqual([item["status"] for item in server.admin_feedback()["items"]], ["new"])
+        with self.assertRaises(ValueError):
+            server.admin_feedback_delete("admin-1", {"ids": []})
+
     def test_json_response_ignores_client_disconnect_during_headers(self):
         handler = object.__new__(server.Handler)
         handler.send_response = Mock()

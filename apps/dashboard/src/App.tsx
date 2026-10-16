@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api, clearToken, type ApiUser } from "../../shared/api";
 import { AuthPanel } from "../../shared/AuthPanel";
@@ -9,19 +9,22 @@ import { ExchangesPage } from "./ExchangesPage";
 import { CompaniesPage } from "./CompaniesPage";
 import { WarningsCard } from "./WarningsCard";
 import { IdentityCard } from "./IdentityCard";
+import { FeedbackPage } from "./FeedbackPage";
+import { LogCard } from "./LogCard";
 import { COMMAND_FORMS, CommandForm } from "./CommandForm";
 
-type Page = "overview" | "instruments" | "finance" | "exchanges" | "companies" | "users" | "events" | "commands" | "database" | "audit";
+type Page = "overview" | "instruments" | "finance" | "exchanges" | "companies" | "users" | "feedback" | "events" | "commands" | "database" | "audit";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
 type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
 type Exchange = { exchange_id: string; status: string; reason: string | null; trading_halted: number; updated_epoch: number | null; resume_epoch: number | null; circuit_stage: number | null };
 type Overview = { activeUsers: number; activeInstruments: number; openOrders: number; market: Exchange[]; bankDeficits?: { issuer: string; account: string; cash: number; nationality: string }[] };
-type Audit = { actorId: string; action: string; payload: Record<string, unknown>; time: number };
+type Audit = { auditId: number; actorId: string; action: string; payload: Record<string, unknown>; time: number };
 type Event = { event_id: number; asset_code: string | null; event_type: string; severity: number; starts_epoch: number; ends_epoch: number; created_by: string; target_mode: string | null; target_value: number | null; active: boolean };
 type Command = { name: string; usage: string };
 type NationalField = { label: string; default: string; required: boolean; long: boolean };
 type NationalCommand = { name: string; fields: NationalField[] };
 type HelpPage = { label: string; description: string; fields: { name: string; value: string }[] };
+type Flow = { history_id: number; asset_code: string; anchor_price: number; target_price: number; change_percent: number; start_epoch: number; end_epoch: number; active: boolean };
 type BotJob = { job_id: number; kind: string; actor_id: string; payload: string; status: "pending" | "running" | "done" | "failed"; result: string | null; created_epoch: number; updated_epoch: number };
 type CommandResult = { command: string; arguments: string; message: string; success: boolean; time: number; national: boolean };
 type Column = { name: string; type: string; notNull: boolean; primaryKey: boolean; default: string | null };
@@ -37,6 +40,7 @@ const pages: { id: Page; label: string; color: string; icon: ReactNode }[] = [
   { id: "exchanges", label: "거래소", color: "#1f6fe0", icon: <><path d="M4 20h16M5 20V10l7-5 7 5v10" /><path d="M9 20v-6h6v6" /></> },
   { id: "companies", label: "법인 자본", color: "#2f7d5b", icon: <><rect x="4" y="7.5" width="16" height="12.5" rx="2" /><path d="M9 7.5V5.5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 5.5v2M4 12.5h16" /></> },
   { id: "users", label: "사용자 · 국가", color: "#c24e00", icon: <><circle cx="12" cy="8" r="3.5" /><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6" /></> },
+  { id: "feedback", label: "문의·신고", color: "#d14b3b", icon: <><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" /></> },
   { id: "events", label: "시장 사건", color: "#c4205f", icon: <path d="M13 3 5 14h6l-1 7 8-11h-6z" /> },
   { id: "commands", label: "관리자 명령어", color: "#7b3fd8", icon: <><path d="m5 8 4 4-4 4" /><path d="M12 17h7" /></> },
   { id: "database", label: "DB 편집", color: "#0a7d8c", icon: <><ellipse cx="12" cy="6" rx="7" ry="2.5" /><path d="M5 6v12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V6" /><path d="M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5" /></> },
@@ -48,6 +52,7 @@ const subtitles: Record<Page, string> = {
   finance: "저축·대출·통화·외환통장 상품을 생성·수정·중지합니다.",
   exchanges: "거래소별 개장·휴장·서킷브레이커와 소속 국가·지수를 관리합니다.",
   companies: "법인 현금·보유자산·통장·대출을 보고 법인 계정으로 매수·매도·송금·대출을 실행합니다.",
+  feedback: "공식 사이트의 Contact·Report로 들어온 문의와 신고를 확인하고 처리합니다.",
   users: "사용자와 국가, 국가 계정의 모든 설정을 관리합니다.",
   events: "호재·악재 사건을 등록하고 최근 사건을 확인합니다.",
   commands: "Discord의 모든 $ 명령어와 도움말을 같은 검증과 기록으로 실행합니다.",
@@ -77,9 +82,12 @@ export default function App() {
   const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [overview, setOverview] = useState<Overview | null>(null);
+  const [unreadFeedback, setUnreadFeedback] = useState(0);
+  const unreadSeen = useRef(0);
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [audit, setAudit] = useState<Audit[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
+  const [flows, setFlows] = useState<Flow[]>([]);
   const [query, setQuery] = useState("");
   const [eventType, setEventType] = useState("good");
   const [eventSeverity, setEventSeverity] = useState("5");
@@ -134,10 +142,11 @@ export default function App() {
       if (page === "audit") setAudit((await api<{ entries: Audit[] }>("/api/admin/audit")).entries);
       if (page === "events") {
         const [eventResult, instrumentResult] = await Promise.all([
-          api<{ events: Event[] }>("/api/admin/events"),
+          api<{ events: Event[]; flows?: Flow[] }>("/api/admin/events"),
           api<{ instruments: Instrument[] }>("/api/admin/instruments"),
         ]);
         setEvents(eventResult.events);
+        setFlows(eventResult.flows ?? []);
         setInstruments(instrumentResult.instruments);
       }
       if (page === "commands" && !commands.length) {
@@ -167,6 +176,21 @@ export default function App() {
 
   useEffect(() => { void loadSession(); }, [loadSession]);
   useEffect(() => { if (user) void refresh(); }, [user, refresh]);
+  // Official-site Contact/Report alerts: refresh the unread count every minute.
+  const loadUnread = useCallback(async () => {
+    try {
+      const result = await api<{ unread: number }>("/api/admin/feedback?status=new");
+      if (result.unread > unreadSeen.current) setNotice({ text: `🔔 공식 사이트에서 새 문의·신고가 ${result.unread - unreadSeen.current}건 왔습니다.`, error: false });
+      unreadSeen.current = result.unread;
+      setUnreadFeedback(result.unread);
+    } catch { /* the badge is best effort */ }
+  }, []);
+  useEffect(() => {
+    if (!user) return;
+    void loadUnread();
+    const timer = window.setInterval(() => void loadUnread(), 60_000);
+    return () => window.clearInterval(timer);
+  }, [user, loadUnread]);
   useEffect(() => { setQuery(""); setNotice(null); }, [page]);
   useEffect(() => { setTableOffset(0); setNewRow(null); }, [table, query]);
 
@@ -301,7 +325,7 @@ export default function App() {
 
   const current = pages.find((item) => item.id === page)!;
   const pageIndex = pages.findIndex((item) => item.id === page);
-  const searchable = page === "instruments" || page === "finance" || page === "exchanges" || page === "companies" || page === "users" || page === "database";
+  const searchable = page === "instruments" || page === "finance" || page === "exchanges" || page === "companies" || page === "users" || page === "feedback" || page === "database";
 
   return <Stage>
     <div className="win">
@@ -312,6 +336,7 @@ export default function App() {
           {pages.map((item, index) => <button key={item.id} type="button" className="nav-item" aria-current={page === item.id ? "page" : undefined} style={{ animationDelay: `${200 + index * 60}ms` }} onClick={() => setPage(item.id)}>
             <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={item.color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">{item.icon}</svg>
             <span>{item.label}</span>
+            {item.id === "feedback" && unreadFeedback > 0 && <span className="nav-badge" aria-label={`새 알림 ${unreadFeedback}건`}>{unreadFeedback}</span>}
           </button>)}
         </nav>
         <div className="sidebar-foot"><span className={connected ? "dot ok" : "dot"} />{health}<br /><span className="mono">127.0.0.1</span></div>
@@ -359,6 +384,7 @@ export default function App() {
         {page === "finance" && <ProductsPage group="finance" ctx={ctx} />}
         {page === "exchanges" && <ExchangesPage ctx={ctx} />}
         {page === "companies" && <CompaniesPage ctx={ctx} />}
+        {page === "feedback" && <FeedbackPage ctx={ctx} onChange={() => void loadUnread()} />}
         {page === "users" && <UsersPage ctx={ctx} currentUserId={user.userId} />}
         {page === "events" && <>
           <section className="glass card mb rise"><div className="card-head"><div><h2>시장 사건 등록</h2><p className="cap">기존 시장 사건 검증과 감사 기록을 적용합니다.</p></div></div><form className="form-grid" onSubmit={createEvent}>
@@ -370,7 +396,14 @@ export default function App() {
             <button className="btn primary" disabled={busy}>사건 등록</button>
             <datalist id="event-assets">{instruments.filter((item) => item.status === "active").map((item) => <option key={item.code} value={item.code}>{item.name} · {number(item.price)}</option>)}</datalist>
           </form><p className="hint">목표가를 비우면 변동률만큼 오르거나(호재) 내립니다. 목표가를 넣으면 그 가격을 향해 움직이고, 변동률은 움직이는 동안의 변동성으로 쓰입니다. 호재는 현재가 이상, 악재는 현재가 이하로 입력하세요.{eventInstrument && ` · ${eventInstrument.name} 현재가 ${number(eventInstrument.price)}`}</p></section>
-          <section className="glass card rise"><div className="card-head"><div><h2>최근 사건</h2><p className="cap">최근 50건</p></div></div><div className="scroll-x tall"><table><thead><tr><th>ID</th><th>대상</th><th>유형</th><th>강도</th><th>목표</th><th>시작</th><th>종료</th><th>관리자</th></tr></thead><tbody>{events.map((item) => <tr key={item.event_id}><td>#{item.event_id}{item.active && <span className="tag ok inline">진행 중</span>}</td><td>{item.asset_code || "시장 전체"}</td><td><span className={item.event_type === "good" ? "tag up" : "tag down"}>{item.event_type === "good" ? "호재" : "악재"}</span></td><td>{item.severity}%</td><td>{item.target_value === null ? "—" : item.target_mode === "price" ? number(item.target_value) : `${number(item.target_value)}%`}</td><td>{date(item.starts_epoch)}</td><td>{date(item.ends_epoch)}</td><td className="mono">{item.created_by}</td></tr>)}</tbody></table>{!events.length && <p className="empty">등록된 사건이 없습니다.</p>}</div></section>
+          <LogCard ctx={ctx} log="events" title="최근 사건" caption="관리자가 등록한 사건 · 최근 50건" rows={events} idOf={(item) => item.event_id} deletable={(item) => !item.active}
+            keepNote="진행 중인 사건은 남습니다." empty="등록된 사건이 없습니다." onChanged={() => void refresh()}
+            head={<><th>ID</th><th>대상</th><th>유형</th><th>강도</th><th>목표</th><th>시작</th><th>종료</th><th>관리자</th></>}
+            row={(item) => <><td>#{item.event_id}{item.active && <span className="tag ok inline">진행 중</span>}</td><td>{item.asset_code || "시장 전체"}</td><td><span className={item.event_type === "good" ? "tag up" : "tag down"}>{item.event_type === "good" ? "호재" : "악재"}</span></td><td>{item.severity}%</td><td>{item.target_value === null ? "—" : item.target_mode === "price" ? number(item.target_value) : `${number(item.target_value)}%`}</td><td>{date(item.starts_epoch)}</td><td>{date(item.ends_epoch)}</td><td className="mono">{item.created_by}</td></>} />
+          <LogCard ctx={ctx} log="flows" title="알고리즘 시장 흐름" caption="시세 엔진이 종목마다 정한 자동 목표가 · 최근 100건 (최대 5,000건 보관)" rows={flows} idOf={(item) => item.history_id}
+            empty="기록된 흐름이 없습니다. 시세 엔진이 새 목표가를 정하면 여기에 쌓입니다." onChanged={() => void refresh()}
+            head={<><th>#</th><th>종목</th><th>방향</th><th className="r">기준가</th><th className="r">목표가</th><th className="r">변동</th><th>시작</th><th>종료</th></>}
+            row={(item) => <><td className="mono">#{item.history_id}{item.active && <span className="tag ok inline">진행 중</span>}</td><td className="mono">{item.asset_code}</td><td><span className={item.change_percent >= 0 ? "tag up" : "tag down"}>{item.change_percent >= 0 ? "상승" : "하락"}</span></td><td className="r mono">{number(Math.round(item.anchor_price * 100) / 100)}</td><td className="r mono">{number(Math.round(item.target_price * 100) / 100)}</td><td className="r mono">{item.change_percent >= 0 ? "+" : ""}{item.change_percent.toFixed(2)}%</td><td>{date(item.start_epoch)}</td><td>{date(item.end_epoch)}</td></>} />
         </>}
 
         {page === "commands" && <>
@@ -387,9 +420,11 @@ export default function App() {
               <button className="btn primary" disabled={busy || !selectedNational}>{busy ? "실행 중…" : selectedNational?.fields.length ? "실행" : "조회"}</button>
             </form>
           </section>}
-          {commandScope === "national" && <section className="glass card mb rise"><div className="card-head"><div><h2>Discord 봇 처리 대기열</h2><p className="cap">$주총처럼 Discord 메시지를 보내야 하는 작업은 실행 중인 봇이 처리합니다. 봇이 꺼져 있으면 대기 상태로 남습니다.</p></div><div className="actions"><button className="soft" type="button" onClick={() => void refresh()}>새로고침</button></div></div>
-            <div className="scroll-x"><table><thead><tr><th>#</th><th>작업</th><th>상태</th><th>요청</th><th>결과</th><th>시각</th></tr></thead><tbody>{jobs.map((job) => <tr key={job.job_id}><td className="mono">#{job.job_id}</td><td>{job.kind === "shareholder_meeting" ? "$주총" : job.kind}</td><td><span className={job.status === "done" ? "tag ok" : job.status === "failed" ? "tag warn" : "tag"}>{{ pending: "대기", running: "처리 중", done: "완료", failed: "실패" }[job.status]}</span></td><td className="mono audit-payload">{job.payload}</td><td className="audit-payload">{job.result ? plain(job.result) : "—"}</td><td>{date(job.updated_epoch)}</td></tr>)}</tbody></table>{!jobs.length && <p className="empty">요청한 작업이 없습니다.</p>}</div>
-          </section>}
+          {commandScope === "national" && <LogCard ctx={ctx} log="jobs" title="Discord 봇 처리 대기열" caption="$주총처럼 Discord 메시지를 보내야 하는 작업은 실행 중인 봇이 처리합니다. 봇이 꺼져 있으면 대기 상태로 남습니다."
+            rows={jobs} idOf={(job) => job.job_id} deletable={(job) => job.status === "done" || job.status === "failed"} keepNote="대기·처리 중인 작업은 남습니다."
+            empty="요청한 작업이 없습니다." onChanged={() => void refresh()}
+            head={<><th>#</th><th>작업</th><th>상태</th><th>요청</th><th>결과</th><th>시각</th></>}
+            row={(job) => <><td className="mono">#{job.job_id}</td><td>{job.kind === "shareholder_meeting" ? "$주총" : job.kind}</td><td><span className={job.status === "done" ? "tag ok" : job.status === "failed" ? "tag warn" : "tag"}>{{ pending: "대기", running: "처리 중", done: "완료", failed: "실패" }[job.status]}</span></td><td className="mono audit-payload">{job.payload}</td><td className="audit-payload">{job.result ? plain(job.result) : "—"}</td><td>{date(job.updated_epoch)}</td></>} />}
           {commandScope === "admin" && <section className="glass card mb rise"><div className="card-head"><div><h2>명령어 실행</h2><p className="cap">명령어를 고르면 입력 칸이 나옵니다. 아래 미리보기는 Discord에 입력하는 `$명령어 인자`와 같습니다. 시장 사건($사건)은 시장 사건 화면에서 등록합니다.</p></div></div>
             <div className="form-grid command-picker"><label>명령어<select value={command} onChange={(event) => { setCommand(event.target.value); setCommandArgs(""); }}>{Array.from(new Set(commands.map((item) => COMMAND_FORMS[item.name]?.group ?? "기타"))).map((group) => <optgroup key={group} label={group}>{commands.filter((item) => (COMMAND_FORMS[item.name]?.group ?? "기타") === group).map((item) => <option key={item.name} value={item.name}>${item.name}</option>)}</optgroup>)}</select></label></div>
             {command && <CommandForm key={`${command}-${commandArgs}`} command={command} usage={selectedCommand?.usage ?? ""} prefill={commandArgs} busy={busy} onRun={runCommand} openProducts={(group) => setPage(group === "market" ? "instruments" : "finance")} />}
@@ -426,7 +461,10 @@ export default function App() {
           </section>
         </>}
 
-        {page === "audit" && <section className="glass card rise"><div className="card-head"><div><h2>최근 관리자 작업</h2><p className="cap">최근 50건</p></div></div><div className="scroll-x tall"><table><thead><tr><th>시각</th><th>관리자 ID</th><th>작업</th><th>세부 내용</th></tr></thead><tbody>{audit.map((entry, index) => <tr key={`${entry.time}-${index}`}><td>{date(entry.time)}</td><td className="mono">{entry.actorId}</td><td><span className="tag">{entry.action}</span></td><td className="audit-payload mono" title={JSON.stringify(entry.payload)}>{JSON.stringify(entry.payload)}</td></tr>)}</tbody></table>{!audit.length && <p className="empty">기록이 없습니다.</p>}</div></section>}
+        {page === "audit" && <LogCard ctx={ctx} log="audit" title="최근 관리자 작업" caption="최근 50건 · 기록을 삭제하면 삭제했다는 기록 1건이 새로 남습니다." rows={audit} idOf={(entry) => entry.auditId}
+          empty="기록이 없습니다." onChanged={() => void refresh()}
+          head={<><th>시각</th><th>관리자 ID</th><th>작업</th><th>세부 내용</th></>}
+          row={(entry) => <><td>{date(entry.time)}</td><td className="mono">{entry.actorId}</td><td><span className="tag">{entry.action}</span></td><td className="audit-payload mono" title={JSON.stringify(entry.payload)}>{JSON.stringify(entry.payload)}</td></>} />}
         <p className="foot">INAZINA 로컬 관리 콘솔 · 모든 관리자 요청은 API에서 권한을 다시 확인합니다.</p>
       </main>
     </div>

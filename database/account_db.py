@@ -176,6 +176,7 @@ class AccountDB(DBManager):
             ("collateral_asset_value", "INTEGER NOT NULL DEFAULT 0"),
             ("collateral_liquidated_value", "INTEGER NOT NULL DEFAULT 0"),
             ("provisioned_loss", "INTEGER NOT NULL DEFAULT 0"),
+            ("ecl_allowance", "INTEGER NOT NULL DEFAULT 0 CHECK(ecl_allowance >= 0)"),
             ("mandatory_cost_fee", "INTEGER NOT NULL DEFAULT 0"),
             ("underwriting_dti", "REAL"),
             ("underwriting_dsr", "REAL"),
@@ -275,6 +276,23 @@ class AccountDB(DBManager):
             ("principal_due", "interest_due", "fee_due", "amount_paid"),
             "schedule_id",
         )
+        self.execute("""CREATE TABLE IF NOT EXISTS loan_ecl_assessments (
+            assessment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            loan_id INTEGER NOT NULL,
+            as_of_day TEXT NOT NULL,
+            stage INTEGER NOT NULL CHECK(stage IN (1,2,3)),
+            pd_12m REAL NOT NULL CHECK(pd_12m BETWEEN 0 AND 1),
+            lifetime_pd REAL NOT NULL CHECK(lifetime_pd BETWEEN 0 AND 1),
+            lgd REAL NOT NULL CHECK(lgd BETWEEN 0 AND 1),
+            ead REAL NOT NULL CHECK(ead >= 0),
+            expected_loss REAL NOT NULL CHECK(expected_loss >= 0),
+            quote_currency TEXT NOT NULL,
+            scenario TEXT NOT NULL DEFAULT 'base',
+            calculated_epoch REAL NOT NULL,
+            UNIQUE(loan_id,as_of_day)
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_loan_ecl_day "
+                     "ON loan_ecl_assessments(as_of_day,stage)")
         self.execute("""CREATE TABLE IF NOT EXISTS contract_rate_reset_history (
             reset_id INTEGER PRIMARY KEY AUTOINCREMENT,
             contract_type TEXT NOT NULL CHECK(contract_type IN ('account','loan')),

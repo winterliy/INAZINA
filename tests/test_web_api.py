@@ -113,7 +113,7 @@ class WebApiTests(unittest.TestCase):
         self.execute("INSERT INTO market_events(asset_code,event_type,severity,starts_epoch,ends_epoch,created_by) "
                      "VALUES ('AAA','good',5,1,2,'admin-1')")
         audit = server.admin_audit()
-        self.assertEqual(audit[0], {"actorId": "admin-1", "action": "legacy", "payload": {"raw": "not json"}, "time": 6.0})
+        self.assertEqual(audit[0], {"auditId": 2, "actorId": "admin-1", "action": "legacy", "payload": {"raw": "not json"}, "time": 6.0})
         self.assertEqual(audit[1]["payload"], {"a": 1})
         events = server.admin_events()
         self.assertEqual(events[0]["asset_code"], "AAA")

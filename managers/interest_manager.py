@@ -497,6 +497,10 @@ class InterestManager:
                         )
                     loan_count += int(charged)
                     self._process_overdue(conn, loan, product, now)
+                from managers.credit_risk_manager import CreditRiskManager
+                CreditRiskManager.assess_conn(
+                    conn, now, user_id=user_id, product_code=product_code
+                )
                 resolutions = BankManager.resolve_all_failed_institutions(conn, now=now)
                 if any(value["accounts"] for value in resolutions.values()):
                     RateManager.refresh_all_market_pressure(conn, now=now)
@@ -513,7 +517,7 @@ class InterestManager:
         fresh = conn.execute(
             "SELECT outstanding_balance,status,overdue_last_epoch,overdue_interest_remainder,"
             "collection_status,collateral_amount,collateral_released,collateral_seized,"
-            "provisioned_loss "
+            "provisioned_loss,ecl_allowance "
             "FROM accounts.loans WHERE loan_id=?", (loan["loan_id"],)
         ).fetchone()
         if not fresh or float(fresh["outstanding_balance"] or 0) <= 0:
@@ -563,6 +567,7 @@ class InterestManager:
         released = float(fresh["collateral_released"] or 0)
         seized = float(fresh["collateral_seized"] or 0)
         provisioned = float(fresh["provisioned_loss"] or 0)
+        ecl_allowance = float(fresh["ecl_allowance"] or 0)
         if default > 0 and age_days >= default:
             state, status = "defaulted", "defaulted"
             if defaulted_epoch is None:
@@ -590,21 +595,23 @@ class InterestManager:
                     )
                     if balance <= 0:
                         balance, status, state = 0, "paid", "paid"
-                if balance > provisioned:
-                    new_provision = balance-provisioned
+                loss_adjustment = balance-provisioned-ecl_allowance
+                if loss_adjustment:
                     RateManager.record_institution_result(
-                        conn, product["issuer"], -new_provision, "credit_loss",
+                        conn, product["issuer"], -loss_adjustment, "credit_loss",
                         f"loan:{loan['loan_id']}:default", now=now,
                         currency_code=loan["quote_currency"],
                     )
-                    provisioned += new_provision
+                provisioned = balance
+                ecl_allowance = 0.0
         conn.execute(
             "UPDATE accounts.loans SET outstanding_balance=?,overdue_since_epoch=COALESCE("
             "overdue_since_epoch,?),overdue_last_epoch=?,overdue_interest_remainder=?,"
             "collection_status=?,accelerated_epoch=?,defaulted_epoch=?,status=?,"
-            "collateral_released=?,collateral_seized=?,provisioned_loss=? WHERE loan_id=?",
+            "collateral_released=?,collateral_seized=?,provisioned_loss=?,ecl_allowance=? "
+            "WHERE loan_id=?",
             (balance, maturity, now, remainder, state, accelerated_epoch, defaulted_epoch,
-             status, released, seized, provisioned, loan["loan_id"]),
+             status, released, seized, provisioned, ecl_allowance, loan["loan_id"]),
         )
 
     def process_user_interests(self, user_id, now=None):
