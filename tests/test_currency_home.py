@@ -202,4 +202,14 @@ class CurrencyHomeTests(unittest.TestCase):
         native_summary(embed,info)
         self.assertEqual(embed.fields[0].value,'```100.000000 AAA```')
 
+    def test_product_edit_tells_savings_and_currency_accounts_apart(self):
+        cmd=self.configure()
+        cmd.execute('admin','상품생성','SV saving "새 적금" 3 1000 30 86400 1 Inazina')
+        self.assertIn('✅',cmd.execute('admin','상품수정','SV saving "새 적금" 4 1000 30 86400 1 Inazina'))
+        self.assertEqual(self.db.products.execute_one("SELECT interest_rate FROM saving WHERE product_code='SV'")[0],4)
+        self.db.products.execute("INSERT INTO saving(product_code,name,interest_rate,quote_currency,product_kind) VALUES ('FX_SV','A 외환통장',1,'AAA','currency_saving')")
+        with self.db.atomic() as conn:
+            self.assertEqual(cmd.locate(conn,'SV')[0],'saving')
+            self.assertEqual(cmd.locate(conn,'FX_SV')[0],'currencyproduct')
+
 if __name__=='__main__':unittest.main()

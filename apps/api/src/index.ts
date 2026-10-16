@@ -4,6 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { existsSync } from "node:fs";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { landingPage, type LandingReason } from "./landing.js";
 
 const projectRoot = findProjectRoot();
 
@@ -233,6 +234,16 @@ async function internalRequest(
 
 const internalGet = (path: string, userId?: string) => internalRequest("GET", path, userId);
 
+async function sendLanding(response: ServerResponse, reason: LandingReason, path: string, status?: number): Promise<void> {
+  const health = await internalGet("/internal/health");
+  response.writeHead(status ?? (reason === "not_found" ? 404 : 200), {
+    "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
+    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+    "x-content-type-options": "nosniff",
+  });
+  response.end(landingPage(reason, path, health.status === 200));
+}
+
 async function requestJson(request: IncomingMessage): Promise<unknown> {
   if (!request.headers["content-type"]?.includes("application/json")) {
     throw new Error("application_json_required");
@@ -253,6 +264,14 @@ async function requestJson(request: IncomingMessage): Promise<unknown> {
 
 async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const url = new URL(request.url ?? "/", `http://${host}:${port}`);
+
+  // People who open the API port in a browser get a page instead of raw JSON;
+  // the apps' fetch calls (Accept: */*) keep receiving JSON.
+  const browser = request.method === "GET" && (request.headers.accept ?? "").includes("text/html");
+  if (browser && (url.pathname === "/" || url.pathname === "/api" || !url.pathname.startsWith("/api/"))) {
+    await sendLanding(response, url.pathname === "/" || url.pathname === "/api" ? "home" : "not_found", url.pathname);
+    return;
+  }
 
   if (request.method === "GET" && url.pathname === "/api/health") {
     const health = await internalGet("/internal/health");
@@ -348,7 +367,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   const principal = principalFor(request);
   if (!principal) {
-    send(response, 401, { error: "authentication_required" });
+    if (browser) await sendLanding(response, "login_required", url.pathname, 401);
+    else send(response, 401, { error: "authentication_required" });
     return;
   }
 
@@ -370,6 +390,13 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   if (url.pathname === "/api/hts/account" && request.method === "GET") {
     const result = await internalGet("/internal/hts/account", principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+  if (url.pathname === "/api/hts/commands") {
+    const result = request.method === "GET"
+      ? await internalGet("/internal/hts/commands", principal.userId)
+      : await internalRequest("POST", "/internal/hts/commands", principal.userId, await requestJson(request), 30_000);
     send(response, result.status, result.body);
     return;
   }

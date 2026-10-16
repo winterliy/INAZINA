@@ -4,6 +4,8 @@ export type ApiUser = {
   userId: string;
   nickname: string;
   nationality: string;
+  /** Home currency of the nationality; wallet amounts are shown in it. */
+  currency?: string;
   role: "admin" | "user" | "nation";
   cash: number;
   creditScore: number;

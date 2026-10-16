@@ -154,7 +154,8 @@ class ActionModal(CheckedModal):
             if self.command in {'검색','그래프','전체자산확인'}:
                 from functions.discord_views import InfoPanelView,PriceMovementView,AllAssetsView
                 if self.command=='전체자산확인':
-                    rows=await asyncio.to_thread(self.bot.db.users.execute,"SELECT user_id,nickname FROM users WHERE status='active' ORDER BY nickname")
+                    from database.user_db import citizen_filter
+                    rows=await asyncio.to_thread(self.bot.db.users.execute,f"SELECT user_id,nickname FROM users WHERE status='active' AND {citizen_filter()} ORDER BY nickname")
                     view=AllAssetsView(self.bot,self.owner,rows)
                     await interaction.followup.send(embed=await asyncio.to_thread(view.build_embed),view=view,ephemeral=True)
                     return

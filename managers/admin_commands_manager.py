@@ -145,6 +145,9 @@ class AdminCommandsManager:
             if category in KINDS:
                 continue
             row=conn.execute(f'SELECT * FROM "{table}" WHERE "{key}"=?',(code,)).fetchone()
+            # Savings and foreign-currency accounts share the saving table.
+            if row and table=='saving' and (row['product_kind']=='currency_saving')!=(category=='currencyproduct'):
+                row=None
             if row:
                 matches.append((category,dict(row)))
         row=conn.execute('SELECT * FROM investment WHERE product_code=?',(code,)).fetchone()
@@ -193,9 +196,9 @@ class AdminCommandsManager:
             if not conn.execute('SELECT 1 FROM country_currencies WHERE nationality=?', (nationality,)).fetchone():
                 raise ValueError('등록된 국가를 확인해주세요.')
             servers = conn.execute('SELECT COUNT(*) FROM guild_countries WHERE nationality=?', (nationality,)).fetchone()[0]
-            citizens = conn.execute("SELECT COUNT(*) FROM users WHERE nationality=? AND user_id NOT IN "
-                                    "(SELECT user_id FROM country_treasuries WHERE nationality=?)",
-                                    (nationality, nationality)).fetchone()[0]
+            from database.user_db import citizen_filter
+            citizens = conn.execute(f"SELECT COUNT(*) FROM users WHERE nationality=? AND {citizen_filter()}",
+                                    (nationality,)).fetchone()[0]
             exchanges = conn.execute('SELECT COUNT(*) FROM market_exchanges WHERE nationality=?', (nationality,)).fetchone()[0]
             products = conn.execute(
                 "SELECT (SELECT COUNT(*) FROM saving WHERE rate_nationality=?)+"
@@ -215,6 +218,9 @@ class AdminCommandsManager:
             conn.execute('DELETE FROM country_treasuries WHERE nationality=?', (nationality,))
             if treasury:
                 conn.execute('DELETE FROM users WHERE user_id=?', (treasury['user_id'],))
+            # The country's HTS login account trades with the treasury and holds nothing itself.
+            conn.execute("DELETE FROM users WHERE user_id=? AND nationality=? AND COALESCE(role,'user')='nation'",
+                         (nationality, nationality))
             conn.execute('DELETE FROM country_currencies WHERE nationality=?', (nationality,))
             self.control._audit(conn, actor, 'country.delete', {'nationality': nationality})
         return f'✅ 연방국가 {nationality}을(를) 삭제했습니다. 통화 자체는 유지됩니다.'
@@ -571,17 +577,20 @@ class AdminCommandsManager:
     def currency(self,conn,actor,a,b,raw_ratio):
         a,b=a.upper(),b.upper()
         if a==b:raise ValueError('서로 다른 통화를 입력해주세요.')
+        from fractions import Fraction
         ratio=Decimal(raw_ratio)
         if not ratio.is_finite() or ratio<=0:raise ValueError('비율은 0보다 큰 유한한 값이어야 합니다.')
+        # Keep the inverse exact: 1 NWX = 3 AAA must mean 1 AAA = 1/3 NWX, not 0.333…
+        exact=Fraction(ratio)
         if a == 'NWX':
-            a,b,ratio = b,a,Decimal(1)/ratio
+            a,b,exact = b,a,1/exact
+            ratio=Decimal(exact.numerator)/Decimal(exact.denominator)
         ar=self.bot.currency_mgr._rate(conn,a);br=self.bot.currency_mgr._rate(conn,b)
         row=conn.execute("SELECT * FROM currencies WHERE code=? AND status='active'",(a,)).fetchone()
         if row['reference_rate'] is not None or br*ratio < 1:
             from managers.currency_manager import CurrencyManager
-            from fractions import Fraction
             current = CurrencyManager.rate_fraction(conn,a)
-            target_rate = CurrencyManager.rate_fraction(conn,b)*Fraction(ratio)
+            target_rate = CurrencyManager.rate_fraction(conn,b)*exact
             multiplier = Fraction(str(row['rate_multiplier']))*target_rate/current
             conn.execute('UPDATE currencies SET rate_multiplier=? WHERE code=?',(str(multiplier),a))
             self.control._audit(conn,actor,'currency.cross_rate',{'a':a,'b':b,'ratio':str(ratio)})

@@ -5,6 +5,18 @@ TREASURY_USER_ID = "20230216"
 LEGACY_TREASURY_USER_IDS = ("__treasury__", "20230219")
 
 
+def citizen_filter(alias="users"):
+    """SQL condition for real citizens: not a treasury and not a country login account.
+
+    Country accounts (user_id equals the country name, role 'nation') only log in
+    to trade with their treasury, so they never count as or receive anything as citizens.
+    """
+    return (f"{alias}.user_id<>'{TREASURY_USER_ID}' "
+            f"AND {alias}.user_id NOT IN (SELECT user_id FROM country_treasuries) "
+            f"AND {alias}.user_id NOT IN (SELECT nationality FROM country_currencies) "
+            f"AND COALESCE({alias}.role,'user')<>'nation'")
+
+
 class UserDB(DBManager):
     def __init__(self):
         super().__init__("users")
@@ -31,6 +43,8 @@ class UserDB(DBManager):
         for column, declaration in (
             ("annual_income", "INTEGER NOT NULL DEFAULT 0 CHECK(annual_income >= 0)"),
             ("income_stability", "REAL NOT NULL DEFAULT 1 CHECK(income_stability BETWEEN 0 AND 1)"),
+            # Server where the citizen registered; it decides their nationality.
+            ("registration_guild_id", "TEXT"),
         ):
             if column not in user_columns:
                 self.execute(f"ALTER TABLE users ADD COLUMN {column} {declaration}")

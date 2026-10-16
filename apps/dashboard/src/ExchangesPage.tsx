@@ -36,12 +36,12 @@ export function ExchangesPage({ ctx }: { ctx: Ctx }) {
 
   const control = (item: Exchange, action: string, label: string, stage?: number) =>
     act(item.exchange_id, { action, stage }, `${item.exchange_id} 거래소에 ${label}을(를) 적용할까요?`);
-  const all = (action: string, label: string) =>
-    act("ALL", { action }, `모든 거래소에 ${label}을(를) 적용할까요?`);
+  const all = (action: string, label: string, stage?: number) =>
+    act("ALL", { action, stage }, `모든 거래소에 ${label}을(를) 적용할까요?`);
 
   return <>
-    <Card title="전체 거래소" caption="모든 거래소에 한 번에 적용합니다 ($휴장·$개장·$장일시정지·$장재개).">
-      <div className="actions"><button className="btn primary small" disabled={busy} onClick={() => all("open", "개장")}>전체 개장</button><button className="soft" disabled={busy} onClick={() => all("close", "휴장")}>전체 휴장</button><button className="soft" disabled={busy} onClick={() => all("pause", "일시 정지")}>전체 일시 정지</button><button className="soft" disabled={busy} onClick={() => all("resume", "재개")}>전체 재개</button></div>
+    <Card title="전체 거래소" caption="모든 거래소에 한 번에 적용합니다 ($휴장·$개장·$장일시정지·$장재개·$서킷브레이커·$사이드카). 휴장 중인 거래소가 있으면 서킷·사이드카는 거부됩니다.">
+      <div className="actions"><button className="btn primary small" disabled={busy} onClick={() => all("open", "개장")}>전체 개장</button><button className="soft" disabled={busy} onClick={() => all("close", "휴장")}>전체 휴장</button><button className="soft" disabled={busy} onClick={() => all("pause", "일시 정지")}>전체 일시 정지</button><button className="soft" disabled={busy} onClick={() => all("resume", "재개")}>전체 재개</button><span className="divider" aria-hidden="true" />{[1, 2, 3].map((stage) => <button key={stage} className="soft" disabled={busy} onClick={() => all("circuit", `서킷브레이커 ${stage}단계`, stage)}>전체 서킷 {stage}단계</button>)}<button className="soft" disabled={busy} onClick={() => all("sidecar", "사이드카(5분)")}>전체 사이드카</button></div>
     </Card>
 
     {exchange && <Card title={`${exchange.exchange_id} 거래소`} caption={<>{STATUS[exchange.status] ?? exchange.status}{exchange.reason ? ` · ${exchange.reason}` : ""}{exchange.resume_epoch ? ` · 자동 재개 ${date(exchange.resume_epoch)}` : ""} · 지수 {number(exchange.index_value)} · 활성 상품 {number(exchange.products)}개</>}

@@ -34,6 +34,15 @@ async def run_job(bot, job):
     if job["kind"] == "shareholder_meeting":
         from functions.admin_prefix import convene_national_meeting
         return await convene_national_meeting(bot, job["actor_id"], payload["code"], payload["place"])
+    if job["kind"] == "relief_request":
+        from functions.slash_commands import submit_relief_request
+        return await submit_relief_request(bot, job["actor_id"], payload.get("name") or job["actor_id"], payload["type"])
+    if job["kind"] == "user_shareholder_meeting":
+        from functions.admin_access import resolve_user_role
+        from functions.slash_commands import convene_shareholder_meeting
+        user = await asyncio.to_thread(bot.db.users.get_user, job["actor_id"])
+        role = resolve_user_role(job["actor_id"], user) if user else "user"
+        return await convene_shareholder_meeting(bot, job["actor_id"], role, payload["code"], payload["place"])
     raise ValueError(f"지원하지 않는 작업입니다: {job['kind']}")
 
 

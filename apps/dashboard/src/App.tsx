@@ -6,6 +6,7 @@ import { plain, type Ctx } from "./common";
 import { ProductsPage } from "./ProductsPage";
 import { UsersPage } from "./UsersPage";
 import { ExchangesPage } from "./ExchangesPage";
+import { COMMAND_FORMS, CommandForm } from "./CommandForm";
 
 type Page = "overview" | "instruments" | "finance" | "exchanges" | "users" | "events" | "commands" | "database" | "audit";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
@@ -197,11 +198,11 @@ export default function App() {
 
   const ctx: Ctx = { busy, run, say, query, openCommand };
 
-  function marketAction(action: string, exchangeId?: string) {
-    const labels: Record<string, string> = { close: "휴장", open: "개장", pause: "일시 정지", resume: "재개" };
-    if (!window.confirm(`${exchangeId ?? "전체 시장"}을 ${labels[action]} 상태로 변경할까요?`)) return;
-    void run(() => api<{ message: string }>("/api/admin/market", { method: "POST", body: JSON.stringify({ action, exchangeId }) }),
-      "시장 상태를 변경하지 못했습니다.", (result) => say(result.message));
+  function marketAction(action: string, exchangeId?: string, stage?: number) {
+    const labels: Record<string, string> = { close: "휴장", open: "개장", pause: "일시 정지", resume: "재개", circuit: `서킷브레이커 ${stage}단계`, sidecar: "사이드카(5분)" };
+    if (!window.confirm(`${exchangeId ?? "전체 거래소"}에 ${labels[action]}을(를) 적용할까요?`)) return;
+    void run(() => api<{ message: string; success: boolean }>("/api/admin/market", { method: "POST", body: JSON.stringify({ action, exchangeId, stage }) }),
+      "시장 상태를 변경하지 못했습니다.", (result) => say(plain(result.message), result.success === false));
   }
 
   function createEvent(event: FormEvent<HTMLFormElement>) {
@@ -226,13 +227,12 @@ export default function App() {
     }), "시장 사건을 등록하지 못했습니다.", (result) => { say(result.message, !result.success); if (result.success) setEventTarget(""); });
   }
 
-  function runCommand(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const text = `$${command}${commandArgs.trim() ? ` ${commandArgs.trim()}` : ""}`;
+  function runCommand(args: string) {
+    const text = `$${command}${args ? ` ${args}` : ""}`;
     if (!window.confirm(`다음 명령어를 실행할까요?\n\n${text}`)) return;
-    void run(() => api<{ message: string; success: boolean }>("/api/admin/commands", { method: "POST", body: JSON.stringify({ command, arguments: commandArgs }) }),
+    void run(() => api<{ message: string; success: boolean }>("/api/admin/commands", { method: "POST", body: JSON.stringify({ command, arguments: args }) }),
       "명령어를 실행하지 못했습니다.", (result) => {
-        setCommandResults((items) => [{ command, arguments: commandArgs.trim(), message: result.message, success: result.success, time: Date.now() / 1000, national: false }, ...items].slice(0, 20));
+        setCommandResults((items) => [{ command, arguments: args, message: result.message, success: result.success, time: Date.now() / 1000, national: false }, ...items].slice(0, 20));
         if (result.success) setCommandArgs("");
       });
   }
@@ -338,7 +338,7 @@ export default function App() {
               <div className="card-head"><div><h2>시장 제어</h2><p className="cap">전체 또는 거래소별로 개장·휴장·정지합니다. 기존 Python 시장 제어와 기록을 거칩니다.</p></div>
                 <div className="actions"><button className="btn primary small" disabled={busy} onClick={() => marketAction("open")}>전체 개장</button><button className="soft" disabled={busy} onClick={() => marketAction("close")}>전체 휴장</button><button className="soft" disabled={busy} onClick={() => marketAction("pause")}>일시 정지</button><button className="soft" disabled={busy} onClick={() => marketAction("resume")}>재개</button></div></div>
               <div className="scroll-x"><table><thead><tr><th>거래소</th><th>상태</th><th>사유</th><th>서킷</th><th>변경 시각</th><th /></tr></thead><tbody>
-                {(overview?.market ?? []).map((item) => <tr key={item.exchange_id}><td className="mono">{item.exchange_id}</td><td><span className={item.status === "open" && !item.trading_halted ? "tag ok" : "tag warn"}>{item.trading_halted ? "거래 정지" : marketStatusName[item.status] ?? item.status}</span></td><td>{item.reason || "—"}</td><td>{item.circuit_stage ? `${item.circuit_stage}단계` : "—"}</td><td>{item.updated_epoch ? date(item.updated_epoch) : "—"}</td><td className="row-actions">{item.status === "open" ? <button className="soft small" disabled={busy} onClick={() => marketAction("close", item.exchange_id)}>휴장</button> : <button className="soft small" disabled={busy} onClick={() => marketAction("open", item.exchange_id)}>개장</button>}{item.trading_halted ? <button className="soft small" disabled={busy} onClick={() => marketAction("resume", item.exchange_id)}>재개</button> : <button className="soft small" disabled={busy} onClick={() => marketAction("pause", item.exchange_id)}>정지</button>}</td></tr>)}
+                {(overview?.market ?? []).map((item) => <tr key={item.exchange_id}><td className="mono">{item.exchange_id}</td><td><span className={item.status === "open" && !item.trading_halted ? "tag ok" : "tag warn"}>{item.trading_halted ? "거래 정지" : marketStatusName[item.status] ?? item.status}</span></td><td>{item.reason || "—"}</td><td>{item.circuit_stage ? `${item.circuit_stage}단계` : "—"}</td><td>{item.updated_epoch ? date(item.updated_epoch) : "—"}</td><td className="row-actions">{item.status === "open" ? <button className="soft small" disabled={busy} onClick={() => marketAction("close", item.exchange_id)}>휴장</button> : <button className="soft small" disabled={busy} onClick={() => marketAction("open", item.exchange_id)}>개장</button>}{item.trading_halted ? <button className="soft small" disabled={busy} onClick={() => marketAction("resume", item.exchange_id)}>재개</button> : <button className="soft small" disabled={busy} onClick={() => marketAction("pause", item.exchange_id)}>정지</button>}<button className="soft small" disabled={busy || item.status === "closed"} onClick={() => marketAction("sidecar", item.exchange_id)}>사이드카</button><select className="mini-select" aria-label={`${item.exchange_id} 서킷브레이커`} value="" disabled={busy || item.status === "closed"} onChange={(event) => { if (event.target.value) marketAction("circuit", item.exchange_id, Number(event.target.value)); }}><option value="">서킷…</option><option value="1">1단계 (20분)</option><option value="2">2단계 (20분)</option><option value="3">3단계 (다음 날)</option></select></td></tr>)}
               </tbody></table>{overview && !overview.market.length && <p className="empty">등록된 거래소가 없습니다.</p>}</div>
             </article>
             <article className="dark-card rise">
@@ -381,13 +381,9 @@ export default function App() {
           {commandScope === "national" && <section className="glass card mb rise"><div className="card-head"><div><h2>Discord 봇 처리 대기열</h2><p className="cap">$주총처럼 Discord 메시지를 보내야 하는 작업은 실행 중인 봇이 처리합니다. 봇이 꺼져 있으면 대기 상태로 남습니다.</p></div><div className="actions"><button className="soft" type="button" onClick={() => void refresh()}>새로고침</button></div></div>
             <div className="scroll-x"><table><thead><tr><th>#</th><th>작업</th><th>상태</th><th>요청</th><th>결과</th><th>시각</th></tr></thead><tbody>{jobs.map((job) => <tr key={job.job_id}><td className="mono">#{job.job_id}</td><td>{job.kind === "shareholder_meeting" ? "$주총" : job.kind}</td><td><span className={job.status === "done" ? "tag ok" : job.status === "failed" ? "tag warn" : "tag"}>{{ pending: "대기", running: "처리 중", done: "완료", failed: "실패" }[job.status]}</span></td><td className="mono audit-payload">{job.payload}</td><td className="audit-payload">{job.result ? plain(job.result) : "—"}</td><td>{date(job.updated_epoch)}</td></tr>)}</tbody></table>{!jobs.length && <p className="empty">요청한 작업이 없습니다.</p>}</div>
           </section>}
-          {commandScope === "admin" && <section className="glass card mb rise"><div className="card-head"><div><h2>명령어 실행</h2><p className="cap">Discord에서 `$명령어 인자`로 입력하던 것과 같습니다. 인자는 공백으로 구분하고, 공백이 있는 값은 따옴표로 감쌉니다. 시장 사건($사건)은 시장 사건 화면에서 등록합니다.</p></div></div>
-            <form className="command-form" onSubmit={runCommand}>
-              <label>명령어<select value={command} onChange={(event) => setCommand(event.target.value)}>{commands.map((item) => <option key={item.name} value={item.name}>${item.name}</option>)}</select></label>
-              <label className="span-wide">인자<input className="mono" value={commandArgs} onChange={(event) => setCommandArgs(event.target.value)} placeholder={selectedCommand?.usage || "인자 없음"} /></label>
-              <button className="btn primary" disabled={busy || !command}>{busy ? "실행 중…" : "실행"}</button>
-            </form>
-            <p className="usage"><span className="mono">${command} {selectedCommand?.usage}</span></p>
+          {commandScope === "admin" && <section className="glass card mb rise"><div className="card-head"><div><h2>명령어 실행</h2><p className="cap">명령어를 고르면 입력 칸이 나옵니다. 아래 미리보기는 Discord에 입력하는 `$명령어 인자`와 같습니다. 시장 사건($사건)은 시장 사건 화면에서 등록합니다.</p></div></div>
+            <div className="form-grid command-picker"><label>명령어<select value={command} onChange={(event) => { setCommand(event.target.value); setCommandArgs(""); }}>{Array.from(new Set(commands.map((item) => COMMAND_FORMS[item.name]?.group ?? "기타"))).map((group) => <optgroup key={group} label={group}>{commands.filter((item) => (COMMAND_FORMS[item.name]?.group ?? "기타") === group).map((item) => <option key={item.name} value={item.name}>${item.name}</option>)}</optgroup>)}</select></label></div>
+            {command && <CommandForm key={`${command}-${commandArgs}`} command={command} usage={selectedCommand?.usage ?? ""} prefill={commandArgs} busy={busy} onRun={runCommand} openProducts={(group) => setPage(group === "market" ? "instruments" : "finance")} />}
             {(command === "상품생성" || command === "상품수정") && <details className="help"><summary>상품 종류별 순서형 인자</summary><pre>{creationHelp}</pre></details>}
           </section>}
           {commandScope !== "help" && <><section className="glass card mb rise"><div className="card-head"><div><h2>실행 결과</h2><p className="cap">이 화면에서 실행한 최근 20건 · 전체 기록은 작업 기록에서 확인합니다.</p></div></div>
@@ -395,7 +391,7 @@ export default function App() {
             {!commandResults.length && <p className="empty">아직 실행한 명령어가 없습니다.</p>}
           </section>
           <section className="glass card rise"><div className="card-head"><div><h2>전체 명령어</h2><p className="cap">{commandScope === "admin" ? commands.length : nationalCommands.length}개 · 선택하면 위 입력에 적용됩니다.</p></div></div><div className="command-list">{commandScope === "admin"
-            ? commands.map((item) => <button key={item.name} type="button" className={item.name === command ? "command-chip active" : "command-chip"} onClick={() => setCommand(item.name)}><b>${item.name}</b><small>{item.usage || "인자 없음"}</small></button>)
+            ? commands.map((item) => <button key={item.name} type="button" className={item.name === command ? "command-chip active" : "command-chip"} onClick={() => { setCommand(item.name); setCommandArgs(""); }}><b>${item.name}</b><small>{item.usage || "인자 없음"}</small></button>)
             : nationalCommands.map((item) => <button key={item.name} type="button" className={item.name === nationalCommand ? "command-chip active" : "command-chip"} onClick={() => setNationalCommand(item.name)}><b>${item.name}</b><small>{item.fields.map((field) => field.label).join(" · ") || "조회"}</small></button>)}</div></section></>}
         </>}
 

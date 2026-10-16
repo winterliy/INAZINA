@@ -1,7 +1,7 @@
 """Atomic currency exchange. Foreign amounts are integer millionths of a unit."""
 import time
 import uuid
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_DOWN
 from database.user_db import TREASURY_USER_ID
 from managers.currency_manager import CurrencyManager
 
@@ -18,8 +18,13 @@ def amount_units(value):
     except (InvalidOperation, ValueError, TypeError):
         raise ValueError("금액은 소수점 6자리 이내의 양수로 입력해주세요.") from None
 
-def display_units(units):
-    return f"{Decimal(units)/SCALE:,.6f}".rstrip('0').rstrip('.')
+def display_units(units, decimal_places=None):
+    """Format stored units; with ``decimal_places`` show exactly that precision."""
+    value = Decimal(units) / SCALE
+    if decimal_places is None:
+        return f"{value:,.6f}".rstrip('0').rstrip('.')
+    places = max(0, min(6, int(decimal_places)))
+    return f"{value.quantize(Decimal(1).scaleb(-places), rounding=ROUND_DOWN):,.{places}f}"
 
 class CurrencyExchangeManager:
     def __init__(self, db):

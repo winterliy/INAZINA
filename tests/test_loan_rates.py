@@ -136,4 +136,5 @@ class LoanRateTests(unittest.TestCase):
         self.assertIn('20%', result)
         self.assertEqual(government['maturity_epoch'], start+9*86400)
         self.assertEqual(government['extension_count'], 1)
-        self.assertEqual(InterestManager.loan_rate(government, self.db.products.get_liability('LN')), 20)
+        # Extensions store the applied rate on the contract (since the cash generalisation).
+        self.assertEqual(government['contract_rate'], 20)

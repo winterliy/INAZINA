@@ -48,6 +48,17 @@ class WebJobTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             asyncio.run(web_jobs.run_job("bot", {**job, "kind": "unknown"}))
 
+    def test_hts_requests_reuse_the_slash_command_flows(self):
+        relief = {"job_id": 2, "kind": "relief_request", "actor_id": "user-1", "payload": json.dumps({"type": "파산", "name": "닉"})}
+        with patch("functions.slash_commands.submit_relief_request", AsyncMock(return_value="sent")) as submit:
+            self.assertEqual(asyncio.run(web_jobs.run_job("bot", relief)), "sent")
+        submit.assert_awaited_once_with("bot", "user-1", "닉", "파산")
+        bot = SimpleNamespace(db=SimpleNamespace(users=SimpleNamespace(get_user=lambda _id: {"role": "user"})))
+        meeting = {"job_id": 3, "kind": "user_shareholder_meeting", "actor_id": "user-1", "payload": json.dumps({"code": "AAA", "place": "홀"})}
+        with patch("functions.slash_commands.convene_shareholder_meeting", AsyncMock(return_value="ok")) as convene:
+            self.assertEqual(asyncio.run(web_jobs.run_job(bot, meeting)), "ok")
+        self.assertEqual(convene.await_args.args[1:], ("user-1", "user", "AAA", "홀"))
+
     def test_loop_records_failures_and_keeps_running(self):
         job_id = self.add(kind="unknown")
         states = iter([False, False, True])

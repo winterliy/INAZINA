@@ -1,5 +1,6 @@
 """Foreign-currency stock/spot orders using the common price-time order book."""
 import time
+import uuid
 from decimal import Decimal
 from database.user_db import TREASURY_USER_ID
 from managers.currency_exchange_manager import CurrencyExchangeManager,SCALE,MAX_UNITS
@@ -22,6 +23,8 @@ class ForeignSecuritiesManager:
             if changed.rowcount!=1:
                 raise ValueError(f'{currency} 현금 잔액 한도를 초과했습니다.')
             return
+        if not account and str(user) == TREASURY_USER_ID:
+            ForeignSecuritiesManager.treasury_currency_account(conn,currency,time.time())
         if account:
             changed = conn.execute("UPDATE accounts SET balance_units=balance_units+? WHERE account_number=? AND user_id=? AND quote_currency=? AND account_type='currency_saving' AND balance_units<=?",
                 (units,account,str(user),currency,MAX_UNITS-units))
@@ -88,6 +91,22 @@ class ForeignSecuritiesManager:
             return False,f'❌ {exc}'
 
     @staticmethod
+    def treasury_currency_account(conn,currency,now):
+        """The treasury receives primary-issue proceeds in any listed currency.
+
+        Citizens open foreign-currency accounts themselves; the treasury is a
+        system account, so its holding account is created on first use.
+        """
+        row=conn.execute("SELECT account_number FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'",(TREASURY_USER_ID,currency)).fetchone()
+        if row:
+            return row['account_number']
+        product=conn.execute("SELECT product_code FROM saving WHERE quote_currency=? AND product_kind='currency_saving' AND status='active' ORDER BY product_code LIMIT 1",(currency,)).fetchone()
+        account='FXA'+uuid.uuid4().hex[:20].upper()
+        conn.execute("INSERT INTO accounts(account_number,user_id,product_code,balance,password,last_payment_epoch,principal,account_type,quote_currency) VALUES (?,?,?,?,?,?,?,?,?)",
+                     (account,TREASURY_USER_ID,product['product_code'] if product else None,0,None,now,0,'currency_saving',currency))
+        return account
+
+    @staticmethod
     def add_position(conn,user,code,account,quantity,price):
         conn.execute("INSERT INTO user_assets(user_id,asset_code,account_number,quantity,average_cost) VALUES (?,?,?,?,?) ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET average_cost=(quantity*average_cost+excluded.quantity*excluded.average_cost)/(quantity+excluded.quantity),quantity=quantity+excluded.quantity",(user,code,account,quantity,price))
 
@@ -124,8 +143,7 @@ class ForeignSecuritiesManager:
             self.add_position(conn,buy['user_id'],asset['code'],buy['funding_account'],quantity,price)
             if primary:
                 if CurrencyManager.home(conn,TREASURY_USER_ID) != currency:
-                    from managers.corporate_actions_manager import CorporateActionsManager
-                    CorporateActionsManager._currency_account(conn,TREASURY_USER_ID,currency,now)
+                    self.treasury_currency_account(conn,currency,now)
                 self.credit_units(
                     conn,TREASURY_USER_ID,currency,
                     int(round(round_currency(conn,quantity*price,currency)*SCALE))

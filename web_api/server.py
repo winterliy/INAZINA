@@ -25,7 +25,7 @@ PORT = int(os.environ.get("INAZINA_PYTHON_PORT", "4313"))
 MAX_HTTP_THREADS = max(1, min(int(os.environ.get("INAZINA_MAX_HTTP_THREADS", "16")), 64))
 BOOTSTRAP_ADMIN_IDS = {"1076861147560542278"}
 sys.path.insert(0, str(ROOT))
-from database.user_db import TREASURY_USER_ID
+from database.user_db import TREASURY_USER_ID, citizen_filter
 from functions.performance import log_slow
 _domain = None
 _domain_lock = threading.Lock()
@@ -142,6 +142,9 @@ def identity(user_id):
             "SELECT cash FROM users WHERE user_id=? AND nationality=?",
             (TREASURY_USER_ID, row["nationality"]),
         ).fetchone() if country_account else None
+        currency = connection.execute(
+            "SELECT currency_code FROM country_currencies WHERE nationality=?", (row["nationality"],),
+        ).fetchone() if row else None
     if (not row or row["status"] not in {"active", "nation"} or
             (auth_table and credential is None)):
         return None
@@ -152,6 +155,7 @@ def identity(user_id):
         "userId": str(row["user_id"]),
         "nickname": str(row["nickname"] or row["user_id"]),
         "nationality": str(row["nationality"] or ""),
+        "currency": str(currency[0]) if currency else "NWX",
         "cash": int((treasury["cash"] if treasury else row["cash"]) or 0),
         "creditScore": int(row["credit_score"] or 0),
         "role": role,
@@ -499,6 +503,8 @@ def domain():
                     bank_mgr=BankManager(db), investment_mgr=InvestmentManager(db, user_manager),
                     treasury_bond_mgr=user_manager.bond_manager,
                 )
+                from managers.interest_manager import InterestManager
+                bot.interest_mgr = InterestManager(db)
                 bot.admin_control = AdminControlManager(bot)
                 bot.admin_mgr = AdminManager(db)
                 _domain = SimpleNamespace(
@@ -515,8 +521,7 @@ def domain():
 def admin_overview():
     with connect_readonly() as connection:
         active_users = connection.execute(
-            "SELECT COUNT(*) FROM users WHERE status='active' AND user_id<>?",
-            (TREASURY_USER_ID,),
+            f"SELECT COUNT(*) FROM users WHERE status='active' AND {citizen_filter()}"
         ).fetchone()[0]
         active_assets = connection.execute(
             "SELECT (SELECT COUNT(*) FROM market_assets WHERE status='active') + "
@@ -702,7 +707,7 @@ def set_market_state(actor, payload):
     if action not in actions:
         raise ValueError("invalid_market_action")
     return domain().market_session.control(
-        actor, action, stage=payload.get("stage"), exchange_id=payload.get("exchangeId")
+        actor, action, stage=payload.get("stage"), exchange_id=payload.get("exchangeId") or "ALL"
     )
 
 
@@ -1372,8 +1377,8 @@ def admin_countries():
             treasury = connection.execute(
                 "SELECT u.user_id,u.cash FROM country_treasuries t JOIN users u ON u.user_id=t.user_id WHERE t.nationality=?",
                 (nationality,)).fetchone() if _table_exists(connection, "country_treasuries") else None
-            citizens = connection.execute("SELECT COUNT(*) FROM users WHERE nationality=? AND user_id<>?",
-                                          (nationality, TREASURY_USER_ID)).fetchone()[0]
+            citizens = connection.execute(f"SELECT COUNT(*) FROM users WHERE nationality=? AND {citizen_filter()}",
+                                          (nationality,)).fetchone()[0]
             guilds = [item[0] for item in connection.execute(
                 "SELECT guild_id FROM guild_countries WHERE nationality=?", (nationality,))] if _table_exists(connection, "guild_countries") else []
             exchanges = [item[0] for item in connection.execute(
@@ -1560,6 +1565,38 @@ def queue_shareholder_meeting(actor, payload):
     return f"⏳ 주총 소집을 Discord 봇에 요청했습니다 (#{job_id}). 봇이 실행 중이면 몇 초 안에 안내 DM을 보냅니다."
 
 
+def queue_bot_job(kind, actor, payload):
+    now = int(time.time())
+    with connect_db(timeout=5) as connection:
+        ensure_bot_jobs_table(connection)
+        return connection.execute(
+            "INSERT INTO web_bot_jobs(kind,actor_id,payload,created_epoch,updated_epoch) VALUES (?,?,?,?,?)",
+            (kind, actor, json.dumps(payload, ensure_ascii=False), now, now)).lastrowid
+
+
+def run_user_command(user, payload):
+    """HTS form for a Discord user command, run as the user's trading identity."""
+    from functions import user_actions
+    command = str(payload.get("command", ""))
+    values = user_actions.parse_values(command, payload.get("values") or {})
+    if command == "파산":
+        job = queue_bot_job("relief_request", user["userId"], {"type": "파산", "name": user["nickname"]})
+        return True, f"⏳ 파산 신청을 Discord 봇에 전달했습니다 (#{job}). 봇이 관리자에게 DM으로 알립니다."
+    if command == "주총소집":
+        job = queue_bot_job("user_shareholder_meeting", user["userId"], {"code": values["code"], "place": values["place"]})
+        return True, f"⏳ 주주총회 소집을 Discord 봇에 전달했습니다 (#{job}). 봇이 주주들에게 DM을 보냅니다."
+    from decimal import InvalidOperation
+    trader = trading_user_id(user["userId"])
+    try:
+        success, message = user_actions.execute(domain().bot, trader, command, values)
+    except (KeyError, InvalidOperation, sqlite3.IntegrityError) as exc:
+        raise ValueError(str(exc) or "명령어를 처리하지 못했습니다.") from exc
+    except RuntimeError as exc:
+        raise ValueError(str(exc)) from exc
+    _read_cache.invalidate(("portfolio", trader), ("orders", trader))
+    return success, message
+
+
 def bot_jobs(limit=20):
     with connect_db(timeout=2) as connection:
         ensure_bot_jobs_table(connection)
@@ -1664,6 +1701,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     self.send_json(200, {"htsId": get_hts_login_id(user_id)})
+            elif path == "/internal/hts/commands":
+                from functions.user_actions import catalog
+                self.send_json(200, {"commands": catalog()})
             elif path == "/internal/market/instruments":
                 self.send_json(200, {"instruments": instruments()})
             elif path == "/internal/market/portfolio":
@@ -1855,7 +1895,10 @@ class Handler(BaseHTTPRequestHandler):
             if not user:
                 self.send_json(403, {"error": "active_user_required"})
                 return
-            if path == "/internal/hts/account":
+            if path == "/internal/hts/commands":
+                success, message = run_user_command(user, payload)
+                self.send_json(200 if success else 400, {"success": success, "message": message})
+            elif path == "/internal/hts/account":
                 hts_id = set_hts_login_id(user["userId"], payload.get("htsId"), payload.get("password"))
                 self.send_json(200, {"htsId": hts_id})
             elif path == "/internal/market/orders":

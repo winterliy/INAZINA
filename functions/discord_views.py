@@ -858,9 +858,14 @@ class InfoPanelView(discord.ui.View):
     def _category_lines(self, category, market_groups=None):
         stocks, investments = market_groups if market_groups is not None else self._market_groups()
         if category == "forex":
-            return [f"• **{r['name']}** ({r['code']}) · 1 NWX = **{inverse_rate_text(r['rate'])} {r['code']}**"
+            # Quote every other currency against the viewer's home currency.
+            manager = CurrencyExchangeManager(self.bot.db)
+            _country, home = manager.national_currency(self.user_id)
+            rates = manager.rates()
+            home_rate = next((Decimal(str(r['rate'])) for r in rates if r['code'] == home), Decimal(1))
+            return [f"• **{r['name']}** ({r['code']}) · 1 {home} = **{format(home_rate / Decimal(str(r['rate'])), '.12g')} {r['code']}**"
                     + (f" · 그래프 `{r['asset_code']}`" if r['asset_code'] else '')
-                    for r in CurrencyExchangeManager(self.bot.db).rates() if r['code'] != 'NWX']
+                    for r in rates if r['code'] != home]
         if category == 'indices':
             return [f"• **{row['exchange_id']} 거래소 지수** · **{float(row['index_value']):,.2f} pt**"
                     for row in self.bot.market_mgr.get_exchange_indices()]
@@ -1173,10 +1178,9 @@ class InfoPanelView(discord.ui.View):
         return embed
 
     def _asset_ranking_embed(self):
+        from database.user_db import citizen_filter
         users = self.bot.db.users.execute(
-            "SELECT user_id,nickname FROM users "
-            "WHERE status='active' AND user_id<>? ORDER BY user_id",
-            (TREASURY_USER_ID,),
+            f"SELECT user_id,nickname FROM users WHERE status='active' AND {citizen_filter()} ORDER BY user_id"
         )
         ranked = []
         for user in users:

@@ -177,9 +177,9 @@ class AdminManager:
                 source=(str(currency_code).upper() if currency_code else
                         CurrencyManager.home(conn,actor or TREASURY_USER_ID))
                 CurrencyManager.validate_units(conn,units,source)
+                from database.user_db import citizen_filter
                 recipients=conn.execute(
-                    "SELECT user_id FROM users WHERE status='active' AND user_id!=? ORDER BY user_id",
-                    (TREASURY_USER_ID,),
+                    f"SELECT user_id FROM users WHERE status='active' AND {citizen_filter()} ORDER BY user_id"
                 ).fetchall()
                 if not recipients:
                     return False,'❌ 기본소득을 받을 활성 시민이 없습니다.'

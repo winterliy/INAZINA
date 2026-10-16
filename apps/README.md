@@ -61,22 +61,33 @@ The HTS shares the dashboard's Apple-style glass design in a denser trading
 layout and follows the system light/dark setting. Following Korean market
 convention, buying and rising prices are red; selling and falling prices are blue.
 
-- Candle (default) and line charts. Candles are aggregated in SQLite per
-  period (1m, 5m, 10m, 30m, 1h, 6h, 12h, 1d); "자동" picks a period from the
-  selected range. Rising candles are red and falling candles blue.
-- Trend and horizontal lines are saved per user and instrument as chart
-  time/price anchors, so they survive reloads, zoom, and period changes.
-- The wallet shows cash and totals in the user's home currency (as the Discord
-  `/내지갑` does), foreign-currency wallets, and holdings; selecting a holding
-  opens its chart.
-- Limit orders and cancellations use the existing Python order book.
+- **Left rail — my wallet**: cash and totals in the home currency (as Discord
+  `/내지갑`), foreign-currency wallets, accounts, investments, order deposits,
+  loans, net worth, and holdings (click to open the chart). Markets are reached
+  through 종목 검색; dedicated market pages can come later.
+- **Chart**: candle (default) or line; periods 1m–1d or 자동. Any interaction
+  (drawing, moving, dragging the chart, wheel zoom, ←/→, ＋/－) freezes the axes,
+  so incoming quotes no longer make drawings jump; 실시간 (or double-click)
+  returns to the live, auto-fitted view. Trend lines are dragged as a whole or
+  by their end handles; lines have a wide hit area; Delete removes, Ctrl/⌘+Z
+  undoes. Drawings are saved per user and instrument as time/price anchors.
+- **Orders**: 미체결/전체 tabs; open, partial, and scheduled orders have a red
+  취소 button (deposit and quantity return immediately). Clicking an order-book
+  row fills the limit price.
+- **명령어**: every Discord user command as a form — 매수/매도 (incl. funds and
+  fractional quantities), 주문취소, 내주문, 호가, 송금, 도박, 계좌개설/해지,
+  대출신청/상환/연장, 선물증거금, 옵션체인/작성, 복권구매/내복권/복권결과/복권규칙,
+  법정최고이자, 재무, 파산, 주총소집 (`functions/user_actions.py`). 파산 and 주총소집
+  send Discord DMs, so they are queued for the running bot. Server setup,
+  registration, and help stay in Discord; search, chart, and wallet are HTS views.
+  Country accounts run commands with their treasury.
 
 ## Dashboard
 
 The dashboard uses the glass design prototyped in `glass-dashboard/index.html`
 and follows the system light/dark setting.
 
-- **운영 현황**: counts, per-exchange market state, and open/close/pause/resume.
+- **운영 현황**: citizen counts (treasuries and country login accounts excluded), per-exchange market state, open/close/pause/resume, sidecar, and circuit breaker.
 - **종목 · 상품** and **금융 상품**: create, edit, stop, and restore every
   `$상품생성` kind — stocks, preferred shares, assets, ETFs, futures, corporate
   and treasury bonds, funds, index funds, commodities, options, and ELS; and
@@ -96,7 +107,9 @@ and follows the system light/dark setting.
   target price (good news at or above the current price, bad news at or below;
   the percentage then sets volatility), and list recent `market_events`.
 - **관리자 명령어**: runs every Discord `$` command. The 관리자 명령어 tab covers
-  the 40 `AdminCommandsManager` commands; the 국가 명의 tab covers the 16
+  the 40 `AdminCommandsManager` commands as forms (selects for operations,
+  countries, exchanges, and currencies; suggestions for products and users) with a
+  live `$명령어 인자` preview and an optional raw-input mode; the 국가 명의 tab covers the 16
   treasury commands (`$매수`, `$송금`, `$계좌개설`, …) with the same form fields.
   Both keep the Discord validation and audit trail. `$사건` is the 시장 사건 page
   and `$도움말` is the 도움말 tab. `$주총` must send Discord DMs, so the dashboard
@@ -117,6 +130,7 @@ and follows the system light/dark setting.
 
 Public:
 
+- `GET /` — browsers get a styled page pointing to the dashboard and HTS (also shown for unknown paths and for API paths opened without a login); apps keep receiving JSON
 - `GET /api/health`
 - `GET /api/auth/config`, `/api/auth/countries`
 - `GET /api/auth/discord/start`, `/api/auth/discord/callback`, `/api/auth/discord/verification`
@@ -126,6 +140,7 @@ Signed-in users:
 
 - `GET /api/auth/session`, `/api/me`, `/api/me/portfolio`
 - `GET/POST /api/hts/account` (HTS login ID)
+- `GET/POST /api/hts/commands` (user command catalog; run `{ command, values }`)
 - `GET /api/market/instruments`, `/api/market/orders`, `/api/market/book/:code`
 - `GET /api/market/chart/:code?range=1h|1d|1w|1m|all&interval=<seconds>` (points and candles)
 - `GET/POST /api/market/drawings/:code`

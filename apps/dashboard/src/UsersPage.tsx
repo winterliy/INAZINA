@@ -70,7 +70,7 @@ function UserTab({ ctx, countries, currentUserId }: { ctx: Ctx; countries: Count
   return <>
     {detail && <>
       <Card title={`${detail.user.nickname} 설정`} caption={<><span className="mono">{id}</span> · {detail.accountType === "country" ? "국가 계정" : "Discord 사용자"}</>}
-        actions={<><button className="soft" type="button" onClick={() => openCommand("잔고수정", `${id} add `)}>잔고 가감 ($잔고수정)</button><button className="soft" type="button" onClick={() => setDetail(null)}>닫기</button></>}>
+        actions={<><button className="soft" type="button" onClick={() => openCommand("잔고수정", id)}>잔고 가감 ($잔고수정)</button><button className="soft" type="button" onClick={() => setDetail(null)}>닫기</button></>}>
         <form className="form-grid" onSubmit={saveUser}>
           {USER_FIELDS.map(([key, label, hint]) => <Field key={key} label={label} hint={hint}>
             {key === "nationality"
@@ -95,7 +95,7 @@ function UserTab({ ctx, countries, currentUserId }: { ctx: Ctx; countries: Count
         </div>
       </Card>
       <Card title="계좌 · 대출 · 보유 자산" caption="읽기 전용입니다. 계좌 잔액은 $잔고수정, 그 밖의 값은 DB 편집에서 바꿉니다.">
-        <div className="scroll-x"><table><thead><tr><th>계좌번호</th><th>상품</th><th>종류</th><th>통화</th><th className="r">잔액</th><th /></tr></thead><tbody>{detail.accounts.map((account) => <tr key={String(account.account_number)}><td className="mono">{show(account.account_number)}</td><td>{show(account.product_code)}</td><td>{show(account.account_type)}</td><td>{show(account.quote_currency)}</td><td className="r mono">{show(account.balance)}</td><td className="row-actions"><button className="soft small" onClick={() => openCommand("잔고수정", `${account.account_number} add `)}>잔고</button></td></tr>)}</tbody></table>{!detail.accounts.length && <p className="empty">계좌가 없습니다.</p>}</div>
+        <div className="scroll-x"><table><thead><tr><th>계좌번호</th><th>상품</th><th>종류</th><th>통화</th><th className="r">잔액</th><th /></tr></thead><tbody>{detail.accounts.map((account) => <tr key={String(account.account_number)}><td className="mono">{show(account.account_number)}</td><td>{show(account.product_code)}</td><td>{show(account.account_type)}</td><td>{show(account.quote_currency)}</td><td className="r mono">{show(account.balance)}</td><td className="row-actions"><button className="soft small" onClick={() => openCommand("잔고수정", String(account.account_number))}>잔고</button></td></tr>)}</tbody></table>{!detail.accounts.length && <p className="empty">계좌가 없습니다.</p>}</div>
         <div className="scroll-x"><table><thead><tr><th>대출</th><th>상품</th><th>상태</th><th className="r">원금</th><th className="r">잔액</th><th>만기</th></tr></thead><tbody>{detail.loans.map((loan) => <tr key={String(loan.loan_id)}><td className="mono">#{show(loan.loan_id)}</td><td>{show(loan.product_code)}</td><td>{show(loan.status)}</td><td className="r mono">{show(loan.principal)}</td><td className="r mono">{show(loan.outstanding_balance)}</td><td>{loan.maturity_epoch ? date(Number(loan.maturity_epoch)) : "—"}</td></tr>)}</tbody></table>{!detail.loans.length && <p className="empty">대출이 없습니다.</p>}</div>
         <div className="chips">{detail.holdings.map((item) => <span key={item.asset_code} className="tag">{item.asset_code} · {number(item.quantity)}</span>)}{!detail.holdings.length && <span className="hint">보유 자산이 없습니다.</span>}</div>
       </Card>

@@ -33,6 +33,111 @@ from managers.currency_exchange_manager import display_units
 MAX_DISCORD_INTEGER = 2**53 - 1
 
 
+async def submit_relief_request(bot, user_id, display_name, request_type):
+    """DM every administrator a bankruptcy/relief request with the asset summary.
+
+    Shared by /파산 and HTS requests that the bot processes from web_bot_jobs.
+    """
+    try:
+        assets = await asyncio.to_thread(
+            bot.user_mgr.get_total_assets, user_id, settle=False
+        )
+        users = await asyncio.to_thread(
+            bot.db.users.execute,
+            "SELECT user_id, role FROM users",
+        )
+    except Exception as exc:
+        print(f"[Relief Request Error] {type(exc).__name__}: {exc}")
+        return "❌ 현재 자산 정보를 불러오지 못해 신청을 전달하지 않았습니다. 잠시 후 다시 시도해주세요."
+
+    admin_ids = {
+        str(row["user_id"])
+        for row in users
+        if resolve_user_role(row["user_id"], row) == "admin"
+    }
+    admin_ids.update(BOOTSTRAP_ADMIN_IDS)
+    investment_total = int(assets["stock_total"]) + int(assets["bond_total"])
+    message = (
+        f"[{display_name} ({user_id})가 {request_type}을 신청했습니다.\n"
+        "현재 잔액 (내 자산 페이지 구성 기준 · 미정산 이자/만기정산 제외)\n"
+        f"현금: {int(assets['cash']):,} NWX · "
+        f"통장: {int(assets['account_total']):,} NWX · "
+        f"투자자산: {investment_total:,} NWX · "
+        f"매수 주문 예치금: {int(assets['order_reserved_total']):,} NWX\n"
+        f"총 자산: {int(assets['grand_total']):,} NWX · "
+        f"대출 잔액: {int(assets['loan_total']):,} NWX · "
+        f"순자산: {int(assets['net_worth']):,} NWX]"
+    )
+
+    sent = failed = 0
+    for admin_id in sorted(admin_ids):
+        try:
+            recipient = bot.get_user(int(admin_id))
+            if recipient is None:
+                recipient = await bot.fetch_user(int(admin_id))
+            await recipient.send(
+                message,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            sent += 1
+        except (discord.HTTPException, ValueError, TypeError):
+            failed += 1
+
+    if sent:
+        result = f"✅ {request_type} 신청을 관리자 {sent}명에게 DM으로 전달했습니다."
+        if failed:
+            result += f" (DM 전달 실패 {failed}명)"
+    elif failed:
+        result = f"⚠️ 신청 DM을 보내지 못했습니다. 전달 실패: {failed}명"
+    else:
+        result = "⚠️ DM을 받을 관리자를 찾지 못했습니다."
+    return result
+
+
+async def convene_shareholder_meeting(bot, user_id, role, 주식코드, 장소):
+    """Largest shareholders or admins invite every holder by DM (/주총소집 and HTS)."""
+    company = bot.db.companies.get_company(주식코드)
+    if not company:
+        return "❌ 회사 주식 코드를 찾을 수 없습니다."
+    if 'share_class' in company.keys() and company['share_class'] == 'preferred':
+        return '❌ 우선주는 의결권이 없습니다. 존속 법인의 보통주 코드로 주주총회를 소집해주세요.'
+    holders = bot.db.assets.execute(
+        "SELECT user_id, SUM(quantity) AS shares FROM ("
+        "SELECT user_id, quantity FROM user_assets WHERE asset_code = ? AND quantity > 0 "
+        "UNION ALL SELECT writer_id AS user_id, quantity FROM option_collateral_lots "
+        "WHERE underlying_code = ? AND quantity > 0) "
+        "GROUP BY user_id ORDER BY shares DESC, user_id ASC",
+        (주식코드, 주식코드),
+    )
+    if not holders:
+        return "❌ 해당 주식을 보유한 주주가 없습니다."
+    largest = holders[0]["shares"]
+    largest_ids = {str(row["user_id"]) for row in holders if row["shares"] == largest}
+    if role != "admin" and user_id not in largest_ids:
+        return "❌ 해당 종목 최대주주 또는 관리자만 소집할 수 있습니다."
+
+    notice = discord.Embed(
+        title=f"📣 {company['name']} 주주총회 공지",
+        description="아래 버튼으로 참석 여부를 선택해주세요. 응답은 DM 수신 후 1시간 동안 가능합니다.",
+        color=discord.Color.gold(),
+    )
+    notice.add_field(name="장소", value=장소[:1024], inline=False)
+    notice.add_field(name="주식 코드", value=주식코드, inline=True)
+    sent = failed = 0
+    for holder in holders:
+        try:
+            holder_id = int(holder["user_id"])
+            target = bot.get_user(holder_id) or await bot.fetch_user(holder_id)
+            view = ShareholderMeetingResponseView(
+                bot, holder_id, int(user_id), company["name"], 주식코드, 장소
+            )
+            view.message = await target.send(embed=notice, view=view)
+            sent += 1
+        except (discord.HTTPException, ValueError, TypeError):
+            failed += 1
+    return f"✅ 주주총회 DM 전달: {sent}명 성공 · {failed}명 실패"
+
+
 class SlashCommandRegistry:
     """Registers the bot's user and administrator commands as Discord slash commands."""
 
@@ -601,62 +706,7 @@ class SlashCommandRegistry:
             or getattr(interaction.user, "global_name", None)
             or getattr(interaction.user, "name", user_id)
         )
-        try:
-            assets = await asyncio.to_thread(
-                self.bot.user_mgr.get_total_assets, user_id, settle=False
-            )
-            users = await asyncio.to_thread(
-                self.bot.db.users.execute,
-                "SELECT user_id, role FROM users",
-            )
-        except Exception as exc:
-            print(f"[Relief Request Error] {type(exc).__name__}: {exc}")
-            return await self._reply(
-                interaction,
-                content="❌ 현재 자산 정보를 불러오지 못해 신청을 전달하지 않았습니다. 잠시 후 다시 시도해주세요.",
-            )
-
-        admin_ids = {
-            str(row["user_id"])
-            for row in users
-            if resolve_user_role(row["user_id"], row) == "admin"
-        }
-        admin_ids.update(BOOTSTRAP_ADMIN_IDS)
-        investment_total = int(assets["stock_total"]) + int(assets["bond_total"])
-        message = (
-            f"[{display_name} ({user_id})가 {request_type}을 신청했습니다.\n"
-            "현재 잔액 (내 자산 페이지 구성 기준 · 미정산 이자/만기정산 제외)\n"
-            f"현금: {int(assets['cash']):,} NWX · "
-            f"통장: {int(assets['account_total']):,} NWX · "
-            f"투자자산: {investment_total:,} NWX · "
-            f"매수 주문 예치금: {int(assets['order_reserved_total']):,} NWX\n"
-            f"총 자산: {int(assets['grand_total']):,} NWX · "
-            f"대출 잔액: {int(assets['loan_total']):,} NWX · "
-            f"순자산: {int(assets['net_worth']):,} NWX]"
-        )
-
-        sent = failed = 0
-        for admin_id in sorted(admin_ids):
-            try:
-                recipient = self.bot.get_user(int(admin_id))
-                if recipient is None:
-                    recipient = await self.bot.fetch_user(int(admin_id))
-                await recipient.send(
-                    message,
-                    allowed_mentions=discord.AllowedMentions.none(),
-                )
-                sent += 1
-            except (discord.HTTPException, ValueError, TypeError):
-                failed += 1
-
-        if sent:
-            result = f"✅ {request_type} 신청을 관리자 {sent}명에게 DM으로 전달했습니다."
-            if failed:
-                result += f" (DM 전달 실패 {failed}명)"
-        elif failed:
-            result = f"⚠️ 신청 DM을 보내지 못했습니다. 전달 실패: {failed}명"
-        else:
-            result = "⚠️ DM을 받을 관리자를 찾지 못했습니다."
+        result = await submit_relief_request(self.bot, user_id, display_name, request_type)
         await self._reply(interaction, content=result)
 
     @app_commands.describe(
@@ -1175,46 +1225,8 @@ class SlashCommandRegistry:
         장소: app_commands.Range[str, 1, 500],
     ):
         user_id, _user_data, role = await self._prepare(interaction)
-        company = self.bot.db.companies.get_company(주식코드)
-        if not company:
-            return await self._reply(interaction, content="❌ 회사 주식 코드를 찾을 수 없습니다.")
-        if 'share_class' in company.keys() and company['share_class'] == 'preferred':
-            return await self._reply(interaction, content='❌ 우선주는 의결권이 없습니다. 존속 법인의 보통주 코드로 주주총회를 소집해주세요.')
-        holders = self.bot.db.assets.execute(
-            "SELECT user_id, SUM(quantity) AS shares FROM ("
-            "SELECT user_id, quantity FROM user_assets WHERE asset_code = ? AND quantity > 0 "
-            "UNION ALL SELECT writer_id AS user_id, quantity FROM option_collateral_lots "
-            "WHERE underlying_code = ? AND quantity > 0) "
-            "GROUP BY user_id ORDER BY shares DESC, user_id ASC",
-            (주식코드, 주식코드),
-        )
-        if not holders:
-            return await self._reply(interaction, content="❌ 해당 주식을 보유한 주주가 없습니다.")
-        largest = holders[0]["shares"]
-        largest_ids = {str(row["user_id"]) for row in holders if row["shares"] == largest}
-        if role != "admin" and user_id not in largest_ids:
-            return await self._reply(interaction, content="❌ 해당 종목 최대주주 또는 관리자만 소집할 수 있습니다.")
-
-        notice = discord.Embed(
-            title=f"📣 {company['name']} 주주총회 공지",
-            description="아래 버튼으로 참석 여부를 선택해주세요. 응답은 DM 수신 후 1시간 동안 가능합니다.",
-            color=discord.Color.gold(),
-        )
-        notice.add_field(name="장소", value=장소[:1024], inline=False)
-        notice.add_field(name="주식 코드", value=주식코드, inline=True)
-        sent = failed = 0
-        for holder in holders:
-            try:
-                holder_id = int(holder["user_id"])
-                target = self.bot.get_user(holder_id) or await self.bot.fetch_user(holder_id)
-                view = ShareholderMeetingResponseView(
-                    self.bot, holder_id, int(user_id), company["name"], 주식코드, 장소
-                )
-                view.message = await target.send(embed=notice, view=view)
-                sent += 1
-            except (discord.HTTPException, ValueError, TypeError):
-                failed += 1
-        await interaction.followup.send(
-            content=f"✅ 주주총회 DM 전달: {sent}명 성공 · {failed}명 실패",
-            ephemeral=True,
-        )
+        message = await convene_shareholder_meeting(self.bot, user_id, role, 주식코드, 장소)
+        if message.startswith("✅"):
+            await interaction.followup.send(content=message, ephemeral=True)
+        else:
+            await self._reply(interaction, content=message)
