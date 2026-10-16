@@ -28,16 +28,16 @@ USER_ACTIONS = {
     "호가": ("거래", "종목의 매수·매도 대기 주문을 봅니다.", "가격별로 쌓인 매수·매도 수량을 보여 줍니다.",
            [("asset", "종목", "text", False, "", "instruments")]),
     "송금": ("돈", "다른 사람이나 계좌로 돈을 보냅니다.",
-           "받는 사람의 Discord ID 또는 계좌번호를 넣으세요. 내 외환통장 번호를 넣으면 그 통화로 환전돼요. 금액은 출금하는 통화 기준입니다.",
+           "받는 사람의 아이디 또는 계좌번호를 넣으세요. 내 외환통장 번호를 넣으면 그 통화로 환전돼요. 금액은 출금하는 통화 기준입니다.",
            [("recipient", "받는 사람 ID 또는 계좌", "text", False, "내 외환통장이면 환전", "accounts"), ("amount", "금액", "number", False, "출금 통화 기준", None), ("source", "출금 계좌", "text", True, "비우면 지갑에서", "accounts")]),
     "도박": ("돈", "금액을 걸고 도박합니다.", "관리자가 정한 확률로 당첨되면 리턴 비율만큼 받고, 지면 건 금액은 국고로 갑니다.",
            [("amount", "건 금액", "number", False, "", None)]),
     "계좌개설": ("은행", "저축 상품이나 외환통장으로 계좌를 엽니다.",
-             "저축 상품은 비밀번호와 최소 예치금이 필요해요. 외환통장은 비밀번호 없이 예치금 0으로 열고, 송금으로 입금합니다.",
-             [("product", "상품", "text", False, "", "saving_products"), ("password", "계좌 비밀번호", "password", True, "외환통장은 비워 두세요", None), ("deposit", "예치금", "number", True, "외환통장은 0", None)]),
+             "저축과 외환통장 모두 비밀번호와 상품의 최소 예치금이 필요해요. 예치금은 상품 통화 기준이고, 외환통장은 현재 환율로 내 현금에서 빠져나가요.",
+             [("product", "상품", "text", False, "", "saving_products"), ("password", "계좌 비밀번호", "password", False, "4~16자", None), ("deposit", "예치금", "number", True, "상품 통화 기준 · 비우면 0", None)]),
     "계좌해지": ("은행", "통장을 해지하고 잔액을 돌려받습니다.",
-             "만기 전에 해지하면 상품에 따라 중도해지 이율이나 수수료가 적용될 수 있어요.",
-             [("account", "해지할 계좌", "text", False, "", "accounts"), ("password", "계좌 비밀번호", "password", True, "외환통장은 비워 두세요", None), ("destination", "받을 계좌", "text", True, "비우면 지갑으로", "accounts")]),
+             "만기 전에 해지하면 상품에 따라 중도해지 이율이나 수수료가 적용될 수 있어요. 외환통장 잔액은 받을 계좌가 없으면 현재 환율로 내 현금에 들어와요.",
+             [("account", "해지할 계좌", "text", False, "", "accounts"), ("password", "계좌 비밀번호", "password", False, "", None), ("destination", "받을 계좌", "text", True, "비우면 지갑으로", "accounts")]),
     "대출신청": ("은행", "대출 상품으로 돈을 빌립니다.",
              "상품마다 한도, 최소 신용점수, 이율, 만기가 달라요. 소득 대비 상환 부담(DTI·DSR)도 심사합니다.",
              [("product", "대출 상품", "text", False, "", "loan_products"), ("amount", "금액", "number", False, "", None)]),
@@ -156,13 +156,7 @@ def execute(bot, user_id, command, values):
     if command == "도박":
         return _text(bot.user_mgr.gamble(user_id, _integer(v["amount"], "금액")))
     if command == "계좌개설":
-        is_fx = bot.db.products.execute_one(
-            "SELECT 1 FROM saving WHERE product_code=? AND product_kind='currency_saving' AND status='active'", (v["product"],))
-        if is_fx:
-            if v["deposit"] and _integer(v["deposit"], "예치금") != 0:
-                raise ValueError("외환통장 초기 예치금은 0으로 두고 송금으로 입금해주세요.")
-            return True, "✅ 외환통장: " + str(bot.currency_mgr.open_account(user_id, v["product"])), None
-        return _text(bot.bank_mgr.open_account(user_id, v["product"], v["password"], _integer(v["deposit"] or "0", "예치금")))
+        return _text(bot.bank_mgr.open_account(user_id, v["product"], v["password"], v["deposit"] or "0"))
     if command == "계좌해지":
         return _text(bot.bank_mgr.close_account(user_id, v["account"], v["destination"] or None, v["password"]))
     if command == "대출신청":

@@ -169,6 +169,16 @@ class BankManager:
             return False, "❌ 초기 예치금을 확인해주세요."
         if not isinstance(password, str) or not 4 <= len(password) <= 16:
             return False, "❌ 비밀번호는 4~16자로 입력해주세요."
+        # Foreign-currency savings open through the same entry point and rules.
+        kind = self.db.products.execute_one(
+            "SELECT product_kind,name FROM saving WHERE product_code=?", (product_code,))
+        if kind and kind["product_kind"] == "currency_saving":
+            from managers.currency_exchange_manager import CurrencyExchangeManager
+            try:
+                number = CurrencyExchangeManager(self.db).open_account(user_id, product_code, password, deposit_amount)
+            except ValueError as exc:
+                return False, f"❌ {exc}"
+            return True, f"✅ {kind['name']} 외환통장을 개설했습니다. 계좌번호: `{number}`"
         try:
             with self.db.atomic(("users", "accounts", "product", "assets", "company")) as conn:
                 product = conn.execute(
@@ -265,15 +275,16 @@ class BankManager:
             self._settle_user_interest(user_id)
             with self.db.atomic(("users", "accounts", "assets")) as conn:
                 source = conn.execute(
-                    "SELECT account_number,user_id,balance,password,principal,created_at,"
-                    "early_withdrawal_rate,early_withdrawal_fee_percent,product_code "
+                    "SELECT account_number,user_id,balance,balance_units,password,principal,created_at,"
+                    "early_withdrawal_rate,early_withdrawal_fee_percent,product_code,account_type "
                     "FROM accounts.accounts "
-                    "WHERE account_number = ? AND user_id = ? AND account_type = 'saving'",
+                    "WHERE account_number = ? AND user_id = ? AND account_type IN ('saving','currency_saving')",
                     (str(account_number), str(user_id)),
                 ).fetchone()
                 if not source:
                     return False, "❌ 해당 계좌를 찾을 수 없거나 권한이 없습니다."
-                if not self._verify_password(password, source["password"]):
+                # System-opened foreign-currency accounts (e.g. the treasury's) have no password.
+                if source["password"] is not None and not self._verify_password(password, source["password"]):
                     return False, "❌ 계좌 비밀번호가 올바르지 않습니다. 계좌 해지를 취소했습니다."
                 reserved_order = conn.execute(
                     "SELECT order_id FROM assets.market_orders WHERE user_id = ? "
@@ -313,7 +324,8 @@ class BankManager:
                     "SELECT quote_currency FROM accounts.accounts WHERE account_number=?",
                     (str(account_number),),
                 ).fetchone()[0]
-                balance = round_currency(conn, source["balance"] or 0, source_currency)
+                from managers.currency_manager import CurrencyManager as _Currency, SCALE as _SCALE
+                balance = round_currency(conn, (source["balance_units"] or 0) / _SCALE, source_currency)
                 early_penalty = 0
                 product = conn.execute(
                     "SELECT maturity_days,day_count_convention FROM product.saving "
@@ -350,14 +362,19 @@ class BankManager:
                             )
                 if destination_number:
                     conn.execute(
-                        "UPDATE accounts.accounts SET balance = balance + ?, "
+                        "UPDATE accounts.accounts SET balance_units = balance_units + CAST(ROUND(? * 1000000) AS INTEGER), "
                         "principal = COALESCE(principal, 0) + ?, "
                         "last_payment_epoch = ?, last_payment = CURRENT_TIMESTAMP "
                         "WHERE account_number = ?",
                         (balance, balance, time.time(), destination_number),
                     )
-                else:
+                elif source_currency == _Currency.home(conn, user_id):
                     conn.execute("UPDATE users.users SET cash = cash + ? WHERE user_id = ?", (balance, str(user_id)))
+                else:
+                    # A foreign-currency balance returns to home cash at the current rate.
+                    _Currency.change(conn, user_id, _Currency.home(conn, user_id),
+                                     _Currency.convert(conn, int(round(balance * _SCALE)), source_currency,
+                                                       _Currency.home(conn, user_id)))
 
                 positions = conn.execute(
                     "SELECT asset_code, quantity, average_cost FROM assets.user_assets "
@@ -816,7 +833,7 @@ class BankManager:
                 if payout:
                     payout_number = payout["account_number"]
                     conn.execute(
-                        "UPDATE accounts.accounts SET balance = balance + ?, "
+                        "UPDATE accounts.accounts SET balance_units = balance_units + CAST(ROUND(? * 1000000) AS INTEGER), "
                         "principal = COALESCE(principal, 0) + ?, last_payment_epoch = ?, "
                         "last_payment = CURRENT_TIMESTAMP "
                         "WHERE account_number = ? AND user_id = ?",
@@ -1394,7 +1411,7 @@ class BankManager:
                     (treasury_units//SCALE, TREASURY_USER_ID),
                 )
             conn.execute(
-                "UPDATE accounts.accounts SET balance=0,principal=0,"
+                "UPDATE accounts.accounts SET balance_units=0,principal=0,"
                 "resolution_status='resolved',insurance_paid=?,uninsured_claim=? "
                 "WHERE account_number=?",
                 (covered, uninsured, account["account_number"]),
@@ -1650,7 +1667,7 @@ class UserFunds:
         else:
             now = time.time()
             cursor = conn.execute(
-                "UPDATE accounts.accounts SET balance = balance - ?, "
+                "UPDATE accounts.accounts SET balance_units = balance_units - CAST(ROUND(? * 1000000) AS INTEGER), "
                 "principal = MAX(0, COALESCE(principal, 0) - ?), last_payment_epoch = ?, "
                 "last_payment = CURRENT_TIMESTAMP "
                 "WHERE account_number = ? AND user_id = ? AND balance >= ?",
@@ -1671,7 +1688,7 @@ class UserFunds:
             )
         else:
             cursor = conn.execute(
-                "UPDATE accounts.accounts SET balance=balance+?,principal=principal+? "
+                "UPDATE accounts.accounts SET balance_units = balance_units + CAST(ROUND(? * 1000000) AS INTEGER),principal=principal+? "
                 "WHERE account_number=? AND user_id=?",
                 (amount, amount, account_number, user_id),
             )

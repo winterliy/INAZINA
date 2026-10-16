@@ -499,7 +499,7 @@ class AccountDB(DBManager):
         return self.execute_one("SELECT 1 FROM accounts WHERE account_number = ?", (account_number,)) is not None
 
     def update_balance(self, account_number, amount):
-        self.execute("UPDATE accounts SET balance = balance + ? WHERE account_number = ?", (amount, account_number))
+        self.execute("UPDATE accounts SET balance_units = balance_units + CAST(ROUND(? * 1000000) AS INTEGER) WHERE account_number = ?", (amount, account_number))
 
     def update_last_payment(self, account_number, timestamp):
         self.execute("UPDATE accounts SET last_payment = ? WHERE account_number = ?", (timestamp, account_number))
@@ -514,7 +514,7 @@ class AccountDB(DBManager):
         with self.lock:
             with self.conn:
                 self.conn.executemany(
-                    "UPDATE accounts SET balance = balance + ?, last_payment = ?, "
+                    "UPDATE accounts SET balance_units = balance_units + CAST(ROUND(? * 1000000) AS INTEGER), last_payment = ?, "
                     "last_payment_epoch = ? WHERE account_number = ?",
                     updates,
                 )

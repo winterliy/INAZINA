@@ -660,7 +660,7 @@ class FXRatesView(discord.ui.View):
         rates = self.bot.currency_mgr.rates()
         pages = max(1,(len(rates)+self.PAGE_SIZE-1)//self.PAGE_SIZE)
         self.page = min(max(0,self.page),pages-1)
-        embed = discord.Embed(title='🌐 환율',description=f'국적 **{str(country)[:100]}** · 기본 통화 **{currency}**\n게임 내 시세 · 1 NWX 기준 외화 금액 (수수료 제외)',color=discord.Color.blue())
+        embed = discord.Embed(title='🌐 환율',description=f'국적 **{str(country)[:100]}** · 기본 통화 **{currency}**\n1 NWX 기준 외화 금액 (수수료 제외)',color=discord.Color.blue())
         for row in rates[self.page*self.PAGE_SIZE:(self.page+1)*self.PAGE_SIZE]:
             note = f"그래프 코드 `{row['asset_code']}`" if row['asset_code'] else '기준 통화'
             embed.add_field(name=f"{row['code']} · {row['name']}"[:80],value=f"1 NWX = **{inverse_rate_text(row['rate'])} {row['code']}**\n{note}"[:120],inline=False)
@@ -749,8 +749,7 @@ class InfoPanelView(discord.ui.View):
         ("commodity_spot", "현물 원자재"),
         ("option", "옵션"),
         ("forex", "외환"),
-        ("currency_savings", "외환통장 상품"),
-        ("savings", "저축 상품"),
+        ("savings", "저축 상품 (외환통장 포함)"),
         ("loan_products", "대출 상품"),
     )
 
@@ -890,9 +889,6 @@ class InfoPanelView(discord.ui.View):
                     f"**{float(row['legal_max_rate']):g}%**\n  {curve_text}"
                 )
             return lines
-        if category == "currency_savings":
-            return [f"• **{r['name']}** (`{r['product_code']}`) · {r['quote_currency']} · 연 {r['interest_rate']:g}% · {self._rate_model_note(r)}"
-                    for r in self.bot.db.products.execute("SELECT * FROM saving WHERE product_kind='currency_saving' AND status='active' ORDER BY name")]
         if category == 'els':
             lines = []
             manager = None
@@ -950,9 +946,11 @@ class InfoPanelView(discord.ui.View):
             return lines
         if category == "savings":
             return [
-                f"• **{row['name']}** (`{row['product_code']}`) — 연 {self._number(row['interest_rate']):g}% · "
+                # Savings and foreign-currency accounts are one product family; only the currency differs.
+                f"• **{row['name']}** (`{row['product_code']}`) · {row['quote_currency']}"
+                f"{' 외환' if row['product_kind'] == 'currency_saving' else ''} — 연 {self._number(row['interest_rate']):g}% · "
                 f"실효 연 {self._effective_rate(row)} · "
-                f"최소 예치 {self._number(row['deposit_amount']):,.0f} NWX · "
+                f"최소 예치 {self._number(row['deposit_amount']):,g} {row['quote_currency']} · "
                 f"만기 {self._number(row['maturity_days']):g}일 · "
                 f"이자주기 {self._number(row['interest_cycle']):g}초 · "
                 f"{'복리' if self._number(row['compound_type']) == 1 else '단리'} · "

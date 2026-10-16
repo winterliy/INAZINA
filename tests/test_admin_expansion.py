@@ -69,6 +69,9 @@ class AdminExpansionTests(unittest.TestCase):
                     row = self.db.system.execute_one(f'SELECT * FROM {table} WHERE {key}=?', (code,))
                     self.assertEqual((row['dividend_cycle_seconds'], row['dividend_per_share'], row['dividend_next_epoch']), (86400, 5, now+86400))
                     self.assertEqual(row['dividend_is_active'], 1)
+                    if code in {'FD', 'IF'}:
+                        # Preserve the pre-upgrade treasury-funded dividend fixture.
+                        self.db.products.execute('DELETE FROM fund_accounts WHERE product_code=?', (code,))
                     self.db.assets.add_user_asset('citizen', code, 2)
         with self.assertRaisesRegex(ValueError, '정기배당'):
             self.command('상품생성', 'NO future 선물 100 1000 ST 30 1 0.2 0.15 FUT {"dividend_cycle_seconds":86400,"dividend_per_share":5}')

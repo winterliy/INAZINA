@@ -74,6 +74,8 @@ OPTIONAL_ARGS = {kind:('dividend_cycle_seconds','dividend_per_share')
 for _kind in tuple(OPTIONAL_ARGS):
     OPTIONAL_ARGS[_kind] += ('Fractal',)
 OPTIONAL_ARGS['loan']=('extension_min_credit_score','extension_days','extension_interest_rate')
+# Foreign-currency accounts accept the same optional saving settings after name/currency/rate.
+OPTIONAL_ARGS['currencyproduct']=('deposit_amount','maturity_days','interest_cycle','compound_type','issuer')
 for _kind,_fields in OPTIONAL_ARGS.items():
     CREATE_ARGS[_kind]+= _fields
 TEXT_ARGS = {'name','industry','exchange_id','underlying_exchange_id','underlying_code','issuer_code',
@@ -567,7 +569,7 @@ class AdminCommandsManager:
                 value=self.adjust(current,operation,entered)
                 value=parse_currency_money(conn,value,currency,minimum=0)
                 if bank:
-                    conn.execute('UPDATE accounts SET balance=?,principal=?,last_payment_epoch=?,last_payment=CURRENT_TIMESTAMP WHERE account_number=?',(value,value,time.time(),identity))
+                    conn.execute('UPDATE accounts SET balance_units=CAST(ROUND(? * 1000000) AS INTEGER),principal=?,last_payment_epoch=?,last_payment=CURRENT_TIMESTAMP WHERE account_number=?',(value,value,time.time(),identity))
                 else:conn.execute('UPDATE users SET cash=? WHERE user_id=?',(value,identity))
                 unit=currency
                 before=current;after=value

@@ -22,6 +22,12 @@ class OrderBookManager:
         user_id = str(user_id)
         asset_code = str(asset_code).strip()
         side = str(side).casefold()
+        from managers.fund_manager import FundManager
+        try:
+            with self.db.readonly() as conn:
+                FundManager.validate_order(conn, user_id, asset_code, side)
+        except ValueError as exc:
+            return False, f'❌ {exc}'
         flagged = self.db.assets.execute_one('SELECT Fractal FROM market_assets WHERE code=? UNION ALL SELECT Fractal FROM company WHERE company_code=? UNION ALL SELECT Fractal FROM investment WHERE product_code=?', (asset_code,)*3)
         if flagged and flagged[0] == 1:
             from managers.fractional_trading_manager import FractionalTradingManager
@@ -82,6 +88,7 @@ class OrderBookManager:
         now = int(time.time())
         try:
             with self.db.atomic(("users", "accounts", "assets", "product", "company", "tax")) as conn:
+                FundManager.validate_order(conn, user_id, asset_code, side)
                 exchange_id = MarketSessionManager.exchange_for_asset(conn, asset_code)
                 state = MarketSessionManager.process_conn(conn, now, exchange_id) if exchange_id else {'status': 'open'}
                 deferred = state['status'] != 'open'
@@ -472,11 +479,8 @@ class OrderBookManager:
             taxable_gain = max(0, int(execution_price) * int(quantity) - int(basis))
             tax = self.user_manager._tax(conn, seller_id, "bond_sale_gain", taxable_gain)
             proceeds = max(0, int(execution_price) * int(quantity) - tax)
-            conn.execute(
-                "UPDATE users.users SET cash = cash + ? "
-                f"WHERE user_id = ? AND (status = 'active' OR user_id='{TREASURY_USER_ID}')",
-                (proceeds, seller_id),
-            )
+            self.user_manager._credit_source(conn, seller_id, None, proceeds,
+                                             event='asset_sale', reference=str(sell_order['order_id']))
             return
 
         conn.execute(
@@ -535,7 +539,8 @@ class OrderBookManager:
                 raise RuntimeError("보유 수량이 변경되어 체결을 취소했습니다.")
             net_proceeds = max(0, execution_price * take - tax_share)
             self.user_manager._credit_source(
-                conn, seller_id, position["account_number"], net_proceeds
+                conn, seller_id, position["account_number"], net_proceeds,
+                event='asset_sale', reference=str(sell_order['order_id'])
             )
             tax_left -= tax_share
             quantity_left -= take
@@ -550,6 +555,10 @@ class OrderBookManager:
                                 currency="NWX"):
         amount = parse_currency_money(conn, amount, currency, minimum=0)
         if amount <= 0:
+            return
+        from database.fund_accounting import account, change_cash
+        if account(conn, user_id):
+            change_cash(conn, user_id, amount, 'order_refund')
             return
         if account_number is None:
             cursor = conn.execute(
@@ -566,7 +575,7 @@ class OrderBookManager:
                 )
                 return
             cursor = conn.execute(
-                "UPDATE accounts.accounts SET balance = balance + ?, "
+                "UPDATE accounts.accounts SET balance_units = balance_units + CAST(ROUND(? * 1000000) AS INTEGER), "
                 "principal = COALESCE(principal, 0) + ?, last_payment_epoch = ?, "
                 "last_payment = CURRENT_TIMESTAMP WHERE account_number = ? AND user_id = ?",
                 (amount, amount, now, account_number, user_id),

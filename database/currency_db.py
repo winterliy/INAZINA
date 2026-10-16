@@ -183,6 +183,41 @@ class CurrencyDB(DBManager):
             available = tuple(column for column in columns if column in existing)
             if available:
                 self.enforce_currency_money(table, available, key, currency)
+        self._ensure_account_units()
+
+    def _ensure_account_units(self):
+        """balance_units is every account's exact balance; balance only mirrors it.
+
+        Savings used to keep their amount in balance while foreign-currency
+        accounts used balance_units. Both now store 1/1,000,000 units, and the
+        legacy balance column is maintained by trigger for readers.
+        """
+        columns = {row[1] for row in self.execute("PRAGMA table_info(accounts)")}
+        if "balance_units" not in columns:
+            return
+        migrated = self.execute_one("SELECT 1 FROM settings WHERE key='account_units_v1'") \
+            if self.execute_one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='settings'") else True
+        for name in ("trg_accounts_units_mirror", "trg_accounts_units_insert", "trg_accounts_balance_guard"):
+            self.execute(f"DROP TRIGGER IF EXISTS {name}")
+        if not migrated:
+            self.execute("UPDATE accounts SET balance_units=CAST(ROUND(COALESCE(balance,0)*1000000) AS INTEGER) "
+                         "WHERE account_type<>'currency_saving'")
+            self.execute("INSERT INTO settings(key,value) VALUES ('account_units_v1', ?)", (str(int(time.time())),))
+        self.execute("""CREATE TRIGGER trg_accounts_units_mirror AFTER UPDATE OF balance_units ON accounts
+            WHEN NEW.balance_units IS NOT OLD.balance_units
+            BEGIN UPDATE accounts SET balance=NEW.balance_units/1000000.0 WHERE account_number=NEW.account_number; END""")
+        # Inserts that still give only balance (older code paths) are converted once.
+        self.execute("""CREATE TRIGGER trg_accounts_units_insert AFTER INSERT ON accounts
+            BEGIN UPDATE accounts SET balance_units=CASE WHEN NEW.balance_units=0 AND COALESCE(NEW.balance,0)<>0
+                     THEN CAST(ROUND(NEW.balance*1000000) AS INTEGER) ELSE NEW.balance_units END
+                 WHERE account_number=NEW.account_number; END""")
+        # Writing balance without balance_units would desynchronise the two; reject it.
+        self.execute("""CREATE TRIGGER trg_accounts_balance_guard BEFORE UPDATE OF balance ON accounts
+            WHEN NEW.balance_units IS OLD.balance_units
+             AND ABS(COALESCE(NEW.balance,0) - NEW.balance_units/1000000.0) > 0.500001
+            BEGIN SELECT RAISE(ABORT, 'Account balances are stored in balance_units; update balance_units instead'); END""")
+        self.execute("UPDATE accounts SET balance=balance_units/1000000.0 "
+                     "WHERE ABS(COALESCE(balance,0) - balance_units/1000000.0) > 0.0000001")
 
     def _ensure_negative_policy_rates(self):
         """Rebuild the small country table once to permit negative policy rates."""
@@ -731,7 +766,7 @@ class CurrencyDB(DBManager):
                     self.conn.execute(
                         "INSERT OR IGNORE INTO saving(product_code,name,interest_rate,deposit_amount,"
                         "maturity_days,interest_cycle,compound_type,issuer,status,quote_currency,product_kind) "
-                        "VALUES (?,?,0,0,0,0,0,'system','active',?,'currency_saving')",
+                        "VALUES (?,?,0,0,0,86400,0,'system','active',?,'currency_saving')",
                         (product_code, f"{currency_code} 외환통장", currency_code),
                     )
                 else:
@@ -831,21 +866,12 @@ class CurrencyDB(DBManager):
                 WHERE n.currency_code=?"""
             from decimal import Decimal
             total = int(Decimal(str(self.execute(home_cash, (code,))[0][0] or 0)) * SCALE)
-            total += int(Decimal(str(self.execute("""SELECT COALESCE(SUM(a.balance),0) FROM accounts a
-                JOIN users u ON u.user_id=a.user_id
-                JOIN country_currencies n ON n.nationality=u.nationality
-                WHERE n.currency_code=? AND a.account_type<>'currency_saving'""", (code,))[0][0] or 0)) * SCALE)
-            total += int(self.execute("SELECT COALESCE(SUM(balance_units),0) FROM accounts WHERE account_type='currency_saving' AND quote_currency=?", (code,))[0][0])
+            total += int(self.execute("SELECT COALESCE(SUM(balance_units),0) FROM accounts WHERE quote_currency=?", (code,))[0][0])
             treasury_rows = self.execute("""SELECT COALESCE(u.cash,0) FROM users u
                 JOIN country_currencies n ON n.nationality=u.nationality
                 WHERE u.user_id=? AND n.currency_code=?""", (TREASURY_USER_ID, code))
             treasury = int(Decimal(str(treasury_rows[0][0] if treasury_rows else 0)) * SCALE)
-            treasury += int(Decimal(str(self.execute("""SELECT COALESCE(SUM(a.balance),0) FROM accounts a
-                JOIN users u ON u.user_id=a.user_id
-                JOIN country_currencies n ON n.nationality=u.nationality
-                WHERE a.user_id=? AND n.currency_code=? AND a.account_type<>'currency_saving'""",
-                (TREASURY_USER_ID,code))[0][0] or 0)) * SCALE)
-            treasury += int(self.execute("SELECT COALESCE(SUM(balance_units),0) FROM accounts WHERE account_type='currency_saving' AND quote_currency=? AND user_id=?", (code, TREASURY_USER_ID))[0][0])
+            treasury += int(self.execute("SELECT COALESCE(SUM(balance_units),0) FROM accounts WHERE quote_currency=? AND user_id=?", (code, TREASURY_USER_ID))[0][0])
             ratio = max(0, total - treasury) / total if total > 0 else 0
             self.execute(
                 "INSERT OR IGNORE INTO currency_liquidity_state "

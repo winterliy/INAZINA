@@ -140,6 +140,13 @@ class CorporateActionsManager:
         return int(row['balance_units']) // SCALE if row else 0
 
     def _debit_dividend(self, conn, issuer, funding, currency, gross, counterpart="retained"):
+        from database.fund_accounting import change_cash
+        fund = conn.execute('SELECT owner_id FROM fund_accounts WHERE product_code=?', (issuer,)).fetchone()
+        if fund:
+            if currency != 'NWX':
+                raise ValueError('펀드 분배금은 NWX만 지원합니다.')
+            change_cash(conn, fund['owner_id'], -gross, 'distribution', issuer)
+            return
         if not gross:
             return
         tracked = bool(conn.execute('SELECT 1 FROM company WHERE company_code=?',(issuer,)).fetchone())
@@ -160,6 +167,12 @@ class CorporateActionsManager:
                           'financing',currency=currency)
 
     def _credit_dividend(self, conn, user, code, kind, amount, currency, now):
+        from database.fund_accounting import account, change_cash
+        if account(conn, user):
+            if currency != 'NWX':
+                raise ValueError('펀드 배당 수령 통화는 NWX만 지원합니다.')
+            change_cash(conn, user, amount, 'dividend', code)
+            return 0, amount*SCALE
         rate = CurrencyExchangeManager._rate(conn, currency)
         tax = UserManager._tax(conn, user, f'{kind}_dividend:{code}', amount*rate)
         if CurrencyManager.home(conn,user) == currency:
@@ -531,8 +544,7 @@ class CorporateActionsManager:
                     taxable = amount if item['kind']=='arrears' else max(0,amount-item.get('principal',amount)) if item['kind']=='debt' else 0
                     tax = UserManager._tax(conn,item['user'],f'liquidation:{item["kind"]}:{issuer}',taxable)
                     net = amount-tax
-                    changed = conn.execute('UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?',(net,item['user'],self.MAX_MONEY-net))
-                    if changed.rowcount!=1:
+                    if not UserManager._change_cash(conn, item['user'], net, maximum=self.MAX_MONEY):
                         raise ValueError('청산금을 받을 사용자 또는 잔액 한도를 확인해주세요.')
                     conn.execute('INSERT INTO corporate_liquidation_payments(operation_key,issuer_code,asset_code,user_id,kind,quantity,claim_amount,paid_amount,tax_amount,recorded_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)',
                                  (key,issuer,item['asset'],item['user'],item['kind'],item['quantity'],item['claim'],amount,tax,now))
@@ -826,12 +838,13 @@ class CorporateActionsManager:
                                          (user, surviving_code, lot['account_number'], units, cost))
                     if residual and user != TREASURY_USER_ID:
                         if currency == 'NWX':
-                            changed = conn.execute('UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?', (residual, user, self.MAX_MONEY - residual))
+                            if not UserManager._change_cash(conn, user, residual, maximum=self.MAX_MONEY):
+                                raise ValueError('단주 정산금을 받을 계정 또는 잔액 한도를 확인해주세요.')
                         else:
                             CurrencyExchangeManager._settle(conn, user, now)
                             account = self._currency_account(conn, user, currency, now)
                             changed = conn.execute("UPDATE accounts SET balance_units=balance_units+? WHERE account_number=? AND account_type='currency_saving' AND balance_units<=?", (residual * SCALE, account, MAX_UNITS - residual * SCALE))
-                        if changed.rowcount != 1:
+                        if currency != 'NWX' and changed.rowcount != 1:
                             raise ValueError('단주 정산 수령자의 잔액 한도를 확인해주세요.')
                 conn.execute('DELETE FROM user_assets WHERE asset_code=?', (absorbed_code,))
                 if a['table'] == 'company':

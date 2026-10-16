@@ -53,7 +53,18 @@ class CurrencyExchangeManager:
             return [{**dict(r), 'rate': self._rate(conn, r['code'])}
                     for r in conn.execute("SELECT * FROM currencies WHERE status='active' ORDER BY code")]
 
-    def open_account(self, user_id, product_code):
+    def open_account(self, user_id, product_code, password=None, deposit_amount=0):
+        """Open a foreign-currency saving account.
+
+        Citizens open it like any saving (password, at least the product's minimum
+        deposit, paid from home cash at the current rate). System callers such as
+        the treasury pass no password and open it empty.
+        """
+        from fractions import Fraction
+        from managers.bank_manager import BankManager
+        from functions.money import parse_currency_money
+        if password is not None and (not isinstance(password, str) or not 4 <= len(password) <= 16):
+            raise ValueError("비밀번호는 4~16자로 입력해주세요.")
         with self.db.atomic() as conn:
             self._user(conn, user_id)
             product = conn.execute("SELECT * FROM saving WHERE product_code=? AND product_kind='currency_saving' AND status='active'", (product_code,)).fetchone()
@@ -71,6 +82,21 @@ class CurrencyExchangeManager:
                 raise ValueError(f'{home}는 국적 통화이므로 현금 잔액에서 사용합니다.')
             if conn.execute("SELECT 1 FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'", (str(user_id), product['quote_currency'])).fetchone():
                 raise ValueError("같은 통화의 외환통장이 이미 있습니다.")
+            deposit_units = cost_units = 0
+            if password is not None:
+                deposit = parse_currency_money(conn, deposit_amount or 0, product['quote_currency'], minimum=0)
+                minimum = float(product['deposit_amount'] or 0)
+                if deposit < minimum:
+                    raise ValueError(f"최소 예치금은 {minimum:,g} {product['quote_currency']}입니다.")
+                deposit_units = amount_units(deposit) if deposit > 0 else 0
+                if deposit_units:
+                    # Paid from home cash at the current rate, rounded up to the home minor unit.
+                    exact = Fraction(deposit_units) * CurrencyManager.quote(conn, product['quote_currency'], home)
+                    quantum = 10 ** (6 - CurrencyManager.precision(conn, home))
+                    cost_units = -(-int(-(-exact.numerator // exact.denominator)) // quantum) * quantum
+                    if CurrencyManager.balance(conn, user_id, home) < cost_units:
+                        raise ValueError(f"현금이 부족합니다. 필요 금액 {display_units(cost_units)} {home}")
+                    CurrencyManager.change(conn, user_id, home, -cost_units)
             number = 'FXA' + uuid.uuid4().hex[:16].upper()
             opened_epoch = time.time()
             from managers.rate_manager import RateManager
@@ -93,6 +119,14 @@ class CurrencyExchangeManager:
                           int(product['benchmark_tenor_days'] or product['maturity_days'] or 0),
                           int(product['repricing_lag_seconds'] or 0),
                           self._effective_rate(product)))
+            if password is not None:
+                conn.execute("UPDATE accounts SET password=?,principal=? WHERE account_number=?",
+                             (BankManager._hash_password(password), deposit_units / SCALE, number))
+            if deposit_units:
+                conn.execute("UPDATE accounts SET balance_units=? WHERE account_number=?", (deposit_units, number))
+                conn.execute('INSERT INTO currency_transactions(user_id,source_currency,target_currency,source_units,target_units,fee_nwx,recorded_epoch) VALUES (?,?,?,?,?,?,?)',
+                             (str(user_id), home, product['quote_currency'], cost_units, deposit_units, 0, opened_epoch))
+                CurrencyManager.ensure_liquidity_state(conn, product['quote_currency'])
             return number
 
     @staticmethod
@@ -107,12 +141,21 @@ class CurrencyExchangeManager:
 
     @staticmethod
     def _settle(conn, user_id, now):
-        rows = conn.execute("SELECT a.*,COALESCE(a.contract_rate,p.interest_rate) AS annual_rate "
-                            "FROM accounts a JOIN saving p USING(product_code) "
-                            "LEFT JOIN financial_institutions f ON f.issuer=p.issuer "
+        """Pay due interest on a user's foreign-currency accounts with savings rules."""
+        from managers.interest_manager import InterestManager
+        InterestManager.migrate_currency_accounts(conn, now)
+        rows = conn.execute("SELECT a.* FROM accounts a "
                             "WHERE a.user_id=? AND a.account_type='currency_saving' "
-                            "AND a.resolution_status='active' AND COALESCE(f.status,'active')<>'failed'",
-                            (str(user_id),)).fetchall()
+                            "AND a.resolution_status='active'", (str(user_id),)).fetchall()
+        for row in rows:
+            InterestManager._settle_saving_account(conn, row, now)
+
+    @staticmethod
+    def _legacy_continuous_interest(conn, rows, now):
+        """Pre-unification FX interest: continuous accrual by elapsed days.
+
+        Kept only to settle existing accounts up to the switch to savings rules.
+        """
         for row in rows:
             from managers.rate_manager import RateManager
             cursor = float(row['last_payment_epoch'])
@@ -173,9 +216,7 @@ class CurrencyExchangeManager:
                 raise ValueError("환전 결과가 최소 단위 미만이거나 한도를 초과합니다.")
             CurrencyManager.change(conn, user_id, source, -units)
             CurrencyManager.change(conn, user_id, target, output)
-            treasury = conn.execute("UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?", (fee,TREASURY_USER_ID,MAX_UNITS-fee))
-            if treasury.rowcount != 1:
-                raise ValueError("국고 잔액 한도를 초과했습니다.")
+            CurrencyManager.credit_treasury_fee(conn, user_id, fee)
             conn.execute('INSERT INTO currency_transactions(user_id,source_currency,target_currency,source_units,target_units,fee_nwx,recorded_epoch) VALUES (?,?,?,?,?,?,?)',
                 (str(user_id),source,target,units,output,fee,now))
             return f"✅ {display_units(units)} {source} → {display_units(output)} {target} · 수수료 {fee:,} NWX"
@@ -341,7 +382,7 @@ class CurrencyExchangeManager:
                 raise ValueError('출금 잔액이 부족합니다.')
             if dst[0]=='accounts' and dst[1]=='balance':
                 native_credit = native_amount(credit)
-                changed = conn.execute('UPDATE accounts SET balance=balance+?,principal=COALESCE(principal,0)+?,last_payment_epoch=?,last_payment=CURRENT_TIMESTAMP WHERE account_number=? AND balance<=?',(native_credit,native_credit,now,dst[3],(2**53-1)-native_credit))
+                changed = conn.execute('UPDATE accounts SET balance_units = balance_units + CAST(ROUND(? * 1000000) AS INTEGER),principal=COALESCE(principal,0)+?,last_payment_epoch=?,last_payment=CURRENT_TIMESTAMP WHERE account_number=? AND balance<=?',(native_credit,native_credit,now,dst[3],(2**53-1)-native_credit))
             elif dst[0]=='users' and dst[1]=='cash':
                 native_credit = native_amount(credit)
                 changed = conn.execute(
@@ -352,10 +393,8 @@ class CurrencyExchangeManager:
                 changed = conn.execute(f'UPDATE {dst[0]} SET {dst[1]}={dst[1]}+? WHERE {dst[2]}=? AND {dst[1]}<=?',(credit,dst[3],MAX_UNITS-credit))
             if changed.rowcount!=1:
                 raise ValueError('입금 계좌 잔액 한도를 초과했습니다.')
-            changed = conn.execute('UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?',(fee,TREASURY_USER_ID,MAX_UNITS-fee))
-            if changed.rowcount!=1:
-                raise ValueError('국고 잔액 한도를 초과했습니다.')
-            destination_label = '국고' if dst[4] == TREASURY_USER_ID else recipient
+            CurrencyManager.credit_treasury_fee(conn, sender, fee)
+            destination_label = '국고' if CurrencyManager.is_treasury(conn, dst[4]) else recipient
             conn.execute('INSERT INTO currency_transfer_transactions(sender_id,recipient_id,source_account,target_account,source_currency,target_currency,source_units,target_units,fee_nwx,recorded_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)',
                 (sender,dst[4],source_account,recipient,src[5],dst[5],units,output,fee,now))
             sources_label = ', '.join(debited_sources)

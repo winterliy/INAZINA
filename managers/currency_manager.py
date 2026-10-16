@@ -51,30 +51,18 @@ class CurrencyManager:
             JOIN country_currencies n ON n.nationality=u.nationality
             WHERE n.currency_code=?""", (code,)).fetchone()[0]
         total = int(Decimal(str(total_native or 0))*SCALE)
-        account_native = conn.execute("""SELECT COALESCE(SUM(a.balance),0) FROM accounts a
-            JOIN users u ON u.user_id=a.user_id
-            JOIN country_currencies n ON n.nationality=u.nationality
-            WHERE n.currency_code=? AND a.account_type<>'currency_saving'""",
-            (code,)).fetchone()[0]
-        total += int(Decimal(str(account_native or 0))*SCALE)
+        # Every account counts in its own currency with its exact balance_units,
+        # whatever its owner's (possibly changed) nationality.
         total += int(conn.execute(
-            "SELECT COALESCE(SUM(balance_units),0) FROM accounts "
-            "WHERE account_type='currency_saving' AND quote_currency=?", (code,)
+            "SELECT COALESCE(SUM(balance_units),0) FROM accounts WHERE quote_currency=?", (code,)
         ).fetchone()[0])
         treasury_row = conn.execute("""SELECT COALESCE(u.cash,0) FROM users u
             JOIN country_currencies n ON n.nationality=u.nationality
             WHERE u.user_id=? AND n.currency_code=?""",
             (TREASURY_USER_ID, code)).fetchone()
         treasury = int(Decimal(str(treasury_row[0] if treasury_row else 0))*SCALE)
-        treasury_accounts = conn.execute("""SELECT COALESCE(SUM(a.balance),0) FROM accounts a
-            JOIN users u ON u.user_id=a.user_id
-            JOIN country_currencies n ON n.nationality=u.nationality
-            WHERE a.user_id=? AND n.currency_code=? AND a.account_type<>'currency_saving'""",
-            (TREASURY_USER_ID,code)).fetchone()[0]
-        treasury += int(Decimal(str(treasury_accounts or 0))*SCALE)
         treasury += int(conn.execute(
-            "SELECT COALESCE(SUM(balance_units),0) FROM accounts "
-            "WHERE account_type='currency_saving' AND quote_currency=? AND user_id=?",
+            "SELECT COALESCE(SUM(balance_units),0) FROM accounts WHERE quote_currency=? AND user_id=?",
             (code, TREASURY_USER_ID)).fetchone()[0])
         return max(0, total), max(0, total - treasury)
 
@@ -130,6 +118,9 @@ class CurrencyManager:
 
     @staticmethod
     def home(conn, user_id):
+        from database.fund_accounting import account
+        if account(conn, user_id):
+            return 'NWX'
         user = conn.execute('SELECT nationality FROM users WHERE user_id=?', (str(user_id),)).fetchone()
         if not user:
             raise ValueError('등록되지 않은 사용자입니다.')
@@ -218,10 +209,30 @@ class CurrencyManager:
                            "AND account_type='currency_saving'", (str(user_id), currency)).fetchone()
         return int(row[0]) if row else 0
 
+    @staticmethod
+    def is_treasury(conn, user_id):
+        """Every country's treasury, not only 낙원's, is a treasury."""
+        user_id = str(user_id)
+        return user_id == TREASURY_USER_ID or conn.execute(
+            "SELECT 1 FROM country_treasuries WHERE user_id=?", (user_id,)).fetchone() is not None
+
+    @classmethod
+    def credit_treasury_fee(cls, conn, user_id, fee_nwx):
+        """Exchange fees (quoted in NWX) go to the user's nationality treasury, in its currency."""
+        if not fee_nwx:
+            return None
+        treasury = cls.user_treasury_id(conn, user_id)
+        home = cls.home(conn, treasury)
+        amount = cls.convert(conn, int(fee_nwx) * SCALE, 'NWX', home)
+        if amount:
+            cls.change(conn, treasury, home, amount)
+        return treasury
+
     @classmethod
     def change(cls, conn, user_id, currency, delta, allow_deficit=False):
         user_id = str(user_id)
-        if not conn.execute("SELECT 1 FROM users WHERE user_id=? AND (status='active' OR user_id=?)", (user_id,TREASURY_USER_ID)).fetchone():
+        if not (conn.execute("SELECT 1 FROM users WHERE user_id=? AND status='active'", (user_id,)).fetchone()
+                or cls.is_treasury(conn, user_id)):
             raise ValueError('등록된 활성 사용자만 이용할 수 있습니다.')
         cls.rate(conn, currency)
         currency = str(currency).upper()
@@ -229,7 +240,7 @@ class CurrencyManager:
         cls.validate_units(conn, int(delta), currency)
         value = cls.balance(conn, user_id, currency) + int(delta)
         limit=(2**53-1)*SCALE if currency == home else MAX_UNITS
-        if abs(value) > limit or (value < 0 and not (allow_deficit and user_id == TREASURY_USER_ID)):
+        if abs(value) > limit or (value < 0 and not (allow_deficit and cls.is_treasury(conn, user_id))):
             raise ValueError(f'{currency} 잔액이 부족하거나 저장 한도를 초과했습니다.')
         if currency == home:
             native = Decimal(int(delta))/Decimal(SCALE)
@@ -304,15 +315,12 @@ class CurrencyReadSnapshot:
                 FROM users u JOIN country_currencies n ON n.nationality=u.nationality
                 GROUP BY n.currency_code
             ), savings AS (
-                SELECT n.currency_code, SUM(a.balance) AS total,
-                    SUM(CASE WHEN a.user_id=? THEN a.balance ELSE 0 END) AS treasury
-                FROM accounts a JOIN users u ON u.user_id=a.user_id
-                JOIN country_currencies n ON n.nationality=u.nationality
-                WHERE a.account_type<>'currency_saving' GROUP BY n.currency_code
+                -- Accounts are counted below by their own currency; kept for the column shape.
+                SELECT NULL AS currency_code, 0 AS total, 0 AS treasury WHERE ? IS NULL AND 0
             ), foreign_savings AS (
                 SELECT quote_currency AS currency_code, SUM(balance_units) AS total,
                     SUM(CASE WHEN user_id=? THEN balance_units ELSE 0 END) AS treasury
-                FROM accounts WHERE account_type='currency_saving' GROUP BY quote_currency
+                FROM accounts GROUP BY quote_currency
             )
             SELECT c.*, a.price AS asset_price,
                 (SELECT GROUP_CONCAT(n.nationality, ', ') FROM country_currencies n

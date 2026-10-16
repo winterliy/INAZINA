@@ -140,6 +140,8 @@ class FractionalTradingManager:
                 return False, error
             now = int(time.time())
             with self.db.atomic() as conn:
+                from managers.fund_manager import FundManager
+                FundManager.validate_order(conn, user, code, side)
                 error = MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=code)
                 if error:
                     return False, error
@@ -285,6 +287,9 @@ class FractionalTradingManager:
         return True, f'✅ 주문 #{order_id}을 취소하고 남은 예치금을 반환했습니다.'
 
     def trade_at_nav(self, user, code, quantity, sell=False):
+        from managers.fund_manager import FundManager
+        if FundManager(self.db).is_backed(code):
+            return FundManager(self.db).trade_units(user, code, quantity, redeem=sell)
         try:
             qty = parse_quantity(quantity,fractional=True)
             units = quantity_units(qty)

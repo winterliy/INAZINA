@@ -84,15 +84,19 @@ class LatestRequestsTests(unittest.TestCase):
         registry._prepare=AsyncMock(return_value=('alice',self.db.users.get_user('alice'),'user'))
         registry._reply=AsyncMock()
         async def run():
-            await registry.open_account(SimpleNamespace(),상품='INZCU001')
-            self.assertIn('외환통장 개설',registry._reply.call_args.kwargs['content'])
-            self.assertEqual(self.db.accounts.execute_one("SELECT COUNT(*) FROM accounts WHERE user_id='alice' AND account_type='currency_saving'")[0],1)
-            await registry.open_account(SimpleNamespace(),상품='INZSV001')
             from functions.discord_views import AccountProductOpenView
-            view=registry._reply.call_args.kwargs['view']
-            self.assertIsInstance(view,AccountProductOpenView)
-            self.assertFalse(any(isinstance(item,discord.ui.Select) for item in view.children))
+            # Foreign-currency accounts use the same password/deposit form as savings.
+            for code in ('INZCU001','INZSV001'):
+                await registry.open_account(SimpleNamespace(),상품=code)
+                view=registry._reply.call_args.kwargs['view']
+                self.assertIsInstance(view,AccountProductOpenView)
+                self.assertFalse(any(isinstance(item,discord.ui.Select) for item in view.children))
         asyncio.run(run())
+        from managers.bank_manager import BankManager
+        ok,message=BankManager(self.db).open_account('alice','INZCU001','pass1234','0')
+        self.assertTrue(ok,message)
+        self.assertIn('외환통장',message)
+        self.assertEqual(self.db.accounts.execute_one("SELECT COUNT(*) FROM accounts WHERE user_id='alice' AND account_type='currency_saving' AND password IS NOT NULL")[0],1)
 
     def test_foreign_catalog_and_primary_fill_use_native_currency_and_nwx_valuation(self):
         self.seed()
@@ -233,7 +237,7 @@ class LatestRequestsTests(unittest.TestCase):
         from functions.wallet_views import WalletCategoryView
         self.assertIsInstance(sent['view'],WalletCategoryView)
         seen=[]
-        sent['view'].category='currency_accounts'
+        sent['view'].category='accounts'
         seen.append(sent['view'].build_embed().description)
         for account in info['currency_accounts']:
             self.assertIn(account['account_number'],'\n'.join(seen))

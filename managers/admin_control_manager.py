@@ -43,7 +43,7 @@ EXAMPLES = {
     'loan': {'interest_rate':5,'loan_limit':1000000,'maturity_days':30,'interest_cycle':86400,'min_credit_score':500,'issuer':'Inazina','repayment_cycle_seconds':0,'repayment_amount':0,'rate_type':'fixed'},
     'option': {'underlying_code':'INZST001','option_type':'call','strike_price':1120,'maturity_days':30,'quantity':1,'limit_price':100,'volatility_percent':60},
     'currency': {'asset_code':'CUR_NEW','nationality':'새 국가'},
-    'currencyproduct': {'quote_currency':'USD','interest_rate':1,'product_kind':'currency_saving','rate_type':'fixed'},
+    'currencyproduct': {'quote_currency':'USD','interest_rate':1,'deposit_amount':0,'maturity_days':0,'interest_cycle':86400,'compound_type':0,'issuer':'Inazina','product_kind':'currency_saving','rate_type':'fixed'},
     'els': {'face_value':1000,'annual_coupon':12,'maturity_days':180,'underlyings':['INZST001'],
             'observation_days':[30,60,90],'redemption_levels':[90,85,80],
             'maturity_level':75,'knock_in_level':60,'subscription_days':1,'exchange_id':'INZ'},
@@ -594,6 +594,9 @@ class AdminControlManager:
                         [(code, asset, weight, price, source, asset_class)
                          for asset, weight, price, source, asset_class in components],
                     )
+            if category in {'fund', 'indexfund'} and operation == 'create':
+                from managers.fund_manager import FundManager
+                FundManager.create_empty(conn, code)
             self._audit(conn,actor,f'{category}.{operation}',{'code':code,**values})
             return '✅ 설정을 저장했습니다.'
 
@@ -621,6 +624,25 @@ class AdminControlManager:
         return '✅ 경제 설정을 저장했습니다.'
 
     def user(self,actor,user_id,changes):
+        changes=dict(changes or {})
+        moved=None
+        if 'nationality' in changes:
+            with self.db.readonly() as conn:
+                self.require(actor,conn)
+                current=conn.execute("SELECT nationality FROM users WHERE user_id=?",(user_id,)).fetchone()
+            if not current or user_id==TREASURY_USER_ID:
+                raise ValueError("일반 사용자를 찾을 수 없습니다. 국고 자금은 $국고를 사용해주세요.")
+            nationality=changes.pop('nationality')
+            if nationality!=current['nationality']:
+                # Liquidates everything into the new home currency (managers/nationality_manager.py).
+                from managers.nationality_manager import NationalityManager
+                moved=NationalityManager(self.bot).change(actor,user_id,nationality)
+            if not changes:
+                return moved or '✅ 사용자 설정을 저장했습니다.'
+        result=self._update_user(actor,user_id,changes)
+        return f"{moved}\n{result}" if moved else result
+
+    def _update_user(self,actor,user_id,changes):
         with self.db.atomic(('users','system')) as conn:
             self.require(actor,conn)
             if not changes or set(changes)-{'nickname','nationality','cash','credit_score','annual_income','income_stability','status','role'}:

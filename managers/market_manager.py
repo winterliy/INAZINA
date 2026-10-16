@@ -999,10 +999,10 @@ class MarketManager:
                     components.setdefault(row['product_code'], []).append(row)
                 updates, history = [], []
                 products = conn.execute("SELECT * FROM product.investment WHERE status = 'active' "
-                    "AND product_type IN ('stock_future', 'corporate_bond', 'mutual_fund')").fetchall()
+                    "AND product_type IN ('stock_future', 'corporate_bond', 'mutual_fund', 'index_fund')").fetchall()
                 # Price futures and corporate debt before funds so bond and
                 # mixed funds consume this tick's quote instead of lagging one tick.
-                for product in (row for row in products if row['product_type'] != 'mutual_fund'):
+                for product in (row for row in products if row['product_type'] not in {'mutual_fund', 'index_fund'}):
                     if MarketSessionManager(self.db).trading_error(
                         conn=conn, now=now, exchange_id=product['exchange_id']
                     ):
@@ -1050,7 +1050,7 @@ class MarketManager:
                     "SELECT product_code code,market_price price FROM treasury_bond_products"
                 )})
                 fund_updates, fund_history = [], []
-                for product in (row for row in products if row['product_type'] == 'mutual_fund'):
+                for product in (row for row in products if row['product_type'] in {'mutual_fund', 'index_fund'}):
                     if MarketSessionManager(self.db).trading_error(
                         conn=conn, now=now, exchange_id=product['exchange_id']
                     ) or int(product["is_fixed"] or 0):
@@ -1090,7 +1090,8 @@ class MarketManager:
                     "rebalance_cycle_seconds, unit_price, is_fixed "
                     "FROM product.investment WHERE status = 'active' "
                     "AND underlying_exchange_id IS NOT NULL "
-                    "AND TRIM(underlying_exchange_id) <> ''"
+                    "AND TRIM(underlying_exchange_id) <> '' "
+                    "AND product_code NOT IN (SELECT product_code FROM fund_accounts)"
                 ).fetchall()
                 for product in products:
                     code = str(product["product_code"])

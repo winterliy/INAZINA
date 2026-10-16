@@ -633,6 +633,8 @@ class MarketFeatureTests(unittest.TestCase):
     def test_funds_track_nav_and_use_subscription_redemption_with_conserved_cash(self):
         self.issue("MF", "mutual_fund", underlying="EX", days=0)
         self.issue("IF", "index_fund", underlying="EX", days=0)
+        # Reconstruct pre-upgrade synthetic funds; new funds have separate cash.
+        self.db.products.execute("DELETE FROM fund_accounts WHERE product_code IN ('MF','IF')")
         now = int(time.time())
         self.market.update_prices(volatility=0, now=now)
         before = self.db.users.get_user("alice")["cash"] + self.db.users.get_treasury_balance()
@@ -667,6 +669,9 @@ class MarketFeatureTests(unittest.TestCase):
                 product = self.db.products.get_investment(code)
                 self.assertEqual(product["fund_category"], category)
 
+        # Legacy weighted-price NAV remains supported alongside real holdings.
+        self.db.products.execute("DELETE FROM fund_accounts WHERE product_code IN ('EQ','BD','MX','OT')")
+
         component_rows = self.db.products.execute(
             "SELECT asset_code,asset_source,asset_class FROM fund_components WHERE product_code='MX' ORDER BY asset_code"
         )
@@ -700,6 +705,7 @@ class MarketFeatureTests(unittest.TestCase):
             "admin", "fund", "create", "FD", name="Fund", price="100", supply="1000",
             extra={"exchange_id": "EX", "fund_category": "equity", "components": {"CO": 1}},
         )
+        self.db.products.execute("DELETE FROM fund_accounts WHERE product_code='FD'")
         self.db.products.execute("UPDATE investment SET unit_price=125 WHERE product_code='FD'")
         control.entity(
             "admin", "fund", "edit", "FD",
@@ -721,6 +727,7 @@ class MarketFeatureTests(unittest.TestCase):
             "admin", "fund", "create", "BF", name="Bond fund", price="100", supply="1000",
             extra={"exchange_id": "EX", "fund_category": "bond", "components": {"CB": 1}},
         )
+        self.db.products.execute("DELETE FROM fund_accounts WHERE product_code='BF'")
         self.market._update_linked_products(int(time.time()))
         bond_price = self.db.products.get_investment("CB")["unit_price"]
         fund_price = self.db.products.get_investment("BF")["unit_price"]

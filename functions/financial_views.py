@@ -94,7 +94,7 @@ class FinancialReportView(discord.ui.View):
             field('산식 기준','해당 월의 손익 / 평균 잔액 · 분모 0 이하 또는 평균 자료 부재 시 미산출',False)
         for option in self.sections.options:option.default=option.value==self.page
         for option in self.period_select.options:option.default=option.value==r['period']
-        embed.set_footer(text='INAZINA · 게임 회계 · 회사 기준통화 표시')
+        embed.set_footer(text='INAZINA · 회계 · 회사 기준통화 표시')
         return embed
 
 

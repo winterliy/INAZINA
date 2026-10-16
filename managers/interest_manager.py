@@ -163,6 +163,155 @@ class InterestManager:
         conn.execute('UPDATE loans SET outstanding_balance=outstanding_balance+?,interest_remainder=?,last_payment_epoch=? WHERE loan_id=?',
             (whole, accrued-whole, max(last, now), loan['loan_id']))
 
+    FX_INTEREST_MIGRATION = "fx_interest_unified_v1"
+
+    @classmethod
+    def migrate_currency_accounts(cls, conn, now):
+        """One-time switch of foreign-currency accounts to savings interest rules.
+
+        Interest accrued so far is settled with the old continuous method, then
+        empty product settings get defaults (daily cycle, simple, no maturity).
+        """
+        done = conn.execute("SELECT 1 FROM settings WHERE key=?", (cls.FX_INTEREST_MIGRATION,)).fetchone()
+        if done:
+            return False
+        from managers.currency_exchange_manager import CurrencyExchangeManager
+        rows = conn.execute("SELECT a.*,COALESCE(a.contract_rate,p.interest_rate) AS annual_rate "
+                            "FROM accounts a JOIN saving p USING(product_code) "
+                            "LEFT JOIN financial_institutions f ON f.issuer=p.issuer "
+                            "WHERE a.account_type='currency_saving' AND a.resolution_status='active' "
+                            "AND COALESCE(f.status,'active')<>'failed'").fetchall()
+        CurrencyExchangeManager._legacy_continuous_interest(conn, rows, now)
+        conn.execute("UPDATE accounts SET interest_remainder='0' WHERE account_type='currency_saving'")
+        conn.execute("UPDATE saving SET interest_cycle=86400 WHERE product_kind='currency_saving' "
+                     "AND (interest_cycle IS NULL OR interest_cycle<=0)")
+        conn.execute("UPDATE saving SET compound_type=0 WHERE product_kind='currency_saving' "
+                     "AND (compound_type IS NULL OR compound_type NOT IN (0,1))")
+        conn.execute("UPDATE saving SET maturity_days=0 WHERE product_kind='currency_saving' AND maturity_days IS NULL")
+        conn.execute("INSERT INTO settings(key,value) VALUES (?,?)", (cls.FX_INTEREST_MIGRATION, str(int(now))))
+        return True
+
+    @classmethod
+    def _settle_saving_account(cls, conn, account, now):
+        """Pay every complete interest cycle of one savings or foreign-currency account.
+
+        Returns (net paid, whether anything was credited).
+        """
+        from managers.currency_manager import SCALE
+        total = 0.0
+        credited = False
+        product = conn.execute(
+            "SELECT interest_rate, maturity_days, interest_cycle, compound_type, status,"
+            "day_count_convention,issuer "
+            "FROM product.saving WHERE product_code = ?",
+            (account["product_code"],),
+        ).fetchone()
+        if not product or product["status"] != "active":
+            cls._advance_account_cursor(conn, account["account_number"], now)
+            return 0.0, False
+        rate = cls._number(account["contract_rate"], cls._number(product["interest_rate"]))
+        cycle = cls._number(product["interest_cycle"])
+        # Every account keeps its exact balance in balance_units (1/1,000,000).
+        fx = account["account_type"] == "currency_saving"
+        balance = (account["balance_units"] or 0) / SCALE
+        principal = balance if fx else cls._number(account["principal"], balance)
+        last = cls._number(account["last_payment_epoch"])
+        if last is None:
+            last = cls._utc_epoch(account["last_payment"])
+        created = cls._utc_epoch(account["created_at"])
+        if rate is None or cycle is None or cycle <= 0 or balance is None or last is None:
+            cls._advance_account_cursor(conn, account["account_number"], now)
+            return 0.0, False
+        compound_setting = cls._number(product["compound_type"], 0)
+        if compound_setting not in (0, 1):
+            cls._advance_account_cursor(conn, account["account_number"], now)
+            return 0.0, False
+        maturity_days = cls._number(product["maturity_days"], 0)
+        end = now
+        if maturity_days and maturity_days > 0 and created is not None:
+            end = min(now, created + maturity_days * 86400)
+        if end <= last:
+            return 0.0, False
+        segments, final_rate, next_reset, resets = cls._rate_segments(
+            conn, account, end, cycle, rate, apply_legal_max=False
+        )
+        if not segments:
+            return 0.0, False
+        compound = int(compound_setting) == 1
+        credited = False
+        for periods, segment_rate, paid_until in segments:
+            gross = (cls._period_interest(
+                         balance, segment_rate, cycle, periods,
+                         product["day_count_convention"],
+                         paid_until-periods*cycle)
+                     if compound else
+                     calculate_simple_interest(
+                         principal, segment_rate, periods*cycle,
+                         product["day_count_convention"],
+                         paid_until-periods*cycle))
+            if gross is None or not math.isfinite(gross):
+                cls._advance_account_cursor(conn, account["account_number"], now)
+                break
+            gross = round_currency(
+                conn, gross, account["quote_currency"]
+            )
+            if gross == 0:
+                cls._advance_account_cursor(
+                    conn, account["account_number"], paid_until
+                )
+                continue
+            tax = (round_currency(
+                conn, gross*cls._tax_rate(conn, account['user_id'])/100.0,
+                account["quote_currency"]
+            ) if gross > 0 else 0)
+            net = max(-float(balance), gross-tax)
+            stamp = datetime.fromtimestamp(
+                paid_until, timezone.utc
+            ).strftime("%Y-%m-%d %H:%M:%S")
+            conn.execute(
+                "UPDATE accounts.accounts SET balance_units=balance_units+?,last_payment=?,"
+                "last_payment_epoch=? WHERE account_number=?",
+                (int(round(net*SCALE)), stamp, paid_until, account["account_number"]),
+            )
+            RateManager.record_institution_result(
+                conn, product["issuer"], -gross, "deposit_interest",
+                f"account:{account['account_number']}:{paid_until}",
+                now=paid_until, currency_code=account["quote_currency"],
+            )
+            balance += net
+            conn.execute('INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount) VALUES (?,?,?,?,?)',
+                (account['user_id'], 'saving_interest', gross, tax, net))
+            if tax > 0:
+                from managers.currency_manager import CurrencyManager, SCALE
+                tax_units = int(round(float(tax)*SCALE))
+                treasury_id = CurrencyManager.user_treasury_id(conn, account['user_id'])
+                home_currency = CurrencyManager.home(conn, account['user_id'])
+                treasury_units = CurrencyManager.convert(
+                    conn, tax_units, account["quote_currency"], home_currency
+                )
+                treasury = conn.execute(
+                    "UPDATE users.users SET cash=cash+? WHERE user_id=?",
+                    (treasury_units//SCALE, treasury_id),
+                )
+                if treasury.rowcount != 1:
+                    raise RuntimeError("국고 계정을 찾을 수 없어 이자 지급을 취소했습니다.")
+            total += net
+            credited = True
+        if account["rate_type"] == "floating":
+            cls._record_rate_resets(
+                conn, "account", account["account_number"], account,
+                resets, end,
+            )
+            conn.execute(
+                "UPDATE accounts.accounts SET contract_rate=?,next_repricing_epoch=?,"
+                "contract_effective_rate=? "
+                "WHERE account_number=?",
+                (final_rate, next_reset,
+                 RateManager.effective_annual_rate(final_rate, cycle),
+                 account["account_number"]),
+            )
+        return total, credited
+
     def process_all_interests(self, now=None, user_id=None, *, conn=None, product_code=None):
         """Accrue due savings/loan interest, optionally for one user only.
 
@@ -178,125 +327,20 @@ class InterestManager:
         loan_count = 0
         try:
             with (self.db.atomic(("users", "accounts", "product", "tax", "system")) if conn is None else nullcontext(conn)) as conn:
+                self.migrate_currency_accounts(conn, now)
                 accounts = conn.execute(
                     "SELECT account_number, user_id, product_code, balance, principal, "
                     "created_at, last_payment, last_payment_epoch,contract_rate,rate_type,"
                     "rate_nationality,base_rate_spread,rate_floor,rate_cap,repricing_cycle_seconds,"
                     "next_repricing_epoch,benchmark_key,benchmark_tenor_days,repricing_lag_seconds,"
-                    "contract_effective_rate,quote_currency "
+                    "contract_effective_rate,quote_currency,account_type,balance_units "
                     "FROM accounts.accounts "
                     "WHERE resolution_status='active' AND (? IS NULL OR user_id = ?) AND (? IS NULL OR product_code=?)",
                     (user_id, user_id, product_code, product_code),
                 ).fetchall()
                 for account in accounts:
-                    product = conn.execute(
-                        "SELECT interest_rate, maturity_days, interest_cycle, compound_type, status,"
-                        "day_count_convention,issuer "
-                        "FROM product.saving WHERE product_code = ?",
-                        (account["product_code"],),
-                    ).fetchone()
-                    if not product or product["status"] != "active":
-                        self._advance_account_cursor(conn, account["account_number"], now)
-                        continue
-                    rate = self._number(account["contract_rate"], self._number(product["interest_rate"]))
-                    cycle = self._number(product["interest_cycle"])
-                    balance = self._number(account["balance"], 0.0)
-                    principal = self._number(account["principal"], balance)
-                    last = self._number(account["last_payment_epoch"])
-                    if last is None:
-                        last = self._utc_epoch(account["last_payment"])
-                    created = self._utc_epoch(account["created_at"])
-                    if rate is None or cycle is None or cycle <= 0 or balance is None or last is None:
-                        self._advance_account_cursor(conn, account["account_number"], now)
-                        continue
-                    compound_setting = self._number(product["compound_type"], 0)
-                    if compound_setting not in (0, 1):
-                        self._advance_account_cursor(conn, account["account_number"], now)
-                        continue
-                    maturity_days = self._number(product["maturity_days"], 0)
-                    end = now
-                    if maturity_days and maturity_days > 0 and created is not None:
-                        end = min(now, created + maturity_days * 86400)
-                    if end <= last:
-                        continue
-                    segments, final_rate, next_reset, resets = self._rate_segments(
-                        conn, account, end, cycle, rate, apply_legal_max=False
-                    )
-                    if not segments:
-                        continue
-                    compound = int(compound_setting) == 1
-                    credited = False
-                    for periods, segment_rate, paid_until in segments:
-                        gross = (self._period_interest(
-                                     balance, segment_rate, cycle, periods,
-                                     product["day_count_convention"],
-                                     paid_until-periods*cycle)
-                                 if compound else
-                                 calculate_simple_interest(
-                                     principal, segment_rate, periods*cycle,
-                                     product["day_count_convention"],
-                                     paid_until-periods*cycle))
-                        if gross is None or not math.isfinite(gross):
-                            self._advance_account_cursor(conn, account["account_number"], now)
-                            break
-                        gross = round_currency(
-                            conn, gross, account["quote_currency"]
-                        )
-                        if gross == 0:
-                            self._advance_account_cursor(
-                                conn, account["account_number"], paid_until
-                            )
-                            continue
-                        tax = (round_currency(
-                            conn, gross*self._tax_rate(conn, account['user_id'])/100.0,
-                            account["quote_currency"]
-                        ) if gross > 0 else 0)
-                        net = max(-float(balance), gross-tax)
-                        stamp = datetime.fromtimestamp(
-                            paid_until, timezone.utc
-                        ).strftime("%Y-%m-%d %H:%M:%S")
-                        conn.execute(
-                            "UPDATE accounts.accounts SET balance=balance+?,last_payment=?,"
-                            "last_payment_epoch=? WHERE account_number=?",
-                            (net, stamp, paid_until, account["account_number"]),
-                        )
-                        RateManager.record_institution_result(
-                            conn, product["issuer"], -gross, "deposit_interest",
-                            f"account:{account['account_number']}:{paid_until}",
-                            now=paid_until, currency_code=account["quote_currency"],
-                        )
-                        balance += net
-                        conn.execute('INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount) VALUES (?,?,?,?,?)',
-                            (account['user_id'], 'saving_interest', gross, tax, net))
-                        if tax > 0:
-                            from managers.currency_manager import CurrencyManager, SCALE
-                            tax_units = int(round(float(tax)*SCALE))
-                            treasury_id = CurrencyManager.user_treasury_id(conn, account['user_id'])
-                            home_currency = CurrencyManager.home(conn, account['user_id'])
-                            treasury_units = CurrencyManager.convert(
-                                conn, tax_units, account["quote_currency"], home_currency
-                            )
-                            treasury = conn.execute(
-                                "UPDATE users.users SET cash=cash+? WHERE user_id=?",
-                                (treasury_units//SCALE, treasury_id),
-                            )
-                            if treasury.rowcount != 1:
-                                raise RuntimeError("국고 계정을 찾을 수 없어 이자 지급을 취소했습니다.")
-                        total_paid += net
-                        credited = True
-                    if account["rate_type"] == "floating":
-                        self._record_rate_resets(
-                            conn, "account", account["account_number"], account,
-                            resets, end,
-                        )
-                        conn.execute(
-                            "UPDATE accounts.accounts SET contract_rate=?,next_repricing_epoch=?,"
-                            "contract_effective_rate=? "
-                            "WHERE account_number=?",
-                            (final_rate, next_reset,
-                             RateManager.effective_annual_rate(final_rate, cycle),
-                             account["account_number"]),
-                        )
+                    net, credited = self._settle_saving_account(conn, account, now)
+                    total_paid += net
                     account_count += int(credited)
 
                 loans = conn.execute(

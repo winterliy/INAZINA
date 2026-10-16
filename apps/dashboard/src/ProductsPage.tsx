@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../shared/api";
+import { FundPanel } from "./FundPanel";
 import { Card, Field, changed, number, plain, show, text, type Ctx } from "./common";
 
 type KindField = { key: string; label: string; optional: boolean; text: boolean };
@@ -35,6 +36,7 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
   const [filter, setFilter] = useState("all");
   const [editor, setEditor] = useState<Editor | null>(null);
   const [showInactive, setShowInactive] = useState(true);
+  const [fundCode, setFundCode] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const [catalog, list] = await Promise.all([
@@ -119,6 +121,7 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
   const counts = Object.fromEntries(families.map((kind) => [kind.family, products.filter((item) => kindOf(item.kind)?.family === kind.family).length]));
 
   return <>
+    {fundCode && <FundPanel key={fundCode} code={fundCode} ctx={ctx} close={() => setFundCode(null)} />}
     <Card title="새 상품" caption={`${families.map((kind) => familyLabel(kind.kind)).join(" · ")} — 종류를 고르면 $상품생성과 같은 입력 칸이 나옵니다.`}>
       <div className="kind-grid">{families.map((kind) => <button key={kind.family} type="button" className={editor?.mode === "create" && kindOf(editor.kind)?.family === kind.family ? "command-chip active" : "command-chip"} onClick={() => startCreate(kind.kind)}><b>{familyLabel(kind.kind)}</b><small>{kind.family === "saving" ? "saving · 국적 통화/외환" : kind.token} · {counts[kind.family] ?? 0}개</small></button>)}</div>
     </Card>
@@ -153,6 +156,7 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
           <td className="r mono">{item.value === null ? "—" : number(item.value)}</td>
           <td><span className={item.status === "active" ? "tag ok" : "tag warn"}>{item.status}</span></td>
           <td className="row-actions">
+            {["fund", "indexfund"].includes(item.kind) && <button className="soft small" disabled={busy} onClick={() => { setFundCode(item.code); window.scrollTo({ top: 0, behavior: "smooth" }); }}>펀드 운용</button>}
             {(RELATED[item.kind] ?? []).length > 0 && <select className="mini-select" aria-label="관련 명령어" value="" onChange={(event) => { if (event.target.value) openCommand(event.target.value, item.code); }}><option value="">명령어…</option>{RELATED[item.kind].map(([command, label]) => <option key={command} value={command}>{label} (${command})</option>)}</select>}
             {kindOf(item.kind)?.editable !== false && <button className="soft small" disabled={busy} onClick={() => void startEdit(item)}>수정</button>}
             {!["matured", "settled", "cancelled", "expired"].includes(item.status) && <button className="soft small" disabled={busy} onClick={() => toggle(item)}>{item.status === "active" ? (item.kind === "els" ? "취소" : "중지") : "재개"}</button>}

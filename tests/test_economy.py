@@ -475,7 +475,7 @@ class EconomyTests(unittest.TestCase):
         )
         self.assertTrue(self.bank.apply_loan("citizen-1", "AUTO", 1000)[0])
         self.db.users.execute("UPDATE users SET cash = 0 WHERE user_id = 'citizen-1'")
-        self.db.accounts.execute("UPDATE accounts SET balance = 0 WHERE user_id = 'citizen-1'")
+        self.db.accounts.execute("UPDATE accounts SET balance_units = 0 WHERE user_id = 'citizen-1'")
         now = time.time()
         self.db.accounts.execute(
             "UPDATE loans SET last_repayment_epoch = ? WHERE user_id = 'citizen-1'",

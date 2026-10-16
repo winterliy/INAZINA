@@ -55,7 +55,7 @@ export function AuthPanel({ app, onAuthenticated }: { app: "dashboard" | "hts"; 
           setUserId(result.userId);
           setMode(result.purpose);
           setMessage(result.purpose === "find-id"
-            ? `확인된 Discord ID: ${result.userId}`
+            ? `확인된 아이디: ${result.userId}`
             : "Discord 본인확인이 완료됐습니다.");
           window.history.replaceState({}, "", window.location.pathname);
         })
@@ -94,7 +94,7 @@ export function AuthPanel({ app, onAuthenticated }: { app: "dashboard" | "hts"; 
     try {
       if (mode === "login") {
         const result = await api<{ user: ApiUser }>("/api/auth/login", {
-          method: "POST", body: JSON.stringify({ ...(app === "hts" ? { loginId: userId.trim() } : { userId: userId.trim() }), password }),
+          method: "POST", body: JSON.stringify({ loginId: userId.trim(), password }),
         });
         onAuthenticated(result.user);
       } else if (mode === "register") {
@@ -111,9 +111,9 @@ export function AuthPanel({ app, onAuthenticated }: { app: "dashboard" | "hts"; 
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : "요청을 처리하지 못했습니다.";
       if (mode === "login" && reason === "account_not_found") {
-        setError("입력한 ID로 계정을 찾지 못했습니다. HTS ID, Discord ID 또는 국가 ID를 확인해주세요.");
+        setError("입력한 아이디로 계정을 찾지 못했습니다. 아이디를 확인해주세요.");
       } else if (mode === "login" && reason === "invalid_credentials") {
-        setError("ID 또는 비밀번호가 일치하지 않습니다. 입력한 정보를 확인해주세요.");
+        setError("아이디 또는 비밀번호가 일치하지 않습니다. 입력한 정보를 확인해주세요.");
       } else if (reason === "account_exists") {
         setMode("login");
         setError("이미 연결된 계정입니다. 로그인하거나 비밀번호를 재설정해주세요.");
@@ -132,19 +132,19 @@ export function AuthPanel({ app, onAuthenticated }: { app: "dashboard" | "hts"; 
         <p className="auth-eyebrow">INAZINA ACCOUNT</p>
         <h1 id="auth-title">{titles[mode]}</h1>
         <p className="auth-subtitle">{mode === "login"
-          ? app === "hts" ? "Discord ID 또는 국가 ID로 접속하세요." : "Discord 계정으로 안전하게 접속하세요."
+          ? "아이디와 비밀번호로 접속하세요."
           : "Discord 본인확인으로 계정을 보호합니다."}</p>
       </div>
 
       {mode === "login" && <form className="auth-form" onSubmit={submit}>
-        <label>{app === "hts" ? "HTS ID · Discord ID · 국가 ID" : "Discord ID"}<input autoComplete="username" inputMode={app === "hts" ? undefined : "numeric"} value={userId} onChange={(event) => setUserId(event.target.value)} placeholder={app === "hts" ? "HTS ID, Discord ID 또는 국가 ID" : "숫자 Discord ID"} required /></label>
+        <label>아이디<input autoComplete="username" value={userId} onChange={(event) => setUserId(event.target.value)} placeholder="아이디" required /></label>
         <label>비밀번호<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
         <button className="auth-primary" disabled={busy}>{busy ? "확인 중…" : "로그인"}</button>
       </form>}
 
       {mode === "register" && <>
-        {!verifiedId ? <div className="auth-step"><p>Discord ID의 소유자를 확인한 뒤 계정을 연결합니다.</p><button className="auth-primary" onClick={() => verifyWithDiscord("register")}>Discord로 본인확인</button></div> : <form className="auth-form" onSubmit={submit}>
-          <label>Discord ID<input value={verifiedId} readOnly /></label>
+        {!verifiedId ? <div className="auth-step"><p>아이디의 소유자를 확인한 뒤 계정을 연결합니다.</p><button className="auth-primary" onClick={() => verifyWithDiscord("register")}>Discord로 본인확인</button></div> : <form className="auth-form" onSubmit={submit}>
+          <label>아이디<input value={verifiedId} readOnly /></label>
           <label>국가 ID<select value={countryId} onChange={(event) => setCountryId(event.target.value)} required>{countries.map((country) => <option key={country.countryId} value={country.countryId}>{country.countryId} · {country.currencyName} ({country.currencyCode})</option>)}</select></label>
           <label>비밀번호<input type="password" autoComplete="new-password" minLength={12} maxLength={128} value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
           <label>비밀번호 확인<input type="password" autoComplete="new-password" minLength={12} maxLength={128} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} required /></label>
@@ -160,7 +160,7 @@ export function AuthPanel({ app, onAuthenticated }: { app: "dashboard" | "hts"; 
 
       {mode === "reset-password" && <>
         {!verifiedId ? <div className="auth-step"><p>비밀번호를 바꾸려면 계정 소유자의 Discord 인증이 필요합니다.</p><button className="auth-primary" onClick={() => verifyWithDiscord("reset-password")}>Discord로 본인확인</button></div> : <form className="auth-form" onSubmit={submit}>
-          <label>확인된 Discord ID<input value={verifiedId} readOnly /></label>
+          <label>확인된 아이디<input value={verifiedId} readOnly /></label>
           <label>새 비밀번호<input type="password" autoComplete="new-password" minLength={12} maxLength={128} value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
           <label>새 비밀번호 확인<input type="password" autoComplete="new-password" minLength={12} maxLength={128} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} required /></label>
           <p className="auth-hint">영문과 숫자를 포함해 12자 이상 입력하세요.</p>

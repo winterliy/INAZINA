@@ -114,6 +114,9 @@ class CatalogManager:
                                 "VALUES (?,?,?,?,'company','equity')",
                                 (code,f'INZST{j:03d}',1/3,1000+j*120),
                             )
+                    if kind in {'mutual_fund', 'index_fund'}:
+                        from managers.fund_manager import FundManager
+                        FundManager.create_empty(conn, code)
                 conn.execute("INSERT INTO treasury_bond_products(product_code,name,annual_rate,maturity_days,face_value,exchange_id,market_price,total_supply) VALUES (?,?,?,?,?,?,?,?)",
                              (f'INZTB{i:03d}',f'Inazina 국채 {30+i*7}일 {i:02d}호',3+(i%10)*.1,30+i*7,1000,'BOND',1000,1_000_000_000))
                 # Covered calls own 100 of the one million issued shares. No
@@ -130,8 +133,8 @@ class CatalogManager:
                              (f'INZSV{i:03d}',f'{brand} {sector} 저축 {i:02d}호',2+(i%10)*.2,1000,30+i*7,86400,i%2,'Inazina 은행'))
                 conn.execute("INSERT INTO liability(product_code,name,interest_rate,loan_limit,maturity_days,interest_cycle,min_credit_score,issuer) VALUES (?,?,?,?,?,?,?,?)",
                              (f'INZLN{i:03d}',f'{brand} {sector} 대출 {i:02d}호',5+(i%10)*.3,1_000_000,30+i*7,86400,500+i,'Inazina 은행'))
-            initial = [('USD','게임 달러','미국',1500),('KRW','게임 원','대한민국',1),('EUR','게임 유로','유럽연합',1650),
-                       ('JPY','게임 엔','일본',10),('GBP','게임 파운드','영국',1900)]
+            initial = [('USD','달러','미국',1500),('KRW','원','대한민국',1),('EUR','유로','유럽연합',1650),
+                       ('JPY','엔','일본',10),('GBP','파운드','영국',1900)]
             initial += [(f'IZC{i:02d}',f'이자니아 {i:02d} 통화',f'이자니아 연방 {i:02d}',100+i*25) for i in range(1,21)]
             for i,(currency,name,country,price) in enumerate(initial,1):
                 code = f'CUR_{currency}'

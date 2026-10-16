@@ -336,7 +336,7 @@ class OptionManager:
                 )
             else:
                 changed = conn.execute(
-                    "UPDATE accounts.accounts SET balance = balance - ?, "
+                    "UPDATE accounts.accounts SET balance_units = balance_units - CAST(ROUND(? * 1000000) AS INTEGER), "
                     "principal = MAX(0, COALESCE(principal, 0) - ?) "
                     "WHERE account_number = ? AND user_id = ? AND balance >= ?",
                     (take, take, account_number, user_id, take),
@@ -600,7 +600,7 @@ class OptionManager:
             )
         else:
             cursor = conn.execute(
-                "UPDATE accounts.accounts SET balance = balance + ?, "
+                "UPDATE accounts.accounts SET balance_units = balance_units + CAST(ROUND(? * 1000000) AS INTEGER), "
                 "principal = COALESCE(principal, 0) + ?, last_payment_epoch = ?, "
                 "last_payment = CURRENT_TIMESTAMP WHERE account_number = ? AND user_id = ?",
                 (int(amount), int(amount), now, account_number, str(user_id)),
@@ -886,7 +886,7 @@ class OptionManager:
                 )
             else:
                 changed = conn.execute(
-                    "UPDATE accounts.accounts SET balance = balance - ?, "
+                    "UPDATE accounts.accounts SET balance_units = balance_units - CAST(ROUND(? * 1000000) AS INTEGER), "
                     "principal = MAX(0, COALESCE(principal, 0) - ?) "
                     "WHERE account_number = ? AND user_id = ? AND balance >= ?",
                     (take, take, account_number, user_id, take),

@@ -149,7 +149,7 @@ class TreasuryBondManager:
             )
         else:
             cursor = conn.execute(
-                "UPDATE accounts.accounts SET balance = balance - ?, "
+                "UPDATE accounts.accounts SET balance_units = balance_units - CAST(ROUND(? * 1000000) AS INTEGER), "
                 "principal = MAX(0, COALESCE(principal, 0) - ?), "
                 "last_payment_epoch = unixepoch('now'), last_payment = CURRENT_TIMESTAMP "
                 "WHERE account_number = ? AND user_id = ? AND balance >= ?",
@@ -295,6 +295,10 @@ class TreasuryBondManager:
                     ).fetchone()
                     tax_percent = float(tax_row['tax_percent'] if tax_row and tax_row['tax_percent'] is not None else 3)
                     tax = calculate_income_tax(gross_interest, tax_percent / 100)
+                    from database.fund_accounting import account, change_cash
+                    fund = account(conn, holding['user_id'])
+                    if fund:
+                        tax = 0
                     gross_payment = principal + gross_interest
                     net_payment = principal + gross_interest - tax
                     treasury_debit = conn.execute(
@@ -310,12 +314,15 @@ class TreasuryBondManager:
                             "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
                             (tax, tax_treasury),
                         )
-                    credit = conn.execute(
-                        "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
-                        (net_payment, holding["user_id"]),
-                    )
-                    if credit.rowcount != 1:
-                        raise RuntimeError("국채 보유자가 활성 사용자가 아니어서 상환을 취소했습니다.")
+                    if fund:
+                        change_cash(conn, holding['user_id'], net_payment, 'bond_redemption', holding['product_code'])
+                    else:
+                        credit = conn.execute(
+                            "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
+                            (net_payment, holding["user_id"]),
+                        )
+                        if credit.rowcount != 1:
+                            raise RuntimeError("국채 보유자가 활성 사용자가 아니어서 상환을 취소했습니다.")
                     closed = conn.execute(
                         "UPDATE accounts.treasury_bond_holdings SET status = 'redeemed', "
                         "redeemed_epoch = ? WHERE holding_id = ? AND status = 'active'",
@@ -383,6 +390,10 @@ class TreasuryBondManager:
                 ).fetchone()
                 tax_percent = float(tax_row["tax_percent"] if tax_row else 3)
                 tax = calculate_income_tax(coupon, tax_percent/100)
+                from database.fund_accounting import account, change_cash
+                fund = account(conn, holding['user_id'])
+                if fund:
+                    tax = 0
                 treasury = conn.execute(
                     "UPDATE users.users SET cash=cash-? WHERE user_id=?",
                     (coupon, TREASURY_USER_ID),
@@ -396,10 +407,13 @@ class TreasuryBondManager:
                         "UPDATE users.users SET cash=cash+? WHERE user_id=?",
                         (tax, tax_treasury),
                     )
-                conn.execute(
-                    "UPDATE users.users SET cash=cash+? WHERE user_id=?",
-                    (coupon-tax, holding["user_id"]),
-                )
+                if fund:
+                    change_cash(conn, holding['user_id'], coupon-tax, 'bond_coupon', holding['product_code'])
+                else:
+                    conn.execute(
+                        "UPDATE users.users SET cash=cash+? WHERE user_id=?",
+                        (coupon-tax, holding["user_id"]),
+                    )
                 conn.execute(
                     "UPDATE accounts.treasury_bond_holdings SET last_coupon_epoch=? "
                     "WHERE holding_id=?", (paid_until, holding["holding_id"]),

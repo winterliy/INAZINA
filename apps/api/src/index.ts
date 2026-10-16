@@ -316,8 +316,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
   if (request.method === "POST" && url.pathname === "/api/auth/login") {
     const body = await requestJson(request);
-    const loginBody = body as { userId?: string; password?: string };
-    const attemptKey = `${request.socket.remoteAddress ?? "local"}:auto:${loginBody.userId ?? ""}`;
+    const loginBody = body as { loginId?: string; userId?: string; password?: string };
+    const attemptKey = `${request.socket.remoteAddress ?? "local"}:auto:${loginBody.loginId ?? loginBody.userId ?? ""}`;
     const attempt = failedLogins.get(attemptKey);
     if (attempt && attempt.resetAt > Date.now() && attempt.count >= 8) {
       send(response, 429, { error: "login_rate_limited" });
@@ -566,6 +566,22 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     }
     const body = await requestJson(request);
     const result = await internalRequest("POST", "/internal/admin/events", principal.userId, body);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  const fundMatch = url.pathname.match(/^\/api\/admin\/funds\/([^/]+)$/);
+  if (fundMatch) {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const path = `/internal/admin/funds/${encodeURIComponent(decodeURIComponent(fundMatch[1]))}`;
+    const result = request.method === "GET"
+      ? await internalGet(path, principal.userId)
+      : request.method === "POST"
+        ? await internalRequest("POST", path, principal.userId, await requestJson(request))
+        : { status: 405, body: { error: "method_not_allowed" } };
     send(response, result.status, result.body);
     return;
   }

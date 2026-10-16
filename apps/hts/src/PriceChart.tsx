@@ -12,6 +12,8 @@ type Gesture =
   | { kind: "move"; start: Point; drawing: Drawing; anchor: number | null };
 
 const AXIS = 72, BOTTOM = 26, TOP = 12, LEFT = 8;
+// Pixels per candle in the live view, like an HTS: a wider window shows more history instead of fatter candles.
+const BAR_SPACING = 9;
 const money = (value: number) => new Intl.NumberFormat("ko-KR", { maximumFractionDigits: value < 10 ? 2 : 0 }).format(value || 0);
 
 /**
@@ -46,21 +48,50 @@ export function PriceChart({ points, candles, candleInterval, mode, fallbackPric
 
   useEffect(() => { setView(null); setSelected(""); setDraft(null); history.current = []; }, [resetKey]);
 
+  // Resizing keeps the time scale and the right edge, so a wider window reveals older data.
+  const lastWidth = useRef(size.w);
+  useEffect(() => {
+    const before = lastWidth.current;
+    lastWidth.current = size.w;
+    if (before === size.w) return;
+    setView((current) => {
+      if (!current) return current;
+      const span = (current.maxTime - current.minTime) * (size.w - AXIS - LEFT) / (before - AXIS - LEFT);
+      return { ...current, minTime: current.maxTime - span, ...fit(current.maxTime - span, current.maxTime) };
+    });
+    // fit reads the latest series; only width changes should trigger this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [size.w]);
+
   const showCandles = mode === "candle" && candles.length > 0;
   const series = useMemo(() => showCandles ? candles.map((item) => ({ time: item.time, price: item.close }))
     : points.length ? points : [{ time: Date.now() / 1000, price: fallbackPrice || 1 }], [showCandles, candles, points, fallbackPrice]);
 
-  // Live view: whole series, prices fitted to what is visible.
-  const auto = useMemo<View>(() => {
-    const start = series[0].time, end = series.at(-1)!.time + (showCandles ? candleInterval : 0);
-    const minTime = start === end ? start - 1800 : start, maxTime = start === end ? end + 1800 : end;
-    const prices = showCandles ? candles.flatMap((item) => [item.low, item.high]) : series.map((item) => item.price);
+  // Price range fitted to the data inside [minTime, maxTime].
+  function fit(minTime: number, maxTime: number) {
+    const inside = showCandles
+      ? candles.filter((item) => item.time + candleInterval >= minTime && item.time <= maxTime).flatMap((item) => [item.low, item.high])
+      : series.filter((item) => item.time >= minTime && item.time <= maxTime).map((item) => item.price);
+    const prices = inside.length ? inside : showCandles ? candles.flatMap((item) => [item.low, item.high]) : series.map((item) => item.price);
     let low = Math.min(...prices), high = Math.max(...prices);
     if (!Number.isFinite(low) || !Number.isFinite(high)) { low = 1; high = 2; }
     if (low === high) { low *= .99; high *= 1.01; }
     const gap = (high - low) * .08;
-    return { minTime, maxTime, minPrice: Math.max(0, low - gap), maxPrice: high + gap };
-  }, [series, showCandles, candles, candleInterval]);
+    return { minPrice: Math.max(0, low - gap), maxPrice: high + gap };
+  }
+
+  // Live view: latest data, as many candles as the width holds at BAR_SPACING.
+  const auto = useMemo<View>(() => {
+    const start = series[0].time, end = series.at(-1)!.time + (showCandles ? candleInterval : 0);
+    let minTime = start === end ? start - 1800 : start;
+    const maxTime = start === end ? end + 1800 : end;
+    if (showCandles) {
+      const capacity = Math.max(10, Math.floor((size.w - AXIS - LEFT) / BAR_SPACING));
+      minTime = end - capacity * candleInterval;
+    }
+    return { minTime, maxTime, ...fit(minTime, maxTime) };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [series, showCandles, candles, candleInterval, size.w]);
   const v = view ?? auto;
 
   const R = size.w - AXIS, B = size.h - BOTTOM;
@@ -82,12 +113,13 @@ export function PriceChart({ points, candles, candleInterval, mode, fallbackPric
     const anchor = centerX === undefined ? (current.minTime + current.maxTime) / 2 : toPoint(centerX, 0).time;
     const span = Math.max(60, (current.maxTime - current.minTime) * factor);
     const ratio = (anchor - current.minTime) / (current.maxTime - current.minTime);
-    setView({ ...current, minTime: anchor - span * ratio, maxTime: anchor + span * (1 - ratio) });
+    const minTime = anchor - span * ratio, maxTime = anchor + span * (1 - ratio);
+    setView({ minTime, maxTime, ...fit(minTime, maxTime) });
   }
   function shift(direction: number) {
     const current = freeze();
     const step = (current.maxTime - current.minTime) * .25 * direction;
-    setView({ ...current, minTime: current.minTime + step, maxTime: current.maxTime + step });
+    setView({ minTime: current.minTime + step, maxTime: current.maxTime + step, ...fit(current.minTime + step, current.maxTime + step) });
   }
 
   function down(event: ReactPointerEvent<SVGSVGElement>) {

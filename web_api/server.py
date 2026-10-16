@@ -793,6 +793,28 @@ def create_fund(actor, payload):
     return True, result
 
 
+def manage_fund(actor, code, payload=None):
+    from managers.fund_manager import FundManager
+    manager = FundManager(domain().db)
+    with manager.db.readonly() as connection:
+        manager._require(connection, actor, code)
+    if payload is None:
+        return manager.snapshot(code)
+    if not isinstance(payload, dict):
+        raise ValueError('펀드 작업 내용을 확인해주세요.')
+    action = payload.get('action')
+    if action == 'activate' and set(payload) <= {'action', 'expectedFunding'}:
+        success, message = manager.activate(actor, code, expected_funding=payload.get('expectedFunding'))
+    elif action == 'order' and set(payload) == {'action', 'assetCode', 'side', 'quantity', 'price'}:
+        success, message = manager.order(actor, code, str(payload['assetCode']).strip(),
+                                         payload['side'], payload['quantity'], payload['price'])
+    elif action == 'cancel' and set(payload) == {'action', 'orderId'}:
+        success, message = manager.cancel(actor, code, payload['orderId'])
+    else:
+        raise ValueError('펀드 작업 또는 입력 필드를 확인해주세요.')
+    return {'success': success, 'message': message, 'fund': manager.snapshot(code)}
+
+
 def admin_users(search):
     term = f"%{search.strip()}%"
     with connect_readonly() as connection:
@@ -1296,6 +1318,7 @@ def product_status(actor, code, active):
 
 # Live obligations that make a product impossible to delete: (table, condition, reason).
 PRODUCT_BLOCKERS = (
+    ('fund_accounts', 'product_code=?', '펀드 전용 계정과 회계 이력이 있습니다'),
     ("user_assets", "asset_code=? AND quantity<>0", "보유 중인 사용자가 있습니다"),
     ("market_orders", "asset_code=? AND status IN ('open','partial','scheduled')", "미체결·예약 주문이 있습니다"),
     ("accounts", "product_code=?", "이 상품으로 연 계좌가 있습니다"),
@@ -1441,7 +1464,7 @@ def admin_web_login_action(actor, user_id, action, hts_id=None):
                 raise ValueError("hts_id_taken")
             connection.execute("UPDATE web_auth_credentials SET hts_id=?,updated_epoch=? WHERE user_id=?",
                                (value, int(time.time()), user_id))
-            message = "✅ HTS ID를 변경했습니다." if value else "✅ HTS ID를 지웠습니다."
+            message = "✅ 아이디를 변경했습니다." if value else "✅ 아이디를 지웠습니다."
         else:
             raise ValueError("invalid_action")
         _audit_db(connection, actor, f"web.{action}", {"user_id": user_id, "hts_id": hts_id})
@@ -1818,6 +1841,12 @@ class Handler(BaseHTTPRequestHandler):
                     trader = trading_user_id(user["userId"])
                     result = _read_cache.get(("portfolio", trader), lambda: portfolio(trader))
                     self.send_json(200, {"portfolio": result})
+            elif path.startswith('/internal/admin/funds/'):
+                user = identity(internal_user_id(self))
+                if not user or user['role'] != 'admin':
+                    self.send_json(403, {'error': 'admin_required'})
+                else:
+                    self.send_json(200, manage_fund(user['userId'], unquote(path.removeprefix('/internal/admin/funds/'))))
             elif path == "/internal/admin/overview":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -2060,6 +2089,12 @@ class Handler(BaseHTTPRequestHandler):
                     runner = run_national_command if payload.get("national") else run_admin_command
                     message = runner(user["userId"], payload)
                     self.send_json(200, {"success": not message.startswith("❌"), "message": message})
+            elif path.startswith('/internal/admin/funds/'):
+                if user['role'] != 'admin':
+                    self.send_json(403, {'error': 'admin_required'})
+                else:
+                    result = manage_fund(user['userId'], unquote(path.removeprefix('/internal/admin/funds/')), payload)
+                    self.send_json(200 if result['success'] else 400, result)
             elif path == "/internal/admin/funds":
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})

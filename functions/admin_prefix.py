@@ -26,8 +26,8 @@ NATIONAL = {
     '내주문': [],
     '주문취소': [('주문 번호','')],
     '송금': [('수신자 ID 또는 계좌',''),('금액 (출금 통화 기준)','1000'),('출금계좌 (외환 송금은 비우면 지갑)','')],
-    '계좌개설': [('상품 코드','INZSV001'),('비밀번호 (외환통장은 비우면)',''),('예치금 NWX (외환통장은 0)','0')],
-    '계좌해지': [('계좌 번호',''),('비밀번호',''),('입금계좌 (비우면 지갑)','')],
+    '계좌개설': [('상품 코드','INZSV001'),('비밀번호',''),('예치금 (상품 통화)','0')],
+    '계좌해지': [('계좌 번호',''),('비밀번호 (국고 자동 외환통장은 비우면)',''),('입금계좌 (비우면 지갑)','')],
     '대출': [('상품 코드','INZLN001'),('금액 NWX','1000')],
     '대출연장': [('대출 번호 또는 대출 상품 id','INZLN001')],
     '대출상환': [('상품 코드',''),('상환액 NWX','1000'),('대출 번호 (선택)','')],
@@ -243,12 +243,7 @@ class ActionModal(CheckedModal):
         elif c=='송금':
             result = execute_shared_action(bot, uid, 'transfer', v[0], v[1], v[2])
         elif c=='계좌개설':
-            if bot.db.products.execute_one("SELECT 1 FROM saving WHERE product_code=? AND product_kind='currency_saving' AND status='active'",(v[0],)):
-                if int(v[2])!=0:
-                    raise ValueError('외환통장 초기 예치금은 0으로 입력하고 $송금으로 입금해주세요.')
-                result = '✅ 국가 외환통장: '+bot.currency_mgr.open_account(uid,v[0])
-            else:
-                result = bot.bank_mgr.open_account(uid,v[0],v[1],int(v[2]))
+            result = bot.bank_mgr.open_account(uid,v[0],v[1],v[2] or '0')
         elif c=='계좌해지':
             result = bot.bank_mgr.close_account(uid,v[0],v[2] or None,v[1])
         elif c=='대출':
@@ -372,8 +367,8 @@ class TreasuryAssetsView(discord.ui.View):
         super().__init__(timeout=300)
         self.bot,self.owner,self.info,self.page = bot,str(owner),info,0
         self.category='main'
-        self.sections={'accounts':[],'currency_accounts':[],'stocks':[],'bonds':[],'written':[],'loans':[],'els':[],'preferred_claims':[]}
-        self.labels={'main':'🏛️ 메인','accounts':'🏦 통장','currency_accounts':'💱 외환통장','stocks':'📈 보유 투자상품',
+        self.sections={'accounts':[],'stocks':[],'bonds':[],'written':[],'loans':[],'els':[],'preferred_claims':[]}
+        self.labels={'main':'🏛️ 메인','accounts':'🏦 통장 (외환통장 포함)','stocks':'📈 보유 투자상품',
                      'bonds':'📜 국채','written':'✍️ 작성 옵션','loans':'💳 대출','els':'🧾 ELS','preferred_claims':'💰 미지급 배당'}
         from functions.wallet_views import els_position_lines,preferred_claim_lines
         self.sections['els']=els_position_lines(info.get('els_positions',[]))
@@ -382,7 +377,7 @@ class TreasuryAssetsView(discord.ui.View):
         for item in info['accounts']:
             self.sections['accounts'].append((f"통장 · {item['product_name']}",f"{item['number']}\n잔액 {item['balance']:,} NWX"))
         for item in info.get('currency_accounts',[]):
-            self.sections['currency_accounts'].append((f"외환통장 · {item.get('product_name') or item['product_code']}",
+            self.sections['accounts'].append((f"외환통장 · {item.get('product_name') or item['product_code']}",
                 f"{item['account_number']}\n잔액 {display_units(item['balance_units'])} {item['currency_code']} · 평가 {item['value_nwx']:,} NWX"))
         for item in info['stocks']:
             note=f"옵션담보 잠금 · 매도 불가 · {item['collateral_contract_code']}" if item.get('is_collateral') else f"매도 주문 잠금 {item.get('sell_reserved_qty',0):,}"

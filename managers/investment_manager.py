@@ -191,6 +191,9 @@ class InvestmentManager:
                             "(product_code,asset_code,weight,base_price,asset_source,asset_class) "
                             "VALUES (?, ?, ?, ?, 'company', 'equity')",
                             (code, row["company_code"], weight, float(row["share_price"])))
+                if product_type in FUND_TYPES:
+                    from managers.fund_manager import FundManager
+                    FundManager.create_empty(conn, code)
             return True, f"✅ {PRODUCT_NAMES[product_type]} `{code}`를 등록했습니다. " + (
                 "/매수·/매도로 지정가 없이 NAV 기준 거래합니다." if product_type in FUND_TYPES
                 else "거래소 매수·매도로 거래합니다.")
@@ -200,6 +203,11 @@ class InvestmentManager:
     @staticmethod
     def linked_price(conn, product, base_rate, now, *, prices=None, fund_components=None):
         kind = product["product_type"]
+        if kind in FUND_TYPES:
+            from managers.fund_manager import FundManager
+            state = FundManager.snapshot_conn(conn, product['product_code'])
+            if state['mode'] == 'backed':
+                return max(1, round_money(state['nav']))
         if kind == "stock_future":
             expiry = int(product["maturity_epoch"] or now)
             if now >= expiry:
@@ -337,7 +345,8 @@ class InvestmentManager:
                     continue
                 for user_id, quantity, principal, coupon in payments:
                     tax = self.users._tax(conn, user_id, "corporate_bond_interest", coupon)
-                    self.users._credit_source(conn, user_id, None, principal + coupon - tax)
+                    self.users._credit_source(conn, user_id, None, principal + coupon - tax,
+                                              event='bond_redemption', reference=product['product_code'])
                     notifications.append(dict(user_id=user_id, product_code=product["product_code"], net=principal + coupon - tax))
                 conn.execute("DELETE FROM assets.user_assets WHERE asset_code = ?", (product["product_code"],))
                 conn.execute("UPDATE product.investment SET status = 'redeemed' WHERE product_code = ?", (product["product_code"],))
@@ -406,7 +415,8 @@ class InvestmentManager:
                     continue
                 for user_id, coupon in payments:
                     tax = self.users._tax(conn, user_id, "corporate_bond_interest", coupon)
-                    self.users._credit_source(conn, user_id, None, coupon-tax)
+                    self.users._credit_source(conn, user_id, None, coupon-tax,
+                                              event='bond_coupon', reference=product['product_code'])
                     notifications.append({"user_id": str(user_id),
                                           "product_code": product["product_code"],
                                           "coupon": coupon, "tax": tax})

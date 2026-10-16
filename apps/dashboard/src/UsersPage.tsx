@@ -10,7 +10,7 @@ type Country = { nationality: string; currency_code: string; currency_name: stri
 type Result = { message: string; success: boolean };
 
 const USER_FIELDS: [string, string, string?][] = [
-  ["nickname", "닉네임"], ["nationality", "국적", "국적 통화가 바뀌면 현금을 먼저 0으로 정산해야 합니다"], ["cash", "현금", "국적 통화 기준"],
+  ["nickname", "닉네임"], ["cash", "현금", "국적 통화 기준"],
   ["credit_score", "신용점수", "0~1000"], ["annual_income", "연소득", "국적 통화 기준"], ["income_stability", "소득 안정성", "0~1"],
 ];
 
@@ -32,6 +32,7 @@ function UserTab({ ctx, countries, currentUserId }: { ctx: Ctx; countries: Count
   const [form, setForm] = useState<Record<string, string>>({});
   const [password, setPassword] = useState("");
   const [htsId, setHtsId] = useState("");
+  const [nationality, setNationality] = useState("");
 
   const loadList = useCallback(async () => setCitizens((await api<{ users: Citizen[] }>(`/api/admin/users?search=${encodeURIComponent(query)}`)).users), [query]);
   useEffect(() => { loadList().catch((cause) => say(cause instanceof Error ? cause.message : "사용자를 불러오지 못했습니다.", true)); }, [loadList]);
@@ -41,6 +42,7 @@ function UserTab({ ctx, countries, currentUserId }: { ctx: Ctx; countries: Count
     setDetail(result);
     setForm(Object.fromEntries([...USER_FIELDS.map(([key]) => key), "status", "role"].map((key) => [key, text(result.user[key])])));
     setHtsId(result.webLogin?.hts_id ?? "");
+    setNationality(String(result.user.nationality ?? ""));
     setPassword("");
   }
   const select = (userId: string) => run(() => open(userId), "사용자 정보를 불러오지 못했습니다.");
@@ -54,6 +56,20 @@ function UserTab({ ctx, countries, currentUserId }: { ctx: Ctx; countries: Count
     if (!window.confirm(`${detail.user.nickname} (${id}) 설정을 저장할까요?\n\n${Object.entries(changes).map(([key, value]) => `${key}: ${show(detail.user[key])} → ${value}`).join("\n")}`)) return;
     void run(() => api<Result>(`/api/admin/user/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ changes }) }),
       "사용자 설정을 저장하지 못했습니다.", async (result) => { say(plain(result.message)); await open(id); await loadList(); });
+  }
+
+  function changeNationality() {
+    if (!detail) return;
+    const id = String(detail.user.user_id);
+    const from = countries.find((country) => country.nationality === detail.user.nationality);
+    const to = countries.find((country) => country.nationality === nationality);
+    if (!to || nationality === detail.user.nationality) return;
+    if (!window.confirm(`${detail.user.nickname}의 국적을 ${detail.user.nationality} → ${nationality}(으)로 바꿀까요?\n\n` +
+      "· 미체결 주문을 모두 취소합니다\n· 보유 종목·국채를 현재가로 이전 국가 국고에 넘기고 현금화합니다\n· 모든 통장(입출금·외환)을 해지합니다\n· 대출을 현금으로 상환합니다 (부족하면 중단)\n" +
+      `· 남은 현금을 ${from?.currency_code ?? "이전 통화"} → ${to.currency_code}로 환전해 지갑에 넣습니다 (환전 수수료는 이전 국가 국고)\n\n` +
+      "선물·작성 옵션·ELS가 남아 있으면 거부됩니다. 되돌릴 수 없습니다.")) return;
+    void run(() => api<Result>(`/api/admin/user/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ changes: { nationality } }) }),
+      "국적을 바꾸지 못했습니다.", async (result) => { say(plain(result.message)); await open(id); await loadList(); });
   }
 
   function web(action: "password" | "hts_id" | "logout" | "remove") {
@@ -73,14 +89,25 @@ function UserTab({ ctx, countries, currentUserId }: { ctx: Ctx; countries: Count
         actions={<><button className="soft" type="button" onClick={() => openCommand("잔고수정", id)}>잔고 가감 ($잔고수정)</button><button className="soft" type="button" onClick={() => setDetail(null)}>닫기</button></>}>
         <form className="form-grid" onSubmit={saveUser}>
           {USER_FIELDS.map(([key, label, hint]) => <Field key={key} label={label} hint={hint}>
-            {key === "nationality"
-              ? <select value={form.nationality ?? ""} onChange={(event) => setForm({ ...form, nationality: event.target.value })}>{countries.map((country) => <option key={country.nationality} value={country.nationality}>{country.nationality} · {country.currency_code}</option>)}</select>
-              : <input className={key === "nickname" ? undefined : "mono"} value={form[key] ?? ""} onChange={(event) => setForm({ ...form, [key]: event.target.value })} />}
+            <input className={key === "nickname" ? undefined : "mono"} value={form[key] ?? ""} onChange={(event) => setForm({ ...form, [key]: event.target.value })} />
           </Field>)}
           <Field label="상태"><select value={form.status ?? ""} disabled={id === currentUserId} onChange={(event) => setForm({ ...form, status: event.target.value })}><option value="active">active (활성)</option><option value="inactive">inactive (비활성)</option><option value="bankrupt">bankrupt (파산)</option></select></Field>
           <Field label="권한"><select value={form.role ?? ""} disabled={id === currentUserId} onChange={(event) => setForm({ ...form, role: event.target.value })}><option value="user">user</option><option value="admin">admin</option><option value="nation">nation (국가)</option></select></Field>
           <button className="btn primary" disabled={busy}>저장</button>
         </form>
+      </Card>
+      <Card title="국적 변경" caption="국적을 바꾸면 모든 자산을 이전 국적 통화로 정리한 뒤 새 국적 통화로 환전합니다.">
+        <div className="form-grid">
+          <Field label="새 국적" hint={`현재 ${detail.user.nationality}`}><select value={nationality} onChange={(event) => setNationality(event.target.value)}>{countries.map((country) => <option key={country.nationality} value={country.nationality}>{country.nationality} · {country.currency_code}</option>)}</select></Field>
+          <button className="btn primary" type="button" disabled={busy || !nationality || nationality === detail.user.nationality || detail.accountType === "country"} onClick={changeNationality}>국적 변경</button>
+        </div>
+        <ol className="steps">
+          <li>미체결 주문 취소 → 보유 종목·국채를 현재가로 이전 국가 국고에 매도</li>
+          <li>입출금·외환 통장 해지 (현재는 해지 위약금 없음)</li>
+          <li>대출 상환 — 현금이 부족하면 아무것도 바꾸지 않고 중단</li>
+          <li>남은 현금을 변경 시점 환율로 새 통화로 환전 (수수료는 이전 국가 국고)</li>
+        </ol>
+        <p className="hint">선물 포지션·작성한 옵션·ELS가 남아 있으면 변경할 수 없습니다.{detail.accountType === "country" ? " 국가 계정은 국적을 바꿀 수 없습니다." : ""}</p>
       </Card>
       <Card title="웹 로그인 · HTS" caption={detail.webLogin ? `가입 ${date(detail.webLogin.created_epoch)} · 최근 변경 ${date(detail.webLogin.updated_epoch)}` : "웹 계정이 없습니다. 비밀번호를 설정하면 이 ID로 로그인할 수 있습니다."}>
         <div className="form-grid">

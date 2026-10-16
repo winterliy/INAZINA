@@ -198,7 +198,7 @@ class RealisticRateSystemTests(unittest.TestCase):
             "SELECT account_number FROM accounts WHERE product_code='EARLY'"
         )
         self.db.accounts.execute(
-            "UPDATE accounts SET balance=1100,principal=1000 WHERE account_number=?",
+            "UPDATE accounts SET balance_units=1100000000,principal=1000 WHERE account_number=?",
             (account["account_number"],),
         )
         treasury_before = self.db.users.get_treasury_balance()
@@ -334,7 +334,7 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(account["balance"], 10.55)
         self.assertEqual(self.db.users.get_user("usd-user")["cash"], 89.58)
         self.db.accounts.execute(
-            "UPDATE accounts SET balance=1.239 WHERE account_number=?",
+            "UPDATE accounts SET balance_units=1239000 WHERE account_number=?",
             (account["account_number"],),
         )
         self.assertEqual(

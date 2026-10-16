@@ -666,8 +666,8 @@ class SlashCommandRegistry:
             for item in info.get('written_options',[])]
         embed.add_field(name='📄 작성 옵션',value='\n'.join(written_lines)[:1024] or '작성 중인 옵션이 없습니다.',inline=False)
         from functions.wallet_views import WalletCategoryView, els_position_lines, preferred_claim_lines
-        sections={'accounts':account_lines[:len(info['accounts'])],
-                  'currency_accounts':account_lines[len(info['accounts']):],
+        # Savings and foreign-currency accounts are listed together as 통장.
+        sections={'accounts':account_lines,
                   'treasury_bond':bond_lines,'written':written_lines,
                   'els':els_position_lines(info.get('els_positions', [])),
                   'preferred_claims':preferred_claim_lines(info.get('preferred_dividend_claims', []))}
@@ -1074,13 +1074,7 @@ class SlashCommandRegistry:
     async def open_account(self, interaction: discord.Interaction, 상품: str):
         user_id, _user_data, _role = await self._prepare(interaction)
         code = 상품.strip()
-        foreign = self.bot.db.products.execute_one("SELECT * FROM saving WHERE product_code=? AND product_kind='currency_saving' AND status='active'",(code,))
-        if foreign:
-            try:
-                number = await asyncio.to_thread(self.bot.currency_mgr.open_account,user_id,code)
-                return await self._reply(interaction,content=f"✅ {foreign['name']} 외환통장 개설: `{number}`\n/송금으로 입금하고 /내지갑에서 잔액을 확인하세요.")
-            except ValueError as exc:
-                return await self._reply(interaction,content=f'❌ {exc}')
+        # Savings and foreign-currency accounts open through the same password/deposit form.
         product = self.bot.db.products.get_saving(code)
         if not product or product['status']!='active':
             return await self._reply(interaction,content='❌ 가입 가능한 일반·외환통장 상품 코드를 입력해주세요. /검색에서 코드를 확인할 수 있습니다.')

@@ -93,6 +93,10 @@ class UserManager:
 
     @staticmethod
     def _choose_funds(conn, user_id, exclude_account=None, exclude_wallet=False):
+        from database.fund_accounting import account
+        fund = account(conn, user_id)
+        if fund:
+            return None if exclude_wallet else (fund['cash'], None)
         user = conn.execute(
             f"SELECT cash FROM users.users WHERE user_id = ? AND (status = 'active' OR user_id='{TREASURY_USER_ID}')", (user_id,)
         ).fetchone()
@@ -112,6 +116,13 @@ class UserManager:
     @staticmethod
     def _change_cash(conn, user_id, amount, *, maximum=None):
         """Apply a cash delta, optionally enforcing an upper balance limit."""
+        from database.fund_accounting import account, change_cash
+        fund = account(conn, user_id)
+        if fund:
+            if fund['cash'] + amount < 0 or (maximum is not None and fund['cash'] + amount > maximum):
+                return False
+            change_cash(conn, user_id, amount)
+            return True
         amount = int(amount)
         if amount < 0:
             cursor = conn.execute(
@@ -132,6 +143,13 @@ class UserManager:
 
     @staticmethod
     def _debit_source(conn, user_id, account_number, amount):
+        from database.fund_accounting import account, change_cash
+        fund = account(conn, user_id)
+        if fund:
+            if account_number is not None or amount < 0 or fund['cash'] < amount:
+                return False
+            change_cash(conn, user_id, -amount, 'order_reserve')
+            return True
         if account_number is None:
             cursor = conn.execute(
                 "UPDATE users.users SET cash = cash - ? "
@@ -142,7 +160,7 @@ class UserManager:
             now = time.time()
             stamp = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
             cursor = conn.execute(
-                "UPDATE accounts.accounts SET balance = balance - ?, "
+                "UPDATE accounts.accounts SET balance_units = balance_units - CAST(ROUND(? * 1000000) AS INTEGER), "
                 "principal = MAX(0, COALESCE(principal, 0) - ?), "
                 "last_payment_epoch = ?, last_payment = ? "
                 "WHERE account_number = ? AND user_id = ? AND balance >= ?",
@@ -151,8 +169,12 @@ class UserManager:
         return cursor.rowcount == 1
 
     @staticmethod
-    def _credit_source(conn, user_id, account_number, amount):
+    def _credit_source(conn, user_id, account_number, amount, *, event='settlement', reference=None):
         if amount <= 0:
+            return
+        from database.fund_accounting import account, change_cash
+        if account(conn, user_id):
+            change_cash(conn, user_id, amount, event, reference)
             return
         if account_number is None:
             conn.execute("UPDATE users.users SET cash = cash + ? WHERE user_id = ?", (amount, user_id))
@@ -160,7 +182,7 @@ class UserManager:
             now = time.time()
             stamp = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
             conn.execute(
-                "UPDATE accounts.accounts SET balance = balance + ?, "
+                "UPDATE accounts.accounts SET balance_units = balance_units + CAST(ROUND(? * 1000000) AS INTEGER), "
                 "principal = COALESCE(principal, 0) + ?, last_payment_epoch = ?, "
                 "last_payment = ? WHERE account_number = ? AND user_id = ?",
                 (amount, amount, now, stamp, account_number, user_id),
@@ -169,6 +191,9 @@ class UserManager:
     @staticmethod
     def _tax(conn, user_id, source, gross_amount):
         """양수 소득에 시민 국적의 세율을 적용하고 내역을 기록합니다."""
+        from database.fund_accounting import account
+        if account(conn, user_id):
+            return 0  # Fund income stays in NAV; investor gains are taxed on redemption.
         gross = max(0, round_money(gross_amount))
         if gross == 0:
             return 0
@@ -219,6 +244,9 @@ class UserManager:
         )
 
     def buy_asset(self, user_id, asset_code, quantity):
+        from managers.fund_manager import FundManager
+        if FundManager(self.db).is_backed(asset_code):
+            return FundManager(self.db).trade_units(user_id, asset_code, quantity)
         if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
             return False, "❌ 매수 수량은 0보다 큰 정수로 입력해주세요."
         product=self.db.products.get_investment(asset_code)
@@ -298,6 +326,9 @@ class UserManager:
             return False, f"❌ 매수 처리 중 오류가 발생했습니다: {exc}"
 
     def sell_asset(self, user_id, asset_code, quantity):
+        from managers.fund_manager import FundManager
+        if FundManager(self.db).is_backed(asset_code):
+            return FundManager(self.db).trade_units(user_id, asset_code, quantity, redeem=True)
         if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
             return False, "❌ 매도 수량은 0보다 큰 정수로 입력해주세요."
         product=self.db.products.get_investment(asset_code)
@@ -538,7 +569,7 @@ class UserManager:
 
                 if target_account_number:
                     cursor = conn.execute(
-                        "UPDATE accounts.accounts SET balance = balance + ?, "
+                        "UPDATE accounts.accounts SET balance_units = balance_units + CAST(ROUND(? * 1000000) AS INTEGER), "
                         "principal = COALESCE(principal, 0) + ?, "
                         "last_payment_epoch = unixepoch('now'), last_payment = CURRENT_TIMESTAMP "
                         "WHERE account_number = ? AND user_id = ? AND account_type = 'saving'",

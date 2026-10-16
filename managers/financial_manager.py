@@ -233,13 +233,13 @@ class FinancialManager:
             cash_flows=flows,capex=capex,fcf=flows.get('operating',0)-capex,eps=eps,weighted_shares=weighted_shares,ratios=ratios,entry_count=count,
             checks=dict(balance_sheet=s['assets']==s['liabilities']+s['equity'],cash_flow=cash_difference==0,
                         live_cash=cash_matches),closed=False,
-            notes=['게임 회계 기준 · 월간 비율(연율화하지 않음)',
+            notes=['회계 기준 · 월간 비율(연율화하지 않음)',
                    '도입 전 미확인 잔액은 자산이나 과거 이익으로 추정하지 않습니다.',
                    '총자본은 총자산과 동일하게 정의합니다. 평균 잔액이 없는 최초 월의 회전율·ROA·ROE는 미산출입니다.',
                    'EPS는 우선주 확정배당 차감 후 보통주 시간가중 유통주식수로 계산합니다. 국고 보유분 제외, 담보주식 포함. 완전한 기간 이력 없으면 미산출. FFO/AFFO는 부동산 모델 미지원',
                    '기타포괄손익 미지원: 총포괄손익은 당기순이익과 같습니다.',
                    '기존 NWX 법인현금은 거래 시 환율로 회사 통화에 환산합니다. 기말환산·외화 현금대사는 미지원입니다.',
-                   '회사채 이자는 기존 게임의 만기 지급 시점에 인식합니다. 발행차금은 만기 일괄 상각합니다.'])
+                   '회사채 이자는 기존 만기 지급 시점에 인식합니다. 발행차금은 만기 일괄 상각합니다.'])
 
     def report(self, code, period=None):
         period = period or month()
