@@ -12,7 +12,7 @@ class DrDeviationMonitorManager:
 
     @classmethod
     def sample_conn(cls, conn, now=None):
-        """Capture one sample per five-minute bucket and append state transitions."""
+        """Capture five-minute observations; confirm alert transitions across two buckets."""
         epoch = float(time.time() if now is None else now)
         if not math.isfinite(epoch) or epoch < 0:
             raise ValueError("invalid_monitor_epoch")
@@ -48,8 +48,12 @@ class DrDeviationMonitorManager:
                     metrics = {}
             state = alert_state(metrics)
             prior = conn.execute(
-                "SELECT state FROM dr_deviation_samples WHERE dr_code=? "
+                "SELECT state,sample_bucket FROM dr_deviation_samples WHERE dr_code=? "
                 "ORDER BY sample_id DESC LIMIT 1", (program["dr_code"],),
+            ).fetchone()
+            last_event = conn.execute(
+                "SELECT to_state FROM dr_deviation_alert_events WHERE dr_code=? "
+                "ORDER BY event_id DESC LIMIT 1", (program["dr_code"],),
             ).fetchone()
             cursor = conn.execute(
                 "INSERT OR IGNORE INTO dr_deviation_samples "
@@ -62,14 +66,24 @@ class DrDeviationMonitorManager:
             if cursor.rowcount != 1:
                 continue
             sampled += 1
-            previous = str(prior["state"]) if prior else "unobserved"
-            if state != previous and (state in {"premium", "discount"}
-                                      or previous in {"premium", "discount"}):
+            stable_state = (str(last_event["to_state"])
+                            if last_event and last_event["to_state"] in {"premium", "discount"}
+                            else "normal")
+            consecutive_match = (
+                prior is not None and int(prior["sample_bucket"]) == bucket-1
+                and str(prior["state"]) == state
+            )
+            confirmed_state = stable_state
+            if state != "unavailable" and state != stable_state and consecutive_match:
+                confirmed_state = state
+            if confirmed_state != stable_state and (
+                    confirmed_state in {"premium", "discount"}
+                    or stable_state in {"premium", "discount"}):
                 conn.execute(
                     "INSERT INTO dr_deviation_alert_events "
                     "(dr_code,from_state,to_state,dr_price,reference_value,deviation_percent,recorded_epoch) "
                     "VALUES (?,?,?,?,?,?,?)",
-                    (program["dr_code"], previous, state,
+                    (program["dr_code"], stable_state, confirmed_state,
                      float(program["dr_price"]) if program["dr_price"] is not None else None,
                      metrics.get("referenceValue"), metrics.get("referencePremiumPercent"), epoch),
                 )

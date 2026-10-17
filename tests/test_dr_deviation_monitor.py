@@ -48,27 +48,38 @@ class DrDeviationMonitorTests(unittest.TestCase):
             first = DrDeviationMonitorManager.sample_conn(conn, now=300)
             duplicate = DrDeviationMonitorManager.sample_conn(conn, now=301)
         self.assertEqual(first["sampled"], 1)
-        self.assertEqual(first["transitions"], 1)
+        self.assertEqual(first["transitions"], 0)
         self.assertEqual(duplicate["sampled"], 0)
+
+        with self.db.atomic() as conn:
+            confirmed = DrDeviationMonitorManager.sample_conn(conn, now=600)
+        self.assertEqual(confirmed["transitions"], 1)
 
         self.db.assets.execute("UPDATE market_assets SET price=105 WHERE code='BASE_DR'")
         with self.db.atomic() as conn:
-            recovered = DrDeviationMonitorManager.sample_conn(conn, now=600)
+            first_normal = DrDeviationMonitorManager.sample_conn(conn, now=900)
+        self.assertEqual(first_normal["transitions"], 0)
+        with self.db.atomic() as conn:
+            recovered = DrDeviationMonitorManager.sample_conn(conn, now=1200)
         self.assertEqual(recovered["transitions"], 1)
 
         self.db.assets.execute("UPDATE market_assets SET price=88 WHERE code='BASE_DR'")
         with self.db.atomic() as conn:
-            discounted = DrDeviationMonitorManager.sample_conn(conn, now=900)
+            first_discount = DrDeviationMonitorManager.sample_conn(conn, now=1500)
+        self.assertEqual(first_discount["transitions"], 0)
+        with self.db.atomic() as conn:
+            discounted = DrDeviationMonitorManager.sample_conn(conn, now=1800)
             history = DrDeviationMonitorManager.history_conn(conn, limit=10)
         self.assertEqual(discounted["transitions"], 1)
         self.assertEqual([row["state"] for row in history["samples"]],
-                         ["discount", "normal", "premium"])
+                         ["discount", "discount", "normal", "normal", "premium", "premium"])
         self.assertEqual([row["to_state"] for row in history["events"]],
                          ["discount", "normal", "premium"])
 
     def test_alert_history_is_append_only_and_old_samples_are_pruned(self):
         with self.db.atomic() as conn:
             DrDeviationMonitorManager.sample_conn(conn, now=300)
+            DrDeviationMonitorManager.sample_conn(conn, now=600)
             with self.assertRaises(Exception):
                 conn.execute("UPDATE dr_deviation_alert_events SET to_state='normal'")
             DrDeviationMonitorManager.sample_conn(
@@ -76,6 +87,24 @@ class DrDeviationMonitorTests(unittest.TestCase):
             )
             count = conn.execute("SELECT COUNT(*) FROM dr_deviation_samples").fetchone()[0]
         self.assertEqual(count, 1)
+
+    def test_transition_requires_adjacent_buckets_and_missing_price_does_not_clear_alert(self):
+        with self.db.atomic() as conn:
+            DrDeviationMonitorManager.sample_conn(conn, now=300)
+            gap = DrDeviationMonitorManager.sample_conn(conn, now=900)
+        self.assertEqual(gap["transitions"], 0)
+        with self.db.atomic() as conn:
+            confirmed = DrDeviationMonitorManager.sample_conn(conn, now=1200)
+        self.assertEqual(confirmed["transitions"], 1)
+
+        self.db.assets.execute("UPDATE market_assets SET status='inactive' WHERE code='BASE_DR'")
+        with self.db.atomic() as conn:
+            missing = DrDeviationMonitorManager.sample_conn(conn, now=1500)
+            still_missing = DrDeviationMonitorManager.sample_conn(conn, now=1800)
+            history = DrDeviationMonitorManager.history_conn(conn, limit=10)
+        self.assertEqual(missing["transitions"], 0)
+        self.assertEqual(still_missing["transitions"], 0)
+        self.assertEqual([row["to_state"] for row in history["events"]], ["premium"])
 
 
 if __name__ == "__main__":
