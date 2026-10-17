@@ -65,7 +65,8 @@ class AdminManager:
                     return False, "❌ 만료·고정 상품은 사건을 적용할 수 없습니다."
             except ValueError as exc:
                 return False, f"❌ {exc}"
-        now = int(time.time() if now is None else now)
+        from managers.rate_manager import RateManager
+        now = int(RateManager._validated_epoch(now, "invalid_market_event_epoch"))
         plans = {}
         with self.db.atomic(("system", "assets", "company", "product")) as conn:
             role = conn.execute('SELECT role FROM users WHERE user_id=?',(str(actor_id),)).fetchone()

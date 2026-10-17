@@ -149,6 +149,39 @@ class StochasticMarketTests(unittest.TestCase):
             "SELECT * FROM market_simulation_state WHERE asset_code = ?", (code,))
         return dict(row) if row else None
 
+    def test_invalid_price_tick_epoch_cannot_change_quote_or_market_state(self):
+        before_price = self.db.companies.get_company("CO")["share_price"]
+        before_history = [tuple(row) for row in self.db.assets.execute(
+            "SELECT * FROM market_price_history ORDER BY recorded_epoch, asset_code"
+        )]
+        before_factors = [tuple(row) for row in self.db.system.execute(
+            "SELECT * FROM market_factor_state ORDER BY key"
+        )]
+        for invalid_epoch in (-1, float("nan"), float("inf"), 1e300, True, "invalid"):
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, "invalid_market_price_update_epoch"):
+                    self.market.update_prices(now=invalid_epoch)
+        self.assertEqual(self.db.companies.get_company("CO")["share_price"], before_price)
+        self.assertEqual([tuple(row) for row in self.db.assets.execute(
+            "SELECT * FROM market_price_history ORDER BY recorded_epoch, asset_code"
+        )], before_history)
+        self.assertEqual([tuple(row) for row in self.db.system.execute(
+            "SELECT * FROM market_factor_state ORDER BY key"
+        )], before_factors)
+        self.assertIsNone(self.db.system.get_setting("movement_history_date"))
+
+    def test_invalid_admin_event_epoch_cannot_write_event_or_target(self):
+        manager = AdminManager(self.db)
+        before_events = self.db.system.execute_one("SELECT COUNT(*) FROM market_events")[0]
+        before_targets = self.db.system.execute_one("SELECT COUNT(*) FROM market_event_targets")[0]
+        for invalid_epoch in (-1, float("nan"), float("inf"), 1e300, True, "invalid"):
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, "invalid_market_event_epoch"):
+                    manager.create_market_event("admin", "good", 50, "CO", 60,
+                                                now=invalid_epoch)
+        self.assertEqual(self.db.system.execute_one("SELECT COUNT(*) FROM market_events")[0], before_events)
+        self.assertEqual(self.db.system.execute_one("SELECT COUNT(*) FROM market_event_targets")[0], before_targets)
+
     def factor(self, epoch, shock):
         self.db.system.execute(
             "INSERT INTO market_factor_state (key, last_epoch, current_factor) VALUES ('market', ?, ?) "

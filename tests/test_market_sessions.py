@@ -58,6 +58,68 @@ class MarketSessionTests(unittest.TestCase):
         self.assertFalse(self.session.control("admin", "circuit", stage=True, now=1000)[0])
         self.assertEqual(self.session.get_state(now=1000), before)
 
+    def test_invalid_session_epochs_are_rejected_before_market_state_changes(self):
+        before = [tuple(row) for row in self.db.system.execute(
+            "SELECT * FROM market_exchanges ORDER BY exchange_id"
+        )]
+        audit_count = self.db.system.execute_one(
+            "SELECT COUNT(*) FROM admin_audit WHERE action LIKE 'market_%'"
+        )[0]
+        invalid_epochs = (-1, float("nan"), float("inf"), 1e300, True, "invalid")
+        for invalid_epoch in invalid_epochs:
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, "invalid_market_session_control_epoch"):
+                    self.session.control("admin", "pause", now=invalid_epoch)
+                with self.assertRaisesRegex(ValueError, "invalid_market_session_processing_epoch"):
+                    self.session.process_due(now=invalid_epoch)
+                with self.assertRaisesRegex(ValueError, "invalid_market_session_processing_epoch"):
+                    self.session.get_state("UNREGISTERED", now=invalid_epoch)
+                with self.assertRaisesRegex(ValueError, "invalid_market_session_check_epoch"):
+                    self.session.trading_error(now=invalid_epoch, exchange_id="UNREGISTERED")
+        self.assertEqual([tuple(row) for row in self.db.system.execute(
+            "SELECT * FROM market_exchanges ORDER BY exchange_id"
+        )], before)
+        self.assertEqual(self.db.system.execute_one(
+            "SELECT COUNT(*) FROM admin_audit WHERE action LIKE 'market_%'"
+        )[0], audit_count)
+
+    def test_invalid_scheduled_order_epoch_cannot_activate_or_refund_reservations(self):
+        self.assertTrue(self.session.control("admin", "pause", now=1000)[0])
+        self.assertTrue(self.book.place_limit_order("alice", "CO", "buy", 1, 100)[0])
+        order_before = tuple(self.db.assets.execute_one(
+            "SELECT status,reserved_cash,updated_epoch FROM market_orders WHERE user_id='alice'"
+        ))
+        cash_before = self.db.users.get_user("alice")["cash"]
+        for invalid_epoch in (-1, float("nan"), float("inf"), 1e300, True, "invalid"):
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, "invalid_scheduled_order_processing_epoch"):
+                    self.book.process_scheduled_orders(now=invalid_epoch)
+        self.assertEqual(tuple(self.db.assets.execute_one(
+            "SELECT status,reserved_cash,updated_epoch FROM market_orders WHERE user_id='alice'"
+        )), order_before)
+        self.assertEqual(self.db.users.get_user("alice")["cash"], cash_before)
+
+    def test_invalid_option_expiration_epoch_cannot_release_collateral(self):
+        self.assertTrue(self.users.buy_asset("alice", "CO", 1)[0])
+        self.assertTrue(self.options.create_and_write(
+            "alice", "CO", "call", 10000, 1, 1, 100
+        )[0])
+        contract = self.db.assets.execute_one("SELECT * FROM option_contracts")
+        contract_before = tuple(contract)
+        collateral_before = [tuple(row) for row in self.db.assets.execute(
+            "SELECT * FROM option_collateral_lots WHERE contract_id=?", (contract["contract_id"],)
+        )]
+        for invalid_epoch in (-1, float("nan"), float("inf"), 1e300, True, "invalid"):
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, "invalid_option_expiration_epoch"):
+                    self.options.expire_matured(now=invalid_epoch)
+        self.assertEqual(tuple(self.db.assets.execute_one(
+            "SELECT * FROM option_contracts WHERE contract_id=?", (contract["contract_id"],)
+        )), contract_before)
+        self.assertEqual([tuple(row) for row in self.db.assets.execute(
+            "SELECT * FROM option_collateral_lots WHERE contract_id=?", (contract["contract_id"],)
+        )], collateral_before)
+
     def test_no_due_session_poll_does_not_reserve_writer(self):
         with patch.object(self.db, "atomic", side_effect=AssertionError("unexpected writer")):
             states = self.session.process_due(now=1000)

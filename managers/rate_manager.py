@@ -47,9 +47,9 @@ class RateManager:
 
     @staticmethod
     def _validated_epoch(value, error_code):
-        from managers.bank_journal import BankJournal
+        from functions.time_utils import validate_epoch
         try:
-            return BankJournal.validate_epoch(value)
+            return validate_epoch(value)
         except ValueError as exc:
             raise ValueError(error_code) from exc
 

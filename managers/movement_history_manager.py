@@ -39,6 +39,11 @@ class MovementHistoryManager:
 
     @classmethod
     def day_boundary(cls, now):
+        from functions.time_utils import validate_epoch
+        try:
+            now = validate_epoch(now)
+        except ValueError as exc:
+            raise ValueError("invalid_movement_history_cleanup_epoch") from exc
         local = datetime.fromtimestamp(int(now), cls.KST)
         midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
         return local.date().isoformat(), int(midnight.timestamp())
@@ -93,7 +98,11 @@ class MovementHistoryManager:
         orders, contract state, settlements and current index/ETF state are not
         chart history and remain intact.
         """
-        now = int(time.time() if now is None else now)
+        from functions.time_utils import validate_epoch
+        try:
+            now = int(validate_epoch(now))
+        except ValueError as exc:
+            raise ValueError("invalid_movement_history_cleanup_epoch") from exc
         date, midnight = self.day_boundary(now)
         if self.db.system.get_setting(self.DATE_KEY) == date:
             return False

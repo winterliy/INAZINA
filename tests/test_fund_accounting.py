@@ -154,6 +154,35 @@ class FundAccountingTests(unittest.TestCase):
         self.assertEqual(fund.snapshot('FD')['availableCash'], 1000)
         self.assertEqual(fund.snapshot('FD')['positions'], [])
 
+    def test_invalid_corporate_bond_epochs_cannot_pay_or_redeem(self):
+        self.issue('CB', 'corporate_bond', price=100, underlying='CO', days=30)
+        self.db.products.execute(
+            "UPDATE investment SET coupon_frequency_days=1,last_coupon_epoch=0,maturity_epoch=0 "
+            "WHERE product_code='CB'"
+        )
+        self.assertTrue(self.users.buy_asset('alice', 'CB', 1)[0])
+        cash_before = self.db.users.get_user('alice')['cash']
+        bond_before = tuple(self.db.products.execute_one(
+            "SELECT status,last_coupon_epoch,maturity_epoch FROM investment WHERE product_code='CB'"
+        ))
+        holding_before = [tuple(row) for row in self.db.assets.execute(
+            "SELECT user_id,asset_code,quantity FROM user_assets WHERE asset_code='CB'"
+        )]
+        invalid_epochs = (-1, float('nan'), float('inf'), 1e300, True, 'invalid')
+        for invalid_epoch in invalid_epochs:
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, 'invalid_corporate_bond_coupon_epoch'):
+                    self.products.pay_corporate_bond_coupons(now=invalid_epoch)
+                with self.assertRaisesRegex(ValueError, 'invalid_corporate_bond_redemption_epoch'):
+                    self.products.redeem_corporate_bonds(now=invalid_epoch)
+        self.assertEqual(self.db.users.get_user('alice')['cash'], cash_before)
+        self.assertEqual(tuple(self.db.products.execute_one(
+            "SELECT status,last_coupon_epoch,maturity_epoch FROM investment WHERE product_code='CB'"
+        )), bond_before)
+        self.assertEqual([tuple(row) for row in self.db.assets.execute(
+            "SELECT user_id,asset_code,quantity FROM user_assets WHERE asset_code='CB'"
+        )], holding_before)
+
     def test_treasury_bond_sale_and_maturity_credit_fund(self):
         self.ok(self.users.bond_manager.issue('TB', 'Treasury', 10, 365, 100, 10000, 'EX'))
         fund = self.fund(components={'TB': 1}, category='bond')

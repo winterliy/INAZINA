@@ -47,6 +47,11 @@ class MarketManager:
         self.movement_history = MovementHistoryManager(db)
         self._tick = threading.local()
 
+    @staticmethod
+    def _validated_epoch(now, error_code="invalid_market_price_epoch"):
+        from managers.rate_manager import RateManager
+        return int(RateManager._validated_epoch(now, error_code))
+
     def _runtime_auto(self):
         with self._runtime_lock:
             return self._runtime_auto_targets.setdefault(self._runtime_key, {})
@@ -57,6 +62,7 @@ class MarketManager:
 
     def register_runtime_events(self, plans, *, event_type, volatility_percent, now, duration_seconds):
         """Install active admin-event paths in RAM only."""
+        now = self._validated_epoch(now, "invalid_market_event_epoch")
         with self._runtime_lock:
             events = self._runtime_events()
             for code, (start_price, target_price) in plans.items():
@@ -758,7 +764,7 @@ class MarketManager:
             'last_display_price=excluded.last_display_price,event_id=excluded.event_id', batch['state_updates'].values())
 
     def update_prices(self, market_trend=1.0, volatility=None, now=None, market_condition=None):
-        now = int(time.time() if now is None else now)
+        now = self._validated_epoch(now, "invalid_market_price_update_epoch")
         # Keep the background price loop's existing short-lock behaviour. A
         # busy DB skips a tick, and an automatic resume shares the same commit
         # as shifting suspended event/model clocks.
@@ -811,7 +817,7 @@ class MarketManager:
             raise ValueError("market_trend는 0 이상의 유한한 숫자여야 합니다.")
         global_config = GarchConfig.from_settings(settings, volatility=volatility)
         AutoTargetConfig.from_settings(settings)
-        now = int(time.time() if now is None else now)
+        now = self._validated_epoch(now, "invalid_market_price_update_epoch")
         legacy_events = conn.execute(
             "SELECT event_id,asset_code,event_type,severity,starts_epoch,ends_epoch "
             "FROM market_events WHERE target_mode='legacy' AND starts_epoch<=? AND ends_epoch>?",
@@ -1578,7 +1584,7 @@ class MarketManager:
 
         if metric not in {'turnover', 'volume', 'gainers', 'losers'}:
             raise ValueError('지원하지 않는 시장 순위입니다.')
-        now = int(time.time() if now is None else now)
+        now = self._validated_epoch(now, "invalid_market_ranking_epoch")
         _, midnight = self.movement_history.day_boundary(now)
         limit = min(100, max(0, int(limit)))
         with self.db.readonly() as conn:

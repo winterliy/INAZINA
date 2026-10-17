@@ -6,6 +6,7 @@ from functions.money import (round_money, parse_money, round_currency,
                              parse_currency_money)
 from managers.market_session_manager import MarketSessionManager
 from managers.order_validation import validate_limit_order
+from managers.rate_manager import RateManager
 
 
 class OrderBookManager:
@@ -730,7 +731,9 @@ class OrderBookManager:
         are activated in arrival order.  The market-session manager remains
         responsible only for session state; this method owns order matching.
         """
-        now = int(time.time() if now is None else now)
+        now = int(RateManager._validated_epoch(
+            now, "invalid_scheduled_order_processing_epoch"
+        ))
         activated = rejected = 0
         try:
             with self.db.atomic(('users', 'accounts', 'assets', 'product', 'company', 'tax', 'system')) as conn:

@@ -10,6 +10,7 @@ from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY, IS_TREASURY
 from functions.money import round_money
 from managers.market_session_manager import MarketSessionManager
 from managers.order_validation import validate_limit_order
+from managers.rate_manager import RateManager
 
 
 class OptionManager:
@@ -899,7 +900,7 @@ class OptionManager:
         return False
 
     def expire_matured(self, now=None):
-        now = int(time.time() if now is None else now)
+        now = int(RateManager._validated_epoch(now, "invalid_option_expiration_epoch"))
         contracts = self.db.assets.execute(
             "SELECT contract_id FROM option_contracts WHERE status = 'active' "
             "AND expiration_epoch <= ? ORDER BY expiration_epoch, contract_id",

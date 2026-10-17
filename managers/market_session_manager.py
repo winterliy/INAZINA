@@ -4,6 +4,7 @@ import time
 import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from functions.time_utils import validate_epoch
 
 
 class MarketSessionManager:
@@ -16,8 +17,16 @@ class MarketSessionManager:
     def __init__(self, db):
         self.db = db
 
+    @staticmethod
+    def _epoch(now, error_code="invalid_market_session_epoch"):
+        try:
+            return int(validate_epoch(now))
+        except ValueError as exc:
+            raise ValueError(error_code) from exc
+
     @classmethod
     def next_day_epoch(cls, now):
+        now = cls._epoch(now, "invalid_market_session_day_boundary_epoch")
         current = datetime.fromtimestamp(now, cls.KST)
         return int((current + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
 
@@ -97,7 +106,7 @@ class MarketSessionManager:
 
     @classmethod
     def process_conn(cls, conn, now=None, exchange_id=None):
-        now = int(time.time() if now is None else now)
+        now = cls._epoch(now, "invalid_market_session_processing_epoch")
         if exchange_id is None:
             return cls.process_all_conn(conn, now)
         exchange_id = cls.normalize_exchange(exchange_id)
@@ -111,13 +120,13 @@ class MarketSessionManager:
 
     @classmethod
     def process_all_conn(cls, conn, now=None):
-        now = int(time.time() if now is None else now)
+        now = cls._epoch(now, "invalid_market_session_processing_epoch")
         for exchange_id in cls.exchange_ids(conn):
             cls.process_conn(conn, now, exchange_id)
         return {exchange_id: cls._row(conn, exchange_id) for exchange_id in cls.exchange_ids(conn)}
 
     def process_due(self, now=None):
-        now = int(time.time() if now is None else now)
+        now = self._epoch(now, "invalid_market_session_processing_epoch")
         # Most polls have nothing to resume.  Check from a WAL read snapshot so
         # the five-second worker does not compete for SQLite's single writer.
         with self.db.readonly() as conn:
@@ -137,6 +146,7 @@ class MarketSessionManager:
             return self.process_all_conn(conn, now)
 
     def get_state(self, exchange_id=None, now=None):
+        now = self._epoch(now, "invalid_market_session_processing_epoch")
         with self.db.atomic(("system",)) as conn:
             return self.process_all_conn(conn, now) if exchange_id is None else self.process_conn(conn, now, exchange_id)
 
@@ -150,6 +160,7 @@ class MarketSessionManager:
         return message
 
     def trading_error(self, conn=None, now=None, *, asset_code=None, exchange_id=None):
+        now = self._epoch(now, "invalid_market_session_check_epoch")
         if conn is None:
             with self.db.atomic(("system",)) as transaction:
                 return self.trading_error(transaction, now, asset_code=asset_code, exchange_id=exchange_id)
@@ -169,7 +180,7 @@ class MarketSessionManager:
             return False, "❌ 지원하지 않는 시장 상태 명령어입니다."
         if action == "circuit" and (isinstance(stage, bool) or stage not in (1, 2, 3)):
             return False, "❌ 서킷브레이커는 1·2·3단계 중 선택해주세요."
-        now = int(time.time() if now is None else now)
+        now = self._epoch(now, "invalid_market_session_control_epoch")
         requested = str(exchange_id or "").strip()
         with self.db.atomic(("system", "users")) as conn:
             role = conn.execute("SELECT role FROM users WHERE user_id=?", (str(actor_id),)).fetchone()

@@ -77,6 +77,26 @@ class MovementDailyTests(unittest.TestCase):
         # KST midnight is still the previous UTC calendar date.
         self.assertEqual(self.midnight % 86400, 15 * 3600)
 
+    def test_invalid_cleanup_epoch_cannot_delete_history_or_write_day_marker(self):
+        self.seed_histories(self.midnight - 1)
+        before = {
+            table: [tuple(row) for row in self.db.assets.execute(
+                f"SELECT * FROM {table} ORDER BY 1"
+            )]
+            for table in self.history.HISTORY_TABLES
+        }
+        for invalid_epoch in (-1, float("nan"), float("inf"), 1e300, True, "invalid"):
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, "invalid_movement_history_cleanup_epoch"):
+                    self.history.cleanup(invalid_epoch)
+                with self.assertRaisesRegex(ValueError, "invalid_movement_history_cleanup_epoch"):
+                    self.history.day_boundary(invalid_epoch)
+        self.assertEqual(self.db.system.get_setting("movement_history_date"), None)
+        for table, rows in before.items():
+            self.assertEqual([tuple(row) for row in self.db.assets.execute(
+                f"SELECT * FROM {table} ORDER BY 1"
+            )], rows)
+
     def test_date_marker_survives_restart_and_skipped_days(self):
         self.seed_histories(self.midnight - 1)
         self.assertTrue(self.history.cleanup(self.midnight))

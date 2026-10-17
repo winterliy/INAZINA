@@ -320,7 +320,9 @@ class InvestmentManager:
         return (self.users.sell_asset if redeem else self.users.buy_asset)(str(user_id), str(code), quantity)
 
     def redeem_corporate_bonds(self, now=None):
-        now = int(time.time() if now is None else now)
+        now = int(RateManager._validated_epoch(
+            now, "invalid_corporate_bond_redemption_epoch"
+        ))
         self.pay_corporate_bond_coupons(now=now)
         notifications = []
         rows = self.db.products.execute("SELECT product_code FROM investment WHERE product_type = 'corporate_bond' "
@@ -368,7 +370,9 @@ class InvestmentManager:
 
     def pay_corporate_bond_coupons(self, now=None):
         """Pay due periodic coupons to the holders of record."""
-        now = int(time.time() if now is None else now)
+        now = int(RateManager._validated_epoch(
+            now, "invalid_corporate_bond_coupon_epoch"
+        ))
         notifications = []
         rows = self.db.products.execute(
             "SELECT product_code FROM investment WHERE product_type='corporate_bond' "

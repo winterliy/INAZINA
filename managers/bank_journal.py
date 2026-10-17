@@ -1,27 +1,18 @@
 """Append-only, currency-minor-unit journal for financial institutions."""
 
 from decimal import Decimal
-import math
-import time
+from functions.time_utils import MAX_SUPPORTED_EPOCH, validate_epoch
 
 
 class BankJournal:
-    MAX_SUPPORTED_EPOCH = 253402300799.0  # 9999-12-31 23:59:59 UTC
+    MAX_SUPPORTED_EPOCH = MAX_SUPPORTED_EPOCH
 
     @classmethod
     def validate_epoch(cls, value):
-        if value is None:
-            value = time.time()
-        if isinstance(value, bool):
-            raise ValueError("분개 시각은 유효한 UNIX epoch이어야 합니다.")
         try:
-            epoch = float(value)
-        except (TypeError, ValueError, OverflowError) as exc:
+            return validate_epoch(value)
+        except ValueError as exc:
             raise ValueError("분개 시각은 유효한 UNIX epoch이어야 합니다.") from exc
-        if (not math.isfinite(epoch)
-                or not 0 <= epoch <= cls.MAX_SUPPORTED_EPOCH):
-            raise ValueError("분개 시각은 유효한 UNIX epoch이어야 합니다.")
-        return epoch
 
     @staticmethod
     def reconcile_institution_results(conn, issuer, *, since_epoch=None):
