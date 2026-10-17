@@ -113,6 +113,12 @@ class CorporateDB(DBManager):
             user_id TEXT NOT NULL,
             quantity REAL NOT NULL CHECK(quantity > 0),
             PRIMARY KEY(register_id, user_id))''')
+        self.execute('''CREATE TABLE IF NOT EXISTS shareholder_register_dr_entries (
+            register_id INTEGER NOT NULL REFERENCES shareholder_registers(register_id),
+            user_id TEXT NOT NULL,
+            payout_currency TEXT NOT NULL,
+            quantity REAL NOT NULL CHECK(quantity > 0),
+            PRIMARY KEY(register_id,user_id,payout_currency))''')
         self.execute('CREATE INDEX IF NOT EXISTS idx_registers_due ON shareholder_registers(status, pay_epoch)')
         self.execute('''CREATE TABLE IF NOT EXISTS dividend_distributions (
             distribution_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -141,7 +147,34 @@ class CorporateDB(DBManager):
             net_amount_units INTEGER NOT NULL CHECK(net_amount_units >= 0),
             quote_currency TEXT NOT NULL,
             created_epoch INTEGER NOT NULL,
-            UNIQUE(distribution_id,user_id))''')
+            UNIQUE(distribution_id,user_id,quote_currency))''')
+        payment_schema = self.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='dividend_payments'"
+        )
+        if payment_schema and 'UNIQUE(distribution_id,user_id))' in (payment_schema[0]['sql'] or '').replace(' ', ''):
+            with self.lock:
+                self.conn.execute('BEGIN IMMEDIATE')
+                try:
+                    self.conn.execute('''CREATE TABLE dividend_payments_v2 (
+                        payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        distribution_id INTEGER NOT NULL REFERENCES dividend_distributions(distribution_id),
+                        user_id TEXT NOT NULL,
+                        quantity INTEGER NOT NULL CHECK(quantity > 0),
+                        gross_amount INTEGER NOT NULL CHECK(gross_amount >= 0),
+                        tax_amount INTEGER NOT NULL CHECK(tax_amount >= 0),
+                        net_amount_units INTEGER NOT NULL CHECK(net_amount_units >= 0),
+                        quote_currency TEXT NOT NULL,
+                        created_epoch INTEGER NOT NULL,
+                        UNIQUE(distribution_id,user_id,quote_currency))''')
+                    self.conn.execute('''INSERT INTO dividend_payments_v2
+                        SELECT payment_id,distribution_id,user_id,quantity,gross_amount,tax_amount,
+                               net_amount_units,quote_currency,created_epoch FROM dividend_payments''')
+                    self.conn.execute('DROP TABLE dividend_payments')
+                    self.conn.execute('ALTER TABLE dividend_payments_v2 RENAME TO dividend_payments')
+                    self.conn.commit()
+                except Exception:
+                    self.conn.rollback()
+                    raise
         self.execute('''CREATE INDEX IF NOT EXISTS idx_dividend_distributions_asset
             ON dividend_distributions(asset_code,created_epoch)''')
         self.execute('''CREATE INDEX IF NOT EXISTS idx_dividend_payments_user

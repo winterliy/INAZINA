@@ -109,32 +109,33 @@ class CorporateActionsManager:
     @staticmethod
     def _holders(conn, code):
         # A covered call transfers collateral custody, not the writer's dividend right.
-        rows = conn.execute('SELECT user_id,SUM(quantity) quantity FROM ('
-            'SELECT user_id,quantity FROM user_assets WHERE asset_code=? UNION ALL '
-            'SELECT writer_id user_id,quantity FROM option_collateral_lots WHERE underlying_code=?'
-            ') GROUP BY user_id ORDER BY user_id', (code, code)).fetchall()
-        # In-currency DR programs pass their custodied underlying entitlement
-        # through to current DR holders. Cross-currency settlement needs a
-        # separate depositary FX/cash ledger and is intentionally not implied.
         underlying_currency = conn.execute(
             "SELECT COALESCE((SELECT quote_currency FROM company WHERE company_code=?),"
             "(SELECT quote_currency FROM market_assets WHERE code=?),'NWX')",
             (str(code), str(code)),
         ).fetchone()[0]
+        rows = conn.execute('SELECT user_id,SUM(quantity) quantity FROM ('
+            'SELECT user_id,quantity FROM user_assets WHERE asset_code=? UNION ALL '
+            'SELECT writer_id user_id,quantity FROM option_collateral_lots WHERE underlying_code=?'
+            ') GROUP BY user_id ORDER BY user_id', (code, code)).fetchall()
         dr_rows = conn.execute(
-            "SELECT h.user_id,SUM(h.quantity*d.underlying_per_receipt) quantity "
+            "SELECT h.user_id,d.quote_currency payout_currency,"
+            "SUM(h.quantity*d.underlying_per_receipt) quantity "
             "FROM depositary_receipts d JOIN user_assets h ON h.asset_code=d.dr_code "
             "WHERE d.underlying_code=? AND d.program_status<>'terminated' "
-            "AND d.quote_currency=? GROUP BY h.user_id ORDER BY h.user_id",
-            (str(code), str(underlying_currency)),
+            "GROUP BY h.user_id,d.quote_currency ORDER BY h.user_id,d.quote_currency",
+            (str(code),),
         ).fetchall()
-        combined = {str(row['user_id']): float(row['quantity'] or 0) for row in rows}
+        combined = {(str(row['user_id']), str(underlying_currency)):
+                    float(row['quantity'] or 0) for row in rows}
         for row in dr_rows:
             user = str(row['user_id'])
-            combined[user] = combined.get(user, 0.0) + float(row['quantity'] or 0)
+            key = (user, str(row['payout_currency'] or underlying_currency))
+            combined[key] = combined.get(key, 0.0) + float(row['quantity'] or 0)
         # Treasuries and a company's own (treasury) shares receive no dividend.
         from managers.company_account_manager import CompanyAccounts
-        return [(user, quantity) for user, quantity in sorted(combined.items()) if quantity > 0
+        return [(user, currency, quantity)
+                for (user, currency), quantity in sorted(combined.items()) if quantity > 0
                 and not CurrencyManager.is_treasury(conn, user)
                 and not CompanyAccounts.own_shares(conn, user, code)]
 
@@ -190,21 +191,23 @@ class CorporateActionsManager:
 
     def _credit_dividend(self, conn, user, code, kind, amount, currency, now):
         from database.fund_accounting import account, change_cash
+        amount_decimal = Decimal(str(amount))
+        amount_units = int((amount_decimal*SCALE).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
         if account(conn, user):
             if currency != 'NWX':
                 raise ValueError('펀드 배당 수령 통화는 NWX만 지원합니다.')
             change_cash(conn, user, amount, 'dividend', code)
             return 0, amount*SCALE
         rate = CurrencyExchangeManager._rate(conn, currency)
-        tax = UserManager._tax(conn, user, f'{kind}_dividend:{code}', amount*rate)
+        tax = UserManager._tax(conn, user, f'{kind}_dividend:{code}', amount_decimal*rate)
         if CurrencyManager.home(conn,user) == currency:
             tax_native = int((Decimal(tax)/Decimal(rate)).to_integral_value(rounding=ROUND_CEILING))
-            net_units = max(0,amount-tax_native)*SCALE
+            net_units = max(0,amount_units-tax_native*SCALE)
             changed = conn.execute('UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?',
                                    (net_units//SCALE, user, self.MAX_MONEY-net_units//SCALE))
         else:
             tax_units = tax*SCALE if currency == 'NWX' else int((Decimal(tax*SCALE)/Decimal(rate)).to_integral_value(rounding=ROUND_CEILING))
-            net_units = max(0, amount*SCALE-tax_units)
+            net_units = max(0, amount_units-tax_units)
             CurrencyExchangeManager._settle(conn, user, now)
             account = self._currency_account(conn, user, currency, now)
             changed = conn.execute("UPDATE accounts SET balance_units=balance_units+? WHERE account_number=? AND account_type='currency_saving' AND balance_units<=?",
@@ -215,7 +218,7 @@ class CorporateActionsManager:
         if CompanyAccounts.is_company(conn, user):
             # A company's dividend income is 영업외수익 in its statements.
             listing = conn.execute('SELECT COALESCE(parent_company_code,company_code) FROM company WHERE company_code=?', (code,)).fetchone()
-            CompanyAccounts.log_income(conn, user, 'dividend', amount*rate, tax, counterparty=listing[0] if listing else code)
+            CompanyAccounts.log_income(conn, user, 'dividend', amount_decimal*rate, tax, counterparty=listing[0] if listing else code)
         return tax, net_units
 
     def _settle_claims(self, conn, issuer, now):
@@ -256,18 +259,37 @@ class CorporateActionsManager:
             'INSERT INTO shareholder_registers(operation_key,asset_code,dividend_kind,record_epoch,pay_epoch,'
             'per_share,actor_id,created_epoch) VALUES (?,?,?,?,?,?,?,?)',
             (str(key), listing['code'], kind, int(now), int(pay_epoch), int(per_share), actor, int(now))).lastrowid
-        conn.executemany('INSERT INTO shareholder_register_entries(register_id,user_id,quantity) VALUES (?,?,?)',
-                         [(register, user, quantity) for user, quantity in self._holders(conn, listing['code']) if quantity > 0])
+        holders = self._holders(conn, listing['code'])
+        source_currency = str(listing.get('quote_currency') or 'NWX')
+        conn.executemany(
+            'INSERT INTO shareholder_register_entries(register_id,user_id,quantity) VALUES (?,?,?)',
+            [(register, user, quantity) for user, currency, quantity in holders
+             if currency == source_currency and quantity > 0])
+        conn.executemany(
+            'INSERT INTO shareholder_register_dr_entries(register_id,user_id,payout_currency,quantity) '
+            'VALUES (?,?,?,?)',
+            [(register, user, currency, quantity) for user, currency, quantity in holders
+             if currency != source_currency and quantity > 0])
         return register
 
     @staticmethod
     def _register_holders(conn, key):
-        row = conn.execute('SELECT register_id FROM shareholder_registers WHERE operation_key=?', (str(key),)).fetchone()
+        row = conn.execute('SELECT register_id,asset_code FROM shareholder_registers WHERE operation_key=?', (str(key),)).fetchone()
         if not row:
             return None
-        return [(str(entry['user_id']), float(entry['quantity'])) for entry in conn.execute(
+        source_currency = conn.execute(
+            "SELECT COALESCE((SELECT quote_currency FROM company WHERE company_code=?),"
+            "(SELECT quote_currency FROM market_assets WHERE code=?),'NWX')",
+            (str(row['asset_code']), str(row['asset_code'])),
+        ).fetchone()[0]
+        holders = [(str(entry['user_id']), str(source_currency), float(entry['quantity'])) for entry in conn.execute(
             'SELECT user_id,quantity FROM shareholder_register_entries WHERE register_id=? ORDER BY user_id',
             (row['register_id'],))]
+        holders.extend((str(entry['user_id']), str(entry['payout_currency']), float(entry['quantity']))
+                       for entry in conn.execute(
+            'SELECT user_id,payout_currency,quantity FROM shareholder_register_dr_entries '
+            'WHERE register_id=? ORDER BY user_id,payout_currency', (row['register_id'],)))
+        return holders
 
     def _distribute(self, conn, listing, per_share, kind, due, key, now, *, percent=None, reference_price=None):
         existing = conn.execute(
@@ -285,8 +307,9 @@ class CorporateActionsManager:
             holders = self._register_holders(conn, key)
         mode = 'percent' if percent is not None else 'fixed'
         unit_amount = Decimal(reference_price)*Decimal(str(percent))/100 if percent is not None else Decimal(per_share)
-        payments = [(user,quantity,int((Decimal(str(quantity))*unit_amount).quantize(Decimal('1'),rounding=ROUND_HALF_UP))) for user,quantity in holders]
-        owed = sum(amount for _,_,amount in payments)
+        payments = [(user,quantity,int((Decimal(str(quantity))*unit_amount).quantize(Decimal('1'),rounding=ROUND_HALF_UP)), payout_currency)
+                    for user, payout_currency, quantity in holders]
+        owed = sum(amount for _,_,amount,_ in payments)
         currency = listing.get('quote_currency') or 'NWX'
         rate = CurrencyExchangeManager._rate(conn, currency)
         if owed > self.MAX_MONEY or owed*rate > self.MAX_MONEY or owed*SCALE > MAX_UNITS:
@@ -296,7 +319,7 @@ class CorporateActionsManager:
         gross = min(owed,self._source_balance(conn,issuer,funding,currency)) if cumulative else owed
         if gross < owed and not cumulative:
             raise ValueError('배당 재원이 부족합니다.')
-        amounts = self._allocate(gross,[amount for _,_,amount in payments]) if owed and gross < owed else [amount for _,_,amount in payments]
+        amounts = self._allocate(gross,[amount for _,_,amount,_ in payments]) if owed and gross < owed else [amount for _,_,amount,_ in payments]
         cursor = conn.execute('''INSERT INTO dividend_distributions
             (operation_key,dividend_kind,asset_code,due_epoch,per_share,dividend_mode,
              dividend_percent,reference_price,gross_amount,entitlement_amount,deferred_amount,
@@ -306,17 +329,37 @@ class CorporateActionsManager:
              gross,owed,owed-gross,currency,funding,issuer,int(now)))
         distribution = cursor.lastrowid
         self._debit_dividend(conn,issuer,funding,currency,gross)
-        for (user,quantity,entitlement),amount in zip(payments,amounts):
-            tax,net_units = self._credit_dividend(conn,user,listing['code'],kind,amount,currency,now)
+        for (user,quantity,entitlement,payout_currency),source_amount in zip(payments,amounts):
+            amount = source_amount
+            if payout_currency != currency and source_amount:
+                source_units = int(Decimal(source_amount)*SCALE)
+                target_units = CurrencyManager.convert(
+                    conn, source_units, currency, payout_currency
+                )
+                # The dividend's source-currency debit funds the depositary's
+                # FX purchase; route both legs through the listing exchange's
+                # treasury so the foreign payout is not newly minted off-ledger.
+                fx_treasury = CurrencyManager.exchange_treasury(conn, listing['code'])
+                CurrencyManager.treasury_receive(conn, fx_treasury, currency, source_units)
+                CurrencyManager.treasury_pay(conn, fx_treasury, payout_currency, target_units)
+                amount = target_units/SCALE
+                conn.execute(
+                    'INSERT INTO currency_transactions(user_id,source_currency,target_currency,'
+                    'source_units,target_units,fee_nwx,recorded_epoch) VALUES (?,?,?,?,?,?,?)',
+                    (user, currency, payout_currency, source_units, target_units, 0, now),
+                )
+            tax,net_units = self._credit_dividend(
+                conn,user,listing['code'],kind,amount,payout_currency,now
+            )
             conn.execute('''INSERT INTO dividend_payments
                 (distribution_id,user_id,quantity,gross_amount,tax_amount,net_amount_units,
                  quote_currency,created_epoch) VALUES (?,?,?,?,?,?,?,?)''',
-                (distribution,user,quantity,amount,tax,net_units,currency,int(now)))
-            if cumulative and entitlement > amount:
+                (distribution,user,quantity,amount,tax,net_units,payout_currency,int(now)))
+            if cumulative and entitlement > source_amount:
                 conn.execute('INSERT INTO preferred_dividend_claims(issuer_code,asset_code,distribution_id,user_id,quantity,gross_amount,quote_currency,funding_source,due_epoch,created_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)',
-                             (issuer,listing['code'],distribution,user,quantity,entitlement-amount,currency,funding,due,now))
+                             (issuer,listing['code'],distribution,user,quantity,entitlement-source_amount,currency,funding,due,now))
             conn.execute('INSERT INTO product_settlements(user_id,product_code,kind,quantity,gross_amount,tax_amount,recorded_epoch) VALUES (?,?,?,?,?,?,?)',
-                         (user,listing['code'],f'{kind}_dividend:{currency}',quantity,amount,tax,now))
+                         (user,listing['code'],f'{kind}_dividend:{payout_currency}',quantity,amount,tax,now))
         if cumulative and owed>gross and funding=='issuer':
             Finance.event(conn,issuer,'우선주 미지급배당 확정',
                           [('retained',owed-gross),('dividend_payable',gross-owed)],
