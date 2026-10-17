@@ -183,6 +183,7 @@ class AccountDB(DBManager):
             ("underwriting_stress_dsr", "REAL"),
             ("borrower_risk_score", "REAL"),
             ("origination_pd_12m", "REAL CHECK(origination_pd_12m IS NULL OR (origination_pd_12m >= 0 AND origination_pd_12m <= 1))"),
+            ("stage_cure_since_epoch", "REAL"),
             ("underwriting_income", "INTEGER NOT NULL DEFAULT 0"),
             ("prepayment_fee_percent", "REAL NOT NULL DEFAULT 0"),
             ("prepayment_fee_decline_days", "INTEGER NOT NULL DEFAULT 0"),

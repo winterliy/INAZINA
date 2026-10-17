@@ -14,6 +14,7 @@ class CreditRiskManager:
     This first pass deliberately uses borrower data already captured by the loan
     workflow. It is an explainable scorecard, not a bureau or regulatory model.
     """
+    STAGE_2_CURE_DAYS = 90
 
     @staticmethod
     def _bounded(value, low, high):
@@ -127,6 +128,44 @@ class CreditRiskManager:
         if (arrears_trigger or pd_deterioration or int(missed_payments or 0) >= 2
                 or CreditRiskManager._bounded(ltv, 0, 10) >= 1.0):
             return 2
+        return 1
+
+    @classmethod
+    def _apply_stage_cure_period(cls, conn, loan_id, proposed_stage, now):
+        """Require 90 days of continuously improved indicators before Stage 1 cure."""
+        loan = conn.execute(
+            "SELECT stage_cure_since_epoch FROM accounts.loans WHERE loan_id=?",
+            (int(loan_id),),
+        ).fetchone()
+        if not loan:
+            return proposed_stage
+        cure_since = loan["stage_cure_since_epoch"]
+        if proposed_stage != 1:
+            if cure_since is not None:
+                conn.execute(
+                    "UPDATE accounts.loans SET stage_cure_since_epoch=NULL WHERE loan_id=?",
+                    (int(loan_id),),
+                )
+            return proposed_stage
+        prior = conn.execute(
+            "SELECT stage FROM accounts.loan_ecl_assessments WHERE loan_id=? "
+            "ORDER BY calculated_epoch DESC,assessment_id DESC LIMIT 1",
+            (int(loan_id),),
+        ).fetchone()
+        if cure_since is None:
+            if prior and int(prior["stage"]) == 2:
+                conn.execute(
+                    "UPDATE accounts.loans SET stage_cure_since_epoch=? WHERE loan_id=?",
+                    (float(now), int(loan_id)),
+                )
+                return 2
+            return 1
+        if float(now)-float(cure_since) < cls.STAGE_2_CURE_DAYS*86400:
+            return 2
+        conn.execute(
+            "UPDATE accounts.loans SET stage_cure_since_epoch=NULL WHERE loan_id=?",
+            (int(loan_id),),
+        )
         return 1
 
     @classmethod
@@ -289,6 +328,7 @@ class CreditRiskManager:
                  if loan["overdue_since_epoch"] is not None else None),
                 loan["origination_pd_12m"], pd_12m,
             )
+            stage = cls._apply_stage_cure_period(conn, loan["loan_id"], stage, epoch)
             if stage == 3:
                 pd_12m = lifetime_pd = 1.0
             base_pd = lifetime_pd if stage == 2 else pd_12m

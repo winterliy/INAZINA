@@ -246,6 +246,84 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.assertEqual(row["ead"], 400)
         self.assertIn('"eadMethod":"midpoint_after_scheduled_principal"', row["scenario"])
 
+    def test_stage_two_cure_requires_ninety_days_of_improved_indicators(self):
+        epoch = 1_800_000_000
+        self.db.accounts.execute(
+            "UPDATE loans SET status='active',collection_status='current',"
+            "missed_payment_count=2,current_ltv=.5,overdue_since_epoch=NULL,"
+            "maturity_epoch=?,contract_effective_rate=0 WHERE product_code='ECL3'",
+            (epoch+365*86400,),
+        )
+        with self.db.atomic() as conn:
+            self.assertEqual(CreditRiskManager.assess_conn(conn, epoch), 1)
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT stage FROM loan_ecl_assessments ORDER BY calculated_epoch DESC LIMIT 1"
+        )["stage"], 2)
+
+        self.db.accounts.execute(
+            "UPDATE loans SET missed_payment_count=0 WHERE product_code='ECL3'"
+        )
+        with self.db.atomic() as conn:
+            self.assertEqual(CreditRiskManager.assess_conn(conn, epoch+86400), 1)
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT stage FROM loan_ecl_assessments ORDER BY calculated_epoch DESC LIMIT 1"
+        )["stage"], 2)
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT stage_cure_since_epoch FROM loans WHERE product_code='ECL3'"
+        )["stage_cure_since_epoch"], epoch+86400)
+
+        with self.db.atomic() as conn:
+            self.assertEqual(CreditRiskManager.assess_conn(conn, epoch+90*86400), 1)
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT stage FROM loan_ecl_assessments ORDER BY calculated_epoch DESC LIMIT 1"
+        )["stage"], 2)
+        with self.db.atomic() as conn:
+            self.assertEqual(CreditRiskManager.assess_conn(conn, epoch+91*86400), 1)
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT stage FROM loan_ecl_assessments ORDER BY calculated_epoch DESC LIMIT 1"
+        )["stage"], 1)
+        self.assertIsNone(self.db.accounts.execute_one(
+            "SELECT stage_cure_since_epoch FROM loans WHERE product_code='ECL3'"
+        )["stage_cure_since_epoch"])
+
+    def test_recurrent_stage_two_trigger_resets_cure_clock(self):
+        epoch = 1_800_000_000
+        self.db.accounts.execute(
+            "UPDATE loans SET status='active',collection_status='current',"
+            "missed_payment_count=2,current_ltv=.5,overdue_since_epoch=NULL,"
+            "maturity_epoch=?,contract_effective_rate=0 WHERE product_code='ECL3'",
+            (epoch+365*86400,),
+        )
+        with self.db.atomic() as conn:
+            CreditRiskManager.assess_conn(conn, epoch)
+        self.db.accounts.execute("UPDATE loans SET missed_payment_count=0 WHERE product_code='ECL3'")
+        with self.db.atomic() as conn:
+            CreditRiskManager.assess_conn(conn, epoch+86400)
+
+        self.db.accounts.execute("UPDATE loans SET missed_payment_count=2 WHERE product_code='ECL3'")
+        with self.db.atomic() as conn:
+            CreditRiskManager.assess_conn(conn, epoch+10*86400)
+        self.assertIsNone(self.db.accounts.execute_one(
+            "SELECT stage_cure_since_epoch FROM loans WHERE product_code='ECL3'"
+        )["stage_cure_since_epoch"])
+
+        self.db.accounts.execute("UPDATE loans SET missed_payment_count=0 WHERE product_code='ECL3'")
+        with self.db.atomic() as conn:
+            CreditRiskManager.assess_conn(conn, epoch+11*86400)
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT stage_cure_since_epoch FROM loans WHERE product_code='ECL3'"
+        )["stage_cure_since_epoch"], epoch+11*86400)
+        with self.db.atomic() as conn:
+            CreditRiskManager.assess_conn(conn, epoch+100*86400)
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT stage FROM loan_ecl_assessments ORDER BY calculated_epoch DESC LIMIT 1"
+        )["stage"], 2)
+        with self.db.atomic() as conn:
+            CreditRiskManager.assess_conn(conn, epoch+101*86400)
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT stage FROM loan_ecl_assessments ORDER BY calculated_epoch DESC LIMIT 1"
+        )["stage"], 1)
+
     def test_macro_downturn_increases_stage_two_pd_and_is_recorded(self):
         epoch = 1_800_000_000
         self.db.currency.execute(

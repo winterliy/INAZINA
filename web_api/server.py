@@ -917,7 +917,7 @@ def user_loan_schedules(user_id):
         loans = [dict(row) for row in connection.execute(
             "SELECT l.loan_id,l.product_code,l.quote_currency,l.outstanding_balance,l.status,"
             "l.underwriting_dsr,l.underwriting_stress_dsr,l.origination_pd_12m,"
-            "l.collection_status,l.maturity_epoch,"
+            "l.collection_status,l.maturity_epoch,l.stage_cure_since_epoch,"
             "(SELECT e.stage FROM loan_ecl_assessments e WHERE e.loan_id=l.loan_id "
             "ORDER BY e.calculated_epoch DESC,e.assessment_id DESC LIMIT 1) current_ecl_stage,"
             "(SELECT e.pd_12m FROM loan_ecl_assessments e WHERE e.loan_id=l.loan_id "
