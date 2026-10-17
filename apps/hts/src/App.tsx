@@ -54,7 +54,7 @@ const CREDIT_TIPS: Record<string, string> = {
   acceleration: "기한이익상실 기록은 시간이 지나며 줄어듭니다. 정상 납부 실적이 회복을 돕습니다.",
   default: "부도 기록은 시간이 지나며 줄어듭니다. 남은 잔액 상환과 정상 납부가 회복을 돕습니다.",
   debt_burden: "대출 잔액을 줄이거나 연소득 정보를 갱신하면 부채수준 요인이 개선됩니다.",
-  new_credit: "짧은 기간에 대출을 여러 건 받지 않으면 90일 뒤 회복됩니다.",
+  new_credit: "짧은 기간에 대출을 여러 건 받지 않으면 2주 뒤 회복됩니다.",
   legacy: "도입 전 감점은 시간이 지나며 줄어듭니다.",
 };
 const signedPoints = (value: number) => `${value > 0 ? "+" : ""}${Math.round(value * 10) / 10}`;

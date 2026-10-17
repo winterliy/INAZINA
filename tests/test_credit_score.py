@@ -68,22 +68,22 @@ class CreditScoreTests(unittest.TestCase):
             "SELECT points FROM credit_events WHERE user_id='borrower' "
             "AND event_type='legacy_baseline'")
         self.assertAlmostEqual(baseline["points"], 120)
-        self.assertEqual(self.refresh(now+365*DAY), 820)
+        self.assertEqual(self.refresh(now+30*DAY), 820)
 
         self.db.users.create_user("penalized", "Penalized", "Nac", 0)
         self.db.users.execute("UPDATE users SET credit_score=600 WHERE user_id='penalized'")
         self.assertEqual(self.refresh(now, "penalized"), 600)
-        # Half-life 365 days: half of the unexplained −100 remains after a year.
-        self.assertEqual(self.refresh(now+365*DAY, "penalized"), 650)
+        # Half-life 30 days: half of the unexplained −100 remains after a month.
+        self.assertEqual(self.refresh(now+30*DAY, "penalized"), 650)
 
     def test_missed_payment_decays_and_on_time_history_rebuilds_score(self):
         now = time.time()
         self.refresh(now)
         self.record("payment_missed", "m1", now, now)
         self.assertEqual(self.score(), 665)
-        # 180-day half-life, then dropped after the 3-year retention window.
-        self.assertEqual(self.refresh(now+180*DAY), 683)
-        self.assertEqual(self.refresh(now+1100*DAY), 700)
+        # 14-day half-life, then dropped after the 90-day retention window.
+        self.assertEqual(self.refresh(now+14*DAY), 683)
+        self.assertEqual(self.refresh(now+91*DAY), 700)
         for month in range(12):
             epoch = now+(month+1)*30*DAY
             self.record("payment_on_time", f"p{month}", epoch, epoch)
@@ -183,10 +183,10 @@ class CreditScoreTests(unittest.TestCase):
 
     def test_periodic_refresh_applies_decay_without_user_activity(self):
         now = time.time()
-        self.record("payment_missed", "old", now-180*DAY, now)
+        self.record("payment_missed", "old", now-14*DAY, now)
         self.assertEqual(self.score(), 683)
-        self.assertGreaterEqual(CreditScoreManager(self.db).refresh_due(now+30*DAY), 1)
-        self.assertEqual(self.score(), 684)  # 35 × 0.5^(210/180) ≈ 15.6
+        self.assertGreaterEqual(CreditScoreManager(self.db).refresh_due(now+2*DAY), 1)
+        self.assertEqual(self.score(), 684)  # 35 × 0.5^(16/14) ≈ 15.9
         history = self.db.users.execute_one(
             "SELECT trigger FROM credit_score_history ORDER BY history_id DESC LIMIT 1")
         self.assertEqual(history["trigger"], "periodic")
@@ -199,6 +199,17 @@ class CreditScoreTests(unittest.TestCase):
             if code == "N1":
                 self.assertEqual(factors["new_credit"], 0)
         self.assertEqual(factors["new_credit"], -20)
+
+    def test_year_scale_policy_rows_move_to_simulator_defaults(self):
+        self.db.users.execute(
+            "UPDATE credit_score_policy SET value=180 WHERE key='missed_half_life_days'")
+        self.db.users.execute(
+            "UPDATE credit_score_policy SET value=21 WHERE key='default_half_life_days'")
+        self.db.close()
+        self.db = DatabaseManager()
+        policy = CreditScoreManager.policy(self.db.users.conn)
+        self.assertEqual((policy["missed_half_life_days"], policy["default_half_life_days"]),
+                         (14, 21))
 
 
 if __name__ == "__main__":
