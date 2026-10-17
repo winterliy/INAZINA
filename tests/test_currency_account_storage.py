@@ -314,6 +314,17 @@ class CurrencyAccountStorageTests(unittest.TestCase):
                 "payout_currency,payout_amount,resolved_epoch) "
                 "VALUES ('FXBank','us-user',?,1.25,0,'EUR',1.234,1)", (number,),
             )
+        for payout_currency, payout_amount in ((None, 1.25), ('USD', None),
+                                                ('UNKNOWN', 1.25)):
+            with self.subTest(payout_currency=payout_currency, payout_amount=payout_amount):
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "payout currency and amount"):
+                    self.db.accounts.execute(
+                        "INSERT INTO deposit_insurance_claims "
+                        "(issuer,user_id,account_number,covered_amount,uninsured_amount,"
+                        "payout_currency,payout_amount,resolved_epoch) VALUES (?,?,?,?,?,?,?,?)",
+                        ('FXBank', 'us-user', number, 1.25, 0,
+                         payout_currency, payout_amount, 1),
+                    )
         self.db.accounts.execute(
             "INSERT INTO deposit_insurance_claims "
             "(issuer,user_id,account_number,covered_amount,uninsured_amount,resolved_epoch) "
@@ -344,6 +355,46 @@ class CurrencyAccountStorageTests(unittest.TestCase):
 
 
 class LegacyCurrencySchemaMigrationTests(unittest.TestCase):
+    def test_legacy_deposit_insurance_claims_gain_nullable_payout_fields(self):
+        old_root = DBManager.database_dir
+        temp = tempfile.TemporaryDirectory()
+        DBManager.database_dir = Path(temp.name)
+        database_path = Path(temp.name) / 'inazina.db'
+        try:
+            with closing(sqlite3.connect(database_path)) as connection, connection:
+                connection.execute("""CREATE TABLE deposit_insurance_claims (
+                    claim_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    issuer TEXT NOT NULL,user_id TEXT NOT NULL,account_number TEXT NOT NULL,
+                    covered_amount INTEGER NOT NULL DEFAULT 0,
+                    uninsured_amount INTEGER NOT NULL DEFAULT 0,
+                    resolved_epoch REAL NOT NULL,UNIQUE(issuer,account_number))""")
+                connection.execute(
+                    "INSERT INTO deposit_insurance_claims "
+                    "(issuer,user_id,account_number,covered_amount,uninsured_amount,resolved_epoch) "
+                    "VALUES ('Bank','u','acct',12,3,1)"
+                )
+            db = DatabaseManager()
+            try:
+                columns = {row[1] for row in db.accounts.execute(
+                    "PRAGMA table_info(deposit_insurance_claims)"
+                )}
+                self.assertTrue({'payout_currency', 'payout_amount'} <= columns)
+                claim = db.accounts.execute_one(
+                    "SELECT covered_amount,uninsured_amount,payout_currency,payout_amount "
+                    "FROM deposit_insurance_claims WHERE issuer='Bank'"
+                )
+                self.assertEqual(tuple(claim), (12, 3, None, None))
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+                    db.accounts.execute(
+                        "UPDATE deposit_insurance_claims SET payout_currency='EUR' "
+                        "WHERE issuer='Bank'"
+                    )
+            finally:
+                db.close()
+        finally:
+            DBManager.database_dir = old_root
+            temp.cleanup()
+
     def test_source_tax_rule_fk_survives_legacy_negative_rate_table_rebuild(self):
         old_root = DBManager.database_dir
         temp = tempfile.TemporaryDirectory()

@@ -315,6 +315,12 @@ class CurrencyDB(DBManager):
                   COALESCE((SELECT decimal_places FROM currencies
                             WHERE code=NEW.payout_currency),0))
             BEGIN SELECT RAISE(ABORT,'insurance payout amount exceeds currency precision'); END""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_insurance_payout_pair_insert
+            BEFORE INSERT ON deposit_insurance_claims
+            WHEN (NEW.payout_currency IS NULL) <> (NEW.payout_amount IS NULL)
+              OR (NEW.payout_currency IS NOT NULL AND NOT EXISTS (
+                  SELECT 1 FROM currencies WHERE code=NEW.payout_currency))
+            BEGIN SELECT RAISE(ABORT,'insurance payout currency and amount must be paired and use a known currency'); END""")
         self._ensure_account_units()
         self._ensure_cash_minor()
         self._ensure_money_snaps()
