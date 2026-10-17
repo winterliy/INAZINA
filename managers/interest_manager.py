@@ -10,6 +10,7 @@ from functions.tax_calc import calculate_income_tax
 from functions.money import round_money, round_currency, currency_precision
 from managers.bank_journal import BankJournal
 from managers.bank_manager import BankManager
+from managers.credit_score_manager import CreditScoreManager
 from managers.rate_manager import RateManager
 
 
@@ -627,9 +628,11 @@ class InterestManager:
             state = "accelerated"
             if accelerated_epoch is None:
                 accelerated_epoch = now
-                conn.execute(
-                    "UPDATE users.users SET credit_score=MAX(0,credit_score-25) WHERE user_id=?",
-                    (loan["user_id"],),
+                # Report the contractual trigger date even when settlement runs late.
+                CreditScoreManager.record(
+                    conn, loan["user_id"], "acceleration", f"loan:{loan['loan_id']}",
+                    occurred_epoch=maturity+acceleration*86400, now=now,
+                    loan_id=loan["loan_id"], refresh=False,
                 )
         released = float(fresh["collateral_released"] or 0)
         seized = float(fresh["collateral_seized"] or 0)
@@ -639,9 +642,10 @@ class InterestManager:
             state, status = "defaulted", "defaulted"
             if defaulted_epoch is None:
                 defaulted_epoch = now
-                conn.execute(
-                    "UPDATE users.users SET credit_score=MAX(0,credit_score-100) WHERE user_id=?",
-                    (loan["user_id"],),
+                CreditScoreManager.record(
+                    conn, loan["user_id"], "default", f"loan:{loan['loan_id']}",
+                    occurred_epoch=maturity+default*86400, now=now,
+                    loan_id=loan["loan_id"], refresh=False,
                 )
                 available = max(0.0, float(fresh["collateral_amount"] or 0)-released-seized)
                 take = min(available, balance)
@@ -710,6 +714,8 @@ class InterestManager:
             (balance, maturity, now, remainder, state, accelerated_epoch, defaulted_epoch,
              status, released, seized, provisioned, ecl_allowance, loan["loan_id"]),
         )
+        if state != fresh["collection_status"] or status != fresh["status"]:
+            CreditScoreManager.refresh(conn, loan["user_id"], now, trigger=f"collection_{state}")
 
     def process_user_interests(self, user_id, now=None):
         """Settle interest for one user's accounts and loans immediately before display/use."""

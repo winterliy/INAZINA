@@ -508,7 +508,11 @@ class EconomyTests(unittest.TestCase):
         self.assertEqual((paid, missed), (0, 1))
         self.assertEqual(len(notifications), 1)
         self.assertEqual((repeated_paid, repeated_missed, repeated_notifications), (0, 0, []))
-        self.assertEqual(self.db.users.get_user("citizen-1")["credit_score"], 699)
+        # Anchor 700 and one missed installment (−35); a single new loan is neutral.
+        self.assertEqual(self.db.users.get_user("citizen-1")["credit_score"], 665)
+        self.assertEqual(self.db.users.execute_one(
+            "SELECT COUNT(*) FROM credit_events WHERE user_id='citizen-1' "
+            "AND event_type='payment_missed'")[0], 1)
 
     def test_zero_loan_limit_means_unlimited(self):
         self.db.products.register_liability("OPEN", "No Limit Loan", 3, 0, 365, 3600, 600, "Open Bank")

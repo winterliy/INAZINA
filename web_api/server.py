@@ -1036,6 +1036,22 @@ def set_user_tax_residency(user_id, residency):
             "effectiveForFutureRegisters": True}
 
 
+def _credit_report(connection, user_id):
+    """Score breakdown for a user, or None on databases without the credit model."""
+    if not all(_table_exists(connection, table) for table in
+               ("credit_events", "credit_score_history", "loans", "loan_payment_schedule")):
+        return None
+    from managers.credit_score_manager import CreditScoreManager
+    return CreditScoreManager.report(connection, user_id)
+
+
+def user_credit_report(user_id):
+    """Return the authenticated user's credit score factors, events and changes."""
+    domain()
+    with connect_readonly() as connection:
+        return _credit_report(connection, user_id)
+
+
 def user_loan_schedules(user_id):
     """Return the authenticated user's upcoming loan installment breakdowns."""
     domain()
@@ -2359,7 +2375,7 @@ def product_delete(actor, code):
 # ---------------------------------------------------------------------------
 # Users, web logins and countries
 # ---------------------------------------------------------------------------
-USER_FIELDS = ("nickname", "nationality", "cash", "credit_score", "annual_income", "income_stability", "status", "role")
+USER_FIELDS = ("nickname", "nationality", "cash", "credit_score", "credit_score_reason", "annual_income", "income_stability", "status", "role")
 
 
 def admin_user_detail(user_id):
@@ -2380,8 +2396,9 @@ def admin_user_detail(user_id):
             "SELECT 1 FROM country_currencies WHERE nationality=?", (user_id,)).fetchone()
         company = _table_exists(connection, "company_accounts") and connection.execute(
             "SELECT 1 FROM company_accounts WHERE user_id=?", (user_id,)).fetchone()
+        credit = _credit_report(connection, user_id)
     user = {key: _cell(row[key]) for key in row.keys()}
-    return {"user": user, "accountType": "company" if company else "country" if country and row["nationality"] == user_id else "discord",
+    return {"user": user, "credit": credit, "accountType": "company" if company else "country" if country and row["nationality"] == user_id else "discord",
             "webLogin": dict(credential) if credential else None,
             "accounts": [_masked(item) for item in accounts],
             "loans": [_masked(item) for item in loans],
@@ -3088,6 +3105,12 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     self.send_json(200, user_tax_residency_profile(user["userId"]))
+            elif path == "/internal/me/credit":
+                user = identity(internal_user_id(self))
+                if not user:
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    self.send_json(200, user_credit_report(user["userId"]) or {})
             elif path == "/internal/me/loan-schedules":
                 user = identity(internal_user_id(self))
                 if not user:
