@@ -125,14 +125,15 @@ class WebApiTests(unittest.TestCase):
                     updated_by TEXT,updated_epoch REAL);
                 CREATE TABLE country_macro_indicators(nationality TEXT,inflation_percent REAL,
                     real_gdp_growth_percent REAL,unemployment_percent REAL,fiscal_debt_percent REAL,
-                    credit_stress_shock_bps INTEGER,updated_by TEXT,updated_epoch REAL);
+                    credit_stress_shock_bps INTEGER,fx_stress_shock_percent REAL,
+                    updated_by TEXT,updated_epoch REAL);
                 INSERT INTO country_currencies(nationality,currency_code) VALUES ('낙원','NWX');
                 INSERT INTO currencies(code,name,status) VALUES ('NWX','나쿠','active');
                 INSERT INTO currencies(code,name,status) VALUES ('AGC','가국화','active');
                 INSERT INTO country_currencies(nationality,currency_code,base_rate) VALUES ('가국','AGC',8);
                 INSERT INTO country_currencies(nationality,currency_code,base_rate) VALUES ('공통권','NWX',100);
                 INSERT INTO country_tax_rules VALUES ('낙원','lottery_winnings',12.5,'admin-1',123);
-                INSERT INTO country_macro_indicators VALUES ('낙원',3,1.5,4,55,250,'admin-1',120);
+                INSERT INTO country_macro_indicators VALUES ('낙원',3,1.5,4,55,250,12,'admin-1',120);
             """)
         country = next(item for item in server.admin_countries() if item["nationality"] == "낙원")
         self.assertEqual(country["taxRules"], [{
@@ -141,6 +142,7 @@ class WebApiTests(unittest.TestCase):
         }])
         self.assertEqual(country["macroIndicators"]["fiscal_debt_percent"], 55)
         self.assertEqual(country["macroIndicators"]["credit_stress_shock_bps"], 250)
+        self.assertEqual(country["macroIndicators"]["fx_stress_shock_percent"], 12)
         self.assertEqual(country["externalReferenceRate"], 8)
         self.assertAlmostEqual(country["externalRatePremium"], 0.5)
 
@@ -149,9 +151,9 @@ class WebApiTests(unittest.TestCase):
             connection.execute("""CREATE TABLE country_macro_indicators (
                 nationality TEXT PRIMARY KEY,inflation_percent REAL,real_gdp_growth_percent REAL,
                 unemployment_percent REAL,fiscal_debt_percent REAL,credit_stress_shock_bps INTEGER,
-                updated_by TEXT,updated_epoch REAL)""")
+                fx_stress_shock_percent REAL,updated_by TEXT,updated_epoch REAL)""")
             connection.execute(
-                "INSERT INTO country_macro_indicators VALUES ('낙원',2,2,5,60,200,'system',0)"
+                "INSERT INTO country_macro_indicators VALUES ('낙원',2,2,5,60,200,10,'system',0)"
             )
 
         @contextmanager
@@ -185,6 +187,7 @@ class WebApiTests(unittest.TestCase):
                 "action": "macro_indicators", "inflationPercent": 8,
                 "realGdpGrowthPercent": -2, "unemploymentPercent": 10,
                 "fiscalDebtPercent": 120, "creditStressShockBps": 350,
+                "fxStressShockPercent": 18.5,
             })
             with self.assertRaises(ValueError):
                 server.admin_country_action("admin-1", "낙원", {
@@ -204,6 +207,12 @@ class WebApiTests(unittest.TestCase):
                     "realGdpGrowthPercent": 2, "unemploymentPercent": 5,
                     "fiscalDebtPercent": 60, "creditStressShockBps": 200.5,
                 })
+            with self.assertRaises(ValueError):
+                server.admin_country_action("admin-1", "낙원", {
+                    "action": "macro_indicators", "inflationPercent": 2,
+                    "realGdpGrowthPercent": 2, "unemploymentPercent": 5,
+                    "fiscalDebtPercent": 60, "fxStressShockPercent": 100.1,
+                })
             server.admin_country_action("admin-1", "낙원", {
                 "action": "macro_indicators", "inflationPercent": 8,
                 "realGdpGrowthPercent": -2, "unemploymentPercent": 10,
@@ -213,11 +222,13 @@ class WebApiTests(unittest.TestCase):
             "SELECT * FROM country_macro_indicators WHERE nationality='낙원'"
         )[0]
         self.assertEqual(saved[1:6], (8, -2, 10, 120, 350))
+        self.assertEqual(saved[6], 18.5)
         audit = self.execute(
             "SELECT action,payload FROM admin_audit WHERE action='country.macro_indicators'"
         )[0]
         self.assertEqual(audit[0], "country.macro_indicators")
         self.assertEqual(json.loads(audit[1])["creditStressShockBps"], 350)
+        self.assertEqual(json.loads(audit[1])["fxStressShockPercent"], 18.5)
 
     def test_market_instruments_include_bond_rate_risk_metrics(self):
         with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
@@ -288,7 +299,7 @@ class WebApiTests(unittest.TestCase):
             CREATE TABLE loans(loan_id INTEGER PRIMARY KEY,user_id TEXT,product_code TEXT,
                 quote_currency TEXT,outstanding_balance REAL,status TEXT,collection_status TEXT,
                 maturity_epoch REAL,underwriting_dsr REAL,underwriting_stress_dsr REAL,
-                underwriting_stress_shock_bps INTEGER,
+                underwriting_stress_shock_bps INTEGER,underwriting_fx_stress_shock_percent REAL,
                 origination_pd_12m REAL,stage_cure_since_epoch REAL);
             CREATE TABLE loan_payment_schedule(schedule_id INTEGER PRIMARY KEY,loan_id INTEGER,
                 installment_number INTEGER,due_epoch REAL,principal_due REAL,interest_due REAL,
@@ -298,8 +309,8 @@ class WebApiTests(unittest.TestCase):
                 benchmark_key TEXT,benchmark_tenor_days INTEGER);
             CREATE TABLE loan_ecl_assessments(assessment_id INTEGER PRIMARY KEY,loan_id INTEGER,
                 stage INTEGER,pd_12m REAL,calculated_epoch REAL);
-            INSERT INTO loans VALUES (1,'alice','L1','NWX',900,'active','current',3000,20,25,200,0.01,2000);
-            INSERT INTO loans VALUES (2,'bob','L2','NWX',500,'active','current',3000,30,35,200,0.02,NULL);
+            INSERT INTO loans VALUES (1,'alice','L1','NWX',900,'active','current',3000,20,25,200,10,0.01,2000);
+            INSERT INTO loans VALUES (2,'bob','L2','NWX',500,'active','current',3000,30,35,200,10,0.02,NULL);
             INSERT INTO loan_ecl_assessments VALUES (1,1,2,0.03,1000);
             INSERT INTO loan_ecl_assessments VALUES (2,2,1,0.01,1000);
             INSERT INTO loan_payment_schedule VALUES (11,1,1,1000,800,80,20,0,0,0,0,'scheduled');
@@ -318,6 +329,7 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(result["loans"][0]["rate_resets"][0]["new_rate"], 6)
         self.assertEqual(result["loans"][0]["underwriting_stress_dsr"], 25)
         self.assertEqual(result["loans"][0]["underwriting_stress_shock_bps"], 200)
+        self.assertEqual(result["loans"][0]["underwriting_fx_stress_shock_percent"], 10)
         self.assertEqual(result["loans"][0]["origination_pd_12m"], 0.01)
         self.assertEqual(result["loans"][0]["current_ecl_stage"], 2)
         self.assertEqual(result["loans"][0]["current_ecl_pd_12m"], 0.03)

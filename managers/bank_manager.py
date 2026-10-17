@@ -634,7 +634,8 @@ class BankManager:
 
     @staticmethod
     def _underwriting_metrics(conn, user_id, amount, product, annual_rate, now,
-                              annual_income, stress_rate_shock_bps=200):
+                              annual_income, stress_rate_shock_bps=200,
+                              stress_fx_shock_percent=10):
         """Return income affordability and repayment-history measures at origination."""
         from managers.currency_manager import CurrencyManager, SCALE
         home_currency = CurrencyManager.home(conn, user_id)
@@ -743,6 +744,20 @@ class BankManager:
             to_home(values["stress_interest"], currency)
             for currency, values in native_totals.items()
         )
+        fx_stress_applicable = any(
+            currency != home_currency and values["service"] > 0
+            for currency, values in native_totals.items()
+        )
+        existing_fx_stress_service = sum(
+            to_home(
+                round_currency(
+                    conn, values["service"]*max(0.0, float(stress_fx_shock_percent))/100,
+                    currency,
+                ), currency,
+            )
+            for currency, values in native_totals.items()
+            if currency != home_currency
+        )
 
         if income > 0:
             # DTI includes the proposed loan's annual debt service and interest
@@ -756,8 +771,9 @@ class BankManager:
                                product_currency,
                            ), product_currency,
                        )
-                       +existing_service+existing_stress_interest)/income
-                if stress_applicable else None
+                       +existing_service+existing_stress_interest
+                       +existing_fx_stress_service)/income
+                if stress_applicable or fx_stress_applicable else None
             )
         else:
             dti = dsr = stress_dsr = None
@@ -767,6 +783,7 @@ class BankManager:
             "dti": dti,
             "dsr": dsr,
             "stress_dsr": stress_dsr,
+            "fx_stress_shock_percent": float(stress_fx_shock_percent),
             "missed": missed,
             "defaults": defaults,
             "history_index": history_index,
@@ -869,11 +886,15 @@ class BankManager:
                 ).fetchone():
                     stress_country = contract_country
                 stress_policy = (conn.execute(
-                    "SELECT credit_stress_shock_bps FROM country_macro_indicators "
+                    "SELECT credit_stress_shock_bps,fx_stress_shock_percent "
+                    "FROM country_macro_indicators "
                     "WHERE nationality=?", (stress_country,),
-                ).fetchone() if contract_country else None)
+                ).fetchone() if stress_country else None)
                 stress_shock_bps = max(0, min(1000, int(
                     stress_policy["credit_stress_shock_bps"] if stress_policy else 200
+                )))
+                fx_stress_shock_percent = max(0.0, min(100.0, float(
+                    stress_policy["fx_stress_shock_percent"] if stress_policy else 10
                 )))
                 base_credit_adjustment = (
                     float(product['credit_spread_max'] or 0)*(1000-credit_score)/1000
@@ -886,6 +907,7 @@ class BankManager:
                     conn, user_id, amount, product,
                     float(product['interest_rate'] or 0)+base_credit_adjustment,
                     opened_epoch, effective_income, stress_shock_bps,
+                    fx_stress_shock_percent,
                 )
                 max_dti = float(product['max_dti_percent'] or 0)
                 max_dsr = float(product['max_dsr_percent'] or 0)
@@ -954,6 +976,7 @@ class BankManager:
                 underwriting = self._underwriting_metrics(
                     conn, user_id, amount, product, contract_rate,
                     opened_epoch, effective_income, stress_shock_bps,
+                    fx_stress_shock_percent,
                 )
                 if max_dti > 0 and underwriting['dti'] > max_dti+1e-9:
                     return False, (
@@ -1068,6 +1091,10 @@ class BankManager:
                      int(product['prepayment_fee_decline_days'] or 0)),
                 )
                 loan_id = int(inserted.lastrowid)
+                conn.execute(
+                    "UPDATE accounts.loans SET underwriting_fx_stress_shock_percent=? "
+                    "WHERE loan_id=?", (fx_stress_shock_percent, loan_id),
+                )
                 from managers.bank_journal import BankJournal
                 BankJournal.post(
                     conn, product["issuer"], "loan_origination", f"loan:{loan_id}", home,

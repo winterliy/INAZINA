@@ -917,6 +917,7 @@ def user_loan_schedules(user_id):
         loans = [dict(row) for row in connection.execute(
             "SELECT l.loan_id,l.product_code,l.quote_currency,l.outstanding_balance,l.status,"
             "l.underwriting_dsr,l.underwriting_stress_dsr,l.underwriting_stress_shock_bps,"
+            "l.underwriting_fx_stress_shock_percent,"
             "l.origination_pd_12m,"
             "l.collection_status,l.maturity_epoch,l.stage_cure_since_epoch,"
             "(SELECT e.stage FROM loan_ecl_assessments e WHERE e.loan_id=l.loan_id "
@@ -2287,7 +2288,8 @@ def admin_countries():
                 "WHERE nationality=? ORDER BY benchmark_key", (nationality,))]
             macro_indicators = connection.execute(
                 "SELECT inflation_percent,real_gdp_growth_percent,unemployment_percent,"
-                "fiscal_debt_percent,credit_stress_shock_bps,updated_by,updated_epoch "
+                "fiscal_debt_percent,credit_stress_shock_bps,fx_stress_shock_percent,"
+                "updated_by,updated_epoch "
                 "FROM country_macro_indicators WHERE nationality=?", (nationality,)
             ).fetchone() if _table_exists(connection, "country_macro_indicators") else None
             tax_rules = [dict(item) for item in connection.execute(
@@ -2380,15 +2382,33 @@ def admin_country_action(actor, nationality, payload):
                 raise ValueError("금리 스트레스 충격은 0~1000bp 정수여야 합니다.")
             stress_shock_bps = int(parsed_shock)
         values["creditStressShockBps"] = stress_shock_bps
+        raw_fx_shock = payload.get("fxStressShockPercent")
+        if raw_fx_shock is None:
+            current = bot.db.users.execute_one(
+                "SELECT fx_stress_shock_percent FROM country_macro_indicators WHERE nationality=?",
+                (nationality,),
+            ) if hasattr(bot.db, "users") else None
+            fx_stress_shock_percent = float(current[0]) if current else 10.0
+        else:
+            if isinstance(raw_fx_shock, bool):
+                raise ValueError("환율 스트레스 충격은 0~100% 숫자여야 합니다.")
+            try:
+                fx_stress_shock_percent = float(raw_fx_shock)
+            except (TypeError, ValueError):
+                raise ValueError("환율 스트레스 충격은 0~100% 숫자여야 합니다.") from None
+            if not math.isfinite(fx_stress_shock_percent) or not 0 <= fx_stress_shock_percent <= 100:
+                raise ValueError("환율 스트레스 충격은 0~100% 숫자여야 합니다.")
+        values["fxStressShockPercent"] = fx_stress_shock_percent
         with bot.db.atomic() as connection:
             bot.admin_control.require(actor, connection)
             cursor = connection.execute(
                 "UPDATE country_macro_indicators SET inflation_percent=?,"
                 "real_gdp_growth_percent=?,unemployment_percent=?,fiscal_debt_percent=?,"
-                "credit_stress_shock_bps=?,"
+                "credit_stress_shock_bps=?,fx_stress_shock_percent=?,"
                 "updated_by=?,updated_epoch=? WHERE nationality=?",
                 (values["inflationPercent"], values["realGdpGrowthPercent"],
                  values["unemploymentPercent"], values["fiscalDebtPercent"], stress_shock_bps,
+                 fx_stress_shock_percent,
                  str(actor), time.time(), nationality),
             )
             if cursor.rowcount != 1:
@@ -2397,7 +2417,8 @@ def admin_country_action(actor, nationality, payload):
                 "nationality": nationality, **values,
             })
         result = (f"✅ {nationality} 거시 지표를 저장했습니다. 시장금리 재산정과 "
-                  f"신규 변동금리 대출의 +{stress_shock_bps}bp DSR 스트레스 심사에 반영됩니다.")
+                  f"신규 대출의 금리 +{stress_shock_bps}bp·외화부채 환율 +{fx_stress_shock_percent:g}% "
+                  "DSR 스트레스 심사에 반영됩니다.")
     elif action == "treasury":
         from functions.admin_prefix import ActionModal
         from database.db_manager import DBManager

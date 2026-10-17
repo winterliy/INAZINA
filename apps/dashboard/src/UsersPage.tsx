@@ -8,7 +8,7 @@ type WebLogin = { hts_id: string | null; created_epoch: number; updated_epoch: n
 type UserDetail = { user: Record<string, string | number | null>; accountType: "discord" | "country" | "company"; webLogin: WebLogin | null; accounts: Record<string, unknown>[]; loans: Record<string, unknown>[]; holdings: { asset_code: string; quantity: number }[] };
 type MarketRate = { benchmark_key: "funding" | "bank_bond" | "treasury"; tenor_days: number; annual_rate: number; updated_epoch: number };
 type RatePressure = { benchmark_key: string; adjustment: number; updated_epoch: number };
-type MacroIndicators = { inflation_percent: number; real_gdp_growth_percent: number; unemployment_percent: number; fiscal_debt_percent: number; credit_stress_shock_bps: number; updated_by: string; updated_epoch: number };
+type MacroIndicators = { inflation_percent: number; real_gdp_growth_percent: number; unemployment_percent: number; fiscal_debt_percent: number; credit_stress_shock_bps: number; fx_stress_shock_percent: number; updated_by: string; updated_epoch: number };
 type SourceTaxRule = { income_source: string; tax_percent: number; updated_by: string; updated_epoch: number };
 type Country = { nationality: string; currency_code: string; currency_name: string | null; base_rate: number; legal_max_rate: number; tax_percent: number; treasuryId: string | null; treasuryCash: number | null; citizens: number; guilds: string[]; exchanges: string[]; marketRates: MarketRate[]; marketRatePressure: RatePressure[]; macroIndicators: MacroIndicators; externalReferenceRate: number | null; externalRatePremium: number; taxRules: SourceTaxRule[]; account: { status: string; role: string; hts_id: string | null } | null };
 type Result = { message: string; success: boolean };
@@ -151,7 +151,7 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
   const [htsId, setHtsId] = useState("");
   const [draft, setDraft] = useState({ nationality: "", currencyCode: "NWX", baseRate: "", legalMaxRate: "", taxPercent: "" });
   const [marketRate, setMarketRate] = useState({ benchmarkKey: "funding", tenorDays: "30", annualRate: "" });
-  const [macro, setMacro] = useState({ inflationPercent: "2", realGdpGrowthPercent: "2", unemploymentPercent: "5", fiscalDebtPercent: "60", creditStressShockBps: "200" });
+  const [macro, setMacro] = useState({ inflationPercent: "2", realGdpGrowthPercent: "2", unemploymentPercent: "5", fiscalDebtPercent: "60", creditStressShockBps: "200", fxStressShockPercent: "10" });
   const country = countries.find((item) => item.nationality === selected);
 
   useEffect(() => {
@@ -166,6 +166,7 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
       unemploymentPercent: String(country.macroIndicators.unemployment_percent),
       fiscalDebtPercent: String(country.macroIndicators.fiscal_debt_percent),
       creditStressShockBps: String(country.macroIndicators.credit_stress_shock_bps),
+      fxStressShockPercent: String(country.macroIndicators.fx_stress_shock_percent),
     });
     const firstCurve = country.marketRates[0];
     if (firstCurve) setMarketRate({ benchmarkKey: firstCurve.benchmark_key, tenorDays: String(firstCurve.tenor_days), annualRate: String(firstCurve.annual_rate) });
@@ -204,6 +205,7 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
       unemploymentPercent: country.macroIndicators.unemployment_percent,
       fiscalDebtPercent: country.macroIndicators.fiscal_debt_percent,
       creditStressShockBps: country.macroIndicators.credit_stress_shock_bps,
+      fxStressShockPercent: country.macroIndicators.fx_stress_shock_percent,
     };
     const diff = changed(macro, original);
     if (!Object.keys(diff).length) { say("변경된 값이 없습니다.", true); return; }
@@ -256,13 +258,14 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
         </section>
         <section className="section-gap">
           <h3 className="sub-head">거시경제 입력</h3>
-          <p className="hint">시뮬레이터 입력값입니다. 다음 시장금리 압력 갱신부터 물가·성장·실업은 조달/은행채, 재정 부채는 국채 금리에 반영됩니다. 대출 심사는 재산정 주기가 1년 이내인 변동금리 계약에 설정 bp 충격을 적용하고 계약 금리 상·하한을 반영합니다. 기준금리 결정에는 직접 반영하지 않습니다.</p>
+          <p className="hint">시뮬레이터 입력값입니다. 다음 시장금리 압력 갱신부터 물가·성장·실업은 조달/은행채, 재정 부채는 국채 금리에 반영됩니다. 신규 대출 심사에는 재산정 주기가 1년 이내인 변동금리의 bp 충격과 기존 외화부채의 환율 상승 충격을 반영합니다. 기준금리 결정에는 직접 반영하지 않습니다.</p>
           <form className="form-grid" onSubmit={saveMacro}>
             <Field label="물가상승률 %"><input className="mono" inputMode="decimal" value={macro.inflationPercent} onChange={(event) => setMacro({ ...macro, inflationPercent: event.target.value })} /></Field>
             <Field label="실질 GDP 성장률 %"><input className="mono" inputMode="decimal" value={macro.realGdpGrowthPercent} onChange={(event) => setMacro({ ...macro, realGdpGrowthPercent: event.target.value })} /></Field>
             <Field label="실업률 %"><input className="mono" inputMode="decimal" value={macro.unemploymentPercent} onChange={(event) => setMacro({ ...macro, unemploymentPercent: event.target.value })} /></Field>
             <Field label="재정 부채 / GDP %"><input className="mono" inputMode="decimal" value={macro.fiscalDebtPercent} onChange={(event) => setMacro({ ...macro, fiscalDebtPercent: event.target.value })} /></Field>
             <Field label="변동금리 DSR 스트레스 (bp)"><input className="mono" type="number" min="0" max="1000" step="1" required value={macro.creditStressShockBps} onChange={(event) => setMacro({ ...macro, creditStressShockBps: event.target.value })} /></Field>
+            <Field label="외화부채 환율 스트레스 (%)"><input className="mono" type="number" min="0" max="100" step="0.1" required value={macro.fxStressShockPercent} onChange={(event) => setMacro({ ...macro, fxStressShockPercent: event.target.value })} /></Field>
             <button className="btn primary" disabled={busy}>거시 지표 저장</button>
           </form>
           <p className="hint">최근 입력: {country.macroIndicators.updated_by} · {country.macroIndicators.updated_epoch ? date(country.macroIndicators.updated_epoch) : "기본값"}</p>

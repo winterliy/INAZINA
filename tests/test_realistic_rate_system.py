@@ -1005,20 +1005,46 @@ class RealisticRateSystemTests(unittest.TestCase):
             "UPDATE users SET annual_income=100000 WHERE user_id='borrower'"
         )
         self.db.currency.execute(
-            "UPDATE country_macro_indicators SET credit_stress_shock_bps=400 "
+            "UPDATE country_macro_indicators SET credit_stress_shock_bps=400,"
+            "fx_stress_shock_percent=25 "
             "WHERE nationality='낙원'"
         )
-        self.assertTrue(BankManager(self.db).apply_loan(
-            "borrower", "COUNTRY-SHOCK", 10_000
-        )[0])
+        result = BankManager(self.db).apply_loan("borrower", "COUNTRY-SHOCK", 10_000)
+        self.assertTrue(result[0], result[1])
         loan = self.db.accounts.execute_one(
             "SELECT underwriting_dsr,underwriting_stress_dsr,"
-            "underwriting_stress_shock_bps FROM loans WHERE product_code='COUNTRY-SHOCK'"
+            "underwriting_stress_shock_bps,underwriting_fx_stress_shock_percent "
+            "FROM loans WHERE product_code='COUNTRY-SHOCK'"
         )
         self.assertEqual(loan["underwriting_stress_shock_bps"], 400)
+        self.assertEqual(loan["underwriting_fx_stress_shock_percent"], 25)
         self.assertAlmostEqual(
             loan["underwriting_stress_dsr"]-loan["underwriting_dsr"], .4, places=4
         )
+
+    def test_fixed_foreign_debt_adds_country_fx_stress_to_dsr(self):
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('USD','US Dollar','2',2)"
+        )
+        self.add_loan(code="FIXED-FX-STRESS", collateral_ratio=0,
+                      origination_fee=0)
+        self.db.products.execute(
+            "UPDATE liability SET rate_type='fixed' WHERE product_code='FIXED-FX-STRESS'"
+        )
+        self.db.accounts.execute(
+            "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,status,"
+            "contract_rate,rate_type,quote_currency) "
+            "VALUES ('borrower','OLD-USD',1000,1000,'active',5,'fixed','USD')"
+        )
+        product = self.db.products.get_liability("FIXED-FX-STRESS")
+        with self.db.atomic() as conn:
+            metrics = BankManager._underwriting_metrics(
+                conn, "borrower", 0, product, 0, 1_800_000_000, 100_000,
+                stress_fx_shock_percent=20,
+            )
+        self.assertAlmostEqual(metrics["dsr"], 2.0)
+        self.assertAlmostEqual(metrics["stress_dsr"], 2.4)
 
     def test_fixed_rate_loan_has_no_repricing_stress_dsr(self):
         self.add_loan(code="FIXED-DSR", collateral_ratio=0, origination_fee=0)
