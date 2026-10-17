@@ -1336,6 +1336,11 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
         credit_stress = CreditRiskManager.portfolio_default_stress(connection, issuer)
         capital_ratio = (float(institution["effective_equity"]) / risk_report["amount"]
                          if risk_report["amount"] > 0 else None)
+        leverage_exposure = max(
+            0.0, float(balance_sheet["deposits"])+float(institution["effective_equity"])
+        )
+        leverage_ratio = (float(institution["effective_equity"])/leverage_exposure
+                          if leverage_exposure > 0 else None)
         prudential = {"issuer": str(issuer), "currency": balance_sheet["base_currency"],
                       "decimalPlaces": currency_precision(connection, balance_sheet["base_currency"]),
                       "status": institution["status"],
@@ -1343,6 +1348,9 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
                       "riskWeightedAssets": risk_report["amount"],
                       "capitalRatioPercent": capital_ratio * 100 if capital_ratio is not None else None,
                       "targetCapitalRatioPercent": institution["target_capital_ratio"] * 100,
+                      "leverageExposure": leverage_exposure,
+                      "leverageRatioPercent": leverage_ratio*100 if leverage_ratio is not None else None,
+                      "minimumLeverageRatioPercent": RateManager.MIN_LEVERAGE_RATIO*100,
                       "exposureCount": risk_report["exposureCount"],
                       "cashCollateralCovered": risk_report["cashCollateralCovered"],
                       "weightedComponents": risk_report["weightedComponents"],

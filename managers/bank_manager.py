@@ -673,7 +673,7 @@ class BankManager:
                             "취급할 수 없습니다."
                         )
                     return False, (
-                        "❌ 발행 금융기관의 지급준비·자기자본 한도를 초과합니다. "
+                        "❌ 발행 금융기관의 지급준비·자기자본·레버리지 한도를 초과합니다. "
                         f"현재 추가 대출 가능액: {math.floor(capacity['headroom']):,} "
                         f"{product['quote_currency']}"
                     )

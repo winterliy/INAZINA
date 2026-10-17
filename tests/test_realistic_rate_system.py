@@ -377,6 +377,27 @@ class RealisticRateSystemTests(unittest.TestCase):
             "SELECT 1 FROM loans WHERE product_code='REGULATED'"
         ))
 
+    def test_simple_leverage_floor_restricts_deposit_heavy_institution(self):
+        self.db.products.execute(
+            "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"
+            "interest_cycle,compound_type,issuer,quote_currency) VALUES "
+            "('LEV-SAVE','Leverage test',0,1,365,31536000,0,'Bank','NWX')"
+        )
+        self.assertTrue(BankManager(self.db).open_account(
+            "borrower", "LEV-SAVE", "1234", 100_000
+        )[0])
+        self.db.currency.execute(
+            "UPDATE financial_institutions SET equity_capital=1000,retained_earnings=0,"
+            "target_capital_ratio=.01,status='active' WHERE issuer='Bank'"
+        )
+        with self.db.atomic() as conn:
+            capacity = RateManager.institution_capacity(conn, "Bank", proposed_loan=1)
+        self.assertAlmostEqual(capacity["leverage_ratio"], 1000/101000)
+        self.assertEqual(capacity["minimum_leverage_ratio"], .03)
+        self.assertEqual(capacity["leverage_headroom"], 0)
+        self.assertEqual(capacity["status"], "restricted")
+        self.assertFalse(capacity["allowed"])
+
     def test_failed_bank_pays_only_insured_limit_and_preserves_claim(self):
         self.db.products.execute(
             "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"

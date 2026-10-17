@@ -29,6 +29,9 @@ def rate_key_from_code(code):
 
 class RateManager:
     KEYS = RATE_NAMES
+    # Simulator floor for a simple unweighted exposure / effective-equity ratio.
+    # This is a policy guardrail, not a jurisdiction-specific Basel calculation.
+    MIN_LEVERAGE_RATIO = 0.03
     RATE_CHART_PREFIX = RATE_CHART_PREFIX
     rate_key_from_code = staticmethod(rate_key_from_code)
 
@@ -1029,6 +1032,11 @@ class RateManager:
         equity = max(0.0, float(terms["effective_equity"]))
         deposits = float(sheet["deposits"])
         loans = float(sheet["loans"])
+        leverage_exposure = max(0.0, deposits+equity)
+        leverage_ratio = equity/leverage_exposure if leverage_exposure > 0 else float("inf")
+        leverage_headroom = max(
+            0.0, equity/RateManager.MIN_LEVERAGE_RATIO-leverage_exposure
+        )
         reserve_ratio = float(terms["reserve_ratio"])
         required_reserves = deposits*reserve_ratio
         # A loan creates a matching transaction deposit. Only the reserve share
@@ -1040,7 +1048,7 @@ class RateManager:
         current_rwa = float(sheet["risk_weighted_assets"])
         capital_headroom = (float("inf") if target_capital <= 0 else
                             max(0.0, (equity/target_capital-current_rwa)/0.75))
-        headroom = min(funding_headroom, capital_headroom)
+        headroom = min(funding_headroom, capital_headroom, leverage_headroom)
         allowed = terms["status"] == "active" and proposed <= headroom+1e-9
         return {
             "allowed": allowed,
@@ -1049,6 +1057,10 @@ class RateManager:
             "deposits": deposits,
             "loans": loans,
             "risk_weighted_assets": current_rwa,
+            "leverage_exposure": leverage_exposure,
+            "leverage_ratio": leverage_ratio,
+            "minimum_leverage_ratio": RateManager.MIN_LEVERAGE_RATIO,
+            "leverage_headroom": leverage_headroom,
             "required_reserves": required_reserves,
             "funding_headroom": funding_headroom,
             "capital_headroom": capital_headroom,
@@ -1068,9 +1080,12 @@ class RateManager:
         equity = float(terms["effective_equity"])
         risk_weighted_assets = float(sheet["risk_weighted_assets"])
         ratio = equity/risk_weighted_assets if risk_weighted_assets > 0 else float("inf")
+        leverage_exposure = max(0.0, float(sheet["deposits"])+equity)
+        leverage_ratio = equity/leverage_exposure if leverage_exposure > 0 else float("inf")
         if equity <= 0:
             status = "failed"
-        elif ratio+1e-12 < float(terms["target_capital_ratio"]):
+        elif (ratio+1e-12 < float(terms["target_capital_ratio"])
+              or leverage_ratio+1e-12 < RateManager.MIN_LEVERAGE_RATIO):
             status = "restricted"
         else:
             status = "active"
