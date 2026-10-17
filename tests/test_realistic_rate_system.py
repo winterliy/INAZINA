@@ -139,6 +139,44 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(result[0]["difference_units"], 1)
         self.assertEqual(result[0]["status"], "mismatch")
 
+    def test_ecl_allowance_reconciliation_uses_currency_minor_units(self):
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('AAA','Test currency',2,2)"
+        )
+        self.db.currency.execute(
+            "INSERT INTO country_currencies(nationality,currency_code) VALUES ('AAA Nation','AAA')"
+        )
+        self.add_loan(code="ECL-RECON")
+        self.db.products.execute(
+            "UPDATE liability SET quote_currency='AAA',rate_nationality='AAA Nation' "
+            "WHERE product_code='ECL-RECON'"
+        )
+        self.db.accounts.execute(
+            "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,ecl_allowance,status,quote_currency) "
+            "VALUES ('borrower','ECL-RECON',100,100,1.23,'active','AAA')"
+        )
+        with self.db.atomic() as conn:
+            result = BankJournal.reconcile_ecl_allowances(conn, "Bank")
+        self.assertEqual(result[0]["status"], "missing_journal")
+        self.assertEqual(result[0]["account_units"], 123)
+
+        with self.db.atomic() as conn:
+            BankJournal.post(
+                conn, "Bank", "expected_credit_loss", "loan:ecl-recon:ecl:day1", "AAA",
+                [("impairment_expense", "debit", 1.23), ("ecl_allowance", "credit", 1.23)],
+            )
+            result = BankJournal.reconcile_ecl_allowances(conn, "Bank")
+        self.assertEqual((result[0]["journal_units"], result[0]["difference_units"],
+                          result[0]["status"]), (123, 0, "matched"))
+
+        self.db.accounts.execute(
+            "UPDATE loans SET ecl_allowance=1.24 WHERE product_code='ECL-RECON'"
+        )
+        with self.db.atomic() as conn:
+            result = BankJournal.reconcile_ecl_allowances(conn, "Bank")
+        self.assertEqual((result[0]["difference_units"], result[0]["status"]), (1, "mismatch"))
+
     def test_withholding_tax_ledger_keeps_income_currency_precision(self):
         self.db.currency.execute(
             "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
