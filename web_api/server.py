@@ -2939,7 +2939,11 @@ class Handler(BaseHTTPRequestHandler):
                         limit = int(raw_limit)
                     except (TypeError, ValueError):
                         raise ValueError("invalid_dr_movement_limit") from None
-                    self.send_json(200, admin_dr_movements(limit))
+                    movements = admin_dr_movements(limit)
+                    audit_admin_access(user["userId"], "dr_movements.read", {
+                        "limit": max(1, min(limit, 200)),
+                    })
+                    self.send_json(200, movements)
             elif path == "/internal/admin/dr/monitor":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":

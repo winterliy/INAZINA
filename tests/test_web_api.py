@@ -509,6 +509,40 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(entry["action"], "compliance.read")
         self.assertEqual(entry["payload"], {"nationality": "한국"})
 
+    def test_admin_dr_movement_access_is_audited(self):
+        response = {}
+        handler = SimpleNamespace(
+            headers={"x-inazina-internal-token": "secret",
+                     "x-inazina-user-id": "admin-1"},
+            path="/internal/admin/dr/movements?limit=999",
+            send_json=lambda status, value: response.update(status=status, value=value),
+        )
+        with patch.object(server, "INTERNAL_TOKEN", "secret"), \
+                patch.object(server, "identity", return_value={
+                    "userId": "admin-1", "role": "admin",
+                }), patch.object(server, "admin_dr_movements", return_value={"movements": []}):
+            server.Handler.do_GET(handler)
+        entry = server.admin_audit()[0]
+        self.assertEqual(entry["action"], "dr_movements.read")
+        self.assertEqual(entry["payload"], {"limit": 200})
+
+    def test_admin_customer_detail_access_is_audited(self):
+        response = {}
+        handler = SimpleNamespace(
+            headers={"x-inazina-internal-token": "secret",
+                     "x-inazina-user-id": "admin-1"},
+            path="/internal/admin/user/customer-42",
+            send_json=lambda status, value: response.update(status=status, value=value),
+        )
+        with patch.object(server, "INTERNAL_TOKEN", "secret"), \
+                patch.object(server, "identity", return_value={
+                    "userId": "admin-1", "role": "admin",
+                }), patch.object(server, "admin_user_detail", return_value={"userId": "customer-42"}):
+            server.Handler.do_GET(handler)
+        entry = server.admin_audit()[0]
+        self.assertEqual(entry["action"], "admin_user.read")
+        self.assertEqual(entry["payload"], {"subject_user_id": "customer-42"})
+
     def test_db_editor_hides_credentials_and_audit(self):
         names = {table["name"] for table in server.db_tables()}
         self.assertIn("settings", names)
