@@ -884,6 +884,37 @@ class RealisticRateSystemTests(unittest.TestCase):
             "SELECT base_rate FROM country_currencies WHERE nationality='낙원'"
         )["base_rate"], before)
 
+    def test_market_rate_pressure_history_is_append_only_at_duplicate_epochs(self):
+        when = 1_800_000_000
+        for _ in range(2):
+            with self.db.atomic() as conn:
+                RateManager.refresh_market_pressure(conn, "낙원", now=when)
+        rows = self.db.currency.execute(
+            "SELECT adjustment,effective_epoch FROM market_rate_pressure_history "
+            "WHERE nationality='낙원' AND benchmark_key='funding' ORDER BY effective_epoch"
+        )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0]["effective_epoch"], when)
+        self.assertGreater(rows[1]["effective_epoch"], rows[0]["effective_epoch"])
+        row_id = self.db.currency.execute_one(
+            "SELECT rowid FROM market_rate_pressure_history "
+            "WHERE nationality='낙원' AND benchmark_key='funding' ORDER BY effective_epoch LIMIT 1"
+        )[0]
+        for statement in (
+            "UPDATE market_rate_pressure_history SET adjustment=99 WHERE rowid=?",
+            "DELETE FROM market_rate_pressure_history WHERE rowid=?",
+        ):
+            with self.subTest(statement=statement):
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+                    self.db.currency.execute(statement, (row_id,))
+        for invalid_epoch in (-1, float("nan"), float("inf")):
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, "유효한 UNIX 시각"):
+                    with self.db.atomic() as conn:
+                        RateManager.refresh_market_pressure(
+                            conn, "낙원", now=invalid_epoch
+                        )
+
     def test_foreign_policy_rate_differential_increases_market_funding_pressure(self):
         domestic_rate = self.db.currency.execute_one(
             "SELECT base_rate FROM country_currencies WHERE nationality='낙원'"

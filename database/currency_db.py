@@ -580,6 +580,11 @@ class CurrencyDB(DBManager):
             "CREATE INDEX IF NOT EXISTS idx_market_rate_pressure_history "
             "ON market_rate_pressure_history(nationality,benchmark_key,effective_epoch DESC)"
         )
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS
+                trg_market_rate_pressure_history_immutable_{operation.lower()}
+                BEFORE {operation} ON market_rate_pressure_history
+                BEGIN SELECT RAISE(ABORT,'market rate pressure history is append-only'); END""")
         curve = {
             'funding': ((30, .20, .85), (90, .35, .80), (365, .55, .70)),
             'bank_bond': ((90, .45, .90), (365, .75, .85), (1095, 1.10, .75)),

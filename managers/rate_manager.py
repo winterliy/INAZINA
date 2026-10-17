@@ -397,6 +397,8 @@ class RateManager:
         if not country:
             return {}
         when = float(time.time() if now is None else now)
+        if not math.isfinite(when) or when < 0:
+            raise ValueError("시장금리 재평가 시각은 유효한 UNIX 시각이어야 합니다.")
         deposits = conn.execute(
             "SELECT COALESCE(SUM(a.balance),0) amount FROM accounts a "
             "LEFT JOIN saving s ON s.product_code=a.product_code "
@@ -523,9 +525,16 @@ class RateManager:
                 "adjustment=excluded.adjustment,updated_epoch=excluded.updated_epoch",
                 (country, key, adjustment, when),
             )
+            last_epoch = conn.execute(
+                "SELECT MAX(effective_epoch) FROM market_rate_pressure_history "
+                "WHERE nationality=? AND benchmark_key=?", (country, key),
+            ).fetchone()[0]
+            effective_epoch = max(
+                when, float(last_epoch)+0.000001 if last_epoch is not None else when
+            )
             conn.execute(
-                "INSERT OR REPLACE INTO market_rate_pressure_history VALUES (?,?,?,?)",
-                (country, key, adjustment, when),
+                "INSERT INTO market_rate_pressure_history VALUES (?,?,?,?)",
+                (country, key, adjustment, effective_epoch),
             )
         RateManager.reprice_floating_products(conn, country)
         return adjustments
