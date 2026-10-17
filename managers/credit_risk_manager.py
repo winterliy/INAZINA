@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import json
 import math
 
-from functions.money import round_currency
+from functions.money import currency_precision, round_currency
 from managers.rate_manager import RateManager
 
 
@@ -116,6 +116,69 @@ class CreditRiskManager:
         unsecured = max(0.0, ead-secured)
         expected_recovery = secured+unsecured*.35
         return cls._bounded(1.0-expected_recovery/ead, 0.0, 1.0)
+
+    @classmethod
+    def portfolio_default_stress(cls, conn, issuer):
+        """Estimate pro-rata portfolio loss under deterministic default-share shocks."""
+        issuer = str(issuer or "").strip()
+        if not issuer:
+            raise ValueError("financial_institution_not_found")
+        sheet = RateManager.institution_balance_sheet(conn, issuer)
+        base = sheet["base_currency"]
+        terms = RateManager.institution_components(conn, issuer)
+        from managers.currency_manager import CurrencyManager, SCALE
+
+        def to_base(amount, currency):
+            amount = round_currency(conn, max(0.0, float(amount or 0)), currency)
+            if currency == base:
+                return amount
+            units = int(round(float(amount)*SCALE))
+            return CurrencyManager.convert(conn, units, currency, base)/SCALE
+
+        loans = conn.execute(
+            "SELECT l.loan_id,l.outstanding_balance,l.quote_currency,l.collateral_amount,"
+            "l.collateral_released,l.collateral_seized,l.ecl_allowance,l.status,l.collection_status "
+            "FROM loans l JOIN liability p ON p.product_code=l.product_code "
+            "WHERE p.issuer=? AND l.status='active' AND l.collection_status<>'defaulted' "
+            "AND l.outstanding_balance>0", (issuer,),
+        ).fetchall()
+        performing_ead = expected_loss = allowance = 0.0
+        for loan in loans:
+            currency = str(loan["quote_currency"] or "NWX")
+            ead = max(0.0, float(loan["outstanding_balance"] or 0))
+            loss = ead*cls._lgd(conn, loan)
+            performing_ead += to_base(ead, currency)
+            expected_loss += to_base(loss, currency)
+            allowance += to_base(loan["ecl_allowance"], currency)
+        scenarios = []
+        for percent in (5, 10, 20, 40):
+            stressed_ead = round_currency(conn, performing_ead*percent/100, base)
+            gross_loss = round_currency(conn, expected_loss*percent/100, base)
+            allowance_applied = min(gross_loss, round_currency(conn, allowance*percent/100, base))
+            incremental = round_currency(conn, max(0.0, gross_loss-allowance_applied), base)
+            equity_after = round_currency(
+                conn, float(terms["effective_equity"])-incremental, base
+            )
+            scenarios.append({
+                "defaultSharePercent": percent,
+                "defaultedEad": stressed_ead,
+                "grossLoss": gross_loss,
+                "existingAllowanceApplied": allowance_applied,
+                "incrementalProvision": incremental,
+                "equityAfterProvision": equity_after,
+                "capitalConsumedPercent": (
+                    incremental/float(terms["effective_equity"])*100
+                    if terms["effective_equity"] > 0 else None
+                ),
+            })
+        return {"issuer": issuer, "currency": base,
+                "decimalPlaces": currency_precision(conn, base),
+                "performingExposureCount": len(loans),
+                "performingEad": round_currency(conn, performing_ead, base),
+                "estimatedFullDefaultLoss": round_currency(conn, expected_loss, base),
+                "existingAllowance": round_currency(conn, allowance, base),
+                "scenarios": scenarios,
+                "method": "deterministic pro-rata default share of performing loans; collateral-adjusted LGD; existing allowance applied pro-rata; no default correlation, recovery timing, macroeconomic feedback or tax effects"}
 
     @classmethod
     def assess_conn(cls, conn, now, *, user_id=None, product_code=None):

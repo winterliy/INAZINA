@@ -1309,6 +1309,8 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
         institution = RateManager.institution_components(connection, issuer)
         balance_sheet = RateManager.institution_balance_sheet(connection, issuer)
         risk_report = balance_sheet["rwa_report"]
+        from managers.credit_risk_manager import CreditRiskManager
+        credit_stress = CreditRiskManager.portfolio_default_stress(connection, issuer)
         capital_ratio = (float(institution["effective_equity"]) / risk_report["amount"]
                          if risk_report["amount"] > 0 else None)
         prudential = {"issuer": str(issuer), "currency": balance_sheet["base_currency"],
@@ -1345,7 +1347,7 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
             "trialBalance": trial_balance, "unbalancedEntries": unbalanced,
             "resultReconciliation": reconciliation, "maturityGap": maturity_gap,
             "rateStress": rate_stress, "fxStress": fx_stress,
-            "prudential": prudential}
+            "prudential": prudential, "creditStress": credit_stress}
 
 
 def admin_compliance_overview(nationality=None):

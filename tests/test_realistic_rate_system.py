@@ -7,6 +7,7 @@ from pathlib import Path
 from database import DatabaseManager
 from database.db_manager import DBManager
 from managers.bank_manager import BankManager
+from managers.credit_risk_manager import CreditRiskManager
 from managers.interest_manager import InterestManager
 from managers.investment_manager import InvestmentManager
 from managers.rate_manager import RateManager
@@ -458,6 +459,7 @@ class RealisticRateSystemTests(unittest.TestCase):
             )
             rwa = RateManager.institution_risk_weighted_assets(conn, "Bank")
             sheet = RateManager.institution_balance_sheet(conn, "Bank")
+            stress = CreditRiskManager.portfolio_default_stress(conn, "Bank")
         self.assertEqual(rwa["amount"], 249_000)
         self.assertEqual(rwa["weightedComponents"]["performing_unsecured"], 75_000)
         self.assertEqual(rwa["weightedComponents"]["higher_risk_unsecured"], 100_000)
@@ -465,6 +467,10 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(rwa["weightedComponents"]["defaulted_unsecured"], 60_000)
         self.assertEqual(sheet["risk_weighted_assets"], rwa["amount"])
         self.assertEqual(rwa["cashCollateralCovered"], 20_000)
+        self.assertEqual(stress["performingEad"], 200_000)
+        self.assertEqual(stress["estimatedFullDefaultLoss"], 130_000)
+        self.assertEqual(stress["scenarios"][0]["defaultedEad"], 10_000)
+        self.assertEqual(stress["scenarios"][0]["incrementalProvision"], 6_500)
         self.db.currency.execute(
             "UPDATE financial_institutions SET equity_capital=20000,target_capital_ratio=.1 "
             "WHERE issuer='Bank'"
