@@ -190,6 +190,7 @@ class CreditRiskManager:
             "l.collateral_amount,l.collateral_released,l.collateral_seized,l.underwriting_dti,"
             "l.underwriting_dsr,l.current_ltv,l.missed_payment_count,l.overdue_since_epoch,"
             "l.collection_status,l.status,l.maturity_epoch,l.created_at,l.ecl_allowance,"
+            "l.contract_rate,l.contract_effective_rate,"
             "u.credit_score,u.nationality,p.issuer,p.maturity_days "
             "FROM accounts.loans l JOIN users.users u ON u.user_id=l.user_id "
             "JOIN product.liability p ON p.product_code=l.product_code "
@@ -225,6 +226,19 @@ class CreditRiskManager:
             if stage == 3:
                 pd_12m = lifetime_pd = 1.0
             base_pd = lifetime_pd if stage == 2 else pd_12m
+            # Discount expected shortfalls at the contract EIR. The expected
+            # timing is a transparent midpoint proxy (not a cash-flow model).
+            expected_loss_time = (
+                min(0.5, years/2) if stage == 1 else
+                min(1.0, years/2) if stage == 3 else years/2
+            )
+            raw_eir = loan["contract_effective_rate"]
+            if raw_eir is None:
+                raw_eir = loan["contract_rate"]
+            eir_percent = cls._bounded(raw_eir, -99.0, 1000.0)
+            discount_factor = (1.0+eir_percent/100.0)**(-expected_loss_time)
+            if not math.isfinite(discount_factor) or discount_factor <= 0:
+                discount_factor = 1.0
             ead = round_currency(
                 conn, max(0.0, float(loan["outstanding_balance"] or 0)),
                 loan["quote_currency"],
@@ -250,10 +264,11 @@ class CreditRiskManager:
                 scenario_lgd = cls._bounded(
                     lgd*float(scenario["lgd_multiplier"] or 0), 0.0, 1.0
                 )
-                raw_expected_loss += weight*ead*scenario_pd*scenario_lgd
+                raw_expected_loss += weight*ead*scenario_pd*scenario_lgd*discount_factor
                 scenario_details.append({"key": scenario["scenario_key"],
                                          "weight": weight, "pd": scenario_pd,
-                                         "lgd": scenario_lgd})
+                                         "lgd": scenario_lgd,
+                                         "discountFactor": discount_factor})
             expected_loss = round_currency(
                 conn, raw_expected_loss, loan["quote_currency"]
             )
@@ -262,10 +277,12 @@ class CreditRiskManager:
             cursor = conn.execute(
                 "INSERT OR IGNORE INTO accounts.loan_ecl_assessments "
                 "(loan_id,as_of_day,stage,pd_12m,lifetime_pd,lgd,ead,expected_loss,"
-                "quote_currency,scenario,calculated_epoch) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "quote_currency,scenario,discount_factor,calculated_epoch) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (loan["loan_id"], as_of_day, stage, pd_12m, lifetime_pd, lgd,
                  ead, expected_loss, loan["quote_currency"],
-                 json.dumps(scenario_details, separators=(",", ":")), epoch),
+                 json.dumps(scenario_details, separators=(",", ":")),
+                 discount_factor, epoch),
             )
             if cursor.rowcount != 1:
                 continue

@@ -305,9 +305,16 @@ class AccountDB(DBManager):
             expected_loss REAL NOT NULL CHECK(expected_loss >= 0),
             quote_currency TEXT NOT NULL,
             scenario TEXT NOT NULL DEFAULT 'base',
+            discount_factor REAL NOT NULL DEFAULT 1 CHECK(discount_factor > 0),
             calculated_epoch REAL NOT NULL,
             UNIQUE(loan_id,as_of_day)
         )""")
+        ecl_columns = {row[1] for row in self.execute("PRAGMA table_info(loan_ecl_assessments)")}
+        if "discount_factor" not in ecl_columns:
+            self.execute(
+                "ALTER TABLE loan_ecl_assessments ADD COLUMN discount_factor "
+                "REAL NOT NULL DEFAULT 1 CHECK(discount_factor > 0)"
+            )
         self.execute("CREATE INDEX IF NOT EXISTS idx_loan_ecl_day "
                      "ON loan_ecl_assessments(as_of_day,stage)")
         self.execute("""CREATE TRIGGER IF NOT EXISTS loan_ecl_assessments_no_update

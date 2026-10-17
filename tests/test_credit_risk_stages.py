@@ -47,6 +47,9 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_defaulted_loan_is_assessed_and_provisioned_as_stage_three(self):
+        self.db.accounts.execute(
+            "UPDATE loans SET contract_effective_rate=10 WHERE product_code='ECL3'"
+        )
         with self.db.atomic() as conn:
             count = CreditRiskManager.assess_conn(conn, 1_800_000_000)
         with self.db.atomic() as conn:
@@ -54,12 +57,17 @@ class DefaultedLoanEclTests(unittest.TestCase):
             self.assertEqual(BankJournal.audit_unbalanced(conn), [])
         self.assertEqual(count, 1)
         row = self.db.accounts.execute_one(
-            "SELECT stage,pd_12m,lifetime_pd,ead,expected_loss FROM loan_ecl_assessments"
+            "SELECT stage,pd_12m,lifetime_pd,lgd,ead,expected_loss,discount_factor,scenario "
+            "FROM loan_ecl_assessments"
         )
         self.assertEqual(row["stage"], 3)
         self.assertEqual(row["pd_12m"], 1)
         self.assertEqual(row["lifetime_pd"], 1)
         self.assertEqual(row["ead"], 1000)
+        self.assertLess(row["discount_factor"], 1)
+        self.assertGreater(row["discount_factor"], 0)
+        self.assertLess(row["expected_loss"], row["ead"] * row["lgd"])
+        self.assertIn('"discountFactor":', row["scenario"])
         self.assertGreater(row["expected_loss"], 0)
         self.assertEqual(self.db.accounts.execute_one(
             "SELECT ecl_allowance FROM loans WHERE product_code='ECL3'"
@@ -67,6 +75,19 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.assertEqual(self.db.accounts.execute_one(
             "SELECT COUNT(*) count FROM bank_journal_entries WHERE event_type='expected_credit_loss'"
         )["count"], 1)
+
+    def test_zero_effective_rate_has_no_discount(self):
+        self.db.accounts.execute(
+            "UPDATE loans SET contract_effective_rate=0 WHERE product_code='ECL3'"
+        )
+        with self.db.atomic() as conn:
+            self.assertEqual(CreditRiskManager.assess_conn(conn, 1_800_086_400), 1)
+        row = self.db.accounts.execute_one(
+            "SELECT discount_factor,ead,lgd,expected_loss FROM loan_ecl_assessments "
+            "ORDER BY calculated_epoch DESC LIMIT 1"
+        )
+        self.assertEqual(row["discount_factor"], 1)
+        self.assertGreater(row["expected_loss"], 0)
 
 
 if __name__ == "__main__":
