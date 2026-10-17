@@ -289,6 +289,8 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertEqual(claims[0]['decimal_places'], 2)
         self.assertEqual(claims[0]['covered_amount'], 1.87)
         self.assertEqual(claims[0]['uninsured_amount'], 1.38)
+        self.assertEqual(claims[0]['payout_currency'], 'USD')
+        self.assertAlmostEqual(claims[0]['payout_amount'], 1.99)
         self.assertEqual(
             UserManager(self.db).get_total_assets('admin', settle=False)[
                 'deposit_insurance_claims'
@@ -305,6 +307,13 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         number = CurrencyExchangeManager(self.db).open_account(
             'us-user', 'FX_EUR', password='1234', deposit_amount='1.25'
         )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "currency precision"):
+            self.db.accounts.execute(
+                "INSERT INTO deposit_insurance_claims "
+                "(issuer,user_id,account_number,covered_amount,uninsured_amount,"
+                "payout_currency,payout_amount,resolved_epoch) "
+                "VALUES ('FXBank','us-user',?,1.25,0,'EUR',1.234,1)", (number,),
+            )
         self.db.accounts.execute(
             "INSERT INTO deposit_insurance_claims "
             "(issuer,user_id,account_number,covered_amount,uninsured_amount,resolved_epoch) "

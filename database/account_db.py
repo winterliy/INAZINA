@@ -441,9 +441,22 @@ class AccountDB(DBManager):
             account_number TEXT NOT NULL,
             covered_amount INTEGER NOT NULL DEFAULT 0 CHECK(covered_amount >= 0),
             uninsured_amount INTEGER NOT NULL DEFAULT 0 CHECK(uninsured_amount >= 0),
+            payout_currency TEXT,
+            payout_amount REAL CHECK(payout_amount IS NULL OR payout_amount >= 0),
             resolved_epoch REAL NOT NULL,
             UNIQUE(issuer,account_number)
         )""")
+        claim_columns = {row[1] for row in self.execute(
+            "PRAGMA table_info(deposit_insurance_claims)"
+        )}
+        for column, declaration in (
+            ("payout_currency", "TEXT"),
+            ("payout_amount", "REAL CHECK(payout_amount IS NULL OR payout_amount >= 0)"),
+        ):
+            if column not in claim_columns:
+                self.execute(
+                    f"ALTER TABLE deposit_insurance_claims ADD COLUMN {column} {declaration}"
+                )
         self.execute(
             "CREATE INDEX IF NOT EXISTS idx_deposit_insurance_claims_user "
             "ON deposit_insurance_claims(user_id,issuer,resolved_epoch)"

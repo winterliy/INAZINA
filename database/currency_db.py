@@ -307,6 +307,14 @@ class CurrencyDB(DBManager):
             available = tuple(column for column in columns if column in existing)
             if available:
                 self.enforce_currency_money(table, available, key, currency)
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_insurance_payout_precision_insert
+            BEFORE INSERT ON deposit_insurance_claims
+            WHEN NEW.payout_amount IS NOT NULL AND NEW.payout_currency IS NOT NULL
+              AND NEW.payout_amount <> ROUND(
+                  NEW.payout_amount+CASE WHEN NEW.payout_amount>=0 THEN 1e-12 ELSE -1e-12 END,
+                  COALESCE((SELECT decimal_places FROM currencies
+                            WHERE code=NEW.payout_currency),0))
+            BEGIN SELECT RAISE(ABORT,'insurance payout amount exceeds currency precision'); END""")
         self._ensure_account_units()
         self._ensure_cash_minor()
         self._ensure_money_snaps()

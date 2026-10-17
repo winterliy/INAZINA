@@ -859,7 +859,7 @@ class UserManager:
         deposit_insurance_claims = []
         for claim in conn.execute(
             "SELECT c.claim_id,c.issuer,c.account_number,c.covered_amount,"
-            "c.uninsured_amount,c.resolved_epoch,a.quote_currency "
+            "c.uninsured_amount,c.payout_currency,c.payout_amount,c.resolved_epoch,a.quote_currency "
             "FROM deposit_insurance_claims c LEFT JOIN accounts a "
             "ON a.account_number=c.account_number WHERE c.user_id=? "
             "ORDER BY c.resolved_epoch DESC,c.claim_id DESC LIMIT 100",
@@ -873,6 +873,13 @@ class UserManager:
                 "decimal_places": currency_snapshot.precision(currency),
                 "covered_amount": float(claim["covered_amount"] or 0),
                 "uninsured_amount": float(claim["uninsured_amount"] or 0),
+                "payout_currency": (str(claim["payout_currency"])
+                                    if claim["payout_currency"] else None),
+                "payout_decimal_places": (currency_snapshot.precision(
+                    str(claim["payout_currency"])
+                ) if claim["payout_currency"] else None),
+                "payout_amount": (float(claim["payout_amount"])
+                                  if claim["payout_amount"] is not None else None),
                 "resolved_epoch": float(claim["resolved_epoch"] or 0),
             })
 

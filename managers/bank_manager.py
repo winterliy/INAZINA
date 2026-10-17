@@ -1876,14 +1876,19 @@ class BankManager:
                     base_currency
                 )/SCALE if uninsured else 0
             used_by_user[user_id] = used_base+covered_base
+            user_currency = CurrencyManager.home(conn, user_id)
+            account_currency = str(account["quote_currency"] or "NWX").upper()
+            covered_units = int(round(covered*SCALE))
+            payout_currency = payout_amount = None
             if covered:
-                user_currency = CurrencyManager.home(conn, user_id)
-                account_currency = str(account["quote_currency"] or "NWX").upper()
-                covered_units = int(round(covered*SCALE))
+                payout_currency = user_currency
                 payout_units = (covered_units if account_currency == user_currency else
                                 CurrencyManager.convert(
                                     conn, covered_units, account_currency, user_currency
                                 ))
+                payout_amount = round_currency(
+                    conn, payout_units/SCALE, payout_currency
+                )
                 CurrencyManager.change(conn, user_id, user_currency, payout_units)
                 CurrencyManager.treasury_pay(
                     conn, CurrencyManager.user_treasury_id(conn, user_id),
@@ -1917,9 +1922,10 @@ class BankManager:
             )
             conn.execute(
                 "INSERT OR IGNORE INTO accounts.deposit_insurance_claims "
-                "(issuer,user_id,account_number,covered_amount,uninsured_amount,resolved_epoch) "
-                "VALUES (?,?,?,?,?,?)",
-                (issuer, user_id, account["account_number"], covered, uninsured, when),
+                "(issuer,user_id,account_number,covered_amount,uninsured_amount,"
+                "payout_currency,payout_amount,resolved_epoch) VALUES (?,?,?,?,?,?,?,?)",
+                (issuer, user_id, account["account_number"], covered, uninsured,
+                 payout_currency, payout_amount, when),
             )
             covered_total += covered_base
             uninsured_total += uninsured_base

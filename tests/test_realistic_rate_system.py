@@ -808,6 +808,10 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(len(report["depositInsuranceClaims"]), 2)
         self.assertEqual(sum(int(row["covered_amount_text"]) for row in report["depositInsuranceClaims"]), 600)
         self.assertEqual(sum(int(row["uninsured_amount_text"]) for row in report["depositInsuranceClaims"]), 900)
+        self.assertTrue(all(row["payout_currency"] == "NWX"
+                            for row in report["depositInsuranceClaims"]))
+        self.assertEqual(sum(int(row["payout_amount_text"])
+                             for row in report["depositInsuranceClaims"]), 600)
         insurance_reconciliation = {
             row["account_code"]: row for row in report["depositInsuranceReconciliation"]
         }
