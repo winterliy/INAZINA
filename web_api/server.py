@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
@@ -648,7 +649,7 @@ def instruments(include_inactive=False):
             f"SELECT code,name,type,price,exchange_id,quote_currency,status,'market_assets' AS source,NULL AS fund_category FROM market_assets{status_clause}",
             f"SELECT company_code AS code,name,'stock' AS type,share_price AS price,exchange_id,quote_currency,status,'company' AS source,NULL AS fund_category FROM company{status_clause}",
             f"SELECT product_code AS code,name,product_type AS type,unit_price AS price,exchange_id,quote_currency,status,'investment' AS source,fund_category FROM investment{status_clause}",
-            f"SELECT product_code AS code,name,'국채' AS type,market_price AS price,exchange_id,quote_currency,status,'treasury_bond' AS source,NULL AS fund_category FROM treasury_bond_products{status_clause}",
+            f"SELECT product_code AS code,name,'국채' AS type,market_price AS price,exchange_id,quote_currency,status,'treasury_bond' AS source,NULL AS fund_category,face_value,annual_rate,maturity_days,coupon_frequency_days,day_count_convention,credit_spread,liquidity_spread,created_at FROM treasury_bond_products{status_clause}",
         ):
             rows.extend(dict(row) for row in connection.execute(query).fetchall())
         components = {}
@@ -705,6 +706,39 @@ def instruments(include_inactive=False):
             "SELECT asset_code,SUM(quantity*price),COUNT(*) FROM market_trade_history "
             "WHERE recorded_epoch>=? GROUP BY asset_code", (since,))} if _table_exists(connection, "market_trade_history") else {}
         for row in rows:
+            if row["source"] == "treasury_bond":
+                try:
+                    from managers.rate_manager import RateManager
+                    issuer = connection.execute(
+                        "SELECT nationality FROM market_exchanges WHERE exchange_id=?",
+                        (row["exchange_id"],),
+                    ).fetchone()
+                    try:
+                        created = datetime.strptime(
+                            str(row["created_at"]), "%Y-%m-%d %H:%M:%S"
+                        ).replace(tzinfo=timezone.utc).timestamp()
+                        remaining_days = max(0, math.ceil(
+                            (created+int(row["maturity_days"] or 1)*86400-time.time())/86400
+                        ))
+                    except (TypeError, ValueError, OverflowError):
+                        remaining_days = int(row["maturity_days"] or 1)
+                    valuation = RateManager.bond_quote(
+                        connection, issuer["nationality"] if issuer and issuer["nationality"] else "낙원",
+                        float(row["face_value"] or 1), float(row["annual_rate"] or 0),
+                        remaining_days,
+                        coupon_frequency_days=int(row["coupon_frequency_days"] or 0),
+                        spread=float(row["credit_spread"] or 0)+float(row["liquidity_spread"] or 0),
+                        original_maturity_days=int(row["maturity_days"] or 1),
+                        day_count_convention=row["day_count_convention"] or "ACT/365",
+                    )
+                    row["bondRisk"] = {
+                        key: float(valuation[key]) for key in (
+                            "macaulay_duration", "modified_duration", "convexity", "dv01"
+                        )
+                    }
+                    row["bondRisk"]["faceValue"] = float(row["face_value"] or 1)
+                except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError):
+                    row["bondRisk"] = None
             if row["type"] == "depositary_receipt":
                 row["drProgram"] = dr_programs.get(row["code"])
                 program = row["drProgram"]

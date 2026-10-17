@@ -713,6 +713,30 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertGreater(marked["dirty_price"], 0)
         self.assertNotEqual(round(marked["dirty_price"]), 1_000)
 
+    def test_bond_quote_reports_curve_bump_duration_convexity_and_dv01(self):
+        with self.db.readonly() as conn:
+            quote = RateManager.bond_quote(
+                conn, "낙원", 1_000, 6, 300,
+                coupon_frequency_days=180, original_maturity_days=365,
+            )
+            bumped_up = RateManager.bond_quote(
+                conn, "낙원", 1_000, 6, 300,
+                coupon_frequency_days=180, original_maturity_days=365, spread=0.01,
+            )
+            bumped_down = RateManager.bond_quote(
+                conn, "낙원", 1_000, 6, 300,
+                coupon_frequency_days=180, original_maturity_days=365, spread=-0.01,
+            )
+        self.assertGreater(quote["macaulay_duration"], 0)
+        self.assertGreater(quote["modified_duration"], 0)
+        self.assertGreater(quote["convexity"], 0)
+        self.assertGreater(quote["dv01"], 0)
+        self.assertAlmostEqual(
+            quote["modified_duration"],
+            quote["dv01"]/(quote["dirty_price"]*0.0001),
+        )
+        self.assertAlmostEqual(quote["dv01"], (bumped_down["dirty_price"]-bumped_up["dirty_price"])/2)
+
     def test_corporate_bond_uses_tenor_curve_and_credit_liquidity_spreads(self):
         now = int(time.time())
         self.db.system.execute(

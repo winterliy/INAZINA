@@ -508,14 +508,14 @@ class RateManager:
 
     @staticmethod
     def discount_factor(conn, nationality, benchmark_key, tenor_days, *, epoch=None,
-                        spread=0.0):
+                        spread=0.0, parallel_shift=0.0):
         """Discount one cash flow from the matching zero-rate curve."""
         days = max(0.0, float(tenor_days or 0))
         if days == 0:
             return 1.0
         rate = RateManager.market_rate(
             conn, nationality, benchmark_key, max(1, math.ceil(days)), epoch=epoch
-        ) + float(spread or 0)
+        ) + float(spread or 0) + float(parallel_shift or 0)
         exponent = -(rate / 100.0) * days / 365.0
         if exponent > 700:
             raise OverflowError("할인계수 계산 결과가 너무 큽니다.")
@@ -539,19 +539,45 @@ class RateManager:
         valuation_epoch = float(time.time() if epoch is None else epoch)
         if remaining <= 0:
             return {"dirty_price": face, "clean_price": face,
-                    "accrued_interest": 0.0, "cashflows": [(0, face)]}
+                    "accrued_interest": 0.0, "cashflows": [(0, face)],
+                    "macaulay_duration": 0.0, "modified_duration": 0.0,
+                    "convexity": 0.0, "dv01": 0.0}
+
+        def price_and_risk_metrics(cashflows):
+            """Price once; derive ±1bp parallel shocks from the same PV terms."""
+            dirty = macaulay_numerator = up = down = 0.0
+            for days, payment in cashflows:
+                pv = payment*RateManager.discount_factor(
+                    conn, nationality, "treasury", days, epoch=epoch, spread=spread
+                )
+                time_years = max(0, days)/365.0
+                shift_exponent = 0.0001*time_years
+                dirty += pv
+                macaulay_numerator += time_years*pv
+                up += pv*math.exp(-shift_exponent)
+                down += pv*math.exp(shift_exponent)
+            if dirty <= 0:
+                return dirty, {"macaulay_duration": 0.0, "modified_duration": 0.0,
+                               "convexity": 0.0, "dv01": 0.0}
+            dv01 = max(0.0, (down-up)/2.0)
+            decimal_bump = 0.0001
+            return dirty, {
+                "macaulay_duration": macaulay_numerator/dirty,
+                "modified_duration": dv01/(dirty*decimal_bump),
+                "convexity": max(0.0, (up+down-2*dirty)/(dirty*decimal_bump**2)),
+                "dv01": dv01,
+            }
+
         if frequency <= 0:
             issue_epoch = valuation_epoch-max(0, original-remaining)*86400
             payoff = face*(1.0+coupon_rate*year_fraction(
                 original*86400, day_count_convention, issue_epoch
             ))
-            dirty = payoff*RateManager.discount_factor(
-                conn, nationality, "treasury", remaining,
-                epoch=epoch, spread=spread,
-            )
+            cashflows = [(remaining, payoff)]
+            dirty, metrics = price_and_risk_metrics(cashflows)
             return {"dirty_price": dirty, "clean_price": dirty,
                     "accrued_interest": 0.0,
-                    "cashflows": [(remaining, payoff)]}
+                    "cashflows": cashflows, **metrics}
 
         elapsed = max(0, original-remaining)
         position = elapsed % frequency
@@ -568,13 +594,7 @@ class RateManager:
             payment = coupon + (face if due == remaining else 0.0)
             cashflows.append((due, payment))
             prior = due
-        dirty = sum(
-            payment*RateManager.discount_factor(
-                conn, nationality, "treasury", due,
-                epoch=epoch, spread=spread,
-            )
-            for due, payment in cashflows
-        )
+        dirty, metrics = price_and_risk_metrics(cashflows)
         accrued = face*coupon_rate*year_fraction(
             position*86400, day_count_convention,
             valuation_epoch-position*86400,
@@ -584,6 +604,7 @@ class RateManager:
             "clean_price": max(0.0, dirty-accrued),
             "accrued_interest": accrued,
             "cashflows": cashflows,
+            **metrics,
         }
 
     @staticmethod

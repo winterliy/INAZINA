@@ -91,6 +91,40 @@ class WebApiTests(unittest.TestCase):
             "updated_by": "admin-1", "updated_epoch": 123.0,
         }])
 
+    def test_market_instruments_include_bond_rate_risk_metrics(self):
+        with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
+            connection.executescript("""
+                CREATE TABLE market_assets(code TEXT,name TEXT,type TEXT,price REAL,exchange_id TEXT,
+                    quote_currency TEXT,status TEXT);
+                CREATE TABLE company(company_code TEXT,name TEXT,share_price REAL,exchange_id TEXT,
+                    quote_currency TEXT,status TEXT);
+                CREATE TABLE investment(product_code TEXT,name TEXT,product_type TEXT,unit_price REAL,
+                    exchange_id TEXT,quote_currency TEXT,status TEXT,fund_category TEXT);
+                CREATE TABLE treasury_bond_products(product_code TEXT,name TEXT,market_price REAL,
+                    exchange_id TEXT,quote_currency TEXT,status TEXT,face_value INTEGER,annual_rate REAL,
+                    maturity_days INTEGER,coupon_frequency_days INTEGER,day_count_convention TEXT,
+                    credit_spread REAL,liquidity_spread REAL,created_at TEXT);
+                CREATE TABLE market_exchanges(exchange_id TEXT PRIMARY KEY,nationality TEXT);
+                CREATE TABLE market_rate_curve(nationality TEXT,benchmark_key TEXT,tenor_days INTEGER,
+                    annual_rate REAL);
+                CREATE TABLE market_rate_pressure(nationality TEXT,benchmark_key TEXT,adjustment REAL);
+                CREATE TABLE depositary_receipts(dr_code TEXT,underlying_code TEXT,receipt_type TEXT,
+                    depositary_bank TEXT,custodian TEXT,home_exchange_id TEXT,listing_exchange_id TEXT,
+                    underlying_per_receipt REAL,receipt_supply INTEGER,deposited_underlying_quantity REAL,
+                    program_status TEXT);
+                CREATE TABLE depositary_receipt_movements(dr_code TEXT,movement_type TEXT,
+                    underlying_quantity REAL,dr_quantity REAL);
+                CREATE TABLE fund_components(product_code TEXT,asset_code TEXT,weight REAL,asset_class TEXT);
+                INSERT INTO market_exchanges VALUES ('BOND','낙원');
+                INSERT INTO market_rate_curve VALUES ('낙원','treasury',1,3),('낙원','treasury',3650,4);
+                INSERT INTO treasury_bond_products VALUES ('TB1','Test Treasury',1000,'BOND','NWX',
+                    'active',1000,5,365,180,'ACT/365',0.2,0.1,CURRENT_TIMESTAMP);
+            """)
+        with patch.object(server, "domain", return_value=None):
+            bond = next(row for row in server.instruments() if row["code"] == "TB1")
+        self.assertGreater(bond["bondRisk"]["modified_duration"], 0)
+        self.assertGreater(bond["bondRisk"]["dv01"], 0)
+
     def test_user_loan_schedules_only_returns_own_unpaid_installments(self):
         connection = server.sqlite3.connect(":memory:")
         connection.row_factory = server.sqlite3.Row
