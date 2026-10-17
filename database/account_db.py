@@ -180,6 +180,7 @@ class AccountDB(DBManager):
             ("mandatory_cost_fee", "INTEGER NOT NULL DEFAULT 0"),
             ("underwriting_dti", "REAL"),
             ("underwriting_dsr", "REAL"),
+            ("underwriting_stress_dsr", "REAL"),
             ("borrower_risk_score", "REAL"),
             ("underwriting_income", "INTEGER NOT NULL DEFAULT 0"),
             ("prepayment_fee_percent", "REAL NOT NULL DEFAULT 0"),

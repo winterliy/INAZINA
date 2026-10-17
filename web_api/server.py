@@ -863,6 +863,7 @@ def user_loan_schedules(user_id):
     with connect_readonly() as connection:
         loans = [dict(row) for row in connection.execute(
             "SELECT loan_id,product_code,quote_currency,outstanding_balance,status,"
+            "underwriting_dsr,underwriting_stress_dsr,"
             "collection_status,maturity_epoch FROM loans WHERE user_id=? "
             "AND status IN ('active','defaulted') ORDER BY loan_id",
             (str(user_id),),

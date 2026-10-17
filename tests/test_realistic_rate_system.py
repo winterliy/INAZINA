@@ -607,7 +607,8 @@ class RealisticRateSystemTests(unittest.TestCase):
             "clean", "HISTORY", 10_000
         )[0])
         risky = self.db.accounts.execute_one(
-            "SELECT contract_rate,borrower_risk_score,underwriting_dsr FROM loans "
+            "SELECT contract_rate,borrower_risk_score,underwriting_dsr,"
+            "underwriting_stress_dsr FROM loans "
             "WHERE user_id='borrower' AND product_code='HISTORY'"
         )
         clean = self.db.accounts.execute_one(
@@ -617,6 +618,29 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertGreater(risky["contract_rate"], clean["contract_rate"])
         self.assertLess(risky["borrower_risk_score"], clean["borrower_risk_score"])
         self.assertIsNotNone(risky["underwriting_dsr"])
+        self.assertGreater(risky["underwriting_stress_dsr"], risky["underwriting_dsr"])
+
+    def test_underwriting_converts_existing_foreign_debt_to_home_currency(self):
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('USD','US Dollar','2',2)"
+        )
+        self.add_loan(code="CROSS", collateral_ratio=0, origination_fee=0)
+        self.db.accounts.execute(
+            "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,status,"
+            "contract_rate,rate_type,quote_currency) "
+            "VALUES ('borrower','OLD-USD',1000,1000,'active',5,'fixed','USD')"
+        )
+        product = self.db.products.get_liability("CROSS")
+        with self.db.atomic() as conn:
+            metrics = BankManager._underwriting_metrics(
+                conn, "borrower", 1_000, product, 5, 1_800_000_000, 100_000
+            )
+            from managers.currency_manager import CurrencyManager, SCALE
+            expected = CurrencyManager.convert(
+                conn, 1_000*SCALE, "USD", "NWX"
+            )/SCALE
+        self.assertEqual(metrics["existing_balance"], expected)
 
     def test_mandatory_finance_cost_is_included_in_legal_maximum(self):
         self.add_loan(code="COSTCAP", collateral_ratio=0, origination_fee=0)

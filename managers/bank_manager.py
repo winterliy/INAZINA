@@ -585,6 +585,17 @@ class BankManager:
     def _underwriting_metrics(conn, user_id, amount, product, annual_rate, now,
                               annual_income):
         """Return income affordability and repayment-history measures at origination."""
+        from managers.currency_manager import CurrencyManager, SCALE
+        home_currency = CurrencyManager.home(conn, user_id)
+
+        def to_home(value, currency):
+            native = max(0.0, float(value or 0))
+            if str(currency or home_currency) == home_currency or native == 0:
+                return native
+            return CurrencyManager.convert(
+                conn, int(round(native*SCALE)), str(currency), home_currency
+            )/SCALE
+
         income = max(0.0, float(annual_income or 0))
         maturity_days = max(1, int(product["maturity_days"] or 365))
         maturity_years = maturity_days / 365.0
@@ -593,30 +604,51 @@ class BankManager:
         )
         proposed_interest = float(amount) * max(0.0, float(annual_rate or 0)) / 100.0
         proposed_service = proposed_principal_service + proposed_interest
+        proposed_stress_delta = 0.0
+        if product["rate_type"] == "floating":
+            cycle = max(1, int(product["repricing_cycle_seconds"] or 31536000))
+            if cycle <= 365*86400:
+                current = float(annual_rate or 0)
+                upper = (float(product["rate_cap"])
+                         if product["rate_cap"] is not None else float("inf"))
+                stressed = min(upper, max(float(product["rate_floor"] or 0), current+2.0))
+                proposed_stress_delta = max(0.0, stressed-current)
 
         existing_balance = 0
         existing_interest = 0.0
         existing_service = 0.0
+        existing_stress_interest = 0.0
         missed = defaults = 0
         loans = conn.execute(
-            "SELECT loan_id,outstanding_balance,contract_rate,missed_payment_count,status "
+            "SELECT loan_id,outstanding_balance,quote_currency,contract_rate,rate_type,"
+            "next_repricing_epoch,rate_floor,rate_cap,missed_payment_count,status "
             "FROM accounts.loans WHERE user_id=? AND status IN ('active','defaulted')",
             (str(user_id),),
         ).fetchall()
         horizon = float(now) + 365 * 86400
         for loan in loans:
             balance = max(0.0, float(loan["outstanding_balance"] or 0))
-            existing_balance += balance
-            existing_interest += balance * max(0.0, float(loan["contract_rate"] or 0)) / 100.0
+            currency = str(loan["quote_currency"] or home_currency)
+            current_interest = balance*max(0.0, float(loan["contract_rate"] or 0))/100.0
+            existing_balance += to_home(balance, currency)
+            existing_interest += to_home(current_interest, currency)
+            if (loan["rate_type"] == "floating" and loan["next_repricing_epoch"] is not None
+                    and float(loan["next_repricing_epoch"]) <= horizon):
+                current = float(loan["contract_rate"] or 0)
+                upper = float(loan["rate_cap"]) if loan["rate_cap"] is not None else float("inf")
+                stressed = min(upper, max(float(loan["rate_floor"] or 0), current+2.0))
+                delta = max(0.0, stressed-current)
+                existing_stress_interest += to_home(balance*delta/100.0, currency)
             scheduled = conn.execute(
                 "SELECT COALESCE(SUM(MAX(0,principal_due+interest_due+fee_due-amount_paid)),0) "
                 "FROM accounts.loan_payment_schedule WHERE loan_id=? AND due_epoch<=? "
                 "AND status NOT IN ('paid','waived')",
                 (loan["loan_id"], horizon),
             ).fetchone()[0]
-            existing_service += float(scheduled or 0)
-            if not scheduled and balance:
-                existing_service += min(balance, balance + existing_interest)
+            if scheduled:
+                existing_service += to_home(scheduled, currency)
+            elif balance:
+                existing_service += to_home(min(balance, balance+current_interest), currency)
             missed += max(0, int(loan["missed_payment_count"] or 0))
             defaults += int(loan["status"] == "defaulted")
 
@@ -625,13 +657,16 @@ class BankManager:
             # on other debt; DSR includes annual principal and interest for all.
             dti = 100.0 * (proposed_service + existing_interest) / income
             dsr = 100.0 * (proposed_service + existing_service) / income
+            stress_dsr = 100.0*(proposed_service+amount*proposed_stress_delta/100.0
+                                +existing_service+existing_stress_interest)/income
         else:
-            dti = dsr = None
+            dti = dsr = stress_dsr = None
         history_index = min(1.0, (missed + defaults * 5) / 10.0)
         return {
             "income": income,
             "dti": dti,
             "dsr": dsr,
+            "stress_dsr": stress_dsr,
             "missed": missed,
             "defaults": defaults,
             "history_index": history_index,
@@ -753,6 +788,12 @@ class BankManager:
                         f"❌ DSR {underwriting['dsr']:.1f}%가 상품 한도 "
                         f"{max_dsr:g}%를 초과합니다."
                     )
+                if (max_dsr > 0 and underwriting['stress_dsr'] is not None
+                        and underwriting['stress_dsr'] > max_dsr+1e-9):
+                    return False, (
+                        f"❌ +200bp 금리상승 스트레스 DSR {underwriting['stress_dsr']:.1f}%가 "
+                        f"상품 한도 {max_dsr:g}%를 초과합니다."
+                    )
                 affordability_utilization = max(
                     (underwriting['dti'] or 0) / (max_dti or 100),
                     (underwriting['dsr'] or 0) / (max_dsr or 100),
@@ -795,6 +836,37 @@ class BankManager:
                         conn, 'legal_max_rate', contract_country, require_country=True
                     ) if contract_country else RateManager.legal_max_for_currency(conn, home)[0])
                     contract_rate = min(contract_rate, legal)
+                # Recheck affordability against the signed price after bank and
+                # borrower spreads have been applied to the initial scorecard.
+                underwriting = self._underwriting_metrics(
+                    conn, user_id, amount, product, contract_rate,
+                    opened_epoch, effective_income,
+                )
+                if max_dti > 0 and underwriting['dti'] > max_dti+1e-9:
+                    return False, (
+                        f"❌ 계약금리 반영 후 DTI {underwriting['dti']:.1f}%가 상품 한도 "
+                        f"{max_dti:g}%를 초과합니다."
+                    )
+                if max_dsr > 0 and underwriting['dsr'] > max_dsr+1e-9:
+                    return False, (
+                        f"❌ 계약금리 반영 후 DSR {underwriting['dsr']:.1f}%가 상품 한도 "
+                        f"{max_dsr:g}%를 초과합니다."
+                    )
+                if (max_dsr > 0 and underwriting['stress_dsr'] is not None
+                        and underwriting['stress_dsr'] > max_dsr+1e-9):
+                    return False, (
+                        f"❌ 계약금리 반영 후 +200bp 스트레스 DSR "
+                        f"{underwriting['stress_dsr']:.1f}%가 상품 한도 "
+                        f"{max_dsr:g}%를 초과합니다."
+                    )
+                affordability_utilization = max(
+                    (underwriting['dti'] or 0)/(max_dti or 100),
+                    (underwriting['dsr'] or 0)/(max_dsr or 100),
+                )
+                borrower_risk_score = max(0.0, min(100.0,
+                    credit_score/10.0-underwriting['history_index']*25.0
+                    - min(1.0, affordability_utilization)*20.0
+                ))
                 fee = round_currency(
                     conn, amount*float(product['origination_fee_percent'] or 0)/100, home
                 )
@@ -854,9 +926,9 @@ class BankManager:
                     "benchmark_key,benchmark_tenor_days,repricing_lag_seconds,contract_effective_rate,"
                     "contract_apr,origination_fee,mandatory_cost_fee,collateral_amount,day_count_convention,"
                     "amortization_type,payment_frequency_days,collateral_asset_value,current_ltv,"
-                    "underwriting_dti,underwriting_dsr,borrower_risk_score,underwriting_income,"
+                    "underwriting_dti,underwriting_dsr,underwriting_stress_dsr,borrower_risk_score,underwriting_income,"
                     "quote_currency,prepayment_fee_percent,prepayment_fee_decline_days) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (str(user_id), product_code, amount, amount, opened_epoch, opened_epoch,
                      opened_epoch+int(product['maturity_days'] or 0)*86400
                      if int(product['maturity_days'] or 0)>0 else None,
@@ -871,7 +943,7 @@ class BankManager:
                      product['day_count_convention'], product['amortization_type'],
                      int(product['payment_frequency_days'] or 30), asset_collateral_value,
                      (amount/total_collateral_value if total_collateral_value else None),
-                     underwriting['dti'], underwriting['dsr'], borrower_risk_score,
+                     underwriting['dti'], underwriting['dsr'], underwriting['stress_dsr'], borrower_risk_score,
                      effective_income, home,
                      float(product['prepayment_fee_percent'] or 0),
                      int(product['prepayment_fee_decline_days'] or 0)),
