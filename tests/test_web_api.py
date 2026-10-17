@@ -98,6 +98,32 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(result["loans"][0]["rate_resets"][0]["new_rate"], 6)
         self.assertEqual(result["loans"][0]["underwriting_stress_dsr"], 25)
 
+    def test_user_dividend_payments_are_private_and_currency_aware(self):
+        connection = server.sqlite3.connect(":memory:")
+        connection.row_factory = server.sqlite3.Row
+        connection.executescript("""
+            CREATE TABLE currencies(code TEXT PRIMARY KEY, decimal_places INTEGER);
+            INSERT INTO currencies VALUES ('USD',2);
+            CREATE TABLE dividend_distributions(distribution_id INTEGER PRIMARY KEY,asset_code TEXT,
+                dividend_kind TEXT);
+            CREATE TABLE dividend_payments(payment_id INTEGER PRIMARY KEY,distribution_id INTEGER,
+                user_id TEXT,quantity REAL,gross_amount REAL,tax_amount REAL,net_amount_units INTEGER,
+                quote_currency TEXT,created_epoch INTEGER);
+            INSERT INTO dividend_distributions VALUES (1,'KO_DR','regular');
+            INSERT INTO dividend_distributions VALUES (2,'KO_DR','special');
+            INSERT INTO dividend_payments VALUES (10,1,'alice',2,0.02,0,20000,'USD',100);
+            INSERT INTO dividend_payments VALUES (11,2,'bob',5,50,0,50000000,'NWX',200);
+        """)
+        with patch.object(server, "domain"), patch.object(
+            server, "connect_readonly", return_value=closing(connection)
+        ):
+            result = server.user_dividend_payments("alice")
+        self.assertEqual(len(result), 1)
+        self.assertEqual(
+            {key: result[0][key] for key in ("payment_id", "asset_code", "dividend_kind", "gross_amount", "quote_currency", "decimal_places")},
+            {"payment_id": 10, "asset_code": "KO_DR", "dividend_kind": "regular", "gross_amount": 0.02, "quote_currency": "USD", "decimal_places": 2},
+        )
+
     def test_candles_aggregate_open_high_low_close_per_bucket(self):
         ticks = [(0, 100), (10, 120), (30, 90), (59, 110), (60, 111), (119, 105)]
         for epoch, price in ticks:

@@ -856,6 +856,24 @@ def user_dr_movements(user_id, limit=50):
     return result
 
 
+def user_dividend_payments(user_id, limit=50):
+    """Return the authenticated user's recent dividend receipts, grouped by payout currency."""
+    domain()  # Apply additive corporate-action schema migrations before querying.
+    from functions.money import currency_precision
+    with connect_readonly() as connection:
+        rows = connection.execute(
+            "SELECT p.payment_id,d.asset_code,p.quantity,p.gross_amount,p.tax_amount,"
+            "p.net_amount_units,p.quote_currency,p.created_epoch,d.dividend_kind "
+            "FROM dividend_payments p JOIN dividend_distributions d USING(distribution_id) "
+            "WHERE p.user_id=? ORDER BY p.created_epoch DESC,p.payment_id DESC LIMIT ?",
+            (str(user_id), max(1, min(100, int(limit)))),
+        ).fetchall()
+        result = [dict(row) for row in rows]
+        for row in result:
+            row['decimal_places'] = currency_precision(connection, row['quote_currency'])
+    return result
+
+
 def user_loan_schedules(user_id):
     """Return the authenticated user's upcoming loan installment breakdowns."""
     domain()
@@ -2606,6 +2624,12 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     self.send_json(200, {"movements": user_dr_movements(user["userId"])})
+            elif path == "/internal/me/dividend-payments":
+                user = identity(internal_user_id(self))
+                if not user:
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    self.send_json(200, {"payments": user_dividend_payments(user["userId"])})
             elif path == "/internal/me/loan-schedules":
                 user = identity(internal_user_id(self))
                 if not user:

@@ -16,6 +16,7 @@ type Wallet = { currency_code: string; balance_units: number; decimal_places?: n
 type LoanSchedule = { schedule_id: number; installment_number: number; due_epoch: number; principal_due: number; interest_due: number; fee_due: number; principal_paid: number; interest_paid: number; fee_paid: number; amount_paid: number; status: string };
 type LoanRateReset = { old_rate: number; new_rate: number; scheduled_epoch: number; applied_epoch: number; benchmark_key: string; benchmark_tenor_days: number };
 type LoanScheduleView = { loan_id: number; product_code: string; quote_currency: string; decimal_places: number; outstanding_balance: number; status: string; collection_status: string; maturity_epoch: number | null; underwriting_dsr: number | null; underwriting_stress_dsr: number | null; installments: LoanSchedule[]; rate_resets: LoanRateReset[] };
+type DividendPayment = { payment_id: number; asset_code: string; dividend_kind: "regular" | "special"; quantity: number; gross_amount: number; tax_amount: number; net_amount_units: number; quote_currency: string; decimal_places: number; created_epoch: number };
 type Holding = { code: string; name: string; qty: number; price: number; value: number; type: string | null; quote_currency?: string; sell_reserved_qty?: number; is_collateral?: boolean };
 type Portfolio = { cash: number; grand_total: number; net_worth: number; loan_total: number; order_reserved_total: number; stock_total: number; account_total: number; bond_total?: number; national_currency?: string; nationality?: string; home_rate_nwx?: number; home_decimal_places?: number; wallets?: Wallet[]; stocks: Holding[]; accounts?: Record<string, unknown>[] };
 type Order = { order_id: number; asset_code: string; side: string; limit_price: number; quantity: number; remaining_quantity: number; filled_quantity: number; status: string; quote_currency?: string };
@@ -75,6 +76,7 @@ export default function App() {
   const [orders, setOrders] = useState<Order[]>([]);
   const [drMovements, setDrMovements] = useState<DrMovement[]>([]);
   const [loanSchedules, setLoanSchedules] = useState<LoanScheduleView[]>([]);
+  const [dividendPayments, setDividendPayments] = useState<DividendPayment[]>([]);
   const [orderFilter, setOrderFilter] = useState<"open" | "all">("open");
   const [book, setBook] = useState<Book>({ bids: [], asks: [] });
   const [side, setSide] = useState<"buy" | "sell">("buy");
@@ -111,14 +113,16 @@ export default function App() {
   }, []);
 
   const refreshAccount = useCallback(async () => {
-    const [wallet, orderData, loanData] = await Promise.all([
+    const [wallet, orderData, loanData, dividendData] = await Promise.all([
       api<{ portfolio: Portfolio }>("/api/me/portfolio"),
       api<{ orders: Order[] }>("/api/market/orders"),
       api<{ loans: LoanScheduleView[] }>("/api/me/loan-schedules"),
+      api<{ payments: DividendPayment[] }>("/api/me/dividend-payments"),
     ]);
     setPortfolio(wallet.portfolio);
     setOrders(orderData.orders);
     setLoanSchedules(loanData.loans);
+    setDividendPayments(dividendData.payments);
   }, []);
 
   useEffect(() => {
@@ -372,6 +376,13 @@ export default function App() {
             </span>
           </div>)}</div>
           <p className="orders-hint">회차별 계약상 배분 내역입니다. 회차 잔액을 넘는 초과상환 및 경과·연체이자 별도 원장은 표시하지 않습니다.</p>
+        </section>}
+        {dividendPayments.length > 0 && <section className="data-panel holdings-panel"><div className="panel-title"><h2>최근 배당 수령</h2><span>최근 {dividendPayments.length}건</span></div>
+          <div className="holdings">{dividendPayments.slice(0, 12).map((payment) => <div className="holding" key={payment.payment_id}>
+            <span><b>{payment.asset_code} · {payment.dividend_kind === "special" ? "특별배당" : "정기배당"}</b><small>{date(payment.created_epoch)} · {money(payment.quantity, 3)}주 · 세전 {money(payment.gross_amount, payment.decimal_places)} · 세금 {money(payment.tax_amount, payment.decimal_places)} {payment.quote_currency}</small></span>
+            <strong>{money(payment.net_amount_units / UNIT_SCALE, payment.decimal_places)} <em>{payment.quote_currency}</em></strong>
+          </div>)}</div>
+          <p className="orders-hint">통화별 지급액 기준 최근 100건입니다. DR 교차통화 배당은 실제 배당통화로 환산된 지급을 표시합니다.</p>
         </section>}
         <section className="data-panel holdings-panel">
           <div className="panel-title"><h2>보유 종목</h2><span>{holdings.length}</span></div>

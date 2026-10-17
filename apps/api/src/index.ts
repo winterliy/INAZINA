@@ -533,6 +533,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/me/dividend-payments") {
+    const result = await internalGet("/internal/me/dividend-payments", principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/market/orders") {
     const result = await internalGet("/internal/market/orders", principal.userId);
     send(response, result.status, result.body);
