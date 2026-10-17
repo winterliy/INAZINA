@@ -30,7 +30,6 @@ def _treasury_move(conn, product_code, amount):
         CurrencyManager.treasury_pay(conn, treasury, currency, -units)
 from functions.money import parse_money, round_money
 from functions.interest_calc import year_fraction
-from functions.tax_calc import calculate_income_tax
 from managers.rate_manager import RateManager
 
 
@@ -307,26 +306,15 @@ class TreasuryBondManager:
                     gross_interest = (0 if int(holding["coupon_frequency_days"] or 0)>0 else
                                       round_money(principal * float(holding["annual_rate"]) * days
                                                   / (100 * self.YEAR_DAYS)))
-                    tax_row = conn.execute(
-                        "SELECT c.tax_percent FROM users u LEFT JOIN country_currencies c "
-                        "ON c.nationality=u.nationality WHERE u.user_id=?", (holding['user_id'],)
-                    ).fetchone()
-                    tax_percent = float(tax_row['tax_percent'] if tax_row and tax_row['tax_percent'] is not None else 3)
-                    tax = calculate_income_tax(gross_interest, tax_percent / 100)
                     from database.fund_accounting import account, change_cash
                     fund = account(conn, holding['user_id'])
-                    if fund:
-                        tax = 0
+                    from managers.user_manager import UserManager
+                    tax = UserManager._tax(
+                        conn, holding['user_id'], 'treasury_bond_interest', gross_interest
+                    )
                     gross_payment = principal + gross_interest
                     net_payment = principal + gross_interest - tax
                     _treasury_move(conn, holding["product_code"], -gross_payment)
-                    if tax:
-                        from managers.currency_manager import CurrencyManager
-                        tax_treasury = CurrencyManager.user_treasury_id(conn, holding['user_id'])
-                        conn.execute(
-                            "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
-                            (tax, tax_treasury),
-                        )
                     if fund:
                         change_cash(conn, holding['user_id'], net_payment, 'bond_redemption', holding['product_code'])
                     else:
@@ -396,25 +384,13 @@ class TreasuryBondManager:
                         elapsed*86400, holding["day_count_convention"], cursor
                     )
                 )
-                tax_row = conn.execute(
-                    "SELECT c.tax_percent FROM users u LEFT JOIN country_currencies c "
-                    "ON c.nationality=u.nationality WHERE u.user_id=?",
-                    (holding["user_id"],),
-                ).fetchone()
-                tax_percent = float(tax_row["tax_percent"] if tax_row else 3)
-                tax = calculate_income_tax(coupon, tax_percent/100)
                 from database.fund_accounting import account, change_cash
                 fund = account(conn, holding['user_id'])
-                if fund:
-                    tax = 0
+                from managers.user_manager import UserManager
+                tax = UserManager._tax(
+                    conn, holding['user_id'], 'treasury_bond_interest', coupon
+                )
                 _treasury_move(conn, holding["product_code"], -coupon)
-                if tax:
-                    from managers.currency_manager import CurrencyManager
-                    tax_treasury = CurrencyManager.user_treasury_id(conn, holding['user_id'])
-                    conn.execute(
-                        "UPDATE users.users SET cash=cash+? WHERE user_id=?",
-                        (tax, tax_treasury),
-                    )
                 if fund:
                     change_cash(conn, holding['user_id'], coupon-tax, 'bond_coupon', holding['product_code'])
                 else:

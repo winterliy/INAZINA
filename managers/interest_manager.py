@@ -59,9 +59,12 @@ class InterestManager:
         return max(0, int(math.floor(elapsed_seconds / cycle_seconds + 1e-9)))
 
     @staticmethod
-    def _tax_rate(conn, user_id=None):
-        row = (conn.execute("SELECT c.tax_percent FROM users u LEFT JOIN country_currencies c "
-                            "ON c.nationality=u.nationality WHERE u.user_id=?", (str(user_id),)).fetchone()
+    def _tax_rate(conn, user_id=None, source='saving_interest'):
+        row = (conn.execute("SELECT COALESCE((SELECT r.tax_percent FROM country_tax_rules r "
+                            "WHERE r.nationality=u.nationality AND r.income_source=?),c.tax_percent) tax_percent "
+                            "FROM users u LEFT JOIN country_currencies c "
+                            "ON c.nationality=u.nationality WHERE u.user_id=?",
+                            (str(source), str(user_id))).fetchone()
                if user_id is not None else None)
         try:
             rate = float(row["tax_percent"] if row and row["tax_percent"] is not None else 3.0)
@@ -270,7 +273,7 @@ class InterestManager:
                 )
                 continue
             tax = (round_currency(
-                conn, gross*cls._tax_rate(conn, account['user_id'])/100.0,
+                conn, gross*cls._tax_rate(conn, account['user_id'], 'saving_interest')/100.0,
                 account["quote_currency"]
             ) if gross > 0 else 0)
             net = max(-float(balance), gross-tax)

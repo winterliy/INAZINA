@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from database import DatabaseManager
@@ -121,6 +123,51 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             )[0],
             3 * SCALE,
         )
+
+
+class LegacyCurrencySchemaMigrationTests(unittest.TestCase):
+    def test_source_tax_rule_fk_survives_legacy_negative_rate_table_rebuild(self):
+        old_root = DBManager.database_dir
+        temp = tempfile.TemporaryDirectory()
+        DBManager.database_dir = Path(temp.name)
+        database_path = Path(temp.name) / 'inazina.db'
+        try:
+            with closing(sqlite3.connect(database_path)) as connection, connection:
+                connection.executescript("""
+                    CREATE TABLE currencies (
+                        code TEXT PRIMARY KEY,name TEXT NOT NULL,asset_code TEXT UNIQUE,
+                        status TEXT NOT NULL DEFAULT 'active',reference_rate TEXT,
+                        rate_multiplier TEXT NOT NULL DEFAULT '1',
+                        decimal_places INTEGER NOT NULL DEFAULT 6
+                    );
+                    INSERT INTO currencies(code,name,decimal_places) VALUES ('NWX','NWX',0);
+                    CREATE TABLE country_currencies (
+                        nationality TEXT PRIMARY KEY,
+                        currency_code TEXT NOT NULL REFERENCES currencies(code),
+                        base_rate REAL NOT NULL DEFAULT 3 CHECK(base_rate BETWEEN 0 AND 100),
+                        legal_max_rate REAL NOT NULL DEFAULT 20 CHECK(legal_max_rate BETWEEN 0 AND 100),
+                        tax_percent REAL NOT NULL DEFAULT 3 CHECK(tax_percent BETWEEN 0 AND 100)
+                    );
+                    INSERT INTO country_currencies VALUES ('낙원','NWX',3,20,3);
+                """)
+
+            db = DatabaseManager()
+            try:
+                definition = db.currency.execute_one(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='country_tax_rules'"
+                )[0]
+                foreign_keys = db.currency.execute("PRAGMA foreign_key_list('country_tax_rules')")
+                self.assertIn('country_currencies', definition)
+                self.assertEqual(foreign_keys[0]['table'], 'country_currencies')
+                db.currency.execute(
+                    "INSERT INTO country_tax_rules(nationality,income_source,tax_percent,updated_by,updated_epoch) "
+                    "VALUES ('낙원','lottery_winnings',12,'admin',1)"
+                )
+            finally:
+                db.close()
+        finally:
+            DBManager.database_dir = old_root
+            temp.cleanup()
 
 
 if __name__ == '__main__':

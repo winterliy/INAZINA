@@ -1,5 +1,6 @@
 """Validated inline administrator commands; treasury trades retain their own forms."""
 import json
+import re
 import shlex
 import time
 import secrets
@@ -12,10 +13,16 @@ from managers.rate_manager import RateManager
 from functions.money import parse_currency_money
 
 COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값','서버설치','소수점거래관리','상품이율수정',
-            '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','환율수정',
+            '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','소득세율','환율수정',
             '국가생성','국가삭제',
             '복권가격설정','금리수정','시장금리수정','법정최고이자수정','자본변경','증자','정기배당수정','정기배당활성','특별배당실시','합병','액면분할병합',
             '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소','거래경고'}
+TAX_SOURCES = {
+    'bond_sale_gain', 'corporate_bond_interest', 'els_profit', 'foreign_security_sale_gain',
+    'fractional_sale_gain', 'futures_realized_gain', 'gambling_winnings', 'liquidation',
+    'lottery_winnings', 'regular_dividend', 'special_dividend', 'stock_sale_gain',
+    'treasury_bond_interest', 'saving_interest',
+}
 TYPES = {'company':'stock','주식':'stock','자산':'asset','ETF':'etf','선물':'future','주식선물':'future',
          '회사채':'corporatebond','일반펀드':'fund','펀드':'fund','인덱스펀드':'indexfund',
          '현물원자재':'commodity','원자재':'commodity','국채':'bond','저축':'saving',
@@ -37,6 +44,7 @@ USAGE = {
  '시장분위기':'[bull/flat/bear]', '상품분위기':'[종목id] [bull/flat/bear]',
  '복권당첨번호보기':'', '복권당첨번호변경':'[서로 다른 1~45 번호 6개] [보너스 번호(선택)]',
  '세율':'[국적] [0~100]', '환율수정':'[외화A] [외화B] [1 A당 B 비율]',
+ '소득세율':'[국적] [소득원 코드] [0~100] · 국가 기본 세율보다 우선 적용',
  '국가생성':'[국가명] [통화코드] [기준금리%(선택)] [법정최고이자%(선택)] [세율%(선택)]',
  '국가삭제':'[국가명]',
  '복권가격설정':'[가격]', '금리수정':'[국적] [add/del/modify] [수치]',
@@ -240,6 +248,7 @@ class AdminCommandsManager:
             conn.execute('DELETE FROM market_rate_curve_history WHERE nationality=?', (nationality,))
             conn.execute('DELETE FROM market_rate_curve WHERE nationality=?', (nationality,))
             conn.execute('DELETE FROM country_rate_history WHERE nationality=?', (nationality,))
+            conn.execute('DELETE FROM country_tax_rules WHERE nationality=?', (nationality,))
             treasury = conn.execute('SELECT user_id FROM country_treasuries WHERE nationality=?', (nationality,)).fetchone()
             conn.execute('DELETE FROM country_treasuries WHERE nationality=?', (nationality,))
             if treasury:
@@ -264,7 +273,7 @@ class AdminCommandsManager:
             count={'상품가격수정':3,'상품삭제':1,'기본소득':2,'잔고수정':3,'등록':1,
                    '도박확률':1,'도박리턴값':1,'시장분위기':1,'상품분위기':2,
                    '복권당첨번호보기':0,'환율수정':3,'복권가격설정':1,'서버설치':3,
-                   '국가삭제':1,
+                   '국가삭제':1,'소득세율':3,
                    '금리수정':3,'시장금리수정':4,'법정최고이자수정':3,'정기배당수정':3,'정기배당활성':2,'특별배당실시':2,'합병':3,'액면분할병합':3,
                    '휴장':1,'개장':1,'장일시정지':1,'장재개':1,'서킷브레이커':2,'사이드카':1}
             count.update({'법인잔고수정':3,'법인청산':1,'ELS취소':1,'소수점거래관리':2,'상품이율수정':3})
@@ -371,6 +380,27 @@ class AdminCommandsManager:
                         raise ValueError('등록된 국가를 확인해주세요.')
                     self.control._audit(conn,actor,'세율',{'nationality':nationality,'tax_percent':value})
                 return f'✅ {nationality} 세율을 {value:g}%로 설정했습니다.'
+            if command=='소득세율':
+                if len(args)!=3:
+                    raise ValueError('사용법: $소득세율 [국적] [소득원 코드] [0~100]')
+                nationality,source=str(args[0]).strip(),str(args[1]).strip().lower()
+                if not nationality or len(nationality)>80 or source not in TAX_SOURCES:
+                    raise ValueError('등록된 국적과 지원 소득원 코드를 입력해주세요.')
+                value=self.control._number(args[2],0,100)
+                now=time.time()
+                with self.db.atomic() as conn:
+                    self.control.require(actor,conn)
+                    if not conn.execute('SELECT 1 FROM country_currencies WHERE nationality=?',(nationality,)).fetchone():
+                        raise ValueError('등록된 국가를 확인해주세요.')
+                    conn.execute('''INSERT INTO country_tax_rules
+                        (nationality,income_source,tax_percent,updated_by,updated_epoch) VALUES (?,?,?,?,?)
+                        ON CONFLICT(nationality,income_source) DO UPDATE SET
+                        tax_percent=excluded.tax_percent,updated_by=excluded.updated_by,
+                        updated_epoch=excluded.updated_epoch''',
+                        (nationality,source,value,str(actor),now))
+                    self.control._audit(conn,actor,'country.tax_source',{
+                        'nationality':nationality,'income_source':source,'tax_percent':value})
+                return f'✅ {nationality} · {source} 소득 세율을 {value:g}%로 설정했습니다.'
             if command=='복권가격설정':
                 return self.bot.lottery_mgr.configure(actor,{'ticket_price':self.control._number(args[0],1,1000000,integer=True)})
             if command=='잔고수정':

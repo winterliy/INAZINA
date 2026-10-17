@@ -254,6 +254,15 @@ class EconomyTests(unittest.TestCase):
 
     def test_government_bond_sale_funds_treasury_and_maturity_redeems_integer_nwx(self):
         bonds = self.users.bond_manager
+        self.db.currency.execute("INSERT INTO currencies(code,name) VALUES ('NAC','Nac 화폐')")
+        self.db.currency.execute(
+            "INSERT INTO country_currencies(nationality,currency_code,base_rate,legal_max_rate,tax_percent) "
+            "VALUES ('Nac','NAC',3,20,3)"
+        )
+        self.db.currency.execute(
+            "INSERT INTO country_tax_rules(nationality,income_source,tax_percent,updated_by,updated_epoch) "
+            "VALUES ('Nac','treasury_bond_interest',20,'test',0)"
+        )
         success, message = bonds.issue("GOV1", "시민 국채", 36.5, 10, 1000, 20000)
         self.assertTrue(success, message)
         success, message = bonds.buy("citizen-1", "GOV1", 1500)
@@ -277,10 +286,20 @@ class EconomyTests(unittest.TestCase):
         redeemed = bonds.redeem_matured("citizen-1", now=now)
         self.assertEqual(len(redeemed), 1)
         self.assertEqual(redeemed[0]["interest"], 100)
-        self.assertEqual(redeemed[0]["tax"], 3)
-        self.assertEqual(redeemed[0]["net"], 10097)
-        self.assertEqual(self.db.users.get_user("citizen-1")["cash"], 10097)
-        self.assertEqual(self.db.users.get_treasury_balance(), -97)
+        self.assertEqual(redeemed[0]["tax"], 20)
+        self.assertEqual(redeemed[0]["net"], 10080)
+        self.assertEqual(self.db.users.get_user("citizen-1")["cash"], 10080)
+        self.assertEqual(self.db.users.get_treasury_balance(), -100)
+        nac_treasury = self.db.currency.execute_one(
+            "SELECT u.cash FROM country_treasuries t JOIN users.users u ON u.user_id=t.user_id "
+            "WHERE t.nationality='Nac'"
+        )
+        self.assertEqual(nac_treasury['cash'], 20)
+        tax_entry = self.db.tax.execute_one(
+            "SELECT source,gross_amount,tax_amount FROM tax_transactions "
+            "WHERE user_id='citizen-1' AND source='treasury_bond_interest'"
+        )
+        self.assertEqual(tuple(tax_entry), ('treasury_bond_interest', 100, 20))
         self.assertEqual(
             self.db.accounts.execute_one(
                 "SELECT status FROM treasury_bond_holdings WHERE holding_id = ?",
@@ -598,6 +617,19 @@ class EconomyTests(unittest.TestCase):
         self.assertIsNotNone(tax)
         self.assertGreater(tax["tax_amount"], 0)
         self.assertEqual(self.db.users.get_treasury_balance(), tax["tax_amount"])
+
+    def test_saving_interest_uses_country_source_tax_override(self):
+        self.db.currency.execute("INSERT INTO currencies(code,name) VALUES ('NAC','Nac 화폐')")
+        self.db.currency.execute(
+            "INSERT INTO country_currencies(nationality,currency_code,base_rate,legal_max_rate,tax_percent) "
+            "VALUES ('Nac','NAC',3,20,3)"
+        )
+        self.db.currency.execute(
+            "INSERT INTO country_tax_rules(nationality,income_source,tax_percent,updated_by,updated_epoch) "
+            "VALUES ('Nac','saving_interest',17,'test',0)"
+        )
+        with self.db.atomic() as conn:
+            self.assertEqual(InterestManager._tax_rate(conn, 'citizen-1'), 17)
 
     def test_global_code_collision_blocks_trade(self):
         self.db.assets.register_asset("DUPE", "Market", "EX", 10, "stock")

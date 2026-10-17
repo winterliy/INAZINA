@@ -201,9 +201,12 @@ class UserManager:
         gross = max(0, round_money(gross_amount))
         if gross == 0:
             return 0
-        row = conn.execute("SELECT c.tax_percent FROM users u "
+        source_class = str(source or '').split(':', 1)[0].strip().lower()
+        row = conn.execute("SELECT COALESCE((SELECT r.tax_percent FROM country_tax_rules r "
+                           "WHERE r.nationality=u.nationality AND r.income_source=?),c.tax_percent) tax_percent "
+                           "FROM users u "
                            "LEFT JOIN country_currencies c ON c.nationality=u.nationality "
-                           "WHERE u.user_id=?", (str(user_id),)).fetchone()
+                           "WHERE u.user_id=?", (source_class,str(user_id))).fetchone()
         fallback = conn.execute("SELECT value FROM settings WHERE key='tax_percent'").fetchone()
         try:
             rate = float(row["tax_percent"] if row and row["tax_percent"] is not None

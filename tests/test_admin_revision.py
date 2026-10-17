@@ -90,6 +90,22 @@ class AdminRevisionTests(unittest.TestCase):
         self.assertEqual(self.db.assets.get_asset_info('CUR_EUR')['price'],2000)
         with self.assertRaises(ValueError):self.run_command('환율수정','USD EUR nan')
 
+    def test_country_income_source_tax_overrides_country_default(self):
+        from managers.user_manager import UserManager
+
+        self.db.users.execute("UPDATE users SET nationality='낙원' WHERE user_id='citizen'")
+        self.run_command('소득세율', '낙원 lottery_winnings 12.5')
+        with self.db.atomic() as conn:
+            tax = UserManager._tax(conn, 'citizen', 'lottery_winnings:weekly', 100)
+        self.assertEqual(tax, 13)
+        rule = self.db.currency.execute_one(
+            "SELECT income_source,tax_percent,updated_by FROM country_tax_rules "
+            "WHERE nationality='낙원' AND income_source='lottery_winnings'"
+        )
+        self.assertEqual(tuple(rule), ('lottery_winnings', 12.5, 'admin'))
+        with self.assertRaises(ValueError):
+            self.run_command('소득세율', '낙원 unknown_source 5')
+
     def test_lottery_manual_numbers_private_until_draw_and_paid_once(self):
         self.bot.lottery_mgr=LotteryManager(self.db)
         now=int(time.time())

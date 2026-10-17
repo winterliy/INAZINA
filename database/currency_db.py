@@ -79,6 +79,13 @@ class CurrencyDB(DBManager):
             self.execute("ALTER TABLE country_currencies DROP COLUMN statutory_rate")
         self._ensure_negative_policy_rates()
         self.execute("INSERT OR IGNORE INTO country_currencies(nationality,currency_code) VALUES ('낙원','NWX')")
+        self.execute('''CREATE TABLE IF NOT EXISTS country_tax_rules (
+            nationality TEXT NOT NULL REFERENCES country_currencies(nationality),
+            income_source TEXT NOT NULL CHECK(length(income_source) BETWEEN 1 AND 64),
+            tax_percent REAL NOT NULL CHECK(tax_percent BETWEEN 0 AND 100),
+            updated_by TEXT NOT NULL,
+            updated_epoch REAL NOT NULL,
+            PRIMARY KEY(nationality,income_source))''')
         self.execute("""CREATE TABLE IF NOT EXISTS guild_countries (
             guild_id TEXT PRIMARY KEY,
             nationality TEXT NOT NULL REFERENCES country_currencies(nationality)
