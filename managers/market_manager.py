@@ -34,6 +34,7 @@ class MarketManager:
 
     DEFAULT_VOLATILITY = 0.15
     MAX_VOLATILITY = 1.0
+    DR_ARBITRAGE_MEAN_REVERSION_SPEED = 0.25
     # These dictionaries remain only as a compatibility cache for callers from
     # older processes. Durable target and event state lives in SQLite.
     _runtime_lock = threading.RLock()
@@ -638,6 +639,15 @@ class MarketManager:
             return price
         bias = {"bull": 1, "bear": -1, "flat": 0}[condition] * trend_sensitivity * math.log1p(.10) \
                * config.trading_minutes_per_step / TRADING_MINUTES_PER_YEAR
+        if str(sector_key or "").casefold() == "depositary_receipt":
+            reference = self._dr_reference_value(conn, code)
+            if reference is not None and latent > 0:
+                from functions.dr_pricing import convergence_drift
+                bias += convergence_drift(
+                    latent, reference,
+                    config.trading_minutes_per_step / TRADING_MINUTES_PER_YEAR,
+                    self.DR_ARBITRAGE_MEAN_REVERSION_SPEED,
+                )
         if sector_sensitivity:
             bias += sector_sensitivity * math.sqrt(config.step_variance) * self._sector_shock(sector_key, epoch, config) * 0.25
         cycle = None
@@ -666,6 +676,37 @@ class MarketManager:
         new_price = min(MAX_PRICE, max(1, self.normalize_market_price(next_price)))
         self._save_simulation_state(conn, code, step.variance, next_innovation, next_price, epoch, new_price)
         return new_price
+
+    @staticmethod
+    def _dr_reference_value(conn, dr_code):
+        """Compute current underlying parity for an active depositary receipt."""
+        program = conn.execute(
+            "SELECT d.underlying_code,d.underlying_per_receipt,a.quote_currency dr_currency "
+            "FROM depositary_receipts d JOIN market_assets a ON a.code=d.dr_code "
+            "WHERE d.dr_code=? AND d.program_status='active' AND a.status='active'",
+            (str(dr_code),),
+        ).fetchone()
+        if not program:
+            return None
+        underlying = conn.execute(
+            "SELECT share_price AS price,quote_currency,status FROM company "
+            "WHERE company_code=? UNION ALL SELECT price,quote_currency,status "
+            "FROM market_assets WHERE code=? LIMIT 1",
+            (program["underlying_code"], program["underlying_code"]),
+        ).fetchone()
+        if not underlying or underlying["status"] != "active":
+            return None
+        try:
+            from managers.currency_manager import CurrencyManager
+            fx = CurrencyManager.quote(
+                conn, str(underlying["quote_currency"] or "NWX"),
+                str(program["dr_currency"] or "NWX"),
+            )
+            value = (float(underlying["price"])*float(program["underlying_per_receipt"])
+                     * float(fx))
+            return value if math.isfinite(value) and value > 0 else None
+        except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError):
+            return None
 
     @staticmethod
     def event_asset_eligible(asset):

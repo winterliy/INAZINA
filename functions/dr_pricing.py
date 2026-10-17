@@ -36,3 +36,17 @@ def alert_state(metrics):
     if not metrics.get("referenceDeviationAlert"):
         return "normal"
     return "premium" if metrics["referencePremiumPercent"] > 0 else "discount"
+
+
+def convergence_drift(current_price, reference_price, step_fraction, annual_speed=0.25):
+    """Log-price pull toward indicative parity, scaled to an annual step fraction."""
+    try:
+        current, reference, fraction, speed = map(
+            float, (current_price, reference_price, step_fraction, annual_speed)
+        )
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if (not all(math.isfinite(value) for value in (current, reference, fraction, speed))
+            or current <= 0 or reference <= 0 or fraction < 0 or speed < 0):
+        return 0.0
+    return speed * math.log(reference/current) * fraction

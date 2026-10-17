@@ -5,9 +5,24 @@ from pathlib import Path
 from database import DatabaseManager
 from database.db_manager import DBManager
 from managers.dr_deviation_monitor_manager import DrDeviationMonitorManager
+from managers.market_manager import MarketManager
+from functions.dr_pricing import convergence_drift
 
 
 class DrDeviationMonitorTests(unittest.TestCase):
+    def test_reference_parity_creates_directional_but_unforced_price_pull(self):
+        discount = convergence_drift(90, 100, .01)
+        premium = convergence_drift(110, 100, .01)
+        self.assertGreater(discount, 0)
+        self.assertLess(premium, 0)
+        self.assertLess(abs(discount), .01)
+        self.assertEqual(convergence_drift(0, 100, .01), 0)
+
+    def test_market_manager_reads_current_dr_underlying_parity(self):
+        with self.db.atomic() as conn:
+            value = MarketManager._dr_reference_value(conn, "BASE_DR")
+        self.assertEqual(value, 100)
+
     def setUp(self):
         self.old_dir = DBManager.database_dir
         self.tempdir = tempfile.TemporaryDirectory()
