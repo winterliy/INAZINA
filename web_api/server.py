@@ -856,7 +856,7 @@ def user_dr_movements(user_id, limit=50):
     return result
 
 
-def user_dividend_payments(user_id, limit=50):
+def user_dividend_payments(user_id, limit=100):
     """Return the authenticated user's recent dividend receipts, grouped by payout currency."""
     domain()  # Apply additive corporate-action schema migrations before querying.
     from functions.money import currency_precision

@@ -380,6 +380,37 @@ class LatestRequestsTests(unittest.TestCase):
         self.assertEqual(lottery.current(now=round['draw_epoch'])['pools'],[0,140,210,210,140])
         self.assertEqual(lottery.result(round['round_id'])['status'],'settled')
 
+    def test_lottery_winnings_use_the_winner_country_tax_rate(self):
+        lottery = self.bot.lottery_mgr
+        self.db.currency.execute(
+            "INSERT INTO country_currencies(nationality,currency_code,tax_percent) "
+            "VALUES ('Taxland','NWX',10)"
+        )
+        self.db.users.execute("UPDATE users SET nationality='Taxland' WHERE user_id='alice'")
+        round_row = lottery.current(now=1_000_000)
+        lottery.purchase('alice', 2, '1 2 3 4 5 6', 'country-tax', now=1_000_001)
+        self.db.lottery.execute(
+            "UPDATE lottery_rounds SET status='drawn',winning_json='[1,2,3,4,5,6]',"
+            "bonus=7,entropy=? WHERE round_id=?",
+            ('ab' * 32, round_row['round_id']),
+        )
+
+        self.assertEqual(lottery.process_due(now=round_row['draw_epoch']), round_row['round_id'])
+        payouts = self.db.lottery.execute(
+            "SELECT gross,tax,net FROM lottery_payouts WHERE user_id='alice' ORDER BY ticket_id"
+        )
+        self.assertEqual([(row['gross'], row['tax'], row['net']) for row in payouts],
+                         [(350, 35, 315), (350, 35, 315)])
+        taxes = self.db.tax.execute(
+            "SELECT tax_amount FROM tax_transactions WHERE user_id='alice' AND source='lottery_winnings'"
+        )
+        self.assertEqual([row['tax_amount'] for row in taxes], [35, 35])
+        treasury = self.db.currency.execute_one(
+            "SELECT u.cash FROM country_treasuries t JOIN users u ON u.user_id=t.user_id "
+            "WHERE t.nationality='Taxland'"
+        )
+        self.assertEqual(treasury['cash'], 470)  # 400 ticket allocation + 70 withholding
+
     def test_lottery_restarts_reproduce_public_draw_and_resume_failed_payout(self):
         lottery=self.bot.lottery_mgr
         round=lottery.current(now=1000000)

@@ -5,7 +5,6 @@ import secrets
 import time
 from datetime import datetime,timedelta,timezone
 from database.user_db import TREASURY_USER_ID
-from functions.tax_calc import calculate_income_tax
 from managers.user_manager import UserManager
 
 KST = timezone(timedelta(hours=9))
@@ -251,23 +250,17 @@ class LotteryManager:
                 conn.execute('UPDATE lottery_tickets SET rank=? WHERE ticket_id=?',(rank,ticket['ticket_id']))
                 if rank:
                     groups[rank-1].append(ticket)
-            rate = conn.execute("SELECT value FROM settings WHERE key='tax_percent'").fetchone()[0]
             result = {}
             for rank,winners in enumerate(groups,1):
                 gross = pools[rank-1]//len(winners) if winners else 0
                 paid = 0
                 for ticket in winners:
-                    tax = calculate_income_tax(gross,float(rate)/100)
+                    tax = UserManager._tax(conn, ticket['user_id'], 'lottery_winnings', gross)
                     net = gross-tax
                     if not UserManager._change_cash(
                         conn, ticket['user_id'], net, maximum=MAX_MONEY
                     ):
                         raise ValueError('당첨자의 계정 또는 잔액 한도를 확인해주세요. 추첨 결과를 보존하고 지급을 보류합니다.')
-                    from managers.currency_manager import CurrencyManager
-                    if not UserManager._change_cash(
-                        conn, CurrencyManager.user_treasury_id(conn, ticket['user_id']), tax, maximum=MAX_MONEY
-                    ):
-                        raise ValueError('국고 잔액 한도를 초과하여 지급을 보류합니다.')
                     conn.execute(
                         'INSERT INTO lottery_payouts VALUES (?,?,?,?,?,?,?,?)',
                         (ticket['ticket_id'], round['round_id'], ticket['user_id'], rank,
