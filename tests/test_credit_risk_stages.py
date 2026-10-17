@@ -21,6 +21,17 @@ class CreditRiskStageTests(unittest.TestCase):
         self.assertEqual(CreditRiskManager._stage("defaulted", "defaulted", 0, 0, True), 3)
         self.assertEqual(CreditRiskManager._stage("active", "defaulted", 0, 0, True), 3)
 
+    def test_short_arrears_do_not_alone_trigger_stage_two(self):
+        self.assertEqual(
+            CreditRiskManager._stage("active", "overdue", 0, .5, True, overdue_days=1), 1
+        )
+        self.assertEqual(
+            CreditRiskManager._stage("active", "overdue", 0, .5, True, overdue_days=29.9), 1
+        )
+        self.assertEqual(
+            CreditRiskManager._stage("active", "overdue", 0, .5, True, overdue_days=30), 2
+        )
+
 
 class DefaultedLoanEclTests(unittest.TestCase):
     def setUp(self):
@@ -143,6 +154,26 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.assertAlmostEqual(row["discount_factor"], 1/(1.08**(years/2)))
         self.assertEqual(row["effective_interest_rate"], 8)
         self.assertAlmostEqual(row["expected_loss_time_years"], years/2)
+
+    def test_ecl_stage_two_arrears_trigger_uses_elapsed_days(self):
+        epoch = 1_800_000_000
+        self.db.accounts.execute(
+            "UPDATE loans SET status='active',collection_status='overdue',"
+            "missed_payment_count=0,current_ltv=.5,overdue_since_epoch=?,"
+            "maturity_epoch=?,contract_effective_rate=5 WHERE product_code='ECL3'",
+            (epoch-29*86400, epoch+365*86400),
+        )
+        with self.db.atomic() as conn:
+            self.assertEqual(CreditRiskManager.assess_conn(conn, epoch), 1)
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT stage FROM loan_ecl_assessments ORDER BY calculated_epoch DESC LIMIT 1"
+        )["stage"], 1)
+
+        with self.db.atomic() as conn:
+            self.assertEqual(CreditRiskManager.assess_conn(conn, epoch+86400), 1)
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT stage FROM loan_ecl_assessments ORDER BY calculated_epoch DESC LIMIT 1"
+        )["stage"], 2)
 
     def test_macro_downturn_increases_stage_two_pd_and_is_recorded(self):
         epoch = 1_800_000_000

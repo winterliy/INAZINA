@@ -87,11 +87,20 @@ class CreditRiskManager:
         return cls._bounded(pd, 0.0001, 0.95)
 
     @staticmethod
-    def _stage(status, collection_status, missed_payments, ltv, overdue):
-        """Classify simulator ECL stages; an already-defaulted exposure is Stage 3."""
+    def _stage(status, collection_status, missed_payments, ltv, overdue,
+               overdue_days=None):
+        """Classify simulator ECL stages; an already-defaulted exposure is Stage 3.
+
+        Thirty days past due is the arrears-based significant-increase trigger.
+        If an older record has no delinquency start timestamp, retain the prior
+        conservative behavior and treat its overdue state as Stage 2.
+        """
         if status == "defaulted" or collection_status == "defaulted":
             return 3
-        if overdue or int(missed_payments or 0) >= 2 or CreditRiskManager._bounded(ltv, 0, 10) >= 1.0:
+        arrears_trigger = overdue and (
+            overdue_days is None or float(overdue_days) >= 30.0
+        )
+        if arrears_trigger or int(missed_payments or 0) >= 2 or CreditRiskManager._bounded(ltv, 0, 10) >= 1.0:
             return 2
         return 1
 
@@ -238,6 +247,8 @@ class CreditRiskManager:
             stage = cls._stage(
                 loan["status"], loan["collection_status"], loan["missed_payment_count"],
                 loan["current_ltv"], overdue,
+                (max(0.0, (epoch-float(loan["overdue_since_epoch"]))/86400.0)
+                 if loan["overdue_since_epoch"] is not None else None),
             )
             if stage == 3:
                 pd_12m = lifetime_pd = 1.0
