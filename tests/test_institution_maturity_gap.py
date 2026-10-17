@@ -38,12 +38,13 @@ class InstitutionMaturityGapTests(unittest.TestCase):
             "UPDATE liability SET rate_type='floating',rate_nationality='USA',"
             "repricing_cycle_seconds=86400 WHERE product_code='L90'"
         )
+        self.db.users.create_user("u1", "U1", "낙원", 0)
         self.now = 1_800_000_000
         self.db.accounts.execute(
-            "INSERT INTO accounts(account_number,product_code,balance,principal,account_type,"
+            "INSERT INTO accounts(account_number,user_id,product_code,balance,principal,account_type,"
             "quote_currency,balance_units,created_at,resolution_status,next_repricing_epoch,rate_type,"
             "rate_nationality,repricing_cycle_seconds) "
-            "VALUES ('A1','S30',500,500,'saving','NWX',0,datetime(?,'unixepoch'),'active',?,'floating','낙원',86400)",
+            "VALUES ('A1','u1','S30',500,500,'saving','NWX',0,datetime(?,'unixepoch'),'active',?,'floating','낙원',86400)",
             (self.now, self.now + 10 * 86400)
         )
         self.db.accounts.execute(
@@ -86,6 +87,9 @@ class InstitutionMaturityGapTests(unittest.TestCase):
         self.assertEqual(usd_up["assetInterestChange"], 0.74)
         self.assertEqual(usd_up["netInterestIncomeChange"], 0.74)
         self.assertEqual(liquidity["eligibleInflows"], 50)
+        self.assertEqual(liquidity["depositorConcentration"]["largestDepositorExposure"], 500)
+        self.assertEqual(liquidity["depositorConcentration"]["largestDepositorSharePercent"], 100)
+        self.assertEqual(liquidity["depositorConcentration"]["topFiveDepositorSharePercent"], 100)
         stress_20 = next(row for row in liquidity["scenarios"] if row["runoffPercent"] == 20)
         self.assertEqual(stress_20["depositOutflow"], 100)
         self.assertEqual(stress_20["netOutflow"], 50)
@@ -102,6 +106,36 @@ class InstitutionMaturityGapTests(unittest.TestCase):
             self.assertEqual(RateManager.institution_maturity_gap(conn, "Missing", now=self.now)["ladders"], [])
             with self.assertRaises(ValueError):
                 RateManager.institution_maturity_gap(conn, "Bank", now=float("nan"))
+
+    def test_depositor_concentration_aggregates_multiple_accounts_by_user(self):
+        self.db.products.execute(
+            "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"
+            "interest_cycle,compound_type,issuer,quote_currency) "
+            "VALUES ('S31','second deposit',1,0,30,86400,0,'Bank','NWX')"
+        )
+        self.db.accounts.execute(
+            "INSERT INTO accounts(account_number,user_id,product_code,balance,principal,"
+            "account_type,quote_currency,balance_units,resolution_status) "
+            "VALUES ('A2','u1','S31',100,100,'saving','NWX',0,'active')"
+        )
+        self.db.products.execute(
+            "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"
+            "interest_cycle,compound_type,issuer,quote_currency) "
+            "VALUES ('SUSD','foreign deposit',1,0,30,86400,0,'Bank','USD')"
+        )
+        self.db.accounts.execute(
+            "INSERT INTO accounts(account_number,user_id,product_code,balance,principal,"
+            "account_type,quote_currency,balance_units,resolution_status) "
+            "VALUES ('A3','u1','SUSD',0,250,'currency_saving','USD',250000000,'active')"
+        )
+        with self.db.readonly() as conn:
+            liquidity = RateManager.institution_liquidity_stress(
+                conn, "Bank", now=self.now
+            )
+        concentration = liquidity["depositorConcentration"]
+        self.assertEqual(concentration["largestDepositorExposure"], 850)
+        self.assertEqual(concentration["largestDepositorSharePercent"], 100)
+        self.assertEqual(concentration["topFiveDepositorSharePercent"], 100)
 
 
 if __name__ == "__main__":

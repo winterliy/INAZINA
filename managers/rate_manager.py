@@ -1035,6 +1035,40 @@ class RateManager:
         hqla_proxy = max(
             0.0, float(sheet["deposits"])+float(terms["effective_equity"])-float(sheet["loans"])
         )
+        depositor_balances = {}
+        concentration_deposit_total = 0.0
+        for row in conn.execute(
+            "SELECT a.user_id,a.quote_currency,SUM(MAX(0,CASE WHEN "
+            "a.account_type='currency_saving' THEN a.balance_units/1000000.0 "
+            "ELSE a.balance END)) amount "
+            "FROM accounts a JOIN saving s ON s.product_code=a.product_code "
+            "WHERE s.issuer=? AND a.account_type IN ('saving','currency_saving') "
+            "AND a.resolution_status='active' "
+            "GROUP BY a.user_id,a.quote_currency", (issuer,),
+        ):
+            amount = max(0.0, float(row["amount"] or 0))
+            currency = str(row["quote_currency"] or base)
+            if currency != base:
+                amount = CurrencyManager.convert(
+                    conn, int(round(amount*SCALE)), currency, base
+                )/SCALE
+            concentration_deposit_total += amount
+            if row["user_id"] is not None:
+                depositor_balances[row["user_id"]] = (
+                    depositor_balances.get(row["user_id"], 0.0)+amount
+                )
+        largest_depositor = max(depositor_balances.values(), default=0.0)
+        top_five_depositors = sum(sorted(depositor_balances.values(), reverse=True)[:5])
+        deposit_total = max(0.0, concentration_deposit_total)
+        concentration = {
+            "largestDepositorExposure": round_currency(conn, largest_depositor, base),
+            "largestDepositorSharePercent": (
+                largest_depositor/deposit_total*100 if deposit_total > 0 else 0.0
+            ),
+            "topFiveDepositorSharePercent": (
+                top_five_depositors/deposit_total*100 if deposit_total > 0 else 0.0
+            ),
+        }
         scenarios = []
         for runoff_percent in (5, 10, 20, 40):
             outflow = max(0.0, float(sheet["deposits"]))*runoff_percent/100.0
@@ -1050,6 +1084,7 @@ class RateManager:
         return {"issuer": issuer, "asOfEpoch": epoch, "horizonDays": 30,
                 "currency": base, "decimalPlaces": currency_precision(conn, base),
                 "availableLiquidityProxy": round_currency(conn, hqla_proxy, base),
+                "depositorConcentration": concentration,
                 "eligibleInflows": round_currency(conn, inflows, base),
                 "scenarios": scenarios,
                 "method": "available liquidity proxy=max(0,deposits+effective equity-loans); 50% of scheduled performing loan payments due within 30 days; deposit runoff scenarios 5/10/20/40%; excludes security HQLA, encumbrance, intraday flows, behavioral calibration, derivative/off-balance-sheet flows and regulatory haircuts; not LCR"}

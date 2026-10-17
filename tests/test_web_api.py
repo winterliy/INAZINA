@@ -126,6 +126,7 @@ class WebApiTests(unittest.TestCase):
                 INSERT INTO currencies(code,name,status) VALUES ('NWX','나쿠','active');
                 INSERT INTO currencies(code,name,status) VALUES ('AGC','가국화','active');
                 INSERT INTO country_currencies(nationality,currency_code,base_rate) VALUES ('가국','AGC',8);
+                INSERT INTO country_currencies(nationality,currency_code,base_rate) VALUES ('공통권','NWX',100);
                 INSERT INTO country_tax_rules VALUES ('낙원','lottery_winnings',12.5,'admin-1',123);
                 INSERT INTO country_macro_indicators VALUES ('낙원',3,1.5,4,55,'admin-1',120);
             """)
