@@ -102,6 +102,26 @@ class AssetDB(DBManager):
                      "ON depositary_receipt_movements(user_id,recorded_epoch DESC,movement_id DESC)")
         self.execute("CREATE INDEX IF NOT EXISTS idx_dr_movements_recent "
                      "ON depositary_receipt_movements(recorded_epoch DESC,movement_id DESC)")
+        self.execute("""CREATE TABLE IF NOT EXISTS dr_custody_process_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reference_key TEXT NOT NULL,
+            event_sequence INTEGER NOT NULL CHECK(event_sequence BETWEEN 1 AND 3),
+            event_type TEXT NOT NULL CHECK(event_type IN
+                ('instruction_received','custody_verified','settled')),
+            dr_code TEXT NOT NULL REFERENCES depositary_receipts(dr_code),
+            user_id TEXT NOT NULL,
+            movement_type TEXT NOT NULL CHECK(movement_type IN ('issue','redeem')),
+            dr_quantity INTEGER NOT NULL CHECK(dr_quantity > 0),
+            underlying_quantity INTEGER NOT NULL CHECK(underlying_quantity > 0),
+            recorded_epoch REAL NOT NULL,
+            UNIQUE(reference_key,event_sequence)
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_dr_custody_process_recent "
+                     "ON dr_custody_process_events(recorded_epoch DESC,event_id DESC)")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_dr_custody_events_immutable_{operation.lower()}
+                BEFORE {operation} ON dr_custody_process_events
+                BEGIN SELECT RAISE(ABORT,'DR custody process events are append-only'); END""")
         self.execute("""CREATE TABLE IF NOT EXISTS dr_deviation_samples (
             sample_id INTEGER PRIMARY KEY AUTOINCREMENT,
             dr_code TEXT NOT NULL REFERENCES depositary_receipts(dr_code),

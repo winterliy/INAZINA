@@ -978,6 +978,21 @@ def admin_dr_movements(limit=100):
     return {"movements": rows}
 
 
+def admin_dr_custody_events(limit=100):
+    """Read-only simulator audit of DR instruction, custody-check and settlement steps."""
+    domain()
+    with connect_readonly() as connection:
+        rows = [dict(row) for row in connection.execute(
+            "SELECT e.event_id,e.reference_key,e.event_sequence,e.event_type,e.dr_code,"
+            "d.underlying_code,e.user_id,e.movement_type,e.dr_quantity,"
+            "e.underlying_quantity,e.recorded_epoch FROM dr_custody_process_events e "
+            "JOIN depositary_receipts d USING(dr_code) "
+            "ORDER BY e.recorded_epoch DESC,e.event_id DESC LIMIT ?",
+            (max(1, min(500, int(limit))),),
+        ).fetchall()]
+    return {"events": rows}
+
+
 def admin_dr_deviation_history(limit=100, dr_code=None):
     """Read-only DR reference-price observations and alert transitions."""
     domain()
@@ -2983,6 +2998,22 @@ class Handler(BaseHTTPRequestHandler):
                         "result_count": len(movements.get("movements", [])),
                     })
                     self.send_json(200, movements)
+            elif path == "/internal/admin/dr/custody-events":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    raw_limit = parse_qs(parsed.query).get("limit", ["100"])[0]
+                    try:
+                        limit = int(raw_limit)
+                    except (TypeError, ValueError):
+                        raise ValueError("invalid_dr_custody_event_limit") from None
+                    events = admin_dr_custody_events(limit)
+                    audit_admin_access(user["userId"], "dr_custody_events.read", {
+                        "limit": max(1, min(limit, 500)),
+                        "result_count": len(events.get("events", [])),
+                    })
+                    self.send_json(200, events)
             elif path == "/internal/admin/dr/monitor":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":

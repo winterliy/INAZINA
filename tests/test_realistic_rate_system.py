@@ -152,6 +152,42 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(result[0]["difference_units"], 1)
         self.assertEqual(result[0]["status"], "mismatch")
 
+    def test_customer_deposit_open_and_close_reconcile_end_to_end(self):
+        self.db.products.execute(
+            "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"
+            "interest_cycle,compound_type,issuer,quote_currency) VALUES "
+            "('ROUNDTRIP','Roundtrip',0,1,0,31536000,0,'Bank','NWX')"
+        )
+        bank = BankManager(self.db)
+        cash_before = self.db.users.get_user("borrower")["cash"]
+        opened, message = bank.open_account("borrower", "ROUNDTRIP", "1234", 1_250)
+        self.assertTrue(opened, message)
+        account_number = self.db.accounts.execute_one(
+            "SELECT account_number FROM accounts WHERE product_code='ROUNDTRIP'"
+        )["account_number"]
+        closed, message = bank.close_account(
+            "borrower", account_number, password="1234"
+        )
+        self.assertTrue(closed, message)
+        self.assertEqual(self.db.users.get_user("borrower")["cash"], cash_before)
+        with self.db.atomic() as conn:
+            deposits = BankJournal.reconcile_customer_deposits(conn, "Bank")
+            entries = conn.execute(
+                "SELECT e.event_type,e.status,COUNT(l.line_id) line_count,"
+                "SUM(l.debit_units) debits,SUM(l.credit_units) credits "
+                "FROM bank_journal_entries e JOIN bank_journal_lines l USING(entry_id) "
+                "WHERE e.issuer='Bank' AND e.reference_key=? GROUP BY e.entry_id "
+                "ORDER BY e.entry_id", (f"account:{account_number}",),
+            ).fetchall()
+            imbalance = BankJournal.audit_unbalanced(conn, "Bank")
+        self.assertEqual([row["event_type"] for row in entries],
+                         ["deposit_open", "deposit_close"])
+        self.assertTrue(all(row["status"] == "posted" and row["line_count"] == 2
+                            and row["debits"] == row["credits"] for row in entries))
+        self.assertTrue(all(row["account_units"] == row["journal_units"]
+                            and row["status"] == "matched" for row in deposits))
+        self.assertEqual(imbalance, [])
+
     def test_bank_journal_rejects_invalid_epoch_before_entry_creation(self):
         before = self.db.accounts.execute_one(
             "SELECT COUNT(*) FROM bank_journal_entries"

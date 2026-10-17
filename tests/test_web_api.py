@@ -599,6 +599,24 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(entry["action"], "dr_movements.read")
         self.assertEqual(entry["payload"], {"limit": 200, "result_count": 0})
 
+    def test_admin_dr_custody_process_access_is_audited(self):
+        response = {}
+        handler = SimpleNamespace(
+            headers={"x-inazina-internal-token": "secret",
+                     "x-inazina-user-id": "admin-1"},
+            path="/internal/admin/dr/custody-events?limit=999",
+            send_json=lambda status, value: response.update(status=status, value=value),
+        )
+        with patch.object(server, "INTERNAL_TOKEN", "secret"), \
+                patch.object(server, "identity", return_value={
+                    "userId": "admin-1", "role": "admin",
+                }), patch.object(server, "admin_dr_custody_events", return_value={"events": []}):
+            server.Handler.do_GET(handler)
+        self.assertEqual(response, {"status": 200, "value": {"events": []}})
+        entry = server.admin_audit()[0]
+        self.assertEqual(entry["action"], "dr_custody_events.read")
+        self.assertEqual(entry["payload"], {"limit": 500, "result_count": 0})
+
     def test_admin_customer_detail_access_is_audited(self):
         response = {}
         handler = SimpleNamespace(

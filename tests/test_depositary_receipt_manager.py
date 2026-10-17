@@ -1,4 +1,5 @@
 """DR conversion moves ownership between original shares and issued receipts atomically."""
+import sqlite3
 import unittest
 
 import test_inazina as fixtures
@@ -37,6 +38,15 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
         self.assertTrue(ok, message)
         self.assertEqual(self.holding("UNDER"), 0)
         self.assertEqual(self.holding("UNDER_DR"), 3)
+        process = self.db.assets.execute(
+            "SELECT event_sequence,event_type FROM dr_custody_process_events "
+            "WHERE reference_key='request-issue' ORDER BY event_sequence"
+        )
+        self.assertEqual([tuple(row) for row in process], [
+            (1, "instruction_received"),
+            (2, "custody_verified"),
+            (3, "settled"),
+        ])
         owner = self.db.companies.execute_one(
             "SELECT max_shareholder_id FROM company WHERE company_code='UNDER'"
         )
@@ -51,6 +61,9 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
             )[0],
             1,
         )
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT COUNT(*) FROM dr_custody_process_events WHERE reference_key='request-issue'"
+        )[0], 3)
 
         # A secondary-market DR position also counts toward beneficial
         # ownership of the underlying for the majority-holder summary.
@@ -72,6 +85,13 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
 
         redeemed, message = self.manager.convert("citizen", "UNDER_DR", "redeem", 1, "request-redeem")
         self.assertTrue(redeemed, message)
+        redeemed_process = self.db.assets.execute(
+            "SELECT event_type FROM dr_custody_process_events "
+            "WHERE reference_key='request-redeem' ORDER BY event_sequence"
+        )
+        self.assertEqual([row[0] for row in redeemed_process], [
+            "instruction_received", "custody_verified", "settled",
+        ])
         self.assertEqual(self.holding("UNDER"), 2)
         self.assertEqual(self.holding("UNDER_DR"), 2)
         custody = self.db.assets.execute_one(
@@ -89,6 +109,17 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
             "FROM depositary_receipt_movements WHERE movement_type='redeem'"
         )
         self.assertEqual(tuple(redeemed_movement), (40, 50, 'NWX', 40, 'NWX'))
+        with self.db.atomic() as conn:
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+                conn.execute(
+                    "UPDATE assets.dr_custody_process_events SET event_type='settled' "
+                    "WHERE reference_key='request-issue' AND event_sequence=1"
+                )
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+                conn.execute(
+                    "DELETE FROM assets.dr_custody_process_events "
+                    "WHERE reference_key='request-issue' AND event_sequence=1"
+                )
 
     def test_reference_key_cannot_be_reused_for_different_request(self):
         self.create_program()
@@ -98,6 +129,24 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
         self.assertIn("다른 DR 전환", message)
         self.assertEqual(self.holding("UNDER_DR"), 2)
         self.assertEqual(self.holding("UNDER"), 2)
+
+    def test_failed_custody_verification_leaves_no_partial_process_or_movement(self):
+        self.create_program()
+        ok, message = self.manager.convert(
+            "citizen", "UNDER_DR", "issue", 4, "insufficient-custody"
+        )
+        self.assertFalse(ok)
+        self.assertIn("원주가 부족", message)
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT COUNT(*) FROM dr_custody_process_events "
+            "WHERE reference_key='insufficient-custody'"
+        )[0], 0)
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT COUNT(*) FROM depositary_receipt_movements "
+            "WHERE reference_key='insufficient-custody'"
+        )[0], 0)
+        self.assertEqual(self.holding("UNDER"), 6)
+        self.assertEqual(self.holding("UNDER_DR"), 0)
 
     def test_invalid_effective_epoch_is_rejected_without_custody_movement(self):
         self.create_program()

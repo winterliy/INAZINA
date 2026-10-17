@@ -9,6 +9,17 @@ class DepositaryReceiptManager:
         self.db = db
 
     @staticmethod
+    def _record_custody_process(conn, reference_key, sequence, event_type,
+                                dr_code, user_id, action, quantity, shares, when):
+        conn.execute(
+            "INSERT INTO assets.dr_custody_process_events "
+            "(reference_key,event_sequence,event_type,dr_code,user_id,movement_type,"
+            "dr_quantity,underlying_quantity,recorded_epoch) VALUES (?,?,?,?,?,?,?,?,?)",
+            (reference_key, sequence, event_type, dr_code, user_id, action,
+             quantity, shares, when),
+        )
+
+    @staticmethod
     def _add_holding(conn, user_id, asset_code, quantity, unit_cost, currency_code):
         """Add a holding while keeping its weighted cost in native currency precision."""
         from functions.money import round_currency
@@ -107,6 +118,10 @@ class DepositaryReceiptManager:
                 code = str(program["dr_code"])
                 underlying_code = str(program["underlying_code"])
                 user = str(user_id)
+                self._record_custody_process(
+                    conn, reference_key, 1, "instruction_received", code, user,
+                    action, quantity, shares, when,
+                )
 
                 if action == "issue":
                     supply = min(
@@ -149,6 +164,11 @@ class DepositaryReceiptManager:
                     available = sum(math.floor(max(0.0, value) + 1e-9) for value in capacities.values())
                     if available + 1e-9 < shares:
                         raise ValueError(f"전환 가능한 {underlying_code} 원주가 부족합니다. 필요 {shares:,}, 가능 {int(available):,}주입니다.")
+
+                    self._record_custody_process(
+                        conn, reference_key, 2, "custody_verified", code, user,
+                        action, quantity, shares, when,
+                    )
 
                     remaining = shares
                     total_cost = Decimal(0)
@@ -211,6 +231,10 @@ class DepositaryReceiptManager:
                     ).fetchone()
                     if int(custody["shares"] or 0) < shares:
                         raise ValueError("상환 가능한 시뮬레이터 예탁 원주가 부족합니다.")
+                    self._record_custody_process(
+                        conn, reference_key, 2, "custody_verified", code, user,
+                        action, quantity, shares, when,
+                    )
                     dr_lots = conn.execute(
                         "SELECT holding_id,quantity,average_cost FROM assets.user_assets "
                         "WHERE user_id=? AND asset_code=? ORDER BY holding_id", (user, code),
@@ -263,6 +287,10 @@ class DepositaryReceiptManager:
                      underlying_average_cost, when, holder_underlying_average_cost,
                      underlying["quote_currency"], underlying_average_cost,
                      underlying["quote_currency"]),
+                )
+                self._record_custody_process(
+                    conn, reference_key, 3, "settled", code, user,
+                    action, quantity, shares, when,
                 )
                 # A DR represents beneficial ownership of its underlying shares
                 # for the simulator's majority-holder/control summary.

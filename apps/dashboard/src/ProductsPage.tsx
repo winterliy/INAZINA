@@ -9,6 +9,7 @@ type AdvancedField = { key: string; label: string; type: string };
 type Kind = { kind: string; token: string; label: string; group: "market" | "finance"; family: string; fields: KindField[]; advanced: AdvancedField[]; example: Record<string, unknown>; editable: boolean };
 type Product = { code: string; name: string; kind: string; status: string; exchangeId: string | null; currency: string | null; value: number | null; drProgram?: { underlyingCode: string; receiptType: string; depositaryBank: string; custodian: string; underlyingPerReceipt: number; receiptSupply: number; depositedUnderlyingQuantity: number; custodiedUnderlyingQuantity: number; outstandingReceiptQuantity: number; programStatus: string; underlyingPrice?: number; underlyingCurrency?: string; referenceValue?: number; referencePremiumPercent?: number; referenceDeviationAlert?: boolean } };
 type DrMovement = { movement_id: number; user_id: string; dr_code: string; underlying_code: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; underlying_average_cost_text: string; underlying_currency: string; holder_underlying_average_cost_text: string; holder_underlying_currency: string; recorded_epoch: number };
+type DrCustodyEvent = { event_id: number; reference_key: string; event_sequence: number; event_type: "instruction_received" | "custody_verified" | "settled"; dr_code: string; underlying_code: string; user_id: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; recorded_epoch: number };
 type DrDeviationSample = { sample_id: number; dr_code: string; sampled_epoch: number; dr_price: number | null; reference_value: number | null; deviation_percent: number | null; state: "normal" | "premium" | "discount" | "unavailable" };
 type DrDeviationEvent = { event_id: number; dr_code: string; from_state: string; to_state: DrDeviationSample["state"]; recorded_epoch: number; deviation_percent: number | null };
 type Detail = { code: string; kind: string; status: string; values: Record<string, unknown>; row: Record<string, unknown> };
@@ -86,6 +87,8 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
   const [products, setProducts] = useState<Product[]>([]);
   const [drMovements, setDrMovements] = useState<DrMovement[]>([]);
   const [drLedgerError, setDrLedgerError] = useState(false);
+  const [drCustodyEvents, setDrCustodyEvents] = useState<DrCustodyEvent[]>([]);
+  const [drCustodyError, setDrCustodyError] = useState(false);
   const [drDeviationSamples, setDrDeviationSamples] = useState<DrDeviationSample[]>([]);
   const [drDeviationEvents, setDrDeviationEvents] = useState<DrDeviationEvent[]>([]);
   const [drMonitorError, setDrMonitorError] = useState(false);
@@ -104,6 +107,14 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
     setKinds(catalog.kinds.filter((item) => item.group === group));
     setProducts(list.products);
     if (group === "market") {
+      try {
+        const custody = await api<{ events: DrCustodyEvent[] }>("/api/admin/dr/custody-events?limit=100");
+        setDrCustodyEvents(custody.events);
+        setDrCustodyError(false);
+      } catch {
+        setDrCustodyEvents([]);
+        setDrCustodyError(true);
+      }
       try {
         const drLedger = await api<{ movements: DrMovement[] }>("/api/admin/dr/movements?limit=100");
         setDrMovements(drLedger.movements);
@@ -135,6 +146,8 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
     } else {
       setDrMovements([]);
       setDrLedgerError(false);
+      setDrCustodyEvents([]);
+      setDrCustodyError(false);
       setDrDeviationSamples([]);
       setDrDeviationEvents([]);
       setDrMonitorError(false);
@@ -234,6 +247,12 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
     <Card title="새 상품" caption={`${families.map((kind) => familyLabel(kind.kind)).join(" · ")} — 종류를 고르면 $상품생성과 같은 입력 칸이 나옵니다.`}>
       <div className="kind-grid">{families.map((kind) => <button key={kind.family} type="button" className={editor?.mode === "create" && kindOf(editor.kind)?.family === kind.family ? "command-chip active" : "command-chip"} onClick={() => startCreate(kind.kind)}><b>{familyLabel(kind.kind)}</b><small>{kind.family === "saving" ? "saving · 국적 통화/외환" : kind.token} · {counts[kind.family] ?? 0}개</small></button>)}</div>
     </Card>
+
+    {group === "market" && <Card title="DR 내부 수탁 처리 이력" caption="접수 → 예탁/보유 검증 → 내부 결제 완료 단계를 원자적으로 기록합니다. 현재 세 단계는 한 번의 시뮬레이터 거래 안에서 동시 처리되며, 외부 수탁 증빙이나 결제 지연은 모사하지 않습니다.">
+      <div className="scroll-x"><table><thead><tr><th>시각</th><th>요청 참조</th><th>단계</th><th>DR / 원주</th><th>사용자</th><th>방향</th><th className="r">DR 수량</th><th className="r">원주 수량</th></tr></thead><tbody>
+        {drCustodyEvents.map((event) => <tr key={event.event_id}><td>{date(event.recorded_epoch)}</td><td className="mono">{event.reference_key}</td><td>{event.event_type === "instruction_received" ? "요청 접수" : event.event_type === "custody_verified" ? "보관 수량 검증" : "내부 결제 완료"}</td><td className="mono">{event.dr_code} · {event.underlying_code}</td><td className="mono">{event.user_id}</td><td>{event.movement_type === "issue" ? "발행" : "상환"}</td><td className="r mono">{number(event.dr_quantity)}</td><td className="r mono">{number(event.underlying_quantity)}</td></tr>)}
+      </tbody></table>{drCustodyError ? <p className="empty">DR 수탁 처리 이력을 불러오지 못했습니다.</p> : !drCustodyEvents.length && <p className="empty">수탁 처리 이력이 없습니다.</p>}</div>
+    </Card>}
 
     {group === "market" && <Card title="DR 전환 원장" caption="최근 100건 · 조회 전용 불변 기록. 예탁 풀 단가는 수탁 원장 대사용이고, 보유자 이전원가는 상환 후 개인에게 돌아가는 세무 원가입니다. 시뮬레이터 기록이지 실제 수탁 증빙은 아닙니다.">
       <div className="scroll-x"><table><thead><tr><th>시각</th><th>사용자</th><th>DR</th><th>유형</th><th className="r">DR 수량</th><th className="r">원주 수량</th><th className="r">예탁 풀 단가</th><th className="r">보유자 이전원가</th><th>통화</th></tr></thead><tbody>
