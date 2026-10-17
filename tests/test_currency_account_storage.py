@@ -116,6 +116,12 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             "benchmark_key='funding',benchmark_tenor_days=30 WHERE account_number=?",
             (account['account_number'],),
         )
+        self.db.accounts.execute(
+            "INSERT INTO contract_rate_reset_history(contract_type,contract_id,old_rate,new_rate,"
+            "scheduled_epoch,observation_epoch,applied_epoch,benchmark_key,benchmark_tenor_days) "
+            "VALUES ('account',?,4,4.5,2000,1900,2001,'funding',30)",
+            (account['account_number'],),
+        )
         portfolio = UserManager(self.db).get_total_assets('us-user', settle=False)
         self.assertEqual(portfolio['account_total'], 10.13)
         self.assertEqual(portfolio['accounts'][0]['balance'], 10.13)
@@ -124,6 +130,7 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertEqual(portfolio['accounts'][0]['contract_rate'], 4.5)
         self.assertEqual(portfolio['accounts'][0]['next_repricing_epoch'], 2000)
         self.assertEqual(portfolio['accounts'][0]['benchmark_key'], 'funding')
+        self.assertEqual(portfolio['accounts'][0]['rate_resets'][0]['new_rate'], 4.5)
 
     def test_pending_kyc_blocks_regular_and_foreign_account_opening(self):
         self.db.users.create_user('admin','관리자','미국',1000,'admin')

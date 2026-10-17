@@ -1,6 +1,7 @@
 import tempfile
 import time
 import unittest
+import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -592,6 +593,16 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertIsNotNone(reset)
         self.assertEqual(reset["benchmark_key"], "bank_bond")
         self.assertGreater(reset["installments_recast"], 0)
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+            self.db.accounts.execute(
+                "UPDATE contract_rate_reset_history SET new_rate=0 WHERE reset_id=?",
+                (reset["reset_id"],),
+            )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+            self.db.accounts.execute(
+                "DELETE FROM contract_rate_reset_history WHERE reset_id=?",
+                (reset["reset_id"],),
+            )
 
     def test_manual_prepayment_charges_snapshotted_declining_fee(self):
         self.add_loan(code="PREPAY", collateral_ratio=0, origination_fee=0)

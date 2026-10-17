@@ -367,6 +367,10 @@ class AccountDB(DBManager):
             "CREATE INDEX IF NOT EXISTS idx_contract_rate_reset_history_contract "
             "ON contract_rate_reset_history(contract_type,contract_id,scheduled_epoch)"
         )
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_contract_rate_reset_history_immutable_{operation.lower()}
+                BEFORE {operation} ON contract_rate_reset_history
+                BEGIN SELECT RAISE(ABORT,'contract rate reset history is append-only'); END""")
         self.execute("""CREATE TABLE IF NOT EXISTS loan_collateral_assets (
             collateral_id INTEGER PRIMARY KEY AUTOINCREMENT,
             loan_id INTEGER NOT NULL,

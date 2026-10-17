@@ -801,6 +801,28 @@ class UserManager:
             (str(user_id),),
         ).fetchall()
         account_total_home_units = 0
+        account_numbers = [str(row["account_number"]) for row in account_rows]
+        rate_resets_by_account = {}
+        if account_numbers:
+            placeholders = ",".join("?" for _ in account_numbers)
+            reset_rows = conn.execute(
+                "SELECT contract_id,old_rate,new_rate,scheduled_epoch,applied_epoch,"
+                "benchmark_key,benchmark_tenor_days FROM ("
+                "SELECT contract_id,old_rate,new_rate,scheduled_epoch,applied_epoch,"
+                "benchmark_key,benchmark_tenor_days,ROW_NUMBER() OVER ("
+                "PARTITION BY contract_id ORDER BY applied_epoch DESC,reset_id DESC) reset_rank "
+                "FROM accounts.contract_rate_reset_history WHERE contract_type='account' "
+                f"AND contract_id IN ({placeholders})) WHERE reset_rank<=3 "
+                "ORDER BY contract_id,reset_rank",
+                account_numbers,
+            ).fetchall()
+            for reset in reset_rows:
+                rate_resets_by_account.setdefault(reset["contract_id"], []).append(
+                    {key: reset[key] for key in (
+                        "old_rate", "new_rate", "scheduled_epoch", "applied_epoch",
+                        "benchmark_key", "benchmark_tenor_days",
+                    )}
+                )
         for account in account_rows:
             account_currency = str(account["quote_currency"] or national_currency)
             account_places = currency_snapshot.precision(account_currency)
@@ -826,6 +848,7 @@ class UserManager:
                 "benchmark_key": account["benchmark_key"],
                 "benchmark_tenor_days": int(account["benchmark_tenor_days"] or 0),
                 "repricing_lag_seconds": int(account["repricing_lag_seconds"] or 0),
+                "rate_resets": rate_resets_by_account.get(str(account["account_number"]), []),
                 "insurance_paid": round_money(account["insurance_paid"] or 0, account_places),
                 "uninsured_claim": round_money(account["uninsured_claim"] or 0, account_places),
             })
