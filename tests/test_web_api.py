@@ -125,6 +125,32 @@ class WebApiTests(unittest.TestCase):
         self.assertGreater(bond["bondRisk"]["modified_duration"], 0)
         self.assertGreater(bond["bondRisk"]["dv01"], 0)
 
+    def test_dr_web_ledgers_distinguish_holder_basis_from_custody_pool_basis(self):
+        with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
+            connection.executescript("""
+                CREATE TABLE currencies(code TEXT PRIMARY KEY,decimal_places INTEGER);
+                INSERT INTO currencies VALUES ('NWX',0);
+                CREATE TABLE company(company_code TEXT,quote_currency TEXT);
+                CREATE TABLE market_assets(code TEXT,quote_currency TEXT);
+                CREATE TABLE depositary_receipts(dr_code TEXT,underlying_code TEXT);
+                CREATE TABLE depositary_receipt_movements(movement_id INTEGER PRIMARY KEY,reference_key TEXT,
+                    dr_code TEXT,user_id TEXT,movement_type TEXT,dr_quantity INTEGER,underlying_quantity INTEGER,
+                    underlying_average_cost INTEGER,recorded_epoch REAL,holder_underlying_average_cost REAL,
+                    holder_underlying_currency TEXT,custody_underlying_average_cost REAL,
+                    custody_underlying_currency TEXT);
+                INSERT INTO depositary_receipts VALUES ('BASE_DR','BASE');
+                INSERT INTO depositary_receipt_movements VALUES (1,'issue','BASE_DR','alice','issue',2,2,40,10,40,'NWX',40,'NWX');
+                INSERT INTO depositary_receipt_movements VALUES (2,'redeem','BASE_DR','alice','redeem',1,1,40,20,50,'NWX',40,'NWX');
+            """)
+        with patch.object(server, "domain", return_value=None):
+            user_rows = server.user_dr_movements("alice")
+            admin_rows = server.admin_dr_movements()["movements"]
+        redeemed_user_row = next(row for row in user_rows if row["movement_type"] == "redeem")
+        redeemed_admin_row = next(row for row in admin_rows if row["movement_type"] == "redeem")
+        self.assertEqual(redeemed_user_row["underlying_average_cost"], 50)
+        self.assertEqual(redeemed_admin_row["underlying_average_cost"], 40)
+        self.assertEqual(redeemed_admin_row["holder_underlying_average_cost_text"], "50")
+
     def test_user_loan_schedules_only_returns_own_unpaid_installments(self):
         connection = server.sqlite3.connect(":memory:")
         connection.row_factory = server.sqlite3.Row

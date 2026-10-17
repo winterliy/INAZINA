@@ -83,6 +83,19 @@ class AssetDB(DBManager):
             underlying_average_cost REAL NOT NULL DEFAULT 0 CHECK(underlying_average_cost >= 0),
             recorded_epoch REAL NOT NULL
         )""")
+        movement_columns = {
+            row[1] for row in self.execute("PRAGMA table_info(depositary_receipt_movements)")
+        }
+        for column, declaration in {
+            "holder_underlying_average_cost": "REAL CHECK(holder_underlying_average_cost >= 0)",
+            "holder_underlying_currency": "TEXT",
+            "custody_underlying_average_cost": "REAL CHECK(custody_underlying_average_cost >= 0)",
+            "custody_underlying_currency": "TEXT",
+        }.items():
+            if column not in movement_columns:
+                self.execute(
+                    f"ALTER TABLE depositary_receipt_movements ADD COLUMN {column} {declaration}"
+                )
         self.execute("CREATE INDEX IF NOT EXISTS idx_dr_movements_program "
                      "ON depositary_receipt_movements(dr_code,recorded_epoch)")
         self.execute("CREATE INDEX IF NOT EXISTS idx_dr_movements_user_recent "

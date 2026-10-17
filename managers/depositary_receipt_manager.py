@@ -179,6 +179,7 @@ class DepositaryReceiptManager:
                     )
                     self._add_holding(conn, user, code, quantity, dr_cost, program["dr_currency"])
                     underlying_average_cost = underlying_cost
+                    holder_underlying_average_cost = underlying_cost
                 else:
                     owned = conn.execute(
                         "SELECT COALESCE(SUM(quantity),0) FROM assets.user_assets "
@@ -194,22 +195,26 @@ class DepositaryReceiptManager:
                     custody = conn.execute(
                         "SELECT COALESCE(SUM(CASE WHEN movement_type='issue' THEN underlying_quantity "
                         "ELSE -underlying_quantity END),0) AS shares, "
-                        "COALESCE(SUM(CASE WHEN movement_type='issue' THEN underlying_quantity*underlying_average_cost "
-                        "ELSE -underlying_quantity*underlying_average_cost END),0) AS cost "
+                        "COALESCE(SUM(CASE WHEN movement_type='issue' THEN underlying_quantity*"
+                        "COALESCE(custody_underlying_average_cost,underlying_average_cost) "
+                        "ELSE -underlying_quantity*COALESCE(custody_underlying_average_cost,"
+                        "underlying_average_cost) END),0) AS cost "
                         "FROM assets.depositary_receipt_movements WHERE dr_code=?",
                         (code,),
                     ).fetchone()
                     if int(custody["shares"] or 0) < shares:
                         raise ValueError("상환 가능한 시뮬레이터 예탁 원주가 부족합니다.")
                     dr_lots = conn.execute(
-                        "SELECT holding_id,quantity FROM assets.user_assets "
+                        "SELECT holding_id,quantity,average_cost FROM assets.user_assets "
                         "WHERE user_id=? AND asset_code=? ORDER BY holding_id", (user, code),
                     ).fetchall()
                     remaining = quantity
+                    total_dr_cost = Decimal(0)
                     for lot in dr_lots:
                         take = min(remaining, int(lot["quantity"] or 0))
                         if take <= 0:
                             continue
+                        total_dr_cost += Decimal(str(lot["average_cost"] or 0))*take
                         changed = (conn.execute(
                             "DELETE FROM assets.user_assets WHERE holding_id=? AND quantity=?",
                             (lot["holding_id"], lot["quantity"]),
@@ -229,15 +234,28 @@ class DepositaryReceiptManager:
                         conn, Decimal(str(custody["cost"] or 0)) / Decimal(int(custody["shares"])),
                         underlying["quote_currency"],
                     )
+                    from managers.currency_manager import CurrencyManager
+                    fx = CurrencyManager.quote(
+                        conn, program["dr_currency"], underlying["quote_currency"]
+                    )
+                    holder_underlying_average_cost = round_currency(
+                        conn,
+                        total_dr_cost*Decimal(fx.numerator)/Decimal(fx.denominator)/Decimal(shares),
+                        underlying["quote_currency"],
+                    )
                     self._add_holding(conn, user, underlying_code, shares,
-                                      underlying_average_cost, underlying["quote_currency"])
+                                      holder_underlying_average_cost, underlying["quote_currency"])
 
                 conn.execute(
                     "INSERT INTO assets.depositary_receipt_movements(reference_key,dr_code,user_id,"
-                    "movement_type,dr_quantity,underlying_quantity,underlying_average_cost,recorded_epoch) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
+                    "movement_type,dr_quantity,underlying_quantity,underlying_average_cost,recorded_epoch,"
+                    "holder_underlying_average_cost,holder_underlying_currency,"
+                    "custody_underlying_average_cost,custody_underlying_currency) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     (reference_key, code, user, action, quantity, shares,
-                     underlying_average_cost, when),
+                     underlying_average_cost, when, holder_underlying_average_cost,
+                     underlying["quote_currency"], underlying_average_cost,
+                     underlying["quote_currency"]),
                 )
                 return True, (f"✅ DR {action} 전환 완료: {quantity:,} {code} ↔ "
                               f"{shares:,} {underlying_code} 원주 (시뮬레이터 원장)")

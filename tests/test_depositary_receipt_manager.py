@@ -48,6 +48,12 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
             1,
         )
 
+        # Simulate a secondary-market purchase: holder basis differs from the
+        # custodian pool's original share basis.
+        self.db.assets.execute(
+            "UPDATE user_assets SET average_cost=100 WHERE user_id='citizen' AND asset_code='UNDER_DR'"
+        )
+
         redeemed, message = self.manager.convert("citizen", "UNDER_DR", "redeem", 1, "request-redeem")
         self.assertTrue(redeemed, message)
         self.assertEqual(self.holding("UNDER"), 2)
@@ -57,6 +63,16 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
             "ELSE -underlying_quantity END) FROM depositary_receipt_movements"
         )[0]
         self.assertEqual(custody, 4)
+        underlying = self.db.assets.execute_one(
+            "SELECT average_cost FROM user_assets WHERE user_id='citizen' AND asset_code='UNDER'"
+        )
+        self.assertEqual(underlying["average_cost"], 50)
+        redeemed_movement = self.db.assets.execute_one(
+            "SELECT underlying_average_cost,holder_underlying_average_cost,holder_underlying_currency,"
+            "custody_underlying_average_cost,custody_underlying_currency "
+            "FROM depositary_receipt_movements WHERE movement_type='redeem'"
+        )
+        self.assertEqual(tuple(redeemed_movement), (40, 50, 'NWX', 40, 'NWX'))
 
     def test_reference_key_cannot_be_reused_for_different_request(self):
         self.create_program()
@@ -66,6 +82,55 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
         self.assertIn("다른 DR 전환", message)
         self.assertEqual(self.holding("UNDER_DR"), 2)
         self.assertEqual(self.holding("UNDER"), 2)
+
+    def test_dr_custody_and_holder_basis_keep_quote_currency_precision(self):
+        self.create_program()
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('USD','Dollar','1300',2)"
+        )
+        self.db.companies.execute("UPDATE company SET quote_currency='USD' WHERE company_code='UNDER'")
+        self.db.assets.execute("UPDATE market_assets SET quote_currency='USD' WHERE code='UNDER_DR'")
+        self.db.assets.execute(
+            "UPDATE user_assets SET average_cost=40.25 WHERE user_id='citizen' AND asset_code='UNDER'"
+        )
+        ok, message = self.manager.convert("citizen", "UNDER_DR", "issue", 1, "usd-issue")
+        self.assertTrue(ok, message)
+        self.db.assets.execute(
+            "UPDATE user_assets SET average_cost=101.50 WHERE user_id='citizen' AND asset_code='UNDER_DR'"
+        )
+        ok, message = self.manager.convert("citizen", "UNDER_DR", "redeem", 1, "usd-redeem")
+        self.assertTrue(ok, message)
+        returned = self.db.assets.execute_one(
+            "SELECT average_cost FROM user_assets WHERE user_id='citizen' AND asset_code='UNDER'"
+        )
+        self.assertEqual(returned["average_cost"], 43.75)
+        redemption = self.db.assets.execute_one(
+            "SELECT underlying_average_cost,custody_underlying_average_cost,"
+            "holder_underlying_average_cost,custody_underlying_currency "
+            "FROM depositary_receipt_movements WHERE movement_type='redeem'"
+        )
+        self.assertEqual(tuple(redemption), (40.25, 40.25, 50.75, 'USD'))
+
+    def test_dr_redemption_translates_holder_basis_from_receipt_currency(self):
+        self.create_program()
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('USD','Dollar','1300',2)"
+        )
+        self.db.assets.execute("UPDATE market_assets SET quote_currency='USD' WHERE code='UNDER_DR'")
+        ok, message = self.manager.convert("citizen", "UNDER_DR", "issue", 1, "fx-issue")
+        self.assertTrue(ok, message)
+        self.db.assets.execute(
+            "UPDATE user_assets SET average_cost=0.10 WHERE user_id='citizen' AND asset_code='UNDER_DR'"
+        )
+        ok, message = self.manager.convert("citizen", "UNDER_DR", "redeem", 1, "fx-redeem")
+        self.assertTrue(ok, message)
+        redemption = self.db.assets.execute_one(
+            "SELECT holder_underlying_average_cost,holder_underlying_currency "
+            "FROM depositary_receipt_movements WHERE movement_type='redeem'"
+        )
+        self.assertEqual(tuple(redemption), (65, 'NWX'))
 
 
 if __name__ == "__main__":

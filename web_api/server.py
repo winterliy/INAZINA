@@ -875,8 +875,9 @@ def user_dr_movements(user_id, limit=50):
     with connect_readonly() as connection:
         rows = connection.execute(
             "SELECT m.movement_id,m.dr_code,d.underlying_code,m.movement_type,m.dr_quantity,"
-            "m.underlying_quantity,m.underlying_average_cost,m.recorded_epoch,"
-            "COALESCE((SELECT quote_currency FROM company WHERE company_code=d.underlying_code),"
+            "m.underlying_quantity,COALESCE(m.holder_underlying_average_cost,m.underlying_average_cost) underlying_average_cost,"
+            "m.recorded_epoch,COALESCE(m.holder_underlying_currency,"
+            "(SELECT quote_currency FROM company WHERE company_code=d.underlying_code),"
             "(SELECT quote_currency FROM market_assets WHERE code=d.underlying_code),'NWX') underlying_currency "
             "FROM depositary_receipt_movements m JOIN depositary_receipts d USING(dr_code) "
             "WHERE m.user_id=? ORDER BY m.recorded_epoch DESC,m.movement_id DESC LIMIT ?",
@@ -947,9 +948,12 @@ def admin_dr_movements(limit=100):
     with connect_readonly() as connection:
         rows = [dict(row) for row in connection.execute(
             "SELECT m.movement_id,m.user_id,m.dr_code,d.underlying_code,m.movement_type,"
-            "m.dr_quantity,m.underlying_quantity,m.underlying_average_cost,m.recorded_epoch,"
+            "m.dr_quantity,m.underlying_quantity,COALESCE(m.custody_underlying_average_cost,"
+            "m.underlying_average_cost) underlying_average_cost,m.holder_underlying_average_cost,"
+            "m.holder_underlying_currency,m.recorded_epoch,"
+            "COALESCE(m.custody_underlying_currency,"
             "COALESCE((SELECT quote_currency FROM company WHERE company_code=d.underlying_code),"
-            "(SELECT quote_currency FROM market_assets WHERE code=d.underlying_code),'NWX') underlying_currency "
+            "(SELECT quote_currency FROM market_assets WHERE code=d.underlying_code),'NWX')) underlying_currency "
             "FROM depositary_receipt_movements m JOIN depositary_receipts d USING(dr_code) "
             "ORDER BY m.recorded_epoch DESC,m.movement_id DESC LIMIT ?",
             (max(1, min(200, int(limit))),),
@@ -957,6 +961,10 @@ def admin_dr_movements(limit=100):
         for row in rows:
             places = currency_precision(connection, row["underlying_currency"])
             row["underlying_average_cost_text"] = f"{Decimal(str(row['underlying_average_cost'] or 0)):.{places}f}"
+            holder_currency = row["holder_underlying_currency"] or row["underlying_currency"]
+            holder_places = currency_precision(connection, holder_currency)
+            row["holder_underlying_average_cost_text"] = f"{Decimal(str(row['holder_underlying_average_cost'] if row['holder_underlying_average_cost'] is not None else row['underlying_average_cost'] or 0)):.{holder_places}f}"
+            row["holder_underlying_currency"] = holder_currency
             row["decimal_places"] = places
     return {"movements": rows}
 
