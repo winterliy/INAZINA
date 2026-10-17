@@ -65,6 +65,57 @@ class ComplianceManager:
         return True
 
     @classmethod
+    def record_financial_action_denial(cls, conn, user_id, action_code, *, now=None):
+        """Append a privacy-minimal event for a denied, explicitly reviewed user."""
+        when = float(time.time() if now is None else now)
+        if not math.isfinite(when):
+            raise ValueError("invalid_kyc_event_epoch")
+        if action_code not in {"transfer", "deposit_open", "loan_apply"}:
+            raise ValueError("invalid_kyc_action_code")
+        profile = conn.execute(
+            "SELECT status,risk_tier,expires_epoch FROM kyc_profiles WHERE user_id=?",
+            (str(user_id),),
+        ).fetchone()
+        if not profile:
+            return False
+        expires = (float(profile["expires_epoch"])
+                   if profile["expires_epoch"] is not None else None)
+        reason = (
+            "risk_restricted" if profile["risk_tier"] not in {"standard", "enhanced"}
+            else "kyc_incomplete_or_expired"
+        )
+        # If the profile changed between the rejected read and this event insert,
+        # record the immutable snapshot available now; the event remains an audit
+        # of the denied action, not a claim about identity or evidence.
+        if (profile["status"] == "verified" and expires is not None
+                and math.isfinite(expires) and expires > when
+                and profile["risk_tier"] in {"standard", "enhanced"}):
+            reason = "eligibility_changed_during_check"
+        status, tier = str(profile["status"]), str(profile["risk_tier"])
+        conn.execute(
+            "INSERT INTO kyc_profile_events(user_id,actor_id,event_type,prior_status,"
+            "new_status,prior_risk_tier,new_risk_tier,reason_code,recorded_epoch) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (str(user_id), str(user_id), f"{action_code}_denied", status, status,
+             tier, tier, reason, when),
+        )
+        return True
+
+    @classmethod
+    def check_financial_eligibility(cls, db, user_id, action_code, *, now=None):
+        """Check outside the business transaction and persist a denial for review."""
+        when = float(time.time() if now is None else now)
+        try:
+            with db.readonly() as conn:
+                return cls.require_financial_eligibility(conn, user_id, now=when)
+        except ValueError:
+            with db.atomic() as conn:
+                cls.record_financial_action_denial(
+                    conn, user_id, action_code, now=when
+                )
+            raise
+
+    @classmethod
     def set_kyc_status(cls, conn, user_id, actor_id, status, *, risk_tier="standard",
                        reason_code, expires_epoch=None, now=None):
         """Record a KYC review without persisting identity documents or PII."""

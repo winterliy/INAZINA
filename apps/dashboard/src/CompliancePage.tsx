@@ -17,6 +17,7 @@ type Result = { success: boolean; result: Record<string, unknown> };
 const KYC_STATUSES = [["pending", "검토 대기"], ["verified", "확인 완료"], ["rejected", "확인 거절"], ["expired", "만료"]];
 const REASONS = [["review_started", "검토 시작"], ["requirements_met", "요건 충족"], ["requirements_not_met", "요건 미충족"], ["periodic_review", "정기 검토"], ["expired", "만료"], ["risk_escalation", "위험 상향"], ["customer_request", "사용자 요청"]];
 const OUTCOMES = [["no_action", "추가 조치 없음"], ["false_positive", "오탐"], ["further_review", "추가 검토"], ["escalated", "상급 검토"], ["account_restriction_considered", "제한 검토"]];
+const KYC_EVENT_LABELS: Record<string, string> = { review: "심사", expiry: "만료", transfer_denied: "송금 차단", deposit_open_denied: "예금 계좌 개설 차단", loan_apply_denied: "대출 신청 차단" };
 
 /** Administrator-only simulator compliance controls; never collects identity documents. */
 export function CompliancePage({ ctx }: { ctx: Ctx }) {
@@ -167,7 +168,7 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
 
     <Card title="준법 검토 이력" caption="KYC·AML 변경 이벤트의 최근 기록입니다. 저장된 기록은 수정·삭제할 수 없습니다.">
       <div className="scroll-x"><table><thead><tr><th>시각</th><th>종류</th><th>사용자 / 사례</th><th>관리자</th><th>변경</th><th>사유 / 결과</th></tr></thead><tbody>
-        {[...data.kycEvents.map((item) => ({ id: `kyc-${item.event_id}`, time: item.recorded_epoch, kind: "KYC", subject: item.user_id, actor: item.actor_id, change: `${item.prior_status} → ${item.new_status} · ${item.prior_risk_tier} → ${item.new_risk_tier}`, reason: item.reason_code })),
+        {[...data.kycEvents.map((item) => ({ id: `kyc-${item.event_id}`, time: item.recorded_epoch, kind: `KYC · ${KYC_EVENT_LABELS[item.event_type] || item.event_type}`, subject: item.user_id, actor: item.actor_id, change: `${item.prior_status} → ${item.new_status} · ${item.prior_risk_tier} → ${item.new_risk_tier}`, reason: item.reason_code })),
           ...data.amlEvents.map((item) => ({ id: `aml-${item.event_id}`, time: item.recorded_epoch, kind: `AML · ${item.nationality}`, subject: `${item.user_id} / #${item.alert_id}`, actor: item.actor_id, change: `${item.prior_status || "—"} → ${item.new_status}`, reason: item.outcome_code || item.event_type }))]
           .sort((left, right) => right.time - left.time).slice(0, 100).map((item) => <tr key={item.id}><td>{date(item.time)}</td><td>{item.kind}</td><td className="mono">{item.subject}</td><td className="mono">{item.actor}</td><td>{item.change}</td><td>{item.reason}</td></tr>)}
       </tbody></table>{!data.kycEvents.length && !data.amlEvents.length && <p className="empty">준법 검토 이력이 없습니다.</p>}</div>

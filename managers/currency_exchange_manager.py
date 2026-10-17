@@ -65,9 +65,12 @@ class CurrencyExchangeManager:
         from functions.money import parse_currency_money
         if password is not None and (not isinstance(password, str) or not 4 <= len(password) <= 16):
             raise ValueError("비밀번호는 4~16자로 입력해주세요.")
+        from managers.compliance_manager import ComplianceManager
+        ComplianceManager.check_financial_eligibility(
+            self.db, user_id, "deposit_open"
+        )
         with self.db.atomic() as conn:
             self._user(conn, user_id)
-            from managers.compliance_manager import ComplianceManager
             ComplianceManager.require_financial_eligibility(conn, user_id)
             product = conn.execute("SELECT * FROM saving WHERE product_code=? AND product_kind='currency_saving' AND status='active'", (product_code,)).fetchone()
             if not product:
@@ -293,8 +296,9 @@ class CurrencyExchangeManager:
         requested_units = amount_units(amount)
         from managers.user_manager import UserManager
         from managers.compliance_manager import ComplianceManager
-        with self.db.readonly() as conn:
-            ComplianceManager.require_financial_eligibility(conn, sender)
+        ComplianceManager.check_financial_eligibility(
+            self.db, sender, "transfer"
+        )
         interest_error = UserManager(self.db)._settle_user_interest(sender)
         if interest_error:
             raise ValueError(interest_error)

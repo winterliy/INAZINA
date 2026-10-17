@@ -222,8 +222,9 @@ class BankManager:
             return False, "❌ 비밀번호는 4~16자로 입력해주세요."
         from managers.compliance_manager import ComplianceManager
         try:
-            with self.db.readonly() as conn:
-                ComplianceManager.require_financial_eligibility(conn, user_id)
+            ComplianceManager.check_financial_eligibility(
+                self.db, user_id, "deposit_open"
+            )
         except ValueError as exc:
             return False, f"❌ {exc}"
         # Foreign-currency savings open through the same entry point and rules.
@@ -852,8 +853,9 @@ class BankManager:
             return False, "❌ 대출·담보 금액을 확인해주세요."
         try:
             from managers.compliance_manager import ComplianceManager
-            with self.db.readonly() as conn:
-                ComplianceManager.require_financial_eligibility(conn, user_id)
+            ComplianceManager.check_financial_eligibility(
+                self.db, user_id, "loan_apply"
+            )
             self._settle_user_interest(user_id)
             with self.db.atomic(("users", "accounts", "product", "assets", "company")) as conn:
                 ComplianceManager.require_financial_eligibility(conn, user_id)

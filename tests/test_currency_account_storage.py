@@ -136,6 +136,12 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             CurrencyExchangeManager(self.db).open_account(
                 'us-user','FX_EUR','1234','3.25'
             )
+        denials = self.db.system.execute(
+            "SELECT event_type FROM kyc_profile_events WHERE user_id='us-user' "
+            "AND event_type='deposit_open_denied' ORDER BY event_id"
+        )
+        self.assertEqual([row['event_type'] for row in denials],
+                         ['deposit_open_denied','deposit_open_denied'])
 
     def test_transfer_to_own_foreign_account_uses_destination_currency_amount(self):
         manager = CurrencyExchangeManager(self.db)

@@ -144,6 +144,11 @@ class CurrencyHomeTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError,'KYC 확인'):
             self.bot.currency_mgr.transfer('citizen','admin','30')
+        denial=self.db.system.execute_one(
+            "SELECT actor_id,event_type,reason_code FROM kyc_profile_events "
+            "WHERE user_id='citizen' ORDER BY event_id DESC LIMIT 1"
+        )
+        self.assertEqual(tuple(denial),('citizen','transfer_denied','kyc_incomplete_or_expired'))
         received=self.bot.currency_mgr.transfer('admin','citizen','30')
         self.assertIn('30 NWX →',received)
         with self.db.atomic() as conn:

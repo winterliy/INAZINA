@@ -192,6 +192,12 @@ class RealisticRateSystemTests(unittest.TestCase):
             self.db.accounts.execute_one("SELECT COUNT(*) FROM loans WHERE user_id='borrower'")[0],
             0,
         )
+        denial=self.db.system.execute_one(
+            "SELECT actor_id,event_type,reason_code FROM kyc_profile_events "
+            "WHERE user_id='borrower' ORDER BY event_id DESC LIMIT 1"
+        )
+        self.assertEqual(tuple(denial),
+                         ('borrower','loan_apply_denied','kyc_incomplete_or_expired'))
         with self.db.atomic() as conn:
             ComplianceManager.set_kyc_status(
                 conn,"borrower","admin","verified",reason_code="requirements_met"
