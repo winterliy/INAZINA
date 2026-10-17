@@ -876,6 +876,13 @@ def user_loan_schedules(user_id):
                 "ORDER BY due_epoch,installment_number LIMIT 12",
                 (loan["loan_id"],),
             ).fetchall()]
+            loan["rate_resets"] = [dict(row) for row in connection.execute(
+                "SELECT old_rate,new_rate,scheduled_epoch,applied_epoch,benchmark_key,"
+                "benchmark_tenor_days FROM contract_rate_reset_history "
+                "WHERE contract_type='loan' AND contract_id=? "
+                "ORDER BY applied_epoch DESC,reset_id DESC LIMIT 3",
+                (str(loan["loan_id"]),),
+            ).fetchall()]
     return {"loans": loans}
 
 
