@@ -3222,6 +3222,20 @@ class Handler(BaseHTTPRequestHandler):
                         "discrepancy_count": report["discrepancyCount"],
                     })
                     self.send_json(200, report)
+            elif path == "/internal/admin/dr/dividend-tax":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    from managers.dr_dividend_tax_manager import DrDividendTaxManager
+                    with domain().bot.db.atomic() as connection:
+                        report = DrDividendTaxManager.reconciliation(connection)
+                        report["rules"] = DrDividendTaxManager.list_rules(connection)
+                    audit_admin_access(user["userId"], "dr_dividend_tax.read", {
+                        "rule_count": len(report["rules"]),
+                        "payment_count": len(report["payments"]),
+                    })
+                    self.send_json(200, report)
             elif path == "/internal/admin/dr/monitor":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -3440,6 +3454,23 @@ class Handler(BaseHTTPRequestHandler):
                         "snapshot_rows": result["snapshotRows"],
                     })
                 self.send_json(201 if success else 400, {"success": success, "result": result})
+                return
+            if path == "/internal/admin/dr/dividend-tax/rules":
+                user = identity(verified_id)
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                    return
+                from managers.dr_dividend_tax_manager import DrDividendTaxManager
+                manager = DrDividendTaxManager
+                with domain().bot.db.atomic() as connection:
+                    rule_id = manager.create_rule(connection, user["userId"], payload, now=int(time.time()))
+                audit_admin_access(user["userId"], "dr_dividend_tax_rule.create", {
+                    "rule_id": rule_id,
+                    "issuer_nationality": payload.get("issuer_nationality"),
+                    "underlying_nationality": payload.get("underlying_nationality"),
+                    "effective_from": payload.get("effective_from"),
+                })
+                self.send_json(201, {"success": True, "ruleId": rule_id})
                 return
             if path in {
                 "/internal/admin/dr/custody-instructions/settle",

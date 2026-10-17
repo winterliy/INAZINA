@@ -210,6 +210,53 @@ class ShareholderRegisterTests(unittest.TestCase):
         self.assertEqual(self.manager.process_due(now=due), [('CO', True, 80)])
         self.assertEqual(self.cash('admin') - admin_before, 30)
 
+    def test_cross_border_dr_tax_uses_effective_rule_and_keeps_audit_snapshot(self):
+        from managers.dr_dividend_tax_manager import DrDividendTaxManager
+        due = 100_000
+        self.prepare(due)
+        self.db.assets.execute(
+            "INSERT INTO depositary_receipts(dr_code,underlying_code,listing_exchange_id,"
+            "quote_currency,underlying_per_receipt,receipt_supply,deposited_underlying_quantity) "
+            "VALUES ('CO_DR_TAX','CO','LSE','NWX',2,100,200)"
+        )
+        self.db.assets.register_asset('CO_DR_TAX', 'CO DR TAX', 'LSE', 200,
+                                      'depositary_receipt', 100)
+        self.db.assets.add_user_asset('admin', 'CO_DR_TAX', 3)
+        with self.db.corporate.atomic() as conn:
+            old = DrDividendTaxManager.create_rule(conn, 'admin', {
+                'rule_name': 'Expired 5 percent', 'issuer_nationality': '낙원',
+                'underlying_nationality': '낙원', 'recipient_nationality': '*',
+                'recipient_residency': '*', 'tax_rate_percent': '5',
+                'effective_from': 1, 'effective_until': due,
+            }, now=1)
+            selected = DrDividendTaxManager.create_rule(conn, 'admin', {
+                'rule_name': 'Treaty 20 percent', 'issuer_nationality': '낙원',
+                'underlying_nationality': '낙원', 'recipient_nationality': '낙원',
+                'recipient_residency': '낙원', 'tax_rate_percent': '20',
+                'treaty_code': 'SIM-TEST', 'effective_from': due,
+            }, now=due)
+        before = self.cash('admin')
+        self.manager.process_due(now=due)
+        payment = self.db.corporate.execute_one(
+            "SELECT p.gross_amount,p.tax_amount,p.net_amount_units,e.rule_id,e.treaty_code,"
+            "e.tax_rate_percent,e.contract_epoch FROM dividend_payments p "
+            "JOIN dr_dividend_withholding_events e USING(payment_id) WHERE p.user_id='admin'"
+        )
+        self.assertEqual((payment['gross_amount'], payment['tax_amount'],
+                          payment['net_amount_units'], payment['rule_id'],
+                          payment['treaty_code'], payment['tax_rate_percent'],
+                          payment['contract_epoch']), (30, 6, 24 * 1_000_000,
+                                                        selected, 'SIM-TEST', '20', due))
+        self.assertNotEqual(payment['rule_id'], old)
+        self.assertEqual(self.cash('admin') - before, 24)
+        report = DrDividendTaxManager.reconciliation(self.db.corporate.conn)
+        self.assertEqual(report['unloggedPaymentCount'], 0)
+        self.assertEqual(report['currencies'][0]['difference_minor_units'], 0)
+        with self.assertRaisesRegex(Exception, 'dr_tax_rules_are_immutable'):
+            self.db.corporate.execute("UPDATE dr_dividend_tax_rules SET tax_rate_percent='1' WHERE rule_id=?", (selected,))
+        with self.assertRaisesRegex(Exception, 'dr_tax_rules_are_immutable'):
+            self.db.corporate.execute("DELETE FROM dr_dividend_tax_rules WHERE rule_id=?", (selected,))
+
     def test_special_dividend_closes_register_now_and_pays_ten_minutes_later(self):
         self.prepare()
         with patch('managers.corporate_actions_manager.time.time', return_value=1000):

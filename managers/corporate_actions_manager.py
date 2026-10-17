@@ -190,16 +190,43 @@ class CorporateActionsManager:
                           [(counterpart,gross),('cash' if funding=='issuer' else 'capital_surplus',-gross)],
                           'financing',currency=currency)
 
-    def _credit_dividend(self, conn, user, code, kind, amount, currency, now):
+    def _credit_dividend(self, conn, user, code, kind, amount, currency, now, operation_key=None):
         from database.fund_accounting import account, change_cash
+        from managers.currency_manager import CurrencyManager
         amount_decimal = Decimal(str(amount))
         amount_units = int((amount_decimal*SCALE).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
         if account(conn, user):
             if currency != 'NWX':
                 raise ValueError('펀드 배당 수령 통화는 NWX만 지원합니다.')
             change_cash(conn, user, amount, 'dividend', code)
-            return 0, amount*SCALE
+            return 0, amount*SCALE, None
         rate = CurrencyExchangeManager._rate(conn, currency)
+        dr_context = self._dr_tax_context(conn, user, code, currency, kind, now, operation_key)
+        if dr_context:
+            from functions.money import currency_precision
+            gross_major = Decimal(str(amount))
+            tax_major = (gross_major * Decimal(dr_context['tax_rate_percent']) / Decimal(100)).quantize(
+                Decimal(1).scaleb(-currency_precision(conn, currency)), rounding=ROUND_HALF_UP)
+            tax = float(tax_major) if currency_precision(conn, currency) else int(tax_major)
+            tax_units = int((tax_major * SCALE).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
+            net_units = max(0, amount_units-tax_units)
+            if tax_units:
+                treasury = CurrencyManager.treasury_id(conn, dr_context['underlying_nationality'])
+                CurrencyManager.treasury_receive(conn, treasury, currency, tax_units)
+                conn.execute('INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount,currency_code) VALUES (?,?,?,?,?,?)',
+                             (str(user), f'dr_cross_border_dividend:{code}', amount, tax,
+                              float(Decimal(net_units)/Decimal(SCALE)), currency))
+            if CurrencyManager.home(conn,user) == currency:
+                changed = conn.execute('UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?',
+                                       (net_units//SCALE, user, self.MAX_MONEY-net_units//SCALE))
+            else:
+                CurrencyExchangeManager._settle(conn, user, now)
+                account = self._currency_account(conn, user, currency, now)
+                changed = conn.execute("UPDATE accounts SET balance_units=balance_units+? WHERE account_number=? AND account_type='currency_saving' AND balance_units<=?",
+                                       (net_units, account, MAX_UNITS-net_units))
+            if changed.rowcount != 1:
+                raise ValueError('배당 수령자의 계정 또는 잔액 한도를 확인해주세요.')
+            return tax, net_units, dr_context
         tax = UserManager._tax(conn, user, f'{kind}_dividend:{code}', amount_decimal*rate)
         if CurrencyManager.home(conn,user) == currency:
             tax_native = int((Decimal(tax)/Decimal(rate)).to_integral_value(rounding=ROUND_CEILING))
@@ -220,7 +247,60 @@ class CorporateActionsManager:
             # A company's dividend income is 영업외수익 in its statements.
             listing = conn.execute('SELECT COALESCE(parent_company_code,company_code) FROM company WHERE company_code=?', (code,)).fetchone()
             CompanyAccounts.log_income(conn, user, 'dividend', amount_decimal*rate, tax, counterparty=listing[0] if listing else code)
-        return tax, net_units
+        return tax, net_units, None
+
+    @staticmethod
+    def _dr_tax_context(conn, user, underlying_code, currency, kind, contract_epoch, operation_key=None):
+        from managers.dr_dividend_tax_manager import DrDividendTaxManager
+        row = conn.execute(
+            "SELECT d.dr_code,d.quote_currency,COALESCE(de.nationality,'낙원') issuer_nationality,"
+            "COALESCE(ue.nationality,'낙원') underlying_nationality,u.nationality recipient_nationality,"
+            "COALESCE(NULLIF(u.tax_residency,''),u.nationality,'낙원') recipient_residency "
+            "FROM depositary_receipts d JOIN shareholder_registers sr ON sr.asset_code=d.underlying_code "
+            "JOIN shareholder_register_dr_entitlements h ON h.register_id=sr.register_id AND h.user_id=? "
+            "AND h.payout_currency=d.quote_currency "
+            "JOIN market_assets a ON a.code=d.dr_code "
+            "LEFT JOIN market_exchanges de ON de.exchange_id=a.exchange_id "
+            "LEFT JOIN company c ON c.company_code=d.underlying_code "
+            "LEFT JOIN market_exchanges ue ON ue.exchange_id=c.exchange_id "
+            "JOIN users u ON u.user_id=h.user_id WHERE d.underlying_code=? AND d.quote_currency=? "
+            "AND d.program_status<>'terminated' AND (? IS NULL OR sr.operation_key=?) "
+            "ORDER BY d.dr_code LIMIT 1",
+            (str(user), str(underlying_code), str(currency), operation_key, operation_key),
+        ).fetchone()
+        if not row:
+            return None
+        issuer = str(row['issuer_nationality'] or '낙원')
+        underlying = str(row['underlying_nationality'] or '낙원')
+        recipient = str(row['recipient_nationality'] or '낙원')
+        residency = str(row['recipient_residency'] or recipient)
+        product = 'depositary_receipt'
+        record = conn.execute("SELECT record_epoch FROM shareholder_registers WHERE asset_code=? AND status IN ('closed','paid') AND (? IS NULL OR operation_key=?) ORDER BY register_id DESC LIMIT 1", (str(underlying_code), operation_key, operation_key)).fetchone()
+        effective_epoch = int(record['record_epoch']) if record else int(contract_epoch)
+        rule = DrDividendTaxManager.applicable_rule(
+            conn, issuer=issuer, underlying=underlying, recipient=recipient,
+            residency=residency, product=product, contract_epoch=effective_epoch,
+        )
+        if rule:
+            rate = Decimal('0') if rule['exempt'] else Decimal(str(rule['tax_rate_percent']))
+            return {'issuer_nationality': issuer, 'underlying_nationality': underlying,
+                    'recipient_nationality': recipient, 'recipient_residency': residency,
+                    'product_type': product, 'contract_epoch': effective_epoch,
+                    'rule_id': int(rule['rule_id']), 'treaty_code': rule['treaty_code'],
+                    'tax_rate_percent': str(rate)}
+        tax_row = conn.execute("SELECT COALESCE((SELECT tax_percent FROM country_tax_rules WHERE nationality=? AND income_source=?),c.tax_percent) rate FROM users u LEFT JOIN country_currencies c ON c.nationality=u.nationality WHERE u.user_id=?", (recipient, f'{kind}_dividend', str(user))).fetchone()
+        fallback = conn.execute("SELECT value FROM settings WHERE key='tax_percent'").fetchone()
+        try:
+            fallback_rate = Decimal(str(tax_row['rate'] if tax_row and tax_row['rate'] is not None else fallback['value'] if fallback else '3'))
+        except Exception:
+            fallback_rate = Decimal('3')
+        if not fallback_rate.is_finite() or fallback_rate < 0 or fallback_rate > 100:
+            fallback_rate = Decimal('3')
+        return {'issuer_nationality': issuer, 'underlying_nationality': underlying,
+                'recipient_nationality': recipient, 'recipient_residency': residency,
+                'product_type': product, 'contract_epoch': effective_epoch,
+                'rule_id': None, 'treaty_code': None,
+                'tax_rate_percent': str(fallback_rate)}
 
     def _settle_claims(self, conn, issuer, now):
         """Pay the original record-date owner even after the shares were traded."""
@@ -233,7 +313,7 @@ class CorporateActionsManager:
                 continue
             self._debit_dividend(conn, issuer, claim['funding_source'], claim['quote_currency'], amount,
                                  counterpart='dividend_payable' if claim['funding_source']=='issuer' else 'retained')
-            tax, _ = self._credit_dividend(conn, claim['user_id'], claim['asset_code'], 'arrears', amount, claim['quote_currency'], now)
+            tax, _, _ = self._credit_dividend(conn, claim['user_id'], claim['asset_code'], 'arrears', amount, claim['quote_currency'], now)
             total_paid = int(claim['paid_amount'])+amount
             conn.execute("UPDATE preferred_dividend_claims SET paid_amount=?,status=? WHERE claim_id=?",
                          (total_paid, 'paid' if total_paid == claim['gross_amount'] else 'partial', claim['claim_id']))
@@ -271,6 +351,17 @@ class CorporateActionsManager:
             'VALUES (?,?,?,?)',
             [(register, user, currency, quantity) for user, currency, quantity in holders
              if currency != source_currency and quantity > 0])
+        # Preserve program identity even when a DR pays in the underlying's
+        # currency; the aggregate shareholder register alone cannot identify tax source.
+        conn.execute(
+            "INSERT OR IGNORE INTO shareholder_register_dr_entitlements "
+            "(register_id,user_id,dr_code,payout_currency,quantity) "
+            "SELECT ?,h.user_id,d.dr_code,d.quote_currency,SUM(h.quantity*d.underlying_per_receipt) "
+            "FROM depositary_receipts d JOIN user_assets h ON h.asset_code=d.dr_code "
+            "WHERE d.underlying_code=? AND d.program_status<>'terminated' "
+            "GROUP BY h.user_id,d.dr_code,d.quote_currency",
+            (register, str(listing['code'])),
+        )
         return register
 
     @staticmethod
@@ -349,13 +440,27 @@ class CorporateActionsManager:
                     'source_units,target_units,fee_nwx,recorded_epoch) VALUES (?,?,?,?,?,?,?)',
                     (user, currency, payout_currency, source_units, target_units, 0, now),
                 )
-            tax,net_units = self._credit_dividend(
-                conn,user,listing['code'],kind,amount,payout_currency,now
+            tax,net_units,dr_tax = self._credit_dividend(
+                conn,user,listing['code'],kind,amount,payout_currency,now,key
             )
-            conn.execute('''INSERT INTO dividend_payments
+            payment_cursor = conn.execute('''INSERT INTO dividend_payments
                 (distribution_id,user_id,quantity,gross_amount,tax_amount,net_amount_units,
                  quote_currency,created_epoch) VALUES (?,?,?,?,?,?,?,?)''',
                 (distribution,user,quantity,amount,tax,net_units,payout_currency,int(now)))
+            payment_id = int(payment_cursor.lastrowid)
+            if dr_tax:
+                remittance_treasury = CurrencyManager.treasury_id(conn, dr_tax['underlying_nationality'])
+                conn.execute('''INSERT INTO dr_dividend_withholding_events
+                    (payment_id,distribution_id,rule_id,issuer_nationality,underlying_nationality,
+                     recipient_nationality,recipient_residency,product_type,contract_epoch,treaty_code,
+                     tax_rate_percent,gross_amount,tax_amount,net_amount_units,currency_code,
+                     remittance_treasury_id,recorded_epoch)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    (payment_id,distribution,dr_tax['rule_id'],dr_tax['issuer_nationality'],
+                     dr_tax['underlying_nationality'],dr_tax['recipient_nationality'],
+                     dr_tax['recipient_residency'],dr_tax['product_type'],dr_tax['contract_epoch'],
+                     dr_tax['treaty_code'],dr_tax['tax_rate_percent'],amount,tax,net_units,
+                     payout_currency,remittance_treasury,int(now)))
             if cumulative and entitlement > source_amount:
                 conn.execute('INSERT INTO preferred_dividend_claims(issuer_code,asset_code,distribution_id,user_id,quantity,gross_amount,quote_currency,funding_source,due_epoch,created_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)',
                              (issuer,listing['code'],distribution,user,quantity,entitlement-source_amount,currency,funding,due,now))

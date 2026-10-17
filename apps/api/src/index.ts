@@ -629,6 +629,31 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  if (url.pathname === "/api/admin/dr/dividend-tax") {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const result = request.method === "GET"
+      ? await internalGet("/internal/admin/dr/dividend-tax", principal.userId)
+      : { status: 405, body: { error: "method_not_allowed" } };
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (url.pathname === "/api/admin/dr/dividend-tax/rules") {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const result = request.method === "POST"
+      ? await internalRequest("POST", "/internal/admin/dr/dividend-tax/rules", principal.userId,
+        await requestJson(request))
+      : { status: 405, body: { error: "method_not_allowed" } };
+    send(response, result.status, result.body);
+    return;
+  }
+
   const drCustodyActionMatch = url.pathname.match(/^\/api\/admin\/dr\/custody-instructions\/(settle|cancel|reject)$/);
   if (drCustodyActionMatch) {
     if (user.role !== "admin") {

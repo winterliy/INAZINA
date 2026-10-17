@@ -1,5 +1,6 @@
 """Versioned, internal-only cross-border DR dividend withholding rules."""
 from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP
 
 
 class DrDividendTaxManager:
@@ -76,11 +77,20 @@ class DrDividendTaxManager:
 
     @staticmethod
     def reconciliation(conn, limit=200):
-        rows = [dict(row) for row in conn.execute(
-            "SELECT currency_code,COUNT(*) payment_count,SUM(gross_amount) gross_minor_units,"
-            "SUM(tax_amount) tax_minor_units,SUM(net_amount_units) net_minor_units,"
-            "SUM(gross_amount)*1000000-SUM(tax_amount)*1000000-SUM(net_amount_units) difference_scaled "
-            "FROM dr_dividend_withholding_events GROUP BY currency_code ORDER BY currency_code")]
+        from functions.money import currency_precision
+        rows = []
+        for row in conn.execute(
+            "SELECT currency_code,COUNT(*) payment_count,SUM(gross_amount) gross_amount,"
+            "SUM(tax_amount) tax_amount,SUM(net_amount_units) net_amount_units "
+            "FROM dr_dividend_withholding_events GROUP BY currency_code ORDER BY currency_code"):
+            places = currency_precision(conn, row["currency_code"])
+            scale = Decimal(10) ** places
+            gross = int((Decimal(str(row["gross_amount"] or 0))*scale).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+            tax = int((Decimal(str(row["tax_amount"] or 0))*scale).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+            net = int((Decimal(int(row["net_amount_units"] or 0))*scale/Decimal(1_000_000)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+            rows.append({"currency_code": row["currency_code"], "payment_count": int(row["payment_count"]),
+                         "gross_minor_units": gross, "tax_minor_units": tax,
+                         "net_minor_units": net, "difference_minor_units": gross-tax-net})
         payments = [dict(row) for row in conn.execute(
             "SELECT e.*,p.user_id,p.quantity,p.quote_currency FROM dr_dividend_withholding_events e "
             "JOIN dividend_payments p USING(payment_id) ORDER BY e.event_id DESC LIMIT ?",
@@ -89,6 +99,10 @@ class DrDividendTaxManager:
                 "unloggedPaymentCount": conn.execute(
                     "SELECT COUNT(*) FROM dividend_payments p JOIN depositary_receipts r "
                     "ON r.underlying_code=(SELECT asset_code FROM dividend_distributions d "
-                    "WHERE d.distribution_id=p.distribution_id) WHERE NOT EXISTS "
+                    "WHERE d.distribution_id=p.distribution_id) JOIN dividend_distributions d "
+                    "ON d.distribution_id=p.distribution_id JOIN shareholder_registers sr "
+                    "ON sr.operation_key=d.operation_key JOIN shareholder_register_dr_entitlements h "
+                    "ON h.register_id=sr.register_id AND h.user_id=p.user_id "
+                    "AND h.payout_currency=p.quote_currency WHERE NOT EXISTS "
                     "(SELECT 1 FROM dr_dividend_withholding_events e WHERE e.payment_id=p.payment_id)"
                 ).fetchone()[0]}

@@ -119,6 +119,14 @@ class CorporateDB(DBManager):
             payout_currency TEXT NOT NULL,
             quantity REAL NOT NULL CHECK(quantity > 0),
             PRIMARY KEY(register_id,user_id,payout_currency))''')
+        self.execute('''CREATE TABLE IF NOT EXISTS shareholder_register_dr_entitlements (
+            register_id INTEGER NOT NULL REFERENCES shareholder_registers(register_id),
+            user_id TEXT NOT NULL,
+            dr_code TEXT NOT NULL,
+            payout_currency TEXT NOT NULL,
+            quantity REAL NOT NULL CHECK(quantity > 0),
+            PRIMARY KEY(register_id,user_id,dr_code))''')
+        self.execute('CREATE INDEX IF NOT EXISTS idx_register_dr_entitlement_user ON shareholder_register_dr_entitlements(register_id,user_id,payout_currency)')
         self.execute('CREATE INDEX IF NOT EXISTS idx_registers_due ON shareholder_registers(status, pay_epoch)')
         self.execute('''CREATE TABLE IF NOT EXISTS dividend_distributions (
             distribution_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -187,6 +195,18 @@ class CorporateDB(DBManager):
             currency_code TEXT NOT NULL,
             remittance_treasury_id TEXT NOT NULL,
             recorded_epoch INTEGER NOT NULL)''')
+        self.execute('''CREATE TRIGGER IF NOT EXISTS dr_dividend_tax_rules_no_update
+            BEFORE UPDATE ON dr_dividend_tax_rules BEGIN
+            SELECT RAISE(ABORT,'dr_tax_rules_are_immutable'); END''')
+        self.execute('''CREATE TRIGGER IF NOT EXISTS dr_dividend_tax_rules_no_delete
+            BEFORE DELETE ON dr_dividend_tax_rules BEGIN
+            SELECT RAISE(ABORT,'dr_tax_rules_are_immutable'); END''')
+        self.execute('''CREATE TRIGGER IF NOT EXISTS dr_dividend_withholding_no_update
+            BEFORE UPDATE ON dr_dividend_withholding_events BEGIN
+            SELECT RAISE(ABORT,'dr_withholding_events_are_immutable'); END''')
+        self.execute('''CREATE TRIGGER IF NOT EXISTS dr_dividend_withholding_no_delete
+            BEFORE DELETE ON dr_dividend_withholding_events BEGIN
+            SELECT RAISE(ABORT,'dr_withholding_events_are_immutable'); END''')
         payment_schema = self.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='dividend_payments'"
         )

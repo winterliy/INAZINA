@@ -16,6 +16,7 @@ type DrDeviationSample = { sample_id: number; dr_code: string; sampled_epoch: nu
 type DrDeviationEvent = { event_id: number; dr_code: string; from_state: string; to_state: DrDeviationSample["state"]; recorded_epoch: number; deviation_percent: number | null };
 type DrVotingMeeting = { meetingId: number; underlyingCode: string; title: string; recordEpoch: number; createdEpoch: number; opensEpoch: number | null; closesEpoch: number | null; quorumPercent: number; agendaCount: number };
 type DrVotingResult = { agendaItemId: number; title: string; choices: Record<string, { votingPower: number; ballots: number }>; eligibleVotingPower: number; turnoutVotingPower: number; turnoutPercent: number; votingOpensEpoch: number | null; votingClosesEpoch: number | null; closed: boolean; quorumPercent: number; quorumMet: boolean | null };
+type DrTaxReport = { rules: { rule_id: number; rule_name: string; issuer_nationality: string; underlying_nationality: string; recipient_nationality: string; recipient_residency: string; product_type: string; treaty_code: string | null; tax_rate_percent: string; exempt: number; effective_from: number; effective_until: number | null }[]; currencies: { currency_code: string; payment_count: number; gross_minor_units: number; tax_minor_units: number; net_minor_units: number; difference_minor_units: number }[]; payments: { event_id: number; payment_id: number; rule_id: number | null; user_id: string; currency_code: string; issuer_nationality: string; underlying_nationality: string; recipient_nationality: string; recipient_residency: string; treaty_code: string | null; tax_rate_percent: string; gross_amount: number; tax_amount: number; net_amount_units: number; recorded_epoch: number }[]; unloggedPaymentCount: number };
 type Detail = { code: string; kind: string; status: string; values: Record<string, unknown>; row: Record<string, unknown> };
 type Editor = { mode: "create" | "edit"; kind: string; code: string; values: Record<string, string>; advanced: Record<string, string>; original: Detail | null };
 
@@ -101,6 +102,9 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
   const [drVotingMeetings, setDrVotingMeetings] = useState<DrVotingMeeting[]>([]);
   const [drVotingMeetingId, setDrVotingMeetingId] = useState("");
   const [drVotingResults, setDrVotingResults] = useState<DrVotingResult[]>([]);
+  const [drTaxReport, setDrTaxReport] = useState<DrTaxReport | null>(null);
+  const [drTaxError, setDrTaxError] = useState(false);
+  const [drTaxRule, setDrTaxRule] = useState({ rule_name: "", issuer_nationality: "", underlying_nationality: "", recipient_nationality: "*", recipient_residency: "*", product_type: "depositary_receipt", treaty_code: "", tax_rate_percent: "0", effective_from: String(Math.floor(Date.now()/1000)), effective_until: "", exempt: false });
   const [drVotingError, setDrVotingError] = useState(false);
   const [drVotingUnderlying, setDrVotingUnderlying] = useState("");
   const [drVotingTitle, setDrVotingTitle] = useState("");
@@ -153,6 +157,13 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
         setDrCustodyReconciliation(null);
       }
       try {
+        setDrTaxReport(await api<DrTaxReport>("/api/admin/dr/dividend-tax"));
+        setDrTaxError(false);
+      } catch {
+        setDrTaxReport(null);
+        setDrTaxError(true);
+      }
+      try {
         const drLedger = await api<{ movements: DrMovement[] }>("/api/admin/dr/movements?limit=100");
         setDrMovements(drLedger.movements);
         setDrLedgerError(false);
@@ -192,6 +203,8 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
       setDrVotingMeetings([]);
       setDrVotingResults([]);
       setDrVotingError(false);
+      setDrTaxReport(null);
+      setDrTaxError(false);
     }
   }, [group, say, drVotingMeetingId]);
 
@@ -370,6 +383,24 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
       </div>
       {selectedVotingMeeting && <p className="hint">회의 #{selectedVotingMeeting.meetingId} · 기준 시각 {date(selectedVotingMeeting.recordEpoch)} · 안건 {selectedVotingMeeting.agendaCount}개 · {selectedVotingMeeting.opensEpoch ? `투표 ${date(selectedVotingMeeting.opensEpoch)} ~ ${date(selectedVotingMeeting.closesEpoch ?? 0)}` : "투표기간 미설정"} · 정족수 {number(selectedVotingMeeting.quorumPercent)}%</p>}
       <div className="scroll-x"><table><thead><tr><th>안건</th><th>선택지별 의결권</th><th className="r">참여율</th><th>상태</th></tr></thead><tbody>{drVotingResults.map((result) => <tr key={result.agendaItemId}><td>{result.title}</td><td>{Object.entries(result.choices).map(([choice, tally]) => `${choice} ${number(tally.votingPower)}표`).join(" · ")}</td><td className="r mono">{number(result.turnoutPercent)}%</td><td>{result.closed ? result.quorumMet ? "종료 · 정족수 충족" : "종료 · 정족수 미달" : "진행 전/중"}</td></tr>)}</tbody></table>{!drVotingResults.length && <p className="empty">선택한 회의의 안건 결과가 없습니다.</p>}</div>
+    </Card>}
+
+    {group === "market" && <Card title="DR 국경간 배당·원천징수" caption="DR 상장국·기초주국·수익자 국적/세무거주지·기준일에 유효한 불변 규칙으로 세율을 고정합니다. 세무거주지가 비어 있으면 국적을 대용합니다. 외부 조세조약 데이터나 실제 송금은 연결하지 않습니다.">
+      <div className="form-grid">
+        {([ ["rule_name", "규칙 이름"], ["issuer_nationality", "DR 발행/상장국"], ["underlying_nationality", "기초주 발행국"], ["recipient_nationality", "수익자 국적 (* 전체)"], ["recipient_residency", "세무거주지 (* 전체)"], ["product_type", "상품 유형"], ["treaty_code", "조약 코드(선택)"], ["tax_rate_percent", "세율 %"], ["effective_from", "효력 시작 epoch"], ["effective_until", "효력 종료 epoch(선택)"] ] as const).map(([key, label]) => <Field key={key} label={label}>
+          <input className="mono" value={drTaxRule[key]} onChange={(event) => setDrTaxRule({ ...drTaxRule, [key]: event.target.value })} />
+        </Field>)}
+        <Field label="면세"><select value={drTaxRule.exempt ? "1" : "0"} onChange={(event) => setDrTaxRule({ ...drTaxRule, exempt: event.target.value === "1" })}><option value="0">아니오</option><option value="1">예</option></select></Field>
+      </div>
+      <p className="hint">규칙 수정·삭제 대신 새 유효기간 버전을 추가합니다. 과거 배당은 저장된 규칙 ID·세율·국가·계약(주주명부 기준일)으로 유지됩니다. 설정 규칙이 없으면 기존 수익자 국가 배당세율을 적용합니다.</p>
+      <button type="button" className="btn primary" disabled={busy || !drTaxRule.rule_name.trim() || !drTaxRule.issuer_nationality.trim() || !drTaxRule.underlying_nationality.trim()} onClick={() => void run(() => api<{ success: boolean; ruleId: number }>("/api/admin/dr/dividend-tax/rules", { method: "POST", body: JSON.stringify({ ...drTaxRule, effective_until: drTaxRule.effective_until || null, treaty_code: drTaxRule.treaty_code || null }) }), "DR 원천징수 규칙을 저장하지 못했습니다.", async () => { say("원천징수 규칙 버전을 추가했습니다."); await load(); })}>불변 규칙 버전 추가</button>
+      {drTaxReport ? <>
+        <h3 className="sub-head">원천징수 대사</h3>
+        {drTaxReport.unloggedPaymentCount > 0 && <p className="notice error">DR 배당 지급 중 세금 상세 이벤트가 없는 과거 기록 {number(drTaxReport.unloggedPaymentCount)}건. 신규 지급부터 상세 기록됩니다.</p>}
+        <div className="scroll-x"><table><thead><tr><th>통화</th><th className="r">건수</th><th className="r">총배당 최소단위</th><th className="r">원천징수 최소단위</th><th className="r">순배당 최소단위</th><th className="r">대사 차이</th></tr></thead><tbody>{drTaxReport.currencies.map((item) => <tr key={item.currency_code}><td>{item.currency_code}</td><td className="r mono">{number(item.payment_count)}</td><td className="r mono">{number(item.gross_minor_units)}</td><td className="r mono">{number(item.tax_minor_units)}</td><td className="r mono">{number(item.net_minor_units)}</td><td className="r mono">{number(item.difference_minor_units)}</td></tr>)}</tbody></table>{!drTaxReport.currencies.length && <p className="empty">DR 원천징수 기록이 없습니다.</p>}</div>
+        <h3 className="sub-head">규칙 이력</h3><div className="scroll-x"><table><thead><tr><th>ID / 이름</th><th>DR 발행국 → 기초주국</th><th>수익자 국적 / 거주</th><th>조약</th><th>세율 / 면세</th><th>효력 epoch</th></tr></thead><tbody>{drTaxReport.rules.map((item) => <tr key={item.rule_id}><td>{item.rule_id} · {item.rule_name}</td><td>{item.issuer_nationality} → {item.underlying_nationality}</td><td>{item.recipient_nationality} / {item.recipient_residency}</td><td>{item.treaty_code ?? "—"}</td><td>{item.exempt ? "면세" : `${item.tax_rate_percent}%`}</td><td>{item.effective_from} ~ {item.effective_until ?? "∞"}</td></tr>)}</tbody></table></div>
+        <h3 className="sub-head">최근 지급 상세</h3><div className="scroll-x"><table><thead><tr><th>시각</th><th>사용자</th><th>관할(발행/기초/국적/거주)</th><th>통화</th><th className="r">총배당</th><th className="r">세율 / 세금</th><th>조약 / 규칙</th></tr></thead><tbody>{drTaxReport.payments.map((item) => <tr key={item.event_id}><td>{date(item.recorded_epoch)}</td><td className="mono">{item.user_id}</td><td>{item.issuer_nationality} / {item.underlying_nationality} / {item.recipient_nationality} / {item.recipient_residency}</td><td>{item.currency_code}</td><td className="r mono">{number(item.gross_amount)}</td><td className="r mono">{item.tax_rate_percent}% / {number(item.tax_amount)}</td><td>{item.treaty_code ?? "—"} · #{item.rule_id ?? "기본세율"}</td></tr>)}</tbody></table>{drTaxError && <p className="empty">DR 세무 정보를 불러오지 못했습니다.</p>}</div>
+      </> : <p className="empty">{drTaxError ? "DR 세무 정보를 불러오지 못했습니다." : "불러오는 중…"}</p>}
     </Card>}
 
     {group === "market" && <Card title="DR 전환 원장" caption="최근 100건 · 조회 전용 불변 기록. 예탁 풀 단가는 수탁 원장 대사용이고, 보유자 이전원가는 상환 후 개인에게 돌아가는 세무 원가입니다. 시뮬레이터 기록이지 실제 수탁 증빙은 아닙니다.">
