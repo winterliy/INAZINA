@@ -1,6 +1,7 @@
 """Game policy rates and nationality-specific legal interest-rate caps."""
 
 import math
+import json
 import time
 from datetime import datetime, timedelta, timezone
 from contextlib import nullcontext
@@ -944,6 +945,13 @@ class RateManager:
             if tenor <= 0 or not math.isfinite(rate) or not -100 <= rate <= 100:
                 raise ValueError("만기는 양의 정수, 시장금리는 -100~100%여야 합니다.")
             with (self.db.atomic(("system", "product")) if conn is None else nullcontext(conn)) as db_conn:
+                previous = db_conn.execute(
+                    "SELECT annual_rate FROM market_rate_curve "
+                    "WHERE nationality=? AND benchmark_key=? AND tenor_days=?",
+                    (str(nationality), key, tenor),
+                ).fetchone()
+                if not previous:
+                    raise ValueError("해당 국가·지표·만기 구간을 찾을 수 없습니다.")
                 updated = db_conn.execute(
                     "UPDATE market_rate_curve SET annual_rate=?,updated_epoch=? "
                     "WHERE nationality=? AND benchmark_key=? AND tenor_days=?",
@@ -956,6 +964,14 @@ class RateManager:
                     (str(nationality), key, tenor, rate, when, str(actor_id)),
                 )
                 self.reprice_floating_products(db_conn, str(nationality))
+                db_conn.execute(
+                    "INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
+                    (str(actor_id), "market_rate.set", json.dumps({
+                        "nationality": str(nationality), "benchmark_key": key,
+                        "tenor_days": tenor, "before": float(previous["annual_rate"]),
+                        "after": rate,
+                    }, sort_keys=True, separators=(",", ":")), when),
+                )
             return True, f"✅ {nationality} {MARKET_RATE_NAMES[key]} {tenor}일물을 연 {rate:g}%로 설정했습니다."
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f"❌ {exc}"

@@ -4,11 +4,13 @@ import { api } from "../../shared/api";
 import { Card, Field, date, plain, type Ctx } from "./common";
 
 type Kyc = { user_id: string; status: string; risk_tier: string; reviewed_by: string | null; reviewed_epoch: number | null; expires_epoch: number | null; updated_epoch: number };
-type Alert = { alert_id: number; user_id: string; nationality: string; rule_code: string; reference_key: string; currency_code: string; amount: number; status: string; outcome_code: string | null; opened_epoch: number; reviewed_by: string | null; reviewed_epoch: number | null };
+type Alert = { alert_id: number; user_id: string; nationality: string; rule_code: string; reference_key: string; currency_code: string; amount: number; amount_text: string; status: string; outcome_code: string | null; opened_epoch: number; reviewed_by: string | null; reviewed_epoch: number | null };
 type Rule = { nationality: string; currency_code: string; large_transaction_limit: number; rolling_24h_amount_limit: number; rolling_24h_count_limit: number; enabled: number; updated_epoch: number };
 type KycEvent = { event_id: number; user_id: string; actor_id: string; event_type: string; prior_status: string; new_status: string; prior_risk_tier: string; new_risk_tier: string; reason_code: string; recorded_epoch: number };
 type AmlEvent = { event_id: number; alert_id: number; actor_id: string; event_type: string; prior_status: string | null; new_status: string; outcome_code: string | null; recorded_epoch: number; nationality: string; user_id: string };
-type Overview = { kycProfiles: Kyc[]; amlAlerts: Alert[]; amlRules: Rule[]; kycEvents: KycEvent[]; amlEvents: AmlEvent[] };
+type EclScenario = { nationality: string; scenario_key: "optimistic" | "base" | "downside"; probability: number; pd_multiplier: number; lgd_multiplier: number; updated_epoch: number };
+type EclAssessment = { assessment_id: number; loan_id: number; as_of_day: string; stage: number; pd_12m: number; lifetime_pd: number; lgd: number; ead: number; expected_loss: number; ead_text: string; expected_loss_text: string; decimal_places: number; quote_currency: string; scenario: string; calculated_epoch: number; nationality: string };
+type Overview = { kycProfiles: Kyc[]; amlAlerts: Alert[]; amlRules: Rule[]; kycEvents: KycEvent[]; amlEvents: AmlEvent[]; creditRiskScenarios: EclScenario[]; eclAssessments: EclAssessment[] };
 type Result = { success: boolean; result: Record<string, unknown> };
 
 const KYC_STATUSES = [["pending", "검토 대기"], ["verified", "확인 완료"], ["rejected", "확인 거절"], ["expired", "만료"]];
@@ -18,11 +20,12 @@ const OUTCOMES = [["no_action", "추가 조치 없음"], ["false_positive", "오
 /** Administrator-only simulator compliance controls; never collects identity documents. */
 export function CompliancePage({ ctx }: { ctx: Ctx }) {
   const { busy, run, say } = ctx;
-  const [data, setData] = useState<Overview>({ kycProfiles: [], amlAlerts: [], amlRules: [], kycEvents: [], amlEvents: [] });
+  const [data, setData] = useState<Overview>({ kycProfiles: [], amlAlerts: [], amlRules: [], kycEvents: [], amlEvents: [], creditRiskScenarios: [], eclAssessments: [] });
   const [nationality, setNationality] = useState("");
   const [kyc, setKyc] = useState({ userId: "", status: "pending", riskTier: "standard", reasonCode: "review_started", expires: "" });
   const [rule, setRule] = useState({ large: "", rollingAmount: "", rollingCount: "", enabled: false });
   const [outcomes, setOutcomes] = useState<Record<number, string>>({});
+  const [scenarioDraft, setScenarioDraft] = useState<Record<string, { probability: string; pdMultiplier: string; lgdMultiplier: string }>>({});
 
   const load = useCallback(async () => {
     const suffix = nationality ? `?nationality=${encodeURIComponent(nationality)}` : "";
@@ -31,6 +34,11 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
     if (!nationality && result.amlRules.length) setNationality(result.amlRules[0].nationality);
     const selected = result.amlRules.find((item) => item.nationality === nationality) ?? result.amlRules[0];
     if (selected) setRule({ large: String(selected.large_transaction_limit || ""), rollingAmount: String(selected.rolling_24h_amount_limit || ""), rollingCount: String(selected.rolling_24h_count_limit || ""), enabled: Boolean(selected.enabled) });
+    const selectedCountry = nationality || selected?.nationality || "";
+    const scenarios = result.creditRiskScenarios.filter((item) => item.nationality === selectedCountry);
+    if (scenarios.length) setScenarioDraft(Object.fromEntries(scenarios.map((item) => [item.scenario_key, {
+      probability: String(item.probability), pdMultiplier: String(item.pd_multiplier), lgdMultiplier: String(item.lgd_multiplier),
+    }])));
   }, [nationality]);
 
   useEffect(() => { load().catch((cause) => say(cause instanceof Error ? cause.message : "준법 정보를 불러오지 못했습니다.", true)); }, [load, say]);
@@ -71,6 +79,20 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
       });
   }
 
+  function saveScenarios(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const scenarios = (["optimistic", "base", "downside"] as const).map((key) => ({ key,
+      probability: Number(scenarioDraft[key]?.probability), pdMultiplier: Number(scenarioDraft[key]?.pdMultiplier), lgdMultiplier: Number(scenarioDraft[key]?.lgdMultiplier),
+    }));
+    if (scenarios.some((item) => !Number.isFinite(item.probability) || item.probability < 0 || item.probability > 1 || !Number.isFinite(item.pdMultiplier) || item.pdMultiplier < 0 || item.pdMultiplier > 20 || !Number.isFinite(item.lgdMultiplier) || item.lgdMultiplier < 0 || item.lgdMultiplier > 5) || scenarios.reduce((sum, item) => sum + item.probability, 0) <= 0) {
+      say("확률 0~1, PD 배수 0~20, LGD 배수 0~5 범위로 입력하고 확률 합은 0보다 커야 합니다.", true); return;
+    }
+    if (!window.confirm(`${nationality}의 ECL 낙관·기준·하방 가정을 저장할까요? 이후 평가에 적용됩니다.`)) return;
+    void run(() => api<Result>("/api/admin/compliance", { method: "POST", body: JSON.stringify({ action: "credit_risk_scenarios", nationality,
+      scenarios: scenarios.map(({ key, probability, pdMultiplier, lgdMultiplier }) => ({ key, probability, pdMultiplier, lgdMultiplier })) }) }),
+      "ECL 시나리오를 저장하지 못했습니다.", async (result) => { say(plain(JSON.stringify(result.result)), !result.success); await load(); });
+  }
+
   const selectedRule = data.amlRules.find((item) => item.nationality === nationality);
   return <>
     <Card title="KYC 상태 검토" caption="상태·위험등급·고정 사유 코드와 검토 이력만 저장합니다. 실명, 신분증 번호·이미지, 자유기술형 증빙은 입력하지 마세요."
@@ -100,9 +122,27 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
       <p className="hint">현재 규칙 {selectedRule ? `${selectedRule.currency_code} · ${selectedRule.enabled ? "활성" : "비활성"} · 갱신 ${date(selectedRule.updated_epoch)}` : "없음"}</p>
     </Card>
 
+    <Card title="국적별 기대신용손실(ECL) 시나리오" caption="낙관·기준·하방 확률가중 점수카드 가정입니다. 감독기관 승인 모델이 아니며 변경은 관리자 감사 기록에 남습니다.">
+      <form className="form-grid" onSubmit={saveScenarios}>
+        <Field label="국적"><select value={nationality} onChange={(event) => setNationality(event.target.value)}>{data.creditRiskScenarios.filter((item, index, rows) => rows.findIndex((other) => other.nationality === item.nationality) === index).map((item) => <option key={item.nationality} value={item.nationality}>{item.nationality}</option>)}</select></Field>
+        {(["optimistic", "base", "downside"] as const).map((key) => <div className="span-wide" key={key}><h3 className="sub-head">{({ optimistic: "낙관", base: "기준", downside: "하방" })[key]} 시나리오</h3><div className="form-grid">
+          <Field label="확률 (0~1)"><input type="number" min="0" max="1" step="0.01" required value={scenarioDraft[key]?.probability ?? ""} onChange={(event) => setScenarioDraft({ ...scenarioDraft, [key]: { ...scenarioDraft[key], probability: event.target.value } })} /></Field>
+          <Field label="PD 배수 (0~20)"><input type="number" min="0" max="20" step="0.01" required value={scenarioDraft[key]?.pdMultiplier ?? ""} onChange={(event) => setScenarioDraft({ ...scenarioDraft, [key]: { ...scenarioDraft[key], pdMultiplier: event.target.value } })} /></Field>
+          <Field label="LGD 배수 (0~5)"><input type="number" min="0" max="5" step="0.01" required value={scenarioDraft[key]?.lgdMultiplier ?? ""} onChange={(event) => setScenarioDraft({ ...scenarioDraft, [key]: { ...scenarioDraft[key], lgdMultiplier: event.target.value } })} /></Field>
+        </div></div>)}
+        <button className="btn primary" disabled={busy || !nationality}>ECL 가정 저장</button>
+      </form>
+    </Card>
+
+    <Card title="최근 대출 ECL 평가" caption="최근 100건 · 평가 결과는 통화별 원장 정밀도로 저장된 시뮬레이션 값입니다.">
+      <div className="scroll-x"><table><thead><tr><th>일자</th><th>대출</th><th>국적</th><th>단계</th><th className="r">12개월 PD</th><th className="r">기간 PD</th><th className="r">LGD</th><th className="r">EAD</th><th className="r">기대손실</th><th>통화</th><th>시나리오</th></tr></thead><tbody>
+        {data.eclAssessments.map((item) => <tr key={item.assessment_id}><td>{item.as_of_day}</td><td className="mono">#{item.loan_id}</td><td>{item.nationality}</td><td>{item.stage}</td><td className="r">{(item.pd_12m * 100).toFixed(2)}%</td><td className="r">{(item.lifetime_pd * 100).toFixed(2)}%</td><td className="r">{(item.lgd * 100).toFixed(2)}%</td><td className="r mono">{groupAmount(item.ead_text)}</td><td className="r mono">{groupAmount(item.expected_loss_text)}</td><td>{item.quote_currency}</td><td>{plain(item.scenario)}</td></tr>)}
+      </tbody></table>{!data.eclAssessments.length && <p className="empty">아직 ECL 평가가 없습니다.</p>}</div>
+    </Card>
+
     <Card title="미종결 AML 경보" caption="거래가 자동 차단되는 것은 아닙니다. 각 경보 검토 후 추가 조치가 필요하면 별도 절차를 적용하세요.">
       <div className="scroll-x"><table><thead><tr><th>ID</th><th>사용자</th><th>국적</th><th>규칙</th><th>거래 참조</th><th className="r">금액</th><th>상태</th><th>종결 결과</th><th>접수</th><th /></tr></thead><tbody>
-        {data.amlAlerts.map((item) => <tr key={item.alert_id}><td className="mono">#{item.alert_id}</td><td className="mono">{item.user_id}</td><td>{item.nationality}</td><td>{item.rule_code}</td><td className="mono">{item.reference_key}</td><td className="r mono">{numberAmount(item.amount)} {item.currency_code}</td><td>{item.status}</td><td><select aria-label={`AML 경보 #${item.alert_id} 종결 결과`} value={outcomes[item.alert_id] || "no_action"} onChange={(event) => setOutcomes({ ...outcomes, [item.alert_id]: event.target.value })}>{OUTCOMES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></td><td>{date(item.opened_epoch)}</td><td className="row-actions"><button className="soft small" disabled={busy || item.status === "reviewing"} onClick={() => reviewAlert(item, false)}>검토 시작</button><button className="soft small" disabled={busy} onClick={() => reviewAlert(item, true)}>종결</button></td></tr>)}
+        {data.amlAlerts.map((item) => <tr key={item.alert_id}><td className="mono">#{item.alert_id}</td><td className="mono">{item.user_id}</td><td>{item.nationality}</td><td>{item.rule_code}</td><td className="mono">{item.reference_key}</td><td className="r mono">{groupAmount(item.amount_text)} {item.currency_code}</td><td>{item.status}</td><td><select aria-label={`AML 경보 #${item.alert_id} 종결 결과`} value={outcomes[item.alert_id] || "no_action"} onChange={(event) => setOutcomes({ ...outcomes, [item.alert_id]: event.target.value })}>{OUTCOMES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></td><td>{date(item.opened_epoch)}</td><td className="row-actions"><button className="soft small" disabled={busy || item.status === "reviewing"} onClick={() => reviewAlert(item, false)}>검토 시작</button><button className="soft small" disabled={busy} onClick={() => reviewAlert(item, true)}>종결</button></td></tr>)}
       </tbody></table>{!data.amlAlerts.length && <p className="empty">미종결 경보가 없습니다.</p>}</div>
     </Card>
 
@@ -116,4 +156,8 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
   </>;
 }
 
-function numberAmount(value: number) { return new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 6 }).format(value); }
+function groupAmount(value: string) {
+  const [whole, fraction] = value.split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return fraction === undefined ? grouped : `${grouped}.${fraction}`;
+}

@@ -169,6 +169,9 @@ class AdminCommandsManager:
             # Savings, FX, CMA, IMA and wrap accounts share the saving table.
             if row and table=='saving' and (row['product_kind'] or 'saving')!=SAVING_KINDS.get(category):
                 row=None
+            # Depositary receipts and other listed assets share market_assets.
+            if row and table=='market_assets' and (row['type']=='depositary_receipt')!=(category=='dr'):
+                row=None
             if row:
                 matches.append((category,dict(row)))
         row=conn.execute('SELECT * FROM investment WHERE product_code=?',(code,)).fetchone()

@@ -8,6 +8,8 @@ from functions import user_actions
 
 # Discord-only server/onboarding commands and views the HTS already has (search, chart, wallet).
 DISCORD_ONLY = {"설치", "등록", "서버등록", "서버탈퇴", "도움말", "검색", "그래프", "내지갑"}
+# Offered in the HTS through its own DR issue/redeem panel, not the command list.
+HTS_PANEL = {"dr전환"}
 
 
 class UserActionTests(unittest.TestCase):
@@ -16,7 +18,7 @@ class UserActionTests(unittest.TestCase):
         definitions = source[source.index("definitions = ("):source.index("for name, description, callback in definitions")]
         slash = set(re.findall(r'\(\s*"([^"]+)",\s*"', definitions))
         offered = {item["name"] for item in user_actions.catalog()}
-        self.assertEqual(slash - DISCORD_ONLY, offered - {"주문취소"})
+        self.assertEqual(slash - DISCORD_ONLY - HTS_PANEL, offered - {"주문취소"})
 
     def test_values_are_validated_before_running(self):
         with self.assertRaisesRegex(ValueError, "알 수 없는"):

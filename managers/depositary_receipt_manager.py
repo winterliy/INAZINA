@@ -34,6 +34,8 @@ class DepositaryReceiptManager:
                 if prior:
                     if str(prior["user_id"]) != str(user_id) or str(prior["dr_code"]) != str(dr_code):
                         raise ValueError("이미 다른 DR 전환에 사용된 요청 참조값입니다.")
+                    if prior["movement_type"] != action or int(prior["dr_quantity"]) != quantity:
+                        raise ValueError("요청 참조값이 다른 DR 전환 내용에 이미 사용되었습니다.")
                     return True, (f"✅ 이 전환 요청은 이미 처리되었습니다. "
                                   f"{prior['movement_type']} {prior['dr_quantity']} DR")
 

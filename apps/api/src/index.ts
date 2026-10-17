@@ -521,6 +521,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/me/dr/movements") {
+    const result = await internalGet("/internal/me/dr/movements", principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/market/orders") {
     const result = await internalGet("/internal/market/orders", principal.userId);
     send(response, result.status, result.body);
@@ -730,7 +736,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   // Product, country, exchange, user-detail, help and bot-job administration.
-  const adminMatch = url.pathname.match(/^\/api\/admin\/((?:products|countries|exchanges|help|bot-jobs|user|companies|warnings|feedback|logs|compliance|bank-journal)(?:\/[^/]+){0,2})$/);
+  const adminMatch = url.pathname.match(/^\/api\/admin\/((?:products|countries|exchanges|help|bot-jobs|user|companies|warnings|feedback|logs|compliance|bank-journal|dr)(?:\/[^/]+){0,2})$/);
   if (adminMatch) {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });

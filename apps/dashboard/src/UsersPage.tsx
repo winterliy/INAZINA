@@ -6,7 +6,9 @@ import { Card, Field, Tabs, changed, date, number, plain, show, text, type Ctx }
 type Citizen = { userId: string; nickname: string; nationality: string; cash: number; creditScore: number; status: string; role: string; accountType: "discord" | "country" | "company"; companyCode: string | null };
 type WebLogin = { hts_id: string | null; created_epoch: number; updated_epoch: number; auth_version: number };
 type UserDetail = { user: Record<string, string | number | null>; accountType: "discord" | "country" | "company"; webLogin: WebLogin | null; accounts: Record<string, unknown>[]; loans: Record<string, unknown>[]; holdings: { asset_code: string; quantity: number }[] };
-type Country = { nationality: string; currency_code: string; currency_name: string | null; base_rate: number; legal_max_rate: number; tax_percent: number; treasuryId: string | null; treasuryCash: number | null; citizens: number; guilds: string[]; exchanges: string[]; account: { status: string; role: string; hts_id: string | null } | null };
+type MarketRate = { benchmark_key: "funding" | "bank_bond" | "treasury"; tenor_days: number; annual_rate: number; updated_epoch: number };
+type RatePressure = { benchmark_key: string; adjustment: number; updated_epoch: number };
+type Country = { nationality: string; currency_code: string; currency_name: string | null; base_rate: number; legal_max_rate: number; tax_percent: number; treasuryId: string | null; treasuryCash: number | null; citizens: number; guilds: string[]; exchanges: string[]; marketRates: MarketRate[]; marketRatePressure: RatePressure[]; account: { status: string; role: string; hts_id: string | null } | null };
 type Result = { message: string; success: boolean };
 
 const USER_FIELDS: [string, string, string?][] = [
@@ -146,6 +148,7 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
   const [password, setPassword] = useState("");
   const [htsId, setHtsId] = useState("");
   const [draft, setDraft] = useState({ nationality: "", currencyCode: "NWX", baseRate: "", legalMaxRate: "", taxPercent: "" });
+  const [marketRate, setMarketRate] = useState({ benchmarkKey: "funding", tenorDays: "30", annualRate: "" });
   const country = countries.find((item) => item.nationality === selected);
 
   useEffect(() => {
@@ -154,6 +157,8 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
     setTreasury({ amount: country.treasuryCash === null ? "" : String(country.treasuryCash), reason: "" });
     setHtsId(country.account?.hts_id ?? "");
     setPassword("");
+    const firstCurve = country.marketRates[0];
+    if (firstCurve) setMarketRate({ benchmarkKey: firstCurve.benchmark_key, tenorDays: String(firstCurve.tenor_days), annualRate: String(firstCurve.annual_rate) });
   }, [country]);
 
   function act(nationality: string, body: Record<string, unknown>, question: string) {
@@ -170,6 +175,19 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
     if (!Object.keys(diff).length) { say("변경된 값이 없습니다.", true); return; }
     act(country.nationality, { action: "rates", ...diff }, `${country.nationality} 금리·세율을 바꿀까요? 연동된 변동금리 상품도 재산정됩니다.\n\n${Object.entries(diff).map(([key, value]) => `${key}: ${show(original[key as keyof typeof original])} → ${value}`).join("\n")}`);
   }
+
+  function saveMarketRate(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!country) return;
+    const selectedRate = country.marketRates.find((item) => item.benchmark_key === marketRate.benchmarkKey && item.tenor_days === Number(marketRate.tenorDays));
+    if (!selectedRate) { say("해당 국가·지표·만기 곡선이 없습니다.", true); return; }
+    if (Number(marketRate.annualRate) === selectedRate.annual_rate) { say("변경된 시장금리가 없습니다.", true); return; }
+    act(country.nationality, { action: "market_rate", ...marketRate }, `${country.nationality} ${marketRate.benchmarkKey} ${marketRate.tenorDays}일 시장금리를 ${selectedRate.annual_rate}% → ${marketRate.annualRate}%로 바꿀까요? 연동 변동금리 상품을 재산정합니다.`);
+  }
+
+  const selectedCurve = country?.marketRates.find((item) => item.benchmark_key === marketRate.benchmarkKey && item.tenor_days === Number(marketRate.tenorDays));
+  const pressureFor = (key: string) => country?.marketRatePressure.find((item) => item.benchmark_key === key)?.adjustment ?? 0;
+  const curveName = (key: string) => ({ funding: "조달금리", bank_bond: "은행채", treasury: "국채" }[key] ?? key);
 
   function countryLogin(action: "create" | "password" | "hts_id" | "logout" | "remove") {
     if (!country) return;
@@ -203,6 +221,26 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
           <Field label="세율 %" hint="0~100 · $세율"><input className="mono" value={rates.taxPercent} onChange={(event) => setRates({ ...rates, taxPercent: event.target.value })} /></Field>
           <button className="btn primary" disabled={busy}>금리 · 세율 저장</button>
         </form>
+        <section className="section-gap">
+          <h3 className="sub-head">만기별 시장금리 곡선</h3>
+          <p className="hint">기준금리(policy)와 별도의 조달·은행채·국채 지표입니다. 유효 시장금리는 해당 만기의 곡선 금리에 자동 조정 압력(%p)을 더합니다. 지표·만기·스프레드를 지정한 변동금리 상품이 재산정될 때 참조합니다.</p>
+          <form className="form-grid" onSubmit={saveMarketRate}>
+            <Field label="지표"><select value={marketRate.benchmarkKey} onChange={(event) => {
+              const key = event.target.value as MarketRate["benchmark_key"];
+              const next = country.marketRates.find((item) => item.benchmark_key === key);
+              setMarketRate({ benchmarkKey: key, tenorDays: String(next?.tenor_days ?? ""), annualRate: String(next?.annual_rate ?? "") });
+            }}><option value="funding">조달금리</option><option value="bank_bond">은행채</option><option value="treasury">국채</option></select></Field>
+            <Field label="만기 (일)"><select value={marketRate.tenorDays} onChange={(event) => {
+              const next = country.marketRates.find((item) => item.benchmark_key === marketRate.benchmarkKey && item.tenor_days === Number(event.target.value));
+              setMarketRate({ ...marketRate, tenorDays: event.target.value, annualRate: String(next?.annual_rate ?? "") });
+            }}>{country.marketRates.filter((item) => item.benchmark_key === marketRate.benchmarkKey).map((item) => <option key={item.tenor_days} value={item.tenor_days}>{item.tenor_days}</option>)}</select></Field>
+            <Field label="연 시장금리 %" hint={selectedCurve ? `현재 ${selectedCurve.annual_rate}%` : undefined}><input className="mono" inputMode="decimal" required value={marketRate.annualRate} onChange={(event) => setMarketRate({ ...marketRate, annualRate: event.target.value })} /></Field>
+            <button className="btn primary" disabled={busy || !selectedCurve}>시장금리 저장</button>
+          </form>
+          <div className="scroll-x"><table><thead><tr><th>지표</th><th className="r">만기일</th><th className="r">곡선 연금리</th><th className="r">자동 압력 (%p)</th><th className="r">유효 연금리</th><th>갱신</th></tr></thead><tbody>
+            {country.marketRates.map((item) => <tr key={`${item.benchmark_key}-${item.tenor_days}`}><td>{curveName(item.benchmark_key)}</td><td className="r">{item.tenor_days}</td><td className="r">{item.annual_rate}%</td><td className="r">{number(pressureFor(item.benchmark_key))}</td><td className="r">{number(item.annual_rate + pressureFor(item.benchmark_key))}%</td><td>{item.updated_epoch ? date(item.updated_epoch) : "—"}</td></tr>)}
+          </tbody></table>{!country.marketRates.length && <p className="empty">시장금리 곡선이 없습니다.</p>}</div>
+        </section>
         <form className="form-grid section-gap" onSubmit={(event) => { event.preventDefault(); act(country.nationality, { action: "treasury", ...treasury }, `${country.nationality} 국고 현금을 ${treasury.amount}(으)로 설정할까요?`); }}>
           <Field label="국고 현금" hint={`현재 ${country.treasuryCash === null ? "—" : number(country.treasuryCash)} · 설정값`}><input className="mono" value={treasury.amount} required onChange={(event) => setTreasury({ ...treasury, amount: event.target.value })} /></Field>
           <Field label="사유" wide><input value={treasury.reason} onChange={(event) => setTreasury({ ...treasury, reason: event.target.value })} /></Field>

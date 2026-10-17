@@ -428,7 +428,9 @@ class CurrencyExchangeManager:
 
             from managers.bank_journal import BankJournal
             source_index = 0
-            for account_number, amount_units in debited_source_details:
+            # Named debited_units: "amount_units" would shadow the module's
+            # amount_units() for this whole function (UnboundLocalError above).
+            for account_number, debited_units in debited_source_details:
                 issuer = institution_for_account(account_number)
                 if not issuer:
                     continue
@@ -436,8 +438,8 @@ class CurrencyExchangeManager:
                 BankJournal.post(
                     conn, issuer, "customer_transfer_out",
                     f"transfer:{transfer_id}:out:{source_index}", src[5],
-                    [("customer_deposits_payable", "debit", native_amount(amount_units)),
-                     ("settlement_asset", "credit", native_amount(amount_units))],
+                    [("customer_deposits_payable", "debit", native_amount(debited_units)),
+                     ("settlement_asset", "credit", native_amount(debited_units))],
                     description=f"Customer transfer {transfer_id} outgoing",
                     now=now,
                 )

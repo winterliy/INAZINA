@@ -28,6 +28,8 @@ class CreditRiskManager:
         """Replace the three country ECL scenarios as one audited policy change."""
         import time
         country = str(nationality or "").strip()
+        from managers.compliance_manager import ComplianceManager
+        ComplianceManager._require_admin(conn, actor_id)
         keys = {"optimistic", "base", "downside"}
         if not country or not isinstance(scenarios, list) or len(scenarios) != 3:
             raise ValueError("국적과 낙관·기준·하방 세 시나리오를 모두 입력해주세요.")
@@ -40,6 +42,8 @@ class CreditRiskManager:
                 raise ValueError("ECL 시나리오 종류가 중복되거나 잘못되었습니다.")
             values = []
             for field, low, high in (("probability", 0, 1), ("pdMultiplier", 0, 20), ("lgdMultiplier", 0, 5)):
+                if isinstance(item[field], bool):
+                    raise ValueError("시나리오 확률·배수는 숫자여야 합니다.")
                 try:
                     value = float(item[field])
                 except (TypeError, ValueError):
@@ -54,11 +58,13 @@ class CreditRiskManager:
             raise ValueError("국적을 찾을 수 없습니다.")
         epoch = float(time.time() if now is None else now)
         for key, (probability, pd_multiplier, lgd_multiplier) in normalized.items():
-            conn.execute(
+            changed = conn.execute(
                 "UPDATE credit_risk_scenarios SET probability=?,pd_multiplier=?,lgd_multiplier=?,updated_epoch=? "
                 "WHERE nationality=? AND scenario_key=?",
                 (probability, pd_multiplier, lgd_multiplier, epoch, country, key),
             )
+            if changed.rowcount != 1:
+                raise ValueError("ECL 시나리오 설정이 초기화되지 않았습니다. 국가 설정을 확인해주세요.")
         conn.execute(
             "INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
             (str(actor_id), "credit_risk.scenarios.configure",
@@ -143,7 +149,10 @@ class CreditRiskManager:
             stage = 2 if (overdue or int(loan["missed_payment_count"] or 0) >= 2
                           or cls._bounded(loan["current_ltv"], 0, 10) >= 1.0) else 1
             base_pd = lifetime_pd if stage == 2 else pd_12m
-            ead = max(0.0, float(loan["outstanding_balance"] or 0))
+            ead = round_currency(
+                conn, max(0.0, float(loan["outstanding_balance"] or 0)),
+                loan["quote_currency"],
+            )
             scenarios = conn.execute(
                 "SELECT scenario_key,probability,pd_multiplier,lgd_multiplier "
                 "FROM credit_risk_scenarios WHERE nationality=?",

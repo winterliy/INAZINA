@@ -804,6 +804,48 @@ def portfolio(user_id):
     return domain().users.get_total_assets(user_id, settle=False)
 
 
+def user_dr_movements(user_id, limit=50):
+    from functions.money import currency_precision
+    from decimal import Decimal
+    with connect_readonly() as connection:
+        rows = connection.execute(
+            "SELECT m.movement_id,m.dr_code,d.underlying_code,m.movement_type,m.dr_quantity,"
+            "m.underlying_quantity,m.underlying_average_cost,m.recorded_epoch,"
+            "COALESCE((SELECT quote_currency FROM company WHERE company_code=d.underlying_code),"
+            "(SELECT quote_currency FROM market_assets WHERE code=d.underlying_code),'NWX') underlying_currency "
+            "FROM depositary_receipt_movements m JOIN depositary_receipts d USING(dr_code) "
+            "WHERE m.user_id=? ORDER BY m.recorded_epoch DESC,m.movement_id DESC LIMIT ?",
+            (str(user_id), max(1, min(100, int(limit)))),
+        ).fetchall()
+        result = [dict(row) for row in rows]
+        for row in result:
+            places = currency_precision(connection, row["underlying_currency"])
+            row["underlying_average_cost_text"] = f"{Decimal(str(row['underlying_average_cost'] or 0)):.{places}f}"
+            row["decimal_places"] = places
+    return result
+
+
+def admin_dr_movements(limit=100):
+    """Read-only administrator view of the immutable DR conversion ledger."""
+    from functions.money import currency_precision
+    from decimal import Decimal
+    with connect_readonly() as connection:
+        rows = [dict(row) for row in connection.execute(
+            "SELECT m.movement_id,m.user_id,m.dr_code,d.underlying_code,m.movement_type,"
+            "m.dr_quantity,m.underlying_quantity,m.underlying_average_cost,m.recorded_epoch,"
+            "COALESCE((SELECT quote_currency FROM company WHERE company_code=d.underlying_code),"
+            "(SELECT quote_currency FROM market_assets WHERE code=d.underlying_code),'NWX') underlying_currency "
+            "FROM depositary_receipt_movements m JOIN depositary_receipts d USING(dr_code) "
+            "ORDER BY m.recorded_epoch DESC,m.movement_id DESC LIMIT ?",
+            (max(1, min(200, int(limit))),),
+        ).fetchall()]
+        for row in rows:
+            places = currency_precision(connection, row["underlying_currency"])
+            row["underlying_average_cost_text"] = f"{Decimal(str(row['underlying_average_cost'] or 0)):.{places}f}"
+            row["decimal_places"] = places
+    return {"movements": rows}
+
+
 def book(code):
     if not any(row["code"] == code for row in instruments()):
         return None
@@ -1175,13 +1217,7 @@ def admin_log_delete(actor, log, payload):
         where = f"({keep}) AND {scope}"
         if log == "events" and _table_exists(connection, "market_event_targets"):
             connection.execute(f"DELETE FROM market_event_targets WHERE event_id IN (SELECT event_id FROM market_events WHERE {where})", params)
-        # The work log refuses deletes unless this transaction holds a grant.
-        grant = log == "audit" and _table_exists(connection, "admin_audit_delete_grant")
-        if grant:
-            connection.execute("INSERT INTO admin_audit_delete_grant(token) VALUES (?)", (secrets.token_hex(8),))
         removed = connection.execute(f"DELETE FROM {table} WHERE {where}", params).rowcount
-        if grant:
-            connection.execute("DELETE FROM admin_audit_delete_grant")
         _audit_db(connection, actor, f"log.{log}.delete", {"all": payload.get("all") is True,
                                                             "ids": payload.get("ids"), "removed": removed})
     skipped = " 진행 중인 사건은 삭제하지 않습니다." if log == "events" else " 대기·처리 중인 작업은 삭제하지 않습니다." if log == "jobs" else ""
@@ -1210,6 +1246,13 @@ def admin_audit(limit=50):
 def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
     """Read-only bank-book controls for an administrator's audit workbench."""
     from managers.bank_journal import BankJournal
+    from functions.money import currency_precision
+    from decimal import Decimal
+
+    def money_text(value, places):
+        amount = Decimal(str(value or 0))
+        return f"{amount:.{places}f}"
+
     with connect_readonly() as connection:
         if not connection.execute(
                 "SELECT 1 FROM financial_institutions WHERE issuer=?", (str(issuer),)).fetchone():
@@ -1219,6 +1262,25 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
         reconciliation = BankJournal.reconcile_institution_results(
             connection, issuer, since_epoch=since_epoch,
         )
+        for row in trial_balance:
+            places = currency_precision(connection, row["currency_code"])
+            scale = 10 ** places
+            row["debit_amount"] = money_text(Decimal(row["debit_units"]) / scale, places)
+            row["credit_amount"] = money_text(Decimal(row["credit_units"]) / scale, places)
+            row["balance_amount"] = money_text(Decimal(row["balance_units"]) / scale, places)
+            row["decimal_places"] = places
+        for row in unbalanced:
+            places = currency_precision(connection, row["currency_code"])
+            scale = 10 ** places
+            row["debit_amount"] = money_text(Decimal(row["debit_units"]) / scale, places)
+            row["credit_amount"] = money_text(Decimal(row["credit_units"]) / scale, places)
+        for row in reconciliation:
+            places = currency_precision(connection, row["currency_code"])
+            row["ledger_amount_text"] = money_text(row["ledger_amount"], places)
+            row["journal_amount_text"] = (money_text(row["journal_amount"], places)
+                                           if row["journal_amount"] is not None else None)
+            row["difference_text"] = (money_text(row["difference"], places)
+                                      if row["difference"] is not None else None)
     return {"issuer": str(issuer), "currency": currency,
             "trialBalance": trial_balance, "unbalancedEntries": unbalanced,
             "resultReconciliation": reconciliation}
@@ -1226,6 +1288,8 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
 
 def admin_compliance_overview(nationality=None):
     """Return bounded, privacy-minimal KYC/AML queues for active administrators."""
+    from functions.money import currency_precision
+    from decimal import Decimal
     with connect_readonly() as connection:
         kyc_sql = ("SELECT user_id,status,risk_tier,reviewed_by,reviewed_epoch,expires_epoch,updated_epoch "
                    "FROM kyc_profiles")
@@ -1240,6 +1304,9 @@ def admin_compliance_overview(nationality=None):
         alert_sql += " AND status<>'closed' ORDER BY opened_epoch DESC LIMIT 100" if nationality else " WHERE status<>'closed' ORDER BY opened_epoch DESC LIMIT 100"
         profiles = [dict(row) for row in connection.execute(kyc_sql, params).fetchall()]
         alerts = [dict(row) for row in connection.execute(alert_sql, params).fetchall()]
+        for row in alerts:
+            places = currency_precision(connection, row["currency_code"])
+            row["amount_text"] = f"{Decimal(str(row['amount'] or 0)):.{places}f}"
         rule_sql = "SELECT nationality,currency_code,large_transaction_limit,rolling_24h_amount_limit,rolling_24h_count_limit,enabled,updated_epoch FROM aml_monitoring_rules"
         if nationality:
             rule_sql += " WHERE nationality=?"
@@ -1262,8 +1329,8 @@ def admin_compliance_overview(nationality=None):
                         "FROM credit_risk_scenarios")
         ecl_sql = ("SELECT e.assessment_id,e.loan_id,e.as_of_day,e.stage,e.pd_12m,e.lifetime_pd,e.lgd,"
                    "e.ead,e.expected_loss,e.quote_currency,e.scenario,e.calculated_epoch,u.nationality "
-                   "FROM accounts.loan_ecl_assessments e JOIN accounts.loans l USING(loan_id) "
-                   "JOIN users.users u ON u.user_id=l.user_id")
+                   "FROM loan_ecl_assessments e JOIN loans l USING(loan_id) "
+                   "JOIN users u ON u.user_id=l.user_id")
         if nationality:
             scenario_sql += " WHERE nationality=?"
             ecl_sql += " WHERE u.nationality=?"
@@ -1271,6 +1338,11 @@ def admin_compliance_overview(nationality=None):
         ecl_sql += " ORDER BY e.calculated_epoch DESC LIMIT 100"
         scenarios = [dict(row) for row in connection.execute(scenario_sql, params).fetchall()]
         ecl_assessments = [dict(row) for row in connection.execute(ecl_sql, params).fetchall()]
+        for row in ecl_assessments:
+            places = currency_precision(connection, row["quote_currency"])
+            row["decimal_places"] = places
+            row["ead_text"] = f"{Decimal(str(row['ead'])):.{places}f}"
+            row["expected_loss_text"] = f"{Decimal(str(row['expected_loss'])):.{places}f}"
     return {"kycProfiles": profiles, "amlAlerts": alerts, "amlRules": rules,
             "kycEvents": kyc_events, "amlEvents": aml_events,
             "creditRiskScenarios": scenarios, "eclAssessments": ecl_assessments}
@@ -1972,6 +2044,13 @@ def admin_countries():
                 "SELECT guild_id FROM guild_countries WHERE nationality=?", (nationality,))] if _table_exists(connection, "guild_countries") else []
             exchanges = [item[0] for item in connection.execute(
                 "SELECT exchange_id FROM market_exchanges WHERE nationality=? ORDER BY exchange_id", (nationality,))] if _table_exists(connection, "market_exchanges") else []
+            market_rates = [dict(item) for item in connection.execute(
+                "SELECT benchmark_key,tenor_days,annual_rate,updated_epoch "
+                "FROM market_rate_curve WHERE nationality=? ORDER BY benchmark_key,tenor_days",
+                (nationality,))]
+            market_rate_pressure = [dict(item) for item in connection.execute(
+                "SELECT benchmark_key,adjustment,updated_epoch FROM market_rate_pressure "
+                "WHERE nationality=? ORDER BY benchmark_key", (nationality,))]
             account = connection.execute(
                 "SELECT u.status,u.role,w.hts_id FROM users u LEFT JOIN web_auth_credentials w ON w.user_id=u.user_id "
                 "WHERE u.user_id=? AND u.nationality=?", (nationality, nationality)).fetchone() if _table_exists(connection, "web_auth_credentials") else None
@@ -1979,6 +2058,7 @@ def admin_countries():
                            "treasuryId": treasury["user_id"] if treasury else None,
                            "treasuryCash": treasury["cash"] if treasury else None,
                            "citizens": int(citizens), "guilds": guilds, "exchanges": exchanges,
+                           "marketRates": market_rates, "marketRatePressure": market_rate_pressure,
                            "account": dict(account) if account else None})
     return result
 
@@ -2009,6 +2089,15 @@ def admin_country_action(actor, nationality, payload):
         if not messages:
             raise ValueError("변경할 값을 입력해주세요.")
         result = "\n".join(str(message) for message in messages)
+    elif action == "market_rate":
+        key = str(payload.get("benchmarkKey") or "").strip()
+        tenor = str(payload.get("tenorDays") or "").strip()
+        annual_rate = str(payload.get("annualRate") or "").strip()
+        if key not in {"funding", "bank_bond", "treasury"} or not tenor or not annual_rate:
+            raise ValueError("지표·만기·시장금리를 모두 입력해주세요.")
+        result = AdminCommandsManager(bot).execute(
+            actor, "시장금리수정", " ".join(quote(value) for value in (nationality, key, tenor, annual_rate)),
+        )
     elif action == "treasury":
         from functions.admin_prefix import ActionModal
         from database.db_manager import DBManager
@@ -2410,6 +2499,12 @@ class Handler(BaseHTTPRequestHandler):
                     trader = trading_user_id(user["userId"])
                     result = _read_cache.get(("portfolio", trader), lambda: portfolio(trader))
                     self.send_json(200, {"portfolio": result})
+            elif path == "/internal/me/dr/movements":
+                user = identity(internal_user_id(self))
+                if not user:
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    self.send_json(200, {"movements": user_dr_movements(user["userId"])})
             elif path.startswith('/internal/admin/funds/'):
                 user = identity(internal_user_id(self))
                 if not user or user['role'] != 'admin':
@@ -2465,6 +2560,17 @@ class Handler(BaseHTTPRequestHandler):
                     if not issuer or len(issuer) > 100 or (currency and len(currency) > 12):
                         raise ValueError("invalid_bank_journal_filter")
                     self.send_json(200, admin_bank_journal_report(issuer, currency, since))
+            elif path == "/internal/admin/dr/movements":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    raw_limit = parse_qs(parsed.query).get("limit", ["100"])[0]
+                    try:
+                        limit = int(raw_limit)
+                    except (TypeError, ValueError):
+                        raise ValueError("invalid_dr_movement_limit") from None
+                    self.send_json(200, admin_dr_movements(limit))
             elif path == "/internal/admin/compliance":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":

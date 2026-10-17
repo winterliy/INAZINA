@@ -173,7 +173,8 @@ class SlashCommandRegistry:
             ("운용계좌", "내가 운용하는 랩어카운트 계좌 목록을 확인합니다", self.managed_accounts),
             ("매수", "자산을 지정가 매수하거나 펀드를 NAV로 가입합니다", self.buy),
             ("매도", "자산을 지정가 매도하거나 펀드를 NAV로 환매합니다", self.sell),
-            ("DR전환", "기초 보통주를 시뮬레이터 보관 원장에 예탁해 DR을 발행하거나 DR을 원주로 상환합니다", self.convert_dr),
+            # Discord command names must be lower-case, so the DR command is "dr전환".
+            ("dr전환", "기초 보통주를 시뮬레이터 보관 원장에 예탁해 DR을 발행하거나 DR을 원주로 상환합니다", self.convert_dr),
             ("호가", "자산의 매수·매도 대기 주문을 확인합니다", self.order_book_view),
             ("내주문", "나의 미체결 및 최근 체결 주문을 확인합니다", self.my_orders),
             ("계좌개설", "일반·외환통장 상품 코드를 입력하여 계좌를 개설합니다", self.open_account),

@@ -7,7 +7,8 @@ import { PriceChart, type Candle, type Drawing, type Point, type Tool } from "./
 import { CommandPanel } from "./CommandPanel";
 
 type Warning = { level: "caution" | "warning" | "danger"; label: string; reason: string; expiresEpoch: number | null };
-type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; quote_currency?: string; fund_category?: string | null; drProgram?: { underlyingCode: string; underlyingPerReceipt: number; receiptType: string; programStatus: string }; warning?: Warning; change24h?: number | null; tradeValue24h?: number; trades24h?: number };
+type DrMovement = { movement_id: number; dr_code: string; underlying_code: string; underlying_currency: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; underlying_average_cost: number; underlying_average_cost_text: string; decimal_places: number; recorded_epoch: number };
+type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; quote_currency?: string; fund_category?: string | null; drProgram?: { underlyingCode: string; underlyingPerReceipt: number; receiptType: string; programStatus: string; depositaryBank?: string | null; custodian?: string | null; homeExchangeId?: string | null }; warning?: Warning; change24h?: number | null; tradeValue24h?: number; trades24h?: number };
 
 // Administrator trading warnings (투자주의·경고·위험).
 const WarningBadge = ({ warning }: { warning?: Warning }) => warning ? <span className={`warn-badge ${warning.level}`} title={warning.reason || warning.label}>{warning.label}</span> : null;
@@ -24,13 +25,14 @@ const OPEN = new Set(["open", "partial", "scheduled"]);
 const STATUS: Record<string, string> = { open: "미체결", partial: "부분 체결", scheduled: "예약", filled: "체결", cancelled: "취소", expired: "만료" };
 const UNIT_SCALE = 1_000_000;
 const money = (value: number, digits = 0) => new Intl.NumberFormat("ko-KR", { maximumFractionDigits: digits }).format(value || 0);
+const date = (epoch: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "short" }).format(epoch * 1000);
 const fundCategoryName: Record<string, string> = { equity: "주식형", bond: "채권형", mixed: "혼합형", other: "기타형" };
-const instrumentType = (item: Instrument) => fundCategoryName[item.fund_category || ""] || item.type;
+const instrumentType = (item: Instrument) => item.type === "depositary_receipt" ? "주식예탁증서 (DR)" : fundCategoryName[item.fund_category || ""] || item.type;
 // Search tabs shown while the search box is empty. "추천" is the starting tab.
 type SearchTab = "recommended" | "stock" | "fund" | "bond" | "commodity" | "other";
 const SEARCH_TABS: [SearchTab, string][] = [["recommended", "실시간 추천"], ["stock", "주식"], ["fund", "ETF·펀드"], ["bond", "채권"], ["commodity", "원자재·외환"], ["other", "기타"]];
 const searchTab = (item: Instrument): Exclude<SearchTab, "recommended"> =>
-  item.type === "stock" || item.type === "preferred" ? "stock"
+  item.type === "stock" || item.type === "preferred" || item.type === "depositary_receipt" ? "stock"
     : ["etf", "etn", "mutual_fund", "index_fund", "leveraged_etf", "inverse_etf", "reit"].includes(item.type) ? "fund"
       : item.type === "국채" || item.type.includes("bond") ? "bond"
         : item.type === "commodity" || item.type === "forex" ? "commodity" : "other";
@@ -68,6 +70,7 @@ export default function App() {
   const [points, setPoints] = useState<Point[]>([]);
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
+  const [drMovements, setDrMovements] = useState<DrMovement[]>([]);
   const [orderFilter, setOrderFilter] = useState<"open" | "all">("open");
   const [book, setBook] = useState<Book>({ bids: [], asks: [] });
   const [side, setSide] = useState<"buy" | "sell">("buy");
@@ -78,6 +81,7 @@ export default function App() {
   const [tool, setTool] = useState<Tool>("select");
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const drRequestKeys = useRef(new Map<string, string>());
   // Drawings are saved per user and instrument once the server copy is loaded.
   const drawingsLoadedFor = useRef("");
   const savedDrawings = useRef("[]");
@@ -127,6 +131,8 @@ export default function App() {
       })
       .catch((cause) => { if (!cancelled) setNotice(errorText(cause, "화면 데이터를 불러오지 못했습니다.")); });
     const timer = window.setInterval(() => void refreshAccount().catch(() => undefined), 15000);
+    void api<{ movements: DrMovement[] }>("/api/me/dr/movements")
+      .then(({ movements }) => setDrMovements(movements)).catch(() => undefined);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [user, refreshAccount]);
 
@@ -224,16 +230,37 @@ export default function App() {
     if (!Number.isSafeInteger(qty) || qty < 1) { setNotice("DR 수량은 1 이상의 정수여야 합니다."); return; }
     const verb = action === "issue" ? "원주를 예탁해 DR을 발행" : "보유 DR을 원주로 상환";
     if (!window.confirm(`${selected.code} ${qty} DR을 ${verb}할까요?`)) return;
+    const requestKey = `${user?.userId ?? "session"}:${selected.code}:${action}:${qty}`;
+    const storageKey = `inazina.dr.request.${requestKey}`;
+    let referenceKey = drRequestKeys.current.get(requestKey);
+    if (!referenceKey) {
+      try { referenceKey = window.sessionStorage.getItem(storageKey) ?? undefined; } catch { /* session storage may be unavailable */ }
+    }
+    if (!referenceKey) {
+      referenceKey = typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      drRequestKeys.current.set(requestKey, referenceKey);
+      try { window.sessionStorage.setItem(storageKey, referenceKey); } catch { /* in-memory retry still works */ }
+    }
     setBusy(true);
     try {
       const result = await api<{ message: string }>("/api/dr/convert", { method: "POST", body: JSON.stringify({
         drCode: selected.code, action, quantity: qty,
-        referenceKey: typeof crypto.randomUUID === "function" ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        referenceKey,
       }) });
       setNotice(result.message);
-      await Promise.all([refreshAccount(), refreshMarket(selectedCode, range, interval)]);
+      drRequestKeys.current.delete(requestKey);
+      try { window.sessionStorage.removeItem(storageKey); } catch { /* ignore unavailable session storage */ }
+      try {
+        const [, , history] = await Promise.all([
+          refreshAccount(), refreshMarket(selectedCode, range, interval),
+          api<{ movements: DrMovement[] }>("/api/me/dr/movements"),
+        ]);
+        setDrMovements(history.movements);
+      } catch {
+        setNotice(`${result.message} 화면 새로고침에 실패했습니다. 다시 불러와 잔액과 이력을 확인해주세요.`);
+      }
     } catch (cause) {
-      setNotice(errorText(cause, "DR 전환을 처리하지 못했습니다."));
+      setNotice(`${errorText(cause, "DR 전환 요청 결과를 확인하지 못했습니다.")} 같은 수량과 방향으로 재시도하면 중복 전환되지 않습니다.`);
     } finally { setBusy(false); }
   }
 
@@ -336,9 +363,15 @@ export default function App() {
             <strong>{money(inHome(item.value), homeDigits)} <em>{homeCurrency}</em></strong>
           </button>)}{!holdings.length && <p className="empty">보유 종목이 없습니다. 위의 종목 검색으로 시장을 찾아보세요.</p>}</div>
         </section>
+        {drMovements.length > 0 && <section className="data-panel holdings-panel"><div className="panel-title"><h2>DR 전환 이력</h2><span>최근 {drMovements.length}건</span></div>
+          <div className="holdings">{drMovements.map((item) => <div className="holding" key={item.movement_id}>
+            <span><b>{item.movement_type === "issue" ? "DR 발행" : "원주 상환"} · {item.dr_code}</b><small>{date(item.recorded_epoch)} · {money(item.dr_quantity, 0)} DR ↔ {money(item.underlying_quantity, 0)}주 {item.underlying_code} · 원주 평균원가 {groupAmount(item.underlying_average_cost_text)} {item.underlying_currency}</small></span>
+          </div>)}</div>
+          <p className="orders-hint">게임 내 예탁 이동 기록이며 실제 수탁기관 보관 증빙은 아닙니다.</p>
+        </section>}
       </aside>
       <section className="main-market">
-        <div className="quote-strip"><div><p className="eyebrow">{selected?.exchange_id || "MARKET"} · {selected ? instrumentType(selected) : "—"}</p><h1>{selected?.name || "종목을 선택하세요"}<small>{selected?.code}</small><WarningBadge warning={selected?.warning} /></h1>{selected?.drProgram && <p className="orders-hint">{selected.drProgram.receiptType} · 원주 {selected.drProgram.underlyingCode} · 1 DR = {money(selected.drProgram.underlyingPerReceipt, 6)}주</p>}{selected?.warning?.reason && <p className="warn-reason">⚠️ {selected.warning.label} · {selected.warning.reason}</p>}</div>
+        <div className="quote-strip"><div><p className="eyebrow">{selected?.exchange_id || "MARKET"} · {selected ? instrumentType(selected) : "—"}</p><h1>{selected?.name || "종목을 선택하세요"}<small>{selected?.code}</small><WarningBadge warning={selected?.warning} /></h1>{selected?.drProgram && <p className="orders-hint">{selected.drProgram.receiptType} · 원주 {selected.drProgram.underlyingCode} · 1 DR = {money(selected.drProgram.underlyingPerReceipt, 6)}주 · 원주 거래소 {selected.drProgram.homeExchangeId || "—"} · 예탁 {selected.drProgram.depositaryBank || "—"} · 수탁 {selected.drProgram.custodian || "—"}</p>}{selected?.warning?.reason && <p className="warn-reason">⚠️ {selected.warning.label} · {selected.warning.reason}</p>}</div>
           <div className="quote-side"><div className="quote-value"><strong>{money(current)}</strong><span>{selected?.quote_currency || "NWX"}</span></div><button className="quote-switch" onClick={() => setSearchOpen(true)}>종목 바꾸기</button>{selected && <button className="quote-switch" onClick={() => setBoardAsset(selected.code)}>종목 토론</button>}</div></div>
         <PriceChart points={points} candles={candles} candleInterval={candleInterval} mode={chartMode} fallbackPrice={selected?.price ?? 1}
           drawings={drawings} onDrawingsChange={setDrawings} tool={tool} onToolChange={setTool} resetKey={`${selectedCode}-${range}-${interval}-${chartMode}`} label={selected?.name || "가격"}
@@ -364,10 +397,10 @@ export default function App() {
           <div className="book-current"><span>현재가</span><strong>{money(current)}</strong></div>
           <div className="book-side bids">{book.bids.map((item, index) => <button type="button" className="book-row" key={`${item.limit_price}-${index}`} title="이 가격으로 주문" onClick={() => setPrice(String(item.limit_price))}><span>{money(item.quantity, 3)}</span><b>{money(item.limit_price, 2)}</b></button>)}</div>
         </section>
-        {selected?.type === "depositary_receipt" && <section className="data-panel order-entry dr-conversion"><div className="panel-title"><h2>DR 발행 · 상환</h2><span>기초주식 예탁 방식</span></div>
-          <p className="orders-hint">DR 수량을 입력하세요. 발행은 보유 원주를 잠그고 DR을 지급하며, 상환은 보유 DR을 소각하고 보관 원주를 지급합니다.</p>
+        {selected?.type === "depositary_receipt" && <section className="data-panel order-entry dr-conversion"><div className="panel-title"><h2>DR 발행 · 상환</h2><span>{selected.drProgram?.programStatus === "active" && selected.status === "active" ? "기초주식 예탁 방식" : "프로그램 중지"}</span></div>
+          <p className="orders-hint">{selected.drProgram?.programStatus === "active" && selected.status === "active" ? "DR 수량을 입력하세요. 발행은 보유 원주를 잠그고 DR을 지급하며, 상환은 보유 DR을 소각하고 보관 원주를 지급합니다." : "중지되거나 종료된 DR 프로그램은 새 전환을 할 수 없습니다."}</p>
           <label>전환할 DR 수량<input inputMode="numeric" value={drQuantity} onChange={(event) => setDrQuantity(event.target.value.replace(/[^\d]/g, ""))} /></label>
-          <div className="actions"><button className="submit buy-submit" disabled={busy || !Number(drQuantity)} onClick={() => void convertDr("issue")}>원주 예탁 · DR 발행</button><button className="submit sell-submit" disabled={busy || !Number(drQuantity)} onClick={() => void convertDr("redeem")}>DR 반납 · 원주 상환</button></div>
+          <div className="actions"><button className="submit buy-submit" disabled={busy || !Number(drQuantity) || selected.drProgram?.programStatus !== "active" || selected.status !== "active"} onClick={() => void convertDr("issue")}>원주 예탁 · DR 발행</button><button className="submit sell-submit" disabled={busy || !Number(drQuantity) || selected.drProgram?.programStatus !== "active" || selected.status !== "active"} onClick={() => void convertDr("redeem")}>DR 반납 · 원주 상환</button></div>
         </section>}
         <section className="data-panel order-entry"><div className="panel-title"><h2>주문 입력</h2><span>지정가</span></div>
           <div className="order-sides"><button className={side === "buy" ? "buy active" : "buy"} onClick={() => setSide("buy")}>매수</button><button className={side === "sell" ? "sell active" : "sell"} onClick={() => setSide("sell")}>매도</button></div>
@@ -385,6 +418,12 @@ export default function App() {
     {commandsOpen !== null && <CommandPanel initial={commandsOpen} instruments={instruments} portfolio={portfolio} orders={orders} homeCurrency={portfolio?.national_currency || user.currency || "NWX"} onClose={() => setCommandsOpen(null)} onDone={() => void refreshAccount().catch(() => undefined)} />}
     {accountSettingsOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setAccountSettingsOpen(false); }}><section className="account-modal" role="dialog" aria-modal="true" aria-labelledby="account-title"><div className="account-modal-head"><div><p className="eyebrow">HTS ACCOUNT</p><h2 id="account-title">아이디 설정</h2></div><button type="button" title="닫기" onClick={() => setAccountSettingsOpen(false)}>닫기</button></div><p className="account-description">로그인에 사용할 아이디를 설정합니다.</p><form className="account-form" onSubmit={saveHtsId}><label>아이디<input autoComplete="username" minLength={3} maxLength={32} pattern="[A-Za-z0-9_.\-]{3,32}" value={htsIdInput} onChange={(event) => setHtsIdInput(event.target.value)} placeholder="예: inazina_user" required /></label><p className="account-hint">영문, 숫자, 점, 밑줄, 하이픈으로 3~32자</p><label>현재 비밀번호<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label>{settingsMessage && <p className="account-success" role="status">{settingsMessage}</p>}{settingsError && <p className="account-error" role="alert">{settingsError}</p>}<div className="modal-actions"><button type="button" disabled={settingsBusy} onClick={() => setAccountSettingsOpen(false)}>닫기</button><button className="account-save" disabled={settingsBusy || !htsIdInput}>{settingsBusy ? "저장 중…" : htsId ? "아이디 변경" : "아이디 설정"}</button></div></form></section></div>}
   </div>;
+}
+
+function groupAmount(value: string) {
+  const [whole, fraction] = value.split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return fraction === undefined ? grouped : `${grouped}.${fraction}`;
 }
 
 function Backdrop() {

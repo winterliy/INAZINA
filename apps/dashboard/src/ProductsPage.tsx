@@ -2,12 +2,13 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../shared/api";
 import { FundPanel } from "./FundPanel";
-import { Card, Field, changed, number, plain, show, text, type Ctx } from "./common";
+import { Card, Field, changed, date, number, plain, show, text, type Ctx } from "./common";
 
 type KindField = { key: string; label: string; optional: boolean; text: boolean };
 type AdvancedField = { key: string; label: string; type: string };
 type Kind = { kind: string; token: string; label: string; group: "market" | "finance"; family: string; fields: KindField[]; advanced: AdvancedField[]; example: Record<string, unknown>; editable: boolean };
 type Product = { code: string; name: string; kind: string; status: string; exchangeId: string | null; currency: string | null; value: number | null; drProgram?: { underlyingCode: string; receiptType: string; depositaryBank: string; custodian: string; underlyingPerReceipt: number; receiptSupply: number; depositedUnderlyingQuantity: number; custodiedUnderlyingQuantity: number; outstandingReceiptQuantity: number; programStatus: string; underlyingPrice?: number; underlyingCurrency?: string; referenceValue?: number; referencePremiumPercent?: number } };
+type DrMovement = { movement_id: number; user_id: string; dr_code: string; underlying_code: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; underlying_average_cost_text: string; underlying_currency: string; recorded_epoch: number };
 type Detail = { code: string; kind: string; status: string; values: Record<string, unknown>; row: Record<string, unknown> };
 type Editor = { mode: "create" | "edit"; kind: string; code: string; values: Record<string, string>; advanced: Record<string, string>; original: Detail | null };
 
@@ -81,18 +82,21 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
   const { busy, run, say, query, openCommand } = ctx;
   const [kinds, setKinds] = useState<Kind[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [drMovements, setDrMovements] = useState<DrMovement[]>([]);
   const [filter, setFilter] = useState("all");
   const [editor, setEditor] = useState<Editor | null>(null);
   const [showInactive, setShowInactive] = useState(true);
   const [fundCode, setFundCode] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const [catalog, list] = await Promise.all([
+    const [catalog, list, drLedger] = await Promise.all([
       api<{ kinds: Kind[] }>("/api/admin/products/catalog"),
       api<{ products: Product[] }>(`/api/admin/products?group=${group}`),
+      group === "market" ? api<{ movements: DrMovement[] }>("/api/admin/dr/movements?limit=100") : Promise.resolve({ movements: [] as DrMovement[] }),
     ]);
     setKinds(catalog.kinds.filter((item) => item.group === group));
     setProducts(list.products);
+    setDrMovements(drLedger.movements);
   }, [group]);
 
   useEffect(() => {
@@ -181,7 +185,13 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
       <div className="kind-grid">{families.map((kind) => <button key={kind.family} type="button" className={editor?.mode === "create" && kindOf(editor.kind)?.family === kind.family ? "command-chip active" : "command-chip"} onClick={() => startCreate(kind.kind)}><b>{familyLabel(kind.kind)}</b><small>{kind.family === "saving" ? "saving · 국적 통화/외환" : kind.token} · {counts[kind.family] ?? 0}개</small></button>)}</div>
     </Card>
 
-    {editor && spec && <Card title={editor.mode === "create" ? `${spec.label} 생성` : `${editor.code} 수정`} caption={editor.mode === "create" ? "선택 항목은 비워 둘 수 있습니다. 배당주기는 초 또는 1일·1주·1달, 배당은 5 또는 5%처럼 입력합니다." : "바꾼 값만 저장합니다. 결제 통화와 발행된 계약 조건처럼 바꿀 수 없는 값은 서버가 거부합니다."}
+    {group === "market" && <Card title="DR 전환 원장" caption="최근 100건 · 조회 전용 불변 기록 · 게임 내 시뮬레이터 기록이며 수탁기관 보관 증빙이 아닙니다.">
+      <div className="scroll-x"><table><thead><tr><th>시각</th><th>사용자</th><th>DR</th><th>유형</th><th className="r">DR 수량</th><th className="r">원주 수량</th><th className="r">원주 평균원가</th><th>통화</th></tr></thead><tbody>
+        {drMovements.map((item) => <tr key={item.movement_id}><td>{date(item.recorded_epoch)}</td><td className="mono">{item.user_id}</td><td className="mono">{item.dr_code} · {item.underlying_code}</td><td>{item.movement_type === "issue" ? "DR 발행" : "원주 상환"}</td><td className="r mono">{number(item.dr_quantity)}</td><td className="r mono">{number(item.underlying_quantity)}</td><td className="r mono">{groupAmount(item.underlying_average_cost_text)}</td><td>{item.underlying_currency}</td></tr>)}
+      </tbody></table>{!drMovements.length && <p className="empty">DR 전환 기록이 없습니다.</p>}</div>
+    </Card>}
+
+    {editor && spec && <Card title={editor.mode === "create" ? `${spec.label} 생성` : `${editor.code} 수정`} caption={editor.kind === "dr" ? editor.mode === "create" ? "기초 코드는 활성 보통주여야 하고 결제 통화·상장 거래소도 이미 등록되어야 합니다. 발행량 × DR당 원주 수는 원주 발행량 한도 안에 있어야 합니다." : "기초주식·비율·통화·거래소 등 발행조건은 변경할 수 없습니다. 가격과 표시 이름만 수정할 수 있습니다." : editor.mode === "create" ? "선택 항목은 비워 둘 수 있습니다. 배당주기는 초 또는 1일·1주·1달, 배당은 5 또는 5%처럼 입력합니다." : "바꾼 값만 저장합니다. 결제 통화와 발행된 계약 조건처럼 바꿀 수 없는 값은 서버가 거부합니다."}
       actions={<button className="soft" type="button" onClick={() => setEditor(null)}>닫기</button>}>
       {spec.family === "saving" && <div className="saving-mode">
         <div className="segment-tabs" role="radiogroup" aria-label="통장 방식">{kinds.filter((kind) => kind.family === "saving").map((kind) => <button key={kind.kind} type="button" role="radio" aria-checked={editor.kind === kind.kind} className={editor.kind === kind.kind ? "active" : ""} disabled={editor.mode === "edit"} onClick={() => startCreate(kind.kind, editor.values)}>{kind.kind === "saving" ? "국적 통화 저축" : "외환통장"}</button>)}</div>
@@ -189,9 +199,12 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
       </div>}
       <form className="form-grid" onSubmit={save}>
         <Field label="상품 코드" hint={editor.mode === "edit" ? "변경 불가" : "공백 없이"}><input className="mono" value={editor.code} readOnly={editor.mode === "edit"} required={editor.kind !== "option"} onChange={(event) => setEditor({ ...editor, code: event.target.value })} /></Field>
-        {spec.fields.map((field) => <Field key={field.key} label={field.label} hint={`${field.key}${field.optional ? " · 선택" : ""}`} wide={field.key === "components" || field.key === "underlyings"}>
-          <input className={field.text ? undefined : "mono"} value={editor.values[field.key] ?? ""} onChange={(event) => setEditor({ ...editor, values: { ...editor.values, [field.key]: event.target.value } })} />
-        </Field>)}
+        {spec.fields.map((field) => {
+          const drFixed = editor.kind === "dr" && ["total_supply", "exchange_id", "underlying_code", "underlying_per_receipt", "receipt_type", "depositary_bank", "custodian", "home_exchange_id", "quote_currency"].includes(field.key);
+          return <Field key={field.key} label={field.label} hint={`${field.key}${field.optional ? " · 선택" : ""}${editor.mode === "edit" && drFixed ? " · 발행조건 고정" : ""}`} wide={field.key === "components" || field.key === "underlyings"}>
+            <input className={field.text ? undefined : "mono"} readOnly={editor.mode === "edit" && drFixed} required={editor.mode === "create" && !field.optional} value={editor.values[field.key] ?? ""} onChange={(event) => setEditor({ ...editor, values: { ...editor.values, [field.key]: event.target.value } })} />
+          </Field>;
+        })}
         <button className="btn primary" disabled={busy}>{busy ? "저장 중…" : editor.mode === "create" ? "생성" : "저장"}</button>
       </form>
       {editor.mode === "edit" && <RatioPanel key={editor.code} editor={editor} spec={spec} busy={busy} submit={(fields, advanced, summary) => {
@@ -213,7 +226,7 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
         <label className="check"><input type="checkbox" checked={showInactive} onChange={(event) => setShowInactive(event.target.checked)} />중지 포함</label></>}>
       <div className="scroll-x tall"><table><thead><tr><th>코드</th><th>이름</th><th>종류</th><th>거래소</th><th>통화</th><th className="r">{group === "market" ? "가격" : "이율·환율"}</th><th>상태</th><th /></tr></thead><tbody>
         {visible.map((item) => <tr key={`${item.kind}-${item.code}`}>
-          <td className="mono">{item.code}</td><td>{item.name}{item.drProgram && <small className="block hint">원주 {item.drProgram.underlyingCode} · 1증서 = {number(item.drProgram.underlyingPerReceipt)}주 · 시뮬레이터 보관 {number(item.drProgram.custodiedUnderlyingQuantity)}주 / 발행 DR 기준 필요 {number(item.drProgram.outstandingReceiptQuantity * item.drProgram.underlyingPerReceipt)}주{item.drProgram.referenceValue !== undefined && <><br />단순 참고가 {number(item.drProgram.referenceValue)} {item.currency} · 현재가 괴리 {number(item.drProgram.referencePremiumPercent ?? 0)}% (환율·비용·유동성 미반영)</>}</small>}</td><td>{familyLabel(item.kind)}{item.kind === "currencyproduct" && <span className="tag inline">외환</span>}</td><td>{show(item.exchangeId)}</td><td>{show(item.currency)}</td>
+          <td className="mono">{item.code}</td><td>{item.name}{item.drProgram && <small className="block hint">원주 {item.drProgram.underlyingCode} · 1증서 = {number(item.drProgram.underlyingPerReceipt)}주 · 시뮬레이터 보관 {number(item.drProgram.custodiedUnderlyingQuantity)}주 / 발행 DR 기준 필요 {number(item.drProgram.outstandingReceiptQuantity * item.drProgram.underlyingPerReceipt)}주 · {drBackingShortfall(item.drProgram) > 0 ? <span className="tag warn">보관 부족 {number(drBackingShortfall(item.drProgram))}주</span> : <span className="tag ok">시뮬레이터 수량 충족</span>}{item.drProgram.referenceValue !== undefined && <><br />단순 참고가 {number(item.drProgram.referenceValue)} {item.currency} · 현재가 괴리 {number(item.drProgram.referencePremiumPercent ?? 0)}% (환율·비용·유동성 미반영)</>}</small>}</td><td>{familyLabel(item.kind)}{item.kind === "currencyproduct" && <span className="tag inline">외환</span>}</td><td>{show(item.exchangeId)}</td><td>{show(item.currency)}</td>
           <td className="r mono">{item.value === null ? "—" : number(item.value)}</td>
           <td><span className={item.status === "active" ? "tag ok" : "tag warn"}>{item.status}</span></td>
           <td className="row-actions">
@@ -228,4 +241,14 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
       </tbody></table>{!visible.length && <p className="empty">표시할 상품이 없습니다.</p>}</div>
     </Card>
   </>;
+}
+
+function groupAmount(value: string) {
+  const [whole, fraction] = value.split(".");
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return fraction === undefined ? grouped : `${grouped}.${fraction}`;
+}
+
+function drBackingShortfall(program: NonNullable<Product["drProgram"]>) {
+  return Math.max(0, program.outstandingReceiptQuantity * program.underlyingPerReceipt - program.custodiedUnderlyingQuantity);
 }
