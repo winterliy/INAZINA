@@ -1,10 +1,28 @@
 """Append-only, currency-minor-unit journal for financial institutions."""
 
 from decimal import Decimal
+import math
 import time
 
 
 class BankJournal:
+    MAX_SUPPORTED_EPOCH = 253402300799.0  # 9999-12-31 23:59:59 UTC
+
+    @classmethod
+    def validate_epoch(cls, value):
+        if value is None:
+            value = time.time()
+        if isinstance(value, bool):
+            raise ValueError("분개 시각은 유효한 UNIX epoch이어야 합니다.")
+        try:
+            epoch = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("분개 시각은 유효한 UNIX epoch이어야 합니다.") from exc
+        if (not math.isfinite(epoch)
+                or not 0 <= epoch <= cls.MAX_SUPPORTED_EPOCH):
+            raise ValueError("분개 시각은 유효한 UNIX epoch이어야 합니다.")
+        return epoch
+
     @staticmethod
     def reconcile_institution_results(conn, issuer, *, since_epoch=None):
         """Compare native-currency P&L journal movement with legacy result rows.
@@ -328,6 +346,8 @@ class BankJournal:
             return False
         from functions.money import currency_precision, round_currency
 
+        created_epoch = BankJournal.validate_epoch(now)
+
         currency = str(currency_code or "").upper()
         places = currency_precision(conn, currency)
         scale = 10 ** places
@@ -354,7 +374,7 @@ class BankJournal:
             "(issuer,event_type,reference_key,currency_code,created_epoch,description) "
             "VALUES (?,?,?,?,?,?)",
             (str(issuer), str(event_type), str(reference_key), currency,
-             float(now) if now is not None else time.time(),
+             created_epoch,
              str(description or "")),
         )
         if cursor.rowcount != 1:

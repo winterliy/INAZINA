@@ -79,7 +79,7 @@ class RealisticRateSystemTests(unittest.TestCase):
             "SELECT annual_rate,updated_epoch FROM market_rate_curve "
             "WHERE nationality='낙원' AND benchmark_key='bank_bond' AND tenor_days=365"
         )
-        for invalid_epoch in (-1, float("nan"), float("inf")):
+        for invalid_epoch in (-1, float("nan"), float("inf"), 1e300, True, "invalid"):
             with self.subTest(invalid_epoch=invalid_epoch):
                 result = self.rates.set_market_rate(
                     "낙원", "bank_bond", 365, 6, "admin", now=invalid_epoch
@@ -91,6 +91,34 @@ class RealisticRateSystemTests(unittest.TestCase):
             "WHERE nationality='낙원' AND benchmark_key='bank_bond' AND tenor_days=365"
         )
         self.assertEqual(tuple(after), tuple(before))
+
+    def test_policy_rate_edits_reject_invalid_epochs_without_history_changes(self):
+        current_rate = self.db.system.execute_one(
+            "SELECT value FROM settings WHERE key='base_rate'"
+        )[0]
+        country_rate = self.db.currency.execute_one(
+            "SELECT base_rate FROM country_currencies WHERE nationality='낙원'"
+        )[0]
+        history_count = self.db.currency.execute_one(
+            "SELECT COUNT(*) FROM country_rate_history WHERE nationality='낙원'"
+        )[0]
+        for invalid_epoch in (-1, float("nan"), float("inf"), 1e300, True, "invalid"):
+            with self.subTest(invalid_epoch=invalid_epoch):
+                self.assertFalse(self.rates.set_rate(
+                    "base_rate", 5, "admin", now=invalid_epoch
+                )[0])
+                self.assertFalse(self.rates.set_country_rate(
+                    "base_rate", "낙원", 5, "admin", now=invalid_epoch
+                )[0])
+        self.assertEqual(self.db.system.execute_one(
+            "SELECT value FROM settings WHERE key='base_rate'"
+        )[0], current_rate)
+        self.assertEqual(self.db.currency.execute_one(
+            "SELECT base_rate FROM country_currencies WHERE nationality='낙원'"
+        )[0], country_rate)
+        self.assertEqual(self.db.currency.execute_one(
+            "SELECT COUNT(*) FROM country_rate_history WHERE nationality='낙원'"
+        )[0], history_count)
 
     def test_negative_policy_rate_is_supported(self):
         result = self.rates.set_country_rate("base_rate", "낙원", -0.75, "admin")
@@ -121,6 +149,25 @@ class RealisticRateSystemTests(unittest.TestCase):
             result = BankJournal.reconcile_customer_deposits(conn, "Bank")
         self.assertEqual(result[0]["difference_units"], 1)
         self.assertEqual(result[0]["status"], "mismatch")
+
+    def test_bank_journal_rejects_invalid_epoch_before_entry_creation(self):
+        before = self.db.accounts.execute_one(
+            "SELECT COUNT(*) FROM bank_journal_entries"
+        )[0]
+        invalid_epochs = (-1, float("nan"), float("inf"), 1e300, True, "invalid")
+        for index, invalid_epoch in enumerate(invalid_epochs):
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, "분개 시각"):
+                    with self.db.atomic() as conn:
+                        BankJournal.post(
+                            conn, "Bank", "test", f"invalid-time:{index}", "NWX",
+                            [("settlement_asset", "debit", 1),
+                             ("customer_deposits_payable", "credit", 1)],
+                            now=invalid_epoch,
+                        )
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT COUNT(*) FROM bank_journal_entries"
+        )[0], before)
 
     def test_loan_receivable_reconciliation_uses_product_currency_minor_units(self):
         self.db.currency.execute(
@@ -427,6 +474,50 @@ class RealisticRateSystemTests(unittest.TestCase):
             reconciliation = BankJournal.reconcile_loan_receivables(conn, "Bank")
         self.assertEqual(reconciliation[0]["status"], "mismatch")
         self.assertEqual(reconciliation[0]["difference_units"], 1)
+
+    def test_institution_result_rejects_invalid_epoch_before_capital_mutation(self):
+        self.add_loan()
+        before_equity = self.db.currency.execute_one(
+            "SELECT retained_earnings FROM financial_institutions WHERE issuer='Bank'"
+        )[0]
+        before_entries = self.db.currency.execute_one(
+            "SELECT COUNT(*) FROM financial_institution_ledger WHERE issuer='Bank'"
+        )[0]
+        for index, invalid_epoch in enumerate(
+            (-1, float("nan"), float("inf"), 1e300, False, "invalid")
+        ):
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, "분개 시각"):
+                    with self.db.atomic() as conn:
+                        RateManager.record_institution_result(
+                            conn, "Bank", 1, "fee_income",
+                            f"invalid-result-time:{index}", now=invalid_epoch,
+                        )
+        self.assertEqual(self.db.currency.execute_one(
+            "SELECT retained_earnings FROM financial_institutions WHERE issuer='Bank'"
+        )[0], before_equity)
+        self.assertEqual(self.db.currency.execute_one(
+            "SELECT COUNT(*) FROM financial_institution_ledger WHERE issuer='Bank'"
+        )[0], before_entries)
+
+    def test_institution_status_refresh_rejects_invalid_epoch_without_mutation(self):
+        self.add_loan()
+        before = tuple(self.db.currency.execute_one(
+            "SELECT status,last_capital_update_epoch,failed_epoch "
+            "FROM financial_institutions WHERE issuer='Bank'"
+        ))
+        for invalid_epoch in (-1, float("nan"), 1e300, True, "invalid"):
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, "분개 시각"):
+                    with self.db.atomic() as conn:
+                        RateManager.refresh_institution_status(
+                            conn, "Bank", now=invalid_epoch
+                        )
+        after = tuple(self.db.currency.execute_one(
+            "SELECT status,last_capital_update_epoch,failed_epoch "
+            "FROM financial_institutions WHERE issuer='Bank'"
+        ))
+        self.assertEqual(after, before)
 
     def test_overdue_accelerates_defaults_and_seizes_collateral(self):
         self.add_loan(maturity=1, origination_fee=0)
@@ -925,7 +1016,7 @@ class RealisticRateSystemTests(unittest.TestCase):
             with self.subTest(statement=statement):
                 with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
                     self.db.currency.execute(statement, (row_id,))
-        for invalid_epoch in (-1, float("nan"), float("inf")):
+        for invalid_epoch in (-1, float("nan"), float("inf"), 1e300, True, "invalid"):
             with self.subTest(invalid_epoch=invalid_epoch):
                 with self.assertRaisesRegex(ValueError, "유효한 UNIX 시각"):
                     with self.db.atomic() as conn:

@@ -101,7 +101,7 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
 
     def test_invalid_effective_epoch_is_rejected_without_custody_movement(self):
         self.create_program()
-        for invalid_epoch in (-1, float("nan"), float("inf")):
+        for invalid_epoch in (-1, float("nan"), float("inf"), 1e300, True, "invalid"):
             with self.subTest(invalid_epoch=invalid_epoch):
                 ok, message = self.manager.convert(
                     "citizen", "UNDER_DR", "issue", 1,
