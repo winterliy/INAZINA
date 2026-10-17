@@ -1,10 +1,11 @@
 import json
+import io
 import tempfile
 import unittest
 from contextlib import closing, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from database.db_manager import DBManager
 from web_api import server
@@ -617,6 +618,59 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(entry["action"], "dr_custody_events.read")
         self.assertEqual(entry["payload"], {"limit": 500, "result_count": 0})
 
+    def test_admin_dr_custody_rejection_is_coded_and_audited(self):
+        response = {}
+        body = json.dumps({
+            "referenceKey": "reject-me", "reasonCode": "compliance_review",
+        }).encode()
+        handler = SimpleNamespace(
+            headers={"x-inazina-internal-token": "secret", "x-inazina-user-id": "admin-1",
+                     "content-length": str(len(body))},
+            path="/internal/admin/dr/custody-instructions/reject",
+            rfile=io.BytesIO(body),
+            send_json=lambda status, value: response.update(status=status, value=value),
+        )
+        manager = SimpleNamespace(reject_conversion=MagicMock(return_value=(True, {
+            "referenceKey": "reject-me", "status": "rejected",
+            "reasonCode": "compliance_review",
+        })))
+        with patch.object(server, "INTERNAL_TOKEN", "secret"), \
+                patch.object(server, "identity", return_value={
+                    "userId": "admin-1", "role": "admin",
+                }), patch.object(server, "domain", return_value=SimpleNamespace(
+                    bot=SimpleNamespace(db=object()),
+                )), patch("managers.depositary_receipt_manager.DepositaryReceiptManager",
+                          return_value=manager):
+            server.Handler.do_POST(handler)
+        manager.reject_conversion.assert_called_once_with(
+            "admin-1", "reject-me", "compliance_review",
+        )
+        self.assertEqual(response["status"], 200)
+        self.assertEqual(server.admin_audit()[0]["payload"], {
+            "reference_key": "reject-me", "reason_code": "compliance_review",
+        })
+
+    def test_admin_dr_custody_reconciliation_is_read_only_and_audited(self):
+        response = {}
+        handler = SimpleNamespace(
+            headers={"x-inazina-internal-token": "secret", "x-inazina-user-id": "admin-1"},
+            path="/internal/admin/dr/custody-reconciliation",
+            send_json=lambda status, value: response.update(status=status, value=value),
+        )
+        report = {"programCount": 1, "discrepancyCount": 0, "programs": [], "discrepancies": []}
+        manager = SimpleNamespace(reconcile_custody_ledger=MagicMock(return_value=report))
+        with patch.object(server, "INTERNAL_TOKEN", "secret"), \
+                patch.object(server, "identity", return_value={
+                    "userId": "admin-1", "role": "admin",
+                }), patch.object(server, "domain", return_value=SimpleNamespace(
+                    bot=SimpleNamespace(db=object()),
+                )), patch("managers.depositary_receipt_manager.DepositaryReceiptManager",
+                          return_value=manager):
+            server.Handler.do_GET(handler)
+        manager.reconcile_custody_ledger.assert_called_once_with()
+        self.assertEqual(response, {"status": 200, "value": report})
+        self.assertEqual(server.admin_audit()[0]["action"], "dr_custody_reconciliation.read")
+
     def test_admin_dr_voting_meeting_list_is_bounded_and_audited(self):
         response = {}
         handler = SimpleNamespace(
@@ -673,6 +727,58 @@ class WebApiTests(unittest.TestCase):
             server.Handler.do_GET(handler)
         getter.assert_called_once_with("proxy-2")
         self.assertEqual(response, {"status": 200, "value": {"delegations": records}})
+
+    def test_user_dr_conversion_list_is_scoped_to_authenticated_user(self):
+        response = {}
+        handler = SimpleNamespace(
+            headers={"x-inazina-internal-token": "secret",
+                     "x-inazina-user-id": "citizen-1"},
+            path="/internal/me/dr/conversions",
+            send_json=lambda status, value: response.update(status=status, value=value),
+        )
+        records = [{"reference_key": "request-1", "status": "requested"}]
+        manager = SimpleNamespace(list_custody_instructions=lambda **filters: records if filters == {
+            "user_id": "citizen-1", "limit": 100,
+        } else [])
+        with patch.object(server, "INTERNAL_TOKEN", "secret"), \
+                patch.object(server, "identity", return_value={
+                    "userId": "citizen-1", "role": "user",
+                }), patch.object(server, "domain", return_value=SimpleNamespace(
+                    bot=SimpleNamespace(db=object()),
+                )), patch("managers.depositary_receipt_manager.DepositaryReceiptManager",
+                          return_value=manager):
+            server.Handler.do_GET(handler)
+        self.assertEqual(response, {"status": 200, "value": {"instructions": records}})
+
+    def test_user_dr_conversion_endpoint_uses_delayed_request_flow(self):
+        response = {}
+        body = json.dumps({
+            "drCode": "ABC_DR", "action": "issue", "quantity": 2,
+            "referenceKey": "request-1",
+        }).encode()
+        handler = SimpleNamespace(
+            headers={"x-inazina-internal-token": "secret", "x-inazina-user-id": "citizen-1",
+                     "content-length": str(len(body))},
+            path="/internal/dr/convert", rfile=io.BytesIO(body),
+            send_json=lambda status, value: response.update(status=status, value=value),
+        )
+        manager = SimpleNamespace(request_conversion=MagicMock(return_value=(True, {
+            "status": "requested", "message": "접수됨",
+        })))
+        with patch.object(server, "INTERNAL_TOKEN", "secret"), \
+                patch.object(server, "identity", return_value={
+                    "userId": "citizen-1", "role": "user",
+                }), patch.object(server, "domain", return_value=SimpleNamespace(
+                    bot=SimpleNamespace(db=object()),
+                )), patch("managers.depositary_receipt_manager.DepositaryReceiptManager",
+                          return_value=manager) as manager_type:
+            server.Handler.do_POST(handler)
+        manager.request_conversion.assert_called_once_with(
+            "citizen-1", "ABC_DR", "issue", 2, "request-1",
+        )
+        self.assertEqual(response, {"status": 200, "value": {
+            "success": True, "result": {"status": "requested", "message": "접수됨"},
+        }})
 
     def test_admin_customer_detail_access_is_audited(self):
         response = {}

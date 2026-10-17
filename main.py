@@ -66,6 +66,8 @@ class InazinaBot(discord.Client):
         self.els_mgr = ELSManager(self.db,self.user_mgr)
         self.capital_markets = CapitalMarketsManager(self.db,self.user_mgr,self.order_book)
         self.market_session = MarketSessionManager(self.db)
+        from managers.depositary_receipt_manager import DepositaryReceiptManager
+        self.dr_custody_mgr = DepositaryReceiptManager(self.db)
         self.prefix_registry = AdminPrefixRegistry(self)
         self._guild_commands_cleaned = False
         self._background_loops_started = False
@@ -215,6 +217,16 @@ class InazinaBot(discord.Client):
                 try:
                     await self._run_background_write(self.market_session.process_due)
                     await self._run_background_write(self.corporate_actions.process_due)
+                    dr_results = await self._run_background_write(
+                        self.dr_custody_mgr.process_due_conversions
+                    )
+                    if dr_results["settled"]:
+                        print(f"[DR Custody Worker] Settled {len(dr_results['settled'])} due request(s).")
+                    if dr_results["failed"]:
+                        raise RuntimeError(
+                            f"{len(dr_results['failed'])} request(s) remain reserved for retry: "
+                            f"{dr_results['failed'][:3]}"
+                        )
                 except Exception as exc:
                     now = asyncio.get_running_loop().time()
                     if now - self._last_product_error_log >= self.BACKGROUND_ERROR_LOG_INTERVAL_SECONDS:

@@ -596,6 +596,13 @@ class BankManager:
             (str(user_id), code),
         ).fetchall()
         available = sum(float(row["quantity"] or 0) for row in lots)
+        custody_reserved = conn.execute(
+            "SELECT COALESCE(SUM(r.reserved_quantity),0) FROM assets.dr_custody_reservations r "
+            "JOIN assets.dr_custody_instructions i USING(reference_key) "
+            "WHERE r.user_id=? AND r.reserved_asset_code=? AND r.released_epoch IS NULL "
+            "AND i.status IN ('requested','verified')", (str(user_id), code),
+        ).fetchone()[0]
+        available -= float(custody_reserved or 0)
         if available+1e-9 < quantity:
             raise ValueError(f"담보 자산 `{code}` 보유 수량이 부족합니다.")
         plan, left = [], quantity

@@ -8,6 +8,7 @@ import { CommandPanel } from "./CommandPanel";
 
 type Warning = { level: "caution" | "warning" | "danger"; label: string; reason: string; expiresEpoch: number | null };
 type DrMovement = { movement_id: number; dr_code: string; underlying_code: string; underlying_currency: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; underlying_average_cost: number; underlying_average_cost_text: string; decimal_places: number; recorded_epoch: number };
+type DrCustodyInstruction = { reference_key: string; dr_code: string; underlying_code: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; status: "requested" | "verified" | "settled" | "rejected" | "cancelled"; requested_epoch: number; settle_after_epoch: number | null };
 type DrVotingDelegation = { delegation_id: number; dr_code: string; underlying_code: string; proxy_user_id: string; dr_quantity: number; status: "active" | "revoked"; created_epoch: number; revoked_epoch: number | null; events: { event_type: string; recorded_epoch: number }[] };
 type ReceivedDrVotingDelegation = { delegation_id: number; dr_code: string; underlying_code: string; owner_user_id: string; dr_quantity: number; created_epoch: number };
 type DrVotingAgenda = { meetingId: number; agendaItemId: number; underlyingCode: string; meetingTitle: string; agendaTitle: string; choices: string[]; recordEpoch: number; opensEpoch: number | null; closesEpoch: number | null; quorumPercent: number; votingPower: number; totalEligible: number; myChoice: string | null; state: "unscheduled" | "upcoming" | "open" | "closed" };
@@ -85,6 +86,7 @@ export default function App() {
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [drMovements, setDrMovements] = useState<DrMovement[]>([]);
+  const [drCustodyInstructions, setDrCustodyInstructions] = useState<DrCustodyInstruction[]>([]);
   const [drDelegations, setDrDelegations] = useState<DrVotingDelegation[]>([]);
   const [receivedDrDelegations, setReceivedDrDelegations] = useState<ReceivedDrVotingDelegation[]>([]);
   const [drVotingAgenda, setDrVotingAgenda] = useState<DrVotingAgenda[]>([]);
@@ -128,16 +130,18 @@ export default function App() {
   }, []);
 
   const refreshAccount = useCallback(async () => {
-    const [wallet, orderData, loanData, dividendData] = await Promise.all([
+    const [wallet, orderData, loanData, dividendData, custodyData] = await Promise.all([
       api<{ portfolio: Portfolio }>("/api/me/portfolio"),
       api<{ orders: Order[] }>("/api/market/orders"),
       api<{ loans: LoanScheduleView[] }>("/api/me/loan-schedules"),
       api<{ payments: DividendPayment[] }>("/api/me/dividend-payments"),
+      api<{ instructions: DrCustodyInstruction[] }>("/api/me/dr/conversions"),
     ]);
     setPortfolio(wallet.portfolio);
     setOrders(orderData.orders);
     setLoanSchedules(loanData.loans);
     setDividendPayments(dividendData.payments);
+    setDrCustodyInstructions(custodyData.instructions);
   }, []);
 
   useEffect(() => {
@@ -274,11 +278,11 @@ export default function App() {
     }
     setBusy(true);
     try {
-      const result = await api<{ message: string }>("/api/dr/convert", { method: "POST", body: JSON.stringify({
+      const result = await api<{ success: boolean; result: { status: string; message: string } }>("/api/dr/convert", { method: "POST", body: JSON.stringify({
         drCode: selected.code, action, quantity: qty,
         referenceKey,
       }) });
-      setNotice(result.message);
+      setNotice(result.result.message);
       drRequestKeys.current.delete(requestKey);
       try { window.sessionStorage.removeItem(storageKey); } catch { /* ignore unavailable session storage */ }
       try {
@@ -288,10 +292,24 @@ export default function App() {
         ]);
         setDrMovements(history.movements);
       } catch {
-        setNotice(`${result.message} 화면 새로고침에 실패했습니다. 다시 불러와 잔액과 이력을 확인해주세요.`);
+        setNotice(`${result.result.message} 화면 새로고침에 실패했습니다. 다시 불러와 잔액과 이력을 확인해주세요.`);
       }
     } catch (cause) {
       setNotice(`${errorText(cause, "DR 전환 요청 결과를 확인하지 못했습니다.")} 같은 수량과 방향으로 재시도하면 중복 전환되지 않습니다.`);
+    } finally { setBusy(false); }
+  }
+
+  async function cancelDrConversion(item: DrCustodyInstruction) {
+    if (!window.confirm(`${item.reference_key} DR 전환 요청을 취소할까요? 예약된 입력 수량이 해제됩니다.`)) return;
+    setBusy(true);
+    try {
+      const result = await api<{ success: boolean; result: { status: string } }>(
+        "/api/dr/convert/cancel", { method: "POST", body: JSON.stringify({ referenceKey: item.reference_key }) },
+      );
+      setNotice(result.result.status === "cancelled" ? "DR 전환 요청을 취소하고 예약 수량을 해제했습니다." : "취소 처리했습니다.");
+      await refreshAccount();
+    } catch (cause) {
+      setNotice(errorText(cause, "DR 전환 요청을 취소하지 못했습니다."));
     } finally { setBusy(false); }
   }
 
@@ -482,6 +500,13 @@ export default function App() {
             <span><b>{item.movement_type === "issue" ? "DR 발행" : "원주 상환"} · {item.dr_code}</b><small>{date(item.recorded_epoch)} · {money(item.dr_quantity, 0)} DR ↔ {money(item.underlying_quantity, 0)}주 {item.underlying_code} · 원주 평균원가 {groupAmount(item.underlying_average_cost_text)} {item.underlying_currency}</small></span>
           </div>)}</div>
           <p className="orders-hint">게임 내 예탁 이동 기록이며 실제 수탁기관 보관 증빙은 아닙니다.</p>
+        </section>}
+        {drCustodyInstructions.some((item) => item.status === "requested" || item.status === "verified") && <section className="data-panel holdings-panel"><div className="panel-title"><h2>대기 중인 DR 전환</h2><span>{drCustodyInstructions.filter((item) => item.status === "requested" || item.status === "verified").length}건</span></div>
+          <div className="holdings">{drCustodyInstructions.filter((item) => item.status === "requested" || item.status === "verified").map((item) => <div className="holding" key={item.reference_key}>
+            <span><b>{item.movement_type === "issue" ? "DR 발행" : "원주 상환"} · {item.dr_code}</b><small>{money(item.dr_quantity, 0)} DR ↔ {money(item.underlying_quantity, 0)}주 {item.underlying_code} · 접수 {date(item.requested_epoch)} · 정산 가능 {item.settle_after_epoch ? date(item.settle_after_epoch) : "즉시"} · 수량 예약 중</small></span>
+            {item.status === "requested" && <button className="cancel-button" disabled={busy} onClick={() => void cancelDrConversion(item)}>요청 취소</button>}
+          </div>)}</div>
+          <p className="orders-hint">대기 중인 입력 수량은 매도·담보·다른 DR 전환에 사용할 수 없습니다. 정산은 내부 시뮬레이터 관리 흐름에서 처리됩니다.</p>
         </section>}
         {receivedDrDelegations.length > 0 && <section className="data-panel holdings-panel"><div className="panel-title"><h2>위임받은 DR 의결권</h2><span>{receivedDrDelegations.length}건</span></div>
           <div className="holdings">{receivedDrDelegations.map((item) => <div className="holding" key={item.delegation_id}>

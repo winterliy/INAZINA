@@ -4,9 +4,16 @@ from decimal import Decimal
 import json
 import math
 import sqlite3
+import time
 
 
 class DepositaryReceiptManager:
+    AUTO_SETTLEMENT_MAX_ATTEMPTS = 5
+    CUSTODY_REJECTION_CODES = frozenset({
+        "compliance_review", "invalid_program", "insufficient_custody",
+        "operational_error", "other",
+    })
+
     def __init__(self, db):
         self.db = db
 
@@ -516,7 +523,438 @@ class DepositaryReceiptManager:
                 (str(user_id), str(asset_code), float(quantity), unit_cost),
             )
 
-    def convert(self, user_id, dr_code, action, quantity, reference_key, *, now=None):
+    @staticmethod
+    def _reserved_quantity(conn, asset_code, user_id=None, exclude_reference=None):
+        sql = (
+            "SELECT COALESCE(SUM(r.reserved_quantity),0) FROM assets.dr_custody_reservations r "
+            "JOIN assets.dr_custody_instructions i USING(reference_key) "
+            "WHERE r.reserved_asset_code=? AND r.released_epoch IS NULL "
+            "AND i.status IN ('requested','verified')"
+        )
+        params = [str(asset_code)]
+        if user_id is not None:
+            sql += " AND r.user_id=?"
+            params.append(str(user_id))
+        if exclude_reference:
+            sql += " AND r.reference_key<>?"
+            params.append(str(exclude_reference))
+        return int(conn.execute(sql, tuple(params)).fetchone()[0] or 0)
+
+    def request_conversion(self, user_id, dr_code, action, quantity, reference_key, *, now=None):
+        """Request an internally delayed DR conversion and reserve its input units."""
+        if action not in {"issue", "redeem"}:
+            return False, "❌ 전환 방향은 issue 또는 redeem이어야 합니다."
+        if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
+            return False, "❌ 전환 수량은 1 이상의 정수 DR 수량이어야 합니다."
+        reference_key = str(reference_key or "").strip()
+        if not reference_key or len(reference_key) > 100:
+            return False, "❌ 중복 실행 방지 참조값을 확인해주세요."
+        delay_row = self.db.assets.execute_one(
+            "SELECT a.settlement_delay_seconds FROM assets.depositary_receipts d "
+            "JOIN assets.market_assets a ON a.code=d.dr_code WHERE d.dr_code=?",
+            (str(dr_code).strip(),),
+        )
+        if delay_row and int(delay_row["settlement_delay_seconds"] or 0) == 0:
+            ok, result = self.convert(user_id, dr_code, action, quantity, reference_key, now=now)
+            return ok, {"status": "settled" if ok else "rejected", "referenceKey": reference_key,
+                        "message": result}
+        from managers.bank_journal import BankJournal
+        try:
+            when = BankJournal.validate_epoch(now)
+            with self.db.atomic() as conn:
+                prior = conn.execute(
+                    "SELECT user_id,dr_code,movement_type,dr_quantity,underlying_quantity "
+                    "FROM assets.depositary_receipt_movements WHERE reference_key=?", (reference_key,),
+                ).fetchone()
+                instruction = conn.execute(
+                    "SELECT * FROM assets.dr_custody_instructions WHERE reference_key=?", (reference_key,),
+                ).fetchone()
+                expected = (str(user_id), str(dr_code).strip(), action, quantity)
+                if prior:
+                    if (str(prior["user_id"]), str(prior["dr_code"]), prior["movement_type"],
+                            int(prior["dr_quantity"])) != expected:
+                        raise ValueError("요청 참조값이 다른 DR 전환 내용에 이미 사용되었습니다.")
+                    return True, {"status": "settled", "message": "이미 정산 완료된 요청입니다."}
+                if instruction:
+                    if (str(instruction["user_id"]), str(instruction["dr_code"]),
+                            instruction["movement_type"], int(instruction["dr_quantity"])) != expected:
+                        raise ValueError("요청 참조값이 다른 DR 전환 내용에 이미 사용되었습니다.")
+                    return True, {
+                        "status": instruction["status"], "referenceKey": reference_key,
+                        "settleAfterEpoch": (conn.execute(
+                            "SELECT settle_after_epoch FROM assets.dr_custody_reservations "
+                            "WHERE reference_key=?", (reference_key,),
+                        ).fetchone() or [None])[0],
+                        "message": "이미 접수된 요청입니다.",
+                    }
+
+                owner = conn.execute(
+                    "SELECT status FROM users.users WHERE user_id=?", (str(user_id),)
+                ).fetchone()
+                if not owner or owner["status"] != "active":
+                    raise ValueError("활성 사용자만 DR 전환을 이용할 수 있습니다.")
+                program = conn.execute(
+                    "SELECT d.*,a.status AS asset_status,a.total_supply,a.type AS asset_type,"
+                    "a.settlement_delay_seconds FROM assets.depositary_receipts d "
+                    "JOIN assets.market_assets a ON a.code=d.dr_code WHERE d.dr_code=?",
+                    (str(dr_code).strip(),),
+                ).fetchone()
+                if not program or program["asset_type"] != "depositary_receipt":
+                    raise ValueError("주식예탁증서(DR) 프로그램을 찾을 수 없습니다.")
+                if action == "issue" and (
+                    program["program_status"] != "active" or program["asset_status"] != "active"
+                ):
+                    raise ValueError("중지된 DR 프로그램에는 새 전환 요청을 접수할 수 없습니다.")
+                underlying = conn.execute(
+                    "SELECT share_class,status FROM company.company WHERE company_code=?",
+                    (program["underlying_code"],),
+                ).fetchone()
+                if (not underlying or underlying["share_class"] != "common"
+                        or (action == "issue" and underlying["status"] != "active")):
+                    raise ValueError("활성 기초 보통주가 아니어서 전환 요청을 접수할 수 없습니다.")
+                exact_shares = Decimal(quantity) * Decimal(str(program["underlying_per_receipt"]))
+                shares = int(exact_shares)
+                if shares <= 0 or exact_shares != Decimal(shares):
+                    raise ValueError("전환 수량은 원주 정수 수량이 되도록 DR 수량을 맞춰주세요.")
+                user, code = str(user_id), str(program["dr_code"])
+                delay = max(0, min(2_592_000, int(program["settlement_delay_seconds"] or 0)))
+                settle_after = when + delay
+                if action == "issue":
+                    supply = min(int(program["receipt_supply"]), int(program["total_supply"] or program["receipt_supply"]))
+                    outstanding = conn.execute(
+                        "SELECT (SELECT COALESCE(SUM(quantity),0) FROM assets.user_assets WHERE asset_code=?) + "
+                        "(SELECT COALESCE(SUM(quantity),0) FROM assets.option_collateral_lots WHERE underlying_code=?) + "
+                        "(SELECT COALESCE(SUM(quantity),0) FROM accounts.loan_collateral_assets WHERE asset_code=? AND status='pledged') + "
+                        "(SELECT COALESCE(SUM(remaining_quantity),0) FROM assets.market_orders WHERE asset_code=? "
+                        "AND side='buy' AND status IN ('scheduled','open','partial'))",
+                        (code, code, code, code),
+                    ).fetchone()[0]
+                    pending_issue = conn.execute(
+                        "SELECT COALESCE(SUM(r.dr_quantity),0) FROM assets.dr_custody_instructions r "
+                        "WHERE r.dr_code=? AND r.movement_type='issue' AND r.status IN ('requested','verified')",
+                        (code,),
+                    ).fetchone()[0]
+                    if int(outstanding or 0) + int(pending_issue or 0) + quantity > supply:
+                        raise ValueError(f"DR 프로그램 발행 한도({supply:,})를 초과합니다.")
+                    lots = conn.execute(
+                        "SELECT account_number,quantity FROM assets.user_assets "
+                        "WHERE user_id=? AND asset_code=?", (user, program["underlying_code"]),
+                    ).fetchall()
+                    order_rows = conn.execute(
+                        "SELECT funding_account,SUM(remaining_quantity) quantity FROM assets.market_orders "
+                        "WHERE user_id=? AND asset_code=? AND side='sell' "
+                        "AND status IN ('scheduled','open','partial') GROUP BY funding_account",
+                        (user, program["underlying_code"]),
+                    ).fetchall()
+                    order_reserved = {row["funding_account"]: float(row["quantity"] or 0) for row in order_rows}
+                    capacities = {}
+                    for lot in lots:
+                        account = lot["account_number"]
+                        capacities[account] = capacities.get(account, 0.0) + float(lot["quantity"] or 0)
+                    available = sum(math.floor(max(0.0, capacity-order_reserved.get(account, 0.0))+1e-9)
+                                    for account, capacity in capacities.items())
+                    available -= self._reserved_quantity(conn, program["underlying_code"], user)
+                    if available < shares:
+                        raise ValueError(f"예약 주문·기존 전환을 제외한 원주가 부족합니다. 필요 {shares:,}, 가능 {max(0, available):,}주입니다.")
+                    reserved_code, reserved_quantity = program["underlying_code"], shares
+                else:
+                    owned = int(conn.execute(
+                        "SELECT COALESCE(SUM(quantity),0) FROM assets.user_assets WHERE user_id=? AND asset_code=?",
+                        (user, code),
+                    ).fetchone()[0] or 0)
+                    sell_reserved = int(conn.execute(
+                        "SELECT COALESCE(SUM(remaining_quantity),0) FROM assets.market_orders "
+                        "WHERE user_id=? AND asset_code=? AND side='sell' AND status IN ('scheduled','open','partial')",
+                        (user, code),
+                    ).fetchone()[0] or 0)
+                    delegated = int(conn.execute(
+                        "SELECT COALESCE(SUM(dr_quantity),0) FROM assets.dr_voting_delegations "
+                        "WHERE owner_user_id=? AND dr_code=? AND status='active'", (user, code),
+                    ).fetchone()[0] or 0)
+                    pending_dr = self._reserved_quantity(conn, code, user)
+                    if owned-sell_reserved-delegated-pending_dr < quantity:
+                        raise ValueError("주문·위임·기존 전환 예약을 제외한 DR 보유 수량이 부족합니다.")
+                    custody = conn.execute(
+                        "SELECT COALESCE(SUM(CASE WHEN movement_type='issue' THEN underlying_quantity "
+                        "ELSE -underlying_quantity END),0) FROM assets.depositary_receipt_movements WHERE dr_code=?",
+                        (code,),
+                    ).fetchone()[0]
+                    pending_underlying = conn.execute(
+                        "SELECT COALESCE(SUM(underlying_quantity),0) FROM assets.dr_custody_instructions "
+                        "WHERE dr_code=? AND movement_type='redeem' AND status IN ('requested','verified')",
+                        (code,),
+                    ).fetchone()[0]
+                    if int(custody or 0)-int(pending_underlying or 0) < shares:
+                        raise ValueError("다른 상환 요청을 제외한 시뮬레이터 예탁 원주가 부족합니다.")
+                    reserved_code, reserved_quantity = code, quantity
+
+                self._record_custody_process(conn, reference_key, 1, "instruction_received",
+                                             code, user, action, quantity, shares, when)
+                conn.execute(
+                    "INSERT INTO assets.dr_custody_reservations "
+                    "(reference_key,dr_code,user_id,movement_type,reserved_asset_code,reserved_quantity,"
+                    "created_epoch,settle_after_epoch) VALUES (?,?,?,?,?,?,?,?)",
+                    (reference_key, code, user, action, reserved_code, reserved_quantity, when, settle_after),
+                )
+                return True, {
+                    "status": "requested", "referenceKey": reference_key,
+                    "drCode": code, "action": action, "drQuantity": quantity,
+                    "underlyingQuantity": shares, "requestedEpoch": when,
+                    "settleAfterEpoch": settle_after,
+                    "message": f"전환 요청을 접수했습니다. 내부 정산 가능 시각: {int(settle_after)}",
+                }
+        except (ValueError, RuntimeError, KeyError, TypeError, OverflowError) as exc:
+            return False, f"❌ {exc}"
+
+    def cancel_conversion(self, user_id, reference_key, *, now=None, allow_admin=False):
+        from managers.bank_journal import BankJournal
+        key = str(reference_key or "").strip()
+        try:
+            when = BankJournal.validate_epoch(now)
+            with self.db.atomic() as conn:
+                instruction = conn.execute(
+                    "SELECT * FROM assets.dr_custody_instructions WHERE reference_key=?", (key,),
+                ).fetchone()
+                if not instruction:
+                    raise ValueError("DR 전환 요청을 찾을 수 없습니다.")
+                if instruction["user_id"] != str(user_id) and not allow_admin:
+                    raise ValueError("본인의 전환 요청만 취소할 수 있습니다.")
+                if instruction["status"] != "requested":
+                    raise ValueError("접수 상태인 요청만 취소할 수 있습니다.")
+                conn.execute(
+                    "UPDATE assets.dr_custody_instructions SET status='cancelled',updated_epoch=? "
+                    "WHERE reference_key=?", (when, key),
+                )
+                conn.execute(
+                    "UPDATE assets.dr_custody_reservations SET released_epoch=? WHERE reference_key=?",
+                    (when, key),
+                )
+                conn.execute(
+                    "INSERT INTO assets.dr_custody_instruction_events "
+                    "(reference_key,event_sequence,event_type,recorded_epoch) VALUES (?,2,'cancelled',?)",
+                    (key, when),
+                )
+                return True, {"referenceKey": key, "status": "cancelled"}
+        except (ValueError, TypeError, OverflowError) as exc:
+            return False, f"❌ {exc}"
+
+    def reject_conversion(self, user_id, reference_key, reason_code, *, now=None):
+        """Admin-only caller records a coded rejection and releases its reservation."""
+        from managers.bank_journal import BankJournal
+        key = str(reference_key or "").strip()
+        code = str(reason_code or "").strip().lower()
+        try:
+            when = BankJournal.validate_epoch(now)
+            if code not in self.CUSTODY_REJECTION_CODES:
+                raise ValueError("거절 사유 코드를 확인해주세요.")
+            with self.db.atomic() as conn:
+                instruction = conn.execute(
+                    "SELECT status FROM assets.dr_custody_instructions WHERE reference_key=?", (key,),
+                ).fetchone()
+                if not instruction:
+                    raise ValueError("DR 전환 요청을 찾을 수 없습니다.")
+                if instruction["status"] != "requested":
+                    raise ValueError("접수 상태인 요청만 거절할 수 있습니다.")
+                conn.execute(
+                    "UPDATE assets.dr_custody_instructions SET status='rejected',updated_epoch=? "
+                    "WHERE reference_key=?", (when, key),
+                )
+                conn.execute(
+                    "UPDATE assets.dr_custody_reservations SET released_epoch=? "
+                    "WHERE reference_key=? AND released_epoch IS NULL", (when, key),
+                )
+                sequence = conn.execute(
+                    "SELECT COALESCE(MAX(event_sequence),0)+1 FROM "
+                    "assets.dr_custody_instruction_events WHERE reference_key=?", (key,),
+                ).fetchone()[0]
+                conn.execute(
+                    "INSERT INTO assets.dr_custody_instruction_events "
+                    "(reference_key,event_sequence,event_type,recorded_epoch,detail_code) "
+                    "VALUES (?,?, 'rejected',?,?)", (key, sequence, when, code),
+                )
+                return True, {"referenceKey": key, "status": "rejected", "reasonCode": code}
+        except (ValueError, TypeError, OverflowError) as exc:
+            return False, f"❌ {exc}"
+
+    def list_custody_instructions(self, *, user_id=None, limit=100):
+        try:
+            bounded = max(1, min(int(limit), 200))
+        except (TypeError, ValueError, OverflowError):
+            bounded = 100
+        where, params = ("", [])
+        if user_id is not None:
+            where, params = ("WHERE i.user_id=?", [str(user_id)])
+        params.append(bounded)
+        return [dict(row) for row in self.db.assets.execute(
+            "SELECT i.reference_key,i.dr_code,d.underlying_code,i.user_id,i.movement_type,"
+            "i.dr_quantity,i.underlying_quantity,i.status,i.requested_epoch,i.updated_epoch,"
+            "i.settled_epoch,r.settle_after_epoch,r.released_epoch,"
+            "(SELECT COUNT(*) FROM assets.dr_custody_settlement_attempts a "
+            " WHERE a.reference_key=i.reference_key) AS settlement_attempt_count,"
+            "(SELECT a.outcome FROM assets.dr_custody_settlement_attempts a "
+            " WHERE a.reference_key=i.reference_key ORDER BY a.attempted_epoch DESC,a.attempt_id DESC LIMIT 1) "
+            " AS last_settlement_outcome,"
+            "(SELECT a.detail FROM assets.dr_custody_settlement_attempts a "
+            " WHERE a.reference_key=i.reference_key ORDER BY a.attempted_epoch DESC,a.attempt_id DESC LIMIT 1) "
+            " AS last_settlement_detail "
+            "FROM assets.dr_custody_instructions i JOIN assets.depositary_receipts d USING(dr_code) "
+            "LEFT JOIN assets.dr_custody_reservations r USING(reference_key) " + where +
+            " ORDER BY i.requested_epoch DESC,i.reference_key DESC LIMIT ?", tuple(params),
+        )]
+
+    def reconcile_custody_ledger(self):
+        """Read-only consistency report for DR movements, holdings, states and reservations."""
+        programs = self.db.assets.execute(
+            "SELECT dr_code,underlying_code,underlying_per_receipt,program_status "
+            "FROM assets.depositary_receipts ORDER BY dr_code"
+        )
+        reports, discrepancies = [], []
+        for program in programs:
+            code = str(program["dr_code"])
+            movement = self.db.assets.execute_one(
+                "SELECT COUNT(*) AS movement_count,"
+                "COALESCE(SUM(CASE WHEN movement_type='issue' THEN dr_quantity "
+                "ELSE -dr_quantity END),0) AS net_dr,"
+                "COALESCE(SUM(CASE WHEN movement_type='issue' THEN underlying_quantity "
+                "ELSE -underlying_quantity END),0) AS net_underlying "
+                "FROM assets.depositary_receipt_movements WHERE dr_code=?", (code,),
+            )
+            movement_rows = self.db.assets.execute(
+                "SELECT movement_type,dr_quantity,underlying_quantity "
+                "FROM assets.depositary_receipt_movements WHERE dr_code=? ORDER BY movement_id", (code,),
+            )
+            ratio = Decimal(str(program["underlying_per_receipt"]))
+            expected_underlying = sum(
+                (1 if row["movement_type"] == "issue" else -1)
+                * int(Decimal(int(row["dr_quantity"])) * ratio)
+                for row in movement_rows
+            )
+            holding = self.db.assets.execute_one(
+                "SELECT COALESCE(SUM(quantity),0) FROM assets.user_assets WHERE asset_code=?", (code,),
+            )
+            net_dr = int(movement["net_dr"] or 0)
+            holding_dr = int(holding[0] or 0)
+            net_underlying = int(movement["net_underlying"] or 0)
+            item_issues = []
+            if net_dr != holding_dr:
+                item_issues.append({"code": "outstanding_dr_mismatch", "movement_quantity": net_dr,
+                                    "holder_quantity": holding_dr})
+            if net_underlying != expected_underlying:
+                item_issues.append({"code": "underlying_ratio_mismatch", "movement_quantity": net_underlying,
+                                    "expected_quantity": expected_underlying})
+            reports.append({
+                "drCode": code, "underlyingCode": program["underlying_code"],
+                "programStatus": program["program_status"],
+                "movementCount": int(movement["movement_count"] or 0),
+                "netDrQuantity": net_dr, "holderDrQuantity": holding_dr,
+                "custodyUnderlyingQuantity": net_underlying,
+                "expectedUnderlyingQuantity": expected_underlying,
+                "discrepancies": item_issues,
+            })
+            discrepancies.extend({"drCode": code, **issue} for issue in item_issues)
+
+        rows = self.db.assets.execute(
+            "SELECT i.reference_key,i.dr_code,i.user_id,i.status,"
+            "r.reference_key AS reservation_key,r.reserved_asset_code,r.reserved_quantity,r.released_epoch "
+            "FROM assets.dr_custody_instructions i LEFT JOIN assets.dr_custody_reservations r "
+            "USING(reference_key) WHERE i.status IN ('requested','verified') "
+            "AND (r.reference_key IS NULL OR r.released_epoch IS NOT NULL) "
+            "UNION ALL SELECT i.reference_key,i.dr_code,i.user_id,i.status,"
+            "r.reference_key AS reservation_key,r.reserved_asset_code,r.reserved_quantity,r.released_epoch "
+            "FROM assets.dr_custody_instructions i JOIN assets.dr_custody_reservations r "
+            "USING(reference_key) WHERE i.status NOT IN ('requested','verified') "
+            "AND r.released_epoch IS NULL ORDER BY reference_key"
+        )
+        for row in rows:
+            issue_code = "missing_active_reservation" if row["reservation_key"] is None else "reservation_on_terminal_request"
+            discrepancies.append({"referenceKey": row["reference_key"], "drCode": row["dr_code"],
+                                  "code": issue_code, "status": row["status"]})
+
+        event_mismatches = self.db.assets.execute(
+            "SELECT i.reference_key,i.dr_code,i.status,e.event_type FROM assets.dr_custody_instructions i "
+            "LEFT JOIN assets.dr_custody_instruction_events e ON e.reference_key=i.reference_key "
+            "AND e.event_sequence=(SELECT MAX(e2.event_sequence) FROM "
+            "assets.dr_custody_instruction_events e2 WHERE e2.reference_key=i.reference_key) "
+            "WHERE e.event_type IS NULL OR e.event_type<>i.status ORDER BY i.reference_key LIMIT 200"
+        )
+        for row in event_mismatches:
+            discrepancies.append({"referenceKey": row["reference_key"], "drCode": row["dr_code"],
+                                  "code": "instruction_event_status_mismatch", "status": row["status"],
+                                  "lastEvent": row["event_type"]})
+
+        overdrawn = self.db.assets.execute(
+            "SELECT r.user_id,r.reserved_asset_code AS asset_code,SUM(r.reserved_quantity) reserved_quantity,"
+            "COALESCE(a.quantity,0) AS holder_quantity "
+            "FROM assets.dr_custody_reservations r LEFT JOIN ("
+            "SELECT user_id,asset_code,SUM(quantity) AS quantity FROM assets.user_assets "
+            "GROUP BY user_id,asset_code) a "
+            "ON a.user_id=r.user_id AND a.asset_code=r.reserved_asset_code "
+            "WHERE r.released_epoch IS NULL GROUP BY r.user_id,r.reserved_asset_code "
+            "HAVING SUM(r.reserved_quantity)>COALESCE(a.quantity,0) "
+            "ORDER BY r.reserved_asset_code,r.user_id LIMIT 200"
+        )
+        for row in overdrawn:
+            discrepancies.append({"userId": row["user_id"], "assetCode": row["asset_code"],
+                                  "code": "reservation_exceeds_holding",
+                                  "reservedQuantity": int(row["reserved_quantity"]),
+                                  "holderQuantity": int(row["holder_quantity"])})
+        return {
+            "programCount": len(reports), "discrepancyCount": len(discrepancies),
+            "programs": reports, "discrepancies": discrepancies[:500],
+        }
+
+    def settle_conversion(self, reference_key, *, now=None):
+        key = str(reference_key or "").strip()
+        instruction = self.db.assets.execute_one(
+            "SELECT user_id,dr_code,movement_type,dr_quantity FROM assets.dr_custody_instructions "
+            "WHERE reference_key=?", (key,),
+        )
+        if not instruction:
+            return False, "❌ DR 전환 요청을 찾을 수 없습니다."
+        ok, result = self.convert(
+            instruction["user_id"], instruction["dr_code"], instruction["movement_type"],
+            int(instruction["dr_quantity"]), key, now=now, _settling_reference=key,
+        )
+        from managers.bank_journal import BankJournal
+        attempted_epoch = BankJournal.validate_epoch(now)
+        with self.db.atomic() as conn:
+            conn.execute(
+                "INSERT INTO assets.dr_custody_settlement_attempts "
+                "(reference_key,attempted_epoch,outcome,detail) VALUES (?,?,?,?)",
+                (key, attempted_epoch, "settled" if ok else "failed",
+                 None if ok else str(result)[:1000]),
+            )
+        return ok, result
+
+    def process_due_conversions(self, *, now=None, limit=100):
+        """Settle due internal custody requests; failed requests remain reserved for retry."""
+        try:
+            when = float(time.time() if now is None else now)
+            bounded = max(1, min(int(limit), 500))
+        except (TypeError, ValueError, OverflowError):
+            return {"settled": [], "failed": [{"reference_key": None,
+                                                  "error": "invalid worker arguments"}]}
+        rows = self.db.assets.execute(
+            "SELECT i.reference_key FROM assets.dr_custody_instructions i "
+            "JOIN assets.dr_custody_reservations r USING(reference_key) "
+            "WHERE i.status='requested' AND r.released_epoch IS NULL "
+            "AND r.settle_after_epoch<=? AND (SELECT COUNT(*) "
+            "FROM assets.dr_custody_settlement_attempts a WHERE a.reference_key=i.reference_key)<? "
+            "ORDER BY r.settle_after_epoch,i.reference_key LIMIT ?",
+            (when, self.AUTO_SETTLEMENT_MAX_ATTEMPTS, bounded),
+        )
+        settled, failed = [], []
+        for row in rows:
+            key = str(row["reference_key"])
+            ok, result = self.settle_conversion(key, now=when)
+            if ok:
+                settled.append(key)
+            else:
+                failed.append({"reference_key": key, "error": str(result)[:500]})
+        return {"settled": settled, "failed": failed}
+
+    def convert(self, user_id, dr_code, action, quantity, reference_key, *, now=None,
+                _settling_reference=None):
         """Issue DRs against deposited shares or redeem DRs for pooled custody shares.
 
         Conversion is limited to whole underlying shares. The custody ledger is a
@@ -550,6 +988,30 @@ class DepositaryReceiptManager:
                     return True, (f"✅ 이 전환 요청은 이미 처리되었습니다. "
                                   f"{prior['movement_type']} {prior['dr_quantity']} DR")
 
+                pending_instruction = None
+                if _settling_reference:
+                    pending_instruction = conn.execute(
+                        "SELECT i.*,r.settle_after_epoch FROM assets.dr_custody_instructions i "
+                        "JOIN assets.dr_custody_reservations r USING(reference_key) "
+                        "WHERE i.reference_key=? AND r.released_epoch IS NULL",
+                        (str(_settling_reference),),
+                    ).fetchone()
+                    if (not pending_instruction or pending_instruction["status"] != "requested"
+                            or str(pending_instruction["user_id"]) != str(user_id)
+                            or str(pending_instruction["dr_code"]) != str(dr_code)
+                            or pending_instruction["movement_type"] != action
+                            or int(pending_instruction["dr_quantity"]) != quantity):
+                        raise ValueError("정산 가능한 DR 전환 요청을 찾지 못했습니다.")
+                    if when < float(pending_instruction["settle_after_epoch"]):
+                        raise ValueError("내부 정산 대기시간이 아직 끝나지 않았습니다.")
+                else:
+                    pending_instruction = conn.execute(
+                        "SELECT status FROM assets.dr_custody_instructions WHERE reference_key=?",
+                        (reference_key,),
+                    ).fetchone()
+                    if pending_instruction:
+                        raise ValueError("접수된 전환 요청은 정산 또는 취소 처리해야 합니다.")
+
                 owner = conn.execute(
                     "SELECT status FROM users.users WHERE user_id=?", (str(user_id),)
                 ).fetchone()
@@ -557,13 +1019,16 @@ class DepositaryReceiptManager:
                     raise ValueError("활성 사용자만 DR 전환을 이용할 수 있습니다.")
                 program = conn.execute(
                     "SELECT d.*,a.status AS asset_status,a.total_supply,a.price AS dr_price,"
-                    "a.quote_currency AS dr_currency,a.type AS asset_type "
+                    "a.quote_currency AS dr_currency,a.type AS asset_type,"
+                    "a.settlement_delay_seconds "
                     "FROM assets.depositary_receipts d JOIN assets.market_assets a "
                     "ON a.code=d.dr_code WHERE d.dr_code=?",
                     (str(dr_code).strip(),),
                 ).fetchone()
                 if not program or program["asset_type"] != "depositary_receipt":
                     raise ValueError("주식예탁증서(DR) 프로그램을 찾을 수 없습니다.")
+                if int(program["settlement_delay_seconds"] or 0) > 0 and not _settling_reference:
+                    raise ValueError("이 DR은 내부 정산 대기기간이 설정되어 있습니다. 전환 요청을 접수해주세요.")
                 if action == "issue" and (
                     program["program_status"] != "active"
                     or program["asset_status"] != "active"
@@ -585,10 +1050,11 @@ class DepositaryReceiptManager:
                 code = str(program["dr_code"])
                 underlying_code = str(program["underlying_code"])
                 user = str(user_id)
-                self._record_custody_process(
-                    conn, reference_key, 1, "instruction_received", code, user,
-                    action, quantity, shares, when,
-                )
+                if not _settling_reference:
+                    self._record_custody_process(
+                        conn, reference_key, 1, "instruction_received", code, user,
+                        action, quantity, shares, when,
+                    )
 
                 if action == "issue":
                     supply = min(
@@ -605,7 +1071,12 @@ class DepositaryReceiptManager:
                         " WHERE asset_code=? AND side='buy' AND status IN ('scheduled','open','partial'))",
                         (code, code, code, code),
                     ).fetchone()[0]
-                    if int(outstanding or 0) + quantity > supply:
+                    pending_issues = conn.execute(
+                        "SELECT COALESCE(SUM(dr_quantity),0) FROM assets.dr_custody_instructions "
+                        "WHERE dr_code=? AND movement_type='issue' AND status IN ('requested','verified') "
+                        "AND reference_key<>?", (code, _settling_reference or reference_key),
+                    ).fetchone()[0]
+                    if int(outstanding or 0) + int(pending_issues or 0) + quantity > supply:
                         raise ValueError(f"DR 프로그램 발행 한도({supply:,})를 초과합니다.")
 
                     lots = conn.execute(
@@ -629,6 +1100,10 @@ class DepositaryReceiptManager:
                     for account, reserved in reserved_by_account.items():
                         capacities[account] = max(0.0, capacities.get(account, 0.0) - reserved)
                     available = sum(math.floor(max(0.0, value) + 1e-9) for value in capacities.values())
+                    pending_shares = self._reserved_quantity(
+                        conn, underlying_code, user, exclude_reference=_settling_reference,
+                    )
+                    available -= pending_shares
                     if available + 1e-9 < shares:
                         raise ValueError(f"전환 가능한 {underlying_code} 원주가 부족합니다. 필요 {shares:,}, 가능 {int(available):,}주입니다.")
 
@@ -688,8 +1163,10 @@ class DepositaryReceiptManager:
                         "SELECT COALESCE(SUM(dr_quantity),0) FROM assets.dr_voting_delegations "
                         "WHERE owner_user_id=? AND dr_code=? AND status='active'", (user, code),
                     ).fetchone()[0]
+                    pending_dr = self._reserved_quantity(conn, code, user,
+                                                         exclude_reference=_settling_reference)
                     if (float(owned or 0) - float(reserved or 0) - float(delegated or 0)
-                            + 1e-9 < quantity):
+                            - pending_dr + 1e-9 < quantity):
                         raise ValueError("미체결 매도 주문 및 위임된 의결권을 제외한 DR 보유 수량이 부족합니다.")
                     custody = conn.execute(
                         "SELECT COALESCE(SUM(CASE WHEN movement_type='issue' THEN underlying_quantity "
@@ -703,6 +1180,13 @@ class DepositaryReceiptManager:
                     ).fetchone()
                     if int(custody["shares"] or 0) < shares:
                         raise ValueError("상환 가능한 시뮬레이터 예탁 원주가 부족합니다.")
+                    pending_underlying = conn.execute(
+                        "SELECT COALESCE(SUM(underlying_quantity),0) FROM assets.dr_custody_instructions "
+                        "WHERE dr_code=? AND movement_type='redeem' AND status IN ('requested','verified') "
+                        "AND reference_key<>?", (code, _settling_reference or reference_key),
+                    ).fetchone()[0]
+                    if int(custody["shares"] or 0)-int(pending_underlying or 0) < shares:
+                        raise ValueError("다른 상환 예약을 제외한 시뮬레이터 예탁 원주가 부족합니다.")
                     self._record_custody_process(
                         conn, reference_key, 2, "custody_verified", code, user,
                         action, quantity, shares, when,
@@ -764,6 +1248,12 @@ class DepositaryReceiptManager:
                     conn, reference_key, 3, "settled", code, user,
                     action, quantity, shares, when,
                 )
+                if _settling_reference:
+                    conn.execute(
+                        "UPDATE assets.dr_custody_reservations SET released_epoch=? "
+                        "WHERE reference_key=? AND released_epoch IS NULL",
+                        (when, str(_settling_reference)),
+                    )
                 # A DR represents beneficial ownership of its underlying shares
                 # for the simulator's majority-holder/control summary.
                 from managers.user_manager import UserManager

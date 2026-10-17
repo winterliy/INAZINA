@@ -10,6 +10,8 @@ type Kind = { kind: string; token: string; label: string; group: "market" | "fin
 type Product = { code: string; name: string; kind: string; status: string; exchangeId: string | null; currency: string | null; value: number | null; drProgram?: { underlyingCode: string; receiptType: string; depositaryBank: string; custodian: string; underlyingPerReceipt: number; receiptSupply: number; depositedUnderlyingQuantity: number; custodiedUnderlyingQuantity: number; outstandingReceiptQuantity: number; programStatus: string; underlyingPrice?: number; underlyingCurrency?: string; referenceValue?: number; referencePremiumPercent?: number; referenceDeviationAlert?: boolean } };
 type DrMovement = { movement_id: number; user_id: string; dr_code: string; underlying_code: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; underlying_average_cost_text: string; underlying_currency: string; holder_underlying_average_cost_text: string; holder_underlying_currency: string; recorded_epoch: number };
 type DrCustodyEvent = { event_id: number; reference_key: string; event_sequence: number; event_type: "instruction_received" | "custody_verified" | "settled"; instruction_status: "requested" | "verified" | "settled" | "rejected" | "cancelled" | null; dr_code: string; underlying_code: string; user_id: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; recorded_epoch: number };
+type DrCustodyInstruction = { reference_key: string; dr_code: string; underlying_code: string; user_id: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; status: "requested" | "verified" | "settled" | "rejected" | "cancelled"; requested_epoch: number; updated_epoch: number; settled_epoch: number | null; settle_after_epoch: number | null; released_epoch: number | null; settlement_attempt_count: number; last_settlement_outcome: "settled" | "failed" | null; last_settlement_detail: string | null };
+type DrCustodyReconciliation = { programCount: number; discrepancyCount: number; programs: { drCode: string; underlyingCode: string; programStatus: string; movementCount: number; netDrQuantity: number; holderDrQuantity: number; custodyUnderlyingQuantity: number; expectedUnderlyingQuantity: number; discrepancies: { code: string }[] }[]; discrepancies: { code: string; referenceKey?: string; drCode?: string; assetCode?: string; userId?: string; reservedQuantity?: number; holderQuantity?: number }[] };
 type DrDeviationSample = { sample_id: number; dr_code: string; sampled_epoch: number; dr_price: number | null; reference_value: number | null; deviation_percent: number | null; state: "normal" | "premium" | "discount" | "unavailable" };
 type DrDeviationEvent = { event_id: number; dr_code: string; from_state: string; to_state: DrDeviationSample["state"]; recorded_epoch: number; deviation_percent: number | null };
 type DrVotingMeeting = { meetingId: number; underlyingCode: string; title: string; recordEpoch: number; createdEpoch: number; opensEpoch: number | null; closesEpoch: number | null; quorumPercent: number; agendaCount: number };
@@ -90,7 +92,9 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
   const [drMovements, setDrMovements] = useState<DrMovement[]>([]);
   const [drLedgerError, setDrLedgerError] = useState(false);
   const [drCustodyEvents, setDrCustodyEvents] = useState<DrCustodyEvent[]>([]);
+  const [drCustodyInstructions, setDrCustodyInstructions] = useState<DrCustodyInstruction[]>([]);
   const [drCustodyError, setDrCustodyError] = useState(false);
+  const [drCustodyReconciliation, setDrCustodyReconciliation] = useState<DrCustodyReconciliation | null>(null);
   const [drDeviationSamples, setDrDeviationSamples] = useState<DrDeviationSample[]>([]);
   const [drDeviationEvents, setDrDeviationEvents] = useState<DrDeviationEvent[]>([]);
   const [drMonitorError, setDrMonitorError] = useState(false);
@@ -138,6 +142,17 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
         setDrCustodyError(true);
       }
       try {
+        const instructions = await api<{ instructions: DrCustodyInstruction[] }>("/api/admin/dr/custody-instructions");
+        setDrCustodyInstructions(instructions.instructions);
+      } catch {
+        setDrCustodyInstructions([]);
+      }
+      try {
+        setDrCustodyReconciliation(await api<DrCustodyReconciliation>("/api/admin/dr/custody-reconciliation"));
+      } catch {
+        setDrCustodyReconciliation(null);
+      }
+      try {
         const drLedger = await api<{ movements: DrMovement[] }>("/api/admin/dr/movements?limit=100");
         setDrMovements(drLedger.movements);
         setDrLedgerError(false);
@@ -169,6 +184,7 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
       setDrMovements([]);
       setDrLedgerError(false);
       setDrCustodyEvents([]);
+      setDrCustodyInstructions([]);
       setDrCustodyError(false);
       setDrDeviationSamples([]);
       setDrDeviationEvents([]);
@@ -199,6 +215,22 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
         say(success);
         await load();
         await refreshDrVotingResults();
+      });
+  }
+
+  function handleCustodyInstruction(referenceKey: string, action: "settle" | "cancel" | "reject") {
+    const verb = action === "settle" ? "정산" : action === "cancel" ? "취소" : "거절";
+    const reasonCode = action === "reject"
+      ? window.prompt("거절 사유 코드: compliance_review, invalid_program, insufficient_custody, operational_error, other", "operational_error")
+      : null;
+    if (action === "reject" && reasonCode === null) return;
+    void run(() => api<{ success: boolean; result: unknown }>(
+      `/api/admin/dr/custody-instructions/${action}`, {
+        method: "POST", body: JSON.stringify({ referenceKey, ...(reasonCode ? { reasonCode } : {}) }),
+      }), `DR 전환 요청을 ${verb}하지 못했습니다.`, async (response) => {
+        if (!response.success) { say("요청을 처리하지 못했습니다.", true); return; }
+        say(`DR 전환 요청을 ${verb}했습니다.`);
+        await load();
       });
   }
 
@@ -296,7 +328,21 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
       <div className="kind-grid">{families.map((kind) => <button key={kind.family} type="button" className={editor?.mode === "create" && kindOf(editor.kind)?.family === kind.family ? "command-chip active" : "command-chip"} onClick={() => startCreate(kind.kind)}><b>{familyLabel(kind.kind)}</b><small>{kind.family === "saving" ? "saving · 국적 통화/외환" : kind.token} · {counts[kind.family] ?? 0}개</small></button>)}</div>
     </Card>
 
-    {group === "market" && <Card title="DR 내부 수탁 처리 이력" caption="요청별 상태 집계와 접수 → 검증 → 정산 이벤트를 함께 표시합니다. 현재 전환은 한 번의 시뮬레이터 거래에서 동기 처리되며, 대기·재시도·외부 수탁 증빙은 아직 지원하지 않습니다.">
+    {group === "market" && <Card title="DR 내부 수탁 처리 이력" caption="상품별 내부 정산 지연을 설정할 수 있습니다. 접수된 요청은 입력 자산 수량을 예약하고, 만기 후 봇 워커가 자동 정산합니다. 실패 시 예약을 보존해 다음 주기에 재시도하며 아래에 최근 사유를 표시합니다. 외부 수탁 증빙은 제공하지 않습니다.">
+      <h3 className="sub-head">읽기 전용 원장 대사</h3>
+      {drCustodyReconciliation ? <><p className="hint">{drCustodyReconciliation.programCount}개 DR 프로그램 검사 · 불일치 {drCustodyReconciliation.discrepancyCount}건 · 자동 수정 없음</p>
+        <div className="scroll-x"><table><thead><tr><th>DR</th><th>상태</th><th className="r">이동 원장 순발행</th><th className="r">현재 보유</th><th className="r">예탁 원주</th><th className="r">기대 원주</th><th>진단</th></tr></thead><tbody>
+          {drCustodyReconciliation.programs.map((item) => <tr key={item.drCode}><td className="mono">{item.drCode}</td><td>{item.programStatus}</td><td className="r mono">{number(item.netDrQuantity)}</td><td className="r mono">{number(item.holderDrQuantity)}</td><td className="r mono">{number(item.custodyUnderlyingQuantity)}</td><td className="r mono">{number(item.expectedUnderlyingQuantity)}</td><td>{item.discrepancies.map((issue) => issue.code).join(", ") || "일치"}</td></tr>)}
+        </tbody></table></div>
+        {drCustodyReconciliation.discrepancies.length > 0 && <div className="scroll-x"><table><thead><tr><th>진단 코드</th><th>DR / 자산</th><th>요청</th><th>사용자</th><th className="r">예약</th><th className="r">보유</th></tr></thead><tbody>
+          {drCustodyReconciliation.discrepancies.map((item, index) => <tr key={`${item.code}-${item.referenceKey ?? item.assetCode ?? index}`}><td>{item.code}</td><td className="mono">{item.drCode ?? item.assetCode ?? "—"}</td><td className="mono">{item.referenceKey ?? "—"}</td><td className="mono">{item.userId ?? "—"}</td><td className="r mono">{item.reservedQuantity == null ? "—" : number(item.reservedQuantity)}</td><td className="r mono">{item.holderQuantity == null ? "—" : number(item.holderQuantity)}</td></tr>)}
+        </tbody></table></div>}</>
+        : <p className="empty">원장 대사 결과를 불러오지 못했습니다.</p>}
+      <h3 className="sub-head">접수된 전환 요청</h3>
+      <div className="scroll-x"><table><thead><tr><th>요청</th><th>접수</th><th>정산 가능</th><th>DR / 원주</th><th>사용자</th><th>방향</th><th>상태</th><th>정산 시도 / 최근 결과</th><th /></tr></thead><tbody>
+        {drCustodyInstructions.map((item) => <tr key={item.reference_key}><td className="mono">{item.reference_key}</td><td>{date(item.requested_epoch)}</td><td>{item.settle_after_epoch == null ? "—" : date(item.settle_after_epoch)}</td><td className="mono">{item.dr_code} · {item.underlying_code} <small className="block hint">{number(item.dr_quantity)} DR / {number(item.underlying_quantity)}주</small></td><td className="mono">{item.user_id}</td><td>{item.movement_type === "issue" ? "발행" : "상환"}</td><td>{item.status}</td><td>{number(item.settlement_attempt_count)}회 · {item.last_settlement_outcome ?? "없음"}{item.last_settlement_detail && <small className="block hint">{item.last_settlement_detail}</small>}</td><td className="row-actions">{item.status === "requested" && <><button type="button" className="soft small" disabled={busy || (item.settle_after_epoch ?? Infinity) > Date.now()/1000} onClick={() => handleCustodyInstruction(item.reference_key, "settle")}>정산 재시도</button><button type="button" className="soft small" disabled={busy} onClick={() => handleCustodyInstruction(item.reference_key, "cancel")}>취소</button><button type="button" className="soft small" disabled={busy} onClick={() => handleCustodyInstruction(item.reference_key, "reject")}>거절</button></>}</td></tr>)}
+      </tbody></table>{!drCustodyInstructions.length && <p className="empty">접수된 DR 전환 요청이 없습니다.</p>}</div>
+      <h3 className="sub-head">단계 이벤트</h3>
       <div className="scroll-x"><table><thead><tr><th>시각</th><th>요청 참조</th><th>현재 상태</th><th>처리 단계</th><th>DR / 원주</th><th>사용자</th><th>방향</th><th className="r">DR 수량</th><th className="r">원주 수량</th></tr></thead><tbody>
         {drCustodyEvents.map((event) => <tr key={event.event_id}><td>{date(event.recorded_epoch)}</td><td className="mono">{event.reference_key}</td><td>{event.instruction_status === "settled" ? "정산 완료" : event.instruction_status ?? "상태 없음"}</td><td>{event.event_type === "instruction_received" ? "요청 접수" : event.event_type === "custody_verified" ? "보관 수량 검증" : "내부 결제 완료"}</td><td className="mono">{event.dr_code} · {event.underlying_code}</td><td className="mono">{event.user_id}</td><td>{event.movement_type === "issue" ? "발행" : "상환"}</td><td className="r mono">{number(event.dr_quantity)}</td><td className="r mono">{number(event.underlying_quantity)}</td></tr>)}
       </tbody></table>{drCustodyError ? <p className="empty">DR 수탁 처리 이력을 불러오지 못했습니다.</p> : !drCustodyEvents.length && <p className="empty">수탁 처리 이력이 없습니다.</p>}</div>

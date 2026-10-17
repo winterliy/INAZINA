@@ -197,7 +197,15 @@ class OptionManager:
                         "AND status IN ('open', 'partial')",
                         (writer_id, underlying_code),
                     ).fetchone()
-                    available = quantity_number(sum(quantity_number(row["quantity"]) for row in positions) - quantity_number(reserved["quantity"] or 0))
+                    custody_reserved = conn.execute(
+                        "SELECT COALESCE(SUM(r.reserved_quantity),0) FROM assets.dr_custody_reservations r "
+                        "JOIN assets.dr_custody_instructions i USING(reference_key) "
+                        "WHERE r.user_id=? AND r.reserved_asset_code=? AND r.released_epoch IS NULL "
+                        "AND i.status IN ('requested','verified')", (writer_id, underlying_code),
+                    ).fetchone()[0]
+                    available = quantity_number(sum(quantity_number(row["quantity"]) for row in positions)
+                                                - quantity_number(reserved["quantity"] or 0)
+                                                - quantity_number(custody_reserved or 0))
                     if available < quantity:
                         return False, (
                             f"❌ 커버드 콜 담보 주식이 부족합니다. 필요 {quantity:,}주, "

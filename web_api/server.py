@@ -1985,7 +1985,8 @@ def product_catalog():
                        "text": field in TEXT_ARGS or field == "quote_currency"} for field in _form_fields(profile)]
             listed = {field["key"] for field in fields} | {key}
             advanced = [{"key": name, "label": ARG_LABELS.get(name, name), "type": kind}
-                        for name, kind in columns.items() if name not in listed and name not in PRODUCT_PROTECTED]
+                        for name, kind in columns.items() if name not in listed and name not in PRODUCT_PROTECTED
+                        and (name != "settlement_delay_seconds" or profile == "dr")]
             kinds.append({"kind": profile, "token": token, "label": label, "group": group,
                           "family": "saving" if profile in SAVING_FAMILY else profile,
                           "fields": fields, "advanced": advanced,
@@ -2992,6 +2993,16 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     self.send_json(200, {"movements": user_dr_movements(user["userId"])})
+            elif path == "/internal/me/dr/conversions":
+                user = identity(internal_user_id(self))
+                if not user:
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    from managers.depositary_receipt_manager import DepositaryReceiptManager
+                    instructions = DepositaryReceiptManager(domain().bot.db).list_custody_instructions(
+                        user_id=user["userId"], limit=100,
+                    )
+                    self.send_json(200, {"instructions": instructions})
             elif path == "/internal/me/dr/voting-delegations":
                 user = identity(internal_user_id(self))
                 if not user:
@@ -3187,6 +3198,29 @@ class Handler(BaseHTTPRequestHandler):
                         "result_count": len(events.get("events", [])),
                     })
                     self.send_json(200, events)
+            elif path == "/internal/admin/dr/custody-instructions":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    from managers.depositary_receipt_manager import DepositaryReceiptManager
+                    instructions = DepositaryReceiptManager(domain().bot.db).list_custody_instructions(limit=200)
+                    audit_admin_access(user["userId"], "dr_custody_instructions.read", {
+                        "result_count": len(instructions),
+                    })
+                    self.send_json(200, {"instructions": instructions})
+            elif path == "/internal/admin/dr/custody-reconciliation":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    from managers.depositary_receipt_manager import DepositaryReceiptManager
+                    report = DepositaryReceiptManager(domain().bot.db).reconcile_custody_ledger()
+                    audit_admin_access(user["userId"], "dr_custody_reconciliation.read", {
+                        "program_count": report["programCount"],
+                        "discrepancy_count": report["discrepancyCount"],
+                    })
+                    self.send_json(200, report)
             elif path == "/internal/admin/dr/monitor":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -3406,6 +3440,40 @@ class Handler(BaseHTTPRequestHandler):
                     })
                 self.send_json(201 if success else 400, {"success": success, "result": result})
                 return
+            if path in {
+                "/internal/admin/dr/custody-instructions/settle",
+                "/internal/admin/dr/custody-instructions/cancel",
+                "/internal/admin/dr/custody-instructions/reject",
+            }:
+                user = identity(verified_id)
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                    return
+                expected_payload = {"referenceKey", "reasonCode"} if path.endswith("/reject") else {"referenceKey"}
+                if set(payload) != expected_payload:
+                    raise ValueError("invalid_dr_custody_instruction_payload")
+                from managers.depositary_receipt_manager import DepositaryReceiptManager
+                manager = DepositaryReceiptManager(domain().bot.db)
+                if path.endswith("/settle"):
+                    success, result = manager.settle_conversion(payload["referenceKey"])
+                    action = "settle"
+                elif path.endswith("/cancel"):
+                    success, result = manager.cancel_conversion(
+                        user["userId"], payload["referenceKey"], allow_admin=True,
+                    )
+                    action = "cancel"
+                else:
+                    success, result = manager.reject_conversion(
+                        user["userId"], payload["referenceKey"], payload["reasonCode"],
+                    )
+                    action = "reject"
+                if success:
+                    audit_admin_access(user["userId"], f"dr_custody_instruction.{action}", {
+                        "reference_key": payload["referenceKey"],
+                        **({"reason_code": payload["reasonCode"]} if action == "reject" else {}),
+                    })
+                self.send_json(200 if success else 400, {"success": success, "result": result})
+                return
             if path == "/internal/admin/dr/voting-agenda":
                 user = identity(verified_id)
                 if not user or user["role"] != "admin":
@@ -3456,11 +3524,21 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("invalid_dr_conversion_payload")
                 from managers.depositary_receipt_manager import DepositaryReceiptManager
                 bot = domain().bot
-                success, message = DepositaryReceiptManager(bot.db).convert(
+                success, result = DepositaryReceiptManager(bot.db).request_conversion(
                     user["userId"], payload["drCode"], payload["action"],
                     payload["quantity"], payload["referenceKey"],
                 )
-                self.send_json(200 if success else 400, {"success": success, "message": message})
+                self.send_json(200 if success else 400,
+                               {"success": success, "result": result})
+                return
+            if path == "/internal/dr/convert/cancel":
+                if set(payload) != {"referenceKey"}:
+                    raise ValueError("invalid_dr_conversion_cancel_payload")
+                from managers.depositary_receipt_manager import DepositaryReceiptManager
+                success, result = DepositaryReceiptManager(domain().bot.db).cancel_conversion(
+                    user["userId"], payload["referenceKey"],
+                )
+                self.send_json(200 if success else 400, {"success": success, "result": result})
                 return
             if path == "/internal/dr/voting-delegations":
                 allowed = {"drCode", "proxyUserId", "quantity"}

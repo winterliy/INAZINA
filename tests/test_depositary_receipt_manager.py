@@ -154,6 +154,224 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
         self.assertEqual(self.holding("UNDER_DR"), 2)
         self.assertEqual(self.holding("UNDER"), 2)
 
+    def test_delayed_conversion_reserves_input_until_cancel_or_settlement(self):
+        self.create_program()
+        self.db.assets.execute(
+            "UPDATE market_assets SET settlement_delay_seconds=60 WHERE code='UNDER_DR'"
+        )
+        now = 1_800_000_000
+        accepted, request = self.manager.request_conversion(
+            "citizen", "UNDER_DR", "issue", 2, "delayed-issue", now=now,
+        )
+        self.assertTrue(accepted, request)
+        self.assertEqual(request["status"], "requested")
+        self.assertEqual(request["settleAfterEpoch"], now+60)
+        self.assertEqual(self.holding("UNDER"), 6)
+        repeated, same = self.manager.request_conversion(
+            "citizen", "UNDER_DR", "issue", 2, "delayed-issue", now=now+1,
+        )
+        self.assertTrue(repeated, same)
+        self.assertEqual(same["status"], "requested")
+        from managers.order_book_manager import OrderBookManager
+        from managers.user_manager import UserManager
+        direct_sale, sale_message = UserManager(self.db).sell_asset("citizen", "UNDER", 3)
+        self.assertFalse(direct_sale)
+        self.assertIn("보유 수량이 부족", sale_message)
+        queued_sale, sale_message = OrderBookManager(self.db, UserManager(self.db)).place_limit_order(
+            "citizen", "UNDER", "sell", 3, 50,
+        )
+        self.assertFalse(queued_sale)
+        self.assertIn("매도 가능 수량이 부족", sale_message)
+        bypass, message = self.manager.convert(
+            "citizen", "UNDER_DR", "issue", 1, "bypass-delay", now=now+2,
+        )
+        self.assertFalse(bypass)
+        self.assertIn("대기기간", message)
+        competing, message = self.manager.request_conversion(
+            "citizen", "UNDER_DR", "issue", 2, "second-delayed-issue", now=now+2,
+        )
+        self.assertFalse(competing)
+        self.assertIn("부족", message)
+        early, message = self.manager.settle_conversion("delayed-issue", now=now+59)
+        self.assertFalse(early)
+        self.assertIn("대기시간", message)
+        settled, message = self.manager.settle_conversion("delayed-issue", now=now+60)
+        self.assertTrue(settled, message)
+        self.assertEqual(self.holding("UNDER"), 2)
+        self.assertEqual(self.holding("UNDER_DR"), 2)
+        status = self.db.assets.execute_one(
+            "SELECT status FROM dr_custody_instructions WHERE reference_key='delayed-issue'"
+        )[0]
+        self.assertEqual(status, "settled")
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT COALESCE(SUM(reserved_quantity),0) FROM dr_custody_reservations "
+            "WHERE reference_key='delayed-issue' AND released_epoch IS NULL"
+        )[0], 0)
+
+    def test_delayed_conversion_cancellation_releases_reservation_and_is_audited(self):
+        self.create_program()
+        self.db.assets.execute(
+            "UPDATE market_assets SET settlement_delay_seconds=120 WHERE code='UNDER_DR'"
+        )
+        accepted, request = self.manager.request_conversion(
+            "citizen", "UNDER_DR", "issue", 2, "cancel-issue", now=1_800_000_000,
+        )
+        self.assertTrue(accepted, request)
+        wrong_owner, message = self.manager.cancel_conversion(
+            "other", "cancel-issue", now=1_800_000_010,
+        )
+        self.assertFalse(wrong_owner)
+        self.assertIn("본인의", message)
+        cancelled, result = self.manager.cancel_conversion(
+            "citizen", "cancel-issue", now=1_800_000_010,
+        )
+        self.assertTrue(cancelled, result)
+        self.assertEqual(self.holding("UNDER"), 6)
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT status FROM dr_custody_instructions WHERE reference_key='cancel-issue'"
+        )[0], "cancelled")
+        self.assertEqual([row[0] for row in self.db.assets.execute(
+            "SELECT event_type FROM dr_custody_instruction_events "
+            "WHERE reference_key='cancel-issue' ORDER BY event_sequence"
+        )], ["requested", "cancelled"])
+
+    def test_due_conversion_worker_settles_only_due_requests(self):
+        self.create_program()
+        self.db.assets.execute(
+            "UPDATE market_assets SET settlement_delay_seconds=60 WHERE code='UNDER_DR'"
+        )
+        now = 1_800_000_000
+        accepted, _ = self.manager.request_conversion(
+            "citizen", "UNDER_DR", "issue", 2, "worker-due", now=now,
+        )
+        self.assertTrue(accepted)
+        before_due = self.manager.process_due_conversions(now=now+59)
+        self.assertEqual(before_due, {"settled": [], "failed": []})
+        due = self.manager.process_due_conversions(now=now+60)
+        self.assertEqual(due, {"settled": ["worker-due"], "failed": []})
+        self.assertEqual(self.holding("UNDER_DR"), 2)
+        self.assertEqual(self.holding("UNDER"), 2)
+
+    def test_failed_settlement_attempt_is_audited_and_keeps_reservation(self):
+        self.create_program()
+        self.db.assets.execute(
+            "UPDATE market_assets SET settlement_delay_seconds=60 WHERE code='UNDER_DR'"
+        )
+        now = 1_800_000_000
+        accepted, _ = self.manager.request_conversion(
+            "citizen", "UNDER_DR", "issue", 2, "worker-failure", now=now,
+        )
+        self.assertTrue(accepted)
+        self.db.companies.execute(
+            "UPDATE company SET status='inactive' WHERE company_code='UNDER'"
+        )
+        result = self.manager.process_due_conversions(now=now+60)
+        self.assertEqual(result["settled"], [])
+        self.assertEqual([item["reference_key"] for item in result["failed"]], ["worker-failure"])
+        attempt = self.db.assets.execute_one(
+            "SELECT outcome,detail FROM dr_custody_settlement_attempts "
+            "WHERE reference_key='worker-failure'"
+        )
+        self.assertEqual(attempt["outcome"], "failed")
+        self.assertTrue(attempt["detail"])
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT status FROM dr_custody_instructions WHERE reference_key='worker-failure'"
+        )[0], "requested")
+        self.assertIsNone(self.db.assets.execute_one(
+            "SELECT released_epoch FROM dr_custody_reservations WHERE reference_key='worker-failure'"
+        )[0])
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+            self.db.assets.execute(
+                "DELETE FROM dr_custody_settlement_attempts WHERE reference_key='worker-failure'"
+            )
+        listed = self.manager.list_custody_instructions()[0]
+        self.assertEqual(listed["settlement_attempt_count"], 1)
+        self.assertEqual(listed["last_settlement_outcome"], "failed")
+
+    def test_automatic_settlement_stops_after_retry_limit_but_keeps_request_reserved(self):
+        self.create_program()
+        self.db.assets.execute(
+            "UPDATE market_assets SET settlement_delay_seconds=60 WHERE code='UNDER_DR'"
+        )
+        now = 1_800_000_000
+        accepted, _ = self.manager.request_conversion(
+            "citizen", "UNDER_DR", "issue", 2, "retry-limit", now=now,
+        )
+        self.assertTrue(accepted)
+        self.db.companies.execute(
+            "UPDATE company SET status='inactive' WHERE company_code='UNDER'"
+        )
+        for _ in range(self.manager.AUTO_SETTLEMENT_MAX_ATTEMPTS):
+            processed = self.manager.process_due_conversions(now=now+60)
+            self.assertEqual(len(processed["failed"]), 1)
+        stopped = self.manager.process_due_conversions(now=now+60)
+        self.assertEqual(stopped, {"settled": [], "failed": []})
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT COUNT(*) FROM dr_custody_settlement_attempts WHERE reference_key='retry-limit'"
+        )[0], self.manager.AUTO_SETTLEMENT_MAX_ATTEMPTS)
+        self.assertIsNone(self.db.assets.execute_one(
+            "SELECT released_epoch FROM dr_custody_reservations WHERE reference_key='retry-limit'"
+        )[0])
+        self.db.companies.execute(
+            "UPDATE company SET status='active' WHERE company_code='UNDER'"
+        )
+        manual_retry, _ = self.manager.settle_conversion("retry-limit", now=now+61)
+        self.assertTrue(manual_retry)
+
+    def test_admin_rejection_uses_reason_code_and_releases_reserved_units(self):
+        self.create_program()
+        self.db.assets.execute(
+            "UPDATE market_assets SET settlement_delay_seconds=120 WHERE code='UNDER_DR'"
+        )
+        now = 1_800_000_000
+        accepted, _ = self.manager.request_conversion(
+            "citizen", "UNDER_DR", "issue", 2, "reject-request", now=now,
+        )
+        self.assertTrue(accepted)
+        invalid, _ = self.manager.reject_conversion(
+            "admin", "reject-request", "freeform-text", now=now+1,
+        )
+        self.assertFalse(invalid)
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT status FROM dr_custody_instructions WHERE reference_key='reject-request'"
+        )[0], "requested")
+        rejected, result = self.manager.reject_conversion(
+            "admin", "reject-request", "compliance_review", now=now+2,
+        )
+        self.assertTrue(rejected, result)
+        self.assertEqual(result["reasonCode"], "compliance_review")
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT status FROM dr_custody_instructions WHERE reference_key='reject-request'"
+        )[0], "rejected")
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT released_epoch FROM dr_custody_reservations WHERE reference_key='reject-request'"
+        )[0], now+2)
+        event = self.db.assets.execute_one(
+            "SELECT event_type,detail_code FROM dr_custody_instruction_events "
+            "WHERE reference_key='reject-request' ORDER BY event_sequence DESC LIMIT 1"
+        )
+        self.assertEqual(tuple(event), ("rejected", "compliance_review"))
+
+    def test_custody_reconciliation_is_read_only_and_detects_holder_mismatch(self):
+        self.create_program()
+        issued, message = self.manager.convert(
+            "citizen", "UNDER_DR", "issue", 2, "reconcile-issue",
+        )
+        self.assertTrue(issued, message)
+        clean = self.manager.reconcile_custody_ledger()
+        self.assertEqual(clean["discrepancyCount"], 0)
+        program = clean["programs"][0]
+        self.assertEqual(program["netDrQuantity"], 2)
+        self.assertEqual(program["holderDrQuantity"], 2)
+        self.assertEqual(program["custodyUnderlyingQuantity"], 4)
+        self.db.assets.execute(
+            "UPDATE user_assets SET quantity=quantity-1 WHERE user_id='citizen' AND asset_code='UNDER_DR'"
+        )
+        broken = self.manager.reconcile_custody_ledger()
+        self.assertEqual(broken["discrepancyCount"], 1)
+        self.assertEqual(broken["discrepancies"][0]["code"], "outstanding_dr_mismatch")
+        self.assertEqual(self.holding("UNDER_DR"), 1)
+
     def test_dr_voting_rights_can_be_partially_delegated_and_revoked(self):
         self.create_program()
         issued, message = self.manager.convert("citizen", "UNDER_DR", "issue", 3, "vote-issue")

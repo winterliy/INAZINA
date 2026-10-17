@@ -211,8 +211,16 @@ class OrderBookManager:
                         "AND funding_account IS ?",
                         (user_id, asset_code, wrap_account),
                     ).fetchone()
+                    custody_reserved = conn.execute(
+                        "SELECT COALESCE(SUM(r.reserved_quantity),0) FROM assets.dr_custody_reservations r "
+                        "JOIN assets.dr_custody_instructions i USING(reference_key) "
+                        "WHERE r.user_id=? AND r.reserved_asset_code=? AND r.released_epoch IS NULL "
+                        "AND i.status IN ('requested','verified')",
+                        (str(user_id), str(asset_code)),
+                    ).fetchone()[0]
                     funding_account = wrap_account
-                    available = owned_quantity - int(already_reserved["quantity"] or 0)
+                    available = (owned_quantity - int(already_reserved["quantity"] or 0)
+                                 - int(custody_reserved or 0))
                     if str(asset.get("type") or "") == "depositary_receipt":
                         delegated = conn.execute(
                             "SELECT COALESCE(SUM(dr_quantity),0) FROM assets.dr_voting_delegations "
@@ -763,7 +771,15 @@ class OrderBookManager:
                                                           "WHERE user_id=? AND asset_code=? AND side='sell' "
                                                           "AND status IN ('scheduled','open','partial') AND order_id<>?",
                                                           (order['user_id'], order['asset_code'], order['order_id'])).fetchone()[0]
-                        valid = int(owned or 0) - int(reserved_elsewhere or 0) >= int(order['remaining_quantity'])
+                        custody_reserved = conn.execute(
+                            "SELECT COALESCE(SUM(r.reserved_quantity),0) FROM dr_custody_reservations r "
+                            "JOIN dr_custody_instructions i USING(reference_key) "
+                            "WHERE r.user_id=? AND r.reserved_asset_code=? AND r.released_epoch IS NULL "
+                            "AND i.status IN ('requested','verified')",
+                            (order['user_id'], order['asset_code']),
+                        ).fetchone()[0]
+                        valid = (int(owned or 0) - int(reserved_elsewhere or 0)
+                                 - int(custody_reserved or 0) >= int(order['remaining_quantity']))
                     if not valid:
                         self._reject_scheduled_order(conn, order, now)
                         rejected += 1

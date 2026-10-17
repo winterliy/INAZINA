@@ -52,7 +52,8 @@ EXAMPLES = {
     'asset': {'exchange_id':'INZ','type':'stock'},
     'dr': {'exchange_id':'LSE','type':'depositary_receipt',
            'underlying_per_receipt':1,'receipt_type':'DR','depositary_bank':'Inazina Depositary',
-           'custodian':'Inazina Custody','home_exchange_id':'INZ','quote_currency':'USD'},
+           'custodian':'Inazina Custody','home_exchange_id':'INZ','quote_currency':'USD',
+           'settlement_delay_seconds':0},
     'etf': {'exchange_id':'INZ','underlying_exchange_id':'INZ','leverage_multiplier':1},
     'future': {'exchange_id':'FUT','underlying_code':'INZST001','maturity_days':90,'contract_size':1},
     'corporatebond': {'exchange_id':'BOND','issuer_code':'INZST001','face_value':1000,'annual_rate':4,'maturity_days':90},
@@ -253,6 +254,12 @@ class AdminControlManager:
                 if set(extra)-{'implied_volatility'} or price or supply:
                     raise ValueError("옵션 계약 조건은 고정됩니다. 내재변동성 수정 또는 $사건으로 프리미엄을 조정해주세요.")
             values = {k:v for k,v in extra.items() if k in columns}
+            if 'settlement_delay_seconds' in values:
+                if category != 'dr':
+                    raise ValueError('내부 결제 지연 설정은 DR 상품에만 적용할 수 있습니다.')
+                values['settlement_delay_seconds'] = self._number(
+                    values['settlement_delay_seconds'], 0, 2_592_000, integer=True,
+                )
             if 'currency_code' in values:
                 values['currency_code']=str(values['currency_code']).strip().upper()
             if 'quote_currency' in values:

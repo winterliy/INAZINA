@@ -605,6 +605,44 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  if (url.pathname === "/api/admin/dr/custody-instructions") {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const result = request.method === "GET"
+      ? await internalGet("/internal/admin/dr/custody-instructions", principal.userId)
+      : { status: 405, body: { error: "method_not_allowed" } };
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (url.pathname === "/api/admin/dr/custody-reconciliation") {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const result = request.method === "GET"
+      ? await internalGet("/internal/admin/dr/custody-reconciliation", principal.userId)
+      : { status: 405, body: { error: "method_not_allowed" } };
+    send(response, result.status, result.body);
+    return;
+  }
+
+  const drCustodyActionMatch = url.pathname.match(/^\/api\/admin\/dr\/custody-instructions\/(settle|cancel|reject)$/);
+  if (drCustodyActionMatch) {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const result = request.method === "POST"
+      ? await internalRequest("POST", `/internal/admin/dr/custody-instructions/${drCustodyActionMatch[1]}`,
+        principal.userId, await requestJson(request))
+      : { status: 405, body: { error: "method_not_allowed" } };
+    send(response, result.status, result.body);
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/admin/users") {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });
@@ -635,6 +673,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   if (request.method === "GET" && url.pathname === "/api/me/dr/movements") {
     const result = await internalGet("/internal/me/dr/movements", principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/me/dr/conversions") {
+    const result = await internalGet("/internal/me/dr/conversions", principal.userId);
     send(response, result.status, result.body);
     return;
   }
@@ -747,6 +791,13 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   if (request.method === "POST" && url.pathname === "/api/dr/convert") {
     const body = await requestJson(request);
     const result = await internalRequest("POST", "/internal/dr/convert", principal.userId, body);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/dr/convert/cancel") {
+    const result = await internalRequest("POST", "/internal/dr/convert/cancel", principal.userId,
+      await requestJson(request));
     send(response, result.status, result.body);
     return;
   }

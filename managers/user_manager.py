@@ -409,10 +409,17 @@ class UserManager:
                         "WHERE owner_user_id=? AND dr_code=? AND status='active'",
                         (str(user_id), str(asset_code)),
                     ).fetchone()[0] or 0)
+                custody_reserved = int(conn.execute(
+                    "SELECT COALESCE(SUM(r.reserved_quantity),0) FROM assets.dr_custody_reservations r "
+                    "JOIN assets.dr_custody_instructions i USING(reference_key) "
+                    "WHERE r.user_id=? AND r.reserved_asset_code=? AND r.released_epoch IS NULL "
+                    "AND i.status IN ('requested','verified')", (str(user_id), str(asset_code)),
+                ).fetchone()[0] or 0)
                 available = (
                     sum(int(row["quantity"]) for row in positions)
                     - int(reserved["quantity"] or 0)
                     - delegated
+                    - custody_reserved
                 )
                 if available < quantity:
                     return False, f"❌ 보유 수량이 부족합니다. (보유 {available:,}개)"

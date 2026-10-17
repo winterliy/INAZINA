@@ -948,10 +948,11 @@ class SlashCommandRegistry:
     ):
         user_id, _user_data, _role = await self._prepare(interaction)
         from managers.depositary_receipt_manager import DepositaryReceiptManager
-        success, message = await asyncio.to_thread(
-            DepositaryReceiptManager(self.bot.db).convert,
+        success, result = await asyncio.to_thread(
+            DepositaryReceiptManager(self.bot.db).request_conversion,
             user_id, 증서.strip(), 방향.value, 수량, str(interaction.id),
         )
+        message = result.get("message", str(result)) if isinstance(result, dict) else str(result)
         await self._reply(
             interaction, embed=self._result_embed("🏦 DR 전환", message, success)
         )

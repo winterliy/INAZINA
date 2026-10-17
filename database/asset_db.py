@@ -165,6 +165,19 @@ class AssetDB(DBManager):
         )""")
         self.execute("CREATE INDEX IF NOT EXISTS idx_dr_custody_reservations_asset "
                      "ON dr_custody_reservations(reserved_asset_code,user_id)")
+        self.execute("""CREATE TABLE IF NOT EXISTS dr_custody_settlement_attempts (
+            attempt_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reference_key TEXT NOT NULL REFERENCES dr_custody_instructions(reference_key),
+            attempted_epoch REAL NOT NULL,
+            outcome TEXT NOT NULL CHECK(outcome IN ('settled','failed')),
+            detail TEXT
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_dr_custody_attempts_recent "
+                     "ON dr_custody_settlement_attempts(reference_key,attempted_epoch DESC)")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_dr_custody_attempts_immutable_{operation.lower()}
+                BEFORE {operation} ON dr_custody_settlement_attempts
+                BEGIN SELECT RAISE(ABORT,'DR custody settlement attempts are append-only'); END""")
         for operation in ("UPDATE", "DELETE"):
             self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_dr_custody_instruction_events_immutable_{operation.lower()}
                 BEFORE {operation} ON dr_custody_instruction_events
