@@ -1212,6 +1212,114 @@ class RateManager:
                 "method": "100% benchmark pass-through after next reset with contractual rate floor/cap; capped by maturity; constant balance, no behavioral beta, amortization, legal-cap recalculation, hedges or basis risk"}
 
     @staticmethod
+    def institution_fixed_rate_eve_stress(conn, issuer, *, now=None):
+        """Estimate fixed-rate balance-sheet value sensitivity using principal duration proxies."""
+        issuer = str(issuer or "").strip()
+        if not issuer:
+            raise ValueError("financial_institution_not_found")
+        epoch = float(time.time() if now is None else now)
+        if not math.isfinite(epoch) or epoch < 0:
+            raise ValueError("invalid_eve_stress_epoch")
+        year_seconds = 365*86400
+        exposure = {}
+        counts = {}
+
+        def bucket(currency):
+            currency = str(currency or "NWX")
+            exposure.setdefault(currency, {"assetDurationAmountYears": 0.0,
+                                           "liabilityDurationAmountYears": 0.0})
+            counts.setdefault(currency, {"fixedLoans": 0, "fixedDeposits": 0,
+                                         "loansWithoutMaturity": 0})
+            return currency, exposure[currency], counts[currency]
+
+        for loan in conn.execute(
+            "SELECT l.loan_id,l.quote_currency,l.outstanding_balance,l.maturity_epoch "
+            "FROM loans l JOIN liability p ON p.product_code=l.product_code "
+            "WHERE p.issuer=? AND l.status='active' AND l.collection_status='current' "
+            "AND l.rate_type='fixed' AND l.outstanding_balance>0",
+            (issuer,),
+        ):
+            currency, values, count = bucket(loan["quote_currency"])
+            balance = max(0.0, float(loan["outstanding_balance"] or 0))
+            maturity = (float(loan["maturity_epoch"])
+                        if loan["maturity_epoch"] is not None else None)
+            if maturity is None:
+                count["loansWithoutMaturity"] += 1
+                continue
+            remaining_years = max(0.0, (maturity-epoch)/year_seconds)
+            cashflows = conn.execute(
+                "SELECT principal_due,principal_paid,due_epoch FROM loan_payment_schedule "
+                "WHERE loan_id=? AND status IN ('scheduled','partial') AND due_epoch>? "
+                "AND due_epoch<=? "
+                "ORDER BY due_epoch,installment_number",
+                (loan["loan_id"], epoch, maturity),
+            ).fetchall()
+            principal_total = 0.0
+            amount_years = 0.0
+            for row in cashflows:
+                principal = max(0.0, float(row["principal_due"] or 0)
+                                - float(row["principal_paid"] or 0))
+                principal_total += principal
+                amount_years += principal*max(0.0, (float(row["due_epoch"])-epoch)/year_seconds)
+            if principal_total > 0:
+                duration_years = amount_years/principal_total
+                # Scale scheduled principal to the current gross balance; any
+                # unscheduled residual is conservatively placed at maturity.
+                values["assetDurationAmountYears"] += (
+                    min(balance, principal_total)*duration_years
+                    + max(0.0, balance-principal_total)*remaining_years
+                )
+            else:
+                values["assetDurationAmountYears"] += balance*remaining_years
+            count["fixedLoans"] += 1
+
+        for account in conn.execute(
+            "SELECT a.quote_currency,a.account_type,a.balance,a.balance_units,a.created_at,"
+            "p.maturity_days FROM accounts a JOIN saving p ON p.product_code=a.product_code "
+            "WHERE p.issuer=? AND a.account_type IN ('saving','currency_saving') "
+            "AND a.resolution_status='active' AND a.rate_type='fixed'",
+            (issuer,),
+        ):
+            balance = (max(0.0, float(account["balance_units"] or 0)/1_000_000)
+                       if account["account_type"] == "currency_saving"
+                       else max(0.0, float(account["balance"] or 0)))
+            if balance <= 0:
+                continue
+            currency, values, count = bucket(account["quote_currency"])
+            term_days = max(0, int(account["maturity_days"] or 0))
+            if term_days > 0:
+                opened = conn.execute(
+                    "SELECT CAST(strftime('%s',?) AS REAL)", (account["created_at"],)
+                ).fetchone()[0]
+                maturity = float(opened or epoch)+term_days*86400
+                remaining_years = max(0.0, (maturity-epoch)/year_seconds)
+                values["liabilityDurationAmountYears"] += balance*remaining_years
+            count["fixedDeposits"] += 1
+
+        from functions.money import currency_precision, round_currency
+        scenarios = []
+        for currency, values in sorted(exposure.items()):
+            asset_years = values["assetDurationAmountYears"]
+            liability_years = values["liabilityDurationAmountYears"]
+            gap = asset_years-liability_years
+            scenarios.append({
+                "currency": currency,
+                "decimalPlaces": currency_precision(conn, currency),
+                "fixedLoans": counts[currency]["fixedLoans"],
+                "fixedDeposits": counts[currency]["fixedDeposits"],
+                "loansWithoutMaturity": counts[currency]["loansWithoutMaturity"],
+                "assetDurationAmountYears": asset_years,
+                "liabilityDurationAmountYears": liability_years,
+                "netDurationGapAmountYears": gap,
+                "shocks": [{
+                    "basisPoints": bp,
+                    "estimatedEveChange": round_currency(conn, -gap*bp/10000, currency),
+                } for bp in (-200, -100, 100, 200)],
+            })
+        return {"issuer": issuer, "asOfEpoch": epoch, "scenarios": scenarios,
+                "method": "fixed-rate current principal balance times remaining principal-weighted maturity; maturity deposits use product term; demand deposits have zero duration; linear parallel-shock ΔEVE≈−net duration amount-years×Δyield; excludes coupons, yield curves, convexity, securities, derivatives, prepayments, behavioral deposit duration and accounting classification; not a regulatory IRRBB measure"}
+
+    @staticmethod
     def institution_capacity(conn, issuer, proposed_loan=0, currency_code=None):
         """Apply simplified reserve and risk-weighted capital constraints."""
         RateManager.refresh_institution_status(conn, issuer)

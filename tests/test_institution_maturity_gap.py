@@ -107,6 +107,35 @@ class InstitutionMaturityGapTests(unittest.TestCase):
         self.assertEqual(usd_fx["netOpenPositionInBase"], 900)
         self.assertEqual([row["capitalImpact"] for row in usd_fx["shocks"]], [-180, -90, 90, 180])
 
+    def test_fixed_rate_duration_gap_estimates_parallel_eve_sensitivity(self):
+        self.db.accounts.execute(
+            "UPDATE accounts SET rate_type='fixed' WHERE account_number='A1'"
+        )
+        self.db.accounts.execute(
+            "UPDATE loans SET rate_type='fixed' WHERE product_code='L90'"
+        )
+        with self.db.readonly() as conn:
+            report = RateManager.institution_fixed_rate_eve_stress(
+                conn, "Bank", now=self.now
+            )
+        by_currency = {row["currency"]: row for row in report["scenarios"]}
+        self.assertEqual(by_currency["NWX"]["fixedDeposits"], 1)
+        self.assertAlmostEqual(by_currency["NWX"]["liabilityDurationAmountYears"],
+                               500*30/365)
+        self.assertAlmostEqual(by_currency["USD"]["assetDurationAmountYears"],
+                               100*20/365+800*90/365)
+        usd_up = next(row for row in by_currency["USD"]["shocks"]
+                      if row["basisPoints"] == 200)
+        usd_down = next(row for row in by_currency["USD"]["shocks"]
+                        if row["basisPoints"] == -200)
+        self.assertAlmostEqual(usd_up["estimatedEveChange"],
+                               -by_currency["USD"]["netDurationGapAmountYears"]*.02,
+                               places=2)
+        self.assertAlmostEqual(usd_down["estimatedEveChange"],
+                               by_currency["USD"]["netDurationGapAmountYears"]*.02,
+                               places=2)
+        self.assertIn("not a regulatory IRRBB", report["method"])
+
     def test_empty_or_invalid_request_is_safe(self):
         with self.db.readonly() as conn:
             self.assertEqual(RateManager.institution_maturity_gap(conn, "Missing", now=self.now)["ladders"], [])

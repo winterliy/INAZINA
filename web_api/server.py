@@ -1413,6 +1413,7 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
         maturity_gap = RateManager.institution_maturity_gap(connection, issuer)
         liquidity_stress = RateManager.institution_liquidity_stress(connection, issuer)
         rate_stress = RateManager.institution_rate_stress(connection, issuer)
+        fixed_rate_eve_stress = RateManager.institution_fixed_rate_eve_stress(connection, issuer)
         fx_stress = RateManager.institution_fx_stress(connection, issuer)
         institution = RateManager.institution_components(connection, issuer)
         balance_sheet = RateManager.institution_balance_sheet(connection, issuer)
@@ -1497,7 +1498,8 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
             "eclAllowanceReconciliation": ecl_allowance_reconciliation,
             "depositInsuranceClaims": insurance_claims,
             "maturityGap": maturity_gap,
-            "liquidityStress": liquidity_stress, "rateStress": rate_stress, "fxStress": fx_stress,
+            "liquidityStress": liquidity_stress, "rateStress": rate_stress,
+            "fixedRateEveStress": fixed_rate_eve_stress, "fxStress": fx_stress,
             "prudential": prudential, "creditStress": credit_stress}
 
 
