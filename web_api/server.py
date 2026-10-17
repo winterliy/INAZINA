@@ -26,6 +26,10 @@ MAX_HTTP_THREADS = max(1, min(int(os.environ.get("INAZINA_MAX_HTTP_THREADS", "16
 BOOTSTRAP_ADMIN_IDS = {"1076861147560542278"}
 sys.path.insert(0, str(ROOT))
 from database.user_db import TREASURY_USER_ID, citizen_filter
+from functions.dr_pricing import (
+    DEVIATION_ALERT_THRESHOLD_PERCENT as DR_REFERENCE_DEVIATION_ALERT_PERCENT,
+    reference_metrics as dr_reference_metrics,
+)
 from functions.performance import log_slow
 from web_api import board
 _domain = None
@@ -632,33 +636,6 @@ def authenticate_login_identifier(identifier, password):
     return None, False
 
 
-# Informational simulator warning, not an exchange halt or valuation guarantee.
-DR_REFERENCE_DEVIATION_ALERT_PERCENT = 10.0
-
-
-def dr_reference_metrics(dr_price, underlying_price, underlying_per_receipt, fx_rate):
-    """Return an indicative DR value and deviation warning for web clients."""
-    try:
-        values = tuple(float(value) for value in
-                       (dr_price, underlying_price, underlying_per_receipt, fx_rate))
-    except (TypeError, ValueError, OverflowError):
-        return {}
-    if not all(math.isfinite(value) and value > 0 for value in values):
-        return {}
-    price, underlying, ratio, fx = values
-    reference = underlying * ratio * fx
-    premium = (price / reference - 1) * 100
-    if not math.isfinite(reference) or not math.isfinite(premium):
-        return {}
-    return {
-        "referenceValue": reference,
-        "referencePremiumPercent": premium,
-        "referenceDeviationAlert": (
-            abs(premium) + 1e-9 >= DR_REFERENCE_DEVIATION_ALERT_PERCENT
-        ),
-    }
-
-
 def instruments(include_inactive=False):
     # Ensure additive schema migrations have run before the read-only adapter
     # selects newly introduced fund metadata.
@@ -898,6 +875,14 @@ def admin_dr_movements(limit=100):
             row["underlying_average_cost_text"] = f"{Decimal(str(row['underlying_average_cost'] or 0)):.{places}f}"
             row["decimal_places"] = places
     return {"movements": rows}
+
+
+def admin_dr_deviation_history(limit=100, dr_code=None):
+    """Read-only DR reference-price observations and alert transitions."""
+    domain()
+    from managers.dr_deviation_monitor_manager import DrDeviationMonitorManager
+    with connect_readonly() as connection:
+        return DrDeviationMonitorManager.history_conn(connection, limit, dr_code)
 
 
 def book(code):
@@ -2622,6 +2607,19 @@ class Handler(BaseHTTPRequestHandler):
                     except (TypeError, ValueError):
                         raise ValueError("invalid_dr_movement_limit") from None
                     self.send_json(200, admin_dr_movements(limit))
+            elif path == "/internal/admin/dr/monitor":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    query = parse_qs(parsed.query)
+                    raw_limit = query.get("limit", ["100"])[0]
+                    try:
+                        limit = int(raw_limit)
+                    except (TypeError, ValueError):
+                        raise ValueError("invalid_dr_monitor_limit") from None
+                    dr_code = query.get("drCode", [None])[0]
+                    self.send_json(200, admin_dr_deviation_history(limit, dr_code))
             elif path == "/internal/admin/compliance":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -2865,6 +2863,19 @@ class Handler(BaseHTTPRequestHandler):
                     else:
                         raise ValueError("unsupported_compliance_action")
                 self.send_json(200, {"success": True, "result": result})
+                return
+            if path == "/internal/admin/dr/monitor/sample":
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                    return
+                if payload:
+                    raise ValueError("invalid_dr_monitor_sample_payload")
+                from managers.dr_deviation_monitor_manager import DrDeviationMonitorManager
+                db = domain().db
+                with db.atomic() as connection:
+                    result = DrDeviationMonitorManager.sample_conn(connection)
+                    history = DrDeviationMonitorManager.history_conn(connection, limit=100)
+                self.send_json(200, {"result": result, **history})
                 return
             if path.startswith("/internal/board/"):
                 try:

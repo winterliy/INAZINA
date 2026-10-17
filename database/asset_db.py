@@ -89,6 +89,35 @@ class AssetDB(DBManager):
                      "ON depositary_receipt_movements(user_id,recorded_epoch DESC,movement_id DESC)")
         self.execute("CREATE INDEX IF NOT EXISTS idx_dr_movements_recent "
                      "ON depositary_receipt_movements(recorded_epoch DESC,movement_id DESC)")
+        self.execute("""CREATE TABLE IF NOT EXISTS dr_deviation_samples (
+            sample_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dr_code TEXT NOT NULL REFERENCES depositary_receipts(dr_code),
+            sample_bucket INTEGER NOT NULL,
+            sampled_epoch REAL NOT NULL,
+            dr_price REAL,
+            reference_value REAL,
+            deviation_percent REAL,
+            state TEXT NOT NULL CHECK(state IN ('normal','premium','discount','unavailable')),
+            UNIQUE(dr_code,sample_bucket)
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_dr_deviation_samples_recent "
+                     "ON dr_deviation_samples(dr_code,sampled_epoch DESC)")
+        self.execute("""CREATE TABLE IF NOT EXISTS dr_deviation_alert_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dr_code TEXT NOT NULL REFERENCES depositary_receipts(dr_code),
+            from_state TEXT NOT NULL,
+            to_state TEXT NOT NULL CHECK(to_state IN ('premium','discount','normal','unavailable')),
+            dr_price REAL,
+            reference_value REAL,
+            deviation_percent REAL,
+            recorded_epoch REAL NOT NULL
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_dr_deviation_alerts_recent "
+                     "ON dr_deviation_alert_events(recorded_epoch DESC,event_id DESC)")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_dr_deviation_alert_immutable_{operation.lower()}
+                BEFORE {operation} ON dr_deviation_alert_events
+                BEGIN SELECT RAISE(ABORT,'DR deviation alert events are append-only'); END""")
         self.enforce_integer_money(
             "depositary_receipt_movements", ("underlying_average_cost",), "movement_id"
         )

@@ -9,6 +9,8 @@ type AdvancedField = { key: string; label: string; type: string };
 type Kind = { kind: string; token: string; label: string; group: "market" | "finance"; family: string; fields: KindField[]; advanced: AdvancedField[]; example: Record<string, unknown>; editable: boolean };
 type Product = { code: string; name: string; kind: string; status: string; exchangeId: string | null; currency: string | null; value: number | null; drProgram?: { underlyingCode: string; receiptType: string; depositaryBank: string; custodian: string; underlyingPerReceipt: number; receiptSupply: number; depositedUnderlyingQuantity: number; custodiedUnderlyingQuantity: number; outstandingReceiptQuantity: number; programStatus: string; underlyingPrice?: number; underlyingCurrency?: string; referenceValue?: number; referencePremiumPercent?: number; referenceDeviationAlert?: boolean } };
 type DrMovement = { movement_id: number; user_id: string; dr_code: string; underlying_code: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; underlying_average_cost_text: string; underlying_currency: string; recorded_epoch: number };
+type DrDeviationSample = { sample_id: number; dr_code: string; sampled_epoch: number; dr_price: number | null; reference_value: number | null; deviation_percent: number | null; state: "normal" | "premium" | "discount" | "unavailable" };
+type DrDeviationEvent = { event_id: number; dr_code: string; from_state: string; to_state: DrDeviationSample["state"]; recorded_epoch: number; deviation_percent: number | null };
 type Detail = { code: string; kind: string; status: string; values: Record<string, unknown>; row: Record<string, unknown> };
 type Editor = { mode: "create" | "edit"; kind: string; code: string; values: Record<string, string>; advanced: Record<string, string>; original: Detail | null };
 
@@ -84,6 +86,9 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
   const [products, setProducts] = useState<Product[]>([]);
   const [drMovements, setDrMovements] = useState<DrMovement[]>([]);
   const [drLedgerError, setDrLedgerError] = useState(false);
+  const [drDeviationSamples, setDrDeviationSamples] = useState<DrDeviationSample[]>([]);
+  const [drDeviationEvents, setDrDeviationEvents] = useState<DrDeviationEvent[]>([]);
+  const [drMonitorError, setDrMonitorError] = useState(false);
   const [filter, setFilter] = useState("all");
   const [editor, setEditor] = useState<Editor | null>(null);
   const [showInactive, setShowInactive] = useState(true);
@@ -105,9 +110,22 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
         setDrMovements([]);
         setDrLedgerError(true);
       }
+      try {
+        const monitored = await api<{ samples: DrDeviationSample[]; events: DrDeviationEvent[] }>("/api/admin/dr/monitor/sample", { method: "POST", body: "{}" });
+        setDrDeviationSamples(monitored.samples);
+        setDrDeviationEvents(monitored.events);
+        setDrMonitorError(false);
+      } catch {
+        setDrDeviationSamples([]);
+        setDrDeviationEvents([]);
+        setDrMonitorError(true);
+      }
     } else {
       setDrMovements([]);
       setDrLedgerError(false);
+      setDrDeviationSamples([]);
+      setDrDeviationEvents([]);
+      setDrMonitorError(false);
     }
   }, [group]);
 
@@ -116,6 +134,14 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
     setFilter("all");
     load().catch((cause) => say(cause instanceof Error ? cause.message : "상품을 불러오지 못했습니다.", true));
   }, [load]);
+
+  useEffect(() => {
+    if (group !== "market") return;
+    const timer = window.setInterval(() => {
+      if (!document.hidden) load().catch(() => undefined);
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [group, load]);
 
   const kindOf = (kind: string) => kinds.find((item) => item.kind === kind);
   // Savings and foreign-currency accounts are one family: same form, different account currency.
@@ -203,6 +229,17 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
       </tbody></table>{drLedgerError ? <p className="empty">DR 원장을 불러오지 못했습니다. 상품 목록은 정상 조회되었습니다.</p> : !drMovements.length && <p className="empty">DR 전환 기록이 없습니다.</p>}</div>
     </Card>}
 
+    {group === "market" && <Card title="DR 괴리 관측·경보 이력" caption="관리자 상품 화면이 열린 동안 1분마다 확인하며, 종목별 최대 5분당 1회 표본을 저장합니다. ±10% 경보는 단순 참고가 기준이며 환율·비용·유동성은 반영하지 않습니다. 표본은 90일 보관합니다.">
+      <h3 className="sub-head">최근 상태 표본</h3>
+      <div className="scroll-x"><table><thead><tr><th>관측 시각</th><th>DR</th><th>상태</th><th className="r">현재가</th><th className="r">참고가</th><th className="r">괴리율</th></tr></thead><tbody>
+        {drDeviationSamples.map((item) => <tr key={item.sample_id}><td>{date(item.sampled_epoch)}</td><td className="mono">{item.dr_code}</td><td>{drDeviationLabel(item.state)}</td><td className="r mono">{item.dr_price == null ? "—" : number(item.dr_price)}</td><td className="r mono">{item.reference_value == null ? "—" : number(item.reference_value)}</td><td className="r mono">{item.deviation_percent == null ? "—" : `${number(item.deviation_percent)}%`}</td></tr>)}
+      </tbody></table>{drMonitorError ? <p className="empty">DR 괴리 이력을 불러오지 못했습니다.</p> : !drDeviationSamples.length && <p className="empty">관측 가능한 DR 표본이 없습니다. 활성 DR이 있으면 이 화면에서 표본 수집을 시작합니다.</p>}</div>
+      <h3 className="sub-head">경보 상태 전환</h3>
+      <div className="scroll-x"><table><thead><tr><th>시각</th><th>DR</th><th>전환</th><th className="r">괴리율</th></tr></thead><tbody>
+        {drDeviationEvents.map((item) => <tr key={item.event_id}><td>{date(item.recorded_epoch)}</td><td className="mono">{item.dr_code}</td><td>{drDeviationLabel(item.from_state)} → {drDeviationLabel(item.to_state)}</td><td className="r mono">{item.deviation_percent == null ? "—" : `${number(item.deviation_percent)}%`}</td></tr>)}
+      </tbody></table>{!drMonitorError && !drDeviationEvents.length && <p className="empty">경보 상태 전환 이력이 없습니다.</p>}</div>
+    </Card>}
+
     {editor && spec && <Card title={editor.mode === "create" ? `${spec.label} 생성` : `${editor.code} 수정`} caption={editor.kind === "dr" ? editor.mode === "create" ? "기초 코드는 활성 보통주여야 하고 결제 통화·상장 거래소도 이미 등록되어야 합니다. 발행량 × DR당 원주 수는 원주 발행량 한도 안에 있어야 합니다." : "기초주식·비율·통화·거래소 등 발행조건은 변경할 수 없습니다. 가격과 표시 이름만 수정할 수 있습니다." : editor.mode === "create" ? "선택 항목은 비워 둘 수 있습니다. 배당주기는 초 또는 1일·1주·1달, 배당은 5 또는 5%처럼 입력합니다." : "바꾼 값만 저장합니다. 결제 통화와 발행된 계약 조건처럼 바꿀 수 없는 값은 서버가 거부합니다."}
       actions={<button className="soft" type="button" onClick={() => setEditor(null)}>닫기</button>}>
       {spec.family === "saving" && <div className="saving-mode">
@@ -259,6 +296,10 @@ function groupAmount(value: string) {
   const [whole, fraction] = value.split(".");
   const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   return fraction === undefined ? grouped : `${grouped}.${fraction}`;
+}
+
+function drDeviationLabel(state: string) {
+  return ({ normal: "정상 범위", premium: "10% 이상 고평가", discount: "10% 이상 저평가", unavailable: "산출 불가", unobserved: "첫 관측" } as Record<string, string>)[state] ?? state;
 }
 
 function drBackingShortfall(program: NonNullable<Product["drProgram"]>) {
