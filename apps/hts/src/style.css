@@ -569,3 +569,27 @@ button.book-row:hover:not(:disabled) { filter: brightness(1.04); }
 .board-poll-voters { display: block; margin-top: 3px; color: var(--ink2); font-size: 11px; }
 .board-poll-actions { display: flex; gap: 6px; margin-top: 12px; }
 .board-poll-actions button:not(.board-primary) { background: var(--hover); }
+
+/* Date-time picker (poll close) */
+.picker { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.picker-button { min-height: 32px !important; padding: 0 12px !important; border-radius: 10px !important; color: var(--ink2); background: var(--field) !important; box-shadow: inset 0 0 0 1px var(--line); font-size: 13px !important; }
+.picker-button.set { color: var(--ink); font-weight: 600; }
+.picker-clear { min-height: 26px !important; padding: 0 8px !important; background: var(--hover); font-size: 11px !important; }
+/* Opens in place, below the button, so a scrolling panel never clips it. */
+.picker-pop { flex-basis: 100%; max-width: 300px; margin-top: 6px; padding: 14px; border-radius: 16px; background: rgb(var(--glass-rgb)); box-shadow: inset 0 0 0 1px var(--line), 0 18px 40px rgba(var(--shadow), .22); }
+.picker-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 14px; }
+.picker-head button { min-height: 28px !important; padding: 0 10px !important; background: var(--hover); font-size: 16px !important; }
+.picker-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+.picker-weekday { padding: 4px 0; color: var(--ink2); font-size: 11px; text-align: center; }
+.picker-day { min-height: 32px !important; padding: 0 !important; border-radius: 8px !important; background: transparent; font-size: 13px !important; font-variant-numeric: tabular-nums; }
+.picker-day:hover:not(:disabled) { background: var(--hover); }
+.picker-day.outside { color: var(--ink2); }
+.picker-day.today { box-shadow: inset 0 0 0 1px var(--accent); }
+.picker-day.selected { color: #fff; background: var(--accent); }
+.picker-day:disabled { opacity: .25 !important; }
+.picker-time { display: flex; gap: 10px; margin-top: 10px; }
+.picker-time label { display: flex; align-items: center; gap: 6px; color: var(--ink2); font-size: 12px; }
+.picker-time select { min-height: 30px; padding: 0 8px; border: 0; border-radius: 8px; color: var(--ink); background: var(--field); box-shadow: inset 0 0 0 1px var(--line); font: inherit; }
+.picker-preview { margin: 10px 0 0; color: var(--ink); font-size: 12px; }
+.picker-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px; }
+.picker-actions button:not(.board-primary) { background: var(--hover); }

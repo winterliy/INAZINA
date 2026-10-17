@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { api, type ApiUser } from "../../shared/api";
+import { DateTimePicker } from "./DateTimePicker";
 
 type Category = { category_id: number; name: string };
 type BoardInfo = { board_id: string; name: string; description: string; admin_only: number; allow_asset: number; categories: Category[] };
@@ -10,19 +11,18 @@ type Attachment = { attachment_id: number; kind: "file" | "link"; name: string; 
 type PollOption = { option_id: number; label: string; votes: number; voters?: string[] };
 type Poll = { poll_id: number; question: string; anonymous: number; multiple: number; closes_epoch: number | null; closed_epoch: number | null; open: boolean; options: PollOption[]; my_votes: number[]; voters: number };
 type Upload = { attachmentId: number; name: string; size: number };
-type PollDraft = { question: string; options: string[]; anonymous: boolean; multiple: boolean; closes: string };
+type PollDraft = { question: string; options: string[]; anonymous: boolean; multiple: boolean; closes: number | null };
 // parent_id null: a top-level comment. removed: a comment hidden by moderation, kept as the anchor of its replies.
 type Comment = { comment_id: number; parent_id: number | null; removed: boolean; body: string; created_epoch: number; author: string; author_admin: number; mine: boolean; like_count: number; dislike_count: number; my_reaction: Reaction };
 type Post = Summary & { body: string; my_reaction: Reaction; comments: Comment[]; attachments: Attachment[]; poll: Poll | null };
 type Page = { posts: Summary[]; total: number; page: number; pageSize: number; writeOpensEpoch?: number };
 type Draft = { postId: number | null; board: string; categoryId: number | null; title: string; body: string; assetCode: string; anonymous: boolean; pinned: boolean; notice: boolean;
-  // Administrators only: files uploaded for this draft, links, attachments to drop (editing) and a poll (new posts).
+  // Files uploaded for this draft, links, attachments to drop (editing) and a poll (new posts).
   uploads: Upload[]; links: { title: string; url: string }[]; existing: Attachment[]; remove: number[]; poll: PollDraft | null };
 const when = (epoch: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "short" }).format(epoch * 1000);
 const count = (value: number) => new Intl.NumberFormat("ko-KR").format(value);
 const bytes = (value: number | null) => !value ? "" : value < 1024 * 1024 ? `${Math.ceil(value / 1024)}KB` : `${(value / 1024 / 1024).toFixed(1)}MB`;
-// <input type="datetime-local"> value in local time for an epoch, and back.
-const localInput = (epoch: number) => { const date = new Date(epoch * 1000); date.setMinutes(date.getMinutes() - date.getTimezoneOffset()); return date.toISOString().slice(0, 16); };
+const POLL_LONGEST_SECONDS = 90 * 86400;
 const errorText = (cause: unknown) => cause instanceof Error ? cause.message : "요청을 처리하지 못했습니다.";
 
 /**
@@ -96,10 +96,10 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin }: { user
     const poll = draft.poll && !draft.postId ? {
       question: draft.poll.question, options: draft.poll.options.map((option) => option.trim()).filter(Boolean),
       anonymous: draft.poll.anonymous, multiple: draft.poll.multiple,
-      closesEpoch: draft.poll.closes ? Math.floor(new Date(draft.poll.closes).getTime() / 1000) : null } : undefined;
+      closesEpoch: draft.poll.closes } : undefined;
     const body = { board: draft.board, categoryId: draft.categoryId, title: draft.title, body: draft.body,
       assetCode: boardInfo(draft.board)?.allow_asset ? draft.assetCode.trim() : "", anonymous: draft.anonymous, pinned: draft.pinned, notice: draft.notice,
-      ...(admin ? { attachments: draft.uploads.map((item) => item.attachmentId), links: draft.links.filter((link) => link.url.trim()), removeAttachments: draft.remove, ...(poll ? { poll } : {}) } : {}) };
+      attachments: draft.uploads.map((item) => item.attachmentId), links: draft.links.filter((link) => link.url.trim()), removeAttachments: draft.remove, ...(poll ? { poll } : {}) };
     if (draft.postId) void write(`/api/board/posts/${draft.postId}/edit`, body, async () => { await open(draft.postId!); await loadList(); });
     else void write<{ postId: number }>("/api/board/posts", body, async (result) => { setPage(1); await loadList(); await open(result.postId); });
   }
@@ -243,8 +243,8 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin }: { user
             <label>제목<input value={draft.title} maxLength={100} required onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></label>
             <label>내용<textarea value={draft.body} maxLength={10000} required rows={12} onChange={(event) => setDraft({ ...draft, body: event.target.value })} /></label>
             <label className="board-check"><input type="checkbox" checked={draft.anonymous} onChange={(event) => setDraft({ ...draft, anonymous: event.target.checked })} />익명으로 표시 <small>작성자 정보와 접속 IP는 관리 목적으로 기록됩니다.{admin ? " 관리자가 쓴 글에는 익명이어도 관리자 표시가 붙습니다." : ""}</small></label>
-            {admin && <fieldset className="board-extras">
-              <legend>첨부 · 설문 <small>관리자</small></legend>
+            <fieldset className="board-extras">
+              <legend>첨부 · 설문</legend>
               {draft.existing.length > 0 && <ul className="board-attach-list">{draft.existing.map((item) => <li key={item.attachment_id}><label className="board-check"><input type="checkbox" checked={draft.remove.includes(item.attachment_id)} onChange={(event) => setDraft({ ...draft, remove: event.target.checked ? [...draft.remove, item.attachment_id] : draft.remove.filter((id) => id !== item.attachment_id) })} />지우기</label><span>{item.kind === "file" ? "📎" : "🔗"} {item.name}</span></li>)}</ul>}
               {draft.uploads.length > 0 && <ul className="board-attach-list">{draft.uploads.map((item) => <li key={item.attachmentId}><span>📎 {item.name} <small>{bytes(item.size)}</small></span><button type="button" onClick={() => setDraft({ ...draft, uploads: draft.uploads.filter((upload) => upload.attachmentId !== item.attachmentId) })}>빼기</button></li>)}</ul>}
               <label className="board-file">파일 추가 <small>10MB 이하 · 글당 5개 · pdf, 이미지, 문서, zip 등</small><input type="file" multiple disabled={busy} onChange={(event) => { void uploadFiles(event.target.files); event.target.value = ""; }} /></label>
@@ -261,12 +261,12 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin }: { user
                 <div className="board-admin-options">
                   <label className="board-check"><input type="checkbox" checked={draft.poll.anonymous} onChange={(event) => setDraft({ ...draft, poll: { ...draft.poll!, anonymous: event.target.checked } })} />익명 투표 (누가 골랐는지 숨김)</label>
                   <label className="board-check"><input type="checkbox" checked={draft.poll.multiple} onChange={(event) => setDraft({ ...draft, poll: { ...draft.poll!, multiple: event.target.checked } })} />여러 개 선택</label>
-                  <label className="board-check">예약 마감 <input type="datetime-local" value={draft.poll.closes} min={localInput(Date.now() / 1000)} max={localInput(Date.now() / 1000 + 90 * 86400)} onChange={(event) => setDraft({ ...draft, poll: { ...draft.poll!, closes: event.target.value } })} /><small>비우면 직접 마감할 때까지</small></label>
+                  <div className="board-check">예약 마감 <DateTimePicker value={draft.poll.closes} min={Math.ceil(Date.now() / 1000) + 300} max={Math.floor(Date.now() / 1000) + POLL_LONGEST_SECONDS} placeholder="마감 없음 (직접 마감)" onChange={(closes) => setDraft({ ...draft, poll: { ...draft.poll!, closes } })} /><small>90일 안에서 고르세요. 비우면 직접 마감할 때까지 열려 있습니다.</small></div>
                 </div>
                 <button type="button" className="board-add" onClick={() => setDraft({ ...draft, poll: null })}>설문 빼기</button>
-              </div> : <button type="button" className="board-add" onClick={() => setDraft({ ...draft, poll: { question: "", options: ["", ""], anonymous: true, multiple: false, closes: "" } })}>+ 설문/투표</button>)}
+              </div> : <button type="button" className="board-add" onClick={() => setDraft({ ...draft, poll: { question: "", options: ["", ""], anonymous: true, multiple: false, closes: null } })}>+ 설문/투표</button>)}
               {draft.postId && <small className="board-hint">설문은 글을 쓸 때만 만들 수 있습니다.</small>}
-            </fieldset>}
+            </fieldset>
             {admin && !draft.postId && <div className="board-admin-options"><label className="board-check"><input type="checkbox" checked={draft.pinned} onChange={(event) => setDraft({ ...draft, pinned: event.target.checked })} />이 게시판 맨 위에 고정</label><label className="board-check"><input type="checkbox" checked={draft.notice} onChange={(event) => setDraft({ ...draft, notice: event.target.checked })} />공지로 설정 (이 게시판 맨 위에 [공지] 표시)</label></div>}
             <div className="board-form-actions"><button type="button" onClick={() => setDraft(null)}>취소</button><button className="board-primary" disabled={busy}>{busy ? "저장 중…" : draft.postId ? "수정" : "등록"}</button></div>
           </form>}
@@ -302,9 +302,9 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin }: { user
                     {voted && <button type="button" disabled={busy} onClick={() => votePoll(poll, [])}>투표 취소</button>}
                   </div>}
                 </form>
-                {admin && <div className="board-poll-actions">{poll.open
-                  ? <button type="button" disabled={busy} onClick={() => { if (window.confirm("설문을 지금 마감할까요?")) void write(`/api/admin/board/poll/${poll.poll_id}`, { action: "close" }, async () => { await open(post.post_id); }); }}>지금 마감</button>
-                  : <button type="button" disabled={busy} onClick={() => void write(`/api/admin/board/poll/${poll.poll_id}`, { action: "reopen" }, async () => { await open(post.post_id); })}>다시 열기</button>}</div>}
+                {(admin || post.mine) && <div className="board-poll-actions">{poll.open
+                  ? <button type="button" disabled={busy} onClick={() => { if (window.confirm("설문을 지금 마감할까요?")) void write(`/api/board/polls/${poll.poll_id}/close`, {}, async () => { await open(post.post_id); }); }}>지금 마감</button>
+                  : <button type="button" disabled={busy} onClick={() => void write(`/api/board/polls/${poll.poll_id}/reopen`, {}, async () => { await open(post.post_id); })}>다시 열기</button>}</div>}
               </section>;
             })()}
             <div className="board-post-actions">

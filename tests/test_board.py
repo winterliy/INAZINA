@@ -1,6 +1,7 @@
 import sqlite3
 import time
 import unittest
+from pathlib import Path
 
 from web_api import board
 
@@ -180,10 +181,40 @@ class BoardOpeningTests(unittest.TestCase):
         self.assertEqual(board.react(self.conn, BOB, "post", post_id, -1)["reaction"], -1)
         self.assertEqual(board.list_posts(self.conn)["writeOpensEpoch"], board.WRITE_OPENS_EPOCH)
 
-    def test_opening_date_is_2026_11_16_kst(self):
-        import datetime, zoneinfo
-        opens = datetime.datetime.fromtimestamp(self.opens, zoneinfo.ZoneInfo("Asia/Seoul"))
-        self.assertEqual((opens.year, opens.month, opens.day, opens.hour), (2026, 11, 16, 0))
+    def test_opening_follows_the_privacy_policy_file(self):
+        import os, tempfile
+        board.WRITE_OPENS_EPOCH = None
+        saved_path, saved_cache = board.POLICY_PATH, dict(board._policy_cache)
+        try:
+            # The real policy: 시행일 2026-10-17, so the board opened at 0:00 KST that day.
+            self.assertEqual(board.write_opens_epoch(), 1792162800)
+            with tempfile.TemporaryDirectory() as folder:
+                board.POLICY_PATH = Path(folder) / "privacy.txt"
+                board._policy_cache.update(key=None, epoch=0)
+                board.POLICY_PATH.write_text("# 방침\n시행일: 2026년 10월 17일\n", encoding="utf-8")
+                self.assertEqual(board.write_opens_epoch(), 1792162800)
+                # Announcing a revision: a later 시행일 closes writing until that day, with no restart.
+                future = int(time.time()) + 40 * 86400
+                day = time.strftime("%Y년 %m월 %d일", time.gmtime(future + 9 * 3600))
+                board.POLICY_PATH.write_text(f"시행일: 2026년 10월 17일\n개정 시행일: {day}\n", encoding="utf-8")
+                os.utime(board.POLICY_PATH, ns=(time.time_ns(), time.time_ns() + 1_000_000_000))
+                self.assertGreater(board.write_opens_epoch(), time.time())
+                with self.assertRaisesRegex(ValueError, "처리방침 시행일"):
+                    self.post(BOB)
+                # A file without a 시행일 (or unreadable) keeps the last known time.
+                board.POLICY_PATH.write_text("오타 수정만 함", encoding="utf-8")
+                os.utime(board.POLICY_PATH, ns=(time.time_ns(), time.time_ns() + 2_000_000_000))
+                self.assertGreater(board.write_opens_epoch(), time.time())
+                board.POLICY_PATH.unlink()
+                self.assertGreater(board.write_opens_epoch(), time.time())
+        finally:
+            board.POLICY_PATH = saved_path
+            board._policy_cache.clear(); board._policy_cache.update(saved_cache)
+
+    def test_policy_dates_take_the_latest_valid_시행일(self):
+        text = "시행일: 2026년 10월 17일\n개정 시행일 : 2026년 12월 1일\n부칙 2027년 1월 1일\n시행일: 2026년 2월 30일"
+        self.assertEqual(board.policy_effective_epoch(text), 1796050800)  # 2026-12-01 00:00 KST
+        self.assertIsNone(board.policy_effective_epoch("날짜 없음"))
 
 
 class BoardReactionAndReplyTests(unittest.TestCase):
@@ -391,11 +422,18 @@ class BoardAttachmentAndPollTests(unittest.TestCase):
         with self.assertRaises(LookupError):
             board.file_meta(self.conn, file_id)
 
-    def test_attachments_are_admin_only_and_validated(self):
-        with self.assertRaisesRegex(ValueError, "관리자"):
-            self.upload(BOB)
-        with self.assertRaisesRegex(ValueError, "관리자"):
-            self.post(BOB, links=[{"url": "https://example.com"}])
+    def test_anyone_may_attach_and_uploads_are_limited_and_validated(self):
+        user_file = self.upload(BOB, stored="9" * 32 + ".pdf")
+        post_id = self.post(BOB, attachments=[user_file], links=[{"url": "https://example.com"}])
+        self.assertEqual(len(board.read_post(self.conn, post_id)["attachments"]), 2)
+        with self.assertRaisesRegex(ValueError, "올린 파일"):  # someone else's upload
+            self.post(ALICE, attachments=[self.upload(stored="8" * 32 + ".pdf")])
+        now = int(time.time())
+        self.conn.executemany("INSERT INTO board_attachments(post_id,uploader_id,kind,name,stored_name,size,sha256,created_epoch) "
+                              "VALUES (NULL,'carol','file','x.pdf',?,1,?,?)",
+                              [(f"{n:032x}.pdf", "0" * 64, now) for n in range(board.UPLOADS_PER_HOUR)])
+        with self.assertRaisesRegex(ValueError, "한 시간에"):
+            self.upload({"userId": "carol", "role": "user"}, stored="7" * 32 + ".pdf")
         with self.assertRaisesRegex(ValueError, "올릴 수 있는 파일"):
             self.upload(name="run.exe", stored="b" * 32 + ".exe")
         with self.assertRaisesRegex(ValueError, "파일 정보"):
@@ -461,9 +499,15 @@ class BoardAttachmentAndPollTests(unittest.TestCase):
         board.admin_action(self.conn, "poll", poll["poll_id"], "reopen")
         board.vote(self.conn, BOB, poll["poll_id"], ids[:1])
 
-    def test_polls_are_admin_only_and_validated(self):
-        with self.assertRaisesRegex(ValueError, "관리자"):
-            self.post(BOB, poll={"question": "q", "options": ["a", "b"]})
+    def test_anyone_may_open_a_poll_and_only_its_author_or_an_admin_closes_it(self):
+        post_id = self.post(BOB, poll={"question": "q", "options": ["a", "b"]})
+        poll_id = board.read_post(self.conn, post_id)["poll"]["poll_id"]
+        with self.assertRaisesRegex(ValueError, "만든 사람"):
+            board.poll_action(self.conn, poll_id, "close", ALICE)
+        self.assertEqual(board.poll_action(self.conn, poll_id, "close", BOB), 1)
+        self.assertEqual(board.poll_action(self.conn, poll_id, "reopen", ADMIN), 1)
+
+    def test_polls_are_validated(self):
         for poll, message in (({"question": "q", "options": ["a"]}, "선택지"), ({"question": "q", "options": ["a", "a"]}, "선택지"),
                               ({"question": "q", "options": ["a", "b"], "closesEpoch": 1}, "예약 마감"),
                               ({"question": "q", "options": ["a", "b"], "closesEpoch": int(time.time()) + 100 * 86400}, "90일")):

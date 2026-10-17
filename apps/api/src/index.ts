@@ -778,13 +778,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
-  // Board file upload (administrators): raw bytes, name in X-File-Name. The file is
+  // Board file upload (any signed-in writer): raw bytes, name in X-File-Name. The file is
   // written first, then registered; a refused registration removes it again.
   if (request.method === "POST" && url.pathname === "/api/board/files") {
-    if (user.role !== "admin") {
-      send(response, 403, { error: "admin_required" });
-      return;
-    }
     let name = "";
     try { name = decodeURIComponent(String(request.headers["x-file-name"] ?? "")).trim(); } catch { /* invalid encoding */ }
     const extension = name.includes(".") ? name.split(".").pop()!.toLowerCase() : "";
@@ -808,7 +804,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   // HTS board writes: the author's address is recorded with every post, comment and report.
-  if (request.method === "POST" && /^\/api\/board\/(posts|posts\/\d+\/(edit|delete|comments|react)|comments\/\d+\/(delete|react)|polls\/\d+\/vote|reports)$/.test(url.pathname)) {
+  if (request.method === "POST" && /^\/api\/board\/(posts|posts\/\d+\/(edit|delete|comments|react)|comments\/\d+\/(delete|react)|polls\/\d+\/(vote|close|reopen)|reports)$/.test(url.pathname)) {
     const body = await requestJson(request);
     const result = await internalRequest("POST", url.pathname.replace(/^\/api\//, "/internal/"), principal.userId,
       { ...(body && typeof body === "object" ? body : {}), clientIp: clientIp(request) });

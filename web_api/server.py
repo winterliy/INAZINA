@@ -287,6 +287,8 @@ def _board_post(parts, user, payload, ip):
             return {"attachmentId": board.register_upload(connection, user, payload)}
         if len(parts) == 3 and parts[0] == "polls" and parts[2] == "vote":
             return {"poll": board.vote(connection, user, parts[1], payload.get("optionIds"))}
+        if len(parts) == 3 and parts[0] == "polls" and parts[2] in {"close", "reopen"}:
+            return {"changed": board.poll_action(connection, parts[1], parts[2], user)}
         if parts == ["posts"]:
             return {"postId": board.create_post(connection, user, payload, ip)}
         if len(parts) == 3 and parts[0] == "posts":

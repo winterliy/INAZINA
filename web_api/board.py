@@ -27,9 +27,10 @@ DEFAULT_BOARDS = (
 BOARD_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 BOARD_NAME_MAX, BOARD_DESCRIPTION_MAX, CATEGORY_NAME_MAX = 30, 200, 20
 PAGE_SIZE = 20
-# Attachments and polls are for administrators' posts (공지 and announcements).
+# Anyone who can write may attach files and links and open a poll.
 FILE_MAX_BYTES = 10 * 1024 * 1024
 FILES_PER_POST, LINKS_PER_POST = 5, 10
+UPLOADS_PER_HOUR = 20
 FILE_TYPES = {  # extension -> media type sent on download
     "pdf": "application/pdf", "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
     "gif": "image/gif", "webp": "image/webp", "txt": "text/plain", "csv": "text/csv", "zip": "application/zip",
@@ -53,16 +54,57 @@ ANONYMOUS = "익명"
 # 개인정보 처리방침: 게시판 접속 IP는 작성(신고) 후 1년이 지나면 파기한다.
 # The rows stay; only the address is erased.
 IP_RETENTION_SECONDS = 365 * 86400
-# Writing stores the client IP, a collection the privacy policy announced on
-# 2026-10-17 to start 30 days later. Until then the board is read-only:
-# posts, comments and reports (which record IPs) are refused; reactions are not.
-WRITE_OPENS_EPOCH = 1794754800  # 2026-11-16 00:00 KST
-WRITE_OPENS_TEXT = "2026년 11월 16일"
+# Writing stores the client IP, so the board follows the privacy policy: until
+# the policy's 시행일 (0:00 KST of the latest "시행일:" / "개정 시행일:" line in
+# privacy.txt) the board is read-only. Posts, comments, uploads and reports are
+# refused then; reactions and votes are not. The file is re-read whenever it
+# changes, so announcing a revision is just writing its future 시행일 there.
+# (2026-10-17: the board's introduction opened on its announcement day, as a
+# one-time exception to the notice period.)
+POLICY_PATH = Path(os.environ.get("INAZINA_PRIVACY_POLICY",
+                                  Path(__file__).resolve().parents[1] / "apps" / "site" / "public" / "links" / "privacy.txt"))
+POLICY_DATE = re.compile(r"^\s*(?:개정\s*)?시행일\s*[:：]\s*(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일", re.M)
+# Tests (or an emergency) may pin the opening time here; None reads the policy.
+WRITE_OPENS_EPOCH = None
+_policy_cache = {"key": None, "epoch": 0}
+
+
+def policy_effective_epoch(text):
+    """0:00 KST of the latest 시행일 in a policy text, or None when it has none."""
+    import datetime
+    import zoneinfo
+    dates = []
+    for year, month, day in POLICY_DATE.findall(text):
+        try:
+            dates.append(datetime.datetime(int(year), int(month), int(day), tzinfo=zoneinfo.ZoneInfo("Asia/Seoul")))
+        except ValueError:
+            continue  # an impossible date such as 2월 30일 is ignored
+    return int(max(dates).timestamp()) if dates else None
+
+
+def write_opens_epoch():
+    """When writing opens; follows privacy.txt and re-reads it after every change."""
+    if WRITE_OPENS_EPOCH is not None:
+        return WRITE_OPENS_EPOCH
+    try:
+        stat = POLICY_PATH.stat()
+    except OSError:
+        return _policy_cache["epoch"]  # unreadable: keep the last known time
+    key = (stat.st_mtime_ns, stat.st_size)
+    if key != _policy_cache["key"]:
+        try:
+            epoch = policy_effective_epoch(POLICY_PATH.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            return _policy_cache["epoch"]
+        _policy_cache.update(key=key, epoch=epoch if epoch is not None else _policy_cache["epoch"])
+    return _policy_cache["epoch"]
 
 
 def _require_open(now=None):
-    if (now if now is not None else time.time()) < WRITE_OPENS_EPOCH:
-        raise ValueError(f"게시판 글쓰기·댓글·신고는 {WRITE_OPENS_TEXT}부터 이용할 수 있습니다. 지금은 읽기만 가능합니다.")
+    opens = write_opens_epoch()
+    if (now if now is not None else time.time()) < opens:
+        day = time.strftime("%Y년 %-m월 %-d일", time.gmtime(opens + 9 * 3600))
+        raise ValueError(f"게시판 글쓰기·댓글·신고는 개인정보 처리방침 시행일({day})부터 이용할 수 있습니다. 지금은 읽기만 가능합니다.")
 
 
 _POSTS_TABLE = """CREATE TABLE {name} (
@@ -383,7 +425,7 @@ def list_posts(connection, board=None, search="", asset_code=None, page=1, viewe
         _PUBLIC_POST + f"WHERE {clause} ORDER BY {order} LIMIT ? OFFSET ?",
         params + [PAGE_SIZE, (page - 1) * PAGE_SIZE]).fetchall()
     return {"posts": [_public(row, viewer) for row in rows], "total": total, "page": page, "pageSize": PAGE_SIZE,
-            "writeOpensEpoch": WRITE_OPENS_EPOCH}
+            "writeOpensEpoch": write_opens_epoch()}
 
 
 def read_post(connection, post_id, viewer=None, count_view=False):
@@ -759,7 +801,7 @@ def _category_action(connection, category_id, action, payload):
 
 
 # ---------------------------------------------------------------------------
-# Attachments (administrators' posts)
+# Attachments
 # ---------------------------------------------------------------------------
 def file_extension(name):
     extension = name.rsplit(".", 1)[-1].lower() if "." in name else ""
@@ -770,8 +812,11 @@ def file_extension(name):
 
 def register_upload(connection, user, payload):
     """Record a file the API server has just written; returns its pending attachment id."""
-    if user["role"] != "admin":
-        raise ValueError("파일 첨부는 관리자만 할 수 있습니다.")
+    _require_open()
+    recent = connection.execute("SELECT COUNT(*) FROM board_attachments WHERE uploader_id=? AND kind='file' AND created_epoch>=?",
+                                (user["userId"], int(time.time()) - 3600)).fetchone()[0]
+    if recent >= UPLOADS_PER_HOUR:
+        raise ValueError(f"파일은 한 시간에 {UPLOADS_PER_HOUR}개까지 올릴 수 있습니다. 잠시 후 다시 시도해주세요.")
     name = _text(payload.get("name"), "파일 이름", 120).replace("/", "_").replace("\\", "_")
     stored = str(payload.get("storedName") or "")
     if not STORED_NAME.fullmatch(stored) or stored.rsplit(".", 1)[1] != file_extension(name):
@@ -792,10 +837,6 @@ def _extras(user, payload):
     files, links, poll = payload.get("attachments") or [], payload.get("links") or [], payload.get("poll") or None
     if not isinstance(files, list) or not isinstance(links, list):
         raise ValueError("첨부를 확인해주세요.")
-    if (files or links) and user["role"] != "admin":
-        raise ValueError("파일·링크 첨부는 관리자만 할 수 있습니다.")
-    if poll is not None and user["role"] != "admin":
-        raise ValueError("설문·투표는 관리자만 만들 수 있습니다.")
     clean = []
     for link in links:
         if not isinstance(link, dict):
@@ -856,7 +897,7 @@ def cleanup_files(connection, directory, now=None, min_age=60):
 
 
 # ---------------------------------------------------------------------------
-# Polls (설문/투표) on administrators' posts
+# Polls (설문/투표)
 # ---------------------------------------------------------------------------
 def _poll_values(poll):
     if not isinstance(poll, dict):
@@ -940,9 +981,17 @@ def vote(connection, user, poll_id, option_ids):
     return _poll_view(connection, poll, user["userId"])
 
 
-def poll_action(connection, poll_id, action):
-    """close: end voting now; reopen: open again without a scheduled close."""
+def poll_action(connection, poll_id, action, user=None):
+    """close: end voting now; reopen: open again without a scheduled close.
+
+    ``user`` (when given) must be the post's author or an administrator.
+    """
     poll_id = _id(poll_id, "설문")
+    if user is not None and user["role"] != "admin":
+        owner = connection.execute("SELECT p.author_id FROM board_polls v JOIN board_posts p ON p.post_id=v.post_id "
+                                   "WHERE v.poll_id=?", (poll_id,)).fetchone()
+        if not owner or owner[0] != user["userId"]:
+            raise ValueError("설문을 만든 사람만 마감하거나 다시 열 수 있습니다.")
     if action == "close":
         return connection.execute("UPDATE board_polls SET closed_epoch=? WHERE poll_id=? AND closed_epoch IS NULL",
                                   (int(time.time()), poll_id)).rowcount
