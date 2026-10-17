@@ -314,6 +314,10 @@ class AccountDB(DBManager):
             calculated_epoch REAL NOT NULL,
             UNIQUE(loan_id,as_of_day)
         )""")
+        self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_loan_ecl_assessments_epoch_loan "
+            "ON loan_ecl_assessments(calculated_epoch,loan_id)"
+        )
         ecl_columns = {row[1] for row in self.execute("PRAGMA table_info(loan_ecl_assessments)")}
         if "discount_factor" not in ecl_columns:
             self.execute(

@@ -10,7 +10,8 @@ type KycEvent = { event_id: number; user_id: string; actor_id: string; event_typ
 type AmlEvent = { event_id: number; alert_id: number; actor_id: string; event_type: string; prior_status: string | null; new_status: string; outcome_code: string | null; recorded_epoch: number; nationality: string; user_id: string };
 type EclScenario = { nationality: string; scenario_key: "optimistic" | "base" | "downside"; probability: number; pd_multiplier: number; lgd_multiplier: number; updated_epoch: number };
 type EclAssessment = { assessment_id: number; loan_id: number; as_of_day: string; stage: number; pd_12m: number; lifetime_pd: number; lgd: number; ead: number; expected_loss: number; discount_factor: number; effective_interest_rate: number; expected_loss_time_years: number; macro_pd_multiplier: number; ead_text: string; expected_loss_text: string; decimal_places: number; quote_currency: string; scenario: string; calculated_epoch: number; nationality: string };
-type Overview = { kycProfiles: Kyc[]; amlAlerts: Alert[]; amlRules: Rule[]; kycEvents: KycEvent[]; amlEvents: AmlEvent[]; creditRiskScenarios: EclScenario[]; eclAssessments: EclAssessment[] };
+type EclBacktest = { issuer: string; nationality: string; pdBand: string; sampleCount: number; observedDefaults: number; meanPredictedPd: number; observedDefaultRate: number; brierScore: number };
+type Overview = { kycProfiles: Kyc[]; amlAlerts: Alert[]; amlRules: Rule[]; kycEvents: KycEvent[]; amlEvents: AmlEvent[]; creditRiskScenarios: EclScenario[]; eclAssessments: EclAssessment[]; eclBacktest: { maturedThroughEpoch: number; groups: EclBacktest[]; method: string } };
 type Result = { success: boolean; result: Record<string, unknown> };
 
 const KYC_STATUSES = [["pending", "검토 대기"], ["verified", "확인 완료"], ["rejected", "확인 거절"], ["expired", "만료"]];
@@ -20,7 +21,7 @@ const OUTCOMES = [["no_action", "추가 조치 없음"], ["false_positive", "오
 /** Administrator-only simulator compliance controls; never collects identity documents. */
 export function CompliancePage({ ctx }: { ctx: Ctx }) {
   const { busy, run, say } = ctx;
-  const [data, setData] = useState<Overview>({ kycProfiles: [], amlAlerts: [], amlRules: [], kycEvents: [], amlEvents: [], creditRiskScenarios: [], eclAssessments: [] });
+  const [data, setData] = useState<Overview>({ kycProfiles: [], amlAlerts: [], amlRules: [], kycEvents: [], amlEvents: [], creditRiskScenarios: [], eclAssessments: [], eclBacktest: { maturedThroughEpoch: 0, groups: [], method: "" } });
   const [nationality, setNationality] = useState("");
   const [kyc, setKyc] = useState({ userId: "", status: "pending", riskTier: "standard", reasonCode: "review_started", expires: "" });
   const [rule, setRule] = useState({ large: "", rollingAmount: "", rollingCount: "", enabled: false });
@@ -143,6 +144,13 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
         </div></div>)}
         <button className="btn primary" disabled={busy || !nationality || scenarioDraftCountry !== nationality}>ECL 가정 저장</button>
       </form>
+    </Card>
+
+    <Card title="12개월 PD 백테스트" caption="국적 필터 적용 · 대출별 월간 마지막 Stage 1/2 평가만 사용하고 365일 관측기간이 지난 표본만 포함합니다. 예측 PD 구간별 실제 부도율·Brier 점수를 비교합니다. 시뮬레이터 내부 성과 진단이며 독립 검증·규제 승인 모형이 아닙니다.">
+      <p className="hint">관측 기준일: {date(data.eclBacktest.maturedThroughEpoch)}</p>
+      <div className="scroll-x"><table><thead><tr><th>기관</th><th>국적</th><th>예측 PD 구간</th><th className="r">표본</th><th className="r">부도</th><th className="r">평균 예측 PD</th><th className="r">관측 부도율</th><th className="r">Brier</th></tr></thead><tbody>
+        {data.eclBacktest.groups.map((row) => <tr key={`${row.issuer}-${row.nationality}-${row.pdBand}`}><td>{row.issuer}</td><td>{row.nationality}</td><td>{row.pdBand}</td><td className="r">{row.sampleCount}</td><td className="r">{row.observedDefaults}</td><td className="r">{(row.meanPredictedPd * 100).toFixed(2)}%</td><td className="r">{(row.observedDefaultRate * 100).toFixed(2)}%</td><td className="r mono">{row.brierScore.toFixed(4)}</td></tr>)}
+      </tbody></table>{!data.eclBacktest.groups.length && <p className="empty">12개월 관측기간을 마친 평가 표본이 아직 없습니다.</p>}</div>
     </Card>
 
     <Card title="최근 대출 ECL 평가" caption="최근 100건 · 사용 EIR·예상손실 시점·할인계수를 평가 시점 그대로 보존합니다. Stage 1·2 EAD는 midpoint까지 납부 예정인 미도래 원금을 차감한 proxy이며, 상환일정이 없거나 Stage 3이면 현재 잔액입니다. 시점·EAD 모두 현금흐름 기반 정밀모형이 아닌 근사입니다.">

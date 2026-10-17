@@ -16,6 +16,65 @@ class CreditRiskManager:
     """
     STAGE_2_CURE_DAYS = 90
 
+    @classmethod
+    def backtest_12m(cls, conn, nationality=None, *, issuer=None, now=None):
+        """Compare matured, monthly PD snapshots with observed 12-month defaults.
+
+        This is a compact calibration diagnostic, not an independent validation:
+        snapshots are sampled from the simulator's own scorecard and defaults.
+        """
+        import time
+        epoch = float(time.time() if now is None else now)
+        if not math.isfinite(epoch) or epoch < 0:
+            raise ValueError("invalid_ecl_backtest_epoch")
+        issuer = str(issuer or "").strip() or None
+        horizon = 365*86400
+        rows = conn.execute(
+            "WITH ranked AS ("
+            " SELECT a.loan_id,a.pd_12m,a.calculated_epoch,l.defaulted_epoch,u.nationality,p.issuer,"
+            " ROW_NUMBER() OVER (PARTITION BY a.loan_id,strftime('%Y-%m',a.calculated_epoch,'unixepoch') "
+            " ORDER BY a.calculated_epoch DESC,a.assessment_id DESC) AS month_rank "
+            " FROM loan_ecl_assessments a "
+            " JOIN loans l ON l.loan_id=a.loan_id "
+            " JOIN users u ON u.user_id=l.user_id "
+            " JOIN liability p ON p.product_code=l.product_code "
+            " WHERE (? IS NULL OR p.issuer=?) AND a.stage IN (1,2) AND a.calculated_epoch>? "
+            " AND a.calculated_epoch<=? AND (? IS NULL OR u.nationality=?)"
+            ") SELECT * FROM ranked WHERE month_rank=1 "
+            "ORDER BY calculated_epoch DESC,loan_id LIMIT 5000",
+            (issuer, issuer, epoch-6*horizon, epoch-horizon,
+             nationality, nationality),
+        ).fetchall()
+        bands = ((0.0, .01, "<1%"), (.01, .05, "1–5%"),
+                 (.05, .20, "5–20%"), (.20, 1.000001, "≥20%"))
+        grouped = {}
+        for row in rows:
+            pd = cls._bounded(row["pd_12m"], 0, 1)
+            band = next(label for low, high, label in bands if low <= pd < high)
+            key = (str(row["issuer"] or ""), str(row["nationality"] or ""), band)
+            stats = grouped.setdefault(key, {"count": 0, "defaults": 0,
+                                               "predicted": 0.0, "brier": 0.0})
+            default_epoch = row["defaulted_epoch"]
+            observed = int(default_epoch is not None
+                           and row["calculated_epoch"] < float(default_epoch)
+                           <= row["calculated_epoch"]+horizon)
+            stats["count"] += 1
+            stats["defaults"] += observed
+            stats["predicted"] += pd
+            stats["brier"] += (pd-observed)**2
+        result = []
+        for (bank, country, band), stats in sorted(grouped.items()):
+            count = stats["count"]
+            result.append({"issuer": bank, "nationality": country, "pdBand": band,
+                           "sampleCount": count, "observedDefaults": stats["defaults"],
+                           "meanPredictedPd": stats["predicted"]/count,
+                           "observedDefaultRate": stats["defaults"]/count,
+                           "brierScore": stats["brier"]/count})
+        return {"issuer": issuer, "horizonDays": 365,
+                "maturedThroughEpoch": epoch-horizon, "groups": result,
+                "method": "most recent Stage 1/2 assessment per loan-month; includes only snapshots with a full 365-day outcome window; outcome is recorded default within the following 12 months; capped at 5000 observations; simulator-only calibration diagnostic"}
+
+
     @staticmethod
     def _bounded(value, low, high):
         try:

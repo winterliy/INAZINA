@@ -111,6 +111,33 @@ class DefaultedLoanEclTests(unittest.TestCase):
             "SELECT COUNT(*) count FROM bank_journal_entries WHERE event_type='expected_credit_loss'"
         )["count"], 1)
 
+    def test_matured_monthly_pd_backtest_compares_realized_defaults(self):
+        sample_epoch = 1_700_000_000.0
+        loan_id = self.db.accounts.execute_one(
+            "SELECT loan_id FROM loans WHERE product_code='ECL3'"
+        )["loan_id"]
+        self.db.accounts.execute(
+            "UPDATE loans SET defaulted_epoch=? WHERE loan_id=?",
+            (sample_epoch+100*86400, loan_id),
+        )
+        self.db.accounts.execute(
+            "INSERT INTO loan_ecl_assessments "
+            "(loan_id,as_of_day,stage,pd_12m,lifetime_pd,lgd,ead,expected_loss,"
+            "quote_currency,calculated_epoch) VALUES (?,?,?,?,?,?,?,?,?,?),(?,?,?,?,?,?,?,?,?,?)",
+            (loan_id, "2023-11-04", 2, .9, .9, .4, 1000, 360, "NWX", sample_epoch-10*86400,
+             loan_id, "2023-11-14", 2, .1, .2, .4, 1000, 80, "NWX", sample_epoch),
+        )
+        with self.db.readonly() as conn:
+            report = CreditRiskManager.backtest_12m(
+                conn, "낙원", issuer="Bank", now=sample_epoch+400*86400,
+            )
+        self.assertEqual(report["horizonDays"], 365)
+        group = report["groups"][0]
+        self.assertEqual((group["sampleCount"], group["observedDefaults"]), (1, 1))
+        self.assertEqual(group["pdBand"], "5–20%")
+        self.assertEqual(group["observedDefaultRate"], 1)
+        self.assertAlmostEqual(group["brierScore"], .81)
+
     def test_zero_effective_rate_has_no_discount(self):
         self.db.accounts.execute(
             "UPDATE loans SET contract_effective_rate=0 WHERE product_code='ECL3'"

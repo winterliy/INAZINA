@@ -1557,6 +1557,8 @@ def admin_compliance_overview(nationality=None):
         ecl_sql += " ORDER BY e.calculated_epoch DESC LIMIT 100"
         scenarios = [dict(row) for row in connection.execute(scenario_sql, params).fetchall()]
         ecl_assessments = [dict(row) for row in connection.execute(ecl_sql, params).fetchall()]
+        from managers.credit_risk_manager import CreditRiskManager
+        ecl_backtest = CreditRiskManager.backtest_12m(connection, nationality)
         for row in ecl_assessments:
             places = currency_precision(connection, row["quote_currency"])
             row["decimal_places"] = places
@@ -1564,7 +1566,8 @@ def admin_compliance_overview(nationality=None):
             row["expected_loss_text"] = f"{Decimal(str(row['expected_loss'])):.{places}f}"
     return {"kycProfiles": profiles, "amlAlerts": alerts, "amlRules": rules,
             "kycEvents": kyc_events, "amlEvents": aml_events,
-            "creditRiskScenarios": scenarios, "eclAssessments": ecl_assessments}
+            "creditRiskScenarios": scenarios, "eclAssessments": ecl_assessments,
+            "eclBacktest": ecl_backtest}
 
 
 # $도움말 is a Discord view; the dashboard shows the same pages on its own.

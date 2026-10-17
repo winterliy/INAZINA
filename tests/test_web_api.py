@@ -86,13 +86,16 @@ class WebApiTests(unittest.TestCase):
                     event_type TEXT,prior_status TEXT,new_status TEXT,outcome_code TEXT,recorded_epoch REAL);
                 CREATE TABLE credit_risk_scenarios(nationality TEXT,scenario_key TEXT,
                     probability REAL,pd_multiplier REAL,lgd_multiplier REAL,updated_epoch REAL);
-                CREATE TABLE loans(loan_id INTEGER PRIMARY KEY,user_id TEXT);
+                CREATE TABLE loans(loan_id INTEGER PRIMARY KEY,user_id TEXT,product_code TEXT,
+                    defaulted_epoch REAL);
+                CREATE TABLE liability(product_code TEXT PRIMARY KEY,issuer TEXT);
+                INSERT INTO liability VALUES ('ECL-PRODUCT','Bank');
                 CREATE TABLE loan_ecl_assessments(assessment_id INTEGER,loan_id INTEGER,as_of_day TEXT,
                     stage INTEGER,pd_12m REAL,lifetime_pd REAL,lgd REAL,ead REAL,expected_loss REAL,
                     discount_factor REAL,effective_interest_rate REAL,expected_loss_time_years REAL,
                     macro_pd_multiplier REAL,
                     quote_currency TEXT,scenario TEXT,calculated_epoch REAL);
-                INSERT INTO loans VALUES (1,'admin-1');
+                INSERT INTO loans VALUES (1,'admin-1','ECL-PRODUCT',NULL);
                 INSERT INTO loan_ecl_assessments VALUES
                     (1,1,'2026-10-17',2,0.1,0.2,0.4,1000,72,0.95,8,0.25,1.2,'NWX','[]',1);
             """)
@@ -102,6 +105,7 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(result["eclAssessments"][0]["expected_loss_time_years"], 0.25)
         self.assertEqual(result["eclAssessments"][0]["macro_pd_multiplier"], 1.2)
         self.assertEqual(result["eclAssessments"][0]["expected_loss_text"], "72")
+        self.assertEqual(result["eclBacktest"]["groups"], [])
 
     def test_admin_countries_returns_auditable_income_source_tax_overrides(self):
         with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
