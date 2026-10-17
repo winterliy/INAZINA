@@ -787,6 +787,13 @@ class RealisticRateSystemTests(unittest.TestCase):
             "SELECT 1 FROM deposit_insurance_claims WHERE account_number IN "
             "(SELECT account_number FROM accounts WHERE product_code='INSURED')"
         ))
+        with self.db.atomic(("accounts",)) as conn:
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+                conn.execute("UPDATE accounts.deposit_insurance_claims "
+                             "SET covered_amount=0")
+        with self.db.atomic(("accounts",)) as conn:
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+                conn.execute("DELETE FROM accounts.deposit_insurance_claims")
         with self.db.atomic() as conn:
             reconciliation = BankJournal.reconcile_customer_deposits(conn, "Bank")
             journal = BankJournal.trial_balance(conn, "Bank", "NWX")

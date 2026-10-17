@@ -69,6 +69,29 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='currency_wallets'"
         ))
 
+    def test_currency_settlement_history_is_append_only(self):
+        inserts = (
+            ("currency_transactions", "user_id,source_currency,target_currency,"
+             "source_units,target_units,fee_nwx,recorded_epoch",
+             "'us-user','USD','EUR',100,90,1,1"),
+            ("currency_transfer_transactions", "sender_id,recipient_id,"
+             "source_currency,target_currency,source_units,target_units,fee_nwx,recorded_epoch",
+             "'us-user','recipient','USD','USD',100,100,1,1"),
+            ("basic_income_payments", "batch_id,user_id,source_currency,target_currency,"
+             "source_units,target_units,source_rate,target_rate,recorded_epoch",
+             "'batch','us-user','NWX','USD',100,90,'1','1',1"),
+        )
+        for table, columns, values in inserts:
+            self.db.currency.execute(
+                f"INSERT INTO {table} ({columns}) VALUES ({values})"
+            )
+            with self.db.atomic(("forex",)) as conn:
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+                    conn.execute(f"UPDATE {table} SET recorded_epoch=2")
+            with self.db.atomic(("forex",)) as conn:
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+                    conn.execute(f"DELETE FROM {table}")
+
     def test_legacy_wallets_move_to_home_cash_and_foreign_accounts(self):
         self.db.currency.execute("CREATE TABLE currency_wallets(user_id TEXT,currency_code TEXT,balance_units INTEGER,PRIMARY KEY(user_id,currency_code))")
         self.db.currency.execute(

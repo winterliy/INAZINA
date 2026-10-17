@@ -48,6 +48,15 @@ class CurrencyDB(DBManager):
             source_units INTEGER NOT NULL, target_units INTEGER NOT NULL,
             source_rate TEXT NOT NULL, target_rate TEXT NOT NULL,
             recorded_epoch REAL NOT NULL)""")
+        # Settled FX, transfer, and public-payment rows are audit records, not
+        # mutable balances. Corrections must be represented by a new event.
+        for table in ("currency_transactions", "currency_transfer_transactions",
+                      "basic_income_payments"):
+            for operation in ("UPDATE", "DELETE"):
+                self.execute(f"""CREATE TRIGGER IF NOT EXISTS
+                    trg_{table}_immutable_{operation.lower()}
+                    BEFORE {operation} ON {table}
+                    BEGIN SELECT RAISE(ABORT,'currency transaction history is append-only'); END""")
         # A currency's quoted base rate remains administrator controlled.  This
         # table stores the neutral supply point used to apply a bounded liquidity
         # adjustment at settlement/read time.  Units are millionths of a currency.

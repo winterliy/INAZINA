@@ -453,6 +453,11 @@ class AccountDB(DBManager):
             ("covered_amount", "uninsured_amount"),
             "claim_id",
         )
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS
+                trg_deposit_insurance_claims_immutable_{operation.lower()}
+                BEFORE {operation} ON deposit_insurance_claims
+                BEGIN SELECT RAISE(ABORT,'deposit insurance claims are append-only'); END""")
 
         self.execute(
             """CREATE TABLE IF NOT EXISTS treasury_bond_holdings (
