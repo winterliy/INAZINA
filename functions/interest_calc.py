@@ -1,16 +1,28 @@
 import math
 from datetime import datetime, timezone
+from functions.time_utils import validate_epoch
 
 YEAR_SECONDS = 365 * 24 * 60 * 60
 
 
 def year_fraction(elapsed_seconds, convention="ACT/365", start_epoch=None):
     """Convert elapsed seconds to a contractual year fraction."""
-    seconds = max(0.0, float(elapsed_seconds or 0))
+    if isinstance(elapsed_seconds, bool):
+        raise ValueError("경과 시간은 유한한 초 단위 값이어야 합니다.")
+    try:
+        seconds = float(elapsed_seconds or 0)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("경과 시간은 유한한 초 단위 값이어야 합니다.") from exc
+    if not math.isfinite(seconds):
+        raise ValueError("경과 시간은 유한한 초 단위 값이어야 합니다.")
+    seconds = max(0.0, seconds)
+    if start_epoch is not None:
+        start_epoch = validate_epoch(start_epoch)
+        end_epoch = validate_epoch(start_epoch + seconds)
     convention = str(convention or "ACT/365").upper()
     if convention == "30/360" and start_epoch is not None:
-        start = datetime.fromtimestamp(float(start_epoch), timezone.utc)
-        end = datetime.fromtimestamp(float(start_epoch)+seconds, timezone.utc)
+        start = datetime.fromtimestamp(start_epoch, timezone.utc)
+        end = datetime.fromtimestamp(end_epoch, timezone.utc)
         day1 = min(start.day, 30)
         day2 = min(end.day, 30) if day1 == 30 else end.day
         return ((end.year-start.year)*360 + (end.month-start.month)*30
@@ -26,6 +38,8 @@ def calculate_simple_interest(principal, rate, elapsed_seconds, convention="ACT/
     principal = float(principal)
     rate = float(rate)
     elapsed_seconds = float(elapsed_seconds)
+    if not all(math.isfinite(value) for value in (principal, rate, elapsed_seconds)):
+        raise ValueError("원금·금리·경과 시간은 유한한 숫자여야 합니다.")
     if principal <= 0 or elapsed_seconds <= 0:
         return 0.0
     return principal * (rate / 100.0) * year_fraction(
@@ -40,6 +54,8 @@ def calculate_compound_interest(principal, rate, periods, cycle_seconds,
     rate = float(rate)
     periods = int(periods)
     cycle_seconds = float(cycle_seconds)
+    if not all(math.isfinite(value) for value in (principal, rate, cycle_seconds)):
+        raise ValueError("원금·금리·주기 시간은 유한한 숫자여야 합니다.")
     if principal <= 0 or periods <= 0 or cycle_seconds <= 0:
         return 0.0
     total_fraction = year_fraction(

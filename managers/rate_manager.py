@@ -56,6 +56,7 @@ class RateManager:
     @staticmethod
     def adjust_business_day(conn, epoch, nationality, convention="following"):
         """Roll contractual payment dates around weekends and configured holidays."""
+        epoch = RateManager._validated_epoch(epoch, "invalid_business_day_epoch")
         convention = str(convention or "following").lower()
         if convention == "none":
             return float(epoch)
@@ -80,7 +81,9 @@ class RateManager:
             adjusted = original
             while closed(adjusted):
                 adjusted -= timedelta(days=1)
-        return adjusted.timestamp()
+        return RateManager._validated_epoch(
+            adjusted.timestamp(), "invalid_business_day_adjusted_epoch"
+        )
 
     def get_rate_history(self, key, since, now=None):
         """Return a right-continuous annual-rate series, with both plot boundaries.
@@ -325,6 +328,7 @@ class RateManager:
     @staticmethod
     def rate_at(conn, key, nationality, epoch):
         """Return the policy rate that was effective at a historical instant."""
+        epoch = RateManager._validated_epoch(epoch, "invalid_historical_rate_epoch")
         row = conn.execute(
             "SELECT annual_percent FROM country_rate_history "
             "WHERE nationality=? AND rate_key=? AND effective_epoch<=? "
@@ -348,6 +352,8 @@ class RateManager:
         """
         country = str(nationality or "").strip()
         key = str(benchmark_key or "policy").strip().lower()
+        if epoch is not None:
+            epoch = RateManager._validated_epoch(epoch, "invalid_market_rate_epoch")
         if not country:
             raise ValueError("시장금리 조회에는 국적이 필요합니다.")
         if key == "policy":
@@ -578,6 +584,8 @@ class RateManager:
     def discount_factor(conn, nationality, benchmark_key, tenor_days, *, epoch=None,
                         spread=0.0, parallel_shift=0.0):
         """Discount one cash flow from the matching zero-rate curve."""
+        if epoch is not None:
+            epoch = RateManager._validated_epoch(epoch, "invalid_discount_factor_epoch")
         days = max(0.0, float(tenor_days or 0))
         if days == 0:
             return 1.0
@@ -604,7 +612,7 @@ class RateManager:
         original = max(1, int(original_maturity_days or remaining or 1))
         frequency = max(0, int(coupon_frequency_days or 0))
         coupon_rate = float(coupon_percent or 0) / 100.0
-        valuation_epoch = float(time.time() if epoch is None else epoch)
+        valuation_epoch = RateManager._validated_epoch(epoch, "invalid_bond_quote_epoch")
         if remaining <= 0:
             return {"dirty_price": face, "clean_price": face,
                     "accrued_interest": 0.0, "cashflows": [(0, face)],

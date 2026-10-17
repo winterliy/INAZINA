@@ -16,7 +16,9 @@ from managers.investment_manager import InvestmentManager
 from managers.rate_manager import RateManager
 from managers.treasury_bond_manager import TreasuryBondManager
 from managers.compliance_manager import ComplianceManager
-from functions.interest_calc import year_fraction
+from functions.interest_calc import (
+    calculate_compound_interest, calculate_simple_interest, year_fraction,
+)
 
 
 class RealisticRateSystemTests(unittest.TestCase):
@@ -569,6 +571,46 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertAlmostEqual(year_fraction(elapsed, "ACT/360", start), .5)
         self.assertAlmostEqual(year_fraction(181*86400, "30/360", start), .5)
 
+    def test_interest_year_fraction_rejects_nonfinite_elapsed_and_invalid_start(self):
+        invalid_elapsed = (float("nan"), float("inf"), -float("inf"), True, "invalid")
+        for elapsed in invalid_elapsed:
+            with self.subTest(elapsed=elapsed), self.assertRaises(ValueError):
+                year_fraction(elapsed)
+        invalid_starts = (-1, float("nan"), float("inf"), 1e300, True, "invalid")
+        for start in invalid_starts:
+            with self.subTest(start=start), self.assertRaises(ValueError):
+                year_fraction(86400, "30/360", start)
+        with self.assertRaises(ValueError):
+            year_fraction(86400, "30/360", 253402300799)
+        with self.assertRaises(ValueError):
+            year_fraction(86400, "ACT/365", 253402300799)
+        with self.assertRaises(ValueError):
+            calculate_simple_interest(float("nan"), 5, 86400)
+        with self.assertRaises(ValueError):
+            calculate_simple_interest(100, float("inf"), 86400)
+        with self.assertRaises(ValueError):
+            calculate_compound_interest(100, 5, 2, float("inf"))
+
+    def test_historical_rate_and_bond_queries_reject_invalid_epochs_before_access(self):
+        invalid_epochs = (-1, float("nan"), float("inf"), 1e300, True, "invalid")
+        for epoch in invalid_epochs:
+            with self.subTest(operation="rate_at", epoch=epoch), self.assertRaisesRegex(
+                ValueError, "invalid_historical_rate_epoch"
+            ):
+                RateManager.rate_at(None, "base_rate", "낙원", epoch)
+            with self.subTest(operation="market_rate", epoch=epoch), self.assertRaisesRegex(
+                ValueError, "invalid_market_rate_epoch"
+            ):
+                RateManager.market_rate(None, "낙원", "policy", epoch=epoch)
+            with self.subTest(operation="bond_quote", epoch=epoch), self.assertRaisesRegex(
+                ValueError, "invalid_bond_quote_epoch"
+            ):
+                RateManager.bond_quote(None, "낙원", 100, 5, 0, epoch=epoch)
+            with self.subTest(operation="discount_factor", epoch=epoch), self.assertRaisesRegex(
+                ValueError, "invalid_discount_factor_epoch"
+            ):
+                RateManager.discount_factor(None, "낙원", "treasury", 0, epoch=epoch)
+
     def test_payment_schedule_uses_selected_day_count(self):
         start = datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp()
         act365 = BankManager._loan_cashflows(
@@ -600,6 +642,11 @@ class RealisticRateSystemTests(unittest.TestCase):
             datetime.fromtimestamp(preceding, timezone.utc).date().isoformat(),
             "2026-01-02",
         )
+        for invalid_epoch in (-1, float("nan"), float("inf"), 1e300, True, "invalid"):
+            with self.subTest(invalid_epoch=invalid_epoch), self.assertRaisesRegex(
+                ValueError, "invalid_business_day_epoch"
+            ):
+                RateManager.adjust_business_day(None, invalid_epoch, "낙원", "none")
 
     def test_early_withdrawal_claws_back_excess_interest(self):
         self.db.products.execute(
