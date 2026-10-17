@@ -700,6 +700,80 @@ class RateManager:
         }
 
     @staticmethod
+    def institution_maturity_gap(conn, issuer, *, now=None):
+        """Build a contractual, native-currency maturity ladder for deposits and loans.
+
+        This is a gap-monitoring proxy: it excludes off-balance-sheet flows and
+        behavioral deposit assumptions and deliberately does not add currencies.
+        """
+        issuer = str(issuer or "").strip()
+        if not issuer:
+            raise ValueError("financial_institution_not_found")
+        epoch = float(time.time() if now is None else now)
+        if not math.isfinite(epoch) or epoch < 0:
+            raise ValueError("invalid_maturity_gap_epoch")
+        bucket_names = ("1d", "7d", "30d", "90d", "365d", "over365d")
+        limits = (1, 7, 30, 90, 365)
+        result = {}
+
+        def bucket_for(maturity_epoch):
+            days = max(0.0, (float(maturity_epoch or epoch) - epoch) / 86400)
+            for limit, name in zip(limits, bucket_names):
+                if days <= limit:
+                    return name
+            return bucket_names[-1]
+
+        deposits = conn.execute(
+            "SELECT a.quote_currency,a.account_type,a.balance,a.balance_units,a.created_at,"
+            "COALESCE(s.maturity_days,l.maturity_days,0) maturity_days "
+            "FROM accounts a LEFT JOIN saving s ON s.product_code=a.product_code "
+            "LEFT JOIN liability l ON l.product_code=a.product_code "
+            "WHERE ((s.issuer=? AND a.account_type IN ('saving','currency_saving')) "
+            "OR (l.issuer=? AND a.account_type='loan_payout')) AND a.resolution_status='active'",
+            (issuer, issuer),
+        ).fetchall()
+        for row in deposits:
+            amount = (float(row["balance_units"] or 0) / 1_000_000
+                      if row["account_type"] == "currency_saving" else float(row["balance"] or 0))
+            if amount <= 0:
+                continue
+            opened = conn.execute("SELECT CAST(strftime('%s',?) AS REAL)",
+                                  (row["created_at"],)).fetchone()[0]
+            maturity = float(opened or epoch) + max(0, int(row["maturity_days"] or 0)) * 86400
+            currency = str(row["quote_currency"] or "NWX")
+            result.setdefault(currency, {name: {"inflows": 0.0, "outflows": 0.0} for name in bucket_names})
+            result[currency][bucket_for(maturity)]["outflows"] += amount
+
+        loans = conn.execute(
+            "SELECT l.quote_currency,l.outstanding_balance,l.maturity_epoch "
+            "FROM loans l JOIN liability p ON p.product_code=l.product_code "
+            "WHERE p.issuer=? AND l.status IN ('active','defaulted') AND l.outstanding_balance>0",
+            (issuer,),
+        ).fetchall()
+        for row in loans:
+            amount = float(row["outstanding_balance"] or 0)
+            currency = str(row["quote_currency"] or "NWX")
+            result.setdefault(currency, {name: {"inflows": 0.0, "outflows": 0.0} for name in bucket_names})
+            result[currency][bucket_for(row["maturity_epoch"])]["inflows"] += amount
+
+        ladders = []
+        for currency, buckets in sorted(result.items()):
+            from functions.money import currency_precision
+            decimal_places = currency_precision(conn, currency)
+            cumulative = 0.0
+            rows = []
+            for name in bucket_names:
+                values = buckets[name]
+                gap = values["inflows"] - values["outflows"]
+                cumulative += gap
+                rows.append({"bucket": name, **values, "net_gap": gap,
+                             "cumulative_gap": cumulative})
+            ladders.append({"currency": currency, "decimalPlaces": decimal_places,
+                            "buckets": rows})
+        return {"issuer": issuer, "asOfEpoch": epoch, "ladders": ladders,
+                "method": "contractual maturity; native-currency; no behavioral runoff or off-balance-sheet flows"}
+
+    @staticmethod
     def institution_capacity(conn, issuer, proposed_loan=0, currency_code=None):
         """Apply simplified reserve and risk-weighted capital constraints."""
         RateManager.refresh_institution_status(conn, issuer)

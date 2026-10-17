@@ -1301,6 +1301,8 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
         reconciliation = BankJournal.reconcile_institution_results(
             connection, issuer, since_epoch=since_epoch,
         )
+        from managers.rate_manager import RateManager
+        maturity_gap = RateManager.institution_maturity_gap(connection, issuer)
         for row in trial_balance:
             places = currency_precision(connection, row["currency_code"])
             scale = 10 ** places
@@ -1322,7 +1324,7 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
                                       if row["difference"] is not None else None)
     return {"issuer": str(issuer), "currency": currency,
             "trialBalance": trial_balance, "unbalancedEntries": unbalanced,
-            "resultReconciliation": reconciliation}
+            "resultReconciliation": reconciliation, "maturityGap": maturity_gap}
 
 
 def admin_compliance_overview(nationality=None):
