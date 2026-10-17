@@ -49,8 +49,8 @@ class InstitutionMaturityGapTests(unittest.TestCase):
         self.db.accounts.execute(
             "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,status,"
             "created_at,maturity_epoch,quote_currency,rate_type,next_repricing_epoch,rate_nationality,"
-            "repricing_cycle_seconds) "
-            "VALUES ('u1','L90',1000,900,'active',datetime(?,'unixepoch'),?,'USD','floating',?,'USA',86400)",
+            "repricing_cycle_seconds,contract_rate,rate_floor,rate_cap) "
+            "VALUES ('u1','L90',1000,900,'active',datetime(?,'unixepoch'),?,'USD','floating',?,'USA',86400,5,3,5.5)",
             (self.now, self.now + 90 * 86400, self.now + 30 * 86400)
         )
 
@@ -77,8 +77,8 @@ class InstitutionMaturityGapTests(unittest.TestCase):
         nwx_up = next(row for row in stress_by_currency["NWX"]["shocks"] if row["basisPoints"] == 200)
         usd_up = next(row for row in stress_by_currency["USD"]["shocks"] if row["basisPoints"] == 200)
         self.assertEqual(nwx_up["liabilityInterestChange"], 1)
-        self.assertEqual(usd_up["assetInterestChange"], 2.96)
-        self.assertEqual(usd_up["netInterestIncomeChange"], 2.96)
+        self.assertEqual(usd_up["assetInterestChange"], 0.74)
+        self.assertEqual(usd_up["netInterestIncomeChange"], 0.74)
         self.assertEqual(len(fx_stress["positions"]), 1)
         usd_fx = fx_stress["positions"][0]
         self.assertEqual(usd_fx["currency"], "USD")

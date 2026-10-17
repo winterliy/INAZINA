@@ -947,7 +947,7 @@ class RateManager:
 
     @staticmethod
     def institution_rate_stress(conn, issuer, *, now=None):
-        """Estimate next-12-month NII sensitivity to parallel shocks on floating contracts."""
+        """Estimate next-12-month NII sensitivity, respecting contract rate bounds."""
         issuer = str(issuer or "").strip()
         if not issuer:
             raise ValueError("financial_institution_not_found")
@@ -956,29 +956,42 @@ class RateManager:
             raise ValueError("invalid_rate_stress_epoch")
         horizon = epoch + 365 * 86400
         exposure = {}
+        shock_bps = (-200, -100, 100, 200)
 
-        def add(currency, side, amount, maturity, reset):
+        def add(currency, side, amount, maturity, reset, current_rate, floor, cap):
             currency = str(currency or "NWX")
             maturity = float(maturity) if maturity is not None else horizon
             reset = max(epoch, float(reset)) if reset is not None else epoch
             days = max(0.0, min(horizon, maturity) - reset) / 86400
             row = exposure.setdefault(currency, {"assetBalanceYears": 0.0,
-                                                   "liabilityBalanceYears": 0.0})
-            row["assetBalanceYears" if side == "asset" else "liabilityBalanceYears"] += (
-                max(0.0, float(amount or 0)) * days / 365
-            )
+                                                   "liabilityBalanceYears": 0.0,
+                                                   "assetShocks": {bp: 0.0 for bp in shock_bps},
+                                                   "liabilityShocks": {bp: 0.0 for bp in shock_bps}})
+            balance_years = max(0.0, float(amount or 0)) * days / 365
+            row["assetBalanceYears" if side == "asset" else "liabilityBalanceYears"] += balance_years
+            base_rate = float(current_rate or 0)
+            lower = max(0.0, float(floor or 0))
+            upper = float(cap) if cap is not None else float("inf")
+            shocks = row["assetShocks" if side == "asset" else "liabilityShocks"]
+            for bp in shock_bps:
+                shocked_rate = min(upper, max(lower, base_rate+bp/100.0))
+                shocks[bp] += balance_years*(shocked_rate-base_rate)/100.0
 
         for row in conn.execute(
             "SELECT l.quote_currency,l.outstanding_balance,l.maturity_epoch,"
-            "l.next_repricing_epoch FROM loans l JOIN liability p USING(product_code) "
+            "l.next_repricing_epoch,COALESCE(l.contract_rate,p.interest_rate) contract_rate,"
+            "l.rate_floor,l.rate_cap FROM loans l JOIN liability p USING(product_code) "
             "WHERE p.issuer=? AND l.status IN ('active','defaulted') AND l.rate_type='floating' "
             "AND l.outstanding_balance>0", (issuer,),
         ).fetchall():
             add(row["quote_currency"], "asset", row["outstanding_balance"],
-                row["maturity_epoch"], row["next_repricing_epoch"])
+                row["maturity_epoch"], row["next_repricing_epoch"],
+                row["contract_rate"], row["rate_floor"], row["rate_cap"])
 
         for row in conn.execute(
             "SELECT a.quote_currency,a.account_type,a.balance,a.balance_units,a.rate_type,"
+            "COALESCE(a.contract_rate,s.interest_rate,l.interest_rate,0) contract_rate,"
+            "a.rate_floor,a.rate_cap,"
             "a.next_repricing_epoch,a.created_at,COALESCE(s.maturity_days,l.maturity_days,0) maturity_days "
             "FROM accounts a LEFT JOIN saving s ON s.product_code=a.product_code "
             "LEFT JOIN liability l ON l.product_code=a.product_code "
@@ -993,7 +1006,8 @@ class RateManager:
             maturity = (float(opened or epoch) + int(row["maturity_days"] or 0) * 86400
                         if int(row["maturity_days"] or 0) > 0 else horizon)
             add(row["quote_currency"], "liability", amount, maturity,
-                row["next_repricing_epoch"])
+                row["next_repricing_epoch"], row["contract_rate"],
+                row["rate_floor"], row["rate_cap"])
 
         from functions.money import currency_precision, round_currency
         scenarios = []
@@ -1007,14 +1021,16 @@ class RateManager:
                 "liabilityBalanceYears": liability,
                 "shocks": [{
                     "basisPoints": bp,
-                    "assetInterestChange": round_currency(conn, asset * bp / 10_000, currency),
-                    "liabilityInterestChange": round_currency(conn, liability * bp / 10_000, currency),
-                    "netInterestIncomeChange": round_currency(conn, (asset - liability) * bp / 10_000, currency),
-                } for bp in (-200, -100, 100, 200)],
+                    "assetInterestChange": round_currency(conn, values["assetShocks"][bp], currency),
+                    "liabilityInterestChange": round_currency(conn, values["liabilityShocks"][bp], currency),
+                    "netInterestIncomeChange": round_currency(
+                        conn, values["assetShocks"][bp]-values["liabilityShocks"][bp], currency
+                    ),
+                } for bp in shock_bps],
             })
         return {"issuer": issuer, "asOfEpoch": epoch, "horizonDays": 365,
                 "scenarios": scenarios,
-                "method": "full pass-through on floating balances after next reset; capped by contractual maturity; no behavioral beta, principal amortization, floors/caps, hedges or basis risk"}
+                "method": "100% benchmark pass-through after next reset with contractual rate floor/cap; capped by maturity; constant balance, no behavioral beta, amortization, legal-cap recalculation, hedges or basis risk"}
 
     @staticmethod
     def institution_capacity(conn, issuer, proposed_loan=0, currency_code=None):
