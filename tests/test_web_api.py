@@ -56,6 +56,15 @@ class WebApiTests(unittest.TestCase):
         with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
             return connection.execute(sql, params).fetchall()
 
+    def test_dr_reference_value_and_deviation_alert(self):
+        ordinary = server.dr_reference_metrics(22, 10, 2, 1)
+        self.assertEqual(ordinary["referenceValue"], 20)
+        self.assertAlmostEqual(ordinary["referencePremiumPercent"], 10)
+        self.assertTrue(ordinary["referenceDeviationAlert"])
+        self.assertFalse(server.dr_reference_metrics(21.99, 10, 2, 1)["referenceDeviationAlert"])
+        self.assertTrue(server.dr_reference_metrics(18, 10, 2, 1)["referenceDeviationAlert"])
+        self.assertEqual(server.dr_reference_metrics(float("nan"), 10, 2, 1), {})
+
     def test_candles_aggregate_open_high_low_close_per_bucket(self):
         ticks = [(0, 100), (10, 120), (30, 90), (59, 110), (60, 111), (119, 105)]
         for epoch, price in ticks:

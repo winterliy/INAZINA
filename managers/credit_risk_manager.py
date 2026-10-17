@@ -181,9 +181,9 @@ class CreditRiskManager:
             raw_expected_loss = 0.0
             for scenario in scenarios:
                 weight = max(0.0, float(scenario["probability"] or 0))/total_weight
-                scenario_pd = cls._bounded(
+                scenario_pd = (1.0 if stage == 3 else cls._bounded(
                     base_pd*float(scenario["pd_multiplier"] or 0), 0.0, 1.0
-                )
+                ))
                 scenario_lgd = cls._bounded(
                     lgd*float(scenario["lgd_multiplier"] or 0), 0.0, 1.0
                 )

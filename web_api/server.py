@@ -636,6 +636,29 @@ def authenticate_login_identifier(identifier, password):
 DR_REFERENCE_DEVIATION_ALERT_PERCENT = 10.0
 
 
+def dr_reference_metrics(dr_price, underlying_price, underlying_per_receipt, fx_rate):
+    """Return an indicative DR value and deviation warning for web clients."""
+    try:
+        values = tuple(float(value) for value in
+                       (dr_price, underlying_price, underlying_per_receipt, fx_rate))
+    except (TypeError, ValueError, OverflowError):
+        return {}
+    if not all(math.isfinite(value) and value > 0 for value in values):
+        return {}
+    price, underlying, ratio, fx = values
+    reference = underlying * ratio * fx
+    premium = (price / reference - 1) * 100
+    if not math.isfinite(reference) or not math.isfinite(premium):
+        return {}
+    return {
+        "referenceValue": reference,
+        "referencePremiumPercent": premium,
+        "referenceDeviationAlert": (
+            abs(premium) + 1e-9 >= DR_REFERENCE_DEVIATION_ALERT_PERCENT
+        ),
+    }
+
+
 def instruments(include_inactive=False):
     # Ensure additive schema migrations have run before the read-only adapter
     # selects newly introduced fund metadata.
@@ -720,17 +743,14 @@ def instruments(include_inactive=False):
                                 connection, str(underlying["quote_currency"] or "NWX"),
                                 str(row.get("quote_currency") or "NWX"),
                             ))
-                            reference = (float(underlying["price"])
-                                         * float(program["underlyingPerReceipt"]) * fx)
-                            if reference > 0 and float(row["price"] or 0) > 0:
-                                premium = (float(row["price"])/reference-1)*100
+                            metrics = dr_reference_metrics(
+                                row["price"], underlying["price"],
+                                program["underlyingPerReceipt"], fx,
+                            )
+                            if metrics:
                                 program["underlyingPrice"] = float(underlying["price"])
                                 program["underlyingCurrency"] = str(underlying["quote_currency"] or "NWX")
-                                program["referenceValue"] = reference
-                                program["referencePremiumPercent"] = premium
-                                program["referenceDeviationAlert"] = (
-                                    abs(premium) >= DR_REFERENCE_DEVIATION_ALERT_PERCENT
-                                )
+                                program.update(metrics)
                     except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError):
                         pass
             start = opening.get(row["code"])
@@ -1740,17 +1760,10 @@ def product_list(group):
                                     connection, dr_program["underlyingCurrency"],
                                     str(item.get("quote_currency") or "NWX"),
                                 ))
-                                fair_value = (dr_program["underlyingPrice"] *
-                                              dr_program["underlyingPerReceipt"] * fx)
-                                dr_program["referenceValue"] = fair_value
-                                if fair_value > 0 and float(item.get("price") or 0) > 0:
-                                    dr_program["referencePremiumPercent"] = (
-                                        float(item["price"]) / fair_value - 1
-                                    ) * 100
-                                    dr_program["referenceDeviationAlert"] = (
-                                        abs(dr_program["referencePremiumPercent"])
-                                        >= DR_REFERENCE_DEVIATION_ALERT_PERCENT
-                                    )
+                                dr_program.update(dr_reference_metrics(
+                                    item.get("price"), dr_program["underlyingPrice"],
+                                    dr_program["underlyingPerReceipt"], fx,
+                                ))
                             except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError):
                                 pass
                         product["drProgram"] = dr_program

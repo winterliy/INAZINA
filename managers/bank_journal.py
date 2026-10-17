@@ -98,7 +98,10 @@ class BankJournal:
         if issuer is not None:
             sql += " AND e.issuer=?"
             params.append(str(issuer))
-        sql += " GROUP BY e.entry_id HAVING line_count<2 OR debit_units<>credit_units"
+        # Repeat aggregate expressions here: SQLite can resolve these aliases
+        # to the source line columns inside HAVING, yielding false positives.
+        sql += (" GROUP BY e.entry_id HAVING COUNT(l.line_id)<2 OR "
+                "COALESCE(SUM(l.debit_units),0)<>COALESCE(SUM(l.credit_units),0)")
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
     @staticmethod
