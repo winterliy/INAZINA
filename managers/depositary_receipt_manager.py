@@ -9,6 +9,7 @@ import time
 
 class DepositaryReceiptManager:
     AUTO_SETTLEMENT_MAX_ATTEMPTS = 5
+    STALE_REQUEST_GRACE_SECONDS = 7 * 86400
     CUSTODY_REJECTION_CODES = frozenset({
         "compliance_review", "invalid_program", "insufficient_custody",
         "operational_error", "other",
@@ -455,8 +456,63 @@ class DepositaryReceiptManager:
             return False, f"❌ {exc}"
 
     @staticmethod
+    def _charge_conversion_fee(conn, *, reference_key, dr_code, user_id, action,
+                               quantity, price, currency, fee_bps, recorded_epoch):
+        """Debit one matching currency-savings account and post the internal fee journal."""
+        bps = int(fee_bps or 0)
+        if bps <= 0:
+            return None
+        from functions.money import currency_precision, round_currency
+        from managers.bank_journal import BankJournal
+
+        fee_amount = round_currency(
+            conn, Decimal(str(price or 0))*int(quantity)*Decimal(bps)/Decimal(10_000), currency,
+        )
+        fee_minor_units = int(Decimal(str(fee_amount))*(10**currency_precision(conn, currency)))
+        if fee_minor_units <= 0:
+            return None
+        account_units = int(Decimal(str(fee_amount))*Decimal(1_000_000))
+        account = conn.execute(
+            "SELECT account_number FROM accounts.accounts WHERE user_id=? "
+            "AND account_type='currency_saving' AND quote_currency=? AND balance_units>=? "
+            "ORDER BY balance_units DESC,account_number LIMIT 1",
+            (str(user_id), str(currency).upper(), account_units),
+        ).fetchone()
+        if not account:
+            raise ValueError(f"수수료 납부에 필요한 {currency} 통화 예금 계좌 잔액이 부족합니다.")
+        changed = conn.execute(
+            "UPDATE accounts.accounts SET balance_units=balance_units-? "
+            "WHERE account_number=? AND user_id=? AND account_type='currency_saving' "
+            "AND quote_currency=? AND balance_units>=?",
+            (account_units, account["account_number"], str(user_id),
+             str(currency).upper(), account_units),
+        )
+        if changed.rowcount != 1:
+            raise ValueError("DR 전환 수수료 계좌 잔액이 변경되어 거래를 취소했습니다.")
+        notional = round_currency(conn, Decimal(str(price or 0))*int(quantity), currency)
+        notional_minor_units = int(Decimal(str(notional))*(10**currency_precision(conn, currency)))
+        if not BankJournal.post(
+            conn, "DR_CUSTODY", "dr_conversion_fee", f"dr-fee:{reference_key}", currency,
+            [("customer_deposits_payable", "debit", fee_amount),
+             ("custodian_fee_income", "credit", fee_amount)],
+            description=f"DR {action} custody fee {dr_code}", now=recorded_epoch,
+        ):
+            raise ValueError("DR 수수료 분개 참조값이 이미 사용되었습니다.")
+        conn.execute(
+            "INSERT INTO assets.dr_custody_fee_ledger "
+            "(reference_key,dr_code,user_id,movement_type,payer_account_number,fee_currency,"
+            "fee_minor_units,fee_bps,notional_minor_units,revenue_account,recorded_epoch) "
+            "VALUES (?,?,?,?,?,?,?,?,?,'custodian_fee_income',?)",
+            (str(reference_key), str(dr_code), str(user_id), str(action),
+             str(account["account_number"]), str(currency).upper(), fee_minor_units,
+             bps, notional_minor_units, float(recorded_epoch)),
+        )
+        return {"amount": fee_amount, "currency": str(currency).upper(), "bps": bps}
+
+    @staticmethod
     def _record_custody_process(conn, reference_key, sequence, event_type,
-                                dr_code, user_id, action, quantity, shares, when):
+                                dr_code, user_id, action, quantity, shares, when,
+                                fee_bps=0, fee_currency=None, fee_price=None):
         instruction_status = {
             "instruction_received": "requested",
             "custody_verified": "verified",
@@ -467,9 +523,10 @@ class DepositaryReceiptManager:
             conn.execute(
                 "INSERT INTO assets.dr_custody_instructions "
                 "(reference_key,dr_code,user_id,movement_type,dr_quantity,underlying_quantity,"
-                "status,requested_epoch,updated_epoch) VALUES (?,?,?,?,?,?,?, ?,?)",
+                "status,requested_epoch,updated_epoch,fee_bps,fee_currency,fee_price) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (reference_key, dr_code, user_id, action, quantity, shares,
-                 instruction_status, when, when),
+                 instruction_status, when, when, int(fee_bps or 0), fee_currency, fee_price),
             )
         else:
             settled_epoch = when if instruction_status == "settled" else None
@@ -595,7 +652,8 @@ class DepositaryReceiptManager:
                     raise ValueError("활성 사용자만 DR 전환을 이용할 수 있습니다.")
                 program = conn.execute(
                     "SELECT d.*,a.status AS asset_status,a.total_supply,a.type AS asset_type,"
-                    "a.settlement_delay_seconds FROM assets.depositary_receipts d "
+                    "a.settlement_delay_seconds,a.price AS dr_price,a.issue_fee_bps,a.redeem_fee_bps "
+                    "FROM assets.depositary_receipts d "
                     "JOIN assets.market_assets a ON a.code=d.dr_code WHERE d.dr_code=?",
                     (str(dr_code).strip(),),
                 ).fetchone()
@@ -619,6 +677,13 @@ class DepositaryReceiptManager:
                 user, code = str(user_id), str(program["dr_code"])
                 delay = max(0, min(2_592_000, int(program["settlement_delay_seconds"] or 0)))
                 settle_after = when + delay
+                fee_bps = int(program["issue_fee_bps"] if action == "issue"
+                              else program["redeem_fee_bps"])
+                from functions.money import round_currency
+                fee_estimate = round_currency(
+                    conn, Decimal(str(program["dr_price"] or 0))*quantity
+                    *Decimal(fee_bps)/Decimal(10_000), program["quote_currency"],
+                )
                 if action == "issue":
                     supply = min(int(program["receipt_supply"]), int(program["total_supply"] or program["receipt_supply"]))
                     outstanding = conn.execute(
@@ -689,7 +754,10 @@ class DepositaryReceiptManager:
                     reserved_code, reserved_quantity = code, quantity
 
                 self._record_custody_process(conn, reference_key, 1, "instruction_received",
-                                             code, user, action, quantity, shares, when)
+                                             code, user, action, quantity, shares, when,
+                                             fee_bps=fee_bps,
+                                             fee_currency=program["quote_currency"],
+                                             fee_price=program["dr_price"])
                 conn.execute(
                     "INSERT INTO assets.dr_custody_reservations "
                     "(reference_key,dr_code,user_id,movement_type,reserved_asset_code,reserved_quantity,"
@@ -701,6 +769,8 @@ class DepositaryReceiptManager:
                     "drCode": code, "action": action, "drQuantity": quantity,
                     "underlyingQuantity": shares, "requestedEpoch": when,
                     "settleAfterEpoch": settle_after,
+                    "feeEstimate": {"amount": fee_estimate, "currency": program["quote_currency"],
+                                    "feeBps": fee_bps, "price": program["dr_price"]},
                     "message": f"전환 요청을 접수했습니다. 내부 정산 가능 시각: {int(settle_after)}",
                 }
         except (ValueError, RuntimeError, KeyError, TypeError, OverflowError) as exc:
@@ -796,7 +866,10 @@ class DepositaryReceiptManager:
             " AS last_settlement_outcome,"
             "(SELECT a.detail FROM assets.dr_custody_settlement_attempts a "
             " WHERE a.reference_key=i.reference_key ORDER BY a.attempted_epoch DESC,a.attempt_id DESC LIMIT 1) "
-            " AS last_settlement_detail "
+            " AS last_settlement_detail,"
+            "(SELECT e.detail_code FROM assets.dr_custody_instruction_events e "
+            " WHERE e.reference_key=i.reference_key ORDER BY e.event_sequence DESC LIMIT 1) "
+            " AS last_status_reason "
             "FROM assets.dr_custody_instructions i JOIN assets.depositary_receipts d USING(dr_code) "
             "LEFT JOIN assets.dr_custody_reservations r USING(reference_key) " + where +
             " ORDER BY i.requested_epoch DESC,i.reference_key DESC LIMIT ?", tuple(params),
@@ -898,9 +971,51 @@ class DepositaryReceiptManager:
                                   "code": "reservation_exceeds_holding",
                                   "reservedQuantity": int(row["reserved_quantity"]),
                                   "holderQuantity": int(row["holder_quantity"])})
+        fee_totals = self.db.assets.execute(
+            "SELECT fee_currency,COUNT(*) AS fee_count,SUM(fee_minor_units) AS fee_minor_units "
+            "FROM assets.dr_custody_fee_ledger GROUP BY fee_currency ORDER BY fee_currency"
+        )
+        fee_by_currency = {str(row["fee_currency"]): row for row in fee_totals}
+        journal_totals = self.db.currency.execute(
+            "SELECT e.currency_code,COUNT(DISTINCT e.entry_id) AS entry_count,"
+            "COALESCE(SUM(l.credit_units),0) AS revenue_units "
+            "FROM bank_journal_entries e JOIN bank_journal_lines l USING(entry_id) "
+            "WHERE e.issuer='DR_CUSTODY' AND l.account_code='custodian_fee_income' "
+            "AND e.status='posted' GROUP BY e.currency_code"
+        )
+        journal_by_currency = {str(row["currency_code"]): row for row in journal_totals}
+        fee_reconciliation = []
+        for currency in sorted(set(fee_by_currency) | set(journal_by_currency)):
+            fee_row = fee_by_currency.get(currency)
+            journal = journal_by_currency.get(currency)
+            entry_count = int(journal["entry_count"] or 0) if journal else 0
+            revenue_units = int(journal["revenue_units"] or 0) if journal else 0
+            fee_units = int(fee_row["fee_minor_units"] or 0) if fee_row else 0
+            difference = fee_units-revenue_units
+            if difference:
+                discrepancies.append({"code": "fee_journal_mismatch", "assetCode": currency,
+                                     "feeMinorUnits": fee_units, "journalMinorUnits": revenue_units})
+            fee_reconciliation.append({
+                "currency": currency, "feeCount": int(fee_row["fee_count"] or 0) if fee_row else 0,
+                "feeMinorUnits": fee_units, "journalEntryCount": entry_count,
+                "journalRevenueMinorUnits": revenue_units, "differenceMinorUnits": difference,
+            })
+        checked_epoch = time.time()
+        stale_requests = self.db.assets.execute(
+            "SELECT i.reference_key,i.dr_code,i.user_id,i.status,r.settle_after_epoch,"
+            "(SELECT COUNT(*) FROM assets.dr_custody_settlement_attempts a "
+            " WHERE a.reference_key=i.reference_key) AS attempt_count "
+            "FROM assets.dr_custody_instructions i JOIN assets.dr_custody_reservations r "
+            "USING(reference_key) WHERE i.status='requested' AND r.released_epoch IS NULL "
+            "AND r.settle_after_epoch<=? ORDER BY r.settle_after_epoch LIMIT 200",
+            (checked_epoch - 86400,),
+        )
         return {
             "programCount": len(reports), "discrepancyCount": len(discrepancies),
             "programs": reports, "discrepancies": discrepancies[:500],
+            "staleRequestCount": len(stale_requests),
+            "staleRequests": [dict(row) for row in stale_requests],
+            "feeReconciliation": fee_reconciliation,
         }
 
     def settle_conversion(self, reference_key, *, now=None):
@@ -927,13 +1042,14 @@ class DepositaryReceiptManager:
         return ok, result
 
     def process_due_conversions(self, *, now=None, limit=100):
-        """Settle due internal custody requests; failed requests remain reserved for retry."""
+        """Expire stale requests then settle due ones; failed requests remain reserved for retry."""
         try:
             when = float(time.time() if now is None else now)
             bounded = max(1, min(int(limit), 500))
         except (TypeError, ValueError, OverflowError):
             return {"settled": [], "failed": [{"reference_key": None,
-                                                  "error": "invalid worker arguments"}]}
+                                                  "error": "invalid worker arguments"}], "expired": []}
+        expired = self.expire_stale_conversions(now=when, limit=bounded)
         rows = self.db.assets.execute(
             "SELECT i.reference_key FROM assets.dr_custody_instructions i "
             "JOIN assets.dr_custody_reservations r USING(reference_key) "
@@ -951,7 +1067,51 @@ class DepositaryReceiptManager:
                 settled.append(key)
             else:
                 failed.append({"reference_key": key, "error": str(result)[:500]})
-        return {"settled": settled, "failed": failed}
+        return {"settled": settled, "failed": failed, "expired": expired}
+
+    def expire_stale_conversions(self, *, now=None, limit=100):
+        """Reject due requests after a seven-day grace period and release their reservation."""
+        from managers.bank_journal import BankJournal
+        try:
+            when = BankJournal.validate_epoch(now)
+            bounded = max(1, min(int(limit), 500))
+        except (TypeError, ValueError, OverflowError):
+            return []
+        rows = self.db.assets.execute(
+            "SELECT i.reference_key FROM assets.dr_custody_instructions i "
+            "JOIN assets.dr_custody_reservations r USING(reference_key) "
+            "WHERE i.status='requested' AND r.released_epoch IS NULL "
+            "AND r.settle_after_epoch+?<=? ORDER BY r.settle_after_epoch,i.reference_key LIMIT ?",
+            (self.STALE_REQUEST_GRACE_SECONDS, when, bounded),
+        )
+        expired = []
+        for row in rows:
+            key = str(row["reference_key"])
+            with self.db.atomic() as conn:
+                current = conn.execute(
+                    "SELECT status FROM assets.dr_custody_instructions WHERE reference_key=?", (key,),
+                ).fetchone()
+                if not current or current["status"] != "requested":
+                    continue
+                conn.execute(
+                    "UPDATE assets.dr_custody_instructions SET status='rejected',updated_epoch=? "
+                    "WHERE reference_key=?", (when, key),
+                )
+                conn.execute(
+                    "UPDATE assets.dr_custody_reservations SET released_epoch=? "
+                    "WHERE reference_key=? AND released_epoch IS NULL", (when, key),
+                )
+                sequence = conn.execute(
+                    "SELECT COALESCE(MAX(event_sequence),0)+1 FROM "
+                    "assets.dr_custody_instruction_events WHERE reference_key=?", (key,),
+                ).fetchone()[0]
+                conn.execute(
+                    "INSERT INTO assets.dr_custody_instruction_events "
+                    "(reference_key,event_sequence,event_type,recorded_epoch,detail_code) "
+                    "VALUES (?,?, 'rejected',?,'expired_unsettled')", (key, sequence, when),
+                )
+                expired.append(key)
+        return expired
 
     def convert(self, user_id, dr_code, action, quantity, reference_key, *, now=None,
                 _settling_reference=None):
@@ -1020,6 +1180,7 @@ class DepositaryReceiptManager:
                 program = conn.execute(
                     "SELECT d.*,a.status AS asset_status,a.total_supply,a.price AS dr_price,"
                     "a.quote_currency AS dr_currency,a.type AS asset_type,"
+                    "a.issue_fee_bps,a.redeem_fee_bps,"
                     "a.settlement_delay_seconds "
                     "FROM assets.depositary_receipts d JOIN assets.market_assets a "
                     "ON a.code=d.dr_code WHERE d.dr_code=?",
@@ -1244,6 +1405,18 @@ class DepositaryReceiptManager:
                      underlying["quote_currency"], underlying_average_cost,
                      underlying["quote_currency"]),
                 )
+                fee = self._charge_conversion_fee(
+                    conn, reference_key=reference_key, dr_code=code, user_id=user,
+                    action=action, quantity=quantity,
+                    price=(pending_instruction["fee_price"] if _settling_reference
+                           and pending_instruction["fee_price"] is not None else program["dr_price"]),
+                    currency=(pending_instruction["fee_currency"] if _settling_reference
+                              and pending_instruction["fee_currency"] else program["quote_currency"]),
+                    fee_bps=(pending_instruction["fee_bps"] if _settling_reference
+                             else (program["issue_fee_bps"] if action == "issue"
+                                   else program["redeem_fee_bps"])),
+                    recorded_epoch=when,
+                )
                 self._record_custody_process(
                     conn, reference_key, 3, "settled", code, user,
                     action, quantity, shares, when,
@@ -1258,7 +1431,9 @@ class DepositaryReceiptManager:
                 # for the simulator's majority-holder/control summary.
                 from managers.user_manager import UserManager
                 UserManager._refresh_max_shareholder(conn, code)
+                fee_message = (f" · 수수료 {fee['amount']} {fee['currency']} ({fee['bps']}bp)"
+                               if fee else "")
                 return True, (f"✅ DR {action} 전환 완료: {quantity:,} {code} ↔ "
-                              f"{shares:,} {underlying_code} 원주 (시뮬레이터 원장)")
+                              f"{shares:,} {underlying_code} 원주 (시뮬레이터 원장){fee_message}")
         except (ValueError, RuntimeError, KeyError, TypeError, OverflowError) as exc:
             return False, f"❌ {exc}"

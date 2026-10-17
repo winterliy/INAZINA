@@ -1986,7 +1986,8 @@ def product_catalog():
             listed = {field["key"] for field in fields} | {key}
             advanced = [{"key": name, "label": ARG_LABELS.get(name, name), "type": kind}
                         for name, kind in columns.items() if name not in listed and name not in PRODUCT_PROTECTED
-                        and (name != "settlement_delay_seconds" or profile == "dr")]
+                        and (name not in {"settlement_delay_seconds", "issue_fee_bps", "redeem_fee_bps"}
+                             or profile == "dr")]
             kinds.append({"kind": profile, "token": token, "label": label, "group": group,
                           "family": "saving" if profile in SAVING_FAMILY else profile,
                           "fields": fields, "advanced": advanced,

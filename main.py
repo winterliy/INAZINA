@@ -220,6 +220,8 @@ class InazinaBot(discord.Client):
                     dr_results = await self._run_background_write(
                         self.dr_custody_mgr.process_due_conversions
                     )
+                    if dr_results["expired"]:
+                        print(f"[DR Custody Worker] Expired {len(dr_results['expired'])} stale request(s).")
                     if dr_results["settled"]:
                         print(f"[DR Custody Worker] Settled {len(dr_results['settled'])} due request(s).")
                     if dr_results["failed"]:

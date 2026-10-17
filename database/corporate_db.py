@@ -148,6 +148,45 @@ class CorporateDB(DBManager):
             quote_currency TEXT NOT NULL,
             created_epoch INTEGER NOT NULL,
             UNIQUE(distribution_id,user_id,quote_currency))''')
+        # Cross-border DR withholding is versioned: administrators append rules,
+        # while paid receipts retain the exact rule and jurisdictions used.
+        self.execute('''CREATE TABLE IF NOT EXISTS dr_dividend_tax_rules (
+            rule_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rule_name TEXT NOT NULL,
+            issuer_nationality TEXT NOT NULL,
+            underlying_nationality TEXT NOT NULL,
+            recipient_nationality TEXT NOT NULL DEFAULT '*',
+            recipient_residency TEXT NOT NULL DEFAULT '*',
+            product_type TEXT NOT NULL DEFAULT 'depositary_receipt',
+            treaty_code TEXT,
+            tax_rate_percent TEXT NOT NULL,
+            tax_base TEXT NOT NULL DEFAULT 'gross' CHECK(tax_base='gross'),
+            exempt INTEGER NOT NULL DEFAULT 0 CHECK(exempt IN (0,1)),
+            effective_from INTEGER NOT NULL,
+            effective_until INTEGER,
+            created_by TEXT NOT NULL,
+            created_epoch INTEGER NOT NULL,
+            CHECK(effective_until IS NULL OR effective_until > effective_from))''')
+        self.execute('CREATE INDEX IF NOT EXISTS idx_dr_tax_rule_lookup ON dr_dividend_tax_rules(issuer_nationality,underlying_nationality,recipient_nationality,recipient_residency,product_type,effective_from,effective_until)')
+        self.execute('''CREATE TABLE IF NOT EXISTS dr_dividend_withholding_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            payment_id INTEGER NOT NULL UNIQUE,
+            distribution_id INTEGER NOT NULL,
+            rule_id INTEGER,
+            issuer_nationality TEXT NOT NULL,
+            underlying_nationality TEXT NOT NULL,
+            recipient_nationality TEXT NOT NULL,
+            recipient_residency TEXT NOT NULL,
+            product_type TEXT NOT NULL,
+            contract_epoch INTEGER NOT NULL,
+            treaty_code TEXT,
+            tax_rate_percent TEXT NOT NULL,
+            gross_amount INTEGER NOT NULL,
+            tax_amount INTEGER NOT NULL,
+            net_amount_units INTEGER NOT NULL,
+            currency_code TEXT NOT NULL,
+            remittance_treasury_id TEXT NOT NULL,
+            recorded_epoch INTEGER NOT NULL)''')
         payment_schema = self.execute(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='dividend_payments'"
         )

@@ -53,7 +53,7 @@ EXAMPLES = {
     'dr': {'exchange_id':'LSE','type':'depositary_receipt',
            'underlying_per_receipt':1,'receipt_type':'DR','depositary_bank':'Inazina Depositary',
            'custodian':'Inazina Custody','home_exchange_id':'INZ','quote_currency':'USD',
-           'settlement_delay_seconds':0},
+           'settlement_delay_seconds':0,'issue_fee_bps':0,'redeem_fee_bps':0},
     'etf': {'exchange_id':'INZ','underlying_exchange_id':'INZ','leverage_multiplier':1},
     'future': {'exchange_id':'FUT','underlying_code':'INZST001','maturity_days':90,'contract_size':1},
     'corporatebond': {'exchange_id':'BOND','issuer_code':'INZST001','face_value':1000,'annual_rate':4,'maturity_days':90},
@@ -260,6 +260,11 @@ class AdminControlManager:
                 values['settlement_delay_seconds'] = self._number(
                     values['settlement_delay_seconds'], 0, 2_592_000, integer=True,
                 )
+            for fee_field in ('issue_fee_bps', 'redeem_fee_bps'):
+                if fee_field in values:
+                    if category != 'dr':
+                        raise ValueError('DR 전환 수수료 설정은 DR 상품에만 적용할 수 있습니다.')
+                    values[fee_field] = self._number(values[fee_field], 0, 10_000, integer=True)
             if 'currency_code' in values:
                 values['currency_code']=str(values['currency_code']).strip().upper()
             if 'quote_currency' in values:

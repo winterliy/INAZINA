@@ -246,9 +246,9 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
         )
         self.assertTrue(accepted)
         before_due = self.manager.process_due_conversions(now=now+59)
-        self.assertEqual(before_due, {"settled": [], "failed": []})
+        self.assertEqual(before_due, {"settled": [], "failed": [], "expired": []})
         due = self.manager.process_due_conversions(now=now+60)
-        self.assertEqual(due, {"settled": ["worker-due"], "failed": []})
+        self.assertEqual(due, {"settled": ["worker-due"], "failed": [], "expired": []})
         self.assertEqual(self.holding("UNDER_DR"), 2)
         self.assertEqual(self.holding("UNDER"), 2)
 
@@ -305,7 +305,7 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
             processed = self.manager.process_due_conversions(now=now+60)
             self.assertEqual(len(processed["failed"]), 1)
         stopped = self.manager.process_due_conversions(now=now+60)
-        self.assertEqual(stopped, {"settled": [], "failed": []})
+        self.assertEqual(stopped, {"settled": [], "failed": [], "expired": []})
         self.assertEqual(self.db.assets.execute_one(
             "SELECT COUNT(*) FROM dr_custody_settlement_attempts WHERE reference_key='retry-limit'"
         )[0], self.manager.AUTO_SETTLEMENT_MAX_ATTEMPTS)
@@ -371,6 +371,124 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
         self.assertEqual(broken["discrepancyCount"], 1)
         self.assertEqual(broken["discrepancies"][0]["code"], "outstanding_dr_mismatch")
         self.assertEqual(self.holding("UNDER_DR"), 1)
+
+    def test_stale_request_expires_after_grace_and_releases_reservation(self):
+        self.create_program()
+        self.db.assets.execute(
+            "UPDATE market_assets SET settlement_delay_seconds=60 WHERE code='UNDER_DR'"
+        )
+        now = 1_800_000_000
+        accepted, _ = self.manager.request_conversion(
+            "citizen", "UNDER_DR", "issue", 2, "stale-expiration", now=now,
+        )
+        self.assertTrue(accepted)
+        expires = now+60+self.manager.STALE_REQUEST_GRACE_SECONDS
+        self.assertEqual(self.manager.expire_stale_conversions(now=expires-1), [])
+        self.assertEqual(self.manager.expire_stale_conversions(now=expires), ["stale-expiration"])
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT status FROM dr_custody_instructions WHERE reference_key='stale-expiration'"
+        )[0], "rejected")
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT released_epoch FROM dr_custody_reservations WHERE reference_key='stale-expiration'"
+        )[0], expires)
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT detail_code FROM dr_custody_instruction_events "
+            "WHERE reference_key='stale-expiration' ORDER BY event_sequence DESC LIMIT 1"
+        )[0], "expired_unsettled")
+        self.assertEqual(self.manager.expire_stale_conversions(now=expires+1), [])
+
+    def test_configured_conversion_fee_debits_currency_account_and_posts_balanced_ledger(self):
+        self.create_program()
+        self.db.assets.execute(
+            "UPDATE market_assets SET issue_fee_bps=100 WHERE code='UNDER_DR'"
+        )
+        insufficient, _ = self.manager.convert(
+            "citizen", "UNDER_DR", "issue", 2, "fee-insufficient",
+        )
+        self.assertFalse(insufficient)
+        self.assertEqual(self.holding("UNDER_DR"), 0)
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT COUNT(*) FROM depositary_receipt_movements WHERE reference_key='fee-insufficient'"
+        )[0], 0)
+        self.db.accounts.execute(
+            "INSERT INTO accounts(account_number,user_id,product_code,account_type,quote_currency,balance_units) "
+            "VALUES ('DR_FEE_ACCOUNT','citizen','DR_FEE_PRODUCT','currency_saving','NWX',0)"
+        )
+        self.db.accounts.execute(
+            "UPDATE accounts SET balance_units=10000000 WHERE account_number='DR_FEE_ACCOUNT'"
+        )
+        charged, message = self.manager.convert(
+            "citizen", "UNDER_DR", "issue", 2, "fee-success",
+        )
+        self.assertTrue(charged, message)
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT balance_units FROM accounts WHERE account_number='DR_FEE_ACCOUNT'"
+        )[0], 6_000_000)
+        fee = self.db.assets.execute_one(
+            "SELECT fee_currency,fee_minor_units,fee_bps,notional_minor_units,revenue_account "
+            "FROM dr_custody_fee_ledger WHERE reference_key='fee-success'"
+        )
+        self.assertEqual(tuple(fee), ("NWX", 4, 100, 400, "custodian_fee_income"))
+        entry = self.db.currency.execute_one(
+            "SELECT COUNT(*),SUM(l.debit_units),SUM(l.credit_units) "
+            "FROM bank_journal_entries e JOIN bank_journal_lines l USING(entry_id) "
+            "WHERE e.issuer='DR_CUSTODY' AND e.reference_key='dr-fee:fee-success'"
+        )
+        self.assertEqual(entry[0], 2)
+        self.assertEqual(entry[1], entry[2])
+        fee_report = self.manager.reconcile_custody_ledger()["feeReconciliation"]
+        self.assertEqual(fee_report[0]["differenceMinorUnits"], 0)
+        self.assertEqual(fee_report[0]["feeMinorUnits"], 4)
+        self.db.assets.execute(
+            "UPDATE market_assets SET issue_fee_bps=0,redeem_fee_bps=100 WHERE code='UNDER_DR'"
+        )
+        redeemed, message = self.manager.convert(
+            "citizen", "UNDER_DR", "redeem", 1, "fee-redeem",
+        )
+        self.assertTrue(redeemed, message)
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT fee_minor_units FROM dr_custody_fee_ledger WHERE reference_key='fee-redeem'"
+        )[0], 2)
+        fee_report = self.manager.reconcile_custody_ledger()["feeReconciliation"][0]
+        self.assertEqual(fee_report["feeCount"], 2)
+        self.assertEqual(fee_report["differenceMinorUnits"], 0)
+
+    def test_delayed_request_locks_fee_terms_at_acceptance(self):
+        self.create_program()
+        self.db.assets.execute(
+            "UPDATE market_assets SET settlement_delay_seconds=60,issue_fee_bps=100 WHERE code='UNDER_DR'"
+        )
+        self.db.accounts.execute(
+            "INSERT INTO accounts(account_number,user_id,product_code,account_type,quote_currency,balance_units) "
+            "VALUES ('DR_LOCKED_FEE','citizen','DR_FEE_PRODUCT','currency_saving','NWX',0)"
+        )
+        self.db.accounts.execute(
+            "UPDATE accounts SET balance_units=10000000 WHERE account_number='DR_LOCKED_FEE'"
+        )
+        now = 1_800_000_000
+        accepted, _ = self.manager.request_conversion(
+            "citizen", "UNDER_DR", "issue", 2, "locked-fee", now=now,
+        )
+        self.assertTrue(accepted)
+        snapshot = self.db.assets.execute_one(
+            "SELECT fee_bps,fee_currency,fee_price FROM dr_custody_instructions "
+            "WHERE reference_key='locked-fee'"
+        )
+        self.assertEqual(tuple(snapshot), (100, "NWX", 200))
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "invalid DR custody instruction transition"):
+            self.db.assets.execute(
+                "UPDATE dr_custody_instructions SET fee_bps=300 WHERE reference_key='locked-fee'"
+            )
+        self.db.assets.execute(
+            "UPDATE market_assets SET issue_fee_bps=500,price=400 WHERE code='UNDER_DR'"
+        )
+        settled, message = self.manager.settle_conversion("locked-fee", now=now+60)
+        self.assertTrue(settled, message)
+        fee = self.db.assets.execute_one(
+            "SELECT fee_bps,notional_minor_units,fee_minor_units FROM dr_custody_fee_ledger "
+            "WHERE reference_key='locked-fee'"
+        )
+        self.assertEqual(tuple(fee), (100, 400, 4))
 
     def test_dr_voting_rights_can_be_partially_delegated_and_revoked(self):
         self.create_program()

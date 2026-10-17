@@ -56,6 +56,9 @@ class UserDB(DBManager):
             ("income_stability", "REAL NOT NULL DEFAULT 1 CHECK(income_stability BETWEEN 0 AND 1)"),
             # Server where the citizen registered; it decides their nationality.
             ("registration_guild_id", "TEXT"),
+            # Tax residence is optional; callers fall back to nationality until
+            # an administrator/user explicitly records a separate residence.
+            ("tax_residency", "TEXT"),
         ):
             if column not in user_columns:
                 self.execute(f"ALTER TABLE users ADD COLUMN {column} {declaration}")

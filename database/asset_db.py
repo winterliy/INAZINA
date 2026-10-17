@@ -54,13 +54,19 @@ class AssetDB(DBManager):
                 market_volatility REAL DEFAULT NULL,
                 total_supply INTEGER DEFAULT NULL,
                 settlement_delay_seconds INTEGER NOT NULL DEFAULT 0
-                    CHECK(settlement_delay_seconds BETWEEN 0 AND 2592000)
+                    CHECK(settlement_delay_seconds BETWEEN 0 AND 2592000),
+                issue_fee_bps INTEGER NOT NULL DEFAULT 0 CHECK(issue_fee_bps BETWEEN 0 AND 10000),
+                redeem_fee_bps INTEGER NOT NULL DEFAULT 0 CHECK(redeem_fee_bps BETWEEN 0 AND 10000)
             )"""
         )
         market_asset_columns = {row[1] for row in self.execute("PRAGMA table_info(market_assets)")}
-        if "settlement_delay_seconds" not in market_asset_columns:
-            self.execute("ALTER TABLE market_assets ADD COLUMN settlement_delay_seconds "
-                         "INTEGER NOT NULL DEFAULT 0 CHECK(settlement_delay_seconds BETWEEN 0 AND 2592000)")
+        for column, definition in {
+            "settlement_delay_seconds": "INTEGER NOT NULL DEFAULT 0 CHECK(settlement_delay_seconds BETWEEN 0 AND 2592000)",
+            "issue_fee_bps": "INTEGER NOT NULL DEFAULT 0 CHECK(issue_fee_bps BETWEEN 0 AND 10000)",
+            "redeem_fee_bps": "INTEGER NOT NULL DEFAULT 0 CHECK(redeem_fee_bps BETWEEN 0 AND 10000)",
+        }.items():
+            if column not in market_asset_columns:
+                self.execute(f"ALTER TABLE market_assets ADD COLUMN {column} {definition}")
         self.execute("""CREATE TABLE IF NOT EXISTS depositary_receipts (
             dr_code TEXT PRIMARY KEY,
             underlying_code TEXT NOT NULL,
@@ -108,6 +114,26 @@ class AssetDB(DBManager):
                      "ON depositary_receipt_movements(user_id,recorded_epoch DESC,movement_id DESC)")
         self.execute("CREATE INDEX IF NOT EXISTS idx_dr_movements_recent "
                      "ON depositary_receipt_movements(recorded_epoch DESC,movement_id DESC)")
+        self.execute("""CREATE TABLE IF NOT EXISTS dr_custody_fee_ledger (
+            fee_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reference_key TEXT NOT NULL UNIQUE REFERENCES depositary_receipt_movements(reference_key),
+            dr_code TEXT NOT NULL REFERENCES depositary_receipts(dr_code),
+            user_id TEXT NOT NULL,
+            movement_type TEXT NOT NULL CHECK(movement_type IN ('issue','redeem')),
+            payer_account_number TEXT NOT NULL,
+            fee_currency TEXT NOT NULL,
+            fee_minor_units INTEGER NOT NULL CHECK(fee_minor_units > 0),
+            fee_bps INTEGER NOT NULL CHECK(fee_bps BETWEEN 1 AND 10000),
+            notional_minor_units INTEGER NOT NULL CHECK(notional_minor_units >= 0),
+            revenue_account TEXT NOT NULL DEFAULT 'custodian_fee_income',
+            recorded_epoch REAL NOT NULL
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_dr_custody_fee_recent "
+                     "ON dr_custody_fee_ledger(recorded_epoch DESC,fee_id DESC)")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_dr_custody_fee_immutable_{operation.lower()}
+                BEFORE {operation} ON dr_custody_fee_ledger
+                BEGIN SELECT RAISE(ABORT,'DR custody fee ledger is append-only'); END""")
         self.execute("""CREATE TABLE IF NOT EXISTS dr_custody_process_events (
             event_id INTEGER PRIMARY KEY AUTOINCREMENT,
             reference_key TEXT NOT NULL,
@@ -138,8 +164,21 @@ class AssetDB(DBManager):
             status TEXT NOT NULL CHECK(status IN ('requested','verified','settled','rejected','cancelled')),
             requested_epoch REAL NOT NULL,
             updated_epoch REAL NOT NULL,
-            settled_epoch REAL
+            settled_epoch REAL,
+            fee_bps INTEGER NOT NULL DEFAULT 0 CHECK(fee_bps BETWEEN 0 AND 10000),
+            fee_currency TEXT,
+            fee_price INTEGER
         )""")
+        custody_instruction_columns = {
+            row[1] for row in self.execute("PRAGMA table_info(dr_custody_instructions)")
+        }
+        for column, declaration in {
+            "fee_bps": "INTEGER NOT NULL DEFAULT 0 CHECK(fee_bps BETWEEN 0 AND 10000)",
+            "fee_currency": "TEXT",
+            "fee_price": "INTEGER",
+        }.items():
+            if column not in custody_instruction_columns:
+                self.execute(f"ALTER TABLE dr_custody_instructions ADD COLUMN {column} {declaration}")
         self.execute("CREATE INDEX IF NOT EXISTS idx_dr_custody_instruction_status "
                      "ON dr_custody_instructions(status,requested_epoch)")
         self.execute("""CREATE TABLE IF NOT EXISTS dr_custody_instruction_events (
@@ -209,7 +248,8 @@ class AssetDB(DBManager):
                 FROM dr_custody_instruction_events e WHERE e.reference_key=NEW.reference_key
             )
             BEGIN SELECT RAISE(ABORT,'invalid DR custody instruction event sequence'); END""")
-        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_dr_custody_instruction_transition
+        self.execute("DROP TRIGGER IF EXISTS trg_dr_custody_instruction_transition")
+        self.execute("""CREATE TRIGGER trg_dr_custody_instruction_transition
             BEFORE UPDATE ON dr_custody_instructions
             WHEN NOT (
                 (OLD.status='requested' AND NEW.status IN ('verified','rejected','cancelled')) OR
@@ -218,6 +258,8 @@ class AssetDB(DBManager):
                NEW.user_id<>OLD.user_id OR NEW.movement_type<>OLD.movement_type OR
                NEW.dr_quantity<>OLD.dr_quantity OR NEW.underlying_quantity<>OLD.underlying_quantity OR
                NEW.requested_epoch<>OLD.requested_epoch OR NEW.updated_epoch<OLD.updated_epoch OR
+               NEW.fee_bps<>OLD.fee_bps OR NEW.fee_currency IS NOT OLD.fee_currency OR
+               NEW.fee_price IS NOT OLD.fee_price OR
                (NEW.status='settled' AND NEW.settled_epoch IS NULL) OR
                (NEW.status<>'settled' AND NEW.settled_epoch IS NOT NULL)
             BEGIN SELECT RAISE(ABORT,'invalid DR custody instruction transition'); END""")
