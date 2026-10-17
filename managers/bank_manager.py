@@ -751,7 +751,8 @@ class BankManager:
         existing_fx_stress_service = sum(
             to_home(
                 round_currency(
-                    conn, values["service"]*max(0.0, float(stress_fx_shock_percent))/100,
+                    conn, (values["service"]+values["stress_interest"])
+                    *max(0.0, float(stress_fx_shock_percent))/100,
                     currency,
                 ), currency,
             )
