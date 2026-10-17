@@ -779,6 +779,32 @@ class RealisticRateSystemTests(unittest.TestCase):
             "SELECT base_rate FROM country_currencies WHERE nationality='낙원'"
         )["base_rate"], before)
 
+    def test_foreign_policy_rate_differential_increases_market_funding_pressure(self):
+        domestic_rate = self.db.currency.execute_one(
+            "SELECT base_rate FROM country_currencies WHERE nationality='낙원'"
+        )["base_rate"]
+        with self.db.atomic() as conn:
+            RateManager.refresh_market_pressure(conn, "낙원", now=1_799_913_600)
+        baseline = self.db.currency.execute_one(
+            "SELECT adjustment FROM market_rate_pressure "
+            "WHERE nationality='낙원' AND benchmark_key='funding'"
+        )["adjustment"]
+        self.db.currency.execute("INSERT INTO currencies(code,name) VALUES ('AGC','가국화')")
+        self.db.currency.execute(
+            "INSERT INTO country_currencies(nationality,currency_code,base_rate) "
+            "VALUES ('가국','AGC',10)"
+        )
+        with self.db.atomic() as conn:
+            RateManager.refresh_market_pressure(conn, "낙원", now=1_800_000_000)
+        pressure = self.db.currency.execute_one(
+            "SELECT adjustment FROM market_rate_pressure "
+            "WHERE nationality='낙원' AND benchmark_key='funding'"
+        )["adjustment"]
+        self.assertGreater(pressure, baseline)
+        self.assertEqual(self.db.currency.execute_one(
+            "SELECT base_rate FROM country_currencies WHERE nationality='낙원'"
+        )["base_rate"], domestic_rate)
+
     def test_risk_weighted_assets_use_collateral_credit_state_and_default_bands(self):
         self.db.products.execute(
             "INSERT INTO liability(product_code,name,interest_rate,loan_limit,maturity_days,"

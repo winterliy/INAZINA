@@ -124,15 +124,19 @@ class WebApiTests(unittest.TestCase):
                     updated_by TEXT,updated_epoch REAL);
                 INSERT INTO country_currencies(nationality,currency_code) VALUES ('낙원','NWX');
                 INSERT INTO currencies(code,name,status) VALUES ('NWX','나쿠','active');
+                INSERT INTO currencies(code,name,status) VALUES ('AGC','가국화','active');
+                INSERT INTO country_currencies(nationality,currency_code,base_rate) VALUES ('가국','AGC',8);
                 INSERT INTO country_tax_rules VALUES ('낙원','lottery_winnings',12.5,'admin-1',123);
                 INSERT INTO country_macro_indicators VALUES ('낙원',3,1.5,4,55,'admin-1',120);
             """)
-        country = server.admin_countries()[0]
+        country = next(item for item in server.admin_countries() if item["nationality"] == "낙원")
         self.assertEqual(country["taxRules"], [{
             "income_source": "lottery_winnings", "tax_percent": 12.5,
             "updated_by": "admin-1", "updated_epoch": 123.0,
         }])
         self.assertEqual(country["macroIndicators"]["fiscal_debt_percent"], 55)
+        self.assertEqual(country["externalReferenceRate"], 8)
+        self.assertAlmostEqual(country["externalRatePremium"], 0.5)
 
     def test_macro_indicator_web_action_validates_and_audits_inputs(self):
         with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:

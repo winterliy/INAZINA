@@ -2244,6 +2244,16 @@ def admin_countries():
         result = []
         for row in rows:
             nationality = row["nationality"]
+            foreign_rates = connection.execute(
+                "SELECT AVG(base_rate) reference_rate,COUNT(*) country_count "
+                "FROM country_currencies WHERE nationality<>? "
+                "AND currency_code<>?", (nationality, row["currency_code"])
+            ).fetchone()
+            external_rate = (float(foreign_rates["reference_rate"])
+                             if foreign_rates["country_count"] else None)
+            external_rate_premium = (max(-2.0, min(
+                2.0, (external_rate-float(row["base_rate"]))*0.10
+            )) if external_rate is not None else 0.0)
             treasury = connection.execute(
                 "SELECT u.user_id,u.cash FROM country_treasuries t JOIN users u ON u.user_id=t.user_id WHERE t.nationality=?",
                 (nationality,)).fetchone() if _table_exists(connection, "country_treasuries") else None
@@ -2278,6 +2288,8 @@ def admin_countries():
                            "citizens": int(citizens), "guilds": guilds, "exchanges": exchanges,
                            "marketRates": market_rates, "marketRatePressure": market_rate_pressure,
                            "macroIndicators": dict(macro_indicators) if macro_indicators else {},
+                           "externalReferenceRate": external_rate,
+                           "externalRatePremium": external_rate_premium,
                            "taxRules": tax_rules,
                            "account": dict(account) if account else None})
     return result

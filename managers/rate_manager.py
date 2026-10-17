@@ -432,6 +432,19 @@ class RateManager:
         funding_ratio = loans/max(1.0, deposits_value+equity)
         funding_target = max(-2.0, min(10.0, (funding_ratio-.90)*.75))
         default_ratio = float(loan_row["bad"] or 0)/max(1.0, loans)
+        rate_context = conn.execute(
+            "SELECT local.base_rate local_rate,"
+            "(SELECT AVG(ext.base_rate) FROM country_currencies ext "
+            "WHERE ext.nationality<>local.nationality "
+            "AND ext.currency_code<>local.currency_code) external_rate "
+            "FROM country_currencies local WHERE local.nationality=?", (country,),
+        ).fetchone()
+        external_rate = (float(rate_context["external_rate"])
+                         if rate_context and rate_context["external_rate"] is not None else None)
+        external_rate_premium = max(-2.0, min(
+            2.0, ((external_rate-float(rate_context["local_rate"]))*0.10)
+            if external_rate is not None else 0.0
+        ))
         macro = conn.execute(
             "SELECT inflation_percent,real_gdp_growth_percent,unemployment_percent,"
             "fiscal_debt_percent FROM country_macro_indicators WHERE nationality=?",
@@ -443,6 +456,7 @@ class RateManager:
         debt_gap = float(macro["fiscal_debt_percent"] if macro else 60)-60
         funding_macro_premium = max(-5.0, min(
             5.0, inflation_gap*.20-growth_gap*.10+unemployment_gap*.15
+            + external_rate_premium
         ))
         sovereign_macro_premium = max(-5.0, min(
             5.0, inflation_gap*.15-growth_gap*.05+debt_gap*.025
@@ -487,6 +501,7 @@ class RateManager:
         # required yield; a poorly covered issue adds an issuance premium.
         treasury_target = max(-2.0, min(
             5.0, (.50-debt_demand)+sovereign_macro_premium
+            + external_rate_premium*.5
         ))
         targets = {
             "funding": funding_target+funding_macro_premium,

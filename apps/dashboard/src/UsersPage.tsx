@@ -10,7 +10,7 @@ type MarketRate = { benchmark_key: "funding" | "bank_bond" | "treasury"; tenor_d
 type RatePressure = { benchmark_key: string; adjustment: number; updated_epoch: number };
 type MacroIndicators = { inflation_percent: number; real_gdp_growth_percent: number; unemployment_percent: number; fiscal_debt_percent: number; updated_by: string; updated_epoch: number };
 type SourceTaxRule = { income_source: string; tax_percent: number; updated_by: string; updated_epoch: number };
-type Country = { nationality: string; currency_code: string; currency_name: string | null; base_rate: number; legal_max_rate: number; tax_percent: number; treasuryId: string | null; treasuryCash: number | null; citizens: number; guilds: string[]; exchanges: string[]; marketRates: MarketRate[]; marketRatePressure: RatePressure[]; macroIndicators: MacroIndicators; taxRules: SourceTaxRule[]; account: { status: string; role: string; hts_id: string | null } | null };
+type Country = { nationality: string; currency_code: string; currency_name: string | null; base_rate: number; legal_max_rate: number; tax_percent: number; treasuryId: string | null; treasuryCash: number | null; citizens: number; guilds: string[]; exchanges: string[]; marketRates: MarketRate[]; marketRatePressure: RatePressure[]; macroIndicators: MacroIndicators; externalReferenceRate: number | null; externalRatePremium: number; taxRules: SourceTaxRule[]; account: { status: string; role: string; hts_id: string | null } | null };
 type Result = { message: string; success: boolean };
 
 const USER_FIELDS: [string, string, string?][] = [
@@ -266,7 +266,7 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
         </section>
         <section className="section-gap">
           <h3 className="sub-head">만기별 시장금리 곡선</h3>
-          <p className="hint">기준금리(policy)와 별도의 조달·은행채·국채 지표입니다. 유효 시장금리는 해당 만기의 곡선 금리에 자동 조정 압력(%p)을 더합니다. 지표·만기·스프레드를 지정한 변동금리 상품이 재산정될 때 참조합니다.</p>
+          <p className="hint">기준금리(policy)와 별도의 조달·은행채·국채 지표입니다. 타 국가 평균 기준금리 {country.externalReferenceRate === null ? "자료 없음" : `${number(country.externalReferenceRate)}%`}와의 차이가 시장 자동 압력에 ±2%p 이내로 반영됩니다 (현재 외부 금리 가산 {number(country.externalRatePremium)}%p). 유효 시장금리는 만기별 곡선에 자동 압력을 더하며, 변동금리 상품 재산정 때 참조합니다.</p>
           <form className="form-grid" onSubmit={saveMarketRate}>
             <Field label="지표"><select value={marketRate.benchmarkKey} onChange={(event) => {
               const key = event.target.value as MarketRate["benchmark_key"];
