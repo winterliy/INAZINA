@@ -471,6 +471,7 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(stress["estimatedFullDefaultLoss"], 130_000)
         self.assertEqual(stress["scenarios"][0]["defaultedEad"], 10_000)
         self.assertEqual(stress["scenarios"][0]["incrementalProvision"], 6_500)
+        self.assertAlmostEqual(stress["scenarios"][0]["capitalConsumedPercent"], .65)
         self.db.currency.execute(
             "UPDATE financial_institutions SET equity_capital=20000,target_capital_ratio=.1 "
             "WHERE issuer='Bank'"
