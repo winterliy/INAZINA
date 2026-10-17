@@ -283,14 +283,33 @@ class CreditRiskManager:
             "WHERE p.issuer=? AND l.status='active' AND l.collection_status<>'defaulted' "
             "AND l.outstanding_balance>0", (issuer,),
         ).fetchall()
-        performing_ead = expected_loss = allowance = 0.0
+        totals_by_currency = {}
         for loan in loans:
             currency = str(loan["quote_currency"] or "NWX")
-            ead = max(0.0, float(loan["outstanding_balance"] or 0))
-            loss = ead*cls._lgd(conn, loan)
-            performing_ead += to_base(ead, currency)
-            expected_loss += to_base(loss, currency)
-            allowance += to_base(loan["ecl_allowance"], currency)
+            ead = round_currency(
+                conn, max(0.0, float(loan["outstanding_balance"] or 0)), currency
+            )
+            loss = round_currency(conn, ead*cls._lgd(conn, loan), currency)
+            amounts = totals_by_currency.setdefault(
+                currency, {"ead": 0.0, "loss": 0.0, "allowance": 0.0}
+            )
+            amounts["ead"] += ead
+            amounts["loss"] += loss
+            amounts["allowance"] += round_currency(
+                conn, max(0.0, float(loan["ecl_allowance"] or 0)), currency
+            )
+        performing_ead = sum(
+            to_base(values["ead"], currency)
+            for currency, values in totals_by_currency.items()
+        )
+        expected_loss = sum(
+            to_base(values["loss"], currency)
+            for currency, values in totals_by_currency.items()
+        )
+        allowance = sum(
+            to_base(values["allowance"], currency)
+            for currency, values in totals_by_currency.items()
+        )
         scenarios = []
         for percent in (5, 10, 20, 40):
             stressed_ead = round_currency(conn, performing_ead*percent/100, base)
@@ -351,15 +370,41 @@ class CreditRiskManager:
         ):
             user_id = str(loan["user_id"] or "")
             row = borrowers.setdefault(user_id, {
-                "exposure": 0.0, "grossLoss": 0.0, "allowance": 0.0, "loanCount": 0,
+                "exposureByCurrency": {}, "grossLossByCurrency": {},
+                "allowanceByCurrency": {}, "loanCount": 0,
             })
             currency = str(loan["quote_currency"] or base)
-            ead = max(0.0, float(loan["outstanding_balance"] or 0))
-            loss = ead*cls._lgd(conn, loan)
-            row["exposure"] += to_base(ead, currency)
-            row["grossLoss"] += to_base(loss, currency)
-            row["allowance"] += to_base(loan["ecl_allowance"], currency)
+            ead = round_currency(
+                conn, max(0.0, float(loan["outstanding_balance"] or 0)), currency
+            )
+            loss = round_currency(conn, ead*cls._lgd(conn, loan), currency)
+            row["exposureByCurrency"][currency] = (
+                row["exposureByCurrency"].get(currency, 0.0)+ead
+            )
+            row["grossLossByCurrency"][currency] = (
+                row["grossLossByCurrency"].get(currency, 0.0)+loss
+            )
+            row["allowanceByCurrency"][currency] = (
+                row["allowanceByCurrency"].get(currency, 0.0)
+                +round_currency(
+                    conn, max(0.0, float(loan["ecl_allowance"] or 0)), currency
+                )
+            )
             row["loanCount"] += 1
+
+        for row in borrowers.values():
+            row["exposure"] = sum(
+                to_base(amount, currency)
+                for currency, amount in row.pop("exposureByCurrency").items()
+            )
+            row["grossLoss"] = sum(
+                to_base(amount, currency)
+                for currency, amount in row.pop("grossLossByCurrency").items()
+            )
+            row["allowance"] = sum(
+                to_base(amount, currency)
+                for currency, amount in row.pop("allowanceByCurrency").items()
+            )
 
         total = sum(row["exposure"] for row in borrowers.values())
         equity = float(terms["effective_equity"])

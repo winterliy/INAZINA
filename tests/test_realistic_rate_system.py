@@ -1043,13 +1043,15 @@ class RealisticRateSystemTests(unittest.TestCase):
                       origination_fee=0)
         self.add_loan(code="CONCENTRATION-USD", maturity=365, collateral_ratio=0,
                       origination_fee=0)
+        self.add_loan(code="CONCENTRATION-USD2", maturity=365, collateral_ratio=0,
+                      origination_fee=0)
         self.db.currency.execute(
             "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
-            "VALUES ('USD','US Dollar','2',2)"
+            "VALUES ('USD','US Dollar','0.75',2)"
         )
         self.db.products.execute(
             "UPDATE liability SET quote_currency='USD',rate_type='fixed' "
-            "WHERE product_code='CONCENTRATION-USD'"
+            "WHERE product_code IN ('CONCENTRATION-USD','CONCENTRATION-USD2')"
         )
         self.db.users.create_user("other-borrower", "Other", "낙원", 1_000)
         self.db.accounts.execute(
@@ -1058,21 +1060,24 @@ class RealisticRateSystemTests(unittest.TestCase):
             "('borrower','CONCENTRATION',60,60,'active','NWX',39),"
             "('borrower','CONCENTRATION2',40,40,'active','NWX',0),"
             "('other-borrower','CONCENTRATION',200,200,'active','NWX',20),"
-            "('borrower','CONCENTRATION-USD',10,10,'active','USD',0)"
+            "('borrower','CONCENTRATION-USD',1,1,'active','USD',0),"
+            "('borrower','CONCENTRATION-USD2',1,1,'active','USD',0)"
         )
         with self.db.readonly() as conn:
             report = CreditRiskManager.borrower_concentration_stress(conn, "Bank")
+            portfolio = CreditRiskManager.portfolio_default_stress(conn, "Bank")
         self.assertEqual(report["borrowerCount"], 2)
         self.assertEqual(report["currency"], "NWX")
-        self.assertEqual(report["totalLoanExposure"], 320)
-        self.assertAlmostEqual(report["largestBorrowerSharePercent"], 200/320*100)
+        self.assertEqual(report["totalLoanExposure"], 301)
+        self.assertAlmostEqual(report["largestBorrowerSharePercent"], 200/301*100)
         borrower = next(row for row in report["borrowers"]
                         if row["borrowerId"] == "borrower")
-        self.assertEqual(borrower["exposure"], 120)
-        self.assertEqual(borrower["loanCount"], 3)
-        self.assertEqual(borrower["grossLoss"], 78)
+        self.assertEqual(borrower["exposure"], 101)
+        self.assertEqual(borrower["loanCount"], 4)
+        self.assertEqual(borrower["grossLoss"], 65)
         self.assertEqual(borrower["existingAllowanceApplied"], 39)
-        self.assertEqual(borrower["incrementalProvision"], 39)
+        self.assertEqual(borrower["incrementalProvision"], 26)
+        self.assertEqual(portfolio["performingEad"], 301)
         self.assertAlmostEqual(report["topFiveExposureSharePercent"], 100)
         largest = report["borrowers"][0]
         self.assertEqual(largest["borrowerId"], "other-borrower")
