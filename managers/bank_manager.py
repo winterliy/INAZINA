@@ -1645,10 +1645,11 @@ class BankManager:
         if not institution or institution["status"] != "failed":
             return {"accounts": 0, "covered": 0, "uninsured": 0}
         accounts = conn.execute(
-            "SELECT a.account_number,a.user_id,a.balance,a.deposit_insured,a.quote_currency "
+            "SELECT a.account_number,a.user_id,a.balance,a.deposit_insured,a.quote_currency,"
+            "a.account_type "
             "FROM accounts.accounts a JOIN product.saving p "
             "ON p.product_code=a.product_code WHERE p.issuer=? "
-            "AND a.account_type='saving' "
+            "AND a.account_type IN ('saving','currency_saving') "
             "AND a.resolution_status='active' ORDER BY a.user_id,a.account_number",
             (issuer,),
         ).fetchall()
@@ -1688,15 +1689,38 @@ class BankManager:
                 )/SCALE if uninsured else 0
             used_by_user[user_id] = used_base+covered_base
             if covered:
-                paid = conn.execute(
-                    "UPDATE users.users SET cash=cash+? WHERE user_id=?",
-                    (covered, user_id),
-                )
-                if paid.rowcount != 1:
-                    raise RuntimeError("예금보험금을 받을 사용자를 찾을 수 없습니다.")
+                user_currency = CurrencyManager.home(conn, user_id)
+                account_currency = str(account["quote_currency"] or "NWX").upper()
+                covered_units = int(round(covered*SCALE))
+                payout_units = (covered_units if account_currency == user_currency else
+                                CurrencyManager.convert(
+                                    conn, covered_units, account_currency, user_currency
+                                ))
+                CurrencyManager.change(conn, user_id, user_currency, payout_units)
                 CurrencyManager.treasury_pay(
                     conn, CurrencyManager.user_treasury_id(conn, user_id),
-                    account["quote_currency"] or "NWX", int(round(covered*SCALE)))
+                    user_currency, payout_units,
+                )
+                if account_currency != user_currency:
+                    conn.execute(
+                        "INSERT INTO accounts.currency_transactions "
+                        "(user_id,source_currency,target_currency,source_units,target_units,fee_nwx,recorded_epoch) "
+                        "VALUES (?,?,?,?,?,?,?)",
+                        (user_id, account_currency, user_currency, covered_units,
+                         payout_units, 0, when),
+                    )
+            if balance > 0:
+                from managers.bank_journal import BankJournal
+                BankJournal.post(
+                    conn, issuer, "deposit_insurance_resolution",
+                    f"deposit-insurance:{account['account_number']}",
+                    account["quote_currency"] or "NWX",
+                    [("customer_deposits_payable", "debit", balance),
+                     ("deposit_insurance_payable", "credit", covered),
+                     ("uninsured_deposit_claim", "credit", uninsured)],
+                    description=f"Failed-institution claim transfer for {account['account_number']}",
+                    now=when,
+                )
             conn.execute(
                 "UPDATE accounts.accounts SET balance_units=0,principal=0,"
                 "resolution_status='resolved',insurance_paid=?,uninsured_claim=? "

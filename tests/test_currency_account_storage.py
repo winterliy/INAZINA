@@ -157,6 +157,43 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertEqual(totals['USD'], 0)
         self.assertEqual(totals['EUR'], 0)
 
+    def test_failed_bank_resolves_insured_fx_deposit_in_customer_home_currency(self):
+        from managers.bank_journal import BankJournal
+
+        self.db.products.execute(
+            "UPDATE saving SET issuer='FXBank',deposit_insured=1 WHERE product_code='FX_EUR'"
+        )
+        self.db.currency.execute(
+            "UPDATE financial_institutions SET nationality='미국',status='active',"
+            "deposit_insurance_limit=2 WHERE issuer='FXBank'"
+        )
+        number = CurrencyExchangeManager(self.db).open_account(
+            'us-user', 'FX_EUR', password='1234', deposit_amount='3.25'
+        )
+        cash_before = self.db.users.get_user('us-user')['cash']
+        self.db.currency.execute(
+            "UPDATE financial_institutions SET status='failed' WHERE issuer='FXBank'"
+        )
+        with self.db.atomic() as conn:
+            result = BankManager.resolve_failed_institution(conn, 'FXBank', now=1_000)
+            reconciliation = BankJournal.reconcile_customer_deposits(conn, 'FXBank')
+        account = self.db.accounts.execute_one(
+            "SELECT balance_units,resolution_status,insurance_paid,uninsured_claim "
+            "FROM accounts WHERE account_number=?", (number,),
+        )
+        self.assertEqual(result['accounts'], 1)
+        self.assertEqual(account['balance_units'], 0)
+        self.assertEqual(account['resolution_status'], 'resolved')
+        self.assertGreater(account['insurance_paid'], 0)
+        self.assertGreater(account['uninsured_claim'], 0)
+        self.assertGreater(self.db.users.get_user('us-user')['cash'], cash_before)
+        self.assertEqual(reconciliation[0]['status'], 'matched')
+        fx_record = self.db.currency.execute_one(
+            "SELECT source_currency,target_currency FROM currency_transactions "
+            "WHERE user_id='us-user' ORDER BY transaction_id DESC LIMIT 1"
+        )
+        self.assertEqual(tuple(fx_record), ('EUR', 'USD'))
+
 
 class LegacyCurrencySchemaMigrationTests(unittest.TestCase):
     def test_source_tax_rule_fk_survives_legacy_negative_rate_table_rebuild(self):

@@ -107,7 +107,7 @@ class CurrencyExchangeManager:
                          "last_payment_epoch,principal,account_type,quote_currency,contract_rate,rate_type,"
                          "rate_nationality,base_rate_spread,rate_floor,rate_cap,repricing_cycle_seconds,"
                          "next_repricing_epoch,benchmark_key,benchmark_tenor_days,repricing_lag_seconds,"
-                         "contract_effective_rate) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         "contract_effective_rate,deposit_insured) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                          (number, str(user_id), product_code, 0, None, opened_epoch, 0,
                           'currency_saving', product['quote_currency'], float(product['interest_rate']),
                           product['rate_type'], product['rate_nationality'],
@@ -118,7 +118,7 @@ class CurrencyExchangeManager:
                           product['benchmark_key'],
                           int(product['benchmark_tenor_days'] or product['maturity_days'] or 0),
                           int(product['repricing_lag_seconds'] or 0),
-                          self._effective_rate(product)))
+                          self._effective_rate(product), int(product['deposit_insured'] or 0)))
             if password is not None:
                 conn.execute("UPDATE accounts SET password=?,principal=? WHERE account_number=?",
                              (BankManager._hash_password(password), deposit_units / SCALE, number))

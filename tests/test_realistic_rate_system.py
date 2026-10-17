@@ -3,6 +3,7 @@ import time
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from database import DatabaseManager
 from database.db_manager import DBManager
@@ -653,6 +654,19 @@ class RealisticRateSystemTests(unittest.TestCase):
             "SELECT 1 FROM deposit_insurance_claims WHERE account_number IN "
             "(SELECT account_number FROM accounts WHERE product_code='INSURED')"
         ))
+        with self.db.atomic() as conn:
+            reconciliation = BankJournal.reconcile_customer_deposits(conn, "Bank")
+            journal = BankJournal.trial_balance(conn, "Bank", "NWX")
+        self.assertEqual(reconciliation[0]["status"], "matched")
+        balances = {row["account_code"]: row["balance_units"] for row in journal}
+        self.assertEqual(balances.get("customer_deposits_payable", 0), 0)
+        self.assertEqual(balances.get("deposit_insurance_payable", 0), -600)
+        self.assertEqual(balances.get("uninsured_deposit_claim", 0), -400)
+        from web_api.server import admin_bank_journal_report
+        with patch("web_api.server.connect_readonly", self.db.readonly):
+            report = admin_bank_journal_report("Bank")
+        self.assertEqual(report["depositInsuranceClaims"][0]["covered_amount_text"], "600")
+        self.assertEqual(report["depositInsuranceClaims"][0]["uninsured_amount_text"], "400")
 
     def test_competing_banks_and_balance_sheet_pressure_change_spread(self):
         self.add_loan(code="BANK1", collateral_ratio=0, origination_fee=0)
