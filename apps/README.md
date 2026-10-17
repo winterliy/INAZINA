@@ -178,7 +178,12 @@ Administrators:
 ## Tests and CI
 
 - Python: `.venv/bin/pip install -r requirements-dev.txt`, then
-  `.venv/bin/python -m pytest` (or `python -m unittest discover -s tests`).
+  `.venv/bin/python -m pytest -n auto` (parallel; or `python -m unittest discover -s tests`).
+  While working, run only what changed: `pytest tests/test_x.py`, `pytest -k name`,
+  `pytest --lf` (last failures), `pytest -x` (stop at first failure), and
+  `pytest --durations=20` to find slow tests. `tests/conftest.py` reuses one
+  freshly built database per process as a template for each test's empty
+  temporary database.
   `tests/test_web_api.py` covers candles, drawings, audit/events, the DB editor,
   and the command catalog against a temporary database.
 - Web: `npm run typecheck` and `npm run build`.

@@ -4,7 +4,8 @@
 - 테스트 파일: **17개**
 - 평소에는 변경된 기능의 테스트 모듈·메서드만 실행한다.
 - 우선주·ELS 관련 실행: `PYTHONPATH=tests .venv/bin/python -m unittest tests.test_preferred tests.test_els tests.test_structured_integration tests.test_structured_ui -q`
-- 전체 실행(요청 시): `PYTHONPATH=tests .venv/bin/python -m unittest discover -s tests -q`
+- 부분 실행: `.venv/bin/python -m pytest tests/test_x.py`(파일), `-k 이름`(이름 일치), `--lf`(직전 실패만), `-x`(첫 실패에서 중단), `--durations=20`(느린 테스트 확인)
+- 전체 실행(요청 시): `.venv/bin/python -m pytest -n auto`(병렬). unittest로는 `PYTHONPATH=tests .venv/bin/python -m unittest discover -s tests -q`
 
 ## `tests/test_admin_expansion.py` (9개)
 

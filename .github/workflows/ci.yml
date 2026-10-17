@@ -37,7 +37,7 @@ jobs:
       - name: Run tests
         env:
           INAZINA_PRICE_BACKEND: python
-        run: python -m pytest
+        run: python -m pytest -n auto
 
   web:
     name: Web typecheck and build
