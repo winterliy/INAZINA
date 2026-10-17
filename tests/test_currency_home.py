@@ -131,6 +131,46 @@ class CurrencyHomeTests(unittest.TestCase):
         sender_alerts=[r for r in alerts if r['user_id']=='citizen']
         self.assertEqual(len(sender_alerts),3)
 
+    def test_kyc_and_aml_workflows_reject_invalid_epochs_without_records(self):
+        self.configure()
+        before = {
+            "kyc": self.db.system.execute_one("SELECT COUNT(*) FROM kyc_profile_events")[0],
+            "aml": self.db.currency.execute_one("SELECT COUNT(*) FROM aml_alerts")[0],
+            "audit": self.db.system.execute_one("SELECT COUNT(*) FROM admin_audit")[0],
+        }
+        for invalid_epoch in (-1, float('nan'), float('inf')):
+            calls = (
+                ("invalid_kyc_check_epoch", lambda c: ComplianceManager.require_financial_eligibility(
+                    c, 'citizen', now=invalid_epoch)),
+                ("invalid_kyc_event_epoch", lambda c: ComplianceManager.record_financial_action_denial(
+                    c, 'citizen', 'transfer', now=invalid_epoch)),
+                ("invalid_kyc_review_epoch", lambda c: ComplianceManager.set_kyc_status(
+                    c, 'citizen', 'admin', 'pending', reason_code='review_started', now=invalid_epoch)),
+                ("invalid_kyc_expiry_epoch", lambda c: ComplianceManager.expire_due_kyc_profiles(
+                    c, 'admin', now=invalid_epoch)),
+                ("invalid_aml_rule_epoch", lambda c: ComplianceManager.configure_aml_rule(
+                    c, '미국', 'admin', now=invalid_epoch)),
+                ("invalid_aml_monitor_epoch", lambda c: ComplianceManager.monitor_transfer(
+                    c, user_id='citizen', nationality='미국', transaction_id=1,
+                    source_units=1, source_currency='AAA', now=invalid_epoch)),
+                ("invalid_aml_review_epoch", lambda c: ComplianceManager.review_aml_alert(
+                    c, 1, 'admin', 'reviewing', 'further_review', now=invalid_epoch)),
+            )
+            for error_code, action in calls:
+                with self.subTest(invalid_epoch=invalid_epoch, error_code=error_code):
+                    with self.assertRaisesRegex(ValueError, error_code):
+                        with self.db.atomic() as conn:
+                            action(conn)
+        self.assertEqual(self.db.system.execute_one(
+            "SELECT COUNT(*) FROM kyc_profile_events"
+        )[0], before["kyc"])
+        self.assertEqual(self.db.currency.execute_one(
+            "SELECT COUNT(*) FROM aml_alerts"
+        )[0], before["aml"])
+        self.assertEqual(self.db.system.execute_one(
+            "SELECT COUNT(*) FROM admin_audit"
+        )[0], before["audit"])
+
     def test_explicit_kyc_review_gates_outgoing_transfers_but_not_receiving(self):
         cmd=self.configure()
         cmd.execute('admin','기본소득','미국 100')
@@ -168,6 +208,16 @@ class CurrencyHomeTests(unittest.TestCase):
             self.bot.user_mgr.get_total_assets('citizen',settle=False)['kyc_profile']['status'],
             'expired',
         )
+        events_before_invalid_time = self.db.system.execute_one(
+            "SELECT COUNT(*) FROM kyc_profile_events WHERE user_id='citizen'"
+        )[0]
+        with self.assertRaisesRegex(ValueError, 'invalid_kyc_check_epoch'):
+            ComplianceManager.check_financial_eligibility(
+                self.db, 'citizen', 'transfer', now=-1
+            )
+        self.assertEqual(self.db.system.execute_one(
+            "SELECT COUNT(*) FROM kyc_profile_events WHERE user_id='citizen'"
+        )[0], events_before_invalid_time)
         with self.assertRaisesRegex(ValueError,'KYC 확인'):
             self.bot.currency_mgr.transfer('citizen','admin','30')
         with self.db.atomic() as conn:

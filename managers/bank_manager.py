@@ -1807,6 +1807,8 @@ class BankManager:
         """Freeze a failed issuer and pay insured deposits once per account."""
         issuer = str(issuer or "").strip()
         when = float(time.time() if now is None else now)
+        if not math.isfinite(when) or when < 0:
+            raise ValueError("bank resolution requires a valid UNIX epoch")
         institution = conn.execute(
             "SELECT f.status,f.deposit_insurance_limit,"
             "COALESCE(c.currency_code,'NWX') base_currency "

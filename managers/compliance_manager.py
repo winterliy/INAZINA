@@ -39,6 +39,16 @@ class ComplianceManager:
         )
 
     @staticmethod
+    def _validated_epoch(value, error_code):
+        try:
+            epoch = float(time.time() if value is None else value)
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError(error_code) from None
+        if not math.isfinite(epoch) or epoch < 0:
+            raise ValueError(error_code)
+        return epoch
+
+    @staticmethod
     def require_financial_eligibility(conn, user_id, *, now=None):
         """Enforce an explicit KYC review on gated customer financial actions.
 
@@ -46,9 +56,7 @@ class ComplianceManager:
         profile must be verified, current, and not risk-restricted. This does not
         block incoming transfers.
         """
-        when = float(time.time() if now is None else now)
-        if not math.isfinite(when):
-            raise ValueError("invalid_kyc_check_epoch")
+        when = ComplianceManager._validated_epoch(now, "invalid_kyc_check_epoch")
         profile = conn.execute(
             "SELECT status,risk_tier,expires_epoch FROM kyc_profiles WHERE user_id=?",
             (str(user_id),),
@@ -67,9 +75,7 @@ class ComplianceManager:
     @classmethod
     def record_financial_action_denial(cls, conn, user_id, action_code, *, now=None):
         """Append a privacy-minimal event for a denied, explicitly reviewed user."""
-        when = float(time.time() if now is None else now)
-        if not math.isfinite(when):
-            raise ValueError("invalid_kyc_event_epoch")
+        when = cls._validated_epoch(now, "invalid_kyc_event_epoch")
         if action_code not in {"transfer", "deposit_open", "loan_apply"}:
             raise ValueError("invalid_kyc_action_code")
         profile = conn.execute(
@@ -104,7 +110,7 @@ class ComplianceManager:
     @classmethod
     def check_financial_eligibility(cls, db, user_id, action_code, *, now=None):
         """Check outside the business transaction and persist a denial for review."""
-        when = float(time.time() if now is None else now)
+        when = cls._validated_epoch(now, "invalid_kyc_check_epoch")
         try:
             with db.readonly() as conn:
                 return cls.require_financial_eligibility(conn, user_id, now=when)
@@ -119,7 +125,7 @@ class ComplianceManager:
     def set_kyc_status(cls, conn, user_id, actor_id, status, *, risk_tier="standard",
                        reason_code, expires_epoch=None, now=None):
         """Record a KYC review without persisting identity documents or PII."""
-        when = float(time.time() if now is None else now)
+        when = cls._validated_epoch(now, "invalid_kyc_review_epoch")
         cls._require_admin(conn, actor_id)
         status, risk_tier, reason_code = (
             str(status), str(risk_tier), str(reason_code)
@@ -170,7 +176,7 @@ class ComplianceManager:
     @classmethod
     def expire_due_kyc_profiles(cls, conn, actor_id, *, now=None, limit=500):
         """Apply elapsed KYC expiry dates as an explicit, auditable admin action."""
-        when = float(time.time() if now is None else now)
+        when = cls._validated_epoch(now, "invalid_kyc_expiry_epoch")
         cls._require_admin(conn, actor_id)
         rows = conn.execute(
             "SELECT user_id,status,risk_tier FROM kyc_profiles "
@@ -211,7 +217,7 @@ class ComplianceManager:
 
         Rules default to disabled and are not presented as statutory thresholds.
         """
-        when = float(time.time() if now is None else now)
+        when = cls._validated_epoch(now, "invalid_aml_rule_epoch")
         cls._require_admin(conn, actor_id)
         country = conn.execute(
             "SELECT currency_code FROM country_currencies WHERE nationality=?",
@@ -271,7 +277,7 @@ class ComplianceManager:
     def monitor_transfer(cls, conn, *, user_id, nationality, transaction_id,
                          source_units, source_currency, now=None):
         """Create idempotent alerts for configured amount/velocity thresholds."""
-        when = float(time.time() if now is None else now)
+        when = cls._validated_epoch(now, "invalid_aml_monitor_epoch")
         rule = conn.execute(
             "SELECT currency_code,large_transaction_limit,rolling_24h_amount_limit,"
             "rolling_24h_count_limit,enabled FROM aml_monitoring_rules WHERE nationality=?",
@@ -337,7 +343,7 @@ class ComplianceManager:
     @classmethod
     def review_aml_alert(cls, conn, alert_id, actor_id, status, outcome_code, *, now=None):
         """Append an analyst disposition to an AML case; closed cases are terminal."""
-        when = float(time.time() if now is None else now)
+        when = cls._validated_epoch(now, "invalid_aml_review_epoch")
         cls._require_admin(conn, actor_id)
         status, outcome_code = str(status), str(outcome_code)
         if status not in {"reviewing", "closed"} or outcome_code not in cls.AML_OUTCOMES:

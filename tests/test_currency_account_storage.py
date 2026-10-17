@@ -248,6 +248,19 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.db.currency.execute(
             "UPDATE financial_institutions SET status='failed' WHERE issuer='FXBank'"
         )
+        for invalid_epoch in (-1, float('nan'), float('inf')):
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, "valid UNIX epoch"):
+                    with self.db.atomic() as conn:
+                        BankManager.resolve_failed_institution(
+                            conn, 'FXBank', now=invalid_epoch
+                        )
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT resolution_status FROM accounts WHERE account_number=?", (number,)
+        )[0], 'active')
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT COUNT(*) FROM deposit_insurance_claims WHERE issuer='FXBank'"
+        )[0], 0)
         with self.db.atomic() as conn:
             result = BankManager.resolve_failed_institution(conn, 'FXBank', now=1_000)
             reconciliation = BankJournal.reconcile_customer_deposits(conn, 'FXBank')
