@@ -61,6 +61,10 @@ class CurrencyAccountStorageTests(unittest.TestCase):
                 'SELECT balance_units FROM accounts WHERE account_number=?',(number,)
             )[0], 11_370_000,
         )
+        canonical = self.db.accounts.execute_one(
+            'SELECT balance_minor_units,balance_decimal_places FROM accounts WHERE account_number=?',(number,)
+        )
+        self.assertEqual(tuple(canonical), (1137, 2))
         before = self.db.users.get_treasury_balance()
         manager.transfer('us-user',TREASURY_USER_ID,'10')
         self.assertEqual(self.db.users.get_user('us-user')['cash'],980)
@@ -91,6 +95,27 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             with self.db.atomic(("forex",)) as conn:
                 with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
                     conn.execute(f"DELETE FROM {table}")
+
+    def test_institution_ledger_minor_unit_upgrade_is_idempotent(self):
+        self.db.currency.execute(
+            "INSERT INTO financial_institution_ledger "
+            "(issuer,event_type,amount,reference_key,created_epoch,currency_code,"
+            "base_currency_code,base_amount) VALUES "
+            "('LegacyBank','fee_income',1.005,'legacy-fee',123,'USD','USD',2.675)"
+        )
+        for _ in range(2):
+            migrated = CurrencyDB()
+            migrated.close()
+        row = self.db.currency.execute_one(
+            "SELECT amount,base_amount,amount_minor_units,base_amount_minor_units,"
+            "amount_decimal_places,base_decimal_places FROM financial_institution_ledger "
+            "WHERE issuer='LegacyBank' AND reference_key='legacy-fee'"
+        )
+        self.assertEqual(row["amount_minor_units"], 101)
+        self.assertEqual(row["base_amount_minor_units"], 268)
+        self.assertEqual((row["amount_decimal_places"], row["base_decimal_places"]),
+                         (2, 2))
+        self.assertEqual((row["amount"], row["base_amount"]), (1.005, 2.675))
 
     def test_legacy_wallets_move_to_home_cash_and_foreign_accounts(self):
         self.db.currency.execute("CREATE TABLE currency_wallets(user_id TEXT,currency_code TEXT,balance_units INTEGER,PRIMARY KEY(user_id,currency_code))")

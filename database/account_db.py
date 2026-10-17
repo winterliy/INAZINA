@@ -21,6 +21,8 @@ class AccountDB(DBManager):
                 last_payment DATETIME DEFAULT CURRENT_TIMESTAMP,
                 quote_currency TEXT NOT NULL DEFAULT 'NWX',
                 balance_units INTEGER NOT NULL DEFAULT 0,
+                balance_minor_units INTEGER NOT NULL DEFAULT 0,
+                balance_decimal_places INTEGER NOT NULL DEFAULT 0 CHECK(balance_decimal_places BETWEEN 0 AND 6),
                 interest_remainder TEXT NOT NULL DEFAULT '0'
             )
         ''')
@@ -40,6 +42,10 @@ class AccountDB(DBManager):
             self.execute("ALTER TABLE accounts ADD COLUMN quote_currency TEXT NOT NULL DEFAULT 'NWX'")
         if "balance_units" not in columns:
             self.execute("ALTER TABLE accounts ADD COLUMN balance_units INTEGER NOT NULL DEFAULT 0")
+        if "balance_minor_units" not in columns:
+            self.execute("ALTER TABLE accounts ADD COLUMN balance_minor_units INTEGER NOT NULL DEFAULT 0")
+        if "balance_decimal_places" not in columns:
+            self.execute("ALTER TABLE accounts ADD COLUMN balance_decimal_places INTEGER NOT NULL DEFAULT 0")
         if "interest_remainder" not in columns:
             self.execute("ALTER TABLE accounts ADD COLUMN interest_remainder TEXT NOT NULL DEFAULT '0'")
         account_rate_columns = {

@@ -568,9 +568,11 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(row["collateral_amount"], 10_000)
         self.assertGreater(row["contract_apr"], row["contract_effective_rate"])
         institution = self.db.currency.execute_one(
-            "SELECT retained_earnings FROM financial_institutions WHERE issuer='Bank'"
+            "SELECT retained_earnings,retained_earnings_minor_units "
+            "FROM financial_institutions WHERE issuer='Bank'"
         )
-        self.assertEqual(institution["retained_earnings"], 500)
+        self.assertEqual((institution["retained_earnings"],
+                          institution["retained_earnings_minor_units"]), (500, 500))
         with self.db.atomic() as conn:
             reconciliation = BankJournal.reconcile_loan_receivables(conn, "Bank")
         self.assertEqual(reconciliation[0]["status"], "matched")
@@ -613,6 +615,65 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(self.db.currency.execute_one(
             "SELECT COUNT(*) FROM financial_institution_ledger WHERE issuer='Bank'"
         )[0], before_entries)
+
+    def test_institution_pnl_posts_exact_units_and_retries_idempotently(self):
+        from decimal import Decimal
+
+        with self.db.atomic() as conn:
+            self.assertTrue(RateManager.record_institution_result(
+                conn, "Bank", Decimal("100.5"), "fee_income", "minor-unit-fee", now=123,
+            ))
+            self.assertTrue(BankJournal.post(
+                conn, "Bank", "fee_income", "minor-unit-fee", "NWX",
+                [("settlement_asset", "debit", Decimal("101")),
+                 ("fee_income", "credit", Decimal("101"))], now=123,
+            ))
+            self.assertFalse(RateManager.record_institution_result(
+                conn, "Bank", Decimal("100.5"), "fee_income", "minor-unit-fee", now=123,
+            ))
+            row = conn.execute(
+                "SELECT amount_minor_units,base_amount_minor_units,"
+                "amount_decimal_places,base_decimal_places FROM financial_institution_ledger "
+                "WHERE issuer='Bank' AND reference_key='minor-unit-fee'"
+            ).fetchone()
+            self.assertEqual(tuple(row), (101, 101, 0, 0))
+            self.assertEqual(
+                BankJournal.reconcile_institution_results(conn, "Bank")[0]["status"],
+                "matched",
+            )
+
+    def test_bank_journal_rejects_unmapped_account_and_aggregates_reconciliations(self):
+        with self.db.atomic() as conn:
+            with self.assertRaisesRegex(ValueError, "회계 계정"):
+                BankJournal.post(
+                    conn, "Bank", "test", "unmapped-account", "NWX",
+                    [("unmapped_semantic", "debit", 1),
+                     ("settlement_asset", "credit", 1)], now=123,
+                )
+            report = BankJournal.reconcile_all(conn, "Bank")
+        self.assertEqual(report["status"], "matched")
+        self.assertEqual(set(report["coverage"]), {
+            "institution_pnl", "customer_deposits", "loan_receivables",
+            "ecl_allowances", "deposit_insurance_claims", "journal_invariants",
+        })
+        self.assertFalse(report["findings"])
+
+    def test_bank_journal_keeps_posting_precision_snapshot(self):
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('USD','Dollar','1',2)"
+        )
+        with self.db.atomic() as conn:
+            BankJournal.post(
+                conn, "Bank", "test", "precision-snapshot", "USD",
+                [("settlement_asset", "debit", "1.25"),
+                 ("fee_income", "credit", "1.25")], now=123,
+            )
+        self.db.currency.execute("UPDATE currencies SET decimal_places=0 WHERE code='USD'")
+        with self.db.atomic() as conn:
+            rows = BankJournal.trial_balance(conn, "Bank", "USD")
+        self.assertTrue(rows)
+        self.assertEqual({row["decimal_places"] for row in rows}, {2})
 
     def test_institution_status_refresh_rejects_invalid_epoch_without_mutation(self):
         self.add_loan()

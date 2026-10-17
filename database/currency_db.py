@@ -392,18 +392,21 @@ class CurrencyDB(DBManager):
                     BEGIN UPDATE {table} SET {column}=ROUND(NEW.{column}, {places}) WHERE {key}=NEW.{key}; END""")
 
     def _ensure_account_units(self):
-        """balance_units is every account's exact balance; balance only mirrors it.
+        """Keep legacy micro-unit balances and product-minor-unit mirrors aligned.
 
         Savings used to keep their amount in balance while foreign-currency
-        accounts used balance_units. Both now store 1/1,000,000 units, and the
-        legacy balance column is maintained by trigger for readers.
+        accounts used balance_units. Existing paths still use 1/1,000,000 units;
+        balance_minor_units is the canonical currency-precision accounting mirror.
+        The legacy balance column remains a compatibility view for readers.
         """
         columns = {row[1] for row in self.execute("PRAGMA table_info(accounts)")}
         if "balance_units" not in columns:
             return
         migrated = self.execute_one("SELECT 1 FROM settings WHERE key='account_units_v1'") \
             if self.execute_one("SELECT 1 FROM sqlite_master WHERE type='table' AND name='settings'") else True
-        for name in ("trg_accounts_units_mirror", "trg_accounts_units_insert", "trg_accounts_balance_guard"):
+        for name in ("trg_accounts_units_mirror", "trg_accounts_units_insert", "trg_accounts_balance_guard",
+                     "trg_accounts_minor_units_update", "trg_accounts_minor_units_insert",
+                     "trg_accounts_minor_units_currency"):
             self.execute(f"DROP TRIGGER IF EXISTS {name}")
         if not migrated:
             self.execute("UPDATE accounts SET balance_units=CAST(ROUND(COALESCE(balance,0)*1000000) AS INTEGER) "
@@ -424,6 +427,41 @@ class CurrencyDB(DBManager):
             BEGIN SELECT RAISE(ABORT, 'Account balances are stored in balance_units; update balance_units instead'); END""")
         self.execute("UPDATE accounts SET balance=balance_units/1000000.0 "
                      "WHERE ABS(COALESCE(balance,0) - balance_units/1000000.0) > 0.0000001")
+        account_columns = {row[1] for row in self.execute("PRAGMA table_info(accounts)")}
+        if {"balance_minor_units", "balance_decimal_places"}.issubset(account_columns):
+            # Keep a canonical whole-minor-unit accounting mirror beside the
+            # legacy micro-unit operational field. Precision is snapshotted on
+            # account creation / currency change, not rewritten retroactively.
+            self.execute("""UPDATE accounts SET balance_decimal_places=COALESCE(
+                (SELECT decimal_places FROM currencies WHERE code=accounts.quote_currency),0)""")
+            scale = "CASE {p} WHEN 0 THEN 1 WHEN 1 THEN 10 WHEN 2 THEN 100 WHEN 3 THEN 1000 WHEN 4 THEN 10000 WHEN 5 THEN 100000 ELSE 1000000 END"
+            insert_places = "COALESCE((SELECT decimal_places FROM currencies WHERE code=NEW.quote_currency),0)"
+            insert_scale = scale.format(p=insert_places)
+            self.execute(f"""UPDATE accounts SET balance_minor_units=CAST(ROUND(
+                balance_units / (1000000.0 / ({scale.format(p='balance_decimal_places')}))) AS INTEGER)""")
+            self.execute("""CREATE TRIGGER trg_accounts_minor_units_update
+                AFTER UPDATE OF balance_units ON accounts
+                WHEN NEW.balance_units IS NOT OLD.balance_units
+                BEGIN UPDATE accounts SET balance_minor_units=CAST(ROUND(
+                    NEW.balance_units / (1000000.0 / (CASE NEW.balance_decimal_places
+                    WHEN 0 THEN 1 WHEN 1 THEN 10 WHEN 2 THEN 100 WHEN 3 THEN 1000
+                    WHEN 4 THEN 10000 WHEN 5 THEN 100000 ELSE 1000000 END))) AS INTEGER)
+                WHERE account_number=NEW.account_number; END""")
+            self.execute(f"""CREATE TRIGGER trg_accounts_minor_units_insert AFTER INSERT ON accounts
+                BEGIN UPDATE accounts SET
+                    balance_decimal_places={insert_places},
+                    balance_minor_units=CAST(ROUND(NEW.balance_units / (1000000.0 / ({insert_scale}))) AS INTEGER)
+                WHERE account_number=NEW.account_number; END""")
+            self.execute("""CREATE TRIGGER trg_accounts_minor_units_currency
+                AFTER UPDATE OF quote_currency ON accounts
+                WHEN NEW.quote_currency IS NOT OLD.quote_currency
+                BEGIN UPDATE accounts SET
+                    balance_decimal_places=COALESCE((SELECT decimal_places FROM currencies WHERE code=NEW.quote_currency),0),
+                    balance_minor_units=CAST(ROUND(NEW.balance_units / (1000000.0 / (CASE COALESCE(
+                        (SELECT decimal_places FROM currencies WHERE code=NEW.quote_currency),0)
+                        WHEN 0 THEN 1 WHEN 1 THEN 10 WHEN 2 THEN 100 WHEN 3 THEN 1000
+                        WHEN 4 THEN 10000 WHEN 5 THEN 100000 ELSE 1000000 END))) AS INTEGER)
+                WHERE account_number=NEW.account_number; END""")
 
     def _ensure_negative_policy_rates(self):
         """Rebuild the small country table once to permit negative policy rates."""
@@ -782,6 +820,9 @@ class CurrencyDB(DBManager):
         for column, declaration in {
             "equity_capital": "REAL NOT NULL DEFAULT 1000000 CHECK(equity_capital > 0)",
             "retained_earnings": "REAL NOT NULL DEFAULT 0",
+            "retained_earnings_minor_units": "INTEGER",
+            "retained_earnings_decimal_places": "INTEGER",
+            "retained_earnings_currency_code": "TEXT",
             "target_capital_ratio": "REAL NOT NULL DEFAULT 0.10 CHECK(target_capital_ratio BETWEEN 0 AND 1)",
             "target_loan_deposit_ratio": "REAL NOT NULL DEFAULT 0.90 CHECK(target_loan_deposit_ratio > 0)",
             "funding_pressure_sensitivity": "REAL NOT NULL DEFAULT 0.50 CHECK(funding_pressure_sensitivity BETWEEN 0 AND 100)",
@@ -797,6 +838,57 @@ class CurrencyDB(DBManager):
                 self.execute(
                     f"ALTER TABLE financial_institutions ADD COLUMN {column} {declaration}"
                 )
+        from functions.money import currency_precision, to_minor_units
+        for row in self.execute(
+            "SELECT issuer,nationality,retained_earnings FROM financial_institutions "
+            "WHERE retained_earnings_minor_units IS NULL OR "
+            "retained_earnings_currency_code IS NULL OR retained_earnings_decimal_places IS NULL"
+        ):
+            denomination = self.execute_one(
+                "SELECT currency_code FROM country_currencies WHERE nationality=?",
+                (row["nationality"],),
+            )
+            currency = str(denomination["currency_code"] if denomination else "NWX").upper()
+            places = currency_precision(self.conn, currency)
+            self.execute(
+                "UPDATE financial_institutions SET retained_earnings_minor_units=?,"
+                "retained_earnings_decimal_places=?,retained_earnings_currency_code=? "
+                "WHERE issuer=?",
+                (to_minor_units(row["retained_earnings"], places), places, currency,
+                 row["issuer"]),
+            )
+        self.execute("DROP TRIGGER IF EXISTS trg_institution_retained_units_insert")
+        self.execute("DROP TRIGGER IF EXISTS trg_institution_retained_units_legacy_update")
+        self.execute("DROP TRIGGER IF EXISTS trg_institution_retained_units_mirror")
+        self.execute("""CREATE TRIGGER trg_institution_retained_units_insert
+            AFTER INSERT ON financial_institutions
+            WHEN NEW.retained_earnings_minor_units IS NULL BEGIN
+              UPDATE financial_institutions SET
+                retained_earnings_currency_code=COALESCE((SELECT currency_code
+                  FROM country_currencies WHERE nationality=NEW.nationality),'NWX'),
+                retained_earnings_decimal_places=COALESCE((SELECT decimal_places FROM currencies
+                  WHERE code=COALESCE((SELECT currency_code FROM country_currencies
+                    WHERE nationality=NEW.nationality),'NWX')),0),
+                retained_earnings_minor_units=CAST(ROUND(COALESCE(NEW.retained_earnings,0)*
+                  CASE COALESCE((SELECT decimal_places FROM currencies WHERE code=COALESCE(
+                    (SELECT currency_code FROM country_currencies WHERE nationality=NEW.nationality),
+                    'NWX')),0) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END) AS INTEGER)
+              WHERE issuer=NEW.issuer;
+            END""")
+        self.execute("""CREATE TRIGGER trg_institution_retained_units_legacy_update
+            AFTER UPDATE OF retained_earnings ON financial_institutions
+            WHEN NEW.retained_earnings IS NOT OLD.retained_earnings BEGIN
+              UPDATE financial_institutions SET retained_earnings_minor_units=CAST(ROUND(
+                COALESCE(NEW.retained_earnings,0)*CASE NEW.retained_earnings_decimal_places
+                  WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END) AS INTEGER)
+              WHERE issuer=NEW.issuer;
+            END""")
+        self.execute("""CREATE TRIGGER trg_institution_retained_units_mirror
+            AFTER UPDATE OF retained_earnings_minor_units ON financial_institutions
+            WHEN NEW.retained_earnings_minor_units IS NOT OLD.retained_earnings_minor_units
+            BEGIN UPDATE financial_institutions SET retained_earnings=
+              NEW.retained_earnings_minor_units*1.0/CASE NEW.retained_earnings_decimal_places
+                WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END WHERE issuer=NEW.issuer; END""")
         self.execute("""CREATE TABLE IF NOT EXISTS financial_institution_ledger (
             entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
             issuer TEXT NOT NULL,
@@ -813,11 +905,36 @@ class CurrencyDB(DBManager):
             ("currency_code", "TEXT NOT NULL DEFAULT 'NWX'"),
             ("base_currency_code", "TEXT NOT NULL DEFAULT 'NWX'"),
             ("base_amount", "REAL NOT NULL DEFAULT 0"),
+            ("amount_minor_units", "INTEGER"),
+            ("base_amount_minor_units", "INTEGER"),
+            ("amount_decimal_places", "INTEGER"),
+            ("base_decimal_places", "INTEGER"),
         ):
             if column not in ledger_columns:
                 self.execute(
                     f"ALTER TABLE financial_institution_ledger ADD COLUMN {column} {declaration}"
                 )
+        # Losslessly backfill the append-only compatibility ledger once. Keep
+        # REAL columns for old readers, but make integer minor units canonical.
+        from functions.money import currency_precision, to_minor_units
+        legacy_rows = self.execute(
+            "SELECT entry_id,amount,currency_code,base_amount,base_currency_code "
+            "FROM financial_institution_ledger WHERE amount_minor_units IS NULL "
+            "OR base_amount_minor_units IS NULL"
+        )
+        for row in legacy_rows:
+            currency = str(row["currency_code"] or "NWX").upper()
+            base_currency = str(row["base_currency_code"] or "NWX").upper()
+            amount_places = currency_precision(self.conn, currency)
+            base_places = currency_precision(self.conn, base_currency)
+            self.execute(
+                "UPDATE financial_institution_ledger SET amount_minor_units=?,"
+                "base_amount_minor_units=?,amount_decimal_places=?,base_decimal_places=? "
+                "WHERE entry_id=?",
+                (to_minor_units(row["amount"], amount_places),
+                 to_minor_units(row["base_amount"], base_places), amount_places,
+                 base_places, row["entry_id"]),
+            )
         self.execute(
             "CREATE INDEX IF NOT EXISTS idx_financial_institution_ledger "
             "ON financial_institution_ledger(issuer,created_epoch,event_type)"
@@ -833,6 +950,19 @@ class CurrencyDB(DBManager):
             status TEXT NOT NULL DEFAULT 'draft' CHECK(status IN ('draft','posted')),
             UNIQUE(issuer,event_type,reference_key)
         )""")
+        journal_entry_columns = {
+            row[1] for row in self.execute("PRAGMA table_info(bank_journal_entries)")
+        }
+        if "decimal_places" not in journal_entry_columns:
+            self.execute("ALTER TABLE bank_journal_entries ADD COLUMN decimal_places INTEGER")
+        from functions.money import currency_precision
+        for entry in self.execute(
+            "SELECT entry_id,currency_code FROM bank_journal_entries WHERE decimal_places IS NULL"
+        ):
+            self.execute(
+                "UPDATE bank_journal_entries SET decimal_places=? WHERE entry_id=?",
+                (currency_precision(self.conn, entry["currency_code"]), entry["entry_id"]),
+            )
         self.execute("""CREATE TABLE IF NOT EXISTS bank_journal_lines (
             line_id INTEGER PRIMARY KEY AUTOINCREMENT,
             entry_id INTEGER NOT NULL REFERENCES bank_journal_entries(entry_id),
@@ -842,6 +972,44 @@ class CurrencyDB(DBManager):
             CHECK((debit_units > 0 AND credit_units = 0) OR
                   (credit_units > 0 AND debit_units = 0))
         )""")
+        self.execute("""CREATE TABLE IF NOT EXISTS bank_journal_accounts (
+            account_code TEXT PRIMARY KEY,
+            display_name TEXT NOT NULL,
+            category TEXT NOT NULL CHECK(category IN
+                ('asset','contra_asset','liability','equity','revenue','expense','clearing')),
+            normal_side TEXT NOT NULL CHECK(normal_side IN ('debit','credit')),
+            active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1))
+        )""")
+        bank_accounts = (
+            ('settlement_asset','결제자산','asset','debit'),
+            ('collateral_recovery_asset','담보회수자산','asset','debit'),
+            ('loans_receivable','대출채권','asset','debit'),
+            ('insurance_fund_receivable','예금보험기금미수금','asset','debit'),
+            ('ecl_allowance','기대신용손실충당금','contra_asset','credit'),
+            ('default_loss_allowance','부도손실충당금','contra_asset','credit'),
+            ('customer_deposits_payable','고객예금부채','liability','credit'),
+            ('customer_funds_payable','고객자금지급채무','liability','credit'),
+            ('tax_payable','원천세납부채무','liability','credit'),
+            ('treasury_payable','국고지급채무','liability','credit'),
+            ('deposit_insurance_payable','예금보험금지급채무','liability','credit'),
+            ('uninsured_deposit_claim','미보호예금청구채무','liability','credit'),
+            ('fx_conversion_clearing','외환전환청산','clearing','debit'),
+            ('interest_income','이자수익','revenue','credit'),
+            ('fee_income','수수료수익','revenue','credit'),
+            ('custodian_fee_income','수탁수수료수익','revenue','credit'),
+            ('credit_loss_recovery_income','신용손실회수수익','revenue','credit'),
+            ('impairment_reversal','손상환입수익','revenue','credit'),
+            ('interest_expense','이자비용','expense','debit'),
+            ('impairment_expense','손상차손','expense','debit'),
+            ('credit_loss_expense','신용손실비용','expense','debit'),
+            ('dividend_expense','배당비용','expense','debit'),
+            ('ima_payout_expense','IMA지급비용','expense','debit'),
+        )
+        self.conn.executemany(
+            "INSERT OR IGNORE INTO bank_journal_accounts "
+            "(account_code,display_name,category,normal_side) VALUES (?,?,?,?)",
+            bank_accounts,
+        )
         self.execute("""CREATE TRIGGER IF NOT EXISTS trg_bank_journal_post_balanced
             BEFORE UPDATE OF status ON bank_journal_entries
             WHEN NEW.status='posted' AND OLD.status='draft'

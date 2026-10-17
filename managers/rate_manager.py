@@ -3,6 +3,7 @@
 import math
 import json
 import time
+from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timedelta, timezone
 from contextlib import nullcontext
 
@@ -1524,7 +1525,9 @@ class RateManager:
         from managers.bank_journal import BankJournal
         when = BankJournal.validate_epoch(now)
         institution = conn.execute(
-            "SELECT f.nationality,c.currency_code FROM financial_institutions f "
+            "SELECT f.nationality,c.currency_code,f.retained_earnings_minor_units,"
+            "f.retained_earnings_decimal_places,f.retained_earnings_currency_code "
+            "FROM financial_institutions f "
             "LEFT JOIN country_currencies c ON c.nationality=f.nationality "
             "WHERE f.issuer=?", (issuer,)
         ).fetchone()
@@ -1532,32 +1535,51 @@ class RateManager:
             institution["currency_code"] if institution and institution["currency_code"]
             else "NWX"
         )
+        if institution and institution["retained_earnings_currency_code"] \
+                and str(institution["retained_earnings_currency_code"]).upper() != base_currency.upper():
+            raise ValueError(
+                "기관 이익잉여금 통화가 국가 기준통화와 다릅니다. 통화 변경 대사를 먼저 완료해야 합니다."
+            )
         event_currency = str(currency_code or base_currency)
         from managers.currency_manager import CurrencyManager, SCALE
-        from functions.money import round_currency
-        event_amount = round_currency(conn, amount, event_currency)
+        from functions.money import currency_precision, from_minor_units, to_minor_units
+        event_places = currency_precision(conn, event_currency)
+        base_places = currency_precision(conn, base_currency)
+        event_units = to_minor_units(amount, event_places)
+        event_amount = from_minor_units(event_units, event_places)
         if event_currency == base_currency:
-            base_amount = round_currency(conn, event_amount, base_currency)
+            base_units = to_minor_units(event_amount, base_places)
         else:
-            sign = -1 if event_amount < 0 else 1
-            converted = CurrencyManager.convert(
-                conn, int(round(abs(event_amount)*SCALE)), event_currency, base_currency
+            sign = -1 if event_units < 0 else 1
+            event_micro_units = int(
+                (abs(event_amount) * SCALE).to_integral_value(rounding=ROUND_HALF_UP)
             )
-            base_amount = sign*converted/SCALE
-            base_amount = round_currency(conn, base_amount, base_currency)
+            converted = CurrencyManager.convert(
+                conn, event_micro_units, event_currency, base_currency
+            )
+            base_units = to_minor_units(
+                sign * Decimal(converted) / Decimal(SCALE), base_places
+            )
+        base_amount = from_minor_units(base_units, base_places)
+        prior_units = int(institution["retained_earnings_minor_units"] or 0) if institution else 0
+        if institution and int(institution["retained_earnings_decimal_places"] or 0) != base_places:
+            raise ValueError("기관 이익잉여금 통화 자릿수가 변경되었습니다. 통화 재기준화를 먼저 완료해야 합니다.")
+        updated_units = prior_units + base_units
         cursor = conn.execute(
             "INSERT OR IGNORE INTO financial_institution_ledger "
             "(issuer,event_type,amount,reference_key,created_epoch,currency_code,"
-            "base_currency_code,base_amount) VALUES (?,?,?,?,?,?,?,?)",
-            (issuer, str(event_type), event_amount, str(reference_key), when,
-             event_currency, base_currency, base_amount),
+            "base_currency_code,base_amount,amount_minor_units,base_amount_minor_units,"
+            "amount_decimal_places,base_decimal_places) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (issuer, str(event_type), float(event_amount), str(reference_key), when,
+             event_currency, base_currency, float(base_amount), event_units, base_units,
+             event_places, base_places),
         )
         if cursor.rowcount != 1:
             return False
         conn.execute(
-            "UPDATE financial_institutions SET retained_earnings=retained_earnings+?,"
+            "UPDATE financial_institutions SET retained_earnings_minor_units=?,"
             "last_capital_update_epoch=? WHERE issuer=?",
-            (base_amount, when, issuer),
+            (updated_units, when, issuer),
         )
         RateManager.refresh_institution_status(conn, issuer, now=when)
         return True

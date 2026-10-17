@@ -23,10 +23,11 @@ class BankJournal:
         """
         if since_epoch is not None:
             since_epoch = BankJournal.validate_epoch(since_epoch)
-        from functions.money import currency_precision, round_currency
+        from functions.money import from_minor_units
 
         query = (
-            "SELECT reference_key,currency_code,SUM(amount) ledger_amount,"
+            "SELECT reference_key,currency_code,SUM(amount_minor_units) ledger_units,"
+            "MAX(amount_decimal_places) decimal_places,"
             "MIN(created_epoch) first_epoch FROM financial_institution_ledger "
             "WHERE issuer=?"
         )
@@ -43,9 +44,12 @@ class BankJournal:
         placeholders = ",".join("?" for _ in pnl_accounts)
         results = []
         for ledger in conn.execute(query, params).fetchall():
+            places = int(ledger["decimal_places"])
+            ledger_amount = from_minor_units(int(ledger["ledger_units"] or 0), places)
             journal = conn.execute(
                 "SELECT COUNT(DISTINCT e.entry_id) entry_count,"
-                "COALESCE(SUM(l.credit_units-l.debit_units),0) pnl_units "
+                "COALESCE(SUM(l.credit_units-l.debit_units),0) pnl_units,"
+                "MAX(e.decimal_places) journal_decimal_places "
                 "FROM bank_journal_entries e JOIN bank_journal_lines l USING(entry_id) "
                 f"WHERE e.issuer=? AND e.reference_key=? AND e.currency_code=? "
                 f"AND e.status='posted' AND l.account_code IN ({placeholders})",
@@ -56,22 +60,20 @@ class BankJournal:
                 results.append({
                     "reference_key": ledger["reference_key"],
                     "currency_code": ledger["currency_code"],
-                    "ledger_amount": ledger["ledger_amount"],
+                    "ledger_amount": float(ledger_amount),
                     "journal_amount": None,
                     "difference": None,
                     "status": "missing_journal",
                 })
                 continue
-            places = currency_precision(conn, ledger["currency_code"])
-            journal_amount = Decimal(int(journal["pnl_units"]))/Decimal(10**places)
-            difference = round_currency(
-                conn, Decimal(str(ledger["ledger_amount"]))-journal_amount,
-                ledger["currency_code"],
-            )
+            journal_units = int(journal["pnl_units"] or 0)
+            journal_places = int(journal["journal_decimal_places"])
+            journal_amount = from_minor_units(journal_units, journal_places)
+            difference = ledger_amount-journal_amount
             results.append({
                 "reference_key": ledger["reference_key"],
                 "currency_code": ledger["currency_code"],
-                "ledger_amount": ledger["ledger_amount"],
+                "ledger_amount": float(ledger_amount),
                 "journal_amount": float(journal_amount),
                 "difference": difference,
                 "status": "matched" if difference == 0 else "mismatch",
@@ -82,7 +84,7 @@ class BankJournal:
     def trial_balance(conn, issuer, currency_code=None):
         """Return posted account balances in debit-positive minor units."""
         sql = (
-            "SELECT e.currency_code,l.account_code,"
+            "SELECT e.currency_code,e.decimal_places,l.account_code,"
             "SUM(l.debit_units) debit_units,SUM(l.credit_units) credit_units,"
             "SUM(l.debit_units-l.credit_units) balance_units "
             "FROM bank_journal_entries e JOIN bank_journal_lines l USING(entry_id) "
@@ -92,7 +94,8 @@ class BankJournal:
         if currency_code:
             sql += " AND e.currency_code=?"
             params.append(str(currency_code).upper())
-        sql += " GROUP BY e.currency_code,l.account_code ORDER BY e.currency_code,l.account_code"
+        sql += " GROUP BY e.currency_code,e.decimal_places,l.account_code " \
+               "ORDER BY e.currency_code,e.decimal_places,l.account_code"
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
     @staticmethod
@@ -298,6 +301,41 @@ class BankJournal:
         return results
 
     @staticmethod
+    def reconcile_all(conn, issuer):
+        """Run every implemented institution subledger-to-journal reconciliation.
+
+        This is deliberately explicit: it does not imply coverage of consumer
+        wallets, market securities, corporate books, or unjournaled legacy
+        events. Missing source/journal coverage remains a finding, never a pass.
+        """
+        checks = {
+            "institution_pnl": BankJournal.reconcile_institution_results(conn, issuer),
+            "customer_deposits": BankJournal.reconcile_customer_deposits(conn, issuer),
+            "loan_receivables": BankJournal.reconcile_loan_receivables(conn, issuer),
+            "ecl_allowances": BankJournal.reconcile_ecl_allowances(conn, issuer),
+            "deposit_insurance_claims": BankJournal.reconcile_deposit_insurance_claims(
+                conn, issuer
+            ),
+            "journal_invariants": [
+                {**row, "status": "mismatch"}
+                for row in BankJournal.audit_unbalanced(conn, issuer)
+            ],
+        }
+        findings = [
+            {"subledger": name, **row}
+            for name, rows in checks.items()
+            for row in rows
+            if row.get("status") != "matched"
+        ]
+        return {
+            "issuer": str(issuer),
+            "status": "matched" if not findings else "mismatch",
+            "checks": checks,
+            "findings": findings,
+            "coverage": tuple(checks),
+        }
+
+    @staticmethod
     def post_tax_remittance(conn, issuer, reference_key, source_currency,
                             source_amount, settlement_currency, settlement_amount,
                             *, description="", now=None):
@@ -337,40 +375,45 @@ class BankJournal:
         """
         if not issuer or not reference_key:
             return False
-        from functions.money import currency_precision, round_currency
+        from functions.money import currency_precision, to_minor_units
 
         created_epoch = BankJournal.validate_epoch(now)
 
         currency = str(currency_code or "").upper()
         places = currency_precision(conn, currency)
-        scale = 10 ** places
         normalized = []
         debit_total = credit_total = 0
         for account, side, amount in lines:
-            rounded = round_currency(conn, amount, currency)
-            units = int(Decimal(str(rounded)) * scale)
+            account = str(account)
+            if not conn.execute(
+                "SELECT 1 FROM bank_journal_accounts "
+                "WHERE account_code=? AND active=1", (account,),
+            ).fetchone():
+                raise ValueError(f"등록되지 않았거나 비활성인 회계 계정입니다: {account}")
+            units = to_minor_units(amount, places)
             if units <= 0:
                 continue
             side = str(side).lower()
             if side == "debit":
                 debit_total += units
-                normalized.append((str(account), units, 0))
+                normalized.append((account, units, 0))
             elif side == "credit":
                 credit_total += units
-                normalized.append((str(account), 0, units))
+                normalized.append((account, 0, units))
             else:
                 raise ValueError("분개 차변/대변 방향이 올바르지 않습니다.")
         if debit_total == 0 or debit_total != credit_total or len(normalized) < 2:
             raise ValueError("금융기관 분개가 통화 최소단위 기준으로 균형을 이루지 않습니다.")
         cursor = conn.execute(
             "INSERT OR IGNORE INTO bank_journal_entries "
-            "(issuer,event_type,reference_key,currency_code,created_epoch,description) "
-            "VALUES (?,?,?,?,?,?)",
+            "(issuer,event_type,reference_key,currency_code,created_epoch,description,decimal_places) "
+            "VALUES (?,?,?,?,?,?,?)",
             (str(issuer), str(event_type), str(reference_key), currency,
-             created_epoch,
-             str(description or "")),
+             created_epoch, str(description or ""), places),
         )
         if cursor.rowcount != 1:
+            from managers.accounting_journal import AccountingJournal
+            AccountingJournal.rebuild_from_subledgers(conn)
             return False
         entry_id = int(cursor.lastrowid)
         conn.executemany(
@@ -382,5 +425,20 @@ class BankJournal:
         conn.execute(
             "UPDATE bank_journal_entries SET status='posted' WHERE entry_id=?",
             (entry_id,),
+        )
+        from managers.accounting_journal import AccountingJournal
+        common_lines = []
+        for account, debit, credit in normalized:
+            AccountingJournal.register_mapping(conn, "institution", account, account)
+            if debit:
+                common_lines.append((account, "debit", debit))
+            if credit:
+                common_lines.append((account, "credit", credit))
+        AccountingJournal.post(
+            conn, ledger_scope="institution", entity_type="financial_institution",
+            entity_id=issuer, source_key=f"{event_type}:{reference_key}",
+            currency_code=currency, decimal_places=places,
+            recorded_epoch=int(created_epoch), lines=common_lines,
+            description=description,
         )
         return True

@@ -77,6 +77,8 @@ class FinancialManager:
         now = int(validate_epoch(now))
         prior = conn.execute('SELECT entry_id FROM financial_entries WHERE company_code=? AND source_key=?', (code,key)).fetchone()
         if prior:
+            from managers.accounting_journal import AccountingJournal
+            AccountingJournal.rebuild_from_subledgers(conn)
             return prior[0]
         combined = {}
         for account, amount in lines:
@@ -99,6 +101,18 @@ class FinancialManager:
         conn.executemany('INSERT INTO financial_lines(entry_id,account,amount) VALUES (?,?,?)',
                          [(entry_id,k,v) for k,v in combined.items()])
         conn.execute("UPDATE financial_entries SET status='posted' WHERE entry_id=?", (entry_id,))
+        entity = cls.entity(conn, code)
+        from managers.accounting_journal import AccountingJournal
+        common_lines = []
+        for account, signed_units in combined.items():
+            AccountingJournal.register_mapping(conn, "company", account, account)
+            common_lines.append((account, "debit" if signed_units > 0 else "credit", abs(signed_units)))
+        AccountingJournal.post(
+            conn, ledger_scope="company", entity_type="company", entity_id=code,
+            source_key=key, currency_code=entity['currency'],
+            decimal_places=int(entity['decimal_places']), recorded_epoch=now,
+            lines=common_lines, description=description,
+        )
         return entry_id
 
     @classmethod

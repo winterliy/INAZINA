@@ -41,6 +41,40 @@ def currency_precision(conn, currency_code):
     return places
 
 
+def to_minor_units(value, decimal_places, *, rounding=ROUND_HALF_UP):
+    """Convert a monetary amount to exact integer minor units.
+
+    This is the accounting/storage boundary: callers should keep the returned
+    integer authoritative and only convert back for presentation or legacy
+    interfaces.  The amount is rounded once, using the currency's scale.
+    """
+    try:
+        amount = Decimal(str(value))
+        places = int(decimal_places)
+    except (InvalidOperation, TypeError, ValueError, OverflowError):
+        raise ValueError("금액 또는 통화 소수 자릿수가 올바르지 않습니다.") from None
+    if not amount.is_finite():
+        raise ValueError("금액은 유한한 숫자여야 합니다.")
+    if not 0 <= places <= 6:
+        raise ValueError("통화 소수 자릿수는 0~6이어야 합니다.")
+    scaled = (amount * (10 ** places)).quantize(Decimal("1"), rounding=rounding)
+    return int(scaled)
+
+
+def from_minor_units(units, decimal_places):
+    """Return an exact Decimal amount from integer currency minor units."""
+    if isinstance(units, bool):
+        raise ValueError("최소단위 금액은 정수여야 합니다.")
+    try:
+        integer_units = int(units)
+        places = int(decimal_places)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("최소단위 금액 또는 통화 소수 자릿수가 올바르지 않습니다.") from None
+    if integer_units != units or not 0 <= places <= 6:
+        raise ValueError("최소단위 금액은 정수이며 통화 소수 자릿수는 0~6이어야 합니다.")
+    return Decimal(integer_units).scaleb(-places)
+
+
 def round_currency(conn, value, currency_code):
     return round_money(value, currency_precision(conn, currency_code))
 

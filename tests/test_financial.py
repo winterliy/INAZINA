@@ -98,6 +98,52 @@ class FinancialTests(unittest.TestCase):
                 raise RuntimeError()
         self.assertEqual(self.fin.report('CO')['entry_count'],before)
 
+    def test_common_journal_company_mapping_replay_and_legacy_rebuild(self):
+        self.setup_company()
+        with self.db.atomic() as conn:
+            self.fin.event(conn,'CO','공통원장 매출',
+                           [('receivables',125),('revenue',-125)],now=1756684800,key='common:test')
+            common = conn.execute("SELECT entry_id,currency_code,decimal_places FROM accounting_entries "
+                                  "WHERE ledger_scope='company' AND entity_id='CO' AND source_key='common:test'").fetchone()
+            self.assertIsNotNone(common)
+            self.assertEqual((common['decimal_places'],), (0,))
+            self.assertEqual(tuple(conn.execute("SELECT SUM(debit_units),SUM(credit_units) FROM accounting_lines WHERE entry_id=?",(common['entry_id'],)).fetchone()), (125,125))
+            # Retry is idempotent at both native and shared journal boundaries.
+            self.fin.event(conn,'CO','공통원장 매출',
+                           [('receivables',125),('revenue',-125)],now=1756684800,key='common:test')
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM accounting_entries WHERE ledger_scope='company' AND source_key='common:test'").fetchone()[0],1)
+        from managers.accounting_journal import AccountingJournal
+        with self.db.atomic() as conn:
+            # Simulate a native posting that predates common-ledger coverage.
+            conn.execute("INSERT INTO financial_entries(company_code,period,recorded_epoch,source_key,description,cash_flow,status) "
+                         "VALUES ('CO','2025-09',1756684800,'legacy:common','legacy fixture','operating','draft')")
+            native_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            conn.executemany("INSERT INTO financial_lines(entry_id,account,amount) VALUES (?,?,?)",
+                             [(native_id,'receivables',125),(native_id,'revenue',-125)])
+            conn.execute("UPDATE financial_entries SET status='posted' WHERE entry_id=?",(native_id,))
+            self.assertEqual(AccountingJournal.rebuild_from_subledgers(conn)['company'],1)
+            self.assertEqual(AccountingJournal.rebuild_from_subledgers(conn)['company'],0)
+            self.assertEqual(AccountingJournal.reconcile_subledgers(conn)[0]['status'],'matched')
+            self.assertEqual(AccountingJournal.audit_unbalanced(conn),[])
+            with self.assertRaisesRegex(sqlite3.IntegrityError,'append-only'):
+                conn.execute("UPDATE accounting_lines SET debit_units=126 WHERE entry_id=?",(common['entry_id'],))
+
+    def test_common_journal_savepoint_rolls_back_partial_failure(self):
+        self.setup_company()
+        from managers.accounting_journal import AccountingJournal
+        with self.db.atomic() as conn:
+            self.fin.ensure(conn,'CO',1756684800)
+            for account in ('receivables','revenue'):
+                AccountingJournal.register_mapping(conn,'test',account,account)
+            conn.execute("CREATE TEMP TRIGGER fail_common_line BEFORE INSERT ON accounting_lines "
+                         "BEGIN SELECT RAISE(ABORT,'injected partial failure'); END")
+            with self.assertRaisesRegex(sqlite3.IntegrityError,'injected partial failure'):
+                AccountingJournal.post(conn,ledger_scope='test',entity_type='customer',entity_id='u1',
+                    source_key='partial',currency_code='INZ',decimal_places=0,recorded_epoch=1,
+                    lines=[('receivables','debit',10),('revenue','credit',10)])
+            conn.execute("DROP TRIGGER fail_common_line")
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM accounting_entries WHERE ledger_scope='test'").fetchone()[0],0)
+
     def test_manual_authorization_balance_and_reversal(self):
         self.setup_company()
         lines=[{'account':'receivables','amount':1000},{'account':'revenue','amount':-1000}]
