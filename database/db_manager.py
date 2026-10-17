@@ -103,6 +103,7 @@ class DBManager:
             "preferred_dividend_claims", "dividend_distributions",
             "dividend_payments", "financial_institutions",
             "financial_institution_ledger", "depositary_receipt_movements",
+            "tax_transactions",
         }
         if table in currency_aware:
             safe_table = "".join(ch if ch.isalnum() else "_" for ch in table)

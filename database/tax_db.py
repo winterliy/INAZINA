@@ -29,9 +29,15 @@ class TaxDB(DBManager):
                 gross_amount INTEGER NOT NULL,
                 tax_amount INTEGER NOT NULL,
                 net_amount INTEGER NOT NULL,
+                currency_code TEXT NOT NULL DEFAULT 'NWX',
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
             )"""
         )
+        columns = {row[1] for row in self.execute("PRAGMA table_info(tax_transactions)")}
+        if "currency_code" not in columns:
+            self.execute(
+                "ALTER TABLE tax_transactions ADD COLUMN currency_code TEXT NOT NULL DEFAULT 'NWX'"
+            )
         self.enforce_integer_money(
             "tax_transactions",
             ("gross_amount", "tax_amount", "net_amount"),

@@ -26,7 +26,7 @@ CURRENCY_REFERENCES = {
                        "preferred_dividend_claims", "saving", "treasury_bond_products"),
     "source_currency": ("basic_income_payments", "currency_transactions", "currency_transfer_transactions"),
     "target_currency": ("basic_income_payments", "currency_transactions", "currency_transfer_transactions"),
-    "currency_code": ("financial_institution_ledger",),
+    "currency_code": ("financial_institution_ledger", "tax_transactions"),
 }
 COUNTRY_REFERENCES = {
     "nationality": ("users", "country_rate_history", "financial_holidays", "financial_institutions",

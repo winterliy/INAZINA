@@ -305,8 +305,9 @@ class InterestManager:
                     now=paid_until,
                 )
             balance += net
-            conn.execute('INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount) VALUES (?,?,?,?,?)',
-                (account['user_id'], 'saving_interest', gross, tax, net))
+            conn.execute('INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount,currency_code) VALUES (?,?,?,?,?,?)',
+                (account['user_id'], 'saving_interest', gross, tax, net,
+                 account['quote_currency']))
             cls._log_company_interest(conn, account['user_id'], 'interest_income', gross, tax, account['quote_currency'], product['issuer'])
             if tax > 0:
                 from managers.currency_manager import CurrencyManager, SCALE

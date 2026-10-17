@@ -139,6 +139,27 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(result[0]["difference_units"], 1)
         self.assertEqual(result[0]["status"], "mismatch")
 
+    def test_withholding_tax_ledger_keeps_income_currency_precision(self):
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('AAA','Test currency',2,2)"
+        )
+        self.db.currency.execute(
+            "INSERT INTO country_tax_rules(nationality,income_source,tax_percent,updated_by,updated_epoch) "
+            "VALUES ('낙원','treasury_bond_interest',10,'admin',1)"
+        )
+        from managers.user_manager import UserManager
+        with self.db.atomic() as conn:
+            tax = UserManager._tax(
+                conn, "borrower", "treasury_bond_interest", "12.34", currency="AAA"
+            )
+        self.assertEqual(tax, 1.23)
+        row = self.db.tax.execute_one(
+            "SELECT gross_amount,tax_amount,net_amount,currency_code FROM tax_transactions "
+            "WHERE user_id='borrower' AND source='treasury_bond_interest'"
+        )
+        self.assertEqual(tuple(row), (12.34, 1.23, 11.11, "AAA"))
+
     def test_negative_deposit_rate_debits_without_negative_tax(self):
         self.db.products.execute(
             "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"

@@ -256,6 +256,8 @@ class CurrencyDB(DBManager):
              ("equity_capital", "retained_earnings", "deposit_insurance_limit"),
              "issuer", "SELECT c.currency_code FROM country_currencies c "
              "WHERE c.nationality=NEW.nationality"),
+            ("tax_transactions", ("gross_amount", "tax_amount", "net_amount"),
+             "transaction_id", "NEW.currency_code"),
         )
         for table, columns, key, currency in derived:
             existing = {row[1] for row in self.execute(f"PRAGMA table_info({table})")}

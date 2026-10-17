@@ -198,7 +198,11 @@ class UserManager:
         from database.fund_accounting import account
         if account(conn, user_id):
             return 0  # Fund income stays in NAV; investor gains are taxed on redemption.
-        gross = max(0, round_money(gross_amount))
+        income_currency_was_supplied = currency is not None
+        tax_currency = str(currency or "NWX").upper()
+        from functions.money import currency_precision, round_currency
+        places = currency_precision(conn, tax_currency)
+        gross = max(0, round_currency(conn, gross_amount, tax_currency))
         if gross == 0:
             return 0
         source_class = str(source or '').split(':', 1)[0].strip().lower()
@@ -215,14 +219,18 @@ class UserManager:
             rate = 3.0
         if not 0 <= rate <= 100:
             rate = 3.0
-        tax_amount = calculate_income_tax(gross, rate / 100.0)
-        net_income = max(0, gross - tax_amount)
+        tax_amount = calculate_income_tax(gross, rate / 100.0, places)
+        tax_amount = round_currency(conn, tax_amount, tax_currency)
+        net_income = max(0, round_currency(conn, gross - tax_amount, tax_currency))
         if tax_amount > 0:
             from managers.currency_manager import CurrencyManager
             treasury_id = CurrencyManager.user_treasury_id(conn, user_id)
-            if currency and str(currency).upper() != CurrencyManager.home(conn, user_id):
+            if income_currency_was_supplied and tax_currency != CurrencyManager.home(conn, user_id):
                 from managers.currency_manager import SCALE
-                CurrencyManager.treasury_receive(conn, treasury_id, currency, int(round(tax_amount * SCALE)))
+                CurrencyManager.treasury_receive(
+                    conn, treasury_id, tax_currency,
+                    int(Decimal(str(tax_amount))*SCALE),
+                )
             else:
                 treasury = conn.execute(
                     "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
@@ -231,11 +239,11 @@ class UserManager:
                 if treasury.rowcount != 1:
                     raise RuntimeError("국고 계정을 찾을 수 없어 세금 처리를 취소했습니다.")
         conn.execute(
-            "INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount) "
-            "VALUES (?,?,?,?,?)",
-            (str(user_id), str(source), gross, tax_amount, net_income),
+            "INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount,currency_code) "
+            "VALUES (?,?,?,?,?,?)",
+            (str(user_id), str(source), gross, tax_amount, net_income, tax_currency),
         )
-        return int(tax_amount)
+        return tax_amount
 
     @staticmethod
     def _refresh_max_shareholder(conn, asset_code):
