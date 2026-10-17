@@ -12,6 +12,7 @@ from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY, IS_TREASURY
 from functions.money import (round_money, round_currency, parse_currency_money,
                              currency_precision)
 from functions.interest_calc import year_fraction
+from managers.bank_journal import BankJournal
 from managers.rate_manager import RateManager
 
 
@@ -19,7 +20,7 @@ class BankManager:
     """예금 계좌 및 대출 업무를 담당합니다."""
 
     PASSWORD_ITERATIONS = 240_000
-    MAX_SUPPORTED_EPOCH = 253402300799.0  # 9999-12-31 23:59:59 UTC
+    MAX_SUPPORTED_EPOCH = BankJournal.MAX_SUPPORTED_EPOCH
 
     @staticmethod
     def _loan_cashflows(principal, annual_rate, maturity_days, frequency_days,

@@ -138,7 +138,7 @@ class CurrencyHomeTests(unittest.TestCase):
             "aml": self.db.currency.execute_one("SELECT COUNT(*) FROM aml_alerts")[0],
             "audit": self.db.system.execute_one("SELECT COUNT(*) FROM admin_audit")[0],
         }
-        for invalid_epoch in (-1, float('nan'), float('inf')):
+        for invalid_epoch in (-1, float('nan'), float('inf'), 1e300, True, 'invalid'):
             calls = (
                 ("invalid_kyc_check_epoch", lambda c: ComplianceManager.require_financial_eligibility(
                     c, 'citizen', now=invalid_epoch)),

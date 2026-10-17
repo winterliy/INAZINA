@@ -46,6 +46,14 @@ class RateManager:
         return RATE_CHART_PREFIX + key
 
     @staticmethod
+    def _validated_epoch(value, error_code):
+        from managers.bank_journal import BankJournal
+        try:
+            return BankJournal.validate_epoch(value)
+        except ValueError as exc:
+            raise ValueError(error_code) from exc
+
+    @staticmethod
     def adjust_business_day(conn, epoch, nationality, convention="following"):
         """Roll contractual payment dates around weekends and configured holidays."""
         convention = str(convention or "following").lower()
@@ -84,9 +92,18 @@ class RateManager:
         key = key if key in self.KEYS else rate_key_from_code(key)
         if key is None:
             raise ValueError("지원하지 않는 금리입니다.")
-        start = float(since)
-        end = float(time.time() if now is None else now)
-        if not math.isfinite(start) or not math.isfinite(end) or end < start:
+        try:
+            from managers.bank_journal import BankJournal
+            if isinstance(since, bool):
+                raise ValueError("invalid_rate_history_window")
+            start = float(since)
+            if (not math.isfinite(start)
+                    or start > BankJournal.MAX_SUPPORTED_EPOCH):
+                raise ValueError("invalid_rate_history_window")
+            end = self._validated_epoch(now, "invalid_rate_history_window")
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("조회 기간은 유효한 UNIX 시각이어야 합니다.") from exc
+        if end < start:
             raise ValueError("조회 기간은 시작 시각 이후의 유효한 UNIX 시각이어야 합니다.")
         with self.db.readonly() as conn:
             prior = conn.execute(
@@ -879,9 +896,7 @@ class RateManager:
         issuer = str(issuer or "").strip()
         if not issuer:
             raise ValueError("financial_institution_not_found")
-        epoch = float(time.time() if now is None else now)
-        if not math.isfinite(epoch) or epoch < 0:
-            raise ValueError("invalid_fx_stress_epoch")
+        epoch = RateManager._validated_epoch(now, "invalid_fx_stress_epoch")
         row = conn.execute(
             "SELECT COALESCE(c.currency_code,'NWX') currency_code FROM "
             "financial_institutions f LEFT JOIN country_currencies c "
@@ -948,9 +963,7 @@ class RateManager:
         issuer = str(issuer or "").strip()
         if not issuer:
             raise ValueError("financial_institution_not_found")
-        epoch = float(time.time() if now is None else now)
-        if not math.isfinite(epoch) or epoch < 0:
-            raise ValueError("invalid_maturity_gap_epoch")
+        epoch = RateManager._validated_epoch(now, "invalid_maturity_gap_epoch")
         bucket_names = ("1d", "7d", "30d", "90d", "365d", "over365d")
         limits = (1, 7, 30, 90, 365)
         result = {}
@@ -1063,9 +1076,7 @@ class RateManager:
         issuer = str(issuer or "").strip()
         if not issuer:
             raise ValueError("financial_institution_not_found")
-        epoch = float(time.time() if now is None else now)
-        if not math.isfinite(epoch) or epoch < 0:
-            raise ValueError("invalid_liquidity_stress_epoch")
+        epoch = RateManager._validated_epoch(now, "invalid_liquidity_stress_epoch")
         horizon = epoch+30*86400
         sheet = RateManager.institution_balance_sheet(conn, issuer)
         base = str(sheet["base_currency"])
@@ -1197,9 +1208,7 @@ class RateManager:
         issuer = str(issuer or "").strip()
         if not issuer:
             raise ValueError("financial_institution_not_found")
-        epoch = float(time.time() if now is None else now)
-        if not math.isfinite(epoch) or epoch < 0:
-            raise ValueError("invalid_rate_stress_epoch")
+        epoch = RateManager._validated_epoch(now, "invalid_rate_stress_epoch")
         horizon = epoch + 365 * 86400
         exposure = {}
         shock_bps = (-200, -100, 100, 200)
@@ -1284,9 +1293,7 @@ class RateManager:
         issuer = str(issuer or "").strip()
         if not issuer:
             raise ValueError("financial_institution_not_found")
-        epoch = float(time.time() if now is None else now)
-        if not math.isfinite(epoch) or epoch < 0:
-            raise ValueError("invalid_eve_stress_epoch")
+        epoch = RateManager._validated_epoch(now, "invalid_eve_stress_epoch")
         year_seconds = 365*86400
         exposure = {}
         counts = {}

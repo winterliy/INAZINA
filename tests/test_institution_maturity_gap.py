@@ -188,6 +188,22 @@ class InstitutionMaturityGapTests(unittest.TestCase):
                     conn, "Bank", now=float("nan")
                 )
 
+    def test_institutional_stress_reports_reject_invalid_epoch_types_and_ranges(self):
+        invalid_epochs = (-1, float("nan"), float("inf"), 1e300, True, "invalid")
+        reports = (
+            (RateManager.institution_fx_stress, "invalid_fx_stress_epoch"),
+            (RateManager.institution_maturity_gap, "invalid_maturity_gap_epoch"),
+            (RateManager.institution_liquidity_stress, "invalid_liquidity_stress_epoch"),
+            (RateManager.institution_rate_stress, "invalid_rate_stress_epoch"),
+            (RateManager.institution_fixed_rate_eve_stress, "invalid_eve_stress_epoch"),
+        )
+        with self.db.readonly() as conn:
+            for report, error_code in reports:
+                for invalid_epoch in invalid_epochs:
+                    with self.subTest(report=report.__name__, invalid_epoch=invalid_epoch):
+                        with self.assertRaisesRegex(ValueError, error_code):
+                            report(conn, "Bank", now=invalid_epoch)
+
     def test_depositor_concentration_aggregates_multiple_accounts_by_user(self):
         self.db.products.execute(
             "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"

@@ -8,6 +8,7 @@ from database.user_db import TREASURY_USER_ID
 from functions.interest_calc import calculate_compound_interest, calculate_simple_interest
 from functions.tax_calc import calculate_income_tax
 from functions.money import round_money, round_currency, currency_precision
+from managers.bank_journal import BankJournal
 from managers.bank_manager import BankManager
 from managers.rate_manager import RateManager
 
@@ -16,7 +17,6 @@ class InterestManager:
     """저축 이자 원천징수 및 대출 이자 누적을 처리합니다."""
 
     YEAR_SECONDS = 365 * 24 * 60 * 60
-    MAX_SUPPORTED_EPOCH = 253402300799.0  # 9999-12-31 23:59:59 UTC
 
     def __init__(self, db: DatabaseManager):
         self.db = db
@@ -31,17 +31,10 @@ class InterestManager:
 
     @classmethod
     def _validated_processing_epoch(cls, value):
-        if value is None:
-            value = time.time()
-        if isinstance(value, bool):
-            raise ValueError("invalid_interest_processing_epoch")
         try:
-            epoch = float(value)
-        except (TypeError, ValueError, OverflowError) as exc:
+            return BankJournal.validate_epoch(value)
+        except ValueError as exc:
             raise ValueError("invalid_interest_processing_epoch") from exc
-        if not math.isfinite(epoch) or not 0 <= epoch <= cls.MAX_SUPPORTED_EPOCH:
-            raise ValueError("invalid_interest_processing_epoch")
-        return epoch
 
     @staticmethod
     def _utc_epoch(value):

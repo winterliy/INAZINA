@@ -7,7 +7,6 @@ government identifiers, document images, or free-text evidence.
 from decimal import Decimal, InvalidOperation
 import json
 import math
-import time
 
 
 class ComplianceManager:
@@ -40,13 +39,11 @@ class ComplianceManager:
 
     @staticmethod
     def _validated_epoch(value, error_code):
+        from managers.bank_journal import BankJournal
         try:
-            epoch = float(time.time() if value is None else value)
-        except (TypeError, ValueError, OverflowError):
-            raise ValueError(error_code) from None
-        if not math.isfinite(epoch) or epoch < 0:
-            raise ValueError(error_code)
-        return epoch
+            return BankJournal.validate_epoch(value)
+        except ValueError as exc:
+            raise ValueError(error_code) from exc
 
     @staticmethod
     def require_financial_eligibility(conn, user_id, *, now=None):
