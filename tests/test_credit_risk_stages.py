@@ -43,6 +43,62 @@ class CreditRiskStageTests(unittest.TestCase):
         ), 2)
 
 
+class EclScenarioConfigurationTests(unittest.TestCase):
+    def setUp(self):
+        self.old_dir = DBManager.database_dir
+        self.tempdir = tempfile.TemporaryDirectory()
+        DBManager.database_dir = Path(self.tempdir.name)
+        self.db = DatabaseManager()
+        self.db.users.create_user("scenario-admin", "Admin", "낙원", 0, role="admin")
+
+    def tearDown(self):
+        self.db.close()
+        DBManager.database_dir = self.old_dir
+        self.tempdir.cleanup()
+
+    def test_scenario_probabilities_must_be_a_normalized_distribution(self):
+        valid = [
+            {"key": "optimistic", "probability": .2, "pdMultiplier": .8, "lgdMultiplier": .9},
+            {"key": "base", "probability": .6, "pdMultiplier": 1, "lgdMultiplier": 1},
+            {"key": "downside", "probability": .2, "pdMultiplier": 2, "lgdMultiplier": 1.15},
+        ]
+        invalid = [dict(item) for item in valid]
+        invalid[1]["probability"] = .5
+        with self.assertRaisesRegex(ValueError, "합은 1"):
+            with self.db.atomic() as conn:
+                CreditRiskManager.configure_scenarios(
+                    conn, "낙원", "scenario-admin", invalid
+                )
+        with self.db.atomic() as conn:
+            result = CreditRiskManager.configure_scenarios(
+                conn, "낙원", "scenario-admin", valid
+            )
+            weights = [row[0] for row in conn.execute(
+                "SELECT probability FROM credit_risk_scenarios "
+                "WHERE nationality='낙원' ORDER BY scenario_key"
+            )]
+        self.assertEqual(result["updated"], 3)
+        self.assertAlmostEqual(sum(weights), 1.0)
+
+    def test_legacy_scenario_weights_are_normalized_without_changing_ratios(self):
+        self.db.currency.execute(
+            "UPDATE credit_risk_scenarios SET probability=CASE scenario_key "
+            "WHEN 'optimistic' THEN .1 WHEN 'base' THEN .5 ELSE .2 END "
+            "WHERE nationality='낙원'"
+        )
+        self.db.close()
+        self.db = DatabaseManager()
+        rows = self.db.currency.execute(
+            "SELECT scenario_key,probability FROM credit_risk_scenarios "
+            "WHERE nationality='낙원'"
+        )
+        weights = {row["scenario_key"]: row["probability"] for row in rows}
+        self.assertAlmostEqual(sum(weights.values()), 1.0)
+        self.assertAlmostEqual(weights["optimistic"], .125)
+        self.assertAlmostEqual(weights["base"], .625)
+        self.assertAlmostEqual(weights["downside"], .25)
+
+
 class DefaultedLoanEclTests(unittest.TestCase):
     def setUp(self):
         self.old_dir = DBManager.database_dir

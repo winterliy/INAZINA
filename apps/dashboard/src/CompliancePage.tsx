@@ -101,8 +101,8 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
     const scenarios = (["optimistic", "base", "downside"] as const).map((key) => ({ key,
       probability: Number(scenarioDraft[key]?.probability), pdMultiplier: Number(scenarioDraft[key]?.pdMultiplier), lgdMultiplier: Number(scenarioDraft[key]?.lgdMultiplier),
     }));
-    if (scenarios.some((item) => !Number.isFinite(item.probability) || item.probability < 0 || item.probability > 1 || !Number.isFinite(item.pdMultiplier) || item.pdMultiplier < 0 || item.pdMultiplier > 20 || !Number.isFinite(item.lgdMultiplier) || item.lgdMultiplier < 0 || item.lgdMultiplier > 5) || scenarios.reduce((sum, item) => sum + item.probability, 0) <= 0) {
-      say("확률 0~1, PD 배수 0~20, LGD 배수 0~5 범위로 입력하고 확률 합은 0보다 커야 합니다.", true); return;
+    if (scenarios.some((item) => !Number.isFinite(item.probability) || item.probability < 0 || item.probability > 1 || !Number.isFinite(item.pdMultiplier) || item.pdMultiplier < 0 || item.pdMultiplier > 20 || !Number.isFinite(item.lgdMultiplier) || item.lgdMultiplier < 0 || item.lgdMultiplier > 5) || Math.abs(scenarios.reduce((sum, item) => sum + item.probability, 0) - 1) > 1e-6) {
+      say("확률은 각각 0~1 범위이고 세 시나리오 합은 1이어야 합니다. PD 배수 0~20, LGD 배수 0~5 범위도 확인해주세요.", true); return;
     }
     if (!window.confirm(`${nationality}의 ECL 낙관·기준·하방 가정을 저장할까요? 이후 평가에 적용됩니다.`)) return;
     void run(() => api<Result>("/api/admin/compliance", { method: "POST", body: JSON.stringify({ action: "credit_risk_scenarios", nationality,
@@ -143,7 +143,7 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
       <form className="form-grid" onSubmit={saveScenarios}>
         <Field label="국적"><select value={nationality} onChange={(event) => { setScenarioDraft({}); setScenarioDraftCountry(""); setNationality(event.target.value); }}>{data.creditRiskScenarios.filter((item, index, rows) => rows.findIndex((other) => other.nationality === item.nationality) === index).map((item) => <option key={item.nationality} value={item.nationality}>{item.nationality}</option>)}</select></Field>
         {(["optimistic", "base", "downside"] as const).map((key) => <div className="span-wide" key={key}><h3 className="sub-head">{({ optimistic: "낙관", base: "기준", downside: "하방" })[key]} 시나리오</h3><div className="form-grid">
-          <Field label="확률 (0~1)"><input type="number" min="0" max="1" step="0.01" required value={scenarioDraft[key]?.probability ?? ""} onChange={(event) => setScenarioDraft({ ...scenarioDraft, [key]: { ...scenarioDraft[key], probability: event.target.value } })} /></Field>
+          <Field label="확률 (0~1, 총합 1)"><input type="number" min="0" max="1" step="0.01" required value={scenarioDraft[key]?.probability ?? ""} onChange={(event) => setScenarioDraft({ ...scenarioDraft, [key]: { ...scenarioDraft[key], probability: event.target.value } })} /></Field>
           <Field label="PD 배수 (0~20)"><input type="number" min="0" max="20" step="0.01" required value={scenarioDraft[key]?.pdMultiplier ?? ""} onChange={(event) => setScenarioDraft({ ...scenarioDraft, [key]: { ...scenarioDraft[key], pdMultiplier: event.target.value } })} /></Field>
           <Field label="LGD 배수 (0~5)"><input type="number" min="0" max="5" step="0.01" required value={scenarioDraft[key]?.lgdMultiplier ?? ""} onChange={(event) => setScenarioDraft({ ...scenarioDraft, [key]: { ...scenarioDraft[key], lgdMultiplier: event.target.value } })} /></Field>
         </div></div>)}

@@ -121,8 +121,10 @@ class CreditRiskManager:
                     raise ValueError("시나리오 확률은 0~1, PD 배수는 0~20, LGD 배수는 0~5여야 합니다.")
                 values.append(value)
             normalized[key] = values
-        if set(normalized) != keys or sum(values[0] for values in normalized.values()) <= 0:
-            raise ValueError("세 시나리오 확률의 합은 0보다 커야 합니다.")
+        total_probability = sum(values[0] for values in normalized.values())
+        if set(normalized) != keys or not math.isclose(
+                total_probability, 1.0, rel_tol=0.0, abs_tol=1e-6):
+            raise ValueError("세 시나리오 확률의 합은 1이어야 합니다.")
         if not conn.execute("SELECT 1 FROM country_currencies WHERE nationality=?", (country,)).fetchone():
             raise ValueError("국적을 찾을 수 없습니다.")
         epoch = float(time.time() if now is None else now)

@@ -780,6 +780,19 @@ class CurrencyDB(DBManager):
                 [(row["nationality"], key, weight, pd_mult, lgd_mult)
                  for key, weight, pd_mult, lgd_mult in defaults],
             )
+        # Older versions accepted non-normalized positive weights and the ECL
+        # evaluator normalized them at use time. Normalize stored probabilities
+        # once per open while preserving their effective relative weights.
+        for row in self.execute(
+                "SELECT nationality,SUM(probability) total,COUNT(*) scenario_count "
+                "FROM credit_risk_scenarios GROUP BY nationality"):
+            total = float(row["total"] or 0)
+            if (row["scenario_count"] == 3 and total > 0
+                    and abs(total-1.0) > 1e-6):
+                self.execute(
+                    "UPDATE credit_risk_scenarios SET probability=probability/? "
+                    "WHERE nationality=?", (total, row["nationality"]),
+                )
         self.execute('DROP TRIGGER IF EXISTS trg_country_credit_scenario_seed')
         self.execute("""CREATE TRIGGER trg_country_credit_scenario_seed
             AFTER INSERT ON country_currencies BEGIN
