@@ -53,7 +53,10 @@ class InstitutionMaturityGapTests(unittest.TestCase):
         self.assertEqual(by_currency["NWX"][2]["outflows"], 500)
         self.assertEqual(by_currency["USD"][3]["inflows"], 900)
         self.assertEqual(by_currency["USD"][3]["cumulative_gap"], 900)
-        self.assertIn("no behavioral runoff", report["method"])
+        nwx_stress = next(row for row in report["ladders"] if row["currency"] == "NWX")["depositRunoffStress"]
+        self.assertEqual([row["assumedRunoff"] for row in nwx_stress], [50, 125, 250])
+        self.assertEqual([row["oneDayGap"] for row in nwx_stress], [-50, -125, -250])
+        self.assertIn("behavioral calibration", report["method"])
 
     def test_empty_or_invalid_request_is_safe(self):
         with self.db.readonly() as conn:

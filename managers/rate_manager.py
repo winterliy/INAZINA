@@ -715,6 +715,7 @@ class RateManager:
         bucket_names = ("1d", "7d", "30d", "90d", "365d", "over365d")
         limits = (1, 7, 30, 90, 365)
         result = {}
+        deposit_totals = {}
 
         def bucket_for(maturity_epoch):
             days = max(0.0, (float(maturity_epoch or epoch) - epoch) / 86400)
@@ -743,6 +744,7 @@ class RateManager:
             currency = str(row["quote_currency"] or "NWX")
             result.setdefault(currency, {name: {"inflows": 0.0, "outflows": 0.0} for name in bucket_names})
             result[currency][bucket_for(maturity)]["outflows"] += amount
+            deposit_totals[currency] = deposit_totals.get(currency, 0.0) + amount
 
         loans = conn.execute(
             "SELECT l.quote_currency,l.outstanding_balance,l.maturity_epoch "
@@ -757,8 +759,8 @@ class RateManager:
             result[currency][bucket_for(row["maturity_epoch"])]["inflows"] += amount
 
         ladders = []
+        from functions.money import currency_precision, round_currency
         for currency, buckets in sorted(result.items()):
-            from functions.money import currency_precision
             decimal_places = currency_precision(conn, currency)
             cumulative = 0.0
             rows = []
@@ -768,10 +770,24 @@ class RateManager:
                 cumulative += gap
                 rows.append({"bucket": name, **values, "net_gap": gap,
                              "cumulative_gap": cumulative})
+            immediate = buckets["1d"]
+            runoff_stress = []
+            for runoff_percent in (10, 25, 50):
+                assumed_runoff = round_currency(
+                    conn, deposit_totals.get(currency, 0.0) * runoff_percent / 100, currency
+                )
+                stressed_outflow = max(immediate["outflows"], assumed_runoff)
+                runoff_stress.append({
+                    "runoffPercent": runoff_percent,
+                    "assumedRunoff": assumed_runoff,
+                    "stressedOneDayOutflow": round_currency(conn, stressed_outflow, currency),
+                    "oneDayLoanInflows": round_currency(conn, immediate["inflows"], currency),
+                    "oneDayGap": round_currency(conn, immediate["inflows"] - stressed_outflow, currency),
+                })
             ladders.append({"currency": currency, "decimalPlaces": decimal_places,
-                            "buckets": rows})
+                            "buckets": rows, "depositRunoffStress": runoff_stress})
         return {"issuer": issuer, "asOfEpoch": epoch, "ladders": ladders,
-                "method": "contractual maturity; native-currency; no behavioral runoff or off-balance-sheet flows"}
+                "method": "contractual maturity; native-currency; 10/25/50% deposit runoff sensitivity; excludes cash/HQLA, behavioral calibration and off-balance-sheet flows"}
 
     @staticmethod
     def institution_capacity(conn, issuer, proposed_loan=0, currency_code=None):
