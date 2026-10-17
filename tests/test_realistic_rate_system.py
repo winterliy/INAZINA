@@ -183,6 +183,11 @@ class RealisticRateSystemTests(unittest.TestCase):
             reconciliation = BankJournal.reconcile_loan_receivables(conn, "Bank")
         self.assertEqual(reconciliation[0]["status"], "matched")
         self.assertEqual(reconciliation[0]["difference_units"], 0)
+        repaid, message = BankManager(self.db).repay_loan("borrower", "REAL", 1_000)
+        self.assertTrue(repaid, message)
+        with self.db.atomic() as conn:
+            reconciliation = BankJournal.reconcile_loan_receivables(conn, "Bank")
+        self.assertEqual(reconciliation[0]["status"], "matched")
         self.db.accounts.execute(
             "UPDATE loans SET outstanding_balance=outstanding_balance+1 WHERE loan_id=?",
             (row["loan_id"],),
