@@ -306,7 +306,9 @@ class WebApiTests(unittest.TestCase):
                 quote_currency TEXT,outstanding_balance REAL,status TEXT,collection_status TEXT,
                 maturity_epoch REAL,underwriting_dsr REAL,underwriting_stress_dsr REAL,
                 underwriting_stress_shock_bps INTEGER,underwriting_fx_stress_shock_percent REAL,
-                origination_pd_12m REAL,stage_cure_since_epoch REAL);
+                origination_pd_12m REAL,stage_cure_since_epoch REAL,rate_type TEXT DEFAULT 'fixed',
+                contract_rate REAL,next_repricing_epoch REAL,benchmark_key TEXT,
+                benchmark_tenor_days INTEGER,repricing_lag_seconds INTEGER DEFAULT 0);
             CREATE TABLE loan_payment_schedule(schedule_id INTEGER PRIMARY KEY,loan_id INTEGER,
                 installment_number INTEGER,due_epoch REAL,principal_due REAL,interest_due REAL,
                 fee_due REAL,principal_paid REAL,interest_paid REAL,fee_paid REAL,amount_paid REAL,status TEXT);
@@ -315,8 +317,13 @@ class WebApiTests(unittest.TestCase):
                 benchmark_key TEXT,benchmark_tenor_days INTEGER);
             CREATE TABLE loan_ecl_assessments(assessment_id INTEGER PRIMARY KEY,loan_id INTEGER,
                 stage INTEGER,pd_12m REAL,calculated_epoch REAL);
-            INSERT INTO loans VALUES (1,'alice','L1','NWX',900,'active','current',3000,20,25,200,10,0.01,2000);
-            INSERT INTO loans VALUES (2,'bob','L2','NWX',500,'active','current',3000,30,35,200,10,0.02,NULL);
+            INSERT INTO loans(loan_id,user_id,product_code,quote_currency,outstanding_balance,status,collection_status,maturity_epoch,underwriting_dsr,underwriting_stress_dsr,underwriting_stress_shock_bps,underwriting_fx_stress_shock_percent,origination_pd_12m,stage_cure_since_epoch)
+                VALUES (1,'alice','L1','NWX',900,'active','current',3000,20,25,200,10,0.01,2000);
+            INSERT INTO loans(loan_id,user_id,product_code,quote_currency,outstanding_balance,status,collection_status,maturity_epoch,underwriting_dsr,underwriting_stress_dsr,underwriting_stress_shock_bps,underwriting_fx_stress_shock_percent,origination_pd_12m,stage_cure_since_epoch)
+                VALUES (2,'bob','L2','NWX',500,'active','current',3000,30,35,200,10,0.02,NULL);
+            UPDATE loans SET rate_type='floating',contract_rate=5,next_repricing_epoch=2500,
+                benchmark_key='bank_bond',benchmark_tenor_days=90,repricing_lag_seconds=86400
+                WHERE loan_id=1;
             INSERT INTO loan_ecl_assessments VALUES (1,1,2,0.03,1000);
             INSERT INTO loan_ecl_assessments VALUES (2,2,1,0.01,1000);
             INSERT INTO loan_payment_schedule VALUES (11,1,1,1000,800,80,20,0,0,0,0,'scheduled');
@@ -339,6 +346,9 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(result["loans"][0]["origination_pd_12m"], 0.01)
         self.assertEqual(result["loans"][0]["current_ecl_stage"], 2)
         self.assertEqual(result["loans"][0]["current_ecl_pd_12m"], 0.03)
+        self.assertEqual(result["loans"][0]["next_repricing_epoch"], 2500)
+        self.assertEqual(result["loans"][0]["benchmark_key"], "bank_bond")
+        self.assertEqual(result["loans"][0]["contract_rate"], 5)
         self.assertEqual(result["loans"][0]["stage_cure_since_epoch"], 2000)
 
     def test_user_dividend_payments_are_private_and_currency_aware(self):

@@ -916,6 +916,8 @@ def user_loan_schedules(user_id):
     with connect_readonly() as connection:
         loans = [dict(row) for row in connection.execute(
             "SELECT l.loan_id,l.product_code,l.quote_currency,l.outstanding_balance,l.status,"
+            "l.rate_type,l.contract_rate,l.next_repricing_epoch,l.benchmark_key,"
+            "l.benchmark_tenor_days,l.repricing_lag_seconds,"
             "l.underwriting_dsr,l.underwriting_stress_dsr,l.underwriting_stress_shock_bps,"
             "l.underwriting_fx_stress_shock_percent,"
             "l.origination_pd_12m,"

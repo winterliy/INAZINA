@@ -111,11 +111,19 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.db.accounts.execute(
             "UPDATE accounts SET balance=10.125 WHERE account_number=?", (account['account_number'],)
         )
+        self.db.accounts.execute(
+            "UPDATE accounts SET rate_type='floating',contract_rate=4.5,next_repricing_epoch=2000,"
+            "benchmark_key='funding',benchmark_tenor_days=30 WHERE account_number=?",
+            (account['account_number'],),
+        )
         portfolio = UserManager(self.db).get_total_assets('us-user', settle=False)
         self.assertEqual(portfolio['account_total'], 10.13)
         self.assertEqual(portfolio['accounts'][0]['balance'], 10.13)
         self.assertEqual(portfolio['accounts'][0]['currency_code'], 'USD')
         self.assertEqual(portfolio['accounts'][0]['decimal_places'], 2)
+        self.assertEqual(portfolio['accounts'][0]['contract_rate'], 4.5)
+        self.assertEqual(portfolio['accounts'][0]['next_repricing_epoch'], 2000)
+        self.assertEqual(portfolio['accounts'][0]['benchmark_key'], 'funding')
 
     def test_pending_kyc_blocks_regular_and_foreign_account_opening(self):
         self.db.users.create_user('admin','관리자','미국',1000,'admin')

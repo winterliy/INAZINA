@@ -791,7 +791,9 @@ class UserManager:
         total_account_balance = 0
         account_rows = conn.execute(
             "SELECT a.account_number,a.product_code,a.balance,a.account_type,a.quote_currency,"
-            "a.resolution_status,a.insurance_paid,a.uninsured_claim,"
+            "a.rate_type,a.contract_rate,a.next_repricing_epoch,a.benchmark_key,"
+            "a.benchmark_tenor_days,a.resolution_status,a.repricing_lag_seconds,"
+            "a.insurance_paid,a.uninsured_claim,"
             "COALESCE(s.name,l.name) AS product_name "
             "FROM accounts a LEFT JOIN saving s ON s.product_code=a.product_code "
             "LEFT JOIN liability l ON l.product_code=a.product_code "
@@ -811,12 +813,19 @@ class UserManager:
             product_name = account["product_name"] or account["product_code"]
             account_details.append({
                 "number": account["account_number"],
+                "account_type": account["account_type"],
                 "product_name": (f"대출금 지급 · {product_name}"
                                  if account["account_type"] == "loan_payout" else product_name),
                 "balance": balance,
                 "currency_code": account_currency,
                 "decimal_places": account_places,
                 "resolution_status": account["resolution_status"],
+                "rate_type": account["rate_type"],
+                "contract_rate": account["contract_rate"],
+                "next_repricing_epoch": account["next_repricing_epoch"],
+                "benchmark_key": account["benchmark_key"],
+                "benchmark_tenor_days": int(account["benchmark_tenor_days"] or 0),
+                "repricing_lag_seconds": int(account["repricing_lag_seconds"] or 0),
                 "insurance_paid": round_money(account["insurance_paid"] or 0, account_places),
                 "uninsured_claim": round_money(account["uninsured_claim"] or 0, account_places),
             })
