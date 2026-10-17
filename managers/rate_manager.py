@@ -96,9 +96,12 @@ class RateManager:
             from managers.bank_journal import BankJournal
             if isinstance(since, bool):
                 raise ValueError("invalid_rate_history_window")
+            # A chart range can begin before epoch zero when rendered against a
+            # synthetic/test clock, but remains bounded and has a real end time.
             start = float(since)
             if (not math.isfinite(start)
-                    or start > BankJournal.MAX_SUPPORTED_EPOCH):
+                    or not -BankJournal.MAX_SUPPORTED_EPOCH <= start
+                    <= BankJournal.MAX_SUPPORTED_EPOCH):
                 raise ValueError("invalid_rate_history_window")
             end = self._validated_epoch(now, "invalid_rate_history_window")
         except (TypeError, ValueError, OverflowError) as exc:

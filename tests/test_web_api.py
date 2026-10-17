@@ -505,6 +505,28 @@ class WebApiTests(unittest.TestCase):
             "trial_balance_accounts": 1, "insurance_claims": 0,
         })
 
+    def test_bank_journal_route_rejects_out_of_range_since_before_report_or_audit(self):
+        for since in ("-1", "1e300", "nan", "true"):
+            with self.subTest(since=since):
+                response = {}
+                handler = SimpleNamespace(
+                    headers={"x-inazina-internal-token": "secret",
+                             "x-inazina-user-id": "admin-1"},
+                    path=f"/internal/admin/bank-journal?issuer=Test%20Bank&since={since}",
+                    send_json=lambda status, value: response.update(
+                        status=status, value=value
+                    ),
+                )
+                with patch.object(server, "INTERNAL_TOKEN", "secret"), \
+                        patch.object(server, "identity", return_value={
+                            "userId": "admin-1", "role": "admin",
+                        }), patch.object(server, "admin_bank_journal_report") as report, \
+                        patch.object(server, "audit_admin_access") as audit:
+                    server.Handler.do_GET(handler)
+                self.assertEqual(response["status"], 400)
+                report.assert_not_called()
+                audit.assert_not_called()
+
     def test_admin_user_search_audit_omits_search_term(self):
         response = {}
         handler = SimpleNamespace(

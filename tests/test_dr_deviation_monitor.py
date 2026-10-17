@@ -76,6 +76,25 @@ class DrDeviationMonitorTests(unittest.TestCase):
         self.assertEqual([row["to_state"] for row in history["events"]],
                          ["discount", "normal", "premium"])
 
+    def test_invalid_sample_epoch_does_not_create_observation_or_alert(self):
+        before_samples = self.db.assets.execute_one(
+            "SELECT COUNT(*) FROM dr_deviation_samples"
+        )[0]
+        before_events = self.db.assets.execute_one(
+            "SELECT COUNT(*) FROM dr_deviation_alert_events"
+        )[0]
+        for invalid_epoch in (-1, float("nan"), float("inf"), 1e300, True, "invalid"):
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, "invalid_monitor_epoch"):
+                    with self.db.atomic() as conn:
+                        DrDeviationMonitorManager.sample_conn(conn, now=invalid_epoch)
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT COUNT(*) FROM dr_deviation_samples"
+        )[0], before_samples)
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT COUNT(*) FROM dr_deviation_alert_events"
+        )[0], before_events)
+
     def test_alert_history_is_append_only_and_old_samples_are_pruned(self):
         with self.db.atomic() as conn:
             DrDeviationMonitorManager.sample_conn(conn, now=300)

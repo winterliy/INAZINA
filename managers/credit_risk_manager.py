@@ -23,10 +23,7 @@ class CreditRiskManager:
         This is a compact calibration diagnostic, not an independent validation:
         snapshots are sampled from the simulator's own scorecard and defaults.
         """
-        import time
-        epoch = float(time.time() if now is None else now)
-        if not math.isfinite(epoch) or epoch < 0:
-            raise ValueError("invalid_ecl_backtest_epoch")
+        epoch = RateManager._validated_epoch(now, "invalid_ecl_backtest_epoch")
         issuer = str(issuer or "").strip() or None
         horizon = 365*86400
         rows = conn.execute(
@@ -127,9 +124,9 @@ class CreditRiskManager:
             raise ValueError("세 시나리오 확률의 합은 1이어야 합니다.")
         if not conn.execute("SELECT 1 FROM country_currencies WHERE nationality=?", (country,)).fetchone():
             raise ValueError("국적을 찾을 수 없습니다.")
-        epoch = float(time.time() if now is None else now)
-        if not math.isfinite(epoch) or epoch < 0:
-            raise ValueError("ECL 시나리오 적용 시각은 유효한 UNIX 시각이어야 합니다.")
+        epoch = RateManager._validated_epoch(
+            now, "ECL 시나리오 적용 시각은 유효한 UNIX 시각이어야 합니다."
+        )
         for key, (probability, pd_multiplier, lgd_multiplier) in normalized.items():
             changed = conn.execute(
                 "UPDATE credit_risk_scenarios SET probability=?,pd_multiplier=?,lgd_multiplier=?,updated_epoch=? "

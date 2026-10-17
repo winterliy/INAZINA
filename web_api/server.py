@@ -2937,9 +2937,14 @@ class Handler(BaseHTTPRequestHandler):
                     currency = query.get("currency", [None])[0]
                     currency = currency.strip().upper() if currency else None
                     raw_since = query.get("since", [None])[0]
-                    since = float(raw_since) if raw_since else None
-                    if raw_since and (not math.isfinite(since) or since < 0):
-                        raise ValueError("invalid_since_epoch")
+                    if raw_since:
+                        from managers.bank_journal import BankJournal
+                        try:
+                            since = BankJournal.validate_epoch(raw_since)
+                        except ValueError as exc:
+                            raise ValueError("invalid_since_epoch") from exc
+                    else:
+                        since = None
                     if not issuer or len(issuer) > 100 or (currency and len(currency) > 12):
                         raise ValueError("invalid_bank_journal_filter")
                     report = admin_bank_journal_report(issuer, currency, since)

@@ -1,9 +1,7 @@
 """Periodic, append-only DR price-deviation observations and alert transitions."""
 
-import math
-import time
-
 from functions.dr_pricing import alert_state, reference_metrics
+from managers.bank_journal import BankJournal
 
 
 class DrDeviationMonitorManager:
@@ -13,9 +11,10 @@ class DrDeviationMonitorManager:
     @classmethod
     def sample_conn(cls, conn, now=None):
         """Capture five-minute observations; confirm alert transitions across two buckets."""
-        epoch = float(time.time() if now is None else now)
-        if not math.isfinite(epoch) or epoch < 0:
-            raise ValueError("invalid_monitor_epoch")
+        try:
+            epoch = BankJournal.validate_epoch(now)
+        except ValueError as exc:
+            raise ValueError("invalid_monitor_epoch") from exc
         bucket = int(epoch // cls.SAMPLE_SECONDS)
         programs = conn.execute(
             "SELECT d.dr_code,d.underlying_code,d.underlying_per_receipt,d.program_status,"

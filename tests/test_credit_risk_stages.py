@@ -93,7 +93,7 @@ class EclScenarioConfigurationTests(unittest.TestCase):
         audit_before = self.db.system.execute_one(
             "SELECT COUNT(*) FROM admin_audit WHERE action='credit_risk.scenarios.configure'"
         )[0]
-        for invalid_epoch in (-1, float("nan"), float("inf")):
+        for invalid_epoch in (-1, float("nan"), float("inf"), 1e300, True, "invalid"):
             with self.subTest(invalid_epoch=invalid_epoch):
                 with self.assertRaisesRegex(ValueError, "유효한 UNIX 시각"):
                     with self.db.atomic() as conn:
@@ -226,6 +226,15 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.assertEqual(group["observedRateUpper95"], 1)
         self.assertAlmostEqual(group["brierScore"], .81)
         self.assertIn("per loan", report["method"])
+
+    def test_pd_backtest_rejects_invalid_epoch_ranges(self):
+        with self.db.readonly() as conn:
+            for invalid_epoch in (-1, float("nan"), float("inf"), 1e300, True, "invalid"):
+                with self.subTest(invalid_epoch=invalid_epoch):
+                    with self.assertRaisesRegex(ValueError, "invalid_ecl_backtest_epoch"):
+                        CreditRiskManager.backtest_12m(
+                            conn, "낙원", issuer="Bank", now=invalid_epoch
+                        )
 
     def test_zero_effective_rate_has_no_discount(self):
         self.db.accounts.execute(

@@ -105,7 +105,9 @@ class RateGraphTests(unittest.TestCase):
                          [(100.0, 9.0), (150.0, 9.0)])
 
     def test_rate_history_rejects_invalid_epoch_types_and_ranges(self):
-        for invalid_epoch in (float("nan"), float("inf"), 1e300, True, "invalid"):
+        for invalid_epoch in (
+            float("nan"), float("inf"), 1e300, -1e300, True, "invalid"
+        ):
             with self.subTest(invalid_epoch=invalid_epoch):
                 with self.assertRaisesRegex(ValueError, "조회 기간"):
                     self.rates.get_rate_history("base_rate", invalid_epoch, now=200)
