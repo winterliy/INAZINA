@@ -105,6 +105,57 @@ class BankJournal:
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
     @staticmethod
+    def reconcile_customer_deposits(conn, issuer):
+        """Compare posted deposit liabilities with live deposit-account balances.
+
+        Balances created before journal coverage was introduced are intentionally
+        reported as missing/mismatched rather than silently repaired.
+        """
+        from functions.money import currency_precision, round_currency
+
+        accounts = conn.execute(
+            "SELECT a.quote_currency,a.account_type,a.balance,a.balance_units "
+            "FROM accounts.accounts a JOIN product.saving s ON s.product_code=a.product_code "
+            "WHERE s.issuer=? AND a.account_type IN ('saving','currency_saving')",
+            (str(issuer),),
+        ).fetchall()
+        account_units = {}
+        for row in accounts:
+            currency = str(row["quote_currency"] or "NWX").upper()
+            places = currency_precision(conn, currency)
+            balance = (Decimal(int(row["balance_units"] or 0)) / Decimal(1_000_000)
+                       if row["account_type"] == "currency_saving"
+                       else Decimal(str(row["balance"] or 0)))
+            rounded = Decimal(str(round_currency(conn, balance, currency)))
+            units = int(rounded * (10 ** places))
+            account_units[currency] = account_units.get(currency, 0) + units
+
+        journal = conn.execute(
+            "SELECT e.currency_code,SUM(l.credit_units-l.debit_units) liability_units "
+            "FROM bank_journal_entries e JOIN bank_journal_lines l USING(entry_id) "
+            "WHERE e.issuer=? AND e.status='posted' "
+            "AND l.account_code='customer_deposits_payable' "
+            "GROUP BY e.currency_code",
+            (str(issuer),),
+        ).fetchall()
+        journal_units = {str(row["currency_code"]): int(row["liability_units"] or 0)
+                         for row in journal}
+        currencies = sorted(set(account_units) | set(journal_units))
+        results = []
+        for currency in currencies:
+            places = currency_precision(conn, currency)
+            actual = account_units.get(currency, 0)
+            posted = journal_units.get(currency, 0)
+            results.append({
+                "issuer": str(issuer), "currency_code": currency,
+                "account_units": actual, "journal_units": posted,
+                "difference_units": actual-posted, "decimal_places": places,
+                "status": ("missing_journal" if actual and not posted else
+                           "matched" if actual == posted else "mismatch"),
+            })
+        return results
+
+    @staticmethod
     def post(conn, issuer, event_type, reference_key, currency_code, lines,
              *, description="", now=None):
         """Post balanced lines; ``lines`` is [(account, side, amount), ...].

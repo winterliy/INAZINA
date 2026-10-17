@@ -1390,6 +1390,7 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
             raise ValueError("financial_institution_not_found")
         trial_balance = BankJournal.trial_balance(connection, issuer, currency)
         unbalanced = BankJournal.audit_unbalanced(connection, issuer)
+        deposit_reconciliation = BankJournal.reconcile_customer_deposits(connection, issuer)
         reconciliation = BankJournal.reconcile_institution_results(
             connection, issuer, since_epoch=since_epoch,
         )
@@ -1443,9 +1444,18 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
                                            if row["journal_amount"] is not None else None)
             row["difference_text"] = (money_text(row["difference"], places)
                                       if row["difference"] is not None else None)
+        for row in deposit_reconciliation:
+            scale = 10 ** row["decimal_places"]
+            row["account_balance"] = money_text(Decimal(row["account_units"]) / scale,
+                                                row["decimal_places"])
+            row["journal_balance"] = money_text(Decimal(row["journal_units"]) / scale,
+                                                row["decimal_places"])
+            row["difference"] = money_text(Decimal(row["difference_units"]) / scale,
+                                           row["decimal_places"])
     return {"issuer": str(issuer), "currency": currency,
             "trialBalance": trial_balance, "unbalancedEntries": unbalanced,
-            "resultReconciliation": reconciliation, "maturityGap": maturity_gap,
+            "resultReconciliation": reconciliation,
+            "depositReconciliation": deposit_reconciliation, "maturityGap": maturity_gap,
             "liquidityStress": liquidity_stress, "rateStress": rate_stress, "fxStress": fx_stress,
             "prudential": prudential, "creditStress": credit_stress}
 

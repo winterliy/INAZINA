@@ -7,6 +7,7 @@ from pathlib import Path
 from database import DatabaseManager
 from database.db_manager import DBManager
 from managers.bank_manager import BankManager
+from managers.bank_journal import BankJournal
 from managers.credit_risk_manager import CreditRiskManager
 from managers.interest_manager import InterestManager
 from managers.investment_manager import InvestmentManager
@@ -74,6 +75,31 @@ class RealisticRateSystemTests(unittest.TestCase):
         result = self.rates.set_country_rate("base_rate", "낙원", -0.75, "admin")
         self.assertTrue(result[0], result[1])
         self.assertEqual(self.rates.get_rate("base_rate", "낙원"), -0.75)
+
+    def test_customer_deposit_journal_reconciliation_detects_balance_drift(self):
+        self.db.products.execute(
+            "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"
+            "interest_cycle,compound_type,issuer,quote_currency) VALUES "
+            "('RECON','Reconciliation',0,1,365,31536000,0,'Bank','NWX')"
+        )
+        self.assertTrue(BankManager(self.db).open_account(
+            "borrower", "RECON", "1234", 1_250
+        )[0])
+        with self.db.atomic() as conn:
+            result = BankJournal.reconcile_customer_deposits(conn, "Bank")
+        self.assertEqual(result, [{
+            "issuer": "Bank", "currency_code": "NWX", "account_units": 1250,
+            "journal_units": 1250, "difference_units": 0,
+            "decimal_places": 0, "status": "matched",
+        }])
+
+        self.db.accounts.execute(
+            "UPDATE accounts SET balance_units=balance_units+1000000 WHERE product_code='RECON'"
+        )
+        with self.db.atomic() as conn:
+            result = BankJournal.reconcile_customer_deposits(conn, "Bank")
+        self.assertEqual(result[0]["difference_units"], 1)
+        self.assertEqual(result[0]["status"], "mismatch")
 
     def test_negative_deposit_rate_debits_without_negative_tax(self):
         self.db.products.execute(
