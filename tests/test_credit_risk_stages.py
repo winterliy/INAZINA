@@ -1,5 +1,6 @@
-import unittest
+import sqlite3
 import tempfile
+import unittest
 from pathlib import Path
 
 from database import DatabaseManager
@@ -64,6 +65,7 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.assertEqual(row["pd_12m"], 1)
         self.assertEqual(row["lifetime_pd"], 1)
         self.assertEqual(row["ead"], 1000)
+        self.assertAlmostEqual(row["discount_factor"], 1/(1.1**0.5))
         self.assertLess(row["discount_factor"], 1)
         self.assertGreater(row["discount_factor"], 0)
         self.assertLess(row["expected_loss"], row["ead"] * row["lgd"])
@@ -88,6 +90,55 @@ class DefaultedLoanEclTests(unittest.TestCase):
         )
         self.assertEqual(row["discount_factor"], 1)
         self.assertGreater(row["expected_loss"], 0)
+
+    def test_missing_contract_rates_fall_back_to_current_product_rate(self):
+        self.db.accounts.execute(
+            "UPDATE loans SET contract_effective_rate=NULL,contract_rate=NULL "
+            "WHERE product_code='ECL3'"
+        )
+        with self.db.atomic() as conn:
+            self.assertEqual(CreditRiskManager.assess_conn(conn, 1_800_172_800), 1)
+        row = self.db.accounts.execute_one(
+            "SELECT discount_factor FROM loan_ecl_assessments "
+            "ORDER BY calculated_epoch DESC LIMIT 1"
+        )
+        self.assertGreater(row["discount_factor"], 0)
+        self.assertLess(row["discount_factor"], 1)
+
+    def test_negative_effective_rate_increases_discount_factor(self):
+        self.db.accounts.execute(
+            "UPDATE loans SET contract_effective_rate=-5 WHERE product_code='ECL3'"
+        )
+        with self.db.atomic() as conn:
+            self.assertEqual(CreditRiskManager.assess_conn(conn, 1_800_259_200), 1)
+        row = self.db.accounts.execute_one(
+            "SELECT discount_factor FROM loan_ecl_assessments "
+            "ORDER BY calculated_epoch DESC LIMIT 1"
+        )
+        self.assertGreater(row["discount_factor"], 1)
+
+    def test_legacy_assessment_migration_preserves_rows_and_uses_neutral_factor(self):
+        self.db.accounts.execute(
+            "INSERT INTO loan_ecl_assessments "
+            "(loan_id,as_of_day,stage,pd_12m,lifetime_pd,lgd,ead,expected_loss,"
+            "quote_currency,scenario,discount_factor,calculated_epoch) "
+            "VALUES (1,'2026-01-01',3,1,1,0.5,1000,500,'NWX','[]',0.9,1)"
+        )
+        self.db.accounts.execute(
+            "ALTER TABLE loan_ecl_assessments DROP COLUMN discount_factor"
+        )
+        self.db.accounts._init_db()
+        row = self.db.accounts.execute_one(
+            "SELECT expected_loss,discount_factor FROM loan_ecl_assessments "
+            "WHERE as_of_day='2026-01-01'"
+        )
+        self.assertEqual(row["expected_loss"], 500)
+        self.assertEqual(row["discount_factor"], 1)
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.db.accounts.execute(
+                "UPDATE loan_ecl_assessments SET discount_factor=0.95 "
+                "WHERE as_of_day='2026-01-01'"
+            )
 
 
 if __name__ == "__main__":

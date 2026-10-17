@@ -191,7 +191,7 @@ class CreditRiskManager:
             "l.underwriting_dsr,l.current_ltv,l.missed_payment_count,l.overdue_since_epoch,"
             "l.collection_status,l.status,l.maturity_epoch,l.created_at,l.ecl_allowance,"
             "l.contract_rate,l.contract_effective_rate,"
-            "u.credit_score,u.nationality,p.issuer,p.maturity_days "
+            "u.credit_score,u.nationality,p.issuer,p.maturity_days,p.interest_rate product_rate "
             "FROM accounts.loans l JOIN users.users u ON u.user_id=l.user_id "
             "JOIN product.liability p ON p.product_code=l.product_code "
             "WHERE l.status IN ('active','defaulted') AND (? IS NULL OR l.user_id=?) "
@@ -235,7 +235,9 @@ class CreditRiskManager:
             raw_eir = loan["contract_effective_rate"]
             if raw_eir is None:
                 raw_eir = loan["contract_rate"]
-            eir_percent = cls._bounded(raw_eir, -99.0, 1000.0)
+            if raw_eir is None:
+                raw_eir = loan["product_rate"]
+            eir_percent = cls._bounded(raw_eir, -99.0, 1000.0) if raw_eir is not None else 0.0
             discount_factor = (1.0+eir_percent/100.0)**(-expected_loss_time)
             if not math.isfinite(discount_factor) or discount_factor <= 0:
                 discount_factor = 1.0

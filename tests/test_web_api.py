@@ -65,6 +65,38 @@ class WebApiTests(unittest.TestCase):
         self.assertTrue(server.dr_reference_metrics(18, 10, 2, 1)["referenceDeviationAlert"])
         self.assertEqual(server.dr_reference_metrics(float("nan"), 10, 2, 1), {})
 
+    def test_compliance_overview_exposes_ecl_discount_factor(self):
+        with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
+            connection.executescript("""
+                CREATE TABLE currencies(code TEXT PRIMARY KEY, decimal_places INTEGER);
+                INSERT INTO currencies VALUES ('NWX',0);
+                CREATE TABLE kyc_profiles(user_id TEXT,status TEXT,risk_tier TEXT,reviewed_by TEXT,
+                    reviewed_epoch REAL,expires_epoch REAL,updated_epoch REAL);
+                CREATE TABLE aml_alerts(alert_id INTEGER,user_id TEXT,nationality TEXT,rule_code TEXT,
+                    reference_key TEXT,currency_code TEXT,amount REAL,status TEXT,outcome_code TEXT,
+                    opened_epoch REAL,reviewed_by TEXT,reviewed_epoch REAL);
+                CREATE TABLE aml_monitoring_rules(nationality TEXT,currency_code TEXT,
+                    large_transaction_limit REAL,rolling_24h_amount_limit REAL,
+                    rolling_24h_count_limit INTEGER,enabled INTEGER,updated_epoch REAL);
+                CREATE TABLE kyc_profile_events(event_id INTEGER,user_id TEXT,actor_id TEXT,
+                    event_type TEXT,prior_status TEXT,new_status TEXT,prior_risk_tier TEXT,
+                    new_risk_tier TEXT,reason_code TEXT,recorded_epoch REAL);
+                CREATE TABLE aml_case_events(event_id INTEGER,alert_id INTEGER,actor_id TEXT,
+                    event_type TEXT,prior_status TEXT,new_status TEXT,outcome_code TEXT,recorded_epoch REAL);
+                CREATE TABLE credit_risk_scenarios(nationality TEXT,scenario_key TEXT,
+                    probability REAL,pd_multiplier REAL,lgd_multiplier REAL,updated_epoch REAL);
+                CREATE TABLE loans(loan_id INTEGER PRIMARY KEY,user_id TEXT);
+                CREATE TABLE loan_ecl_assessments(assessment_id INTEGER,loan_id INTEGER,as_of_day TEXT,
+                    stage INTEGER,pd_12m REAL,lifetime_pd REAL,lgd REAL,ead REAL,expected_loss REAL,
+                    discount_factor REAL,quote_currency TEXT,scenario TEXT,calculated_epoch REAL);
+                INSERT INTO loans VALUES (1,'admin-1');
+                INSERT INTO loan_ecl_assessments VALUES
+                    (1,1,'2026-10-17',2,0.1,0.2,0.4,1000,72,0.95,'NWX','[]',1);
+            """)
+        result = server.admin_compliance_overview()
+        self.assertEqual(result["eclAssessments"][0]["discount_factor"], 0.95)
+        self.assertEqual(result["eclAssessments"][0]["expected_loss_text"], "72")
+
     def test_admin_countries_returns_auditable_income_source_tax_overrides(self):
         with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
             connection.executescript("""
