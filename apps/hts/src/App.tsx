@@ -28,6 +28,9 @@ type LoanScheduleView = { loan_id: number; product_code: string; quote_currency:
 type DividendPayment = { payment_id: number; asset_code: string; dividend_kind: "regular" | "special"; quantity: number; gross_amount: number; tax_amount: number; net_amount_units: number; quote_currency: string; decimal_places: number; created_epoch: number; allocation_key?: string; dr_code?: string | null; rule_id?: number | null; treaty_code?: string | null; tax_rate_percent?: string | null };
 type TaxResidency = { nationality: string | null; taxResidency: string | null; countries: string[] };
 type Holding = { code: string; name: string; qty: number; price: number; value: number; type: string | null; quote_currency?: string; sell_reserved_qty?: number; is_collateral?: boolean };
+type CreditFactor = { key: string; label: string; points: number };
+type CreditEvent = { type: string; reference: string; loanId: number | null; occurredEpoch: number; reason: string | null };
+type CreditReport = { score: number; anchor: number; factors: CreditFactor[]; events: CreditEvent[]; history: { previous: number; score: number; trigger: string; epoch: number }[] };
 type Portfolio = { cash: number; grand_total: number; net_worth: number; loan_total: number; order_reserved_total: number; stock_total: number; account_total: number; bond_total?: number; national_currency?: string; nationality?: string; home_rate_nwx?: number; home_decimal_places?: number; wallets?: Wallet[]; stocks: Holding[]; accounts?: AccountDetail[]; deposit_insurance_claims?: DepositInsuranceClaim[]; kyc_profile?: KycProfile | null };
 type Order = { order_id: number; asset_code: string; side: string; limit_price: number; quantity: number; remaining_quantity: number; filled_quantity: number; status: string; quote_currency?: string };
 type Book = { bids: { limit_price: number; quantity: number; order_count: number }[]; asks: { limit_price: number; quantity: number; order_count: number }[] };
@@ -40,6 +43,21 @@ const STATUS: Record<string, string> = { open: "미체결", partial: "부분 체
 const UNIT_SCALE = 1_000_000;
 const money = (value: number, digits = 0) => new Intl.NumberFormat("ko-KR", { maximumFractionDigits: digits }).format(value || 0);
 const date = (epoch: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "short" }).format(epoch * 1000);
+const CREDIT_EVENTS: Record<string, string> = {
+  payment_on_time: "정상 납부", payment_missed: "납부 연체", payment_cured: "연체 회차 사후 납부", loan_closed: "대출 완납",
+  acceleration: "기한이익상실", default: "부도", manual_adjustment: "관리자 정정", external_adjustment: "점수 정정 반영", legacy_baseline: "신용모델 도입",
+};
+const CREDIT_TIPS: Record<string, string> = {
+  unpaid_installments: "미납 회차를 갚으면 현재 미납 감점이 바로 사라집니다.",
+  missed: "연체 기록은 시간이 지나며 줄어들고, 미납 회차를 갚으면 일부 회복됩니다.",
+  delinquent_loans: "연체 중인 대출 잔액을 상환하면 연체 상태 감점이 사라집니다.",
+  acceleration: "기한이익상실 기록은 시간이 지나며 줄어듭니다. 정상 납부 실적이 회복을 돕습니다.",
+  default: "부도 기록은 시간이 지나며 줄어듭니다. 남은 잔액 상환과 정상 납부가 회복을 돕습니다.",
+  debt_burden: "대출 잔액을 줄이거나 연소득 정보를 갱신하면 부채수준 요인이 개선됩니다.",
+  new_credit: "짧은 기간에 대출을 여러 건 받지 않으면 2주 뒤 회복됩니다.",
+  legacy: "도입 전 감점은 시간이 지나며 줄어듭니다.",
+};
+const signedPoints = (value: number) => `${value > 0 ? "+" : ""}${Math.round(value * 10) / 10}`;
 const KYC_STATUS: Record<KycProfile["status"], string> = { pending: "확인 대기", verified: "확인 완료", rejected: "확인 거절", expired: "만료" };
 const KYC_RISK: Record<KycProfile["risk_tier"], string> = { standard: "일반", enhanced: "강화 심사", restricted: "송금 제한" };
 const fundCategoryName: Record<string, string> = { equity: "주식형", bond: "채권형", mixed: "혼합형", other: "기타형" };
@@ -95,6 +113,7 @@ export default function App() {
   const [receivedDrDelegations, setReceivedDrDelegations] = useState<ReceivedDrVotingDelegation[]>([]);
   const [drVotingAgenda, setDrVotingAgenda] = useState<DrVotingAgenda[]>([]);
   const [loanSchedules, setLoanSchedules] = useState<LoanScheduleView[]>([]);
+  const [credit, setCredit] = useState<CreditReport | null>(null);
   const [dividendPayments, setDividendPayments] = useState<DividendPayment[]>([]);
   const [orderFilter, setOrderFilter] = useState<"open" | "all">("open");
   const [book, setBook] = useState<Book>({ bids: [], asks: [] });
@@ -142,6 +161,10 @@ export default function App() {
       api<{ instructions: DrCustodyInstruction[] }>("/api/me/dr/conversions"),
       api<TaxResidency>("/api/me/tax-residency"),
     ]);
+    // The credit panel is optional; a failed report must not hide the wallet.
+    api<Partial<CreditReport>>("/api/me/credit")
+      .then((report) => setCredit(typeof report.score === "number" ? report as CreditReport : null))
+      .catch(() => setCredit(null));
     setPortfolio(wallet.portfolio);
     setOrders(orderData.orders);
     setLoanSchedules(loanData.loans);
@@ -500,6 +523,14 @@ export default function App() {
             <span><b>{claim.issuer} · {date(claim.resolved_epoch)}</b><small>원예금 통화 기준 보험금 {money(claim.covered_amount, claim.decimal_places)} · 미보장채권 {money(claim.uninsured_amount, claim.decimal_places)} {claim.currency_code}</small>{claim.payout_currency && claim.payout_amount != null && <small>실제 지급 기록 {money(claim.payout_amount, claim.payout_decimal_places ?? 0)} {claim.payout_currency}</small>}</span>
           </div>)}</div>
           <p className="orders-hint">보험금 지급은 고객 국적 통화로 환전될 수 있습니다. 이 내역은 예금 원통화 기준의 시뮬레이터 정리 결과이며 실제 예금보험 청구가 아닙니다.</p>
+        </section>}
+        {credit && <section className="data-panel holdings-panel"><div className="panel-title"><h2>신용점수</h2><span>{credit.score}점 / 1000</span></div>
+          <div className="holdings">
+            {credit.factors.map((factor) => <div className="holding" key={factor.key}><span><b>{factor.label} {signedPoints(factor.points)}</b>{factor.points < 0 && CREDIT_TIPS[factor.key] && <small>{CREDIT_TIPS[factor.key]}</small>}</span></div>)}
+            {!credit.factors.length && <div className="holding"><span><b>기준점수 {credit.anchor}점</b><small>아직 점수에 반영된 신용 이력이 없습니다.</small></span></div>}
+            {credit.events.filter((event) => event.type !== "legacy_baseline").slice(0, 5).map((event) => <div className="holding" key={`${event.type}:${event.reference}`}><span><b>{CREDIT_EVENTS[event.type] ?? event.type}{event.loanId ? ` · 대출 #${event.loanId}` : ""}</b><small>{date(event.occurredEpoch)}{event.reason ? ` · ${event.reason}` : ""}</small></span></div>)}
+          </div>
+          <p className="orders-hint">기준점수 {credit.anchor}점에 요인을 더한 시뮬레이터 점수입니다. 연체 영향은 시간이 지나며 줄고, 정상 납부·완납은 점수를 올립니다. 실제 신용평가사 점수가 아닙니다.</p>
         </section>}
         {loanSchedules.length > 0 && <section className="data-panel holdings-panel"><div className="panel-title"><h2>대출 상환 일정</h2><span>{loanSchedules.length}건</span></div>
           <div className="holdings">{loanSchedules.map((loan) => <div className="holding loan-schedule" key={loan.loan_id}>

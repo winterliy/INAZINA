@@ -17,6 +17,7 @@ from .lottery_db import LotteryDB
 from .corporate_db import CorporateDB
 from .els_db import ELSDB
 from .financial_db import FinancialDB
+from .credit_db import CreditDB
 
 
 _schema_lock = threading.RLock()
@@ -55,6 +56,7 @@ class DatabaseManager:
             self.corporate = CorporateDB()
             self.els = ELSDB()
             self.financial = FinancialDB()
+            self.credit = CreditDB()
             from .numeric_guards import install as install_numeric_guards
             install_numeric_guards(self.users)
             # Refresh planner statistics opportunistically after schema/index
@@ -64,5 +66,5 @@ class DatabaseManager:
     def close(self):
         for database in (self.users, self.assets, self.products, self.companies,
                          self.accounts, self.pot, self.tax, self.system, self.currency,self.lottery,
-                         self.corporate,self.els,self.financial):
+                         self.corporate,self.els,self.financial,self.credit):
             database.close()

@@ -379,7 +379,8 @@ class InazinaBot(discord.Client):
                         if result["missed_count"]:
                             notice.add_field(
                                 name="미납 및 신용 점수",
-                                value=f"미납 {result['missed_count']}회 · 회당 1점 차감",
+                                value=(f"미납 {result['missed_count']}회 · 연체 기록으로 신용점수가 내려갑니다. "
+                                       "미납 회차를 갚으면 일부 회복되고, 기록 영향은 시간이 지나며 줄어듭니다."),
                                 inline=False,
                             )
                         notice.add_field(
@@ -393,6 +394,15 @@ class InazinaBot(discord.Client):
                 if now - self._last_loan_error_log >= self.BACKGROUND_ERROR_LOG_INTERVAL_SECONDS:
                     self._last_loan_error_log = now
                     print(f"[Loan Worker] {type(e).__name__}: {e}")
+            try:
+                # Overdue states and credit decay advance without waiting for
+                # the borrower to open their account.
+                await self._run_background_write(self.bank_mgr.refresh_credit_scores)
+            except Exception as e:
+                now = asyncio.get_running_loop().time()
+                if now - self._last_loan_error_log >= self.BACKGROUND_ERROR_LOG_INTERVAL_SECONDS:
+                    self._last_loan_error_log = now
+                    print(f"[Credit Worker] {type(e).__name__}: {e}")
             await asyncio.sleep(self.LOAN_PAYMENT_POLL_INTERVAL_SECONDS)
 
     async def ensure_user(self, user_id, nickname):

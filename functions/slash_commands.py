@@ -664,7 +664,19 @@ class SlashCommandRegistry:
             credit_score = int(float(user_data["credit_score"] or 0))
         except (TypeError, ValueError, OverflowError):
             credit_score = 0
-        embed.add_field(name="💳 신용 점수", value=f"```{credit_score:,}점```", inline=True)
+        credit_note = ""
+        try:
+            from managers.credit_score_manager import CreditScoreManager
+            def credit_factors():
+                with self.bot.db.readonly() as conn:
+                    return CreditScoreManager.report(conn, user_id, events=0, history=0)["factors"]
+            factors = await asyncio.to_thread(credit_factors)
+            worst = next((item for item in factors if item["points"] <= -1), None)
+            if worst:
+                credit_note = f"\n주요 감점: {worst['label']} {worst['points']:+.0f}"
+        except Exception:
+            credit_note = ""
+        embed.add_field(name="💳 신용 점수", value=f"```{credit_score:,}점```{credit_note}", inline=True)
         embed.add_field(
             name="💼 심사 연소득",
             value=f"```{int(user_data['annual_income'] or 0):,} {home}```",

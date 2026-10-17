@@ -6,6 +6,7 @@ from contextlib import nullcontext
 from database.user_db import TREASURY_USER_ID
 from managers.stochastic_price_engine import GarchConfig
 from managers.auto_target_engine import AutoTargetConfig
+from managers.credit_score_manager import CreditScoreManager
 from managers.rate_manager import RateManager
 from database.db_manager import DBManager
 from functions.money import parse_currency_money
@@ -832,7 +833,7 @@ class AdminControlManager:
     def _update_user(self,actor,user_id,changes):
         with self.db.atomic(('users','system')) as conn:
             self.require(actor,conn)
-            if not changes or set(changes)-{'nickname','nationality','cash','credit_score','annual_income','income_stability','status','role'}:
+            if not changes or set(changes)-{'nickname','nationality','cash','credit_score','credit_score_reason','annual_income','income_stability','status','role'}:
                 raise ValueError("허용된 사용자 필드를 입력해주세요.")
             user = conn.execute("SELECT * FROM users WHERE user_id=?",(user_id,)).fetchone()
             if not user or user_id==TREASURY_USER_ID:
@@ -848,9 +849,13 @@ class AdminControlManager:
                     account = conn.execute("SELECT balance_units FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'",(user_id,new[0])).fetchone()
                     if account and int(account[0] or 0):
                         raise ValueError('새 국적 통화의 외환통장 잔액을 먼저 0으로 정산해주세요.')
+            credit_reason = changes.pop('credit_score_reason', None)
+            credit_target = None
             if 'credit_score' in changes:
-                changes['credit_score'] = self._number(
-                    changes['credit_score'], 0, 1000, integer=True
+                # Corrections are credit events: the score keeps evolving from
+                # the corrected value instead of being frozen by an overwrite.
+                credit_target = self._number(
+                    changes.pop('credit_score'), 0, 1000, integer=True
                 )
             target_nationality = changes.get('nationality', user['nationality'])
             currency_row = conn.execute(
@@ -871,8 +876,15 @@ class AdminControlManager:
                 raise ValueError("role/status 값을 확인해주세요.")
             if user_id==str(actor) and (changes.get('role')=='user' or changes.get('status') in {'inactive','bankrupt'}):
                 raise ValueError("현재 관리자는 자신의 관리 권한을 제거할 수 없습니다.")
-            assignments = ','.join(f'"{k}"=?' for k in changes)
-            conn.execute(f'UPDATE users SET {assignments} WHERE user_id=?',(*changes.values(),user_id))
+            if changes:
+                assignments = ','.join(f'"{k}"=?' for k in changes)
+                conn.execute(f'UPDATE users SET {assignments} WHERE user_id=?',(*changes.values(),user_id))
+            if credit_target is not None:
+                CreditScoreManager.set_score(conn,user_id,credit_target,actor,credit_reason)
+                changes['credit_score'] = credit_target
+                changes['credit_score_reason'] = credit_reason or '관리자 정정'
+            elif 'annual_income' in changes or 'income_stability' in changes:
+                CreditScoreManager.refresh(conn,user_id,trigger='income_update')
             self._audit(conn,actor,'user',{'user_id':user_id,**changes})
         return '✅ 사용자 설정을 저장했습니다.'
 

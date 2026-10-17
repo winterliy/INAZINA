@@ -5,7 +5,10 @@ import { Card, Field, Tabs, changed, date, number, plain, show, text, type Ctx }
 
 type Citizen = { userId: string; nickname: string; nationality: string; cash: number; creditScore: number; status: string; role: string; accountType: "discord" | "country" | "company"; companyCode: string | null };
 type WebLogin = { hts_id: string | null; created_epoch: number; updated_epoch: number; auth_version: number };
-type UserDetail = { user: Record<string, string | number | null>; accountType: "discord" | "country" | "company"; webLogin: WebLogin | null; accounts: Record<string, unknown>[]; loans: Record<string, unknown>[]; holdings: { asset_code: string; quantity: number }[] };
+type CreditFactor = { key: string; label: string; points: number };
+type CreditEvent = { type: string; reference: string; loanId: number | null; occurredEpoch: number; points: number; actorId: string | null; reason: string | null };
+type CreditReport = { score: number; modelScore: number; anchor: number; factors: CreditFactor[]; events: CreditEvent[]; history: { previous: number; score: number; trigger: string; epoch: number }[] };
+type UserDetail = { user: Record<string, string | number | null>; credit: CreditReport | null; accountType: "discord" | "country" | "company"; webLogin: WebLogin | null; accounts: Record<string, unknown>[]; loans: Record<string, unknown>[]; holdings: { asset_code: string; quantity: number }[] };
 type MarketRate = { benchmark_key: "funding" | "bank_bond" | "treasury"; tenor_days: number; annual_rate: number; updated_epoch: number };
 type RatePressure = { benchmark_key: string; adjustment: number; updated_epoch: number };
 type RateHistoryEvent = { operation: "insert" | "update" | "delete"; rate_key: string; before_percent: number | null; after_percent: number | null; before_actor: string | null; after_actor: string | null; recorded_epoch: number };
@@ -14,6 +17,12 @@ type MacroIndicators = { inflation_percent: number; real_gdp_growth_percent: num
 type SourceTaxRule = { income_source: string; tax_percent: number; updated_by: string; updated_epoch: number };
 type Country = { nationality: string; currency_code: string; currency_name: string | null; base_rate: number; legal_max_rate: number; tax_percent: number; treasuryId: string | null; treasuryCash: number | null; citizens: number; guilds: string[]; exchanges: string[]; marketRates: MarketRate[]; marketRatePressure: RatePressure[]; rateHistoryEvents?: RateHistoryEvent[]; marketRateHistoryEvents?: CurveHistoryEvent[]; macroIndicators: MacroIndicators; externalReferenceRate: number | null; externalRatePremium: number; taxRules: SourceTaxRule[]; account: { status: string; role: string; hts_id: string | null } | null };
 type Result = { message: string; success: boolean };
+
+const CREDIT_EVENT_LABELS: Record<string, string> = {
+  payment_on_time: "정상 납부", payment_missed: "납부 연체", payment_cured: "연체 회차 사후 납부", loan_closed: "대출 완납",
+  acceleration: "기한이익상실", default: "부도", manual_adjustment: "관리자 정정", external_adjustment: "모델 밖 수정 반영", legacy_baseline: "도입 시점 점수 보존",
+};
+const signed = (value: number) => `${value > 0 ? "+" : ""}${number(Math.round(value * 10) / 10)}`;
 
 const USER_FIELDS: [string, string, string?][] = [
   ["nickname", "닉네임"], ["cash", "현금", "국적 통화 기준"],
@@ -40,6 +49,7 @@ function UserTab({ ctx, countries, currentUserId, companies }: { ctx: Ctx; count
   const [password, setPassword] = useState("");
   const [htsId, setHtsId] = useState("");
   const [nationality, setNationality] = useState("");
+  const [creditReason, setCreditReason] = useState("");
 
   const loadList = useCallback(async () => setCitizens((await api<{ users: Citizen[] }>(`/api/admin/users?search=${encodeURIComponent(query)}${companies ? "&kind=company" : ""}`)).users), [query, companies]);
   useEffect(() => { loadList().catch((cause) => say(cause instanceof Error ? cause.message : "사용자를 불러오지 못했습니다.", true)); }, [loadList]);
@@ -51,6 +61,7 @@ function UserTab({ ctx, countries, currentUserId, companies }: { ctx: Ctx; count
     setHtsId(result.webLogin?.hts_id ?? "");
     setNationality(String(result.user.nationality ?? ""));
     setPassword("");
+    setCreditReason("");
   }
   const select = (userId: string) => run(() => open(userId), "사용자 정보를 불러오지 못했습니다.");
 
@@ -59,6 +70,10 @@ function UserTab({ ctx, countries, currentUserId, companies }: { ctx: Ctx; count
     if (!detail) return;
     const changes = changed(form, detail.user);
     if (!Object.keys(changes).length) { say("변경된 값이 없습니다.", true); return; }
+    if ("credit_score" in changes) {
+      if (!creditReason.trim()) { say("신용점수 정정 사유를 입력해주세요.", true); return; }
+      changes.credit_score_reason = creditReason.trim();
+    }
     const id = String(detail.user.user_id);
     if (!window.confirm(`${detail.user.nickname} (${id}) 설정을 저장할까요?\n\n${Object.entries(changes).map(([key, value]) => `${key}: ${show(detail.user[key])} → ${value}`).join("\n")}`)) return;
     void run(() => api<Result>(`/api/admin/user/${encodeURIComponent(id)}`, { method: "POST", body: JSON.stringify({ changes }) }),
@@ -98,6 +113,9 @@ function UserTab({ ctx, countries, currentUserId, companies }: { ctx: Ctx; count
           {USER_FIELDS.map(([key, label, hint]) => <Field key={key} label={label} hint={hint}>
             <input className={key === "nickname" ? undefined : "mono"} value={form[key] ?? ""} onChange={(event) => setForm({ ...form, [key]: event.target.value })} />
           </Field>)}
+          {form.credit_score !== text(detail.user.credit_score) && <Field label="신용점수 정정 사유" hint="이벤트 원장에 영구 기록">
+            <input maxLength={200} value={creditReason} onChange={(event) => setCreditReason(event.target.value)} />
+          </Field>}
           <Field label="상태"><select value={form.status ?? ""} disabled={id === currentUserId} onChange={(event) => setForm({ ...form, status: event.target.value })}><option value="active">active (활성)</option><option value="inactive">inactive (비활성)</option><option value="bankrupt">bankrupt (파산)</option></select></Field>
           <Field label="권한"><select value={form.role ?? ""} disabled={id === currentUserId} onChange={(event) => setForm({ ...form, role: event.target.value })}><option value="user">user</option><option value="admin">admin</option><option value="nation">nation (국가)</option></select></Field>
           <button className="btn primary" disabled={busy}>저장</button>
@@ -128,6 +146,16 @@ function UserTab({ ctx, countries, currentUserId, companies }: { ctx: Ctx; count
           </>}
         </div>
       </Card></>}
+      {detail.credit && <Card title={`신용점수 ${number(detail.credit.score)}점`} caption={`기준점수 ${number(detail.credit.anchor)}점에서 아래 요인을 더합니다. 연체 영향은 시간이 지나면 감쇠하고, 정상 납부·완납은 점수를 회복시킵니다. 정정은 위 설정에서 사유와 함께 저장합니다.`}>
+        <div className="chips">{detail.credit.factors.map((factor) => <span key={factor.key} className="tag">{factor.label} {signed(factor.points)}</span>)}{!detail.credit.factors.length && <span className="hint">반영된 요인이 없습니다.</span>}</div>
+        <div className="scroll-x"><table><thead><tr><th>발생</th><th>이벤트</th><th>대출</th><th className="r">조정</th><th>사유 · 처리자</th></tr></thead><tbody>{detail.credit.events.map((event) => <tr key={`${event.type}:${event.reference}`}>
+          <td>{date(event.occurredEpoch)}</td><td>{CREDIT_EVENT_LABELS[event.type] ?? event.type}</td><td className="mono">{event.loanId ? `#${event.loanId}` : "—"}</td>
+          <td className="r mono">{event.points ? signed(event.points) : "—"}</td><td>{[event.reason, event.actorId].filter(Boolean).join(" · ") || "—"}</td>
+        </tr>)}{!detail.credit.events.length && <tr><td colSpan={5} className="hint">신용 이벤트가 없습니다.</td></tr>}</tbody></table></div>
+        <div className="scroll-x"><table><thead><tr><th>변경 시각</th><th className="r">이전</th><th className="r">이후</th><th>원인</th></tr></thead><tbody>{detail.credit.history.map((item, index) => <tr key={`${item.epoch}:${index}`}>
+          <td>{date(item.epoch)}</td><td className="r mono">{number(item.previous)}</td><td className="r mono">{number(item.score)}</td><td className="mono">{item.trigger}</td>
+        </tr>)}{!detail.credit.history.length && <tr><td colSpan={4} className="hint">점수 변경 이력이 없습니다.</td></tr>}</tbody></table></div>
+      </Card>}
       <Card title="계좌 · 대출 · 보유 자산" caption="읽기 전용입니다. 계좌 잔액은 $잔고수정, 그 밖의 값은 DB 편집에서 바꿉니다.">
         <div className="scroll-x"><table><thead><tr><th>계좌번호</th><th>상품</th><th>종류</th><th>통화</th><th className="r">잔액</th><th /></tr></thead><tbody>{detail.accounts.map((account) => <tr key={String(account.account_number)}><td className="mono">{show(account.account_number)}</td><td>{show(account.product_code)}</td><td>{show(account.account_type)}</td><td>{show(account.quote_currency)}</td><td className="r mono">{show(account.balance)}</td><td className="row-actions"><button className="soft small" onClick={() => openCommand("잔고수정", String(account.account_number))}>잔고</button></td></tr>)}</tbody></table>{!detail.accounts.length && <p className="empty">계좌가 없습니다.</p>}</div>
         <div className="scroll-x"><table><thead><tr><th>대출</th><th>상품</th><th>상태</th><th className="r">원금</th><th className="r">잔액</th><th>만기</th></tr></thead><tbody>{detail.loans.map((loan) => <tr key={String(loan.loan_id)}><td className="mono">#{show(loan.loan_id)}</td><td>{show(loan.product_code)}</td><td>{show(loan.status)}</td><td className="r mono">{show(loan.principal)}</td><td className="r mono">{show(loan.outstanding_balance)}</td><td>{loan.maturity_epoch ? date(Number(loan.maturity_epoch)) : "—"}</td></tr>)}</tbody></table>{!detail.loans.length && <p className="empty">대출이 없습니다.</p>}</div>

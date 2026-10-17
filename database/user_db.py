@@ -59,6 +59,10 @@ class UserDB(DBManager):
             # Tax residence is optional; callers fall back to nationality until
             # an administrator/user explicitly records a separate residence.
             ("tax_residency", "TEXT"),
+            # Last score written by managers/credit_score_manager.py. A stored
+            # credit_score that differs was edited outside the credit model.
+            ("credit_score_computed", "INTEGER"),
+            ("credit_score_epoch", "REAL"),
         ):
             if column not in user_columns:
                 self.execute(f"ALTER TABLE users ADD COLUMN {column} {declaration}")

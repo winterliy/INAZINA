@@ -13,6 +13,7 @@ from functions.money import (round_money, round_currency, parse_currency_money,
                              currency_precision)
 from functions.interest_calc import year_fraction
 from managers.bank_journal import BankJournal
+from managers.credit_score_manager import CreditScoreManager
 from managers.rate_manager import RateManager
 
 
@@ -21,6 +22,7 @@ class BankManager:
 
     PASSWORD_ITERATIONS = 240_000
     MAX_SUPPORTED_EPOCH = BankJournal.MAX_SUPPORTED_EPOCH
+    OVERDUE_SWEEP_INTERVAL_SECONDS = 600
 
     @staticmethod
     def _loan_cashflows(principal, annual_rate, maturity_days, frequency_days,
@@ -902,6 +904,7 @@ class BankManager:
                     (str(user_id), product_code),
                 ).fetchone():
                     return False, f"❌ 이미 {product['name']} 상품을 이용한 기록이 있습니다."
+                CreditScoreManager.refresh(conn, user_id, trigger="loan_application")
                 user = conn.execute(
                     f"SELECT credit_score,nationality,annual_income,income_stability "
                     f"FROM users.users WHERE user_id = ? AND "
@@ -1246,6 +1249,7 @@ class BankManager:
                         conn, product["issuer"], total_finance_fee, "origination_fee",
                         f"loan:{loan_id}", now=opened_epoch, currency_code=home,
                     )
+                CreditScoreManager.refresh(conn, user_id, now=opened_epoch, trigger="loan_opened")
                 RateManager.refresh_all_market_pressure(conn, now=opened_epoch)
             return True, (
                 f"✅ 대출이 승인되었습니다. 실수령액 {net_payout:,} {home}를 입금했습니다.\n"
@@ -1276,6 +1280,7 @@ class BankManager:
             identity = str(loan_id).strip()
             self._settle_user_interest(user_id, now=now)
             with self.db.atomic() as conn:
+                CreditScoreManager.refresh(conn, user_id, now, trigger="loan_extension")
                 user = conn.execute("SELECT credit_score FROM users WHERE user_id=? AND "
                     f"{ACTIVE_OR_TREASURY}", (str(user_id),)).fetchone()
                 if not user:
@@ -1434,6 +1439,13 @@ class BankManager:
                 self._allocate_schedule_payment(
                     conn, loan["loan_id"], payment, now
                 )
+                if remaining <= 0:
+                    CreditScoreManager.record(
+                        conn, user_id, "loan_closed", f"loan:{loan['loan_id']}",
+                        now=now, loan_id=loan["loan_id"],
+                    )
+                else:
+                    CreditScoreManager.refresh(conn, user_id, now, trigger="repayment")
                 RateManager.refresh_all_market_pressure(conn)
             currency = loan["quote_currency"]
             suffix = f" · 담보 {released:,} {currency} 반환" if released else ""
@@ -1541,6 +1553,10 @@ class BankManager:
                                 conn, loan["loan_id"], loan["issuer"], loan["quote_currency"],
                                 now=now, reason=f"scheduled-zero:{int(now)}",
                             )
+                            CreditScoreManager.record(
+                                conn, loan["user_id"], "loan_closed", f"loan:{loan['loan_id']}",
+                                now=now, loan_id=loan["loan_id"],
+                            )
                         continue
 
                     due_periods = int((now - last) // cycle)
@@ -1571,6 +1587,13 @@ class BankManager:
                             paid_count += 1
                             loan_paid_count += 1
                             loan_paid_amount += payment
+                            due_epoch = last+(processed+1)*cycle
+                            CreditScoreManager.record(
+                                conn, loan["user_id"], "payment_on_time",
+                                f"loan:{loan['loan_id']}:legacy:{int(due_epoch)}",
+                                occurred_epoch=due_epoch, now=now,
+                                loan_id=loan["loan_id"], refresh=False,
+                            )
                             from managers.bank_journal import BankJournal
                             BankJournal.post(
                                 conn, loan["issuer"], "loan_repayment",
@@ -1599,10 +1622,12 @@ class BankManager:
                         else:
                             missed_count += 1
                             loan_missed_count += 1
-                            conn.execute(
-                                "UPDATE users.users SET credit_score = "
-                                "MAX(0, COALESCE(credit_score, 0) - 1) WHERE user_id = ?",
-                                (str(loan["user_id"]),),
+                            due_epoch = last+(processed+1)*cycle
+                            CreditScoreManager.record(
+                                conn, loan["user_id"], "payment_missed",
+                                f"loan:{loan['loan_id']}:legacy:{int(due_epoch)}",
+                                occurred_epoch=due_epoch, now=now,
+                                loan_id=loan["loan_id"], refresh=False,
                             )
                         processed += 1
                         if balance <= 0:
@@ -1613,6 +1638,15 @@ class BankManager:
                             "UPDATE accounts.loans SET last_repayment_epoch = ? "
                             "WHERE loan_id = ? AND status = 'active'",
                             (last + processed * cycle, loan["loan_id"]),
+                        )
+                    if balance <= 0:
+                        CreditScoreManager.record(
+                            conn, loan["user_id"], "loan_closed", f"loan:{loan['loan_id']}",
+                            now=now, loan_id=loan["loan_id"], refresh=False,
+                        )
+                    if loan_paid_count or loan_missed_count or balance <= 0:
+                        CreditScoreManager.refresh(
+                            conn, loan["user_id"], now, trigger="scheduled_payment"
                         )
                     if loan_paid_count or loan_missed_count:
                         notifications.append({
@@ -1629,6 +1663,20 @@ class BankManager:
             return paid_count, missed_count, notifications
         except Exception:
             raise
+
+    def refresh_credit_scores(self, now=None):
+        """Settle loans past maturity, then re-score users with stale scores."""
+        now = time.time() if now is None else float(now)
+        last = getattr(self, "_last_overdue_sweep", None)
+        if last is None or now-last >= self.OVERDUE_SWEEP_INTERVAL_SECONDS:
+            self._last_overdue_sweep = now
+            for row in self.db.accounts.execute(
+                "SELECT DISTINCT user_id FROM loans WHERE status='active' "
+                "AND outstanding_balance>0 AND maturity_epoch IS NOT NULL AND maturity_epoch<?",
+                (now,),
+            ):
+                self._settle_user_interest(str(row["user_id"]), now=now)
+        return CreditScoreManager(self.db).refresh_due(now)
 
     @staticmethod
     def _allocate_schedule_payment(conn, loan_id, amount, paid_epoch):
@@ -1662,6 +1710,20 @@ class BankManager:
                 (new_paid, fee_applied, interest_applied, principal_applied,
                  status, status, paid_epoch, row["schedule_id"]),
             )
+            # Bureau-style reporting: a missed installment paid late is a cure;
+            # one settled by its due date is an on-time payment.
+            if status == "paid" and (row["status"] == "missed"
+                                     or paid_epoch <= float(row["due_epoch"])):
+                owner = conn.execute(
+                    "SELECT user_id FROM accounts.loans WHERE loan_id=?", (loan_id,)
+                ).fetchone()
+                if owner:
+                    cured = row["status"] == "missed"
+                    CreditScoreManager.record(
+                        conn, owner[0], "payment_cured" if cured else "payment_on_time",
+                        f"schedule:{row['schedule_id']}", occurred_epoch=paid_epoch,
+                        now=paid_epoch, loan_id=loan_id, refresh=False,
+                    )
             remaining -= applied
             if remaining <= 0:
                 break
@@ -1725,6 +1787,13 @@ class BankManager:
                 balance -= due
                 paid_count += 1
                 paid_amount += due
+                cured = row["status"] == "missed"
+                CreditScoreManager.record(
+                    conn, loan["user_id"], "payment_cured" if cured else "payment_on_time",
+                    f"schedule:{row['schedule_id']}",
+                    occurred_epoch=now if cured else float(row["due_epoch"]), now=now,
+                    loan_id=loan["loan_id"], refresh=False,
+                )
                 from managers.bank_journal import BankJournal
                 BankJournal.post(
                     conn, loan["issuer"], "loan_repayment",
@@ -1744,9 +1813,11 @@ class BankManager:
                     "WHERE schedule_id=?", (row["schedule_id"],),
                 )
                 if newly_missed:
-                    conn.execute(
-                        "UPDATE users.users SET credit_score=MAX(0,credit_score-1) "
-                        "WHERE user_id=?", (str(loan["user_id"]),),
+                    CreditScoreManager.record(
+                        conn, loan["user_id"], "payment_missed",
+                        f"schedule:{row['schedule_id']}",
+                        occurred_epoch=float(row["due_epoch"]), now=now,
+                        loan_id=loan["loan_id"], refresh=False,
                     )
         status = "paid" if balance <= 0 else "active"
         conn.execute(
@@ -1761,6 +1832,12 @@ class BankManager:
                 conn, loan["loan_id"], loan["issuer"], loan["quote_currency"],
                 now=now, reason=f"schedule:{int(now)}",
             )
+            CreditScoreManager.record(
+                conn, loan["user_id"], "loan_closed", f"loan:{loan['loan_id']}",
+                now=now, loan_id=loan["loan_id"], refresh=False,
+            )
+        if rows:
+            CreditScoreManager.refresh(conn, loan["user_id"], now, trigger="scheduled_payment")
         return paid_count, missed_count, paid_amount, max(0, balance)
 
     @staticmethod
