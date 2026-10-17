@@ -39,12 +39,12 @@ class ComplianceManager:
         )
 
     @staticmethod
-    def require_transfer_eligibility(conn, user_id, *, now=None):
-        """Enforce an explicit KYC review before a customer sends a transfer.
+    def require_financial_eligibility(conn, user_id, *, now=None):
+        """Enforce an explicit KYC review on gated customer financial actions.
 
         Users without a KYC profile retain legacy simulator behavior. A recorded
-        profile must be verified, current, and not risk-restricted to send funds.
-        Receiving transfers remains possible.
+        profile must be verified, current, and not risk-restricted. This does not
+        block incoming transfers.
         """
         when = float(time.time() if now is None else now)
         if not math.isfinite(when):
@@ -59,9 +59,9 @@ class ComplianceManager:
                    if profile["expires_epoch"] is not None else None)
         if (profile["status"] != "verified"
                 or (expires is not None and (not math.isfinite(expires) or expires <= when))):
-            raise ValueError("KYC 확인이 완료되지 않았거나 만료되어 송금할 수 없습니다.")
+            raise ValueError("KYC 확인이 완료되지 않았거나 만료되어 금융 거래를 진행할 수 없습니다.")
         if profile["risk_tier"] not in {"standard", "enhanced"}:
-            raise ValueError("제한 위험등급으로 설정되어 송금할 수 없습니다.")
+            raise ValueError("제한 위험등급으로 설정되어 금융 거래를 진행할 수 없습니다.")
         return True
 
     @classmethod

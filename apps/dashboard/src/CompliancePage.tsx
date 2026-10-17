@@ -107,7 +107,7 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
 
   const selectedRule = data.amlRules.find((item) => item.nationality === nationality);
   return <>
-    <Card title="KYC 상태 검토" caption="상태·위험등급·고정 사유 코드와 검토 이력만 저장합니다. KYC 프로필이 있는 사용자는 확인 완료·유효 상태이며 제한 등급이 아닐 때 송금할 수 있고, 수취는 계속 가능합니다. 프로필이 없는 기존 사용자는 기존 정책을 따릅니다. 실명, 신분증 번호·이미지, 자유기술형 증빙은 입력하지 마세요."
+    <Card title="KYC 상태 검토" caption="상태·위험등급·고정 사유 코드와 검토 이력만 저장합니다. KYC 프로필이 있는 사용자는 확인 완료·유효 상태이며 제한 등급이 아닐 때 송금, 예금 계좌 개설, 대출 신청을 할 수 있고 수취는 계속 가능합니다. 프로필이 없는 기존 사용자는 기존 정책을 따릅니다. 실명, 신분증 번호·이미지, 자유기술형 증빙은 입력하지 마세요."
       actions={<button className="soft small" type="button" disabled={busy} onClick={expireDueKyc}>만료 처리 실행</button>}>
       <form className="form-grid" onSubmit={saveKyc}>
         <Field label="사용자 ID"><input className="mono" value={kyc.userId} required maxLength={80} onChange={(event) => setKyc({ ...kyc, userId: event.target.value })} /></Field>

@@ -14,6 +14,7 @@ from managers.interest_manager import InterestManager
 from managers.investment_manager import InvestmentManager
 from managers.rate_manager import RateManager
 from managers.treasury_bond_manager import TreasuryBondManager
+from managers.compliance_manager import ComplianceManager
 from functions.interest_calc import year_fraction
 
 
@@ -177,6 +178,26 @@ class RealisticRateSystemTests(unittest.TestCase):
         with self.db.atomic() as conn:
             result = BankJournal.reconcile_ecl_allowances(conn, "Bank")
         self.assertEqual((result[0]["difference_units"], result[0]["status"]), (1, "mismatch"))
+
+    def test_kyc_profile_gates_loan_origination(self):
+        self.add_loan(code="KYC-LOAN", maturity=365, collateral_ratio=0, origination_fee=0)
+        with self.db.atomic() as conn:
+            ComplianceManager.set_kyc_status(
+                conn,"borrower","admin","pending",reason_code="review_started"
+            )
+        success,message = BankManager(self.db).apply_loan("borrower","KYC-LOAN",10_000)
+        self.assertFalse(success,message)
+        self.assertIn("KYC 확인",message)
+        self.assertEqual(
+            self.db.accounts.execute_one("SELECT COUNT(*) FROM loans WHERE user_id='borrower'")[0],
+            0,
+        )
+        with self.db.atomic() as conn:
+            ComplianceManager.set_kyc_status(
+                conn,"borrower","admin","verified",reason_code="requirements_met"
+            )
+        success,message = BankManager(self.db).apply_loan("borrower","KYC-LOAN",10_000)
+        self.assertTrue(success,message)
 
     def test_fully_repaid_loan_releases_its_ecl_allowance(self):
         self.add_loan(code="ECL-REPAY", maturity=365, origination_fee=0)

@@ -220,6 +220,12 @@ class BankManager:
             return False, "❌ 초기 예치금을 확인해주세요."
         if not isinstance(password, str) or not 4 <= len(password) <= 16:
             return False, "❌ 비밀번호는 4~16자로 입력해주세요."
+        from managers.compliance_manager import ComplianceManager
+        try:
+            with self.db.readonly() as conn:
+                ComplianceManager.require_financial_eligibility(conn, user_id)
+        except ValueError as exc:
+            return False, f"❌ {exc}"
         # Foreign-currency savings open through the same entry point and rules.
         kind = self.db.products.execute_one(
             "SELECT product_kind,name FROM saving WHERE product_code=?", (product_code,))
@@ -232,6 +238,7 @@ class BankManager:
             return True, f"✅ {kind['name']} 외환통장을 개설했습니다. 계좌번호: `{number}`"
         try:
             with self.db.atomic(("users", "accounts", "product", "assets", "company")) as conn:
+                ComplianceManager.require_financial_eligibility(conn, user_id)
                 product = conn.execute(
                     "SELECT * FROM product.saving WHERE product_code = ?", (product_code,)
                 ).fetchone()
@@ -844,8 +851,12 @@ class BankManager:
         if isinstance(amount, bool) or isinstance(collateral_amount, bool):
             return False, "❌ 대출·담보 금액을 확인해주세요."
         try:
+            from managers.compliance_manager import ComplianceManager
+            with self.db.readonly() as conn:
+                ComplianceManager.require_financial_eligibility(conn, user_id)
             self._settle_user_interest(user_id)
             with self.db.atomic(("users", "accounts", "product", "assets", "company")) as conn:
+                ComplianceManager.require_financial_eligibility(conn, user_id)
                 product = conn.execute(
                     "SELECT * FROM product.liability WHERE product_code = ?", (product_code,)
                 ).fetchone()

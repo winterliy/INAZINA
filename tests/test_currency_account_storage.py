@@ -12,6 +12,7 @@ from managers.currency_exchange_manager import CurrencyExchangeManager
 from managers.currency_manager import CurrencyManager, SCALE
 from managers.bank_manager import BankManager
 from managers.user_manager import UserManager
+from managers.compliance_manager import ComplianceManager
 
 
 class CurrencyAccountStorageTests(unittest.TestCase):
@@ -115,6 +116,26 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertEqual(portfolio['accounts'][0]['balance'], 10.13)
         self.assertEqual(portfolio['accounts'][0]['currency_code'], 'USD')
         self.assertEqual(portfolio['accounts'][0]['decimal_places'], 2)
+
+    def test_pending_kyc_blocks_regular_and_foreign_account_opening(self):
+        self.db.users.create_user('admin','관리자','미국',1000,'admin')
+        self.db.products.execute(
+            "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,status,"
+            "quote_currency,product_kind) VALUES ('SAVE_USD_KYC','KYC 예금',0,0,'active','USD','saving')"
+        )
+        with self.db.atomic() as conn:
+            ComplianceManager.set_kyc_status(
+                conn,'us-user','admin','pending',reason_code='review_started'
+            )
+        ok,message = BankManager(self.db).open_account(
+            'us-user','SAVE_USD_KYC','1234',10
+        )
+        self.assertFalse(ok,message)
+        self.assertIn('KYC 확인',message)
+        with self.assertRaisesRegex(ValueError,'KYC 확인'):
+            CurrencyExchangeManager(self.db).open_account(
+                'us-user','FX_EUR','1234','3.25'
+            )
 
     def test_transfer_to_own_foreign_account_uses_destination_currency_amount(self):
         manager = CurrencyExchangeManager(self.db)
