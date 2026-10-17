@@ -128,6 +128,8 @@ class CreditRiskManager:
         if not conn.execute("SELECT 1 FROM country_currencies WHERE nationality=?", (country,)).fetchone():
             raise ValueError("국적을 찾을 수 없습니다.")
         epoch = float(time.time() if now is None else now)
+        if not math.isfinite(epoch) or epoch < 0:
+            raise ValueError("ECL 시나리오 적용 시각은 유효한 UNIX 시각이어야 합니다.")
         for key, (probability, pd_multiplier, lgd_multiplier) in normalized.items():
             changed = conn.execute(
                 "UPDATE credit_risk_scenarios SET probability=?,pd_multiplier=?,lgd_multiplier=?,updated_epoch=? "

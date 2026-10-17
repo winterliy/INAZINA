@@ -80,6 +80,36 @@ class EclScenarioConfigurationTests(unittest.TestCase):
         self.assertEqual(result["updated"], 3)
         self.assertAlmostEqual(sum(weights), 1.0)
 
+    def test_scenario_configuration_rejects_invalid_epoch_without_audit_or_mutation(self):
+        valid = [
+            {"key": "optimistic", "probability": .2, "pdMultiplier": .8, "lgdMultiplier": .9},
+            {"key": "base", "probability": .6, "pdMultiplier": 1, "lgdMultiplier": 1},
+            {"key": "downside", "probability": .2, "pdMultiplier": 2, "lgdMultiplier": 1.15},
+        ]
+        before = [tuple(row) for row in self.db.currency.execute(
+            "SELECT scenario_key,probability,pd_multiplier,lgd_multiplier,updated_epoch "
+            "FROM credit_risk_scenarios WHERE nationality='낙원' ORDER BY scenario_key"
+        )]
+        audit_before = self.db.system.execute_one(
+            "SELECT COUNT(*) FROM admin_audit WHERE action='credit_risk.scenarios.configure'"
+        )[0]
+        for invalid_epoch in (-1, float("nan"), float("inf")):
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, "유효한 UNIX 시각"):
+                    with self.db.atomic() as conn:
+                        CreditRiskManager.configure_scenarios(
+                            conn, "낙원", "scenario-admin", valid, now=invalid_epoch
+                        )
+        after = [tuple(row) for row in self.db.currency.execute(
+            "SELECT scenario_key,probability,pd_multiplier,lgd_multiplier,updated_epoch "
+            "FROM credit_risk_scenarios WHERE nationality='낙원' ORDER BY scenario_key"
+        )]
+        audit_after = self.db.system.execute_one(
+            "SELECT COUNT(*) FROM admin_audit WHERE action='credit_risk.scenarios.configure'"
+        )[0]
+        self.assertEqual(after, before)
+        self.assertEqual(audit_after, audit_before)
+
     def test_legacy_scenario_weights_are_normalized_without_changing_ratios(self):
         self.db.currency.execute(
             "UPDATE credit_risk_scenarios SET probability=CASE scenario_key "

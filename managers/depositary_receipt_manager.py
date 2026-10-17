@@ -54,6 +54,8 @@ class DepositaryReceiptManager:
             return False, "❌ 중복 실행 방지 참조값을 확인해주세요."
 
         when = float(time.time() if now is None else now)
+        if not math.isfinite(when) or when < 0:
+            return False, "❌ DR 전환 시각은 유효한 UNIX 시각이어야 합니다."
         try:
             with self.db.atomic() as conn:
                 prior = conn.execute(

@@ -99,6 +99,27 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
         self.assertEqual(self.holding("UNDER_DR"), 2)
         self.assertEqual(self.holding("UNDER"), 2)
 
+    def test_invalid_effective_epoch_is_rejected_without_custody_movement(self):
+        self.create_program()
+        for invalid_epoch in (-1, float("nan"), float("inf")):
+            with self.subTest(invalid_epoch=invalid_epoch):
+                ok, message = self.manager.convert(
+                    "citizen", "UNDER_DR", "issue", 1,
+                    f"invalid-epoch-{invalid_epoch}", now=invalid_epoch,
+                )
+                self.assertFalse(ok)
+                self.assertIn("유효한 UNIX 시각", message)
+        self.assertEqual(self.holding("UNDER"), 6)
+        self.assertEqual(self.holding("UNDER_DR"), 0)
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT COUNT(*) FROM depositary_receipt_movements"
+        )[0], 0)
+        retried, message = self.manager.convert(
+            "citizen", "UNDER_DR", "issue", 1, "invalid-epoch-nan", now=1_000
+        )
+        self.assertTrue(retried, message)
+        self.assertEqual(self.holding("UNDER_DR"), 1)
+
     def test_suspended_program_blocks_issuance_but_allows_existing_holders_to_redeem(self):
         self.create_program()
         ok, message = self.manager.convert(
