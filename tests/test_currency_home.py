@@ -149,6 +149,10 @@ class CurrencyHomeTests(unittest.TestCase):
             "WHERE user_id='citizen' ORDER BY event_id DESC LIMIT 1"
         )
         self.assertEqual(tuple(denial),('citizen','transfer_denied','kyc_incomplete_or_expired'))
+        with self.assertRaisesRegex(Exception,'append-only'):
+            self.db.system.execute(
+                "UPDATE kyc_profile_events SET reason_code='edited' WHERE event_type='transfer_denied'"
+            )
         received=self.bot.currency_mgr.transfer('admin','citizen','30')
         self.assertIn('30 NWX →',received)
         with self.db.atomic() as conn:
@@ -173,6 +177,12 @@ class CurrencyHomeTests(unittest.TestCase):
             )
         with self.assertRaisesRegex(ValueError,'제한 위험등급'):
             self.bot.currency_mgr.transfer('citizen','admin','30')
+        restricted_denial=self.db.system.execute_one(
+            "SELECT reason_code,new_risk_tier FROM kyc_profile_events "
+            "WHERE user_id='citizen' AND event_type='transfer_denied' "
+            "ORDER BY event_id DESC LIMIT 1"
+        )
+        self.assertEqual(tuple(restricted_denial),('risk_restricted','restricted'))
         with self.db.atomic() as conn:
             ComplianceManager.set_kyc_status(
                 conn,'citizen','admin','verified',risk_tier='enhanced',

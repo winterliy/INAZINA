@@ -82,6 +82,9 @@ class WebApiTests(unittest.TestCase):
                 CREATE TABLE kyc_profile_events(event_id INTEGER,user_id TEXT,actor_id TEXT,
                     event_type TEXT,prior_status TEXT,new_status TEXT,prior_risk_tier TEXT,
                     new_risk_tier TEXT,reason_code TEXT,recorded_epoch REAL);
+                INSERT INTO kyc_profile_events VALUES
+                    (1,'alice','alice','transfer_denied','pending','pending',
+                     'standard','standard','kyc_incomplete_or_expired',1);
                 CREATE TABLE aml_case_events(event_id INTEGER,alert_id INTEGER,actor_id TEXT,
                     event_type TEXT,prior_status TEXT,new_status TEXT,outcome_code TEXT,recorded_epoch REAL);
                 CREATE TABLE credit_risk_scenarios(nationality TEXT,scenario_key TEXT,
@@ -105,6 +108,8 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(result["eclAssessments"][0]["expected_loss_time_years"], 0.25)
         self.assertEqual(result["eclAssessments"][0]["macro_pd_multiplier"], 1.2)
         self.assertEqual(result["eclAssessments"][0]["expected_loss_text"], "72")
+        self.assertEqual(result["kycEvents"][0]["event_type"], "transfer_denied")
+        self.assertEqual(result["kycEvents"][0]["actor_id"], "alice")
         self.assertEqual(result["eclBacktest"]["groups"], [])
 
     def test_admin_countries_returns_auditable_income_source_tax_overrides(self):
