@@ -971,16 +971,45 @@ class RateManager:
             deposit_totals[currency] = deposit_totals.get(currency, 0.0) + amount
 
         loans = conn.execute(
-            "SELECT l.quote_currency,l.outstanding_balance,l.maturity_epoch "
+            "SELECT l.loan_id,l.quote_currency,l.outstanding_balance,l.maturity_epoch "
             "FROM loans l JOIN liability p ON p.product_code=l.product_code "
             "WHERE p.issuer=? AND l.status IN ('active','defaulted') AND l.outstanding_balance>0",
             (issuer,),
         ).fetchall()
+        schedules_by_loan = {}
+        for payment in conn.execute(
+            "SELECT s.loan_id,s.due_epoch,s.principal_due,s.principal_paid,"
+            "s.interest_due,s.interest_paid,s.fee_due,s.fee_paid,s.amount_paid "
+            "FROM loan_payment_schedule s JOIN loans l ON l.loan_id=s.loan_id "
+            "JOIN liability p ON p.product_code=l.product_code "
+            "WHERE p.issuer=? AND l.status IN ('active','defaulted') "
+            "AND l.outstanding_balance>0 AND s.status NOT IN ('paid','waived') "
+            "ORDER BY s.loan_id,s.due_epoch,s.installment_number",
+            (issuer,),
+        ):
+            schedules_by_loan.setdefault(payment["loan_id"], []).append(payment)
         for row in loans:
             amount = float(row["outstanding_balance"] or 0)
             currency = str(row["quote_currency"] or "NWX")
             result.setdefault(currency, {name: {"inflows": 0.0, "outflows": 0.0} for name in bucket_names})
-            result[currency][bucket_for(row["maturity_epoch"])]["inflows"] += amount
+            schedule = schedules_by_loan.get(row["loan_id"], [])
+            scheduled_principal = 0.0
+            for payment in schedule:
+                principal = max(
+                    0.0, float(payment["principal_due"] or 0)
+                    - float(payment["principal_paid"] or 0)
+                )
+                scheduled_principal += principal
+                scheduled_total = (
+                    float(payment["principal_due"] or 0)
+                    + float(payment["interest_due"] or 0)
+                    + float(payment["fee_due"] or 0)
+                )
+                due = max(0.0, scheduled_total-float(payment["amount_paid"] or 0))
+                result[currency][bucket_for(payment["due_epoch"])]["inflows"] += due
+            # Schedules may omit a balloon; legacy loans may have no schedule.
+            residual = max(0.0, amount-scheduled_principal)
+            result[currency][bucket_for(row["maturity_epoch"])]["inflows"] += residual
 
         ladders = []
         from functions.money import currency_precision, round_currency

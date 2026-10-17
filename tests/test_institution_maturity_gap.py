@@ -74,7 +74,8 @@ class InstitutionMaturityGapTests(unittest.TestCase):
         self.assertEqual({row["currency"] for row in report["ladders"]}, {"NWX", "USD"})
         by_currency = {row["currency"]: row["buckets"] for row in report["ladders"]}
         self.assertEqual(by_currency["NWX"][2]["outflows"], 500)
-        self.assertEqual(by_currency["USD"][3]["inflows"], 900)
+        self.assertEqual(by_currency["USD"][2]["inflows"], 100)
+        self.assertEqual(by_currency["USD"][3]["inflows"], 800)
         self.assertEqual(by_currency["USD"][3]["cumulative_gap"], 900)
         nwx_stress = next(row for row in report["ladders"] if row["currency"] == "NWX")["depositRunoffStress"]
         self.assertEqual([row["assumedRunoff"] for row in nwx_stress], [50, 125, 250])

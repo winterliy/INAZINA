@@ -1015,6 +1015,30 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertAlmostEqual(metrics["dsr"], 2.1)
         self.assertAlmostEqual(metrics["stress_dsr"], 2.52)
 
+    def test_proposed_foreign_variable_loan_compounds_rate_and_fx_stress(self):
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('USD','US Dollar','2',2)"
+        )
+        self.db.currency.execute(
+            "INSERT INTO country_currencies(nationality,currency_code) "
+            "VALUES ('USD Nation','USD')"
+        )
+        self.add_loan(code="NEW-USD-COMBINED-STRESS", maturity=365,
+                      collateral_ratio=0, origination_fee=0)
+        self.db.products.execute(
+            "UPDATE liability SET quote_currency='USD',rate_type='floating',"
+            "rate_nationality='USD Nation',repricing_cycle_seconds=2592000,rate_cap=10 "
+            "WHERE product_code='NEW-USD-COMBINED-STRESS'"
+        )
+        product = self.db.products.get_liability("NEW-USD-COMBINED-STRESS")
+        with self.db.atomic() as conn:
+            metrics = BankManager._underwriting_metrics(
+                conn, "borrower", 1_000, product, 5, 1_800_000_000, 100_000,
+                stress_rate_shock_bps=200, stress_fx_shock_percent=20,
+            )
+        self.assertAlmostEqual(metrics["stress_dsr"], 2.568)
+
     def test_country_stress_shock_is_applied_and_persisted_at_origination(self):
         self.add_loan(code="COUNTRY-SHOCK", maturity=365, collateral_ratio=0,
                       origination_fee=0)

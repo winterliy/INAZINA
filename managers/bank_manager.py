@@ -664,10 +664,6 @@ class BankManager:
                 conn, proposed_principal_service+proposed_interest, product_currency
             ), product_currency,
         )
-        proposed_fx_stress_service = (
-            proposed_service*max(0.0, float(stress_fx_shock_percent))/100.0
-            if product_currency != home_currency else 0.0
-        )
         proposed_stress_delta = 0.0
         stress_applicable = False
         if product["rate_type"] == "floating":
@@ -763,6 +759,20 @@ class BankManager:
             for currency, values in native_totals.items()
             if currency != home_currency
         )
+        proposed_stress_interest = to_home(
+            round_currency(
+                conn, amount*proposed_stress_delta/100.0, product_currency
+            ), product_currency,
+        )
+        proposed_fx_stress_service = (
+            round_currency(
+                conn,
+                (proposed_service+proposed_stress_interest)
+                *max(0.0, float(stress_fx_shock_percent))/100.0,
+                home_currency,
+            )
+            if product_currency != home_currency else 0.0
+        )
 
         if income > 0:
             # DTI includes the proposed loan's annual debt service and interest
@@ -770,16 +780,12 @@ class BankManager:
             dti = 100.0 * (proposed_service + existing_interest) / income
             dsr = 100.0 * (proposed_service + existing_service) / income
             stress_dsr = (
-                100.0*(proposed_service+to_home(
-                           round_currency(
-                               conn, amount*proposed_stress_delta/100.0,
-                               product_currency,
-                           ), product_currency,
-                       )
+                100.0*(proposed_service+proposed_stress_interest
                        +proposed_fx_stress_service
                        +existing_service+existing_stress_interest
                        +existing_fx_stress_service)/income
-                if stress_applicable or fx_stress_applicable or proposed_fx_stress_service > 0 else None
+                if stress_applicable or fx_stress_applicable
+                or product_currency != home_currency else None
             )
         else:
             dti = dsr = stress_dsr = None
