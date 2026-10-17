@@ -1814,6 +1814,18 @@ class BankManager:
         limit = max(0.0, float(institution["deposit_insurance_limit"] or 0))
         from managers.currency_manager import CurrencyManager, SCALE
         base_currency = str(institution["base_currency"] or "NWX")
+        insured_totals_base = {}
+        for account in accounts:
+            if not int(account["deposit_insured"] or 0):
+                continue
+            currency = str(account["quote_currency"] or "NWX")
+            balance = max(0.0, float(account["balance"] or 0))
+            if currency != base_currency and balance:
+                balance = CurrencyManager.convert(
+                    conn, int(round(balance*SCALE)), currency, base_currency
+                )/SCALE
+            user_id = str(account["user_id"])
+            insured_totals_base[user_id] = insured_totals_base.get(user_id, 0.0)+balance
         used_by_user = {}
         covered_total = uninsured_total = 0
         for account in accounts:
@@ -1829,7 +1841,12 @@ class BankManager:
                         conn, int(round(remaining_base*SCALE)), base_currency,
                         account["quote_currency"]
                     )/SCALE
-                covered = min(balance, available_cover)
+                insured_total = insured_totals_base.get(user_id, 0.0)
+                share = min(1.0, limit/insured_total) if insured_total > 0 else 0.0
+                pro_rata_cover = round_currency(
+                    conn, balance*share, account["quote_currency"] or "NWX"
+                )
+                covered = min(balance, available_cover, pro_rata_cover)
             else:
                 covered = 0
             uninsured = balance-covered

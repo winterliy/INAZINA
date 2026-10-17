@@ -186,6 +186,10 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertEqual(account['resolution_status'], 'resolved')
         self.assertGreater(account['insurance_paid'], 0)
         self.assertGreater(account['uninsured_claim'], 0)
+        self.assertEqual(account['insurance_paid'], 1.87)
+        self.assertEqual(account['uninsured_claim'], 1.38)
+        self.assertAlmostEqual(result['covered'], 1.99)
+        self.assertAlmostEqual(result['uninsured'], 1.47)
         self.assertGreater(self.db.users.get_user('us-user')['cash'], cash_before)
         self.assertEqual(reconciliation[0]['status'], 'matched')
         fx_record = self.db.currency.execute_one(

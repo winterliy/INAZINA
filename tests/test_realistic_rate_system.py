@@ -702,11 +702,15 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.db.products.execute(
             "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"
             "interest_cycle,compound_type,issuer,quote_currency,deposit_insured) "
-            "VALUES ('INSURED','Insured',0,1,365,31536000,0,'Bank','NWX',1)"
+            "VALUES ('INSURED','Insured',0,1,365,31536000,0,'Bank','NWX',1),"
+            "('INSURED2','Insured 2',0,1,365,31536000,0,'Bank','NWX',1)"
         )
         bank = BankManager(self.db)
         self.assertTrue(bank.open_account(
             "borrower", "INSURED", "1234", 1_000
+        )[0])
+        self.assertTrue(bank.open_account(
+            "borrower", "INSURED2", "1234", 500
         )[0])
         self.db.currency.execute(
             "UPDATE financial_institutions SET equity_capital=100,retained_earnings=0,"
@@ -721,18 +725,26 @@ class RealisticRateSystemTests(unittest.TestCase):
                 conn, "Bank", now=1000
             )
         self.assertEqual(resolved, {
-            "accounts": 1, "covered": 600, "uninsured": 400,
+            "accounts": 2, "covered": 600, "uninsured": 900,
         })
-        account = self.db.accounts.execute_one(
-            "SELECT balance,resolution_status,insurance_paid,uninsured_claim "
-            "FROM accounts WHERE product_code='INSURED'"
+        accounts = self.db.accounts.execute(
+            "SELECT balance,resolution_status FROM accounts "
+            "WHERE product_code IN ('INSURED','INSURED2')"
         )
-        self.assertEqual(
-            (account["balance"], account["resolution_status"],
-             account["insurance_paid"], account["uninsured_claim"]),
-            (0, "resolved", 600, 400),
-        )
+        self.assertEqual(len(accounts), 2)
+        self.assertTrue(all(row["balance"] == 0 and row["resolution_status"] == "resolved"
+                            for row in accounts))
         self.assertEqual(self.db.users.get_treasury_balance(), treasury_before-600)
+        claims = self.db.accounts.execute_one(
+            "SELECT SUM(covered_amount),SUM(uninsured_amount) FROM deposit_insurance_claims"
+        )
+        self.assertEqual(tuple(claims), (600, 900))
+        allocation = self.db.accounts.execute(
+            "SELECT covered_amount,uninsured_amount FROM deposit_insurance_claims "
+            "ORDER BY covered_amount"
+        )
+        self.assertEqual([(row["covered_amount"], row["uninsured_amount"])
+                          for row in allocation], [(200, 300), (400, 600)])
         self.assertIsNotNone(self.db.accounts.execute_one(
             "SELECT 1 FROM deposit_insurance_claims WHERE account_number IN "
             "(SELECT account_number FROM accounts WHERE product_code='INSURED')"
@@ -744,12 +756,13 @@ class RealisticRateSystemTests(unittest.TestCase):
         balances = {row["account_code"]: row["balance_units"] for row in journal}
         self.assertEqual(balances.get("customer_deposits_payable", 0), 0)
         self.assertEqual(balances.get("deposit_insurance_payable", 0), -600)
-        self.assertEqual(balances.get("uninsured_deposit_claim", 0), -400)
+        self.assertEqual(balances.get("uninsured_deposit_claim", 0), -900)
         from web_api.server import admin_bank_journal_report
         with patch("web_api.server.connect_readonly", self.db.readonly):
             report = admin_bank_journal_report("Bank")
-        self.assertEqual(report["depositInsuranceClaims"][0]["covered_amount_text"], "600")
-        self.assertEqual(report["depositInsuranceClaims"][0]["uninsured_amount_text"], "400")
+        self.assertEqual(len(report["depositInsuranceClaims"]), 2)
+        self.assertEqual(sum(int(row["covered_amount_text"]) for row in report["depositInsuranceClaims"]), 600)
+        self.assertEqual(sum(int(row["uninsured_amount_text"]) for row in report["depositInsuranceClaims"]), 900)
         self.assertEqual(report["borrowerConcentrationStress"]["borrowerCount"], 0)
 
     def test_competing_banks_and_balance_sheet_pressure_change_spread(self):
