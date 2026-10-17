@@ -111,7 +111,7 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
         setDrLedgerError(true);
       }
       try {
-        const monitored = await api<{ samples: DrDeviationSample[]; events: DrDeviationEvent[] }>("/api/admin/dr/monitor/sample", { method: "POST", body: "{}" });
+        const monitored = await api<{ samples: DrDeviationSample[]; events: DrDeviationEvent[] }>("/api/admin/dr/monitor?limit=100");
         setDrDeviationSamples(monitored.samples);
         setDrDeviationEvents(monitored.events);
         setDrMonitorError(false);
@@ -229,7 +229,7 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
       </tbody></table>{drLedgerError ? <p className="empty">DR 원장을 불러오지 못했습니다. 상품 목록은 정상 조회되었습니다.</p> : !drMovements.length && <p className="empty">DR 전환 기록이 없습니다.</p>}</div>
     </Card>}
 
-    {group === "market" && <Card title="DR 괴리 관측·경보 이력" caption="관리자 상품 화면이 열린 동안 1분마다 확인하며, 종목별 최대 5분당 1회 표본을 저장합니다. ±10% 경보는 단순 참고가 기준이며 환율·비용·유동성은 반영하지 않습니다. 표본은 90일 보관합니다.">
+    {group === "market" && <Card title="DR 괴리 관측·경보 이력" caption="Python 데이터 서비스가 1분마다 표본 수집을 시도하고 종목별 최대 5분당 1회 저장합니다. 관리자 화면은 이력을 읽기 전용으로 조회합니다. ±10% 경보는 단순 참고가 기준이며 환율·비용·유동성은 반영하지 않습니다. 표본은 90일 보관합니다.">
       <h3 className="sub-head">최근 상태 표본</h3>
       <div className="scroll-x"><table><thead><tr><th>관측 시각</th><th>DR</th><th>상태</th><th className="r">현재가</th><th className="r">참고가</th><th className="r">괴리율</th></tr></thead><tbody>
         {drDeviationSamples.map((item) => <tr key={item.sample_id}><td>{date(item.sampled_epoch)}</td><td className="mono">{item.dr_code}</td><td>{drDeviationLabel(item.state)}</td><td className="r mono">{item.dr_price == null ? "—" : number(item.dr_price)}</td><td className="r mono">{item.reference_value == null ? "—" : number(item.reference_value)}</td><td className="r mono">{item.deviation_percent == null ? "—" : `${number(item.deviation_percent)}%`}</td></tr>)}

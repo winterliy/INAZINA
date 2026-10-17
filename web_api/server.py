@@ -3,6 +3,7 @@
 import hmac
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -3125,6 +3126,25 @@ def main():
     server = BoundedThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     stopping = threading.Event()
 
+    def monitor_dr_deviations():
+        from managers.dr_deviation_monitor_manager import DrDeviationMonitorManager
+        while not stopping.wait(60):
+            try:
+                with domain().db.atomic(("assets", "company", "currency")) as connection:
+                    result = DrDeviationMonitorManager.sample_conn(connection)
+                if result["transitions"]:
+                    logging.getLogger("inazina.dr_monitor").info(
+                        "recorded %s DR deviation transitions", result["transitions"]
+                    )
+            except Exception:
+                logging.getLogger("inazina.dr_monitor").exception(
+                    "DR deviation sampling failed"
+                )
+
+    monitor = threading.Thread(target=monitor_dr_deviations,
+                               name="dr-deviation-monitor", daemon=True)
+    monitor.start()
+
     def stop(_signum, _frame):
         if not stopping.is_set():
             stopping.set()
@@ -3137,6 +3157,7 @@ def main():
     try:
         server.serve_forever()
     finally:
+        stopping.set()
         server.server_close()
     print("INAZINA Python data service stopped.", flush=True)
 
