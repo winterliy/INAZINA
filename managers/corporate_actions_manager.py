@@ -123,9 +123,8 @@ class CorporateActionsManager:
         ).fetchone()[0]
         dr_rows = conn.execute(
             "SELECT h.user_id,SUM(h.quantity*d.underlying_per_receipt) quantity "
-            "FROM depositary_receipts d JOIN market_assets da ON da.code=d.dr_code "
-            "JOIN user_assets h ON h.asset_code=d.dr_code "
-            "WHERE d.underlying_code=? AND d.program_status='active' AND da.status='active' "
+            "FROM depositary_receipts d JOIN user_assets h ON h.asset_code=d.dr_code "
+            "WHERE d.underlying_code=? AND d.program_status<>'terminated' "
             "AND d.quote_currency=? GROUP BY h.user_id ORDER BY h.user_id",
             (str(code), str(underlying_currency)),
         ).fetchall()

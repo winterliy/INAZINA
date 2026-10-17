@@ -92,6 +92,22 @@ class ShareholderRegisterTests(unittest.TestCase):
         self.assertEqual(self.manager.process_due(now=due), [('CO', True, 50)])
         self.assertEqual(self.cash('admin') - admin_before, 0)
 
+    def test_suspended_dr_program_keeps_existing_dividend_rights(self):
+        due = 100_000
+        self.prepare(due)
+        self.db.assets.execute(
+            "INSERT INTO depositary_receipts(dr_code,underlying_code,listing_exchange_id,"
+            "quote_currency,underlying_per_receipt,receipt_supply,deposited_underlying_quantity,"
+            "program_status) VALUES ('CO_DR','CO','LSE','NWX',2,100,200,'suspended')"
+        )
+        self.db.assets.register_asset('CO_DR', 'CO DR', 'LSE', 200, 'depositary_receipt', 100)
+        self.db.assets.execute("UPDATE market_assets SET status='inactive' WHERE code='CO_DR'")
+        self.db.assets.add_user_asset('admin', 'CO_DR', 3)
+        admin_before = self.cash('admin')
+
+        self.assertEqual(self.manager.process_due(now=due), [('CO', True, 80)])
+        self.assertEqual(self.cash('admin') - admin_before, 30)
+
     def test_special_dividend_closes_register_now_and_pays_ten_minutes_later(self):
         self.prepare()
         with patch('managers.corporate_actions_manager.time.time', return_value=1000):
