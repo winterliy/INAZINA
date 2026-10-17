@@ -248,6 +248,55 @@ class RealisticRateSystemTests(unittest.TestCase):
             ).fetchone()[0]
         self.assertEqual((released, remaining, journal), (0, 0, 0))
 
+    def test_scheduled_full_repayment_releases_ecl_allowance(self):
+        self.add_loan(code="ECL-SCHEDULE", maturity=90, collateral_ratio=0,
+                      origination_fee=0)
+        self.db.products.execute(
+            "UPDATE liability SET rate_type='fixed',interest_rate=0,"
+            "amortization_type='annuity',payment_frequency_days=30 "
+            "WHERE product_code='ECL-SCHEDULE'"
+        )
+        success, message = BankManager(self.db).apply_loan(
+            "borrower", "ECL-SCHEDULE", 90_000
+        )
+        self.assertTrue(success, message)
+        loan = self.db.accounts.execute_one(
+            "SELECT loan_id FROM loans WHERE product_code='ECL-SCHEDULE'"
+        )
+        schedule = self.db.accounts.execute(
+            "SELECT due_epoch FROM loan_payment_schedule WHERE loan_id=? ORDER BY installment_number",
+            (loan["loan_id"],),
+        )
+        with self.db.atomic() as conn:
+            conn.execute(
+                "UPDATE accounts.loans SET ecl_allowance=25,contract_rate=0 WHERE loan_id=?",
+                (loan["loan_id"],),
+            )
+            conn.execute(
+                "UPDATE loan_payment_schedule SET principal_due=30000,interest_due=0,fee_due=0 "
+                "WHERE loan_id=?",
+                (loan["loan_id"],),
+            )
+            BankJournal.post(
+                conn, "Bank", "expected_credit_loss", "loan:ecl-schedule:assessment", "NWX",
+                [("impairment_expense", "debit", 25), ("ecl_allowance", "credit", 25)],
+            )
+
+        paid, missed, _ = BankManager(self.db).process_scheduled_loan_payments(
+            now=float(schedule[-1]["due_epoch"])+1
+        )
+        self.assertEqual((paid, missed), (3, 0))
+        closed = self.db.accounts.execute_one(
+            "SELECT status,outstanding_balance,ecl_allowance FROM loans WHERE loan_id=?",
+            (loan["loan_id"],),
+        )
+        self.assertEqual((closed["status"], closed["outstanding_balance"],
+                          closed["ecl_allowance"]), ("paid", 0, 0))
+        with self.db.atomic() as conn:
+            result = BankJournal.reconcile_ecl_allowances(conn, "Bank")
+        self.assertEqual(result[0]["status"], "matched")
+        self.assertEqual(result[0]["journal_units"], 0)
+
     def test_withholding_tax_ledger_keeps_income_currency_precision(self):
         self.db.currency.execute(
             "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
