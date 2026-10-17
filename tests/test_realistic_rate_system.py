@@ -74,6 +74,24 @@ class RealisticRateSystemTests(unittest.TestCase):
             self.db.products.get_liability("REAL")["interest_rate"], 8.7
         )
 
+    def test_market_rate_edit_rejects_invalid_effective_epochs_without_mutation(self):
+        before = self.db.currency.execute_one(
+            "SELECT annual_rate,updated_epoch FROM market_rate_curve "
+            "WHERE nationality='낙원' AND benchmark_key='bank_bond' AND tenor_days=365"
+        )
+        for invalid_epoch in (-1, float("nan"), float("inf")):
+            with self.subTest(invalid_epoch=invalid_epoch):
+                result = self.rates.set_market_rate(
+                    "낙원", "bank_bond", 365, 6, "admin", now=invalid_epoch
+                )
+                self.assertFalse(result[0])
+                self.assertIn("유효한 UNIX 시각", result[1])
+        after = self.db.currency.execute_one(
+            "SELECT annual_rate,updated_epoch FROM market_rate_curve "
+            "WHERE nationality='낙원' AND benchmark_key='bank_bond' AND tenor_days=365"
+        )
+        self.assertEqual(tuple(after), tuple(before))
+
     def test_negative_policy_rate_is_supported(self):
         result = self.rates.set_country_rate("base_rate", "낙원", -0.75, "admin")
         self.assertTrue(result[0], result[1])

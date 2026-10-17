@@ -539,6 +539,52 @@ class CurrencyDB(DBManager):
                             WHERE nationality=NEW.nationality AND rate_key='legal_max_rate'),0)),'sql'
                     WHERE NEW.legal_max_rate IS NOT OLD.legal_max_rate;
             END""")
+        self.execute("""CREATE TABLE IF NOT EXISTS country_rate_history_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            operation TEXT NOT NULL CHECK(operation IN ('insert','update','delete')),
+            nationality TEXT NOT NULL,
+            rate_key TEXT NOT NULL,
+            before_percent REAL,
+            after_percent REAL,
+            before_epoch REAL,
+            after_epoch REAL,
+            before_actor TEXT,
+            after_actor TEXT,
+            recorded_epoch REAL NOT NULL
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_country_rate_history_events_recent "
+                     "ON country_rate_history_events(nationality,event_id DESC)")
+        for operation, trigger_operation in (("INSERT", "insert"), ("UPDATE", "update"),
+                                             ("DELETE", "delete")):
+            before = "OLD" if operation != "INSERT" else None
+            after = "NEW" if operation != "DELETE" else None
+            before_nationality = f"{before}.nationality" if before else "NULL"
+            after_nationality = f"{after}.nationality" if after else "NULL"
+            before_rate_key = f"{before}.rate_key" if before else "NULL"
+            after_rate_key = f"{after}.rate_key" if after else "NULL"
+            before_values = [f"{before}.{column}" if before else "NULL" for column in
+                             ("annual_percent", "effective_epoch", "changed_by")]
+            after_values = [f"{after}.{column}" if after else "NULL" for column in
+                            ("annual_percent", "effective_epoch", "changed_by")]
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS
+                trg_country_rate_history_event_{trigger_operation}
+                AFTER {operation} ON country_rate_history BEGIN
+                INSERT INTO country_rate_history_events(
+                    operation,nationality,rate_key,before_percent,after_percent,
+                    before_epoch,after_epoch,before_actor,after_actor,recorded_epoch
+                ) VALUES (
+                    '{trigger_operation}',COALESCE({after_nationality},{before_nationality}),
+                    COALESCE({after_rate_key},{before_rate_key}),
+                    {before_values[0]},{after_values[0]},
+                    {before_values[1]},{after_values[1]},
+                    {before_values[2]},{after_values[2]},
+                    (julianday('now')-2440587.5)*86400.0
+                ); END""")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS
+                trg_country_rate_history_events_immutable_{operation.lower()}
+                BEFORE {operation} ON country_rate_history_events
+                BEGIN SELECT RAISE(ABORT,'country rate history events are append-only'); END""")
 
     def _init_market_rate_structure(self):
         """Create market benchmarks, a tenor curve, and institution cost inputs."""

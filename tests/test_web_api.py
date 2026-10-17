@@ -127,6 +127,10 @@ class WebApiTests(unittest.TestCase):
                     annual_rate REAL,updated_epoch REAL);
                 CREATE TABLE market_rate_pressure(nationality TEXT,benchmark_key TEXT,
                     adjustment REAL,updated_epoch REAL);
+                CREATE TABLE IF NOT EXISTS country_rate_history_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,operation TEXT,nationality TEXT,
+                    rate_key TEXT,before_percent REAL,after_percent REAL,before_epoch REAL,
+                    after_epoch REAL,before_actor TEXT,after_actor TEXT,recorded_epoch REAL);
                 CREATE TABLE country_tax_rules(nationality TEXT,income_source TEXT,tax_percent REAL,
                     updated_by TEXT,updated_epoch REAL);
                 CREATE TABLE country_macro_indicators(nationality TEXT,inflation_percent REAL,
@@ -140,6 +144,9 @@ class WebApiTests(unittest.TestCase):
                 INSERT INTO country_currencies(nationality,currency_code,base_rate) VALUES ('공통권','NWX',100);
                 INSERT INTO country_tax_rules VALUES ('낙원','lottery_winnings',12.5,'admin-1',123);
                 INSERT INTO country_macro_indicators VALUES ('낙원',3,1.5,4,55,250,12,'admin-1',120);
+                INSERT INTO country_rate_history_events(operation,nationality,rate_key,
+                    before_percent,after_percent,before_actor,after_actor,recorded_epoch)
+                    VALUES ('update','낙원','base_rate',3,4,'admin-0','admin-1',321);
             """)
         country = next(item for item in server.admin_countries() if item["nationality"] == "낙원")
         self.assertEqual(country["taxRules"], [{
@@ -151,6 +158,11 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(country["macroIndicators"]["fx_stress_shock_percent"], 12)
         self.assertEqual(country["externalReferenceRate"], 8)
         self.assertAlmostEqual(country["externalRatePremium"], 0.5)
+        self.assertEqual(country["rateHistoryEvents"], [{
+            "operation": "update", "rate_key": "base_rate", "before_percent": 3,
+            "after_percent": 4, "before_actor": "admin-0", "after_actor": "admin-1",
+            "before_epoch": None, "after_epoch": None, "recorded_epoch": 321.0,
+        }])
 
     def test_macro_indicator_web_action_validates_and_audits_inputs(self):
         with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:

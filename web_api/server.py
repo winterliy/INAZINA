@@ -2317,6 +2317,11 @@ def admin_countries():
             market_rate_pressure = [dict(item) for item in connection.execute(
                 "SELECT benchmark_key,adjustment,updated_epoch FROM market_rate_pressure "
                 "WHERE nationality=? ORDER BY benchmark_key", (nationality,))]
+            rate_history_events = [dict(item) for item in connection.execute(
+                "SELECT operation,rate_key,before_percent,after_percent,before_actor,after_actor,"
+                "before_epoch,after_epoch,recorded_epoch FROM country_rate_history_events "
+                "WHERE nationality=? ORDER BY event_id DESC LIMIT 50", (nationality,)
+            )] if _table_exists(connection, "country_rate_history_events") else []
             macro_indicators = connection.execute(
                 "SELECT inflation_percent,real_gdp_growth_percent,unemployment_percent,"
                 "fiscal_debt_percent,credit_stress_shock_bps,fx_stress_shock_percent,"
@@ -2335,6 +2340,7 @@ def admin_countries():
                            "treasuryCash": treasury["cash"] if treasury else None,
                            "citizens": int(citizens), "guilds": guilds, "exchanges": exchanges,
                            "marketRates": market_rates, "marketRatePressure": market_rate_pressure,
+                           "rateHistoryEvents": rate_history_events,
                            "macroIndicators": dict(macro_indicators) if macro_indicators else {},
                            "externalReferenceRate": external_rate,
                            "externalRatePremium": external_rate_premium,

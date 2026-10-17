@@ -1655,6 +1655,8 @@ class RateManager:
                 raise ValueError("기준지표는 funding/bank_bond/treasury 중 하나여야 합니다.")
             tenor, rate = int(tenor_days), float(percent)
             when = float(time.time() if now is None else now)
+            if not math.isfinite(when) or when < 0:
+                raise ValueError("시장금리 적용 시각은 유효한 UNIX 시각이어야 합니다.")
             if tenor <= 0 or not math.isfinite(rate) or not -100 <= rate <= 100:
                 raise ValueError("만기는 양의 정수, 시장금리는 -100~100%여야 합니다.")
             with (self.db.atomic(("system", "product")) if conn is None else nullcontext(conn)) as db_conn:

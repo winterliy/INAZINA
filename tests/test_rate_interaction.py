@@ -152,6 +152,27 @@ class RateInteractionTests(unittest.TestCase):
         self.assertEqual(int(rows[0]['effective_epoch']), int(rows[1]['effective_epoch']))
         self.assertGreater(rows[0]['effective_epoch'], rows[1]['effective_epoch'])
 
+    def test_policy_rate_history_corrections_leave_immutable_before_after_events(self):
+        self.assertTrue(self.rates.set_country_rate(
+            "base_rate", "낙원", 5, "admin", now=10_000
+        )[0])
+        self.assertTrue(self.rates.set_country_rate(
+            "base_rate", "낙원", 6, "admin", now=10_000
+        )[0])
+        event = self.db.currency.execute_one(
+            "SELECT event_id FROM country_rate_history_events WHERE nationality='낙원' "
+            "AND rate_key='base_rate' AND operation='update' "
+            "AND before_percent=5 AND after_percent=6 ORDER BY event_id DESC LIMIT 1"
+        )
+        self.assertIsNotNone(event)
+        for operation in ("UPDATE", "DELETE"):
+            with self.subTest(operation=operation):
+                sql = (f"{operation} country_rate_history_events "
+                       f"SET after_percent=99 WHERE event_id=?" if operation == "UPDATE" else
+                       "DELETE FROM country_rate_history_events WHERE event_id=?")
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+                    self.db.currency.execute(sql, (event[0],))
+
     def test_floating_reset_must_align_with_interest_cycle(self):
         with self.assertRaisesRegex(sqlite3.IntegrityError, "재산정주기"):
             self.add_saving("BAD", floating=True, cycle=100_000)
