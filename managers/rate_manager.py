@@ -448,7 +448,8 @@ class RateManager:
             ldr = bank_loans/max(1.0, float(sheet["deposits"]))
             ldr_target = max(.01, float(institution["target_loan_deposit_ratio"] or .9))
             ldr_gap = max(-1.0, min(5.0, (ldr-ldr_target)/ldr_target))
-            capital_ratio = float(terms["effective_equity"])/max(1.0, bank_loans*.75)
+            capital_ratio = (float(terms["effective_equity"])
+                             / max(1.0, float(sheet["risk_weighted_assets"])))
             capital_target = max(.001, float(institution["target_capital_ratio"] or .1))
             capital_gap = max(-1.0, min(5.0,
                 (capital_target-capital_ratio)/capital_target

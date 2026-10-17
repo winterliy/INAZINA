@@ -258,6 +258,10 @@ class AccountDB(DBManager):
         schedule_columns = {
             row[1] for row in self.execute("PRAGMA table_info(loan_payment_schedule)")
         }
+        payment_allocation_migration = any(
+            column not in schedule_columns
+            for column in ("principal_paid", "interest_paid", "fee_paid")
+        )
         for column, declaration in (
             ("rate_applied", "REAL"),
             ("day_count_convention", "TEXT NOT NULL DEFAULT 'ACT/365'"),
@@ -272,11 +276,12 @@ class AccountDB(DBManager):
                 )
         # Older releases kept only the aggregate amount_paid. Backfill it using
         # the same fee -> interest -> principal convention used for new payments.
-        self.execute("""UPDATE loan_payment_schedule SET
-            fee_paid=MIN(fee_due,amount_paid),
-            interest_paid=MIN(interest_due,MAX(0,amount_paid-fee_due)),
-            principal_paid=MIN(principal_due,MAX(0,amount_paid-fee_due-interest_due))
-            WHERE amount_paid>0 AND fee_paid=0 AND interest_paid=0 AND principal_paid=0""")
+        if payment_allocation_migration:
+            self.execute("""UPDATE loan_payment_schedule SET
+                fee_paid=MIN(fee_due,amount_paid),
+                interest_paid=MIN(interest_due,MAX(0,amount_paid-fee_due)),
+                principal_paid=MIN(principal_due,MAX(0,amount_paid-fee_due-interest_due))
+                WHERE amount_paid>0 AND fee_paid=0 AND interest_paid=0 AND principal_paid=0""")
         self.execute(
             "CREATE INDEX IF NOT EXISTS idx_loan_schedule_due "
             "ON loan_payment_schedule(status,due_epoch,loan_id)"
