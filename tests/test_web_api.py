@@ -464,14 +464,19 @@ class WebApiTests(unittest.TestCase):
         with patch.object(server, "INTERNAL_TOKEN", "secret"), \
                 patch.object(server, "identity", return_value={
                     "userId": "admin-1", "role": "admin",
-                }), patch.object(server, "admin_bank_journal_report", return_value={"ok": True}):
+                }), patch.object(server, "admin_bank_journal_report", return_value={
+                    "trialBalance": [{}], "depositInsuranceClaims": [],
+                }):
             server.Handler.do_GET(handler)
-        self.assertEqual(response, {"status": 200, "value": {"ok": True}})
+        self.assertEqual(response, {"status": 200, "value": {
+            "trialBalance": [{}], "depositInsuranceClaims": [],
+        }})
         entry = server.admin_audit()[0]
         self.assertEqual(entry["actorId"], "admin-1")
         self.assertEqual(entry["action"], "bank_journal.read")
         self.assertEqual(entry["payload"], {
             "issuer": "Test Bank", "currency": "EUR", "since": 123.0,
+            "trial_balance_accounts": 1, "insurance_claims": 0,
         })
 
     def test_admin_user_search_audit_omits_search_term(self):
@@ -489,7 +494,9 @@ class WebApiTests(unittest.TestCase):
             server.Handler.do_GET(handler)
         entry = server.admin_audit()[0]
         self.assertEqual(entry["action"], "admin_users.read")
-        self.assertEqual(entry["payload"], {"kind": "people", "filtered": True})
+        self.assertEqual(entry["payload"], {
+            "kind": "people", "filtered": True, "result_count": 0,
+        })
 
     def test_compliance_report_access_is_audited(self):
         response = {}
@@ -502,12 +509,19 @@ class WebApiTests(unittest.TestCase):
         with patch.object(server, "INTERNAL_TOKEN", "secret"), \
                 patch.object(server, "identity", return_value={
                     "userId": "admin-1", "role": "admin",
-                }), patch.object(server, "admin_compliance_overview", return_value={"ok": True}):
+                }), patch.object(server, "admin_compliance_overview", return_value={
+                    "kycProfiles": [{}], "amlAlerts": [], "eclAssessments": [{}, {}],
+                }):
             server.Handler.do_GET(handler)
-        self.assertEqual(response, {"status": 200, "value": {"ok": True}})
+        self.assertEqual(response, {"status": 200, "value": {
+            "kycProfiles": [{}], "amlAlerts": [], "eclAssessments": [{}, {}],
+        }})
         entry = server.admin_audit()[0]
         self.assertEqual(entry["action"], "compliance.read")
-        self.assertEqual(entry["payload"], {"nationality": "한국"})
+        self.assertEqual(entry["payload"], {
+            "nationality": "한국", "kyc_profiles": 1,
+            "aml_alerts": 0, "ecl_assessments": 2,
+        })
 
     def test_admin_dr_movement_access_is_audited(self):
         response = {}
@@ -524,7 +538,7 @@ class WebApiTests(unittest.TestCase):
             server.Handler.do_GET(handler)
         entry = server.admin_audit()[0]
         self.assertEqual(entry["action"], "dr_movements.read")
-        self.assertEqual(entry["payload"], {"limit": 200})
+        self.assertEqual(entry["payload"], {"limit": 200, "result_count": 0})
 
     def test_admin_customer_detail_access_is_audited(self):
         response = {}
@@ -541,7 +555,7 @@ class WebApiTests(unittest.TestCase):
             server.Handler.do_GET(handler)
         entry = server.admin_audit()[0]
         self.assertEqual(entry["action"], "admin_user.read")
-        self.assertEqual(entry["payload"], {"subject_user_id": "customer-42"})
+        self.assertEqual(entry["payload"], {"subject_user_id": "customer-42", "found": True})
 
     def test_db_editor_hides_credentials_and_audit(self):
         names = {table["name"] for table in server.db_tables()}
