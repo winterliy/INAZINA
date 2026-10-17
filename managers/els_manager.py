@@ -14,6 +14,7 @@ from database.user_db import TREASURY_USER_ID
 from managers.currency_manager import CurrencyManager, SCALE
 from managers.currency_exchange_manager import CurrencyExchangeManager
 from managers.market_session_manager import MarketSessionManager
+from managers.rate_manager import RateManager
 
 DAY = 86400
 MAX_MONEY = 2**53 - 1
@@ -208,7 +209,7 @@ class ELSManager:
         user_id, code = str(user_id), str(code).strip()
         try:
             quantity = self._integer(quantity, "청약좌수")
-            now = int(time.time() if now is None else now)
+            now = int(RateManager._validated_epoch(now, "invalid_els_subscription_epoch"))
             self._settle_interest(user_id)
             with self.db.atomic() as conn:
                 error = MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=code)
@@ -283,7 +284,10 @@ class ELSManager:
             InterestManager(self.db).process_user_interests(user_id)
 
     def cancel(self, actor, code, now=None, conn=None):
-        now = int(time.time() if now is None else now)
+        try:
+            now = int(RateManager._validated_epoch(now, "invalid_els_cancellation_epoch"))
+        except (ValueError, TypeError, OverflowError) as exc:
+            return False, f"❌ ELS 발행 취소 실패: {exc}"
         if conn is not None:
             self._require_admin(conn, actor)
             terms = conn.execute("SELECT * FROM els_products WHERE product_code=?", (code,)).fetchone()
@@ -325,7 +329,7 @@ class ELSManager:
 
     def observe(self, conn, now, prices=None):
         """Record only real price ticks; never reconstruct a missing historical path."""
-        now = int(now)
+        now = int(RateManager._validated_epoch(now, "invalid_els_observation_epoch"))
         recorded = []
         for terms in conn.execute("SELECT * FROM els_products WHERE state IN ('subscription','active','observation_pending')").fetchall():
             code = terms["product_code"]
@@ -393,7 +397,7 @@ class ELSManager:
 
     def process_due(self, now=None):
         """Pay previously observed contracts atomically, retaining snapshots on failure."""
-        now = int(time.time() if now is None else now)
+        now = int(RateManager._validated_epoch(now, "invalid_els_settlement_epoch"))
         notifications = []
         self.last_settlement_errors = []
         codes = self.db.products.execute("SELECT product_code FROM els_products WHERE state='redemption_pending'")

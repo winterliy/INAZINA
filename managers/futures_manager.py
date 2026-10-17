@@ -183,7 +183,7 @@ class FuturesManager:
             return True, f"✅ 선물 주문 #{order_id} 취소 · 증거금 {int(order['reserved_cash']):,} NWX 반환"
 
     def settle_positions(self, now=None):
-        now = int(time.time() if now is None else now)
+        now = int(RateManager._validated_epoch(now, "invalid_futures_settlement_epoch"))
         results = []
         codes = self.db.products.execute("SELECT product_code FROM investment WHERE product_type = 'stock_future' AND status = 'active'")
         for item in codes:

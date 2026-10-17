@@ -120,6 +120,22 @@ class MarketSessionTests(unittest.TestCase):
             "SELECT * FROM option_collateral_lots WHERE contract_id=?", (contract["contract_id"],)
         )], collateral_before)
 
+    def test_invalid_futures_settlement_epoch_cannot_reprice_or_close_contract(self):
+        ok, message = self.products.issue(
+            "admin", "FUT", "Future", "stock_future", 10000, 100, "EX", "CO", 1
+        )
+        self.assertTrue(ok, message)
+        before = tuple(self.db.products.execute_one(
+            "SELECT status,unit_price,maturity_epoch FROM investment WHERE product_code='FUT'"
+        ))
+        for invalid_epoch in (-1, float("nan"), float("inf"), 1e300, True, "invalid"):
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, "invalid_futures_settlement_epoch"):
+                    self.futures.settle_positions(now=invalid_epoch)
+        self.assertEqual(tuple(self.db.products.execute_one(
+            "SELECT status,unit_price,maturity_epoch FROM investment WHERE product_code='FUT'"
+        )), before)
+
     def test_no_due_session_poll_does_not_reserve_writer(self):
         with patch.object(self.db, "atomic", side_effect=AssertionError("unexpected writer")):
             states = self.session.process_due(now=1000)

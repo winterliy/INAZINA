@@ -1,7 +1,6 @@
 """Clear prior Korean calendar days of Movement chart samples."""
 
 import sqlite3
-import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from database.unified import UnifiedConnection

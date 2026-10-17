@@ -1,6 +1,6 @@
 """Per-exchange trading halts with restart-safe automatic reopening."""
 
-import time
+import time  # Kept as a patch point for legacy worker-clock tests.
 import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo

@@ -7,13 +7,18 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from zoneinfo import ZoneInfo
 from database.db_manager import DBManager
 from database.financial_db import ACCOUNTS
+from functions.time_utils import validate_epoch
 
 KST = ZoneInfo('Asia/Seoul')
 MAX_UNITS = 2**52  # Exact SQLite TOTAL validation and bounded report aggregation.
 
 
 def month(epoch=None):
-    return datetime.fromtimestamp(time.time() if epoch is None else epoch, KST).strftime('%Y-%m')
+    try:
+        epoch = validate_epoch(epoch)
+    except ValueError as exc:
+        raise ValueError('회계 시각은 유효한 UNIX epoch이어야 합니다.') from exc
+    return datetime.fromtimestamp(epoch, KST).strftime('%Y-%m')
 
 
 def period_bounds(period):
@@ -69,7 +74,7 @@ class FinancialManager:
     @classmethod
     def post(cls, conn, code, key, description, lines, flow='none', now=None, reversal=None):
         """Must run within the caller's transaction, so game cash and journal commit together."""
-        now = int(time.time() if now is None else now)
+        now = int(validate_epoch(now))
         prior = conn.execute('SELECT entry_id FROM financial_entries WHERE company_code=? AND source_key=?', (code,key)).fetchone()
         if prior:
             return prior[0]
@@ -107,6 +112,7 @@ class FinancialManager:
 
     @classmethod
     def ensure(cls, conn, code, now=None):
+        now = int(validate_epoch(now))
         company = cls.resolve(conn,code)
         issuer = company['company_code']
         existing = cls.entity(conn,issuer)
@@ -115,7 +121,6 @@ class FinancialManager:
             if existing['currency']!=currency:
                 raise ValueError('회계 원장 개설 후 기준통화를 변경할 수 없습니다.')
             return issuer
-        now = int(time.time() if now is None else now)
         precision = conn.execute('SELECT decimal_places FROM currencies WHERE code=?', (currency,)).fetchone()
         places = int(precision[0]) if precision else (0 if currency=='NWX' else 6)
         conn.execute('INSERT INTO financial_entities VALUES (?,?,?,?)', (issuer,currency,places,now))
@@ -573,7 +578,7 @@ class FinancialManager:
         return f'✅ {issuer} 월간 영업 {"활성" if config.get("enabled") else "중지"}. 이번 달부터 적용하고 다음 달에 외상매출·비용을 자동 인식합니다. 현금 수금·지급은 회계분개에서 처리합니다.'
 
     def process_due(self,now=None):
-        now=int(time.time() if now is None else now)
+        now=int(validate_epoch(now))
         if now<getattr(self,'_next_operating_check',0):return []
         completed=[]
         with self.db.atomic() as conn:

@@ -6,6 +6,7 @@ import time
 from datetime import datetime,timedelta,timezone
 from database.user_db import TREASURY_USER_ID
 from managers.user_manager import UserManager
+from managers.rate_manager import RateManager
 
 KST = timezone(timedelta(hours=9))
 MAX_MONEY = 2**53-1
@@ -124,12 +125,12 @@ class LotteryManager:
         return result
 
     def current(self,now=None):
-        now = time.time() if now is None else now
+        now = RateManager._validated_epoch(now, "invalid_lottery_current_epoch")
         with self.db.atomic() as conn:
             return self._public(self._ensure(conn,now))
 
     def purchase(self,user_id,quantity,numbers,request_id,now=None,expected_round=None):
-        now = int(time.time() if now is None else now)
+        now = int(RateManager._validated_epoch(now, "invalid_lottery_purchase_epoch"))
         if isinstance(quantity,bool) or not isinstance(quantity,int) or not 1<=quantity<=1000:
             raise ValueError('구매 수량은 1~1000장의 정수여야 합니다.')
         chosen = self.numbers(numbers)
@@ -205,7 +206,7 @@ class LotteryManager:
             return {'round_id':round['round_id'],'price':price,'tickets':tickets}
 
     def process_due(self,now=None):
-        now = int(time.time() if now is None else now)
+        now = int(RateManager._validated_epoch(now, "invalid_lottery_processing_epoch"))
         # A selling round spends almost all of its lifetime before the close.
         # Keep those frequent worker polls read-only instead of reserving the
         # database writer every five seconds.

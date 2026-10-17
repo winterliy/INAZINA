@@ -1,11 +1,11 @@
 """Append-only, currency-minor-unit journal for financial institutions."""
 
 from decimal import Decimal
-from functions.time_utils import MAX_SUPPORTED_EPOCH, validate_epoch
+from functions.time_utils import MAX_SUPPORTED_EPOCH as _MAX_SUPPORTED_EPOCH, validate_epoch
 
 
 class BankJournal:
-    MAX_SUPPORTED_EPOCH = MAX_SUPPORTED_EPOCH
+    MAX_SUPPORTED_EPOCH = _MAX_SUPPORTED_EPOCH
 
     @classmethod
     def validate_epoch(cls, value):

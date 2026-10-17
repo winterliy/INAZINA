@@ -21,6 +21,25 @@ class FinancialTests(unittest.TestCase):
         self.fin=FinancialManager(self.db)
         self.actions=CorporateActionsManager(self.bot)
 
+    def test_invalid_financial_epochs_cannot_create_entities_or_entries(self):
+        self.setup_company()
+        invalid_epochs=(-1,float('nan'),float('inf'),1e300,True,'invalid')
+        with self.db.atomic() as conn:
+            entity_count=conn.execute('SELECT COUNT(*) FROM financial_entities').fetchone()[0]
+            entry_count=conn.execute('SELECT COUNT(*) FROM financial_entries').fetchone()[0]
+            for epoch in invalid_epochs:
+                with self.subTest(operation='ensure',epoch=epoch), self.assertRaises(ValueError):
+                    self.fin.ensure(conn,'CO',epoch)
+                with self.subTest(operation='post',epoch=epoch), self.assertRaises(ValueError):
+                    self.fin.event(conn,'CO','invalid-time',[('receivables',1),('revenue',-1)],now=epoch)
+        self.assertEqual(self.db.financial.execute_one('SELECT COUNT(*) FROM financial_entities')[0],entity_count)
+        self.assertEqual(self.db.financial.execute_one('SELECT COUNT(*) FROM financial_entries')[0],entry_count)
+        for epoch in invalid_epochs:
+            with self.subTest(operation='month',epoch=epoch), self.assertRaisesRegex(ValueError,'회계 시각'):
+                month(epoch)
+            with self.subTest(operation='process_due',epoch=epoch), self.assertRaises(ValueError):
+                self.fin.process_due(now=epoch)
+
     def test_opening_preferred_and_reports_have_no_invented_profit(self):
         self.setup_company()
         self.db.companies.create_company('PR','우선주','게임',1000,10,100,'admin','INZ')

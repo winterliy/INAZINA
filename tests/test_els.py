@@ -56,6 +56,41 @@ class ELSTests(unittest.TestCase):
             + self.db.products.execute_one('SELECT SUM(locked_amount) FROM els_products')[0]
             + self.db.products.execute_one('SELECT COALESCE(SUM(balance),0) FROM issuer_cash_accounts')[0])
 
+    def test_invalid_els_epochs_cannot_subscribe_cancel_observe_or_settle(self):
+        invalid_epochs = (-1, float('nan'), float('inf'), 1e300, True, 'invalid')
+        cash_before = self.db.users.get_user('citizen')['cash']
+        for invalid_epoch in invalid_epochs:
+            with self.subTest(operation='subscribe', invalid_epoch=invalid_epoch):
+                ok, message = self.manager.subscribe('citizen', 'ELS1', 1, now=invalid_epoch)
+                self.assertFalse(ok)
+                self.assertIn('invalid_els_subscription_epoch', message)
+        self.assertEqual(self.db.users.get_user('citizen')['cash'], cash_before)
+        self.assertEqual(self.db.products.execute_one(
+            "SELECT COUNT(*) FROM els_subscriptions WHERE product_code='ELS1'"
+        )[0], 0)
+        self.assertTrue(self.manager.subscribe('citizen', 'ELS1', 1, now=1001)[0])
+        before = tuple(self.db.products.execute_one(
+            "SELECT state,locked_amount,principal_amount,coupon_amount,settled_epoch "
+            "FROM els_products WHERE product_code='ELS1'"
+        ))
+        for invalid_epoch in invalid_epochs:
+            with self.subTest(operation='cancel', invalid_epoch=invalid_epoch):
+                ok, message = self.manager.cancel('admin', 'ELS1', now=invalid_epoch)
+                self.assertFalse(ok)
+                self.assertIn('invalid_els_cancellation_epoch', message)
+            with self.subTest(operation='observe', invalid_epoch=invalid_epoch):
+                with self.db.atomic() as conn, self.assertRaisesRegex(
+                    ValueError, 'invalid_els_observation_epoch'
+                ):
+                    self.manager.observe(conn, invalid_epoch)
+            with self.subTest(operation='settle', invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, 'invalid_els_settlement_epoch'):
+                    self.manager.process_due(now=invalid_epoch)
+        self.assertEqual(tuple(self.db.products.execute_one(
+            "SELECT state,locked_amount,principal_amount,coupon_amount,settled_epoch "
+            "FROM els_products WHERE product_code='ELS1'"
+        )), before)
+
     def test_foreign_citizen_subscribes_and_is_paid_through_fx_account(self):
         from managers.currency_manager import CurrencyManager, SCALE
         self.db.currency.execute("INSERT INTO currencies(code,name,reference_rate) VALUES ('AAA','A국 화폐','1')")

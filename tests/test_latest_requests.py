@@ -435,6 +435,23 @@ class LatestRequestsTests(unittest.TestCase):
         self.assertEqual(result['entropy'],entropy)
         self.assertLessEqual(len(result_embed(result)),6000)
 
+    def test_invalid_lottery_epochs_cannot_open_round_or_sell_tickets(self):
+        lottery = self.bot.lottery_mgr
+        invalid_epochs = (-1, float('nan'), float('inf'), 1e300, True, 'invalid')
+        for invalid_epoch in invalid_epochs:
+            with self.subTest(operation='current', invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, 'invalid_lottery_current_epoch'):
+                    lottery.current(now=invalid_epoch)
+            with self.subTest(operation='purchase', invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, 'invalid_lottery_purchase_epoch'):
+                    lottery.purchase('alice', 1, '1 2 3 4 5 6',
+                                    f'invalid-{len(str(invalid_epoch))}', now=invalid_epoch)
+            with self.subTest(operation='process_due', invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, 'invalid_lottery_processing_epoch'):
+                    lottery.process_due(now=invalid_epoch)
+        self.assertEqual(self.db.lottery.execute_one('SELECT COUNT(*) FROM lottery_rounds')[0], 0)
+        self.assertEqual(self.db.lottery.execute_one('SELECT COUNT(*) FROM lottery_purchases')[0], 0)
+
     def test_lottery_rules_freeze_and_ledger_mismatch_preserves_draw(self):
         lottery=self.bot.lottery_mgr
         round=lottery.current(now=1000000)
