@@ -929,6 +929,12 @@ class BankManager:
                 effective = RateManager.effective_annual_rate(
                     contract_rate, float(product['interest_cycle'] or 31536000)
                 )
+                from managers.credit_risk_manager import CreditRiskManager
+                origination_pd_12m = CreditRiskManager.origination_pd_12m(
+                    conn, user['nationality'], credit_score, underwriting['dti'],
+                    underwriting['dsr'],
+                    (amount/total_collateral_value if total_collateral_value else 0.0),
+                )
                 maturity_days = int(product['maturity_days'] or 365)
                 frequency_days = int(product['payment_frequency_days'] or 30)
                 due_days = ([] if product['amortization_type'] == 'legacy' else
@@ -978,8 +984,8 @@ class BankManager:
                     "contract_apr,origination_fee,mandatory_cost_fee,collateral_amount,day_count_convention,"
                     "amortization_type,payment_frequency_days,collateral_asset_value,current_ltv,"
                     "underwriting_dti,underwriting_dsr,underwriting_stress_dsr,borrower_risk_score,underwriting_income,"
-                    "quote_currency,prepayment_fee_percent,prepayment_fee_decline_days) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "origination_pd_12m,quote_currency,prepayment_fee_percent,prepayment_fee_decline_days) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (str(user_id), product_code, amount, amount, opened_epoch, opened_epoch,
                      opened_epoch+int(product['maturity_days'] or 0)*86400
                      if int(product['maturity_days'] or 0)>0 else None,
@@ -995,7 +1001,7 @@ class BankManager:
                      int(product['payment_frequency_days'] or 30), asset_collateral_value,
                      (amount/total_collateral_value if total_collateral_value else None),
                      underwriting['dti'], underwriting['dsr'], underwriting['stress_dsr'], borrower_risk_score,
-                     effective_income, home,
+                     effective_income, origination_pd_12m, home,
                      float(product['prepayment_fee_percent'] or 0),
                      int(product['prepayment_fee_decline_days'] or 0)),
                 )

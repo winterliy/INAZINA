@@ -915,10 +915,15 @@ def user_loan_schedules(user_id):
     from functions.money import currency_precision
     with connect_readonly() as connection:
         loans = [dict(row) for row in connection.execute(
-            "SELECT loan_id,product_code,quote_currency,outstanding_balance,status,"
-            "underwriting_dsr,underwriting_stress_dsr,"
-            "collection_status,maturity_epoch FROM loans WHERE user_id=? "
-            "AND status IN ('active','defaulted') ORDER BY loan_id",
+            "SELECT l.loan_id,l.product_code,l.quote_currency,l.outstanding_balance,l.status,"
+            "l.underwriting_dsr,l.underwriting_stress_dsr,l.origination_pd_12m,"
+            "l.collection_status,l.maturity_epoch,"
+            "(SELECT e.stage FROM loan_ecl_assessments e WHERE e.loan_id=l.loan_id "
+            "ORDER BY e.calculated_epoch DESC,e.assessment_id DESC LIMIT 1) current_ecl_stage,"
+            "(SELECT e.pd_12m FROM loan_ecl_assessments e WHERE e.loan_id=l.loan_id "
+            "ORDER BY e.calculated_epoch DESC,e.assessment_id DESC LIMIT 1) current_ecl_pd_12m "
+            "FROM loans l WHERE l.user_id=? "
+            "AND l.status IN ('active','defaulted') ORDER BY l.loan_id",
             (str(user_id),),
         ).fetchall()]
         for loan in loans:

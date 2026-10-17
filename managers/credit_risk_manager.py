@@ -86,9 +86,28 @@ class CreditRiskManager:
             pd *= 1.75
         return cls._bounded(pd, 0.0001, 0.95)
 
+    @classmethod
+    def _macro_pd_multiplier(cls, conn, nationality):
+        macro = conn.execute(
+            "SELECT inflation_percent,real_gdp_growth_percent,unemployment_percent "
+            "FROM country_macro_indicators WHERE nationality=?",
+            (str(nationality or ""),),
+        ).fetchone()
+        inflation = float(macro["inflation_percent"] if macro else 2.0)
+        growth = float(macro["real_gdp_growth_percent"] if macro else 2.0)
+        unemployment = float(macro["unemployment_percent"] if macro else 5.0)
+        return cls._bounded(1.0-.08*(growth-2.0)+.04*(unemployment-5.0)
+                            +.02*(inflation-2.0), 0.5, 2.5)
+
+    @classmethod
+    def origination_pd_12m(cls, conn, nationality, credit_score, dti, dsr, ltv):
+        """Persist a comparable, macro-adjusted PD baseline for SICR monitoring."""
+        base = cls._pd_12m(credit_score, dti, dsr, 0, ltv, False)
+        return cls._bounded(base*cls._macro_pd_multiplier(conn, nationality), 0.0001, 1.0)
+
     @staticmethod
     def _stage(status, collection_status, missed_payments, ltv, overdue,
-               overdue_days=None):
+               overdue_days=None, origination_pd_12m=None, current_pd_12m=None):
         """Classify simulator ECL stages; an already-defaulted exposure is Stage 3.
 
         Thirty days past due is the arrears-based significant-increase trigger.
@@ -100,7 +119,13 @@ class CreditRiskManager:
         arrears_trigger = overdue and (
             overdue_days is None or float(overdue_days) >= 30.0
         )
-        if arrears_trigger or int(missed_payments or 0) >= 2 or CreditRiskManager._bounded(ltv, 0, 10) >= 1.0:
+        pd_deterioration = (
+            origination_pd_12m is not None and current_pd_12m is not None
+            and float(origination_pd_12m) > 0
+            and float(current_pd_12m) >= 2.0*float(origination_pd_12m)
+        )
+        if (arrears_trigger or pd_deterioration or int(missed_payments or 0) >= 2
+                or CreditRiskManager._bounded(ltv, 0, 10) >= 1.0):
             return 2
         return 1
 
@@ -200,6 +225,7 @@ class CreditRiskManager:
             "l.underwriting_dsr,l.current_ltv,l.missed_payment_count,l.overdue_since_epoch,"
             "l.collection_status,l.status,l.maturity_epoch,l.created_at,l.ecl_allowance,"
             "l.contract_rate,l.contract_effective_rate,"
+            "l.origination_pd_12m,"
             "u.credit_score,u.nationality,p.issuer,p.maturity_days,p.interest_rate product_rate "
             "FROM accounts.loans l JOIN users.users u ON u.user_id=l.user_id "
             "JOIN product.liability p ON p.product_code=l.product_code "
@@ -224,18 +250,7 @@ class CreditRiskManager:
                 loan["credit_score"], loan["underwriting_dti"], loan["underwriting_dsr"],
                 loan["missed_payment_count"], loan["current_ltv"], overdue,
             )
-            macro = conn.execute(
-                "SELECT inflation_percent,real_gdp_growth_percent,unemployment_percent "
-                "FROM country_macro_indicators WHERE nationality=?",
-                (str(loan["nationality"] or ""),),
-            ).fetchone()
-            inflation = float(macro["inflation_percent"] if macro else 2.0)
-            growth = float(macro["real_gdp_growth_percent"] if macro else 2.0)
-            unemployment = float(macro["unemployment_percent"] if macro else 5.0)
-            macro_pd_multiplier = cls._bounded(
-                1.0-.08*(growth-2.0)+.04*(unemployment-5.0)+.02*(inflation-2.0),
-                0.5, 2.5,
-            )
+            macro_pd_multiplier = cls._macro_pd_multiplier(conn, loan["nationality"])
             pd_12m = cls._bounded(pd_12m*macro_pd_multiplier, 0.0, 1.0)
             lgd = cls._lgd(conn, loan)
             term_days = max(1, int(loan["maturity_days"] or 365))
@@ -249,6 +264,7 @@ class CreditRiskManager:
                 loan["current_ltv"], overdue,
                 (max(0.0, (epoch-float(loan["overdue_since_epoch"]))/86400.0)
                  if loan["overdue_since_epoch"] is not None else None),
+                loan["origination_pd_12m"], pd_12m,
             )
             if stage == 3:
                 pd_12m = lifetime_pd = 1.0

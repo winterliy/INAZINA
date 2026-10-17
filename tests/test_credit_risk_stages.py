@@ -32,6 +32,16 @@ class CreditRiskStageTests(unittest.TestCase):
             CreditRiskManager._stage("active", "overdue", 0, .5, True, overdue_days=30), 2
         )
 
+    def test_double_origination_pd_is_a_significant_increase_trigger(self):
+        self.assertEqual(CreditRiskManager._stage(
+            "active", "current", 0, .5, False,
+            origination_pd_12m=.01, current_pd_12m=.019,
+        ), 1)
+        self.assertEqual(CreditRiskManager._stage(
+            "active", "current", 0, .5, False,
+            origination_pd_12m=.01, current_pd_12m=.02,
+        ), 2)
+
 
 class DefaultedLoanEclTests(unittest.TestCase):
     def setUp(self):
@@ -160,7 +170,8 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.db.accounts.execute(
             "UPDATE loans SET status='active',collection_status='overdue',"
             "missed_payment_count=0,current_ltv=.5,overdue_since_epoch=?,"
-            "maturity_epoch=?,contract_effective_rate=5 WHERE product_code='ECL3'",
+            "origination_pd_12m=NULL,maturity_epoch=?,contract_effective_rate=5 "
+            "WHERE product_code='ECL3'",
             (epoch-29*86400, epoch+365*86400),
         )
         with self.db.atomic() as conn:
@@ -174,6 +185,26 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.assertEqual(self.db.accounts.execute_one(
             "SELECT stage FROM loan_ecl_assessments ORDER BY calculated_epoch DESC LIMIT 1"
         )["stage"], 2)
+
+    def test_doubled_current_pd_triggers_stage_two_against_origination_baseline(self):
+        epoch = 1_800_000_000
+        baseline = CreditRiskManager.origination_pd_12m(
+            self.db.currency.conn, "낙원", 700, 0, 0, .5
+        )
+        self.db.accounts.execute(
+            "UPDATE loans SET status='active',collection_status='current',"
+            "missed_payment_count=0,current_ltv=.5,overdue_since_epoch=NULL,"
+            "origination_pd_12m=?,maturity_epoch=?,contract_effective_rate=5 "
+            "WHERE product_code='ECL3'", (baseline, epoch+365*86400),
+        )
+        self.db.users.execute("UPDATE users SET credit_score=0 WHERE user_id='ecl-borrower'")
+        with self.db.atomic() as conn:
+            self.assertEqual(CreditRiskManager.assess_conn(conn, epoch), 1)
+        row = self.db.accounts.execute_one(
+            "SELECT stage,pd_12m FROM loan_ecl_assessments ORDER BY calculated_epoch DESC LIMIT 1"
+        )
+        self.assertEqual(row["stage"], 2)
+        self.assertGreaterEqual(row["pd_12m"], baseline*2)
 
     def test_macro_downturn_increases_stage_two_pd_and_is_recorded(self):
         epoch = 1_800_000_000

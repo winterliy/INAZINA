@@ -937,16 +937,19 @@ class RealisticRateSystemTests(unittest.TestCase):
             "clean", "HISTORY", 10_000
         )[0])
         risky = self.db.accounts.execute_one(
-            "SELECT contract_rate,borrower_risk_score,underwriting_dsr,"
+            "SELECT contract_rate,borrower_risk_score,origination_pd_12m,underwriting_dsr,"
             "underwriting_stress_dsr FROM loans "
             "WHERE user_id='borrower' AND product_code='HISTORY'"
         )
         clean = self.db.accounts.execute_one(
-            "SELECT contract_rate,borrower_risk_score FROM loans "
+            "SELECT contract_rate,borrower_risk_score,origination_pd_12m FROM loans "
             "WHERE user_id='clean' AND product_code='HISTORY'"
         )
         self.assertGreater(risky["contract_rate"], clean["contract_rate"])
         self.assertLess(risky["borrower_risk_score"], clean["borrower_risk_score"])
+        self.assertGreaterEqual(risky["origination_pd_12m"], 0)
+        self.assertGreaterEqual(clean["origination_pd_12m"], 0)
+        self.assertLessEqual(risky["origination_pd_12m"], 1)
         self.assertIsNotNone(risky["underwriting_dsr"])
         self.assertGreater(risky["underwriting_stress_dsr"], risky["underwriting_dsr"])
 

@@ -259,15 +259,20 @@ class WebApiTests(unittest.TestCase):
             INSERT INTO currencies VALUES ('NWX',0);
             CREATE TABLE loans(loan_id INTEGER PRIMARY KEY,user_id TEXT,product_code TEXT,
                 quote_currency TEXT,outstanding_balance REAL,status TEXT,collection_status TEXT,
-                maturity_epoch REAL,underwriting_dsr REAL,underwriting_stress_dsr REAL);
+                maturity_epoch REAL,underwriting_dsr REAL,underwriting_stress_dsr REAL,
+                origination_pd_12m REAL);
             CREATE TABLE loan_payment_schedule(schedule_id INTEGER PRIMARY KEY,loan_id INTEGER,
                 installment_number INTEGER,due_epoch REAL,principal_due REAL,interest_due REAL,
                 fee_due REAL,principal_paid REAL,interest_paid REAL,fee_paid REAL,amount_paid REAL,status TEXT);
             CREATE TABLE contract_rate_reset_history(reset_id INTEGER PRIMARY KEY,contract_type TEXT,
                 contract_id TEXT,old_rate REAL,new_rate REAL,scheduled_epoch REAL,applied_epoch REAL,
                 benchmark_key TEXT,benchmark_tenor_days INTEGER);
-            INSERT INTO loans VALUES (1,'alice','L1','NWX',900,'active','current',3000,20,25);
-            INSERT INTO loans VALUES (2,'bob','L2','NWX',500,'active','current',3000,30,35);
+            CREATE TABLE loan_ecl_assessments(assessment_id INTEGER PRIMARY KEY,loan_id INTEGER,
+                stage INTEGER,pd_12m REAL,calculated_epoch REAL);
+            INSERT INTO loans VALUES (1,'alice','L1','NWX',900,'active','current',3000,20,25,0.01);
+            INSERT INTO loans VALUES (2,'bob','L2','NWX',500,'active','current',3000,30,35,0.02);
+            INSERT INTO loan_ecl_assessments VALUES (1,1,2,0.03,1000);
+            INSERT INTO loan_ecl_assessments VALUES (2,2,1,0.01,1000);
             INSERT INTO loan_payment_schedule VALUES (11,1,1,1000,800,80,20,0,0,0,0,'scheduled');
             INSERT INTO loan_payment_schedule VALUES (12,1,2,2000,700,70,10,700,70,10,780,'paid');
             INSERT INTO loan_payment_schedule VALUES (21,2,1,1000,500,50,0,0,0,0,0,'scheduled');
@@ -283,6 +288,9 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(result["loans"][0]["decimal_places"], 0)
         self.assertEqual(result["loans"][0]["rate_resets"][0]["new_rate"], 6)
         self.assertEqual(result["loans"][0]["underwriting_stress_dsr"], 25)
+        self.assertEqual(result["loans"][0]["origination_pd_12m"], 0.01)
+        self.assertEqual(result["loans"][0]["current_ecl_stage"], 2)
+        self.assertEqual(result["loans"][0]["current_ecl_pd_12m"], 0.03)
 
     def test_user_dividend_payments_are_private_and_currency_aware(self):
         connection = server.sqlite3.connect(":memory:")
