@@ -68,6 +68,24 @@ class FxInterestTests(unittest.TestCase):
         # balance mirrors balance_units for every account.
         self.assertAlmostEqual(after['balance'], after['balance_units'] / SCALE, places=2)
 
+    def test_interest_processing_rejects_invalid_epoch_before_mutation(self):
+        number = self.open_usd(36.5)
+        before = self.account(number)
+        journal_count = self.db.accounts.execute_one(
+            "SELECT COUNT(*) FROM bank_journal_entries"
+        )[0]
+        for invalid_epoch in (-1, float('nan'), float('inf'), 1e300, True, 'invalid'):
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, 'invalid_interest_processing_epoch'):
+                    InterestManager(self.db).process_all_interests(
+                        now=invalid_epoch, user_id='citizen'
+                    )
+                self.assertEqual(self.account(number)['balance_units'], before['balance_units'])
+                self.assertEqual(self.account(number)['last_payment_epoch'], before['last_payment_epoch'])
+                self.assertEqual(self.db.accounts.execute_one(
+                    "SELECT COUNT(*) FROM bank_journal_entries"
+                )[0], journal_count)
+
     def test_foreign_savings_withholding_remits_tax_payable_through_fx_clearing(self):
         from managers.bank_journal import BankJournal
 

@@ -248,7 +248,7 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.db.currency.execute(
             "UPDATE financial_institutions SET status='failed' WHERE issuer='FXBank'"
         )
-        for invalid_epoch in (-1, float('nan'), float('inf')):
+        for invalid_epoch in (-1, float('nan'), float('inf'), 1e300, True, 'invalid'):
             with self.subTest(invalid_epoch=invalid_epoch):
                 with self.assertRaisesRegex(ValueError, "valid UNIX epoch"):
                     with self.db.atomic() as conn:

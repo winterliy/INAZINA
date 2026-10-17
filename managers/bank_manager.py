@@ -19,6 +19,7 @@ class BankManager:
     """예금 계좌 및 대출 업무를 담당합니다."""
 
     PASSWORD_ITERATIONS = 240_000
+    MAX_SUPPORTED_EPOCH = 253402300799.0  # 9999-12-31 23:59:59 UTC
 
     @staticmethod
     def _loan_cashflows(principal, annual_rate, maturity_days, frequency_days,
@@ -1247,8 +1248,14 @@ class BankManager:
 
     def extend_loan(self, user_id, loan_id, now=None):
         """Extend an owned loan once per maturity window, subject to product credit rules."""
-        now = time.time() if now is None else float(now)
-        if not math.isfinite(now):
+        try:
+            now = time.time() if now is None else now
+            if isinstance(now, bool):
+                return False, '❌ 처리 시각이 올바르지 않습니다.'
+            now = float(now)
+        except (TypeError, ValueError, OverflowError):
+            return False, '❌ 처리 시각이 올바르지 않습니다.'
+        if not math.isfinite(now) or not 0 <= now <= self.MAX_SUPPORTED_EPOCH:
             return False, '❌ 처리 시각이 올바르지 않습니다.'
         try:
             identity = str(loan_id).strip()
@@ -1428,9 +1435,17 @@ class BankManager:
 
     def process_scheduled_loan_payments(self, now=None):
         """상품 설정 주기마다 가장 잔액이 큰 자금원에서 정기 상환합니다."""
-        now = time.time() if now is None else float(now)
         paid_count = missed_count = 0
         notifications = []
+        try:
+            now = time.time() if now is None else now
+            if isinstance(now, bool):
+                return paid_count, missed_count, notifications
+            now = float(now)
+        except (TypeError, ValueError, OverflowError):
+            return paid_count, missed_count, notifications
+        if not math.isfinite(now) or not 0 <= now <= self.MAX_SUPPORTED_EPOCH:
+            return paid_count, missed_count, notifications
         max_catch_up = 100
         try:
             due_users = set()
@@ -1806,8 +1821,14 @@ class BankManager:
     def resolve_failed_institution(conn, issuer, *, now=None):
         """Freeze a failed issuer and pay insured deposits once per account."""
         issuer = str(issuer or "").strip()
-        when = float(time.time() if now is None else now)
-        if not math.isfinite(when) or when < 0:
+        raw_when = time.time() if now is None else now
+        if isinstance(raw_when, bool):
+            raise ValueError("bank resolution requires a valid UNIX epoch")
+        try:
+            when = float(raw_when)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("bank resolution requires a valid UNIX epoch") from exc
+        if not math.isfinite(when) or not 0 <= when <= BankManager.MAX_SUPPORTED_EPOCH:
             raise ValueError("bank resolution requires a valid UNIX epoch")
         institution = conn.execute(
             "SELECT f.status,f.deposit_insurance_limit,"

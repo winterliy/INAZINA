@@ -16,6 +16,7 @@ class InterestManager:
     """저축 이자 원천징수 및 대출 이자 누적을 처리합니다."""
 
     YEAR_SECONDS = 365 * 24 * 60 * 60
+    MAX_SUPPORTED_EPOCH = 253402300799.0  # 9999-12-31 23:59:59 UTC
 
     def __init__(self, db: DatabaseManager):
         self.db = db
@@ -27,6 +28,20 @@ class InterestManager:
             return number if math.isfinite(number) else default
         except (TypeError, ValueError):
             return default
+
+    @classmethod
+    def _validated_processing_epoch(cls, value):
+        if value is None:
+            value = time.time()
+        if isinstance(value, bool):
+            raise ValueError("invalid_interest_processing_epoch")
+        try:
+            epoch = float(value)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("invalid_interest_processing_epoch") from exc
+        if not math.isfinite(epoch) or not 0 <= epoch <= cls.MAX_SUPPORTED_EPOCH:
+            raise ValueError("invalid_interest_processing_epoch")
+        return epoch
 
     @staticmethod
     def _utc_epoch(value):
@@ -371,7 +386,7 @@ class InterestManager:
         It is safe to call on a user-facing balance/loan lookup; already-settled
         cycles are not paid twice.
         """
-        now = time.time() if now is None else float(now)
+        now = self._validated_processing_epoch(now)
         user_id = None if user_id is None else str(user_id)
         total_paid = 0
         account_count = 0

@@ -32,6 +32,45 @@ class LoanRateTests(unittest.TestCase):
     def balance(self):
         return self.db.accounts.execute_one('SELECT outstanding_balance FROM loans')[0]
 
+    def test_extension_rejects_invalid_timestamp_without_mutation(self):
+        self.loan()
+        before = tuple(self.db.accounts.execute_one(
+            "SELECT maturity_epoch,extension_count,last_extended_epoch,contract_rate "
+            "FROM loans WHERE product_code='LN'"
+        ))
+        for invalid_now in (-1, float('nan'), float('inf'), 1e300, True, 'not-a-time'):
+            success, message = self.bot.bank_mgr.extend_loan(
+                'citizen', 'LN', now=invalid_now
+            )
+            self.assertFalse(success)
+            self.assertIn('처리 시각', message)
+            after = tuple(self.db.accounts.execute_one(
+                "SELECT maturity_epoch,extension_count,last_extended_epoch,contract_rate "
+                "FROM loans WHERE product_code='LN'"
+            ))
+            self.assertEqual(after, before)
+
+    def test_scheduled_repayment_rejects_invalid_timestamp_without_mutation(self):
+        self.loan()
+        loan_before = tuple(self.db.accounts.execute_one(
+            "SELECT outstanding_balance,last_repayment_epoch,status FROM loans WHERE product_code='LN'"
+        ))
+        journal_before = self.db.accounts.execute_one(
+            "SELECT COUNT(*) FROM bank_journal_entries"
+        )[0]
+        for invalid_now in (-1, float('nan'), float('-inf'), 1e300, False, 'not-a-time'):
+            self.assertEqual(
+                self.bot.bank_mgr.process_scheduled_loan_payments(now=invalid_now),
+                (0, 0, []),
+            )
+            loan_after = tuple(self.db.accounts.execute_one(
+                "SELECT outstanding_balance,last_repayment_epoch,status FROM loans WHERE product_code='LN'"
+            ))
+            self.assertEqual(loan_after, loan_before)
+            self.assertEqual(self.db.accounts.execute_one(
+                "SELECT COUNT(*) FROM bank_journal_entries"
+            )[0], journal_before)
+
     def test_creation_optional_rate_and_validated_admin_edit(self):
         self.command('상품생성', 'LN loan 대출 5 1000000 30 86400 0 Inazina')
         self.assertIsNone(self.db.products.get_liability('LN')['extension_interest_rate'])
