@@ -10,8 +10,10 @@ When an author deletes a post or comment it is removed from the database at
 once (a post takes its comments, reactions and reports with it). Replies to a
 deleted comment stay, as ordinary comments. Administrators may also hide.
 """
+import os
 import re
 import time
+from pathlib import Path
 
 from database.integrity import PRODUCT_CATALOG
 
@@ -25,6 +27,23 @@ DEFAULT_BOARDS = (
 BOARD_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 BOARD_NAME_MAX, BOARD_DESCRIPTION_MAX, CATEGORY_NAME_MAX = 30, 200, 20
 PAGE_SIZE = 20
+# Attachments and polls are for administrators' posts (공지 and announcements).
+FILE_MAX_BYTES = 10 * 1024 * 1024
+FILES_PER_POST, LINKS_PER_POST = 5, 10
+FILE_TYPES = {  # extension -> media type sent on download
+    "pdf": "application/pdf", "png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
+    "gif": "image/gif", "webp": "image/webp", "txt": "text/plain", "csv": "text/csv", "zip": "application/zip",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "hwp": "application/x-hwp", "hwpx": "application/x-hwp",
+}
+STORED_NAME = re.compile(r"[a-f0-9]{32}\.[a-z0-9]{1,5}")
+# Uploads not attached to a post within a day are discarded.
+PENDING_UPLOAD_SECONDS = 86400
+POLL_OPTIONS_MIN, POLL_OPTIONS_MAX = 2, 10
+POLL_QUESTION_MAX, POLL_OPTION_MAX = 200, 50
+POLL_LONGEST_SECONDS = 90 * 86400
 TITLE_MAX, BODY_MAX, COMMENT_MAX, REASON_MAX = 100, 10_000, 1_000, 300
 # Per author: at most this many posts / comments in the last 60 seconds.
 POSTS_PER_MINUTE, COMMENTS_PER_MINUTE = 2, 10
@@ -129,6 +148,36 @@ def ensure_tables(connection):
             CHECK((post_id IS NULL) <> (comment_id IS NULL)));
         CREATE UNIQUE INDEX IF NOT EXISTS idx_board_reports_post ON board_reports(reporter_id, post_id) WHERE post_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS idx_board_reports_comment ON board_reports(reporter_id, comment_id) WHERE comment_id IS NOT NULL;
+        -- Files (stored on disk under stored_name) and links. post_id is NULL
+        -- for an upload that has not been attached to a post yet.
+        CREATE TABLE IF NOT EXISTS board_attachments (
+            attachment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER REFERENCES board_posts(post_id) ON DELETE CASCADE,
+            uploader_id TEXT NOT NULL REFERENCES users(user_id),
+            kind TEXT NOT NULL CHECK(kind IN ('file','link')),
+            name TEXT NOT NULL, url TEXT, stored_name TEXT UNIQUE, size INTEGER, sha256 TEXT,
+            created_epoch INTEGER NOT NULL,
+            CHECK((kind='file') = (stored_name IS NOT NULL)), CHECK((kind='link') = (url IS NOT NULL)));
+        CREATE INDEX IF NOT EXISTS idx_board_attachments_post ON board_attachments(post_id, attachment_id);
+        CREATE TABLE IF NOT EXISTS board_polls (
+            poll_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER NOT NULL UNIQUE REFERENCES board_posts(post_id) ON DELETE CASCADE,
+            question TEXT NOT NULL,
+            anonymous INTEGER NOT NULL DEFAULT 1 CHECK(anonymous IN (0,1)),
+            multiple INTEGER NOT NULL DEFAULT 0 CHECK(multiple IN (0,1)),
+            closes_epoch INTEGER, closed_epoch INTEGER,
+            created_epoch INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS board_poll_options (
+            option_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            poll_id INTEGER NOT NULL REFERENCES board_polls(poll_id) ON DELETE CASCADE,
+            label TEXT NOT NULL, sort_order INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS board_poll_votes (
+            poll_id INTEGER NOT NULL REFERENCES board_polls(poll_id) ON DELETE CASCADE,
+            option_id INTEGER NOT NULL REFERENCES board_poll_options(option_id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(user_id),
+            created_epoch INTEGER NOT NULL,
+            PRIMARY KEY(option_id, user_id));
+        CREATE INDEX IF NOT EXISTS idx_board_poll_votes_poll ON board_poll_votes(poll_id, user_id);
     """)
     columns = {row[1] for row in connection.execute("PRAGMA table_info(board_comments)")}
     # Replies: a comment may answer one top-level comment of the same post.
@@ -272,7 +321,9 @@ _PUBLIC_POST = (
     "p.author_id,CASE WHEN p.anonymous=1 THEN ? ELSE COALESCE(u.nickname,'알 수 없음') END AS author,"
     "(SELECT COUNT(*) FROM board_comments c WHERE c.post_id=p.post_id AND c.status='active') AS comment_count,"
     "(SELECT COUNT(*) FROM board_post_reactions r WHERE r.post_id=p.post_id AND r.value=1) AS like_count,"
-    "(SELECT COUNT(*) FROM board_post_reactions r WHERE r.post_id=p.post_id AND r.value=-1) AS dislike_count "
+    "(SELECT COUNT(*) FROM board_post_reactions r WHERE r.post_id=p.post_id AND r.value=-1) AS dislike_count,"
+    "EXISTS(SELECT 1 FROM board_attachments a WHERE a.post_id=p.post_id) AS has_attachments,"
+    "EXISTS(SELECT 1 FROM board_polls v WHERE v.post_id=p.post_id) AS has_poll "
     "FROM board_posts p LEFT JOIN users u ON u.user_id=p.author_id "
     "JOIN board_boards b ON b.board_id=p.board LEFT JOIN board_categories k ON k.category_id=p.category_id ")
 REMOVED = {"hidden": "숨겨진 댓글입니다."}
@@ -308,15 +359,16 @@ def boards(connection):
 def list_posts(connection, board=None, search="", asset_code=None, page=1, viewer=None, category=None):
     """Active posts, newest first.
 
-    공지 (notice) posts lead every list, every board included; within one board
-    its pinned posts come next. ``board=None`` lists every board.
+    A post an administrator marks 공지 (any board, not only the 공지 board)
+    leads its board's list with a [공지] label, then that board's pinned posts.
+    The all-boards list (``board=None``) also starts with every 공지.
     """
     if board:
         _board(connection, board)
     page = max(1, min(_id(page, "페이지"), 10_000))
     where, params = ["p.status='active'"], [ANONYMOUS]
     if board:
-        where.append("(p.board=? OR p.notice=1)"); params.append(board)
+        where.append("p.board=?"); params.append(board)
     if category not in (None, ""):
         where.append("p.category_id=?"); params.append(_id(category, "카테고리"))
     if asset_code:
@@ -369,6 +421,10 @@ def read_post(connection, post_id, viewer=None, count_view=False):
         comment["my_reaction"] = comment["my_reaction"] or 0
         comments.append(comment)
     post["comments"] = comments
+    post["attachments"] = [dict(row) for row in connection.execute(
+        "SELECT attachment_id,kind,name,url,size FROM board_attachments WHERE post_id=? ORDER BY attachment_id", (post_id,))]
+    poll = connection.execute("SELECT * FROM board_polls WHERE post_id=?", (post_id,)).fetchone()
+    post["poll"] = _poll_view(connection, poll, viewer) if poll else None
     return post
 
 
@@ -385,6 +441,7 @@ def create_post(connection, user, payload, ip):
     body = _text(payload.get("body"), "내용", BODY_MAX)
     category = _category(connection, board["board_id"], payload.get("categoryId"))
     asset = _asset(connection, board, payload.get("assetCode"))
+    extras = _extras(user, payload)  # attachments and poll are checked before anything is written
     _throttle(connection, "board_posts", user["userId"], POSTS_PER_MINUTE, "글")
     now = int(time.time())
     # Only administrators may pin a post or make it a 공지 (also later, from the post).
@@ -394,13 +451,18 @@ def create_post(connection, user, payload, ip):
         "author_ip,created_epoch,updated_epoch) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (board["board_id"], category, user["userId"], 1 if admin else 0, _flag(payload.get("anonymous")),
          title, body, asset, pinned, notice, _ip(ip), now, now))
-    return cursor.lastrowid
+    post_id = cursor.lastrowid
+    _attach(connection, user, post_id, extras)
+    if extras["poll"]:
+        _create_poll(connection, post_id, extras["poll"])
+    return post_id
 
 
 def edit_post(connection, user, post_id, payload):
     row = _post(connection, _id(post_id))
     if row["author_id"] != user["userId"]:
         raise ValueError("본인이 쓴 글만 수정할 수 있습니다.")
+    extras = _extras(user, {**payload, "poll": None})
     if row["status"] != "active":
         raise ValueError("숨겨진 글은 수정할 수 없습니다.")
     board = _board(connection, row["board"])
@@ -410,6 +472,13 @@ def edit_post(connection, user, post_id, payload):
          _category(connection, board["board_id"], payload.get("categoryId")),
          _asset(connection, board, payload.get("assetCode")),
          _flag(payload.get("anonymous")), int(time.time()), row["post_id"]))
+    remove = payload.get("removeAttachments") or []
+    if not isinstance(remove, list):
+        raise ValueError("지울 첨부를 확인해주세요.")
+    for attachment_id in remove:
+        connection.execute("DELETE FROM board_attachments WHERE attachment_id=? AND post_id=?",
+                           (_id(attachment_id, "첨부"), row["post_id"]))
+    _attach(connection, user, row["post_id"], extras)
 
 
 def delete_post(connection, user, post_id):
@@ -563,6 +632,8 @@ def admin_action(connection, kind, target, action, payload=None):
         return _board_action(connection, target, action, payload)
     if kind == "category":
         return _category_action(connection, target, action, payload)
+    if kind == "poll":
+        return poll_action(connection, target, action)
     target = _id(target, "대상")
     if kind == "post":
         row = connection.execute("SELECT * FROM board_posts WHERE post_id=?", (target,)).fetchone()
@@ -684,4 +755,197 @@ def _category_action(connection, category_id, action, payload):
     if action == "delete":
         # Its posts stay in the board, without a category (ON DELETE SET NULL).
         return connection.execute("DELETE FROM board_categories WHERE category_id=?", (row["category_id"],)).rowcount
+    raise ValueError("작업을 확인해주세요.")
+
+
+# ---------------------------------------------------------------------------
+# Attachments (administrators' posts)
+# ---------------------------------------------------------------------------
+def file_extension(name):
+    extension = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if extension not in FILE_TYPES:
+        raise ValueError("올릴 수 있는 파일: " + ", ".join(sorted(FILE_TYPES)))
+    return extension
+
+
+def register_upload(connection, user, payload):
+    """Record a file the API server has just written; returns its pending attachment id."""
+    if user["role"] != "admin":
+        raise ValueError("파일 첨부는 관리자만 할 수 있습니다.")
+    name = _text(payload.get("name"), "파일 이름", 120).replace("/", "_").replace("\\", "_")
+    stored = str(payload.get("storedName") or "")
+    if not STORED_NAME.fullmatch(stored) or stored.rsplit(".", 1)[1] != file_extension(name):
+        raise ValueError("파일 정보를 확인해주세요.")
+    size = payload.get("size")
+    if isinstance(size, bool) or not isinstance(size, int) or not 0 < size <= FILE_MAX_BYTES:
+        raise ValueError(f"파일은 {FILE_MAX_BYTES // (1024 * 1024)}MB 이하만 올릴 수 있습니다.")
+    sha256 = str(payload.get("sha256") or "")
+    if not re.fullmatch(r"[a-f0-9]{64}", sha256):
+        raise ValueError("파일 정보를 확인해주세요.")
+    return connection.execute(
+        "INSERT INTO board_attachments(post_id,uploader_id,kind,name,stored_name,size,sha256,created_epoch) "
+        "VALUES (NULL,?,'file',?,?,?,?,?)", (user["userId"], name, stored, size, sha256, int(time.time()))).lastrowid
+
+
+def _extras(user, payload):
+    """Validate attachments, links and poll of a post before it is written."""
+    files, links, poll = payload.get("attachments") or [], payload.get("links") or [], payload.get("poll") or None
+    if not isinstance(files, list) or not isinstance(links, list):
+        raise ValueError("첨부를 확인해주세요.")
+    if (files or links) and user["role"] != "admin":
+        raise ValueError("파일·링크 첨부는 관리자만 할 수 있습니다.")
+    if poll is not None and user["role"] != "admin":
+        raise ValueError("설문·투표는 관리자만 만들 수 있습니다.")
+    clean = []
+    for link in links:
+        if not isinstance(link, dict):
+            raise ValueError("링크를 확인해주세요.")
+        url = str(link.get("url") or "").strip()
+        if len(url) > 500 or not re.fullmatch(r"https?://[^\s<>\"]+", url):
+            raise ValueError("링크는 http:// 또는 https://로 시작하는 500자 이하 주소여야 합니다.")
+        clean.append((str(link.get("title") or "").strip()[:100] or url, url))
+    return {"files": [_id(item, "첨부") for item in files], "links": clean,
+            "poll": _poll_values(poll) if poll is not None else None}
+
+
+def _attach(connection, user, post_id, extras):
+    for attachment_id in extras["files"]:
+        attached = connection.execute(
+            "UPDATE board_attachments SET post_id=? WHERE attachment_id=? AND post_id IS NULL AND uploader_id=? AND kind='file'",
+            (post_id, attachment_id, user["userId"])).rowcount
+        if not attached:
+            raise ValueError("올린 파일을 찾을 수 없습니다. 다시 올려 주세요.")
+    for title, url in extras["links"]:
+        connection.execute("INSERT INTO board_attachments(post_id,uploader_id,kind,name,url,created_epoch) VALUES (?,?,'link',?,?,?)",
+                           (post_id, user["userId"], title, url, int(time.time())))
+    counts = dict(connection.execute("SELECT kind,COUNT(*) FROM board_attachments WHERE post_id=? GROUP BY kind", (post_id,)).fetchall())
+    if counts.get("file", 0) > FILES_PER_POST or counts.get("link", 0) > LINKS_PER_POST:
+        raise ValueError(f"파일은 {FILES_PER_POST}개, 링크는 {LINKS_PER_POST}개까지 붙일 수 있습니다.")
+
+
+def file_meta(connection, attachment_id):
+    """What the API server needs to send a file: only files of visible posts."""
+    row = connection.execute(
+        "SELECT a.name,a.stored_name,a.size FROM board_attachments a JOIN board_posts p ON p.post_id=a.post_id "
+        "WHERE a.attachment_id=? AND a.kind='file' AND p.status='active'", (_id(attachment_id, "첨부"),)).fetchone()
+    if not row:
+        raise LookupError("not_found")
+    return {"name": row["name"], "storedName": row["stored_name"], "size": row["size"],
+            "mime": FILE_TYPES[row["stored_name"].rsplit(".", 1)[1]]}
+
+
+def cleanup_files(connection, directory, now=None, min_age=60):
+    """Drop stale pending uploads, then delete files no attachment row points to.
+
+    ``min_age`` spares files the API server is writing right now (the row comes
+    just after the file). Returns the number of files deleted.
+    """
+    now = int(now if now is not None else time.time())
+    connection.execute("DELETE FROM board_attachments WHERE post_id IS NULL AND created_epoch<?", (now - PENDING_UPLOAD_SECONDS,))
+    directory = Path(directory)
+    if not directory.is_dir():
+        return 0
+    known = {row[0] for row in connection.execute("SELECT stored_name FROM board_attachments WHERE stored_name IS NOT NULL")}
+    removed = 0
+    for path in directory.iterdir():
+        if path.is_file() and STORED_NAME.fullmatch(path.name) and path.name not in known:
+            if now - path.stat().st_mtime >= min_age:
+                path.unlink(missing_ok=True)
+                removed += 1
+    return removed
+
+
+# ---------------------------------------------------------------------------
+# Polls (설문/투표) on administrators' posts
+# ---------------------------------------------------------------------------
+def _poll_values(poll):
+    if not isinstance(poll, dict):
+        raise ValueError("설문을 확인해주세요.")
+    question = _text(poll.get("question"), "설문 질문", POLL_QUESTION_MAX)
+    options = poll.get("options")
+    if not isinstance(options, list):
+        raise ValueError("선택지를 확인해주세요.")
+    labels = [_text(option, "선택지", POLL_OPTION_MAX) for option in options]
+    if not POLL_OPTIONS_MIN <= len(labels) <= POLL_OPTIONS_MAX or len(set(labels)) != len(labels):
+        raise ValueError(f"선택지는 서로 다르게 {POLL_OPTIONS_MIN}~{POLL_OPTIONS_MAX}개 입력해주세요.")
+    now = int(time.time())
+    closes = poll.get("closesEpoch")
+    if closes in (None, ""):
+        closes = None
+    else:
+        if isinstance(closes, bool) or not isinstance(closes, (int, float)):
+            raise ValueError("마감 시각을 확인해주세요.")
+        closes = int(closes)
+        if not now < closes <= now + POLL_LONGEST_SECONDS:
+            raise ValueError("예약 마감은 지금 이후 90일 안으로 정해 주세요.")
+    # Anonymous unless asked otherwise: only counts are shown.
+    return {"question": question, "labels": labels, "anonymous": _flag(poll.get("anonymous", True)),
+            "multiple": _flag(poll.get("multiple")), "closes": closes}
+
+
+def _create_poll(connection, post_id, values):
+    poll_id = connection.execute(
+        "INSERT INTO board_polls(post_id,question,anonymous,multiple,closes_epoch,created_epoch) VALUES (?,?,?,?,?,?)",
+        (post_id, values["question"], values["anonymous"], values["multiple"], values["closes"], int(time.time()))).lastrowid
+    connection.executemany("INSERT INTO board_poll_options(poll_id,label,sort_order) VALUES (?,?,?)",
+                           [(poll_id, label, order) for order, label in enumerate(values["labels"])])
+    return poll_id
+
+
+def _poll_open(poll, now=None):
+    now = now if now is not None else time.time()
+    return poll["closed_epoch"] is None and (poll["closes_epoch"] is None or now < poll["closes_epoch"])
+
+
+def _poll_view(connection, poll, viewer):
+    """Counts for everyone; voter names only on a poll that is not anonymous."""
+    options = connection.execute(
+        "SELECT o.option_id,o.label,(SELECT COUNT(*) FROM board_poll_votes v WHERE v.option_id=o.option_id) AS votes "
+        "FROM board_poll_options o WHERE o.poll_id=? ORDER BY o.sort_order", (poll["poll_id"],)).fetchall()
+    view = [dict(option) for option in options]
+    if not poll["anonymous"]:
+        for option in view:
+            option["voters"] = [row[0] for row in connection.execute(
+                "SELECT COALESCE(u.nickname,v.user_id) FROM board_poll_votes v LEFT JOIN users u ON u.user_id=v.user_id "
+                "WHERE v.option_id=? ORDER BY v.created_epoch", (option["option_id"],))]
+    mine = [row[0] for row in connection.execute(
+        "SELECT option_id FROM board_poll_votes WHERE poll_id=? AND user_id=?", (poll["poll_id"], viewer or ""))]
+    voters = connection.execute("SELECT COUNT(DISTINCT user_id) FROM board_poll_votes WHERE poll_id=?", (poll["poll_id"],)).fetchone()[0]
+    return {"poll_id": poll["poll_id"], "question": poll["question"], "anonymous": poll["anonymous"],
+            "multiple": poll["multiple"], "closes_epoch": poll["closes_epoch"], "closed_epoch": poll["closed_epoch"],
+            "open": _poll_open(poll), "options": view, "my_votes": mine, "voters": voters}
+
+
+def vote(connection, user, poll_id, option_ids):
+    """Cast or change a vote; an empty list withdraws it. Returns the poll view."""
+    poll = connection.execute(
+        "SELECT v.* FROM board_polls v JOIN board_posts p ON p.post_id=v.post_id WHERE v.poll_id=? AND p.status='active'",
+        (_id(poll_id, "설문"),)).fetchone()
+    if not poll:
+        raise ValueError("설문을 찾을 수 없습니다.")
+    if not _poll_open(poll):
+        raise ValueError("마감된 설문입니다.")
+    if not isinstance(option_ids, list):
+        raise ValueError("선택지를 골라 주세요.")
+    chosen = {_id(option, "선택지") for option in option_ids}
+    valid = {row[0] for row in connection.execute("SELECT option_id FROM board_poll_options WHERE poll_id=?", (poll["poll_id"],))}
+    if not chosen <= valid:
+        raise ValueError("이 설문의 선택지를 골라 주세요.")
+    if len(chosen) > 1 and not poll["multiple"]:
+        raise ValueError("하나만 고를 수 있는 설문입니다.")
+    connection.execute("DELETE FROM board_poll_votes WHERE poll_id=? AND user_id=?", (poll["poll_id"], user["userId"]))
+    now = int(time.time())
+    connection.executemany("INSERT INTO board_poll_votes(poll_id,option_id,user_id,created_epoch) VALUES (?,?,?,?)",
+                           [(poll["poll_id"], option, user["userId"], now) for option in sorted(chosen)])
+    return _poll_view(connection, poll, user["userId"])
+
+
+def poll_action(connection, poll_id, action):
+    """close: end voting now; reopen: open again without a scheduled close."""
+    poll_id = _id(poll_id, "설문")
+    if action == "close":
+        return connection.execute("UPDATE board_polls SET closed_epoch=? WHERE poll_id=? AND closed_epoch IS NULL",
+                                  (int(time.time()), poll_id)).rowcount
+    if action == "reopen":
+        return connection.execute("UPDATE board_polls SET closed_epoch=NULL,closes_epoch=NULL WHERE poll_id=?", (poll_id,)).rowcount
     raise ValueError("작업을 확인해주세요.")

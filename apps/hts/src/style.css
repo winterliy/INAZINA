@@ -477,6 +477,7 @@ button.book-row:hover:not(:disabled) { filter: brightness(1.04); }
 .board-item-meta { color: var(--ink2); font-size: 12px; }
 .board-pin, .board-kind { display: inline-block; margin-right: 6px; padding: 1px 7px; border-radius: 999px; color: var(--accent); background: var(--select); font-size: 11px; font-style: normal; font-weight: 700; vertical-align: 1px; }
 .board-pin { color: #fff; background: var(--accent); }
+.board-notice-label { margin-right: 4px; color: #c9342f; font-style: normal; font-weight: 800; }
 .board-admin { display: inline-block; margin-left: 5px; padding: 0 6px; border-radius: 6px; color: #fff; background: #8a5a00; font-size: 10px; font-style: normal; font-weight: 700; vertical-align: 1px; }
 .board-description { margin: -4px 2px 8px; color: var(--ink2); font-size: 12px; }
 .board-categories { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
@@ -538,3 +539,33 @@ button.book-row:hover:not(:disabled) { filter: brightness(1.04); }
   .board-body { grid-template-columns: 1fr; grid-template-rows: minmax(160px, 38%) 1fr; }
   .board-main { padding: 12px 0 0; border-top: 1px solid var(--line); border-left: 0; }
 }
+
+/* Board: attachments and polls */
+.board-icon { font-size: 12px; }
+.board-extras { display: grid; gap: 8px; margin: 0; padding: 12px; border: 0; border-radius: 12px; background: rgba(138, 90, 0, .06); }
+.board-extras legend { padding: 0; color: var(--ink); font-size: 13px; font-weight: 700; }
+.board-extras legend small { margin-left: 4px; color: #8a5a00; }
+.board-attach-list { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: 13px; }
+.board-attach-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.board-attach-list small, .board-attachments small { color: var(--ink2); }
+.board-file input { padding: 6px !important; }
+.board-link-row { display: flex; gap: 6px; }
+.board-link-row input { flex: 1; }
+.board-link-row button, .board-attach-list button, .board-add { flex: none; background: var(--hover); }
+.board-add { justify-self: start; }
+.board-poll-draft { display: grid; gap: 8px; padding: 10px; border-radius: 10px; background: var(--hover); }
+.board-hint { color: var(--ink2); font-size: 12px; }
+.board-attachments { display: grid; gap: 6px; margin: 16px 0 0; padding: 12px 14px; border-radius: 12px; background: var(--hover); list-style: none; font-size: 14px; }
+.board-attachments a { color: var(--accent); overflow-wrap: anywhere; }
+.board-poll { margin: 18px 0 0; padding: 14px 16px; border-radius: 14px; box-shadow: inset 0 0 0 1px var(--line); }
+.board-poll h4 { margin: 0; font-size: 16px; }
+.board-poll-meta { margin: 4px 0 12px; color: var(--ink2); font-size: 12px; }
+.board-poll ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.board-poll-option { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 4px 8px; cursor: pointer; }
+.board-poll-label em { color: var(--accent); font-size: 11px; font-style: normal; font-weight: 700; }
+.board-poll-count { color: var(--ink2); font-size: 12px; font-variant-numeric: tabular-nums; }
+.board-poll-bar { grid-column: 1 / -1; height: 6px; overflow: hidden; border-radius: 99px; background: var(--hover); }
+.board-poll-bar span { display: block; height: 100%; border-radius: 99px; background: var(--accent); }
+.board-poll-voters { display: block; margin-top: 3px; color: var(--ink2); font-size: 11px; }
+.board-poll-actions { display: flex; gap: 6px; margin-top: 12px; }
+.board-poll-actions button:not(.board-primary) { background: var(--hover); }

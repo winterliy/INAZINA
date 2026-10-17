@@ -1,7 +1,8 @@
-import { createHmac, timingSafeEqual, randomBytes } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { existsSync } from "node:fs";
+import { createReadStream, existsSync } from "node:fs";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { landingPage, type LandingReason } from "./landing.js";
@@ -245,6 +246,31 @@ function clientIp(request: IncomingMessage): string {
   return (loopback && forwarded.length ? forwarded[forwarded.length - 1] : peer).slice(0, 64);
 }
 
+// Board attachments live on disk; the Python service keeps their records
+// (web_api/board.py). Same directory and limits on both sides.
+const boardFilesDir = resolve(process.env.INAZINA_BOARD_FILES_DIR ?? join(projectRoot, "database", "board_files"));
+const boardFileMaxBytes = 10 * 1024 * 1024;
+const boardFileTypes: Record<string, string> = {
+  pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp",
+  txt: "text/plain", csv: "text/csv", zip: "application/zip",
+  docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  hwp: "application/x-hwp", hwpx: "application/x-hwp",
+};
+
+async function requestBytes(request: IncomingMessage, limit: number): Promise<Buffer> {
+  if (Number(request.headers["content-length"] ?? 0) > limit) throw new Error("request_too_large");
+  let size = 0;
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > limit) throw new Error("request_too_large");
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
 // A post's view count rises at most once per address every 10 minutes.
 const boardViews = new Map<string, number>();
 function countBoardView(ip: string, postId: string): boolean {
@@ -346,6 +372,26 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
   // HTS board: anyone may read; the session (if any) only marks the reader's own posts.
+  // Board files download for anyone who can read the post; always as a download, never rendered here.
+  const boardFile = request.method === "GET" ? url.pathname.match(/^\/api\/board\/files\/(\d+)$/) : null;
+  if (boardFile) {
+    const meta = await internalGet(`/internal/board/files/${boardFile[1]}`);
+    const path = meta.status === 200 && /^[a-f0-9]{32}\.[a-z0-9]{1,5}$/.test(meta.body.storedName ?? "") ? join(boardFilesDir, meta.body.storedName) : "";
+    if (!path || !existsSync(path)) {
+      send(response, 404, { error: "not_found" });
+      return;
+    }
+    response.writeHead(200, {
+      "content-type": meta.body.mime,
+      "content-length": String(meta.body.size),
+      "content-disposition": `attachment; filename*=UTF-8''${encodeURIComponent(meta.body.name)}`,
+      "x-content-type-options": "nosniff",
+      "content-security-policy": "sandbox",
+      "cache-control": "private, no-store",
+    });
+    createReadStream(path).pipe(response);
+    return;
+  }
   if (request.method === "GET" && url.pathname === "/api/board/boards") {
     const result = await internalGet("/internal/board/boards");
     send(response, result.status, result.body);
@@ -732,8 +778,37 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  // Board file upload (administrators): raw bytes, name in X-File-Name. The file is
+  // written first, then registered; a refused registration removes it again.
+  if (request.method === "POST" && url.pathname === "/api/board/files") {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    let name = "";
+    try { name = decodeURIComponent(String(request.headers["x-file-name"] ?? "")).trim(); } catch { /* invalid encoding */ }
+    const extension = name.includes(".") ? name.split(".").pop()!.toLowerCase() : "";
+    if (!name || name.length > 120 || !boardFileTypes[extension]) {
+      send(response, 400, { error: `올릴 수 있는 파일: ${Object.keys(boardFileTypes).sort().join(", ")}` });
+      return;
+    }
+    const bytes = await requestBytes(request, boardFileMaxBytes).catch(() => null);
+    if (!bytes || !bytes.length) {
+      send(response, 400, { error: "파일은 10MB 이하만 올릴 수 있습니다." });
+      return;
+    }
+    const storedName = `${randomBytes(16).toString("hex")}.${extension}`;
+    await mkdir(boardFilesDir, { recursive: true });
+    await writeFile(join(boardFilesDir, storedName), bytes, { flag: "wx" });
+    const result = await internalRequest("POST", "/internal/board/files", principal.userId,
+      { name, storedName, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+    if (result.status !== 200) await unlink(join(boardFilesDir, storedName)).catch(() => undefined);
+    send(response, result.status, result.status === 200 ? { ...result.body, name, size: bytes.length } : result.body);
+    return;
+  }
+
   // HTS board writes: the author's address is recorded with every post, comment and report.
-  if (request.method === "POST" && /^\/api\/board\/(posts|posts\/\d+\/(edit|delete|comments|react)|comments\/\d+\/(delete|react)|reports)$/.test(url.pathname)) {
+  if (request.method === "POST" && /^\/api\/board\/(posts|posts\/\d+\/(edit|delete|comments|react)|comments\/\d+\/(delete|react)|polls\/\d+\/vote|reports)$/.test(url.pathname)) {
     const body = await requestJson(request);
     const result = await internalRequest("POST", url.pathname.replace(/^\/api\//, "/internal/"), principal.userId,
       { ...(body && typeof body === "object" ? body : {}), clientIp: clientIp(request) });
@@ -742,7 +817,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
   // Moderation and board structure: post/comment/report/category take a number ("new" to create),
   // board takes its ID.
-  if (url.pathname === "/api/admin/board" || /^\/api\/admin\/board\/((post|comment|report|category)\/(\d+|new)|board\/[a-z0-9_-]{1,32})$/.test(url.pathname)) {
+  if (url.pathname === "/api/admin/board" || /^\/api\/admin\/board\/((post|comment|report|category|poll)\/(\d+|new)|board\/[a-z0-9_-]{1,32})$/.test(url.pathname)) {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });
       return;

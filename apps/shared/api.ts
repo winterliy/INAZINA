@@ -17,7 +17,8 @@ export function clearToken(): void {
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
-  if (init.body) headers.set("Content-Type", "application/json");
+  // JSON text by default; a File/Blob body (board uploads) keeps its own type.
+  if (typeof init.body === "string") headers.set("Content-Type", "application/json");
 
   const response = await fetch(path, { ...init, headers, cache: "no-store", credentials: "include" });
   const body = await response.json().catch(() => ({}));

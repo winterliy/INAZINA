@@ -16,3 +16,4 @@ coverage/
 .vite/
 .pytest_cache/
 database/backups/
+database/board_files/

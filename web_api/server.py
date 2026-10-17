@@ -226,6 +226,8 @@ FEEDBACK_KINDS = {"contact": "문의", "report": "신고"}
 FEEDBACK_STATUSES = {"new", "read", "done"}
 _board_ready = False
 _board_ip_purged = 0.0
+# Board attachments: the API server writes the files here, this service tracks them.
+BOARD_FILES_DIR = Path(os.environ.get("INAZINA_BOARD_FILES_DIR", ROOT / "database" / "board_files")).resolve()
 
 
 @contextmanager
@@ -242,6 +244,7 @@ def board_db():
             _board_ready = True
         if time.time() - _board_ip_purged >= 3600:
             board.purge_expired_ips(connection)
+            board.cleanup_files(connection, BOARD_FILES_DIR)
             _board_ip_purged = time.time()
         yield connection
 
@@ -252,6 +255,8 @@ def board_get(path, query, viewer):
     with board_db() as connection:
         if path == "/internal/board/boards":
             return {"boards": board.boards(connection)}
+        if path.startswith("/internal/board/files/"):
+            return board.file_meta(connection, path.removeprefix("/internal/board/files/"))
         if path == "/internal/board/posts":
             return board.list_posts(connection, first("board") or None, first("search"), first("asset") or None,
                                     first("page", "1"), viewer, first("category") or None)
@@ -259,10 +264,29 @@ def board_get(path, query, viewer):
                                         count_view=first("view") == "1")}
 
 
+def board_cleanup():
+    """Delete files of attachments that are gone (after the deleting transaction committed)."""
+    with board_db() as connection:
+        board.cleanup_files(connection, BOARD_FILES_DIR)
+
+
 def board_post(path, user, payload):
     ip = payload.get("clientIp")
     parts = path.removeprefix("/internal/board/").split("/")
+    if parts[-1] in {"delete", "edit"}:
+        try:
+            return _board_post(parts, user, payload, ip)
+        finally:
+            board_cleanup()
+    return _board_post(parts, user, payload, ip)
+
+
+def _board_post(parts, user, payload, ip):
     with board_db() as connection:
+        if parts == ["files"]:
+            return {"attachmentId": board.register_upload(connection, user, payload)}
+        if len(parts) == 3 and parts[0] == "polls" and parts[2] == "vote":
+            return {"poll": board.vote(connection, user, parts[1], payload.get("optionIds"))}
         if parts == ["posts"]:
             return {"postId": board.create_post(connection, user, payload, ip)}
         if len(parts) == 3 and parts[0] == "posts":
@@ -294,6 +318,8 @@ def admin_board_action(actor, kind, target, action, payload=None):
     with board_db() as connection:
         changed = board.admin_action(connection, kind, target, action, payload)
         _audit_db(connection, actor, f"board.{kind}.{action}", {"id": target, "changed": changed, **payload})
+    if action in {"purge", "delete"}:
+        board_cleanup()
     return f"✅ {BOARD_ACTION_NAMES.get(action, action)} 처리했습니다." if changed else "❌ 바뀐 것이 없습니다."
 
 
@@ -2864,9 +2890,12 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     self.send_json(200, {"user": user})
-            elif path in {"/internal/board/posts", "/internal/board/boards"} or path.startswith("/internal/board/posts/"):
+            elif path in {"/internal/board/posts", "/internal/board/boards"} or path.startswith(("/internal/board/posts/", "/internal/board/files/")):
                 viewer = identity(internal_user_id(self)) if internal_user_id(self) else None
-                self.send_json(200, board_get(path, parse_qs(parsed.query), viewer["userId"] if viewer else None))
+                try:
+                    self.send_json(200, board_get(path, parse_qs(parsed.query), viewer["userId"] if viewer else None))
+                except LookupError:
+                    self.send_json(404, {"error": "not_found"})
             elif path == "/internal/admin/board":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":

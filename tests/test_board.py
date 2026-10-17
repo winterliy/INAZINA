@@ -272,17 +272,21 @@ class BoardStructureTests(unittest.TestCase):
         self.assertEqual(board.list_posts(self.conn)["posts"][0]["author_admin"], 1)
         self.assertEqual(board.read_post(self.conn, self.post(BOB))["author_admin"], 0)
 
-    def test_notice_leads_every_board_and_pin_leads_its_own(self):
+    def test_notice_and_pin_lead_their_own_board(self):
         free, market = self.post(), self.post(BOB, board="market")
         pinned = self.post({"userId": "carol", "role": "user"})
         notice = self.post(ADMIN, board="market", notice=True)
         board.admin_action(self.conn, "post", pinned, "pin")
         ids = lambda **kw: [p["post_id"] for p in board.list_posts(self.conn, **kw)["posts"]]
-        self.assertEqual(ids(board="free"), [notice, pinned, free])
+        # 공지 stays in its own board, above that board's pinned posts.
+        self.assertEqual(ids(board="free"), [pinned, free])
         self.assertEqual(ids(board="market"), [notice, market])
         self.assertEqual(ids(), [notice, pinned, market, free])
+        board.admin_action(self.conn, "post", free, "notice")
+        self.assertEqual(ids(board="free"), [free, pinned])
         board.admin_action(self.conn, "post", notice, "unnotice")
-        self.assertEqual(ids(board="free"), [pinned, free])
+        self.assertEqual(ids(board="market"), [notice, market])  # back to newest first
+        self.assertEqual(board.read_post(self.conn, notice)["notice"], 0)
         # Users cannot pin or make 공지 by themselves.
         self.assertEqual(board.read_post(self.conn, self.post(BOB, notice=True, pinned=True))["notice"], 0)
 
@@ -363,3 +367,105 @@ class BoardStructureTests(unittest.TestCase):
         board.delete_post(conn, ALICE, 1)
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM board_comments").fetchone()[0], 0)
         conn.close()
+
+
+class BoardAttachmentAndPollTests(unittest.TestCase):
+    setUp, tearDown, post = BoardTests.setUp, BoardTests.tearDown, BoardTests.post
+
+    def upload(self, user=ADMIN, name="공지.pdf", stored=None):
+        stored = stored or ("a" * 31 + str(len(name) % 10)) + "." + name.rsplit(".", 1)[1].lower()
+        return board.register_upload(self.conn, user, {"name": name, "storedName": stored, "size": 1234, "sha256": "f" * 64})
+
+    def test_admin_notice_with_files_and_links(self):
+        file_id = self.upload()
+        post_id = self.post(ADMIN, notice=True, attachments=[file_id],
+                            links=[{"title": "안내", "url": "https://example.com/a"}, {"url": "http://example.org"}])
+        attachments = board.read_post(self.conn, post_id)["attachments"]
+        self.assertEqual([(a["kind"], a["name"]) for a in attachments],
+                         [("file", "공지.pdf"), ("link", "안내"), ("link", "http://example.org")])
+        self.assertNotIn("stored_name", attachments[0])
+        self.assertTrue(board.list_posts(self.conn)["posts"][0]["has_attachments"])
+        meta = board.file_meta(self.conn, file_id)
+        self.assertEqual((meta["name"], meta["mime"]), ("공지.pdf", "application/pdf"))
+        board.admin_action(self.conn, "post", post_id, "hide")
+        with self.assertRaises(LookupError):
+            board.file_meta(self.conn, file_id)
+
+    def test_attachments_are_admin_only_and_validated(self):
+        with self.assertRaisesRegex(ValueError, "관리자"):
+            self.upload(BOB)
+        with self.assertRaisesRegex(ValueError, "관리자"):
+            self.post(BOB, links=[{"url": "https://example.com"}])
+        with self.assertRaisesRegex(ValueError, "올릴 수 있는 파일"):
+            self.upload(name="run.exe", stored="b" * 32 + ".exe")
+        with self.assertRaisesRegex(ValueError, "파일 정보"):
+            self.upload(name="a.pdf", stored="../../etc/passwd")
+        for url in ("javascript:alert(1)", "ftp://x", "https://a b"):
+            with self.assertRaisesRegex(ValueError, "http"):
+                self.post(ADMIN, links=[{"url": url}])
+        # An upload can be attached once, by its uploader only.
+        file_id = self.upload()
+        self.post(ADMIN, attachments=[file_id])
+        with self.assertRaisesRegex(ValueError, "올린 파일"):
+            self.post(ADMIN, attachments=[file_id])
+
+    def test_editing_removes_and_adds_attachments_and_deleting_cleans_files(self):
+        import tempfile
+        from pathlib import Path
+        folder = tempfile.TemporaryDirectory()
+        first = self.upload(stored="c" * 32 + ".pdf")
+        post_id = self.post(ADMIN, attachments=[first])
+        second = self.upload(name="b.png", stored="d" * 32 + ".png")
+        board.edit_post(self.conn, ADMIN, post_id, {"title": "t", "body": "b", "removeAttachments": [first], "attachments": [second]})
+        self.assertEqual([a["name"] for a in board.read_post(self.conn, post_id)["attachments"]], ["b.png"])
+        for name in ("c" * 32 + ".pdf", "d" * 32 + ".png", "e" * 32 + ".txt"):
+            (Path(folder.name) / name).write_text("x")
+        self.conn.execute("INSERT INTO board_attachments(post_id,uploader_id,kind,name,stored_name,size,sha256,created_epoch) "
+                          "VALUES (NULL,'admin','file','old.txt',?,1,?,0)", ("e" * 32 + ".txt", "0" * 64))
+        later = int(time.time()) + 3600
+        self.assertEqual(board.cleanup_files(self.conn, folder.name, now=later), 2)  # removed from the post + stale upload
+        self.assertEqual(sorted(p.name for p in Path(folder.name).iterdir()), ["d" * 32 + ".png"])
+        board.delete_post(self.conn, ADMIN, post_id)
+        board.cleanup_files(self.conn, folder.name, now=later)
+        self.assertEqual(list(Path(folder.name).iterdir()), [])
+        folder.cleanup()
+
+    def test_poll_single_choice_anonymous_with_scheduled_close(self):
+        closes = int(time.time()) + 3600
+        post_id = self.post(ADMIN, poll={"question": "회식 메뉴?", "options": ["고기", "회", "피자"], "anonymous": True, "closesEpoch": closes})
+        poll = board.read_post(self.conn, post_id)["poll"]
+        self.assertEqual((poll["anonymous"], poll["multiple"], poll["closes_epoch"], poll["open"]), (1, 0, closes, True))
+        first, second = poll["options"][0]["option_id"], poll["options"][1]["option_id"]
+        board.vote(self.conn, BOB, poll["poll_id"], [first])
+        view = board.vote(self.conn, BOB, poll["poll_id"], [second])  # changing the vote
+        self.assertEqual(([o["votes"] for o in view["options"]], view["my_votes"], view["voters"]), ([0, 1, 0], [second], 1))
+        self.assertNotIn("voters", view["options"][0])
+        with self.assertRaisesRegex(ValueError, "하나만"):
+            board.vote(self.conn, BOB, poll["poll_id"], [first, second])
+        self.conn.execute("UPDATE board_polls SET closes_epoch=?", (int(time.time()) - 1,))
+        with self.assertRaisesRegex(ValueError, "마감"):
+            board.vote(self.conn, ALICE, poll["poll_id"], [first])
+        self.assertFalse(board.read_post(self.conn, post_id)["poll"]["open"])
+
+    def test_poll_named_multiple_choice_and_admin_close(self):
+        post_id = self.post(ADMIN, poll={"question": "가능한 요일", "options": ["월", "화"], "anonymous": False, "multiple": True})
+        poll = board.read_post(self.conn, post_id, viewer="bob")["poll"]
+        ids = [o["option_id"] for o in poll["options"]]
+        view = board.vote(self.conn, BOB, poll["poll_id"], ids)
+        self.assertEqual([o["voters"] for o in view["options"]], [["밥"], ["밥"]])
+        board.vote(self.conn, BOB, poll["poll_id"], [])  # withdraw
+        self.assertEqual(board.read_post(self.conn, post_id)["poll"]["voters"], 0)
+        board.admin_action(self.conn, "poll", poll["poll_id"], "close")
+        with self.assertRaisesRegex(ValueError, "마감"):
+            board.vote(self.conn, BOB, poll["poll_id"], ids[:1])
+        board.admin_action(self.conn, "poll", poll["poll_id"], "reopen")
+        board.vote(self.conn, BOB, poll["poll_id"], ids[:1])
+
+    def test_polls_are_admin_only_and_validated(self):
+        with self.assertRaisesRegex(ValueError, "관리자"):
+            self.post(BOB, poll={"question": "q", "options": ["a", "b"]})
+        for poll, message in (({"question": "q", "options": ["a"]}, "선택지"), ({"question": "q", "options": ["a", "a"]}, "선택지"),
+                              ({"question": "q", "options": ["a", "b"], "closesEpoch": 1}, "예약 마감"),
+                              ({"question": "q", "options": ["a", "b"], "closesEpoch": int(time.time()) + 100 * 86400}, "90일")):
+            with self.assertRaisesRegex(ValueError, message):
+                self.post(ADMIN, poll=poll)
