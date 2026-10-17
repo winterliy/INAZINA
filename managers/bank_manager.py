@@ -5,6 +5,7 @@ import math
 import os
 import random
 import time
+from decimal import Decimal
 from datetime import datetime, timezone
 from database import DatabaseManager
 from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY, IS_TREASURY
@@ -129,6 +130,56 @@ class BankManager:
 
     def __init__(self, db: DatabaseManager):
         self.db = db
+
+    @staticmethod
+    def _release_ecl_allowance(conn, loan_id, issuer, currency, *, now=None, reason="settled"):
+        """Reverse a loan's remaining allowance when its exposure is fully closed."""
+        from functions.money import currency_precision, round_currency
+
+        row = conn.execute(
+            "SELECT ecl_allowance FROM accounts.loans WHERE loan_id=?",
+            (int(loan_id),),
+        ).fetchone()
+        if not row:
+            return 0
+        allowance = round_currency(
+            conn, max(0, row["ecl_allowance"] or 0), currency
+        )
+        places = currency_precision(conn, currency)
+        booked_units = conn.execute(
+            "SELECT COALESCE(SUM(l.credit_units-l.debit_units),0) "
+            "FROM accounts.bank_journal_entries e "
+            "JOIN accounts.bank_journal_lines l USING(entry_id) "
+            "WHERE e.issuer=? AND e.currency_code=? AND e.status='posted' "
+            "AND l.account_code='ecl_allowance'",
+            (str(issuer), str(currency).upper()),
+        ).fetchone()[0]
+        booked_allowance = max(0, Decimal(int(booked_units or 0)) / (10 ** places))
+        allowance = min(allowance, round_currency(conn, booked_allowance, currency))
+        if allowance <= 0:
+            conn.execute(
+                "UPDATE accounts.loans SET ecl_allowance=0 WHERE loan_id=?",
+                (int(loan_id),),
+            )
+            return 0
+        reference = f"loan:{int(loan_id)}:ecl-release:{reason}"
+        RateManager.record_institution_result(
+            conn, issuer, allowance, "expected_credit_loss_release", reference,
+            now=now, currency_code=currency,
+        )
+        from managers.bank_journal import BankJournal
+        BankJournal.post(
+            conn, issuer, "expected_credit_loss_release", reference, currency,
+            [("ecl_allowance", "debit", allowance),
+             ("impairment_reversal", "credit", allowance)],
+            description=f"Release ECL allowance for settled loan {loan_id}",
+            now=now,
+        )
+        conn.execute(
+            "UPDATE accounts.loans SET ecl_allowance=0 WHERE loan_id=?",
+            (int(loan_id),),
+        )
+        return allowance
 
     def _settle_user_interest(self, user_id, now=None):
         from managers.interest_manager import InterestManager
@@ -1176,6 +1227,11 @@ class BankManager:
                      ("fee_income", "credit", prepayment_fee)],
                     description=f"Loan {loan['loan_id']} repayment", now=now,
                 )
+                if remaining <= 0:
+                    self._release_ecl_allowance(
+                        conn, loan["loan_id"], loan["issuer"], loan["quote_currency"],
+                        now=now, reason=f"repay:{time.time_ns()}",
+                    )
                 if recovery:
                     RateManager.record_institution_result(
                         conn, loan["issuer"], recovery, "default_recovery",
@@ -1280,6 +1336,10 @@ class BankManager:
                                 "WHERE loan_id = ?",
                                 (loan["loan_id"],),
                             )
+                            self._release_ecl_allowance(
+                                conn, loan["loan_id"], loan["issuer"], loan["quote_currency"],
+                                now=now, reason=f"scheduled-zero:{int(now)}",
+                            )
                         continue
 
                     due_periods = int((now - last) // cycle)
@@ -1329,6 +1389,11 @@ class BankManager:
                             if balance <= 0:
                                 self._release_collateral(
                                     conn, loan["loan_id"], str(loan["user_id"])
+                                )
+                                self._release_ecl_allowance(
+                                    conn, loan["loan_id"], loan["issuer"], loan["quote_currency"],
+                                    now=last+(processed+1)*cycle,
+                                    reason=f"scheduled:{int(last+(processed+1)*cycle)}",
                                 )
                         else:
                             missed_count += 1
@@ -1491,6 +1556,10 @@ class BankManager:
         )
         if balance <= 0:
             cls._release_collateral(conn, loan["loan_id"], str(loan["user_id"]))
+            BankManager._release_ecl_allowance(
+                conn, loan["loan_id"], loan["issuer"], loan["quote_currency"],
+                now=now, reason=f"schedule:{int(now)}",
+            )
         return paid_count, missed_count, paid_amount, max(0, balance)
 
     @staticmethod
@@ -1857,6 +1926,11 @@ class BankManager:
             "status=CASE WHEN ?>0 THEN status ELSE 'paid' END WHERE loan_id=?",
             (new_balance, proceeds, new_balance, new_balance, loan_id),
         )
+        if new_balance <= 0:
+            BankManager._release_ecl_allowance(
+                conn, loan_id, product["issuer"], currency,
+                now=now, reason=f"collateral:{int(now)}",
+            )
         return new_balance, ltv, proceeds
 
 

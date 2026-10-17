@@ -177,6 +177,76 @@ class RealisticRateSystemTests(unittest.TestCase):
             result = BankJournal.reconcile_ecl_allowances(conn, "Bank")
         self.assertEqual((result[0]["difference_units"], result[0]["status"]), (1, "mismatch"))
 
+    def test_fully_repaid_loan_releases_its_ecl_allowance(self):
+        self.add_loan(code="ECL-REPAY", maturity=365, origination_fee=0)
+        success, message = BankManager(self.db).apply_loan(
+            "borrower", "ECL-REPAY", 10_000, collateral_amount=1_000
+        )
+        self.assertTrue(success, message)
+        loan = self.db.accounts.execute_one(
+            "SELECT loan_id,outstanding_balance FROM loans WHERE product_code='ECL-REPAY'"
+        )
+        with self.db.atomic() as conn:
+            conn.execute(
+                "UPDATE accounts.loans SET ecl_allowance=250 WHERE loan_id=?",
+                (loan["loan_id"],),
+            )
+            BankJournal.post(
+                conn, "Bank", "expected_credit_loss", "loan:ecl-repay:assessment", "NWX",
+                [("impairment_expense", "debit", 250), ("ecl_allowance", "credit", 250)],
+            )
+
+        bank = BankManager(self.db)
+        success, message = bank.repay_loan(
+            "borrower", "ECL-REPAY", 1_000, loan["loan_id"]
+        )
+        self.assertTrue(success, message)
+        still_open = self.db.accounts.execute_one(
+            "SELECT status,ecl_allowance,outstanding_balance FROM loans WHERE loan_id=?",
+            (loan["loan_id"],),
+        )
+        self.assertEqual(still_open["status"], "active")
+        self.assertGreater(still_open["ecl_allowance"], 0)
+
+        success, message = bank.repay_loan(
+            "borrower", "ECL-REPAY", still_open["outstanding_balance"], loan["loan_id"]
+        )
+        self.assertTrue(success, message)
+        closed = self.db.accounts.execute_one(
+            "SELECT status,ecl_allowance FROM loans WHERE loan_id=?", (loan["loan_id"],)
+        )
+        self.assertEqual((closed["status"], closed["ecl_allowance"]), ("paid", 0))
+        with self.db.atomic() as conn:
+            result = BankJournal.reconcile_ecl_allowances(conn, "Bank")
+            p_and_l = BankJournal.reconcile_institution_results(conn, "Bank")
+        self.assertEqual(result[0]["status"], "matched")
+        self.assertEqual(result[0]["journal_units"], 0)
+        release = next(row for row in p_and_l
+                       if row["reference_key"].startswith(f"loan:{loan['loan_id']}:ecl-release:"))
+        self.assertEqual(release["status"], "matched")
+
+    def test_unposted_legacy_allowance_is_not_recognized_as_release_income(self):
+        self.add_loan(code="ECL-LEGACY")
+        self.db.accounts.execute(
+            "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,ecl_allowance,status,quote_currency) "
+            "VALUES ('borrower','ECL-LEGACY',100,100,25,'active','NWX')"
+        )
+        loan_id = self.db.accounts.execute_one(
+            "SELECT loan_id FROM loans WHERE product_code='ECL-LEGACY'"
+        )[0]
+        with self.db.atomic() as conn:
+            released = BankManager._release_ecl_allowance(
+                conn, loan_id, "Bank", "NWX", now=1, reason="legacy-close"
+            )
+            remaining = conn.execute(
+                "SELECT ecl_allowance FROM loans WHERE loan_id=?", (loan_id,)
+            ).fetchone()[0]
+            journal = conn.execute(
+                "SELECT COUNT(*) FROM bank_journal_entries WHERE reference_key LIKE ?",
+                (f"loan:{loan_id}:ecl-release:%",),
+            ).fetchone()[0]
+        self.assertEqual((released, remaining, journal), (0, 0, 0))
+
     def test_withholding_tax_ledger_keeps_income_currency_precision(self):
         self.db.currency.execute(
             "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
