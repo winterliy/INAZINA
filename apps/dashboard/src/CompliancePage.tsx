@@ -9,7 +9,7 @@ type Rule = { nationality: string; currency_code: string; large_transaction_limi
 type KycEvent = { event_id: number; user_id: string; actor_id: string; event_type: string; prior_status: string; new_status: string; prior_risk_tier: string; new_risk_tier: string; reason_code: string; recorded_epoch: number };
 type AmlEvent = { event_id: number; alert_id: number; actor_id: string; event_type: string; prior_status: string | null; new_status: string; outcome_code: string | null; recorded_epoch: number; nationality: string; user_id: string };
 type EclScenario = { nationality: string; scenario_key: "optimistic" | "base" | "downside"; probability: number; pd_multiplier: number; lgd_multiplier: number; updated_epoch: number };
-type EclAssessment = { assessment_id: number; loan_id: number; as_of_day: string; stage: number; pd_12m: number; lifetime_pd: number; lgd: number; ead: number; expected_loss: number; discount_factor: number; ead_text: string; expected_loss_text: string; decimal_places: number; quote_currency: string; scenario: string; calculated_epoch: number; nationality: string };
+type EclAssessment = { assessment_id: number; loan_id: number; as_of_day: string; stage: number; pd_12m: number; lifetime_pd: number; lgd: number; ead: number; expected_loss: number; discount_factor: number; effective_interest_rate: number; expected_loss_time_years: number; ead_text: string; expected_loss_text: string; decimal_places: number; quote_currency: string; scenario: string; calculated_epoch: number; nationality: string };
 type Overview = { kycProfiles: Kyc[]; amlAlerts: Alert[]; amlRules: Rule[]; kycEvents: KycEvent[]; amlEvents: AmlEvent[]; creditRiskScenarios: EclScenario[]; eclAssessments: EclAssessment[] };
 type Result = { success: boolean; result: Record<string, unknown> };
 
@@ -145,9 +145,9 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
       </form>
     </Card>
 
-    <Card title="최근 대출 ECL 평가" caption="최근 100건 · ECL은 계약 유효이자율과 예상 손실시점 중간값 가정으로 할인됩니다. 할인계수는 평가 이력과 함께 보존됩니다.">
-      <div className="scroll-x"><table><thead><tr><th>일자</th><th>대출</th><th>국적</th><th>단계</th><th className="r">12개월 PD</th><th className="r">기간 PD</th><th className="r">LGD</th><th className="r">할인계수</th><th className="r">EAD</th><th className="r">기대손실</th><th>통화</th><th>시나리오</th></tr></thead><tbody>
-        {data.eclAssessments.map((item) => <tr key={item.assessment_id}><td>{item.as_of_day}</td><td className="mono">#{item.loan_id}</td><td>{item.nationality}</td><td>{item.stage}</td><td className="r">{(item.pd_12m * 100).toFixed(2)}%</td><td className="r">{(item.lifetime_pd * 100).toFixed(2)}%</td><td className="r">{(item.lgd * 100).toFixed(2)}%</td><td className="r mono">{item.discount_factor.toFixed(6)}</td><td className="r mono">{groupAmount(item.ead_text)}</td><td className="r mono">{groupAmount(item.expected_loss_text)}</td><td>{item.quote_currency}</td><td>{plain(item.scenario)}</td></tr>)}
+    <Card title="최근 대출 ECL 평가" caption="최근 100건 · 사용 EIR·예상손실 시점·할인계수를 평가 시점 그대로 보존합니다. 시점은 잔여기간/회수기간 기반 midpoint 근사입니다.">
+      <div className="scroll-x"><table><thead><tr><th>일자</th><th>대출</th><th>국적</th><th>단계</th><th className="r">12개월 PD</th><th className="r">기간 PD</th><th className="r">LGD</th><th className="r">적용 EIR</th><th className="r">손실시점(년)</th><th className="r">할인계수</th><th className="r">EAD</th><th className="r">기대손실</th><th>통화</th><th>시나리오</th></tr></thead><tbody>
+        {data.eclAssessments.map((item) => <tr key={item.assessment_id}><td>{item.as_of_day}</td><td className="mono">#{item.loan_id}</td><td>{item.nationality}</td><td>{item.stage}</td><td className="r">{(item.pd_12m * 100).toFixed(2)}%</td><td className="r">{(item.lifetime_pd * 100).toFixed(2)}%</td><td className="r">{(item.lgd * 100).toFixed(2)}%</td><td className="r mono">{item.effective_interest_rate.toFixed(4)}%</td><td className="r mono">{item.expected_loss_time_years.toFixed(3)}</td><td className="r mono">{item.discount_factor.toFixed(6)}</td><td className="r mono">{groupAmount(item.ead_text)}</td><td className="r mono">{groupAmount(item.expected_loss_text)}</td><td>{item.quote_currency}</td><td>{plain(item.scenario)}</td></tr>)}
       </tbody></table>{!data.eclAssessments.length && <p className="empty">아직 ECL 평가가 없습니다.</p>}</div>
     </Card>
 

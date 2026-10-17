@@ -88,13 +88,16 @@ class WebApiTests(unittest.TestCase):
                 CREATE TABLE loans(loan_id INTEGER PRIMARY KEY,user_id TEXT);
                 CREATE TABLE loan_ecl_assessments(assessment_id INTEGER,loan_id INTEGER,as_of_day TEXT,
                     stage INTEGER,pd_12m REAL,lifetime_pd REAL,lgd REAL,ead REAL,expected_loss REAL,
-                    discount_factor REAL,quote_currency TEXT,scenario TEXT,calculated_epoch REAL);
+                    discount_factor REAL,effective_interest_rate REAL,expected_loss_time_years REAL,
+                    quote_currency TEXT,scenario TEXT,calculated_epoch REAL);
                 INSERT INTO loans VALUES (1,'admin-1');
                 INSERT INTO loan_ecl_assessments VALUES
-                    (1,1,'2026-10-17',2,0.1,0.2,0.4,1000,72,0.95,'NWX','[]',1);
+                    (1,1,'2026-10-17',2,0.1,0.2,0.4,1000,72,0.95,8,0.25,'NWX','[]',1);
             """)
         result = server.admin_compliance_overview()
         self.assertEqual(result["eclAssessments"][0]["discount_factor"], 0.95)
+        self.assertEqual(result["eclAssessments"][0]["effective_interest_rate"], 8)
+        self.assertEqual(result["eclAssessments"][0]["expected_loss_time_years"], 0.25)
         self.assertEqual(result["eclAssessments"][0]["expected_loss_text"], "72")
 
     def test_admin_countries_returns_auditable_income_source_tax_overrides(self):

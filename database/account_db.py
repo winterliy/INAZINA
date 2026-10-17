@@ -306,6 +306,8 @@ class AccountDB(DBManager):
             quote_currency TEXT NOT NULL,
             scenario TEXT NOT NULL DEFAULT 'base',
             discount_factor REAL NOT NULL DEFAULT 1 CHECK(discount_factor > 0),
+            effective_interest_rate REAL NOT NULL DEFAULT 0,
+            expected_loss_time_years REAL NOT NULL DEFAULT 0 CHECK(expected_loss_time_years >= 0),
             calculated_epoch REAL NOT NULL,
             UNIQUE(loan_id,as_of_day)
         )""")
@@ -314,6 +316,16 @@ class AccountDB(DBManager):
             self.execute(
                 "ALTER TABLE loan_ecl_assessments ADD COLUMN discount_factor "
                 "REAL NOT NULL DEFAULT 1 CHECK(discount_factor > 0)"
+            )
+        if "effective_interest_rate" not in ecl_columns:
+            self.execute(
+                "ALTER TABLE loan_ecl_assessments ADD COLUMN effective_interest_rate "
+                "REAL NOT NULL DEFAULT 0"
+            )
+        if "expected_loss_time_years" not in ecl_columns:
+            self.execute(
+                "ALTER TABLE loan_ecl_assessments ADD COLUMN expected_loss_time_years "
+                "REAL NOT NULL DEFAULT 0 CHECK(expected_loss_time_years >= 0)"
             )
         self.execute("CREATE INDEX IF NOT EXISTS idx_loan_ecl_day "
                      "ON loan_ecl_assessments(as_of_day,stage)")

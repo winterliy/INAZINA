@@ -58,7 +58,8 @@ class DefaultedLoanEclTests(unittest.TestCase):
             self.assertEqual(BankJournal.audit_unbalanced(conn), [])
         self.assertEqual(count, 1)
         row = self.db.accounts.execute_one(
-            "SELECT stage,pd_12m,lifetime_pd,lgd,ead,expected_loss,discount_factor,scenario "
+            "SELECT stage,pd_12m,lifetime_pd,lgd,ead,expected_loss,discount_factor,"
+            "effective_interest_rate,expected_loss_time_years,scenario "
             "FROM loan_ecl_assessments"
         )
         self.assertEqual(row["stage"], 3)
@@ -66,6 +67,8 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.assertEqual(row["lifetime_pd"], 1)
         self.assertEqual(row["ead"], 1000)
         self.assertAlmostEqual(row["discount_factor"], 1/(1.1**0.5))
+        self.assertEqual(row["effective_interest_rate"], 10)
+        self.assertEqual(row["expected_loss_time_years"], 0.5)
         self.assertLess(row["discount_factor"], 1)
         self.assertGreater(row["discount_factor"], 0)
         self.assertLess(row["expected_loss"], row["ead"] * row["lgd"])
@@ -117,6 +120,28 @@ class DefaultedLoanEclTests(unittest.TestCase):
         )
         self.assertGreater(row["discount_factor"], 1)
 
+    def test_stage_two_uses_remaining_contract_life_for_pd_and_discounting(self):
+        epoch = 1_800_000_000
+        self.db.accounts.execute(
+            "UPDATE loans SET status='active',collection_status='current',"
+            "missed_payment_count=2,maturity_epoch=?,contract_effective_rate=8 "
+            "WHERE product_code='ECL3'",
+            (epoch+90*86400,),
+        )
+        with self.db.atomic() as conn:
+            self.assertEqual(CreditRiskManager.assess_conn(conn, epoch), 1)
+        row = self.db.accounts.execute_one(
+            "SELECT stage,pd_12m,lifetime_pd,discount_factor,effective_interest_rate,"
+            "expected_loss_time_years FROM loan_ecl_assessments "
+            "ORDER BY calculated_epoch DESC LIMIT 1"
+        )
+        years = 90/365
+        self.assertEqual(row["stage"], 2)
+        self.assertAlmostEqual(row["lifetime_pd"], 1-(1-row["pd_12m"])**years)
+        self.assertAlmostEqual(row["discount_factor"], 1/(1.08**(years/2)))
+        self.assertEqual(row["effective_interest_rate"], 8)
+        self.assertAlmostEqual(row["expected_loss_time_years"], years/2)
+
     def test_legacy_assessment_migration_preserves_rows_and_uses_neutral_factor(self):
         self.db.accounts.execute(
             "INSERT INTO loan_ecl_assessments "
@@ -127,13 +152,22 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.db.accounts.execute(
             "ALTER TABLE loan_ecl_assessments DROP COLUMN discount_factor"
         )
+        self.db.accounts.execute(
+            "ALTER TABLE loan_ecl_assessments DROP COLUMN effective_interest_rate"
+        )
+        self.db.accounts.execute(
+            "ALTER TABLE loan_ecl_assessments DROP COLUMN expected_loss_time_years"
+        )
         self.db.accounts._init_db()
         row = self.db.accounts.execute_one(
-            "SELECT expected_loss,discount_factor FROM loan_ecl_assessments "
+            "SELECT expected_loss,discount_factor,effective_interest_rate,"
+            "expected_loss_time_years FROM loan_ecl_assessments "
             "WHERE as_of_day='2026-01-01'"
         )
         self.assertEqual(row["expected_loss"], 500)
         self.assertEqual(row["discount_factor"], 1)
+        self.assertEqual(row["effective_interest_rate"], 0)
+        self.assertEqual(row["expected_loss_time_years"], 0)
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.accounts.execute(
                 "UPDATE loan_ecl_assessments SET discount_factor=0.95 "
