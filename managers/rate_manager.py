@@ -691,13 +691,101 @@ class RateManager:
                     )/SCALE
             return total
 
+        risk_report = RateManager.institution_risk_weighted_assets(
+            conn, issuer, base_currency=base_currency
+        )
         return {
             "base_currency": base_currency,
             "deposits": translated(deposit_rows),
             "loans": translated(loan_rows),
             "total_deposits": translated(total_deposit_rows),
             "total_loans": translated(total_loan_rows),
+            "risk_weighted_assets": risk_report["amount"],
+            "rwa_report": risk_report,
         }
+
+    @staticmethod
+    def institution_risk_weighted_assets(conn, issuer, *, base_currency=None):
+        """Estimate loan RWA with collateral and credit-state bands (simulator policy)."""
+        issuer = str(issuer or "").strip()
+        if not issuer:
+            raise ValueError("financial_institution_not_found")
+        if not base_currency:
+            row = conn.execute(
+                "SELECT COALESCE(c.currency_code,'NWX') currency_code FROM "
+                "financial_institutions f LEFT JOIN country_currencies c "
+                "ON c.nationality=f.nationality WHERE f.issuer=?", (issuer,),
+            ).fetchone()
+            base_currency = str(row["currency_code"] if row else "NWX")
+        loans = conn.execute(
+            "SELECT l.loan_id,l.user_id,l.outstanding_balance,l.quote_currency,l.status,"
+            "l.collateral_amount,l.collateral_released,l.collateral_seized,l.current_ltv,"
+            "l.missed_payment_count,l.overdue_since_epoch,l.collection_status,u.credit_score,"
+            "(SELECT e.stage FROM loan_ecl_assessments e WHERE e.loan_id=l.loan_id "
+            "ORDER BY e.as_of_day DESC,e.assessment_id DESC LIMIT 1) latest_stage "
+            "FROM loans l JOIN liability p ON p.product_code=l.product_code "
+            "LEFT JOIN users u ON u.user_id=l.user_id "
+            "WHERE p.issuer=? AND l.status IN ('active','defaulted') AND l.outstanding_balance>0",
+            (issuer,),
+        ).fetchall()
+        from managers.currency_manager import CurrencyManager, SCALE
+        from functions.money import round_currency
+        total_base = 0.0
+        by_weight = {"secured_asset": 0.0,
+                     "performing_unsecured": 0.0, "higher_risk_unsecured": 0.0,
+                     "defaulted_unsecured": 0.0}
+        cash_collateral_covered_base = 0.0
+        for loan in loans:
+            ead = max(0.0, float(loan["outstanding_balance"] or 0))
+            cash = max(0.0, float(loan["collateral_amount"] or 0)
+                       - float(loan["collateral_released"] or 0)
+                       - float(loan["collateral_seized"] or 0))
+            asset_row = conn.execute(
+                "SELECT COALESCE(SUM(last_value),0) value FROM loan_collateral_assets "
+                "WHERE loan_id=? AND status='pledged'", (loan["loan_id"],),
+            ).fetchone()
+            asset = max(0.0, float(asset_row["value"] or 0)) * 0.80
+            cash_covered = min(ead, cash)
+            asset_covered = min(max(0.0, ead-cash_covered), asset)
+            unsecured = max(0.0, ead-cash_covered-asset_covered)
+            defaulted = loan["status"] == "defaulted" or loan["collection_status"] == "defaulted" or int(loan["latest_stage"] or 0) >= 3
+            higher_risk = (int(loan["latest_stage"] or 0) >= 2
+                           or (loan["credit_score"] is not None and int(loan["credit_score"]) < 600)
+                           or float(loan["current_ltv"] or 0) >= 1.0
+                           or int(loan["missed_payment_count"] or 0) >= 2
+                           or loan["overdue_since_epoch"] is not None)
+            unsecured_weight, key = ((1.50, "defaulted_unsecured") if defaulted else
+                                     (1.00, "higher_risk_unsecured") if higher_risk else
+                                     (0.75, "performing_unsecured"))
+            currency = str(loan["quote_currency"] or "NWX")
+            parts = {"secured_asset": asset_covered*.35,
+                     key: unsecured*unsecured_weight}
+            for component, native_amount in parts.items():
+                native_amount = round_currency(conn, native_amount, currency)
+                if currency == base_currency:
+                    translated = native_amount
+                else:
+                    translated = CurrencyManager.convert(
+                        conn, int(round(float(native_amount)*SCALE)), currency, base_currency
+                    ) / SCALE
+                total_base += translated
+                by_weight[component] += translated
+            cash_covered = round_currency(conn, cash_covered, currency)
+            cash_collateral_covered_base += (
+                cash_covered if currency == base_currency else
+                CurrencyManager.convert(conn, int(round(float(cash_covered)*SCALE)),
+                                        currency, base_currency) / SCALE
+            )
+        by_weight = {key: round_currency(conn, value, base_currency)
+                     for key, value in by_weight.items()}
+        cash_collateral_covered_base = round_currency(
+            conn, cash_collateral_covered_base, base_currency
+        )
+        total_base = sum(by_weight.values())
+        return {"issuer": issuer, "currency": base_currency, "amount": total_base,
+                "exposureCount": len(loans), "weightedComponents": by_weight,
+                "cashCollateralCovered": cash_collateral_covered_base,
+                "method": "cash collateral 0%; asset collateral 35% after 20% haircut; performing unsecured retail 75%; higher-risk unsecured 100%; defaulted unsecured 150%"}
 
     @staticmethod
     def institution_maturity_gap(conn, issuer, *, now=None):
@@ -884,10 +972,9 @@ class RateManager:
         funding_headroom = (float("inf") if reserve_ratio <= 0 and liquid_buffer >= 0
                             else max(0.0, liquid_buffer/max(1e-12, reserve_ratio)))
         target_capital = float(terms["target_capital_ratio"])
-        risk_weight = 0.75
-        capital_capacity = (float("inf") if target_capital <= 0 else
-                            equity/(target_capital*risk_weight))
-        capital_headroom = max(0.0, capital_capacity-loans)
+        current_rwa = float(sheet["risk_weighted_assets"])
+        capital_headroom = (float("inf") if target_capital <= 0 else
+                            max(0.0, (equity/target_capital-current_rwa)/0.75))
         headroom = min(funding_headroom, capital_headroom)
         allowed = terms["status"] == "active" and proposed <= headroom+1e-9
         return {
@@ -896,6 +983,7 @@ class RateManager:
             "effective_equity": equity,
             "deposits": deposits,
             "loans": loans,
+            "risk_weighted_assets": current_rwa,
             "required_reserves": required_reserves,
             "funding_headroom": funding_headroom,
             "capital_headroom": capital_headroom,
@@ -913,7 +1001,7 @@ class RateManager:
             return "failed"
         sheet = RateManager.institution_balance_sheet(conn, issuer)
         equity = float(terms["effective_equity"])
-        risk_weighted_assets = float(sheet["loans"])*0.75
+        risk_weighted_assets = float(sheet["risk_weighted_assets"])
         ratio = equity/risk_weighted_assets if risk_weighted_assets > 0 else float("inf")
         if equity <= 0:
             status = "failed"
@@ -989,7 +1077,7 @@ class RateManager:
         funding_pressure = max(
             0.0, loan_deposit-float(terms["target_loan_deposit_ratio"])
         ) * float(terms["funding_pressure_sensitivity"])
-        risk_weighted_assets = loans * 0.75
+        risk_weighted_assets = float(sheet["risk_weighted_assets"])
         capital_ratio = (max(0.0, float(terms["effective_equity"]))/risk_weighted_assets
                          if risk_weighted_assets > 0 else 1.0)
         capital_pressure = max(

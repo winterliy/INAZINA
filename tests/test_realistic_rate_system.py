@@ -433,6 +433,48 @@ class RealisticRateSystemTests(unittest.TestCase):
             "WHERE nationality='낙원' AND benchmark_key='bank_bond'"
         ))
 
+    def test_risk_weighted_assets_use_collateral_credit_state_and_default_bands(self):
+        self.db.products.execute(
+            "INSERT INTO liability(product_code,name,interest_rate,loan_limit,maturity_days,"
+            "interest_cycle,min_credit_score,issuer,quote_currency) "
+            "VALUES ('RWA','RWA test',5,1000000,365,86400,0,'Bank','NWX')"
+        )
+        for user_id, score in (("rwa-good", 750), ("rwa-weak", 500), ("rwa-default", 750)):
+            self.db.users.create_user(user_id, user_id, "낙원", 0)
+            self.db.users.execute("UPDATE users SET credit_score=? WHERE user_id=?", (score, user_id))
+        with self.db.atomic() as conn:
+            conn.execute(
+                "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,status,"
+                "quote_currency,collateral_amount) VALUES "
+                "('rwa-good','RWA',100000,100000,'active','NWX',0),"
+                "('rwa-weak','RWA',100000,100000,'active','NWX',0),"
+                "('rwa-default','RWA',100000,100000,'defaulted','NWX',20000)"
+            )
+            default_id = conn.execute("SELECT loan_id FROM loans WHERE user_id='rwa-default'").fetchone()[0]
+            conn.execute(
+                "INSERT INTO loan_collateral_assets(loan_id,user_id,asset_code,quantity,"
+                "pledged_epoch,last_price,last_value,status) "
+                "VALUES (?, 'rwa-default','TEST',1,1,50000,50000,'pledged')", (default_id,)
+            )
+            rwa = RateManager.institution_risk_weighted_assets(conn, "Bank")
+            sheet = RateManager.institution_balance_sheet(conn, "Bank")
+        self.assertEqual(rwa["amount"], 249_000)
+        self.assertEqual(rwa["weightedComponents"]["performing_unsecured"], 75_000)
+        self.assertEqual(rwa["weightedComponents"]["higher_risk_unsecured"], 100_000)
+        self.assertEqual(rwa["weightedComponents"]["secured_asset"], 14_000)
+        self.assertEqual(rwa["weightedComponents"]["defaulted_unsecured"], 60_000)
+        self.assertEqual(sheet["risk_weighted_assets"], rwa["amount"])
+        self.assertEqual(rwa["cashCollateralCovered"], 20_000)
+        self.db.currency.execute(
+            "UPDATE financial_institutions SET equity_capital=20000,target_capital_ratio=.1 "
+            "WHERE issuer='Bank'"
+        )
+        with self.db.atomic() as conn:
+            capacity = RateManager.institution_capacity(conn, "Bank", proposed_loan=1)
+        self.assertEqual(capacity["risk_weighted_assets"], 249_000)
+        self.assertEqual(capacity["capital_headroom"], 0)
+        self.assertFalse(capacity["allowed"])
+
     def test_asset_collateral_is_haircut_revalued_and_liquidated(self):
         self.add_loan(code="ASSETLOAN", collateral_ratio=1, origination_fee=0)
         self.db.products.execute(

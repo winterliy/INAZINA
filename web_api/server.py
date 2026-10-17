@@ -1304,6 +1304,22 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
         from managers.rate_manager import RateManager
         maturity_gap = RateManager.institution_maturity_gap(connection, issuer)
         rate_stress = RateManager.institution_rate_stress(connection, issuer)
+        institution = RateManager.institution_components(connection, issuer)
+        balance_sheet = RateManager.institution_balance_sheet(connection, issuer)
+        risk_report = balance_sheet["rwa_report"]
+        capital_ratio = (float(institution["effective_equity"]) / risk_report["amount"]
+                         if risk_report["amount"] > 0 else None)
+        prudential = {"issuer": str(issuer), "currency": balance_sheet["base_currency"],
+                      "decimalPlaces": currency_precision(connection, balance_sheet["base_currency"]),
+                      "status": institution["status"],
+                      "effectiveEquity": institution["effective_equity"],
+                      "riskWeightedAssets": risk_report["amount"],
+                      "capitalRatioPercent": capital_ratio * 100 if capital_ratio is not None else None,
+                      "targetCapitalRatioPercent": institution["target_capital_ratio"] * 100,
+                      "exposureCount": risk_report["exposureCount"],
+                      "cashCollateralCovered": risk_report["cashCollateralCovered"],
+                      "weightedComponents": risk_report["weightedComponents"],
+                      "method": risk_report["method"]}
         for row in trial_balance:
             places = currency_precision(connection, row["currency_code"])
             scale = 10 ** places
@@ -1326,7 +1342,7 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
     return {"issuer": str(issuer), "currency": currency,
             "trialBalance": trial_balance, "unbalancedEntries": unbalanced,
             "resultReconciliation": reconciliation, "maturityGap": maturity_gap,
-            "rateStress": rate_stress}
+            "rateStress": rate_stress, "prudential": prudential}
 
 
 def admin_compliance_overview(nationality=None):

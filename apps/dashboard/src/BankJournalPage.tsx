@@ -8,7 +8,8 @@ type Unbalanced = { entry_id: number; issuer: string; event_type: string; refere
 type Reconciliation = { reference_key: string; currency_code: string; ledger_amount: number; journal_amount: number | null; difference: number | null; ledger_amount_text: string; journal_amount_text: string | null; difference_text: string | null; status: string };
 type MaturityGap = { issuer: string; asOfEpoch: number; method: string; ladders: { currency: string; decimalPlaces: number; buckets: { bucket: string; inflows: number; outflows: number; net_gap: number; cumulative_gap: number }[]; depositRunoffStress: { runoffPercent: number; assumedRunoff: number; stressedOneDayOutflow: number; oneDayLoanInflows: number; oneDayGap: number }[] }[] };
 type RateStress = { issuer: string; asOfEpoch: number; horizonDays: number; scenarios: { currency: string; decimalPlaces: number; assetBalanceYears: number; liabilityBalanceYears: number; shocks: { basisPoints: number; assetInterestChange: number; liabilityInterestChange: number; netInterestIncomeChange: number }[] }[]; method: string };
-type Report = { issuer: string; currency: string | null; trialBalance: Trial[]; unbalancedEntries: Unbalanced[]; resultReconciliation: Reconciliation[]; maturityGap: MaturityGap; rateStress: RateStress };
+type Prudential = { issuer: string; currency: string; decimalPlaces: number; status: string; effectiveEquity: number; riskWeightedAssets: number; capitalRatioPercent: number | null; targetCapitalRatioPercent: number; exposureCount: number; cashCollateralCovered: number; weightedComponents: Record<string, number>; method: string };
+type Report = { issuer: string; currency: string | null; trialBalance: Trial[]; unbalancedEntries: Unbalanced[]; resultReconciliation: Reconciliation[]; maturityGap: MaturityGap; rateStress: RateStress; prudential: Prudential };
 
 export function BankJournalPage({ ctx }: { ctx: Ctx }) {
   const { busy, run, say } = ctx;
@@ -35,6 +36,10 @@ export function BankJournalPage({ ctx }: { ctx: Ctx }) {
       <button className="btn primary" disabled={busy || !issuer.trim()}>원장 조회</button>
     </form>
     {report && <>
+      <h3 className="sub-head">신용위험가중자산 · {report.prudential.issuer} · {report.prudential.currency}</h3>
+      <p className="hint">기관 상태: {report.prudential.status} · 유효 자기자본 {money(report.prudential.effectiveEquity, report.prudential.decimalPlaces)} · RWA {money(report.prudential.riskWeightedAssets, report.prudential.decimalPlaces)} · 단순 자본비율 {report.prudential.capitalRatioPercent == null ? "—" : `${report.prudential.capitalRatioPercent.toFixed(2)}%`} / 목표 {report.prudential.targetCapitalRatioPercent.toFixed(2)}% · 대출 {report.prudential.exposureCount}건 · 현금담보 {money(report.prudential.cashCollateralCovered, report.prudential.decimalPlaces)}</p>
+      <div className="scroll-x"><table><thead><tr><th>위험구간 기여</th><th className="r">가중 노출액 ({report.prudential.currency})</th></tr></thead><tbody>{Object.entries(report.prudential.weightedComponents).map(([key, value]) => <tr key={key}><td>{riskWeightLabel(key)}</td><td className="r mono">{money(value, report.prudential.decimalPlaces)}</td></tr>)}</tbody></table></div>
+      <p className="hint">가정: 현금담보 0%, 자산담보 20% 할인 후 35%, 정상 무담보 75%, 고위험 무담보 100%, 부도 무담보 150%. 시뮬레이터 분류이며 Basel 승인 RWA가 아닙니다. {report.prudential.method}</p>
       <h3 className="sub-head">계약상 만기갭 · 통화별</h3>
       <p className="hint">계약상 만기만 단순 합산한 ALM 관측치입니다. 1d는 1일 이내, 7d·30d·90d·365d는 직전 구간 초과부터 해당 일수까지이며 누적 갭은 해당 구간까지의 합계입니다. 각 통화는 따로 표시하며 예금 행동만기, 조기인출, 장부외 현금흐름, LCR·NSFR 규제 계산은 반영하지 않습니다.</p>
       {report.maturityGap.ladders.map((ladder) => <div className="scroll-x" key={ladder.currency}><h4>{ladder.currency}</h4><table><thead><tr><th>잔존만기</th><th className="r">대출 유입</th><th className="r">예금 유출</th><th className="r">구간 갭</th><th className="r">누적 갭</th></tr></thead><tbody>
@@ -74,4 +79,8 @@ function money(value: number, decimalPlaces: number) {
     minimumFractionDigits: decimalPlaces,
     maximumFractionDigits: decimalPlaces,
   }).format(value);
+}
+
+function riskWeightLabel(key: string) {
+  return ({ secured_asset: "자산담보 환산(35%)", performing_unsecured: "정상 무담보(75%)", higher_risk_unsecured: "고위험 무담보(100%)", defaulted_unsecured: "부도 무담보(150%)" } as Record<string, string>)[key] ?? key;
 }
