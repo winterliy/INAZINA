@@ -716,6 +716,7 @@ class RealisticRateSystemTests(unittest.TestCase):
             report = admin_bank_journal_report("Bank")
         self.assertEqual(report["depositInsuranceClaims"][0]["covered_amount_text"], "600")
         self.assertEqual(report["depositInsuranceClaims"][0]["uninsured_amount_text"], "400")
+        self.assertEqual(report["borrowerConcentrationStress"]["borrowerCount"], 0)
 
     def test_competing_banks_and_balance_sheet_pressure_change_spread(self):
         self.add_loan(code="BANK1", collateral_ratio=0, origination_fee=0)
@@ -1034,6 +1035,39 @@ class RealisticRateSystemTests(unittest.TestCase):
                 conn, "borrower", 10_000, product, 5, now, 100_000, 400,
             )
         self.assertAlmostEqual(metrics["stress_dsr"]-metrics["dsr"], .4, places=4)
+
+    def test_borrower_concentration_aggregates_loans_and_stresses_top_single_default(self):
+        self.add_loan(code="CONCENTRATION", maturity=365, collateral_ratio=0,
+                      origination_fee=0)
+        self.add_loan(code="CONCENTRATION2", maturity=365, collateral_ratio=0,
+                      origination_fee=0)
+        self.db.users.create_user("other-borrower", "Other", "낙원", 1_000)
+        self.db.accounts.execute(
+            "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,"
+            "status,quote_currency,ecl_allowance) VALUES "
+            "('borrower','CONCENTRATION',60,60,'active','NWX',39),"
+            "('borrower','CONCENTRATION2',40,40,'active','NWX',0),"
+            "('other-borrower','CONCENTRATION',200,200,'active','NWX',20)"
+        )
+        with self.db.readonly() as conn:
+            report = CreditRiskManager.borrower_concentration_stress(conn, "Bank")
+        self.assertEqual(report["borrowerCount"], 2)
+        self.assertEqual(report["totalLoanExposure"], 300)
+        self.assertAlmostEqual(report["largestBorrowerSharePercent"], 200/300*100)
+        self.assertAlmostEqual(report["topFiveExposureSharePercent"], 100)
+        largest = report["borrowers"][0]
+        self.assertEqual(largest["borrowerId"], "other-borrower")
+        self.assertEqual(largest["loanCount"], 1)
+        self.assertEqual(largest["grossLoss"], 130)
+        self.assertEqual(largest["existingAllowanceApplied"], 20)
+        self.assertEqual(largest["incrementalProvision"], 110)
+        from web_api.server import admin_bank_journal_report
+        with patch("web_api.server.connect_readonly", self.db.readonly):
+            web_report = admin_bank_journal_report("Bank")
+        self.assertEqual(
+            web_report["borrowerConcentrationStress"]["borrowers"][0]["borrowerId"],
+            "other-borrower",
+        )
 
     def test_mandatory_finance_cost_is_included_in_legal_maximum(self):
         self.add_loan(code="COSTCAP", collateral_ratio=0, origination_fee=0)

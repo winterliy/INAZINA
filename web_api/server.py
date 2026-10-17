@@ -1421,6 +1421,9 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
         risk_report = balance_sheet["rwa_report"]
         from managers.credit_risk_manager import CreditRiskManager
         credit_stress = CreditRiskManager.portfolio_default_stress(connection, issuer)
+        borrower_concentration = CreditRiskManager.borrower_concentration_stress(
+            connection, issuer
+        )
         capital_ratio = (float(institution["effective_equity"]) / risk_report["amount"]
                          if risk_report["amount"] > 0 else None)
         leverage_exposure = max(
@@ -1501,7 +1504,8 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
             "maturityGap": maturity_gap,
             "liquidityStress": liquidity_stress, "rateStress": rate_stress,
             "fixedRateEveStress": fixed_rate_eve_stress, "fxStress": fx_stress,
-            "prudential": prudential, "creditStress": credit_stress}
+            "prudential": prudential, "creditStress": credit_stress,
+            "borrowerConcentrationStress": borrower_concentration}
 
 
 def admin_compliance_overview(nationality=None):

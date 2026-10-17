@@ -321,6 +321,75 @@ class CreditRiskManager:
                 "scenarios": scenarios,
                 "method": "deterministic pro-rata default share of performing loans; collateral-adjusted LGD; existing allowance applied pro-rata; no default correlation, recovery timing, macroeconomic feedback or tax effects"}
 
+    @classmethod
+    def borrower_concentration_stress(cls, conn, issuer):
+        """Aggregate loan exposure by borrower and stress each top borrower default."""
+        issuer = str(issuer or "").strip()
+        if not issuer:
+            raise ValueError("financial_institution_not_found")
+        sheet = RateManager.institution_balance_sheet(conn, issuer)
+        base = str(sheet["base_currency"])
+        terms = RateManager.institution_components(conn, issuer)
+        from managers.currency_manager import CurrencyManager, SCALE
+
+        def to_base(amount, currency):
+            amount = round_currency(conn, max(0.0, float(amount or 0)), currency)
+            if currency == base:
+                return amount
+            return CurrencyManager.convert(
+                conn, int(round(float(amount)*SCALE)), currency, base
+            )/SCALE
+
+        borrowers = {}
+        for loan in conn.execute(
+            "SELECT l.loan_id,l.user_id,l.outstanding_balance,l.quote_currency,"
+            "l.collateral_amount,l.collateral_released,l.collateral_seized,l.ecl_allowance "
+            "FROM loans l JOIN liability p ON p.product_code=l.product_code "
+            "WHERE p.issuer=? AND l.status IN ('active','defaulted') "
+            "AND l.outstanding_balance>0",
+            (issuer,),
+        ):
+            user_id = str(loan["user_id"] or "")
+            row = borrowers.setdefault(user_id, {
+                "exposure": 0.0, "grossLoss": 0.0, "allowance": 0.0, "loanCount": 0,
+            })
+            currency = str(loan["quote_currency"] or base)
+            ead = max(0.0, float(loan["outstanding_balance"] or 0))
+            loss = ead*cls._lgd(conn, loan)
+            row["exposure"] += to_base(ead, currency)
+            row["grossLoss"] += to_base(loss, currency)
+            row["allowance"] += to_base(loan["ecl_allowance"], currency)
+            row["loanCount"] += 1
+
+        total = sum(row["exposure"] for row in borrowers.values())
+        equity = float(terms["effective_equity"])
+        ranked = sorted(borrowers.items(), key=lambda item: (-item[1]["exposure"], item[0]))
+        result = []
+        for user_id, row in ranked[:5]:
+            gross = round_currency(conn, row["grossLoss"], base)
+            allowance = min(gross, round_currency(conn, row["allowance"], base))
+            incremental = round_currency(conn, max(0.0, gross-allowance), base)
+            result.append({
+                "borrowerId": user_id, "loanCount": row["loanCount"],
+                "exposure": round_currency(conn, row["exposure"], base),
+                "exposureSharePercent": row["exposure"]/total*100 if total else 0.0,
+                "grossLoss": gross, "existingAllowanceApplied": allowance,
+                "incrementalProvision": incremental,
+                "equityAfterProvision": round_currency(conn, equity-incremental, base),
+            })
+        return {
+            "issuer": issuer, "currency": base,
+            "decimalPlaces": currency_precision(conn, base),
+            "borrowerCount": len(borrowers),
+            "totalLoanExposure": round_currency(conn, total, base),
+            "largestBorrowerSharePercent": result[0]["exposureSharePercent"] if result else 0.0,
+            "topFiveExposureSharePercent": sum(
+                row["exposureSharePercent"] for row in result
+            ),
+            "borrowers": result,
+            "method": "single-borrower default stress; grouped by user_id across the issuer's active/defaulted loans; collateral-adjusted simulator LGD and that borrower's recorded ECL allowance; native exposures converted to institution base currency; excludes connected-party groups, guarantees, recovery timing, taxes and default correlation across borrowers",
+        }
+
     @staticmethod
     def _ead_at_expected_loss(conn, loan_id, balance, as_of_epoch, loss_time_years,
                               stage, currency):
