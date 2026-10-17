@@ -864,20 +864,6 @@ class BankManager:
                 )
                 if amount <= 0:
                     return False, "❌ 대출 금액은 0보다 커야 합니다."
-                capacity = RateManager.institution_capacity(
-                    conn, product["issuer"], amount, product['quote_currency']
-                )
-                if not capacity["allowed"]:
-                    if capacity["status"] != "active":
-                        return False, (
-                            "❌ 발행 금융기관이 자본규제 또는 정리 절차로 신규 대출을 "
-                            "취급할 수 없습니다."
-                        )
-                    return False, (
-                        "❌ 발행 금융기관의 지급준비·자기자본·레버리지 한도를 초과합니다. "
-                        f"현재 추가 대출 가능액: {math.floor(capacity['headroom']):,} "
-                        f"{product['quote_currency']}"
-                    )
                 from managers.currency_manager import CurrencyManager
                 home = CurrencyManager.home(conn,user_id)
                 if product['quote_currency'] != home:
@@ -924,6 +910,34 @@ class BankManager:
                         f"❌ 이 상품은 헤어컷 후 담보 {required_collateral:,} {home} 이상이 필요합니다."
                     )
                 credit_score = max(0, min(1000, int(user['credit_score'] or 0)))
+                cash_covered = min(amount, collateral_amount)
+                rwa_asset_covered = min(
+                    max(0.0, amount-cash_covered), max(0.0, asset_collateral_value)*0.80
+                )
+                unsecured = max(0.0, amount-cash_covered-rwa_asset_covered)
+                high_risk = (
+                    credit_score < 600
+                    or (asset_collateral_value > 0
+                        and amount/asset_collateral_value >= 1.0)
+                )
+                unsecured_weight = 1.0 if high_risk else 0.75
+                proposed_rwa = rwa_asset_covered*0.35+unsecured*unsecured_weight
+                proposed_risk_weight = proposed_rwa/amount
+                capacity = RateManager.institution_capacity(
+                    conn, product["issuer"], amount, product['quote_currency'],
+                    proposed_risk_weight=proposed_risk_weight,
+                )
+                if not capacity["allowed"]:
+                    if capacity["status"] != "active":
+                        return False, (
+                            "❌ 발행 금융기관이 자본규제 또는 정리 절차로 신규 대출을 "
+                            "취급할 수 없습니다."
+                        )
+                    return False, (
+                        "❌ 발행 금융기관의 지급준비·자기자본·레버리지 한도를 초과합니다. "
+                        f"현재 추가 대출 가능액: {math.floor(capacity['headroom']):,} "
+                        f"{product['quote_currency']}"
+                    )
                 proposed_country = product['rate_nationality'] or user['nationality']
                 contract_country = (proposed_country if proposed_country and conn.execute(
                     "SELECT 1 FROM country_currencies WHERE nationality=?", (proposed_country,)

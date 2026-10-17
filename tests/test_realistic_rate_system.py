@@ -643,6 +643,40 @@ class RealisticRateSystemTests(unittest.TestCase):
             "SELECT 1 FROM loans WHERE product_code='REGULATED'"
         ))
 
+    def test_cash_secured_loan_uses_zero_rwa_weight_for_capacity(self):
+        self.add_loan(code="CASH-SECURED", collateral_ratio=1, origination_fee=0)
+        self.db.currency.execute(
+            "UPDATE financial_institutions SET equity_capital=1000,retained_earnings=0,"
+            "reserve_ratio=0,target_capital_ratio=.1,status='active' WHERE issuer='Bank'"
+        )
+        result = BankManager(self.db).apply_loan(
+            "borrower", "CASH-SECURED", 20_000, collateral_amount=20_000
+        )
+        self.assertTrue(result[0], result[1])
+        with self.db.atomic() as conn:
+            capacity = RateManager.institution_capacity(
+                conn, "Bank", proposed_loan=20_000, proposed_risk_weight=0,
+            )
+            rwa = RateManager.institution_risk_weighted_assets(conn, "Bank")
+        self.assertEqual(capacity["proposed_risk_weight"], 0)
+        self.assertEqual(rwa["amount"], 0)
+
+    def test_institution_capacity_uses_proposed_risk_weight_for_capital_headroom(self):
+        self.add_loan(code="CAPACITY-RISK", collateral_ratio=0, origination_fee=0)
+        self.db.currency.execute(
+            "UPDATE financial_institutions SET equity_capital=100000,retained_earnings=0,"
+            "reserve_ratio=0,target_capital_ratio=.1,status='active' WHERE issuer='Bank'"
+        )
+        with self.db.atomic() as conn:
+            secured = RateManager.institution_capacity(
+                conn, "Bank", proposed_loan=100_000, proposed_risk_weight=.35,
+            )
+            higher_risk = RateManager.institution_capacity(
+                conn, "Bank", proposed_loan=100_000, proposed_risk_weight=1.0,
+            )
+        self.assertAlmostEqual(secured["capital_headroom"], 100_000/.1/.35)
+        self.assertAlmostEqual(higher_risk["capital_headroom"], 100_000/.1)
+
     def test_simple_leverage_floor_restricts_deposit_heavy_institution(self):
         self.db.products.execute(
             "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"

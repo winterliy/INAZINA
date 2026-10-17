@@ -1385,12 +1385,16 @@ class RateManager:
                 "method": "fixed-rate current principal balance times remaining principal-weighted maturity and squared maturity; maturity deposits use product term; demand deposits have zero duration; second-order parallel-shock proxy ΔEVE≈−net duration exposure×Δyield+0.5×net squared-time exposure×Δyield²; not discounted cash-flow convexity and excludes coupons, yield curves, securities, derivatives, prepayments, behavioral deposit duration and accounting classification; not a regulatory IRRBB measure"}
 
     @staticmethod
-    def institution_capacity(conn, issuer, proposed_loan=0, currency_code=None):
+    def institution_capacity(conn, issuer, proposed_loan=0, currency_code=None,
+                             proposed_risk_weight=0.75):
         """Apply simplified reserve and risk-weighted capital constraints."""
         RateManager.refresh_institution_status(conn, issuer)
         terms = RateManager.institution_components(conn, issuer)
         sheet = RateManager.institution_balance_sheet(conn, issuer)
         proposed = max(0.0, float(proposed_loan or 0))
+        risk_weight = float(proposed_risk_weight)
+        if not math.isfinite(risk_weight) or not 0 <= risk_weight <= 1.5:
+            raise ValueError("invalid_proposed_risk_weight")
         if proposed and currency_code and str(currency_code) != sheet["base_currency"]:
             from managers.currency_manager import CurrencyManager, SCALE
             proposed = CurrencyManager.convert(
@@ -1414,8 +1418,10 @@ class RateManager:
                             else max(0.0, liquid_buffer/max(1e-12, reserve_ratio)))
         target_capital = float(terms["target_capital_ratio"])
         current_rwa = float(sheet["risk_weighted_assets"])
-        capital_headroom = (float("inf") if target_capital <= 0 else
-                            max(0.0, (equity/target_capital-current_rwa)/0.75))
+        capital_headroom = (
+            float("inf") if target_capital <= 0 or risk_weight == 0 else
+            max(0.0, (equity/target_capital-current_rwa)/risk_weight)
+        )
         headroom = min(funding_headroom, capital_headroom, leverage_headroom)
         allowed = terms["status"] == "active" and proposed <= headroom+1e-9
         return {
@@ -1432,6 +1438,7 @@ class RateManager:
             "required_reserves": required_reserves,
             "funding_headroom": funding_headroom,
             "capital_headroom": capital_headroom,
+            "proposed_risk_weight": risk_weight,
             "headroom": headroom,
         }
 
