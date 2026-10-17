@@ -318,6 +318,20 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertEqual(insured['claim_units'], 125)
         self.assertEqual(insured['journal_units'], 0)
         self.assertEqual(insured['status'], 'missing_journal')
+        with self.db.atomic() as conn:
+            BankJournal.post(
+                conn, 'FXBank', 'test', 'partial-insurance-claim', 'EUR',
+                [('insurance_fund_receivable', 'debit', .50),
+                 ('deposit_insurance_payable', 'credit', .50)],
+            )
+            reconciliation = BankJournal.reconcile_deposit_insurance_claims(
+                conn, 'FXBank'
+            )
+        insured = next(row for row in reconciliation
+                       if row['account_code'] == 'deposit_insurance_payable')
+        self.assertEqual(insured['journal_units'], 50)
+        self.assertEqual(insured['difference_units'], 75)
+        self.assertEqual(insured['status'], 'mismatch')
 
 
 class LegacyCurrencySchemaMigrationTests(unittest.TestCase):

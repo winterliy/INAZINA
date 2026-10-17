@@ -1383,6 +1383,19 @@ def admin_audit(limit=50):
     return entries
 
 
+def audit_admin_access(actor_id, action, payload):
+    """Append a minimal audit event for sensitive administrator reads."""
+    with connect_db(timeout=5) as connection:
+        if not _table_exists(connection, "admin_audit"):
+            raise ValueError("admin_audit_unavailable")
+        connection.execute(
+            "INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) "
+            "VALUES (?,?,?,?)",
+            (str(actor_id), str(action),
+             json.dumps(payload, ensure_ascii=False, default=str), time.time()),
+        )
+
+
 def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
     """Read-only bank-book controls for an administrator's audit workbench."""
     from managers.bank_journal import BankJournal
@@ -2878,7 +2891,12 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     query = parse_qs(parsed.query)
                     kind = "company" if query.get("kind", [""])[0] == "company" else "people"
-                    self.send_json(200, {"users": admin_users(query.get("search", [""])[0], kind)})
+                    search = query.get("search", [""])[0]
+                    users = admin_users(search, kind)
+                    audit_admin_access(user["userId"], "admin_users.read", {
+                        "kind": kind, "filtered": bool(search),
+                    })
+                    self.send_json(200, {"users": users})
             elif path == "/internal/admin/events":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -2906,7 +2924,11 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError("invalid_since_epoch")
                     if not issuer or len(issuer) > 100 or (currency and len(currency) > 12):
                         raise ValueError("invalid_bank_journal_filter")
-                    self.send_json(200, admin_bank_journal_report(issuer, currency, since))
+                    report = admin_bank_journal_report(issuer, currency, since)
+                    audit_admin_access(user["userId"], "bank_journal.read", {
+                        "issuer": issuer, "currency": currency, "since": since,
+                    })
+                    self.send_json(200, report)
             elif path == "/internal/admin/dr/movements":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -2937,7 +2959,11 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "admin_required"})
                 else:
                     nationality = parse_qs(parsed.query).get("nationality", [None])[0]
-                    self.send_json(200, admin_compliance_overview(nationality))
+                    report = admin_compliance_overview(nationality)
+                    audit_admin_access(user["userId"], "compliance.read", {
+                        "nationality": nationality,
+                    })
+                    self.send_json(200, report)
             elif path == "/internal/admin/commands":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -2967,7 +2993,11 @@ class Handler(BaseHTTPRequestHandler):
                 elif parts == ["bot-jobs"]:
                     self.send_json(200, {"jobs": bot_jobs()})
                 elif len(parts) == 2 and parts[0] == "user":
-                    self.send_json(200, admin_user_detail(parts[1]))
+                    detail = admin_user_detail(parts[1])
+                    audit_admin_access(user["userId"], "admin_user.read", {
+                        "subject_user_id": parts[1],
+                    })
+                    self.send_json(200, detail)
                 elif parts == ["companies"]:
                     self.send_json(200, admin_companies())
                 elif parts == ["companies", "identity"]:

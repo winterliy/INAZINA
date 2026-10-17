@@ -90,3 +90,14 @@ class AuditDeleteGuardTests(unittest.TestCase):
         import sqlite3
         with self.assertRaisesRegex(sqlite3.DatabaseError, "cannot be deleted"):
             self.db.system.execute("DELETE FROM admin_audit")
+
+    def test_sensitive_read_access_appends_to_immutable_audit_trail(self):
+        server.audit_admin_access(
+            "admin-1", "compliance.read", {"nationality": "한국"},
+        )
+        row = self.db.system.execute_one(
+            "SELECT actor_id,action,payload FROM admin_audit ORDER BY audit_id DESC LIMIT 1"
+        )
+        self.assertEqual(row[0:2], ("admin-1", "compliance.read"))
+        import json
+        self.assertEqual(json.loads(row[2]), {"nationality": "한국"})

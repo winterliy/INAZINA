@@ -441,6 +441,74 @@ class WebApiTests(unittest.TestCase):
         self.assertIsNone(events[0]["target_mode"])
         self.assertFalse(events[0]["active"])
 
+    def test_sensitive_admin_report_access_is_audited(self):
+        server.audit_admin_access(
+            "admin-1", "bank_journal.read",
+            {"issuer": "Test Bank", "currency": "EUR", "since": 123.0},
+        )
+        entry = server.admin_audit()[0]
+        self.assertEqual(entry["actorId"], "admin-1")
+        self.assertEqual(entry["action"], "bank_journal.read")
+        self.assertEqual(entry["payload"], {
+            "issuer": "Test Bank", "currency": "EUR", "since": 123.0,
+        })
+
+    def test_bank_journal_route_records_actor_and_filters(self):
+        response = {}
+        handler = SimpleNamespace(
+            headers={"x-inazina-internal-token": "secret",
+                     "x-inazina-user-id": "admin-1"},
+            path="/internal/admin/bank-journal?issuer=Test%20Bank&currency=EUR&since=123",
+            send_json=lambda status, value: response.update(status=status, value=value),
+        )
+        with patch.object(server, "INTERNAL_TOKEN", "secret"), \
+                patch.object(server, "identity", return_value={
+                    "userId": "admin-1", "role": "admin",
+                }), patch.object(server, "admin_bank_journal_report", return_value={"ok": True}):
+            server.Handler.do_GET(handler)
+        self.assertEqual(response, {"status": 200, "value": {"ok": True}})
+        entry = server.admin_audit()[0]
+        self.assertEqual(entry["actorId"], "admin-1")
+        self.assertEqual(entry["action"], "bank_journal.read")
+        self.assertEqual(entry["payload"], {
+            "issuer": "Test Bank", "currency": "EUR", "since": 123.0,
+        })
+
+    def test_admin_user_search_audit_omits_search_term(self):
+        response = {}
+        handler = SimpleNamespace(
+            headers={"x-inazina-internal-token": "secret",
+                     "x-inazina-user-id": "admin-1"},
+            path="/internal/admin/users?search=private%40example.com",
+            send_json=lambda status, value: response.update(status=status, value=value),
+        )
+        with patch.object(server, "INTERNAL_TOKEN", "secret"), \
+                patch.object(server, "identity", return_value={
+                    "userId": "admin-1", "role": "admin",
+                }), patch.object(server, "admin_users", return_value=[]):
+            server.Handler.do_GET(handler)
+        entry = server.admin_audit()[0]
+        self.assertEqual(entry["action"], "admin_users.read")
+        self.assertEqual(entry["payload"], {"kind": "people", "filtered": True})
+
+    def test_compliance_report_access_is_audited(self):
+        response = {}
+        handler = SimpleNamespace(
+            headers={"x-inazina-internal-token": "secret",
+                     "x-inazina-user-id": "admin-1"},
+            path="/internal/admin/compliance?nationality=한국",
+            send_json=lambda status, value: response.update(status=status, value=value),
+        )
+        with patch.object(server, "INTERNAL_TOKEN", "secret"), \
+                patch.object(server, "identity", return_value={
+                    "userId": "admin-1", "role": "admin",
+                }), patch.object(server, "admin_compliance_overview", return_value={"ok": True}):
+            server.Handler.do_GET(handler)
+        self.assertEqual(response, {"status": 200, "value": {"ok": True}})
+        entry = server.admin_audit()[0]
+        self.assertEqual(entry["action"], "compliance.read")
+        self.assertEqual(entry["payload"], {"nationality": "한국"})
+
     def test_db_editor_hides_credentials_and_audit(self):
         names = {table["name"] for table in server.db_tables()}
         self.assertIn("settings", names)
