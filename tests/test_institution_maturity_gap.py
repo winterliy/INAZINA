@@ -90,6 +90,12 @@ class InstitutionMaturityGapTests(unittest.TestCase):
         self.assertEqual(liquidity["depositorConcentration"]["largestDepositorExposure"], 500)
         self.assertEqual(liquidity["depositorConcentration"]["largestDepositorSharePercent"], 100)
         self.assertEqual(liquidity["depositorConcentration"]["topFiveDepositorSharePercent"], 100)
+        largest_stress = next(
+            row for row in liquidity["concentrationScenarios"]
+            if row["group"] == "largest_depositor"
+        )
+        self.assertEqual(largest_stress["depositOutflow"], 500)
+        self.assertEqual(largest_stress["netOutflow"], 450)
         stress_20 = next(row for row in liquidity["scenarios"] if row["runoffPercent"] == 20)
         self.assertEqual(stress_20["depositOutflow"], 100)
         self.assertEqual(stress_20["netOutflow"], 50)
@@ -128,14 +134,24 @@ class InstitutionMaturityGapTests(unittest.TestCase):
             "account_type,quote_currency,balance_units,resolution_status) "
             "VALUES ('A3','u1','SUSD',0,250,'currency_saving','USD',250000000,'active')"
         )
+        self.db.currency.execute(
+            "UPDATE financial_institutions SET deposit_insurance_limit=500 WHERE issuer='Bank'"
+        )
         with self.db.readonly() as conn:
             liquidity = RateManager.institution_liquidity_stress(
                 conn, "Bank", now=self.now
             )
         concentration = liquidity["depositorConcentration"]
         self.assertEqual(concentration["largestDepositorExposure"], 850)
+        self.assertEqual(concentration["uninsuredDepositExposure"], 350)
+        self.assertAlmostEqual(concentration["uninsuredDepositSharePercent"], 350/850*100)
         self.assertEqual(concentration["largestDepositorSharePercent"], 100)
         self.assertEqual(concentration["topFiveDepositorSharePercent"], 100)
+        outflow = next(
+            row for row in liquidity["concentrationScenarios"]
+            if row["group"] == "top_five_depositors"
+        )
+        self.assertEqual(outflow["depositOutflow"], 850)
 
 
 if __name__ == "__main__":
