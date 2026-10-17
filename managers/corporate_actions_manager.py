@@ -17,7 +17,9 @@ from managers.financial_manager import FinancialManager as Finance
 class CorporateActionsManager:
     MAX_MONEY = 2**53 - 1
     RECORD_LEAD = 600  # the shareholder register closes 10 minutes before payment
-    DIVIDEND_TYPES = {'stock', '주식', 'etf', 'mutual_fund', 'index_fund', 'commodity_spot', 'depositary_receipt'}
+    # DR holders receive same-currency underlying dividends through the underlying
+    # shareholder register; a second independent DR schedule would double-pay.
+    DIVIDEND_TYPES = {'stock', '주식', 'etf', 'mutual_fund', 'index_fund', 'commodity_spot'}
 
     def __init__(self, bot):
         self.bot, self.db = bot, bot.db

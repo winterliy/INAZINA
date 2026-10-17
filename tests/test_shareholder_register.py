@@ -59,6 +59,9 @@ class ShareholderRegisterTests(unittest.TestCase):
         )
         self.db.assets.register_asset('CO_DR', 'CO DR', 'LSE', 200, 'depositary_receipt', 100)
         self.db.assets.add_user_asset('admin', 'CO_DR', 3)
+        configured, reason = self.manager.configure_dividend('admin', 'CO_DR', 86400, 5)
+        self.assertFalse(configured)
+        self.assertIn('배당', reason)
         citizen_before, dr_holder_before = self.cash('citizen'), self.cash('admin')
 
         self.assertEqual(self.manager.process_due(now=due), [('CO', True, 80)])
