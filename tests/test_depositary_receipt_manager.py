@@ -99,6 +99,33 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
         self.assertEqual(self.holding("UNDER_DR"), 2)
         self.assertEqual(self.holding("UNDER"), 2)
 
+    def test_suspended_program_blocks_issuance_but_allows_existing_holders_to_redeem(self):
+        self.create_program()
+        ok, message = self.manager.convert(
+            "citizen", "UNDER_DR", "issue", 1, "suspended-issue"
+        )
+        self.assertTrue(ok, message)
+        self.db.assets.execute(
+            "UPDATE depositary_receipts SET program_status='suspended' WHERE dr_code='UNDER_DR'"
+        )
+        self.db.assets.execute(
+            "UPDATE market_assets SET status='inactive' WHERE code='UNDER_DR'"
+        )
+        self.db.companies.execute(
+            "UPDATE company SET status='inactive' WHERE company_code='UNDER'"
+        )
+        ok, message = self.manager.convert(
+            "citizen", "UNDER_DR", "issue", 1, "suspended-issue-2"
+        )
+        self.assertFalse(ok)
+        self.assertIn("신규 발행", message)
+        ok, message = self.manager.convert(
+            "citizen", "UNDER_DR", "redeem", 1, "suspended-redeem"
+        )
+        self.assertTrue(ok, message)
+        self.assertEqual(self.holding("UNDER_DR"), 0)
+        self.assertEqual(self.holding("UNDER"), 6)
+
     def test_dr_custody_and_holder_basis_keep_quote_currency_precision(self):
         self.create_program()
         self.db.currency.execute(

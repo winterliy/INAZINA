@@ -83,14 +83,18 @@ class DepositaryReceiptManager:
                 ).fetchone()
                 if not program or program["asset_type"] != "depositary_receipt":
                     raise ValueError("주식예탁증서(DR) 프로그램을 찾을 수 없습니다.")
-                if program["program_status"] != "active" or program["asset_status"] != "active":
-                    raise ValueError("중지된 DR 프로그램은 전환할 수 없습니다.")
+                if action == "issue" and (
+                    program["program_status"] != "active"
+                    or program["asset_status"] != "active"
+                ):
+                    raise ValueError("중지된 DR 프로그램은 신규 발행할 수 없습니다.")
                 underlying = conn.execute(
                     "SELECT company_code AS code,share_price AS price,quote_currency,status,share_class "
                     "FROM company WHERE company_code=?",
                     (program["underlying_code"],),
                 ).fetchone()
-                if not underlying or underlying["status"] != "active" or underlying["share_class"] != "common":
+                if (not underlying or underlying["share_class"] != "common"
+                        or (action == "issue" and underlying["status"] != "active")):
                     raise ValueError("기초 보통주가 거래 가능하지 않아 전환을 중지했습니다.")
 
                 exact_shares = Decimal(quantity) * Decimal(str(program["underlying_per_receipt"]))

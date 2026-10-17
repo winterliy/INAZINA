@@ -664,6 +664,10 @@ class BankManager:
                 conn, proposed_principal_service+proposed_interest, product_currency
             ), product_currency,
         )
+        proposed_fx_stress_service = (
+            proposed_service*max(0.0, float(stress_fx_shock_percent))/100.0
+            if product_currency != home_currency else 0.0
+        )
         proposed_stress_delta = 0.0
         stress_applicable = False
         if product["rate_type"] == "floating":
@@ -772,9 +776,10 @@ class BankManager:
                                product_currency,
                            ), product_currency,
                        )
+                       +proposed_fx_stress_service
                        +existing_service+existing_stress_interest
                        +existing_fx_stress_service)/income
-                if stress_applicable or fx_stress_applicable else None
+                if stress_applicable or fx_stress_applicable or proposed_fx_stress_service > 0 else None
             )
         else:
             dti = dsr = stress_dsr = None
