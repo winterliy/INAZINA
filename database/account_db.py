@@ -262,18 +262,29 @@ class AccountDB(DBManager):
             ("rate_applied", "REAL"),
             ("day_count_convention", "TEXT NOT NULL DEFAULT 'ACT/365'"),
             ("recast_epoch", "REAL"),
+            ("principal_paid", "INTEGER NOT NULL DEFAULT 0 CHECK(principal_paid >= 0)"),
+            ("interest_paid", "INTEGER NOT NULL DEFAULT 0 CHECK(interest_paid >= 0)"),
+            ("fee_paid", "INTEGER NOT NULL DEFAULT 0 CHECK(fee_paid >= 0)"),
         ):
             if column not in schedule_columns:
                 self.execute(
                     f"ALTER TABLE loan_payment_schedule ADD COLUMN {column} {declaration}"
                 )
+        # Older releases kept only the aggregate amount_paid. Backfill it using
+        # the same fee -> interest -> principal convention used for new payments.
+        self.execute("""UPDATE loan_payment_schedule SET
+            fee_paid=MIN(fee_due,amount_paid),
+            interest_paid=MIN(interest_due,MAX(0,amount_paid-fee_due)),
+            principal_paid=MIN(principal_due,MAX(0,amount_paid-fee_due-interest_due))
+            WHERE amount_paid>0 AND fee_paid=0 AND interest_paid=0 AND principal_paid=0""")
         self.execute(
             "CREATE INDEX IF NOT EXISTS idx_loan_schedule_due "
             "ON loan_payment_schedule(status,due_epoch,loan_id)"
         )
         self.enforce_integer_money(
             "loan_payment_schedule",
-            ("principal_due", "interest_due", "fee_due", "amount_paid"),
+            ("principal_due", "interest_due", "fee_due", "amount_paid",
+             "principal_paid", "interest_paid", "fee_paid"),
             "schedule_id",
         )
         self.execute("""CREATE TABLE IF NOT EXISTS loan_ecl_assessments (

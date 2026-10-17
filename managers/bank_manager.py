@@ -1298,26 +1298,62 @@ class BankManager:
         if not remaining:
             return
         rows = conn.execute(
-            "SELECT schedule_id,principal_due+interest_due+fee_due AS due,amount_paid "
+            "SELECT * "
             "FROM accounts.loan_payment_schedule WHERE loan_id=? "
             "AND status NOT IN ('paid','waived') ORDER BY installment_number",
             (loan_id,),
         ).fetchall()
         for row in rows:
-            unpaid = max(0.0, float(row["due"] or 0)-float(row["amount_paid"] or 0))
+            unpaid_fee = max(0.0, float(row["fee_due"] or 0)-float(row["fee_paid"] or 0))
+            unpaid_interest = max(0.0, float(row["interest_due"] or 0)-float(row["interest_paid"] or 0))
+            unpaid_principal = max(0.0, float(row["principal_due"] or 0)-float(row["principal_paid"] or 0))
+            due = float(row["principal_due"] or 0)+float(row["interest_due"] or 0)+float(row["fee_due"] or 0)
+            unpaid = max(0.0, due-float(row["amount_paid"] or 0))
             applied = min(remaining, unpaid)
             if not applied:
                 continue
+            fee_applied = min(applied, unpaid_fee)
+            interest_applied = min(applied-fee_applied, unpaid_interest)
+            principal_applied = min(applied-fee_applied-interest_applied, unpaid_principal)
             new_paid = float(row["amount_paid"] or 0)+applied
-            status = "paid" if new_paid >= float(row["due"] or 0)-1e-9 else "partial"
+            status = "paid" if new_paid >= due-1e-9 else "partial"
             conn.execute(
-                "UPDATE accounts.loan_payment_schedule SET amount_paid=?,status=?,"
+                "UPDATE accounts.loan_payment_schedule SET amount_paid=?,fee_paid=fee_paid+?,"
+                "interest_paid=interest_paid+?,principal_paid=principal_paid+?,status=?,"
                 "paid_epoch=CASE WHEN ?='paid' THEN ? ELSE paid_epoch END WHERE schedule_id=?",
-                (new_paid, status, status, paid_epoch, row["schedule_id"]),
+                (new_paid, fee_applied, interest_applied, principal_applied,
+                 status, status, paid_epoch, row["schedule_id"]),
             )
             remaining -= applied
             if remaining <= 0:
                 break
+
+    @staticmethod
+    def _apply_schedule_installment(conn, schedule_id, amount, paid_epoch):
+        row = conn.execute(
+            "SELECT * FROM accounts.loan_payment_schedule WHERE schedule_id=?",
+            (schedule_id,),
+        ).fetchone()
+        if not row:
+            return 0.0
+        fee_due = max(0.0, float(row["fee_due"] or 0)-float(row["fee_paid"] or 0))
+        interest_due = max(0.0, float(row["interest_due"] or 0)-float(row["interest_paid"] or 0))
+        principal_due = max(0.0, float(row["principal_due"] or 0)-float(row["principal_paid"] or 0))
+        applied = min(max(0.0, float(amount or 0)), fee_due+interest_due+principal_due)
+        fee_applied = min(applied, fee_due)
+        interest_applied = min(applied-fee_applied, interest_due)
+        principal_applied = min(applied-fee_applied-interest_applied, principal_due)
+        new_paid = float(row["amount_paid"] or 0)+applied
+        total_due = float(row["fee_due"] or 0)+float(row["interest_due"] or 0)+float(row["principal_due"] or 0)
+        status = "paid" if new_paid >= total_due-1e-9 else "partial"
+        conn.execute(
+            "UPDATE accounts.loan_payment_schedule SET amount_paid=?,fee_paid=fee_paid+?,"
+            "interest_paid=interest_paid+?,principal_paid=principal_paid+?,status=?,"
+            "paid_epoch=CASE WHEN ?='paid' THEN ? ELSE paid_epoch END WHERE schedule_id=?",
+            (new_paid, fee_applied, interest_applied, principal_applied,
+             status, status, paid_epoch, schedule_id),
+        )
+        return applied
 
     @classmethod
     def _process_due_schedule(cls, conn, loan, now):
@@ -1361,11 +1397,7 @@ class BankManager:
                     description=f"Scheduled repayment for loan {loan['loan_id']}",
                     now=now,
                 )
-                conn.execute(
-                    "UPDATE accounts.loan_payment_schedule SET amount_paid=amount_paid+?,"
-                    "status='paid',paid_epoch=? WHERE schedule_id=?",
-                    (due, now, row["schedule_id"]),
-                )
+                cls._apply_schedule_installment(conn, row["schedule_id"], due, now)
             else:
                 newly_missed = row["status"] != "missed"
                 missed_count += int(newly_missed)

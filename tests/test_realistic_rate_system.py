@@ -234,11 +234,31 @@ class RealisticRateSystemTests(unittest.TestCase):
         )
         self.assertEqual((paid, missed), (1, 0))
         first = self.db.accounts.execute_one(
-            "SELECT status,amount_paid FROM loan_payment_schedule WHERE schedule_id=?",
+            "SELECT status,amount_paid,fee_paid,interest_paid,principal_paid "
+            "FROM loan_payment_schedule WHERE schedule_id=?",
             (schedule[0]["schedule_id"],),
         )
         self.assertEqual(first["status"], "paid")
         self.assertGreater(first["amount_paid"], 0)
+        self.assertEqual(
+            first["amount_paid"],
+            first["fee_paid"]+first["interest_paid"]+first["principal_paid"],
+        )
+        self.assertGreater(first["interest_paid"], 0)
+        ok, message = BankManager(self.db).repay_loan(
+            "borrower", "AMORT", 1_000, loan["loan_id"]
+        )
+        self.assertTrue(ok, message)
+        second = self.db.accounts.execute_one(
+            "SELECT amount_paid,fee_paid,interest_paid,principal_paid "
+            "FROM loan_payment_schedule WHERE schedule_id=?",
+            (schedule[1]["schedule_id"],),
+        )
+        self.assertEqual(
+            second["amount_paid"],
+            second["fee_paid"]+second["interest_paid"]+second["principal_paid"],
+        )
+        self.assertGreater(second["interest_paid"], 0)
 
     def test_floating_reset_recasts_unpaid_future_schedule(self):
         self.add_loan(code="RECAST", maturity=90, collateral_ratio=0,
