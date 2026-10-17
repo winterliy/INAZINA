@@ -113,15 +113,21 @@ class CompanyAccountTests(unittest.TestCase):
         self.db.assets.execute(
             "INSERT INTO depositary_receipts(dr_code,underlying_code,listing_exchange_id,"
             "quote_currency,underlying_per_receipt,receipt_supply,deposited_underlying_quantity) "
-            "VALUES ('SUB_DR','SUB','LSE','NWX',2,100,200)"
+            "VALUES ('SUB_DR','SUB','LSE','AAA',2,100,200)"
         )
-        self.db.assets.add_user_asset(parent_account, 'SUB_DR', 100, unit_cost=200)
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate) VALUES ('AAA','Test currency',2)"
+        )
+        self.db.assets.register_asset('SUB_DR', 'SUB DR', 'LSE', 1, 'depositary_receipt', 100)
+        self.db.assets.execute("UPDATE market_assets SET quote_currency='AAA' WHERE code='SUB_DR'")
+        self.db.assets.add_user_asset(parent_account, 'SUB_DR', 100, unit_cost=0.1)
         with self.db.atomic() as conn:
             subsidiaries = FinancialManager.subsidiaries(conn, 'CO')
         self.assertEqual(len(subsidiaries), 1)
         self.assertEqual(subsidiaries[0]['code'], 'SUB')
         self.assertEqual(subsidiaries[0]['ownership'], 0.6)
-        self.assertEqual(subsidiaries[0]['cost'], 60_000)
+        # 100 receipts × 0.1 AAA × 2 NWX/AAA translates to 20 NWX.
+        self.assertEqual(subsidiaries[0]['cost'], 40_020)
 
     def test_multi_level_foreign_and_intragroup_eliminations(self):
         self.prepare()

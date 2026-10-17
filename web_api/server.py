@@ -1391,6 +1391,7 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
         trial_balance = BankJournal.trial_balance(connection, issuer, currency)
         unbalanced = BankJournal.audit_unbalanced(connection, issuer)
         deposit_reconciliation = BankJournal.reconcile_customer_deposits(connection, issuer)
+        loan_reconciliation = BankJournal.reconcile_loan_receivables(connection, issuer)
         reconciliation = BankJournal.reconcile_institution_results(
             connection, issuer, since_epoch=since_epoch,
         )
@@ -1452,10 +1453,19 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
                                                 row["decimal_places"])
             row["difference"] = money_text(Decimal(row["difference_units"]) / scale,
                                            row["decimal_places"])
+        for row in loan_reconciliation:
+            scale = 10 ** row["decimal_places"]
+            row["account_balance"] = money_text(Decimal(row["account_units"]) / scale,
+                                                row["decimal_places"])
+            row["journal_balance"] = money_text(Decimal(row["journal_units"]) / scale,
+                                                row["decimal_places"])
+            row["difference"] = money_text(Decimal(row["difference_units"]) / scale,
+                                           row["decimal_places"])
     return {"issuer": str(issuer), "currency": currency,
             "trialBalance": trial_balance, "unbalancedEntries": unbalanced,
             "resultReconciliation": reconciliation,
-            "depositReconciliation": deposit_reconciliation, "maturityGap": maturity_gap,
+            "depositReconciliation": deposit_reconciliation,
+            "loanReconciliation": loan_reconciliation, "maturityGap": maturity_gap,
             "liquidityStress": liquidity_stress, "rateStress": rate_stress, "fxStress": fx_stress,
             "prudential": prudential, "creditStress": credit_stress}
 

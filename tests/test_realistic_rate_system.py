@@ -141,6 +141,10 @@ class RealisticRateSystemTests(unittest.TestCase):
             "SELECT retained_earnings FROM financial_institutions WHERE issuer='Bank'"
         )
         self.assertEqual(institution["retained_earnings"], 500)
+        with self.db.atomic() as conn:
+            reconciliation = BankJournal.reconcile_loan_receivables(conn, "Bank")
+        self.assertEqual(reconciliation[0]["status"], "matched")
+        self.assertEqual(reconciliation[0]["difference_units"], 0)
 
     def test_overdue_accelerates_defaults_and_seizes_collateral(self):
         self.add_loan(maturity=1, origination_fee=0)

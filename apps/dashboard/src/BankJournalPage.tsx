@@ -7,13 +7,14 @@ type Trial = { currency_code: string; account_code: string; debit_units: number;
 type Unbalanced = { entry_id: number; issuer: string; event_type: string; reference_key: string; currency_code: string; line_count: number; debit_units: number; credit_units: number; debit_amount: string; credit_amount: string };
 type Reconciliation = { reference_key: string; currency_code: string; ledger_amount: number; journal_amount: number | null; difference: number | null; ledger_amount_text: string; journal_amount_text: string | null; difference_text: string | null; status: string };
 type DepositReconciliation = { currency_code: string; account_balance: string; journal_balance: string; difference: string; status: string };
+type LoanReconciliation = DepositReconciliation;
 type MaturityGap = { issuer: string; asOfEpoch: number; method: string; ladders: { currency: string; decimalPlaces: number; buckets: { bucket: string; inflows: number; outflows: number; net_gap: number; cumulative_gap: number }[]; depositRunoffStress: { runoffPercent: number; assumedRunoff: number; stressedOneDayOutflow: number; oneDayLoanInflows: number; oneDayGap: number }[] }[] };
 type LiquidityStress = { issuer: string; asOfEpoch: number; horizonDays: number; currency: string; decimalPlaces: number; availableLiquidityProxy: number; eligibleInflows: number; scenarios: { runoffPercent: number; depositOutflow: number; eligibleInflows: number; netOutflow: number; availableLiquidityProxy: number; coveragePercent: number | null }[]; method: string };
 type RateStress = { issuer: string; asOfEpoch: number; horizonDays: number; scenarios: { currency: string; decimalPlaces: number; assetBalanceYears: number; liabilityBalanceYears: number; shocks: { basisPoints: number; assetInterestChange: number; liabilityInterestChange: number; netInterestIncomeChange: number }[] }[]; method: string };
 type FxStress = { issuer: string; baseCurrency: string; decimalPlaces: number; asOfEpoch: number; positions: { currency: string; baseCurrency: string; assetsInBase: number; liabilitiesInBase: number; netOpenPositionInBase: number; fxRate: number; shocks: { currencyChangePercent: number; capitalImpact: number }[] }[]; method: string };
 type CreditStress = { issuer: string; currency: string; decimalPlaces: number; performingExposureCount: number; performingEad: number; estimatedFullDefaultLoss: number; existingAllowance: number; scenarios: { defaultSharePercent: number; defaultedEad: number; grossLoss: number; existingAllowanceApplied: number; incrementalProvision: number; equityAfterProvision: number; capitalConsumedPercent: number | null }[]; method: string };
 type Prudential = { issuer: string; currency: string; decimalPlaces: number; status: string; effectiveEquity: number; riskWeightedAssets: number; capitalRatioPercent: number | null; targetCapitalRatioPercent: number; leverageExposure: number; leverageRatioPercent: number | null; minimumLeverageRatioPercent: number; exposureCount: number; cashCollateralCovered: number; weightedComponents: Record<string, number>; method: string };
-type Report = { issuer: string; currency: string | null; trialBalance: Trial[]; unbalancedEntries: Unbalanced[]; resultReconciliation: Reconciliation[]; depositReconciliation: DepositReconciliation[]; maturityGap: MaturityGap; liquidityStress: LiquidityStress; rateStress: RateStress; fxStress: FxStress; prudential: Prudential; creditStress: CreditStress };
+type Report = { issuer: string; currency: string | null; trialBalance: Trial[]; unbalancedEntries: Unbalanced[]; resultReconciliation: Reconciliation[]; depositReconciliation: DepositReconciliation[]; loanReconciliation: LoanReconciliation[]; maturityGap: MaturityGap; liquidityStress: LiquidityStress; rateStress: RateStress; fxStress: FxStress; prudential: Prudential; creditStress: CreditStress };
 
 export function BankJournalPage({ ctx }: { ctx: Ctx }) {
   const { busy, run, say } = ctx;
@@ -86,6 +87,11 @@ export function BankJournalPage({ ctx }: { ctx: Ctx }) {
       <div className="scroll-x"><table><thead><tr><th>통화</th><th className="r">계좌 잔액</th><th className="r">분개장 부채</th><th className="r">차이</th><th>상태</th></tr></thead><tbody>
         {report.depositReconciliation.map((row) => <tr key={row.currency_code}><td>{row.currency_code}</td><td className="r mono">{groupAmount(row.account_balance)}</td><td className="r mono">{groupAmount(row.journal_balance)}</td><td className="r mono">{groupAmount(row.difference)}</td><td>{row.status}</td></tr>)}
       </tbody></table>{!report.depositReconciliation.length && <p className="empty">대사할 예금 잔액이 없습니다.</p>}</div>
+      <h3 className="sub-head">대출채권 잔액 대사</h3>
+      <p className="hint">정상·부도 대출계약의 현재 gross 잔액을 loans_receivable 분개장 계정과 통화 최소단위로 비교합니다. 손실충당금은 별도 contra-asset 계정이므로 이 대사는 충당금 차감 전 총액 기준입니다.</p>
+      <div className="scroll-x"><table><thead><tr><th>통화</th><th className="r">대출계약 잔액</th><th className="r">분개장 채권</th><th className="r">차이</th><th>상태</th></tr></thead><tbody>
+        {report.loanReconciliation.map((row) => <tr key={row.currency_code}><td>{row.currency_code}</td><td className="r mono">{groupAmount(row.account_balance)}</td><td className="r mono">{groupAmount(row.journal_balance)}</td><td className="r mono">{groupAmount(row.difference)}</td><td>{row.status}</td></tr>)}
+      </tbody></table>{!report.loanReconciliation.length && <p className="empty">대사할 대출채권 잔액이 없습니다.</p>}</div>
     </>}
   </Card>;
 }

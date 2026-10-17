@@ -156,6 +156,50 @@ class BankJournal:
         return results
 
     @staticmethod
+    def reconcile_loan_receivables(conn, issuer):
+        """Compare live gross loan balances with the posted receivable account."""
+        from functions.money import currency_precision, round_currency
+
+        accounts = conn.execute(
+            "SELECT l.quote_currency,l.outstanding_balance FROM accounts.loans l "
+            "JOIN product.liability p USING(product_code) WHERE p.issuer=? "
+            "AND l.status IN ('active','defaulted')",
+            (str(issuer),),
+        ).fetchall()
+        account_units = {}
+        for row in accounts:
+            currency = str(row["quote_currency"] or "NWX").upper()
+            places = currency_precision(conn, currency)
+            rounded = Decimal(str(round_currency(
+                conn, Decimal(str(row["outstanding_balance"] or 0)), currency,
+            )))
+            account_units[currency] = account_units.get(currency, 0) + int(
+                rounded * (10 ** places)
+            )
+
+        journal = conn.execute(
+            "SELECT e.currency_code,SUM(l.debit_units-l.credit_units) receivable_units "
+            "FROM bank_journal_entries e JOIN bank_journal_lines l USING(entry_id) "
+            "WHERE e.issuer=? AND e.status='posted' AND l.account_code='loans_receivable' "
+            "GROUP BY e.currency_code",
+            (str(issuer),),
+        ).fetchall()
+        journal_units = {str(row["currency_code"]): int(row["receivable_units"] or 0)
+                         for row in journal}
+        currencies = sorted(set(account_units) | set(journal_units))
+        return [{
+            "issuer": str(issuer), "currency_code": currency,
+            "account_units": account_units.get(currency, 0),
+            "journal_units": journal_units.get(currency, 0),
+            "difference_units": account_units.get(currency, 0)-journal_units.get(currency, 0),
+            "decimal_places": currency_precision(conn, currency),
+            "status": ("missing_journal" if account_units.get(currency, 0)
+                       and not journal_units.get(currency, 0) else
+                       "matched" if account_units.get(currency, 0) == journal_units.get(currency, 0)
+                       else "mismatch"),
+        } for currency in currencies]
+
+    @staticmethod
     def post(conn, issuer, event_type, reference_key, currency_code, lines,
              *, description="", now=None):
         """Post balanced lines; ``lines`` is [(account, side, amount), ...].
