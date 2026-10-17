@@ -70,6 +70,25 @@ class ShareholderRegisterTests(unittest.TestCase):
         )
         self.assertEqual((payment['quantity'], payment['gross_amount']), (6, 30))
 
+    def test_cross_currency_dr_is_not_silently_paid_in_underlying_currency(self):
+        due = 100_000
+        self.prepare(due)
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,decimal_places) VALUES ('USD','US Dollar',2)"
+        )
+        self.db.assets.execute(
+            "INSERT INTO depositary_receipts(dr_code,underlying_code,listing_exchange_id,"
+            "quote_currency,underlying_per_receipt,receipt_supply,deposited_underlying_quantity) "
+            "VALUES ('CO_US_DR','CO','NYSE','USD',2,100,200)"
+        )
+        self.db.assets.register_asset('CO_US_DR', 'CO US DR', 'NYSE', 200,
+                                      'depositary_receipt', 100)
+        self.db.assets.add_user_asset('admin', 'CO_US_DR', 3)
+        admin_before = self.cash('admin')
+
+        self.assertEqual(self.manager.process_due(now=due), [('CO', True, 50)])
+        self.assertEqual(self.cash('admin') - admin_before, 0)
+
     def test_special_dividend_closes_register_now_and_pays_ten_minutes_later(self):
         self.prepare()
         with patch('managers.corporate_actions_manager.time.time', return_value=1000):
