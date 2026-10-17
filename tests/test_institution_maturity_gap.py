@@ -208,6 +208,15 @@ class InstitutionMaturityGapTests(unittest.TestCase):
             "account_type,quote_currency,balance_units,resolution_status) "
             "VALUES ('A3','u1','SUSD',0,250,'currency_saving','USD',250000000,'active')"
         )
+        for index in range(10):
+            user_id = f"small-usd-{index}"
+            self.db.users.create_user(user_id, user_id, "USA", 0)
+            self.db.accounts.execute(
+                "INSERT INTO accounts(account_number,user_id,product_code,balance,principal,"
+                "account_type,quote_currency,balance_units,resolution_status) "
+                "VALUES (?,?, 'SUSD',0,0,'currency_saving','USD',250000,'active')",
+                (f"A-SMALL-{index}", user_id),
+            )
         self.db.currency.execute(
             "UPDATE financial_institutions SET deposit_insurance_limit=500 WHERE issuer='Bank'"
         )
@@ -218,9 +227,9 @@ class InstitutionMaturityGapTests(unittest.TestCase):
         concentration = liquidity["depositorConcentration"]
         self.assertEqual(concentration["largestDepositorExposure"], 850)
         self.assertEqual(concentration["uninsuredDepositExposure"], 350)
-        self.assertAlmostEqual(concentration["uninsuredDepositSharePercent"], 350/850*100)
-        self.assertEqual(concentration["largestDepositorSharePercent"], 100)
-        self.assertEqual(concentration["topFiveDepositorSharePercent"], 100)
+        self.assertAlmostEqual(concentration["uninsuredDepositSharePercent"], 350/852*100)
+        self.assertAlmostEqual(concentration["largestDepositorSharePercent"], 850/852*100)
+        self.assertAlmostEqual(concentration["topFiveDepositorSharePercent"], 850/852*100)
         outflow = next(
             row for row in liquidity["concentrationScenarios"]
             if row["group"] == "top_five_depositors"

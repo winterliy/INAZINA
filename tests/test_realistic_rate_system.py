@@ -976,6 +976,25 @@ class RealisticRateSystemTests(unittest.TestCase):
             )/SCALE
         self.assertEqual(metrics["existing_balance"], expected)
 
+    def test_underwriting_converts_proposed_foreign_loan_to_home_currency(self):
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('USD','US Dollar','2',2)"
+        )
+        self.add_loan(code="CROSS-USD", maturity=365, collateral_ratio=0,
+                      origination_fee=0)
+        self.db.products.execute(
+            "UPDATE liability SET quote_currency='USD',rate_type='fixed' "
+            "WHERE product_code='CROSS-USD'"
+        )
+        product = self.db.products.get_liability("CROSS-USD")
+        with self.db.atomic() as conn:
+            metrics = BankManager._underwriting_metrics(
+                conn, "borrower", 1_000, product, 5, 1_800_000_000, 100_000
+            )
+        self.assertAlmostEqual(metrics["dti"], 2.1)
+        self.assertAlmostEqual(metrics["dsr"], 2.1)
+
     def test_country_stress_shock_is_applied_and_persisted_at_origination(self):
         self.add_loan(code="COUNTRY-SHOCK", maturity=365, collateral_ratio=0,
                       origination_fee=0)

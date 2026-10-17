@@ -640,21 +640,29 @@ class BankManager:
         home_currency = CurrencyManager.home(conn, user_id)
 
         def to_home(value, currency):
-            native = max(0.0, float(value or 0))
+            currency = str(currency or home_currency)
+            native = round_currency(
+                conn, max(0.0, float(value or 0)), currency
+            )
             if str(currency or home_currency) == home_currency or native == 0:
                 return native
             return CurrencyManager.convert(
-                conn, int(round(native*SCALE)), str(currency), home_currency
+                conn, int(round(native*SCALE)), currency, home_currency
             )/SCALE
 
         income = max(0.0, float(annual_income or 0))
+        product_currency = str(product["quote_currency"] or home_currency)
         maturity_days = max(1, int(product["maturity_days"] or 365))
         maturity_years = maturity_days / 365.0
         proposed_principal_service = min(
             float(amount), float(amount) / max(1.0, maturity_years)
         )
         proposed_interest = float(amount) * max(0.0, float(annual_rate or 0)) / 100.0
-        proposed_service = proposed_principal_service + proposed_interest
+        proposed_service = to_home(
+            round_currency(
+                conn, proposed_principal_service+proposed_interest, product_currency
+            ), product_currency,
+        )
         proposed_stress_delta = 0.0
         stress_applicable = False
         if product["rate_type"] == "floating":
@@ -668,10 +676,7 @@ class BankManager:
                 stressed = min(upper, max(float(product["rate_floor"] or 0), current+shock_percent))
                 proposed_stress_delta = max(0.0, stressed-current)
 
-        existing_balance = 0
-        existing_interest = 0.0
-        existing_service = 0.0
-        existing_stress_interest = 0.0
+        native_totals = {}
         missed = defaults = 0
         loans = conn.execute(
             "SELECT loan_id,outstanding_balance,quote_currency,contract_rate,rate_type,"
@@ -681,11 +686,20 @@ class BankManager:
         ).fetchall()
         horizon = float(now) + 365 * 86400
         for loan in loans:
-            balance = max(0.0, float(loan["outstanding_balance"] or 0))
             currency = str(loan["quote_currency"] or home_currency)
-            current_interest = balance*max(0.0, float(loan["contract_rate"] or 0))/100.0
-            existing_balance += to_home(balance, currency)
-            existing_interest += to_home(current_interest, currency)
+            balance = round_currency(
+                conn, max(0.0, float(loan["outstanding_balance"] or 0)), currency
+            )
+            current_interest = round_currency(
+                conn, balance*max(0.0, float(loan["contract_rate"] or 0))/100.0,
+                currency,
+            )
+            totals = native_totals.setdefault(
+                currency, {"balance": 0.0, "interest": 0.0,
+                           "service": 0.0, "stress_interest": 0.0}
+            )
+            totals["balance"] += balance
+            totals["interest"] += current_interest
             if (loan["rate_type"] == "floating" and loan["next_repricing_epoch"] is not None
                     and float(loan["next_repricing_epoch"]) <= horizon):
                 stress_applicable = True
@@ -694,7 +708,9 @@ class BankManager:
                 shock_percent = max(0.0, float(stress_rate_shock_bps))/100.0
                 stressed = min(upper, max(float(loan["rate_floor"] or 0), current+shock_percent))
                 delta = max(0.0, stressed-current)
-                existing_stress_interest += to_home(balance*delta/100.0, currency)
+                totals["stress_interest"] += round_currency(
+                    conn, balance*delta/100.0, currency
+                )
             scheduled = conn.execute(
                 "SELECT COALESCE(SUM(MAX(0,principal_due+interest_due+fee_due-amount_paid)),0) "
                 "FROM accounts.loan_payment_schedule WHERE loan_id=? AND due_epoch<=? "
@@ -702,11 +718,31 @@ class BankManager:
                 (loan["loan_id"], horizon),
             ).fetchone()[0]
             if scheduled:
-                existing_service += to_home(scheduled, currency)
+                service = round_currency(conn, scheduled, currency)
             elif balance:
-                existing_service += to_home(min(balance, balance+current_interest), currency)
+                service = min(balance, balance+current_interest)
+            else:
+                service = 0.0
+            totals["service"] += round_currency(conn, service, currency)
             missed += max(0, int(loan["missed_payment_count"] or 0))
             defaults += int(loan["status"] == "defaulted")
+
+        existing_balance = sum(
+            to_home(values["balance"], currency)
+            for currency, values in native_totals.items()
+        )
+        existing_interest = sum(
+            to_home(values["interest"], currency)
+            for currency, values in native_totals.items()
+        )
+        existing_service = sum(
+            to_home(values["service"], currency)
+            for currency, values in native_totals.items()
+        )
+        existing_stress_interest = sum(
+            to_home(values["stress_interest"], currency)
+            for currency, values in native_totals.items()
+        )
 
         if income > 0:
             # DTI includes the proposed loan's annual debt service and interest
@@ -714,7 +750,12 @@ class BankManager:
             dti = 100.0 * (proposed_service + existing_interest) / income
             dsr = 100.0 * (proposed_service + existing_service) / income
             stress_dsr = (
-                100.0*(proposed_service+amount*proposed_stress_delta/100.0
+                100.0*(proposed_service+to_home(
+                           round_currency(
+                               conn, amount*proposed_stress_delta/100.0,
+                               product_currency,
+                           ), product_currency,
+                       )
                        +existing_service+existing_stress_interest)/income
                 if stress_applicable else None
             )

@@ -1051,7 +1051,7 @@ class RateManager:
         depositor_balances = {}
         insured_deposits_by_user = {}
         uninsured_deposits_by_user = {}
-        concentration_deposit_total = 0.0
+        deposit_totals_by_currency = {}
         for row in conn.execute(
             "SELECT a.user_id,a.quote_currency,a.deposit_insured,SUM(MAX(0,CASE WHEN "
             "a.account_type='currency_saving' THEN a.balance_units/1000000.0 "
@@ -1063,11 +1063,13 @@ class RateManager:
         ):
             amount = max(0.0, float(row["amount"] or 0))
             currency = str(row["quote_currency"] or base)
+            deposit_totals_by_currency[currency] = (
+                deposit_totals_by_currency.get(currency, 0.0)+amount
+            )
             if currency != base:
                 amount = CurrencyManager.convert(
                     conn, int(round(amount*SCALE)), currency, base
                 )/SCALE
-            concentration_deposit_total += amount
             insurance_map = (insured_deposits_by_user if int(row["deposit_insured"] or 0)
                              else uninsured_deposits_by_user)
             insurance_map[row["user_id"]] = insurance_map.get(row["user_id"], 0.0)+amount
@@ -1075,6 +1077,14 @@ class RateManager:
                 depositor_balances[row["user_id"]] = (
                     depositor_balances.get(row["user_id"], 0.0)+amount
                 )
+        concentration_deposit_total = 0.0
+        for currency, native_amount in deposit_totals_by_currency.items():
+            concentration_deposit_total += (
+                native_amount if currency == base else
+                CurrencyManager.convert(
+                    conn, int(round(native_amount*SCALE)), currency, base
+                )/SCALE
+            )
         largest_depositor = max(depositor_balances.values(), default=0.0)
         top_five_depositors = sum(sorted(depositor_balances.values(), reverse=True)[:5])
         deposit_total = max(0.0, concentration_deposit_total)
