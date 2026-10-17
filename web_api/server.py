@@ -632,6 +632,10 @@ def authenticate_login_identifier(identifier, password):
     return None, False
 
 
+# Informational simulator warning, not an exchange halt or valuation guarantee.
+DR_REFERENCE_DEVIATION_ALERT_PERCENT = 10.0
+
+
 def instruments(include_inactive=False):
     # Ensure additive schema migrations have run before the read-only adapter
     # selects newly introduced fund metadata.
@@ -702,6 +706,33 @@ def instruments(include_inactive=False):
         for row in rows:
             if row["type"] == "depositary_receipt":
                 row["drProgram"] = dr_programs.get(row["code"])
+                program = row["drProgram"]
+                if program:
+                    try:
+                        underlying = connection.execute(
+                            "SELECT share_price AS price,quote_currency FROM company WHERE company_code=? "
+                            "UNION ALL SELECT price,quote_currency FROM market_assets WHERE code=? LIMIT 1",
+                            (program["underlyingCode"], program["underlyingCode"]),
+                        ).fetchone()
+                        if underlying and float(underlying["price"] or 0) > 0:
+                            from managers.currency_manager import CurrencyManager
+                            fx = float(CurrencyManager.quote(
+                                connection, str(underlying["quote_currency"] or "NWX"),
+                                str(row.get("quote_currency") or "NWX"),
+                            ))
+                            reference = (float(underlying["price"])
+                                         * float(program["underlyingPerReceipt"]) * fx)
+                            if reference > 0 and float(row["price"] or 0) > 0:
+                                premium = (float(row["price"])/reference-1)*100
+                                program["underlyingPrice"] = float(underlying["price"])
+                                program["underlyingCurrency"] = str(underlying["quote_currency"] or "NWX")
+                                program["referenceValue"] = reference
+                                program["referencePremiumPercent"] = premium
+                                program["referenceDeviationAlert"] = (
+                                    abs(premium) >= DR_REFERENCE_DEVIATION_ALERT_PERCENT
+                                )
+                    except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError):
+                        pass
             start = opening.get(row["code"])
             row["change24h"] = (float(row["price"]) / float(start) - 1) * 100 if start and row["price"] else None
             row["tradeValue24h"], row["trades24h"] = traded.get(row["code"], (0, 0))
@@ -1716,6 +1747,10 @@ def product_list(group):
                                     dr_program["referencePremiumPercent"] = (
                                         float(item["price"]) / fair_value - 1
                                     ) * 100
+                                    dr_program["referenceDeviationAlert"] = (
+                                        abs(dr_program["referencePremiumPercent"])
+                                        >= DR_REFERENCE_DEVIATION_ALERT_PERCENT
+                                    )
                             except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError):
                                 pass
                         product["drProgram"] = dr_program

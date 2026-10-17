@@ -86,6 +86,15 @@ class CreditRiskManager:
             pd *= 1.75
         return cls._bounded(pd, 0.0001, 0.95)
 
+    @staticmethod
+    def _stage(status, collection_status, missed_payments, ltv, overdue):
+        """Classify simulator ECL stages; an already-defaulted exposure is Stage 3."""
+        if status == "defaulted" or collection_status == "defaulted":
+            return 3
+        if overdue or int(missed_payments or 0) >= 2 or CreditRiskManager._bounded(ltv, 0, 10) >= 1.0:
+            return 2
+        return 1
+
     @classmethod
     def _lgd(cls, conn, loan):
         ead = max(0.0, float(loan["outstanding_balance"] or 0))
@@ -117,11 +126,11 @@ class CreditRiskManager:
             "SELECT l.loan_id,l.user_id,l.product_code,l.outstanding_balance,l.quote_currency,"
             "l.collateral_amount,l.collateral_released,l.collateral_seized,l.underwriting_dti,"
             "l.underwriting_dsr,l.current_ltv,l.missed_payment_count,l.overdue_since_epoch,"
-            "l.collection_status,l.maturity_epoch,l.created_at,l.ecl_allowance,"
+            "l.collection_status,l.status,l.maturity_epoch,l.created_at,l.ecl_allowance,"
             "u.credit_score,u.nationality,p.issuer,p.maturity_days "
             "FROM accounts.loans l JOIN users.users u ON u.user_id=l.user_id "
             "JOIN product.liability p ON p.product_code=l.product_code "
-            "WHERE l.status='active' AND (? IS NULL OR l.user_id=?) "
+            "WHERE l.status IN ('active','defaulted') AND (? IS NULL OR l.user_id=?) "
             "AND (? IS NULL OR l.product_code=?)",
             (user_id, user_id, product_code, product_code),
         ).fetchall()
@@ -146,8 +155,12 @@ class CreditRiskManager:
             term_days = max(1, int(loan["maturity_days"] or 365))
             years = max(1.0/365.0, term_days/365.0)
             lifetime_pd = cls._bounded(1.0-(1.0-pd_12m)**years, 0.0, 1.0)
-            stage = 2 if (overdue or int(loan["missed_payment_count"] or 0) >= 2
-                          or cls._bounded(loan["current_ltv"], 0, 10) >= 1.0) else 1
+            stage = cls._stage(
+                loan["status"], loan["collection_status"], loan["missed_payment_count"],
+                loan["current_ltv"], overdue,
+            )
+            if stage == 3:
+                pd_12m = lifetime_pd = 1.0
             base_pd = lifetime_pd if stage == 2 else pd_12m
             ead = round_currency(
                 conn, max(0.0, float(loan["outstanding_balance"] or 0)),
