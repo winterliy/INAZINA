@@ -111,11 +111,31 @@ class CorporateActionsManager:
             'SELECT user_id,quantity FROM user_assets WHERE asset_code=? UNION ALL '
             'SELECT writer_id user_id,quantity FROM option_collateral_lots WHERE underlying_code=?'
             ') GROUP BY user_id ORDER BY user_id', (code, code)).fetchall()
+        # In-currency DR programs pass their custodied underlying entitlement
+        # through to current DR holders. Cross-currency settlement needs a
+        # separate depositary FX/cash ledger and is intentionally not implied.
+        underlying_currency = conn.execute(
+            "SELECT COALESCE((SELECT quote_currency FROM company WHERE company_code=?),"
+            "(SELECT quote_currency FROM market_assets WHERE code=?),'NWX')",
+            (str(code), str(code)),
+        ).fetchone()[0]
+        dr_rows = conn.execute(
+            "SELECT h.user_id,SUM(h.quantity*d.underlying_per_receipt) quantity "
+            "FROM depositary_receipts d JOIN market_assets da ON da.code=d.dr_code "
+            "JOIN user_assets h ON h.asset_code=d.dr_code "
+            "WHERE d.underlying_code=? AND d.program_status='active' AND da.status='active' "
+            "AND d.quote_currency=? GROUP BY h.user_id ORDER BY h.user_id",
+            (str(code), str(underlying_currency)),
+        ).fetchall()
+        combined = {str(row['user_id']): float(row['quantity'] or 0) for row in rows}
+        for row in dr_rows:
+            user = str(row['user_id'])
+            combined[user] = combined.get(user, 0.0) + float(row['quantity'] or 0)
         # Treasuries and a company's own (treasury) shares receive no dividend.
         from managers.company_account_manager import CompanyAccounts
-        return [(str(row['user_id']), float(row['quantity'])) for row in rows
-                if not CurrencyManager.is_treasury(conn, str(row['user_id']))
-                and not CompanyAccounts.own_shares(conn, str(row['user_id']), code)]
+        return [(user, quantity) for user, quantity in sorted(combined.items()) if quantity > 0
+                and not CurrencyManager.is_treasury(conn, user)
+                and not CompanyAccounts.own_shares(conn, user, code)]
 
     @staticmethod
     def _currency_account(conn, user, currency, now):
