@@ -101,6 +101,44 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(result[0]["difference_units"], 1)
         self.assertEqual(result[0]["status"], "mismatch")
 
+    def test_loan_receivable_reconciliation_uses_product_currency_minor_units(self):
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('AAA','Test currency',2,2)"
+        )
+        self.db.currency.execute(
+            "INSERT INTO country_currencies(nationality,currency_code) VALUES ('AAA Nation','AAA')"
+        )
+        self.add_loan(code="FX-RECON")
+        self.db.products.execute(
+            "UPDATE liability SET quote_currency='AAA',rate_nationality='AAA Nation' "
+            "WHERE product_code='FX-RECON'"
+        )
+        self.db.accounts.execute(
+            "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,status,quote_currency) "
+            "VALUES ('borrower','FX-RECON',10.25,10.25,'active','AAA')"
+        )
+        with self.db.atomic() as conn:
+            BankJournal.post(
+                conn, "Bank", "loan_origination", "loan:fx-recon", "AAA",
+                [("loans_receivable", "debit", "10.25"),
+                 ("customer_funds_payable", "credit", "10.25")],
+            )
+            result = BankJournal.reconcile_loan_receivables(conn, "Bank")
+        self.assertEqual(result, [{
+            "issuer": "Bank", "currency_code": "AAA", "account_units": 1025,
+            "journal_units": 1025, "difference_units": 0,
+            "decimal_places": 2, "status": "matched",
+        }])
+        self.db.accounts.execute(
+            "UPDATE loans SET outstanding_balance=outstanding_balance+0.01 "
+            "WHERE product_code='FX-RECON'"
+        )
+        with self.db.atomic() as conn:
+            result = BankJournal.reconcile_loan_receivables(conn, "Bank")
+        self.assertEqual(result[0]["difference_units"], 1)
+        self.assertEqual(result[0]["status"], "mismatch")
+
     def test_negative_deposit_rate_debits_without_negative_tax(self):
         self.db.products.execute(
             "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"
@@ -145,6 +183,14 @@ class RealisticRateSystemTests(unittest.TestCase):
             reconciliation = BankJournal.reconcile_loan_receivables(conn, "Bank")
         self.assertEqual(reconciliation[0]["status"], "matched")
         self.assertEqual(reconciliation[0]["difference_units"], 0)
+        self.db.accounts.execute(
+            "UPDATE loans SET outstanding_balance=outstanding_balance+1 WHERE loan_id=?",
+            (row["loan_id"],),
+        )
+        with self.db.atomic() as conn:
+            reconciliation = BankJournal.reconcile_loan_receivables(conn, "Bank")
+        self.assertEqual(reconciliation[0]["status"], "mismatch")
+        self.assertEqual(reconciliation[0]["difference_units"], 1)
 
     def test_overdue_accelerates_defaults_and_seizes_collateral(self):
         self.add_loan(maturity=1, origination_fee=0)
