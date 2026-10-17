@@ -4,7 +4,8 @@ import { api, type ApiUser } from "../../shared/api";
 import { DateTimePicker } from "./DateTimePicker";
 
 type Category = { category_id: number; name: string };
-type BoardInfo = { board_id: string; name: string; description: string; admin_only: number; allow_asset: number; categories: Category[] };
+// suspension: the notice while an administrator has stopped writing on the board.
+type BoardInfo = { board_id: string; name: string; description: string; admin_only: number; allow_asset: number; secret: number; suspension: string | null; categories: Category[] };
 type Summary = { post_id: number; board: string; board_name: string; category_id: number | null; category_name: string | null; notice: number; author_admin: number; title: string; asset_code: string | null; pinned: number; anonymous: number; view_count: number; created_epoch: number; updated_epoch: number; author: string; comment_count: number; like_count: number; dislike_count: number; mine: boolean; has_attachments: number; has_poll: number };
 type Reaction = 1 | -1 | 0;
 type Attachment = { attachment_id: number; kind: "file" | "link"; name: string; url: string | null; size: number | null };
@@ -201,7 +202,7 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin }: { user
   const opens = list?.writeOpensEpoch ?? 0;
   const closed = Date.now() / 1000 < opens;
   const opensText = opens ? new Intl.DateTimeFormat("ko-KR", { dateStyle: "long" }).format(opens * 1000) : "";
-  const writable = boards.filter((item) => !item.admin_only || admin);
+  const writable = boards.filter((item) => admin || (!item.admin_only && !item.suspension));
 
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="board-modal" role="dialog" aria-modal="true" aria-labelledby="board-title">
@@ -216,8 +217,10 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin }: { user
       {error && <p className="board-error" role="alert">{error}</p>}
       <div className="board-body">
         <aside className="board-list">
-          <div className="board-tabs" role="tablist" aria-label="게시판">{[{ board_id: "", name: "전체" }, ...boards].map((item) => <button key={item.board_id || "all"} type="button" role="tab" aria-selected={board === item.board_id} className={board === item.board_id ? "active" : ""} onClick={() => { setBoard(item.board_id); setCategory(null); setPage(1); if (!boardInfo(item.board_id)?.allow_asset) setAsset(""); }}>{item.name}</button>)}</div>
+          <div className="board-tabs" role="tablist" aria-label="게시판">{[{ board_id: "", name: "전체" }, ...boards].map((item) => <button key={item.board_id || "all"} type="button" role="tab" aria-selected={board === item.board_id} className={board === item.board_id ? "active" : ""} onClick={() => { setBoard(item.board_id); setCategory(null); setPage(1); if (!boardInfo(item.board_id)?.allow_asset) setAsset(""); }}>{boardInfo(item.board_id)?.secret ? "🔒 " : ""}{item.name}</button>)}</div>
           {current?.description && <p className="board-description">{current.description}</p>}
+          {current?.secret ? <p className="board-description">🔒 허용된 사람만 보는 비밀게시판입니다.</p> : null}
+          {current?.suspension && <p className="board-notice">⛔ {current.suspension} 지금은 읽기만 할 수 있습니다.</p>}
           {current && current.categories.length > 0 && <div className="board-categories" aria-label="카테고리">{[{ category_id: 0, name: "전체" }, ...current.categories].map((item) => <button key={item.category_id} type="button" aria-pressed={(category ?? 0) === item.category_id} className={(category ?? 0) === item.category_id ? "active" : ""} onClick={() => { setCategory(item.category_id || null); setPage(1); }}>{item.name}</button>)}</div>}
           <form className="board-search" onSubmit={(event) => { event.preventDefault(); setTerm(search.trim()); setPage(1); }}>
             <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="제목·내용 검색" aria-label="게시글 검색" />

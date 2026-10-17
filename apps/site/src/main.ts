@@ -61,6 +61,18 @@ function renderDocument(source: string): DocumentFragment {
   return fragment;
 }
 
+// Announced revisions (written by the dashboard): pending.json says when each
+// takes effect, and <name>.next.txt holds its text. The current file stays in
+// force until then.
+type Pending = Record<string, { effectiveEpoch: number; announcedEpoch: number }>;
+const day = (epoch: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "long", timeZone: "Asia/Seoul" }).format(epoch * 1000);
+
+async function fetchText(path: string): Promise<string> {
+  const response = await fetch(path, { cache: "no-cache" });
+  if (!response.ok) throw new Error(String(response.status));
+  return response.text();
+}
+
 async function openDocument(name: string) {
   const dialog = $<HTMLDialogElement>("#doc-dialog");
   const body = $<HTMLDivElement>("#doc-body");
@@ -68,9 +80,36 @@ async function openDocument(name: string) {
   body.replaceChildren(element("p", "불러오는 중…"));
   dialog.showModal();
   try {
-    const response = await fetch(`/links/${name}.txt`, { cache: "no-cache" });
-    if (!response.ok) throw new Error(String(response.status));
-    body.replaceChildren(renderDocument(await response.text()));
+    const [current, pending] = await Promise.all([
+      fetchText(`/links/${name}.txt`),
+      fetch("/links/pending.json", { cache: "no-cache" })
+        .then((response): Promise<Pending> | Pending => response.ok ? response.json() as Promise<Pending> : {})
+        .catch((): Pending => ({})),
+    ]);
+    const announced = pending[name] && pending[name].effectiveEpoch * 1000 > Date.now() ? pending[name] : null;
+    const show = (text: string, revision: boolean) => {
+      const parts: Node[] = [];
+      if (announced) {
+        const notice = element("div", "");
+        notice.className = "doc-revision";
+        notice.append(element("p", revision
+          ? `개정안입니다. ${day(announced.effectiveEpoch)}부터 적용되며, 그 전까지는 현재 문서가 적용됩니다. (공지 ${day(announced.announcedEpoch)})`
+          : `📢 개정 예정: ${day(announced.effectiveEpoch)}부터 새 내용이 적용됩니다. (공지 ${day(announced.announcedEpoch)})`));
+        const toggle = element("button", revision ? "현재 문서 보기" : "개정안 보기");
+        toggle.setAttribute("type", "button");
+        toggle.className = "btn linkout";
+        toggle.addEventListener("click", () => {
+          if (revision) { show(current, false); return; }
+          fetchText(`/links/${name}.next.txt`).then((next) => show(next, true))
+            .catch(() => body.replaceChildren(element("p", "개정안을 불러오지 못했습니다.")));
+        });
+        notice.append(toggle);
+        parts.push(notice);
+      }
+      parts.push(renderDocument(text));
+      body.replaceChildren(...parts);
+    };
+    show(current, false);
   } catch {
     body.replaceChildren(element("p", "문서를 불러오지 못했습니다. 잠시 후 다시 시도해 주세요."));
   }

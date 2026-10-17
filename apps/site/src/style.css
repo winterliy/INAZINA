@@ -241,3 +241,8 @@ dialog[open] { animation: rise .45s var(--ease); }
 #feedback-form .check { display: flex; align-items: center; gap: 8px; font-weight: 600; }
 #feedback-form .check input { width: 18px; height: 18px; accent-color: var(--accent); }
 .text-link { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
+
+/* Announced revision of a policy document */
+.doc-revision { display: grid; gap: 10px; margin: 0 0 20px; padding: 14px 16px; border-radius: 14px; background: var(--accent-soft); color: var(--accent); }
+.doc-revision p { margin: 0; font-weight: 500; }
+.doc-revision .btn { justify-self: start; }

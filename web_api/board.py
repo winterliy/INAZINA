@@ -54,57 +54,23 @@ ANONYMOUS = "익명"
 # 개인정보 처리방침: 게시판 접속 IP는 작성(신고) 후 1년이 지나면 파기한다.
 # The rows stay; only the address is erased.
 IP_RETENTION_SECONDS = 365 * 86400
-# Writing stores the client IP, so the board follows the privacy policy: until
-# the policy's 시행일 (0:00 KST of the latest "시행일:" / "개정 시행일:" line in
-# privacy.txt) the board is read-only. Posts, comments, uploads and reports are
-# refused then; reactions and votes are not. The file is re-read whenever it
-# changes, so announcing a revision is just writing its future 시행일 there.
-# (2026-10-17: the board's introduction opened on its announcement day, as a
-# one-time exception to the notice period.)
-POLICY_PATH = Path(os.environ.get("INAZINA_PRIVACY_POLICY",
-                                  Path(__file__).resolve().parents[1] / "apps" / "site" / "public" / "links" / "privacy.txt"))
-POLICY_DATE = re.compile(r"^\s*(?:개정\s*)?시행일\s*[:：]\s*(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일", re.M)
-# Tests (or an emergency) may pin the opening time here; None reads the policy.
-WRITE_OPENS_EPOCH = None
-_policy_cache = {"key": None, "epoch": 0}
-
-
-def policy_effective_epoch(text):
-    """0:00 KST of the latest 시행일 in a policy text, or None when it has none."""
-    import datetime
-    import zoneinfo
-    dates = []
-    for year, month, day in POLICY_DATE.findall(text):
-        try:
-            dates.append(datetime.datetime(int(year), int(month), int(day), tzinfo=zoneinfo.ZoneInfo("Asia/Seoul")))
-        except ValueError:
-            continue  # an impossible date such as 2월 30일 is ignored
-    return int(max(dates).timestamp()) if dates else None
+# Writing stores the client IP. Until WRITE_OPENS_EPOCH the board is read-only:
+# posts, comments, uploads and reports are refused; reactions and votes are
+# not. Policy changes no longer close the board: an announced revision only
+# takes effect after its notice period (web_api/documents.py) and the version
+# in force applies meanwhile. The board opened 2026-10-17.
+WRITE_OPENS_EPOCH = 1792162800  # 2026-10-17 00:00 KST
 
 
 def write_opens_epoch():
-    """When writing opens; follows privacy.txt and re-reads it after every change."""
-    if WRITE_OPENS_EPOCH is not None:
-        return WRITE_OPENS_EPOCH
-    try:
-        stat = POLICY_PATH.stat()
-    except OSError:
-        return _policy_cache["epoch"]  # unreadable: keep the last known time
-    key = (stat.st_mtime_ns, stat.st_size)
-    if key != _policy_cache["key"]:
-        try:
-            epoch = policy_effective_epoch(POLICY_PATH.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError):
-            return _policy_cache["epoch"]
-        _policy_cache.update(key=key, epoch=epoch if epoch is not None else _policy_cache["epoch"])
-    return _policy_cache["epoch"]
+    return WRITE_OPENS_EPOCH
 
 
 def _require_open(now=None):
     opens = write_opens_epoch()
     if (now if now is not None else time.time()) < opens:
         day = time.strftime("%Y년 %-m월 %-d일", time.gmtime(opens + 9 * 3600))
-        raise ValueError(f"게시판 글쓰기·댓글·신고는 개인정보 처리방침 시행일({day})부터 이용할 수 있습니다. 지금은 읽기만 가능합니다.")
+        raise ValueError(f"게시판 글쓰기·댓글·신고는 {day}부터 이용할 수 있습니다. 지금은 읽기만 가능합니다.")
 
 
 _POSTS_TABLE = """CREATE TABLE {name} (
@@ -139,6 +105,12 @@ def ensure_tables(connection):
             allow_asset INTEGER NOT NULL DEFAULT 0 CHECK(allow_asset IN (0,1)),
             sort_order INTEGER NOT NULL DEFAULT 0,
             created_epoch INTEGER NOT NULL);
+        -- Who may see a secret board (administrators always can).
+        CREATE TABLE IF NOT EXISTS board_members (
+            board_id TEXT NOT NULL REFERENCES board_boards(board_id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(user_id),
+            added_epoch INTEGER NOT NULL,
+            PRIMARY KEY(board_id, user_id));
         CREATE TABLE IF NOT EXISTS board_categories (
             category_id INTEGER PRIMARY KEY AUTOINCREMENT,
             board_id TEXT NOT NULL REFERENCES board_boards(board_id) ON DELETE CASCADE,
@@ -146,6 +118,11 @@ def ensure_tables(connection):
             sort_order INTEGER NOT NULL DEFAULT 0,
             UNIQUE(board_id, name));
     """)
+    board_columns = {row[1] for row in connection.execute("PRAGMA table_info(board_boards)")}
+    for column, definition in (("secret", "INTEGER NOT NULL DEFAULT 0"), ("suspended", "INTEGER NOT NULL DEFAULT 0"),
+                               ("suspended_reason", "TEXT NOT NULL DEFAULT ''"), ("suspended_until", "INTEGER")):
+        if column not in board_columns:
+            connection.execute(f"ALTER TABLE board_boards ADD COLUMN {column} {definition}")
     connection.executemany(
         "INSERT OR IGNORE INTO board_boards(board_id,name,description,admin_only,allow_asset,sort_order,created_epoch) "
         "VALUES (?,?,?,?,?,?,0)", DEFAULT_BOARDS)
@@ -326,6 +303,43 @@ def _board(connection, board_id):
     return row
 
 
+# A board is visible to everyone unless it is secret; a secret board only to
+# administrators and its members. Hidden boards answer like missing ones.
+_VISIBLE = "(b.secret=0 OR ?=1 OR EXISTS(SELECT 1 FROM board_members m WHERE m.board_id=b.board_id AND m.user_id=?))"
+
+
+def _can_see(connection, board, user_id, admin):
+    return (not board["secret"] or admin or bool(user_id) and connection.execute(
+        "SELECT 1 FROM board_members WHERE board_id=? AND user_id=?", (board["board_id"], user_id)).fetchone() is not None)
+
+
+def _visible_board(connection, board_id, user_id=None, admin=False):
+    board = _board(connection, board_id)
+    if not _can_see(connection, board, user_id, admin):
+        raise ValueError("게시판을 확인해주세요.")
+    return board
+
+
+def _suspension(board, now=None):
+    """The board's suspension notice while it is in force, else None."""
+    now = now if now is not None else time.time()
+    if board["suspended"] and (board["suspended_until"] is None or now < board["suspended_until"]):
+        until = board["suspended_until"]
+        when = time.strftime(" %Y-%m-%d %H:%M까지", time.gmtime(until + 9 * 3600)) if until else ""
+        return f"{board['name']} 게시판은 운영진이 정지했습니다{when}." + (f" 사유: {board['suspended_reason']}" if board["suspended_reason"] else "")
+    return None
+
+
+def _writable(connection, board_id, user):
+    """The board row when ``user`` may write in it: visible to them and, unless they are an administrator, not suspended."""
+    admin = user["role"] == "admin"
+    board = _visible_board(connection, board_id, user["userId"], admin)
+    notice = None if admin else _suspension(board)
+    if notice:
+        raise ValueError(notice)
+    return board
+
+
 def _category(connection, board_id, category_id):
     """A category of ``board_id`` (None when not given)."""
     if category_id in (None, ""):
@@ -345,6 +359,27 @@ def _asset(connection, board, code):
     if not connection.execute(f"SELECT 1 FROM ({PRODUCT_CATALOG}) WHERE code=?", (code,)).fetchone():
         raise ValueError("종목 코드를 확인해주세요.")
     return code
+
+
+def _visible_post(connection, post_id, user_id, admin):
+    """The post row when its board is visible to the viewer; hidden boards look like missing posts."""
+    row = connection.execute("SELECT * FROM board_posts WHERE post_id=?", (post_id,)).fetchone()
+    if not row or not _can_see(connection, _board(connection, row["board"]), user_id, admin):
+        raise ValueError("글을 찾을 수 없거나 숨겨진 글입니다.")
+    return row
+
+
+def _post_for(connection, user, post_id, frozen_too=False):
+    """The post ``user`` acts on: on a board they can see and (unless ``frozen_too``
+    or they are an administrator) one that is not suspended."""
+    admin = user["role"] == "admin"
+    row = _visible_post(connection, _id(post_id), user["userId"], admin)
+    if row["status"] == "deleted":
+        raise ValueError("글을 찾을 수 없습니다.")
+    notice = None if admin or frozen_too else _suspension(_board(connection, row["board"]))
+    if notice:
+        raise ValueError(notice)
+    return row
 
 
 def _post(connection, post_id):
@@ -385,8 +420,9 @@ def _reaction(connection, table, key, target, viewer):
     return row[0] if row else 0
 
 
-def boards(connection):
-    """Every board in display order, each with its categories."""
+def boards(connection, viewer=None, admin=False):
+    """Boards the viewer may see, in display order, with categories, suspension
+    and (for administrators) the members of secret boards."""
     categories = {}
     for row in connection.execute("SELECT category_id,board_id,name,sort_order FROM board_categories "
                                   "ORDER BY sort_order,category_id"):
@@ -394,11 +430,19 @@ def boards(connection):
             {"category_id": row["category_id"], "name": row["name"], "sort_order": row["sort_order"]})
     rows = connection.execute(
         "SELECT b.*,(SELECT COUNT(*) FROM board_posts p WHERE p.board=b.board_id AND p.status='active') AS post_count "
-        "FROM board_boards b ORDER BY b.sort_order,b.name").fetchall()
-    return [{**dict(row), "categories": categories.get(row["board_id"], [])} for row in rows]
+        f"FROM board_boards b WHERE {_VISIBLE} ORDER BY b.sort_order,b.name", (1 if admin else 0, viewer or "")).fetchall()
+    result = []
+    for row in rows:
+        item = {**dict(row), "categories": categories.get(row["board_id"], []), "suspension": _suspension(row)}
+        if admin:
+            item["members"] = [dict(member) for member in connection.execute(
+                "SELECT m.user_id,COALESCE(u.nickname,'') AS nickname FROM board_members m LEFT JOIN users u "
+                "ON u.user_id=m.user_id WHERE m.board_id=? ORDER BY m.added_epoch", (row["board_id"],))]
+        result.append(item)
+    return result
 
 
-def list_posts(connection, board=None, search="", asset_code=None, page=1, viewer=None, category=None):
+def list_posts(connection, board=None, search="", asset_code=None, page=1, viewer=None, category=None, admin=False):
     """Active posts, newest first.
 
     A post an administrator marks 공지 (any board, not only the 공지 board)
@@ -406,9 +450,9 @@ def list_posts(connection, board=None, search="", asset_code=None, page=1, viewe
     The all-boards list (``board=None``) also starts with every 공지.
     """
     if board:
-        _board(connection, board)
+        _visible_board(connection, board, viewer, admin)
     page = max(1, min(_id(page, "페이지"), 10_000))
-    where, params = ["p.status='active'"], [ANONYMOUS]
+    where, params = ["p.status='active'", _VISIBLE], [ANONYMOUS, 1 if admin else 0, viewer or ""]
     if board:
         where.append("p.board=?"); params.append(board)
     if category not in (None, ""):
@@ -419,7 +463,8 @@ def list_posts(connection, board=None, search="", asset_code=None, page=1, viewe
     if term:
         where.append("(p.title LIKE ? OR p.body LIKE ?)"); params += [f"%{term}%", f"%{term}%"]
     clause = " AND ".join(where)
-    total = connection.execute(f"SELECT COUNT(*) FROM board_posts p WHERE {clause}", params[1:]).fetchone()[0]
+    total = connection.execute(f"SELECT COUNT(*) FROM board_posts p JOIN board_boards b ON b.board_id=p.board WHERE {clause}",
+                               params[1:]).fetchone()[0]
     order = "p.notice DESC," + (" p.pinned DESC," if board else "") + " p.post_id DESC"
     rows = connection.execute(
         _PUBLIC_POST + f"WHERE {clause} ORDER BY {order} LIMIT ? OFFSET ?",
@@ -428,8 +473,9 @@ def list_posts(connection, board=None, search="", asset_code=None, page=1, viewe
             "writeOpensEpoch": write_opens_epoch()}
 
 
-def read_post(connection, post_id, viewer=None, count_view=False):
+def read_post(connection, post_id, viewer=None, count_view=False, admin=False):
     post_id = _id(post_id)
+    _visible_post(connection, post_id, viewer, admin)
     if count_view:
         connection.execute("UPDATE board_posts SET view_count=view_count+1 WHERE post_id=? AND status='active'", (post_id,))
     row = connection.execute(_PUBLIC_POST + "WHERE p.post_id=? AND p.status='active'", (ANONYMOUS, post_id)).fetchone()
@@ -475,7 +521,7 @@ def read_post(connection, post_id, viewer=None, count_view=False):
 # ---------------------------------------------------------------------------
 def create_post(connection, user, payload, ip):
     _require_open()
-    board = _board(connection, payload.get("board"))
+    board = _writable(connection, payload.get("board"), user)
     admin = user["role"] == "admin"
     if board["admin_only"] and not admin:
         raise ValueError(f"{board['name']} 게시판은 관리자만 쓸 수 있습니다.")
@@ -501,7 +547,7 @@ def create_post(connection, user, payload, ip):
 
 
 def edit_post(connection, user, post_id, payload):
-    row = _post(connection, _id(post_id))
+    row = _post_for(connection, user, post_id)
     if row["author_id"] != user["userId"]:
         raise ValueError("본인이 쓴 글만 수정할 수 있습니다.")
     extras = _extras(user, {**payload, "poll": None})
@@ -533,7 +579,7 @@ def delete_post(connection, user, post_id):
 
 def add_comment(connection, user, post_id, payload, ip):
     _require_open()
-    row = _post(connection, _id(post_id))
+    row = _post_for(connection, user, post_id)
     if row["status"] != "active":
         raise ValueError("숨겨진 글에는 댓글을 달 수 없습니다.")
     body = _text(payload.get("body"), "댓글", COMMENT_MAX)
@@ -579,13 +625,15 @@ def react(connection, user, kind, target_id, value):
         raise ValueError("좋아요 또는 싫어요를 골라 주세요.")
     if kind == "post":
         table, key = "board_post_reactions", "post_id"
-        target = _post(connection, _id(target_id))
+        target = _post_for(connection, user, target_id)
         if target["status"] != "active":
             raise ValueError("숨겨진 글입니다.")
         target = target["post_id"]
     elif kind == "comment":
         table, key = "board_comment_reactions", "comment_id"
-        row = connection.execute("SELECT comment_id,status FROM board_comments WHERE comment_id=?", (_id(target_id, "댓글"),)).fetchone()
+        row = connection.execute("SELECT comment_id,post_id,status FROM board_comments WHERE comment_id=?", (_id(target_id, "댓글"),)).fetchone()
+        if row:
+            _post_for(connection, user, row["post_id"])
         if not row or row["status"] != "active":
             raise ValueError("댓글을 찾을 수 없습니다.")
         target = row["comment_id"]
@@ -611,9 +659,12 @@ def report(connection, user, payload, ip):
     reason = _text(payload.get("reason"), "신고 사유", REASON_MAX)
     if payload.get("postId") is not None:
         target, table, key = _id(payload.get("postId")), "board_posts", "post_id"
-        _post(connection, target)
+        _post_for(connection, user, target, frozen_too=True)  # reports stay open on a suspended board
     elif payload.get("commentId") is not None:
         target, table, key = _id(payload.get("commentId"), "댓글"), "board_comments", "comment_id"
+        parent = connection.execute("SELECT post_id FROM board_comments WHERE comment_id=?", (target,)).fetchone()
+        if parent:
+            _post_for(connection, user, parent[0], frozen_too=True)
         if not connection.execute("SELECT 1 FROM board_comments WHERE comment_id=? AND status<>'deleted'", (target,)).fetchone():
             raise ValueError("댓글을 찾을 수 없습니다.")
     else:
@@ -733,15 +784,42 @@ def _board_action(connection, board_id, action, payload):
             raise ValueError("이미 있는 게시판 ID입니다.")
         values = _board_values(connection, payload, None)
         connection.execute(
-            "INSERT INTO board_boards(board_id,name,description,admin_only,allow_asset,sort_order,created_epoch) "
-            "VALUES (?,?,?,?,?,?,?)", (board_id, *values, int(time.time())))
+            "INSERT INTO board_boards(board_id,name,description,admin_only,allow_asset,sort_order,secret,created_epoch) "
+            "VALUES (?,?,?,?,?,?,?,?)", (board_id, *values, int(time.time())))
         return 1
     board = _board(connection, board_id)
     if action == "edit":
         values = _board_values(connection, payload, board["board_id"])
         return connection.execute(
-            "UPDATE board_boards SET name=?,description=?,admin_only=?,allow_asset=?,sort_order=? WHERE board_id=?",
+            "UPDATE board_boards SET name=?,description=?,admin_only=?,allow_asset=?,sort_order=?,secret=? WHERE board_id=?",
             (*values, board["board_id"])).rowcount
+    if action == "suspend":
+        # Writing stops (reading and reports go on); administrators still write. No end time: until resumed.
+        reason = str(payload.get("reason") or "").strip()
+        if len(reason) > 200:
+            raise ValueError("정지 사유는 200자 이하로 입력해주세요.")
+        until = payload.get("until")
+        if until not in (None, ""):
+            if isinstance(until, bool) or not isinstance(until, (int, float)) or int(until) <= time.time():
+                raise ValueError("정지 해제 시각은 지금 이후로 정해 주세요.")
+            until = int(until)
+        else:
+            until = None
+        return connection.execute("UPDATE board_boards SET suspended=1,suspended_reason=?,suspended_until=? WHERE board_id=?",
+                                  (reason, until, board["board_id"])).rowcount
+    if action == "resume":
+        return connection.execute("UPDATE board_boards SET suspended=0,suspended_reason='',suspended_until=NULL WHERE board_id=?",
+                                  (board["board_id"],)).rowcount
+    if action in {"member_add", "member_remove"}:
+        user_id = str(payload.get("userId") or "").strip()
+        if not user_id:
+            raise ValueError("Discord 아이디를 입력해주세요.")
+        if action == "member_remove":
+            return connection.execute("DELETE FROM board_members WHERE board_id=? AND user_id=?", (board["board_id"], user_id)).rowcount
+        if not connection.execute("SELECT 1 FROM users WHERE user_id=?", (user_id,)).fetchone():
+            raise ValueError("등록된 사용자의 Discord 아이디가 아닙니다.")
+        return connection.execute("INSERT OR IGNORE INTO board_members(board_id,user_id,added_epoch) VALUES (?,?,?)",
+                                  (board["board_id"], user_id, int(time.time()))).rowcount
     if action == "delete":
         if connection.execute("SELECT COUNT(*) FROM board_boards").fetchone()[0] <= 1:
             raise ValueError("게시판은 하나 이상 있어야 합니다.")
@@ -766,7 +844,7 @@ def _board_values(connection, payload, own_id):
     if len(description) > BOARD_DESCRIPTION_MAX:
         raise ValueError(f"설명은 {BOARD_DESCRIPTION_MAX}자 이하로 입력해주세요.")
     return (name, description, _flag(payload.get("adminOnly")), _flag(payload.get("allowAsset")),
-            _order(payload.get("sortOrder")))
+            _order(payload.get("sortOrder")), _flag(payload.get("secret")))
 
 
 def _order(value):
@@ -864,11 +942,12 @@ def _attach(connection, user, post_id, extras):
         raise ValueError(f"파일은 {FILES_PER_POST}개, 링크는 {LINKS_PER_POST}개까지 붙일 수 있습니다.")
 
 
-def file_meta(connection, attachment_id):
-    """What the API server needs to send a file: only files of visible posts."""
+def file_meta(connection, attachment_id, viewer=None, admin=False):
+    """What the API server needs to send a file: only files of posts the viewer can read."""
     row = connection.execute(
         "SELECT a.name,a.stored_name,a.size FROM board_attachments a JOIN board_posts p ON p.post_id=a.post_id "
-        "WHERE a.attachment_id=? AND a.kind='file' AND p.status='active'", (_id(attachment_id, "첨부"),)).fetchone()
+        f"JOIN board_boards b ON b.board_id=p.board WHERE a.attachment_id=? AND a.kind='file' AND p.status='active' AND {_VISIBLE}",
+        (_id(attachment_id, "첨부"), 1 if admin else 0, viewer or "")).fetchone()
     if not row:
         raise LookupError("not_found")
     return {"name": row["name"], "storedName": row["stored_name"], "size": row["size"],
@@ -964,6 +1043,7 @@ def vote(connection, user, poll_id, option_ids):
         (_id(poll_id, "설문"),)).fetchone()
     if not poll:
         raise ValueError("설문을 찾을 수 없습니다.")
+    _post_for(connection, user, poll["post_id"])
     if not _poll_open(poll):
         raise ValueError("마감된 설문입니다.")
     if not isinstance(option_ids, list):

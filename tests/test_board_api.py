@@ -27,7 +27,7 @@ class BoardApiTests(unittest.TestCase):
         listed = server.board_get("/internal/board/posts", {"board": ["notice"]}, None)
         self.assertEqual(listed["total"], 1)
         self.assertEqual(listed["posts"][0]["author"], "익명")
-        read = server.board_get(f"/internal/board/posts/{post_id}", {"view": ["1"]}, "admin-1")["post"]
+        read = server.board_get(f"/internal/board/posts/{post_id}", {"view": ["1"]}, ADMIN)["post"]
         self.assertTrue(read["mine"])
         self.assertEqual(read["view_count"], 1)
         self.assertNotIn("author_ip", read)

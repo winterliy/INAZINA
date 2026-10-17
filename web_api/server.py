@@ -33,7 +33,7 @@ from functions.dr_pricing import (
     reference_metrics as dr_reference_metrics,
 )
 from functions.performance import log_slow
-from web_api import board
+from web_api import board, documents
 _domain = None
 _domain_lock = threading.Lock()
 
@@ -249,19 +249,31 @@ def board_db():
         yield connection
 
 
-def board_get(path, query, viewer):
-    """Public board reads; ``viewer`` (or None) only marks the viewer's own posts."""
+def board_get(path, query, user):
+    """Public board reads. ``user`` (signed-in identity or None) marks their own
+    posts and decides which secret boards they may see."""
     first = lambda key, default="": query.get(key, [default])[0]
+    viewer, admin = (user["userId"], user["role"] == "admin") if user else (None, False)
     with board_db() as connection:
         if path == "/internal/board/boards":
-            return {"boards": board.boards(connection)}
+            return {"boards": board.boards(connection, viewer, admin)}
         if path.startswith("/internal/board/files/"):
-            return board.file_meta(connection, path.removeprefix("/internal/board/files/"))
+            return board.file_meta(connection, path.removeprefix("/internal/board/files/"), viewer, admin)
         if path == "/internal/board/posts":
             return board.list_posts(connection, first("board") or None, first("search"), first("asset") or None,
-                                    first("page", "1"), viewer, first("category") or None)
+                                    first("page", "1"), viewer, first("category") or None, admin)
         return {"post": board.read_post(connection, path.removeprefix("/internal/board/posts/"), viewer,
-                                        count_view=first("view") == "1")}
+                                        count_view=first("view") == "1", admin=admin)}
+
+
+def _apply_due_documents():
+    """Put announced document revisions into force once their notice period is over."""
+    applied = documents.apply_due()
+    if applied:
+        with connect_db(timeout=5) as connection:
+            for change in applied:
+                _audit_db(connection, "system", "document.apply", change)
+    return applied
 
 
 def board_cleanup():
@@ -2833,10 +2845,10 @@ def create_admin_event(actor, payload):
     )
 
 
-def request_json(handler):
+def request_json(handler, limit=32_768):
     try:
         size = int(handler.headers.get("content-length", "0"))
-        if size < 0 or size > 32_768:
+        if size < 0 or size > limit:
             raise ValueError("request_too_large")
         body = handler.rfile.read(size) if size else b"{}"
         value = json.loads(body.decode("utf-8"))
@@ -2895,9 +2907,18 @@ class Handler(BaseHTTPRequestHandler):
             elif path in {"/internal/board/posts", "/internal/board/boards"} or path.startswith(("/internal/board/posts/", "/internal/board/files/")):
                 viewer = identity(internal_user_id(self)) if internal_user_id(self) else None
                 try:
-                    self.send_json(200, board_get(path, parse_qs(parsed.query), viewer["userId"] if viewer else None))
+                    self.send_json(200, board_get(path, parse_qs(parsed.query), viewer))
                 except LookupError:
                     self.send_json(404, {"error": "not_found"})
+            elif path == "/internal/admin/documents" or path.startswith("/internal/admin/documents/"):
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                elif path == "/internal/admin/documents":
+                    _apply_due_documents()
+                    self.send_json(200, {"documents": documents.list_documents()})
+                else:
+                    self.send_json(200, documents.read_document(path.removeprefix("/internal/admin/documents/")))
             elif path == "/internal/admin/board":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -3192,7 +3213,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(401, {"error": "internal_authentication_required"})
             return
         try:
-            payload = request_json(self)
+            # Whole documents (terms, privacy policy) are larger than other requests.
+            limit = 262_144 if urlsplit(self.path).path.startswith("/internal/admin/documents/") else 32_768
+            payload = request_json(self, limit)
             if not isinstance(payload, dict):
                 raise ValueError("invalid_payload")
             path = urlsplit(self.path).path
@@ -3337,6 +3360,30 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     self.send_json(200, board_post(path, user, payload))
                 except LookupError:
+                    self.send_json(404, {"error": "not_found"})
+                return
+            if path.startswith("/internal/admin/documents/"):
+                parts = path.removeprefix("/internal/admin/documents/").split("/")
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                elif len(parts) == 2 and parts[1] == "preview":
+                    self.send_json(200, documents.preview(parts[0], payload.get("content"), payload.get("important") is True))
+                elif len(parts) == 2 and parts[1] == "cancel":
+                    change = documents.cancel(parts[0])
+                    with connect_db(timeout=5) as connection:
+                        _audit_db(connection, user["userId"], "document.cancel", change)
+                    self.send_json(200, {"success": True, "message": "✅ 공지한 개정안을 거두었습니다. 지금 문서가 계속 적용됩니다.",
+                                         "document": documents.read_document(parts[0])})
+                elif len(parts) == 1:
+                    change = documents.save(parts[0], payload.get("content"), payload.get("baseSha256"), payload.get("confirmed"),
+                                            payload.get("important") is True)
+                    with connect_db(timeout=5) as connection:
+                        _audit_db(connection, user["userId"], "document.announce" if change["scheduled"] else "document.save", change)
+                    when = time.strftime("%Y-%m-%d %H:%M", time.gmtime(change["scheduled"] + 9 * 3600)) if change["scheduled"] else None
+                    self.send_json(200, {"success": True, "document": documents.read_document(parts[0]),
+                                         "message": f"✅ 개정안을 공지했습니다. {when}(한국시간)에 적용됩니다." if when
+                                         else f"✅ 저장했습니다. (+{change['added']} / -{change['removed']}줄)"})
+                else:
                     self.send_json(404, {"error": "not_found"})
                 return
             if path.startswith("/internal/admin/board/"):
@@ -3577,6 +3624,17 @@ def main():
     monitor = threading.Thread(target=monitor_dr_deviations,
                                name="dr-deviation-monitor", daemon=True)
     monitor.start()
+
+    def apply_documents():
+        while True:
+            try:
+                _apply_due_documents()
+            except Exception:
+                logging.getLogger("inazina.documents").exception("applying announced documents failed")
+            if stopping.wait(60):
+                return
+
+    threading.Thread(target=apply_documents, name="document-revisions", daemon=True).start()
 
     def stop(_signum, _frame):
         if not stopping.is_set():

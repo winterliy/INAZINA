@@ -3,7 +3,8 @@ import { api } from "../../shared/api";
 import { Card, Field, Tabs, date, number, plain, type Ctx } from "./common";
 
 type Category = { category_id: number; name: string; sort_order: number };
-type BoardInfo = { board_id: string; name: string; description: string; admin_only: number; allow_asset: number; sort_order: number; post_count: number; categories: Category[] };
+type BoardInfo = { board_id: string; name: string; description: string; admin_only: number; allow_asset: number; sort_order: number; post_count: number; categories: Category[];
+  secret: number; members?: { user_id: string; nickname: string }[]; suspended: number; suspended_reason: string; suspended_until: number | null; suspension: string | null };
 type Post = { post_id: number; board: string; board_name: string; category_id: number | null; category_name: string | null; notice: number; author_admin: number; title: string; body: string; asset_code: string | null; pinned: number; status: "active" | "hidden" | "deleted"; hidden_reason: string | null; anonymous: number; author_id: string; nickname: string; author_ip: string; view_count: number; created_epoch: number; comment_count: number; open_reports: number };
 type Report = { report_id: number; post_id: number | null; comment_id: number | null; target_post: number; reporter_id: string; reason: string; reporter_ip: string; created_epoch: number; comment_body: string | null; comment_author: string | null; comment_ip: string | null; comment_status: string | null };
 type Filter = "reported" | "all" | "active" | "hidden";
@@ -105,18 +106,20 @@ export function BoardAdminPage({ ctx }: { ctx: Ctx }) {
 
 /** Boards and their categories: create, rename, reorder, delete. */
 function BoardStructure({ busy, boards, onSubmit }: { busy: boolean; boards: BoardInfo[]; onSubmit: (kind: "board" | "category", id: string | number, body: Record<string, unknown>, question?: string) => void }) {
-  const blank = { boardId: "", name: "", description: "", adminOnly: false, allowAsset: false, sortOrder: "0" };
+  const blank = { boardId: "", name: "", description: "", adminOnly: false, allowAsset: false, secret: false, sortOrder: "0" };
   const [draft, setDraft] = useState(blank);
   const [edits, setEdits] = useState<Record<string, typeof blank>>({});
   const [newCategory, setNewCategory] = useState<Record<string, string>>({});
   const [categoryNames, setCategoryNames] = useState<Record<number, string>>({});
   const [moveTo, setMoveTo] = useState<Record<string, string>>({});
-  const valuesOf = (item: BoardInfo) => edits[item.board_id] ?? { boardId: item.board_id, name: item.name, description: item.description, adminOnly: item.admin_only === 1, allowAsset: item.allow_asset === 1, sortOrder: String(item.sort_order) };
+  const [newMember, setNewMember] = useState<Record<string, string>>({});
+  const [suspend, setSuspend] = useState<Record<string, { reason: string; until: string }>>({});
+  const valuesOf = (item: BoardInfo) => edits[item.board_id] ?? { boardId: item.board_id, name: item.name, description: item.description, adminOnly: item.admin_only === 1, allowAsset: item.allow_asset === 1, secret: item.secret === 1, sortOrder: String(item.sort_order) };
   const edit = (item: BoardInfo, change: Partial<typeof blank>) => setEdits({ ...edits, [item.board_id]: { ...valuesOf(item), ...change } });
-  const send = (values: typeof blank) => ({ name: values.name, description: values.description, adminOnly: values.adminOnly, allowAsset: values.allowAsset, sortOrder: Number(values.sortOrder) || 0 });
+  const send = (values: typeof blank) => ({ name: values.name, description: values.description, adminOnly: values.adminOnly, allowAsset: values.allowAsset, secret: values.secret, sortOrder: Number(values.sortOrder) || 0 });
 
-  return <Card title="게시판 · 카테고리" caption="게시판을 만들고 이름·설명·순서·쓰기 권한을 바꿉니다. 글이 있는 게시판을 지우려면 글을 옮길 게시판을 고르세요. 카테고리를 지우면 그 글은 카테고리 없이 남습니다.">
-    <div className="scroll-x"><table><thead><tr><th>ID</th><th>이름</th><th>설명</th><th className="r">순서</th><th>쓰기</th><th>종목 코드</th><th className="r">글</th><th>카테고리</th><th /></tr></thead><tbody>
+  return <Card title="게시판 · 카테고리" caption="게시판을 만들고 이름·설명·순서·쓰기 권한을 바꿉니다. 비밀게시판은 허용 목록의 Discord 아이디와 관리자만 보고 씁니다. 정지한 게시판은 읽기·신고만 됩니다(관리자는 계속 씀). 글이 있는 게시판을 지우려면 글을 옮길 게시판을 고르세요.">
+    <div className="scroll-x"><table><thead><tr><th>ID</th><th>이름</th><th>설명</th><th className="r">순서</th><th>쓰기</th><th>종목 코드</th><th>비밀</th><th className="r">글</th><th>카테고리</th><th>정지</th><th /></tr></thead><tbody>
       {boards.map((item) => {
         const values = valuesOf(item);
         const others = boards.filter((other) => other.board_id !== item.board_id);
@@ -127,6 +130,12 @@ function BoardStructure({ busy, boards, onSubmit }: { busy: boolean; boards: Boa
           <td className="r"><input className="mini-input narrow" type="number" aria-label={`${item.board_id} 순서`} value={values.sortOrder} onChange={(event) => edit(item, { sortOrder: event.target.value })} /></td>
           <td><label className="check"><input type="checkbox" checked={values.adminOnly} onChange={(event) => edit(item, { adminOnly: event.target.checked })} />관리자만</label></td>
           <td><label className="check"><input type="checkbox" checked={values.allowAsset} onChange={(event) => edit(item, { allowAsset: event.target.checked })} />허용</label></td>
+          <td><label className="check"><input type="checkbox" checked={values.secret} onChange={(event) => edit(item, { secret: event.target.checked })} />비밀</label>
+            {item.secret === 1 && <div className="chips">{(item.members ?? []).map((member) => <span key={member.user_id} className="category-chip"><span className="tag" title={member.user_id}>{member.nickname || member.user_id} <small className="mono muted">{member.user_id}</small></span>
+              <button className="soft small danger" type="button" disabled={busy} title="허용 목록에서 빼기" onClick={() => onSubmit("board", item.board_id, { action: "member_remove", userId: member.user_id }, `${member.nickname || member.user_id}을(를) ${item.name} 허용 목록에서 뺄까요?`)}>✕</button></span>)}
+              <span className="category-chip"><input className="mini-input mono" aria-label={`${item.name}에 허용할 Discord 아이디`} placeholder="Discord 아이디" value={newMember[item.board_id] ?? ""} onChange={(event) => setNewMember({ ...newMember, [item.board_id]: event.target.value.trim() })} />
+                <button className="soft small" type="button" disabled={busy || !(newMember[item.board_id] ?? "")} onClick={() => { onSubmit("board", item.board_id, { action: "member_add", userId: newMember[item.board_id] }); setNewMember({ ...newMember, [item.board_id]: "" }); }}>허용</button></span>
+              {!(item.members ?? []).length && <small className="muted">아직 허용된 사람이 없습니다(관리자만 봄).</small>}</div>}</td>
           <td className="r">{number(item.post_count)}</td>
           <td><div className="chips">{item.categories.map((category) => <span key={category.category_id} className="category-chip">
             <input className="mini-input" aria-label={`카테고리 ${category.name}`} value={categoryNames[category.category_id] ?? category.name} maxLength={20} onChange={(event) => setCategoryNames({ ...categoryNames, [category.category_id]: event.target.value })} />
@@ -136,6 +145,15 @@ function BoardStructure({ busy, boards, onSubmit }: { busy: boolean; boards: Boa
             <span className="category-chip"><input className="mini-input" aria-label={`${item.name} 새 카테고리`} placeholder="새 카테고리" maxLength={20} value={newCategory[item.board_id] ?? ""} onChange={(event) => setNewCategory({ ...newCategory, [item.board_id]: event.target.value })} />
               <button className="soft small" type="button" disabled={busy || !(newCategory[item.board_id] ?? "").trim()} onClick={() => { onSubmit("category", "new", { action: "create", boardId: item.board_id, name: newCategory[item.board_id], sortOrder: item.categories.length }); setNewCategory({ ...newCategory, [item.board_id]: "" }); }}>추가</button></span>
           </div></td>
+          <td>{item.suspension
+            ? <><span className="tag warn" title={item.suspension}>정지 중{item.suspended_until ? ` · ${date(item.suspended_until)}까지` : ""}</span>{item.suspended_reason && <small className="muted block">{item.suspended_reason}</small>}
+                <button className="soft small" type="button" disabled={busy} onClick={() => onSubmit("board", item.board_id, { action: "resume" }, `${item.name} 게시판의 정지를 풀까요?`)}>정지 해제</button></>
+            : suspend[item.board_id]
+              ? <div className="suspend-form"><input className="mini-input wide" placeholder="사유 (선택)" maxLength={200} value={suspend[item.board_id].reason} onChange={(event) => setSuspend({ ...suspend, [item.board_id]: { ...suspend[item.board_id], reason: event.target.value } })} />
+                  <input className="mini-input" type="datetime-local" aria-label="해제 예정 (선택)" title="비우면 직접 풀 때까지" value={suspend[item.board_id].until} onChange={(event) => setSuspend({ ...suspend, [item.board_id]: { ...suspend[item.board_id], until: event.target.value } })} />
+                  <button className="btn primary small" type="button" disabled={busy} onClick={() => { const value = suspend[item.board_id]; onSubmit("board", item.board_id, { action: "suspend", reason: value.reason, until: value.until ? Math.floor(new Date(value.until).getTime() / 1000) : null }, `${item.name} 게시판을 정지할까요? 읽기·신고만 되고 관리자 외에는 글·댓글·반응·투표를 할 수 없습니다.`); const next = { ...suspend }; delete next[item.board_id]; setSuspend(next); }}>정지</button>
+                  <button className="soft small" type="button" onClick={() => { const next = { ...suspend }; delete next[item.board_id]; setSuspend(next); }}>취소</button></div>
+              : <button className="soft small" type="button" disabled={busy} onClick={() => setSuspend({ ...suspend, [item.board_id]: { reason: "", until: "" } })}>정지…</button>}</td>
           <td className="row-actions">
             <button className="btn primary small" type="button" disabled={busy || !edits[item.board_id]} onClick={() => { onSubmit("board", item.board_id, { action: "edit", ...send(values) }); const next = { ...edits }; delete next[item.board_id]; setEdits(next); }}>저장</button>
             {item.post_count > 0 && <select className="mini-select" aria-label={`${item.name} 글을 옮길 게시판`} value={moveTo[item.board_id] ?? ""} onChange={(event) => setMoveTo({ ...moveTo, [item.board_id]: event.target.value })}><option value="">글 옮길 곳</option>{others.map((other) => <option key={other.board_id} value={other.board_id}>{other.name}</option>)}</select>}
@@ -154,6 +172,7 @@ function BoardStructure({ busy, boards, onSubmit }: { busy: boolean; boards: Boa
       <Field label="순서" hint="작을수록 앞"><input type="number" value={draft.sortOrder} onChange={(event) => setDraft({ ...draft, sortOrder: event.target.value })} /></Field>
       <label className="check"><input type="checkbox" checked={draft.adminOnly} onChange={(event) => setDraft({ ...draft, adminOnly: event.target.checked })} />관리자만 쓰기</label>
       <label className="check"><input type="checkbox" checked={draft.allowAsset} onChange={(event) => setDraft({ ...draft, allowAsset: event.target.checked })} />종목 코드 허용</label>
+      <label className="check"><input type="checkbox" checked={draft.secret} onChange={(event) => setDraft({ ...draft, secret: event.target.checked })} />비밀게시판 (만든 뒤 허용할 Discord 아이디 추가)</label>
       <button className="btn primary" disabled={busy || !draft.boardId || !draft.name.trim()}>게시판 만들기</button>
     </form>
   </Card>;

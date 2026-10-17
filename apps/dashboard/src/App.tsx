@@ -12,11 +12,12 @@ import { IdentityCard } from "./IdentityCard";
 import { FeedbackPage } from "./FeedbackPage";
 import { LogCard } from "./LogCard";
 import { BoardAdminPage } from "./BoardAdminPage";
+import { DocumentsPage } from "./DocumentsPage";
 import { CompliancePage } from "./CompliancePage";
 import { BankJournalPage } from "./BankJournalPage";
 import { COMMAND_FORMS, CommandForm } from "./CommandForm";
 
-type Page = "overview" | "instruments" | "finance" | "exchanges" | "companies" | "users" | "feedback" | "board" | "compliance" | "accounting" | "events" | "commands" | "database" | "audit";
+type Page = "overview" | "instruments" | "finance" | "exchanges" | "companies" | "users" | "feedback" | "board" | "documents" | "compliance" | "accounting" | "events" | "commands" | "database" | "audit";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
 type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
 type Exchange = { exchange_id: string; status: string; reason: string | null; trading_halted: number; updated_epoch: number | null; resume_epoch: number | null; circuit_stage: number | null };
@@ -47,6 +48,7 @@ const pages: { id: Page; label: string; color: string; icon: ReactNode }[] = [
   { id: "board", label: "게시판 관리", color: "#8a5a00", icon: <><path d="M5 4.5h14v11H9l-4 4z" /><path d="M8.5 8.5h7M8.5 11.5h4.5" /></> },
   { id: "compliance", label: "KYC · AML", color: "#6248a8", icon: <><path d="M12 3.5 19 6v5.5c0 4.2-2.8 7.2-7 9-4.2-1.8-7-4.8-7-9V6z" /><path d="m9 11.5 2 2 4-4" /></> },
   { id: "accounting", label: "은행 원장", color: "#087e8b", icon: <><path d="M3.5 9 12 4l8.5 5M5 10v8m4-8v8m6-8v8m4-8v8M3.5 20h17" /></> },
+  { id: "documents", label: "문서 · 약관", color: "#3b6e8f", icon: <><path d="M6 3.5h8l4 4V20.5H6z" /><path d="M14 3.5V7.5h4M9 12h6M9 15.5h6M9 9h2" /></> },
   { id: "events", label: "시장 사건", color: "#c4205f", icon: <path d="M13 3 5 14h6l-1 7 8-11h-6z" /> },
   { id: "commands", label: "관리자 명령어", color: "#7b3fd8", icon: <><path d="m5 8 4 4-4 4" /><path d="M12 17h7" /></> },
   { id: "database", label: "DB 편집", color: "#0a7d8c", icon: <><ellipse cx="12" cy="6" rx="7" ry="2.5" /><path d="M5 6v12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V6" /><path d="M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5" /></> },
@@ -59,6 +61,7 @@ const subtitles: Record<Page, string> = {
   exchanges: "거래소별 개장·휴장·서킷브레이커와 소속 국가·지수를 관리합니다.",
   companies: "법인 현금·보유자산·통장·대출을 보고 법인 계정으로 매수·매도·송금·대출을 실행합니다.",
   feedback: "공식 사이트의 Contact·Report로 들어온 문의와 신고를 확인하고 처리합니다.",
+  documents: "약관·처리방침·규칙·도움말과 Discord 등록 안내문을 고치고 확정합니다.",
   board: "HTS 게시판의 신고를 처리하고 글을 숨기거나 고정합니다. 익명 글의 실제 작성자와 IP를 확인할 수 있습니다.",
   compliance: "국적별 KYC 검토 상태와 AML 시뮬레이터 경보·규칙을 관리합니다.",
   accounting: "금융기관의 이중분개 시산 잔액·불균형·결과 원장 대사를 조회합니다.",
@@ -394,6 +397,7 @@ export default function App() {
         {page === "exchanges" && <ExchangesPage ctx={ctx} />}
         {page === "companies" && <CompaniesPage ctx={ctx} />}
         {page === "board" && <BoardAdminPage ctx={ctx} />}
+        {page === "documents" && <DocumentsPage ctx={ctx} />}
         {page === "compliance" && <CompliancePage ctx={ctx} />}
         {page === "accounting" && <BankJournalPage ctx={ctx} />}
         {page === "feedback" && <FeedbackPage ctx={ctx} onChange={() => void loadUnread()} />}

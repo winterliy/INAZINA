@@ -296,7 +296,7 @@ async function sendLanding(response: ServerResponse, reason: LandingReason, path
   response.end(landingPage(reason, path, health.status === 200));
 }
 
-async function requestJson(request: IncomingMessage): Promise<unknown> {
+async function requestJson(request: IncomingMessage, limit = 32_768): Promise<unknown> {
   if (!request.headers["content-type"]?.includes("application/json")) {
     throw new Error("application_json_required");
   }
@@ -304,7 +304,7 @@ async function requestJson(request: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > 32_768) throw new Error("request_too_large");
+    if (size > limit) throw new Error("request_too_large");
     chunks.push(Buffer.from(chunk));
   }
   try {
@@ -375,7 +375,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   // Board files download for anyone who can read the post; always as a download, never rendered here.
   const boardFile = request.method === "GET" ? url.pathname.match(/^\/api\/board\/files\/(\d+)$/) : null;
   if (boardFile) {
-    const meta = await internalGet(`/internal/board/files/${boardFile[1]}`);
+    // The session (if any) decides access to files on secret boards.
+    const meta = await internalGet(`/internal/board/files/${boardFile[1]}`, principalFor(request)?.userId);
     const path = meta.status === 200 && /^[a-f0-9]{32}\.[a-z0-9]{1,5}$/.test(meta.body.storedName ?? "") ? join(boardFilesDir, meta.body.storedName) : "";
     if (!path || !existsSync(path)) {
       send(response, 404, { error: "not_found" });
@@ -393,7 +394,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/board/boards") {
-    const result = await internalGet("/internal/board/boards");
+    const result = await internalGet("/internal/board/boards", principalFor(request)?.userId);
     send(response, result.status, result.body);
     return;
   }
@@ -811,6 +812,20 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     send(response, result.status, result.body);
     return;
   }
+  // Public documents (terms, privacy policy, rules, help, registration notice): read, preview, confirmed save.
+  if (url.pathname === "/api/admin/documents" || /^\/api\/admin\/documents\/[a-z]+(\/(preview|cancel))?$/.test(url.pathname)) {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const internal = url.pathname.replace(/^\/api\//, "/internal/");
+    const result = request.method === "GET"
+      ? await internalGet(internal, principal.userId)
+      : await internalRequest("POST", internal, principal.userId, await requestJson(request, 262_144));
+    send(response, result.status, result.body);
+    return;
+  }
+
   // Moderation and board structure: post/comment/report/category take a number ("new" to create),
   // board takes its ID.
   if (url.pathname === "/api/admin/board" || /^\/api\/admin\/board\/((post|comment|report|category|poll)\/(\d+|new)|board\/[a-z0-9_-]{1,32})$/.test(url.pathname)) {

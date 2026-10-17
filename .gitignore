@@ -17,3 +17,4 @@ coverage/
 .pytest_cache/
 database/backups/
 database/board_files/
+database/document_history/

@@ -181,40 +181,10 @@ class BoardOpeningTests(unittest.TestCase):
         self.assertEqual(board.react(self.conn, BOB, "post", post_id, -1)["reaction"], -1)
         self.assertEqual(board.list_posts(self.conn)["writeOpensEpoch"], board.WRITE_OPENS_EPOCH)
 
-    def test_opening_follows_the_privacy_policy_file(self):
-        import os, tempfile
-        board.WRITE_OPENS_EPOCH = None
-        saved_path, saved_cache = board.POLICY_PATH, dict(board._policy_cache)
-        try:
-            # The real policy: 시행일 2026-10-17, so the board opened at 0:00 KST that day.
-            self.assertEqual(board.write_opens_epoch(), 1792162800)
-            with tempfile.TemporaryDirectory() as folder:
-                board.POLICY_PATH = Path(folder) / "privacy.txt"
-                board._policy_cache.update(key=None, epoch=0)
-                board.POLICY_PATH.write_text("# 방침\n시행일: 2026년 10월 17일\n", encoding="utf-8")
-                self.assertEqual(board.write_opens_epoch(), 1792162800)
-                # Announcing a revision: a later 시행일 closes writing until that day, with no restart.
-                future = int(time.time()) + 40 * 86400
-                day = time.strftime("%Y년 %m월 %d일", time.gmtime(future + 9 * 3600))
-                board.POLICY_PATH.write_text(f"시행일: 2026년 10월 17일\n개정 시행일: {day}\n", encoding="utf-8")
-                os.utime(board.POLICY_PATH, ns=(time.time_ns(), time.time_ns() + 1_000_000_000))
-                self.assertGreater(board.write_opens_epoch(), time.time())
-                with self.assertRaisesRegex(ValueError, "처리방침 시행일"):
-                    self.post(BOB)
-                # A file without a 시행일 (or unreadable) keeps the last known time.
-                board.POLICY_PATH.write_text("오타 수정만 함", encoding="utf-8")
-                os.utime(board.POLICY_PATH, ns=(time.time_ns(), time.time_ns() + 2_000_000_000))
-                self.assertGreater(board.write_opens_epoch(), time.time())
-                board.POLICY_PATH.unlink()
-                self.assertGreater(board.write_opens_epoch(), time.time())
-        finally:
-            board.POLICY_PATH = saved_path
-            board._policy_cache.clear(); board._policy_cache.update(saved_cache)
-
-    def test_policy_dates_take_the_latest_valid_시행일(self):
-        text = "시행일: 2026년 10월 17일\n개정 시행일 : 2026년 12월 1일\n부칙 2027년 1월 1일\n시행일: 2026년 2월 30일"
-        self.assertEqual(board.policy_effective_epoch(text), 1796050800)  # 2026-12-01 00:00 KST
-        self.assertIsNone(board.policy_effective_epoch("날짜 없음"))
+    def test_board_opened_on_2026_10_17_kst(self):
+        import datetime, zoneinfo
+        opens = datetime.datetime.fromtimestamp(self.opens, zoneinfo.ZoneInfo("Asia/Seoul"))
+        self.assertEqual((opens.year, opens.month, opens.day, opens.hour), (2026, 10, 17, 0))
 
 
 class BoardReactionAndReplyTests(unittest.TestCase):
@@ -513,3 +483,84 @@ class BoardAttachmentAndPollTests(unittest.TestCase):
                               ({"question": "q", "options": ["a", "b"], "closesEpoch": int(time.time()) + 100 * 86400}, "90일")):
             with self.assertRaisesRegex(ValueError, message):
                 self.post(ADMIN, poll=poll)
+
+
+class SecretAndSuspendedBoardTests(unittest.TestCase):
+    setUp, tearDown, post = BoardTests.setUp, BoardTests.tearDown, BoardTests.post
+
+    def make_secret(self):
+        board.admin_action(self.conn, "board", "new", "create", {"boardId": "staff", "name": "운영진 방", "secret": True})
+        board.admin_action(self.conn, "board", "staff", "member_add", {"userId": "bob"})
+
+    def test_secret_board_is_invisible_to_everyone_but_members_and_admins(self):
+        self.make_secret()
+        post_id = self.post(BOB, board="staff", title="비밀 글")
+        ids = lambda viewer=None, admin=False: [b["board_id"] for b in board.boards(self.conn, viewer, admin)]
+        self.assertNotIn("staff", ids())
+        self.assertNotIn("staff", ids("alice"))
+        self.assertIn("staff", ids("bob"))
+        self.assertIn("staff", ids("carol", admin=True))
+        admin_view = next(b for b in board.boards(self.conn, "admin", True) if b["board_id"] == "staff")
+        self.assertEqual([m["user_id"] for m in admin_view["members"]], ["bob"])
+        # Lists, posts and comments behave as if the board did not exist.
+        self.assertEqual(board.list_posts(self.conn, viewer="alice")["total"], 0)
+        self.assertEqual(board.list_posts(self.conn, viewer="bob")["total"], 1)
+        self.assertEqual(board.list_posts(self.conn, board="staff", viewer="bob")["total"], 1)
+        with self.assertRaisesRegex(ValueError, "게시판을 확인"):
+            board.list_posts(self.conn, board="staff", viewer="alice")
+        with self.assertRaisesRegex(ValueError, "찾을 수 없거나"):
+            board.read_post(self.conn, post_id, viewer="alice")
+        self.assertEqual(board.read_post(self.conn, post_id, viewer="admin", admin=True)["title"], "비밀 글")
+        for attempt in (lambda: self.post(ALICE, board="staff"),
+                        lambda: board.add_comment(self.conn, ALICE, post_id, {"body": "c"}, "ip"),
+                        lambda: board.react(self.conn, ALICE, "post", post_id, 1),
+                        lambda: board.report(self.conn, ALICE, {"postId": post_id, "reason": "r"}, "ip")):
+            with self.assertRaises(ValueError):
+                attempt()
+        board.add_comment(self.conn, BOB, post_id, {"body": "멤버 댓글"}, "ip")
+        # Removing a member takes their access away at once.
+        board.admin_action(self.conn, "board", "staff", "member_remove", {"userId": "bob"})
+        with self.assertRaises(ValueError):
+            board.read_post(self.conn, post_id, viewer="bob")
+
+    def test_secret_board_files_need_access(self):
+        self.make_secret()
+        file_id = board.register_upload(self.conn, BOB, {"name": "a.pdf", "storedName": "1" * 32 + ".pdf", "size": 1, "sha256": "0" * 64})
+        self.post(BOB, board="staff", attachments=[file_id])
+        self.assertEqual(board.file_meta(self.conn, file_id, "bob")["name"], "a.pdf")
+        self.assertEqual(board.file_meta(self.conn, file_id, "x", admin=True)["name"], "a.pdf")
+        for viewer in (None, "alice"):
+            with self.assertRaises(LookupError):
+                board.file_meta(self.conn, file_id, viewer)
+
+    def test_member_must_be_a_registered_user(self):
+        self.make_secret()
+        with self.assertRaisesRegex(ValueError, "등록된 사용자"):
+            board.admin_action(self.conn, "board", "staff", "member_add", {"userId": "nobody"})
+
+    def test_suspended_board_is_read_only_except_reports_and_admins(self):
+        post_id = self.post(BOB)
+        board.admin_action(self.conn, "board", "free", "suspend", {"reason": "도배 정리 중"})
+        info = next(b for b in board.boards(self.conn) if b["board_id"] == "free")
+        self.assertIn("도배 정리 중", info["suspension"])
+        for attempt in (lambda: self.post(ALICE),
+                        lambda: board.add_comment(self.conn, ALICE, post_id, {"body": "c"}, "ip"),
+                        lambda: board.react(self.conn, ALICE, "post", post_id, 1),
+                        lambda: board.edit_post(self.conn, BOB, post_id, {"title": "t", "body": "b"})):
+            with self.assertRaisesRegex(ValueError, "정지"):
+                attempt()
+        self.assertEqual(board.read_post(self.conn, post_id)["post_id"], post_id)
+        board.report(self.conn, ALICE, {"postId": post_id, "reason": "r"}, "ip")
+        self.post(ADMIN)  # administrators still write
+        board.delete_post(self.conn, BOB, post_id)  # authors may still delete
+        board.admin_action(self.conn, "board", "free", "resume")
+        self.post(ALICE)
+
+    def test_suspension_with_an_end_time_lifts_by_itself(self):
+        board.admin_action(self.conn, "board", "free", "suspend", {"until": int(time.time()) + 60})
+        with self.assertRaisesRegex(ValueError, "까지"):
+            self.post(ALICE)
+        self.conn.execute("UPDATE board_boards SET suspended_until=? WHERE board_id='free'", (int(time.time()) - 1,))
+        self.post(ALICE)
+        with self.assertRaisesRegex(ValueError, "이후"):
+            board.admin_action(self.conn, "board", "free", "suspend", {"until": 1})
