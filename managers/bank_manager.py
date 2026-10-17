@@ -655,15 +655,33 @@ class BankManager:
         product_currency = str(product["quote_currency"] or home_currency)
         maturity_days = max(1, int(product["maturity_days"] or 365))
         maturity_years = maturity_days / 365.0
-        proposed_principal_service = min(
-            float(amount), float(amount) / max(1.0, maturity_years)
-        )
-        proposed_interest = float(amount) * max(0.0, float(annual_rate or 0)) / 100.0
-        proposed_service = to_home(
-            round_currency(
+        amortization_type = str(product["amortization_type"] or "legacy")
+        frequency_days = max(1, int(product["payment_frequency_days"] or maturity_days))
+        proposed_schedule = None
+        if amortization_type == "legacy":
+            proposed_principal_service = min(
+                float(amount), float(amount) / max(1.0, maturity_years)
+            )
+            proposed_interest = (
+                float(amount) * max(0.0, float(annual_rate or 0)) / 100.0
+            )
+            proposed_native_service = round_currency(
                 conn, proposed_principal_service+proposed_interest, product_currency
-            ), product_currency,
-        )
+            )
+        else:
+            proposed_schedule = BankManager._loan_cashflows(
+                amount, annual_rate, maturity_days, frequency_days,
+                amortization_type,
+                product["day_count_convention"] or "ACT/365",
+                float(now), decimal_places=currency_precision(conn, product_currency),
+            )
+            proposed_native_service = round_currency(
+                conn,
+                sum(principal_due+interest_due for due_day, principal_due, interest_due
+                    in proposed_schedule if due_day <= 365),
+                product_currency,
+            )
+        proposed_service = to_home(proposed_native_service, product_currency)
         proposed_stress_delta = 0.0
         stress_applicable = False
         if product["rate_type"] == "floating":
@@ -759,10 +777,29 @@ class BankManager:
             for currency, values in native_totals.items()
             if currency != home_currency
         )
+        if proposed_schedule is None:
+            proposed_stress_native = amount*proposed_stress_delta/100.0
+        else:
+            stressed_schedule = BankManager._loan_cashflows(
+                amount, float(annual_rate or 0)+proposed_stress_delta,
+                maturity_days, frequency_days, amortization_type,
+                product["day_count_convention"] or "ACT/365",
+                float(now), decimal_places=currency_precision(conn, product_currency),
+            )
+            stressed_service = sum(
+                principal_due+interest_due
+                for due_day, principal_due, interest_due in stressed_schedule
+                if due_day <= 365
+            )
+            base_service = sum(
+                principal_due+interest_due
+                for due_day, principal_due, interest_due in proposed_schedule
+                if due_day <= 365
+            )
+            proposed_stress_native = max(0.0, stressed_service-base_service)
         proposed_stress_interest = to_home(
-            round_currency(
-                conn, amount*proposed_stress_delta/100.0, product_currency
-            ), product_currency,
+            round_currency(conn, proposed_stress_native, product_currency),
+            product_currency,
         )
         proposed_fx_stress_service = (
             round_currency(

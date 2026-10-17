@@ -1039,6 +1039,37 @@ class RealisticRateSystemTests(unittest.TestCase):
             )
         self.assertAlmostEqual(metrics["stress_dsr"], 2.568)
 
+    def test_bullet_loan_dsr_follows_contractual_balloon_date(self):
+        self.db.users.execute(
+            "UPDATE users SET annual_income=100000 WHERE user_id='borrower'"
+        )
+        self.add_loan(code="BULLET-AFFORDABILITY", maturity=730,
+                      collateral_ratio=0, origination_fee=0)
+        self.db.products.execute(
+            "UPDATE liability SET amortization_type='bullet',payment_frequency_days=365,"
+            "rate_type='floating',rate_nationality='낙원',rate_floor=0,rate_cap=10,"
+            "repricing_cycle_seconds=31536000 "
+            "WHERE product_code='BULLET-AFFORDABILITY'"
+        )
+        product = self.db.products.get_liability("BULLET-AFFORDABILITY")
+        with self.db.atomic() as conn:
+            metrics = BankManager._underwriting_metrics(
+                conn, "borrower", 10_000, product, 5, 1_800_000_000, 100_000,
+            )
+        self.assertEqual(metrics["dsr"], 0)
+        self.assertEqual(metrics["stress_dsr"], 0)
+
+        self.db.products.execute(
+            "UPDATE liability SET maturity_days=365 WHERE product_code='BULLET-AFFORDABILITY'"
+        )
+        product = self.db.products.get_liability("BULLET-AFFORDABILITY")
+        with self.db.atomic() as conn:
+            metrics = BankManager._underwriting_metrics(
+                conn, "borrower", 10_000, product, 5, 1_800_000_000, 100_000,
+            )
+        self.assertAlmostEqual(metrics["dsr"], 10.5)
+        self.assertAlmostEqual(metrics["stress_dsr"], 10.7)
+
     def test_country_stress_shock_is_applied_and_persisted_at_origination(self):
         self.add_loan(code="COUNTRY-SHOCK", maturity=365, collateral_ratio=0,
                       origination_fee=0)
