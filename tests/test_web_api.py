@@ -73,6 +73,7 @@ class WebApiTests(unittest.TestCase):
                 INSERT INTO currencies VALUES ('NWX',0);
                 CREATE TABLE kyc_profiles(user_id TEXT,status TEXT,risk_tier TEXT,reviewed_by TEXT,
                     reviewed_epoch REAL,expires_epoch REAL,updated_epoch REAL);
+                INSERT INTO kyc_profiles VALUES ('bad-expiry','verified','standard','admin',1,253402300800,2);
                 CREATE TABLE aml_alerts(alert_id INTEGER,user_id TEXT,nationality TEXT,rule_code TEXT,
                     reference_key TEXT,currency_code TEXT,amount REAL,status TEXT,outcome_code TEXT,
                     opened_epoch REAL,reviewed_by TEXT,reviewed_epoch REAL);
@@ -108,6 +109,8 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(result["eclAssessments"][0]["expected_loss_time_years"], 0.25)
         self.assertEqual(result["eclAssessments"][0]["macro_pd_multiplier"], 1.2)
         self.assertEqual(result["eclAssessments"][0]["expected_loss_text"], "72")
+        self.assertEqual(result["kycProfiles"][0]["status"], "expired")
+        self.assertIsNone(result["kycProfiles"][0]["expires_epoch"])
         self.assertEqual(result["kycEvents"][0]["event_type"], "transfer_denied")
         self.assertEqual(result["kycEvents"][0]["actor_id"], "alice")
         self.assertEqual(result["kycEvents"][0]["reason_code"], "kyc_incomplete_or_expired")

@@ -769,14 +769,22 @@ class UserManager:
         kyc_profile = None
         if kyc_row:
             kyc_status = str(kyc_row["status"])
-            if (kyc_status == "verified" and kyc_row["expires_epoch"] is not None
-                    and float(kyc_row["expires_epoch"]) <= time.time()):
-                kyc_status = "expired"
+            expires_epoch = None
+            if kyc_row["expires_epoch"] is not None:
+                from functions.time_utils import validate_epoch
+                try:
+                    expires_epoch = validate_epoch(kyc_row["expires_epoch"])
+                except ValueError:
+                    # Corrupt expiry data must never be displayed as verified.
+                    if kyc_status == "verified":
+                        kyc_status = "expired"
+                else:
+                    if kyc_status == "verified" and expires_epoch <= time.time():
+                        kyc_status = "expired"
             kyc_profile = {
                 "status": kyc_status,
                 "risk_tier": str(kyc_row["risk_tier"]),
-                "expires_epoch": (float(kyc_row["expires_epoch"])
-                                  if kyc_row["expires_epoch"] is not None else None),
+                "expires_epoch": expires_epoch,
             }
         home_cash_units = cash * SCALE
         foreign_cash_units = sum(

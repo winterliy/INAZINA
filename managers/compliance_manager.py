@@ -60,10 +60,17 @@ class ComplianceManager:
         ).fetchone()
         if not profile:
             return True
-        expires = (float(profile["expires_epoch"])
-                   if profile["expires_epoch"] is not None else None)
-        if (profile["status"] != "verified"
-                or (expires is not None and (not math.isfinite(expires) or expires <= when))):
+        expires = None
+        if profile["expires_epoch"] is not None:
+            try:
+                expires = ComplianceManager._validated_epoch(
+                    profile["expires_epoch"], "invalid_kyc_profile_expiry_epoch"
+                )
+            except ValueError:
+                raise ValueError(
+                    "KYC 확인이 완료되지 않았거나 만료되어 금융 거래를 진행할 수 없습니다."
+                ) from None
+        if profile["status"] != "verified" or (expires is not None and expires <= when):
             raise ValueError("KYC 확인이 완료되지 않았거나 만료되어 금융 거래를 진행할 수 없습니다.")
         if profile["risk_tier"] not in {"standard", "enhanced"}:
             raise ValueError("제한 위험등급으로 설정되어 금융 거래를 진행할 수 없습니다.")
@@ -81,8 +88,12 @@ class ComplianceManager:
         ).fetchone()
         if not profile:
             return False
-        expires = (float(profile["expires_epoch"])
-                   if profile["expires_epoch"] is not None else None)
+        try:
+            expires = (cls._validated_epoch(
+                profile["expires_epoch"], "invalid_kyc_profile_expiry_epoch"
+            ) if profile["expires_epoch"] is not None else None)
+        except ValueError:
+            expires = float("nan")
         reason = (
             "risk_restricted" if profile["risk_tier"] not in {"standard", "enhanced"}
             else "kyc_incomplete_or_expired"
@@ -132,8 +143,10 @@ class ComplianceManager:
         if reason_code not in cls.KYC_REASONS:
             raise ValueError("허용되지 않은 KYC 사유 코드입니다.")
         if expires_epoch is not None:
-            expires_epoch = float(expires_epoch)
-            if not math.isfinite(expires_epoch) or expires_epoch <= when:
+            expires_epoch = cls._validated_epoch(
+                expires_epoch, "invalid_kyc_expiry_epoch"
+            )
+            if expires_epoch <= when:
                 raise ValueError("KYC 만료 시각은 현재보다 미래여야 합니다.")
         subject = conn.execute(
             "SELECT user_id FROM users WHERE user_id=?", (str(user_id),)

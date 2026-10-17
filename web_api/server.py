@@ -1557,6 +1557,19 @@ def admin_compliance_overview(nationality=None):
         kyc_sql += " ORDER BY updated_epoch DESC LIMIT 100"
         alert_sql += " AND status<>'closed' ORDER BY opened_epoch DESC LIMIT 100" if nationality else " WHERE status<>'closed' ORDER BY opened_epoch DESC LIMIT 100"
         profiles = [dict(row) for row in connection.execute(kyc_sql, params).fetchall()]
+        from functions.time_utils import validate_epoch
+        for row in profiles:
+            if row["expires_epoch"] is None:
+                continue
+            try:
+                row["expires_epoch"] = validate_epoch(row["expires_epoch"])
+            except ValueError:
+                row["expires_epoch"] = None
+                if row["status"] == "verified":
+                    row["status"] = "expired"
+            else:
+                if row["status"] == "verified" and row["expires_epoch"] <= time.time():
+                    row["status"] = "expired"
         alerts = [dict(row) for row in connection.execute(alert_sql, params).fetchall()]
         for row in alerts:
             places = currency_precision(connection, row["currency_code"])

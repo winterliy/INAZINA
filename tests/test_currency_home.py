@@ -171,6 +171,48 @@ class CurrencyHomeTests(unittest.TestCase):
             "SELECT COUNT(*) FROM admin_audit"
         )[0], before["audit"])
 
+    def test_kyc_expiry_must_be_a_supported_future_epoch(self):
+        self.configure()
+        before_events = self.db.system.execute_one(
+            "SELECT COUNT(*) FROM kyc_profile_events"
+        )[0]
+        for invalid_expiry in (-1, float('nan'), float('inf'), 1e300, True, 'invalid'):
+            with self.subTest(invalid_expiry=invalid_expiry):
+                with self.assertRaisesRegex(ValueError, 'invalid_kyc_expiry_epoch'):
+                    with self.db.atomic() as conn:
+                        ComplianceManager.set_kyc_status(
+                            conn, 'citizen', 'admin', 'verified',
+                            reason_code='requirements_met', expires_epoch=invalid_expiry,
+                        )
+        self.assertIsNone(self.db.system.execute_one(
+            "SELECT 1 FROM kyc_profiles WHERE user_id='citizen'"
+        ))
+        self.assertEqual(self.db.system.execute_one(
+            "SELECT COUNT(*) FROM kyc_profile_events"
+        )[0], before_events)
+        with self.db.atomic() as conn:
+            ComplianceManager.set_kyc_status(
+                conn, 'citizen', 'admin', 'verified',
+                reason_code='requirements_met', expires_epoch=253402300000,
+                now=1000,
+            )
+        self.db.system.execute(
+            "UPDATE kyc_profiles SET expires_epoch=253402300800 WHERE user_id='citizen'"
+        )
+        kyc_view = self.bot.user_mgr.get_total_assets(
+            'citizen', settle=False
+        )['kyc_profile']
+        self.assertEqual(kyc_view['status'], 'expired')
+        self.assertIsNone(kyc_view['expires_epoch'])
+        with self.assertRaisesRegex(ValueError, 'KYC 확인'):
+            ComplianceManager.check_financial_eligibility(
+                self.db, 'citizen', 'transfer', now=1000
+            )
+        denial = self.db.system.execute_one(
+            "SELECT reason_code FROM kyc_profile_events WHERE event_type='transfer_denied'"
+        )
+        self.assertEqual(denial['reason_code'], 'kyc_incomplete_or_expired')
+
     def test_explicit_kyc_review_gates_outgoing_transfers_but_not_receiving(self):
         cmd=self.configure()
         cmd.execute('admin','기본소득','미국 100')
