@@ -129,11 +129,16 @@ class InstitutionMaturityGapTests(unittest.TestCase):
         usd_down = next(row for row in by_currency["USD"]["shocks"]
                         if row["basisPoints"] == -200)
         self.assertAlmostEqual(usd_up["estimatedEveChange"],
-                               -by_currency["USD"]["netDurationGapAmountYears"]*.02,
+                               -by_currency["USD"]["netDurationGapAmountYears"]*.02
+                               +.5*by_currency["USD"]["netConvexityGapAmountYears2"]*.02**2,
                                places=2)
         self.assertAlmostEqual(usd_down["estimatedEveChange"],
-                               by_currency["USD"]["netDurationGapAmountYears"]*.02,
+                               by_currency["USD"]["netDurationGapAmountYears"]*.02
+                               +.5*by_currency["USD"]["netConvexityGapAmountYears2"]*.02**2,
                                places=2)
+        self.assertGreater(by_currency["USD"]["netConvexityGapAmountYears2"], 0)
+        self.assertNotEqual(usd_up["estimatedEveChange"], -usd_down["estimatedEveChange"])
+        self.assertIn("second-order", report["method"])
         self.assertIn("not a regulatory IRRBB", report["method"])
 
     def test_demand_deposits_have_zero_duration_and_unknown_loan_maturity_is_reported(self):

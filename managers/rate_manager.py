@@ -1213,7 +1213,7 @@ class RateManager:
 
     @staticmethod
     def institution_fixed_rate_eve_stress(conn, issuer, *, now=None):
-        """Estimate fixed-rate balance-sheet value sensitivity using principal duration proxies."""
+        """Estimate fixed-rate value sensitivity using principal timing moments."""
         issuer = str(issuer or "").strip()
         if not issuer:
             raise ValueError("financial_institution_not_found")
@@ -1227,7 +1227,9 @@ class RateManager:
         def bucket(currency):
             currency = str(currency or "NWX")
             exposure.setdefault(currency, {"assetDurationAmountYears": 0.0,
-                                           "liabilityDurationAmountYears": 0.0})
+                                           "liabilityDurationAmountYears": 0.0,
+                                           "assetConvexityAmountYears2": 0.0,
+                                           "liabilityConvexityAmountYears2": 0.0})
             counts.setdefault(currency, {"fixedLoans": 0, "fixedDeposits": 0,
                                          "loansWithoutMaturity": 0})
             return currency, exposure[currency], counts[currency]
@@ -1256,21 +1258,24 @@ class RateManager:
             ).fetchall()
             principal_total = 0.0
             amount_years = 0.0
+            amount_years_squared = 0.0
             for row in cashflows:
                 principal = max(0.0, float(row["principal_due"] or 0)
                                 - float(row["principal_paid"] or 0))
+                due_years = max(0.0, (float(row["due_epoch"])-epoch)/year_seconds)
                 principal_total += principal
-                amount_years += principal*max(0.0, (float(row["due_epoch"])-epoch)/year_seconds)
+                amount_years += principal*due_years
+                amount_years_squared += principal*due_years*due_years
             if principal_total > 0:
-                duration_years = amount_years/principal_total
                 # Scale scheduled principal to the current gross balance; any
                 # unscheduled residual is conservatively placed at maturity.
-                values["assetDurationAmountYears"] += (
-                    min(balance, principal_total)*duration_years
-                    + max(0.0, balance-principal_total)*remaining_years
-                )
+                scheduled_scale = min(balance, principal_total)/principal_total
+                residual = max(0.0, balance-principal_total)
+                values["assetDurationAmountYears"] += amount_years*scheduled_scale + residual*remaining_years
+                values["assetConvexityAmountYears2"] += amount_years_squared*scheduled_scale + residual*remaining_years**2
             else:
                 values["assetDurationAmountYears"] += balance*remaining_years
+                values["assetConvexityAmountYears2"] += balance*remaining_years**2
             count["fixedLoans"] += 1
 
         for account in conn.execute(
@@ -1294,6 +1299,7 @@ class RateManager:
                 maturity = float(opened or epoch)+term_days*86400
                 remaining_years = max(0.0, (maturity-epoch)/year_seconds)
                 values["liabilityDurationAmountYears"] += balance*remaining_years
+                values["liabilityConvexityAmountYears2"] += balance*remaining_years**2
             count["fixedDeposits"] += 1
 
         from functions.money import currency_precision, round_currency
@@ -1302,6 +1308,8 @@ class RateManager:
             asset_years = values["assetDurationAmountYears"]
             liability_years = values["liabilityDurationAmountYears"]
             gap = asset_years-liability_years
+            convexity_gap = (values["assetConvexityAmountYears2"]
+                             - values["liabilityConvexityAmountYears2"])
             scenarios.append({
                 "currency": currency,
                 "decimalPlaces": currency_precision(conn, currency),
@@ -1311,13 +1319,18 @@ class RateManager:
                 "assetDurationAmountYears": asset_years,
                 "liabilityDurationAmountYears": liability_years,
                 "netDurationGapAmountYears": gap,
+                "assetConvexityAmountYears2": values["assetConvexityAmountYears2"],
+                "liabilityConvexityAmountYears2": values["liabilityConvexityAmountYears2"],
+                "netConvexityGapAmountYears2": convexity_gap,
                 "shocks": [{
                     "basisPoints": bp,
-                    "estimatedEveChange": round_currency(conn, -gap*bp/10000, currency),
+                    "estimatedEveChange": round_currency(
+                        conn, -gap*(bp/10000)+0.5*convexity_gap*(bp/10000)**2, currency
+                    ),
                 } for bp in (-200, -100, 100, 200)],
             })
         return {"issuer": issuer, "asOfEpoch": epoch, "scenarios": scenarios,
-                "method": "fixed-rate current principal balance times remaining principal-weighted maturity; maturity deposits use product term; demand deposits have zero duration; linear parallel-shock ΔEVE≈−net duration amount-years×Δyield; excludes coupons, yield curves, convexity, securities, derivatives, prepayments, behavioral deposit duration and accounting classification; not a regulatory IRRBB measure"}
+                "method": "fixed-rate current principal balance times remaining principal-weighted maturity and squared maturity; maturity deposits use product term; demand deposits have zero duration; second-order parallel-shock proxy ΔEVE≈−net duration exposure×Δyield+0.5×net squared-time exposure×Δyield²; not discounted cash-flow convexity and excludes coupons, yield curves, securities, derivatives, prepayments, behavioral deposit duration and accounting classification; not a regulatory IRRBB measure"}
 
     @staticmethod
     def institution_capacity(conn, issuer, proposed_loan=0, currency_code=None):
