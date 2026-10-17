@@ -280,6 +280,9 @@ class InterestManager:
                 account["quote_currency"]
             ) if gross > 0 else 0)
             net = max(-float(balance), gross-tax)
+            # A negative-rate charge cannot reduce an account below zero. Book
+            # the amount actually applied to the balance, not the uncapped accrual.
+            accounting_gross = gross if gross >= 0 else net
             stamp = datetime.fromtimestamp(
                 paid_until, timezone.utc
             ).strftime("%Y-%m-%d %H:%M:%S")
@@ -289,27 +292,37 @@ class InterestManager:
                 (int(round(net*SCALE)), stamp, paid_until, account["account_number"]),
             )
             RateManager.record_institution_result(
-                conn, product["issuer"], -gross, "deposit_interest",
+                conn, product["issuer"], -accounting_gross, "deposit_interest",
                 f"account:{account['account_number']}:{paid_until}",
                 now=paid_until, currency_code=account["quote_currency"],
             )
-            if gross > 0:
+            if accounting_gross != 0:
                 from managers.bank_journal import BankJournal
+                if accounting_gross > 0:
+                    lines = [("interest_expense", "debit", accounting_gross),
+                             ("customer_deposits_payable", "credit", net),
+                             ("tax_payable", "credit", tax)]
+                else:
+                    charge = -accounting_gross
+                    lines = [("customer_deposits_payable", "debit", charge),
+                             ("interest_income", "credit", charge)]
                 BankJournal.post(
                     conn, product["issuer"], "deposit_interest",
                     f"account:{account['account_number']}:{paid_until}",
                     account["quote_currency"],
-                    [("interest_expense", "debit", gross),
-                     ("customer_deposits_payable", "credit", net),
-                     ("tax_payable", "credit", tax)],
+                    lines,
                     description=f"Deposit interest for {account['account_number']}",
                     now=paid_until,
                 )
             balance += net
             conn.execute('INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount,currency_code) VALUES (?,?,?,?,?,?)',
-                (account['user_id'], 'saving_interest', gross, tax, net,
+                (account['user_id'], 'saving_interest', accounting_gross, tax, net,
                  account['quote_currency']))
-            cls._log_company_interest(conn, account['user_id'], 'interest_income', gross, tax, account['quote_currency'], product['issuer'])
+            company_kind = "interest_income" if accounting_gross >= 0 else "interest_expense"
+            cls._log_company_interest(
+                conn, account['user_id'], company_kind, abs(accounting_gross), tax,
+                account['quote_currency'], product['issuer'],
+            )
             if tax > 0:
                 from managers.currency_manager import CurrencyManager, SCALE
                 tax_units = int(round(float(tax)*SCALE))

@@ -219,6 +219,12 @@ class RealisticRateSystemTests(unittest.TestCase):
             "borrower", now=start+31536000
         )
         self.assertEqual(self.db.accounts.get_account(row["account_number"])["balance"], 9_000)
+        with self.db.atomic() as conn:
+            deposit_reconciliation = BankJournal.reconcile_customer_deposits(conn, "Bank")
+            result_reconciliation = BankJournal.reconcile_institution_results(conn, "Bank")
+        self.assertEqual(deposit_reconciliation[0]["status"], "matched")
+        self.assertEqual(result_reconciliation[0]["status"], "matched")
+        self.assertEqual(result_reconciliation[0]["ledger_amount"], 1_000)
 
     def test_contract_rate_uses_credit_collateral_fee_and_apr(self):
         self.add_loan()
