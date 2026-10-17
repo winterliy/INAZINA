@@ -60,7 +60,7 @@ class CreditScoreTests(unittest.TestCase):
         self.db.users.execute("UPDATE users SET cash=0 WHERE user_id='borrower'")
         self.db.accounts.execute("UPDATE accounts SET balance_units=0 WHERE user_id='borrower'")
 
-    def test_enrollment_preserves_existing_score_then_converges_to_model(self):
+    def test_enrollment_keeps_granted_surplus_and_fades_legacy_deductions(self):
         now = time.time()
         self.db.users.execute("UPDATE users SET credit_score=820 WHERE user_id='borrower'")
         self.assertEqual(self.refresh(now), 820)
@@ -68,8 +68,13 @@ class CreditScoreTests(unittest.TestCase):
             "SELECT points FROM credit_events WHERE user_id='borrower' "
             "AND event_type='legacy_baseline'")
         self.assertAlmostEqual(baseline["points"], 120)
-        # Half-life 365 days: half of the unexplained +120 remains after a year.
-        self.assertEqual(self.refresh(now+365*DAY), 760)
+        self.assertEqual(self.refresh(now+365*DAY), 820)
+
+        self.db.users.create_user("penalized", "Penalized", "Nac", 0)
+        self.db.users.execute("UPDATE users SET credit_score=600 WHERE user_id='penalized'")
+        self.assertEqual(self.refresh(now, "penalized"), 600)
+        # Half-life 365 days: half of the unexplained −100 remains after a year.
+        self.assertEqual(self.refresh(now+365*DAY, "penalized"), 650)
 
     def test_missed_payment_decays_and_on_time_history_rebuilds_score(self):
         now = time.time()

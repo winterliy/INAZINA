@@ -9,7 +9,8 @@ The stored users.credit_score is a cache of compute(): an anchor plus
 - debt burden: outstanding loans against stability-weighted income,
 - credit history length and recently opened loans,
 - adjustments: permanent administrator corrections and a decaying baseline
-  that preserves each user's pre-model score at enrollment.
+  that preserves each user's pre-model score at enrollment (deductions
+  fade, administrator-granted surpluses stay).
 
 Weights follow the shape of bureau scorecards (payment history dominates)
 but are simulator assumptions kept in credit_score_policy, not a calibrated
@@ -48,7 +49,7 @@ FACTOR_LABELS = {
     "history_length": "신용거래기간",
     "new_credit": "최근 신규 대출",
     "manual": "관리자 정정",
-    "legacy": "도입 전 점수 보정(감쇠 중)",
+    "legacy": "도입 전 점수 보정",
 }
 
 
@@ -89,7 +90,11 @@ class CreditScoreManager:
             if kind == "manual_adjustment" or kind == "external_adjustment":
                 factors["manual"] += float(event["points"])
             elif kind == "legacy_baseline":
-                factors["legacy"] += float(event["points"])*cls._decay(
+                # The legacy system only lowered scores through delinquency
+                # penalties and only administrators raised them: unexplained
+                # deductions fade like old delinquencies, grants are kept.
+                points = float(event["points"])
+                factors["legacy"] += points if points > 0 else points*cls._decay(
                     age, p["legacy_half_life_days"])
             elif kind in EVENT_RULES:
                 points_key, half_life_key, retention_key, sign = EVENT_RULES[kind]
@@ -182,8 +187,8 @@ class CreditScoreManager:
     def sync(cls, conn, user_id, now=None):
         """Enroll a user or absorb an outside edit before new evidence is recorded.
 
-        Enrollment stores (current score − model) as a decaying baseline so
-        that introducing the model never jumps anyone's score. An outside
+        Enrollment stores (current score − model) as a baseline so that
+        introducing the model never jumps anyone's score. An outside
         edit (SQL Browser, legacy code) becomes a permanent external adjustment.
         """
         now = time.time() if now is None else float(now)

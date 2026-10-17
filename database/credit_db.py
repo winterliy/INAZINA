@@ -45,7 +45,7 @@ CREDIT_POLICY_DEFAULTS = (
     ("new_credit_window_days", 90, "신규 대출 집계 기간"),
     ("new_credit_points", 10, "기간 내 두 번째 이후 신규 대출 1건 감점"),
     ("new_credit_cap", 30, "신규 대출 감점 상한"),
-    ("legacy_half_life_days", 365, "도입 전 점수와 모델 차이의 반감기"),
+    ("legacy_half_life_days", 365, "도입 전 점수가 모델보다 낮은 차이의 반감기(높은 차이는 유지)"),
     ("refresh_interval_seconds", 86400, "감쇠 반영을 위한 정기 재계산 주기"),
 )
 
