@@ -73,6 +73,13 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.db.accounts.execute(
             "UPDATE loans SET contract_effective_rate=10 WHERE product_code='ECL3'"
         )
+        loan_id = self.db.accounts.execute_one(
+            "SELECT loan_id FROM loans WHERE product_code='ECL3'"
+        )["loan_id"]
+        self.db.accounts.execute(
+            "INSERT INTO loan_payment_schedule(loan_id,installment_number,due_epoch,principal_due) "
+            "VALUES (?,?,?,500)", (loan_id, 1, 1_800_000_000+90*86400),
+        )
         with self.db.atomic() as conn:
             count = CreditRiskManager.assess_conn(conn, 1_800_000_000)
         with self.db.atomic() as conn:
@@ -205,6 +212,39 @@ class DefaultedLoanEclTests(unittest.TestCase):
         )
         self.assertEqual(row["stage"], 2)
         self.assertGreaterEqual(row["pd_12m"], baseline*2)
+
+    def test_ead_uses_principal_amortization_due_before_expected_loss_midpoint(self):
+        epoch = 1_800_000_000
+        self.db.accounts.execute(
+            "UPDATE loans SET status='active',collection_status='current',"
+            "missed_payment_count=0,current_ltv=.5,maturity_epoch=?,"
+            "contract_effective_rate=0 WHERE product_code='ECL3'",
+            (epoch+365*86400,),
+        )
+        loan_id = self.db.accounts.execute_one(
+            "SELECT loan_id FROM loans WHERE product_code='ECL3'"
+        )["loan_id"]
+        self.db.accounts.execute(
+            "INSERT INTO loan_payment_schedule(loan_id,installment_number,due_epoch,principal_due) "
+            "VALUES (?,?,?,?),(?,?,?,?),(?,?,?,?)",
+            (loan_id, 1, epoch+90*86400, 300,
+             loan_id, 2, epoch+180*86400, 300,
+             loan_id, 3, epoch+365*86400, 400),
+        )
+        self.db.accounts.execute(
+            "INSERT INTO loan_payment_schedule"
+            "(loan_id,installment_number,due_epoch,principal_due,status) VALUES (?,?,?,?,?)",
+            (loan_id, 4, epoch-30*86400, 100, "missed"),
+        )
+        with self.db.atomic() as conn:
+            self.assertEqual(CreditRiskManager.assess_conn(conn, epoch), 1)
+        row = self.db.accounts.execute_one(
+            "SELECT stage,ead,scenario FROM loan_ecl_assessments "
+            "ORDER BY calculated_epoch DESC LIMIT 1"
+        )
+        self.assertEqual(row["stage"], 1)
+        self.assertEqual(row["ead"], 400)
+        self.assertIn('"eadMethod":"midpoint_after_scheduled_principal"', row["scenario"])
 
     def test_macro_downturn_increases_stage_two_pd_and_is_recorded(self):
         epoch = 1_800_000_000

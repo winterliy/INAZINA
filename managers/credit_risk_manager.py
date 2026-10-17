@@ -214,6 +214,29 @@ class CreditRiskManager:
                 "scenarios": scenarios,
                 "method": "deterministic pro-rata default share of performing loans; collateral-adjusted LGD; existing allowance applied pro-rata; no default correlation, recovery timing, macroeconomic feedback or tax effects"}
 
+    @staticmethod
+    def _ead_at_expected_loss(conn, loan_id, balance, as_of_epoch, loss_time_years,
+                              stage, currency):
+        """Proxy exposure at midpoint after scheduled, not-yet-due principal payments."""
+        current = max(0.0, float(balance or 0))
+        if stage == 3:
+            return round_currency(conn, current, currency), "defaulted_current_balance"
+        horizon = float(as_of_epoch)+max(0.0, float(loss_time_years))*365*86400
+        rows = conn.execute(
+            "SELECT principal_due,principal_paid FROM accounts.loan_payment_schedule "
+            "WHERE loan_id=? AND due_epoch>? AND due_epoch<=? "
+            "AND status IN ('scheduled','partial')",
+            (int(loan_id), float(as_of_epoch), horizon),
+        ).fetchall()
+        scheduled_principal = sum(
+            max(0.0, float(row["principal_due"] or 0)-float(row["principal_paid"] or 0))
+            for row in rows
+        )
+        if not rows:
+            return round_currency(conn, current, currency), "current_balance_no_future_schedule"
+        projected = round_currency(conn, max(0.0, current-scheduled_principal), currency)
+        return projected, "midpoint_after_scheduled_principal"
+
     @classmethod
     def assess_conn(cls, conn, now, *, user_id=None, product_code=None):
         """Book at most one assessment per active loan per UTC day."""
@@ -284,9 +307,9 @@ class CreditRiskManager:
             discount_factor = (1.0+eir_percent/100.0)**(-expected_loss_time)
             if not math.isfinite(discount_factor) or discount_factor <= 0:
                 discount_factor = 1.0
-            ead = round_currency(
-                conn, max(0.0, float(loan["outstanding_balance"] or 0)),
-                loan["quote_currency"],
+            ead, ead_method = cls._ead_at_expected_loss(
+                conn, loan["loan_id"], loan["outstanding_balance"], epoch,
+                expected_loss_time, stage, loan["quote_currency"],
             )
             scenarios = conn.execute(
                 "SELECT scenario_key,probability,pd_multiplier,lgd_multiplier "
@@ -316,7 +339,8 @@ class CreditRiskManager:
                                          "discountFactor": discount_factor,
                                          "macroPdMultiplier": macro_pd_multiplier,
                                          "effectiveRatePercent": eir_percent,
-                                         "expectedLossTimeYears": expected_loss_time})
+                                         "expectedLossTimeYears": expected_loss_time,
+                                         "eadMethod": ead_method})
             expected_loss = round_currency(
                 conn, raw_expected_loss, loan["quote_currency"]
             )
