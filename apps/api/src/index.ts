@@ -545,6 +545,66 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  const drVotingMeetingMatch = url.pathname.match(/^\/api\/admin\/dr\/voting-meetings(?:\/(\d+))?$/);
+  if (drVotingMeetingMatch) {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const meetingId = drVotingMeetingMatch[1];
+    const result = request.method === "GET" && !meetingId
+      ? await internalGet(`/internal/admin/dr/voting-meetings?limit=${encodeURIComponent(url.searchParams.get("limit") ?? "100")}`, principal.userId)
+      : request.method === "GET" && meetingId
+      ? await internalGet(`/internal/admin/dr/voting-meetings/${meetingId}`, principal.userId)
+      : request.method === "POST" && !meetingId
+        ? await internalRequest("POST", "/internal/admin/dr/voting-meetings", principal.userId,
+          await requestJson(request))
+        : { status: 405, body: { error: "method_not_allowed" } };
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (url.pathname === "/api/admin/dr/voting-agenda") {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const result = request.method === "POST"
+      ? await internalRequest("POST", "/internal/admin/dr/voting-agenda", principal.userId,
+        await requestJson(request))
+      : { status: 405, body: { error: "method_not_allowed" } };
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (url.pathname === "/api/admin/dr/voting-window") {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const result = request.method === "POST"
+      ? await internalRequest("POST", "/internal/admin/dr/voting-window", principal.userId,
+        await requestJson(request))
+      : { status: 405, body: { error: "method_not_allowed" } };
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (url.pathname === "/api/admin/dr/voting-results") {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const query = new URLSearchParams({ meetingId: url.searchParams.get("meetingId") ?? "" });
+    const agendaItemId = url.searchParams.get("agendaItemId");
+    if (agendaItemId) query.set("agendaItemId", agendaItemId);
+    const result = request.method === "GET"
+      ? await internalGet(`/internal/admin/dr/voting-results?${query}`, principal.userId)
+      : { status: 405, body: { error: "method_not_allowed" } };
+    send(response, result.status, result.body);
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/admin/users") {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });
@@ -575,6 +635,24 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
 
   if (request.method === "GET" && url.pathname === "/api/me/dr/movements") {
     const result = await internalGet("/internal/me/dr/movements", principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/me/dr/voting-delegations") {
+    const result = await internalGet("/internal/me/dr/voting-delegations", principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/me/dr/proxy-voting-delegations") {
+    const result = await internalGet("/internal/me/dr/proxy-voting-delegations", principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/me/dr/voting-agenda") {
+    const result = await internalGet("/internal/me/dr/voting-agenda", principal.userId);
     send(response, result.status, result.body);
     return;
   }
@@ -669,6 +747,28 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   if (request.method === "POST" && url.pathname === "/api/dr/convert") {
     const body = await requestJson(request);
     const result = await internalRequest("POST", "/internal/dr/convert", principal.userId, body);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/dr/voting-delegations") {
+    const result = await internalRequest("POST", "/internal/dr/voting-delegations", principal.userId,
+      await requestJson(request));
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/dr/votes") {
+    const result = await internalRequest("POST", "/internal/dr/votes", principal.userId,
+      await requestJson(request));
+    send(response, result.status, result.body);
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname.startsWith("/api/dr/voting-delegations/") &&
+      url.pathname.endsWith("/revoke")) {
+    const result = await internalRequest("POST", "/internal/dr/voting-delegations/revoke",
+      principal.userId, await requestJson(request));
     send(response, result.status, result.body);
     return;
   }

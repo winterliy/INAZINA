@@ -617,6 +617,63 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(entry["action"], "dr_custody_events.read")
         self.assertEqual(entry["payload"], {"limit": 500, "result_count": 0})
 
+    def test_admin_dr_voting_meeting_list_is_bounded_and_audited(self):
+        response = {}
+        handler = SimpleNamespace(
+            headers={"x-inazina-internal-token": "secret",
+                     "x-inazina-user-id": "admin-1"},
+            path="/internal/admin/dr/voting-meetings?limit=999",
+            send_json=lambda status, value: response.update(status=status, value=value),
+        )
+        meetings = [{"meetingId": 4, "underlyingCode": "ACME", "agendaCount": 2}]
+        manager = SimpleNamespace(list_voting_meetings=lambda limit: meetings if limit == 100 else [])
+        with patch.object(server, "INTERNAL_TOKEN", "secret"), \
+                patch.object(server, "identity", return_value={
+                    "userId": "admin-1", "role": "admin",
+                }), patch.object(server, "domain", return_value=SimpleNamespace(
+                    bot=SimpleNamespace(db=object()),
+                )), patch("managers.depositary_receipt_manager.DepositaryReceiptManager",
+                          return_value=manager):
+            server.Handler.do_GET(handler)
+        self.assertEqual(response, {"status": 200, "value": {"meetings": meetings}})
+        entry = server.admin_audit()[0]
+        self.assertEqual(entry["action"], "dr_voting_meetings.list")
+        self.assertEqual(entry["payload"], {"limit": 100, "result_count": 1})
+
+    def test_user_dr_voting_delegations_are_scoped_to_authenticated_owner(self):
+        response = {}
+        handler = SimpleNamespace(
+            headers={"x-inazina-internal-token": "secret",
+                     "x-inazina-user-id": "citizen-1"},
+            path="/internal/me/dr/voting-delegations",
+            send_json=lambda status, value: response.update(status=status, value=value),
+        )
+        records = [{"delegation_id": 7, "dr_code": "ABC_DR", "proxy_user_id": "proxy-2"}]
+        with patch.object(server, "INTERNAL_TOKEN", "secret"), \
+                patch.object(server, "identity", return_value={
+                    "userId": "citizen-1", "role": "user",
+                }), patch.object(server, "user_dr_voting_delegations", return_value=records) as getter:
+            server.Handler.do_GET(handler)
+        getter.assert_called_once_with("citizen-1")
+        self.assertEqual(response, {"status": 200, "value": {"delegations": records}})
+
+    def test_proxy_dr_voting_delegations_are_scoped_to_authenticated_proxy(self):
+        response = {}
+        handler = SimpleNamespace(
+            headers={"x-inazina-internal-token": "secret",
+                     "x-inazina-user-id": "proxy-2"},
+            path="/internal/me/dr/proxy-voting-delegations",
+            send_json=lambda status, value: response.update(status=status, value=value),
+        )
+        records = [{"delegation_id": 7, "owner_user_id": "citizen-1"}]
+        with patch.object(server, "INTERNAL_TOKEN", "secret"), \
+                patch.object(server, "identity", return_value={
+                    "userId": "proxy-2", "role": "user",
+                }), patch.object(server, "user_dr_received_voting_delegations", return_value=records) as getter:
+            server.Handler.do_GET(handler)
+        getter.assert_called_once_with("proxy-2")
+        self.assertEqual(response, {"status": 200, "value": {"delegations": records}})
+
     def test_admin_customer_detail_access_is_audited(self):
         response = {}
         handler = SimpleNamespace(

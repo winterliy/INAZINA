@@ -296,29 +296,38 @@ class RealisticRateSystemTests(unittest.TestCase):
 
     def test_ecl_backtest_reports_calibration_gap_and_observed_to_expected(self):
         self.add_loan(code="ECL-BACKTEST")
+        self.add_loan(code="ECL-BACKTEST-2")
         epoch = 2_000_000_000
         assessed = epoch - 2 * 365 * 86400
-        self.db.accounts.execute(
-            "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,status,"
-            "quote_currency,defaulted_epoch) VALUES "
-            "('borrower','ECL-BACKTEST',100,100,'defaulted','NWX',?)",
-            (assessed + 30 * 86400,),
-        )
-        loan_id = self.db.accounts.execute_one(
-            "SELECT loan_id FROM loans WHERE product_code='ECL-BACKTEST'"
-        )[0]
-        self.db.accounts.execute(
-            "INSERT INTO loan_ecl_assessments(loan_id,as_of_day,stage,pd_12m,lifetime_pd,"
-            "lgd,ead,expected_loss,quote_currency,calculated_epoch) "
-            "VALUES (?, '2024-10-18',1,.10,.20,.5,100,5,'NWX',?)",
-            (loan_id, assessed),
-        )
+        for product_code, defaulted_epoch in (
+            ("ECL-BACKTEST", assessed + 30*86400), ("ECL-BACKTEST-2", None),
+        ):
+            self.db.accounts.execute(
+                "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,status,"
+                "quote_currency,defaulted_epoch) "
+                "VALUES ('borrower',?,100,100,'active','NWX',?)",
+                (product_code, defaulted_epoch),
+            )
+            loan_id = self.db.accounts.execute_one(
+                "SELECT loan_id FROM loans WHERE product_code=? "
+                "ORDER BY loan_id DESC LIMIT 1", (product_code,)
+            )[0]
+            self.db.accounts.execute(
+                "INSERT INTO loan_ecl_assessments(loan_id,as_of_day,stage,pd_12m,lifetime_pd,"
+                "lgd,ead,expected_loss,quote_currency,calculated_epoch) "
+                "VALUES (?, '2024-10-18',1,.10,.20,.5,100,5,'NWX',?)",
+                (loan_id, assessed),
+            )
         with self.db.atomic() as conn:
             report = CreditRiskManager.backtest_12m(conn, issuer="Bank", now=epoch)
         self.assertEqual(len(report["groups"]), 1)
         group = report["groups"][0]
-        self.assertAlmostEqual(group["calibrationGap"], .90)
-        self.assertAlmostEqual(group["observedToExpected"], 10.0)
+        self.assertEqual(group["sampleCount"], 2)
+        self.assertEqual(group["borrowerCount"], 1)
+        self.assertAlmostEqual(group["effectiveSampleCount"], 1.0)
+        self.assertAlmostEqual(group["calibrationGap"], .40)
+        self.assertAlmostEqual(group["observedToExpected"], 5.0)
+        self.assertTrue(group["predictedPdWithinObserved95"])
 
     def test_kyc_profile_gates_loan_origination(self):
         self.add_loan(code="KYC-LOAN", maturity=365, collateral_ratio=0, origination_fee=0)
@@ -513,6 +522,36 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(deposit_reconciliation[0]["status"], "matched")
         self.assertEqual(result_reconciliation[0]["status"], "matched")
         self.assertEqual(result_reconciliation[0]["ledger_amount"], 1_000)
+
+    def test_positive_deposit_interest_reconciles_after_tax_payment(self):
+        self.db.products.execute(
+            "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"
+            "interest_cycle,compound_type,issuer,quote_currency) VALUES "
+            "('POS-INT','Positive interest',10,1,365,31536000,0,'Bank','NWX')"
+        )
+        bank = BankManager(self.db)
+        opened, message = bank.open_account("borrower", "POS-INT", "1234", 10_000)
+        self.assertTrue(opened, message)
+        account = self.db.accounts.execute_one(
+            "SELECT account_number FROM accounts WHERE user_id='borrower' AND product_code='POS-INT'"
+        )["account_number"]
+        start = 1_000.0
+        self.db.accounts.execute(
+            "UPDATE accounts SET created_at=datetime(?,'unixepoch'),last_payment_epoch=? "
+            "WHERE account_number=?", (start, start, account),
+        )
+        InterestManager(self.db).process_user_interests(
+            "borrower", now=start+31536000,
+        )
+        balance = self.db.accounts.get_account(account)["balance"]
+        self.assertGreater(balance, 10_000)
+        with self.db.atomic() as conn:
+            deposits = BankJournal.reconcile_customer_deposits(conn, "Bank")
+            pnl = BankJournal.reconcile_institution_results(conn, "Bank")
+            unbalanced = BankJournal.audit_unbalanced(conn, "Bank")
+        self.assertEqual(deposits[0]["status"], "matched")
+        self.assertEqual(pnl[0]["status"], "matched")
+        self.assertFalse(unbalanced)
 
     def test_contract_rate_uses_credit_collateral_fee_and_apr(self):
         self.add_loan()

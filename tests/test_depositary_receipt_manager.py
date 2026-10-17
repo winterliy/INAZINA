@@ -47,6 +47,16 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
             (2, "custody_verified"),
             (3, "settled"),
         ])
+        instruction = self.db.assets.execute_one(
+            "SELECT status,requested_epoch,updated_epoch,settled_epoch "
+            "FROM dr_custody_instructions WHERE reference_key='request-issue'"
+        )
+        self.assertEqual(instruction["status"], "settled")
+        self.assertIsNotNone(instruction["settled_epoch"])
+        self.assertEqual([row[0] for row in self.db.assets.execute(
+            "SELECT event_type FROM dr_custody_instruction_events "
+            "WHERE reference_key='request-issue' ORDER BY event_sequence"
+        )], ["requested", "verified", "settled"])
         owner = self.db.companies.execute_one(
             "SELECT max_shareholder_id FROM company WHERE company_code='UNDER'"
         )
@@ -110,6 +120,20 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
         )
         self.assertEqual(tuple(redeemed_movement), (40, 50, 'NWX', 40, 'NWX'))
         with self.db.atomic() as conn:
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "invalid DR custody instruction transition"):
+                conn.execute(
+                    "UPDATE assets.dr_custody_instructions SET status='requested' "
+                    "WHERE reference_key='request-issue'"
+                )
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "retained for audit"):
+                conn.execute(
+                    "DELETE FROM assets.dr_custody_instructions WHERE reference_key='request-issue'"
+                )
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+                conn.execute(
+                    "DELETE FROM assets.dr_custody_instruction_events "
+                    "WHERE reference_key='request-issue' AND event_sequence=1"
+                )
             with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
                 conn.execute(
                     "UPDATE assets.dr_custody_process_events SET event_type='settled' "
@@ -150,6 +174,21 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
         )
         self.assertFalse(overdrawn)
         self.assertIn("위임 가능한", message)
+        redeem, message = self.manager.convert(
+            "citizen", "UNDER_DR", "redeem", 2, "delegated-redeem",
+        )
+        self.assertFalse(redeem)
+        self.assertIn("위임된 의결권", message)
+        from managers.user_manager import UserManager
+        direct_sell, message = UserManager(self.db).sell_asset("citizen", "UNDER_DR", 2)
+        self.assertFalse(direct_sell)
+        self.assertIn("보유 수량이 부족", message)
+        from managers.order_book_manager import OrderBookManager
+        queued_sell, message = OrderBookManager(self.db, UserManager(self.db)).place_limit_order(
+            "citizen", "UNDER_DR", "sell", 2, 200,
+        )
+        self.assertFalse(queued_sell)
+        self.assertIn("매도 가능 수량이 부족", message)
         unauthorized, _ = self.manager.revoke_vote_delegation(
             "proxy", delegation_id, now=1_800_000_002,
         )
@@ -163,6 +202,144 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
             (delegation_id,),
         )
         self.assertEqual(tuple(row), ("revoked", 1_800_000_003))
+        events = self.db.assets.execute(
+            "SELECT event_type,actor_user_id FROM dr_voting_delegation_events "
+            "WHERE delegation_id=? ORDER BY event_id", (delegation_id,),
+        )
+        self.assertEqual([tuple(event) for event in events], [
+            ("delegated", "citizen"), ("revoked", "citizen"),
+        ])
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "audit event"):
+            self.db.assets.execute(
+                "UPDATE dr_voting_delegations SET proxy_user_id='attacker' WHERE delegation_id=?",
+                (delegation_id,),
+            )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "retained for audit"):
+            self.db.assets.execute(
+                "DELETE FROM dr_voting_delegations WHERE delegation_id=?",
+                (delegation_id,),
+            )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+            self.db.assets.execute(
+                "DELETE FROM dr_voting_delegation_events WHERE delegation_id=?",
+                (delegation_id,),
+            )
+
+    def test_voting_record_snapshot_freezes_direct_and_delegated_dr_entitlements(self):
+        self.create_program()
+        self.db.users.create_user("proxy", "Proxy", "낙원", 1_000)
+        self.db.assets.add_user_asset("citizen", "UNDER_DR", 3, unit_cost=45)
+        delegated, delegation = self.manager.delegate_votes("citizen", "UNDER_DR", "proxy", 1)
+        self.assertTrue(delegated, delegation)
+
+        created, meeting = self.manager.create_voting_record_snapshot(
+            "UNDER", "정기 주주총회", now=1_800_000_000,
+        )
+        self.assertTrue(created, meeting)
+        self.assertEqual(meeting["snapshotRows"], 3)
+        self.assertEqual(self.manager.get_voting_entitlements(meeting["meetingId"]), [
+            {"voterUserId": "citizen", "quantity": 10},
+            {"voterUserId": "proxy", "quantity": 2},
+        ])
+        # Trading and delegation changes must not rewrite the record-date franchise.
+        self.db.assets.add_user_asset("citizen", "UNDER_DR", 2, unit_cost=50)
+        self.assertTrue(self.manager.revoke_vote_delegation("citizen", delegation["delegationId"])[0])
+        self.assertEqual(self.manager.get_voting_entitlements(meeting["meetingId"]), [
+            {"voterUserId": "citizen", "quantity": 10},
+            {"voterUserId": "proxy", "quantity": 2},
+        ])
+        self.db.assets.add_user_asset("citizen", "UNDER_DR", 1, unit_cost=45)
+        self.assertEqual(self.manager.get_voting_entitlements(meeting["meetingId"]), [
+            {"voterUserId": "citizen", "quantity": 10},
+            {"voterUserId": "proxy", "quantity": 2},
+        ])
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "immutable"):
+            self.db.assets.execute(
+                "UPDATE dr_voting_entitlement_snapshots SET quantity=999 WHERE meeting_id=?",
+                (meeting["meetingId"],),
+            )
+
+    def test_record_date_voters_can_cast_one_weighted_ballot_per_agenda(self):
+        self.create_program()
+        self.db.users.create_user("proxy", "Proxy", "낙원", 1_000)
+        self.db.users.create_user("outsider", "Outsider", "낙원", 1_000)
+        self.db.assets.add_user_asset("citizen", "UNDER_DR", 3, unit_cost=45)
+        self.assertTrue(self.manager.delegate_votes("citizen", "UNDER_DR", "proxy", 1)[0])
+        created, meeting = self.manager.create_voting_record_snapshot(
+            "UNDER", "정기 주주총회", now=1_800_000_000,
+        )
+        self.assertTrue(created, meeting)
+        window_ok, window = self.manager.set_voting_window(
+            meeting["meetingId"], 1_800_000_010, 1_800_000_100, 100,
+            now=1_800_000_001,
+        )
+        self.assertTrue(window_ok, window)
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "immutable"):
+            self.db.assets.execute(
+                "UPDATE dr_voting_meetings SET voting_close_epoch=? WHERE meeting_id=?",
+                (1_800_000_200, meeting["meetingId"]),
+            )
+        agenda_ok, agenda = self.manager.add_voting_agenda_item(
+            meeting["meetingId"], "배당안", ["찬성", "반대", "기권"], now=1_800_000_001,
+        )
+        self.assertTrue(agenda_ok, agenda)
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "immutable"):
+            self.db.assets.execute(
+                "UPDATE dr_voting_agenda_items SET title='바뀐 안건' WHERE agenda_item_id=?",
+                (agenda["agendaItemId"],),
+            )
+        early, message = self.manager.cast_vote(
+            "citizen", meeting["meetingId"], agenda["agendaItemId"], "찬성", now=1_800_000_009,
+        )
+        self.assertFalse(early)
+        self.assertIn("시작 전", message)
+        yes, yes_result = self.manager.cast_vote(
+            "citizen", meeting["meetingId"], agenda["agendaItemId"], "찬성", now=1_800_000_020,
+        )
+        no, no_result = self.manager.cast_vote(
+            "proxy", meeting["meetingId"], agenda["agendaItemId"], "반대", now=1_800_000_030,
+        )
+        self.assertTrue(yes, yes_result)
+        self.assertTrue(no, no_result)
+        citizen_agenda = self.manager.list_user_voting_agenda(
+            "citizen", now=1_800_000_031,
+        )
+        self.assertEqual(len(citizen_agenda), 1)
+        self.assertEqual(citizen_agenda[0]["myChoice"], "찬성")
+        self.assertEqual(citizen_agenda[0]["votingPower"], 10)
+        self.assertEqual(citizen_agenda[0]["state"], "open")
+        duplicate, message = self.manager.cast_vote(
+            "citizen", meeting["meetingId"], agenda["agendaItemId"], "반대", now=1_800_000_040,
+        )
+        self.assertFalse(duplicate)
+        self.assertIn("이미 투표", message)
+        outsider, message = self.manager.cast_vote(
+            "outsider", meeting["meetingId"], agenda["agendaItemId"], "찬성", now=1_800_000_050,
+        )
+        self.assertFalse(outsider)
+        self.assertIn("의결권이 없는", message)
+        results = self.manager.get_voting_results(meeting["meetingId"], now=1_800_000_101)
+        self.assertEqual(results, [{
+            "agendaItemId": agenda["agendaItemId"], "title": "배당안",
+            "choices": {
+                "찬성": {"votingPower": 10, "ballots": 1},
+                "반대": {"votingPower": 2, "ballots": 1},
+                "기권": {"votingPower": 0, "ballots": 0},
+            },
+            "eligibleVotingPower": 12, "turnoutVotingPower": 12,
+            "turnoutPercent": 100, "votingOpensEpoch": 1_800_000_010,
+            "votingClosesEpoch": 1_800_000_100, "closed": True,
+            "quorumPercent": 100, "quorumMet": True,
+        }])
+        closed, message = self.manager.cast_vote(
+            "citizen", meeting["meetingId"], agenda["agendaItemId"], "기권", now=1_800_000_100,
+        )
+        self.assertFalse(closed)
+        self.assertIn("종료", message)
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "immutable"):
+            self.db.assets.execute(
+                "DELETE FROM dr_voting_ballots WHERE agenda_item_id=?", (agenda["agendaItemId"],),
+            )
 
     def test_failed_custody_verification_leaves_no_partial_process_or_movement(self):
         self.create_program()
@@ -173,6 +350,14 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
         self.assertIn("원주가 부족", message)
         self.assertEqual(self.db.assets.execute_one(
             "SELECT COUNT(*) FROM dr_custody_process_events "
+            "WHERE reference_key='insufficient-custody'"
+        )[0], 0)
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT COUNT(*) FROM dr_custody_instructions "
+            "WHERE reference_key='insufficient-custody'"
+        )[0], 0)
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT COUNT(*) FROM dr_custody_instruction_events "
             "WHERE reference_key='insufficient-custody'"
         )[0], 0)
         self.assertEqual(self.db.assets.execute_one(

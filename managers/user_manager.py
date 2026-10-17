@@ -402,9 +402,17 @@ class UserManager:
                     "AND side = 'sell' AND status IN ('open', 'partial')",
                     (str(user_id), asset_code),
                 ).fetchone()
+                delegated = 0
+                if str(asset.get("type") or "") == "depositary_receipt":
+                    delegated = int(conn.execute(
+                        "SELECT COALESCE(SUM(dr_quantity),0) FROM assets.dr_voting_delegations "
+                        "WHERE owner_user_id=? AND dr_code=? AND status='active'",
+                        (str(user_id), str(asset_code)),
+                    ).fetchone()[0] or 0)
                 available = (
                     sum(int(row["quantity"]) for row in positions)
                     - int(reserved["quantity"] or 0)
+                    - delegated
                 )
                 if available < quantity:
                     return False, f"❌ 보유 수량이 부족합니다. (보유 {available:,}개)"

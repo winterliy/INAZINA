@@ -52,9 +52,15 @@ class AssetDB(DBManager):
                 status TEXT NOT NULL DEFAULT 'active',
                 is_fixed INTEGER NOT NULL DEFAULT 0,
                 market_volatility REAL DEFAULT NULL,
-                total_supply INTEGER DEFAULT NULL
+                total_supply INTEGER DEFAULT NULL,
+                settlement_delay_seconds INTEGER NOT NULL DEFAULT 0
+                    CHECK(settlement_delay_seconds BETWEEN 0 AND 2592000)
             )"""
         )
+        market_asset_columns = {row[1] for row in self.execute("PRAGMA table_info(market_assets)")}
+        if "settlement_delay_seconds" not in market_asset_columns:
+            self.execute("ALTER TABLE market_assets ADD COLUMN settlement_delay_seconds "
+                         "INTEGER NOT NULL DEFAULT 0 CHECK(settlement_delay_seconds BETWEEN 0 AND 2592000)")
         self.execute("""CREATE TABLE IF NOT EXISTS depositary_receipts (
             dr_code TEXT PRIMARY KEY,
             underlying_code TEXT NOT NULL,
@@ -122,6 +128,89 @@ class AssetDB(DBManager):
             self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_dr_custody_events_immutable_{operation.lower()}
                 BEFORE {operation} ON dr_custody_process_events
                 BEGIN SELECT RAISE(ABORT,'DR custody process events are append-only'); END""")
+        self.execute("""CREATE TABLE IF NOT EXISTS dr_custody_instructions (
+            reference_key TEXT PRIMARY KEY,
+            dr_code TEXT NOT NULL REFERENCES depositary_receipts(dr_code),
+            user_id TEXT NOT NULL,
+            movement_type TEXT NOT NULL CHECK(movement_type IN ('issue','redeem')),
+            dr_quantity INTEGER NOT NULL CHECK(dr_quantity > 0),
+            underlying_quantity INTEGER NOT NULL CHECK(underlying_quantity > 0),
+            status TEXT NOT NULL CHECK(status IN ('requested','verified','settled','rejected','cancelled')),
+            requested_epoch REAL NOT NULL,
+            updated_epoch REAL NOT NULL,
+            settled_epoch REAL
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_dr_custody_instruction_status "
+                     "ON dr_custody_instructions(status,requested_epoch)")
+        self.execute("""CREATE TABLE IF NOT EXISTS dr_custody_instruction_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            reference_key TEXT NOT NULL REFERENCES dr_custody_instructions(reference_key),
+            event_sequence INTEGER NOT NULL CHECK(event_sequence BETWEEN 1 AND 5),
+            event_type TEXT NOT NULL CHECK(event_type IN
+                ('requested','verified','settled','rejected','cancelled')),
+            recorded_epoch REAL NOT NULL,
+            detail_code TEXT,
+            UNIQUE(reference_key,event_sequence)
+        )""")
+        self.execute("""CREATE TABLE IF NOT EXISTS dr_custody_reservations (
+            reference_key TEXT PRIMARY KEY REFERENCES dr_custody_instructions(reference_key),
+            dr_code TEXT NOT NULL REFERENCES depositary_receipts(dr_code),
+            user_id TEXT NOT NULL,
+            movement_type TEXT NOT NULL CHECK(movement_type IN ('issue','redeem')),
+            reserved_asset_code TEXT NOT NULL,
+            reserved_quantity INTEGER NOT NULL CHECK(reserved_quantity > 0),
+            created_epoch REAL NOT NULL,
+            settle_after_epoch REAL NOT NULL,
+            released_epoch REAL
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_dr_custody_reservations_asset "
+                     "ON dr_custody_reservations(reserved_asset_code,user_id)")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_dr_custody_instruction_events_immutable_{operation.lower()}
+                BEFORE {operation} ON dr_custody_instruction_events
+                BEGIN SELECT RAISE(ABORT,'DR custody instruction events are append-only'); END""")
+        self.execute("""INSERT OR IGNORE INTO dr_custody_instructions
+            (reference_key,dr_code,user_id,movement_type,dr_quantity,underlying_quantity,
+             status,requested_epoch,updated_epoch,settled_epoch)
+            SELECT reference_key,MIN(dr_code),MIN(user_id),MIN(movement_type),
+                   MAX(dr_quantity),MAX(underlying_quantity),
+                   CASE MAX(event_sequence) WHEN 1 THEN 'requested'
+                        WHEN 2 THEN 'verified' ELSE 'settled' END,
+                   MIN(recorded_epoch),MAX(recorded_epoch),
+                   CASE WHEN MAX(event_sequence)>=3 THEN MAX(recorded_epoch) END
+            FROM dr_custody_process_events GROUP BY reference_key""")
+        self.execute("""INSERT OR IGNORE INTO dr_custody_instruction_events
+            (reference_key,event_sequence,event_type,recorded_epoch)
+            SELECT reference_key,event_sequence,
+                   CASE event_type WHEN 'instruction_received' THEN 'requested'
+                        WHEN 'custody_verified' THEN 'verified' ELSE 'settled' END,
+                   recorded_epoch
+            FROM dr_custody_process_events ORDER BY reference_key,event_sequence""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_dr_custody_instruction_event_sequence
+            BEFORE INSERT ON dr_custody_instruction_events
+            WHEN NOT EXISTS (
+                SELECT 1 FROM dr_custody_instructions i
+                WHERE i.reference_key=NEW.reference_key AND i.status=NEW.event_type
+            ) OR NEW.event_sequence<>(
+                SELECT COALESCE(MAX(e.event_sequence),0)+1
+                FROM dr_custody_instruction_events e WHERE e.reference_key=NEW.reference_key
+            )
+            BEGIN SELECT RAISE(ABORT,'invalid DR custody instruction event sequence'); END""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_dr_custody_instruction_transition
+            BEFORE UPDATE ON dr_custody_instructions
+            WHEN NOT (
+                (OLD.status='requested' AND NEW.status IN ('verified','rejected','cancelled')) OR
+                (OLD.status='verified' AND NEW.status IN ('settled','rejected','cancelled'))
+            ) OR NEW.reference_key<>OLD.reference_key OR NEW.dr_code<>OLD.dr_code OR
+               NEW.user_id<>OLD.user_id OR NEW.movement_type<>OLD.movement_type OR
+               NEW.dr_quantity<>OLD.dr_quantity OR NEW.underlying_quantity<>OLD.underlying_quantity OR
+               NEW.requested_epoch<>OLD.requested_epoch OR NEW.updated_epoch<OLD.updated_epoch OR
+               (NEW.status='settled' AND NEW.settled_epoch IS NULL) OR
+               (NEW.status<>'settled' AND NEW.settled_epoch IS NOT NULL)
+            BEGIN SELECT RAISE(ABORT,'invalid DR custody instruction transition'); END""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_dr_custody_instructions_no_delete
+            BEFORE DELETE ON dr_custody_instructions
+            BEGIN SELECT RAISE(ABORT,'DR custody instructions are retained for audit'); END""")
         self.execute("""CREATE TABLE IF NOT EXISTS dr_voting_delegations (
             delegation_id INTEGER PRIMARY KEY AUTOINCREMENT,
             dr_code TEXT NOT NULL REFERENCES depositary_receipts(dr_code),
@@ -135,6 +224,107 @@ class AssetDB(DBManager):
         )""")
         self.execute("CREATE INDEX IF NOT EXISTS idx_dr_voting_delegations_active "
                      "ON dr_voting_delegations(dr_code,owner_user_id,status)")
+        self.execute("""CREATE TABLE IF NOT EXISTS dr_voting_delegation_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            delegation_id INTEGER NOT NULL REFERENCES dr_voting_delegations(delegation_id),
+            event_type TEXT NOT NULL CHECK(event_type IN ('delegated','revoked')),
+            actor_user_id TEXT NOT NULL,
+            recorded_epoch REAL NOT NULL
+        )""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_dr_voting_delegations_no_delete
+            BEFORE DELETE ON dr_voting_delegations
+            BEGIN SELECT RAISE(ABORT,'DR voting delegations are retained for audit'); END""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_dr_voting_delegations_revoke_only
+            BEFORE UPDATE ON dr_voting_delegations
+            WHEN NOT (
+                OLD.status='active' AND NEW.status='revoked' AND OLD.revoked_epoch IS NULL
+                AND NEW.revoked_epoch IS NOT NULL
+                AND OLD.delegation_id=NEW.delegation_id AND OLD.dr_code=NEW.dr_code
+                AND OLD.owner_user_id=NEW.owner_user_id AND OLD.proxy_user_id=NEW.proxy_user_id
+                AND OLD.dr_quantity=NEW.dr_quantity AND OLD.created_epoch=NEW.created_epoch
+                AND EXISTS (SELECT 1 FROM dr_voting_delegation_events e
+                            WHERE e.delegation_id=OLD.delegation_id
+                            AND e.event_type='revoked' AND e.actor_user_id=OLD.owner_user_id
+                            AND e.recorded_epoch=NEW.revoked_epoch)
+            )
+            BEGIN SELECT RAISE(ABORT,'DR voting delegation changes require an audit event'); END""")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_dr_voting_delegation_events_immutable_{operation.lower()}
+                BEFORE {operation} ON dr_voting_delegation_events
+                BEGIN SELECT RAISE(ABORT,'DR voting delegation events are append-only'); END""")
+        self.execute("""CREATE TABLE IF NOT EXISTS dr_voting_meetings (
+            meeting_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            underlying_code TEXT NOT NULL,
+            title TEXT NOT NULL,
+            record_epoch REAL NOT NULL,
+            created_epoch REAL NOT NULL,
+            voting_open_epoch REAL,
+            voting_close_epoch REAL,
+            quorum_percent REAL NOT NULL DEFAULT 0 CHECK(quorum_percent BETWEEN 0 AND 100),
+            status TEXT NOT NULL DEFAULT 'recorded' CHECK(status='recorded')
+        )""")
+        meeting_columns = {row[1] for row in self.execute("PRAGMA table_info(dr_voting_meetings)")}
+        for column, declaration in {
+            "voting_open_epoch": "REAL",
+            "voting_close_epoch": "REAL",
+            "quorum_percent": "REAL NOT NULL DEFAULT 0 CHECK(quorum_percent BETWEEN 0 AND 100)",
+        }.items():
+            if column not in meeting_columns:
+                self.execute(f"ALTER TABLE dr_voting_meetings ADD COLUMN {column} {declaration}")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_dr_voting_meeting_schedule_once
+            BEFORE UPDATE OF voting_open_epoch,voting_close_epoch,quorum_percent ON dr_voting_meetings
+            WHEN OLD.voting_open_epoch IS NOT NULL OR NEW.voting_open_epoch IS NULL
+              OR NEW.voting_close_epoch IS NULL
+            BEGIN SELECT RAISE(ABORT,'DR voting schedule is immutable once configured'); END""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_dr_voting_meetings_no_delete
+            BEFORE DELETE ON dr_voting_meetings
+            BEGIN SELECT RAISE(ABORT,'DR voting meetings are retained for audit'); END""")
+        self.execute("""CREATE TABLE IF NOT EXISTS dr_voting_entitlement_snapshots (
+            snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            meeting_id INTEGER NOT NULL REFERENCES dr_voting_meetings(meeting_id),
+            holder_user_id TEXT NOT NULL,
+            voter_user_id TEXT NOT NULL,
+            source_type TEXT NOT NULL CHECK(source_type IN ('underlying','dr')),
+            source_code TEXT NOT NULL,
+            quantity INTEGER NOT NULL CHECK(quantity > 0),
+            recorded_epoch REAL NOT NULL,
+            UNIQUE(meeting_id,holder_user_id,voter_user_id,source_type,source_code)
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_dr_voting_snapshot_voter "
+                     "ON dr_voting_entitlement_snapshots(meeting_id,voter_user_id)")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_dr_voting_snapshots_immutable_{operation.lower()}
+                BEFORE {operation} ON dr_voting_entitlement_snapshots
+                BEGIN SELECT RAISE(ABORT,'DR voting entitlement snapshots are immutable'); END""")
+        self.execute("""CREATE TABLE IF NOT EXISTS dr_voting_agenda_items (
+            agenda_item_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            meeting_id INTEGER NOT NULL REFERENCES dr_voting_meetings(meeting_id),
+            title TEXT NOT NULL,
+            choices_json TEXT NOT NULL,
+            created_epoch REAL NOT NULL
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_dr_voting_agenda_meeting "
+                     "ON dr_voting_agenda_items(meeting_id,agenda_item_id)")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_dr_voting_agenda_immutable_{operation.lower()}
+                BEFORE {operation} ON dr_voting_agenda_items
+                BEGIN SELECT RAISE(ABORT,'DR voting agenda items are immutable'); END""")
+        self.execute("""CREATE TABLE IF NOT EXISTS dr_voting_ballots (
+            ballot_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            meeting_id INTEGER NOT NULL REFERENCES dr_voting_meetings(meeting_id),
+            agenda_item_id INTEGER NOT NULL REFERENCES dr_voting_agenda_items(agenda_item_id),
+            voter_user_id TEXT NOT NULL,
+            choice TEXT NOT NULL,
+            voting_power INTEGER NOT NULL CHECK(voting_power > 0),
+            cast_epoch REAL NOT NULL,
+            UNIQUE(agenda_item_id,voter_user_id)
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_dr_voting_ballots_item "
+                     "ON dr_voting_ballots(agenda_item_id,choice)")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_dr_voting_ballots_immutable_{operation.lower()}
+                BEFORE {operation} ON dr_voting_ballots
+                BEGIN SELECT RAISE(ABORT,'DR voting ballots are immutable'); END""")
         self.execute("""CREATE TABLE IF NOT EXISTS dr_deviation_samples (
             sample_id INTEGER PRIMARY KEY AUTOINCREMENT,
             dr_code TEXT NOT NULL REFERENCES depositary_receipts(dr_code),

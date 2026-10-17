@@ -8,6 +8,9 @@ import { CommandPanel } from "./CommandPanel";
 
 type Warning = { level: "caution" | "warning" | "danger"; label: string; reason: string; expiresEpoch: number | null };
 type DrMovement = { movement_id: number; dr_code: string; underlying_code: string; underlying_currency: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; underlying_average_cost: number; underlying_average_cost_text: string; decimal_places: number; recorded_epoch: number };
+type DrVotingDelegation = { delegation_id: number; dr_code: string; underlying_code: string; proxy_user_id: string; dr_quantity: number; status: "active" | "revoked"; created_epoch: number; revoked_epoch: number | null; events: { event_type: string; recorded_epoch: number }[] };
+type ReceivedDrVotingDelegation = { delegation_id: number; dr_code: string; underlying_code: string; owner_user_id: string; dr_quantity: number; created_epoch: number };
+type DrVotingAgenda = { meetingId: number; agendaItemId: number; underlyingCode: string; meetingTitle: string; agendaTitle: string; choices: string[]; recordEpoch: number; opensEpoch: number | null; closesEpoch: number | null; quorumPercent: number; votingPower: number; totalEligible: number; myChoice: string | null; state: "unscheduled" | "upcoming" | "open" | "closed" };
 type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; quote_currency?: string; fund_category?: string | null; bondRisk?: { faceValue: number; macaulay_duration: number; modified_duration: number; convexity: number; dv01: number } | null; drProgram?: { underlyingCode: string; underlyingPerReceipt: number; receiptType: string; programStatus: string; depositaryBank?: string | null; custodian?: string | null; homeExchangeId?: string | null; referenceValue?: number; referencePremiumPercent?: number; referenceDeviationAlert?: boolean }; warning?: Warning; change24h?: number | null; tradeValue24h?: number; trades24h?: number };
 
 // Administrator trading warnings (투자주의·경고·위험).
@@ -82,6 +85,9 @@ export default function App() {
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [drMovements, setDrMovements] = useState<DrMovement[]>([]);
+  const [drDelegations, setDrDelegations] = useState<DrVotingDelegation[]>([]);
+  const [receivedDrDelegations, setReceivedDrDelegations] = useState<ReceivedDrVotingDelegation[]>([]);
+  const [drVotingAgenda, setDrVotingAgenda] = useState<DrVotingAgenda[]>([]);
   const [loanSchedules, setLoanSchedules] = useState<LoanScheduleView[]>([]);
   const [dividendPayments, setDividendPayments] = useState<DividendPayment[]>([]);
   const [orderFilter, setOrderFilter] = useState<"open" | "all">("open");
@@ -89,6 +95,8 @@ export default function App() {
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [quantity, setQuantity] = useState("1");
   const [drQuantity, setDrQuantity] = useState("1");
+  const [drVoteQuantity, setDrVoteQuantity] = useState("1");
+  const [drProxyUserId, setDrProxyUserId] = useState("");
   const [price, setPrice] = useState("");
   const [review, setReview] = useState(false);
   const [tool, setTool] = useState<Tool>("select");
@@ -150,6 +158,12 @@ export default function App() {
     const timer = window.setInterval(() => void refreshAccount().catch(() => undefined), 15000);
     void api<{ movements: DrMovement[] }>("/api/me/dr/movements")
       .then(({ movements }) => setDrMovements(movements)).catch(() => undefined);
+    void api<{ delegations: DrVotingDelegation[] }>("/api/me/dr/voting-delegations")
+      .then(({ delegations }) => setDrDelegations(delegations)).catch(() => undefined);
+    void api<{ delegations: ReceivedDrVotingDelegation[] }>("/api/me/dr/proxy-voting-delegations")
+      .then(({ delegations }) => setReceivedDrDelegations(delegations)).catch(() => undefined);
+    void api<{ agenda: DrVotingAgenda[] }>("/api/me/dr/voting-agenda")
+      .then(({ agenda }) => setDrVotingAgenda(agenda)).catch(() => undefined);
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [user, refreshAccount]);
 
@@ -278,6 +292,58 @@ export default function App() {
       }
     } catch (cause) {
       setNotice(`${errorText(cause, "DR 전환 요청 결과를 확인하지 못했습니다.")} 같은 수량과 방향으로 재시도하면 중복 전환되지 않습니다.`);
+    } finally { setBusy(false); }
+  }
+
+  async function delegateDrVotes() {
+    if (!selected || selected.type !== "depositary_receipt") return;
+    const quantityValue = Number(drVoteQuantity);
+    const proxyUserId = drProxyUserId.trim();
+    if (!Number.isSafeInteger(quantityValue) || quantityValue < 1 || !proxyUserId) {
+      setNotice("대리 사용자 ID와 1 이상의 정수 DR 수량을 입력해주세요.");
+      return;
+    }
+    setBusy(true);
+    try {
+      await api("/api/dr/voting-delegations", { method: "POST", body: JSON.stringify({
+        drCode: selected.code, proxyUserId, quantity: quantityValue,
+      }) });
+      const { delegations } = await api<{ delegations: DrVotingDelegation[] }>(
+        "/api/me/dr/voting-delegations");
+      setDrDelegations(delegations);
+      setNotice(`${selected.code} 의결권 ${quantityValue} DR을 ${proxyUserId}에게 위임했습니다.`);
+    } catch (cause) {
+      setNotice(errorText(cause, "의결권 위임을 처리하지 못했습니다."));
+    } finally { setBusy(false); }
+  }
+
+  async function revokeDrVotes(delegation: DrVotingDelegation) {
+    if (!window.confirm(`${delegation.dr_code} ${delegation.dr_quantity} DR 의결권 위임을 철회할까요?`)) return;
+    setBusy(true);
+    try {
+      await api(`/api/dr/voting-delegations/${delegation.delegation_id}/revoke`, {
+        method: "POST", body: JSON.stringify({ delegationId: delegation.delegation_id }),
+      });
+      const { delegations } = await api<{ delegations: DrVotingDelegation[] }>(
+        "/api/me/dr/voting-delegations");
+      setDrDelegations(delegations);
+      setNotice("의결권 위임을 철회했습니다.");
+    } catch (cause) {
+      setNotice(errorText(cause, "의결권 위임을 철회하지 못했습니다."));
+    } finally { setBusy(false); }
+  }
+
+  async function castDrVote(item: DrVotingAgenda, choice: string) {
+    setBusy(true);
+    try {
+      await api("/api/dr/votes", { method: "POST", body: JSON.stringify({
+        meetingId: item.meetingId, agendaItemId: item.agendaItemId, choice,
+      }) });
+      const { agenda } = await api<{ agenda: DrVotingAgenda[] }>("/api/me/dr/voting-agenda");
+      setDrVotingAgenda(agenda);
+      setNotice(`${item.agendaTitle}: ${choice}로 투표했습니다. 기준일 의결권 ${money(item.votingPower)}표가 반영됩니다.`);
+    } catch (cause) {
+      setNotice(errorText(cause, "의결권 투표를 처리하지 못했습니다."));
     } finally { setBusy(false); }
   }
 
@@ -417,6 +483,19 @@ export default function App() {
           </div>)}</div>
           <p className="orders-hint">게임 내 예탁 이동 기록이며 실제 수탁기관 보관 증빙은 아닙니다.</p>
         </section>}
+        {receivedDrDelegations.length > 0 && <section className="data-panel holdings-panel"><div className="panel-title"><h2>위임받은 DR 의결권</h2><span>{receivedDrDelegations.length}건</span></div>
+          <div className="holdings">{receivedDrDelegations.map((item) => <div className="holding" key={item.delegation_id}>
+            <span><b>{item.dr_code} · {item.dr_quantity} DR</b><small>{item.owner_user_id}에게서 위임 · {item.underlying_code} 의결권 · {date(item.created_epoch)}</small></span>
+          </div>)}</div>
+          <p className="orders-hint">위임받은 권리는 기준일 스냅샷에서 대리인의 표수에 합산됩니다.</p>
+        </section>}
+        {drVotingAgenda.length > 0 && <section className="data-panel holdings-panel"><div className="panel-title"><h2>주주총회 의결권</h2><span>{drVotingAgenda.length}개 안건</span></div>
+          <div className="holdings">{drVotingAgenda.map((item) => <div className="holding" key={`${item.meetingId}-${item.agendaItemId}`}>
+            <span><b>{item.underlyingCode} · {item.meetingTitle} — {item.agendaTitle}</b><small>기준일 의결권 {money(item.votingPower)}표 · {item.state === "open" ? `투표 마감 ${item.closesEpoch ? date(item.closesEpoch) : "—"}` : item.state === "upcoming" ? `투표 시작 ${item.opensEpoch ? date(item.opensEpoch) : "—"}` : item.state === "closed" ? "투표 종료" : "투표 일정 미설정"}{item.myChoice ? ` · 내 선택 ${item.myChoice}` : ""}</small></span>
+            {item.state === "open" && !item.myChoice && <div className="actions">{item.choices.map((choice) => <button key={choice} className="cancel-button" disabled={busy} onClick={() => void castDrVote(item, choice)}>{choice}</button>)}</div>}
+          </div>)}</div>
+          <p className="orders-hint">기준일 현재 직접·DR 및 위임 권리를 합산합니다. 투표는 기간 중 안건마다 한 번 가능하고 변경·철회할 수 없습니다.</p>
+        </section>}
       </aside>
       <section className="main-market">
         <div className="quote-strip"><div><p className="eyebrow">{selected?.exchange_id || "MARKET"} · {selected ? instrumentType(selected) : "—"}</p><h1>{selected?.name || "종목을 선택하세요"}<small>{selected?.code}</small><WarningBadge warning={selected?.warning} /></h1>{selected?.drProgram && <><p className="orders-hint">{selected.drProgram.receiptType} · 원주 {selected.drProgram.underlyingCode} · 1 DR = {money(selected.drProgram.underlyingPerReceipt, 6)}주 · 원주 거래소 {selected.drProgram.homeExchangeId || "—"} · 예탁 {selected.drProgram.depositaryBank || "—"} · 수탁 {selected.drProgram.custodian || "—"}</p>{selected.drProgram.referenceValue !== undefined && <p className="orders-hint">단순 원주 환산 참고가 {money(selected.drProgram.referenceValue, 4)} {selected.quote_currency || ""}{selected.drProgram.referencePremiumPercent !== undefined && ` · 현재가 괴리 ${selected.drProgram.referencePremiumPercent >= 0 ? "+" : ""}${selected.drProgram.referencePremiumPercent.toFixed(2)}%`}{selected.drProgram.referenceDeviationAlert && " · ⚠ 괴리 주의 (±10% 이상)"} · 수수료·세금·유동성 미반영</p>}</>}{selected?.bondRisk && <p className="orders-hint">액면 {money(selected.bondRisk.faceValue)} 기준 · Macaulay {selected.bondRisk.macaulay_duration.toFixed(3)}년 · 수정듀레이션 {selected.bondRisk.modified_duration.toFixed(3)} · 컨벡서티 {selected.bondRisk.convexity.toFixed(3)} · DV01 {money(selected.bondRisk.dv01, 4)} {selected.quote_currency || "NWX"} / 1bp. 현 국채 곡선의 평행이동 민감도이며 거래가격 예측이나 규제지표가 아닙니다.</p>}{selected?.warning?.reason && <p className="warn-reason">⚠️ {selected.warning.label} · {selected.warning.reason}</p>}</div>
@@ -449,6 +528,16 @@ export default function App() {
           <p className="orders-hint">{selected.drProgram?.programStatus === "active" && selected.status === "active" ? "DR 수량을 입력하세요. 발행은 보유 원주를 잠그고 DR을 지급하며, 상환은 보유 DR을 소각하고 보관 원주를 지급합니다." : "중지되거나 종료된 DR 프로그램은 새 전환을 할 수 없습니다."}</p>
           <label>전환할 DR 수량<input inputMode="numeric" value={drQuantity} onChange={(event) => setDrQuantity(event.target.value.replace(/[^\d]/g, ""))} /></label>
           <div className="actions"><button className="submit buy-submit" disabled={busy || !Number(drQuantity) || selected.drProgram?.programStatus !== "active" || selected.status !== "active"} onClick={() => void convertDr("issue")}>원주 예탁 · DR 발행</button><button className="submit sell-submit" disabled={busy || !Number(drQuantity) || selected.drProgram?.programStatus !== "active" || selected.status !== "active"} onClick={() => void convertDr("redeem")}>DR 반납 · 원주 상환</button></div>
+          <hr />
+          <h3>DR 의결권 위임</h3>
+          <p className="orders-hint">시뮬레이터 내부 위임 기록입니다. 위임된 수량은 매도·상환할 수 없으며, 기준일 의결권은 주주총회 투표에서 대리인에게 합산됩니다. 실제 수탁기관 지시는 포함하지 않습니다.</p>
+          <label>대리 사용자 ID<input value={drProxyUserId} onChange={(event) => setDrProxyUserId(event.target.value)} placeholder="예: user-123" /></label>
+          <label>위임 수량 (DR)<input inputMode="numeric" value={drVoteQuantity} onChange={(event) => setDrVoteQuantity(event.target.value.replace(/[^\d]/g, ""))} /></label>
+          <button className="submit buy-submit" disabled={busy || !drProxyUserId.trim() || !Number(drVoteQuantity)} onClick={() => void delegateDrVotes()}>의결권 위임</button>
+          {drDelegations.filter((item) => item.dr_code === selected.code).map((item) => <div className="holding" key={item.delegation_id}>
+            <span><b>{item.proxy_user_id} · {item.dr_quantity} DR · {item.status === "active" ? "위임 중" : "철회됨"}</b><small>위임 {date(item.created_epoch)}{item.revoked_epoch ? ` · 철회 ${date(item.revoked_epoch)}` : ""}</small></span>
+            {item.status === "active" && <button className="cancel-button" disabled={busy} onClick={() => void revokeDrVotes(item)}>철회</button>}
+          </div>)}
         </section>}
         <section className="data-panel order-entry"><div className="panel-title"><h2>주문 입력</h2><span>지정가</span></div>
           <div className="order-sides"><button className={side === "buy" ? "buy active" : "buy"} onClick={() => setSide("buy")}>매수</button><button className={side === "sell" ? "sell active" : "sell"} onClick={() => setSide("sell")}>매도</button></div>

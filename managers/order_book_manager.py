@@ -213,6 +213,13 @@ class OrderBookManager:
                     ).fetchone()
                     funding_account = wrap_account
                     available = owned_quantity - int(already_reserved["quantity"] or 0)
+                    if str(asset.get("type") or "") == "depositary_receipt":
+                        delegated = conn.execute(
+                            "SELECT COALESCE(SUM(dr_quantity),0) FROM assets.dr_voting_delegations "
+                            "WHERE owner_user_id=? AND dr_code=? AND status='active'",
+                            (str(user_id), str(asset_code)),
+                        ).fetchone()[0]
+                        available -= int(delegated or 0)
                     if available < quantity:
                         return False, f"❌ 매도 가능 수량이 부족합니다. (주문 가능 {max(0, available):,}개)"
 

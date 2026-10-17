@@ -9,9 +9,11 @@ type AdvancedField = { key: string; label: string; type: string };
 type Kind = { kind: string; token: string; label: string; group: "market" | "finance"; family: string; fields: KindField[]; advanced: AdvancedField[]; example: Record<string, unknown>; editable: boolean };
 type Product = { code: string; name: string; kind: string; status: string; exchangeId: string | null; currency: string | null; value: number | null; drProgram?: { underlyingCode: string; receiptType: string; depositaryBank: string; custodian: string; underlyingPerReceipt: number; receiptSupply: number; depositedUnderlyingQuantity: number; custodiedUnderlyingQuantity: number; outstandingReceiptQuantity: number; programStatus: string; underlyingPrice?: number; underlyingCurrency?: string; referenceValue?: number; referencePremiumPercent?: number; referenceDeviationAlert?: boolean } };
 type DrMovement = { movement_id: number; user_id: string; dr_code: string; underlying_code: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; underlying_average_cost_text: string; underlying_currency: string; holder_underlying_average_cost_text: string; holder_underlying_currency: string; recorded_epoch: number };
-type DrCustodyEvent = { event_id: number; reference_key: string; event_sequence: number; event_type: "instruction_received" | "custody_verified" | "settled"; dr_code: string; underlying_code: string; user_id: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; recorded_epoch: number };
+type DrCustodyEvent = { event_id: number; reference_key: string; event_sequence: number; event_type: "instruction_received" | "custody_verified" | "settled"; instruction_status: "requested" | "verified" | "settled" | "rejected" | "cancelled" | null; dr_code: string; underlying_code: string; user_id: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; recorded_epoch: number };
 type DrDeviationSample = { sample_id: number; dr_code: string; sampled_epoch: number; dr_price: number | null; reference_value: number | null; deviation_percent: number | null; state: "normal" | "premium" | "discount" | "unavailable" };
 type DrDeviationEvent = { event_id: number; dr_code: string; from_state: string; to_state: DrDeviationSample["state"]; recorded_epoch: number; deviation_percent: number | null };
+type DrVotingMeeting = { meetingId: number; underlyingCode: string; title: string; recordEpoch: number; createdEpoch: number; opensEpoch: number | null; closesEpoch: number | null; quorumPercent: number; agendaCount: number };
+type DrVotingResult = { agendaItemId: number; title: string; choices: Record<string, { votingPower: number; ballots: number }>; eligibleVotingPower: number; turnoutVotingPower: number; turnoutPercent: number; votingOpensEpoch: number | null; votingClosesEpoch: number | null; closed: boolean; quorumPercent: number; quorumMet: boolean | null };
 type Detail = { code: string; kind: string; status: string; values: Record<string, unknown>; row: Record<string, unknown> };
 type Editor = { mode: "create" | "edit"; kind: string; code: string; values: Record<string, string>; advanced: Record<string, string>; original: Detail | null };
 
@@ -92,6 +94,17 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
   const [drDeviationSamples, setDrDeviationSamples] = useState<DrDeviationSample[]>([]);
   const [drDeviationEvents, setDrDeviationEvents] = useState<DrDeviationEvent[]>([]);
   const [drMonitorError, setDrMonitorError] = useState(false);
+  const [drVotingMeetings, setDrVotingMeetings] = useState<DrVotingMeeting[]>([]);
+  const [drVotingMeetingId, setDrVotingMeetingId] = useState("");
+  const [drVotingResults, setDrVotingResults] = useState<DrVotingResult[]>([]);
+  const [drVotingError, setDrVotingError] = useState(false);
+  const [drVotingUnderlying, setDrVotingUnderlying] = useState("");
+  const [drVotingTitle, setDrVotingTitle] = useState("");
+  const [drVotingOpens, setDrVotingOpens] = useState("");
+  const [drVotingCloses, setDrVotingCloses] = useState("");
+  const [drVotingQuorum, setDrVotingQuorum] = useState("50");
+  const [drVotingAgendaTitle, setDrVotingAgendaTitle] = useState("");
+  const [drVotingChoices, setDrVotingChoices] = useState("찬성,반대,기권");
   const drMonitorInitialized = useRef(false);
   const lastDrAlertEventId = useRef(0);
   const [filter, setFilter] = useState("all");
@@ -107,6 +120,15 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
     setKinds(catalog.kinds.filter((item) => item.group === group));
     setProducts(list.products);
     if (group === "market") {
+      try {
+        const voting = await api<{ meetings: DrVotingMeeting[] }>("/api/admin/dr/voting-meetings?limit=100");
+        setDrVotingMeetings(voting.meetings);
+        setDrVotingError(false);
+        if (!drVotingMeetingId && voting.meetings[0]) setDrVotingMeetingId(String(voting.meetings[0].meetingId));
+      } catch {
+        setDrVotingMeetings([]);
+        setDrVotingError(true);
+      }
       try {
         const custody = await api<{ events: DrCustodyEvent[] }>("/api/admin/dr/custody-events?limit=100");
         setDrCustodyEvents(custody.events);
@@ -151,8 +173,34 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
       setDrDeviationSamples([]);
       setDrDeviationEvents([]);
       setDrMonitorError(false);
+      setDrVotingMeetings([]);
+      setDrVotingResults([]);
+      setDrVotingError(false);
     }
-  }, [group, say]);
+  }, [group, say, drVotingMeetingId]);
+
+  const selectedVotingMeeting = drVotingMeetings.find((meeting) => String(meeting.meetingId) === drVotingMeetingId);
+  const refreshDrVotingResults = useCallback(async () => {
+    if (group !== "market" || !drVotingMeetingId) { setDrVotingResults([]); return; }
+    try {
+      const response = await api<{ results: DrVotingResult[] }>(`/api/admin/dr/voting-results?meetingId=${encodeURIComponent(drVotingMeetingId)}`);
+      setDrVotingResults(response.results);
+    } catch {
+      setDrVotingResults([]);
+    }
+  }, [group, drVotingMeetingId]);
+
+  useEffect(() => { void refreshDrVotingResults(); }, [refreshDrVotingResults]);
+
+  function submitDrVoting(path: string, payload: Record<string, unknown>, success: string) {
+    void run(() => api<{ success?: boolean; result?: unknown; message?: string }>(path, { method: "POST", body: JSON.stringify(payload) }),
+      "DR 의결권 정보를 저장하지 못했습니다.", async (response) => {
+        if (response.success === false) { say(typeof response.result === "string" ? plain(response.result) : "요청을 처리하지 못했습니다.", true); return; }
+        say(success);
+        await load();
+        await refreshDrVotingResults();
+      });
+  }
 
   useEffect(() => {
     setEditor(null);
@@ -248,10 +296,30 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
       <div className="kind-grid">{families.map((kind) => <button key={kind.family} type="button" className={editor?.mode === "create" && kindOf(editor.kind)?.family === kind.family ? "command-chip active" : "command-chip"} onClick={() => startCreate(kind.kind)}><b>{familyLabel(kind.kind)}</b><small>{kind.family === "saving" ? "saving · 국적 통화/외환" : kind.token} · {counts[kind.family] ?? 0}개</small></button>)}</div>
     </Card>
 
-    {group === "market" && <Card title="DR 내부 수탁 처리 이력" caption="접수 → 예탁/보유 검증 → 내부 결제 완료 단계를 원자적으로 기록합니다. 현재 세 단계는 한 번의 시뮬레이터 거래 안에서 동시 처리되며, 외부 수탁 증빙이나 결제 지연은 모사하지 않습니다.">
-      <div className="scroll-x"><table><thead><tr><th>시각</th><th>요청 참조</th><th>단계</th><th>DR / 원주</th><th>사용자</th><th>방향</th><th className="r">DR 수량</th><th className="r">원주 수량</th></tr></thead><tbody>
-        {drCustodyEvents.map((event) => <tr key={event.event_id}><td>{date(event.recorded_epoch)}</td><td className="mono">{event.reference_key}</td><td>{event.event_type === "instruction_received" ? "요청 접수" : event.event_type === "custody_verified" ? "보관 수량 검증" : "내부 결제 완료"}</td><td className="mono">{event.dr_code} · {event.underlying_code}</td><td className="mono">{event.user_id}</td><td>{event.movement_type === "issue" ? "발행" : "상환"}</td><td className="r mono">{number(event.dr_quantity)}</td><td className="r mono">{number(event.underlying_quantity)}</td></tr>)}
+    {group === "market" && <Card title="DR 내부 수탁 처리 이력" caption="요청별 상태 집계와 접수 → 검증 → 정산 이벤트를 함께 표시합니다. 현재 전환은 한 번의 시뮬레이터 거래에서 동기 처리되며, 대기·재시도·외부 수탁 증빙은 아직 지원하지 않습니다.">
+      <div className="scroll-x"><table><thead><tr><th>시각</th><th>요청 참조</th><th>현재 상태</th><th>처리 단계</th><th>DR / 원주</th><th>사용자</th><th>방향</th><th className="r">DR 수량</th><th className="r">원주 수량</th></tr></thead><tbody>
+        {drCustodyEvents.map((event) => <tr key={event.event_id}><td>{date(event.recorded_epoch)}</td><td className="mono">{event.reference_key}</td><td>{event.instruction_status === "settled" ? "정산 완료" : event.instruction_status ?? "상태 없음"}</td><td>{event.event_type === "instruction_received" ? "요청 접수" : event.event_type === "custody_verified" ? "보관 수량 검증" : "내부 결제 완료"}</td><td className="mono">{event.dr_code} · {event.underlying_code}</td><td className="mono">{event.user_id}</td><td>{event.movement_type === "issue" ? "발행" : "상환"}</td><td className="r mono">{number(event.dr_quantity)}</td><td className="r mono">{number(event.underlying_quantity)}</td></tr>)}
       </tbody></table>{drCustodyError ? <p className="empty">DR 수탁 처리 이력을 불러오지 못했습니다.</p> : !drCustodyEvents.length && <p className="empty">수탁 처리 이력이 없습니다.</p>}</div>
+    </Card>}
+
+    {group === "market" && <Card title="DR 주주총회·의결권 관리" caption="기준 시점의 현재 DR 잔고를 의결권 스냅샷으로 고정하고, 안건·투표기간·정족수를 관리합니다. 스냅샷은 과거 기준일 잔고를 재구성하는 기록이 아니며, 실제 법적 의결 절차를 대체하지 않습니다.">
+      <div className="form-grid">
+        <Field label="기초 원주 코드" hint="활성 원주 코드"><input className="mono" value={drVotingUnderlying} onChange={(event) => setDrVotingUnderlying(event.target.value.toUpperCase())} /></Field>
+        <Field label="회의명"><input value={drVotingTitle} onChange={(event) => setDrVotingTitle(event.target.value)} /></Field>
+        <button type="button" className="btn primary" disabled={busy || !drVotingUnderlying.trim() || !drVotingTitle.trim()} onClick={() => submitDrVoting("/api/admin/dr/voting-meetings", { underlyingCode: drVotingUnderlying.trim(), title: drVotingTitle.trim() }, "기준 잔고를 고정한 주주총회를 만들었습니다.")}>현재 잔고로 회의 생성</button>
+      </div>
+      <div className="form-grid">
+        <Field label="회의 선택" hint={drVotingError ? "회의 목록을 불러오지 못했습니다." : "기록 시점 잔고 기준"}><select value={drVotingMeetingId} onChange={(event) => setDrVotingMeetingId(event.target.value)}><option value="">회의 선택</option>{drVotingMeetings.map((meeting) => <option key={meeting.meetingId} value={meeting.meetingId}>#{meeting.meetingId} · {meeting.underlyingCode} · {meeting.title}</option>)}</select></Field>
+        <Field label="투표 시작 (Unix 초)"><input className="mono" inputMode="numeric" value={drVotingOpens} onChange={(event) => setDrVotingOpens(event.target.value)} /></Field>
+        <Field label="투표 종료 (Unix 초)"><input className="mono" inputMode="numeric" value={drVotingCloses} onChange={(event) => setDrVotingCloses(event.target.value)} /></Field>
+        <Field label="정족수 (%)"><input className="mono" inputMode="decimal" value={drVotingQuorum} onChange={(event) => setDrVotingQuorum(event.target.value)} /></Field>
+        <button type="button" className="soft" disabled={busy || !drVotingMeetingId || !drVotingOpens || !drVotingCloses} onClick={() => submitDrVoting("/api/admin/dr/voting-window", { meetingId: Number(drVotingMeetingId), opensEpoch: Number(drVotingOpens), closesEpoch: Number(drVotingCloses), quorumPercent: Number(drVotingQuorum) }, "투표기간과 정족수를 설정했습니다.")}>기간·정족수 설정</button>
+        <Field label="안건 제목"><input value={drVotingAgendaTitle} onChange={(event) => setDrVotingAgendaTitle(event.target.value)} /></Field>
+        <Field label="선택지" hint="쉼표로 구분 · 2~8개"><input value={drVotingChoices} onChange={(event) => setDrVotingChoices(event.target.value)} /></Field>
+        <button type="button" className="soft" disabled={busy || !drVotingMeetingId || !drVotingAgendaTitle.trim()} onClick={() => submitDrVoting("/api/admin/dr/voting-agenda", { meetingId: Number(drVotingMeetingId), title: drVotingAgendaTitle.trim(), choices: drVotingChoices.split(",").map((choice) => choice.trim()).filter(Boolean) }, "안건을 추가했습니다.")}>안건 추가</button>
+      </div>
+      {selectedVotingMeeting && <p className="hint">회의 #{selectedVotingMeeting.meetingId} · 기준 시각 {date(selectedVotingMeeting.recordEpoch)} · 안건 {selectedVotingMeeting.agendaCount}개 · {selectedVotingMeeting.opensEpoch ? `투표 ${date(selectedVotingMeeting.opensEpoch)} ~ ${date(selectedVotingMeeting.closesEpoch ?? 0)}` : "투표기간 미설정"} · 정족수 {number(selectedVotingMeeting.quorumPercent)}%</p>}
+      <div className="scroll-x"><table><thead><tr><th>안건</th><th>선택지별 의결권</th><th className="r">참여율</th><th>상태</th></tr></thead><tbody>{drVotingResults.map((result) => <tr key={result.agendaItemId}><td>{result.title}</td><td>{Object.entries(result.choices).map(([choice, tally]) => `${choice} ${number(tally.votingPower)}표`).join(" · ")}</td><td className="r mono">{number(result.turnoutPercent)}%</td><td>{result.closed ? result.quorumMet ? "종료 · 정족수 충족" : "종료 · 정족수 미달" : "진행 전/중"}</td></tr>)}</tbody></table>{!drVotingResults.length && <p className="empty">선택한 회의의 안건 결과가 없습니다.</p>}</div>
     </Card>}
 
     {group === "market" && <Card title="DR 전환 원장" caption="최근 100건 · 조회 전용 불변 기록. 예탁 풀 단가는 수탁 원장 대사용이고, 보유자 이전원가는 상환 후 개인에게 돌아가는 세무 원가입니다. 시뮬레이터 기록이지 실제 수탁 증빙은 아닙니다.">

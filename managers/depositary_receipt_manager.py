@@ -1,12 +1,364 @@
 """Atomic simulator conversion between DRs and their underlying common shares."""
 
 from decimal import Decimal
+import json
 import math
+import sqlite3
 
 
 class DepositaryReceiptManager:
     def __init__(self, db):
         self.db = db
+
+    def create_voting_record_snapshot(self, underlying_code, title, *, now=None):
+        """Freeze common-share and DR voting entitlements at the current simulator epoch."""
+        from managers.bank_journal import BankJournal
+        code, label = str(underlying_code or "").strip(), str(title or "").strip()
+        if not code or not label:
+            return False, "❌ 기초 주식과 주주총회 제목을 입력해주세요."
+        try:
+            when = BankJournal.validate_epoch(now)
+            with self.db.atomic() as conn:
+                underlying = conn.execute(
+                    "SELECT share_class,status FROM company.company WHERE company_code=?",
+                    (code,),
+                ).fetchone()
+                if not underlying or underlying["share_class"] != "common" or underlying["status"] != "active":
+                    raise ValueError("활성 보통주만 의결권 기준일을 만들 수 있습니다.")
+                cur = conn.execute(
+                    "INSERT INTO assets.dr_voting_meetings "
+                    "(underlying_code,title,record_epoch,created_epoch) VALUES (?,?,?,?)",
+                    (code, label[:160], when, when),
+                )
+                meeting_id = int(cur.lastrowid)
+                snapshots = []
+                direct = conn.execute(
+                    "SELECT user_id,SUM(quantity) quantity FROM assets.user_assets "
+                    "WHERE asset_code=? GROUP BY user_id", (code,),
+                ).fetchall()
+                for row in direct:
+                    quantity = int(row["quantity"] or 0)
+                    if quantity > 0:
+                        snapshots.append((meeting_id, row["user_id"], row["user_id"],
+                                          "underlying", code, quantity, when))
+
+                programs = conn.execute(
+                    "SELECT dr_code,underlying_per_receipt FROM assets.depositary_receipts "
+                    "WHERE underlying_code=? AND program_status='active'", (code,),
+                ).fetchall()
+                for program in programs:
+                    dr_code = program["dr_code"]
+                    ratio = Decimal(str(program["underlying_per_receipt"]))
+                    holdings = conn.execute(
+                        "SELECT user_id,SUM(quantity) quantity FROM assets.user_assets "
+                        "WHERE asset_code=? GROUP BY user_id", (dr_code,),
+                    ).fetchall()
+                    active_delegations = conn.execute(
+                        "SELECT owner_user_id,proxy_user_id,SUM(dr_quantity) quantity "
+                        "FROM assets.dr_voting_delegations WHERE dr_code=? AND status='active' "
+                        "GROUP BY owner_user_id,proxy_user_id", (dr_code,),
+                    ).fetchall()
+                    by_owner = {}
+                    for delegation in active_delegations:
+                        by_owner.setdefault(delegation["owner_user_id"], []).append(delegation)
+                    for holding in holdings:
+                        owner = holding["user_id"]
+                        held = int(holding["quantity"] or 0)
+                        if held <= 0:
+                            continue
+                        delegations = by_owner.get(owner, [])
+                        delegated = sum(int(item["quantity"] or 0) for item in delegations)
+                        if delegated > held:
+                            raise ValueError("보유량보다 많은 의결권 위임이 있어 기준일 처리를 중단했습니다.")
+                        for voter, dr_quantity in [(owner, held-delegated)] + [
+                            (item["proxy_user_id"], int(item["quantity"])) for item in delegations
+                        ]:
+                            if dr_quantity <= 0:
+                                continue
+                            entitlement = ratio * dr_quantity
+                            if entitlement != entitlement.to_integral_value():
+                                raise ValueError(f"{dr_code}의 전환비율로 정수 의결권을 산출할 수 없습니다.")
+                            snapshots.append((meeting_id, owner, voter, "dr", dr_code,
+                                              int(entitlement), when))
+                conn.executemany(
+                    "INSERT INTO assets.dr_voting_entitlement_snapshots "
+                    "(meeting_id,holder_user_id,voter_user_id,source_type,source_code,quantity,recorded_epoch) "
+                    "VALUES (?,?,?,?,?,?,?)", snapshots,
+                )
+                return True, {"meetingId": meeting_id, "underlyingCode": code,
+                              "recordEpoch": when, "snapshotRows": len(snapshots)}
+        except (ValueError, TypeError, OverflowError) as exc:
+            return False, f"❌ {exc}"
+
+    def get_voting_entitlements(self, meeting_id):
+        if isinstance(meeting_id, bool) or not isinstance(meeting_id, int) or meeting_id <= 0:
+            return []
+        rows = self.db.assets.execute(
+            "SELECT voter_user_id,SUM(quantity) quantity FROM dr_voting_entitlement_snapshots "
+            "WHERE meeting_id=? GROUP BY voter_user_id ORDER BY voter_user_id", (meeting_id,),
+        )
+        return [{"voterUserId": row["voter_user_id"], "quantity": int(row["quantity"])}
+                for row in rows]
+
+    def get_voting_record_snapshot(self, meeting_id):
+        if isinstance(meeting_id, bool) or not isinstance(meeting_id, int) or meeting_id <= 0:
+            return None
+        meeting = self.db.assets.execute_one(
+            "SELECT meeting_id,underlying_code,title,record_epoch,status "
+            "FROM dr_voting_meetings WHERE meeting_id=?", (meeting_id,),
+        )
+        if not meeting:
+            return None
+        return {
+            "meetingId": meeting["meeting_id"],
+            "underlyingCode": meeting["underlying_code"],
+            "title": meeting["title"],
+            "recordEpoch": meeting["record_epoch"],
+            "status": meeting["status"],
+            "voters": self.get_voting_entitlements(meeting_id),
+        }
+
+    def list_voting_meetings(self, limit=100):
+        try:
+            bounded_limit = max(1, min(int(limit), 100))
+        except (TypeError, ValueError, OverflowError):
+            bounded_limit = 100
+        rows = self.db.assets.execute(
+            "SELECT m.meeting_id,m.underlying_code,m.title,m.record_epoch,m.created_epoch,"
+            "m.voting_open_epoch,m.voting_close_epoch,m.quorum_percent,"
+            "COUNT(i.agenda_item_id) agenda_count "
+            "FROM dr_voting_meetings m LEFT JOIN dr_voting_agenda_items i "
+            "ON i.meeting_id=m.meeting_id GROUP BY m.meeting_id "
+            "ORDER BY m.record_epoch DESC,m.meeting_id DESC LIMIT ?", (bounded_limit,),
+        )
+        return [{
+            "meetingId": row["meeting_id"], "underlyingCode": row["underlying_code"],
+            "title": row["title"], "recordEpoch": row["record_epoch"],
+            "createdEpoch": row["created_epoch"], "opensEpoch": row["voting_open_epoch"],
+            "closesEpoch": row["voting_close_epoch"],
+            "quorumPercent": float(row["quorum_percent"] or 0),
+            "agendaCount": int(row["agenda_count"]),
+        } for row in rows]
+
+    def add_voting_agenda_item(self, meeting_id, title, choices, *, now=None):
+        if isinstance(meeting_id, bool) or not isinstance(meeting_id, int) or meeting_id <= 0:
+            return False, "❌ 주주총회 번호를 확인해주세요."
+        label = str(title or "").strip()
+        if not label or len(label) > 240 or not isinstance(choices, list) or not 2 <= len(choices) <= 8:
+            return False, "❌ 안건 제목과 2~8개의 선택지를 입력해주세요."
+        options = [str(choice).strip() for choice in choices]
+        if any(not option or len(option) > 80 for option in options) or len(set(options)) != len(options):
+            return False, "❌ 선택지는 비어 있거나 중복될 수 없습니다."
+        from managers.bank_journal import BankJournal
+        try:
+            when = BankJournal.validate_epoch(now)
+            with self.db.atomic() as conn:
+                if not conn.execute(
+                    "SELECT 1 FROM assets.dr_voting_meetings WHERE meeting_id=?",
+                    (meeting_id,),
+                ).fetchone():
+                    raise ValueError("주주총회를 찾을 수 없습니다.")
+                cur = conn.execute(
+                    "INSERT INTO assets.dr_voting_agenda_items "
+                    "(meeting_id,title,choices_json,created_epoch) VALUES (?,?,?,?)",
+                    (meeting_id, label, json.dumps(options, ensure_ascii=False), when),
+                )
+                return True, {"agendaItemId": int(cur.lastrowid), "meetingId": meeting_id,
+                              "title": label, "choices": options}
+        except (ValueError, TypeError, OverflowError) as exc:
+            return False, f"❌ {exc}"
+
+    def set_voting_window(self, meeting_id, opens_epoch, closes_epoch, quorum_percent=0, *, now=None):
+        if isinstance(meeting_id, bool) or not isinstance(meeting_id, int) or meeting_id <= 0:
+            return False, "❌ 주주총회 번호를 확인해주세요."
+        from managers.bank_journal import BankJournal
+        try:
+            opens = BankJournal.validate_epoch(opens_epoch)
+            closes = BankJournal.validate_epoch(closes_epoch)
+            when = BankJournal.validate_epoch(now)
+            if opens <= when or closes <= opens:
+                raise ValueError("투표 시작은 현재 이후, 종료는 시작 이후여야 합니다.")
+            if isinstance(quorum_percent, bool):
+                raise ValueError("정족수 비율은 0~100 숫자여야 합니다.")
+            quorum = float(quorum_percent)
+            if not math.isfinite(quorum) or not 0 <= quorum <= 100:
+                raise ValueError("정족수 비율은 0~100 숫자여야 합니다.")
+            with self.db.atomic() as conn:
+                meeting = conn.execute(
+                    "SELECT record_epoch,voting_open_epoch FROM assets.dr_voting_meetings "
+                    "WHERE meeting_id=?", (meeting_id,),
+                ).fetchone()
+                if not meeting:
+                    raise ValueError("주주총회를 찾을 수 없습니다.")
+                if meeting["voting_open_epoch"] is not None:
+                    raise ValueError("투표 일정은 이미 확정되어 변경할 수 없습니다.")
+                if opens < float(meeting["record_epoch"]):
+                    raise ValueError("투표 시작은 기준일 스냅샷 이후여야 합니다.")
+                conn.execute(
+                    "UPDATE assets.dr_voting_meetings SET voting_open_epoch=?,"
+                    "voting_close_epoch=?,quorum_percent=? WHERE meeting_id=?",
+                    (opens, closes, quorum, meeting_id),
+                )
+                return True, {"meetingId": meeting_id, "opensEpoch": opens,
+                              "closesEpoch": closes, "quorumPercent": quorum}
+        except (ValueError, TypeError, OverflowError) as exc:
+            return False, f"❌ {exc}"
+
+    def cast_vote(self, voter_user_id, meeting_id, agenda_item_id, choice, *, now=None):
+        if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0
+               for value in (meeting_id, agenda_item_id)):
+            return False, "❌ 주주총회·안건 번호를 확인해주세요."
+        voter, selected = str(voter_user_id or "").strip(), str(choice or "").strip()
+        if not voter or not selected:
+            return False, "❌ 투표자와 선택지를 확인해주세요."
+        from managers.bank_journal import BankJournal
+        try:
+            when = BankJournal.validate_epoch(now)
+            with self.db.atomic() as conn:
+                agenda = conn.execute(
+                    "SELECT i.choices_json,m.voting_open_epoch,m.voting_close_epoch "
+                    "FROM assets.dr_voting_agenda_items i "
+                    "JOIN assets.dr_voting_meetings m ON m.meeting_id=i.meeting_id "
+                    "WHERE i.agenda_item_id=? AND i.meeting_id=?", (agenda_item_id, meeting_id),
+                ).fetchone()
+                if not agenda:
+                    raise ValueError("해당 주주총회의 안건을 찾을 수 없습니다.")
+                if agenda["voting_open_epoch"] is None or agenda["voting_close_epoch"] is None:
+                    raise ValueError("관리자가 투표 기간을 아직 설정하지 않았습니다.")
+                if when < float(agenda["voting_open_epoch"]):
+                    raise ValueError("투표 시작 전입니다.")
+                if when >= float(agenda["voting_close_epoch"]):
+                    raise ValueError("투표가 종료되었습니다.")
+                choices = json.loads(agenda["choices_json"])
+                if selected not in choices:
+                    raise ValueError("안건에서 선택할 수 없는 항목입니다.")
+                entitlement = int(conn.execute(
+                    "SELECT COALESCE(SUM(quantity),0) FROM assets.dr_voting_entitlement_snapshots "
+                    "WHERE meeting_id=? AND voter_user_id=?", (meeting_id, voter),
+                ).fetchone()[0] or 0)
+                if entitlement <= 0:
+                    raise ValueError("기준일 의결권이 없는 사용자입니다.")
+                cur = conn.execute(
+                    "INSERT INTO assets.dr_voting_ballots "
+                    "(meeting_id,agenda_item_id,voter_user_id,choice,voting_power,cast_epoch) "
+                    "VALUES (?,?,?,?,?,?)",
+                    (meeting_id, agenda_item_id, voter, selected, entitlement, when),
+                )
+                return True, {"ballotId": int(cur.lastrowid), "meetingId": meeting_id,
+                              "agendaItemId": agenda_item_id, "votingPower": entitlement}
+        except (ValueError, TypeError, OverflowError) as exc:
+            return False, f"❌ {exc}"
+        except sqlite3.IntegrityError as exc:
+            # A uniqueness conflict means this voter already cast a ballot for this item.
+            if "UNIQUE constraint failed" in str(exc):
+                return False, "❌ 이 안건에는 이미 투표했습니다."
+            raise
+
+    def get_voting_results(self, meeting_id, agenda_item_id=None, *, now=None):
+        if isinstance(meeting_id, bool) or not isinstance(meeting_id, int) or meeting_id <= 0:
+            return []
+        from managers.bank_journal import BankJournal
+        try:
+            as_of = BankJournal.validate_epoch(now)
+        except (ValueError, TypeError, OverflowError):
+            return []
+        meeting = self.db.assets.execute_one(
+            "SELECT voting_open_epoch,voting_close_epoch,quorum_percent "
+            "FROM dr_voting_meetings WHERE meeting_id=?", (meeting_id,),
+        )
+        if not meeting:
+            return []
+        total_eligible = int(self.db.assets.execute_one(
+            "SELECT COALESCE(SUM(quantity),0) FROM dr_voting_entitlement_snapshots "
+            "WHERE meeting_id=?", (meeting_id,),
+        )[0] or 0)
+        params = [meeting_id]
+        condition = "i.meeting_id=?"
+        if agenda_item_id is not None:
+            if isinstance(agenda_item_id, bool) or not isinstance(agenda_item_id, int) or agenda_item_id <= 0:
+                return []
+            condition += " AND i.agenda_item_id=?"
+            params.append(agenda_item_id)
+        rows = self.db.assets.execute(
+            "SELECT i.agenda_item_id,i.title,i.choices_json,b.choice,"
+            "COALESCE(SUM(b.voting_power),0) voting_power,COUNT(b.ballot_id) ballot_count "
+            "FROM dr_voting_agenda_items i LEFT JOIN dr_voting_ballots b "
+            "ON b.agenda_item_id=i.agenda_item_id WHERE " + condition +
+            " GROUP BY i.agenda_item_id,b.choice ORDER BY i.agenda_item_id,b.choice", tuple(params),
+        )
+        grouped = {}
+        for row in rows:
+            item = grouped.setdefault(row["agenda_item_id"], {
+                "agendaItemId": row["agenda_item_id"], "title": row["title"],
+                "choices": {choice: {"votingPower": 0, "ballots": 0}
+                            for choice in json.loads(row["choices_json"])},
+            })
+            if row["choice"] is not None:
+                item["choices"][row["choice"]] = {
+                    "votingPower": int(row["voting_power"]),
+                    "ballots": int(row["ballot_count"]),
+                }
+        output = list(grouped.values())
+        for item in output:
+            turnout = sum(choice["votingPower"] for choice in item["choices"].values())
+            open_epoch = meeting["voting_open_epoch"]
+            close_epoch = meeting["voting_close_epoch"]
+            closed = close_epoch is not None and as_of >= float(close_epoch)
+            item.update({
+                "eligibleVotingPower": total_eligible,
+                "turnoutVotingPower": turnout,
+                "turnoutPercent": turnout/total_eligible*100 if total_eligible else 0.0,
+                "votingOpensEpoch": open_epoch,
+                "votingClosesEpoch": close_epoch,
+                "closed": closed,
+                "quorumPercent": float(meeting["quorum_percent"] or 0),
+                "quorumMet": (turnout/total_eligible*100 >= float(meeting["quorum_percent"] or 0)
+                              if closed and total_eligible else (False if closed else None)),
+            })
+        return output
+
+    def list_user_voting_agenda(self, voter_user_id, *, now=None):
+        from managers.bank_journal import BankJournal
+        try:
+            epoch = BankJournal.validate_epoch(now)
+        except (ValueError, TypeError, OverflowError):
+            return []
+        voter = str(voter_user_id or "").strip()
+        if not voter:
+            return []
+        rows = self.db.assets.execute(
+            "SELECT i.meeting_id,i.agenda_item_id,m.underlying_code,m.title meeting_title,"
+            "m.record_epoch,m.voting_open_epoch,m.voting_close_epoch,m.quorum_percent,"
+            "i.title agenda_title,i.choices_json,"
+            "(SELECT SUM(s.quantity) FROM dr_voting_entitlement_snapshots s "
+            "WHERE s.meeting_id=m.meeting_id AND s.voter_user_id=?) voting_power,"
+            "(SELECT SUM(s.quantity) FROM dr_voting_entitlement_snapshots s "
+            "WHERE s.meeting_id=m.meeting_id) total_eligible,"
+            "(SELECT b.choice FROM dr_voting_ballots b WHERE b.agenda_item_id=i.agenda_item_id "
+            "AND b.voter_user_id=?) my_choice "
+            "FROM dr_voting_agenda_items i JOIN dr_voting_meetings m ON m.meeting_id=i.meeting_id "
+            "WHERE EXISTS (SELECT 1 FROM dr_voting_entitlement_snapshots s "
+            "WHERE s.meeting_id=m.meeting_id AND s.voter_user_id=?) "
+            "ORDER BY m.record_epoch DESC,i.agenda_item_id DESC LIMIT 100",
+            (voter, voter, voter),
+        )
+        output = []
+        for row in rows:
+            opens, closes = row["voting_open_epoch"], row["voting_close_epoch"]
+            state = ("unscheduled" if opens is None or closes is None else
+                     "upcoming" if epoch < float(opens) else
+                     "closed" if epoch >= float(closes) else "open")
+            output.append({
+                "meetingId": row["meeting_id"], "agendaItemId": row["agenda_item_id"],
+                "underlyingCode": row["underlying_code"], "meetingTitle": row["meeting_title"],
+                "agendaTitle": row["agenda_title"], "choices": json.loads(row["choices_json"]),
+                "recordEpoch": row["record_epoch"], "opensEpoch": opens,
+                "closesEpoch": closes, "quorumPercent": float(row["quorum_percent"] or 0),
+                "votingPower": int(row["voting_power"] or 0),
+                "totalEligible": int(row["total_eligible"] or 0),
+                "myChoice": row["my_choice"], "state": state,
+            })
+        return output
 
     def delegate_votes(self, owner_user_id, dr_code, proxy_user_id, quantity, *, now=None):
         """Record an internal, revocable delegation of DR voting rights."""
@@ -40,13 +392,24 @@ class DepositaryReceiptManager:
                     "SELECT COALESCE(SUM(dr_quantity),0) FROM assets.dr_voting_delegations "
                     "WHERE owner_user_id=? AND dr_code=? AND status='active'", (owner, code),
                 ).fetchone()[0] or 0)
-                if quantity > owned-delegated:
-                    raise ValueError(f"위임 가능한 의결권은 {max(0, owned-delegated):,} DR입니다.")
+                sell_reserved = int(conn.execute(
+                    "SELECT COALESCE(SUM(remaining_quantity),0) FROM assets.market_orders "
+                    "WHERE user_id=? AND asset_code=? AND side='sell' "
+                    "AND status IN ('scheduled','open','partial')", (owner, code),
+                ).fetchone()[0] or 0)
+                available = max(0, owned-delegated-sell_reserved)
+                if quantity > available:
+                    raise ValueError(f"위임 가능한 의결권은 {available:,} DR입니다.")
                 cur = conn.execute(
                     "INSERT INTO assets.dr_voting_delegations "
                     "(dr_code,owner_user_id,proxy_user_id,dr_quantity,status,created_epoch) "
                     "VALUES (?,?,?,?,'active',?)",
                     (code, owner, proxy, quantity, when),
+                )
+                conn.execute(
+                    "INSERT INTO assets.dr_voting_delegation_events "
+                    "(delegation_id,event_type,actor_user_id,recorded_epoch) "
+                    "VALUES (?,'delegated',?,?)", (int(cur.lastrowid), owner, when),
                 )
                 return True, {"delegationId": int(cur.lastrowid), "drCode": code,
                               "quantity": quantity, "status": "active"}
@@ -61,6 +424,18 @@ class DepositaryReceiptManager:
         try:
             when = BankJournal.validate_epoch(now)
             with self.db.atomic() as conn:
+                exists = conn.execute(
+                    "SELECT 1 FROM assets.dr_voting_delegations "
+                    "WHERE delegation_id=? AND owner_user_id=? AND status='active'",
+                    (delegation_id, str(owner_user_id)),
+                ).fetchone()
+                if not exists:
+                    raise ValueError("본인의 활성 의결권 위임을 찾을 수 없습니다.")
+                conn.execute(
+                    "INSERT INTO assets.dr_voting_delegation_events "
+                    "(delegation_id,event_type,actor_user_id,recorded_epoch) "
+                    "VALUES (?,'revoked',?,?)", (delegation_id, str(owner_user_id), when),
+                )
                 changed = conn.execute(
                     "UPDATE assets.dr_voting_delegations SET status='revoked',revoked_epoch=? "
                     "WHERE delegation_id=? AND owner_user_id=? AND status='active'",
@@ -75,6 +450,34 @@ class DepositaryReceiptManager:
     @staticmethod
     def _record_custody_process(conn, reference_key, sequence, event_type,
                                 dr_code, user_id, action, quantity, shares, when):
+        instruction_status = {
+            "instruction_received": "requested",
+            "custody_verified": "verified",
+            "settled": "settled",
+        }[event_type]
+        instruction_event = instruction_status
+        if sequence == 1:
+            conn.execute(
+                "INSERT INTO assets.dr_custody_instructions "
+                "(reference_key,dr_code,user_id,movement_type,dr_quantity,underlying_quantity,"
+                "status,requested_epoch,updated_epoch) VALUES (?,?,?,?,?,?,?, ?,?)",
+                (reference_key, dr_code, user_id, action, quantity, shares,
+                 instruction_status, when, when),
+            )
+        else:
+            settled_epoch = when if instruction_status == "settled" else None
+            changed = conn.execute(
+                "UPDATE assets.dr_custody_instructions SET status=?,updated_epoch=?,"
+                "settled_epoch=COALESCE(?,settled_epoch) WHERE reference_key=?",
+                (instruction_status, when, settled_epoch, reference_key),
+            )
+            if changed.rowcount != 1:
+                raise RuntimeError("DR 수탁 지시의 상태가 예상과 달라 처리를 중단했습니다.")
+        conn.execute(
+            "INSERT INTO assets.dr_custody_instruction_events "
+            "(reference_key,event_sequence,event_type,recorded_epoch) VALUES (?,?,?,?)",
+            (reference_key, sequence, instruction_event, when),
+        )
         conn.execute(
             "INSERT INTO assets.dr_custody_process_events "
             "(reference_key,event_sequence,event_type,dr_code,user_id,movement_type,"
@@ -281,8 +684,13 @@ class DepositaryReceiptManager:
                         "WHERE user_id=? AND asset_code=? AND side='sell' "
                         "AND status IN ('scheduled','open','partial')", (user, code),
                     ).fetchone()[0]
-                    if float(owned or 0) - float(reserved or 0) + 1e-9 < quantity:
-                        raise ValueError("미체결 매도 주문을 제외한 DR 보유 수량이 부족합니다.")
+                    delegated = conn.execute(
+                        "SELECT COALESCE(SUM(dr_quantity),0) FROM assets.dr_voting_delegations "
+                        "WHERE owner_user_id=? AND dr_code=? AND status='active'", (user, code),
+                    ).fetchone()[0]
+                    if (float(owned or 0) - float(reserved or 0) - float(delegated or 0)
+                            + 1e-9 < quantity):
+                        raise ValueError("미체결 매도 주문 및 위임된 의결권을 제외한 DR 보유 수량이 부족합니다.")
                     custody = conn.execute(
                         "SELECT COALESCE(SUM(CASE WHEN movement_type='issue' THEN underlying_quantity "
                         "ELSE -underlying_quantity END),0) AS shares, "

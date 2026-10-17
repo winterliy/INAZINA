@@ -938,6 +938,40 @@ def user_dr_movements(user_id, limit=50):
     return result
 
 
+def user_dr_voting_delegations(user_id, limit=100):
+    """Return only this owner's delegation records and their internal event history."""
+    domain()
+    with connect_readonly() as connection:
+        rows = connection.execute(
+            "SELECT d.delegation_id,d.dr_code,r.underlying_code,d.proxy_user_id,"
+            "d.dr_quantity,d.status,d.created_epoch,d.revoked_epoch "
+            "FROM dr_voting_delegations d JOIN depositary_receipts r USING(dr_code) "
+            "WHERE d.owner_user_id=? ORDER BY d.delegation_id DESC LIMIT ?",
+            (str(user_id), max(1, min(100, int(limit)))),
+        ).fetchall()
+        result = [dict(row) for row in rows]
+        for row in result:
+            row["events"] = [dict(event) for event in connection.execute(
+                "SELECT event_type,recorded_epoch FROM dr_voting_delegation_events "
+                "WHERE delegation_id=? ORDER BY event_id", (row["delegation_id"],),
+            ).fetchall()]
+    return result
+
+
+def user_dr_received_voting_delegations(user_id, limit=100):
+    """Show the authenticated proxy only the active rights delegated to them."""
+    domain()
+    with connect_readonly() as connection:
+        rows = connection.execute(
+            "SELECT d.delegation_id,d.dr_code,r.underlying_code,d.owner_user_id,"
+            "d.dr_quantity,d.created_epoch FROM dr_voting_delegations d "
+            "JOIN depositary_receipts r USING(dr_code) WHERE d.proxy_user_id=? "
+            "AND d.status='active' ORDER BY d.delegation_id DESC LIMIT ?",
+            (str(user_id), max(1, min(100, int(limit)))),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def user_dividend_payments(user_id, limit=100):
     """Return the authenticated user's recent dividend receipts, grouped by payout currency."""
     domain()  # Apply additive corporate-action schema migrations before querying.
@@ -1032,8 +1066,9 @@ def admin_dr_custody_events(limit=100):
         rows = [dict(row) for row in connection.execute(
             "SELECT e.event_id,e.reference_key,e.event_sequence,e.event_type,e.dr_code,"
             "d.underlying_code,e.user_id,e.movement_type,e.dr_quantity,"
-            "e.underlying_quantity,e.recorded_epoch FROM dr_custody_process_events e "
-            "JOIN depositary_receipts d USING(dr_code) "
+            "e.underlying_quantity,e.recorded_epoch,i.status AS instruction_status "
+            "FROM dr_custody_process_events e JOIN depositary_receipts d USING(dr_code) "
+            "LEFT JOIN dr_custody_instructions i USING(reference_key) "
             "ORDER BY e.recorded_epoch DESC,e.event_id DESC LIMIT ?",
             (max(1, min(500, int(limit))),),
         ).fetchall()]
@@ -2957,6 +2992,32 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     self.send_json(200, {"movements": user_dr_movements(user["userId"])})
+            elif path == "/internal/me/dr/voting-delegations":
+                user = identity(internal_user_id(self))
+                if not user:
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    self.send_json(200, {
+                        "delegations": user_dr_voting_delegations(user["userId"]),
+                    })
+            elif path == "/internal/me/dr/proxy-voting-delegations":
+                user = identity(internal_user_id(self))
+                if not user:
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    self.send_json(200, {
+                        "delegations": user_dr_received_voting_delegations(user["userId"]),
+                    })
+            elif path == "/internal/me/dr/voting-agenda":
+                user = identity(internal_user_id(self))
+                if not user:
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    from managers.depositary_receipt_manager import DepositaryReceiptManager
+                    agenda = DepositaryReceiptManager(domain().bot.db).list_user_voting_agenda(
+                        user["userId"],
+                    )
+                    self.send_json(200, {"agenda": agenda})
             elif path == "/internal/me/dividend-payments":
                 user = identity(internal_user_id(self))
                 if not user:
@@ -3057,6 +3118,59 @@ class Handler(BaseHTTPRequestHandler):
                         "result_count": len(movements.get("movements", [])),
                     })
                     self.send_json(200, movements)
+            elif path == "/internal/admin/dr/voting-meetings":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    raw_limit = parse_qs(parsed.query).get("limit", ["100"])[0]
+                    try:
+                        limit = max(1, min(int(raw_limit), 100))
+                    except (TypeError, ValueError):
+                        raise ValueError("invalid_dr_voting_meeting_limit") from None
+                    from managers.depositary_receipt_manager import DepositaryReceiptManager
+                    meetings = DepositaryReceiptManager(domain().bot.db).list_voting_meetings(limit)
+                    audit_admin_access(user["userId"], "dr_voting_meetings.list", {
+                        "limit": limit, "result_count": len(meetings),
+                    })
+                    self.send_json(200, {"meetings": meetings})
+            elif path.startswith("/internal/admin/dr/voting-meetings/"):
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    raw_id = path.rsplit("/", 1)[-1]
+                    if not raw_id.isdigit() or int(raw_id) <= 0:
+                        raise ValueError("invalid_dr_voting_meeting_id")
+                    from managers.depositary_receipt_manager import DepositaryReceiptManager
+                    meeting = DepositaryReceiptManager(domain().bot.db).get_voting_record_snapshot(int(raw_id))
+                    if meeting is None:
+                        self.send_json(404, {"error": "dr_voting_meeting_not_found"})
+                    else:
+                        audit_admin_access(user["userId"], "dr_voting_snapshot.read", {
+                            "meeting_id": int(raw_id), "voter_count": len(meeting["voters"]),
+                        })
+                        self.send_json(200, {"meeting": meeting})
+            elif path == "/internal/admin/dr/voting-results":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    query = parse_qs(parsed.query)
+                    try:
+                        meeting_id = int(query.get("meetingId", [""])[0])
+                        raw_item = query.get("agendaItemId", [""])[0]
+                        item_id = int(raw_item) if raw_item else None
+                    except (TypeError, ValueError):
+                        raise ValueError("invalid_dr_voting_results_filter") from None
+                    from managers.depositary_receipt_manager import DepositaryReceiptManager
+                    manager = DepositaryReceiptManager(domain().bot.db)
+                    results = manager.get_voting_results(meeting_id, item_id)
+                    audit_admin_access(user["userId"], "dr_voting_results.read", {
+                        "meeting_id": meeting_id, "agenda_item_id": item_id,
+                        "agenda_count": len(results),
+                    })
+                    self.send_json(200, {"results": results})
             elif path == "/internal/admin/dr/custody-events":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -3273,6 +3387,64 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 self.send_json(201, {"account": account})
                 return
+            if path == "/internal/admin/dr/voting-meetings":
+                user = identity(verified_id)
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                    return
+                if set(payload) != {"underlyingCode", "title"}:
+                    raise ValueError("invalid_dr_voting_meeting_payload")
+                from managers.depositary_receipt_manager import DepositaryReceiptManager
+                success, result = DepositaryReceiptManager(domain().bot.db).create_voting_record_snapshot(
+                    payload["underlyingCode"], payload["title"],
+                )
+                if success:
+                    audit_admin_access(user["userId"], "dr_voting_snapshot.create", {
+                        "meeting_id": result["meetingId"],
+                        "underlying_code": result["underlyingCode"],
+                        "snapshot_rows": result["snapshotRows"],
+                    })
+                self.send_json(201 if success else 400, {"success": success, "result": result})
+                return
+            if path == "/internal/admin/dr/voting-agenda":
+                user = identity(verified_id)
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                    return
+                if set(payload) != {"meetingId", "title", "choices"}:
+                    raise ValueError("invalid_dr_voting_agenda_payload")
+                from managers.depositary_receipt_manager import DepositaryReceiptManager
+                success, result = DepositaryReceiptManager(domain().bot.db).add_voting_agenda_item(
+                    payload["meetingId"], payload["title"], payload["choices"],
+                )
+                if success:
+                    audit_admin_access(user["userId"], "dr_voting_agenda.create", {
+                        "meeting_id": result["meetingId"],
+                        "agenda_item_id": result["agendaItemId"],
+                    })
+                self.send_json(201 if success else 400, {"success": success, "result": result})
+                return
+            if path == "/internal/admin/dr/voting-window":
+                user = identity(verified_id)
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                    return
+                if set(payload) != {"meetingId", "opensEpoch", "closesEpoch", "quorumPercent"}:
+                    raise ValueError("invalid_dr_voting_window_payload")
+                from managers.depositary_receipt_manager import DepositaryReceiptManager
+                success, result = DepositaryReceiptManager(domain().bot.db).set_voting_window(
+                    payload["meetingId"], payload["opensEpoch"], payload["closesEpoch"],
+                    payload["quorumPercent"],
+                )
+                if success:
+                    audit_admin_access(user["userId"], "dr_voting_window.configure", {
+                        "meeting_id": result["meetingId"],
+                        "opens_epoch": result["opensEpoch"],
+                        "closes_epoch": result["closesEpoch"],
+                        "quorum_percent": result["quorumPercent"],
+                    })
+                self.send_json(200 if success else 400, {"success": success, "result": result})
+                return
 
             user = identity(verified_id)
             if not user:
@@ -3313,6 +3485,16 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 self.send_json(200 if success else 400,
                                {"success": success, "result": result})
+                return
+            if path == "/internal/dr/votes":
+                allowed = {"meetingId", "agendaItemId", "choice"}
+                if set(payload) != allowed:
+                    raise ValueError("invalid_dr_vote_payload")
+                from managers.depositary_receipt_manager import DepositaryReceiptManager
+                success, result = DepositaryReceiptManager(domain().bot.db).cast_vote(
+                    user["userId"], payload["meetingId"], payload["agendaItemId"], payload["choice"],
+                )
+                self.send_json(201 if success else 400, {"success": success, "result": result})
                 return
             if path == "/internal/admin/compliance":
                 if user["role"] != "admin":

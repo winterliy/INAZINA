@@ -28,7 +28,7 @@ class CreditRiskManager:
         horizon = 365*86400
         rows = conn.execute(
             "WITH ranked AS ("
-            " SELECT a.loan_id,a.pd_12m,a.calculated_epoch,l.defaulted_epoch,u.nationality,p.issuer,"
+            " SELECT a.loan_id,a.pd_12m,a.calculated_epoch,l.defaulted_epoch,l.user_id,u.nationality,p.issuer,"
             " ROW_NUMBER() OVER (PARTITION BY a.loan_id "
             " ORDER BY a.calculated_epoch DESC,a.assessment_id DESC) AS month_rank "
             " FROM loan_ecl_assessments a "
@@ -50,7 +50,8 @@ class CreditRiskManager:
             band = next(label for low, high, label in bands if low <= pd < high)
             key = (str(row["issuer"] or ""), str(row["nationality"] or ""), band)
             stats = grouped.setdefault(key, {"count": 0, "defaults": 0,
-                                               "predicted": 0.0, "brier": 0.0})
+                                               "predicted": 0.0, "brier": 0.0,
+                                               "borrower_loans": {}})
             default_epoch = row["defaulted_epoch"]
             observed = int(default_epoch is not None
                            and row["calculated_epoch"] < float(default_epoch)
@@ -59,29 +60,45 @@ class CreditRiskManager:
             stats["defaults"] += observed
             stats["predicted"] += pd
             stats["brier"] += (pd-observed)**2
+            borrower_id = str(row["user_id"])
+            stats["borrower_loans"][borrower_id] = (
+                stats["borrower_loans"].get(borrower_id, 0) + 1
+            )
         result = []
         for (bank, country, band), stats in sorted(grouped.items()):
             count = stats["count"]
             observed_rate = stats["defaults"]/count
+            borrower_count = len(stats["borrower_loans"])
+            # Kish effective sample size conservatively discounts correlated loans
+            # from the same borrower when computing the Wilson interval.
+            cluster_square_sum = sum(n*n for n in stats["borrower_loans"].values())
+            effective_count = count*count/cluster_square_sum if cluster_square_sum else 0.0
             z = 1.959963984540054
-            denominator = 1+(z*z/count)
-            center = (observed_rate+(z*z/(2*count)))/denominator
+            denominator = 1+(z*z/effective_count)
+            center = (observed_rate+(z*z/(2*effective_count)))/denominator
             margin = z*math.sqrt(
-                observed_rate*(1-observed_rate)/count+(z*z/(4*count*count))
+                observed_rate*(1-observed_rate)/effective_count
+                +(z*z/(4*effective_count*effective_count))
             )/denominator
+            lower95 = max(0.0, center-margin)
+            upper95 = min(1.0, center+margin)
+            mean_predicted = stats["predicted"]/count
             result.append({"issuer": bank, "nationality": country, "pdBand": band,
                            "sampleCount": count, "observedDefaults": stats["defaults"],
-                           "meanPredictedPd": stats["predicted"]/count,
+                           "borrowerCount": borrower_count,
+                           "effectiveSampleCount": effective_count,
+                           "meanPredictedPd": mean_predicted,
                            "observedDefaultRate": observed_rate,
-                           "calibrationGap": observed_rate-stats["predicted"]/count,
+                           "calibrationGap": observed_rate-mean_predicted,
                            "observedToExpected": (stats["defaults"]/stats["predicted"]
                                                    if stats["predicted"] > 0 else None),
-                           "observedRateLower95": max(0.0, center-margin),
-                           "observedRateUpper95": min(1.0, center+margin),
+                           "observedRateLower95": lower95,
+                           "observedRateUpper95": upper95,
+                           "predictedPdWithinObserved95": lower95 <= mean_predicted <= upper95,
                            "brierScore": stats["brier"]/count})
         return {"issuer": issuer, "horizonDays": 365,
                 "maturedThroughEpoch": epoch-horizon, "groups": result,
-                "method": "most recent matured Stage 1/2 assessment per loan; includes only snapshots with a full 365-day outcome window; outcome is recorded default within the following 12 months; capped at 5000 loans; Wilson intervals are loan-level approximations and do not cluster multiple loans by borrower; simulator-only calibration diagnostic"}
+                "method": "most recent matured Stage 1/2 assessment per loan; includes only snapshots with a full 365-day outcome window; outcome is recorded default within the following 12 months; capped at 5000 loans; Wilson intervals use Kish effective sample size to discount repeated loans per borrower, as a conservative clustering approximation; simulator-only calibration diagnostic"}
 
 
     @staticmethod
