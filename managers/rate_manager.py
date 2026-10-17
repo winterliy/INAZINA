@@ -788,21 +788,27 @@ class RateManager:
         ).fetchall()
         from managers.currency_manager import CurrencyManager, SCALE
         from functions.money import round_currency
-        total_base = 0.0
-        by_weight = {"secured_asset": 0.0,
-                     "performing_unsecured": 0.0, "higher_risk_unsecured": 0.0,
-                     "defaulted_unsecured": 0.0}
-        cash_collateral_covered_base = 0.0
+        components = ("secured_asset", "performing_unsecured",
+                      "higher_risk_unsecured", "defaulted_unsecured")
+        native_by_weight = {key: {} for key in components}
+        native_cash_collateral = {}
         for loan in loans:
-            ead = max(0.0, float(loan["outstanding_balance"] or 0))
-            cash = max(0.0, float(loan["collateral_amount"] or 0)
-                       - float(loan["collateral_released"] or 0)
-                       - float(loan["collateral_seized"] or 0))
+            currency = str(loan["quote_currency"] or "NWX")
+            ead = round_currency(
+                conn, max(0.0, float(loan["outstanding_balance"] or 0)), currency
+            )
+            cash = round_currency(
+                conn, max(0.0, float(loan["collateral_amount"] or 0)
+                          - float(loan["collateral_released"] or 0)
+                          - float(loan["collateral_seized"] or 0)), currency
+            )
             asset_row = conn.execute(
                 "SELECT COALESCE(SUM(last_value),0) value FROM loan_collateral_assets "
                 "WHERE loan_id=? AND status='pledged'", (loan["loan_id"],),
             ).fetchone()
-            asset = max(0.0, float(asset_row["value"] or 0)) * 0.80
+            asset = round_currency(
+                conn, max(0.0, float(asset_row["value"] or 0))*0.80, currency
+            )
             cash_covered = min(ead, cash)
             asset_covered = min(max(0.0, ead-cash_covered), asset)
             unsecured = max(0.0, ead-cash_covered-asset_covered)
@@ -815,27 +821,34 @@ class RateManager:
             unsecured_weight, key = ((1.50, "defaulted_unsecured") if defaulted else
                                      (1.00, "higher_risk_unsecured") if higher_risk else
                                      (0.75, "performing_unsecured"))
-            currency = str(loan["quote_currency"] or "NWX")
             parts = {"secured_asset": asset_covered*.35,
                      key: unsecured*unsecured_weight}
             for component, native_amount in parts.items():
                 native_amount = round_currency(conn, native_amount, currency)
-                if currency == base_currency:
-                    translated = native_amount
-                else:
-                    translated = CurrencyManager.convert(
-                        conn, int(round(float(native_amount)*SCALE)), currency, base_currency
-                    ) / SCALE
-                total_base += translated
-                by_weight[component] += translated
+                native_by_weight[component][currency] = (
+                    native_by_weight[component].get(currency, 0.0)+native_amount
+                )
             cash_covered = round_currency(conn, cash_covered, currency)
-            cash_collateral_covered_base += (
-                cash_covered if currency == base_currency else
-                CurrencyManager.convert(conn, int(round(float(cash_covered)*SCALE)),
-                                        currency, base_currency) / SCALE
+            native_cash_collateral[currency] = (
+                native_cash_collateral.get(currency, 0.0)+cash_covered
             )
-        by_weight = {key: round_currency(conn, value, base_currency)
-                     for key, value in by_weight.items()}
+
+        def translate_totals(values):
+            translated = 0.0
+            for currency, native_amount in values.items():
+                if currency == base_currency:
+                    translated += native_amount
+                else:
+                    translated += CurrencyManager.convert(
+                        conn, int(round(native_amount*SCALE)), currency, base_currency
+                    )/SCALE
+            return translated
+
+        by_weight = {
+            key: round_currency(conn, translate_totals(values), base_currency)
+            for key, values in native_by_weight.items()
+        }
+        cash_collateral_covered_base = translate_totals(native_cash_collateral)
         cash_collateral_covered_base = round_currency(
             conn, cash_collateral_covered_base, base_currency
         )

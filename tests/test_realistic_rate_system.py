@@ -1066,6 +1066,7 @@ class RealisticRateSystemTests(unittest.TestCase):
         with self.db.readonly() as conn:
             report = CreditRiskManager.borrower_concentration_stress(conn, "Bank")
             portfolio = CreditRiskManager.portfolio_default_stress(conn, "Bank")
+            rwa = RateManager.institution_risk_weighted_assets(conn, "Bank")
         self.assertEqual(report["borrowerCount"], 2)
         self.assertEqual(report["currency"], "NWX")
         self.assertEqual(report["totalLoanExposure"], 301)
@@ -1078,6 +1079,7 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(borrower["existingAllowanceApplied"], 39)
         self.assertEqual(borrower["incrementalProvision"], 26)
         self.assertEqual(portfolio["performingEad"], 301)
+        self.assertEqual(rwa["amount"], 226)
         self.assertAlmostEqual(report["topFiveExposureSharePercent"], 100)
         largest = report["borrowers"][0]
         self.assertEqual(largest["borrowerId"], "other-borrower")
