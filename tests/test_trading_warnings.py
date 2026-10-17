@@ -31,6 +31,10 @@ class TradingWarningTests(unittest.TestCase):
             self.warnings.set('admin', 'WARN', '최고')
         with self.assertRaises(ValueError):
             self.warnings.set('citizen', 'WARN', '주의')
+        with self.assertRaisesRegex(ValueError, '경고 기간'):
+            self.warnings.set('admin', 'WARN', '주의', days=True)
+        with self.assertRaisesRegex(ValueError, '경고 기간'):
+            self.warnings.set('admin', 'WARN', '주의', days=10**1000)
 
     def test_orders_show_the_warning_and_expired_warnings_disappear(self):
         self.prepare()
@@ -42,6 +46,8 @@ class TradingWarningTests(unittest.TestCase):
         self.db.system.execute("UPDATE trading_warnings SET expires_epoch=?", (time.time() - 1,))
         ok, message = self.bot.order_book.place_limit_order('citizen', 'WARN', 'buy', 1, 100)
         self.assertNotIn('투자위험', message)
+        self.db.system.execute("UPDATE trading_warnings SET expires_epoch=253402300800")
+        self.assertEqual(self.warnings.list(), [])
 
     def test_web_instruments_carry_the_warning(self):
         self.prepare()

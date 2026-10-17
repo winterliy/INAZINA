@@ -74,6 +74,7 @@ class WebApiTests(unittest.TestCase):
                 CREATE TABLE kyc_profiles(user_id TEXT,status TEXT,risk_tier TEXT,reviewed_by TEXT,
                     reviewed_epoch REAL,expires_epoch REAL,updated_epoch REAL);
                 INSERT INTO kyc_profiles VALUES ('bad-expiry','verified','standard','admin',1,253402300800,2);
+                INSERT INTO kyc_profiles VALUES ('pending-expiry','pending','standard','admin',1,1e300,3);
                 CREATE TABLE aml_alerts(alert_id INTEGER,user_id TEXT,nationality TEXT,rule_code TEXT,
                     reference_key TEXT,currency_code TEXT,amount REAL,status TEXT,outcome_code TEXT,
                     opened_epoch REAL,reviewed_by TEXT,reviewed_epoch REAL);
@@ -109,8 +110,11 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(result["eclAssessments"][0]["expected_loss_time_years"], 0.25)
         self.assertEqual(result["eclAssessments"][0]["macro_pd_multiplier"], 1.2)
         self.assertEqual(result["eclAssessments"][0]["expected_loss_text"], "72")
-        self.assertEqual(result["kycProfiles"][0]["status"], "expired")
-        self.assertIsNone(result["kycProfiles"][0]["expires_epoch"])
+        profiles = {row["user_id"]: row for row in result["kycProfiles"]}
+        self.assertEqual(profiles["bad-expiry"]["status"], "expired")
+        self.assertIsNone(profiles["bad-expiry"]["expires_epoch"])
+        self.assertEqual(profiles["pending-expiry"]["status"], "pending")
+        self.assertIsNone(profiles["pending-expiry"]["expires_epoch"])
         self.assertEqual(result["kycEvents"][0]["event_type"], "transfer_denied")
         self.assertEqual(result["kycEvents"][0]["actor_id"], "alice")
         self.assertEqual(result["kycEvents"][0]["reason_code"], "kyc_incomplete_or_expired")
@@ -282,6 +286,9 @@ class WebApiTests(unittest.TestCase):
                 CREATE TABLE market_rate_curve(nationality TEXT,benchmark_key TEXT,tenor_days INTEGER,
                     annual_rate REAL);
                 CREATE TABLE market_rate_pressure(nationality TEXT,benchmark_key TEXT,adjustment REAL);
+                CREATE TABLE trading_warnings(asset_code TEXT,level TEXT,reason TEXT,set_by TEXT,
+                    created_epoch REAL,expires_epoch REAL);
+                INSERT INTO trading_warnings VALUES ('TB1','warning','bad expiry','admin',1,253402300800);
                 CREATE TABLE depositary_receipts(dr_code TEXT,underlying_code TEXT,receipt_type TEXT,
                     depositary_bank TEXT,custodian TEXT,home_exchange_id TEXT,listing_exchange_id TEXT,
                     underlying_per_receipt REAL,receipt_supply INTEGER,deposited_underlying_quantity REAL,
@@ -298,6 +305,7 @@ class WebApiTests(unittest.TestCase):
             bond = next(row for row in server.instruments() if row["code"] == "TB1")
         self.assertGreater(bond["bondRisk"]["modified_duration"], 0)
         self.assertGreater(bond["bondRisk"]["dv01"], 0)
+        self.assertNotIn("warning", bond)
 
     def test_dr_web_ledgers_distinguish_holder_basis_from_custody_pool_basis(self):
         with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:

@@ -171,6 +171,26 @@ class CurrencyHomeTests(unittest.TestCase):
             "SELECT COUNT(*) FROM admin_audit"
         )[0], before["audit"])
 
+    def test_aml_thresholds_reject_values_not_representable_in_storage(self):
+        self.configure()
+        for amount in (Decimal('1e10000'), Decimal('1e-10000')):
+            with self.subTest(amount=amount):
+                with self.assertRaisesRegex(ValueError, '저장 가능한 유한 금액'):
+                    with self.db.atomic() as conn:
+                        ComplianceManager.configure_aml_rule(
+                            conn, '미국', 'admin', large_transaction_limit=amount,
+                            enabled=True,
+                        )
+        with self.assertRaisesRegex(ValueError, '거래 횟수 기준'):
+            with self.db.atomic() as conn:
+                ComplianceManager.configure_aml_rule(
+                    conn, '미국', 'admin', rolling_24h_count_limit=10**1000,
+                    enabled=True,
+                )
+        self.assertIsNone(self.db.currency.execute_one(
+            "SELECT 1 FROM aml_monitoring_rules WHERE nationality='미국'"
+        ))
+
     def test_kyc_expiry_must_be_a_supported_future_epoch(self):
         self.configure()
         before_events = self.db.system.execute_one(

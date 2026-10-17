@@ -244,7 +244,10 @@ class ComplianceManager:
                 raise ValueError(f"{label} 기준을 확인해주세요.") from None
             if not parsed.is_finite() or parsed < 0:
                 raise ValueError(f"{label} 기준은 0 이상이어야 합니다.")
-            return float(parsed)
+            converted = float(parsed)
+            if not math.isfinite(converted) or (parsed > 0 and converted == 0):
+                raise ValueError(f"{label} 기준은 저장 가능한 유한 금액이어야 합니다.")
+            return converted
 
         large = amount(large_transaction_limit, "고액거래")
         rolling = amount(rolling_24h_amount_limit, "24시간 누적거래")
@@ -252,7 +255,9 @@ class ComplianceManager:
             count = int(rolling_24h_count_limit)
         except (TypeError, ValueError, OverflowError):
             raise ValueError("24시간 거래 횟수 기준을 확인해주세요.") from None
-        if count < 0 or str(count) != str(rolling_24h_count_limit):
+        # Keep JSON/browser round-trips exact as well as SQLite INTEGER-safe.
+        if (count < 0 or count > 2**53-1
+                or str(count) != str(rolling_24h_count_limit)):
             raise ValueError("24시간 거래 횟수 기준은 0 이상의 정수여야 합니다.")
         if isinstance(enabled, bool):
             enabled = enabled

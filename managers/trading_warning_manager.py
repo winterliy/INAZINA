@@ -19,16 +19,28 @@ class TradingWarnings:
 
     @staticmethod
     def active(conn, now=None):
-        now = time.time() if now is None else now
-        return {str(row["asset_code"]): dict(row) for row in conn.execute(
-            "SELECT * FROM trading_warnings WHERE expires_epoch IS NULL OR expires_epoch>?", (now,))}
+        from functions.time_utils import validate_epoch
+        now = validate_epoch(now)
+        active = {}
+        for row in conn.execute(
+                "SELECT * FROM trading_warnings WHERE expires_epoch IS NULL OR expires_epoch>?",
+                (now,)):
+            expires = row["expires_epoch"]
+            if expires is not None:
+                try:
+                    expires = validate_epoch(expires)
+                except ValueError:
+                    continue
+                if expires <= now:
+                    continue
+            value = dict(row)
+            value["expires_epoch"] = expires
+            active[str(row["asset_code"])] = value
+        return active
 
     @staticmethod
     def of(conn, code, now=None):
-        now = time.time() if now is None else now
-        row = conn.execute("SELECT * FROM trading_warnings WHERE asset_code=? AND (expires_epoch IS NULL OR expires_epoch>?)",
-                           (str(code), now)).fetchone()
-        return dict(row) if row else None
+        return TradingWarnings.active(conn, now).get(str(code))
 
     @staticmethod
     def label(warning, *, reason=True):
@@ -57,10 +69,17 @@ class TradingWarnings:
                 raise ValueError("존재하지 않는 종목·상품 코드입니다.")
             expires = None
             if days not in (None, ""):
-                days = float(days)
+                if isinstance(days, bool):
+                    raise ValueError("경고 기간은 0보다 크고 3650일 이하입니다.")
+                try:
+                    days = float(days)
+                except (TypeError, ValueError, OverflowError):
+                    raise ValueError("경고 기간은 0보다 크고 3650일 이하입니다.") from None
                 if not 0 < days <= 3650:
                     raise ValueError("경고 기간은 0보다 크고 3650일 이하입니다.")
                 expires = now + days * 86400
+                from functions.time_utils import validate_epoch
+                expires = validate_epoch(expires)
             conn.execute(
                 "INSERT INTO trading_warnings(asset_code,level,reason,set_by,created_epoch,expires_epoch) VALUES (?,?,?,?,?,?) "
                 "ON CONFLICT(asset_code) DO UPDATE SET level=excluded.level,reason=excluded.reason,set_by=excluded.set_by,"
