@@ -238,6 +238,9 @@ class CurrencyDB(DBManager):
              "SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code "
              "UNION ALL SELECT quote_currency FROM company WHERE company_code=NEW.asset_code "
              "UNION ALL SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code LIMIT 1"),
+            ("depositary_receipt_movements", ("underlying_average_cost",), "movement_id",
+             "SELECT quote_currency FROM company WHERE company_code=(SELECT underlying_code "
+             "FROM depositary_receipts WHERE dr_code=NEW.dr_code)"),
             ("market_price_history", ("price",), "history_id",
              "SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code "
              "UNION ALL SELECT quote_currency FROM company WHERE company_code=NEW.asset_code "

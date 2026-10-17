@@ -80,11 +80,15 @@ class AssetDB(DBManager):
             movement_type TEXT NOT NULL CHECK(movement_type IN ('issue','redeem')),
             dr_quantity INTEGER NOT NULL CHECK(dr_quantity > 0),
             underlying_quantity INTEGER NOT NULL CHECK(underlying_quantity > 0),
-            underlying_average_cost INTEGER NOT NULL DEFAULT 0 CHECK(underlying_average_cost >= 0),
+            underlying_average_cost REAL NOT NULL DEFAULT 0 CHECK(underlying_average_cost >= 0),
             recorded_epoch REAL NOT NULL
         )""")
         self.execute("CREATE INDEX IF NOT EXISTS idx_dr_movements_program "
                      "ON depositary_receipt_movements(dr_code,recorded_epoch)")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_dr_movements_user_recent "
+                     "ON depositary_receipt_movements(user_id,recorded_epoch DESC,movement_id DESC)")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_dr_movements_recent "
+                     "ON depositary_receipt_movements(recorded_epoch DESC,movement_id DESC)")
         self.enforce_integer_money(
             "depositary_receipt_movements", ("underlying_average_cost",), "movement_id"
         )

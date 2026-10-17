@@ -9,6 +9,36 @@ class DepositaryReceiptManager:
     def __init__(self, db):
         self.db = db
 
+    @staticmethod
+    def _add_holding(conn, user_id, asset_code, quantity, unit_cost, currency_code):
+        """Add a holding while keeping its weighted cost in native currency precision."""
+        from functions.money import round_currency
+        row = conn.execute(
+            "SELECT holding_id,quantity,average_cost FROM assets.user_assets "
+            "WHERE user_id=? AND asset_code=? AND IFNULL(account_number,'')='' "
+            "ORDER BY holding_id LIMIT 1", (str(user_id), str(asset_code)),
+        ).fetchone()
+        if row:
+            old_quantity = Decimal(str(row["quantity"] or 0))
+            added_quantity = Decimal(str(quantity))
+            total_quantity = old_quantity + added_quantity
+            average_cost = round_currency(
+                conn,
+                (old_quantity * Decimal(str(row["average_cost"] or 0))
+                 + added_quantity * Decimal(str(unit_cost))) / total_quantity,
+                currency_code,
+            )
+            conn.execute(
+                "UPDATE assets.user_assets SET quantity=?,average_cost=? WHERE holding_id=?",
+                (float(total_quantity), average_cost, row["holding_id"]),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO assets.user_assets(user_id,asset_code,account_number,quantity,average_cost) "
+                "VALUES (?,?,NULL,?,?)",
+                (str(user_id), str(asset_code), float(quantity), unit_cost),
+            )
+
     def convert(self, user_id, dr_code, action, quantity, reference_key, *, now=None):
         """Issue DRs against deposited shares or redeem DRs for pooled custody shares.
 
@@ -141,20 +171,13 @@ class DepositaryReceiptManager:
                         raise RuntimeError("예약 주문을 제외한 원주 수량이 부족해 전환을 취소했습니다.")
                     from functions.money import round_currency
                     from managers.currency_manager import CurrencyManager
-                    underlying_cost = int(round_currency(conn, total_cost / shares, underlying["quote_currency"]))
+                    underlying_cost = round_currency(conn, total_cost / shares, underlying["quote_currency"])
                     fx = CurrencyManager.quote(conn, underlying["quote_currency"], program["dr_currency"])
                     dr_cost = round_currency(
                         conn, Decimal(underlying_cost) * exact_shares / Decimal(quantity) *
                         Decimal(fx.numerator) / Decimal(fx.denominator), program["dr_currency"],
                     )
-                    conn.execute(
-                        "INSERT INTO assets.user_assets(user_id,asset_code,account_number,quantity,average_cost) "
-                        "VALUES (?,?,NULL,?,?) ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) "
-                        "DO UPDATE SET average_cost=CAST(ROUND((quantity*average_cost+excluded.quantity*"
-                        "excluded.average_cost)/(quantity+excluded.quantity)) AS INTEGER),"
-                        "quantity=quantity+excluded.quantity",
-                        (user, code, quantity, dr_cost),
-                    )
+                    self._add_holding(conn, user, code, quantity, dr_cost, program["dr_currency"])
                     underlying_average_cost = underlying_cost
                 else:
                     owned = conn.execute(
@@ -202,18 +225,12 @@ class DepositaryReceiptManager:
                     if remaining:
                         raise RuntimeError("DR 보유 수량이 부족해 상환을 취소했습니다.")
                     from functions.money import round_currency
-                    underlying_average_cost = int(round_currency(
-                        conn, Decimal(int(custody["cost"] or 0)) / Decimal(int(custody["shares"])),
+                    underlying_average_cost = round_currency(
+                        conn, Decimal(str(custody["cost"] or 0)) / Decimal(int(custody["shares"])),
                         underlying["quote_currency"],
-                    ))
-                    conn.execute(
-                        "INSERT INTO assets.user_assets(user_id,asset_code,account_number,quantity,average_cost) "
-                        "VALUES (?,?,NULL,?,?) ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) "
-                        "DO UPDATE SET average_cost=CAST(ROUND((quantity*average_cost+excluded.quantity*"
-                        "excluded.average_cost)/(quantity+excluded.quantity)) AS INTEGER),"
-                        "quantity=quantity+excluded.quantity",
-                        (user, underlying_code, shares, underlying_average_cost),
                     )
+                    self._add_holding(conn, user, underlying_code, shares,
+                                      underlying_average_cost, underlying["quote_currency"])
 
                 conn.execute(
                     "INSERT INTO assets.depositary_receipt_movements(reference_key,dr_code,user_id,"

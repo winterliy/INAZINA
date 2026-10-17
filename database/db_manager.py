@@ -102,7 +102,7 @@ class DBManager:
             "treasury_bond_holdings", "issuer_cash_accounts",
             "preferred_dividend_claims", "dividend_distributions",
             "dividend_payments", "financial_institutions",
-            "financial_institution_ledger",
+            "financial_institution_ledger", "depositary_receipt_movements",
         }
         if table in currency_aware:
             safe_table = "".join(ch if ch.isalnum() else "_" for ch in table)

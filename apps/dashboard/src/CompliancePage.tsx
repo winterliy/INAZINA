@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../shared/api";
 import { Card, Field, date, plain, type Ctx } from "./common";
@@ -26,19 +26,29 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
   const [rule, setRule] = useState({ large: "", rollingAmount: "", rollingCount: "", enabled: false });
   const [outcomes, setOutcomes] = useState<Record<number, string>>({});
   const [scenarioDraft, setScenarioDraft] = useState<Record<string, { probability: string; pdMultiplier: string; lgdMultiplier: string }>>({});
+  const [scenarioDraftCountry, setScenarioDraftCountry] = useState("");
+  const scenarioLoadVersion = useRef(0);
 
   const load = useCallback(async () => {
+    const version = ++scenarioLoadVersion.current;
     const suffix = nationality ? `?nationality=${encodeURIComponent(nationality)}` : "";
     const result = await api<Overview>(`/api/admin/compliance${suffix}`);
+    if (version !== scenarioLoadVersion.current) return;
     setData(result);
     if (!nationality && result.amlRules.length) setNationality(result.amlRules[0].nationality);
     const selected = result.amlRules.find((item) => item.nationality === nationality) ?? result.amlRules[0];
     if (selected) setRule({ large: String(selected.large_transaction_limit || ""), rollingAmount: String(selected.rolling_24h_amount_limit || ""), rollingCount: String(selected.rolling_24h_count_limit || ""), enabled: Boolean(selected.enabled) });
     const selectedCountry = nationality || selected?.nationality || "";
     const scenarios = result.creditRiskScenarios.filter((item) => item.nationality === selectedCountry);
-    if (scenarios.length) setScenarioDraft(Object.fromEntries(scenarios.map((item) => [item.scenario_key, {
-      probability: String(item.probability), pdMultiplier: String(item.pd_multiplier), lgdMultiplier: String(item.lgd_multiplier),
-    }])));
+    if (scenarios.length) {
+      setScenarioDraft(Object.fromEntries(scenarios.map((item) => [item.scenario_key, {
+        probability: String(item.probability), pdMultiplier: String(item.pd_multiplier), lgdMultiplier: String(item.lgd_multiplier),
+      }])));
+      setScenarioDraftCountry(selectedCountry);
+    } else {
+      setScenarioDraft({});
+      setScenarioDraftCountry("");
+    }
   }, [nationality]);
 
   useEffect(() => { load().catch((cause) => say(cause instanceof Error ? cause.message : "준법 정보를 불러오지 못했습니다.", true)); }, [load, say]);
@@ -81,6 +91,7 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
 
   function saveScenarios(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (scenarioDraftCountry !== nationality) { say("선택한 국가의 ECL 가정을 불러오는 중입니다.", true); return; }
     const scenarios = (["optimistic", "base", "downside"] as const).map((key) => ({ key,
       probability: Number(scenarioDraft[key]?.probability), pdMultiplier: Number(scenarioDraft[key]?.pdMultiplier), lgdMultiplier: Number(scenarioDraft[key]?.lgdMultiplier),
     }));
@@ -124,13 +135,13 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
 
     <Card title="국적별 기대신용손실(ECL) 시나리오" caption="낙관·기준·하방 확률가중 점수카드 가정입니다. 감독기관 승인 모델이 아니며 변경은 관리자 감사 기록에 남습니다.">
       <form className="form-grid" onSubmit={saveScenarios}>
-        <Field label="국적"><select value={nationality} onChange={(event) => setNationality(event.target.value)}>{data.creditRiskScenarios.filter((item, index, rows) => rows.findIndex((other) => other.nationality === item.nationality) === index).map((item) => <option key={item.nationality} value={item.nationality}>{item.nationality}</option>)}</select></Field>
+        <Field label="국적"><select value={nationality} onChange={(event) => { setScenarioDraft({}); setScenarioDraftCountry(""); setNationality(event.target.value); }}>{data.creditRiskScenarios.filter((item, index, rows) => rows.findIndex((other) => other.nationality === item.nationality) === index).map((item) => <option key={item.nationality} value={item.nationality}>{item.nationality}</option>)}</select></Field>
         {(["optimistic", "base", "downside"] as const).map((key) => <div className="span-wide" key={key}><h3 className="sub-head">{({ optimistic: "낙관", base: "기준", downside: "하방" })[key]} 시나리오</h3><div className="form-grid">
           <Field label="확률 (0~1)"><input type="number" min="0" max="1" step="0.01" required value={scenarioDraft[key]?.probability ?? ""} onChange={(event) => setScenarioDraft({ ...scenarioDraft, [key]: { ...scenarioDraft[key], probability: event.target.value } })} /></Field>
           <Field label="PD 배수 (0~20)"><input type="number" min="0" max="20" step="0.01" required value={scenarioDraft[key]?.pdMultiplier ?? ""} onChange={(event) => setScenarioDraft({ ...scenarioDraft, [key]: { ...scenarioDraft[key], pdMultiplier: event.target.value } })} /></Field>
           <Field label="LGD 배수 (0~5)"><input type="number" min="0" max="5" step="0.01" required value={scenarioDraft[key]?.lgdMultiplier ?? ""} onChange={(event) => setScenarioDraft({ ...scenarioDraft, [key]: { ...scenarioDraft[key], lgdMultiplier: event.target.value } })} /></Field>
         </div></div>)}
-        <button className="btn primary" disabled={busy || !nationality}>ECL 가정 저장</button>
+        <button className="btn primary" disabled={busy || !nationality || scenarioDraftCountry !== nationality}>ECL 가정 저장</button>
       </form>
     </Card>
 

@@ -805,6 +805,8 @@ def portfolio(user_id):
 
 
 def user_dr_movements(user_id, limit=50):
+    # Apply additive DR migrations before this endpoint reads its tables.
+    domain()
     from functions.money import currency_precision
     from decimal import Decimal
     with connect_readonly() as connection:
@@ -827,6 +829,7 @@ def user_dr_movements(user_id, limit=50):
 
 def admin_dr_movements(limit=100):
     """Read-only administrator view of the immutable DR conversion ledger."""
+    domain()
     from functions.money import currency_precision
     from decimal import Decimal
     with connect_readonly() as connection:

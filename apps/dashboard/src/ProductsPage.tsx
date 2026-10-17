@@ -83,20 +83,32 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
   const [kinds, setKinds] = useState<Kind[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [drMovements, setDrMovements] = useState<DrMovement[]>([]);
+  const [drLedgerError, setDrLedgerError] = useState(false);
   const [filter, setFilter] = useState("all");
   const [editor, setEditor] = useState<Editor | null>(null);
   const [showInactive, setShowInactive] = useState(true);
   const [fundCode, setFundCode] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const [catalog, list, drLedger] = await Promise.all([
+    const [catalog, list] = await Promise.all([
       api<{ kinds: Kind[] }>("/api/admin/products/catalog"),
       api<{ products: Product[] }>(`/api/admin/products?group=${group}`),
-      group === "market" ? api<{ movements: DrMovement[] }>("/api/admin/dr/movements?limit=100") : Promise.resolve({ movements: [] as DrMovement[] }),
     ]);
     setKinds(catalog.kinds.filter((item) => item.group === group));
     setProducts(list.products);
-    setDrMovements(drLedger.movements);
+    if (group === "market") {
+      try {
+        const drLedger = await api<{ movements: DrMovement[] }>("/api/admin/dr/movements?limit=100");
+        setDrMovements(drLedger.movements);
+        setDrLedgerError(false);
+      } catch {
+        setDrMovements([]);
+        setDrLedgerError(true);
+      }
+    } else {
+      setDrMovements([]);
+      setDrLedgerError(false);
+    }
   }, [group]);
 
   useEffect(() => {
@@ -188,7 +200,7 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
     {group === "market" && <Card title="DR 전환 원장" caption="최근 100건 · 조회 전용 불변 기록 · 게임 내 시뮬레이터 기록이며 수탁기관 보관 증빙이 아닙니다.">
       <div className="scroll-x"><table><thead><tr><th>시각</th><th>사용자</th><th>DR</th><th>유형</th><th className="r">DR 수량</th><th className="r">원주 수량</th><th className="r">원주 평균원가</th><th>통화</th></tr></thead><tbody>
         {drMovements.map((item) => <tr key={item.movement_id}><td>{date(item.recorded_epoch)}</td><td className="mono">{item.user_id}</td><td className="mono">{item.dr_code} · {item.underlying_code}</td><td>{item.movement_type === "issue" ? "DR 발행" : "원주 상환"}</td><td className="r mono">{number(item.dr_quantity)}</td><td className="r mono">{number(item.underlying_quantity)}</td><td className="r mono">{groupAmount(item.underlying_average_cost_text)}</td><td>{item.underlying_currency}</td></tr>)}
-      </tbody></table>{!drMovements.length && <p className="empty">DR 전환 기록이 없습니다.</p>}</div>
+      </tbody></table>{drLedgerError ? <p className="empty">DR 원장을 불러오지 못했습니다. 상품 목록은 정상 조회되었습니다.</p> : !drMovements.length && <p className="empty">DR 전환 기록이 없습니다.</p>}</div>
     </Card>}
 
     {editor && spec && <Card title={editor.mode === "create" ? `${spec.label} 생성` : `${editor.code} 수정`} caption={editor.kind === "dr" ? editor.mode === "create" ? "기초 코드는 활성 보통주여야 하고 결제 통화·상장 거래소도 이미 등록되어야 합니다. 발행량 × DR당 원주 수는 원주 발행량 한도 안에 있어야 합니다." : "기초주식·비율·통화·거래소 등 발행조건은 변경할 수 없습니다. 가격과 표시 이름만 수정할 수 있습니다." : editor.mode === "create" ? "선택 항목은 비워 둘 수 있습니다. 배당주기는 초 또는 1일·1주·1달, 배당은 5 또는 5%처럼 입력합니다." : "바꾼 값만 저장합니다. 결제 통화와 발행된 계약 조건처럼 바꿀 수 없는 값은 서버가 거부합니다."}
