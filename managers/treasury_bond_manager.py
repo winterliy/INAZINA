@@ -38,13 +38,17 @@ class TreasuryBondManager:
 
     YEAR_DAYS = 365
 
+    @staticmethod
+    def _epoch(now, error_code):
+        return int(RateManager._validated_epoch(now, error_code))
+
     def __init__(self, db: DatabaseManager):
         self.db = db
         self._migrate_legacy_holdings()
 
     @staticmethod
     def theoretical_price(conn, bond, remaining_days=None, now=None):
-        now = int(time.time() if now is None else now)
+        now = TreasuryBondManager._epoch(now, "invalid_bond_valuation_epoch")
         days = int(bond["maturity_days"] if remaining_days is None else remaining_days)
         country = conn.execute(
             "SELECT nationality FROM market_exchanges WHERE exchange_id=?",
@@ -273,7 +277,7 @@ class TreasuryBondManager:
 
     def redeem_matured(self, user_id=None, now=None):
         """Automatically repay matured principal plus simple interest, less tax."""
-        now = int(time.time() if now is None else now)
+        now = self._epoch(now, "invalid_bond_redemption_epoch")
         user_id = None if user_id is None else str(user_id)
         self.pay_due_coupons(user_id=user_id, now=now)
         redeemed = []
@@ -356,7 +360,7 @@ class TreasuryBondManager:
 
     def pay_due_coupons(self, user_id=None, now=None):
         """Pay all due periodic coupons for active Treasury lots."""
-        now = int(time.time() if now is None else now)
+        now = self._epoch(now, "invalid_bond_coupon_epoch")
         user_id = None if user_id is None else str(user_id)
         paid = []
         with self.db.atomic(("users", "accounts", "tax")) as conn:
@@ -408,7 +412,7 @@ class TreasuryBondManager:
         return paid
 
     def get_user_holdings(self, user_id, now=None, *, conn=None):
-        now = int(time.time() if now is None else now)
+        now = self._epoch(now, "invalid_bond_valuation_epoch")
         # Valuation is read-only.  Do not reserve the database writer merely
         # because a wallet or web portfolio is being viewed.
         with (self.db.readonly() if conn is None else nullcontext(conn)) as conn:
@@ -459,7 +463,7 @@ class TreasuryBondManager:
 
     @staticmethod
     def available_units(conn, user_id, product_code, now=None):
-        now = int(time.time() if now is None else now)
+        now = TreasuryBondManager._epoch(now, "invalid_bond_availability_epoch")
         rows = conn.execute(
             "SELECT principal, face_value FROM accounts.treasury_bond_holdings "
             "WHERE user_id = ? AND product_code = ? AND status = 'active' "
@@ -474,6 +478,7 @@ class TreasuryBondManager:
     @staticmethod
     def transfer_units(conn, seller_id, buyer_id, product_code, quantity, price, now):
         """Move existing claims with their coupon and maturity terms to a buyer."""
+        now = TreasuryBondManager._epoch(now, "invalid_bond_transfer_epoch")
         rows = conn.execute(
             "SELECT holding_id, product_name, annual_rate, maturity_days, principal, "
             "face_value, acquisition_cost, purchased_epoch, maturity_epoch,"

@@ -169,6 +169,17 @@ class RealisticRateSystemTests(unittest.TestCase):
             "SELECT COUNT(*) FROM bank_journal_entries"
         )[0], before)
 
+    def test_institution_result_reconciliation_rejects_invalid_since_epoch(self):
+        self.add_loan()
+        invalid_epochs = (-1, float("nan"), float("inf"), 1e300, True, "invalid")
+        with self.db.readonly() as conn:
+            for invalid_epoch in invalid_epochs:
+                with self.subTest(invalid_epoch=invalid_epoch):
+                    with self.assertRaisesRegex(ValueError, "분개 시각"):
+                        BankJournal.reconcile_institution_results(
+                            conn, "Bank", since_epoch=invalid_epoch
+                        )
+
     def test_loan_receivable_reconciliation_uses_product_currency_minor_units(self):
         self.db.currency.execute(
             "INSERT INTO currencies(code,name,reference_rate,decimal_places) "

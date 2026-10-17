@@ -14,6 +14,7 @@ import time
 from decimal import Decimal, ROUND_FLOOR, ROUND_HALF_UP
 
 from managers.currency_manager import CurrencyManager, SCALE
+from managers.rate_manager import RateManager
 from managers.user_manager import UserManager
 
 YEAR = 365 * 86400
@@ -335,6 +336,7 @@ class CapitalMarketsManager:
     @staticmethod
     def charge_wrap_fees(conn, now):
         """Accrue each wrap account's annual management fee to its manager."""
+        now = RateManager._validated_epoch(now, "invalid_wrap_fee_epoch")
         rows = conn.execute(
             "SELECT a.account_number,a.user_id,a.managed_by,a.balance_units,a.quote_currency,a.fee_paid_epoch,"
             "s.management_fee_percent FROM accounts a JOIN saving s ON s.product_code=a.product_code "
@@ -381,7 +383,7 @@ class CapitalMarketsManager:
 
     def bank_deficit_alerts(self, now=None):
         """Head offices that newly fell below zero (each warned once until it recovers)."""
-        now = time.time() if now is None else now
+        now = RateManager._validated_epoch(now, "invalid_bank_deficit_alert_epoch")
         alerts = []
         with self.db.atomic() as conn:
             for row in conn.execute("SELECT b.issuer,b.user_id,u.cash,u.nationality FROM bank_accounts b "
@@ -407,7 +409,7 @@ class CapitalMarketsManager:
             "ON u.user_id=b.user_id WHERE u.cash<0 ORDER BY u.cash")]
 
     def process_due(self, now=None):
-        now = time.time() if now is None else now
+        now = RateManager._validated_epoch(now, "invalid_capital_markets_processing_epoch")
         with self.db.atomic() as conn:
             for swap in conn.execute("SELECT * FROM swap_contracts WHERE status='open' "
                                      "AND (last_settle_epoch<=? OR maturity_epoch<=?)",

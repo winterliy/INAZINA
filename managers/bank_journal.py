@@ -30,6 +30,8 @@ class BankJournal:
         Unmapped legacy events are reported, not silently treated as balanced.
         Multiple result types sharing a transaction reference are consolidated.
         """
+        if since_epoch is not None:
+            since_epoch = BankJournal.validate_epoch(since_epoch)
         from functions.money import currency_precision, round_currency
 
         query = (

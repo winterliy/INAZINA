@@ -42,6 +42,31 @@ class ShareholderRegisterTests(unittest.TestCase):
         self.assertEqual(self.cash('admin') - admin, 0)
         self.assertEqual(self.db.corporate.execute_one('SELECT status FROM shareholder_registers')[0], 'paid')
 
+    def test_invalid_processing_epoch_cannot_close_register_or_pay_dividends(self):
+        due = 100_000
+        self.prepare(due)
+        before_cash = self.cash('citizen')
+        invalid_epochs = (-1, float('nan'), float('inf'), 1e300, True, 'invalid')
+        for invalid_epoch in invalid_epochs:
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(
+                    ValueError, 'invalid_corporate_action_processing_epoch'
+                ):
+                    self.manager.process_due(now=invalid_epoch)
+                self.assertIsNone(self.db.corporate.execute_one(
+                    'SELECT 1 FROM shareholder_registers'
+                ))
+                self.assertEqual(self.cash('citizen'), before_cash)
+                success, message = self.manager.liquidate(
+                    'admin', 'CO', operation_key=f'bad-time:{invalid_epoch}',
+                    now=invalid_epoch,
+                )
+                self.assertFalse(success)
+                self.assertIn('invalid_corporate_action_liquidation_epoch', message)
+        self.assertEqual(self.db.corporate.execute_one(
+            "SELECT COUNT(*) FROM corporate_action_records WHERE action_kind='liquidation'"
+        )[0], 0)
+
     def test_regular_dividend_without_a_closed_register_uses_holders_at_payment(self):
         due = 100_000
         self.prepare(due)

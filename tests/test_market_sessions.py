@@ -225,6 +225,22 @@ class MarketSessionTests(unittest.TestCase):
         self.users.bond_manager.redeem_matured(now=lot["maturity_epoch"]+1)
         self.assertEqual(self.db.accounts.execute_one("SELECT status FROM treasury_bond_holdings")[0], "redeemed")
 
+    def test_invalid_bond_redemption_epoch_cannot_change_lot_or_cash(self):
+        self.assertTrue(self.users.bond_manager.issue("TB", "Bond", 0, 1, 100, 10000)[0])
+        self.assertTrue(self.users.bond_manager.buy("alice", "TB", 100)[0])
+        lot_before = tuple(self.db.accounts.execute_one(
+            "SELECT principal,status,last_coupon_epoch FROM treasury_bond_holdings"
+        ))
+        cash_before = self.db.users.get_user("alice")["cash"]
+        for invalid_epoch in (-1, float("nan"), float("inf"), 1e300, True, "invalid"):
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, "invalid_bond_redemption_epoch"):
+                    self.users.bond_manager.redeem_matured("alice", now=invalid_epoch)
+                self.assertEqual(tuple(self.db.accounts.execute_one(
+                    "SELECT principal,status,last_coupon_epoch FROM treasury_bond_holdings"
+                )), lot_before)
+                self.assertEqual(self.db.users.get_user("alice")["cash"], cash_before)
+
     def test_nonexpired_futures_do_not_reprice_or_fill_resting_orders_while_halted(self):
         self.assertTrue(self.products.issue("admin", "FUT", "Future", "stock_future",
             10000, 100, "EX", "CO", 1)[0])

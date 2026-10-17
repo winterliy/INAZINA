@@ -236,6 +236,19 @@ class DefaultedLoanEclTests(unittest.TestCase):
                             conn, "낙원", issuer="Bank", now=invalid_epoch
                         )
 
+    def test_ecl_assessment_rejects_invalid_epoch_before_recording(self):
+        before = self.db.accounts.execute_one(
+            "SELECT COUNT(*) FROM loan_ecl_assessments"
+        )[0]
+        for invalid_epoch in (-1, float("nan"), float("inf"), 1e300, True, "invalid"):
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, "invalid_ecl_assessment_epoch"):
+                    with self.db.atomic() as conn:
+                        CreditRiskManager.assess_conn(conn, invalid_epoch)
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT COUNT(*) FROM loan_ecl_assessments"
+        )[0], before)
+
     def test_zero_effective_rate_has_no_discount(self):
         self.db.accounts.execute(
             "UPDATE loans SET contract_effective_rate=0 WHERE product_code='ECL3'"

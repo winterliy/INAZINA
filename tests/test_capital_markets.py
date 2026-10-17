@@ -105,6 +105,24 @@ class CapitalMarketsTests(unittest.TestCase):
         self.assertTrue(ok, message)
         self.assertEqual(self.db.accounts.execute_one("SELECT status,margin FROM swap_contracts")[:], ('closed', 0))
 
+    def test_due_processing_rejects_invalid_epoch_before_swap_settlement(self):
+        self.prepare()
+        markets = self.bot.capital_markets
+        ok, message = markets.open_swap('citizen', 1_000_000, '고정지급', 365)
+        self.assertTrue(ok, message)
+        swap_before = tuple(self.db.accounts.execute_one(
+            "SELECT margin,realized,last_settle_epoch,status FROM swap_contracts"
+        ))
+        cash_before = self.db.users.get_user('citizen')['cash']
+        for invalid_epoch in (-1, float('nan'), float('inf'), 1e300, True, 'invalid'):
+            with self.subTest(invalid_epoch=invalid_epoch):
+                with self.assertRaisesRegex(ValueError, 'invalid_capital_markets_processing_epoch'):
+                    markets.process_due(now=invalid_epoch)
+                self.assertEqual(tuple(self.db.accounts.execute_one(
+                    "SELECT margin,realized,last_settle_epoch,status FROM swap_contracts"
+                )), swap_before)
+                self.assertEqual(self.db.users.get_user('citizen')['cash'], cash_before)
+
     def test_cma_and_wrap_accounts(self):
         self.prepare()
         self.create('cma', 'CMA1', 'CMA', '', '', interest_rate=2, deposit_amount=0)

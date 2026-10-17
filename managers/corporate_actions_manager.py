@@ -12,6 +12,7 @@ from managers.currency_exchange_manager import CurrencyExchangeManager, SCALE, M
 from managers.currency_manager import CurrencyManager
 from managers.user_manager import UserManager
 from managers.financial_manager import FinancialManager as Finance
+from managers.rate_manager import RateManager
 
 
 class CorporateActionsManager:
@@ -473,7 +474,9 @@ class CorporateActionsManager:
 
     def process_due(self, now=None):
         """Group an issuer's dividend decisions in one transaction, in priority order."""
-        now = int(time.time() if now is None else now)
+        now = int(RateManager._validated_epoch(
+            now, "invalid_corporate_action_processing_epoch"
+        ))
         groups = defaultdict(list)
         for database,table,key in ((self.db.companies,'company','company_code'),(self.db.products,'investment','product_code'),(self.db.assets,'market_assets','code')):
             for row in database.execute(f"SELECT * FROM {table} WHERE status='active' AND dividend_is_active=1 AND dividend_cycle_seconds>0 AND ((dividend_mode='fixed' AND dividend_per_share>0) OR (dividend_mode='percent' AND dividend_percent>0))"):
@@ -586,7 +589,9 @@ class CorporateActionsManager:
     def liquidate(self, actor, code, operation_key=None, now=None):
         """One atomic waterfall: debt, fixed arrears, preference capital, residual equity."""
         try:
-            now = int(time.time() if now is None else now)
+            now = int(RateManager._validated_epoch(
+                now, "invalid_corporate_action_liquidation_epoch"
+            ))
             key = operation_key or 'liquidation:'+uuid.uuid4().hex
             with DBManager.admin_scope(actor),self.db.atomic() as conn:
                 self._require(conn,actor)

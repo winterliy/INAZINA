@@ -462,7 +462,7 @@ class CreditRiskManager:
     @classmethod
     def assess_conn(cls, conn, now, *, user_id=None, product_code=None):
         """Book at most one assessment per active loan per UTC day."""
-        epoch = float(now)
+        epoch = RateManager._validated_epoch(now, "invalid_ecl_assessment_epoch")
         as_of_day = datetime.fromtimestamp(epoch, timezone.utc).date().isoformat()
         loans = conn.execute(
             "SELECT l.loan_id,l.user_id,l.product_code,l.outstanding_balance,l.quote_currency,"
