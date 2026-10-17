@@ -87,8 +87,8 @@ class ComplianceManager:
         # If the profile changed between the rejected read and this event insert,
         # record the immutable snapshot available now; the event remains an audit
         # of the denied action, not a claim about identity or evidence.
-        if (profile["status"] == "verified" and expires is not None
-                and math.isfinite(expires) and expires > when
+        expiry_valid = expires is None or (math.isfinite(expires) and expires > when)
+        if (profile["status"] == "verified" and expiry_valid
                 and profile["risk_tier"] in {"standard", "enhanced"}):
             reason = "eligibility_changed_during_check"
         status, tier = str(profile["status"]), str(profile["risk_tier"])

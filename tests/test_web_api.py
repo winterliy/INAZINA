@@ -110,6 +110,7 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(result["eclAssessments"][0]["expected_loss_text"], "72")
         self.assertEqual(result["kycEvents"][0]["event_type"], "transfer_denied")
         self.assertEqual(result["kycEvents"][0]["actor_id"], "alice")
+        self.assertEqual(result["kycEvents"][0]["reason_code"], "kyc_incomplete_or_expired")
         self.assertEqual(result["eclBacktest"]["groups"], [])
 
     def test_admin_countries_returns_auditable_income_source_tax_overrides(self):

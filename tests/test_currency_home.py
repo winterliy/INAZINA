@@ -190,6 +190,28 @@ class CurrencyHomeTests(unittest.TestCase):
             )
         self.assertIn('30 AAA →',self.bot.currency_mgr.transfer('citizen','admin','30'))
 
+    def test_kyc_denial_audit_marks_profile_change_when_unexpired_without_expiry(self):
+        self.configure()
+        with self.db.atomic() as conn:
+            ComplianceManager.set_kyc_status(
+                conn,'citizen','admin','pending',reason_code='review_started',now=1
+            )
+        # The denial was detected on the pending profile, but an administrator
+        # completed review before the separate immutable event write.
+        with self.db.atomic() as conn:
+            ComplianceManager.set_kyc_status(
+                conn,'citizen','admin','verified',reason_code='requirements_met',now=2
+            )
+        with self.db.atomic() as conn:
+            ComplianceManager.record_financial_action_denial(
+                conn,'citizen','transfer',now=3
+            )
+        event=self.db.system.execute_one(
+            "SELECT reason_code FROM kyc_profile_events "
+            "WHERE user_id='citizen' AND event_type='transfer_denied'"
+        )
+        self.assertEqual(event['reason_code'],'eligibility_changed_during_check')
+
     def test_migration_is_idempotent_and_all_product_denominations_present(self):
         self.configure();before=self.db.users.get_user('citizen')['cash']
         fx=CurrencyDB();fx.close()
