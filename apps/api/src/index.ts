@@ -346,11 +346,16 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
   // HTS board: anyone may read; the session (if any) only marks the reader's own posts.
+  if (request.method === "GET" && url.pathname === "/api/board/boards") {
+    const result = await internalGet("/internal/board/boards");
+    send(response, result.status, result.body);
+    return;
+  }
   if (request.method === "GET" && (url.pathname === "/api/board/posts" || /^\/api\/board\/posts\/\d+$/.test(url.pathname))) {
     const viewer = principalFor(request)?.userId;
     const postId = url.pathname.split("/")[4];
     const query = new URLSearchParams();
-    for (const key of ["board", "search", "asset", "page"]) {
+    for (const key of ["board", "category", "search", "asset", "page"]) {
       const value = url.searchParams.get(key);
       if (value) query.set(key, value);
     }
@@ -728,14 +733,16 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
 
   // HTS board writes: the author's address is recorded with every post, comment and report.
-  if (request.method === "POST" && /^\/api\/board\/(posts|posts\/\d+\/(edit|delete|comments|like)|comments\/\d+\/delete|reports)$/.test(url.pathname)) {
+  if (request.method === "POST" && /^\/api\/board\/(posts|posts\/\d+\/(edit|delete|comments|react)|comments\/\d+\/(delete|react)|reports)$/.test(url.pathname)) {
     const body = await requestJson(request);
     const result = await internalRequest("POST", url.pathname.replace(/^\/api\//, "/internal/"), principal.userId,
       { ...(body && typeof body === "object" ? body : {}), clientIp: clientIp(request) });
     send(response, result.status, result.body);
     return;
   }
-  if (url.pathname === "/api/admin/board" || /^\/api\/admin\/board\/(post|comment|report)\/\d+$/.test(url.pathname)) {
+  // Moderation and board structure: post/comment/report/category take a number ("new" to create),
+  // board takes its ID.
+  if (url.pathname === "/api/admin/board" || /^\/api\/admin\/board\/((post|comment|report|category)\/(\d+|new)|board\/[a-z0-9_-]{1,32})$/.test(url.pathname)) {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });
       return;

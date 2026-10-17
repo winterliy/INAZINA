@@ -250,9 +250,11 @@ def board_get(path, query, viewer):
     """Public board reads; ``viewer`` (or None) only marks the viewer's own posts."""
     first = lambda key, default="": query.get(key, [default])[0]
     with board_db() as connection:
+        if path == "/internal/board/boards":
+            return {"boards": board.boards(connection)}
         if path == "/internal/board/posts":
             return board.list_posts(connection, first("board") or None, first("search"), first("asset") or None,
-                                    first("page", "1"), viewer)
+                                    first("page", "1"), viewer, first("category") or None)
         return {"post": board.read_post(connection, path.removeprefix("/internal/board/posts/"), viewer,
                                         count_view=first("view") == "1")}
 
@@ -271,22 +273,27 @@ def board_post(path, user, payload):
                 board.delete_post(connection, user, parts[1]); return {"success": True}
             if action == "comments":
                 return {"commentId": board.add_comment(connection, user, parts[1], payload, ip)}
-            if action == "like":
-                return {"liked": board.toggle_like(connection, user, parts[1])}
+            if action == "react":
+                return board.react(connection, user, "post", parts[1], payload.get("value"))
         if len(parts) == 3 and parts[0] == "comments" and parts[2] == "delete":
             board.delete_comment(connection, user, parts[1]); return {"success": True}
+        if len(parts) == 3 and parts[0] == "comments" and parts[2] == "react":
+            return board.react(connection, user, "comment", parts[1], payload.get("value"))
         if parts == ["reports"]:
             board.report(connection, user, payload, ip); return {"success": True}
     raise LookupError("not_found")
 
 
-BOARD_ACTION_NAMES = {"hide": "숨김", "restore": "복원", "pin": "상단 고정", "unpin": "고정 해제", "purge": "영구 삭제", "resolve": "처리 완료"}
+BOARD_ACTION_NAMES = {"hide": "숨김", "restore": "복원", "pin": "상단 고정", "unpin": "고정 해제", "notice": "공지 설정",
+                      "unnotice": "공지 해제", "move": "게시판 이동", "category": "카테고리 지정", "purge": "영구 삭제",
+                      "resolve": "처리 완료", "create": "생성", "edit": "수정", "delete": "삭제"}
 
 
-def admin_board_action(actor, kind, target, action):
+def admin_board_action(actor, kind, target, action, payload=None):
+    payload = {key: value for key, value in (payload or {}).items() if key != "action"}
     with board_db() as connection:
-        changed = board.admin_action(connection, kind, target, action)
-        _audit_db(connection, actor, f"board.{kind}.{action}", {"id": target, "changed": changed})
+        changed = board.admin_action(connection, kind, target, action, payload)
+        _audit_db(connection, actor, f"board.{kind}.{action}", {"id": target, "changed": changed, **payload})
     return f"✅ {BOARD_ACTION_NAMES.get(action, action)} 처리했습니다." if changed else "❌ 바뀐 것이 없습니다."
 
 
@@ -2857,7 +2864,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     self.send_json(200, {"user": user})
-            elif path == "/internal/board/posts" or path.startswith("/internal/board/posts/"):
+            elif path in {"/internal/board/posts", "/internal/board/boards"} or path.startswith("/internal/board/posts/"):
                 viewer = identity(internal_user_id(self)) if internal_user_id(self) else None
                 self.send_json(200, board_get(path, parse_qs(parsed.query), viewer["userId"] if viewer else None))
             elif path == "/internal/admin/board":
@@ -3308,7 +3315,7 @@ class Handler(BaseHTTPRequestHandler):
                 elif len(parts) != 2:
                     self.send_json(404, {"error": "not_found"})
                 else:
-                    message = admin_board_action(user["userId"], parts[0], parts[1], payload.get("action"))
+                    message = admin_board_action(user["userId"], parts[0], parts[1], payload.get("action"), payload)
                     self.send_json(200, {"success": not message.startswith("❌"), "message": message})
                 return
             if path == "/internal/hts/commands":

@@ -1,17 +1,29 @@
-"""HTS board: notices, free talk and per-instrument market discussion.
+"""HTS board: boards (공지·자유·시장 토론 and any an administrator adds), each
+with optional categories (말머리).
 
 Anyone may read; writing, commenting, liking and reporting need a login. A
 post or comment may be shown as 익명, but the author ID and the client IP are
 always stored, and only administrators can see them.
 
 Every function takes an open connection, so the caller owns the transaction.
-Deleting by an author only marks the row; administrators may purge it.
+When an author deletes a post or comment it is removed from the database at
+once (a post takes its comments, reactions and reports with it). Replies to a
+deleted comment stay, as ordinary comments. Administrators may also hide.
 """
+import re
 import time
 
 from database.integrity import PRODUCT_CATALOG
 
-BOARDS = {"notice": "공지", "free": "자유", "market": "시장 토론"}
+# Boards that exist from the start; administrators can edit, add and delete boards.
+DEFAULT_BOARDS = (
+    # board_id, name, description, admin_only, allow_asset, sort_order
+    ("notice", "공지", "운영진이 알리는 소식입니다.", 1, 0, 0),
+    ("free", "자유", "자유롭게 이야기하는 곳입니다.", 0, 0, 1),
+    ("market", "시장 토론", "종목 코드를 붙여 종목별로 이야기합니다.", 0, 1, 2),
+)
+BOARD_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
+BOARD_NAME_MAX, BOARD_DESCRIPTION_MAX, CATEGORY_NAME_MAX = 30, 200, 20
 PAGE_SIZE = 20
 TITLE_MAX, BODY_MAX, COMMENT_MAX, REASON_MAX = 100, 10_000, 1_000, 300
 # Per author: at most this many posts / comments in the last 60 seconds.
@@ -24,7 +36,7 @@ ANONYMOUS = "익명"
 IP_RETENTION_SECONDS = 365 * 86400
 # Writing stores the client IP, a collection the privacy policy announced on
 # 2026-10-17 to start 30 days later. Until then the board is read-only:
-# posts, comments and reports (which record IPs) are refused; likes are not.
+# posts, comments and reports (which record IPs) are refused; reactions are not.
 WRITE_OPENS_EPOCH = 1794754800  # 2026-11-16 00:00 KST
 WRITE_OPENS_TEXT = "2026년 11월 16일"
 
@@ -34,22 +46,55 @@ def _require_open(now=None):
         raise ValueError(f"게시판 글쓰기·댓글·신고는 {WRITE_OPENS_TEXT}부터 이용할 수 있습니다. 지금은 읽기만 가능합니다.")
 
 
-def ensure_tables(connection):
-    connection.executescript("""
-        CREATE TABLE IF NOT EXISTS board_posts (
+_POSTS_TABLE = """CREATE TABLE {name} (
             post_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            board TEXT NOT NULL CHECK(board IN ('notice','free','market')),
+            board TEXT NOT NULL REFERENCES board_boards(board_id),
+            category_id INTEGER REFERENCES board_categories(category_id) ON DELETE SET NULL,
             author_id TEXT NOT NULL REFERENCES users(user_id),
+            author_admin INTEGER NOT NULL DEFAULT 0 CHECK(author_admin IN (0,1)),
             anonymous INTEGER NOT NULL DEFAULT 0 CHECK(anonymous IN (0,1)),
             title TEXT NOT NULL, body TEXT NOT NULL, asset_code TEXT,
             pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1)),
+            notice INTEGER NOT NULL DEFAULT 0 CHECK(notice IN (0,1)),
             status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','hidden','deleted')),
             hidden_reason TEXT, author_ip TEXT NOT NULL,
             view_count INTEGER NOT NULL DEFAULT 0,
-            created_epoch INTEGER NOT NULL, updated_epoch INTEGER NOT NULL);
+            created_epoch INTEGER NOT NULL, updated_epoch INTEGER NOT NULL)"""
+_POSTS_INDEXES = """
         CREATE INDEX IF NOT EXISTS idx_board_posts_list ON board_posts(board, status, pinned, post_id);
+        CREATE INDEX IF NOT EXISTS idx_board_posts_notice ON board_posts(notice, status, post_id);
+        CREATE INDEX IF NOT EXISTS idx_board_posts_category ON board_posts(category_id);
         CREATE INDEX IF NOT EXISTS idx_board_posts_asset ON board_posts(asset_code, status, post_id);
-        CREATE INDEX IF NOT EXISTS idx_board_posts_author ON board_posts(author_id, created_epoch);
+        CREATE INDEX IF NOT EXISTS idx_board_posts_author ON board_posts(author_id, created_epoch);"""
+
+
+def ensure_tables(connection):
+    connection.executescript("""
+        CREATE TABLE IF NOT EXISTS board_boards (
+            board_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            description TEXT NOT NULL DEFAULT '',
+            admin_only INTEGER NOT NULL DEFAULT 0 CHECK(admin_only IN (0,1)),
+            allow_asset INTEGER NOT NULL DEFAULT 0 CHECK(allow_asset IN (0,1)),
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_epoch INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS board_categories (
+            category_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            board_id TEXT NOT NULL REFERENCES board_boards(board_id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(board_id, name));
+    """)
+    connection.executemany(
+        "INSERT OR IGNORE INTO board_boards(board_id,name,description,admin_only,allow_asset,sort_order,created_epoch) "
+        "VALUES (?,?,?,?,?,?,0)", DEFAULT_BOARDS)
+    connection.commit()
+    existing = connection.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='board_posts'").fetchone()
+    if not existing:
+        connection.executescript(_POSTS_TABLE.format(name="board_posts") + ";" + _POSTS_INDEXES)
+    elif "category_id" not in existing[0]:
+        _rebuild_posts(connection)
+    connection.executescript("""
         CREATE TABLE IF NOT EXISTS board_comments (
             comment_id INTEGER PRIMARY KEY AUTOINCREMENT,
             post_id INTEGER NOT NULL REFERENCES board_posts(post_id) ON DELETE CASCADE,
@@ -60,11 +105,19 @@ def ensure_tables(connection):
             hidden_reason TEXT, author_ip TEXT NOT NULL, created_epoch INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_board_comments_post ON board_comments(post_id, comment_id);
         CREATE INDEX IF NOT EXISTS idx_board_comments_author ON board_comments(author_id, created_epoch);
-        CREATE TABLE IF NOT EXISTS board_likes (
+        -- One reaction per person: 1 = 좋아요, -1 = 싫어요.
+        CREATE TABLE IF NOT EXISTS board_post_reactions (
             post_id INTEGER NOT NULL REFERENCES board_posts(post_id) ON DELETE CASCADE,
             user_id TEXT NOT NULL REFERENCES users(user_id),
+            value INTEGER NOT NULL CHECK(value IN (1,-1)),
             created_epoch INTEGER NOT NULL,
             PRIMARY KEY(post_id, user_id));
+        CREATE TABLE IF NOT EXISTS board_comment_reactions (
+            comment_id INTEGER NOT NULL REFERENCES board_comments(comment_id) ON DELETE CASCADE,
+            user_id TEXT NOT NULL REFERENCES users(user_id),
+            value INTEGER NOT NULL CHECK(value IN (1,-1)),
+            created_epoch INTEGER NOT NULL,
+            PRIMARY KEY(comment_id, user_id));
         CREATE TABLE IF NOT EXISTS board_reports (
             report_id INTEGER PRIMARY KEY AUTOINCREMENT,
             post_id INTEGER REFERENCES board_posts(post_id) ON DELETE CASCADE,
@@ -77,16 +130,54 @@ def ensure_tables(connection):
         CREATE UNIQUE INDEX IF NOT EXISTS idx_board_reports_post ON board_reports(reporter_id, post_id) WHERE post_id IS NOT NULL;
         CREATE UNIQUE INDEX IF NOT EXISTS idx_board_reports_comment ON board_reports(reporter_id, comment_id) WHERE comment_id IS NOT NULL;
     """)
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(board_comments)")}
+    # Replies: a comment may answer one top-level comment of the same post.
+    if "parent_id" not in columns:
+        connection.execute("ALTER TABLE board_comments ADD COLUMN parent_id INTEGER "
+                           "REFERENCES board_comments(comment_id) ON DELETE CASCADE")
+    if "author_admin" not in columns:
+        connection.execute("ALTER TABLE board_comments ADD COLUMN author_admin INTEGER NOT NULL DEFAULT 0")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_board_comments_parent ON board_comments(parent_id)")
+    # Earlier versions kept likes only; carry them over as 좋아요.
+    if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='board_likes'").fetchone():
+        connection.execute("INSERT OR IGNORE INTO board_post_reactions(post_id,user_id,value,created_epoch) "
+                           "SELECT post_id,user_id,1,created_epoch FROM board_likes")
+        connection.execute("DROP TABLE board_likes")
+    # Earlier versions only marked author deletions; remove those rows for good.
+    connection.execute("UPDATE board_comments SET parent_id=NULL WHERE parent_id IN "
+                       "(SELECT comment_id FROM board_comments WHERE status='deleted')")
+    connection.execute("DELETE FROM board_comments WHERE status='deleted'")
+    connection.execute("DELETE FROM board_posts WHERE status='deleted'")
+
+
+def _rebuild_posts(connection):
+    """Move board_posts off the fixed three-board CHECK onto board_boards.
+
+    Foreign keys are off while the table is swapped, so comments, reactions and
+    reports that point at posts are kept (dropping the old table would
+    otherwise cascade into them). The check afterwards proves nothing dangles.
+    """
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys=OFF")
+    try:
+        connection.executescript(
+            "BEGIN;" + _POSTS_TABLE.format(name="board_posts_rebuilt") + ";"
+            "INSERT INTO board_posts_rebuilt(post_id,board,author_id,anonymous,title,body,asset_code,pinned,status,"
+            "hidden_reason,author_ip,view_count,created_epoch,updated_epoch) "
+            "SELECT post_id,board,author_id,anonymous,title,body,asset_code,pinned,status,"
+            "hidden_reason,author_ip,view_count,created_epoch,updated_epoch FROM board_posts;"
+            "DROP TABLE board_posts;"
+            "ALTER TABLE board_posts_rebuilt RENAME TO board_posts;" + _POSTS_INDEXES + "COMMIT;")
+        problems = connection.execute("PRAGMA foreign_key_check").fetchall()
+        if problems:
+            raise RuntimeError(f"board_posts rebuild left dangling references: {problems[:5]}")
+    finally:
+        connection.execute("PRAGMA foreign_keys=ON")
 
 
 def purge_expired_ips(connection, now=None):
-    """Erase client addresses older than the retention period; returns how many were erased.
-
-    Posts and comments their authors deleted are destroyed on the same schedule.
-    """
+    """Erase client addresses older than the retention period; returns how many were erased."""
     cutoff = int(now if now is not None else time.time()) - IP_RETENTION_SECONDS
-    connection.execute("DELETE FROM board_comments WHERE status='deleted' AND created_epoch<?", (cutoff,))
-    connection.execute("DELETE FROM board_posts WHERE status='deleted' AND created_epoch<?", (cutoff,))
     erased = 0
     for table, column in (("board_posts", "author_ip"), ("board_comments", "author_ip"), ("board_reports", "reporter_ip")):
         erased += connection.execute(
@@ -133,9 +224,32 @@ def _throttle(connection, table, author_id, limit, label):
         raise ValueError(f"{label}은(는) 1분에 {limit}개까지 쓸 수 있습니다. 잠시 후 다시 시도해주세요.")
 
 
+def _flag(value):
+    return 1 if value is True or value == 1 else 0
+
+
+def _board(connection, board_id):
+    row = connection.execute("SELECT * FROM board_boards WHERE board_id=?", (str(board_id or ""),)).fetchone()
+    if not row:
+        raise ValueError("게시판을 확인해주세요.")
+    return row
+
+
+def _category(connection, board_id, category_id):
+    """A category of ``board_id`` (None when not given)."""
+    if category_id in (None, ""):
+        return None
+    row = connection.execute("SELECT category_id FROM board_categories WHERE category_id=? AND board_id=?",
+                             (_id(category_id, "카테고리"), board_id)).fetchone()
+    if not row:
+        raise ValueError("이 게시판의 카테고리를 골라 주세요.")
+    return row[0]
+
+
 def _asset(connection, board, code):
+    """``board`` is a board_boards row; only boards that allow it keep an instrument code."""
     code = str(code or "").strip()
-    if board != "market" or not code:
+    if not board["allow_asset"] or not code:
         return None
     if not connection.execute(f"SELECT 1 FROM ({PRODUCT_CATALOG}) WHERE code=?", (code,)).fetchone():
         raise ValueError("종목 코드를 확인해주세요.")
@@ -153,11 +267,15 @@ def _post(connection, post_id):
 # Reading (no login needed)
 # ---------------------------------------------------------------------------
 _PUBLIC_POST = (
-    "SELECT p.post_id,p.board,p.title,p.asset_code,p.pinned,p.anonymous,p.view_count,p.created_epoch,p.updated_epoch,"
+    "SELECT p.post_id,p.board,b.name AS board_name,p.category_id,k.name AS category_name,p.title,p.asset_code,"
+    "p.pinned,p.notice,p.author_admin,p.anonymous,p.view_count,p.created_epoch,p.updated_epoch,"
     "p.author_id,CASE WHEN p.anonymous=1 THEN ? ELSE COALESCE(u.nickname,'알 수 없음') END AS author,"
     "(SELECT COUNT(*) FROM board_comments c WHERE c.post_id=p.post_id AND c.status='active') AS comment_count,"
-    "(SELECT COUNT(*) FROM board_likes l WHERE l.post_id=p.post_id) AS like_count "
-    "FROM board_posts p LEFT JOIN users u ON u.user_id=p.author_id ")
+    "(SELECT COUNT(*) FROM board_post_reactions r WHERE r.post_id=p.post_id AND r.value=1) AS like_count,"
+    "(SELECT COUNT(*) FROM board_post_reactions r WHERE r.post_id=p.post_id AND r.value=-1) AS dislike_count "
+    "FROM board_posts p LEFT JOIN users u ON u.user_id=p.author_id "
+    "JOIN board_boards b ON b.board_id=p.board LEFT JOIN board_categories k ON k.category_id=p.category_id ")
+REMOVED = {"hidden": "숨겨진 댓글입니다."}
 
 
 def _public(row, viewer):
@@ -167,14 +285,40 @@ def _public(row, viewer):
     return item
 
 
-def list_posts(connection, board=None, search="", asset_code=None, page=1, viewer=None):
-    """Active posts, pinned first then newest. ``board=None`` lists every board."""
-    if board is not None and board not in BOARDS:
-        raise ValueError("게시판을 확인해주세요.")
+def _reaction(connection, table, key, target, viewer):
+    if not viewer:
+        return 0
+    row = connection.execute(f"SELECT value FROM {table} WHERE {key}=? AND user_id=?", (target, viewer)).fetchone()
+    return row[0] if row else 0
+
+
+def boards(connection):
+    """Every board in display order, each with its categories."""
+    categories = {}
+    for row in connection.execute("SELECT category_id,board_id,name,sort_order FROM board_categories "
+                                  "ORDER BY sort_order,category_id"):
+        categories.setdefault(row["board_id"], []).append(
+            {"category_id": row["category_id"], "name": row["name"], "sort_order": row["sort_order"]})
+    rows = connection.execute(
+        "SELECT b.*,(SELECT COUNT(*) FROM board_posts p WHERE p.board=b.board_id AND p.status='active') AS post_count "
+        "FROM board_boards b ORDER BY b.sort_order,b.name").fetchall()
+    return [{**dict(row), "categories": categories.get(row["board_id"], [])} for row in rows]
+
+
+def list_posts(connection, board=None, search="", asset_code=None, page=1, viewer=None, category=None):
+    """Active posts, newest first.
+
+    공지 (notice) posts lead every list, every board included; within one board
+    its pinned posts come next. ``board=None`` lists every board.
+    """
+    if board:
+        _board(connection, board)
     page = max(1, min(_id(page, "페이지"), 10_000))
     where, params = ["p.status='active'"], [ANONYMOUS]
     if board:
-        where.append("p.board=?"); params.append(board)
+        where.append("(p.board=? OR p.notice=1)"); params.append(board)
+    if category not in (None, ""):
+        where.append("p.category_id=?"); params.append(_id(category, "카테고리"))
     if asset_code:
         where.append("p.asset_code=?"); params.append(str(asset_code).strip())
     term = str(search or "").strip()[:50]
@@ -182,8 +326,9 @@ def list_posts(connection, board=None, search="", asset_code=None, page=1, viewe
         where.append("(p.title LIKE ? OR p.body LIKE ?)"); params += [f"%{term}%", f"%{term}%"]
     clause = " AND ".join(where)
     total = connection.execute(f"SELECT COUNT(*) FROM board_posts p WHERE {clause}", params[1:]).fetchone()[0]
+    order = "p.notice DESC," + (" p.pinned DESC," if board else "") + " p.post_id DESC"
     rows = connection.execute(
-        _PUBLIC_POST + f"WHERE {clause} ORDER BY p.pinned DESC, p.post_id DESC LIMIT ? OFFSET ?",
+        _PUBLIC_POST + f"WHERE {clause} ORDER BY {order} LIMIT ? OFFSET ?",
         params + [PAGE_SIZE, (page - 1) * PAGE_SIZE]).fetchall()
     return {"posts": [_public(row, viewer) for row in rows], "total": total, "page": page, "pageSize": PAGE_SIZE,
             "writeOpensEpoch": WRITE_OPENS_EPOCH}
@@ -198,14 +343,32 @@ def read_post(connection, post_id, viewer=None, count_view=False):
         raise ValueError("글을 찾을 수 없거나 숨겨진 글입니다.")
     post = _public(row, viewer)
     post["body"] = connection.execute("SELECT body FROM board_posts WHERE post_id=?", (post_id,)).fetchone()[0]
-    post["liked"] = bool(viewer) and connection.execute(
-        "SELECT 1 FROM board_likes WHERE post_id=? AND user_id=?", (post_id, viewer)).fetchone() is not None
-    comments = connection.execute(
-        "SELECT c.comment_id,c.body,c.created_epoch,c.author_id,"
-        "CASE WHEN c.anonymous=1 THEN ? ELSE COALESCE(u.nickname,'알 수 없음') END AS author "
+    post["my_reaction"] = _reaction(connection, "board_post_reactions", "post_id", post_id, viewer)
+    rows = connection.execute(
+        "SELECT c.comment_id,c.parent_id,c.status,c.body,c.created_epoch,c.author_id,c.author_admin,"
+        "CASE WHEN c.anonymous=1 THEN ? ELSE COALESCE(u.nickname,'알 수 없음') END AS author,"
+        "(SELECT COUNT(*) FROM board_comment_reactions r WHERE r.comment_id=c.comment_id AND r.value=1) AS like_count,"
+        "(SELECT COUNT(*) FROM board_comment_reactions r WHERE r.comment_id=c.comment_id AND r.value=-1) AS dislike_count,"
+        "(SELECT r.value FROM board_comment_reactions r WHERE r.comment_id=c.comment_id AND r.user_id=?) AS my_reaction "
         "FROM board_comments c LEFT JOIN users u ON u.user_id=c.author_id "
-        "WHERE c.post_id=? AND c.status='active' ORDER BY c.comment_id", (ANONYMOUS, post_id)).fetchall()
-    post["comments"] = [_public(comment, viewer) for comment in comments]
+        "WHERE c.post_id=? ORDER BY c.comment_id", (ANONYMOUS, viewer or "", post_id)).fetchall()
+    live_parents = {row["parent_id"] for row in rows if row["parent_id"] and row["status"] == "active"}
+    comments = []
+    for row in rows:
+        if row["status"] != "active":
+            # A hidden comment stays only as a placeholder above its live replies.
+            if row["parent_id"] or row["comment_id"] not in live_parents or row["status"] not in REMOVED:
+                continue
+            comments.append({"comment_id": row["comment_id"], "parent_id": None, "removed": True,
+                             "body": REMOVED[row["status"]], "author": "", "author_admin": 0, "created_epoch": row["created_epoch"],
+                             "like_count": 0, "dislike_count": 0, "my_reaction": 0, "mine": False})
+            continue
+        comment = _public(row, viewer)
+        comment.pop("status")
+        comment["removed"] = False
+        comment["my_reaction"] = comment["my_reaction"] or 0
+        comments.append(comment)
+    post["comments"] = comments
     return post
 
 
@@ -214,20 +377,23 @@ def read_post(connection, post_id, viewer=None, count_view=False):
 # ---------------------------------------------------------------------------
 def create_post(connection, user, payload, ip):
     _require_open()
-    board = payload.get("board")
-    if board not in BOARDS:
-        raise ValueError("게시판을 확인해주세요.")
-    if board == "notice" and user["role"] != "admin":
-        raise ValueError("공지는 관리자만 쓸 수 있습니다.")
+    board = _board(connection, payload.get("board"))
+    admin = user["role"] == "admin"
+    if board["admin_only"] and not admin:
+        raise ValueError(f"{board['name']} 게시판은 관리자만 쓸 수 있습니다.")
     title = _text(payload.get("title"), "제목", TITLE_MAX)
     body = _text(payload.get("body"), "내용", BODY_MAX)
+    category = _category(connection, board["board_id"], payload.get("categoryId"))
     asset = _asset(connection, board, payload.get("assetCode"))
     _throttle(connection, "board_posts", user["userId"], POSTS_PER_MINUTE, "글")
     now = int(time.time())
+    # Only administrators may pin a post or make it a 공지 (also later, from the post).
+    pinned, notice = (_flag(payload.get("pinned")), _flag(payload.get("notice"))) if admin else (0, 0)
     cursor = connection.execute(
-        "INSERT INTO board_posts(board,author_id,anonymous,title,body,asset_code,author_ip,created_epoch,updated_epoch) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
-        (board, user["userId"], 1 if payload.get("anonymous") is True else 0, title, body, asset, _ip(ip), now, now))
+        "INSERT INTO board_posts(board,category_id,author_id,author_admin,anonymous,title,body,asset_code,pinned,notice,"
+        "author_ip,created_epoch,updated_epoch) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (board["board_id"], category, user["userId"], 1 if admin else 0, _flag(payload.get("anonymous")),
+         title, body, asset, pinned, notice, _ip(ip), now, now))
     return cursor.lastrowid
 
 
@@ -237,18 +403,21 @@ def edit_post(connection, user, post_id, payload):
         raise ValueError("본인이 쓴 글만 수정할 수 있습니다.")
     if row["status"] != "active":
         raise ValueError("숨겨진 글은 수정할 수 없습니다.")
+    board = _board(connection, row["board"])
     connection.execute(
-        "UPDATE board_posts SET title=?,body=?,asset_code=?,anonymous=?,updated_epoch=? WHERE post_id=?",
+        "UPDATE board_posts SET title=?,body=?,category_id=?,asset_code=?,anonymous=?,updated_epoch=? WHERE post_id=?",
         (_text(payload.get("title"), "제목", TITLE_MAX), _text(payload.get("body"), "내용", BODY_MAX),
-         _asset(connection, row["board"], payload.get("assetCode")),
-         1 if payload.get("anonymous") is True else 0, int(time.time()), row["post_id"]))
+         _category(connection, board["board_id"], payload.get("categoryId")),
+         _asset(connection, board, payload.get("assetCode")),
+         _flag(payload.get("anonymous")), int(time.time()), row["post_id"]))
 
 
 def delete_post(connection, user, post_id):
     row = _post(connection, _id(post_id))
     if row["author_id"] != user["userId"]:
         raise ValueError("본인이 쓴 글만 삭제할 수 있습니다.")
-    connection.execute("UPDATE board_posts SET status='deleted',pinned=0 WHERE post_id=?", (row["post_id"],))
+    # Comments, replies, reactions and reports go with it (ON DELETE CASCADE).
+    connection.execute("DELETE FROM board_posts WHERE post_id=?", (row["post_id"],))
 
 
 def add_comment(connection, user, post_id, payload, ip):
@@ -257,10 +426,20 @@ def add_comment(connection, user, post_id, payload, ip):
     if row["status"] != "active":
         raise ValueError("숨겨진 글에는 댓글을 달 수 없습니다.")
     body = _text(payload.get("body"), "댓글", COMMENT_MAX)
+    parent = None
+    if payload.get("parentId") is not None:
+        target = connection.execute("SELECT comment_id,post_id,parent_id,status FROM board_comments WHERE comment_id=?",
+                                    (_id(payload.get("parentId"), "댓글"),)).fetchone()
+        if not target or target["post_id"] != row["post_id"] or target["status"] != "active":
+            raise ValueError("답글을 달 댓글을 찾을 수 없습니다.")
+        # One level of replies: answering a reply joins the same thread.
+        parent = target["parent_id"] or target["comment_id"]
     _throttle(connection, "board_comments", user["userId"], COMMENTS_PER_MINUTE, "댓글")
     cursor = connection.execute(
-        "INSERT INTO board_comments(post_id,author_id,anonymous,body,author_ip,created_epoch) VALUES (?,?,?,?,?,?)",
-        (row["post_id"], user["userId"], 1 if payload.get("anonymous") is True else 0, body, _ip(ip), int(time.time())))
+        "INSERT INTO board_comments(post_id,parent_id,author_id,author_admin,anonymous,body,author_ip,created_epoch) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (row["post_id"], parent, user["userId"], 1 if user["role"] == "admin" else 0, _flag(payload.get("anonymous")),
+         body, _ip(ip), int(time.time())))
     return cursor.lastrowid
 
 
@@ -270,19 +449,49 @@ def delete_comment(connection, user, comment_id):
         raise ValueError("댓글을 찾을 수 없습니다.")
     if row["author_id"] != user["userId"]:
         raise ValueError("본인이 쓴 댓글만 삭제할 수 있습니다.")
-    connection.execute("UPDATE board_comments SET status='deleted' WHERE comment_id=?", (int(comment_id),))
+    _remove_comment(connection, int(comment_id))
 
 
-def toggle_like(connection, user, post_id):
-    """Like or unlike; returns whether the post is liked afterwards."""
-    row = _post(connection, _id(post_id))
-    if row["status"] != "active":
-        raise ValueError("숨겨진 글입니다.")
-    removed = connection.execute("DELETE FROM board_likes WHERE post_id=? AND user_id=?", (row["post_id"], user["userId"])).rowcount
-    if not removed:
-        connection.execute("INSERT INTO board_likes(post_id,user_id,created_epoch) VALUES (?,?,?)",
-                           (row["post_id"], user["userId"], int(time.time())))
-    return not removed
+def _remove_comment(connection, comment_id):
+    """Delete a comment for good; its replies stay as ordinary comments."""
+    connection.execute("UPDATE board_comments SET parent_id=NULL WHERE parent_id=?", (comment_id,))
+    connection.execute("DELETE FROM board_comments WHERE comment_id=?", (comment_id,))
+
+
+def react(connection, user, kind, target_id, value):
+    """좋아요(1) / 싫어요(-1) on a post or comment.
+
+    Pressing the same reaction again removes it; the other one switches.
+    Returns the viewer's reaction afterwards (1, -1 or 0) and both counts.
+    """
+    if isinstance(value, bool) or value not in (1, -1):
+        raise ValueError("좋아요 또는 싫어요를 골라 주세요.")
+    if kind == "post":
+        table, key = "board_post_reactions", "post_id"
+        target = _post(connection, _id(target_id))
+        if target["status"] != "active":
+            raise ValueError("숨겨진 글입니다.")
+        target = target["post_id"]
+    elif kind == "comment":
+        table, key = "board_comment_reactions", "comment_id"
+        row = connection.execute("SELECT comment_id,status FROM board_comments WHERE comment_id=?", (_id(target_id, "댓글"),)).fetchone()
+        if not row or row["status"] != "active":
+            raise ValueError("댓글을 찾을 수 없습니다.")
+        target = row["comment_id"]
+    else:
+        raise ValueError("대상 종류를 확인해주세요.")
+    current = _reaction(connection, table, key, target, user["userId"])
+    if current == value:
+        connection.execute(f"DELETE FROM {table} WHERE {key}=? AND user_id=?", (target, user["userId"]))
+        mine = 0
+    else:
+        connection.execute(f"INSERT INTO {table}({key},user_id,value,created_epoch) VALUES (?,?,?,?) "
+                           f"ON CONFLICT({key},user_id) DO UPDATE SET value=excluded.value,created_epoch=excluded.created_epoch",
+                           (target, user["userId"], value, int(time.time())))
+        mine = value
+    likes, dislikes = connection.execute(
+        f"SELECT COALESCE(SUM(value=1),0),COALESCE(SUM(value=-1),0) FROM {table} WHERE {key}=?", (target,)).fetchone()
+    return {"reaction": mine, "likes": likes, "dislikes": dislikes}
 
 
 def report(connection, user, payload, ip):
@@ -324,11 +533,13 @@ def admin_list(connection, status="all", reported=False, search=""):
     if term:
         where.append("(p.title LIKE ? OR p.body LIKE ? OR p.author_id LIKE ?)"); params += [f"%{term}%"] * 3
     rows = connection.execute(
-        "SELECT p.post_id,p.board,p.title,p.body,p.asset_code,p.pinned,p.status,p.hidden_reason,p.anonymous,"
+        "SELECT p.post_id,p.board,b.name AS board_name,p.category_id,k.name AS category_name,p.title,p.body,p.asset_code,"
+        "p.pinned,p.notice,p.author_admin,p.status,p.hidden_reason,p.anonymous,"
         "p.author_id,COALESCE(u.nickname,'') AS nickname,p.author_ip,p.view_count,p.created_epoch,"
         "(SELECT COUNT(*) FROM board_comments c WHERE c.post_id=p.post_id AND c.status='active') AS comment_count,"
         "(SELECT COUNT(*) FROM board_reports r WHERE r.post_id=p.post_id AND r.status='new') AS open_reports "
-        f"FROM board_posts p LEFT JOIN users u ON u.user_id=p.author_id {'WHERE ' + ' AND '.join(where) if where else ''} "
+        "FROM board_posts p LEFT JOIN users u ON u.user_id=p.author_id JOIN board_boards b ON b.board_id=p.board "
+        f"LEFT JOIN board_categories k ON k.category_id=p.category_id {'WHERE ' + ' AND '.join(where) if where else ''} "
         "ORDER BY p.post_id DESC LIMIT 200", params).fetchall()
     reports = connection.execute(
         "SELECT r.report_id,r.post_id,r.comment_id,COALESCE(r.post_id,c.post_id) AS target_post,r.reporter_id,"
@@ -339,17 +550,41 @@ def admin_list(connection, status="all", reported=False, search=""):
     return {"posts": [dict(row) for row in rows], "reports": [dict(row) for row in reports]}
 
 
-def admin_action(connection, kind, target, action):
-    """hide / restore / pin / unpin / purge a post, hide / restore / purge a comment, resolve a report."""
+def admin_action(connection, kind, target, action, payload=None):
+    """Moderation and board structure.
+
+    post: hide / restore / pin / unpin / notice / unnotice / move / category / purge
+    comment: hide / restore / purge; report: resolve
+    board: create / edit / delete; category: create / edit / delete
+    Returns how many rows changed (for create: the new id).
+    """
+    payload = payload or {}
+    if kind == "board":
+        return _board_action(connection, target, action, payload)
+    if kind == "category":
+        return _category_action(connection, target, action, payload)
     target = _id(target, "대상")
     if kind == "post":
-        if not connection.execute("SELECT 1 FROM board_posts WHERE post_id=?", (target,)).fetchone():
+        row = connection.execute("SELECT * FROM board_posts WHERE post_id=?", (target,)).fetchone()
+        if not row:
             raise ValueError("글을 찾을 수 없습니다.")
+        if action == "move":
+            board = _board(connection, payload.get("board"))
+            category = _category(connection, board["board_id"], payload.get("categoryId"))
+            return connection.execute(
+                "UPDATE board_posts SET board=?,category_id=?,asset_code=CASE WHEN ?=1 THEN asset_code END,"
+                "pinned=CASE WHEN board=? THEN pinned ELSE 0 END WHERE post_id=?",
+                (board["board_id"], category, board["allow_asset"], board["board_id"], target)).rowcount
+        if action == "category":
+            return connection.execute("UPDATE board_posts SET category_id=? WHERE post_id=?",
+                                      (_category(connection, row["board"], payload.get("categoryId")), target)).rowcount
         statements = {
-            "hide": "UPDATE board_posts SET status='hidden',hidden_reason='admin',pinned=0 WHERE post_id=?",
+            "hide": "UPDATE board_posts SET status='hidden',hidden_reason='admin',pinned=0,notice=0 WHERE post_id=?",
             "restore": "UPDATE board_posts SET status='active',hidden_reason=NULL WHERE post_id=?",
             "pin": "UPDATE board_posts SET pinned=1 WHERE post_id=? AND status='active'",
             "unpin": "UPDATE board_posts SET pinned=0 WHERE post_id=?",
+            "notice": "UPDATE board_posts SET notice=1 WHERE post_id=? AND status='active'",
+            "unnotice": "UPDATE board_posts SET notice=0 WHERE post_id=?",
             "purge": "DELETE FROM board_posts WHERE post_id=?",
         }
     elif kind == "comment":
@@ -366,8 +601,87 @@ def admin_action(connection, kind, target, action):
         raise ValueError("대상 종류를 확인해주세요.")
     if action not in statements:
         raise ValueError("작업을 확인해주세요.")
+    if kind == "comment" and action == "purge":
+        # Replies to a purged comment stay, as ordinary comments.
+        connection.execute("UPDATE board_comments SET parent_id=NULL WHERE parent_id=?", (target,))
     changed = connection.execute(statements[action], (target,)).rowcount
     if action == "restore":
         # Restoring after review closes the reports that hid it.
         connection.execute(f"UPDATE board_reports SET status='done' WHERE {'post_id' if kind == 'post' else 'comment_id'}=?", (target,))
     return changed
+
+
+def _board_action(connection, board_id, action, payload):
+    if action == "create":
+        board_id = str(payload.get("boardId") or "").strip().lower()
+        if not BOARD_ID.fullmatch(board_id):
+            raise ValueError("게시판 ID는 영문 소문자·숫자·밑줄·하이픈으로 1~32자 입력해주세요.")
+        if connection.execute("SELECT 1 FROM board_boards WHERE board_id=?", (board_id,)).fetchone():
+            raise ValueError("이미 있는 게시판 ID입니다.")
+        values = _board_values(connection, payload, None)
+        connection.execute(
+            "INSERT INTO board_boards(board_id,name,description,admin_only,allow_asset,sort_order,created_epoch) "
+            "VALUES (?,?,?,?,?,?,?)", (board_id, *values, int(time.time())))
+        return 1
+    board = _board(connection, board_id)
+    if action == "edit":
+        values = _board_values(connection, payload, board["board_id"])
+        return connection.execute(
+            "UPDATE board_boards SET name=?,description=?,admin_only=?,allow_asset=?,sort_order=? WHERE board_id=?",
+            (*values, board["board_id"])).rowcount
+    if action == "delete":
+        if connection.execute("SELECT COUNT(*) FROM board_boards").fetchone()[0] <= 1:
+            raise ValueError("게시판은 하나 이상 있어야 합니다.")
+        if connection.execute("SELECT 1 FROM board_posts WHERE board=?", (board["board_id"],)).fetchone():
+            target = payload.get("moveTo")
+            if not target or target == board["board_id"]:
+                raise ValueError("글이 있는 게시판입니다. 글을 옮길 다른 게시판을 골라 주세요.")
+            target = _board(connection, target)
+            # The board's categories go with it, so moved posts lose their category.
+            connection.execute(
+                "UPDATE board_posts SET board=?,category_id=NULL,pinned=0,asset_code=CASE WHEN ?=1 THEN asset_code END "
+                "WHERE board=?", (target["board_id"], target["allow_asset"], board["board_id"]))
+        return connection.execute("DELETE FROM board_boards WHERE board_id=?", (board["board_id"],)).rowcount
+    raise ValueError("작업을 확인해주세요.")
+
+
+def _board_values(connection, payload, own_id):
+    name = _text(payload.get("name"), "게시판 이름", BOARD_NAME_MAX)
+    if connection.execute("SELECT 1 FROM board_boards WHERE name=? AND board_id IS NOT ?", (name, own_id)).fetchone():
+        raise ValueError("같은 이름의 게시판이 있습니다.")
+    description = str(payload.get("description") or "").strip()
+    if len(description) > BOARD_DESCRIPTION_MAX:
+        raise ValueError(f"설명은 {BOARD_DESCRIPTION_MAX}자 이하로 입력해주세요.")
+    return (name, description, _flag(payload.get("adminOnly")), _flag(payload.get("allowAsset")),
+            _order(payload.get("sortOrder")))
+
+
+def _order(value):
+    try:
+        return max(-1000, min(1000, int(value or 0)))
+    except (TypeError, ValueError):
+        raise ValueError("순서는 정수로 입력해주세요.") from None
+
+
+def _category_action(connection, category_id, action, payload):
+    if action == "create":
+        board = _board(connection, payload.get("boardId"))
+        name = _text(payload.get("name"), "카테고리 이름", CATEGORY_NAME_MAX)
+        if connection.execute("SELECT 1 FROM board_categories WHERE board_id=? AND name=?", (board["board_id"], name)).fetchone():
+            raise ValueError("이 게시판에 같은 이름의 카테고리가 있습니다.")
+        return connection.execute("INSERT INTO board_categories(board_id,name,sort_order) VALUES (?,?,?)",
+                                  (board["board_id"], name, _order(payload.get("sortOrder")))).lastrowid
+    row = connection.execute("SELECT * FROM board_categories WHERE category_id=?", (_id(category_id, "카테고리"),)).fetchone()
+    if not row:
+        raise ValueError("카테고리를 찾을 수 없습니다.")
+    if action == "edit":
+        name = _text(payload.get("name"), "카테고리 이름", CATEGORY_NAME_MAX)
+        if connection.execute("SELECT 1 FROM board_categories WHERE board_id=? AND name=? AND category_id<>?",
+                              (row["board_id"], name, row["category_id"])).fetchone():
+            raise ValueError("이 게시판에 같은 이름의 카테고리가 있습니다.")
+        return connection.execute("UPDATE board_categories SET name=?,sort_order=? WHERE category_id=?",
+                                  (name, _order(payload.get("sortOrder")), row["category_id"])).rowcount
+    if action == "delete":
+        # Its posts stay in the board, without a category (ON DELETE SET NULL).
+        return connection.execute("DELETE FROM board_categories WHERE category_id=?", (row["category_id"],)).rowcount
+    raise ValueError("작업을 확인해주세요.")

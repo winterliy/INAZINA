@@ -33,7 +33,10 @@ class BoardApiTests(unittest.TestCase):
         self.assertNotIn("author_ip", read)
         self.assertEqual(self.execute("SELECT author_ip FROM board_posts"), [("203.0.113.7",)])
         server.board_post(f"/internal/board/posts/{post_id}/comments", ADMIN, {"body": "댓글", "clientIp": "203.0.113.7"})
-        self.assertTrue(server.board_post(f"/internal/board/posts/{post_id}/like", ADMIN, {})["liked"])
+        self.assertEqual(server.board_post(f"/internal/board/posts/{post_id}/react", ADMIN, {"value": -1})["reaction"], -1)
+        comment = server.board_post(f"/internal/board/posts/{post_id}/comments", ADMIN, {"body": "c", "clientIp": "ip"})["commentId"]
+        reply = server.board_post(f"/internal/board/posts/{post_id}/comments", ADMIN, {"body": "r", "parentId": comment, "clientIp": "ip"})["commentId"]
+        self.assertEqual(server.board_post(f"/internal/board/comments/{reply}/react", ADMIN, {"value": 1})["likes"], 1)
         self.assertIn("✅", server.admin_board_action("admin-1", "post", str(post_id), "hide"))
         self.assertEqual(server.board_get("/internal/board/posts", {}, None)["total"], 0)
         self.assertEqual(self.execute("SELECT action FROM admin_audit")[-1][0], "board.post.hide")
@@ -41,3 +44,18 @@ class BoardApiTests(unittest.TestCase):
     def test_unknown_board_paths_are_not_found(self):
         with self.assertRaises(LookupError):
             server.board_post("/internal/board/nothing", ADMIN, {})
+
+    def test_boards_categories_and_moves_go_through_the_admin_api(self):
+        server._board_ready = False
+        self.assertIn("✅", server.admin_board_action("admin-1", "board", "new", "create",
+                                                     {"action": "create", "boardId": "qna", "name": "질문"}))
+        self.assertIn("✅", server.admin_board_action("admin-1", "category", "new", "create", {"boardId": "qna", "name": "버그"}))
+        boards = server.board_get("/internal/board/boards", {}, None)["boards"]
+        qna = next(b for b in boards if b["board_id"] == "qna")
+        self.assertEqual([c["name"] for c in qna["categories"]], ["버그"])
+        post_id = server.board_post("/internal/board/posts", ADMIN, {"board": "free", "title": "t", "body": "b", "clientIp": "ip"})["postId"]
+        server.admin_board_action("admin-1", "post", str(post_id), "move", {"board": "qna", "categoryId": qna["categories"][0]["category_id"]})
+        listed = server.board_get("/internal/board/posts", {"board": ["qna"], "category": [str(qna["categories"][0]["category_id"])]}, None)
+        self.assertEqual([p["post_id"] for p in listed["posts"]], [post_id])
+        audit = self.execute("SELECT action,payload FROM admin_audit")
+        self.assertIn("board.post.move", [row[0] for row in audit])

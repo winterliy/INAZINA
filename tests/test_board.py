@@ -78,17 +78,17 @@ class BoardTests(unittest.TestCase):
         board.delete_post(self.conn, ALICE, post_id)
         with self.assertRaises(ValueError):
             board.read_post(self.conn, post_id)
-        self.assertEqual(self.conn.execute("SELECT status FROM board_posts").fetchone()[0], "deleted")
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM board_posts").fetchone()[0], 0)
 
     def test_comments_likes_and_counts(self):
         post_id = self.post()
         comment = board.add_comment(self.conn, BOB, post_id, {"body": "댓글", "anonymous": True}, "10.0.0.2")
-        self.assertTrue(board.toggle_like(self.conn, BOB, post_id))
+        self.assertEqual(board.react(self.conn, BOB, "post", post_id, 1)["reaction"], 1)
         post = board.read_post(self.conn, post_id, viewer="bob")
-        self.assertEqual((post["comment_count"], post["like_count"], post["liked"]), (1, 1, True))
+        self.assertEqual((post["comment_count"], post["like_count"], post["my_reaction"]), (1, 1, 1))
         self.assertEqual(post["comments"][0]["author"], "익명")
         self.assertTrue(post["comments"][0]["mine"])
-        self.assertFalse(board.toggle_like(self.conn, BOB, post_id))
+        self.assertEqual(board.react(self.conn, BOB, "post", post_id, 1)["reaction"], 0)
         board.delete_comment(self.conn, BOB, comment)
         self.assertEqual(board.read_post(self.conn, post_id)["comment_count"], 0)
 
@@ -120,10 +120,10 @@ class BoardTests(unittest.TestCase):
     def test_purge_removes_post_with_its_comments_likes_and_reports(self):
         post_id = self.post()
         board.add_comment(self.conn, BOB, post_id, {"body": "c"}, "ip")
-        board.toggle_like(self.conn, BOB, post_id)
+        board.react(self.conn, BOB, "post", post_id, 1)
         board.report(self.conn, BOB, {"postId": post_id, "reason": "r"}, "ip")
         board.admin_action(self.conn, "post", post_id, "purge")
-        for table in ("board_posts", "board_comments", "board_likes", "board_reports"):
+        for table in ("board_posts", "board_comments", "board_post_reactions", "board_reports"):
             self.assertEqual(self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0, table)
 
     def test_search_and_paging(self):
@@ -153,12 +153,16 @@ class BoardRetentionTests(unittest.TestCase):
         self.assertEqual(board.read_post(self.conn, old)["title"], "제목")
         self.assertEqual(board.purge_expired_ips(self.conn), 0)
 
-    def test_author_deleted_posts_are_destroyed_after_a_year(self):
+    def test_author_deletion_removes_the_post_and_everything_on_it_at_once(self):
         gone, kept = self.post(), self.post(BOB)
+        comment = board.add_comment(self.conn, BOB, gone, {"body": "c"}, "ip")
+        board.react(self.conn, BOB, "post", gone, 1)
+        board.react(self.conn, ALICE, "comment", comment, -1)
+        board.report(self.conn, BOB, {"postId": gone, "reason": "r"}, "ip")
         board.delete_post(self.conn, ALICE, gone)
-        self.conn.execute("UPDATE board_posts SET created_epoch=?", (int(time.time()) - board.IP_RETENTION_SECONDS - 1,))
-        board.purge_expired_ips(self.conn)
         self.assertEqual([row[0] for row in self.conn.execute("SELECT post_id FROM board_posts")], [kept])
+        for table in ("board_comments", "board_post_reactions", "board_comment_reactions", "board_reports"):
+            self.assertEqual(self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0], 0, table)
 
 
 class BoardOpeningTests(unittest.TestCase):
@@ -173,10 +177,189 @@ class BoardOpeningTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "읽기만"):
                 attempt()
         self.assertEqual(board.list_posts(self.conn)["total"], 1)
-        self.assertTrue(board.toggle_like(self.conn, BOB, post_id))
+        self.assertEqual(board.react(self.conn, BOB, "post", post_id, -1)["reaction"], -1)
         self.assertEqual(board.list_posts(self.conn)["writeOpensEpoch"], board.WRITE_OPENS_EPOCH)
 
     def test_opening_date_is_2026_11_16_kst(self):
         import datetime, zoneinfo
         opens = datetime.datetime.fromtimestamp(self.opens, zoneinfo.ZoneInfo("Asia/Seoul"))
         self.assertEqual((opens.year, opens.month, opens.day, opens.hour), (2026, 11, 16, 0))
+
+
+class BoardReactionAndReplyTests(unittest.TestCase):
+    setUp, tearDown, post = BoardTests.setUp, BoardTests.tearDown, BoardTests.post
+
+    def test_like_dislike_switch_and_cancel_on_posts_and_comments(self):
+        post_id = self.post()
+        comment = board.add_comment(self.conn, ALICE, post_id, {"body": "c"}, "ip")
+        self.assertEqual(board.react(self.conn, BOB, "post", post_id, 1), {"reaction": 1, "likes": 1, "dislikes": 0})
+        self.assertEqual(board.react(self.conn, BOB, "post", post_id, -1), {"reaction": -1, "likes": 0, "dislikes": 1})
+        board.react(self.conn, {"userId": "carol", "role": "user"}, "post", post_id, -1)
+        self.assertEqual(board.react(self.conn, BOB, "post", post_id, -1), {"reaction": 0, "likes": 0, "dislikes": 1})
+        board.react(self.conn, BOB, "comment", comment, -1)
+        post = board.read_post(self.conn, post_id, viewer="bob")
+        self.assertEqual((post["like_count"], post["dislike_count"], post["my_reaction"]), (0, 1, 0))
+        self.assertEqual((post["comments"][0]["dislike_count"], post["comments"][0]["my_reaction"]), (1, -1))
+        self.assertEqual(board.list_posts(self.conn)["posts"][0]["dislike_count"], 1)
+        with self.assertRaisesRegex(ValueError, "좋아요 또는 싫어요"):
+            board.react(self.conn, BOB, "post", post_id, 2)
+        with self.assertRaisesRegex(ValueError, "좋아요 또는 싫어요"):
+            board.react(self.conn, BOB, "post", post_id, True)
+
+    def test_replies_stay_one_level_and_reports_reach_them(self):
+        post_id, other = self.post(), self.post(BOB)
+        top = board.add_comment(self.conn, ALICE, post_id, {"body": "top"}, "ip")
+        reply = board.add_comment(self.conn, BOB, post_id, {"body": "reply", "parentId": top}, "ip")
+        nested = board.add_comment(self.conn, ALICE, post_id, {"body": "re-reply", "parentId": reply}, "ip")
+        parents = dict(self.conn.execute("SELECT comment_id,parent_id FROM board_comments").fetchall())
+        self.assertEqual((parents[reply], parents[nested]), (top, top))
+        with self.assertRaisesRegex(ValueError, "답글"):
+            board.add_comment(self.conn, ALICE, other, {"body": "x", "parentId": top}, "ip")
+        board.report(self.conn, ALICE, {"commentId": reply, "reason": "r"}, "ip")
+        self.assertEqual(board.admin_list(self.conn)["reports"][0]["comment_id"], reply)
+        self.assertEqual(board.react(self.conn, ALICE, "comment", reply, 1)["likes"], 1)
+
+    def test_deleting_a_comment_removes_it_and_keeps_replies_as_comments(self):
+        post_id = self.post()
+        top = board.add_comment(self.conn, ALICE, post_id, {"body": "top"}, "ip")
+        reply = board.add_comment(self.conn, BOB, post_id, {"body": "reply", "parentId": top}, "ip")
+        board.react(self.conn, BOB, "comment", top, 1)
+        board.delete_comment(self.conn, ALICE, top)
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM board_comments WHERE comment_id=?", (top,)).fetchone())
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM board_comment_reactions").fetchone()[0], 0)
+        comments = board.read_post(self.conn, post_id)["comments"]
+        self.assertEqual([(c["comment_id"], c["parent_id"], c["body"]) for c in comments], [(reply, None, "reply")])
+
+    def test_hidden_parent_stays_as_a_placeholder_while_replies_live(self):
+        post_id = self.post()
+        top = board.add_comment(self.conn, ALICE, post_id, {"body": "top"}, "ip")
+        reply = board.add_comment(self.conn, BOB, post_id, {"body": "reply", "parentId": top}, "ip")
+        board.admin_action(self.conn, "comment", top, "hide")
+        comments = board.read_post(self.conn, post_id)["comments"]
+        self.assertEqual([(c["comment_id"], c["removed"], c["body"]) for c in comments],
+                         [(top, True, "숨겨진 댓글입니다."), (reply, False, "reply")])
+        board.admin_action(self.conn, "comment", top, "purge")
+        self.assertEqual([c["parent_id"] for c in board.read_post(self.conn, post_id)["comments"]], [None])
+
+    def test_rows_marked_deleted_by_older_versions_are_removed(self):
+        post_id = self.post()
+        top = board.add_comment(self.conn, ALICE, post_id, {"body": "top"}, "ip")
+        reply = board.add_comment(self.conn, BOB, post_id, {"body": "reply", "parentId": top}, "ip")
+        self.conn.execute("UPDATE board_comments SET status='deleted' WHERE comment_id=?", (top,))
+        board.ensure_tables(self.conn)
+        self.assertEqual(self.conn.execute("SELECT comment_id,parent_id FROM board_comments").fetchall()[0][:], (reply, None))
+
+    def test_old_likes_become_likes(self):
+        post_id = self.post()
+        self.conn.executescript("""
+            CREATE TABLE board_likes (post_id INTEGER, user_id TEXT, created_epoch INTEGER);""")
+        self.conn.execute("INSERT INTO board_likes VALUES (?, 'bob', 1)", (post_id,))
+        board.ensure_tables(self.conn)
+        self.assertEqual(board.read_post(self.conn, post_id, viewer="bob")["my_reaction"], 1)
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM sqlite_master WHERE name='board_likes'").fetchone())
+
+
+class BoardStructureTests(unittest.TestCase):
+    setUp, tearDown, post = BoardTests.setUp, BoardTests.tearDown, BoardTests.post
+
+    def test_admin_posts_and_comments_carry_the_admin_mark(self):
+        post_id = self.post(ADMIN, anonymous=True)
+        board.add_comment(self.conn, ADMIN, post_id, {"body": "운영진 답변"}, "ip")
+        board.add_comment(self.conn, BOB, post_id, {"body": "c"}, "ip")
+        post = board.read_post(self.conn, post_id)
+        self.assertEqual((post["author"], post["author_admin"]), ("익명", 1))
+        self.assertEqual([c["author_admin"] for c in post["comments"]], [1, 0])
+        self.assertEqual(board.list_posts(self.conn)["posts"][0]["author_admin"], 1)
+        self.assertEqual(board.read_post(self.conn, self.post(BOB))["author_admin"], 0)
+
+    def test_notice_leads_every_board_and_pin_leads_its_own(self):
+        free, market = self.post(), self.post(BOB, board="market")
+        pinned = self.post({"userId": "carol", "role": "user"})
+        notice = self.post(ADMIN, board="market", notice=True)
+        board.admin_action(self.conn, "post", pinned, "pin")
+        ids = lambda **kw: [p["post_id"] for p in board.list_posts(self.conn, **kw)["posts"]]
+        self.assertEqual(ids(board="free"), [notice, pinned, free])
+        self.assertEqual(ids(board="market"), [notice, market])
+        self.assertEqual(ids(), [notice, pinned, market, free])
+        board.admin_action(self.conn, "post", notice, "unnotice")
+        self.assertEqual(ids(board="free"), [pinned, free])
+        # Users cannot pin or make 공지 by themselves.
+        self.assertEqual(board.read_post(self.conn, self.post(BOB, notice=True, pinned=True))["notice"], 0)
+
+    def test_boards_are_created_edited_and_deleted_by_moving_posts(self):
+        board.admin_action(self.conn, "board", "new", "create",
+                           {"boardId": "qna", "name": "질문", "description": "묻고 답하기", "adminOnly": False, "sortOrder": 5})
+        post_id = self.post(board="qna")
+        self.assertEqual(board.read_post(self.conn, post_id)["board_name"], "질문")
+        board.admin_action(self.conn, "board", "qna", "edit", {"name": "질문과 답변", "adminOnly": True, "sortOrder": 5})
+        with self.assertRaisesRegex(ValueError, "관리자만"):
+            self.post(BOB, board="qna")
+        with self.assertRaisesRegex(ValueError, "옮길"):
+            board.admin_action(self.conn, "board", "qna", "delete", {})
+        board.admin_action(self.conn, "board", "qna", "delete", {"moveTo": "free"})
+        self.assertEqual(board.read_post(self.conn, post_id)["board"], "free")
+        self.assertNotIn("qna", [b["board_id"] for b in board.boards(self.conn)])
+        for bad in ({"boardId": "Bad ID", "name": "x"}, {"boardId": "free", "name": "x"}, {"boardId": "new1", "name": "자유"}):
+            with self.assertRaises(ValueError):
+                board.admin_action(self.conn, "board", "new", "create", bad)
+
+    def test_the_last_board_cannot_be_deleted(self):
+        board.admin_action(self.conn, "board", "notice", "delete", {})
+        board.admin_action(self.conn, "board", "market", "delete", {})
+        with self.assertRaisesRegex(ValueError, "하나 이상"):
+            board.admin_action(self.conn, "board", "free", "delete", {})
+
+    def test_categories_and_moving_posts(self):
+        talk = board.admin_action(self.conn, "category", "new", "create", {"boardId": "free", "name": "잡담"})
+        tip = board.admin_action(self.conn, "category", "new", "create", {"boardId": "market", "name": "분석"})
+        with self.assertRaisesRegex(ValueError, "같은 이름"):
+            board.admin_action(self.conn, "category", "new", "create", {"boardId": "free", "name": "잡담"})
+        post_id = self.post(categoryId=talk)
+        with self.assertRaisesRegex(ValueError, "카테고리"):
+            self.post(BOB, categoryId=tip)
+        self.assertEqual(board.list_posts(self.conn, board="free", category=talk)["total"], 1)
+        self.assertEqual(board.read_post(self.conn, post_id)["category_name"], "잡담")
+        board.admin_action(self.conn, "category", talk, "edit", {"name": "수다"})
+        self.assertEqual(board.boards(self.conn)[1]["categories"][0]["name"], "수다")
+        # Moving to another board takes that board's category (or none).
+        board.admin_action(self.conn, "post", post_id, "move", {"board": "market", "categoryId": tip})
+        moved = board.read_post(self.conn, post_id)
+        self.assertEqual((moved["board"], moved["category_id"]), ("market", tip))
+        board.admin_action(self.conn, "post", post_id, "category", {"categoryId": None})
+        self.assertIsNone(board.read_post(self.conn, post_id)["category_id"])
+        board.admin_action(self.conn, "post", post_id, "category", {"categoryId": tip})
+        board.admin_action(self.conn, "category", tip, "delete")
+        self.assertIsNone(board.read_post(self.conn, post_id)["category_id"])
+
+    def test_old_three_board_table_is_rebuilt_keeping_everything_attached(self):
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.executescript("""
+            CREATE TABLE users (user_id TEXT PRIMARY KEY, nickname TEXT);
+            INSERT INTO users VALUES ('alice','앨리스'),('bob','밥');
+            CREATE TABLE board_posts (
+                post_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                board TEXT NOT NULL CHECK(board IN ('notice','free','market')),
+                author_id TEXT NOT NULL REFERENCES users(user_id), anonymous INTEGER NOT NULL DEFAULT 0,
+                title TEXT NOT NULL, body TEXT NOT NULL, asset_code TEXT, pinned INTEGER NOT NULL DEFAULT 0,
+                status TEXT NOT NULL DEFAULT 'active', hidden_reason TEXT, author_ip TEXT NOT NULL,
+                view_count INTEGER NOT NULL DEFAULT 0, created_epoch INTEGER NOT NULL, updated_epoch INTEGER NOT NULL);
+            CREATE TABLE board_comments (
+                comment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                post_id INTEGER NOT NULL REFERENCES board_posts(post_id) ON DELETE CASCADE,
+                author_id TEXT NOT NULL REFERENCES users(user_id), anonymous INTEGER NOT NULL DEFAULT 0,
+                body TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active', hidden_reason TEXT,
+                author_ip TEXT NOT NULL, created_epoch INTEGER NOT NULL);
+            INSERT INTO board_posts(board,author_id,title,body,pinned,author_ip,view_count,created_epoch,updated_epoch)
+                VALUES ('market','alice','t','b',1,'1.1.1.1',7,1,1);
+            INSERT INTO board_comments(post_id,author_id,body,author_ip,created_epoch) VALUES (1,'bob','c','ip',2);
+        """)
+        board.ensure_tables(conn)
+        post = board.read_post(conn, 1)
+        self.assertEqual((post["board_name"], post["pinned"], post["view_count"], post["comment_count"]), ("시장 토론", 1, 7, 1))
+        self.assertIn("REFERENCES board_boards", conn.execute("SELECT sql FROM sqlite_master WHERE name='board_posts'").fetchone()[0])
+        self.assertEqual(conn.execute("PRAGMA foreign_keys").fetchone()[0], 1)
+        board.delete_post(conn, ALICE, 1)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM board_comments").fetchone()[0], 0)
+        conn.close()

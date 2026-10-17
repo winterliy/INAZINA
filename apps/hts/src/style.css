@@ -477,6 +477,18 @@ button.book-row:hover:not(:disabled) { filter: brightness(1.04); }
 .board-item-meta { color: var(--ink2); font-size: 12px; }
 .board-pin, .board-kind { display: inline-block; margin-right: 6px; padding: 1px 7px; border-radius: 999px; color: var(--accent); background: var(--select); font-size: 11px; font-style: normal; font-weight: 700; vertical-align: 1px; }
 .board-pin { color: #fff; background: var(--accent); }
+.board-admin { display: inline-block; margin-left: 5px; padding: 0 6px; border-radius: 6px; color: #fff; background: #8a5a00; font-size: 10px; font-style: normal; font-weight: 700; vertical-align: 1px; }
+.board-description { margin: -4px 2px 8px; color: var(--ink2); font-size: 12px; }
+.board-categories { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+.board-categories button { min-height: 26px !important; padding: 0 10px !important; border-radius: 999px !important; color: var(--ink2); background: transparent; box-shadow: inset 0 0 0 1px var(--line); font-size: 12px !important; }
+.board-categories button.active { color: var(--accent); background: var(--select); box-shadow: none; font-weight: 600; }
+.board-admin-options { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 10px 12px; border-radius: 12px; background: rgba(138, 90, 0, .08); }
+.board-admin-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: -8px 0 18px; padding: 10px 12px; border-radius: 12px; background: rgba(138, 90, 0, .08); }
+.board-admin-label { color: #8a5a00; font-size: 12px; font-weight: 700; }
+.board-admin-bar button { background: var(--hover); }
+.board-admin-bar button.active { color: #fff; background: #8a5a00; }
+.board-admin-bar label { display: flex; align-items: center; gap: 6px; color: var(--ink2); font-size: 12px; }
+.board-admin-bar select { min-height: 30px; padding: 0 8px; border: 0; border-radius: 8px; color: var(--ink); background: var(--field); box-shadow: inset 0 0 0 1px var(--line); font: inherit; font-size: 12px; }
 .board-pages { display: flex; align-items: center; justify-content: center; gap: 10px; padding-top: 8px; color: var(--ink2); font-size: 13px; }
 .board-pages button { background: var(--hover); }
 .board-main { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 4px 4px 4px 16px; border-left: 1px solid var(--line); }
@@ -488,7 +500,18 @@ button.book-row:hover:not(:disabled) { filter: brightness(1.04); }
 .board-post-body { min-height: 80px; color: var(--ink); font-size: 15px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
 .board-post-actions { margin: 20px 0; padding-bottom: 18px; border-bottom: 1px solid var(--line); }
 .board-post-actions button, .board-comment-meta button { background: var(--hover); }
-.board-like.active { color: #fff !important; background: var(--up) !important; }
+.board-reactions { display: inline-flex; gap: 6px; }
+.board-react { font-variant-numeric: tabular-nums; }
+.board-react.like.active { color: #fff !important; background: var(--up) !important; }
+.board-react.dislike.active { color: #fff !important; background: var(--down) !important; }
+.board-reactions.small .board-react, .board-reply-button { min-height: 24px !important; padding: 0 9px !important; font-size: 11px !important; }
+.board-comment-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+.board-comment-actions button { background: var(--hover); }
+.board-replies { margin: 10px 0 0 !important; padding-left: 16px !important; border-left: 2px solid var(--line); }
+.board-replies li { padding: 8px 0; }
+.board-removed { color: var(--ink2); font-style: italic; }
+.board-comment-form > div > span { display: inline-flex; gap: 6px; }
+.board-comment-form > div > span button:not(.board-primary) { background: var(--hover); }
 .board-comments h4 { margin: 0 0 10px; font-size: 14px; }
 .board-comments li { padding: 10px 0; border-top: 1px solid var(--line); }
 .board-comments li:first-child { border-top: 0; }
