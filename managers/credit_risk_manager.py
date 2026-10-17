@@ -73,6 +73,9 @@ class CreditRiskManager:
                            "sampleCount": count, "observedDefaults": stats["defaults"],
                            "meanPredictedPd": stats["predicted"]/count,
                            "observedDefaultRate": observed_rate,
+                           "calibrationGap": observed_rate-stats["predicted"]/count,
+                           "observedToExpected": (stats["defaults"]/stats["predicted"]
+                                                   if stats["predicted"] > 0 else None),
                            "observedRateLower95": max(0.0, center-margin),
                            "observedRateUpper95": min(1.0, center+margin),
                            "brierScore": stats["brier"]/count})

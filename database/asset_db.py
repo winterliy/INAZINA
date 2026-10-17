@@ -122,6 +122,19 @@ class AssetDB(DBManager):
             self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_dr_custody_events_immutable_{operation.lower()}
                 BEFORE {operation} ON dr_custody_process_events
                 BEGIN SELECT RAISE(ABORT,'DR custody process events are append-only'); END""")
+        self.execute("""CREATE TABLE IF NOT EXISTS dr_voting_delegations (
+            delegation_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            dr_code TEXT NOT NULL REFERENCES depositary_receipts(dr_code),
+            owner_user_id TEXT NOT NULL,
+            proxy_user_id TEXT NOT NULL,
+            dr_quantity INTEGER NOT NULL CHECK(dr_quantity > 0),
+            status TEXT NOT NULL CHECK(status IN ('active','revoked')),
+            created_epoch REAL NOT NULL,
+            revoked_epoch REAL,
+            CHECK(owner_user_id <> proxy_user_id)
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_dr_voting_delegations_active "
+                     "ON dr_voting_delegations(dr_code,owner_user_id,status)")
         self.execute("""CREATE TABLE IF NOT EXISTS dr_deviation_samples (
             sample_id INTEGER PRIMARY KEY AUTOINCREMENT,
             dr_code TEXT NOT NULL REFERENCES depositary_receipts(dr_code),

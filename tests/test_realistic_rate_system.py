@@ -294,6 +294,32 @@ class RealisticRateSystemTests(unittest.TestCase):
             result = BankJournal.reconcile_ecl_allowances(conn, "Bank")
         self.assertEqual((result[0]["difference_units"], result[0]["status"]), (1, "mismatch"))
 
+    def test_ecl_backtest_reports_calibration_gap_and_observed_to_expected(self):
+        self.add_loan(code="ECL-BACKTEST")
+        epoch = 2_000_000_000
+        assessed = epoch - 2 * 365 * 86400
+        self.db.accounts.execute(
+            "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,status,"
+            "quote_currency,defaulted_epoch) VALUES "
+            "('borrower','ECL-BACKTEST',100,100,'defaulted','NWX',?)",
+            (assessed + 30 * 86400,),
+        )
+        loan_id = self.db.accounts.execute_one(
+            "SELECT loan_id FROM loans WHERE product_code='ECL-BACKTEST'"
+        )[0]
+        self.db.accounts.execute(
+            "INSERT INTO loan_ecl_assessments(loan_id,as_of_day,stage,pd_12m,lifetime_pd,"
+            "lgd,ead,expected_loss,quote_currency,calculated_epoch) "
+            "VALUES (?, '2024-10-18',1,.10,.20,.5,100,5,'NWX',?)",
+            (loan_id, assessed),
+        )
+        with self.db.atomic() as conn:
+            report = CreditRiskManager.backtest_12m(conn, issuer="Bank", now=epoch)
+        self.assertEqual(len(report["groups"]), 1)
+        group = report["groups"][0]
+        self.assertAlmostEqual(group["calibrationGap"], .90)
+        self.assertAlmostEqual(group["observedToExpected"], 10.0)
+
     def test_kyc_profile_gates_loan_origination(self):
         self.add_loan(code="KYC-LOAN", maturity=365, collateral_ratio=0, origination_fee=0)
         with self.db.atomic() as conn:

@@ -3290,6 +3290,30 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 self.send_json(200 if success else 400, {"success": success, "message": message})
                 return
+            if path == "/internal/dr/voting-delegations":
+                allowed = {"drCode", "proxyUserId", "quantity"}
+                if set(payload) != allowed:
+                    raise ValueError("invalid_dr_voting_delegation_payload")
+                from managers.depositary_receipt_manager import DepositaryReceiptManager
+                bot = domain().bot
+                success, result = DepositaryReceiptManager(bot.db).delegate_votes(
+                    user["userId"], payload["drCode"], payload["proxyUserId"],
+                    payload["quantity"],
+                )
+                self.send_json(201 if success else 400,
+                               {"success": success, "result": result})
+                return
+            if path == "/internal/dr/voting-delegations/revoke":
+                if set(payload) != {"delegationId"}:
+                    raise ValueError("invalid_dr_voting_delegation_payload")
+                from managers.depositary_receipt_manager import DepositaryReceiptManager
+                bot = domain().bot
+                success, result = DepositaryReceiptManager(bot.db).revoke_vote_delegation(
+                    user["userId"], payload["delegationId"],
+                )
+                self.send_json(200 if success else 400,
+                               {"success": success, "result": result})
+                return
             if path == "/internal/admin/compliance":
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})

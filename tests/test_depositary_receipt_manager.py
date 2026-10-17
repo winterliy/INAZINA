@@ -130,6 +130,40 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
         self.assertEqual(self.holding("UNDER_DR"), 2)
         self.assertEqual(self.holding("UNDER"), 2)
 
+    def test_dr_voting_rights_can_be_partially_delegated_and_revoked(self):
+        self.create_program()
+        issued, message = self.manager.convert("citizen", "UNDER_DR", "issue", 3, "vote-issue")
+        self.assertTrue(issued, message)
+        self.db.users.create_user("proxy", "Proxy", "낙원", 1_000)
+        ok, result = self.manager.delegate_votes(
+            "citizen", "UNDER_DR", "proxy", 2, now=1_800_000_000,
+        )
+        self.assertTrue(ok, result)
+        delegation_id = result["delegationId"]
+        row = self.db.assets.execute_one(
+            "SELECT dr_quantity,status FROM dr_voting_delegations WHERE delegation_id=?",
+            (delegation_id,),
+        )
+        self.assertEqual(tuple(row), (2, "active"))
+        overdrawn, message = self.manager.delegate_votes(
+            "citizen", "UNDER_DR", "proxy", 2, now=1_800_000_001,
+        )
+        self.assertFalse(overdrawn)
+        self.assertIn("위임 가능한", message)
+        unauthorized, _ = self.manager.revoke_vote_delegation(
+            "proxy", delegation_id, now=1_800_000_002,
+        )
+        self.assertFalse(unauthorized)
+        revoked, result = self.manager.revoke_vote_delegation(
+            "citizen", delegation_id, now=1_800_000_003,
+        )
+        self.assertTrue(revoked, result)
+        row = self.db.assets.execute_one(
+            "SELECT status,revoked_epoch FROM dr_voting_delegations WHERE delegation_id=?",
+            (delegation_id,),
+        )
+        self.assertEqual(tuple(row), ("revoked", 1_800_000_003))
+
     def test_failed_custody_verification_leaves_no_partial_process_or_movement(self):
         self.create_program()
         ok, message = self.manager.convert(

@@ -8,6 +8,70 @@ class DepositaryReceiptManager:
     def __init__(self, db):
         self.db = db
 
+    def delegate_votes(self, owner_user_id, dr_code, proxy_user_id, quantity, *, now=None):
+        """Record an internal, revocable delegation of DR voting rights."""
+        if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity <= 0:
+            return False, "❌ 위임 수량은 1 이상의 정수 DR 수량이어야 합니다."
+        owner, proxy = str(owner_user_id), str(proxy_user_id)
+        code = str(dr_code or "").strip()
+        if not code or not owner or not proxy or owner == proxy:
+            return False, "❌ DR, 위임자, 대리인을 확인해주세요. 본인에게는 위임할 수 없습니다."
+        from managers.bank_journal import BankJournal
+        try:
+            when = BankJournal.validate_epoch(now)
+            with self.db.atomic() as conn:
+                program = conn.execute(
+                    "SELECT program_status FROM assets.depositary_receipts WHERE dr_code=?",
+                    (code,),
+                ).fetchone()
+                users = conn.execute(
+                    "SELECT user_id,status FROM users.users WHERE user_id IN (?,?)",
+                    (owner, proxy),
+                ).fetchall()
+                if not program or program["program_status"] == "terminated":
+                    raise ValueError("활성 DR 프로그램을 찾을 수 없습니다.")
+                if len(users) != 2 or any(row["status"] != "active" for row in users):
+                    raise ValueError("위임자와 대리인은 모두 활성 사용자여야 합니다.")
+                owned = int(conn.execute(
+                    "SELECT COALESCE(SUM(quantity),0) FROM assets.user_assets "
+                    "WHERE user_id=? AND asset_code=?", (owner, code),
+                ).fetchone()[0] or 0)
+                delegated = int(conn.execute(
+                    "SELECT COALESCE(SUM(dr_quantity),0) FROM assets.dr_voting_delegations "
+                    "WHERE owner_user_id=? AND dr_code=? AND status='active'", (owner, code),
+                ).fetchone()[0] or 0)
+                if quantity > owned-delegated:
+                    raise ValueError(f"위임 가능한 의결권은 {max(0, owned-delegated):,} DR입니다.")
+                cur = conn.execute(
+                    "INSERT INTO assets.dr_voting_delegations "
+                    "(dr_code,owner_user_id,proxy_user_id,dr_quantity,status,created_epoch) "
+                    "VALUES (?,?,?,?,'active',?)",
+                    (code, owner, proxy, quantity, when),
+                )
+                return True, {"delegationId": int(cur.lastrowid), "drCode": code,
+                              "quantity": quantity, "status": "active"}
+        except (ValueError, TypeError, OverflowError) as exc:
+            return False, f"❌ {exc}"
+
+    def revoke_vote_delegation(self, owner_user_id, delegation_id, *, now=None):
+        """Revoke only the caller's active delegation; keep the row for audit history."""
+        if isinstance(delegation_id, bool) or not isinstance(delegation_id, int) or delegation_id <= 0:
+            return False, "❌ 위임 번호를 확인해주세요."
+        from managers.bank_journal import BankJournal
+        try:
+            when = BankJournal.validate_epoch(now)
+            with self.db.atomic() as conn:
+                changed = conn.execute(
+                    "UPDATE assets.dr_voting_delegations SET status='revoked',revoked_epoch=? "
+                    "WHERE delegation_id=? AND owner_user_id=? AND status='active'",
+                    (when, delegation_id, str(owner_user_id)),
+                )
+                if changed.rowcount != 1:
+                    raise ValueError("본인의 활성 의결권 위임을 찾을 수 없습니다.")
+                return True, {"delegationId": delegation_id, "status": "revoked"}
+        except (ValueError, TypeError, OverflowError) as exc:
+            return False, f"❌ {exc}"
+
     @staticmethod
     def _record_custody_process(conn, reference_key, sequence, event_type,
                                 dr_code, user_id, action, quantity, shares, when):

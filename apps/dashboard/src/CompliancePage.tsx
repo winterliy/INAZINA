@@ -10,7 +10,7 @@ type KycEvent = { event_id: number; user_id: string; actor_id: string; event_typ
 type AmlEvent = { event_id: number; alert_id: number; actor_id: string; event_type: string; prior_status: string | null; new_status: string; outcome_code: string | null; recorded_epoch: number; nationality: string; user_id: string };
 type EclScenario = { nationality: string; scenario_key: "optimistic" | "base" | "downside"; probability: number; pd_multiplier: number; lgd_multiplier: number; updated_epoch: number };
 type EclAssessment = { assessment_id: number; loan_id: number; as_of_day: string; stage: number; pd_12m: number; lifetime_pd: number; lgd: number; ead: number; expected_loss: number; discount_factor: number; effective_interest_rate: number; expected_loss_time_years: number; macro_pd_multiplier: number; ead_text: string; expected_loss_text: string; decimal_places: number; quote_currency: string; scenario: string; calculated_epoch: number; nationality: string };
-type EclBacktest = { issuer: string; nationality: string; pdBand: string; sampleCount: number; observedDefaults: number; meanPredictedPd: number; observedDefaultRate: number; observedRateLower95: number; observedRateUpper95: number; brierScore: number };
+type EclBacktest = { issuer: string; nationality: string; pdBand: string; sampleCount: number; observedDefaults: number; meanPredictedPd: number; observedDefaultRate: number; calibrationGap: number; observedToExpected: number | null; observedRateLower95: number; observedRateUpper95: number; brierScore: number };
 type Overview = { kycProfiles: Kyc[]; amlAlerts: Alert[]; amlRules: Rule[]; kycEvents: KycEvent[]; amlEvents: AmlEvent[]; creditRiskScenarios: EclScenario[]; eclAssessments: EclAssessment[]; eclBacktest: { maturedThroughEpoch: number; groups: EclBacktest[]; method: string } };
 type Result = { success: boolean; result: Record<string, unknown> };
 
@@ -151,10 +151,10 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
       </form>
     </Card>
 
-    <Card title="12개월 PD 백테스트" caption="국적 필터 적용 · 대출별 가장 최근 Stage 1/2 성숙 평가 하나만 사용합니다. 예측 PD 구간별 실제 부도율·Wilson 95% 신뢰구간·Brier 점수를 비교합니다. 같은 차주의 복수 대출 상관은 보정하지 않은 시뮬레이터 내부 진단이며 독립 검증·규제 승인 모형이 아닙니다.">
+    <Card title="12개월 PD 백테스트" caption="국적 필터 적용 · 대출별 가장 최근 Stage 1/2 성숙 평가 하나만 사용합니다. 예측 PD 구간별 실제 부도율·Wilson 95% 신뢰구간·Brier 점수·예측 대비 보정 차이·관측/기대 부도 비율을 비교합니다. 같은 차주의 복수 대출 상관은 보정하지 않은 시뮬레이터 내부 진단이며 독립 검증·규제 승인 모형이 아닙니다.">
       <p className="hint">관측 기준일: {date(data.eclBacktest.maturedThroughEpoch)} · 신뢰구간이 넓으면 표본이 작아 관측 부도율이 불확실하다는 뜻입니다.</p>
-      <div className="scroll-x"><table><thead><tr><th>기관</th><th>국적</th><th>예측 PD 구간</th><th className="r">표본</th><th className="r">부도</th><th className="r">평균 예측 PD</th><th className="r">관측 부도율 (95% Wilson)</th><th className="r">Brier</th></tr></thead><tbody>
-        {data.eclBacktest.groups.map((row) => <tr key={`${row.issuer}-${row.nationality}-${row.pdBand}`}><td>{row.issuer}</td><td>{row.nationality}</td><td>{row.pdBand}</td><td className="r">{row.sampleCount}</td><td className="r">{row.observedDefaults}</td><td className="r">{(row.meanPredictedPd * 100).toFixed(2)}%</td><td className="r">{(row.observedDefaultRate * 100).toFixed(2)}% ({(row.observedRateLower95 * 100).toFixed(1)}–{(row.observedRateUpper95 * 100).toFixed(1)}%)</td><td className="r mono">{row.brierScore.toFixed(4)}</td></tr>)}
+      <div className="scroll-x"><table><thead><tr><th>기관</th><th>국적</th><th>예측 PD 구간</th><th className="r">표본</th><th className="r">부도</th><th className="r">평균 예측 PD</th><th className="r">관측 부도율 (95% Wilson)</th><th className="r">보정 차이</th><th className="r">관측/기대</th><th className="r">Brier</th></tr></thead><tbody>
+        {data.eclBacktest.groups.map((row) => <tr key={`${row.issuer}-${row.nationality}-${row.pdBand}`}><td>{row.issuer}</td><td>{row.nationality}</td><td>{row.pdBand}</td><td className="r">{row.sampleCount}</td><td className="r">{row.observedDefaults}</td><td className="r">{(row.meanPredictedPd * 100).toFixed(2)}%</td><td className="r">{(row.observedDefaultRate * 100).toFixed(2)}% ({(row.observedRateLower95 * 100).toFixed(1)}–{(row.observedRateUpper95 * 100).toFixed(1)}%)</td><td className="r">{(row.calibrationGap * 100).toFixed(2)}%p</td><td className="r">{row.observedToExpected == null ? "—" : `${row.observedToExpected.toFixed(2)}×`}</td><td className="r mono">{row.brierScore.toFixed(4)}</td></tr>)}
       </tbody></table>{!data.eclBacktest.groups.length && <p className="empty">12개월 관측기간을 마친 평가 표본이 아직 없습니다.</p>}</div>
     </Card>
 
