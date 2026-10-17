@@ -9,9 +9,10 @@ type UserDetail = { user: Record<string, string | number | null>; accountType: "
 type MarketRate = { benchmark_key: "funding" | "bank_bond" | "treasury"; tenor_days: number; annual_rate: number; updated_epoch: number };
 type RatePressure = { benchmark_key: string; adjustment: number; updated_epoch: number };
 type RateHistoryEvent = { operation: "insert" | "update" | "delete"; rate_key: string; before_percent: number | null; after_percent: number | null; before_actor: string | null; after_actor: string | null; recorded_epoch: number };
+type CurveHistoryEvent = { operation: "insert" | "update" | "delete" | "replace"; benchmark_key: string; tenor_days: number; before_rate: number | null; after_rate: number | null; before_actor: string | null; after_actor: string | null; recorded_epoch: number };
 type MacroIndicators = { inflation_percent: number; real_gdp_growth_percent: number; unemployment_percent: number; fiscal_debt_percent: number; credit_stress_shock_bps: number; fx_stress_shock_percent: number; updated_by: string; updated_epoch: number };
 type SourceTaxRule = { income_source: string; tax_percent: number; updated_by: string; updated_epoch: number };
-type Country = { nationality: string; currency_code: string; currency_name: string | null; base_rate: number; legal_max_rate: number; tax_percent: number; treasuryId: string | null; treasuryCash: number | null; citizens: number; guilds: string[]; exchanges: string[]; marketRates: MarketRate[]; marketRatePressure: RatePressure[]; rateHistoryEvents: RateHistoryEvent[]; macroIndicators: MacroIndicators; externalReferenceRate: number | null; externalRatePremium: number; taxRules: SourceTaxRule[]; account: { status: string; role: string; hts_id: string | null } | null };
+type Country = { nationality: string; currency_code: string; currency_name: string | null; base_rate: number; legal_max_rate: number; tax_percent: number; treasuryId: string | null; treasuryCash: number | null; citizens: number; guilds: string[]; exchanges: string[]; marketRates: MarketRate[]; marketRatePressure: RatePressure[]; rateHistoryEvents?: RateHistoryEvent[]; marketRateHistoryEvents?: CurveHistoryEvent[]; macroIndicators: MacroIndicators; externalReferenceRate: number | null; externalRatePremium: number; taxRules: SourceTaxRule[]; account: { status: string; role: string; hts_id: string | null } | null };
 type Result = { message: string; success: boolean };
 
 const USER_FIELDS: [string, string, string?][] = [
@@ -292,10 +293,17 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
           </tbody></table>{!country.marketRates.length && <p className="empty">시장금리 곡선이 없습니다.</p>}</div>
         </section>
         <section className="section-gap">
+          <h3 className="sub-head">시장금리 곡선 변경 증적</h3>
+          <div className="scroll-x"><table><thead><tr><th>기록 시각</th><th>지표 · 만기</th><th>유형</th><th>변경 전</th><th>변경 후</th><th>행위자</th></tr></thead><tbody>
+            {(country.marketRateHistoryEvents ?? []).map((item, index) => <tr key={`${item.recorded_epoch}-${item.benchmark_key}-${item.tenor_days}-${index}`}><td>{date(item.recorded_epoch)}</td><td>{curveName(item.benchmark_key)} · {item.tenor_days}일</td><td>{item.operation === "insert" ? "기록 생성" : item.operation === "update" ? "정정" : item.operation === "delete" ? "기록 제거" : "동일시각 대체"}</td><td className="r mono">{item.before_rate === null ? "—" : `${number(item.before_rate)}%`}</td><td className="r mono">{item.after_rate === null ? "—" : `${number(item.after_rate)}%`}</td><td>{item.after_actor || item.before_actor || "—"}</td></tr>)}
+          </tbody></table>{!(country.marketRateHistoryEvents ?? []).length && <p className="empty">시장금리 곡선 변경 증적이 없습니다.</p>}</div>
+          <p className="hint">최근 50건의 만기별 시장금리 이력 이벤트입니다. 이력 교체·정정·삭제 전후 값은 별도 불변 증적에 보존됩니다.</p>
+        </section>
+        <section className="section-gap">
           <h3 className="sub-head">정책·법정최고금리 변경 증적</h3>
           <div className="scroll-x"><table><thead><tr><th>기록 시각</th><th>항목</th><th>유형</th><th>변경 전</th><th>변경 후</th><th>행위자</th></tr></thead><tbody>
-            {country.rateHistoryEvents.map((item, index) => <tr key={`${item.recorded_epoch}-${item.rate_key}-${index}`}><td>{date(item.recorded_epoch)}</td><td>{item.rate_key === "base_rate" ? "기준금리" : "법정최고이자"}</td><td>{item.operation === "insert" ? "기록 생성" : item.operation === "update" ? "정정" : "기록 제거"}</td><td className="r mono">{item.before_percent === null ? "—" : `${number(item.before_percent)}%`}</td><td className="r mono">{item.after_percent === null ? "—" : `${number(item.after_percent)}%`}</td><td>{item.after_actor || item.before_actor || "—"}</td></tr>)}
-          </tbody></table>{!country.rateHistoryEvents.length && <p className="empty">금리 변경 증적이 없습니다.</p>}</div>
+            {(country.rateHistoryEvents ?? []).map((item, index) => <tr key={`${item.recorded_epoch}-${item.rate_key}-${index}`}><td>{date(item.recorded_epoch)}</td><td>{item.rate_key === "base_rate" ? "기준금리" : "법정최고이자"}</td><td>{item.operation === "insert" ? "기록 생성" : item.operation === "update" ? "정정" : "기록 제거"}</td><td className="r mono">{item.before_percent === null ? "—" : `${number(item.before_percent)}%`}</td><td className="r mono">{item.after_percent === null ? "—" : `${number(item.after_percent)}%`}</td><td>{item.after_actor || item.before_actor || "—"}</td></tr>)}
+          </tbody></table>{!(country.rateHistoryEvents ?? []).length && <p className="empty">금리 변경 증적이 없습니다.</p>}</div>
           <p className="hint">최근 50건의 조회용 금리 이력 추가·정정·삭제 이벤트입니다. 증적은 읽기 전용입니다.</p>
         </section>
         <form className="form-grid section-gap" onSubmit={(event) => { event.preventDefault(); act(country.nationality, { action: "treasury", ...treasury }, `${country.nationality} 국고 현금을 ${treasury.amount}(으)로 설정할까요?`); }}>

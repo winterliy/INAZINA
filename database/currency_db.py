@@ -476,7 +476,12 @@ class CurrencyDB(DBManager):
         existing = self.execute_one(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='country_rate_history'"
         )
-        if existing and "annual_percent BETWEEN 0 AND 100" in str(existing['sql']):
+        schema_sql = "".join(str(existing['sql'] if existing else "").lower().split())
+        supports_negative_policy_rate = (
+            "rate_key='base_rate'" in schema_sql
+            and "annual_percentbetween-100and100" in schema_sql
+        )
+        if existing and not supports_negative_policy_rate:
             legacy_rows = list(self.execute(
                 "SELECT nationality,rate_key,annual_percent,effective_epoch,changed_by "
                 "FROM country_rate_history"
@@ -667,6 +672,70 @@ class CurrencyDB(DBManager):
                     (NEW.nationality,NEW.benchmark_key,NEW.tenor_days,NEW.annual_rate,
                      COALESCE(NULLIF(NEW.updated_epoch,0),unixepoch()),'sql');
             END""")
+        self.execute("""CREATE TABLE IF NOT EXISTS market_rate_curve_history_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            operation TEXT NOT NULL CHECK(operation IN ('insert','update','delete','replace')),
+            nationality TEXT NOT NULL,
+            benchmark_key TEXT NOT NULL,
+            tenor_days INTEGER NOT NULL,
+            before_rate REAL,
+            after_rate REAL,
+            before_epoch REAL,
+            after_epoch REAL,
+            before_actor TEXT,
+            after_actor TEXT,
+            recorded_epoch REAL NOT NULL
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_market_curve_history_events_recent "
+                     "ON market_rate_curve_history_events(nationality,event_id DESC)")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_market_curve_history_event_replace
+            BEFORE INSERT ON market_rate_curve_history
+            WHEN EXISTS (SELECT 1 FROM market_rate_curve_history WHERE
+                nationality=NEW.nationality AND benchmark_key=NEW.benchmark_key
+                AND tenor_days=NEW.tenor_days AND effective_epoch=NEW.effective_epoch)
+            BEGIN
+                INSERT INTO market_rate_curve_history_events(
+                    operation,nationality,benchmark_key,tenor_days,before_rate,after_rate,
+                    before_epoch,after_epoch,before_actor,after_actor,recorded_epoch)
+                SELECT 'replace',old.nationality,old.benchmark_key,old.tenor_days,
+                    old.annual_rate,NEW.annual_rate,old.effective_epoch,NEW.effective_epoch,
+                    old.changed_by,NEW.changed_by,(julianday('now')-2440587.5)*86400.0
+                FROM market_rate_curve_history old WHERE old.nationality=NEW.nationality
+                    AND old.benchmark_key=NEW.benchmark_key AND old.tenor_days=NEW.tenor_days
+                    AND old.effective_epoch=NEW.effective_epoch;
+            END""")
+        for operation, trigger_operation in (("INSERT", "insert"), ("UPDATE", "update"),
+                                             ("DELETE", "delete")):
+            before = "OLD" if operation != "INSERT" else None
+            after = "NEW" if operation != "DELETE" else None
+            before_identity = [f"{before}.{column}" if before else "NULL" for column in
+                               ("nationality", "benchmark_key", "tenor_days")]
+            after_identity = [f"{after}.{column}" if after else "NULL" for column in
+                              ("nationality", "benchmark_key", "tenor_days")]
+            before_values = [f"{before}.{column}" if before else "NULL" for column in
+                             ("annual_rate", "effective_epoch", "changed_by")]
+            after_values = [f"{after}.{column}" if after else "NULL" for column in
+                            ("annual_rate", "effective_epoch", "changed_by")]
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS
+                trg_market_curve_history_event_{trigger_operation}
+                AFTER {operation} ON market_rate_curve_history BEGIN
+                INSERT INTO market_rate_curve_history_events(
+                    operation,nationality,benchmark_key,tenor_days,before_rate,after_rate,
+                    before_epoch,after_epoch,before_actor,after_actor,recorded_epoch
+                ) VALUES (
+                    '{trigger_operation}',COALESCE({after_identity[0]},{before_identity[0]}),
+                    COALESCE({after_identity[1]},{before_identity[1]}),
+                    COALESCE({after_identity[2]},{before_identity[2]}),
+                    {before_values[0]},{after_values[0]},
+                    {before_values[1]},{after_values[1]},
+                    {before_values[2]},{after_values[2]},
+                    (julianday('now')-2440587.5)*86400.0
+                ); END""")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS
+                trg_market_curve_history_events_immutable_{operation.lower()}
+                BEFORE {operation} ON market_rate_curve_history_events
+                BEGIN SELECT RAISE(ABORT,'market rate curve history events are append-only'); END""")
         self.execute('DROP TRIGGER IF EXISTS "trg_country_market_curve_insert"')
         self.execute('DROP TRIGGER IF EXISTS "trg_country_market_curve_policy_move"')
         self.execute("""CREATE TRIGGER trg_country_market_curve_insert

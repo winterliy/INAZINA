@@ -933,6 +933,39 @@ class RealisticRateSystemTests(unittest.TestCase):
                             conn, "낙원", now=invalid_epoch
                         )
 
+    def test_market_curve_history_replacements_and_deletes_leave_immutable_events(self):
+        first = self.rates.set_market_rate(
+            "낙원", "bank_bond", 365, 6, "admin", now=1_800_000_000
+        )
+        second = self.rates.set_market_rate(
+            "낙원", "bank_bond", 365, 7, "admin", now=1_800_000_000
+        )
+        self.assertTrue(first[0], first[1])
+        self.assertTrue(second[0], second[1])
+        replaced = self.db.currency.execute_one(
+            "SELECT event_id FROM market_rate_curve_history_events WHERE nationality='낙원' "
+            "AND benchmark_key='bank_bond' AND tenor_days=365 AND operation='replace' "
+            "AND before_rate=6 AND after_rate=7 ORDER BY event_id DESC LIMIT 1"
+        )
+        self.assertIsNotNone(replaced)
+        self.db.currency.execute(
+            "DELETE FROM market_rate_curve_history WHERE nationality='낙원' "
+            "AND benchmark_key='bank_bond' AND tenor_days=365 AND effective_epoch=1800000000"
+        )
+        deleted = self.db.currency.execute_one(
+            "SELECT event_id FROM market_rate_curve_history_events WHERE nationality='낙원' "
+            "AND benchmark_key='bank_bond' AND tenor_days=365 AND operation='delete' "
+            "AND before_rate=7 ORDER BY event_id DESC LIMIT 1"
+        )
+        self.assertIsNotNone(deleted)
+        for operation in ("UPDATE", "DELETE"):
+            with self.subTest(operation=operation):
+                sql = (f"UPDATE market_rate_curve_history_events SET after_rate=99 "
+                       f"WHERE event_id=?" if operation == "UPDATE" else
+                       "DELETE FROM market_rate_curve_history_events WHERE event_id=?")
+                with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+                    self.db.currency.execute(sql, (deleted[0],))
+
     def test_foreign_policy_rate_differential_increases_market_funding_pressure(self):
         domestic_rate = self.db.currency.execute_one(
             "SELECT base_rate FROM country_currencies WHERE nationality='낙원'"

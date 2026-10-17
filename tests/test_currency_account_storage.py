@@ -432,6 +432,17 @@ class LegacyCurrencySchemaMigrationTests(unittest.TestCase):
                     "INSERT INTO country_tax_rules(nationality,income_source,tax_percent,updated_by,updated_epoch) "
                     "VALUES ('낙원','lottery_winnings',12,'admin',1)"
                 )
+                db.currency.execute("""CREATE TRIGGER keep_rate_history_schema_marker
+                    BEFORE UPDATE ON country_rate_history
+                    BEGIN SELECT RAISE(ABORT,'schema marker must survive'); END""")
+                reopened_currency = CurrencyDB()
+                try:
+                    self.assertIsNotNone(db.currency.execute_one(
+                        "SELECT 1 FROM sqlite_master WHERE type='trigger' "
+                        "AND name='keep_rate_history_schema_marker'"
+                    ))
+                finally:
+                    reopened_currency.close()
             finally:
                 db.close()
         finally:

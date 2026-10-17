@@ -131,6 +131,11 @@ class WebApiTests(unittest.TestCase):
                     event_id INTEGER PRIMARY KEY AUTOINCREMENT,operation TEXT,nationality TEXT,
                     rate_key TEXT,before_percent REAL,after_percent REAL,before_epoch REAL,
                     after_epoch REAL,before_actor TEXT,after_actor TEXT,recorded_epoch REAL);
+                CREATE TABLE IF NOT EXISTS market_rate_curve_history_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,operation TEXT,nationality TEXT,
+                    benchmark_key TEXT,tenor_days INTEGER,before_rate REAL,after_rate REAL,
+                    before_epoch REAL,after_epoch REAL,before_actor TEXT,after_actor TEXT,
+                    recorded_epoch REAL);
                 CREATE TABLE country_tax_rules(nationality TEXT,income_source TEXT,tax_percent REAL,
                     updated_by TEXT,updated_epoch REAL);
                 CREATE TABLE country_macro_indicators(nationality TEXT,inflation_percent REAL,
@@ -147,6 +152,9 @@ class WebApiTests(unittest.TestCase):
                 INSERT INTO country_rate_history_events(operation,nationality,rate_key,
                     before_percent,after_percent,before_actor,after_actor,recorded_epoch)
                     VALUES ('update','낙원','base_rate',3,4,'admin-0','admin-1',321);
+                INSERT INTO market_rate_curve_history_events(operation,nationality,benchmark_key,
+                    tenor_days,before_rate,after_rate,before_actor,after_actor,recorded_epoch)
+                    VALUES ('replace','낙원','bank_bond',365,5,6,'sql','admin-1',322);
             """)
         country = next(item for item in server.admin_countries() if item["nationality"] == "낙원")
         self.assertEqual(country["taxRules"], [{
@@ -162,6 +170,12 @@ class WebApiTests(unittest.TestCase):
             "operation": "update", "rate_key": "base_rate", "before_percent": 3,
             "after_percent": 4, "before_actor": "admin-0", "after_actor": "admin-1",
             "before_epoch": None, "after_epoch": None, "recorded_epoch": 321.0,
+        }])
+        self.assertEqual(country["marketRateHistoryEvents"], [{
+            "operation": "replace", "benchmark_key": "bank_bond", "tenor_days": 365,
+            "before_rate": 5, "after_rate": 6, "before_actor": "sql",
+            "after_actor": "admin-1", "before_epoch": None, "after_epoch": None,
+            "recorded_epoch": 322.0,
         }])
 
     def test_macro_indicator_web_action_validates_and_audits_inputs(self):

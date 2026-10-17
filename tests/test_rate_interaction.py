@@ -165,13 +165,23 @@ class RateInteractionTests(unittest.TestCase):
             "AND before_percent=5 AND after_percent=6 ORDER BY event_id DESC LIMIT 1"
         )
         self.assertIsNotNone(event)
+        self.db.currency.execute(
+            "DELETE FROM country_rate_history WHERE nationality='낙원' "
+            "AND rate_key='base_rate' AND effective_epoch=10000"
+        )
+        deleted = self.db.currency.execute_one(
+            "SELECT event_id FROM country_rate_history_events WHERE nationality='낙원' "
+            "AND rate_key='base_rate' AND operation='delete' AND before_percent=6 "
+            "ORDER BY event_id DESC LIMIT 1"
+        )
+        self.assertIsNotNone(deleted)
         for operation in ("UPDATE", "DELETE"):
             with self.subTest(operation=operation):
                 sql = (f"{operation} country_rate_history_events "
                        f"SET after_percent=99 WHERE event_id=?" if operation == "UPDATE" else
                        "DELETE FROM country_rate_history_events WHERE event_id=?")
                 with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
-                    self.db.currency.execute(sql, (event[0],))
+                    self.db.currency.execute(sql, (deleted[0],))
 
     def test_floating_reset_must_align_with_interest_cycle(self):
         with self.assertRaisesRegex(sqlite3.IntegrityError, "재산정주기"):
