@@ -38,6 +38,32 @@ class ComplianceManager:
             (str(actor_id), str(action), json.dumps(payload, sort_keys=True), float(now)),
         )
 
+    @staticmethod
+    def require_transfer_eligibility(conn, user_id, *, now=None):
+        """Enforce an explicit KYC review before a customer sends a transfer.
+
+        Users without a KYC profile retain legacy simulator behavior. A recorded
+        profile must be verified, current, and not risk-restricted to send funds.
+        Receiving transfers remains possible.
+        """
+        when = float(time.time() if now is None else now)
+        if not math.isfinite(when):
+            raise ValueError("invalid_kyc_check_epoch")
+        profile = conn.execute(
+            "SELECT status,risk_tier,expires_epoch FROM kyc_profiles WHERE user_id=?",
+            (str(user_id),),
+        ).fetchone()
+        if not profile:
+            return True
+        expires = (float(profile["expires_epoch"])
+                   if profile["expires_epoch"] is not None else None)
+        if (profile["status"] != "verified"
+                or (expires is not None and (not math.isfinite(expires) or expires <= when))):
+            raise ValueError("KYC 확인이 완료되지 않았거나 만료되어 송금할 수 없습니다.")
+        if profile["risk_tier"] not in {"standard", "enhanced"}:
+            raise ValueError("제한 위험등급으로 설정되어 송금할 수 없습니다.")
+        return True
+
     @classmethod
     def set_kyc_status(cls, conn, user_id, actor_id, status, *, risk_tier="standard",
                        reason_code, expires_epoch=None, now=None):

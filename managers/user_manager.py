@@ -762,6 +762,22 @@ class UserManager:
         wallets = CurrencyManager(self.db).wallets(
             user_id, conn=conn, snapshot=currency_snapshot
         ) if user else []
+        kyc_row = conn.execute(
+            "SELECT status,risk_tier,expires_epoch FROM kyc_profiles WHERE user_id=?",
+            (str(user_id),),
+        ).fetchone() if user else None
+        kyc_profile = None
+        if kyc_row:
+            kyc_status = str(kyc_row["status"])
+            if (kyc_status == "verified" and kyc_row["expires_epoch"] is not None
+                    and float(kyc_row["expires_epoch"]) <= time.time()):
+                kyc_status = "expired"
+            kyc_profile = {
+                "status": kyc_status,
+                "risk_tier": str(kyc_row["risk_tier"]),
+                "expires_epoch": (float(kyc_row["expires_epoch"])
+                                  if kyc_row["expires_epoch"] is not None else None),
+            }
         home_cash_units = cash * SCALE
         foreign_cash_units = sum(
             int(row['value_home_units']) for row in wallets if row['is_foreign']
@@ -1063,6 +1079,7 @@ class UserManager:
             "nationality":nationality,
             "national_currency":national_currency,
             "wallets":wallets,
+            "kyc_profile":kyc_profile,
             "home_cash_units":home_cash_units,
             "foreign_cash_units":foreign_cash_units,
             "home_decimal_places":home_decimal_places,

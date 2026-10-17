@@ -14,12 +14,13 @@ type Instrument = { code: string; name: string; type: string; price: number; sta
 const WarningBadge = ({ warning }: { warning?: Warning }) => warning ? <span className={`warn-badge ${warning.level}`} title={warning.reason || warning.label}>{warning.label}</span> : null;
 type Wallet = { currency_code: string; balance_units: number; decimal_places?: number; is_foreign: boolean };
 type DepositInsuranceClaim = { claim_id: number; issuer: string; currency_code: string; decimal_places: number; covered_amount: number; uninsured_amount: number; resolved_epoch: number };
+type KycProfile = { status: "pending" | "verified" | "rejected" | "expired"; risk_tier: "standard" | "enhanced" | "restricted"; expires_epoch: number | null };
 type LoanSchedule = { schedule_id: number; installment_number: number; due_epoch: number; principal_due: number; interest_due: number; fee_due: number; principal_paid: number; interest_paid: number; fee_paid: number; amount_paid: number; status: string };
 type LoanRateReset = { old_rate: number; new_rate: number; scheduled_epoch: number; applied_epoch: number; benchmark_key: string; benchmark_tenor_days: number };
 type LoanScheduleView = { loan_id: number; product_code: string; quote_currency: string; decimal_places: number; outstanding_balance: number; status: string; collection_status: string; maturity_epoch: number | null; stage_cure_since_epoch: number | null; underwriting_dsr: number | null; underwriting_stress_dsr: number | null; underwriting_stress_shock_bps: number; underwriting_fx_stress_shock_percent: number; origination_pd_12m: number | null; current_ecl_stage: number | null; current_ecl_pd_12m: number | null; installments: LoanSchedule[]; rate_resets: LoanRateReset[] };
 type DividendPayment = { payment_id: number; asset_code: string; dividend_kind: "regular" | "special"; quantity: number; gross_amount: number; tax_amount: number; net_amount_units: number; quote_currency: string; decimal_places: number; created_epoch: number };
 type Holding = { code: string; name: string; qty: number; price: number; value: number; type: string | null; quote_currency?: string; sell_reserved_qty?: number; is_collateral?: boolean };
-type Portfolio = { cash: number; grand_total: number; net_worth: number; loan_total: number; order_reserved_total: number; stock_total: number; account_total: number; bond_total?: number; national_currency?: string; nationality?: string; home_rate_nwx?: number; home_decimal_places?: number; wallets?: Wallet[]; stocks: Holding[]; accounts?: Record<string, unknown>[]; deposit_insurance_claims?: DepositInsuranceClaim[] };
+type Portfolio = { cash: number; grand_total: number; net_worth: number; loan_total: number; order_reserved_total: number; stock_total: number; account_total: number; bond_total?: number; national_currency?: string; nationality?: string; home_rate_nwx?: number; home_decimal_places?: number; wallets?: Wallet[]; stocks: Holding[]; accounts?: Record<string, unknown>[]; deposit_insurance_claims?: DepositInsuranceClaim[]; kyc_profile?: KycProfile | null };
 type Order = { order_id: number; asset_code: string; side: string; limit_price: number; quantity: number; remaining_quantity: number; filled_quantity: number; status: string; quote_currency?: string };
 type Book = { bids: { limit_price: number; quantity: number; order_count: number }[]; asks: { limit_price: number; quantity: number; order_count: number }[] };
 
@@ -31,6 +32,8 @@ const STATUS: Record<string, string> = { open: "미체결", partial: "부분 체
 const UNIT_SCALE = 1_000_000;
 const money = (value: number, digits = 0) => new Intl.NumberFormat("ko-KR", { maximumFractionDigits: digits }).format(value || 0);
 const date = (epoch: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "short" }).format(epoch * 1000);
+const KYC_STATUS: Record<KycProfile["status"], string> = { pending: "확인 대기", verified: "확인 완료", rejected: "확인 거절", expired: "만료" };
+const KYC_RISK: Record<KycProfile["risk_tier"], string> = { standard: "일반", enhanced: "강화 심사", restricted: "송금 제한" };
 const fundCategoryName: Record<string, string> = { equity: "주식형", bond: "채권형", mixed: "혼합형", other: "기타형" };
 const instrumentType = (item: Instrument) => item.type === "depositary_receipt" ? "주식예탁증서 (DR)" : fundCategoryName[item.fund_category || ""] || item.type;
 // Search tabs shown while the search box is empty. "추천" is the starting tab.
@@ -351,6 +354,7 @@ export default function App() {
           <span>내 지갑 · {portfolio?.nationality ?? user.nationality} · {homeCurrency}</span>
           <strong>{money(portfolio?.cash ?? user.cash, homeDigits)} <small>{homeCurrency}</small></strong>
           <p>총자산 {money(inHome(portfolio?.grand_total ?? 0), homeDigits)} · 순자산 {money(inHome(portfolio?.net_worth ?? 0), homeDigits)} {homeCurrency}</p>
+          {portfolio?.kyc_profile && <p>KYC · {KYC_STATUS[portfolio.kyc_profile.status]} · {KYC_RISK[portfolio.kyc_profile.risk_tier]}{portfolio.kyc_profile.expires_epoch ? ` · 만료 ${date(portfolio.kyc_profile.expires_epoch)}` : ""}</p>}
         </section>
         <div className="wallet-actions">
           <button onClick={() => setCommandsOpen("송금")}>송금</button>

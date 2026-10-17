@@ -131,6 +131,50 @@ class CurrencyHomeTests(unittest.TestCase):
         sender_alerts=[r for r in alerts if r['user_id']=='citizen']
         self.assertEqual(len(sender_alerts),3)
 
+    def test_explicit_kyc_review_gates_outgoing_transfers_but_not_receiving(self):
+        cmd=self.configure()
+        cmd.execute('admin','기본소득','미국 100')
+        with self.db.atomic() as conn:
+            ComplianceManager.set_kyc_status(
+                conn,'citizen','admin','pending',reason_code='review_started'
+            )
+        self.assertEqual(
+            self.bot.user_mgr.get_total_assets('citizen',settle=False)['kyc_profile']['status'],
+            'pending',
+        )
+        with self.assertRaisesRegex(ValueError,'KYC 확인'):
+            self.bot.currency_mgr.transfer('citizen','admin','30')
+        received=self.bot.currency_mgr.transfer('admin','citizen','30')
+        self.assertIn('30 NWX →',received)
+        with self.db.atomic() as conn:
+            ComplianceManager.set_kyc_status(
+                conn,'citizen','admin','verified',reason_code='requirements_met'
+            )
+        result=self.bot.currency_mgr.transfer('citizen','admin','30')
+        self.assertIn('30 AAA →',result)
+        self.db.currency.execute(
+            "UPDATE kyc_profiles SET expires_epoch=0 WHERE user_id='citizen'"
+        )
+        self.assertEqual(
+            self.bot.user_mgr.get_total_assets('citizen',settle=False)['kyc_profile']['status'],
+            'expired',
+        )
+        with self.assertRaisesRegex(ValueError,'KYC 확인'):
+            self.bot.currency_mgr.transfer('citizen','admin','30')
+        with self.db.atomic() as conn:
+            ComplianceManager.set_kyc_status(
+                conn,'citizen','admin','verified',risk_tier='restricted',
+                reason_code='risk_escalation'
+            )
+        with self.assertRaisesRegex(ValueError,'제한 위험등급'):
+            self.bot.currency_mgr.transfer('citizen','admin','30')
+        with self.db.atomic() as conn:
+            ComplianceManager.set_kyc_status(
+                conn,'citizen','admin','verified',risk_tier='enhanced',
+                reason_code='periodic_review'
+            )
+        self.assertIn('30 AAA →',self.bot.currency_mgr.transfer('citizen','admin','30'))
+
     def test_migration_is_idempotent_and_all_product_denominations_present(self):
         self.configure();before=self.db.users.get_user('citizen')['cash']
         fx=CurrencyDB();fx.close()

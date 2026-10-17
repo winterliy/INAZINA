@@ -290,6 +290,9 @@ class CurrencyExchangeManager:
         source_account = str(source_account or '__wallet__').strip()
         requested_units = amount_units(amount)
         from managers.user_manager import UserManager
+        from managers.compliance_manager import ComplianceManager
+        with self.db.readonly() as conn:
+            ComplianceManager.require_transfer_eligibility(conn, sender)
         interest_error = UserManager(self.db)._settle_user_interest(sender)
         if interest_error:
             raise ValueError(interest_error)
@@ -301,6 +304,7 @@ class CurrencyExchangeManager:
         now = time.time()
         with self.db.atomic() as conn:
             self._user(conn,sender)
+            ComplianceManager.require_transfer_eligibility(conn, sender, now=now)
             def endpoint(number,owner=None):
                 if number=='__wallet__' and owner is not None:
                     return ('users','cash','user_id',owner,owner,CurrencyManager.home(conn,owner),SCALE)
