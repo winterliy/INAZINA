@@ -40,6 +40,25 @@ class FinancialTests(unittest.TestCase):
             with self.subTest(operation='process_due',epoch=epoch), self.assertRaises(ValueError):
                 self.fin.process_due(now=epoch)
 
+    def test_invalid_internal_accounting_epochs_precede_balance_reads_and_writes(self):
+        self.setup_company()
+        invalid_epochs=(-1,float('nan'),float('inf'),1e300,True,'invalid')
+        with self.db.atomic() as conn:
+            for epoch in invalid_epochs:
+                for operation in (
+                    lambda: self.fin.merge(conn,'CO','OTHER',epoch),
+                    lambda: self.fin.liquidate(conn,'CO',epoch),
+                    lambda: self.fin.amortize_bond(conn,'CO','CB',epoch),
+                    lambda: self.fin.record_shares(conn,'CO',epoch),
+                    lambda: self.fin.balances(None,'CO',epoch),
+                    lambda: self.fin.eps(None,'CO',epoch,100,0,0),
+                    lambda: self.fin.eps(None,'CO',0,epoch,0,0),
+                ):
+                    with self.subTest(epoch=epoch,operation=operation), self.assertRaises(ValueError):
+                        operation()
+        self.assertEqual(self.db.financial.execute_one('SELECT COUNT(*) FROM financial_entries')[0],0)
+        self.assertEqual(self.db.financial.execute_one('SELECT COUNT(*) FROM financial_share_history')[0],0)
+
     def test_opening_preferred_and_reports_have_no_invented_profit(self):
         self.setup_company()
         self.db.companies.create_company('PR','우선주','게임',1000,10,100,'admin','INZ')

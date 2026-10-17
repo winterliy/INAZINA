@@ -621,6 +621,18 @@ class RealisticRateSystemTests(unittest.TestCase):
         )
         self.assertEqual(act365[0][2], 493)
         self.assertEqual(act360[0][2], 500)
+        for epoch in (-1, float("nan"), float("inf"), 1e300, True, "invalid"):
+            with self.subTest(start_epoch=epoch), self.assertRaisesRegex(
+                ValueError, "invalid_loan_cashflow_start_epoch"
+            ):
+                BankManager._loan_cashflows(10_000, 10, 180, 180, "bullet", start_epoch=epoch)
+            with self.subTest(due_epoch=epoch), self.assertRaisesRegex(
+                ValueError, "invalid_loan_cashflow_due_epoch"
+            ):
+                BankManager._loan_cashflows(
+                    10_000, 10, 180, 180, "bullet", start_epoch=start,
+                    due_epochs=[epoch],
+                )
 
     def test_business_day_calendar_rolls_weekends_and_holidays(self):
         saturday = datetime(2026, 1, 3, 12, tzinfo=timezone.utc).timestamp()

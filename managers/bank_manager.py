@@ -33,12 +33,19 @@ class BankManager:
         mode = str(amortization_type or "legacy")
         if mode == "legacy":
             return []
-        start = float(time.time() if start_epoch is None else start_epoch)
+        start = RateManager._validated_epoch(
+            start_epoch, "invalid_loan_cashflow_start_epoch"
+        )
         if due_epochs is None:
             due_days = list(range(frequency, days, frequency)) + [days]
             due_times = [start+day*86400 for day in due_days]
         else:
-            due_times = sorted(float(value) for value in due_epochs if float(value) > start)
+            due_times = sorted(
+                value for value in (
+                    RateManager._validated_epoch(item, "invalid_loan_cashflow_due_epoch")
+                    for item in due_epochs
+                ) if value > start
+            )
             due_days = [(value-start)/86400 for value in due_times]
         if not due_times:
             return []

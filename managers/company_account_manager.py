@@ -11,6 +11,8 @@ offerings and these trades all move the same money. Changes that bypass the
 corporate-action journal are booked to the company's financial statements by
 :meth:`CompanyAccounts.reconcile`.
 """
+from functions.time_utils import MAX_SUPPORTED_EPOCH
+
 PREFIX = "company:"
 
 
@@ -116,7 +118,7 @@ class CompanyAccounts:
             return 0
         account = conn.execute("SELECT user_id FROM company_accounts WHERE company_code=?", (issuer,)).fetchone()
         scale = 10 ** int(entity["decimal_places"])
-        books = FinancialManager.balances(conn, issuer, 2**62)
+        books = FinancialManager.balances(conn, issuer, MAX_SUPPORTED_EPOCH)
         live_cash = FinancialManager.cash_state(conn, issuer)[0] * scale
         held = cls.positions(conn, account[0], issuer) if account else {"investments": 0, "treasury": 0, "debt": 0}
         logs = conn.execute("SELECT * FROM company_income_log WHERE company_code=? AND booked=0", (issuer,)).fetchall()

@@ -171,6 +171,7 @@ class FinancialManager:
 
     @staticmethod
     def balances(conn, code, before):
+        before = validate_epoch(before)
         values = {r['account']:int(r['amount']) for r in conn.execute('''SELECT l.account,SUM(l.amount) amount
             FROM financial_lines l JOIN financial_entries e ON e.entry_id=l.entry_id
             WHERE e.company_code=? AND e.status='posted' AND e.recorded_epoch<? GROUP BY l.account''', (code,before))}
@@ -525,6 +526,7 @@ class FinancialManager:
 
     @classmethod
     def merge(cls, conn, surviving, absorbed, now):
+        now = int(validate_epoch(now))
         b=cls.balances(conn,absorbed,now+1)
         # Prior profit transfers into retained earnings, not the survivor's current revenue.
         transferred={k:v for k,v in b.items() if ACCOUNTS[k][1] not in {'revenue','expense'}}
@@ -537,6 +539,7 @@ class FinancialManager:
 
     @classmethod
     def liquidate(cls, conn, issuer, now):
+        now = int(validate_epoch(now))
         b=cls.balances(conn,issuer,now+1)
         terminal={k:-v for k,v in b.items() if ACCOUNTS[k][1] not in {'revenue','expense'}}
         terminal['adjustment']=terminal.get('adjustment',0)-sum(terminal.values())
@@ -550,6 +553,7 @@ class FinancialManager:
 
     @classmethod
     def amortize_bond(cls,conn,code,product,now):
+        now = int(validate_epoch(now))
         row=conn.execute('SELECT * FROM financial_bond_basis WHERE product_code=?',(product,)).fetchone()
         if row and row['discount_units']:
             cls.post(conn,row['company_code'],'amortize:'+product,'회사채 발행차금 만기 상각',
@@ -609,6 +613,7 @@ class FinancialManager:
 
     @staticmethod
     def record_shares(conn,code,now):
+        now = int(validate_epoch(now))
         from database.user_db import TREASURY_USER_ID
         shares=conn.execute('''SELECT
             COALESCE((SELECT SUM(quantity) FROM user_assets WHERE asset_code=? AND user_id<>?),0)
@@ -620,7 +625,11 @@ class FinancialManager:
 
     @classmethod
     def eps(cls,conn,code,start,end,profit,opened):
-        if opened>start:return None,None
+        start = validate_epoch(start)
+        end = validate_epoch(end)
+        if opened is not None:
+            opened = validate_epoch(opened)
+        if opened is None or opened>start:return None,None
         until=min(end,int(time.time()))
         if until<=start:return None,None
         prior=conn.execute('SELECT quantity_milli FROM financial_share_history WHERE company_code=? AND recorded_epoch<=? ORDER BY recorded_epoch DESC LIMIT 1',(code,start)).fetchone()
