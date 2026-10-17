@@ -1,8 +1,9 @@
 import json
 import tempfile
 import unittest
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from database.db_manager import DBManager
@@ -116,15 +117,72 @@ class WebApiTests(unittest.TestCase):
                     adjustment REAL,updated_epoch REAL);
                 CREATE TABLE country_tax_rules(nationality TEXT,income_source TEXT,tax_percent REAL,
                     updated_by TEXT,updated_epoch REAL);
+                CREATE TABLE country_macro_indicators(nationality TEXT,inflation_percent REAL,
+                    real_gdp_growth_percent REAL,unemployment_percent REAL,fiscal_debt_percent REAL,
+                    updated_by TEXT,updated_epoch REAL);
                 INSERT INTO country_currencies(nationality,currency_code) VALUES ('낙원','NWX');
                 INSERT INTO currencies(code,name,status) VALUES ('NWX','나쿠','active');
                 INSERT INTO country_tax_rules VALUES ('낙원','lottery_winnings',12.5,'admin-1',123);
+                INSERT INTO country_macro_indicators VALUES ('낙원',3,1.5,4,55,'admin-1',120);
             """)
         country = server.admin_countries()[0]
         self.assertEqual(country["taxRules"], [{
             "income_source": "lottery_winnings", "tax_percent": 12.5,
             "updated_by": "admin-1", "updated_epoch": 123.0,
         }])
+        self.assertEqual(country["macroIndicators"]["fiscal_debt_percent"], 55)
+
+    def test_macro_indicator_web_action_validates_and_audits_inputs(self):
+        with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
+            connection.execute("""CREATE TABLE country_macro_indicators (
+                nationality TEXT PRIMARY KEY,inflation_percent REAL,real_gdp_growth_percent REAL,
+                unemployment_percent REAL,fiscal_debt_percent REAL,updated_by TEXT,updated_epoch REAL)""")
+            connection.execute(
+                "INSERT INTO country_macro_indicators VALUES ('낙원',2,2,5,60,'system',0)"
+            )
+
+        @contextmanager
+        def atomic():
+            with closing(server.sqlite3.connect(server.DATABASE)) as connection:
+                with connection:
+                    yield connection
+
+        class Admin:
+            @staticmethod
+            def require(actor, _connection):
+                if actor != "admin-1":
+                    raise PermissionError("admin required")
+
+            @staticmethod
+            def _audit(connection, actor, action, payload):
+                connection.execute(
+                    "INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) "
+                    "VALUES (?,?,?,?)", (actor, action, json.dumps(payload), 10),
+                )
+
+        bot = SimpleNamespace(
+            db=SimpleNamespace(atomic=atomic), admin_control=Admin(),
+        )
+        with patch("web_api.server.domain", return_value=SimpleNamespace(bot=bot)):
+            server.admin_country_action("admin-1", "낙원", {
+                "action": "macro_indicators", "inflationPercent": 8,
+                "realGdpGrowthPercent": -2, "unemploymentPercent": 10,
+                "fiscalDebtPercent": 120,
+            })
+            with self.assertRaises(ValueError):
+                server.admin_country_action("admin-1", "낙원", {
+                    "action": "macro_indicators", "inflationPercent": -101,
+                    "realGdpGrowthPercent": 2, "unemploymentPercent": 5,
+                    "fiscalDebtPercent": 60,
+                })
+        saved = self.execute(
+            "SELECT * FROM country_macro_indicators WHERE nationality='낙원'"
+        )[0]
+        self.assertEqual(saved[1:5], (8, -2, 10, 120))
+        audit = self.execute(
+            "SELECT action,payload FROM admin_audit WHERE action='country.macro_indicators'"
+        )[0]
+        self.assertEqual(audit[0], "country.macro_indicators")
 
     def test_market_instruments_include_bond_rate_risk_metrics(self):
         with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:

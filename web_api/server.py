@@ -2260,6 +2260,11 @@ def admin_countries():
             market_rate_pressure = [dict(item) for item in connection.execute(
                 "SELECT benchmark_key,adjustment,updated_epoch FROM market_rate_pressure "
                 "WHERE nationality=? ORDER BY benchmark_key", (nationality,))]
+            macro_indicators = connection.execute(
+                "SELECT inflation_percent,real_gdp_growth_percent,unemployment_percent,"
+                "fiscal_debt_percent,updated_by,updated_epoch "
+                "FROM country_macro_indicators WHERE nationality=?", (nationality,)
+            ).fetchone() if _table_exists(connection, "country_macro_indicators") else None
             tax_rules = [dict(item) for item in connection.execute(
                 "SELECT income_source,tax_percent,updated_by,updated_epoch FROM country_tax_rules "
                 "WHERE nationality=? ORDER BY income_source", (nationality,))] \
@@ -2272,6 +2277,7 @@ def admin_countries():
                            "treasuryCash": treasury["cash"] if treasury else None,
                            "citizens": int(citizens), "guilds": guilds, "exchanges": exchanges,
                            "marketRates": market_rates, "marketRatePressure": market_rate_pressure,
+                           "macroIndicators": dict(macro_indicators) if macro_indicators else {},
                            "taxRules": tax_rules,
                            "account": dict(account) if account else None})
     return result
@@ -2312,6 +2318,39 @@ def admin_country_action(actor, nationality, payload):
         result = AdminCommandsManager(bot).execute(
             actor, "시장금리수정", " ".join(quote(value) for value in (nationality, key, tenor, annual_rate)),
         )
+    elif action == "macro_indicators":
+        import math
+        bounds = {
+            "inflationPercent": (-100, 1000),
+            "realGdpGrowthPercent": (-100, 100),
+            "unemploymentPercent": (0, 100),
+            "fiscalDebtPercent": (0, 1000),
+        }
+        values = {}
+        for key, (low, high) in bounds.items():
+            try:
+                value = float(payload[key])
+            except (KeyError, TypeError, ValueError):
+                raise ValueError("거시 지표 네 항목을 모두 숫자로 입력해주세요.") from None
+            if not math.isfinite(value) or not low <= value <= high:
+                raise ValueError(f"{key} 범위가 올바르지 않습니다: {low}~{high}")
+            values[key] = value
+        with bot.db.atomic() as connection:
+            bot.admin_control.require(actor, connection)
+            cursor = connection.execute(
+                "UPDATE country_macro_indicators SET inflation_percent=?,"
+                "real_gdp_growth_percent=?,unemployment_percent=?,fiscal_debt_percent=?,"
+                "updated_by=?,updated_epoch=? WHERE nationality=?",
+                (values["inflationPercent"], values["realGdpGrowthPercent"],
+                 values["unemploymentPercent"], values["fiscalDebtPercent"],
+                 str(actor), time.time(), nationality),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("국가의 거시 지표 행을 찾을 수 없습니다.")
+            bot.admin_control._audit(connection, actor, "country.macro_indicators", {
+                "nationality": nationality, **values,
+            })
+        result = f"✅ {nationality} 거시 지표를 저장했습니다. 시장금리 재산정에 반영됩니다."
     elif action == "treasury":
         from functions.admin_prefix import ActionModal
         from database.db_manager import DBManager

@@ -432,6 +432,21 @@ class RateManager:
         funding_ratio = loans/max(1.0, deposits_value+equity)
         funding_target = max(-2.0, min(10.0, (funding_ratio-.90)*.75))
         default_ratio = float(loan_row["bad"] or 0)/max(1.0, loans)
+        macro = conn.execute(
+            "SELECT inflation_percent,real_gdp_growth_percent,unemployment_percent,"
+            "fiscal_debt_percent FROM country_macro_indicators WHERE nationality=?",
+            (country,),
+        ).fetchone()
+        inflation_gap = float(macro["inflation_percent"] if macro else 2)-2
+        growth_gap = float(macro["real_gdp_growth_percent"] if macro else 2)-2
+        unemployment_gap = float(macro["unemployment_percent"] if macro else 5)-5
+        debt_gap = float(macro["fiscal_debt_percent"] if macro else 60)-60
+        funding_macro_premium = max(-5.0, min(
+            5.0, inflation_gap*.20-growth_gap*.10+unemployment_gap*.15
+        ))
+        sovereign_macro_premium = max(-5.0, min(
+            5.0, inflation_gap*.15-growth_gap*.05+debt_gap*.025
+        ))
         institution_pressure = 0.0
         pressure_weight = 0.0
         for institution in conn.execute(
@@ -465,13 +480,16 @@ class RateManager:
         )
         bank_bond_target = max(-2.0, min(
             15.0, funding_target+default_ratio*5.0+balance_sheet_pressure
+            + funding_macro_premium
         ))
         debt_demand = float(treasury["sold"] or 0)/max(1.0, float(treasury["total"] or 0))
         # A well-covered issue indicates stronger demand and therefore lower
         # required yield; a poorly covered issue adds an issuance premium.
-        treasury_target = max(-2.0, min(5.0, (.50-debt_demand)))
+        treasury_target = max(-2.0, min(
+            5.0, (.50-debt_demand)+sovereign_macro_premium
+        ))
         targets = {
-            "funding": funding_target,
+            "funding": funding_target+funding_macro_premium,
             "bank_bond": bank_bond_target,
             "treasury": treasury_target,
         }

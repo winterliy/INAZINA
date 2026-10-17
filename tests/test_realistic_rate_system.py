@@ -754,6 +754,31 @@ class RealisticRateSystemTests(unittest.TestCase):
             "WHERE nationality='낙원' AND benchmark_key='bank_bond'"
         ))
 
+    def test_macro_indicators_move_market_curves_without_changing_policy_rate(self):
+        before = self.db.currency.execute_one(
+            "SELECT base_rate FROM country_currencies WHERE nationality='낙원'"
+        )["base_rate"]
+        self.db.currency.execute(
+            "UPDATE country_macro_indicators SET inflation_percent=10,"
+            "real_gdp_growth_percent=-3,unemployment_percent=20,fiscal_debt_percent=160 "
+            "WHERE nationality='낙원'"
+        )
+        with self.db.atomic() as conn:
+            RateManager.refresh_market_pressure(conn, "낙원", now=1_800_000_000)
+        pressures = {
+            row["benchmark_key"]: row["adjustment"]
+            for row in self.db.currency.execute(
+                "SELECT benchmark_key,adjustment FROM market_rate_pressure "
+                "WHERE nationality='낙원'"
+            )
+        }
+        self.assertGreater(pressures["funding"], 0)
+        self.assertGreater(pressures["bank_bond"], 0)
+        self.assertGreater(pressures["treasury"], 0)
+        self.assertEqual(self.db.currency.execute_one(
+            "SELECT base_rate FROM country_currencies WHERE nationality='낙원'"
+        )["base_rate"], before)
+
     def test_risk_weighted_assets_use_collateral_credit_state_and_default_bands(self):
         self.db.products.execute(
             "INSERT INTO liability(product_code,name,interest_rate,loan_limit,maturity_days,"
