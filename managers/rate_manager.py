@@ -1058,9 +1058,16 @@ class RateManager:
             rows = []
             for name in bucket_names:
                 values = buckets[name]
-                gap = values["inflows"] - values["outflows"]
-                cumulative += gap
-                rows.append({"bucket": name, **values, "net_gap": gap,
+                # These reports are denominated in contract currency.  Round
+                # each displayed bucket and derive its gaps from those rounded
+                # values so fractional legacy/REAL rows cannot leak sub-unit
+                # amounts into a zero- or two-decimal currency report.
+                inflows = round_currency(conn, values["inflows"], currency)
+                outflows = round_currency(conn, values["outflows"], currency)
+                gap = round_currency(conn, inflows - outflows, currency)
+                cumulative = round_currency(conn, cumulative + gap, currency)
+                rows.append({"bucket": name, "inflows": inflows,
+                             "outflows": outflows, "net_gap": gap,
                              "cumulative_gap": cumulative})
             immediate = buckets["1d"]
             runoff_stress = []

@@ -6,6 +6,7 @@ from datetime import datetime
 
 from functions.price_chart import _Canvas
 from functions.technical_indicators import build_candles, candle_interval, calculate_indicators, KST
+from functions.time_utils import validate_epoch
 
 
 def render_chart(points, period_seconds, current_price=None, width=960, height=500,
@@ -14,11 +15,19 @@ def render_chart(points, period_seconds, current_price=None, width=960, height=5
                  price_candles=None):
     background, grid, text = (11, 18, 32), (38, 52, 73), (166, 181, 201)
     rising, falling = (239, 68, 68), (59, 130, 246)
-    end = int(time.time() if end_epoch is None else end_epoch)
+    end = int(validate_epoch(time.time() if end_epoch is None else end_epoch))
     start = end - int(period_seconds)
     upper = tuple(("sma",) if upper_indicators is None else upper_indicators)
     lower = tuple(("volume",) if lower_indicators is None else lower_indicators)
-    points = [(int(t), int(float(p) + .5) if integer_prices else float(p)) for t, p in points]
+    valid_points = []
+    for timestamp, price in points or ():
+        try:
+            timestamp = int(validate_epoch(timestamp))
+            price = int(float(price) + .5) if integer_prices else float(price)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        valid_points.append((timestamp, price))
+    points = valid_points
     if not points and current_price is not None:
         points = [(end, float(current_price))]
     interval = int(candle_seconds) if candle_seconds is not None else candle_interval(period_seconds)

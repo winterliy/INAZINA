@@ -878,6 +878,26 @@ class IndicatorTests(unittest.TestCase):
         self.assertEqual(candles[0], dict(time=0, open=10, high=12, low=8, close=11, volume=12))
         self.assertEqual(candles[1]["volume"], 9)
 
+    def test_candle_builder_ignores_invalid_epoch_points_and_volumes(self):
+        candles = build_candles(
+            [(0, 10), (-1, 50), (253402300800, 60), (float('nan'), 70), (60, 20)],
+            [(0, 2), (-1, 100), (253402300800, 100), (60, float('inf'))], 60,
+        )
+        self.assertEqual(candles, [
+            dict(time=0, open=10, high=10, low=10, close=10, volume=2),
+            dict(time=60, open=20, high=20, low=20, close=20, volume=0),
+        ])
+
+    def test_indicator_chart_filters_bad_points_and_rejects_bad_viewport_epoch(self):
+        from functions.indicator_chart import render_chart
+        image = render_chart(
+            [(-1, 100), (253402300800, 200), (0, 10)], 60,
+            upper_indicators=(), lower_indicators=(), end_epoch=60,
+        )
+        self.assertEqual(image[:8], b"\x89PNG\r\n\x1a\n")
+        with self.assertRaises(ValueError):
+            render_chart([], 60, end_epoch=1e300)
+
     def test_flat_prices_zero_volume_and_short_history_do_not_fabricate_vwap(self):
         for count in (1, 2, 5, 20, 160):
             candles = [dict(time=i * 60, open=100, high=100, low=100, close=100, volume=0) for i in range(count)]

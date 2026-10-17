@@ -108,6 +108,30 @@ class InstitutionMaturityGapTests(unittest.TestCase):
         self.assertEqual(usd_fx["netOpenPositionInBase"], 900)
         self.assertEqual([row["capitalImpact"] for row in usd_fx["shocks"]], [-180, -90, 90, 180])
 
+    def test_maturity_ladder_rounds_legacy_fractional_rows_to_native_currency(self):
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,decimal_places,reference_rate) "
+            "VALUES ('JPY','Japanese Yen',0,'1')"
+        )
+        self.db.products.execute(
+            "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"
+            "interest_cycle,compound_type,issuer,quote_currency) "
+            "VALUES ('SJPY','JPY deposit',1,0,30,86400,0,'Bank','JPY')"
+        )
+        self.db.accounts.execute(
+            "INSERT INTO accounts(account_number,user_id,product_code,balance,principal,"
+            "account_type,quote_currency,balance_units,created_at,resolution_status) "
+            "VALUES ('AJPY','u1','SJPY',10.6,10.6,'saving','JPY',0,datetime(?,'unixepoch'),'active')",
+            (self.now,),
+        )
+        with self.db.readonly() as conn:
+            report = RateManager.institution_maturity_gap(conn, "Bank", now=self.now)
+        jpy = next(row for row in report["ladders"] if row["currency"] == "JPY")
+        self.assertEqual(jpy["decimalPlaces"], 0)
+        self.assertEqual(jpy["buckets"][2]["outflows"], 11)
+        self.assertEqual(jpy["buckets"][2]["net_gap"], -11)
+        self.assertEqual(jpy["buckets"][2]["cumulative_gap"], -11)
+
     def test_fixed_rate_duration_gap_estimates_parallel_eve_sensitivity(self):
         self.db.accounts.execute(
             "UPDATE accounts SET rate_type='fixed' WHERE account_number='A1'"

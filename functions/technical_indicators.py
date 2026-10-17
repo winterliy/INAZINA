@@ -33,9 +33,15 @@ def candle_interval(period):
 
 
 def build_candles(points, volumes, interval):
+    from functions.time_utils import validate_epoch
     buckets = {}
-    for epoch, price in sorted(points):
-        epoch, price = int(epoch), float(price)
+    valid_points = []
+    for epoch, price in points or ():
+        try:
+            valid_points.append((int(validate_epoch(epoch)), float(price)))
+        except (TypeError, ValueError, OverflowError):
+            continue
+    for epoch, price in sorted(valid_points):
         if not math.isfinite(price) or price < 0:
             continue
         bucket = epoch // interval * interval
@@ -47,9 +53,13 @@ def build_candles(points, volumes, interval):
             candle["low"] = min(candle["low"], price)
             candle["close"] = price
     for epoch, quantity in volumes or ():
-        bucket = int(epoch) // interval * interval
-        if bucket in buckets:
-            buckets[bucket]["volume"] += max(0, float(quantity))
+        try:
+            bucket = int(validate_epoch(epoch)) // interval * interval
+            quantity = float(quantity)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if bucket in buckets and math.isfinite(quantity):
+            buckets[bucket]["volume"] += max(0, quantity)
     return [buckets[key] for key in sorted(buckets)]
 
 
