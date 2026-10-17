@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,11 +36,31 @@ class RateGraphTests(unittest.TestCase):
         self.tempdir.cleanup()
 
     def history(self, key, rows):
+        self.db.system.execute("DROP TRIGGER IF EXISTS trg_rate_history_immutable_update")
+        self.db.system.execute("DROP TRIGGER IF EXISTS trg_rate_history_immutable_delete")
         self.db.system.execute("DELETE FROM rate_history WHERE rate_key = ?", (key,))
         for epoch, rate in rows:
             self.db.system.execute(
                 "INSERT INTO rate_history (rate_key, annual_percent, effective_epoch, changed_by) "
                 "VALUES (?, ?, ?, 'test')", (key, rate, epoch),
+            )
+        for operation in ("UPDATE", "DELETE"):
+            self.db.system.execute(f"""CREATE TRIGGER trg_rate_history_immutable_{operation.lower()}
+                BEFORE {operation} ON rate_history
+                BEGIN SELECT RAISE(ABORT,'rate history is append-only'); END""")
+
+    def test_policy_rate_history_is_append_only(self):
+        row = self.db.system.execute_one(
+            "SELECT history_id FROM rate_history WHERE rate_key='base_rate' LIMIT 1"
+        )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+            self.db.system.execute(
+                "UPDATE rate_history SET annual_percent=99 WHERE history_id=?",
+                (row["history_id"],),
+            )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+            self.db.system.execute(
+                "DELETE FROM rate_history WHERE history_id=?", (row["history_id"],)
             )
 
     def test_rate_chart_codes_and_names_resolve_without_confusing_asset_codes(self):

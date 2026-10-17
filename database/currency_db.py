@@ -491,17 +491,29 @@ class CurrencyDB(DBManager):
         self.execute("""CREATE TRIGGER trg_country_rate_history_insert
             AFTER INSERT ON country_currencies BEGIN
                 INSERT OR REPLACE INTO country_rate_history VALUES
-                    (NEW.nationality,'base_rate',NEW.base_rate,unixepoch(),'sql');
+                    (NEW.nationality,'base_rate',NEW.base_rate,
+                     MAX((julianday('now')-2440587.5)*86400.0,COALESCE((
+                         SELECT MAX(effective_epoch)+0.000001 FROM country_rate_history
+                         WHERE nationality=NEW.nationality AND rate_key='base_rate'),0)),'sql');
                 INSERT OR REPLACE INTO country_rate_history VALUES
-                    (NEW.nationality,'legal_max_rate',NEW.legal_max_rate,unixepoch(),'sql');
+                    (NEW.nationality,'legal_max_rate',NEW.legal_max_rate,
+                     MAX((julianday('now')-2440587.5)*86400.0,COALESCE((
+                         SELECT MAX(effective_epoch)+0.000001 FROM country_rate_history
+                         WHERE nationality=NEW.nationality AND rate_key='legal_max_rate'),0)),'sql');
             END""")
         self.execute("""CREATE TRIGGER trg_country_rate_history_update
             AFTER UPDATE OF base_rate,legal_max_rate ON country_currencies BEGIN
                 INSERT OR REPLACE INTO country_rate_history
-                    SELECT NEW.nationality,'base_rate',NEW.base_rate,unixepoch(),'sql'
+                    SELECT NEW.nationality,'base_rate',NEW.base_rate,
+                        MAX((julianday('now')-2440587.5)*86400.0,COALESCE((
+                            SELECT MAX(effective_epoch)+0.000001 FROM country_rate_history
+                            WHERE nationality=NEW.nationality AND rate_key='base_rate'),0)),'sql'
                     WHERE NEW.base_rate IS NOT OLD.base_rate;
                 INSERT OR REPLACE INTO country_rate_history
-                    SELECT NEW.nationality,'legal_max_rate',NEW.legal_max_rate,unixepoch(),'sql'
+                    SELECT NEW.nationality,'legal_max_rate',NEW.legal_max_rate,
+                        MAX((julianday('now')-2440587.5)*86400.0,COALESCE((
+                            SELECT MAX(effective_epoch)+0.000001 FROM country_rate_history
+                            WHERE nationality=NEW.nationality AND rate_key='legal_max_rate'),0)),'sql'
                     WHERE NEW.legal_max_rate IS NOT OLD.legal_max_rate;
             END""")
 

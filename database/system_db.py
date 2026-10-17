@@ -140,6 +140,10 @@ class SystemDB(DBManager):
                 "AND NOT EXISTS(SELECT 1 FROM rate_history WHERE rate_key=?)",
                 (key, key, key),
             )
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_rate_history_immutable_{operation.lower()}
+                BEFORE {operation} ON rate_history
+                BEGIN SELECT RAISE(ABORT,'rate history is append-only'); END""")
         self._init_gamble_triggers()
         self._init_rate_triggers()
         self.execute("""CREATE TABLE IF NOT EXISTS market_events (

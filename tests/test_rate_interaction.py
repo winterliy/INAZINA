@@ -136,6 +136,22 @@ class RateInteractionTests(unittest.TestCase):
         )
         self.assertEqual(history[0], 6)
 
+    def test_direct_policy_edits_in_same_second_keep_distinct_history(self):
+        self.db.currency.execute(
+            "UPDATE country_currencies SET base_rate=6 WHERE nationality='낙원'"
+        )
+        self.db.currency.execute(
+            "UPDATE country_currencies SET base_rate=7 WHERE nationality='낙원'"
+        )
+        rows = self.db.currency.execute(
+            "SELECT annual_percent,effective_epoch FROM country_rate_history "
+            "WHERE nationality='낙원' AND rate_key='base_rate' AND changed_by='sql' "
+            "ORDER BY effective_epoch DESC LIMIT 2"
+        )
+        self.assertEqual([row['annual_percent'] for row in rows], [7, 6])
+        self.assertEqual(int(rows[0]['effective_epoch']), int(rows[1]['effective_epoch']))
+        self.assertGreater(rows[0]['effective_epoch'], rows[1]['effective_epoch'])
+
     def test_floating_reset_must_align_with_interest_cycle(self):
         with self.assertRaisesRegex(sqlite3.IntegrityError, "재산정주기"):
             self.add_saving("BAD", floating=True, cycle=100_000)
