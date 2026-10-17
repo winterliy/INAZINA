@@ -774,7 +774,7 @@ class UserManager:
         account_details = []
         total_account_balance = 0
         account_rows = conn.execute(
-            "SELECT a.account_number,a.product_code,a.balance,a.account_type,"
+            "SELECT a.account_number,a.product_code,a.balance,a.account_type,a.quote_currency,"
             "a.resolution_status,a.insurance_paid,a.uninsured_claim,"
             "COALESCE(s.name,l.name) AS product_name "
             "FROM accounts a LEFT JOIN saving s ON s.product_code=a.product_code "
@@ -782,18 +782,50 @@ class UserManager:
             "WHERE a.user_id=? AND a.account_type<>'currency_saving'",
             (str(user_id),),
         ).fetchall()
+        account_total_home_units = 0
         for account in account_rows:
-            balance = int(round(account["balance"] or 0))
-            total_account_balance += balance
+            account_currency = str(account["quote_currency"] or national_currency)
+            account_places = currency_snapshot.precision(account_currency)
+            balance = round_money(account["balance"] or 0, account_places)
+            balance_units = int(Decimal(str(balance)) * SCALE)
+            converted_units = currency_snapshot.convert(
+                abs(balance_units), account_currency, national_currency
+            )
+            account_total_home_units += -converted_units if balance_units < 0 else converted_units
             product_name = account["product_name"] or account["product_code"]
             account_details.append({
                 "number": account["account_number"],
                 "product_name": (f"대출금 지급 · {product_name}"
                                  if account["account_type"] == "loan_payout" else product_name),
                 "balance": balance,
+                "currency_code": account_currency,
+                "decimal_places": account_places,
                 "resolution_status": account["resolution_status"],
-                "insurance_paid": int(account["insurance_paid"] or 0),
-                "uninsured_claim": int(account["uninsured_claim"] or 0),
+                "insurance_paid": round_money(account["insurance_paid"] or 0, account_places),
+                "uninsured_claim": round_money(account["uninsured_claim"] or 0, account_places),
+            })
+        total_account_balance = round_money(
+            Decimal(account_total_home_units) / Decimal(SCALE), home_decimal_places
+        )
+
+        deposit_insurance_claims = []
+        for claim in conn.execute(
+            "SELECT c.claim_id,c.issuer,c.account_number,c.covered_amount,"
+            "c.uninsured_amount,c.resolved_epoch,a.quote_currency "
+            "FROM deposit_insurance_claims c LEFT JOIN accounts a "
+            "ON a.account_number=c.account_number WHERE c.user_id=? "
+            "ORDER BY c.resolved_epoch DESC,c.claim_id DESC LIMIT 100",
+            (str(user_id),),
+        ).fetchall():
+            currency = str(claim["quote_currency"] or national_currency)
+            deposit_insurance_claims.append({
+                "claim_id": int(claim["claim_id"]),
+                "issuer": str(claim["issuer"]),
+                "currency_code": currency,
+                "decimal_places": currency_snapshot.precision(currency),
+                "covered_amount": float(claim["covered_amount"] or 0),
+                "uninsured_amount": float(claim["uninsured_amount"] or 0),
+                "resolved_epoch": float(claim["resolved_epoch"] or 0),
             })
 
         stock_details = []
@@ -1007,7 +1039,11 @@ class UserManager:
             currency_snapshot.convert(int(r['balance_units']),r['currency_code'],national_currency)
             for r in currency_accounts
         ) // SCALE
-        home_account_total_nwx = int(Decimal(total_account_balance)*Decimal(str(home_rate_nwx)))
+        home_account_total_nwx = currency_snapshot.convert(
+            abs(account_total_home_units), national_currency, 'NWX'
+        ) // SCALE
+        if account_total_home_units < 0:
+            home_account_total_nwx = -home_account_total_nwx
         els_positions=[]
         if getattr(self.db,'els',None) is not None:
             from managers.els_manager import ELSManager
@@ -1042,6 +1078,7 @@ class UserManager:
             "preferred_claim_total":preferred_claim_total,
             "cash": cash,
             "accounts": account_details,
+            "deposit_insurance_claims": deposit_insurance_claims,
             "account_total": total_account_balance,
             "stocks": stock_details,
             "stock_total": total_stock_value,

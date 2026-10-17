@@ -11,6 +11,7 @@ from database.user_db import TREASURY_USER_ID
 from managers.currency_exchange_manager import CurrencyExchangeManager
 from managers.currency_manager import CurrencyManager, SCALE
 from managers.bank_manager import BankManager
+from managers.user_manager import UserManager
 
 
 class CurrencyAccountStorageTests(unittest.TestCase):
@@ -106,6 +107,14 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         )
         self.assertEqual((account['quote_currency'],account['balance']),('USD',10))
         self.assertEqual(self.db.users.get_user('us-user')['cash'],990)
+        self.db.accounts.execute(
+            "UPDATE accounts SET balance=10.125 WHERE account_number=?", (account['account_number'],)
+        )
+        portfolio = UserManager(self.db).get_total_assets('us-user', settle=False)
+        self.assertEqual(portfolio['account_total'], 10.13)
+        self.assertEqual(portfolio['accounts'][0]['balance'], 10.13)
+        self.assertEqual(portfolio['accounts'][0]['currency_code'], 'USD')
+        self.assertEqual(portfolio['accounts'][0]['decimal_places'], 2)
 
     def test_transfer_to_own_foreign_account_uses_destination_currency_amount(self):
         manager = CurrencyExchangeManager(self.db)
@@ -197,6 +206,20 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             "WHERE user_id='us-user' ORDER BY transaction_id DESC LIMIT 1"
         )
         self.assertEqual(tuple(fx_record), ('EUR', 'USD'))
+        claims = UserManager(self.db).get_total_assets('us-user', settle=False)[
+            'deposit_insurance_claims'
+        ]
+        self.assertEqual(len(claims), 1)
+        self.assertEqual(claims[0]['currency_code'], 'EUR')
+        self.assertEqual(claims[0]['decimal_places'], 2)
+        self.assertEqual(claims[0]['covered_amount'], 1.87)
+        self.assertEqual(claims[0]['uninsured_amount'], 1.38)
+        self.assertEqual(
+            UserManager(self.db).get_total_assets('admin', settle=False)[
+                'deposit_insurance_claims'
+            ],
+            [],
+        )
 
 
 class LegacyCurrencySchemaMigrationTests(unittest.TestCase):
