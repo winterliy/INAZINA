@@ -1539,7 +1539,7 @@ def admin_compliance_overview(nationality=None):
                         "FROM credit_risk_scenarios")
         ecl_sql = ("SELECT e.assessment_id,e.loan_id,e.as_of_day,e.stage,e.pd_12m,e.lifetime_pd,e.lgd,"
                    "e.ead,e.expected_loss,e.discount_factor,e.quote_currency,e.scenario,"
-                   "e.effective_interest_rate,e.expected_loss_time_years,"
+                   "e.effective_interest_rate,e.expected_loss_time_years,e.macro_pd_multiplier,"
                    "e.calculated_epoch,u.nationality "
                    "FROM loan_ecl_assessments e JOIN loans l USING(loan_id) "
                    "JOIN users u ON u.user_id=l.user_id")

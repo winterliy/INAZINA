@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import tempfile
 import unittest
@@ -59,7 +60,7 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.assertEqual(count, 1)
         row = self.db.accounts.execute_one(
             "SELECT stage,pd_12m,lifetime_pd,lgd,ead,expected_loss,discount_factor,"
-            "effective_interest_rate,expected_loss_time_years,scenario "
+            "effective_interest_rate,expected_loss_time_years,macro_pd_multiplier,scenario "
             "FROM loan_ecl_assessments"
         )
         self.assertEqual(row["stage"], 3)
@@ -69,6 +70,7 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.assertAlmostEqual(row["discount_factor"], 1/(1.1**0.5))
         self.assertEqual(row["effective_interest_rate"], 10)
         self.assertEqual(row["expected_loss_time_years"], 0.5)
+        self.assertEqual(row["macro_pd_multiplier"], 1)
         self.assertLess(row["discount_factor"], 1)
         self.assertGreater(row["discount_factor"], 0)
         self.assertLess(row["expected_loss"], row["ead"] * row["lgd"])
@@ -132,7 +134,7 @@ class DefaultedLoanEclTests(unittest.TestCase):
             self.assertEqual(CreditRiskManager.assess_conn(conn, epoch), 1)
         row = self.db.accounts.execute_one(
             "SELECT stage,pd_12m,lifetime_pd,discount_factor,effective_interest_rate,"
-            "expected_loss_time_years FROM loan_ecl_assessments "
+            "expected_loss_time_years,macro_pd_multiplier FROM loan_ecl_assessments "
             "ORDER BY calculated_epoch DESC LIMIT 1"
         )
         years = 90/365
@@ -141,6 +143,35 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.assertAlmostEqual(row["discount_factor"], 1/(1.08**(years/2)))
         self.assertEqual(row["effective_interest_rate"], 8)
         self.assertAlmostEqual(row["expected_loss_time_years"], years/2)
+
+    def test_macro_downturn_increases_stage_two_pd_and_is_recorded(self):
+        epoch = 1_800_000_000
+        self.db.currency.execute(
+            "UPDATE credit_risk_scenarios SET pd_multiplier=1 WHERE nationality='낙원'"
+        )
+        self.db.accounts.execute(
+            "UPDATE loans SET status='active',collection_status='current',missed_payment_count=2,"
+            "maturity_epoch=?,contract_effective_rate=5 WHERE product_code='ECL3'",
+            (epoch+365*86400,),
+        )
+        with self.db.atomic() as conn:
+            self.assertEqual(CreditRiskManager.assess_conn(conn, epoch), 1)
+        self.db.currency.execute(
+            "UPDATE country_macro_indicators SET inflation_percent=10,"
+            "real_gdp_growth_percent=-3,unemployment_percent=20 WHERE nationality='낙원'"
+        )
+        with self.db.atomic() as conn:
+            self.assertEqual(CreditRiskManager.assess_conn(conn, epoch+86400), 1)
+        rows = self.db.accounts.execute(
+            "SELECT pd_12m,scenario,macro_pd_multiplier FROM loan_ecl_assessments ORDER BY as_of_day"
+        )
+        baseline_scenario = json.loads(rows[0]["scenario"])
+        stress_scenario = json.loads(rows[1]["scenario"])
+        self.assertGreater(rows[1]["pd_12m"], rows[0]["pd_12m"])
+        self.assertEqual(rows[0]["macro_pd_multiplier"], 1)
+        self.assertGreater(rows[1]["macro_pd_multiplier"], 1)
+        self.assertEqual(baseline_scenario[0]["macroPdMultiplier"], 1)
+        self.assertGreater(stress_scenario[0]["macroPdMultiplier"], 1)
 
     def test_legacy_assessment_migration_preserves_rows_and_uses_neutral_factor(self):
         self.db.accounts.execute(
@@ -158,16 +189,20 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.db.accounts.execute(
             "ALTER TABLE loan_ecl_assessments DROP COLUMN expected_loss_time_years"
         )
+        self.db.accounts.execute(
+            "ALTER TABLE loan_ecl_assessments DROP COLUMN macro_pd_multiplier"
+        )
         self.db.accounts._init_db()
         row = self.db.accounts.execute_one(
             "SELECT expected_loss,discount_factor,effective_interest_rate,"
-            "expected_loss_time_years FROM loan_ecl_assessments "
+            "expected_loss_time_years,macro_pd_multiplier FROM loan_ecl_assessments "
             "WHERE as_of_day='2026-01-01'"
         )
         self.assertEqual(row["expected_loss"], 500)
         self.assertEqual(row["discount_factor"], 1)
         self.assertEqual(row["effective_interest_rate"], 0)
         self.assertEqual(row["expected_loss_time_years"], 0)
+        self.assertEqual(row["macro_pd_multiplier"], 1)
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.accounts.execute(
                 "UPDATE loan_ecl_assessments SET discount_factor=0.95 "

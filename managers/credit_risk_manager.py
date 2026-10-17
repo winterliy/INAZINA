@@ -215,6 +215,19 @@ class CreditRiskManager:
                 loan["credit_score"], loan["underwriting_dti"], loan["underwriting_dsr"],
                 loan["missed_payment_count"], loan["current_ltv"], overdue,
             )
+            macro = conn.execute(
+                "SELECT inflation_percent,real_gdp_growth_percent,unemployment_percent "
+                "FROM country_macro_indicators WHERE nationality=?",
+                (str(loan["nationality"] or ""),),
+            ).fetchone()
+            inflation = float(macro["inflation_percent"] if macro else 2.0)
+            growth = float(macro["real_gdp_growth_percent"] if macro else 2.0)
+            unemployment = float(macro["unemployment_percent"] if macro else 5.0)
+            macro_pd_multiplier = cls._bounded(
+                1.0-.08*(growth-2.0)+.04*(unemployment-5.0)+.02*(inflation-2.0),
+                0.5, 2.5,
+            )
+            pd_12m = cls._bounded(pd_12m*macro_pd_multiplier, 0.0, 1.0)
             lgd = cls._lgd(conn, loan)
             term_days = max(1, int(loan["maturity_days"] or 365))
             remaining_days = max(1.0, term_days)
@@ -274,6 +287,7 @@ class CreditRiskManager:
                                          "weight": weight, "pd": scenario_pd,
                                          "lgd": scenario_lgd,
                                          "discountFactor": discount_factor,
+                                         "macroPdMultiplier": macro_pd_multiplier,
                                          "effectiveRatePercent": eir_percent,
                                          "expectedLossTimeYears": expected_loss_time})
             expected_loss = round_currency(
@@ -285,12 +299,13 @@ class CreditRiskManager:
                 "INSERT OR IGNORE INTO accounts.loan_ecl_assessments "
                 "(loan_id,as_of_day,stage,pd_12m,lifetime_pd,lgd,ead,expected_loss,"
                 "quote_currency,scenario,discount_factor,effective_interest_rate,"
-                "expected_loss_time_years,calculated_epoch) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "expected_loss_time_years,macro_pd_multiplier,calculated_epoch) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (loan["loan_id"], as_of_day, stage, pd_12m, lifetime_pd, lgd,
                  ead, expected_loss, loan["quote_currency"],
                  json.dumps(scenario_details, separators=(",", ":")),
-                 discount_factor, eir_percent, expected_loss_time, epoch),
+                 discount_factor, eir_percent, expected_loss_time,
+                 macro_pd_multiplier, epoch),
             )
             if cursor.rowcount != 1:
                 continue

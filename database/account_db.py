@@ -308,6 +308,7 @@ class AccountDB(DBManager):
             discount_factor REAL NOT NULL DEFAULT 1 CHECK(discount_factor > 0),
             effective_interest_rate REAL NOT NULL DEFAULT 0,
             expected_loss_time_years REAL NOT NULL DEFAULT 0 CHECK(expected_loss_time_years >= 0),
+            macro_pd_multiplier REAL NOT NULL DEFAULT 1 CHECK(macro_pd_multiplier BETWEEN 0.5 AND 2.5),
             calculated_epoch REAL NOT NULL,
             UNIQUE(loan_id,as_of_day)
         )""")
@@ -326,6 +327,11 @@ class AccountDB(DBManager):
             self.execute(
                 "ALTER TABLE loan_ecl_assessments ADD COLUMN expected_loss_time_years "
                 "REAL NOT NULL DEFAULT 0 CHECK(expected_loss_time_years >= 0)"
+            )
+        if "macro_pd_multiplier" not in ecl_columns:
+            self.execute(
+                "ALTER TABLE loan_ecl_assessments ADD COLUMN macro_pd_multiplier "
+                "REAL NOT NULL DEFAULT 1 CHECK(macro_pd_multiplier BETWEEN 0.5 AND 2.5)"
             )
         self.execute("CREATE INDEX IF NOT EXISTS idx_loan_ecl_day "
                      "ON loan_ecl_assessments(as_of_day,stage)")
