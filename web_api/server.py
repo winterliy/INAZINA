@@ -1402,6 +1402,9 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
         deposit_reconciliation = BankJournal.reconcile_customer_deposits(connection, issuer)
         loan_reconciliation = BankJournal.reconcile_loan_receivables(connection, issuer)
         ecl_allowance_reconciliation = BankJournal.reconcile_ecl_allowances(connection, issuer)
+        deposit_insurance_reconciliation = BankJournal.reconcile_deposit_insurance_claims(
+            connection, issuer,
+        )
         insurance_claims = [dict(row) for row in connection.execute(
             "SELECT c.user_id,c.account_number,a.quote_currency AS currency_code,"
             "c.covered_amount,c.uninsured_amount,c.resolved_epoch "
@@ -1491,6 +1494,14 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
                                                 row["decimal_places"])
             row["difference"] = money_text(Decimal(row["difference_units"]) / scale,
                                            row["decimal_places"])
+        for row in deposit_insurance_reconciliation:
+            scale = 10 ** row["decimal_places"]
+            row["claim_amount"] = money_text(Decimal(row["claim_units"]) / scale,
+                                             row["decimal_places"])
+            row["journal_amount"] = money_text(Decimal(row["journal_units"]) / scale,
+                                               row["decimal_places"])
+            row["difference"] = money_text(Decimal(row["difference_units"]) / scale,
+                                           row["decimal_places"])
         for row in insurance_claims:
             row["currency_code"] = str(row["currency_code"] or balance_sheet["base_currency"])
             places = currency_precision(connection, row["currency_code"])
@@ -1503,6 +1514,7 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
             "depositReconciliation": deposit_reconciliation,
             "loanReconciliation": loan_reconciliation,
             "eclAllowanceReconciliation": ecl_allowance_reconciliation,
+            "depositInsuranceReconciliation": deposit_insurance_reconciliation,
             "depositInsuranceClaims": insurance_claims,
             "maturityGap": maturity_gap,
             "liquidityStress": liquidity_stress, "rateStress": rate_stress,

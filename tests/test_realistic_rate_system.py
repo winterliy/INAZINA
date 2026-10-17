@@ -808,6 +808,14 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(len(report["depositInsuranceClaims"]), 2)
         self.assertEqual(sum(int(row["covered_amount_text"]) for row in report["depositInsuranceClaims"]), 600)
         self.assertEqual(sum(int(row["uninsured_amount_text"]) for row in report["depositInsuranceClaims"]), 900)
+        insurance_reconciliation = {
+            row["account_code"]: row for row in report["depositInsuranceReconciliation"]
+        }
+        self.assertEqual(insurance_reconciliation["deposit_insurance_payable"]["claim_amount"], "600")
+        self.assertEqual(insurance_reconciliation["deposit_insurance_payable"]["journal_amount"], "600")
+        self.assertEqual(insurance_reconciliation["uninsured_deposit_claim"]["claim_amount"], "900")
+        self.assertTrue(all(row["status"] == "matched"
+                            for row in insurance_reconciliation.values()))
         self.assertEqual(report["borrowerConcentrationStress"]["borrowerCount"], 0)
 
     def test_competing_banks_and_balance_sheet_pressure_change_spread(self):

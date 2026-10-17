@@ -241,6 +241,52 @@ class BankJournal:
         } for currency in currencies]
 
     @staticmethod
+    def reconcile_deposit_insurance_claims(conn, issuer):
+        """Compare resolved claim totals with the two posted liability accounts."""
+        from functions.money import currency_precision, round_currency
+
+        claims = conn.execute(
+            "SELECT COALESCE(a.quote_currency,'NWX') currency_code,"
+            "SUM(c.covered_amount) covered_amount,SUM(c.uninsured_amount) uninsured_amount "
+            "FROM accounts.deposit_insurance_claims c LEFT JOIN accounts.accounts a "
+            "ON a.account_number=c.account_number WHERE c.issuer=? "
+            "GROUP BY COALESCE(a.quote_currency,'NWX')", (str(issuer),),
+        ).fetchall()
+        posted = conn.execute(
+            "SELECT e.currency_code,l.account_code,SUM(l.credit_units-l.debit_units) balance_units "
+            "FROM bank_journal_entries e JOIN bank_journal_lines l USING(entry_id) "
+            "WHERE e.issuer=? AND e.status='posted' AND l.account_code IN "
+            "('deposit_insurance_payable','uninsured_deposit_claim') "
+            "GROUP BY e.currency_code,l.account_code", (str(issuer),),
+        ).fetchall()
+        expected = {str(row['currency_code']): row for row in claims}
+        actual = {(str(row['currency_code']), str(row['account_code'])):
+                  int(row['balance_units'] or 0) for row in posted}
+        currencies = sorted(set(expected) | {currency for currency, _ in actual})
+        results = []
+        for currency in currencies:
+            places = currency_precision(conn, currency)
+            scale = 10 ** places
+            claim = expected.get(currency)
+            for code, field in (("deposit_insurance_payable", "covered_amount"),
+                                ("uninsured_deposit_claim", "uninsured_amount")):
+                amount = round_currency(conn, Decimal(str(
+                    claim[field] if claim is not None and claim[field] is not None else 0
+                )), currency)
+                expected_units = int(Decimal(str(amount)) * scale)
+                actual_units = actual.get((currency, code), 0)
+                difference = expected_units - actual_units
+                results.append({
+                    "issuer": str(issuer), "currency_code": currency,
+                    "account_code": code, "claim_units": expected_units,
+                    "journal_units": actual_units, "difference_units": difference,
+                    "decimal_places": places,
+                    "status": ("missing_journal" if expected_units and not actual_units else
+                               "matched" if difference == 0 else "mismatch"),
+                })
+        return results
+
+    @staticmethod
     def post_tax_remittance(conn, issuer, reference_key, source_currency,
                             source_amount, settlement_currency, settlement_amount,
                             *, description="", now=None):

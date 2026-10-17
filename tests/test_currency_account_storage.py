@@ -251,6 +251,9 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         with self.db.atomic() as conn:
             result = BankManager.resolve_failed_institution(conn, 'FXBank', now=1_000)
             reconciliation = BankJournal.reconcile_customer_deposits(conn, 'FXBank')
+            insurance_reconciliation = BankJournal.reconcile_deposit_insurance_claims(
+                conn, 'FXBank'
+            )
         account = self.db.accounts.execute_one(
             "SELECT balance_units,resolution_status,insurance_paid,uninsured_claim "
             "FROM accounts WHERE account_number=?", (number,),
@@ -266,6 +269,13 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertAlmostEqual(result['uninsured'], 1.47)
         self.assertGreater(self.db.users.get_user('us-user')['cash'], cash_before)
         self.assertEqual(reconciliation[0]['status'], 'matched')
+        insurance_rows = {row['account_code']: row for row in insurance_reconciliation}
+        self.assertEqual(insurance_rows['deposit_insurance_payable']['status'], 'matched')
+        self.assertEqual(insurance_rows['deposit_insurance_payable']['claim_units'], 187)
+        self.assertEqual(insurance_rows['deposit_insurance_payable']['journal_units'], 187)
+        self.assertEqual(insurance_rows['uninsured_deposit_claim']['status'], 'matched')
+        self.assertEqual(insurance_rows['uninsured_deposit_claim']['claim_units'], 138)
+        self.assertEqual(insurance_rows['uninsured_deposit_claim']['journal_units'], 138)
         fx_record = self.db.currency.execute_one(
             "SELECT source_currency,target_currency FROM currency_transactions "
             "WHERE user_id='us-user' ORDER BY transaction_id DESC LIMIT 1"
@@ -285,6 +295,29 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             ],
             [],
         )
+
+    def test_insurance_claim_without_liability_journal_is_reported(self):
+        from managers.bank_journal import BankJournal
+
+        self.db.products.execute(
+            "UPDATE saving SET issuer='FXBank' WHERE product_code='FX_EUR'"
+        )
+        number = CurrencyExchangeManager(self.db).open_account(
+            'us-user', 'FX_EUR', password='1234', deposit_amount='1.25'
+        )
+        self.db.accounts.execute(
+            "INSERT INTO deposit_insurance_claims "
+            "(issuer,user_id,account_number,covered_amount,uninsured_amount,resolved_epoch) "
+            "VALUES ('FXBank','us-user',?,1.25,0,1)", (number,),
+        )
+        with self.db.atomic() as conn:
+            reconciliation = BankJournal.reconcile_deposit_insurance_claims(conn, 'FXBank')
+        insured = next(row for row in reconciliation
+                       if row['account_code'] == 'deposit_insurance_payable')
+        self.assertEqual(insured['currency_code'], 'EUR')
+        self.assertEqual(insured['claim_units'], 125)
+        self.assertEqual(insured['journal_units'], 0)
+        self.assertEqual(insured['status'], 'missing_journal')
 
 
 class LegacyCurrencySchemaMigrationTests(unittest.TestCase):
