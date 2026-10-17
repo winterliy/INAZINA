@@ -13,6 +13,8 @@ type Instrument = { code: string; name: string; type: string; price: number; sta
 // Administrator trading warnings (투자주의·경고·위험).
 const WarningBadge = ({ warning }: { warning?: Warning }) => warning ? <span className={`warn-badge ${warning.level}`} title={warning.reason || warning.label}>{warning.label}</span> : null;
 type Wallet = { currency_code: string; balance_units: number; decimal_places?: number; is_foreign: boolean };
+type LoanSchedule = { schedule_id: number; installment_number: number; due_epoch: number; principal_due: number; interest_due: number; fee_due: number; principal_paid: number; interest_paid: number; fee_paid: number; amount_paid: number; status: string };
+type LoanScheduleView = { loan_id: number; product_code: string; quote_currency: string; decimal_places: number; outstanding_balance: number; status: string; collection_status: string; maturity_epoch: number | null; installments: LoanSchedule[] };
 type Holding = { code: string; name: string; qty: number; price: number; value: number; type: string | null; quote_currency?: string; sell_reserved_qty?: number; is_collateral?: boolean };
 type Portfolio = { cash: number; grand_total: number; net_worth: number; loan_total: number; order_reserved_total: number; stock_total: number; account_total: number; bond_total?: number; national_currency?: string; nationality?: string; home_rate_nwx?: number; home_decimal_places?: number; wallets?: Wallet[]; stocks: Holding[]; accounts?: Record<string, unknown>[] };
 type Order = { order_id: number; asset_code: string; side: string; limit_price: number; quantity: number; remaining_quantity: number; filled_quantity: number; status: string; quote_currency?: string };
@@ -71,6 +73,7 @@ export default function App() {
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [drMovements, setDrMovements] = useState<DrMovement[]>([]);
+  const [loanSchedules, setLoanSchedules] = useState<LoanScheduleView[]>([]);
   const [orderFilter, setOrderFilter] = useState<"open" | "all">("open");
   const [book, setBook] = useState<Book>({ bids: [], asks: [] });
   const [side, setSide] = useState<"buy" | "sell">("buy");
@@ -107,12 +110,14 @@ export default function App() {
   }, []);
 
   const refreshAccount = useCallback(async () => {
-    const [wallet, orderData] = await Promise.all([
+    const [wallet, orderData, loanData] = await Promise.all([
       api<{ portfolio: Portfolio }>("/api/me/portfolio"),
       api<{ orders: Order[] }>("/api/market/orders"),
+      api<{ loans: LoanScheduleView[] }>("/api/me/loan-schedules"),
     ]);
     setPortfolio(wallet.portfolio);
     setOrders(orderData.orders);
+    setLoanSchedules(loanData.loans);
   }, []);
 
   useEffect(() => {
@@ -356,6 +361,15 @@ export default function App() {
           <div className="wallet-row"><span>대출</span><b>{money(inHome(portfolio?.loan_total || 0), homeDigits)} {homeCurrency}</b></div>
           <div className="wallet-row net-worth"><span>순자산</span><b>{money(inHome(portfolio?.net_worth || 0), homeDigits)} {homeCurrency}</b></div>
         </section>
+        {loanSchedules.length > 0 && <section className="data-panel holdings-panel"><div className="panel-title"><h2>대출 상환 일정</h2><span>{loanSchedules.length}건</span></div>
+          <div className="holdings">{loanSchedules.map((loan) => <div className="holding loan-schedule" key={loan.loan_id}>
+            <span><b>#{loan.loan_id} · {loan.product_code} · 잔액 {money(loan.outstanding_balance, loan.decimal_places)} {loan.quote_currency}</b>
+              {loan.installments.slice(0, 4).map((item) => <small key={item.schedule_id}>회차 {item.installment_number} · {date(item.due_epoch)} · 잔액 원금 {money(item.principal_due-item.principal_paid, loan.decimal_places)} / 이자 {money(item.interest_due-item.interest_paid, loan.decimal_places)} / 수수료 {money(item.fee_due-item.fee_paid, loan.decimal_places)} {loan.quote_currency}</small>)}
+              {!loan.installments.length && <small>예정된 미납 회차가 없습니다.</small>}
+            </span>
+          </div>)}</div>
+          <p className="orders-hint">회차별 계약상 배분 내역입니다. 회차 잔액을 넘는 초과상환 및 경과·연체이자 별도 원장은 표시하지 않습니다.</p>
+        </section>}
         <section className="data-panel holdings-panel">
           <div className="panel-title"><h2>보유 종목</h2><span>{holdings.length}</span></div>
           <div className="holdings">{holdings.map((item) => <button type="button" key={`${item.code}-${item.is_collateral ? "c" : "h"}`} className={item.code === selectedCode ? "holding active" : "holding"} onClick={() => chooseInstrument(item.code)}>

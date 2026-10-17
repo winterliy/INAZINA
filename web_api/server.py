@@ -856,6 +856,29 @@ def user_dr_movements(user_id, limit=50):
     return result
 
 
+def user_loan_schedules(user_id):
+    """Return the authenticated user's upcoming loan installment breakdowns."""
+    domain()
+    from functions.money import currency_precision
+    with connect_readonly() as connection:
+        loans = [dict(row) for row in connection.execute(
+            "SELECT loan_id,product_code,quote_currency,outstanding_balance,status,"
+            "collection_status,maturity_epoch FROM loans WHERE user_id=? "
+            "AND status IN ('active','defaulted') ORDER BY loan_id",
+            (str(user_id),),
+        ).fetchall()]
+        for loan in loans:
+            loan["decimal_places"] = currency_precision(connection, loan["quote_currency"])
+            loan["installments"] = [dict(row) for row in connection.execute(
+                "SELECT schedule_id,installment_number,due_epoch,principal_due,interest_due,fee_due,"
+                "principal_paid,interest_paid,fee_paid,amount_paid,status "
+                "FROM loan_payment_schedule WHERE loan_id=? AND status NOT IN ('paid','waived') "
+                "ORDER BY due_epoch,installment_number LIMIT 12",
+                (loan["loan_id"],),
+            ).fetchall()]
+    return {"loans": loans}
+
+
 def admin_dr_movements(limit=100):
     """Read-only administrator view of the immutable DR conversion ledger."""
     domain()
@@ -2566,6 +2589,12 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     self.send_json(200, {"movements": user_dr_movements(user["userId"])})
+            elif path == "/internal/me/loan-schedules":
+                user = identity(internal_user_id(self))
+                if not user:
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    self.send_json(200, user_loan_schedules(user["userId"]))
             elif path.startswith('/internal/admin/funds/'):
                 user = identity(internal_user_id(self))
                 if not user or user['role'] != 'admin':

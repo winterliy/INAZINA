@@ -65,6 +65,32 @@ class WebApiTests(unittest.TestCase):
         self.assertTrue(server.dr_reference_metrics(18, 10, 2, 1)["referenceDeviationAlert"])
         self.assertEqual(server.dr_reference_metrics(float("nan"), 10, 2, 1), {})
 
+    def test_user_loan_schedules_only_returns_own_unpaid_installments(self):
+        connection = server.sqlite3.connect(":memory:")
+        connection.row_factory = server.sqlite3.Row
+        connection.executescript("""
+            CREATE TABLE currencies(code TEXT PRIMARY KEY, decimal_places INTEGER);
+            INSERT INTO currencies VALUES ('NWX',0);
+            CREATE TABLE loans(loan_id INTEGER PRIMARY KEY,user_id TEXT,product_code TEXT,
+                quote_currency TEXT,outstanding_balance REAL,status TEXT,collection_status TEXT,
+                maturity_epoch REAL);
+            CREATE TABLE loan_payment_schedule(schedule_id INTEGER PRIMARY KEY,loan_id INTEGER,
+                installment_number INTEGER,due_epoch REAL,principal_due REAL,interest_due REAL,
+                fee_due REAL,principal_paid REAL,interest_paid REAL,fee_paid REAL,amount_paid REAL,status TEXT);
+            INSERT INTO loans VALUES (1,'alice','L1','NWX',900,'active','current',3000);
+            INSERT INTO loans VALUES (2,'bob','L2','NWX',500,'active','current',3000);
+            INSERT INTO loan_payment_schedule VALUES (11,1,1,1000,800,80,20,0,0,0,0,'scheduled');
+            INSERT INTO loan_payment_schedule VALUES (12,1,2,2000,700,70,10,700,70,10,780,'paid');
+            INSERT INTO loan_payment_schedule VALUES (21,2,1,1000,500,50,0,0,0,0,0,'scheduled');
+        """)
+        with patch.object(server, "domain"), patch.object(
+            server, "connect_readonly", return_value=closing(connection)
+        ):
+            result = server.user_loan_schedules("alice")
+        self.assertEqual([loan["loan_id"] for loan in result["loans"]], [1])
+        self.assertEqual([row["schedule_id"] for row in result["loans"][0]["installments"]], [11])
+        self.assertEqual(result["loans"][0]["decimal_places"], 0)
+
     def test_candles_aggregate_open_high_low_close_per_bucket(self):
         ticks = [(0, 100), (10, 120), (30, 90), (59, 110), (60, 111), (119, 105)]
         for epoch, price in ticks:
