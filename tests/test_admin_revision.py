@@ -105,6 +105,13 @@ class AdminRevisionTests(unittest.TestCase):
         self.assertEqual(tuple(rule), ('lottery_winnings', 12.5, 'admin'))
         with self.assertRaises(ValueError):
             self.run_command('소득세율', '낙원 unknown_source 5')
+        self.run_command('소득세율', '낙원 lottery_winnings 기본')
+        with self.db.atomic() as conn:
+            fallback_tax = UserManager._tax(conn, 'citizen', 'lottery_winnings:weekly', 100)
+        self.assertEqual(fallback_tax, 3)
+        self.assertIsNone(self.db.currency.execute_one(
+            "SELECT 1 FROM country_tax_rules WHERE nationality='낙원' AND income_source='lottery_winnings'"
+        ))
 
     def test_lottery_manual_numbers_private_until_draw_and_paid_once(self):
         self.bot.lottery_mgr=LotteryManager(self.db)

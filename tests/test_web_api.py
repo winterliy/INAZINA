@@ -65,6 +65,32 @@ class WebApiTests(unittest.TestCase):
         self.assertTrue(server.dr_reference_metrics(18, 10, 2, 1)["referenceDeviationAlert"])
         self.assertEqual(server.dr_reference_metrics(float("nan"), 10, 2, 1), {})
 
+    def test_admin_countries_returns_auditable_income_source_tax_overrides(self):
+        with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
+            connection.executescript("""
+                ALTER TABLE country_currencies ADD COLUMN base_rate REAL NOT NULL DEFAULT 3;
+                ALTER TABLE country_currencies ADD COLUMN legal_max_rate REAL NOT NULL DEFAULT 20;
+                ALTER TABLE country_currencies ADD COLUMN tax_percent REAL NOT NULL DEFAULT 3;
+                CREATE TABLE currencies(code TEXT PRIMARY KEY,name TEXT,status TEXT);
+                CREATE TABLE country_treasuries(nationality TEXT PRIMARY KEY,user_id TEXT);
+                CREATE TABLE guild_countries(guild_id TEXT,nationality TEXT);
+                CREATE TABLE market_exchanges(exchange_id TEXT PRIMARY KEY,nationality TEXT);
+                CREATE TABLE market_rate_curve(nationality TEXT,benchmark_key TEXT,tenor_days INTEGER,
+                    annual_rate REAL,updated_epoch REAL);
+                CREATE TABLE market_rate_pressure(nationality TEXT,benchmark_key TEXT,
+                    adjustment REAL,updated_epoch REAL);
+                CREATE TABLE country_tax_rules(nationality TEXT,income_source TEXT,tax_percent REAL,
+                    updated_by TEXT,updated_epoch REAL);
+                INSERT INTO country_currencies(nationality,currency_code) VALUES ('낙원','NWX');
+                INSERT INTO currencies(code,name,status) VALUES ('NWX','나쿠','active');
+                INSERT INTO country_tax_rules VALUES ('낙원','lottery_winnings',12.5,'admin-1',123);
+            """)
+        country = server.admin_countries()[0]
+        self.assertEqual(country["taxRules"], [{
+            "income_source": "lottery_winnings", "tax_percent": 12.5,
+            "updated_by": "admin-1", "updated_epoch": 123.0,
+        }])
+
     def test_user_loan_schedules_only_returns_own_unpaid_installments(self):
         connection = server.sqlite3.connect(":memory:")
         connection.row_factory = server.sqlite3.Row

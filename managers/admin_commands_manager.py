@@ -44,7 +44,7 @@ USAGE = {
  '시장분위기':'[bull/flat/bear]', '상품분위기':'[종목id] [bull/flat/bear]',
  '복권당첨번호보기':'', '복권당첨번호변경':'[서로 다른 1~45 번호 6개] [보너스 번호(선택)]',
  '세율':'[국적] [0~100]', '환율수정':'[외화A] [외화B] [1 A당 B 비율]',
- '소득세율':'[국적] [소득원 코드] [0~100] · 국가 기본 세율보다 우선 적용',
+ '소득세율':'[국적] [소득원 코드] [0~100|기본] · 기본은 소득원 예외를 지우고 국가 세율 사용',
  '국가생성':'[국가명] [통화코드] [기준금리%(선택)] [법정최고이자%(선택)] [세율%(선택)]',
  '국가삭제':'[국가명]',
  '복권가격설정':'[가격]', '금리수정':'[국적] [add/del/modify] [수치]',
@@ -382,16 +382,23 @@ class AdminCommandsManager:
                 return f'✅ {nationality} 세율을 {value:g}%로 설정했습니다.'
             if command=='소득세율':
                 if len(args)!=3:
-                    raise ValueError('사용법: $소득세율 [국적] [소득원 코드] [0~100]')
+                    raise ValueError('사용법: $소득세율 [국적] [소득원 코드] [0~100|기본]')
                 nationality,source=str(args[0]).strip(),str(args[1]).strip().lower()
                 if not nationality or len(nationality)>80 or source not in TAX_SOURCES:
                     raise ValueError('등록된 국적과 지원 소득원 코드를 입력해주세요.')
-                value=self.control._number(args[2],0,100)
+                reset=str(args[2]).strip().lower() in {'기본','default','reset'}
+                value=None if reset else self.control._number(args[2],0,100)
                 now=time.time()
                 with self.db.atomic() as conn:
                     self.control.require(actor,conn)
                     if not conn.execute('SELECT 1 FROM country_currencies WHERE nationality=?',(nationality,)).fetchone():
                         raise ValueError('등록된 국가를 확인해주세요.')
+                    if reset:
+                        conn.execute('DELETE FROM country_tax_rules WHERE nationality=? AND income_source=?',
+                                     (nationality,source))
+                        self.control._audit(conn,actor,'country.tax_source_reset',{
+                            'nationality':nationality,'income_source':source})
+                        return f'✅ {nationality} · {source} 소득은 국가 기본 세율을 사용합니다.'
                     conn.execute('''INSERT INTO country_tax_rules
                         (nationality,income_source,tax_percent,updated_by,updated_epoch) VALUES (?,?,?,?,?)
                         ON CONFLICT(nationality,income_source) DO UPDATE SET

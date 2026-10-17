@@ -8,7 +8,8 @@ type WebLogin = { hts_id: string | null; created_epoch: number; updated_epoch: n
 type UserDetail = { user: Record<string, string | number | null>; accountType: "discord" | "country" | "company"; webLogin: WebLogin | null; accounts: Record<string, unknown>[]; loans: Record<string, unknown>[]; holdings: { asset_code: string; quantity: number }[] };
 type MarketRate = { benchmark_key: "funding" | "bank_bond" | "treasury"; tenor_days: number; annual_rate: number; updated_epoch: number };
 type RatePressure = { benchmark_key: string; adjustment: number; updated_epoch: number };
-type Country = { nationality: string; currency_code: string; currency_name: string | null; base_rate: number; legal_max_rate: number; tax_percent: number; treasuryId: string | null; treasuryCash: number | null; citizens: number; guilds: string[]; exchanges: string[]; marketRates: MarketRate[]; marketRatePressure: RatePressure[]; account: { status: string; role: string; hts_id: string | null } | null };
+type SourceTaxRule = { income_source: string; tax_percent: number; updated_by: string; updated_epoch: number };
+type Country = { nationality: string; currency_code: string; currency_name: string | null; base_rate: number; legal_max_rate: number; tax_percent: number; treasuryId: string | null; treasuryCash: number | null; citizens: number; guilds: string[]; exchanges: string[]; marketRates: MarketRate[]; marketRatePressure: RatePressure[]; taxRules: SourceTaxRule[]; account: { status: string; role: string; hts_id: string | null } | null };
 type Result = { message: string; success: boolean };
 
 const USER_FIELDS: [string, string, string?][] = [
@@ -221,6 +222,13 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
           <Field label="세율 %" hint="0~100 · $세율"><input className="mono" value={rates.taxPercent} onChange={(event) => setRates({ ...rates, taxPercent: event.target.value })} /></Field>
           <button className="btn primary" disabled={busy}>금리 · 세율 저장</button>
         </form>
+        <section className="section-gap">
+          <h3 className="sub-head">소득원별 세율 예외</h3>
+          <p className="hint">예외가 없으면 국가 기본 세율 {number(country.tax_percent)}%를 사용합니다. 변경·초기화는 관리자 명령 웹 화면에서 할 수 있습니다.</p>
+          <div className="scroll-x"><table><thead><tr><th>소득원 코드</th><th className="r">세율</th><th>마지막 변경</th><th /></tr></thead><tbody>
+            {country.taxRules.map((item) => <tr key={item.income_source}><td className="mono">{item.income_source}</td><td className="r mono">{number(item.tax_percent)}%</td><td>{item.updated_by} · {date(item.updated_epoch)}</td><td className="row-actions"><button className="soft small" disabled={busy} onClick={() => ctx.openCommand("소득세율", `${country.nationality} ${item.income_source} 기본`)}>기본세율로 복귀</button></td></tr>)}
+          </tbody></table>{!country.taxRules.length && <p className="empty">소득원 예외 세율이 없습니다.</p>}</div>
+        </section>
         <section className="section-gap">
           <h3 className="sub-head">만기별 시장금리 곡선</h3>
           <p className="hint">기준금리(policy)와 별도의 조달·은행채·국채 지표입니다. 유효 시장금리는 해당 만기의 곡선 금리에 자동 조정 압력(%p)을 더합니다. 지표·만기·스프레드를 지정한 변동금리 상품이 재산정될 때 참조합니다.</p>

@@ -66,8 +66,10 @@ class InterestManager:
                             "ON c.nationality=u.nationality WHERE u.user_id=?",
                             (str(source), str(user_id))).fetchone()
                if user_id is not None else None)
+        fallback = conn.execute("SELECT value FROM settings WHERE key='tax_percent'").fetchone()
         try:
-            rate = float(row["tax_percent"] if row and row["tax_percent"] is not None else 3.0)
+            rate = float(row["tax_percent"] if row and row["tax_percent"] is not None
+                         else fallback["value"] if fallback else 3.0)
         except (TypeError, ValueError):
             rate = 3.0
         return rate if math.isfinite(rate) and 0 <= rate <= 100 else 3.0

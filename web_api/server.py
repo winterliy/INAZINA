@@ -2170,6 +2170,10 @@ def admin_countries():
             market_rate_pressure = [dict(item) for item in connection.execute(
                 "SELECT benchmark_key,adjustment,updated_epoch FROM market_rate_pressure "
                 "WHERE nationality=? ORDER BY benchmark_key", (nationality,))]
+            tax_rules = [dict(item) for item in connection.execute(
+                "SELECT income_source,tax_percent,updated_by,updated_epoch FROM country_tax_rules "
+                "WHERE nationality=? ORDER BY income_source", (nationality,))] \
+                if _table_exists(connection, "country_tax_rules") else []
             account = connection.execute(
                 "SELECT u.status,u.role,w.hts_id FROM users u LEFT JOIN web_auth_credentials w ON w.user_id=u.user_id "
                 "WHERE u.user_id=? AND u.nationality=?", (nationality, nationality)).fetchone() if _table_exists(connection, "web_auth_credentials") else None
@@ -2178,6 +2182,7 @@ def admin_countries():
                            "treasuryCash": treasury["cash"] if treasury else None,
                            "citizens": int(citizens), "guilds": guilds, "exchanges": exchanges,
                            "marketRates": market_rates, "marketRatePressure": market_rate_pressure,
+                           "taxRules": tax_rules,
                            "account": dict(account) if account else None})
     return result
 

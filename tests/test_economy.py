@@ -631,6 +631,11 @@ class EconomyTests(unittest.TestCase):
         with self.db.atomic() as conn:
             self.assertEqual(InterestManager._tax_rate(conn, 'citizen-1'), 17)
 
+    def test_saving_interest_uses_global_tax_fallback_without_country_policy(self):
+        self.db.system.set_setting('tax_percent', '8')
+        with self.db.atomic() as conn:
+            self.assertEqual(InterestManager._tax_rate(conn, 'citizen-1'), 8)
+
     def test_global_code_collision_blocks_trade(self):
         self.db.assets.register_asset("DUPE", "Market", "EX", 10, "stock")
         self.db.products.register_saving("DUPE", "Savings", 3, 0, 0, 3600, 0, "Bank")
