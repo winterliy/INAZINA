@@ -68,6 +68,33 @@ class FxInterestTests(unittest.TestCase):
         # balance mirrors balance_units for every account.
         self.assertAlmostEqual(after['balance'], after['balance_units'] / SCALE, places=2)
 
+    def test_foreign_savings_withholding_remits_tax_payable_through_fx_clearing(self):
+        from managers.bank_journal import BankJournal
+
+        number = self.open_usd(36.5)
+        self.bot.currency_mgr.exchange('citizen', 'NWX', 'USD', '450000')
+        start = self.account(number)
+        InterestManager(self.db).process_user_interests(
+            'citizen', now=start['last_payment_epoch'] + DAY
+        )
+        issuer = self.db.products.execute_one(
+            "SELECT issuer FROM saving WHERE product_code='INZCU001'"
+        )[0]
+        with self.db.atomic() as conn:
+            usd_trial = BankJournal.trial_balance(conn, issuer, 'USD')
+            nwx_trial = BankJournal.trial_balance(conn, issuer, 'NWX')
+            remittances = conn.execute(
+                "SELECT COUNT(*) FROM bank_journal_entries WHERE issuer=? "
+                "AND event_type='tax_remittance'", (issuer,),
+            ).fetchone()[0]
+        usd_accounts = {row['account_code']: row['balance_units'] for row in usd_trial}
+        nwx_accounts = {row['account_code']: row['balance_units'] for row in nwx_trial}
+        self.assertGreater(usd_accounts.get('interest_expense', 0), 0)
+        self.assertEqual(usd_accounts.get('tax_payable', 0), 0)
+        self.assertLess(usd_accounts.get('fx_conversion_clearing', 0), 0)
+        self.assertGreater(nwx_accounts.get('fx_conversion_clearing', 0), 0)
+        self.assertEqual(remittances, 2)
+
     def test_fx_opening_needs_password_and_minimum_deposit_paid_from_home_cash(self):
         self.seed()
         with self.db.atomic() as conn:

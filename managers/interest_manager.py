@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from contextlib import nullcontext
+from decimal import Decimal
 import math
 import time
 from database import DatabaseManager
@@ -323,6 +324,15 @@ class InterestManager:
                 )
                 if treasury.rowcount != 1:
                     raise RuntimeError("국고 계정을 찾을 수 없어 이자 지급을 취소했습니다.")
+                from managers.bank_journal import BankJournal
+                settlement_amount = Decimal(treasury_units) / Decimal(SCALE)
+                BankJournal.post_tax_remittance(
+                    conn, product["issuer"],
+                    f"account:{account['account_number']}:{paid_until}:tax-remittance",
+                    account["quote_currency"], tax, home_currency, settlement_amount,
+                    description=f"Withholding tax remittance for {account['account_number']}",
+                    now=paid_until,
+                )
             total += net
             credited = True
         if account["rate_type"] == "floating":
