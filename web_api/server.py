@@ -1304,6 +1304,7 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
         from managers.rate_manager import RateManager
         maturity_gap = RateManager.institution_maturity_gap(connection, issuer)
         rate_stress = RateManager.institution_rate_stress(connection, issuer)
+        fx_stress = RateManager.institution_fx_stress(connection, issuer)
         institution = RateManager.institution_components(connection, issuer)
         balance_sheet = RateManager.institution_balance_sheet(connection, issuer)
         risk_report = balance_sheet["rwa_report"]
@@ -1342,7 +1343,8 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
     return {"issuer": str(issuer), "currency": currency,
             "trialBalance": trial_balance, "unbalancedEntries": unbalanced,
             "resultReconciliation": reconciliation, "maturityGap": maturity_gap,
-            "rateStress": rate_stress, "prudential": prudential}
+            "rateStress": rate_stress, "fxStress": fx_stress,
+            "prudential": prudential}
 
 
 def admin_compliance_overview(nationality=None):

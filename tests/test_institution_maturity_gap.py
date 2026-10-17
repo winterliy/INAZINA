@@ -14,7 +14,8 @@ class InstitutionMaturityGapTests(unittest.TestCase):
         DBManager.database_dir = Path(self.tempdir.name)
         self.db = DatabaseManager()
         self.db.currency.execute(
-            "INSERT INTO currencies(code,name,decimal_places) VALUES ('USD','US Dollar',2)"
+            "INSERT INTO currencies(code,name,decimal_places,reference_rate) "
+            "VALUES ('USD','US Dollar',2,'1')"
         )
         self.db.currency.execute(
             "INSERT INTO country_currencies(nationality,currency_code) VALUES ('USA','USD')"
@@ -62,6 +63,7 @@ class InstitutionMaturityGapTests(unittest.TestCase):
         with self.db.readonly() as conn:
             report = RateManager.institution_maturity_gap(conn, "Bank", now=self.now)
             rate_stress = RateManager.institution_rate_stress(conn, "Bank", now=self.now)
+            fx_stress = RateManager.institution_fx_stress(conn, "Bank", now=self.now)
         self.assertEqual({row["currency"] for row in report["ladders"]}, {"NWX", "USD"})
         by_currency = {row["currency"]: row["buckets"] for row in report["ladders"]}
         self.assertEqual(by_currency["NWX"][2]["outflows"], 500)
@@ -77,6 +79,11 @@ class InstitutionMaturityGapTests(unittest.TestCase):
         self.assertEqual(nwx_up["liabilityInterestChange"], 1)
         self.assertEqual(usd_up["assetInterestChange"], 2.96)
         self.assertEqual(usd_up["netInterestIncomeChange"], 2.96)
+        self.assertEqual(len(fx_stress["positions"]), 1)
+        usd_fx = fx_stress["positions"][0]
+        self.assertEqual(usd_fx["currency"], "USD")
+        self.assertEqual(usd_fx["netOpenPositionInBase"], 900)
+        self.assertEqual([row["capitalImpact"] for row in usd_fx["shocks"]], [-180, -90, 90, 180])
 
     def test_empty_or_invalid_request_is_safe(self):
         with self.db.readonly() as conn:

@@ -788,6 +788,71 @@ class RateManager:
                 "method": "cash collateral 0%; asset collateral 35% after 20% haircut; performing unsecured retail 75%; higher-risk unsecured 100%; defaulted unsecured 150%"}
 
     @staticmethod
+    def institution_fx_stress(conn, issuer, *, now=None):
+        """Estimate capital sensitivity to unhedged loan/deposit FX positions."""
+        issuer = str(issuer or "").strip()
+        if not issuer:
+            raise ValueError("financial_institution_not_found")
+        epoch = float(time.time() if now is None else now)
+        if not math.isfinite(epoch) or epoch < 0:
+            raise ValueError("invalid_fx_stress_epoch")
+        row = conn.execute(
+            "SELECT COALESCE(c.currency_code,'NWX') currency_code FROM "
+            "financial_institutions f LEFT JOIN country_currencies c "
+            "ON c.nationality=f.nationality WHERE f.issuer=?", (issuer,),
+        ).fetchone()
+        base = str(row["currency_code"] if row else "NWX")
+        exposure = {}
+        for item in conn.execute(
+            "SELECT currency,side,SUM(amount) amount FROM ("
+            "SELECT a.quote_currency currency,'liability' side,SUM(CASE WHEN a.account_type='currency_saving' "
+            "THEN a.balance_units/1000000.0 ELSE a.balance END) amount FROM accounts a "
+            "LEFT JOIN saving s ON s.product_code=a.product_code "
+            "LEFT JOIN liability p ON p.product_code=a.product_code "
+            "WHERE ((s.issuer=? AND a.account_type IN ('saving','currency_saving')) "
+            "OR (p.issuer=? AND a.account_type='loan_payout')) AND a.resolution_status='active' "
+            "GROUP BY a.quote_currency "
+            "UNION ALL "
+            "SELECT l.quote_currency,'asset',SUM(l.outstanding_balance) FROM loans l "
+            "JOIN liability p ON p.product_code=l.product_code "
+            "WHERE p.issuer=? AND l.status IN ('active','defaulted') GROUP BY l.quote_currency) "
+            "GROUP BY currency,side", (issuer, issuer, issuer),
+        ).fetchall():
+            currency = str(item["currency"] or "NWX")
+            exposure.setdefault(currency, {"assets": 0.0, "liabilities": 0.0})
+            exposure[currency]["assets" if item["side"] == "asset" else "liabilities"] = float(item["amount"] or 0)
+
+        from managers.currency_manager import CurrencyManager, SCALE
+        from functions.money import currency_precision, round_currency
+        places = currency_precision(conn, base)
+        positions = []
+        for currency, values in sorted(exposure.items()):
+            if currency == base:
+                continue
+            fx = CurrencyManager.quote(conn, currency, base)
+            asset_base = CurrencyManager.convert(
+                conn, int(round(values["assets"]*SCALE)), currency, base
+            ) / SCALE
+            liability_base = CurrencyManager.convert(
+                conn, int(round(values["liabilities"]*SCALE)), currency, base
+            ) / SCALE
+            net = round_currency(conn, asset_base-liability_base, base)
+            positions.append({
+                "currency": currency,
+                "baseCurrency": base,
+                "assetsInBase": round_currency(conn, asset_base, base),
+                "liabilitiesInBase": round_currency(conn, liability_base, base),
+                "netOpenPositionInBase": net,
+                "fxRate": float(fx.numerator / fx.denominator),
+                "shocks": [{"currencyChangePercent": percent,
+                            "capitalImpact": round_currency(conn, net*percent/100, base)}
+                           for percent in (-20, -10, 10, 20)],
+            })
+        return {"issuer": issuer, "baseCurrency": base, "decimalPlaces": places,
+                "asOfEpoch": epoch, "positions": positions,
+                "method": "unhedged loan assets minus deposit liabilities; ±10/20% parallel FX shocks; excludes securities, derivatives, capital controls and other off-balance-sheet positions"}
+
+    @staticmethod
     def institution_maturity_gap(conn, issuer, *, now=None):
         """Build a contractual, native-currency maturity ladder for deposits and loans.
 
