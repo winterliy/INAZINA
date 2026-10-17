@@ -239,6 +239,13 @@ class UserManager:
 
     @staticmethod
     def _refresh_max_shareholder(conn, asset_code):
+        asset_code = str(asset_code)
+        dr_program = conn.execute(
+            "SELECT underlying_code FROM assets.depositary_receipts WHERE dr_code=?",
+            (asset_code,),
+        ).fetchone()
+        if dr_program:
+            asset_code = str(dr_program["underlying_code"])
         conn.execute(
             """UPDATE company.company SET max_shareholder_id = (
                    SELECT user_id FROM (
@@ -246,6 +253,10 @@ class UserManager:
                        UNION ALL
                        SELECT writer_id AS user_id, quantity
                        FROM assets.option_collateral_lots WHERE underlying_code = ?
+                       UNION ALL
+                       SELECT h.user_id,d.underlying_per_receipt*h.quantity AS quantity
+                       FROM assets.user_assets h JOIN assets.depositary_receipts d
+                         ON d.dr_code=h.asset_code WHERE d.underlying_code=?
                    )
                    -- Treasury stock (the company's own shares) carries no vote.
                    WHERE user_id <> 'company:' || ?
@@ -253,7 +264,7 @@ class UserManager:
                    ORDER BY SUM(quantity) DESC, user_id ASC
                    LIMIT 1
                ) WHERE company_code = ?""",
-            (asset_code, asset_code, asset_code, asset_code),
+            (asset_code, asset_code, asset_code, asset_code, asset_code),
         )
 
     def buy_asset(self, user_id, asset_code, quantity):

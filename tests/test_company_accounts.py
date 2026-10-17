@@ -106,6 +106,23 @@ class CompanyAccountTests(unittest.TestCase):
         self.assertEqual(summary['equity'], summary['parent_equity'] + summary['noncontrolling_interest'])
         self.assertIsNone(FinancialManager(self.db).report('SUB')['consolidated'])
 
+    def test_dr_underlying_equivalent_can_establish_subsidiary_control(self):
+        self.prepare()
+        parent_account = self.account('CO')
+        self.db.assets.add_user_asset(parent_account, 'SUB', 400, unit_cost=100)
+        self.db.assets.execute(
+            "INSERT INTO depositary_receipts(dr_code,underlying_code,listing_exchange_id,"
+            "quote_currency,underlying_per_receipt,receipt_supply,deposited_underlying_quantity) "
+            "VALUES ('SUB_DR','SUB','LSE','NWX',2,100,200)"
+        )
+        self.db.assets.add_user_asset(parent_account, 'SUB_DR', 100, unit_cost=200)
+        with self.db.atomic() as conn:
+            subsidiaries = FinancialManager.subsidiaries(conn, 'CO')
+        self.assertEqual(len(subsidiaries), 1)
+        self.assertEqual(subsidiaries[0]['code'], 'SUB')
+        self.assertEqual(subsidiaries[0]['ownership'], 0.6)
+        self.assertEqual(subsidiaries[0]['cost'], 60_000)
+
     def test_multi_level_foreign_and_intragroup_eliminations(self):
         self.prepare()
         self.db.currency.execute("INSERT INTO currencies(code,name,reference_rate) VALUES ('AAA','A국 화폐','2')")

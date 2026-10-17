@@ -255,18 +255,61 @@ class FinancialManager:
             if conn.execute("SELECT 1 FROM sqlite_master WHERE name='company_accounts'").fetchone() else None
         if not account:
             return []
-        result = []
+        positions = {}
         for row in conn.execute(
                 "SELECT c.company_code,c.name,c.total_shares,SUM(u.quantity) held,SUM(u.quantity*u.average_cost) cost "
                 "FROM user_assets u JOIN company c ON c.company_code=u.asset_code "
                 "WHERE u.user_id=? AND COALESCE(c.share_class,'common')='common' AND c.company_code<>? "
                 "GROUP BY c.company_code", (account[0], code)).fetchall():
+            positions[row["company_code"]] = {
+                "code": row["company_code"], "name": row["name"],
+                "total_shares": row["total_shares"], "held": float(row["held"] or 0),
+                "cost": Decimal(str(row["cost"] or 0)),
+            }
+        dr_positions = conn.execute(
+            "SELECT d.underlying_code,c.name,c.total_shares,d.quote_currency dr_currency,"
+            "c.quote_currency underlying_currency,"
+            "SUM(u.quantity*d.underlying_per_receipt) held,"
+            "SUM(u.quantity*u.average_cost) dr_cost "
+            "FROM assets.user_assets u JOIN assets.depositary_receipts d ON d.dr_code=u.asset_code "
+            "JOIN company c ON c.company_code=d.underlying_code "
+            "WHERE u.user_id=? AND COALESCE(c.share_class,'common')='common' "
+            "AND c.company_code<>? GROUP BY d.underlying_code,d.quote_currency,c.quote_currency",
+            (str(account[0]), str(code)),
+        ).fetchall()
+        from managers.currency_manager import CurrencyManager
+        from functions.money import round_currency
+        for row in dr_positions:
+            underlying_code = row["underlying_code"]
+            underlying_currency = str(row["underlying_currency"] or "NWX")
+            dr_currency = str(row["dr_currency"] or "NWX")
+            quote = CurrencyManager.quote(conn, dr_currency, underlying_currency)
+            dr_cost = (Decimal(str(row["dr_cost"] or 0)) * Decimal(quote.numerator)
+                       / Decimal(quote.denominator))
+            native_cost = Decimal(str(round_currency(conn, dr_cost, underlying_currency)))
+            position = positions.setdefault(underlying_code, {
+                "code": underlying_code, "name": row["name"],
+                "total_shares": row["total_shares"], "held": 0.0, "cost": Decimal(0),
+            })
+            position["held"] += float(row["held"] or 0)
+            position["cost"] += native_cost
+
+        result = []
+        for row in positions.values():
             own = conn.execute("SELECT COALESCE(SUM(quantity),0) FROM user_assets WHERE user_id=?",
-                               ('company:' + row['company_code'],)).fetchone()[0]
-            outstanding = float(row['total_shares'] or 0) - float(own or 0)  # treasury stock has no vote
+                               ('company:' + row['code'],)).fetchone()[0]
+            own_dr = conn.execute(
+                "SELECT COALESCE(SUM(u.quantity*d.underlying_per_receipt),0) "
+                "FROM assets.user_assets u JOIN assets.depositary_receipts d ON d.dr_code=u.asset_code "
+                "WHERE u.user_id=? AND d.underlying_code=?",
+                ('company:' + row['code'], row['code']),
+            ).fetchone()[0]
+            outstanding = (float(row['total_shares'] or 0) - float(own or 0)
+                           - float(own_dr or 0))  # treasury common shares/DRs carry no vote
             if outstanding > 0 and float(row['held']) / outstanding > 0.5:
-                result.append({'code': row['company_code'], 'name': row['name'],
-                               'ownership': float(row['held']) / outstanding, 'cost': float(row['cost'] or 0)})
+                result.append({'code': row['code'], 'name': row['name'],
+                               'ownership': float(row['held']) / outstanding,
+                               'cost': float(row['cost'] or 0)})
         return result
 
     @staticmethod

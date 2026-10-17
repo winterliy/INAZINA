@@ -257,6 +257,10 @@ class DepositaryReceiptManager:
                      underlying["quote_currency"], underlying_average_cost,
                      underlying["quote_currency"]),
                 )
+                # A DR represents beneficial ownership of its underlying shares
+                # for the simulator's majority-holder/control summary.
+                from managers.user_manager import UserManager
+                UserManager._refresh_max_shareholder(conn, code)
                 return True, (f"✅ DR {action} 전환 완료: {quantity:,} {code} ↔ "
                               f"{shares:,} {underlying_code} 원주 (시뮬레이터 원장)")
         except (ValueError, RuntimeError, KeyError, TypeError, OverflowError) as exc:

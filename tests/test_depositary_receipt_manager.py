@@ -37,6 +37,10 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
         self.assertTrue(ok, message)
         self.assertEqual(self.holding("UNDER"), 0)
         self.assertEqual(self.holding("UNDER_DR"), 3)
+        owner = self.db.companies.execute_one(
+            "SELECT max_shareholder_id FROM company WHERE company_code='UNDER'"
+        )
+        self.assertEqual(owner["max_shareholder_id"], "citizen")
 
         duplicate, _ = self.manager.convert("citizen", "UNDER_DR", "issue", 3, "request-issue")
         self.assertTrue(duplicate)
@@ -47,6 +51,18 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
             )[0],
             1,
         )
+
+        # A secondary-market DR position also counts toward beneficial
+        # ownership of the underlying for the majority-holder summary.
+        self.db.users.create_user("dr-investor", "DR Investor", "낙원", 1_000)
+        self.db.assets.add_user_asset("dr-investor", "UNDER_DR", 4, unit_cost=45)
+        with self.db.atomic() as conn:
+            from managers.user_manager import UserManager
+            UserManager._refresh_max_shareholder(conn, "UNDER_DR")
+        owner = self.db.companies.execute_one(
+            "SELECT max_shareholder_id FROM company WHERE company_code='UNDER'"
+        )
+        self.assertEqual(owner["max_shareholder_id"], "dr-investor")
 
         # Simulate a secondary-market purchase: holder basis differs from the
         # custodian pool's original share basis.
