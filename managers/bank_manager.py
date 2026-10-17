@@ -634,7 +634,7 @@ class BankManager:
 
     @staticmethod
     def _underwriting_metrics(conn, user_id, amount, product, annual_rate, now,
-                              annual_income):
+                              annual_income, stress_rate_shock_bps=200):
         """Return income affordability and repayment-history measures at origination."""
         from managers.currency_manager import CurrencyManager, SCALE
         home_currency = CurrencyManager.home(conn, user_id)
@@ -656,13 +656,16 @@ class BankManager:
         proposed_interest = float(amount) * max(0.0, float(annual_rate or 0)) / 100.0
         proposed_service = proposed_principal_service + proposed_interest
         proposed_stress_delta = 0.0
+        stress_applicable = False
         if product["rate_type"] == "floating":
             cycle = max(1, int(product["repricing_cycle_seconds"] or 31536000))
             if cycle <= 365*86400:
+                stress_applicable = True
                 current = float(annual_rate or 0)
                 upper = (float(product["rate_cap"])
                          if product["rate_cap"] is not None else float("inf"))
-                stressed = min(upper, max(float(product["rate_floor"] or 0), current+2.0))
+                shock_percent = max(0.0, float(stress_rate_shock_bps))/100.0
+                stressed = min(upper, max(float(product["rate_floor"] or 0), current+shock_percent))
                 proposed_stress_delta = max(0.0, stressed-current)
 
         existing_balance = 0
@@ -685,9 +688,11 @@ class BankManager:
             existing_interest += to_home(current_interest, currency)
             if (loan["rate_type"] == "floating" and loan["next_repricing_epoch"] is not None
                     and float(loan["next_repricing_epoch"]) <= horizon):
+                stress_applicable = True
                 current = float(loan["contract_rate"] or 0)
                 upper = float(loan["rate_cap"]) if loan["rate_cap"] is not None else float("inf")
-                stressed = min(upper, max(float(loan["rate_floor"] or 0), current+2.0))
+                shock_percent = max(0.0, float(stress_rate_shock_bps))/100.0
+                stressed = min(upper, max(float(loan["rate_floor"] or 0), current+shock_percent))
                 delta = max(0.0, stressed-current)
                 existing_stress_interest += to_home(balance*delta/100.0, currency)
             scheduled = conn.execute(
@@ -708,8 +713,11 @@ class BankManager:
             # on other debt; DSR includes annual principal and interest for all.
             dti = 100.0 * (proposed_service + existing_interest) / income
             dsr = 100.0 * (proposed_service + existing_service) / income
-            stress_dsr = 100.0*(proposed_service+amount*proposed_stress_delta/100.0
-                                +existing_service+existing_stress_interest)/income
+            stress_dsr = (
+                100.0*(proposed_service+amount*proposed_stress_delta/100.0
+                       +existing_service+existing_stress_interest)/income
+                if stress_applicable else None
+            )
         else:
             dti = dsr = stress_dsr = None
         history_index = min(1.0, (missed + defaults * 5) / 10.0)
@@ -813,6 +821,19 @@ class BankManager:
                 contract_country = (proposed_country if proposed_country and conn.execute(
                     "SELECT 1 FROM country_currencies WHERE nationality=?", (proposed_country,)
                 ).fetchone() else None)
+                stress_country = user["nationality"]
+                if not stress_country or not conn.execute(
+                    "SELECT 1 FROM country_currencies WHERE nationality=?",
+                    (stress_country,),
+                ).fetchone():
+                    stress_country = contract_country
+                stress_policy = (conn.execute(
+                    "SELECT credit_stress_shock_bps FROM country_macro_indicators "
+                    "WHERE nationality=?", (stress_country,),
+                ).fetchone() if contract_country else None)
+                stress_shock_bps = max(0, min(1000, int(
+                    stress_policy["credit_stress_shock_bps"] if stress_policy else 200
+                )))
                 base_credit_adjustment = (
                     float(product['credit_spread_max'] or 0)*(1000-credit_score)/1000
                 )
@@ -823,7 +844,7 @@ class BankManager:
                 underwriting = self._underwriting_metrics(
                     conn, user_id, amount, product,
                     float(product['interest_rate'] or 0)+base_credit_adjustment,
-                    opened_epoch, effective_income,
+                    opened_epoch, effective_income, stress_shock_bps,
                 )
                 max_dti = float(product['max_dti_percent'] or 0)
                 max_dsr = float(product['max_dsr_percent'] or 0)
@@ -842,7 +863,7 @@ class BankManager:
                 if (max_dsr > 0 and underwriting['stress_dsr'] is not None
                         and underwriting['stress_dsr'] > max_dsr+1e-9):
                     return False, (
-                        f"❌ +200bp 금리상승 스트레스 DSR {underwriting['stress_dsr']:.1f}%가 "
+                        f"❌ +{stress_shock_bps}bp 금리상승 스트레스 DSR {underwriting['stress_dsr']:.1f}%가 "
                         f"상품 한도 {max_dsr:g}%를 초과합니다."
                     )
                 affordability_utilization = max(
@@ -891,7 +912,7 @@ class BankManager:
                 # borrower spreads have been applied to the initial scorecard.
                 underwriting = self._underwriting_metrics(
                     conn, user_id, amount, product, contract_rate,
-                    opened_epoch, effective_income,
+                    opened_epoch, effective_income, stress_shock_bps,
                 )
                 if max_dti > 0 and underwriting['dti'] > max_dti+1e-9:
                     return False, (
@@ -906,7 +927,7 @@ class BankManager:
                 if (max_dsr > 0 and underwriting['stress_dsr'] is not None
                         and underwriting['stress_dsr'] > max_dsr+1e-9):
                     return False, (
-                        f"❌ 계약금리 반영 후 +200bp 스트레스 DSR "
+                        f"❌ 계약금리 반영 후 +{stress_shock_bps}bp 스트레스 DSR "
                         f"{underwriting['stress_dsr']:.1f}%가 상품 한도 "
                         f"{max_dsr:g}%를 초과합니다."
                     )
@@ -983,9 +1004,9 @@ class BankManager:
                     "benchmark_key,benchmark_tenor_days,repricing_lag_seconds,contract_effective_rate,"
                     "contract_apr,origination_fee,mandatory_cost_fee,collateral_amount,day_count_convention,"
                     "amortization_type,payment_frequency_days,collateral_asset_value,current_ltv,"
-                    "underwriting_dti,underwriting_dsr,underwriting_stress_dsr,borrower_risk_score,underwriting_income,"
+                    "underwriting_dti,underwriting_dsr,underwriting_stress_dsr,underwriting_stress_shock_bps,borrower_risk_score,underwriting_income,"
                     "origination_pd_12m,quote_currency,prepayment_fee_percent,prepayment_fee_decline_days) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (str(user_id), product_code, amount, amount, opened_epoch, opened_epoch,
                      opened_epoch+int(product['maturity_days'] or 0)*86400
                      if int(product['maturity_days'] or 0)>0 else None,
@@ -1000,7 +1021,7 @@ class BankManager:
                      product['day_count_convention'], product['amortization_type'],
                      int(product['payment_frequency_days'] or 30), asset_collateral_value,
                      (amount/total_collateral_value if total_collateral_value else None),
-                     underwriting['dti'], underwriting['dsr'], underwriting['stress_dsr'], borrower_risk_score,
+                     underwriting['dti'], underwriting['dsr'], underwriting['stress_dsr'], stress_shock_bps, borrower_risk_score,
                      effective_income, origination_pd_12m, home,
                      float(product['prepayment_fee_percent'] or 0),
                      int(product['prepayment_fee_decline_days'] or 0)),

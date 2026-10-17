@@ -916,7 +916,8 @@ def user_loan_schedules(user_id):
     with connect_readonly() as connection:
         loans = [dict(row) for row in connection.execute(
             "SELECT l.loan_id,l.product_code,l.quote_currency,l.outstanding_balance,l.status,"
-            "l.underwriting_dsr,l.underwriting_stress_dsr,l.origination_pd_12m,"
+            "l.underwriting_dsr,l.underwriting_stress_dsr,l.underwriting_stress_shock_bps,"
+            "l.origination_pd_12m,"
             "l.collection_status,l.maturity_epoch,l.stage_cure_since_epoch,"
             "(SELECT e.stage FROM loan_ecl_assessments e WHERE e.loan_id=l.loan_id "
             "ORDER BY e.calculated_epoch DESC,e.assessment_id DESC LIMIT 1) current_ecl_stage,"
@@ -2282,7 +2283,7 @@ def admin_countries():
                 "WHERE nationality=? ORDER BY benchmark_key", (nationality,))]
             macro_indicators = connection.execute(
                 "SELECT inflation_percent,real_gdp_growth_percent,unemployment_percent,"
-                "fiscal_debt_percent,updated_by,updated_epoch "
+                "fiscal_debt_percent,credit_stress_shock_bps,updated_by,updated_epoch "
                 "FROM country_macro_indicators WHERE nationality=?", (nationality,)
             ).fetchone() if _table_exists(connection, "country_macro_indicators") else None
             tax_rules = [dict(item) for item in connection.execute(
@@ -2357,14 +2358,33 @@ def admin_country_action(actor, nationality, payload):
             if not math.isfinite(value) or not low <= value <= high:
                 raise ValueError(f"{key} 범위가 올바르지 않습니다: {low}~{high}")
             values[key] = value
+        raw_shock = payload.get("creditStressShockBps")
+        if raw_shock is None:
+            current = bot.db.users.execute_one(
+                "SELECT credit_stress_shock_bps FROM country_macro_indicators WHERE nationality=?",
+                (nationality,),
+            ) if hasattr(bot.db, "users") else None
+            stress_shock_bps = int(current[0]) if current else 200
+        else:
+            if isinstance(raw_shock, bool):
+                raise ValueError("금리 스트레스 충격은 0~1000bp 정수여야 합니다.")
+            try:
+                parsed_shock = float(raw_shock)
+            except (TypeError, ValueError):
+                raise ValueError("금리 스트레스 충격은 0~1000bp 정수여야 합니다.") from None
+            if not math.isfinite(parsed_shock) or not parsed_shock.is_integer() or not 0 <= parsed_shock <= 1000:
+                raise ValueError("금리 스트레스 충격은 0~1000bp 정수여야 합니다.")
+            stress_shock_bps = int(parsed_shock)
+        values["creditStressShockBps"] = stress_shock_bps
         with bot.db.atomic() as connection:
             bot.admin_control.require(actor, connection)
             cursor = connection.execute(
                 "UPDATE country_macro_indicators SET inflation_percent=?,"
                 "real_gdp_growth_percent=?,unemployment_percent=?,fiscal_debt_percent=?,"
+                "credit_stress_shock_bps=?,"
                 "updated_by=?,updated_epoch=? WHERE nationality=?",
                 (values["inflationPercent"], values["realGdpGrowthPercent"],
-                 values["unemploymentPercent"], values["fiscalDebtPercent"],
+                 values["unemploymentPercent"], values["fiscalDebtPercent"], stress_shock_bps,
                  str(actor), time.time(), nationality),
             )
             if cursor.rowcount != 1:
@@ -2372,7 +2392,8 @@ def admin_country_action(actor, nationality, payload):
             bot.admin_control._audit(connection, actor, "country.macro_indicators", {
                 "nationality": nationality, **values,
             })
-        result = f"✅ {nationality} 거시 지표를 저장했습니다. 시장금리 재산정에 반영됩니다."
+        result = (f"✅ {nationality} 거시 지표를 저장했습니다. 시장금리 재산정과 "
+                  f"신규 변동금리 대출의 +{stress_shock_bps}bp DSR 스트레스 심사에 반영됩니다.")
     elif action == "treasury":
         from functions.admin_prefix import ActionModal
         from database.db_manager import DBManager

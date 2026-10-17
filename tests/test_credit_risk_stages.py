@@ -111,7 +111,7 @@ class DefaultedLoanEclTests(unittest.TestCase):
             "SELECT COUNT(*) count FROM bank_journal_entries WHERE event_type='expected_credit_loss'"
         )["count"], 1)
 
-    def test_matured_monthly_pd_backtest_compares_realized_defaults(self):
+    def test_matured_pd_backtest_uses_one_snapshot_per_loan(self):
         sample_epoch = 1_700_000_000.0
         loan_id = self.db.accounts.execute_one(
             "SELECT loan_id FROM loans WHERE product_code='ECL3'"
@@ -136,7 +136,10 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.assertEqual((group["sampleCount"], group["observedDefaults"]), (1, 1))
         self.assertEqual(group["pdBand"], "5–20%")
         self.assertEqual(group["observedDefaultRate"], 1)
+        self.assertAlmostEqual(group["observedRateLower95"], .2065, places=3)
+        self.assertEqual(group["observedRateUpper95"], 1)
         self.assertAlmostEqual(group["brierScore"], .81)
+        self.assertIn("per loan", report["method"])
 
     def test_zero_effective_rate_has_no_discount(self):
         self.db.accounts.execute(

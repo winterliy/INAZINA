@@ -85,9 +85,19 @@ class CurrencyDB(DBManager):
             real_gdp_growth_percent REAL NOT NULL DEFAULT 2 CHECK(real_gdp_growth_percent BETWEEN -100 AND 100),
             unemployment_percent REAL NOT NULL DEFAULT 5 CHECK(unemployment_percent BETWEEN 0 AND 100),
             fiscal_debt_percent REAL NOT NULL DEFAULT 60 CHECK(fiscal_debt_percent BETWEEN 0 AND 1000),
+            credit_stress_shock_bps INTEGER NOT NULL DEFAULT 200 CHECK(credit_stress_shock_bps BETWEEN 0 AND 1000),
             updated_by TEXT NOT NULL DEFAULT 'system',
             updated_epoch REAL NOT NULL DEFAULT 0
         )""")
+        macro_columns = {row[1] for row in self.execute(
+            "PRAGMA table_info(country_macro_indicators)"
+        )}
+        if "credit_stress_shock_bps" not in macro_columns:
+            self.execute(
+                "ALTER TABLE country_macro_indicators ADD COLUMN "
+                "credit_stress_shock_bps INTEGER NOT NULL DEFAULT 200 "
+                "CHECK(credit_stress_shock_bps BETWEEN 0 AND 1000)"
+            )
         self.execute(
             "INSERT OR IGNORE INTO country_macro_indicators(nationality) "
             "SELECT nationality FROM country_currencies"

@@ -975,6 +975,66 @@ class RealisticRateSystemTests(unittest.TestCase):
             )/SCALE
         self.assertEqual(metrics["existing_balance"], expected)
 
+    def test_country_stress_shock_is_applied_and_persisted_at_origination(self):
+        self.add_loan(code="COUNTRY-SHOCK", maturity=365, collateral_ratio=0,
+                      origination_fee=0)
+        self.db.products.execute(
+            "UPDATE liability SET max_dsr_percent=100 WHERE product_code='COUNTRY-SHOCK'"
+        )
+        self.db.users.execute(
+            "UPDATE users SET annual_income=100000 WHERE user_id='borrower'"
+        )
+        self.db.currency.execute(
+            "UPDATE country_macro_indicators SET credit_stress_shock_bps=400 "
+            "WHERE nationality='낙원'"
+        )
+        self.assertTrue(BankManager(self.db).apply_loan(
+            "borrower", "COUNTRY-SHOCK", 10_000
+        )[0])
+        loan = self.db.accounts.execute_one(
+            "SELECT underwriting_dsr,underwriting_stress_dsr,"
+            "underwriting_stress_shock_bps FROM loans WHERE product_code='COUNTRY-SHOCK'"
+        )
+        self.assertEqual(loan["underwriting_stress_shock_bps"], 400)
+        self.assertAlmostEqual(
+            loan["underwriting_stress_dsr"]-loan["underwriting_dsr"], .4, places=4
+        )
+
+    def test_fixed_rate_loan_has_no_repricing_stress_dsr(self):
+        self.add_loan(code="FIXED-DSR", collateral_ratio=0, origination_fee=0)
+        self.db.products.execute(
+            "UPDATE liability SET rate_type='fixed' WHERE product_code='FIXED-DSR'"
+        )
+        product = self.db.products.get_liability("FIXED-DSR")
+        with self.db.atomic() as conn:
+            metrics = BankManager._underwriting_metrics(
+                conn, "borrower", 10_000, product, 5, 1_800_000_000, 100_000, 400,
+            )
+        self.assertIsNone(metrics["stress_dsr"])
+
+    def test_country_stress_shock_reprices_existing_variable_debt_in_dsr(self):
+        now = 1_800_000_000
+        self.add_loan(code="CANDIDATE", collateral_ratio=0, origination_fee=0)
+        self.db.products.execute(
+            "UPDATE liability SET rate_type='fixed' WHERE product_code='CANDIDATE'"
+        )
+        self.add_loan(code="EXISTING-FLOAT", collateral_ratio=0, origination_fee=0)
+        self.db.accounts.execute(
+            "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,status,"
+            "contract_rate,rate_type,quote_currency,next_repricing_epoch) "
+            "VALUES ('borrower','EXISTING-FLOAT',10000,10000,'active',5,'floating','NWX',?)",
+            (now+30*86400,),
+        )
+        self.db.users.execute(
+            "UPDATE users SET annual_income=100000 WHERE user_id='borrower'"
+        )
+        product = self.db.products.get_liability("CANDIDATE")
+        with self.db.atomic() as conn:
+            metrics = BankManager._underwriting_metrics(
+                conn, "borrower", 10_000, product, 5, now, 100_000, 400,
+            )
+        self.assertAlmostEqual(metrics["stress_dsr"]-metrics["dsr"], .4, places=4)
+
     def test_mandatory_finance_cost_is_included_in_legal_maximum(self):
         self.add_loan(code="COSTCAP", collateral_ratio=0, origination_fee=0)
         self.db.products.execute(

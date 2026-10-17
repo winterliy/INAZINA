@@ -181,6 +181,7 @@ class AccountDB(DBManager):
             ("underwriting_dti", "REAL"),
             ("underwriting_dsr", "REAL"),
             ("underwriting_stress_dsr", "REAL"),
+            ("underwriting_stress_shock_bps", "INTEGER NOT NULL DEFAULT 200 CHECK(underwriting_stress_shock_bps BETWEEN 0 AND 1000)"),
             ("borrower_risk_score", "REAL"),
             ("origination_pd_12m", "REAL CHECK(origination_pd_12m IS NULL OR (origination_pd_12m >= 0 AND origination_pd_12m <= 1))"),
             ("stage_cure_since_epoch", "REAL"),

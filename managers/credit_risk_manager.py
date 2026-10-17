@@ -18,7 +18,7 @@ class CreditRiskManager:
 
     @classmethod
     def backtest_12m(cls, conn, nationality=None, *, issuer=None, now=None):
-        """Compare matured, monthly PD snapshots with observed 12-month defaults.
+        """Compare each loan's latest matured PD snapshot with 12-month defaults.
 
         This is a compact calibration diagnostic, not an independent validation:
         snapshots are sampled from the simulator's own scorecard and defaults.
@@ -32,7 +32,7 @@ class CreditRiskManager:
         rows = conn.execute(
             "WITH ranked AS ("
             " SELECT a.loan_id,a.pd_12m,a.calculated_epoch,l.defaulted_epoch,u.nationality,p.issuer,"
-            " ROW_NUMBER() OVER (PARTITION BY a.loan_id,strftime('%Y-%m',a.calculated_epoch,'unixepoch') "
+            " ROW_NUMBER() OVER (PARTITION BY a.loan_id "
             " ORDER BY a.calculated_epoch DESC,a.assessment_id DESC) AS month_rank "
             " FROM loan_ecl_assessments a "
             " JOIN loans l ON l.loan_id=a.loan_id "
@@ -65,14 +65,23 @@ class CreditRiskManager:
         result = []
         for (bank, country, band), stats in sorted(grouped.items()):
             count = stats["count"]
+            observed_rate = stats["defaults"]/count
+            z = 1.959963984540054
+            denominator = 1+(z*z/count)
+            center = (observed_rate+(z*z/(2*count)))/denominator
+            margin = z*math.sqrt(
+                observed_rate*(1-observed_rate)/count+(z*z/(4*count*count))
+            )/denominator
             result.append({"issuer": bank, "nationality": country, "pdBand": band,
                            "sampleCount": count, "observedDefaults": stats["defaults"],
                            "meanPredictedPd": stats["predicted"]/count,
-                           "observedDefaultRate": stats["defaults"]/count,
+                           "observedDefaultRate": observed_rate,
+                           "observedRateLower95": max(0.0, center-margin),
+                           "observedRateUpper95": min(1.0, center+margin),
                            "brierScore": stats["brier"]/count})
         return {"issuer": issuer, "horizonDays": 365,
                 "maturedThroughEpoch": epoch-horizon, "groups": result,
-                "method": "most recent Stage 1/2 assessment per loan-month; includes only snapshots with a full 365-day outcome window; outcome is recorded default within the following 12 months; capped at 5000 observations; simulator-only calibration diagnostic"}
+                "method": "most recent matured Stage 1/2 assessment per loan; includes only snapshots with a full 365-day outcome window; outcome is recorded default within the following 12 months; capped at 5000 loans; Wilson intervals are loan-level approximations and do not cluster multiple loans by borrower; simulator-only calibration diagnostic"}
 
 
     @staticmethod
