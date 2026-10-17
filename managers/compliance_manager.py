@@ -210,16 +210,18 @@ class ComplianceManager:
                                                    str(source_currency), home_currency))
         current_amount = Decimal(converted_units)/Decimal(SCALE)
         recent = conn.execute(
-            "SELECT source_currency,source_units FROM currency_transfer_transactions "
-            "WHERE sender_id=? AND recorded_epoch>=? ORDER BY transaction_id DESC",
-            (str(user_id), when-86400),
+            "SELECT CASE WHEN sender_id=? THEN source_currency ELSE target_currency END currency,"
+            "CASE WHEN sender_id=? THEN source_units ELSE target_units END units "
+            "FROM currency_transfer_transactions WHERE (sender_id=? OR recipient_id=?) "
+            "AND recorded_epoch>=? AND recorded_epoch<=? ORDER BY transaction_id DESC",
+            (str(user_id), str(user_id), str(user_id), str(user_id), when-86400, when),
         ).fetchall()
         rolling_units = 0
         for row in recent:
-            units = int(row["source_units"] or 0)
-            if str(row["source_currency"]) != home_currency:
+            units = int(row["units"] or 0)
+            if str(row["currency"]) != home_currency:
                 units = CurrencyManager.convert(
-                    conn, units, str(row["source_currency"]), home_currency
+                    conn, units, str(row["currency"]), home_currency
                 )
             rolling_units += units
         rolling_amount = Decimal(rolling_units)/Decimal(SCALE)
@@ -235,12 +237,14 @@ class ComplianceManager:
             flags.append("rolling_24h_count")
         opened = []
         for rule_code in flags:
+            alert_amount = (rolling_amount if rule_code == "rolling_24h_amount"
+                            else current_amount)
             cursor = conn.execute(
                 "INSERT OR IGNORE INTO aml_alerts(user_id,nationality,rule_code,"
                 "reference_key,currency_code,amount,opened_epoch) VALUES (?,?,?,?,?,?,?)",
                 (str(user_id), str(nationality), rule_code,
                  f"transfer:{int(transaction_id)}", home_currency,
-                 float(current_amount), when),
+                 float(alert_amount), when),
             )
             if cursor.rowcount != 1:
                 continue

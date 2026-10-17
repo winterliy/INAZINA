@@ -7,6 +7,7 @@ import test_inazina as fixtures
 from database.user_db import TREASURY_USER_ID
 from database.currency_db import CurrencyDB
 from managers.currency_manager import CurrencyManager, SCALE
+from managers.compliance_manager import ComplianceManager
 from managers.admin_commands_manager import AdminCommandsManager
 from functions.currency_display import native_summary
 from functions.discord_views import InfoPanelView
@@ -103,6 +104,32 @@ class CurrencyHomeTests(unittest.TestCase):
         self.assertEqual(self.db.accounts.get_account(number)['balance_units'],90*SCALE)
         with self.db.atomic() as conn:
             self.assertEqual(CurrencyManager.balance(conn,'citizen','AAA'),1_029_400*SCALE)
+
+    def test_aml_monitors_sender_and_recipient_in_their_home_currencies(self):
+        cmd=self.configure()
+        self.db.users.create_user('recipient','수취인','미국',1000)
+        cmd.execute('admin','기본소득','미국 100')
+        self.db.system.set_setting('currency_exchange_fee_percent','0')
+        with self.db.atomic() as conn:
+            ComplianceManager.configure_aml_rule(
+                conn,'미국','admin',large_transaction_limit=10,
+                rolling_24h_amount_limit=35,enabled=True
+            )
+        self.bot.currency_mgr.transfer('citizen','recipient','30')
+        self.bot.currency_mgr.transfer('citizen','recipient','10')
+        alerts=self.db.currency.execute(
+            "SELECT user_id,rule_code,currency_code,amount FROM aml_alerts "
+            "ORDER BY user_id,opened_epoch"
+        )
+        recipient_alerts=[r for r in alerts if r['user_id']=='recipient']
+        self.assertEqual(
+            [(r['rule_code'],r['currency_code']) for r in recipient_alerts],
+            [('large_transaction','AAA'), ('large_transaction','AAA'),
+             ('rolling_24h_amount','AAA')],
+        )
+        self.assertEqual([r['amount'] for r in recipient_alerts],[30,10,40])
+        sender_alerts=[r for r in alerts if r['user_id']=='citizen']
+        self.assertEqual(len(sender_alerts),3)
 
     def test_migration_is_idempotent_and_all_product_denominations_present(self):
         self.configure();before=self.db.users.get_user('citizen')['cash']

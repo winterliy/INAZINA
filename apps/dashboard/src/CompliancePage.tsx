@@ -159,7 +159,7 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
       </tbody></table>{!data.eclAssessments.length && <p className="empty">아직 ECL 평가가 없습니다.</p>}</div>
     </Card>
 
-    <Card title="미종결 AML 경보" caption="거래가 자동 차단되는 것은 아닙니다. 각 경보 검토 후 추가 조치가 필요하면 별도 절차를 적용하세요.">
+    <Card title="미종결 AML 경보" caption="송금인·수취인 양쪽을 감시합니다. 24시간 누적액 규칙의 금액은 경보 시점 누적합이며, 그 밖의 규칙은 해당 거래액입니다. 거래가 자동 차단되는 것은 아니며, 추가 조치는 별도 절차로 진행하세요.">
       <div className="scroll-x"><table><thead><tr><th>ID</th><th>사용자</th><th>국적</th><th>규칙</th><th>거래 참조</th><th className="r">금액</th><th>상태</th><th>종결 결과</th><th>접수</th><th /></tr></thead><tbody>
         {data.amlAlerts.map((item) => <tr key={item.alert_id}><td className="mono">#{item.alert_id}</td><td className="mono">{item.user_id}</td><td>{item.nationality}</td><td>{item.rule_code}</td><td className="mono">{item.reference_key}</td><td className="r mono">{groupAmount(item.amount_text)} {item.currency_code}</td><td>{item.status}</td><td><select aria-label={`AML 경보 #${item.alert_id} 종결 결과`} value={outcomes[item.alert_id] || "no_action"} onChange={(event) => setOutcomes({ ...outcomes, [item.alert_id]: event.target.value })}>{OUTCOMES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></td><td>{date(item.opened_epoch)}</td><td className="row-actions"><button className="soft small" disabled={busy || item.status === "reviewing"} onClick={() => reviewAlert(item, false)}>검토 시작</button><button className="soft small" disabled={busy} onClick={() => reviewAlert(item, true)}>종결</button></td></tr>)}
       </tbody></table>{!data.amlAlerts.length && <p className="empty">미종결 경보가 없습니다.</p>}</div>

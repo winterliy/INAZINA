@@ -424,16 +424,24 @@ class CurrencyExchangeManager:
                 (sender,dst[4],source_account,recipient,src[5],dst[5],units,output,fee,now))
             transfer_id = int(transfer_cursor.lastrowid)
             if sender != dst[4]:
-                nationality = conn.execute(
-                    "SELECT nationality FROM users.users WHERE user_id=?", (sender,)
-                ).fetchone()
-                if nationality:
-                    from managers.compliance_manager import ComplianceManager
-                    ComplianceManager.monitor_transfer(
-                        conn, user_id=sender, nationality=nationality["nationality"],
-                        transaction_id=transfer_id, source_units=units,
-                        source_currency=src[5], now=now,
-                    )
+                from managers.compliance_manager import ComplianceManager
+                for monitored_user, monitored_units, monitored_currency in (
+                    (sender, units, src[5]), (dst[4], output, dst[5]),
+                ):
+                    if CurrencyManager.is_treasury(conn, monitored_user):
+                        continue
+                    nationality = conn.execute(
+                        "SELECT nationality FROM users.users WHERE user_id=?",
+                        (monitored_user,),
+                    ).fetchone()
+                    if nationality:
+                        ComplianceManager.monitor_transfer(
+                            conn, user_id=monitored_user,
+                            nationality=nationality["nationality"],
+                            transaction_id=transfer_id,
+                            source_units=monitored_units,
+                            source_currency=monitored_currency, now=now,
+                        )
 
             def institution_for_account(number):
                 if number is None:
