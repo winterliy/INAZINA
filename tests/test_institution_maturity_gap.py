@@ -136,11 +136,51 @@ class InstitutionMaturityGapTests(unittest.TestCase):
                                places=2)
         self.assertIn("not a regulatory IRRBB", report["method"])
 
+    def test_demand_deposits_have_zero_duration_and_unknown_loan_maturity_is_reported(self):
+        self.db.accounts.execute(
+            "UPDATE accounts SET rate_type='fixed' WHERE account_number='A1'"
+        )
+        self.db.products.execute(
+            "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"
+            "interest_cycle,compound_type,issuer,quote_currency) "
+            "VALUES ('SDEMAND','Demand deposit',0,0,0,86400,0,'Bank','NWX')"
+        )
+        self.db.accounts.execute(
+            "INSERT INTO accounts(account_number,user_id,product_code,balance,principal,"
+            "account_type,quote_currency,balance_units,created_at,rate_type,resolution_status) "
+            "VALUES ('AD','u1','SDEMAND',200,200,'saving','NWX',0,datetime(?,'unixepoch'),"
+            "'fixed','active')", (self.now,),
+        )
+        self.db.products.execute(
+            "INSERT INTO liability(product_code,name,interest_rate,loan_limit,maturity_days,"
+            "interest_cycle,min_credit_score,issuer,quote_currency,rate_type) "
+            "VALUES ('LNO','No maturity',5,10000,0,86400,0,'Bank','USD','fixed')"
+        )
+        self.db.accounts.execute(
+            "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,status,"
+            "collection_status,quote_currency,rate_type) "
+            "VALUES ('u1','LNO',100,100,'active','current','USD','fixed')"
+        )
+        with self.db.readonly() as conn:
+            report = RateManager.institution_fixed_rate_eve_stress(
+                conn, "Bank", now=self.now
+            )
+        by_currency = {row["currency"]: row for row in report["scenarios"]}
+        self.assertEqual(by_currency["NWX"]["fixedDeposits"], 2)
+        self.assertAlmostEqual(by_currency["NWX"]["liabilityDurationAmountYears"],
+                               500*30/365)
+        self.assertEqual(by_currency["USD"]["fixedLoans"], 0)
+        self.assertEqual(by_currency["USD"]["loansWithoutMaturity"], 1)
+
     def test_empty_or_invalid_request_is_safe(self):
         with self.db.readonly() as conn:
             self.assertEqual(RateManager.institution_maturity_gap(conn, "Missing", now=self.now)["ladders"], [])
             with self.assertRaises(ValueError):
                 RateManager.institution_maturity_gap(conn, "Bank", now=float("nan"))
+            with self.assertRaises(ValueError):
+                RateManager.institution_fixed_rate_eve_stress(
+                    conn, "Bank", now=float("nan")
+                )
 
     def test_depositor_concentration_aggregates_multiple_accounts_by_user(self):
         self.db.products.execute(
