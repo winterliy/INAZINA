@@ -124,6 +124,39 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             3 * SCALE,
         )
 
+    def test_foreign_account_opening_posts_both_currency_legs_to_bank_journal(self):
+        from managers.bank_journal import BankJournal
+
+        self.db.products.execute(
+            "UPDATE saving SET issuer='FXBank' WHERE product_code='FX_EUR'"
+        )
+        number = CurrencyExchangeManager(self.db).open_account(
+            'us-user', 'FX_EUR', password='1234', deposit_amount='3.25'
+        )
+        issuer = self.db.products.execute_one(
+            "SELECT issuer FROM saving WHERE product_code='FX_EUR'"
+        )[0]
+
+        with self.db.atomic() as conn:
+            report = BankJournal.reconcile_customer_deposits(conn, issuer)
+            trial = BankJournal.trial_balance(conn, issuer)
+            account = conn.execute(
+                "SELECT balance_units,quote_currency FROM accounts WHERE account_number=?",
+                (number,),
+            ).fetchone()
+
+        self.assertEqual((account['balance_units'], account['quote_currency']),
+                         (325 * SCALE // 100, 'EUR'))
+        self.assertEqual({row['currency_code']: row['status'] for row in report}['EUR'],
+                         'matched')
+        totals = {}
+        for row in trial:
+            totals[row['currency_code']] = totals.get(row['currency_code'], 0) + row['balance_units']
+        self.assertIn('USD', totals)
+        self.assertIn('EUR', totals)
+        self.assertEqual(totals['USD'], 0)
+        self.assertEqual(totals['EUR'], 0)
+
 
 class LegacyCurrencySchemaMigrationTests(unittest.TestCase):
     def test_source_tax_rule_fk_survives_legacy_negative_rate_table_rebuild(self):

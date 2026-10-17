@@ -127,6 +127,27 @@ class CurrencyExchangeManager:
                 conn.execute('INSERT INTO currency_transactions(user_id,source_currency,target_currency,source_units,target_units,fee_nwx,recorded_epoch) VALUES (?,?,?,?,?,?,?)',
                              (str(user_id), home, product['quote_currency'], cost_units, deposit_units, 0, opened_epoch))
                 CurrencyManager.ensure_liquidity_state(conn, product['quote_currency'])
+                # The opening deposit is a foreign-currency liability funded by
+                # home-currency cash. Keep both currency legs balanced separately
+                # through the bank's FX conversion clearing account.
+                from managers.bank_journal import BankJournal
+                BankJournal.post(
+                    conn, product['issuer'], "fx_account_open_funding",
+                    f"account:{number}:funding:home", home,
+                    [("settlement_asset", "debit", Decimal(cost_units) / SCALE),
+                     ("fx_conversion_clearing", "credit", Decimal(cost_units) / SCALE)],
+                    description=f"Foreign-currency account {number} funded from home cash",
+                    now=opened_epoch,
+                )
+                BankJournal.post(
+                    conn, product['issuer'], "fx_account_open_funding",
+                    f"account:{number}:funding:{product['quote_currency']}",
+                    product['quote_currency'],
+                    [("fx_conversion_clearing", "debit", Decimal(deposit_units) / SCALE),
+                     ("customer_deposits_payable", "credit", Decimal(deposit_units) / SCALE)],
+                    description=f"Foreign-currency account {number} opened",
+                    now=opened_epoch,
+                )
             return number
 
     @staticmethod
