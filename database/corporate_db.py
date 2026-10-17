@@ -112,7 +112,11 @@ class CorporateDB(DBManager):
             register_id INTEGER NOT NULL REFERENCES shareholder_registers(register_id),
             user_id TEXT NOT NULL,
             quantity REAL NOT NULL CHECK(quantity > 0),
+            tax_residency TEXT,
             PRIMARY KEY(register_id, user_id))''')
+        register_entry_columns = {row[1] for row in self.execute("PRAGMA table_info('shareholder_register_entries')")}
+        if 'tax_residency' not in register_entry_columns:
+            self.execute('ALTER TABLE shareholder_register_entries ADD COLUMN tax_residency TEXT')
         self.execute('''CREATE TABLE IF NOT EXISTS shareholder_register_dr_entries (
             register_id INTEGER NOT NULL REFERENCES shareholder_registers(register_id),
             user_id TEXT NOT NULL,
@@ -125,7 +129,24 @@ class CorporateDB(DBManager):
             dr_code TEXT NOT NULL,
             payout_currency TEXT NOT NULL,
             quantity REAL NOT NULL CHECK(quantity > 0),
+            tax_residency TEXT,
             PRIMARY KEY(register_id,user_id,dr_code))''')
+        dr_entitlement_columns = {row[1] for row in self.execute("PRAGMA table_info('shareholder_register_dr_entitlements')")}
+        if 'tax_residency' not in dr_entitlement_columns:
+            self.execute('ALTER TABLE shareholder_register_dr_entitlements ADD COLUMN tax_residency TEXT')
+        self.execute('''CREATE TABLE IF NOT EXISTS user_tax_residency_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id TEXT NOT NULL,
+            old_residency TEXT,
+            new_residency TEXT,
+            source TEXT NOT NULL,
+            recorded_epoch INTEGER NOT NULL)''')
+        self.execute('''CREATE TRIGGER IF NOT EXISTS user_tax_residency_events_no_update
+            BEFORE UPDATE ON user_tax_residency_events BEGIN
+            SELECT RAISE(ABORT,'tax_residency_events_are_immutable'); END''')
+        self.execute('''CREATE TRIGGER IF NOT EXISTS user_tax_residency_events_no_delete
+            BEFORE DELETE ON user_tax_residency_events BEGIN
+            SELECT RAISE(ABORT,'tax_residency_events_are_immutable'); END''')
         self.execute('CREATE INDEX IF NOT EXISTS idx_register_dr_entitlement_user ON shareholder_register_dr_entitlements(register_id,user_id,payout_currency)')
         self.execute('CREATE INDEX IF NOT EXISTS idx_registers_due ON shareholder_registers(status, pay_epoch)')
         self.execute('''CREATE TABLE IF NOT EXISTS dividend_distributions (
@@ -155,7 +176,8 @@ class CorporateDB(DBManager):
             net_amount_units INTEGER NOT NULL CHECK(net_amount_units >= 0),
             quote_currency TEXT NOT NULL,
             created_epoch INTEGER NOT NULL,
-            UNIQUE(distribution_id,user_id,quote_currency))''')
+            allocation_key TEXT NOT NULL DEFAULT 'legacy',
+            UNIQUE(distribution_id,user_id,quote_currency,allocation_key))''')
         # Cross-border DR withholding is versioned: administrators append rules,
         # while paid receipts retain the exact rule and jurisdictions used.
         self.execute('''CREATE TABLE IF NOT EXISTS dr_dividend_tax_rules (
@@ -181,6 +203,7 @@ class CorporateDB(DBManager):
             payment_id INTEGER NOT NULL UNIQUE,
             distribution_id INTEGER NOT NULL,
             rule_id INTEGER,
+            dr_code TEXT NOT NULL,
             issuer_nationality TEXT NOT NULL,
             underlying_nationality TEXT NOT NULL,
             recipient_nationality TEXT NOT NULL,
@@ -234,6 +257,38 @@ class CorporateDB(DBManager):
                 except Exception:
                     self.conn.rollback()
                     raise
+        payment_columns = {row[1] for row in self.execute("PRAGMA table_info('dividend_payments')")}
+        if 'allocation_key' not in payment_columns:
+            with self.lock:
+                self.conn.execute('BEGIN IMMEDIATE')
+                try:
+                    self.conn.execute('''CREATE TABLE dividend_payments_v3 (
+                        payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        distribution_id INTEGER NOT NULL REFERENCES dividend_distributions(distribution_id),
+                        user_id TEXT NOT NULL,
+                        quantity INTEGER NOT NULL CHECK(quantity > 0),
+                        gross_amount INTEGER NOT NULL CHECK(gross_amount >= 0),
+                        tax_amount INTEGER NOT NULL CHECK(tax_amount >= 0),
+                        net_amount_units INTEGER NOT NULL CHECK(net_amount_units >= 0),
+                        quote_currency TEXT NOT NULL,
+                        created_epoch INTEGER NOT NULL,
+                        allocation_key TEXT NOT NULL DEFAULT 'legacy',
+                        UNIQUE(distribution_id,user_id,quote_currency,allocation_key))''')
+                    self.conn.execute('''INSERT INTO dividend_payments_v3
+                        (payment_id,distribution_id,user_id,quantity,gross_amount,tax_amount,
+                         net_amount_units,quote_currency,created_epoch,allocation_key)
+                        SELECT payment_id,distribution_id,user_id,quantity,gross_amount,tax_amount,
+                               net_amount_units,quote_currency,created_epoch,'legacy'
+                        FROM dividend_payments''')
+                    self.conn.execute('DROP TABLE dividend_payments')
+                    self.conn.execute('ALTER TABLE dividend_payments_v3 RENAME TO dividend_payments')
+                    self.conn.commit()
+                except Exception:
+                    self.conn.rollback()
+                    raise
+        withholding_columns = {row[1] for row in self.execute("PRAGMA table_info('dr_dividend_withholding_events')")}
+        if 'dr_code' not in withholding_columns:
+            self.execute("ALTER TABLE dr_dividend_withholding_events ADD COLUMN dr_code TEXT NOT NULL DEFAULT ''")
         self.execute('''CREATE INDEX IF NOT EXISTS idx_dividend_distributions_asset
             ON dividend_distributions(asset_code,created_epoch)''')
         self.execute('''CREATE INDEX IF NOT EXISTS idx_dividend_payments_user

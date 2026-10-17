@@ -117,7 +117,11 @@ class ShareholderRegisterTests(unittest.TestCase):
             f"PRAGMA index_info('{unique['name']}')"
         )
         self.assertEqual([column['name'] for column in columns],
-                         ['distribution_id', 'user_id', 'quote_currency'])
+                         ['distribution_id', 'user_id', 'quote_currency', 'allocation_key'])
+        migrated_payment = self.db.corporate.execute_one(
+            'SELECT allocation_key FROM dividend_payments WHERE distribution_id=?', (distribution,)
+        )
+        self.assertEqual(migrated_payment['allocation_key'], 'legacy')
         migrated_db.close()
 
     def test_same_currency_dr_holders_receive_underlying_dividend_entitlement(self):
@@ -249,13 +253,71 @@ class ShareholderRegisterTests(unittest.TestCase):
                                                         selected, 'SIM-TEST', '20', due))
         self.assertNotEqual(payment['rule_id'], old)
         self.assertEqual(self.cash('admin') - before, 24)
-        report = DrDividendTaxManager.reconciliation(self.db.corporate.conn)
-        self.assertEqual(report['unloggedPaymentCount'], 0)
-        self.assertEqual(report['currencies'][0]['difference_minor_units'], 0)
         with self.assertRaisesRegex(Exception, 'dr_tax_rules_are_immutable'):
             self.db.corporate.execute("UPDATE dr_dividend_tax_rules SET tax_rate_percent='1' WHERE rule_id=?", (selected,))
         with self.assertRaisesRegex(Exception, 'dr_tax_rules_are_immutable'):
             self.db.corporate.execute("DELETE FROM dr_dividend_tax_rules WHERE rule_id=?", (selected,))
+
+    def test_same_currency_dividend_keeps_each_dr_program_rule_and_journals_tax(self):
+        from managers.bank_journal import BankJournal
+        from managers.dr_dividend_tax_manager import DrDividendTaxManager
+        due = 100_000
+        self.prepare(due)
+        for exchange, nationality, code, receipts in (
+            ('EX_A', 'Aland', 'CO_DR_A', 2), ('EX_B', 'Boria', 'CO_DR_B', 3),
+        ):
+            self.db.system.execute(
+                "INSERT INTO market_exchanges(exchange_id,status,updated_epoch,nationality) "
+                "VALUES (?, 'open', 1, ?)", (exchange, nationality),
+            )
+            self.db.assets.execute(
+                "INSERT INTO depositary_receipts(dr_code,underlying_code,listing_exchange_id,"
+                "quote_currency,underlying_per_receipt,receipt_supply,deposited_underlying_quantity) "
+                "VALUES (?, 'CO', ?, 'NWX', 2, 100, 200)", (code, exchange),
+            )
+            self.db.assets.register_asset(code, code, exchange, 200, 'depositary_receipt', 100)
+            self.db.assets.add_user_asset('admin', code, receipts)
+        self.db.assets.add_user_asset('admin', 'CO', 2)
+        self.db.users.execute("UPDATE users SET tax_residency='OldRes' WHERE user_id='admin'")
+        with self.db.corporate.atomic() as conn:
+            rule_a = DrDividendTaxManager.create_rule(conn, 'admin', {
+                'rule_name': 'Aland DR', 'issuer_nationality': 'Aland',
+                'underlying_nationality': '낙원', 'recipient_nationality': '낙원',
+                'recipient_residency': 'OldRes', 'tax_rate_percent': '10',
+                'effective_from': 1,
+            }, now=1)
+            rule_b = DrDividendTaxManager.create_rule(conn, 'admin', {
+                'rule_name': 'Boria DR', 'issuer_nationality': 'Boria',
+                'underlying_nationality': '낙원', 'recipient_nationality': '낙원',
+                'recipient_residency': 'OldRes', 'tax_rate_percent': '30',
+                'effective_from': 1,
+            }, now=1)
+
+        before = self.cash('admin')
+        self.manager.process_due(now=due - 600)
+        self.db.users.execute("UPDATE users SET tax_residency='NewRes' WHERE user_id='admin'")
+        self.manager.process_due(now=due)
+        payments = self.db.corporate.execute(
+            "SELECT p.allocation_key,p.quantity,p.gross_amount,p.tax_amount,p.net_amount_units,"
+            "e.dr_code,e.rule_id FROM dividend_payments p LEFT JOIN dr_dividend_withholding_events e "
+            "USING(payment_id) WHERE p.user_id='admin' ORDER BY p.allocation_key"
+        )
+        self.assertEqual([(row['allocation_key'], row['gross_amount'], row['tax_amount'],
+                           row['rule_id']) for row in payments], [
+            ('dr:CO_DR_A', 20, 2, rule_a), ('dr:CO_DR_B', 30, 9, rule_b),
+            ('stock', 10, 0, None),
+        ])
+        self.assertEqual(self.cash('admin') - before, 49)
+        self.assertEqual([row['dr_code'] for row in payments],
+                         ['CO_DR_A', 'CO_DR_B', None])
+        self.assertEqual(BankJournal.audit_unbalanced(self.db.corporate.conn), [])
+        journal = self.db.corporate.execute_one(
+            "SELECT COUNT(*) count FROM bank_journal_entries WHERE event_type='dr_dividend_payment'"
+        )
+        self.assertEqual(journal['count'], 2)  # One payment journal for each DR program.
+        report = DrDividendTaxManager.reconciliation(self.db.corporate.conn)
+        self.assertEqual(report['unloggedPaymentCount'], 0)
+        self.assertEqual(report['currencies'][0]['difference_minor_units'], 0)
 
     def test_special_dividend_closes_register_now_and_pays_ten_minutes_later(self):
         self.prepare()

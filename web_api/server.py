@@ -979,8 +979,10 @@ def user_dividend_payments(user_id, limit=100):
     with connect_readonly() as connection:
         rows = connection.execute(
             "SELECT p.payment_id,d.asset_code,p.quantity,p.gross_amount,p.tax_amount,"
-            "p.net_amount_units,p.quote_currency,p.created_epoch,d.dividend_kind "
+            "p.net_amount_units,p.quote_currency,p.created_epoch,d.dividend_kind,p.allocation_key,"
+            "e.dr_code,e.rule_id,e.treaty_code,e.tax_rate_percent "
             "FROM dividend_payments p JOIN dividend_distributions d USING(distribution_id) "
+            "LEFT JOIN dr_dividend_withholding_events e USING(payment_id) "
             "WHERE p.user_id=? ORDER BY p.created_epoch DESC,p.payment_id DESC LIMIT ?",
             (str(user_id), max(1, min(100, int(limit)))),
         ).fetchall()
@@ -988,6 +990,50 @@ def user_dividend_payments(user_id, limit=100):
         for row in result:
             row['decimal_places'] = currency_precision(connection, row['quote_currency'])
     return result
+
+
+def user_tax_residency_profile(user_id):
+    domain()
+    with connect_readonly() as connection:
+        row = connection.execute(
+            "SELECT nationality,tax_residency FROM users WHERE user_id=?", (str(user_id),)
+        ).fetchone()
+        if not row:
+            raise ValueError("user_not_found")
+        countries = [item[0] for item in connection.execute(
+            "SELECT nationality FROM country_currencies ORDER BY nationality"
+        )]
+    return {"nationality": row["nationality"], "taxResidency": row["tax_residency"],
+            "countries": countries}
+
+
+def set_user_tax_residency(user_id, residency):
+    domain()
+    value = str(residency or "").strip() or None
+    if value is not None and len(value) > 100:
+        raise ValueError("invalid_tax_residency")
+    now = int(time.time())
+    with connect_db() as connection:
+        with connection:
+            user = connection.execute(
+                "SELECT nationality,tax_residency FROM users WHERE user_id=?", (str(user_id),)
+            ).fetchone()
+            if not user:
+                raise ValueError("user_not_found")
+            if value and not connection.execute(
+                "SELECT 1 FROM country_currencies WHERE nationality=?", (value,)
+            ).fetchone():
+                raise ValueError("unknown_tax_residency")
+            old = user["tax_residency"]
+            connection.execute("UPDATE users SET tax_residency=? WHERE user_id=?",
+                               (value, str(user_id)))
+            if old != value:
+                connection.execute(
+                    "INSERT INTO user_tax_residency_events(user_id,old_residency,new_residency,source,recorded_epoch) "
+                    "VALUES (?,?,?,?,?)", (str(user_id), old, value, "self_service", now),
+                )
+    return {"nationality": user["nationality"], "taxResidency": value,
+            "effectiveForFutureRegisters": True}
 
 
 def user_loan_schedules(user_id):
@@ -3036,6 +3082,12 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     self.send_json(200, {"payments": user_dividend_payments(user["userId"])})
+            elif path == "/internal/me/tax-residency":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "user":
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    self.send_json(200, user_tax_residency_profile(user["userId"]))
             elif path == "/internal/me/loan-schedules":
                 user = identity(internal_user_id(self))
                 if not user:
@@ -3403,6 +3455,16 @@ class Handler(BaseHTTPRequestHandler):
                     nickname=payload.get("nickname", ""), country_id=payload.get("countryId", ""),
                 )
                 self.send_json(201, {"user": user})
+                return
+            if path == "/internal/me/tax-residency":
+                user = identity(verified_id)
+                if not user or user["role"] != "user":
+                    self.send_json(403, {"error": "active_user_required"})
+                    return
+                if set(payload) != {"residency"}:
+                    raise ValueError("invalid_tax_residency_payload")
+                result = set_user_tax_residency(user["userId"], payload["residency"])
+                self.send_json(200, result)
                 return
             if path == "/internal/auth/password/reset":
                 user = save_password(verified_id, payload.get("password"))

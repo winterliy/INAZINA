@@ -25,7 +25,8 @@ type LoanSchedule = { schedule_id: number; installment_number: number; due_epoch
 type LoanRateReset = { old_rate: number; new_rate: number; scheduled_epoch: number; applied_epoch: number; benchmark_key: string; benchmark_tenor_days: number };
 const RATE_BENCHMARK_LABELS: Record<string, string> = { policy: "정책금리", funding: "조달금리", bank_bond: "은행채 수익률", treasury: "국채 수익률" };
 type LoanScheduleView = { loan_id: number; product_code: string; quote_currency: string; decimal_places: number; outstanding_balance: number; status: string; rate_type: string; contract_rate: number | null; next_repricing_epoch: number | null; benchmark_key: string | null; benchmark_tenor_days: number; repricing_lag_seconds: number; collection_status: string; maturity_epoch: number | null; stage_cure_since_epoch: number | null; underwriting_dsr: number | null; underwriting_stress_dsr: number | null; underwriting_stress_shock_bps: number; underwriting_fx_stress_shock_percent: number; origination_pd_12m: number | null; current_ecl_stage: number | null; current_ecl_pd_12m: number | null; installments: LoanSchedule[]; rate_resets: LoanRateReset[] };
-type DividendPayment = { payment_id: number; asset_code: string; dividend_kind: "regular" | "special"; quantity: number; gross_amount: number; tax_amount: number; net_amount_units: number; quote_currency: string; decimal_places: number; created_epoch: number };
+type DividendPayment = { payment_id: number; asset_code: string; dividend_kind: "regular" | "special"; quantity: number; gross_amount: number; tax_amount: number; net_amount_units: number; quote_currency: string; decimal_places: number; created_epoch: number; allocation_key?: string; dr_code?: string | null; rule_id?: number | null; treaty_code?: string | null; tax_rate_percent?: string | null };
+type TaxResidency = { nationality: string | null; taxResidency: string | null; countries: string[] };
 type Holding = { code: string; name: string; qty: number; price: number; value: number; type: string | null; quote_currency?: string; sell_reserved_qty?: number; is_collateral?: boolean };
 type Portfolio = { cash: number; grand_total: number; net_worth: number; loan_total: number; order_reserved_total: number; stock_total: number; account_total: number; bond_total?: number; national_currency?: string; nationality?: string; home_rate_nwx?: number; home_decimal_places?: number; wallets?: Wallet[]; stocks: Holding[]; accounts?: AccountDetail[]; deposit_insurance_claims?: DepositInsuranceClaim[]; kyc_profile?: KycProfile | null };
 type Order = { order_id: number; asset_code: string; side: string; limit_price: number; quantity: number; remaining_quantity: number; filled_quantity: number; status: string; quote_currency?: string };
@@ -77,6 +78,9 @@ export default function App() {
   const [settingsMessage, setSettingsMessage] = useState("");
   const [settingsError, setSettingsError] = useState("");
   const [settingsBusy, setSettingsBusy] = useState(false);
+  const [taxResidency, setTaxResidency] = useState<TaxResidency | null>(null);
+  const [taxResidencyOpen, setTaxResidencyOpen] = useState(false);
+  const [taxResidencyValue, setTaxResidencyValue] = useState("");
   const [range, setRange] = useState<string>("1d");
   const [chartMode, setChartMode] = useState<"candle" | "line">("candle");
   const [interval, setIntervalSeconds] = useState<number | null>(null);
@@ -130,19 +134,40 @@ export default function App() {
   }, []);
 
   const refreshAccount = useCallback(async () => {
-    const [wallet, orderData, loanData, dividendData, custodyData] = await Promise.all([
+    const [wallet, orderData, loanData, dividendData, custodyData, taxResidencyData] = await Promise.all([
       api<{ portfolio: Portfolio }>("/api/me/portfolio"),
       api<{ orders: Order[] }>("/api/market/orders"),
       api<{ loans: LoanScheduleView[] }>("/api/me/loan-schedules"),
       api<{ payments: DividendPayment[] }>("/api/me/dividend-payments"),
       api<{ instructions: DrCustodyInstruction[] }>("/api/me/dr/conversions"),
+      api<TaxResidency>("/api/me/tax-residency"),
     ]);
     setPortfolio(wallet.portfolio);
     setOrders(orderData.orders);
     setLoanSchedules(loanData.loans);
     setDividendPayments(dividendData.payments);
     setDrCustodyInstructions(custodyData.instructions);
+    setTaxResidency(taxResidencyData);
+    setTaxResidencyValue(taxResidencyData.taxResidency ?? "");
   }, []);
+
+  async function saveTaxResidency(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSettingsBusy(true);
+    setSettingsError("");
+    setSettingsMessage("");
+    try {
+      const saved = await api<{ taxResidency: string | null }>("/api/me/tax-residency", {
+        method: "POST", body: JSON.stringify({ residency: taxResidencyValue || null }),
+      });
+      setTaxResidency((current) => current ? { ...current, taxResidency: saved.taxResidency } : current);
+      setSettingsMessage("세무거주지를 저장했습니다. 이후 확정되는 주주명부부터 적용됩니다.");
+    } catch (cause) {
+      setSettingsError(errorText(cause, "세무거주지를 저장하지 못했습니다."));
+    } finally {
+      setSettingsBusy(false);
+    }
+  }
 
   useEffect(() => {
     void fetch("/api/health").then((response) => response.json()).then((result) => setHealth(result.python === "connected" ? "연결됨" : "Python 연결 끊김")).catch(() => setHealth("연결 끊김"));
@@ -442,6 +467,16 @@ export default function App() {
           <strong>{money(portfolio?.cash ?? user.cash, homeDigits)} <small>{homeCurrency}</small></strong>
           <p>총자산 {money(inHome(portfolio?.grand_total ?? 0), homeDigits)} · 순자산 {money(inHome(portfolio?.net_worth ?? 0), homeDigits)} {homeCurrency}</p>
           {portfolio?.kyc_profile && <p>KYC · {KYC_STATUS[portfolio.kyc_profile.status]} · {KYC_RISK[portfolio.kyc_profile.risk_tier]}{portfolio.kyc_profile.expires_epoch ? ` · 만료 ${date(portfolio.kyc_profile.expires_epoch)}` : ""}</p>}
+          <button type="button" className="text-button" onClick={() => setTaxResidencyOpen((open) => !open)}>세무거주지 · {taxResidency?.taxResidency || `국적(${taxResidency?.nationality ?? user.nationality}) 사용 중`} 변경</button>
+          {taxResidencyOpen && <form className="account-form tax-residency-form" onSubmit={saveTaxResidency}>
+            <label>세무거주 국가<select value={taxResidencyValue} onChange={(event) => setTaxResidencyValue(event.target.value)}>
+              <option value="">국적 기본값 사용 ({taxResidency?.nationality ?? user.nationality})</option>
+              {(taxResidency?.countries ?? []).map((country) => <option key={country} value={country}>{country}</option>)}
+            </select></label>
+            <p className="account-hint">시뮬레이터 세칙 선택에 사용합니다. 증빙 확인이나 법률상 거주자 판정은 수행하지 않습니다.</p>
+            {settingsMessage && <p className="account-success" role="status">{settingsMessage}</p>}{settingsError && <p className="account-error" role="alert">{settingsError}</p>}
+            <button className="account-save" disabled={settingsBusy}>{settingsBusy ? "저장 중…" : "세무거주지 저장"}</button>
+          </form>}
         </section>
         <div className="wallet-actions">
           <button onClick={() => setCommandsOpen("송금")}>송금</button>
@@ -483,7 +518,7 @@ export default function App() {
         </section>}
         {dividendPayments.length > 0 && <section className="data-panel holdings-panel"><div className="panel-title"><h2>최근 배당 수령</h2><span>최근 {dividendPayments.length}건</span></div>
           <div className="holdings">{dividendPayments.slice(0, 12).map((payment) => <div className="holding" key={payment.payment_id}>
-            <span><b>{payment.asset_code} · {payment.dividend_kind === "special" ? "특별배당" : "정기배당"}</b><small>{date(payment.created_epoch)} · {money(payment.quantity, 3)}주 · 세전 {money(payment.gross_amount, payment.decimal_places)} · 세금 {money(payment.tax_amount, payment.decimal_places)} {payment.quote_currency}</small></span>
+            <span><b>{payment.asset_code} · {payment.dr_code ? `DR ${payment.dr_code}` : payment.allocation_key === "stock" ? "원주" : "배당"} · {payment.dividend_kind === "special" ? "특별배당" : "정기배당"}</b><small>{date(payment.created_epoch)} · {money(payment.quantity, 3)}주 · 세전 {money(payment.gross_amount, payment.decimal_places)} · 세금 {money(payment.tax_amount, payment.decimal_places)} {payment.quote_currency}{payment.rule_id ? ` · ${payment.tax_rate_percent}% (${payment.treaty_code ?? `규칙 #${payment.rule_id}`})` : ""}</small></span>
             <strong>{money(payment.net_amount_units / UNIT_SCALE, payment.decimal_places)} <em>{payment.quote_currency}</em></strong>
           </div>)}</div>
           <p className="orders-hint">통화별 지급액 기준 최근 100건입니다. DR 교차통화 배당은 실제 배당통화로 환산된 지급을 표시합니다.</p>

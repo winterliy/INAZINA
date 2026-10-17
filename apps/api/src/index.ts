@@ -696,6 +696,17 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  if (url.pathname === "/api/me/tax-residency") {
+    const result = request.method === "GET"
+      ? await internalGet("/internal/me/tax-residency", principal.userId)
+      : request.method === "POST"
+        ? await internalRequest("POST", "/internal/me/tax-residency", principal.userId,
+          await requestJson(request))
+        : { status: 405, body: { error: "method_not_allowed" } };
+    send(response, result.status, result.body);
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/me/dr/movements") {
     const result = await internalGet("/internal/me/dr/movements", principal.userId);
     send(response, result.status, result.body);

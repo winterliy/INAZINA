@@ -24,7 +24,7 @@ class WebApiTests(unittest.TestCase):
                 CREATE TABLE users (
                     user_id TEXT PRIMARY KEY, nickname TEXT, nationality TEXT,
                     cash INTEGER DEFAULT 0, credit_score INTEGER DEFAULT 700,
-                    status TEXT DEFAULT 'active', role TEXT DEFAULT 'user');
+                    status TEXT DEFAULT 'active', role TEXT DEFAULT 'user', tax_residency TEXT);
                 CREATE TABLE admin_audit (
                     audit_id INTEGER PRIMARY KEY AUTOINCREMENT, actor_id TEXT NOT NULL,
                     action TEXT NOT NULL, payload TEXT NOT NULL, recorded_epoch REAL NOT NULL);
@@ -33,6 +33,8 @@ class WebApiTests(unittest.TestCase):
                     salt TEXT NOT NULL, password_hash TEXT NOT NULL, created_epoch INTEGER NOT NULL,
                     updated_epoch INTEGER NOT NULL, auth_version INTEGER NOT NULL DEFAULT 0, hts_id TEXT);
                 CREATE TABLE country_currencies (nationality TEXT PRIMARY KEY, currency_code TEXT NOT NULL);
+                CREATE TABLE user_tax_residency_events(event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT,old_residency TEXT,new_residency TEXT,source TEXT,recorded_epoch INTEGER);
                 CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                 CREATE TRIGGER settings_rate_check BEFORE UPDATE ON settings
                     WHEN NEW.key='base_rate' AND CAST(NEW.value AS REAL) NOT BETWEEN -100 AND 100
@@ -66,6 +68,24 @@ class WebApiTests(unittest.TestCase):
         self.assertFalse(server.dr_reference_metrics(21.99, 10, 2, 1)["referenceDeviationAlert"])
         self.assertTrue(server.dr_reference_metrics(18, 10, 2, 1)["referenceDeviationAlert"])
         self.assertEqual(server.dr_reference_metrics(float("nan"), 10, 2, 1), {})
+
+    def test_user_can_set_tax_residency_with_append_only_change_event(self):
+        self.execute("INSERT INTO users(user_id,nickname,nationality) VALUES ('alice','Alice','낙원')")
+        self.execute("INSERT INTO country_currencies VALUES ('Boria','BR')")
+        with patch.object(server, "domain"):
+            result = server.set_user_tax_residency("alice", "Boria")
+            self.assertEqual(result, {
+                "nationality": "낙원", "taxResidency": "Boria",
+                "effectiveForFutureRegisters": True,
+            })
+            self.assertEqual(server.user_tax_residency_profile("alice")["taxResidency"], "Boria")
+            event = self.execute(
+                "SELECT old_residency,new_residency,source FROM user_tax_residency_events "
+                "WHERE user_id='alice'"
+            )[0]
+            self.assertEqual(tuple(event), (None, "Boria", "self_service"))
+            with self.assertRaisesRegex(ValueError, "unknown_tax_residency"):
+                server.set_user_tax_residency("alice", "Unknown")
 
     def test_compliance_overview_exposes_ecl_discount_factor(self):
         with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
@@ -399,11 +419,17 @@ class WebApiTests(unittest.TestCase):
                 dividend_kind TEXT);
             CREATE TABLE dividend_payments(payment_id INTEGER PRIMARY KEY,distribution_id INTEGER,
                 user_id TEXT,quantity REAL,gross_amount REAL,tax_amount REAL,net_amount_units INTEGER,
-                quote_currency TEXT,created_epoch INTEGER);
+                quote_currency TEXT,created_epoch INTEGER,allocation_key TEXT DEFAULT 'legacy');
+            CREATE TABLE dr_dividend_withholding_events(payment_id INTEGER,dr_code TEXT,rule_id INTEGER,
+                treaty_code TEXT,tax_rate_percent TEXT);
             INSERT INTO dividend_distributions VALUES (1,'KO_DR','regular');
             INSERT INTO dividend_distributions VALUES (2,'KO_DR','special');
-            INSERT INTO dividend_payments VALUES (10,1,'alice',2,0.02,0,20000,'USD',100);
-            INSERT INTO dividend_payments VALUES (11,2,'bob',5,50,0,50000000,'NWX',200);
+            INSERT INTO dividend_payments(payment_id,distribution_id,user_id,quantity,gross_amount,
+                tax_amount,net_amount_units,quote_currency,created_epoch)
+                VALUES (10,1,'alice',2,0.02,0,20000,'USD',100);
+            INSERT INTO dividend_payments(payment_id,distribution_id,user_id,quantity,gross_amount,
+                tax_amount,net_amount_units,quote_currency,created_epoch)
+                VALUES (11,2,'bob',5,50,0,50000000,'NWX',200);
         """)
         with patch.object(server, "domain"), patch.object(
             server, "connect_readonly", return_value=closing(connection)

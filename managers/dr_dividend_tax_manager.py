@@ -95,14 +95,23 @@ class DrDividendTaxManager:
             "SELECT e.*,p.user_id,p.quantity,p.quote_currency FROM dr_dividend_withholding_events e "
             "JOIN dividend_payments p USING(payment_id) ORDER BY e.event_id DESC LIMIT ?",
             (max(1, min(200, int(limit))),))]
-        return {"currencies": rows, "payments": payments,
+        journal = [dict(row) for row in conn.execute(
+            "SELECT e.currency_code,COUNT(DISTINCT e.entry_id) entry_count,"
+            "SUM(l.debit_units) debit_minor_units,SUM(l.credit_units) credit_minor_units,"
+            "SUM(l.debit_units)-SUM(l.credit_units) difference_minor_units "
+            "FROM bank_journal_entries e JOIN bank_journal_lines l USING(entry_id) "
+            "WHERE e.issuer LIKE 'DR_DIVIDEND:%' AND e.event_type='dr_dividend_payment' "
+            "AND e.status='posted' GROUP BY e.currency_code ORDER BY e.currency_code")]
+        return {"currencies": rows, "payments": payments, "journal": journal,
                 "unloggedPaymentCount": conn.execute(
-                    "SELECT COUNT(*) FROM dividend_payments p JOIN depositary_receipts r "
+                "SELECT COUNT(DISTINCT p.payment_id) FROM dividend_payments p JOIN depositary_receipts r "
                     "ON r.underlying_code=(SELECT asset_code FROM dividend_distributions d "
                     "WHERE d.distribution_id=p.distribution_id) JOIN dividend_distributions d "
                     "ON d.distribution_id=p.distribution_id JOIN shareholder_registers sr "
                     "ON sr.operation_key=d.operation_key JOIN shareholder_register_dr_entitlements h "
                     "ON h.register_id=sr.register_id AND h.user_id=p.user_id "
-                    "AND h.payout_currency=p.quote_currency WHERE NOT EXISTS "
+                    "AND h.payout_currency=p.quote_currency "
+                    "AND (p.allocation_key='legacy' OR h.dr_code=SUBSTR(p.allocation_key,4)) "
+                    "WHERE NOT EXISTS "
                     "(SELECT 1 FROM dr_dividend_withholding_events e WHERE e.payment_id=p.payment_id)"
                 ).fetchone()[0]}
