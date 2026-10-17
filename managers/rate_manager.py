@@ -947,6 +947,60 @@ class RateManager:
                 "method": "contractual maturity; native-currency; 10/25/50% deposit runoff sensitivity; excludes cash/HQLA, behavioral calibration and off-balance-sheet flows"}
 
     @staticmethod
+    def institution_liquidity_stress(conn, issuer, *, now=None):
+        """Return a cash/reserve and 30-day runoff coverage proxy, not regulatory LCR."""
+        issuer = str(issuer or "").strip()
+        if not issuer:
+            raise ValueError("financial_institution_not_found")
+        epoch = float(time.time() if now is None else now)
+        if not math.isfinite(epoch) or epoch < 0:
+            raise ValueError("invalid_liquidity_stress_epoch")
+        horizon = epoch+30*86400
+        sheet = RateManager.institution_balance_sheet(conn, issuer)
+        base = str(sheet["base_currency"])
+        from managers.currency_manager import CurrencyManager, SCALE
+        from functions.money import currency_precision, round_currency
+
+        inflows = 0.0
+        for row in conn.execute(
+            "SELECT l.quote_currency,SUM(MAX(0,s.principal_due+s.interest_due+s.fee_due-"
+            "s.amount_paid)) amount FROM loans l JOIN liability p ON p.product_code=l.product_code "
+            "JOIN loan_payment_schedule s ON s.loan_id=l.loan_id "
+            "WHERE p.issuer=? AND l.status='active' AND l.collection_status='current' "
+            "AND s.status IN ('scheduled','partial') AND s.due_epoch>=? AND s.due_epoch<=? "
+            "GROUP BY l.quote_currency", (issuer, epoch, horizon),
+        ).fetchall():
+            amount = max(0.0, float(row["amount"] or 0))*.50
+            currency = str(row["quote_currency"] or base)
+            if currency != base:
+                amount = CurrencyManager.convert(
+                    conn, int(round(amount*SCALE)), currency, base
+                )/SCALE
+            inflows += amount
+        terms = RateManager.institution_components(conn, issuer)
+        hqla_proxy = max(
+            0.0, float(sheet["deposits"])+float(terms["effective_equity"])-float(sheet["loans"])
+        )
+        scenarios = []
+        for runoff_percent in (5, 10, 20, 40):
+            outflow = max(0.0, float(sheet["deposits"]))*runoff_percent/100.0
+            net_outflow = max(0.0, outflow-inflows)
+            scenarios.append({
+                "runoffPercent": runoff_percent,
+                "depositOutflow": round_currency(conn, outflow, base),
+                "eligibleInflows": round_currency(conn, inflows, base),
+                "netOutflow": round_currency(conn, net_outflow, base),
+                "availableLiquidityProxy": round_currency(conn, hqla_proxy, base),
+                "coveragePercent": (100.0*hqla_proxy/net_outflow if net_outflow > 0 else None),
+            })
+        return {"issuer": issuer, "asOfEpoch": epoch, "horizonDays": 30,
+                "currency": base, "decimalPlaces": currency_precision(conn, base),
+                "availableLiquidityProxy": round_currency(conn, hqla_proxy, base),
+                "eligibleInflows": round_currency(conn, inflows, base),
+                "scenarios": scenarios,
+                "method": "available liquidity proxy=max(0,deposits+effective equity-loans); 50% of scheduled performing loan payments due within 30 days; deposit runoff scenarios 5/10/20/40%; excludes security HQLA, encumbrance, intraday flows, behavioral calibration, derivative/off-balance-sheet flows and regulatory haircuts; not LCR"}
+
+    @staticmethod
     def institution_rate_stress(conn, issuer, *, now=None):
         """Estimate next-12-month NII sensitivity, respecting contract rate bounds."""
         issuer = str(issuer or "").strip()

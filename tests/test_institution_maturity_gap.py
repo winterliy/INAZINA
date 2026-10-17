@@ -53,6 +53,11 @@ class InstitutionMaturityGapTests(unittest.TestCase):
             "VALUES ('u1','L90',1000,900,'active',datetime(?,'unixepoch'),?,'USD','floating',?,'USA',86400,5,3,5.5)",
             (self.now, self.now + 90 * 86400, self.now + 30 * 86400)
         )
+        self.db.accounts.execute(
+            "INSERT INTO loan_payment_schedule(loan_id,installment_number,due_epoch,"
+            "principal_due,interest_due,fee_due,amount_paid,status) "
+            "VALUES (1,1,?,100,10,2,12,'scheduled')", (self.now+20*86400,)
+        )
 
     def tearDown(self):
         self.db.close()
@@ -63,6 +68,7 @@ class InstitutionMaturityGapTests(unittest.TestCase):
         with self.db.readonly() as conn:
             report = RateManager.institution_maturity_gap(conn, "Bank", now=self.now)
             rate_stress = RateManager.institution_rate_stress(conn, "Bank", now=self.now)
+            liquidity = RateManager.institution_liquidity_stress(conn, "Bank", now=self.now)
             fx_stress = RateManager.institution_fx_stress(conn, "Bank", now=self.now)
         self.assertEqual({row["currency"] for row in report["ladders"]}, {"NWX", "USD"})
         by_currency = {row["currency"]: row["buckets"] for row in report["ladders"]}
@@ -79,6 +85,12 @@ class InstitutionMaturityGapTests(unittest.TestCase):
         self.assertEqual(nwx_up["liabilityInterestChange"], 1)
         self.assertEqual(usd_up["assetInterestChange"], 0.74)
         self.assertEqual(usd_up["netInterestIncomeChange"], 0.74)
+        self.assertEqual(liquidity["eligibleInflows"], 50)
+        stress_20 = next(row for row in liquidity["scenarios"] if row["runoffPercent"] == 20)
+        self.assertEqual(stress_20["depositOutflow"], 100)
+        self.assertEqual(stress_20["netOutflow"], 50)
+        self.assertGreater(stress_20["coveragePercent"], 100)
+        self.assertIn("not LCR", liquidity["method"])
         self.assertEqual(len(fx_stress["positions"]), 1)
         usd_fx = fx_stress["positions"][0]
         self.assertEqual(usd_fx["currency"], "USD")
