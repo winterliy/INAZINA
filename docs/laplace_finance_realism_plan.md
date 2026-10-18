@@ -113,6 +113,8 @@
 
 대출 계약 현금흐름 산출과 회차 지급 배분(`_loan_cashflows`, `_allocate_schedule_payment`, `_apply_schedule_installment`)은 이제 원금 분배·잔액 이월·수수료→이자→원금 배분 중간값을 계약통화 최소단위 정수로 처리하고, 저장/기존 호출 경계에서만 legacy 금액값으로 변환한다. USD 센트 단위 통합 테스트가 현금흐름 원금 총액, 분할배분과 금액 snapshot을 확인한다. 상환 스케줄 DB 열과 다수의 이자/상환 호출부는 아직 legacy 수치 필드를 사용하므로 전체 대출 금액 경로의 canonical-unit 이관은 미완료다.
 
+`BankJournal.reconcile_loan_payment_schedules`는 대출 상환표를 계약통화 최소단위로 환산해 회차별 `amount_paid == fee_paid + interest_paid + principal_paid`, 각 지급 구성요소가 해당 예정액을 넘지 않는지, `paid` 상태가 총 예정액과 일치하는지 검사한다. 이 검사는 기관 통합 대사에도 포함되며 USD 센트 기준 정상/불일치 탐지 테스트가 추가됐다. 이는 상환표 내부 불변식 검사이지 은행 현금·고객 지갑·대출 원장의 전사 현금흐름 대사는 아니다. M4 완료 체크 항목은 아직 모두 미체크다.
+
 ### M5 — #74 신용위험·ECL·심사
 
 - [x] 차주별 등급/PD 전이, 관할과 상품별 기준, 보증·공동차주·연결차주를 모델링한다. 첫 평가→최근 평가 등급 전이표는 차주별 immutable ECL 스냅샷을 집계한다.

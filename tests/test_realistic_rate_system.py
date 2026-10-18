@@ -665,7 +665,7 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(set(report["coverage"]), {
             "institution_pnl", "customer_deposits", "loan_receivables",
             "ecl_allowances", "charged_off_memo_balances",
-            "deposit_insurance_claims", "journal_invariants",
+            "loan_payment_schedules", "deposit_insurance_claims", "journal_invariants",
         })
         self.assertFalse(report["findings"])
 
@@ -963,6 +963,17 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual((second["amount_paid"], second["fee_paid"],
                           second["interest_paid"], second["principal_paid"]),
                          (.04, .03, .01, 0))
+        with self.db.readonly() as conn:
+            self.assertEqual(BankJournal.reconcile_loan_payment_schedules(conn, "Bank"), [])
+        self.db.accounts.execute(
+            "UPDATE loan_payment_schedule SET amount_paid=4.24 WHERE schedule_id=?",
+            (schedule_id,),
+        )
+        with self.db.readonly() as conn:
+            findings = BankJournal.reconcile_loan_payment_schedules(conn, "Bank")
+        self.assertEqual(findings[0]["schedule_id"], schedule_id)
+        self.assertEqual(findings[0]["allocated_minor_units"], 425)
+        self.assertEqual(findings[0]["amount_paid_minor_units"], 424)
         cashflows = BankManager._loan_cashflows(
             100.01, 6, 90, 30, "equal_principal", start_epoch=1_800_000_000,
             decimal_places=2,

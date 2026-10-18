@@ -289,6 +289,48 @@ class BankJournal:
                  else "mismatch"} for currency in currencies]
 
     @staticmethod
+    def reconcile_loan_payment_schedules(conn, issuer):
+        """Check payment schedule allocation identities against their due amounts.
+
+        This is a schedule-internal control, not a substitute for reconciling
+        cash movements to the journal. Values are compared in contract-currency
+        minor units so currencies with different scales are handled correctly.
+        """
+        from functions.money import currency_precision, to_minor_units
+
+        rows = conn.execute(
+            "SELECT s.*,l.quote_currency FROM accounts.loan_payment_schedule s "
+            "JOIN accounts.loans l USING(loan_id) "
+            "JOIN product.liability p USING(product_code) WHERE p.issuer=? "
+            "ORDER BY s.schedule_id", (str(issuer),),
+        ).fetchall()
+        findings = []
+        for row in rows:
+            currency = str(row["quote_currency"] or "NWX").upper()
+            places = currency_precision(conn, currency)
+            units = lambda field: to_minor_units(row[field] or 0, places)
+            due = sum(units(field) for field in ("principal_due", "interest_due", "fee_due"))
+            paid_components = sum(units(field) for field in
+                                  ("principal_paid", "interest_paid", "fee_paid"))
+            paid = units("amount_paid")
+            overallocated = any(units(paid_field) > units(due_field) for due_field, paid_field in (
+                ("principal_due", "principal_paid"),
+                ("interest_due", "interest_paid"),
+                ("fee_due", "fee_paid"),
+            ))
+            status_invalid = row["status"] == "paid" and paid != due
+            if paid != paid_components or paid > due or overallocated or status_invalid:
+                findings.append({
+                    "schedule_id": int(row["schedule_id"]),
+                    "loan_id": int(row["loan_id"]), "currency_code": currency,
+                    "amount_paid_minor_units": paid,
+                    "allocated_minor_units": paid_components,
+                    "due_minor_units": due,
+                    "status": "mismatch",
+                })
+        return findings
+
+    @staticmethod
     def reconcile_deposit_insurance_claims(conn, issuer):
         """Compare resolved claim totals with the two posted liability accounts."""
         from functions.money import currency_precision, round_currency
@@ -348,6 +390,9 @@ class BankJournal:
             "loan_receivables": BankJournal.reconcile_loan_receivables(conn, issuer),
             "ecl_allowances": BankJournal.reconcile_ecl_allowances(conn, issuer),
             "charged_off_memo_balances": BankJournal.reconcile_charged_off_balances(conn, issuer),
+            "loan_payment_schedules": BankJournal.reconcile_loan_payment_schedules(
+                conn, issuer
+            ),
             "deposit_insurance_claims": BankJournal.reconcile_deposit_insurance_claims(
                 conn, issuer
             ),
