@@ -1533,6 +1533,7 @@ class BankManager:
             with self.db.atomic(("users", "accounts", "product")) as conn:
                 loans = conn.execute(
                     "SELECT l.loan_id, l.user_id, l.product_code, l.outstanding_balance, "
+                    "l.outstanding_balance_minor_units, "
                     "l.last_repayment_epoch, p.name AS product_name, p.issuer, "
                     "p.repayment_cycle_seconds, p.repayment_amount, l.amortization_type,"
                     "l.quote_currency "
@@ -1825,36 +1826,51 @@ class BankManager:
 
     @classmethod
     def _process_due_schedule(cls, conn, loan, now):
+        from functions.money import currency_precision, from_minor_units, to_minor_units
+
         rows = conn.execute(
             "SELECT * FROM accounts.loan_payment_schedule WHERE loan_id=? "
             "AND due_epoch<=? AND status NOT IN ('paid','waived') "
             "ORDER BY installment_number",
             (loan["loan_id"], now),
         ).fetchall()
-        balance = round_currency(
-            conn, loan["outstanding_balance"] or 0, loan["quote_currency"]
-        )
-        paid_count = missed_count = paid_amount = 0
+        currency = str(loan["quote_currency"] or "NWX")
+        places = currency_precision(conn, currency)
+
+        def units(row, field):
+            minor_field = f"{field}_minor_units"
+            if minor_field in row.keys():
+                return max(0, int(row[minor_field] or 0))
+            return max(0, to_minor_units(row[field] or 0, places))
+
+        def amount_value(value):
+            exact = from_minor_units(value, places)
+            return int(exact) if places == 0 else float(exact)
+
+        balance = (max(0, int(loan["outstanding_balance_minor_units"] or 0))
+                   if "outstanding_balance_minor_units" in loan.keys()
+                   else max(0, to_minor_units(loan["outstanding_balance"] or 0, places)))
+        paid_count = missed_count = paid_amount_units = 0
         for row in rows:
-            contractual = (float(row["principal_due"] or 0)
-                           + float(row["interest_due"] or 0)
-                           + float(row["fee_due"] or 0))
-            due = min(balance, max(0, contractual-float(row["amount_paid"] or 0)))
+            contractual = sum(units(row, field) for field in
+                              ("principal_due", "interest_due", "fee_due"))
+            due = min(balance, max(0, contractual-units(row, "amount_paid")))
             if due <= 0:
                 conn.execute(
                     "UPDATE accounts.loan_payment_schedule SET status='paid',paid_epoch=? "
                     "WHERE schedule_id=?", (now, row["schedule_id"]),
                 )
                 continue
+            due_amount = amount_value(due)
             funds = UserFunds.choose(
-                conn, str(loan["user_id"]), loan["quote_currency"]
+                conn, str(loan["user_id"]), currency
             )
-            if funds and funds[0] >= due and UserFunds.debit(
-                conn, str(loan["user_id"]), funds[1], due
+            if funds and funds[0] >= due_amount and UserFunds.debit(
+                conn, str(loan["user_id"]), funds[1], due_amount
             ):
                 balance -= due
                 paid_count += 1
-                paid_amount += due
+                paid_amount_units += due
                 cured = row["status"] == "missed"
                 CreditScoreManager.record(
                     conn, loan["user_id"], "payment_cured" if cured else "payment_on_time",
@@ -1866,13 +1882,13 @@ class BankManager:
                 BankJournal.post(
                     conn, loan["issuer"], "loan_repayment",
                     f"loan:{loan['loan_id']}:schedule:{row['schedule_id']}",
-                    loan["quote_currency"],
-                    [("settlement_asset", "debit", due),
-                     ("loans_receivable", "credit", due)],
+                    currency,
+                    [("settlement_asset", "debit", due_amount),
+                     ("loans_receivable", "credit", due_amount)],
                     description=f"Scheduled repayment for loan {loan['loan_id']}",
                     now=now,
                 )
-                cls._apply_schedule_installment(conn, row["schedule_id"], due, now)
+                cls._apply_schedule_installment(conn, row["schedule_id"], due_amount, now)
             else:
                 newly_missed = row["status"] != "missed"
                 missed_count += int(newly_missed)
@@ -1892,7 +1908,7 @@ class BankManager:
             "UPDATE accounts.loans SET outstanding_balance=?,status=?,"
             "collection_status=CASE WHEN ?='paid' THEN 'paid' ELSE collection_status END,"
             "missed_payment_count=missed_payment_count+? WHERE loan_id=?",
-            (max(0, balance), status, status, missed_count, loan["loan_id"]),
+            (amount_value(max(0, balance)), status, status, missed_count, loan["loan_id"]),
         )
         if balance <= 0:
             cls._release_collateral(conn, loan["loan_id"], str(loan["user_id"]))
@@ -1906,7 +1922,7 @@ class BankManager:
             )
         if rows:
             CreditScoreManager.refresh(conn, loan["user_id"], now, trigger="scheduled_payment")
-        return paid_count, missed_count, paid_amount, max(0, balance)
+        return paid_count, missed_count, amount_value(paid_amount_units), amount_value(max(0, balance))
 
     @staticmethod
     def _generate_account_number(conn):
