@@ -54,6 +54,7 @@ print "Dashboard: http://127.0.0.1:4310"
 print "HTS:       http://127.0.0.1:4311"
 print "API:       http://127.0.0.1:4312/api/health"
 print "Site:      http://127.0.0.1:4314"
+print "WL:        http://127.0.0.1:4315"
 print "로그는 아래에 서비스별로 표시됩니다."
 
 if lsof -nP -iTCP:4310 -sTCP:LISTEN >/dev/null 2>&1 \
@@ -61,6 +62,7 @@ if lsof -nP -iTCP:4310 -sTCP:LISTEN >/dev/null 2>&1 \
   || lsof -nP -iTCP:4312 -sTCP:LISTEN >/dev/null 2>&1 \
   || lsof -nP -iTCP:4313 -sTCP:LISTEN >/dev/null 2>&1 \
   || lsof -nP -iTCP:4314 -sTCP:LISTEN >/dev/null 2>&1 \
+  || lsof -nP -iTCP:4315 -sTCP:LISTEN >/dev/null 2>&1 \
   || pgrep -f "$ROOT/run.py" >/dev/null 2>&1; then
   print -u2 "기존 INAZINA 서비스가 실행 중입니다."
   print -u2 "이전 실행 터미널에서 Ctrl+C로 전체 종료한 뒤 다시 실행해주세요."
@@ -74,6 +76,8 @@ pids+=("$!")
 npm run dev:hts &
 pids+=("$!")
 npm run dev:site &
+pids+=("$!")
+npm run dev:wl &
 pids+=("$!")
 "$PYTHON" "$ROOT/run.py" &
 pids+=("$!")

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Wide-Learning</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=JetBrains+Mono:wght@400;700&family=Inter:wght@700&family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+  <div class="term">
+  <header class="term-bar">
+    <img src="/window-buttons.svg" width="58" height="14" alt="">
+    <span class="term-title">wl — docs/wide-learning — zsh<i class="cursor" aria-hidden="true"></i></span>
+  </header>
+  <div class="shell">
+    <aside class="side">
+      <div class="logo"><span class="logo-mark">WL</span><span><b>Wide-Learning</b><small>Laplace plan detail no. 2</small></span></div>
+      <nav id="nav" aria-label="메뉴"></nav>
+      <div class="sync-box">
+        <div class="sync-actions">
+          <button type="button" id="reload" class="reload">⟳ 새로고침</button>
+          <button type="button" id="settings" class="reload gear" aria-label="설정" title="설정">⚙</button>
+        </div>
+        <p class="sync" id="sync">불러오는 중…</p>
+      </div>
+    </aside>
+    <main id="view" class="view" tabindex="-1"></main>
+  </div>
+  </div>
+  <dialog id="settings-dialog" class="settings" aria-labelledby="settings-title">
+    <form method="dialog">
+      <header><h2 id="settings-title">설정</h2><button value="close" class="close" aria-label="닫기">✕</button></header>
+      <section><h3>테마</h3><div class="themes" id="theme-list"></div></section>
+      <section class="rows" id="setting-rows"></section>
+      <footer><span class="muted">이 브라우저에만 저장됩니다.</span><button type="button" id="settings-reset" class="reload">기본값으로</button></footer>
+    </form>
+  </dialog>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

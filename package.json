@@ -10,7 +10,9 @@
     "dev:site": "npm run dev --workspace @inazina/site",
     "dev:api": "npm run dev --workspace @inazina/api",
     "build": "npm run build --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "dev:wl": "npm run dev --workspace @inazina/wl",
+    "test:wl": "node --import tsx --test apps/wl/src/wlmd.test.ts apps/wl/src/settings.test.ts"
   },
   "engines": {
     "node": ">=24"

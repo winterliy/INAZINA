@@ -7,6 +7,7 @@ workspace. The API starts the private Python data service automatically:
 - HTS (trading): `http://127.0.0.1:4311`
 - API: `http://127.0.0.1:4312/api/health`
 - Official site (NACURI): `http://127.0.0.1:4314` — Contact/Report go to the dashboard's 문의·신고 page; "LINK to" documents are `apps/site/public/links/*.txt`
+- Wide-Learning viewer: `http://127.0.0.1:4315` — reads `docs/wide-learning` read-only (rules, status, CThread↔GThread chat); `npm run test:wl` tests its parser
 - Private Python data service: `127.0.0.1:4313` (API-managed; not exposed to the browser)
 
 ```
