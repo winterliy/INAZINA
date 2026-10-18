@@ -290,6 +290,9 @@ class RealisticRateSystemTests(unittest.TestCase):
             "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,ecl_allowance,status,quote_currency) "
             "VALUES ('borrower','ECL-RECON',100,100,1.23,'active','AAA')"
         )
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT ecl_allowance_minor_units FROM loans WHERE product_code='ECL-RECON'"
+        )["ecl_allowance_minor_units"], 123)
         with self.db.atomic() as conn:
             result = BankJournal.reconcile_ecl_allowances(conn, "Bank")
         self.assertEqual(result[0]["status"], "missing_journal")
@@ -307,6 +310,9 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.db.accounts.execute(
             "UPDATE loans SET ecl_allowance=1.24 WHERE product_code='ECL-RECON'"
         )
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT ecl_allowance_minor_units FROM loans WHERE product_code='ECL-RECON'"
+        )["ecl_allowance_minor_units"], 124)
         with self.db.atomic() as conn:
             result = BankJournal.reconcile_ecl_allowances(conn, "Bank")
         self.assertEqual((result[0]["difference_units"], result[0]["status"]), (1, "mismatch"))

@@ -201,7 +201,8 @@ class DefaultedLoanEclTests(unittest.TestCase):
             self.assertEqual(BankJournal.audit_unbalanced(conn), [])
         self.assertEqual(count, 1)
         row = self.db.accounts.execute_one(
-            "SELECT stage,risk_grade,pd_12m,lifetime_pd,lgd,ead,expected_loss,discount_factor,"
+            "SELECT stage,risk_grade,pd_12m,lifetime_pd,lgd,ead,expected_loss,"
+            "ead_minor_units,expected_loss_minor_units,discount_factor,"
             "effective_interest_rate,expected_loss_time_years,macro_pd_multiplier,scenario "
             "FROM loan_ecl_assessments"
         )
@@ -210,6 +211,8 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.assertEqual(row["pd_12m"], 1)
         self.assertEqual(row["lifetime_pd"], 1)
         self.assertEqual(row["ead"], 1000)
+        self.assertEqual(row["ead_minor_units"], 1000)
+        self.assertEqual(row["expected_loss_minor_units"], row["expected_loss"])
         self.assertAlmostEqual(row["discount_factor"], 1/(1.1**0.5))
         self.assertEqual(row["effective_interest_rate"], 10)
         self.assertEqual(row["expected_loss_time_years"], 0.5)
@@ -222,6 +225,9 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.assertEqual(self.db.accounts.execute_one(
             "SELECT ecl_allowance FROM loans WHERE product_code='ECL3'"
         )["ecl_allowance"], row["expected_loss"])
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT ecl_allowance_minor_units FROM loans WHERE product_code='ECL3'"
+        )["ecl_allowance_minor_units"], row["expected_loss_minor_units"])
         self.assertEqual(self.db.accounts.execute_one(
             "SELECT nonaccrual_since_epoch FROM loans WHERE product_code='ECL3'"
         )["nonaccrual_since_epoch"], 1_800_000_000)

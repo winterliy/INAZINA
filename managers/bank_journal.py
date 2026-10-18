@@ -217,10 +217,11 @@ class BankJournal:
     @staticmethod
     def reconcile_ecl_allowances(conn, issuer):
         """Compare loan-level ECL allowances with the posted contra-asset balance."""
-        from functions.money import currency_precision, round_currency
+        from functions.money import currency_precision, round_currency, to_minor_units
 
         exposures = conn.execute(
-            "SELECT l.quote_currency,l.ecl_allowance FROM accounts.loans l "
+            "SELECT l.quote_currency,l.ecl_allowance,l.ecl_allowance_minor_units "
+            "FROM accounts.loans l "
             "JOIN product.liability p USING(product_code) WHERE p.issuer=?",
             (str(issuer),),
         ).fetchall()
@@ -228,10 +229,11 @@ class BankJournal:
         for row in exposures:
             currency = str(row["quote_currency"] or "NWX").upper()
             places = currency_precision(conn, currency)
-            amount = round_currency(conn, max(0, row["ecl_allowance"] or 0), currency)
-            account_units[currency] = account_units.get(currency, 0) + int(
-                Decimal(str(amount)) * (10 ** places)
-            )
+            units = (int(row["ecl_allowance_minor_units"] or 0)
+                     if "ecl_allowance_minor_units" in row.keys()
+                     else to_minor_units(round_currency(
+                         conn, max(0, row["ecl_allowance"] or 0), currency), places))
+            account_units[currency] = account_units.get(currency, 0) + units
 
         journal = conn.execute(
             "SELECT e.currency_code,SUM(l.credit_units-l.debit_units) allowance_units "

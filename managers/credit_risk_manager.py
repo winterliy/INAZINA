@@ -5,7 +5,7 @@ import hashlib
 import json
 import math
 
-from functions.money import currency_precision, round_currency
+from functions.money import currency_precision, round_currency, to_minor_units
 from managers.rate_manager import RateManager
 
 
@@ -67,10 +67,13 @@ class CreditRiskManager:
         gross = (int(loan["outstanding_balance_minor_units"] or 0)
                  if "outstanding_balance_minor_units" in loan.keys()
                  else to_minor_units(max(0, loan["outstanding_balance"] or 0), places))
-        allowance = min(gross, to_minor_units(max(0, loan["ecl_allowance"] or 0), places))
+        allowance_units = (int(loan["ecl_allowance_minor_units"] or 0)
+                           if "ecl_allowance_minor_units" in loan.keys()
+                           else to_minor_units(max(0, loan["ecl_allowance"] or 0), places))
+        allowance = min(gross, allowance_units)
         if gross <= 0:
             raise ValueError("상각할 대출 잔액이 없습니다.")
-        excess_allowance = max(0, to_minor_units(max(0, loan["ecl_allowance"] or 0), places)-allowance)
+        excess_allowance = max(0, allowance_units-allowance)
         loss = gross-allowance
         conn.execute("""INSERT INTO accounts.loan_chargeoff_events
             (loan_id,issuer,event_key,event_type,amount_minor_units,decimal_places,
@@ -1317,6 +1320,7 @@ class CreditRiskManager:
             "l.collateral_amount,l.collateral_released,l.collateral_seized,l.underwriting_dti,"
             "l.underwriting_dsr,l.current_ltv,l.missed_payment_count,l.overdue_since_epoch,"
             "l.collection_status,l.status,l.maturity_epoch,l.created_at,l.ecl_allowance,"
+            "l.ecl_allowance_minor_units,"
             "l.contract_rate,l.contract_effective_rate,"
             "l.origination_pd_12m,"
             "u.credit_score,u.nationality,p.issuer,p.maturity_days,p.interest_rate product_rate "
@@ -1465,23 +1469,29 @@ class CreditRiskManager:
             expected_loss = round_currency(
                 conn, raw_expected_loss, loan["quote_currency"]
             )
-            previous_allowance = max(0.0, float(loan["ecl_allowance"] or 0))
-            allowance_change = float(expected_loss)-previous_allowance
+            expected_loss_units = to_minor_units(expected_loss,
+                                                  currency_precision(conn, loan["quote_currency"]))
+            previous_allowance_units = int(loan["ecl_allowance_minor_units"] or 0)
+            allowance_change_units = expected_loss_units-previous_allowance_units
+            places = currency_precision(conn, loan["quote_currency"])
+            allowance_change = allowance_change_units/(10**places)
             cursor = conn.execute(
                 "INSERT OR IGNORE INTO accounts.loan_ecl_assessments "
                 "(loan_id,as_of_day,stage,pd_12m,lifetime_pd,lgd,ead,expected_loss,"
+                "ead_minor_units,expected_loss_minor_units,"
                 "quote_currency,scenario,discount_factor,effective_interest_rate,"
                 "expected_loss_time_years,macro_pd_multiplier,calculated_epoch,risk_grade) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (loan["loan_id"], as_of_day, stage, pd_12m, lifetime_pd, lgd,
-                 ead, expected_loss, loan["quote_currency"],
+                 ead, expected_loss, to_minor_units(ead, places), expected_loss_units,
+                 loan["quote_currency"],
                  json.dumps(scenario_details, separators=(",", ":")),
                  discount_factor, eir_percent, expected_loss_time,
                  macro_pd_multiplier, epoch, cls.risk_grade(pd_12m, grade_thresholds)),
             )
             if cursor.rowcount != 1:
                 continue
-            if allowance_change:
+            if allowance_change_units:
                 RateManager.record_institution_result(
                     conn, issuer, -allowance_change, "expected_credit_loss",
                     f"loan:{loan['loan_id']}:ecl:{as_of_day}", now=epoch,
@@ -1502,8 +1512,8 @@ class CreditRiskManager:
                     now=epoch,
                 )
                 conn.execute(
-                    "UPDATE accounts.loans SET ecl_allowance=? WHERE loan_id=?",
-                    (expected_loss, loan["loan_id"]),
+                    "UPDATE accounts.loans SET ecl_allowance_minor_units=? WHERE loan_id=?",
+                    (expected_loss_units, loan["loan_id"]),
                 )
             assessed += 1
         return assessed
