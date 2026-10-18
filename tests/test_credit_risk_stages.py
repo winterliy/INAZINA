@@ -86,6 +86,25 @@ class EclScenarioConfigurationTests(unittest.TestCase):
         self.assertEqual(result["updated"], 3)
         self.assertAlmostEqual(sum(weights), 1.0)
 
+    def test_macro_scenario_forecasts_are_explainable_and_ordered(self):
+        with self.db.readonly() as conn:
+            optimistic = CreditRiskManager._macro_scenario_path(
+                conn, "낙원", "optimistic", 3.0,
+            )
+            base = CreditRiskManager._macro_scenario_path(conn, "낙원", "base", 3.0)
+            downside = CreditRiskManager._macro_scenario_path(
+                conn, "낙원", "downside", 3.0,
+            )
+        self.assertEqual([point["year"] for point in downside["path"]], [1, 2, 3])
+        self.assertLess(optimistic["relativePdMultiplier"], 1)
+        self.assertEqual(base["relativePdMultiplier"], 1)
+        self.assertGreater(downside["relativePdMultiplier"], 1)
+        self.assertGreater(downside["path"][-1]["unemploymentPercent"],
+                           downside["path"][0]["unemploymentPercent"])
+        with self.assertRaisesRegex(ValueError, "invalid_macro_scenario"):
+            with self.db.readonly() as conn:
+                CreditRiskManager._macro_scenario_path(conn, "낙원", "unknown", 1)
+
     def test_scenario_configuration_rejects_invalid_epoch_without_audit_or_mutation(self):
         valid = [
             {"key": "optimistic", "probability": .2, "pdMultiplier": .8, "lgdMultiplier": .9},
@@ -818,6 +837,14 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.assertGreater(rows[1]["macro_pd_multiplier"], 1)
         self.assertEqual(baseline_scenario[0]["macroPdMultiplier"], 1)
         self.assertGreater(stress_scenario[0]["macroPdMultiplier"], 1)
+        baseline_path = next(item["macroForecast"] for item in baseline_scenario
+                             if item["key"] == "base")
+        stress_path = next(item["macroForecast"] for item in stress_scenario
+                           if item["key"] == "downside")
+        self.assertEqual(baseline_path["relativePdMultiplier"], 1)
+        self.assertGreater(stress_path["relativePdMultiplier"], 1)
+        self.assertIn("simulator assumptions, not external forecasts",
+                      stress_path["method"])
 
     def test_legacy_assessment_migration_preserves_rows_and_uses_neutral_factor(self):
         self.db.accounts.execute(

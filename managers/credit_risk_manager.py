@@ -718,6 +718,58 @@ class CreditRiskManager:
                             +.02*(inflation-2.0), 0.5, 2.5)
 
     @classmethod
+    def _macro_scenario_path(cls, conn, nationality, scenario_key, horizon_years):
+        """Build a transparent deterministic annual macro path for ECL sensitivity.
+
+        These are simulator assumptions, not sourced forecasts. Scenario shocks
+        fade in geometrically from the current indicator snapshot. The returned
+        PD factor is relative to today's macro factor so the current-condition
+        PD is not counted twice.
+        """
+        row = conn.execute(
+            "SELECT inflation_percent,real_gdp_growth_percent,unemployment_percent "
+            "FROM country_macro_indicators WHERE nationality=?",
+            (str(nationality or ""),),
+        ).fetchone()
+        current = {
+            "inflationPercent": float(row["inflation_percent"] if row else 2.0),
+            "gdpGrowthPercent": float(row["real_gdp_growth_percent"] if row else 2.0),
+            "unemploymentPercent": float(row["unemployment_percent"] if row else 5.0),
+        }
+        shocks = {
+            "optimistic": (0.0, 0.5, -0.5),
+            "base": (0.0, 0.0, 0.0),
+            "downside": (0.5, -1.5, 1.5),
+        }
+        if scenario_key not in shocks:
+            raise ValueError("invalid_macro_scenario")
+        horizon = max(1, min(30, int(math.ceil(float(horizon_years or 1)))))
+        inflation_shock, growth_shock, unemployment_shock = shocks[scenario_key]
+        current_factor = cls._macro_pd_multiplier(conn, nationality)
+        path = []
+        for year in range(1, horizon+1):
+            fade_in = 1.0-(0.5**year)
+            projected = {
+                "year": year,
+                "inflationPercent": current["inflationPercent"]+inflation_shock*fade_in,
+                "gdpGrowthPercent": current["gdpGrowthPercent"]+growth_shock*fade_in,
+                "unemploymentPercent": current["unemploymentPercent"]+unemployment_shock*fade_in,
+            }
+            projected_factor = cls._bounded(
+                1.0-.08*(projected["gdpGrowthPercent"]-2.0)
+                +.04*(projected["unemploymentPercent"]-5.0)
+                +.02*(projected["inflationPercent"]-2.0), 0.5, 2.5,
+            )
+            projected["macroPdMultiplier"] = projected_factor
+            path.append(projected)
+        relative_factor = cls._bounded(
+            (sum(point["macroPdMultiplier"] for point in path)/len(path))
+            /max(1e-9, current_factor), 0.5, 2.5,
+        )
+        return {"horizonYears": horizon, "relativePdMultiplier": relative_factor,
+                "path": path, "method": "deterministic scenario shocks fade in by 50% per year; simulator assumptions, not external forecasts"}
+
+    @classmethod
     def origination_pd_12m(cls, conn, nationality, credit_score, dti, dsr, ltv):
         """Persist a comparable, macro-adjusted PD baseline for SICR monitoring."""
         base = cls._pd_12m(credit_score, dti, dsr, 0, ltv, False)
@@ -1317,8 +1369,13 @@ class CreditRiskManager:
             raw_expected_loss = 0.0
             for scenario in scenarios:
                 weight = max(0.0, float(scenario["probability"] or 0))/total_weight
+                macro_path = cls._macro_scenario_path(
+                    conn, loan["nationality"], scenario["scenario_key"],
+                    1.0 if stage == 1 else years,
+                )
                 scenario_pd = (1.0 if stage == 3 else cls._bounded(
-                    base_pd*float(scenario["pd_multiplier"] or 0), 0.0, 1.0
+                    base_pd*float(scenario["pd_multiplier"] or 0)
+                    *macro_path["relativePdMultiplier"], 0.0, 1.0
                 ))
                 scenario_lgd = cls._bounded(
                     lgd*float(scenario["lgd_multiplier"] or 0), 0.0, 1.0
@@ -1329,6 +1386,7 @@ class CreditRiskManager:
                                          "lgd": scenario_lgd,
                                          "discountFactor": discount_factor,
                                          "macroPdMultiplier": macro_pd_multiplier,
+                                         "macroForecast": macro_path,
                                          "policyPdMultiplier": policy_pd_multiplier,
                                          "effectiveRatePercent": eir_percent,
                                          "expectedLossTimeYears": expected_loss_time,
