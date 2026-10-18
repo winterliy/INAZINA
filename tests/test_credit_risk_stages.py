@@ -541,6 +541,33 @@ class DefaultedLoanEclTests(unittest.TestCase):
             "last_price,last_value,status) VALUES (?,?,?,1,1,500,500,'pledged')",
             (loan_id, "ecl-borrower", "COLLATERAL"),
         )
+        collateral = self.db.accounts.execute_one(
+            "SELECT last_value,last_value_minor_units FROM loan_collateral_assets "
+            "WHERE loan_id=?", (loan_id,),
+        )
+        self.assertEqual((collateral["last_value"], collateral["last_value_minor_units"]),
+                         (500, 500))
+        self.db.accounts.execute(
+            "UPDATE loans SET collateral_amount=0,collateral_released=0,collateral_seized=0 "
+            "WHERE loan_id=?", (loan_id,),
+        )
+        with self.db.atomic() as conn:
+            loan = conn.execute("SELECT * FROM accounts.loans WHERE loan_id=?",
+                                (loan_id,)).fetchone()
+            lgd_with_collateral = CreditRiskManager._lgd(conn, loan)
+            conn.execute(
+                "UPDATE accounts.loan_collateral_assets SET last_value_minor_units=0 "
+                "WHERE loan_id=?", (loan_id,),
+            )
+            lgd_without_collateral = CreditRiskManager._lgd(
+                conn, conn.execute("SELECT * FROM accounts.loans WHERE loan_id=?",
+                                   (loan_id,)).fetchone(),
+            )
+            conn.execute(
+                "UPDATE accounts.loan_collateral_assets SET last_value_minor_units=500 "
+                "WHERE loan_id=?", (loan_id,),
+            )
+        self.assertLess(lgd_with_collateral, lgd_without_collateral)
         collateral_id = self.db.accounts.execute_one(
             "SELECT collateral_id FROM loan_collateral_assets WHERE loan_id=?", (loan_id,)
         )["collateral_id"]

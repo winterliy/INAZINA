@@ -7,7 +7,7 @@
 | 고객 | `users.cash`, `users.annual_income`; `accounts.balance`, `principal`, `insurance_paid`, `uninsured_claim` | 거주국 통화 / 계좌 quote currency |
 | 상품 | `saving.deposit_amount`; `liability.loan_limit`, `repayment_amount`; `investment.unit_price`, `face_value`, `dividend_per_share`; `treasury_bond_products.face_value`, `market_price`, `total_supply`, `sold_amount` | 상품 quote currency |
 | 시장 | `market_assets.price`, `dividend_per_share`; `market_orders.limit_price`, `reserved_cash`; `market_trade_history.price`; `market_last_trade.price`; `market_price_history.price` | 종목/주문 기초자산의 quote currency |
-| 대출·담보 | 원금·잔액(`principal_minor_units`, `outstanding_balance_minor_units` 권위 최소단위 열)·ECL 충당금(`ecl_allowance_minor_units`)·상각 후 미회수 메모잔액(`charged_off_balance_minor_units`)·취급/필수비용·담보·회수 필드; 상환 스케줄 원금/이자/수수료/지급 필드; ECL 평가 스냅샷 EAD/손실 최소단위 열; 담보평가·청산 가격/대금 | 계약/대출 quote currency |
+| 대출·담보 | 원금·잔액(`principal_minor_units`, `outstanding_balance_minor_units` 권위 최소단위 열)·ECL 충당금(`ecl_allowance_minor_units`)·상각 후 미회수 메모잔액(`charged_off_balance_minor_units`)·담보평가액(`last_value_minor_units`)·취급/필수비용·담보·회수 필드; 상환 스케줄 원금/이자/수수료/지급 필드; ECL 평가 스냅샷 EAD/손실 최소단위 열; 청산 가격/대금 | 계약/대출 quote currency |
 | 채권·DR | `treasury_bond_holdings` 원금/액면/취득원가; DR movement 원가; DR deviation 표본·경보 가격/기준가 | 채권/DR 프로그램 통화 |
 | 법인·기관·세금 | 기관 자본/이익잉여금/보험한도, 기관 P&L 원장 금액 및 기준통화 금액, 세금 총액/세액/순액 | 기관/거래의 명시 통화 |
 | 펀드 | 펀드 현금/NAV 및 펀드 현금원장 금액/잔액 | 펀드 상품 통화 |

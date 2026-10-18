@@ -929,18 +929,20 @@ class CreditRiskManager:
             except (KeyError, IndexError):
                 pass
         recoveries = [(0, cash_collateral, 0, 0)]
+        from functions.money import currency_precision, from_minor_units
+        places = currency_precision(conn, currency)
         asset_rows = conn.execute(
-            "SELECT last_value,haircut,seniority_rank,recovery_days,recovery_cost_bps "
+            "SELECT last_value,last_value_minor_units,haircut,seniority_rank,"
+            "recovery_days,recovery_cost_bps "
             "FROM loan_collateral_assets WHERE loan_id=? AND status='pledged' "
             "ORDER BY seniority_rank,collateral_id", (loan["loan_id"],),
         ).fetchall()
         recoveries.extend((
             int(row["seniority_rank"]),
-            max(0.0, float(row["last_value"] or 0))*(1-cls._bounded(row["haircut"],0,1)),
+            max(0.0, int(row["last_value_minor_units"] or 0)/(10**places))
+                *(1-cls._bounded(row["haircut"],0,1)),
             int(row["recovery_days"]), int(row["recovery_cost_bps"]),
         ) for row in asset_rows)
-        from functions.money import currency_precision, from_minor_units
-        places = currency_precision(conn, currency)
         guarantees = conn.execute("""SELECT guarantee_limit_minor_units,guarantee_recovery_bps,
                 recovery_days,recovery_cost_bps,seniority_rank
             FROM accounts.loan_credit_support WHERE loan_id=? AND support_type='guarantor'

@@ -247,6 +247,14 @@ class CurrencyDB(DBManager):
         for column in ("ead_minor_units", "expected_loss_minor_units"):
             if column not in ecl_columns:
                 self.execute(f"ALTER TABLE loan_ecl_assessments ADD COLUMN {column} INTEGER")
+        collateral_columns = {row[1] for row in self.execute(
+            "PRAGMA table_info(loan_collateral_assets)"
+        )}
+        if "last_value_minor_units" not in collateral_columns:
+            self.execute(
+                "ALTER TABLE loan_collateral_assets ADD COLUMN last_value_minor_units "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
         from functions.money import currency_precision, to_minor_units
         for loan in self.execute(
                 "SELECT loan_id,quote_currency,principal,principal_minor_units,"
@@ -287,6 +295,42 @@ class CurrencyDB(DBManager):
                     UPDATE loans SET {legacy}=CAST(NEW.{minor} AS REAL)/({loan_scale})
                     WHERE loan_id=NEW.loan_id;
                 END""")
+        for collateral in self.execute(
+                "SELECT c.collateral_id,c.last_value,c.last_value_minor_units,l.quote_currency "
+                "FROM loan_collateral_assets c JOIN loans l USING(loan_id)"):
+            places = currency_precision(self.conn, collateral["quote_currency"] or "NWX")
+            if int(collateral["last_value_minor_units"] or 0) == 0 and collateral["last_value"]:
+                self.execute(
+                    "UPDATE loan_collateral_assets SET last_value_minor_units=? "
+                    "WHERE collateral_id=?",
+                    (to_minor_units(collateral["last_value"], places), collateral["collateral_id"]),
+                )
+        collateral_scale = (
+            "CASE COALESCE((SELECT decimal_places FROM currencies WHERE code="
+            "(SELECT quote_currency FROM loans WHERE loan_id=NEW.loan_id)),0) "
+            "WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END"
+        )
+        self.execute("DROP TRIGGER IF EXISTS trg_loan_collateral_value_from_legacy")
+        self.execute("DROP TRIGGER IF EXISTS trg_loan_collateral_value_from_legacy_update")
+        self.execute("DROP TRIGGER IF EXISTS trg_loan_collateral_value_to_legacy")
+        self.execute(f"""CREATE TRIGGER trg_loan_collateral_value_from_legacy
+            AFTER INSERT ON loan_collateral_assets BEGIN
+                UPDATE loan_collateral_assets SET last_value_minor_units=
+                    CAST(ROUND(COALESCE(NEW.last_value,0)*({collateral_scale})) AS INTEGER)
+                WHERE collateral_id=NEW.collateral_id;
+            END""")
+        self.execute(f"""CREATE TRIGGER trg_loan_collateral_value_from_legacy_update
+            AFTER UPDATE OF last_value,loan_id ON loan_collateral_assets BEGIN
+                UPDATE loan_collateral_assets SET last_value_minor_units=
+                    CAST(ROUND(COALESCE(NEW.last_value,0)*({collateral_scale})) AS INTEGER)
+                WHERE collateral_id=NEW.collateral_id;
+            END""")
+        self.execute(f"""CREATE TRIGGER trg_loan_collateral_value_to_legacy
+            AFTER UPDATE OF last_value_minor_units ON loan_collateral_assets BEGIN
+                UPDATE loan_collateral_assets SET last_value=
+                    CAST(NEW.last_value_minor_units AS REAL)/({collateral_scale})
+                WHERE collateral_id=NEW.collateral_id;
+            END""")
         direct = (
             ("company", ("capital", "share_price", "liquidation_value_per_share",
                          "dividend_per_share"), "company_code", "NEW.quote_currency"),
