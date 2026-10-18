@@ -1358,6 +1358,8 @@ class BankManager:
             return False, f'❌ 대출연장 설정을 확인해주세요: {exc}'
 
     def repay_loan(self, user_id, product_code, amount, loan_id=None):
+        from functions.money import currency_precision, from_minor_units, to_minor_units
+
         if isinstance(amount, bool):
             return False, "❌ 상환액을 확인해주세요."
         try:
@@ -1365,7 +1367,8 @@ class BankManager:
             with self.db.atomic(("users", "accounts")) as conn:
                 if loan_id is None:
                     loan = conn.execute(
-                        "SELECT l.loan_id,l.outstanding_balance,l.status,l.provisioned_loss,l.quote_currency,"
+                        "SELECT l.loan_id,l.outstanding_balance,l.outstanding_balance_minor_units,"
+                        "l.status,l.provisioned_loss,l.quote_currency,"
                         "l.created_at,l.maturity_epoch,l.prepayment_fee_percent,"
                         "l.prepayment_fee_decline_days,"
                         "p.issuer FROM accounts.loans l JOIN product.liability p "
@@ -1375,7 +1378,8 @@ class BankManager:
                     ).fetchone()
                 else:
                     loan = conn.execute(
-                        "SELECT l.loan_id,l.outstanding_balance,l.status,l.provisioned_loss,l.quote_currency,"
+                        "SELECT l.loan_id,l.outstanding_balance,l.outstanding_balance_minor_units,"
+                        "l.status,l.provisioned_loss,l.quote_currency,"
                         "l.created_at,l.maturity_epoch,l.prepayment_fee_percent,"
                         "l.prepayment_fee_decline_days,"
                         "p.issuer FROM accounts.loans l JOIN product.liability p "
@@ -1390,10 +1394,20 @@ class BankManager:
                 )
                 if amount <= 0:
                     return False, "❌ 상환액은 0보다 커야 합니다."
-                outstanding = round_currency(
-                    conn, loan["outstanding_balance"] or 0, loan["quote_currency"]
-                )
-                payment = min(amount, outstanding)
+                currency = str(loan["quote_currency"] or "NWX")
+                places = currency_precision(conn, currency)
+
+                def amount_value(value):
+                    exact = from_minor_units(value, places)
+                    return int(exact) if places == 0 else float(exact)
+
+                outstanding_units = (max(0, int(loan["outstanding_balance_minor_units"] or 0))
+                                     if "outstanding_balance_minor_units" in loan.keys()
+                                     else max(0, to_minor_units(
+                                         loan["outstanding_balance"] or 0, places
+                                     )))
+                payment_units = min(max(0, to_minor_units(amount, places)), outstanding_units)
+                payment = amount_value(payment_units)
                 now = time.time()
                 prepayment_fee = 0
                 if (loan["status"] == "active"
@@ -1411,18 +1425,24 @@ class BankManager:
                         payment*float(loan["prepayment_fee_percent"])*factor/100,
                         loan["quote_currency"],
                     )
-                total_debit = payment+prepayment_fee
+                fee_units = max(0, to_minor_units(prepayment_fee, places))
+                prepayment_fee = amount_value(fee_units)
+                total_debit_units = payment_units+fee_units
+                total_debit = amount_value(total_debit_units)
                 funds = UserFunds.choose(conn, str(user_id), loan["quote_currency"])
                 if not funds or funds[0] < total_debit:
                     return False, "❌ 상환할 잔액이 부족합니다."
                 if not UserFunds.debit(conn, str(user_id), funds[1], total_debit):
                     return False, "❌ 잔액이 부족합니다."
-                remaining = round_currency(
-                    conn, max(0, outstanding-payment), loan["quote_currency"]
+                remaining_units = max(0, outstanding_units-payment_units)
+                remaining = amount_value(remaining_units)
+                recovery_units = min(
+                    payment_units,
+                    max(0, to_minor_units(loan["provisioned_loss"] or 0, places)),
                 )
-                recovery = min(payment, max(0.0, float(loan["provisioned_loss"] or 0)))
+                recovery = amount_value(recovery_units)
                 released = 0
-                if remaining <= 0:
+                if remaining_units <= 0:
                     released = self._release_collateral(conn, loan["loan_id"], str(user_id))
                 conn.execute(
                     "UPDATE accounts.loans SET outstanding_balance = ?, "
@@ -1431,9 +1451,8 @@ class BankManager:
                     "provisioned_loss=MAX(0,provisioned_loss-?),"
                     "prepayment_fees_paid=prepayment_fees_paid+? "
                     "WHERE loan_id = ?",
-                    (remaining, remaining, remaining,
-                     min(payment, float(loan["provisioned_loss"] or 0)),
-                     prepayment_fee, loan["loan_id"]),
+                    (remaining, remaining_units, remaining_units,
+                     recovery, prepayment_fee, loan["loan_id"]),
                 )
                 if prepayment_fee:
                     repayment_ref = f"loan:{loan['loan_id']}:payment:{time.time_ns()}"
@@ -1456,12 +1475,12 @@ class BankManager:
                      ("fee_income", "credit", prepayment_fee)],
                     description=f"Loan {loan['loan_id']} repayment", now=now,
                 )
-                if remaining <= 0:
+                if remaining_units <= 0:
                     self._release_ecl_allowance(
                         conn, loan["loan_id"], loan["issuer"], loan["quote_currency"],
                         now=now, reason=f"repay:{time.time_ns()}",
                     )
-                if recovery:
+                if recovery_units:
                     RateManager.record_institution_result(
                         conn, loan["issuer"], recovery, "default_recovery",
                         repayment_ref,
@@ -1470,7 +1489,7 @@ class BankManager:
                 self._allocate_schedule_payment(
                     conn, loan["loan_id"], payment, now
                 )
-                if remaining <= 0:
+                if remaining_units <= 0:
                     CreditScoreManager.record(
                         conn, user_id, "loan_closed", f"loan:{loan['loan_id']}",
                         now=now, loan_id=loan["loan_id"],

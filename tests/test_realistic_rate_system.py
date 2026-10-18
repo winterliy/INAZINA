@@ -1216,16 +1216,20 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertTrue(ok, message)
         self.assertIn("중도상환수수료 10 NWX", message)
         loan = self.db.accounts.execute_one(
-            "SELECT outstanding_balance,prepayment_fees_paid FROM loans "
+            "SELECT outstanding_balance,outstanding_balance_minor_units,"
+            "prepayment_fees_paid FROM loans "
             "WHERE product_code='PREPAY'"
         )
-        self.assertEqual((loan["outstanding_balance"], loan["prepayment_fees_paid"]),
-                         (500, 10))
+        self.assertEqual((loan["outstanding_balance"],
+                          loan["outstanding_balance_minor_units"],
+                          loan["prepayment_fees_paid"]), (500, 500, 10))
         ledger = self.db.currency.execute_one(
             "SELECT amount,currency_code FROM financial_institution_ledger "
             "WHERE event_type='prepayment_fee'"
         )
         self.assertEqual((ledger["amount"], ledger["currency_code"]), (10, "NWX"))
+        with self.db.atomic() as conn:
+            self.assertFalse(BankJournal.audit_unbalanced(conn, "Bank"))
 
     def test_contract_amounts_follow_product_currency_precision(self):
         self.db.currency.execute(
