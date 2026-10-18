@@ -1377,6 +1377,10 @@ class RealisticRateSystemTests(unittest.TestCase):
                 "pledged_epoch,last_price,last_value,status) "
                 "VALUES (?, 'rwa-default','TEST',1,1,50000,50000,'pledged')", (default_id,)
             )
+            good_id = conn.execute("SELECT loan_id FROM loans WHERE user_id='rwa-good'").fetchone()[0]
+            conn.execute("""INSERT INTO accounts.loan_credit_support
+                (loan_id,party_user_id,support_type,created_epoch,updated_epoch)
+                VALUES (?, 'rwa-weak','connected_party',1,1)""", (good_id,))
             rwa = RateManager.institution_risk_weighted_assets(conn, "Bank")
             sheet = RateManager.institution_balance_sheet(conn, "Bank")
             stress = CreditRiskManager.portfolio_default_stress(conn, "Bank")
@@ -1399,6 +1403,11 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertGreater(correlated_credit["correlatedTailLoss"],
                            independent_credit["independentExpectedLoss"])
         self.assertEqual(correlated_credit["exposureCount"], 2)
+        self.assertEqual(correlated_credit["connectedPartyBorrowerCount"], 2)
+        self.assertEqual(correlated_credit["connectedPartyExposureCount"], 2)
+        self.assertEqual(correlated_credit["connectedPartyEad"], 200_000)
+        self.assertGreater(correlated_credit["connectedPartyJointTailLoss"],
+                           correlated_credit["correlatedTailLoss"])
         self.db.currency.execute(
             "UPDATE financial_institutions SET equity_capital=20000,target_capital_ratio=.1 "
             "WHERE issuer='Bank'"

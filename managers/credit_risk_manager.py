@@ -924,12 +924,17 @@ class CreditRiskManager:
 
     @classmethod
     def correlated_default_stress(cls, conn, issuer, *, asset_correlation=0.20,
-                                  confidence=0.99):
-        """One-factor Gaussian tail stress using latest simulated 12m PD snapshots."""
+                                  connected_party_correlation=0.50, confidence=0.99):
+        """Gaussian adverse-factor stress with a separate connected-party sensitivity."""
         issuer = str(issuer or "").strip()
-        rho, quantile = float(asset_correlation), float(confidence)
+        rho, group_rho, quantile = (
+            float(asset_correlation), float(connected_party_correlation), float(confidence)
+        )
         if not issuer or not math.isfinite(rho) or not 0 <= rho < 1:
             raise ValueError("invalid_correlated_credit_stress_parameters")
+        if not math.isfinite(group_rho) or not 0 <= group_rho < 1:
+            raise ValueError("invalid_correlated_credit_stress_parameters")
+        group_rho = max(rho, group_rho)
         if not math.isfinite(quantile) or not 0.5 < quantile < 1:
             raise ValueError("invalid_correlated_credit_stress_parameters")
         sheet = RateManager.institution_balance_sheet(conn, issuer)
@@ -938,6 +943,31 @@ class CreditRiskManager:
         from managers.currency_manager import CurrencyManager, SCALE
         normal = NormalDist()
         adverse_factor = -normal.inv_cdf(quantile)
+        parent = {}
+
+        def root(user_id):
+            parent.setdefault(user_id, user_id)
+            if parent[user_id] != user_id:
+                parent[user_id] = root(parent[user_id])
+            return parent[user_id]
+
+        for link in conn.execute(
+            "SELECT l.user_id,s.party_user_id FROM accounts.loan_credit_support s "
+            "JOIN accounts.loans l ON l.loan_id=s.loan_id "
+            "JOIN product.liability p ON p.product_code=l.product_code "
+            "WHERE p.issuer=? AND s.support_type='connected_party' AND s.active=1",
+            (issuer,),
+        ):
+            left, right = root(str(link["user_id"])), root(str(link["party_user_id"]))
+            if left != right:
+                parent[max(left, right)] = min(left, right)
+        group_sizes = {}
+        for member in tuple(parent):
+            group = root(member)
+            group_sizes[group] = group_sizes.get(group, 0) + 1
+        connected_borrowers = {
+            member for member in parent if group_sizes.get(root(member), 0) > 1
+        }
         rows = conn.execute("""WITH latest AS (
                 SELECT loan_id,pd_12m,ROW_NUMBER() OVER (
                     PARTITION BY loan_id ORDER BY calculated_epoch DESC,assessment_id DESC) rn
@@ -951,7 +981,11 @@ class CreditRiskManager:
               AND l.outstanding_balance>0""",
             (issuer,),
         ).fetchall()
-        independent, correlated, total_ead = 0.0, 0.0, 0.0
+        independent, correlated, connected_tail, connected_ead, total_ead = (
+            0.0, 0.0, 0.0, 0.0, 0.0
+        )
+        connected_count = 0
+        connected_borrowers_with_exposure = set()
         for loan in rows:
             currency = str(loan["quote_currency"] or base)
             ead = round_currency(conn, max(0.0, float(loan["outstanding_balance"] or 0)), currency)
@@ -969,6 +1003,17 @@ class CreditRiskManager:
             lgd = cls._lgd(conn, loan)
             independent += ead*pd*lgd
             correlated += ead*conditional_pd*lgd
+            if str(loan["user_id"]) in connected_borrowers:
+                group_conditional_pd = normal.cdf(
+                    (normal.inv_cdf(pd)-math.sqrt(group_rho)*adverse_factor)
+                    / math.sqrt(1-group_rho)
+                )
+                connected_tail += ead*group_conditional_pd*lgd
+                connected_ead += ead
+                connected_count += 1
+                connected_borrowers_with_exposure.add(str(loan["user_id"]))
+            else:
+                connected_tail += ead*conditional_pd*lgd
             total_ead += ead
         return {"issuer": issuer, "currency": base,
                 "decimalPlaces": currency_precision(conn, base),
@@ -977,7 +1022,12 @@ class CreditRiskManager:
                 "performingEad": round_currency(conn, total_ead, base),
                 "independentExpectedLoss": round_currency(conn, independent, base),
                 "correlatedTailLoss": round_currency(conn, correlated, base),
-                "method": "single-factor Gaussian conditional default probability at adverse systematic quantile; latest simulator PD or scorecard fallback; current EAD and collateral LGD; not a regulatory capital formula"}
+                "connectedPartyCorrelation": group_rho,
+                "connectedPartyBorrowerCount": len(connected_borrowers_with_exposure),
+                "connectedPartyExposureCount": connected_count,
+                "connectedPartyEad": round_currency(conn, connected_ead, base),
+                "connectedPartyJointTailLoss": round_currency(conn, connected_tail, base),
+                "method": "single-factor Gaussian common systematic tail plus a separate, more adverse connected-party factor sensitivity for registered connected groups; latest simulator PD or scorecard fallback; current EAD and collateral LGD; illustrative conditional joint stress, not portfolio VaR or regulatory capital"}
 
     @classmethod
     def borrower_concentration_stress(cls, conn, issuer):
