@@ -477,6 +477,47 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.assertIn("undrawn_commitment", method)
         self.assertEqual(events, 1)
 
+    def test_ead_uses_minor_unit_schedule_and_reconciliation_flags_legacy_drift(self):
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('USD','Dollar','1',2)"
+        )
+        self.db.products.execute(
+            "INSERT INTO liability(product_code,name,interest_rate,loan_limit,maturity_days,"
+            "interest_cycle,min_credit_score,issuer,quote_currency) "
+            "VALUES ('ECL-USD','USD ECL',5,10000,365,86400,0,'Bank','USD')"
+        )
+        self.db.accounts.execute(
+            "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,status,"
+            "created_at,quote_currency) VALUES ('ecl-borrower','ECL-USD',100,100,'active',"
+            "datetime('now'),'USD')"
+        )
+        loan_id = self.db.accounts.execute_one(
+            "SELECT loan_id FROM loans WHERE product_code='ECL-USD'"
+        )["loan_id"]
+        epoch = 1_800_000_000
+        self.db.accounts.execute(
+            "INSERT INTO loan_payment_schedule(loan_id,installment_number,due_epoch,"
+            "principal_due,principal_paid) VALUES (?,1,?,20,10)",
+            (loan_id, epoch+100*86400),
+        )
+        schedule_id = self.db.accounts.execute_one(
+            "SELECT schedule_id FROM loan_payment_schedule WHERE loan_id=?", (loan_id,)
+        )["schedule_id"]
+        self.db.accounts.execute(
+            "UPDATE loan_payment_schedule SET principal_due_minor_units=3000 "
+            "WHERE schedule_id=?", (schedule_id,),
+        )
+        with self.db.readonly() as conn:
+            ead, method = CreditRiskManager._ead_at_expected_loss(
+                conn, loan_id, 100, epoch, .5, 1, "USD",
+            )
+            findings = BankJournal.reconcile_loan_payment_schedules(conn, "Bank")
+        self.assertEqual(ead, 80)
+        self.assertIn("midpoint_after_scheduled_principal", method)
+        finding = next(row for row in findings if row["schedule_id"] == schedule_id)
+        self.assertIn("principal_due", finding["legacy_mirror_mismatch_fields"])
+
     def test_collateral_recovery_assumption_update_is_audited_and_versioned(self):
         loan_id = self.db.accounts.execute_one(
             "SELECT loan_id FROM loans WHERE product_code='ECL3'"

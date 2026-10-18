@@ -1251,22 +1251,30 @@ class CreditRiskManager:
     def _ead_at_expected_loss(conn, loan_id, balance, as_of_epoch, loss_time_years,
                               stage, currency):
         """Proxy exposure at midpoint after scheduled, not-yet-due principal payments."""
-        current = max(0.0, float(balance or 0))
+        from functions.money import currency_precision, from_minor_units, to_minor_units
+
+        places = currency_precision(conn, currency)
+        current_units = max(0, to_minor_units(balance or 0, places))
         if stage == 3:
-            return round_currency(conn, current, currency), "defaulted_current_balance"
+            return float(from_minor_units(current_units, places)), "defaulted_current_balance"
         horizon = float(as_of_epoch)+max(0.0, float(loss_time_years))*365*86400
         rows = conn.execute(
-            "SELECT principal_due,principal_paid FROM accounts.loan_payment_schedule "
+            "SELECT * FROM accounts.loan_payment_schedule "
             "WHERE loan_id=? AND due_epoch>? AND due_epoch<=? "
             "AND status IN ('scheduled','partial')",
             (int(loan_id), float(as_of_epoch), horizon),
         ).fetchall()
-        scheduled_principal = sum(
-            max(0.0, float(row["principal_due"] or 0)-float(row["principal_paid"] or 0))
-            for row in rows
-        )
-        projected = (round_currency(conn, max(0.0, current-scheduled_principal), currency)
-                     if rows else round_currency(conn, current, currency))
+        scheduled_principal_units = 0
+        for row in rows:
+            due_minor = row["principal_due_minor_units"] if "principal_due_minor_units" in row.keys() else None
+            paid_minor = row["principal_paid_minor_units"] if "principal_paid_minor_units" in row.keys() else None
+            due_units = (int(due_minor or 0) if due_minor is not None else
+                         to_minor_units(row["principal_due"] or 0, places))
+            paid_units = (int(paid_minor or 0) if paid_minor is not None else
+                          to_minor_units(row["principal_paid"] or 0, places))
+            scheduled_principal_units += max(0, due_units-paid_units)
+        projected_units = max(0, current_units-scheduled_principal_units) if rows else current_units
+        projected = float(from_minor_units(projected_units, places))
         commitment = conn.execute(
             "SELECT committed_limit_minor_units,credit_conversion_factor_bps "
             "FROM accounts.loan_future_commitments WHERE loan_id=? AND active=1 "
@@ -1276,14 +1284,13 @@ class CreditRiskManager:
         if not commitment:
             return projected, ("midpoint_after_scheduled_principal" if rows
                                else "current_balance_no_future_schedule")
-        from functions.money import currency_precision, from_minor_units
-        places = currency_precision(conn, currency)
-        limit = float(from_minor_units(commitment["committed_limit_minor_units"], places))
-        undrawn = max(0.0, limit-projected)
-        ead = round_currency(
-            conn, projected+undrawn*int(commitment["credit_conversion_factor_bps"])/10000,
-            currency,
+        limit_units = int(commitment["committed_limit_minor_units"])
+        undrawn_units = max(0, limit_units-projected_units)
+        ccf = int(commitment["credit_conversion_factor_bps"])
+        ccf_units = to_minor_units(
+            from_minor_units(undrawn_units, places)*ccf/10000, places
         )
+        ead = float(from_minor_units(projected_units+ccf_units, places))
         prefix = "midpoint_after_scheduled_principal" if rows else "current_balance_no_future_schedule"
         return ead, prefix+"_plus_undrawn_commitment"
 

@@ -317,19 +317,29 @@ class BankJournal:
             paid_components = sum(units(field) for field in
                                   ("principal_paid", "interest_paid", "fee_paid"))
             paid = units("amount_paid")
+            legacy_mismatches = [
+                field for field in (
+                    "principal_due", "interest_due", "fee_due", "amount_paid",
+                    "principal_paid", "interest_paid", "fee_paid",
+                ) if f"{field}_minor_units" in row.keys()
+                and int(row[f"{field}_minor_units"] or 0)
+                != to_minor_units(row[field] or 0, places)
+            ]
             overallocated = any(units(paid_field) > units(due_field) for due_field, paid_field in (
                 ("principal_due", "principal_paid"),
                 ("interest_due", "interest_paid"),
                 ("fee_due", "fee_paid"),
             ))
             status_invalid = row["status"] == "paid" and paid != due
-            if paid != paid_components or paid > due or overallocated or status_invalid:
+            if (paid != paid_components or paid > due or overallocated or status_invalid
+                    or legacy_mismatches):
                 findings.append({
                     "schedule_id": int(row["schedule_id"]),
                     "loan_id": int(row["loan_id"]), "currency_code": currency,
                     "amount_paid_minor_units": paid,
                     "allocated_minor_units": paid_components,
                     "due_minor_units": due,
+                    "legacy_mirror_mismatch_fields": legacy_mismatches,
                     "status": "mismatch",
                 })
         return findings
