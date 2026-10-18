@@ -4,7 +4,7 @@
 
 | 항목 | 질문 | 실패 시 판정 |
 |---|---|---|
-| 출처 존재 | 인용한 ID가 `registry.md`에 있고 URL이 열리는가? | `needs-source` |
+| 출처 존재 | 인용한 ID가 `registry/`에 있고 URL이 열리는가? | `needs-source` |
 | 출처 일치 | `locator` 위치에 주장과 같은 내용이 있는가? | `dispute` |
 | 등급 적합 | 주장의 성격(수치·법령·기준)에 맞는 S1이 있는가? | `needs-source` |
 | 시점·관할 | 기준일과 국가가 명시되고 현행인가? | `partial` |

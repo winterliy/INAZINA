@@ -7,7 +7,7 @@ Laplace plan detail no. 2. Claude(CThread)와 Codex(GThread)가 경제·금융 �
 ```
 ① 주제 승인 (사용자)          topics.md          draft → approved
         ↓
-② 자료 읽기·기록 (두 CLI)     threads/*.md       claim  + 출처(registry.md)
+② 자료 읽기·기록 (두 CLI)     threads/*.md       claim  + 출처(registry/*.md)
         ↓
 ③ 교차 검토 (두 CLI)          threads/*.md       review: agree / partial / needs-source / dispute
         ↓
@@ -32,7 +32,9 @@ Laplace plan detail no. 2. Claude(CThread)와 Codex(GThread)가 경제·금융 �
 | [SOURCES.md](SOURCES.md) | 자료 등급(S1·S2·S3·X), 확인 절차, 권장 출처 목록 | 사용자 |
 | [REVIEW.md](REVIEW.md) | 검토 체크리스트, 판정·상태 정의, 시스템 적용 기준 | 사용자 |
 | [topics.md](topics.md) | 다룰 주제와 질문 (Laplace 1~12장에 대응) | 사용자 |
-| [registry.md](registry.md) | 출처 목록 (덧붙이기만) | 두 CLI |
+| [registry/user.md](registry/user.md) | 사용자가 지정한 출처 `S-0xx` (학습자료1·2) | 사용자 |
+| [registry/cthread-claude.md](registry/cthread-claude.md) | CLAUDE가 찾은 출처 `S-1xx` (덧붙이기만) | CLAUDE만 |
+| [registry/gthread-codex.md](registry/gthread-codex.md) | CODEX가 찾은 출처 `S-2xx` (덧붙이기만) | CODEX만 |
 | [threads/cthread-claude.md](threads/cthread-claude.md) | CLAUDE의 기록 `C-NNN` (덧붙이기만) | CLAUDE만 |
 | [threads/gthread-codex.md](threads/gthread-codex.md) | CODEX의 기록 `G-NNN` (덧붙이기만) | CODEX만 |
 | [wide-learning.md](wide-learning.md) | 확정된 내용의 주제별 통합본 | 지정한 CLI 하나 |
@@ -41,7 +43,7 @@ Laplace plan detail no. 2. Claude(CThread)와 Codex(GThread)가 경제·금융 �
 | `AGENTS.md`, `CLAUDE.md` | 이 폴더에서 일하는 CLI가 자동으로 읽는 요약 지침 | — |
 | `../../tools/wlmd_check.py` | 규칙 검사기 | — |
 
-두 CLI가 같은 파일을 동시에 고쳐 내용이 사라지는 일을 막으려고, 기록 파일을 스레드별로 나눴습니다. 원래 계획의 `wide-learning.md`는 검토가 끝난 내용을 모으는 통합본 역할을 합니다.
+두 CLI가 같은 파일을 동시에 고쳐 내용이 사라지는 일을 막으려고, 기록 파일과 출처 파일을 모두 스레드별로 나눴습니다. 원래 계획의 `wide-learning.md`는 검토가 끝난 내용을 모으는 통합본 역할을 합니다.
 
 ## 시작하기
 
@@ -49,12 +51,14 @@ Laplace plan detail no. 2. Claude(CThread)와 Codex(GThread)가 경제·금융 �
    - `T-00` 경제학 개념 지도: 학습자료1·2에서 개념 목록을 뽑는 출발점
    - `T-04` 개인 신용평가와 연체정보: 방금 만든 신용점수 모델([credit_score.md](../credit_score.md))의 가정을 실제 자료와 대조
 2. **스레드 시작**: CThread에는 [prompts/cthread-claude.md](prompts/cthread-claude.md), GThread에는 [prompts/gthread-codex.md](prompts/gthread-codex.md)의 코드 블록을 붙여 넣습니다.
-3. **교차 검토 요청**: 한쪽이 기록을 마치면 다른 쪽에 "상대 스레드의 새 claim을 검토해줘"라고 말합니다. 각 CLI는 상대 기록을 읽기만 하고, 의견은 자기 파일에 `review`로 씁니다.
+3. **차례 진행**: 각 스레드에 "다음 차례 진행해"라고만 말하면 됩니다. CLI가 먼저 `--todo`로 자기 할 일(상대 주장 검토, 받은 검토에 답변, disputed 선언)을 처리한 뒤 새 claim을 최대 5개 씁니다. 상대 기록은 읽기만 하고, 의견은 자기 파일에 `review`로 씁니다.
 4. **진행 확인**: 아무 때나 아래 명령으로 주제별 진행 상황과 규칙 위반을 봅니다.
    ```bash
    python3 tools/wlmd_check.py
    ```
    출력 예: `T-04 [approved] 개인 신용평가와 연체정보 — proposed 3, verified 2`
+
+   각 CLI의 남은 할 일은 `python3 tools/wlmd_check.py --todo CLAUDE` 또는 `--todo CODEX`로 봅니다. 두 쪽 모두 "(없음)"이면 그 주제는 정리할 차례입니다.
 5. **쟁점 판단**: `disputed`가 생기면 두 스레드의 해당 항목을 보고 결정을 알려 줍니다.
 6. **정리**: 주제가 마무리되면 한 스레드에 "T-04를 wide-learning.md에 정리하고 apply-queue.md에 반영 후보를 올려줘"라고 지시합니다.
 7. **적용 승인**: [apply-queue.md](apply-queue.md)에서 반영할 항목의 `status`를 `approved`로 바꾸고 구현을 지시합니다.
@@ -76,12 +80,13 @@ Laplace plan detail no. 2. Claude(CThread)와 Codex(GThread)가 경제·금융 �
 
 ## 동시 진행할 때
 
-- 두 CLI가 같은 작업 폴더를 쓰면, 각자 자기 스레드 파일과 `registry.md`만 고칩니다.
-- 커밋할 때는 자기 파일만 지정해서 커밋하라고 지시하는 것이 안전합니다(예: `git add docs/wide-learning/threads/cthread-claude.md docs/wide-learning/registry.md`).
-- `python3 tools/wlmd_check.py --against HEAD`는 마지막 커밋 이후 스레드 파일과 출처 목록이 덧붙이기만 됐는지도 확인합니다.
+- 두 CLI는 각자 자기 스레드 파일과 자기 출처 파일만 고치므로 같은 파일을 동시에 쓰지 않습니다.
+- 커밋도 자기 파일만 지정해서 합니다(시작 프롬프트에 포함). 예: `git add docs/wide-learning/threads/cthread-claude.md docs/wide-learning/registry/cthread-claude.md`
+- `python3 tools/wlmd_check.py --against HEAD`는 마지막 커밋 이후 기록이 덧붙이기만 됐는지, 새 claim이 5개 이하인지 확인합니다.
+- 시작 전에 **GThread(Codex)의 웹 검색이 켜져 있는지** 확인하세요. Codex CLI는 설정에 따라 네트워크가 막혀 있어 S1 자료를 찾지 못할 수 있습니다(실행 옵션 `--search` 또는 설정의 웹 검색 허용).
 
 ## 참고
 
-- 스레드 파일 이름을 `claude.md`로 하지 않은 이유: macOS는 대소문자를 구분하지 않아 Claude Code가 이 파일을 지침 파일(`CLAUDE.md`)로 읽게 됩니다. 웹 자료가 섞인 기록이 지침으로 읽히지 않도록 이름을 `cthread-claude.md`로 했습니다.
+- 스레드·출처 파일 이름을 `claude.md`로 하지 않은 이유: macOS는 대소문자를 구분하지 않아 Claude Code가 그 파일을 지침 파일(`CLAUDE.md`)로 읽게 됩니다. 웹 자료가 섞인 기록이 지침으로 읽히지 않도록 `cthread-claude.md`처럼 이름을 붙였습니다.
 - 나무위키 내용은 CC BY-NC-SA 2.0 KR입니다. 기록에는 요약과 출처만 남기고 원문을 길게 옮기지 않습니다.
 - 상위 계획: [Laplace 금융 시뮬레이터 현실화 계획](../laplace_finance_realism_plan.md)

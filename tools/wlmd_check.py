@@ -1,7 +1,8 @@
 """Validate Wide-Learning WLMD records (docs/wide-learning, see WLMD.md).
 
     python3 tools/wlmd_check.py                 # format, sources and verdict rules
-    python3 tools/wlmd_check.py --against HEAD  # + append-only check against a git ref
+    python3 tools/wlmd_check.py --against HEAD  # + append-only and per-round claim limit
+    python3 tools/wlmd_check.py --todo CLAUDE   # reviews and answers waiting for CLAUDE
 """
 import argparse
 import re
@@ -14,9 +15,15 @@ REPO = Path(__file__).resolve().parents[1]
 DEFAULT_ROOT = REPO / "docs" / "wide-learning"
 THREADS = {"threads/cthread-claude.md": ("C", "CLAUDE"),
            "threads/gthread-codex.md": ("G", "CODEX")}
-APPEND_ONLY = (*THREADS, "registry.md")
-AUTHOR_PREFIX = {author: prefix for prefix, author in THREADS.values()}
-REGISTRY_RANGES = {"USER": range(0, 100), "CLAUDE": range(100, 200), "CODEX": range(200, 300)}
+# Each participant appends to its own registry file so concurrent threads
+# never write the same file; IDs stay globally unique through fixed ranges.
+REGISTRIES = {"registry/user.md": ("USER", range(0, 100)),
+              "registry/cthread-claude.md": ("CLAUDE", range(100, 200)),
+              "registry/gthread-codex.md": ("CODEX", range(200, 300))}
+APPEND_ONLY = (*THREADS, *REGISTRIES)
+AUTHORS = tuple(author for _prefix, author in THREADS.values())
+MAX_NEW_CLAIMS = 5
+MAX_ROUND_TRIPS = 2
 
 HEADER = re.compile(r"^### \[([A-Z])-(\d{2,3})\] (.+?)\s*$")
 FIELD = re.compile(r"^- ([a-z-]+):[ \t]?(.*)$")
@@ -111,7 +118,9 @@ class Checker:
 
     # ------------------------------------------------------------------
     def run(self, against=None):
-        self.sources = self.check_registry(parse(self.read("registry.md"), "registry.md"))
+        self.sources, self.urls = {}, {}
+        for relative, (owner, ids) in REGISTRIES.items():
+            self.check_registry(parse(self.read(relative), relative), owner, ids)
         self.topics = self.check_topics(parse(self.read("topics.md"), "topics.md"))
         self.entries = {}
         for relative, (prefix, author) in THREADS.items():
@@ -124,8 +133,8 @@ class Checker:
             self.check_append_only(against)
         return self.errors
 
-    def check_registry(self, entries):
-        sources, urls = {}, {}
+    def check_registry(self, entries, owner, ids):
+        sources, urls = self.sources, self.urls
         for entry in entries:
             if not re.match(r"^S-\d{3}$", entry.id):
                 self.error(entry, "출처 ID는 S-NNN 형식이어야 합니다.")
@@ -146,12 +155,10 @@ class Checker:
             urls.setdefault(url, entry.id)
             if entry.fields.get("accessed") and not DATE.match(entry.fields["accessed"]):
                 self.error(entry, "accessed는 YYYY-MM-DD 형식이어야 합니다.")
-            allowed = REGISTRY_RANGES.get(entry.fields.get("added-by", ""))
-            if allowed is None:
-                self.error(entry, "added-by는 USER·CLAUDE·CODEX 중 하나여야 합니다.")
-            elif entry.number not in allowed:
-                self.error(entry, f"{entry.fields['added-by']}의 출처 ID 범위가 아닙니다.")
-        return sources
+            if entry.fields.get("added-by") != owner:
+                self.error(entry, f"이 파일의 added-by는 {owner}여야 합니다.")
+            if entry.number not in ids:
+                self.error(entry, f"{owner}의 출처 ID 범위(S-{ids.start:03d}~S-{ids.stop-1:03d})가 아닙니다.")
 
     def check_topics(self, entries):
         topics = {}
@@ -235,12 +242,21 @@ class Checker:
             self.check_claim(entry)
         if kind == "correction" and target and target.author != entry.author:
             self.error(entry, "correction은 자기 항목에만 쓸 수 있습니다. 상대 주장에는 review를 쓰세요.")
+        if entry.fields.get("answers"):
+            chain = ({item.id for item in self.chain(self.root_of(target))}
+                     if kind == "correction" and target else set())
+            for review_id in entry.ids("answers"):
+                review = self.entries.get(review_id)
+                if (not review or review.fields.get("type") != "review"
+                        or review.author == entry.author
+                        or review.fields.get("re") not in chain):
+                    self.error(entry, f"answers의 {review_id}는 이 주장에 대한 상대 review가 아닙니다.")
         if kind == "review":
             if entry.fields.get("verdict") not in VERDICTS:
                 self.error(entry, f"verdict는 {', '.join(VERDICTS)} 중 하나여야 합니다.")
             for source_id in entry.ids("checked"):
                 if source_id not in self.sources:
-                    self.error(entry, f"checked의 {source_id}가 registry.md에 없습니다.")
+                    self.error(entry, f"checked의 {source_id}가 출처 목록(registry/)에 없습니다.")
             if target and target.author == entry.author:
                 self.error(entry, "자기 주장은 검토할 수 없습니다.")
 
@@ -250,7 +266,7 @@ class Checker:
         for source_id in sources:
             source = self.sources.get(source_id)
             if not source:
-                self.error(entry, f"출처 {source_id}가 registry.md에 없습니다.")
+                self.error(entry, f"출처 {source_id}가 출처 목록(registry/)에 없습니다.")
             elif source.fields.get("tier") in TIERS:
                 tiers.append(source.fields["tier"])
         best = min(tiers, default=None)
@@ -318,8 +334,44 @@ class Checker:
                                     capture_output=True, text=True)
             if result.returncode != 0 or not path.exists():
                 continue
-            if not appended_only(result.stdout, path.read_text(encoding="utf-8")):
+            current = path.read_text(encoding="utf-8")
+            if not appended_only(result.stdout, current):
                 self.error(relative, f"{ref} 이후 기존 내용이 바뀌었습니다. 덧붙이기만 할 수 있습니다.")
+            elif relative in THREADS:
+                added = new_claims(result.stdout, current)
+                if added > MAX_NEW_CLAIMS:
+                    self.error(relative, f"{ref} 이후 새 claim이 {added}개입니다. 한 차례 최대 {MAX_NEW_CLAIMS}개입니다.")
+
+    def latest_amendment(self, root):
+        amendments = [item for item in self.chain(root)
+                      if item.fields.get("type") in ("claim", "correction")
+                      and item.author == root.author]
+        return max(amendments, key=lambda item: item.number, default=root)
+
+    def todo(self, author):
+        """What `author` should handle next: reviews to write, reviews to answer."""
+        lines, open_roots = [], [
+            entry for entry in self.entries.values()
+            if entry.fields.get("type") == "claim" and self.final_status(entry.id) == "proposed"]
+        reviews = [entry for entry in self.entries.values() if entry.fields.get("type") == "review"]
+        answered = {review_id for entry in self.entries.values() for review_id in entry.ids("answers")}
+        for root in sorted(open_roots, key=lambda item: item.id):
+            chain = {item.id for item in self.chain(root)}
+            if root.author != author:
+                latest = self.latest_amendment(root)
+                if not any(review.author == author and review.fields.get("re") == latest.id
+                           for review in reviews):
+                    lines.append(f"검토 필요  {latest.id} ({root.topic}) {latest.fields.get('claim', '')}")
+                continue
+            received = [review for review in reviews
+                        if review.author != author and review.fields.get("re") in chain]
+            objections = sum(review.fields.get("verdict") != "agree" for review in received)
+            if objections > MAX_ROUND_TRIPS:
+                lines.append(f"disputed 선언  {root.id} — 반박 {objections}회, 사용자 판단 요청")
+            for review in received:
+                if review.id not in answered:
+                    lines.append(f"답변 필요  {review.id} ({review.fields.get('verdict')}) → {review.fields.get('re')}")
+        return lines
 
     def summary(self):
         lines = []
@@ -339,15 +391,27 @@ def appended_only(old, new):
     return new.startswith(old.rstrip("\n"))
 
 
+def new_claims(old, new):
+    def claims(text):
+        return {entry.id for entry in parse(text, "") if entry.fields.get("type") == "claim"}
+    return len(claims(new)-claims(old))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Wide-Learning WLMD 기록 검사")
     parser.add_argument("--root", default=str(DEFAULT_ROOT))
     parser.add_argument("--against", help="덧붙이기만 했는지 비교할 git ref (예: HEAD, origin/main)")
+    parser.add_argument("--todo", choices=AUTHORS, help="이 CLI가 처리할 검토·답변 목록")
     args = parser.parse_args(argv)
     checker = Checker(args.root)
     errors = checker.run(args.against)
     for line in checker.summary():
         print(line)
+    if args.todo:
+        tasks = checker.todo(args.todo)
+        print(f"\n{args.todo} 할 일 {len(tasks)}건:")
+        for line in tasks or ["(없음)"]:
+            print(f"  - {line}")
     if errors:
         print(f"\n오류 {len(errors)}건:")
         for message in errors:

@@ -6,16 +6,22 @@ Laplace plan detail no. 2. 두 CLI(CLAUDE = CThread, CODEX = GThread)가 경제�
 
 | 참여자 | 스레드 | 항목 ID | 쓰기 가능한 파일 |
 |---|---|---|---|
-| CLAUDE | CThread | `C-001`… | `threads/cthread-claude.md`, `registry.md`(자기 자료 추가) |
-| CODEX | GThread | `G-001`… | `threads/gthread-codex.md`, `registry.md`(자기 자료 추가) |
-| 사용자 | — | — | 모든 파일. `topics.md`의 승인, `apply-queue.md`의 승인 |
+| CLAUDE | CThread | `C-001`… | `threads/cthread-claude.md`, `registry/cthread-claude.md` (`S-1xx`) |
+| CODEX | GThread | `G-001`… | `threads/gthread-codex.md`, `registry/gthread-codex.md` (`S-2xx`) |
+| 사용자 | — | — | 모든 파일. `registry/user.md` (`S-0xx`), `topics.md`·`apply-queue.md`의 승인 |
 
 - **상대 스레드 파일은 절대 수정하지 않습니다.** 동시 진행 중 덮어쓰기를 막기 위한 규칙입니다. 상대 주장에 대한 의견은 자기 파일에 `review` 항목으로 씁니다.
-- 스레드 파일은 **끝에 덧붙이기만** 합니다. 이미 쓴 항목을 고치거나 지우지 않고, 틀렸으면 `correction` 항목을 새로 씁니다.
-- `registry.md`는 두 CLI가 함께 덧붙입니다. 쓰기 직전에 파일을 다시 읽고, 같은 URL이 이미 있으면 기존 ID를 재사용합니다. ID 충돌을 피하려고 CLAUDE는 `S-1xx`, CODEX는 `S-2xx`, 사용자가 등록한 학습자료는 `S-0xx`를 씁니다.
+- 스레드 파일과 출처 파일은 **끝에 덧붙이기만** 합니다. 이미 쓴 항목을 고치거나 지우지 않고, 틀렸으면 `correction` 항목을 새로 씁니다.
+- 출처도 자기 파일에만 등록합니다. 등록 전에 `registry/` 세 파일을 모두 읽어, 같은 URL이 이미 있으면 그 ID를 인용합니다. ID 범위가 나뉘어 있어 동시에 등록해도 충돌하지 않습니다.
 - `wide-learning.md`(통합본)와 `apply-queue.md`는 6단계 정리 때만, 사용자가 지정한 한 CLI가 씁니다.
 
 ## 2. 진행 단계
+
+한 차례(사용자가 지시한 한 번의 작업)는 다음 순서로 합니다.
+
+- **먼저 할 일 처리**: `python3 tools/wlmd_check.py --todo <자기 이름>`이 보여 주는 검토 필요·답변 필요·disputed 선언을 새 주장보다 먼저 처리합니다.
+- **새 claim은 한 차례 최대 5개**입니다. review와 correction은 제한하지 않습니다. 검사기가 `--against HEAD`로 마지막 커밋 이후 늘어난 claim 수를 확인합니다.
+- 끝나면 검사를 통과시키고, 자기 파일만 커밋합니다.
 
 1. **주제 확정** — `topics.md`에서 사용자가 `approved`로 둔 주제만 다룹니다. 새 주제가 필요하면 자기 스레드에 `question` 항목으로 제안하고, 사용자가 `topics.md`에 추가합니다.
 2. **자료 읽기** — 학습자료1·2(나무위키)는 개념 지도로만 씁니다. 각 주제의 근거는 S1·S2 자료에서 찾습니다(외부 검색 허용).
@@ -28,11 +34,11 @@ Laplace plan detail no. 2. 두 CLI(CLAUDE = CThread, CODEX = GThread)가 경제�
 ## 3. 종료 조건 (주제별)
 
 - 주제의 모든 `claim`이 `verified`, `simulator-assumption`, `rejected` 중 하나로 확정되었거나
-- 같은 주장에 대한 반박·재반박이 **2회 왕복**을 넘었을 때. 이때는 `disputed`로 남기고 사용자 판단을 요청합니다.
+- 같은 주장에 대한 반박·재반박이 **2회 왕복**을 넘었을 때(agree가 아닌 review가 3개 이상). 이때는 원 작성자가 `disputed`로 선언하고 사용자 판단을 요청합니다. `--todo`가 이 경우를 알려 줍니다.
 
 ## 4. 출처와 검증
 
-- 모든 `claim`·`correction`은 `registry.md`에 등록된 출처 ID를 하나 이상 인용합니다. 출처 없는 주장은 기록할 수 없습니다.
+- 모든 `claim`·`correction`은 `registry/`에 등록된 출처 ID를 하나 이상 인용합니다. 출처 없는 주장은 기록할 수 없습니다.
 - `verified`가 되려면 S1 출처 하나 이상과, **상대 CLI의 `agree` 검토(출처 직접 확인)**가 필요합니다. 자기 주장을 스스로 `verified`로 만들 수 없습니다.
 - S3 자료(나무위키 포함)만으로는 `verified`가 될 수 없습니다.
 - 두 CLI가 같은 의견이라는 사실은 검증이 아닙니다. 검증은 출처 확인으로만 합니다.
@@ -51,11 +57,21 @@ Laplace plan detail no. 2. 두 CLI(CLAUDE = CThread, CODEX = GThread)가 경제�
 - 실제 세계의 사실(`verified`)과 게임 설계 선택(`simulator-assumption`)을 구분해 문서에 적습니다. 예: "실제 신용평가사는 상환이력 비중이 가장 크다(verified) → 우리 모델은 연체 감점 −35점(simulator-assumption)".
 - 반영 커밋 메시지와 문서에는 근거가 된 WLMD 항목 ID를 남깁니다.
 
-## 7. 확인 도구
+## 7. 커밋
+
+두 CLI가 같은 작업 폴더를 쓰므로, 커밋할 때는 자기 파일만 지정합니다.
 
 ```bash
-python3 tools/wlmd_check.py                 # 형식·출처·판정 규칙 검사
-python3 tools/wlmd_check.py --against HEAD  # + 스레드 파일이 덧붙이기만 했는지 검사
+git add docs/wide-learning/threads/cthread-claude.md docs/wide-learning/registry/cthread-claude.md   # CLAUDE
+git add docs/wide-learning/threads/gthread-codex.md docs/wide-learning/registry/gthread-codex.md     # CODEX
+```
+
+## 8. 확인 도구
+
+```bash
+python3 tools/wlmd_check.py                 # 형식·출처·판정 규칙 검사, 주제별 진행 현황
+python3 tools/wlmd_check.py --todo CLAUDE   # CLAUDE가 처리할 검토·답변·disputed 선언
+python3 tools/wlmd_check.py --against HEAD  # + 덧붙이기만 했는지, 새 claim 5개 이하인지
 ```
 
 검사를 통과하지 못한 상태로 작업을 끝내지 않습니다.

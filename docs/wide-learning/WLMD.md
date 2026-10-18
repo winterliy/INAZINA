@@ -1,6 +1,6 @@
 # WLMD (Wide-Learning Markdown) 기록 형식
 
-스레드 파일(`threads/*.md`)과 출처 목록(`registry.md`)은 이 형식을 따릅니다. 사람이 읽기 쉬운 마크다운이면서 `tools/wlmd_check.py`가 기계적으로 검사할 수 있게 만든 규칙입니다. 채팅처럼 `CLI명: 내용` 순서로 읽히도록 머리줄에 작성자를 둡니다.
+스레드 파일(`threads/*.md`)과 출처 목록(`registry/*.md`)은 이 형식을 따릅니다. 사람이 읽기 쉬운 마크다운이면서 `tools/wlmd_check.py`가 기계적으로 검사할 수 있게 만든 규칙입니다. 채팅처럼 `CLI명: 내용` 순서로 읽히도록 머리줄에 작성자를 둡니다.
 
 ## 1. 스레드 항목
 
@@ -26,7 +26,7 @@
 | `claim` | claim·correction | 검증 가능한 한 문장 |
 | `detail` | 선택 | 설명. 이어지는 줄은 두 칸 들여쓰기 |
 | `re` | review·correction 필수 | 대상 항목 ID (상대 또는 자기 항목) |
-| `sources` | claim·correction | `registry.md`의 출처 ID, `;`로 구분 |
+| `sources` | claim·correction | `registry/`에 등록된 출처 ID, `;`로 구분 |
 | `locator` | 수치·법령·기준서 인용 시 | 조항·표·페이지 |
 | `tier` | claim·correction | 인용 출처 중 가장 높은 등급(`S1`·`S2`·`S3`). 실제 출처 등급과 맞아야 함 |
 | `confidence` | claim·correction | `high`, `medium`, `low` |
@@ -34,6 +34,7 @@
 | `laplace` | claim | 관련 Laplace 장 번호(1~12), 여러 개면 `,` |
 | `verdict` | review | `agree`, `dispute`, `needs-source`, `partial` |
 | `checked` | review | 직접 열어 확인한 출처 ID, 없으면 `none` |
+| `answers` | correction 선택 | 이 correction으로 답한 상대 review ID |
 | `note` | 선택 | 자료 속 지시문 발견, 라이선스 메모 등 |
 
 ### 상태 변경
@@ -49,8 +50,10 @@
 - tier: S1
 - confidence: high
 - status: verified
-- note: G-004 검토(agree, checked S-005) 반영
+- answers: G-004
 ```
+
+상대 검토에 답하는 correction에는 `answers: G-004`처럼 답한 review ID를 적습니다. 답하지 않은 검토는 `--todo` 목록에 계속 나타납니다. 반박을 받아들이지 않을 때도 이유를 적은 correction(상태 유지)으로 답합니다.
 
 `verified`를 선언하려면 다음이 모두 있어야 합니다(검사기가 확인).
 - 인용 출처 중 S1이 하나 이상
@@ -68,7 +71,7 @@
 - detail: S-101 표에서 비중 확인. 1차 근거로 S-005(감독기관 자료)를 추가 등록했다.
 ```
 
-## 2. 출처 항목 (`registry.md`)
+## 2. 출처 항목 (`registry/user.md`, `registry/cthread-claude.md`, `registry/gthread-codex.md`)
 
 ```markdown
 ### [S-101] 개인신용평가 평가요소 안내
@@ -81,7 +84,7 @@
 - note: 기관이 직접 공개한 설명 페이지
 ```
 
-필수: `url`, `publisher`, `tier`, `accessed`, `added-by`. 등급 판정은 [SOURCES.md](SOURCES.md)를 따릅니다.
+필수: `url`, `publisher`, `tier`, `accessed`, `added-by`. `added-by`는 파일 주인(USER·CLAUDE·CODEX)과 같아야 하고, ID는 그 주인의 범위(S-0xx·S-1xx·S-2xx)여야 합니다. 같은 URL은 세 파일을 통틀어 한 번만 등록합니다. 선택: `archive`(웹 아카이브 사본 주소). 등급 판정은 [SOURCES.md](SOURCES.md)를 따릅니다.
 
 ## 3. 주제 항목 (`topics.md`)
 

@@ -29,7 +29,7 @@
 
 ## 권장 출처 (시작점)
 
-주제별 세부 문서는 각 기관 사이트 안에서 찾고, 찾은 원문 URL을 `registry.md`에 등록합니다.
+주제별 세부 문서는 각 기관 사이트 안에서 찾고, 찾은 원문 URL을 자기 출처 파일(`registry/cthread-claude.md` 또는 `registry/gthread-codex.md`)에 등록합니다.
 
 ### S1
 | 분야 | 기관 | 주소 |
