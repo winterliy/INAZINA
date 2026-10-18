@@ -578,8 +578,61 @@ class CurrencyDB(DBManager):
         self._ensure_account_units()
         self._ensure_cash_minor()
         self._ensure_money_snaps()
+        self._ensure_market_trade_price_units()
         self._ensure_minor_amount_snapshots(direct, derived)
         self._ensure_customer_wallet_journal()
+
+    def _ensure_market_trade_price_units(self):
+        """Keep execution prices in quote-currency minor units as the source of truth."""
+        from functions.money import currency_precision, to_minor_units
+
+        quote_sql = (
+            "COALESCE((SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code),"
+            "(SELECT quote_currency FROM company WHERE company_code=NEW.asset_code),"
+            "(SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code),"
+            "(SELECT quote_currency FROM treasury_bond_products WHERE product_code=NEW.asset_code),"
+            "(SELECT base.quote_currency FROM option_contracts o JOIN market_assets base "
+            "ON base.code=o.underlying_code WHERE o.contract_code=NEW.asset_code),'NWX')"
+        )
+        for table, key in (("market_trade_history", "trade_id"),
+                           ("market_last_trade", "asset_code")):
+            columns = {row[1] for row in self.execute(f"PRAGMA table_info({table})")}
+            if "price_minor_units" not in columns:
+                self.execute(
+                    f"ALTER TABLE {table} ADD COLUMN price_minor_units INTEGER NOT NULL DEFAULT 0"
+                )
+            for row in self.execute(
+                    f"SELECT {key},asset_code,price,price_minor_units FROM {table}"):
+                if int(row["price_minor_units"] or 0) == 0 and float(row["price"] or 0) != 0:
+                    currency = self.execute_one(
+                        "SELECT " + quote_sql.replace("NEW.asset_code", "asset_code")
+                        + " AS code FROM (SELECT ? AS asset_code)",
+                        (row["asset_code"],),
+                    )["code"]
+                    places = currency_precision(self.conn, currency or "NWX")
+                    self.execute(
+                        f"UPDATE {table} SET price_minor_units=? WHERE {key}=?",
+                        (to_minor_units(row["price"], places), row[key]),
+                    )
+            scale = (
+                "CASE COALESCE((SELECT decimal_places FROM currencies WHERE code="
+                f"({quote_sql})),0) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END"
+            )
+            stem = f"trg_{table}_price_minor_units"
+            for suffix in ("from_legacy", "from_legacy_update", "to_legacy"):
+                self.execute(f"DROP TRIGGER IF EXISTS {stem}_{suffix}")
+            self.execute(f"""CREATE TRIGGER {stem}_from_legacy AFTER INSERT ON {table}
+                BEGIN UPDATE {table} SET price_minor_units=
+                  CAST(ROUND(COALESCE(NEW.price,0)*({scale})) AS INTEGER)
+                  WHERE {key}=NEW.{key}; END""")
+            self.execute(f"""CREATE TRIGGER {stem}_from_legacy_update
+                AFTER UPDATE OF price,asset_code ON {table}
+                BEGIN UPDATE {table} SET price_minor_units=
+                  CAST(ROUND(COALESCE(NEW.price,0)*({scale})) AS INTEGER)
+                  WHERE {key}=NEW.{key}; END""")
+            self.execute(f"""CREATE TRIGGER {stem}_to_legacy AFTER UPDATE OF price_minor_units ON {table}
+                BEGIN UPDATE {table} SET price=CAST(NEW.price_minor_units AS REAL)/({scale})
+                  WHERE {key}=NEW.{key}; END""")
 
     def _ensure_customer_wallet_journal(self):
         """Capture every customer cash/account balance delta in one native journal.

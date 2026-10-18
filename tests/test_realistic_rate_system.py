@@ -1286,6 +1286,38 @@ class RealisticRateSystemTests(unittest.TestCase):
             self.db.accounts.get_account(account["account_number"])["balance"], 1.24
         )
 
+    def test_market_execution_prices_keep_quote_currency_minor_units(self):
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('USD','Dollar','1',2)"
+        )
+        self.db.assets.execute(
+            "INSERT INTO market_assets(code,name,exchange_id,price,type,quote_currency) "
+            "VALUES ('USD-TRADE','USD trade','NASDAQ',1,'stock','USD')"
+        )
+        self.db.assets.execute(
+            "INSERT INTO market_trade_history(asset_code,side,quantity,price,recorded_epoch) "
+            "VALUES ('USD-TRADE','buy',1,1.235,100)"
+        )
+        row = self.db.assets.execute_one(
+            "SELECT price,price_minor_units FROM market_trade_history WHERE asset_code='USD-TRADE'"
+        )
+        latest = self.db.assets.execute_one(
+            "SELECT price,price_minor_units FROM market_last_trade WHERE asset_code='USD-TRADE'"
+        )
+        self.assertEqual(tuple(row), (1.24, 124))
+        self.assertEqual(tuple(latest), (1.24, 124))
+        self.db.assets.execute(
+            "UPDATE market_trade_history SET price_minor_units=125 WHERE asset_code='USD-TRADE'"
+        )
+        row = self.db.assets.execute_one(
+            "SELECT price,price_minor_units FROM market_last_trade WHERE asset_code='USD-TRADE'"
+        )
+        self.assertEqual(tuple(row), (1.25, 125))
+        self.assertEqual(self.db.assets.get_last_trade("USD-TRADE")["price"], 1.25)
+        history = self.db.assets.get_trade_history("USD-TRADE", 0)
+        self.assertEqual((history[0]["price"], history[0]["price_minor_units"]), (1.25, 125))
+
     def test_reserve_and_capital_constraints_reject_excess_new_loan(self):
         self.add_loan(code="REGULATED", collateral_ratio=0, origination_fee=0)
         self.db.currency.execute(

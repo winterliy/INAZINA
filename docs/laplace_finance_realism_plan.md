@@ -141,6 +141,8 @@ ECL 충당금도 대출별 `ecl_allowance_minor_units`를 추가해 백필·양�
 
 같은 원천별 비교를 회사 및 기관 공통원장에도 확장했다. 각 posted native entry의 원천 키·주체·통화·소수 자릿수·기록시각과, 등록 계정 매핑을 적용한 계정별 정수 차변/대변 합계가 common entry와 일치하는지 검사한다. 행 개수는 같지만 회사 수익 계정 매핑이 잘못된 경우 `posting_gaps`로 검출하는 회귀검사를 추가했고, `test_currency_account_storage`와 `test_financial` 30개가 통과했다. 이 검증은 native→common 전기 대사이지 고객 결제→기관 settlement_asset→상품 거래 전체의 업무 이벤트 계보를 자동으로 보장하는 것은 아니다.
 
+시장 체결 이력과 latest trade에 `price_minor_units` 정수 열을 추가해 종목 quote currency 기준으로 백필·양방향 동기화한다. 기존 체결 writer의 `price`는 호환 열로 남기고, 최근 체결/차트용 이력 API는 정수 열에서 가격을 복원한다. USD 1.235 체결의 half-up 124센트, 정수열에서 legacy 가격으로의 역동기화와 chart reader의 호환 회귀를 확인했다. 이는 가격 이력 저장 표현 개선이며 주문 예약·체결 수량/대금·고객자금과 시장/기관 원장 간 전사 대사는 아직 미완료다.
+
 상환표 대사는 정수 열과 legacy 호환 금액의 통화 scale 변환값이 서로 다르면 해당 회차와 필드를 별도 불일치로 노출한다. ECL의 midpoint EAD proxy도 미래 원금 상환 차감에 이 정수 열을 사용하므로 회계 이관 금액과 신용위험 경로가 같은 원천을 읽는다. USD 일정에서 legacy/정수 값이 일부러 달라진 경우 EAD가 소액단위 값을 따르고 대사가 drift를 잡는 회귀 테스트가 추가됐다.
 
 ### M5 — #74 신용위험·ECL·심사

@@ -818,17 +818,39 @@ class AssetDB(DBManager):
         return self.execute_one("SELECT * FROM market_assets WHERE code = ?", (code,))
 
     def get_trade_history(self, code, since_epoch):
+        places = "COALESCE((SELECT c.decimal_places FROM currencies c WHERE c.code=COALESCE("
+        places += "(SELECT quote_currency FROM market_assets WHERE code=h.asset_code),"
+        places += "(SELECT quote_currency FROM company WHERE company_code=h.asset_code),"
+        places += "(SELECT quote_currency FROM investment WHERE product_code=h.asset_code),"
+        places += "(SELECT quote_currency FROM treasury_bond_products WHERE product_code=h.asset_code),"
+        places += "'NWX')),0)"
         return self.execute(
-            "SELECT recorded_epoch, side, quantity, price FROM market_trade_history "
-            "WHERE asset_code = ? AND recorded_epoch >= ? ORDER BY recorded_epoch, trade_id",
+            "SELECT h.recorded_epoch,h.side,h.quantity,"
+            f"CAST(h.price_minor_units AS REAL)/CASE ({places}) "
+            "WHEN 0 THEN 1 WHEN 1 THEN 10 WHEN 2 THEN 100 ELSE 1 END price,"
+            "h.price_minor_units FROM market_trade_history h "
+            "WHERE h.asset_code = ? AND h.recorded_epoch >= ? ORDER BY h.recorded_epoch,h.trade_id",
             (str(code), int(since_epoch)),
         )
 
     def get_last_trade(self, code):
-        return self.execute_one(
-            "SELECT price, recorded_epoch, trade_id FROM market_last_trade WHERE asset_code=?",
-            (str(code),),
+        from functions.money import currency_precision, from_minor_units
+
+        row = self.execute_one(
+            "SELECT t.price_minor_units,t.recorded_epoch,t.trade_id,"
+            "COALESCE((SELECT quote_currency FROM market_assets WHERE code=t.asset_code),"
+            "(SELECT quote_currency FROM company WHERE company_code=t.asset_code),"
+            "(SELECT quote_currency FROM investment WHERE product_code=t.asset_code),"
+            "(SELECT quote_currency FROM treasury_bond_products WHERE product_code=t.asset_code),"
+            "'NWX') currency_code "
+            "FROM market_last_trade t WHERE t.asset_code=?", (str(code),),
         )
+        if not row:
+            return None
+        places = currency_precision(self.conn, row["currency_code"])
+        return {"price": float(from_minor_units(row["price_minor_units"], places)),
+                "price_minor_units": int(row["price_minor_units"]),
+                "recorded_epoch": row["recorded_epoch"], "trade_id": row["trade_id"]}
 
     def update_price(self, code, new_price):
         self.execute("UPDATE market_assets SET price = ? WHERE code = ?", (new_price, code))
