@@ -173,6 +173,7 @@ class AccountDB(DBManager):
             ("collection_status", "TEXT NOT NULL DEFAULT 'current'"),
             ("accelerated_epoch", "REAL"),
             ("defaulted_epoch", "REAL"),
+            ("nonaccrual_since_epoch", "REAL"),
             ("collateral_seized", "INTEGER NOT NULL DEFAULT 0"),
             ("day_count_convention", "TEXT NOT NULL DEFAULT 'ACT/365'"),
             ("amortization_type", "TEXT NOT NULL DEFAULT 'legacy'"),
@@ -183,6 +184,7 @@ class AccountDB(DBManager):
             ("collateral_liquidated_value", "INTEGER NOT NULL DEFAULT 0"),
             ("provisioned_loss", "INTEGER NOT NULL DEFAULT 0"),
             ("ecl_allowance", "INTEGER NOT NULL DEFAULT 0 CHECK(ecl_allowance >= 0)"),
+            ("charged_off_balance", "INTEGER NOT NULL DEFAULT 0 CHECK(charged_off_balance >= 0)"),
             ("mandatory_cost_fee", "INTEGER NOT NULL DEFAULT 0"),
             ("underwriting_dti", "REAL"),
             ("underwriting_dsr", "REAL"),
@@ -208,6 +210,19 @@ class AccountDB(DBManager):
             "UPDATE loans SET quote_currency=COALESCE((SELECT quote_currency FROM liability p "
             "WHERE p.product_code=loans.product_code),quote_currency,'NWX')"
         )
+        self.execute("""CREATE TABLE IF NOT EXISTS loan_chargeoff_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            loan_id INTEGER NOT NULL,
+            issuer TEXT NOT NULL,
+            event_key TEXT NOT NULL UNIQUE,
+            event_type TEXT NOT NULL CHECK(event_type IN ('charge_off','recovery')),
+            amount_minor_units INTEGER NOT NULL CHECK(amount_minor_units > 0),
+            decimal_places INTEGER NOT NULL,
+            currency_code TEXT NOT NULL,
+            actor_id TEXT NOT NULL,
+            created_epoch REAL NOT NULL,
+            memo TEXT NOT NULL DEFAULT ''
+        )""")
         # Fix each contract's maturity rather than changing existing loans when
         # an administrator edits the product's duration.
         self.execute("UPDATE loans SET maturity_epoch = CAST(strftime('%s', created_at) AS REAL) + "
@@ -347,6 +362,10 @@ class AccountDB(DBManager):
                 "ALTER TABLE loan_ecl_assessments ADD COLUMN macro_pd_multiplier "
                 "REAL NOT NULL DEFAULT 1 CHECK(macro_pd_multiplier BETWEEN 0.5 AND 2.5)"
             )
+        if "risk_grade" not in ecl_columns:
+            # Preserve historical append-only rows; old grades remain NULL rather
+            # than being backfilled by rewriting immutable assessment evidence.
+            self.execute("ALTER TABLE loan_ecl_assessments ADD COLUMN risk_grade TEXT")
         self.execute("CREATE INDEX IF NOT EXISTS idx_loan_ecl_day "
                      "ON loan_ecl_assessments(as_of_day,stage)")
         self.execute("""CREATE TRIGGER IF NOT EXISTS loan_ecl_assessments_no_update
@@ -387,6 +406,9 @@ class AccountDB(DBManager):
             average_cost INTEGER NOT NULL DEFAULT 0 CHECK(average_cost >= 0),
             pledged_epoch REAL NOT NULL,
             haircut REAL NOT NULL DEFAULT 0.20 CHECK(haircut BETWEEN 0 AND 1),
+            seniority_rank INTEGER NOT NULL DEFAULT 1 CHECK(seniority_rank BETWEEN 1 AND 100),
+            recovery_days INTEGER NOT NULL DEFAULT 0 CHECK(recovery_days BETWEEN 0 AND 3650),
+            recovery_cost_bps INTEGER NOT NULL DEFAULT 0 CHECK(recovery_cost_bps BETWEEN 0 AND 10000),
             last_price INTEGER NOT NULL CHECK(last_price > 0),
             last_value INTEGER NOT NULL CHECK(last_value >= 0),
             status TEXT NOT NULL DEFAULT 'pledged'
@@ -404,6 +426,13 @@ class AccountDB(DBManager):
         collateral_columns = {
             row[1] for row in self.execute("PRAGMA table_info(loan_collateral_assets)")
         }
+        for column, declaration in (
+            ("seniority_rank", "INTEGER NOT NULL DEFAULT 1 CHECK(seniority_rank BETWEEN 1 AND 100)"),
+            ("recovery_days", "INTEGER NOT NULL DEFAULT 0 CHECK(recovery_days BETWEEN 0 AND 3650)"),
+            ("recovery_cost_bps", "INTEGER NOT NULL DEFAULT 0 CHECK(recovery_cost_bps BETWEEN 0 AND 10000)"),
+        ):
+            if column not in collateral_columns:
+                self.execute(f"ALTER TABLE loan_collateral_assets ADD COLUMN {column} {declaration}")
         for column, declaration in (
             ("liquidation_price", "INTEGER NOT NULL DEFAULT 0"),
             ("liquidation_cost", "INTEGER NOT NULL DEFAULT 0"),
@@ -440,6 +469,99 @@ class AccountDB(DBManager):
             ("mark_price", "gross_proceeds", "liquidation_cost", "net_proceeds"),
             "event_id",
         )
+        self.execute("""CREATE TABLE IF NOT EXISTS loan_credit_support (
+            support_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            loan_id INTEGER NOT NULL,
+            party_user_id TEXT NOT NULL,
+            support_type TEXT NOT NULL CHECK(support_type IN ('co_borrower','guarantor','connected_party')),
+            exposure_share_bps INTEGER NOT NULL DEFAULT 0 CHECK(exposure_share_bps BETWEEN 0 AND 10000),
+            underwriting_dti REAL CHECK(underwriting_dti IS NULL OR underwriting_dti BETWEEN 0 AND 200),
+            underwriting_dsr REAL CHECK(underwriting_dsr IS NULL OR underwriting_dsr BETWEEN 0 AND 200),
+            guarantee_limit_minor_units INTEGER NOT NULL DEFAULT 0
+                CHECK(typeof(guarantee_limit_minor_units)='integer' AND guarantee_limit_minor_units>=0),
+            quote_currency TEXT NOT NULL DEFAULT 'NWX',
+            guarantee_recovery_bps INTEGER NOT NULL DEFAULT 10000 CHECK(guarantee_recovery_bps BETWEEN 0 AND 10000),
+            recovery_days INTEGER NOT NULL DEFAULT 180 CHECK(recovery_days BETWEEN 0 AND 3650),
+            recovery_cost_bps INTEGER NOT NULL DEFAULT 0 CHECK(recovery_cost_bps BETWEEN 0 AND 10000),
+            seniority_rank INTEGER NOT NULL DEFAULT 1 CHECK(seniority_rank BETWEEN 1 AND 100),
+            active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+            created_epoch INTEGER NOT NULL,
+            updated_epoch INTEGER NOT NULL,
+            UNIQUE(loan_id,party_user_id,support_type)
+        )""")
+        credit_support_columns = {row[1] for row in self.execute("PRAGMA table_info(loan_credit_support)")}
+        for column in ("underwriting_dti", "underwriting_dsr"):
+            if column not in credit_support_columns:
+                self.execute(f"ALTER TABLE loan_credit_support ADD COLUMN {column} REAL")
+        self.execute("""CREATE TABLE IF NOT EXISTS loan_credit_support_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            support_id INTEGER NOT NULL,
+            loan_id INTEGER NOT NULL,
+            party_user_id TEXT NOT NULL,
+            actor_id TEXT NOT NULL,
+            event_type TEXT NOT NULL CHECK(event_type IN ('created','updated','released')),
+            snapshot TEXT NOT NULL,
+            recorded_epoch INTEGER NOT NULL
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_loan_credit_support_loan ON loan_credit_support(loan_id,active,support_type)")
+        for table in ("loan_credit_support_events",):
+            for operation in ("UPDATE", "DELETE"):
+                self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_{operation.lower()}_immutable
+                    BEFORE {operation} ON {table}
+                    BEGIN SELECT RAISE(ABORT,'loan credit support events are append-only'); END""")
+        self.execute("""CREATE TABLE IF NOT EXISTS credit_risk_policy_overrides (
+            nationality TEXT NOT NULL,
+            product_code TEXT NOT NULL,
+            pd_multiplier REAL NOT NULL DEFAULT 1 CHECK(pd_multiplier BETWEEN 0.1 AND 10),
+            grade_a_max REAL NOT NULL DEFAULT 0.005,
+            grade_b_max REAL NOT NULL DEFAULT 0.01,
+            grade_c_max REAL NOT NULL DEFAULT 0.025,
+            grade_d_max REAL NOT NULL DEFAULT 0.05,
+            grade_e_max REAL NOT NULL DEFAULT 0.10,
+            grade_f_max REAL NOT NULL DEFAULT 0.20,
+            updated_epoch INTEGER NOT NULL,
+            updated_by TEXT NOT NULL,
+            PRIMARY KEY(nationality,product_code),
+            CHECK(grade_a_max>0 AND grade_a_max<grade_b_max AND grade_b_max<grade_c_max
+              AND grade_c_max<grade_d_max AND grade_d_max<grade_e_max
+              AND grade_e_max<grade_f_max AND grade_f_max<1)
+        )""")
+        self.execute("""CREATE TABLE IF NOT EXISTS credit_risk_policy_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nationality TEXT NOT NULL, product_code TEXT NOT NULL,
+            actor_id TEXT NOT NULL, snapshot TEXT NOT NULL, recorded_epoch INTEGER NOT NULL
+        )""")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_credit_risk_policy_events_{operation.lower()}_immutable
+                BEFORE {operation} ON credit_risk_policy_events
+                BEGIN SELECT RAISE(ABORT,'credit risk policy events are append-only'); END""")
+        self.execute("""CREATE TABLE IF NOT EXISTS loan_future_commitments (
+            loan_id INTEGER PRIMARY KEY,
+            committed_limit_minor_units INTEGER NOT NULL CHECK(typeof(committed_limit_minor_units)='integer' AND committed_limit_minor_units>=0),
+            credit_conversion_factor_bps INTEGER NOT NULL CHECK(credit_conversion_factor_bps BETWEEN 0 AND 10000),
+            expires_epoch INTEGER,
+            active INTEGER NOT NULL CHECK(active IN (0,1)),
+            updated_epoch INTEGER NOT NULL,
+            updated_by TEXT NOT NULL
+        )""")
+        self.execute("""CREATE TABLE IF NOT EXISTS loan_future_commitment_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT, loan_id INTEGER NOT NULL,
+            actor_id TEXT NOT NULL, snapshot TEXT NOT NULL, recorded_epoch INTEGER NOT NULL
+        )""")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_loan_future_commitment_events_{operation.lower()}_immutable
+                BEFORE {operation} ON loan_future_commitment_events
+                BEGIN SELECT RAISE(ABORT,'loan future commitment events are append-only'); END""")
+        self.execute("""CREATE TABLE IF NOT EXISTS loan_collateral_recovery_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT, collateral_id INTEGER NOT NULL,
+            loan_id INTEGER NOT NULL, actor_id TEXT NOT NULL,
+            prior_snapshot TEXT NOT NULL, new_snapshot TEXT NOT NULL,
+            recorded_epoch INTEGER NOT NULL
+        )""")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_loan_collateral_recovery_events_{operation.lower()}_immutable
+                BEFORE {operation} ON loan_collateral_recovery_events
+                BEGIN SELECT RAISE(ABORT,'loan collateral recovery events are append-only'); END""")
         self.execute("""CREATE TABLE IF NOT EXISTS deposit_insurance_claims (
             claim_id INTEGER PRIMARY KEY AUTOINCREMENT,
             issuer TEXT NOT NULL,

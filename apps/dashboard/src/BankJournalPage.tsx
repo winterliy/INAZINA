@@ -8,6 +8,7 @@ type Unbalanced = { entry_id: number; issuer: string; event_type: string; refere
 type Reconciliation = { reference_key: string; currency_code: string; ledger_amount: number; journal_amount: number | null; difference: number | null; ledger_amount_text: string; journal_amount_text: string | null; difference_text: string | null; status: string };
 type DepositReconciliation = { currency_code: string; account_balance: string; journal_balance: string; difference: string; status: string };
 type LoanReconciliation = DepositReconciliation;
+type ChargeoffMemoReconciliation = { currency_code: string; subledger_units: number; event_units: number; difference_units: number; decimal_places: number; status: string };
 type DepositInsuranceClaim = { user_id: string; account_number: string; currency_code: string; covered_amount_text: string; uninsured_amount_text: string; payout_currency: string | null; payout_amount_text?: string; resolved_epoch: number; decimal_places: number; payout_decimal_places?: number };
 type DepositInsuranceReconciliation = { currency_code: string; account_code: string; claim_amount: string; journal_amount: string; difference: string; status: string };
 type MaturityGap = { issuer: string; asOfEpoch: number; method: string; ladders: { currency: string; decimalPlaces: number; buckets: { bucket: string; inflows: number; outflows: number; net_gap: number; cumulative_gap: number }[]; depositRunoffStress: { runoffPercent: number; assumedRunoff: number; stressedOneDayOutflow: number; oneDayLoanInflows: number; oneDayGap: number }[] }[] };
@@ -16,9 +17,12 @@ type RateStress = { issuer: string; asOfEpoch: number; horizonDays: number; scen
 type FixedRateEveStress = { issuer: string; asOfEpoch: number; scenarios: { currency: string; decimalPlaces: number; fixedLoans: number; fixedDeposits: number; loansWithoutMaturity: number; assetDurationAmountYears: number; liabilityDurationAmountYears: number; netDurationGapAmountYears: number; netConvexityGapAmountYears2: number; shocks: { basisPoints: number; estimatedEveChange: number }[] }[]; method: string };
 type FxStress = { issuer: string; baseCurrency: string; decimalPlaces: number; asOfEpoch: number; positions: { currency: string; baseCurrency: string; assetsInBase: number; liabilitiesInBase: number; netOpenPositionInBase: number; fxRate: number; shocks: { currencyChangePercent: number; capitalImpact: number }[] }[]; method: string };
 type CreditStress = { issuer: string; currency: string; decimalPlaces: number; performingExposureCount: number; performingEad: number; estimatedFullDefaultLoss: number; existingAllowance: number; scenarios: { defaultSharePercent: number; defaultedEad: number; grossLoss: number; existingAllowanceApplied: number; incrementalProvision: number; equityAfterProvision: number; capitalConsumedPercent: number | null }[]; method: string };
+type CorrelatedCreditStress = { issuer: string; currency: string; decimalPlaces: number; confidence: number; assetCorrelation: number; exposureCount: number; performingEad: number; independentExpectedLoss: number; correlatedTailLoss: number; method: string };
 type BorrowerConcentrationStress = { issuer: string; currency: string; decimalPlaces: number; borrowerCount: number; totalLoanExposure: number; largestBorrowerSharePercent: number; topFiveExposureSharePercent: number; borrowers: { borrowerId: string; loanCount: number; exposure: number; exposureSharePercent: number; grossLoss: number; existingAllowanceApplied: number; incrementalProvision: number; equityAfterProvision: number }[]; method: string };
 type Prudential = { issuer: string; currency: string; decimalPlaces: number; status: string; effectiveEquity: number; riskWeightedAssets: number; capitalRatioPercent: number | null; targetCapitalRatioPercent: number; leverageExposure: number; leverageRatioPercent: number | null; minimumLeverageRatioPercent: number; exposureCount: number; cashCollateralCovered: number; weightedComponents: Record<string, number>; method: string };
-type Report = { issuer: string; currency: string | null; trialBalance: Trial[]; unbalancedEntries: Unbalanced[]; resultReconciliation: Reconciliation[]; depositReconciliation: DepositReconciliation[]; loanReconciliation: LoanReconciliation[]; eclAllowanceReconciliation: LoanReconciliation[]; depositInsuranceReconciliation: DepositInsuranceReconciliation[]; depositInsuranceClaims: DepositInsuranceClaim[]; maturityGap: MaturityGap; liquidityStress: LiquidityStress; rateStress: RateStress; fixedRateEveStress: FixedRateEveStress; fxStress: FxStress; prudential: Prudential; creditStress: CreditStress; borrowerConcentrationStress: BorrowerConcentrationStress };
+type CommonJournalReconciliation = { ledger_scope: string; native_entries?: number; native_balances?: number; wallet_entries?: number; common_entries: number; missing_entries: number; balance_gaps?: number; status: string };
+type AmountSnapshotAudit = { status: string; findingCount: number; findings: { source_table?: string; source_key?: string; amount_field?: string; currency_code?: string; status: string }[] };
+type Report = { issuer: string; currency: string | null; trialBalance: Trial[]; unbalancedEntries: Unbalanced[]; resultReconciliation: Reconciliation[]; depositReconciliation: DepositReconciliation[]; loanReconciliation: LoanReconciliation[]; eclAllowanceReconciliation: LoanReconciliation[]; chargeoffMemoReconciliation: ChargeoffMemoReconciliation[]; depositInsuranceReconciliation: DepositInsuranceReconciliation[]; depositInsuranceClaims: DepositInsuranceClaim[]; commonJournalReconciliation: CommonJournalReconciliation[]; commonJournalUnbalancedEntries: { entry_id: number; ledger_scope: string; entity_type: string; entity_id: string; currency_code: string }[]; amountSnapshotAudit: AmountSnapshotAudit; maturityGap: MaturityGap; liquidityStress: LiquidityStress; rateStress: RateStress; fixedRateEveStress: FixedRateEveStress; fxStress: FxStress; prudential: Prudential; creditStress: CreditStress; correlatedCreditStress: CorrelatedCreditStress; borrowerConcentrationStress: BorrowerConcentrationStress };
 
 export function BankJournalPage({ ctx }: { ctx: Ctx }) {
   const { busy, run, say } = ctx;
@@ -30,12 +34,25 @@ export function BankJournalPage({ ctx }: { ctx: Ctx }) {
     return value.toISOString().slice(0, 16);
   });
   const [report, setReport] = useState<Report | null>(null);
+  const [closing, setClosing] = useState({ scope: "institution", entity: "", currency: "", start: "", end: "" });
   function load(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!issuer.trim()) { say("금융기관 issuer를 입력해주세요.", true); return; }
     const query = new URLSearchParams({ issuer: issuer.trim(), ...(currency.trim() ? { currency: currency.trim().toUpperCase() } : {}),
       ...(since ? { since: String(Math.floor(new Date(since).getTime() / 1000)) } : {}) });
     void run(() => api<Report>(`/api/admin/bank-journal?${query}`), "은행 원장 대사 정보를 불러오지 못했습니다.", setReport);
+  }
+  function closePeriod(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const start = Math.floor(new Date(closing.start).getTime() / 1000);
+    const end = Math.floor(new Date(closing.end).getTime() / 1000);
+    if (!closing.entity.trim() || !closing.currency.trim() || !Number.isFinite(start) || !Number.isFinite(end) || end <= start) {
+      say("대상, 통화와 올바른 시작·종료 시각을 입력해주세요.", true); return;
+    }
+    if (!window.confirm(`${closing.scope}/${closing.entity} · ${closing.currency.toUpperCase()} 기간을 마감할까요? 마감 후 이 기간에 소급 전기할 수 없으며 수정은 다음 기간 조정전기로 해야 합니다.`)) return;
+    void run(() => api<{ success: boolean; closingId: number }>("/api/admin/bank-journal/close", {
+      method: "POST", body: JSON.stringify({ ledgerScope: closing.scope, entityId: closing.entity.trim(), currencyCode: closing.currency.trim().toUpperCase(), periodStartEpoch: start, periodEndEpoch: end }),
+    }), "회계기간을 마감하지 못했습니다.", (result) => say(`회계기간 마감 #${result.closingId}을 기록했습니다.`, !result.success));
   }
   return <Card title="은행 이중분개 원장 대사" caption="조회 전용 · 시산 잔액과 불균형은 전체 이력, 손익 원장 대사는 지정 기간입니다. 금액은 각 통화 정밀도를 따르며 법정 감사의견이 아닙니다.">
     <form className="form-grid" onSubmit={load}>
@@ -44,7 +61,26 @@ export function BankJournalPage({ ctx }: { ctx: Ctx }) {
       <Field label="손익 원장 대사 시작" hint="선택 · 기본 최근 30일, 비우면 전체"><input type="datetime-local" value={since} onChange={(event) => setSince(event.target.value)} /></Field>
       <button className="btn primary" disabled={busy || !issuer.trim()}>원장 조회</button>
     </form>
+    <h3 className="sub-head">공통원장 기간 마감</h3>
+    <form className="form-grid" onSubmit={closePeriod}>
+      <Field label="원장 범위"><select value={closing.scope} onChange={(event) => setClosing({ ...closing, scope: event.target.value })}><option value="customer">고객</option><option value="company">회사</option><option value="institution">금융기관</option></select></Field>
+      <Field label="대상 ID"><input required maxLength={100} value={closing.entity} onChange={(event) => setClosing({ ...closing, entity: event.target.value })} /></Field>
+      <Field label="통화"><input required className="mono" maxLength={12} value={closing.currency} onChange={(event) => setClosing({ ...closing, currency: event.target.value })} /></Field>
+      <Field label="기간 시작 (포함)"><input required type="datetime-local" value={closing.start} onChange={(event) => setClosing({ ...closing, start: event.target.value })} /></Field>
+      <Field label="기간 종료 (미포함)"><input required type="datetime-local" value={closing.end} onChange={(event) => setClosing({ ...closing, end: event.target.value })} /></Field>
+      <button className="btn primary" disabled={busy}>기간 마감</button>
+    </form>
+    <p className="hint">불변 스냅샷으로 기록됩니다. 같은 기간 재요청은 멱등이며, 마감 이후 소급 전기는 거부됩니다. 오류 정정은 다음 열린 기간의 조정분개로 기록하세요.</p>
     {report && <>
+      <h3 className="sub-head">공통 원장 연결 상태</h3>
+      <p className="hint">범위는 현재 연결된 고객 지갑, 회사, 금융기관 보조원장입니다. 대출·시장·상품 등 아직 공통 전기로 이관되지 않은 하위원장은 미연결로 남으므로 여기서 matched로 간주하지 않습니다.</p>
+      <div className="scroll-x"><table><thead><tr><th>원장 범위</th><th className="r">원장 행/잔액</th><th className="r">공통 전기</th><th className="r">누락</th><th className="r">잔액 차이</th><th>상태</th></tr></thead><tbody>
+        {report.commonJournalReconciliation.map((row) => <tr key={row.ledger_scope}><td>{row.ledger_scope}</td><td className="r">{row.native_entries ?? row.wallet_entries ?? row.native_balances ?? 0}</td><td className="r">{row.common_entries}</td><td className="r">{row.missing_entries}</td><td className="r">{row.balance_gaps ?? "—"}</td><td>{row.status}</td></tr>)}
+      </tbody></table></div>
+      <p className="hint">공통 원장 불균형 분개: {report.commonJournalUnbalancedEntries.length}건</p>
+      <h3 className="sub-head">금액 최소단위 스냅샷 검사</h3>
+      <p className="hint">등록된 원천 금액과 통화 최소단위 정수 스냅샷의 차이·누락 검사입니다. 아직 스냅샷이 권위 원장을 대체하지는 않습니다. 결과 {report.amountSnapshotAudit.findingCount}건 · {report.amountSnapshotAudit.status}</p>
+      {report.amountSnapshotAudit.findings.length > 0 && <div className="scroll-x"><table><thead><tr><th>테이블</th><th>키</th><th>필드</th><th>통화</th><th>판정</th></tr></thead><tbody>{report.amountSnapshotAudit.findings.map((item, index) => <tr key={`${item.source_table}-${item.source_key}-${item.amount_field}-${index}`}><td>{item.source_table ?? "—"}</td><td className="mono">{item.source_key ?? "—"}</td><td>{item.amount_field ?? "—"}</td><td>{item.currency_code ?? "—"}</td><td>{item.status}</td></tr>)}</tbody></table></div>}
       <h3 className="sub-head">신용위험가중자산 · {report.prudential.issuer} · {report.prudential.currency}</h3>
       <p className="hint">기관 상태: {report.prudential.status} · 유효 자기자본 {money(report.prudential.effectiveEquity, report.prudential.decimalPlaces)} · RWA {money(report.prudential.riskWeightedAssets, report.prudential.decimalPlaces)} · RWA 기준 단순 자본비율 {report.prudential.capitalRatioPercent == null ? "—" : `${report.prudential.capitalRatioPercent.toFixed(2)}%`} / 목표 {report.prudential.targetCapitalRatioPercent.toFixed(2)}% · 단순 레버리지비율 {report.prudential.leverageRatioPercent == null ? "—" : `${report.prudential.leverageRatioPercent.toFixed(2)}%`} / 최소 {report.prudential.minimumLeverageRatioPercent.toFixed(2)}% · 대출 {report.prudential.exposureCount}건 · 현금담보 {money(report.prudential.cashCollateralCovered, report.prudential.decimalPlaces)}</p>
       <div className="scroll-x"><table><thead><tr><th>위험구간 기여</th><th className="r">가중 노출액 ({report.prudential.currency})</th></tr></thead><tbody>{Object.entries(report.prudential.weightedComponents).map(([key, value]) => <tr key={key}><td>{riskWeightLabel(key)}</td><td className="r mono">{money(value, report.prudential.decimalPlaces)}</td></tr>)}</tbody></table></div>
@@ -54,8 +90,10 @@ export function BankJournalPage({ ctx }: { ctx: Ctx }) {
       <div className="scroll-x"><table><thead><tr><th>가정 부도비중</th><th className="r">부도 EAD</th><th className="r">총 손실</th><th className="r">충당금 사용</th><th className="r">추가 충당금</th><th className="r">자기자본 소진</th><th className="r">충당 후 자기자본</th></tr></thead><tbody>
         {report.creditStress.scenarios.map((scenario) => <tr key={scenario.defaultSharePercent}><td>{scenario.defaultSharePercent}%</td><td className="r mono">{money(scenario.defaultedEad, report.creditStress.decimalPlaces)}</td><td className="r mono">{money(scenario.grossLoss, report.creditStress.decimalPlaces)}</td><td className="r mono">{money(scenario.existingAllowanceApplied, report.creditStress.decimalPlaces)}</td><td className="r mono">{money(scenario.incrementalProvision, report.creditStress.decimalPlaces)}</td><td className="r mono">{scenario.capitalConsumedPercent == null ? "—" : `${scenario.capitalConsumedPercent.toFixed(2)}%`}</td><td className="r mono">{money(scenario.equityAfterProvision, report.creditStress.decimalPlaces)}</td></tr>)}
       </tbody></table>{!report.creditStress.performingExposureCount && <p className="empty">스트레스 대상 정상 대출이 없습니다.</p>}</div>
+      <h3 className="sub-head">공통 거시충격 부도 상관 스트레스</h3>
+      <p className="hint">단일요인 Gaussian proxy의 {(report.correlatedCreditStress.confidence * 100).toFixed(0)}% 불리한 거시 분위수에서 동일 포트폴리오 PD가 함께 상승한다고 가정합니다. 자산상관 {report.correlatedCreditStress.assetCorrelation.toFixed(2)} · 기대손실 {money(report.correlatedCreditStress.independentExpectedLoss, report.correlatedCreditStress.decimalPlaces)} → 조건부 꼬리손실 {money(report.correlatedCreditStress.correlatedTailLoss, report.correlatedCreditStress.decimalPlaces)} {report.correlatedCreditStress.currency}. 감독규제 자본 산식이 아닌 내부 스트레스 proxy입니다.</p>
       <h3 className="sub-head">차주 집중도 · 단일 차주 부도 스트레스</h3>
-      <p className="hint">정상·부도 대출을 차주별로 합산합니다. 상위 5명 합계가 전체 대출노출에서 차지하는 비율과 각 차주 단독 부도 시 담보조정 손실·기충당 ECL·추가 충당금·자본 영향을 표시합니다. 공동지배·보증인·연결기업은 묶지 않는 단일 차주 시뮬레이터 스트레스입니다.</p>
+      <p className="hint">정상·부도 대출을 차주별로 합산합니다. 관리자가 연결차주로 등록한 집단은 같은 집중노출 그룹으로 합산하며, 보증인은 노출집단이 아니라 담보조정 LGD에 반영합니다.</p>
       <p className="hint">차주 {report.borrowerConcentrationStress.borrowerCount}명 · 대출노출 {money(report.borrowerConcentrationStress.totalLoanExposure, report.borrowerConcentrationStress.decimalPlaces)} {report.borrowerConcentrationStress.currency} · 최대 차주 {report.borrowerConcentrationStress.largestBorrowerSharePercent.toFixed(1)}% · 상위 5명 {report.borrowerConcentrationStress.topFiveExposureSharePercent.toFixed(1)}%</p>
       <div className="scroll-x"><table><thead><tr><th>차주 ID</th><th className="r">대출 수</th><th className="r">노출액</th><th className="r">포트폴리오 비중</th><th className="r">단독 부도 총손실</th><th className="r">충당금 사용</th><th className="r">추가 충당금</th><th className="r">충당 후 자기자본</th></tr></thead><tbody>
         {report.borrowerConcentrationStress.borrowers.map((row) => <tr key={row.borrowerId}><td className="mono">{row.borrowerId}</td><td className="r">{row.loanCount}</td><td className="r mono">{money(row.exposure, report.borrowerConcentrationStress.decimalPlaces)}</td><td className="r">{row.exposureSharePercent.toFixed(2)}%</td><td className="r mono">{money(row.grossLoss, report.borrowerConcentrationStress.decimalPlaces)}</td><td className="r mono">{money(row.existingAllowanceApplied, report.borrowerConcentrationStress.decimalPlaces)}</td><td className="r mono">{money(row.incrementalProvision, report.borrowerConcentrationStress.decimalPlaces)}</td><td className="r mono">{money(row.equityAfterProvision, report.borrowerConcentrationStress.decimalPlaces)}</td></tr>)}
@@ -115,6 +153,11 @@ export function BankJournalPage({ ctx }: { ctx: Ctx }) {
       <div className="scroll-x"><table><thead><tr><th>통화</th><th className="r">대출별 충당금</th><th className="r">분개장 충당금</th><th className="r">차이</th><th>상태</th></tr></thead><tbody>
         {report.eclAllowanceReconciliation.map((row) => <tr key={row.currency_code}><td>{row.currency_code}</td><td className="r mono">{groupAmount(row.account_balance)}</td><td className="r mono">{groupAmount(row.journal_balance)}</td><td className="r mono">{groupAmount(row.difference)}</td><td>{row.status}</td></tr>)}
       </tbody></table>{!report.eclAllowanceReconciliation.length && <p className="empty">대사할 ECL 충당금 잔액이 없습니다.</p>}</div>
+      <h3 className="sub-head">상각 후 미회수 채권 메모잔액 대사</h3>
+      <p className="hint">상각으로 재무상태표에서 제거된 계약상 채무잔액과 불변 상각·회수 이벤트 순액을 비교합니다. 이는 회수 가능성이나 법적 집행 여부를 보증하지 않습니다.</p>
+      <div className="scroll-x"><table><thead><tr><th>통화</th><th className="r">대출 메모잔액 (최소단위)</th><th className="r">이벤트 순액 (최소단위)</th><th className="r">차이 (최소단위)</th><th>상태</th></tr></thead><tbody>
+        {report.chargeoffMemoReconciliation.map((row) => <tr key={row.currency_code}><td>{row.currency_code}</td><td className="r mono">{row.subledger_units}</td><td className="r mono">{row.event_units}</td><td className="r mono">{row.difference_units}</td><td>{row.status}</td></tr>)}
+      </tbody></table>{!report.chargeoffMemoReconciliation.length && <p className="empty">대사할 상각 메모잔액이 없습니다.</p>}</div>
       <h3 className="sub-head">예금보험 청구액 · 분개장 부채 대사</h3>
       <p className="hint">정리 이력의 확정 보장·미보장 청구액과 분개장 부채를 통화 최소단위로 비교합니다. 미보장 채권은 법정 배당순위나 회수액이 아니라 시뮬레이터상 청구액입니다.</p>
       <div className="scroll-x"><table><thead><tr><th>통화</th><th>계정</th><th className="r">청구액</th><th className="r">분개장 부채</th><th className="r">차이</th><th>상태</th></tr></thead><tbody>

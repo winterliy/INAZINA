@@ -404,7 +404,7 @@ class InterestManager:
                     account_count += int(credited)
 
                 loans = conn.execute(
-                    "SELECT loan_id,user_id,product_code,principal,outstanding_balance,created_at,last_payment_epoch,"
+                    "SELECT loan_id,user_id,product_code,principal,outstanding_balance,created_at,last_payment_epoch,status,"
                     "contract_rate,rate_type,rate_nationality,base_rate_spread,rate_floor,rate_cap,"
                     "repricing_cycle_seconds,next_repricing_epoch,benchmark_key,benchmark_tenor_days,"
                     "repricing_lag_seconds,maturity_epoch,overdue_since_epoch,overdue_last_epoch,"
@@ -429,6 +429,18 @@ class InterestManager:
                             "UPDATE accounts.loans SET last_payment_epoch = ? "
                             "WHERE loan_id = ?",
                             (now, loan["loan_id"]),
+                        )
+                        continue
+                    if loan["status"] == "defaulted" or loan["collection_status"] == "defaulted":
+                        # Defaulted/stage-3 exposures are on nonaccrual in this
+                        # simulator: no new interest is recognized or journaled.
+                        # Advance the cursor so recovery cannot retro-book it.
+                        conn.execute(
+                            "UPDATE accounts.loans SET nonaccrual_since_epoch="
+                            "COALESCE(nonaccrual_since_epoch,defaulted_epoch,?),"
+                            "last_payment_epoch=?,interest_remainder=0,"
+                            "overdue_interest_remainder=0 WHERE loan_id=?",
+                            (now, now, loan["loan_id"]),
                         )
                         continue
                     rate = self._number(loan["contract_rate"], self._number(product["interest_rate"]))

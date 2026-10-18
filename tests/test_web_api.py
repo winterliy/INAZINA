@@ -676,6 +676,58 @@ class WebApiTests(unittest.TestCase):
             "reference_key": "reject-me", "reason_code": "compliance_review",
         })
 
+    def test_admin_accounting_period_close_is_authorized_and_audited(self):
+        from contextlib import nullcontext
+        response = {}
+        payload = {"ledgerScope": "institution", "entityId": "Bank", "currencyCode": "NWX",
+                   "periodStartEpoch": 100, "periodEndEpoch": 200}
+        body = json.dumps(payload).encode()
+        handler = SimpleNamespace(
+            headers={"x-inazina-internal-token": "secret", "x-inazina-user-id": "admin-1",
+                     "content-length": str(len(body))},
+            path="/internal/admin/bank-journal/close", rfile=io.BytesIO(body),
+            send_json=lambda status, value: response.update(status=status, value=value),
+        )
+        connection = object()
+        db = SimpleNamespace(atomic=lambda: nullcontext(connection))
+        with patch.object(server, "INTERNAL_TOKEN", "secret"), \
+                patch.object(server, "identity", return_value={"userId": "admin-1", "role": "admin"}), \
+                patch.object(server, "domain", return_value=SimpleNamespace(db=db)), \
+                patch("managers.accounting_journal.AccountingJournal.close_period", return_value=7) as close:
+            server.Handler.do_POST(handler)
+        close.assert_called_once()
+        self.assertEqual(response, {"status": 200, "value": {"success": True, "closingId": 7}})
+        audit = server.admin_audit()[0]
+        self.assertEqual(audit["action"], "accounting.period.close")
+
+    def test_admin_loan_chargeoff_action_is_available_through_compliance_api(self):
+        from contextlib import nullcontext
+        response = {}
+        payload = {"action": "loan_charge_off", "loanId": 17,
+                   "eventKey": "case-17-chargeoff", "memo": "approved"}
+        body = json.dumps(payload).encode()
+        handler = SimpleNamespace(
+            headers={"x-inazina-internal-token": "secret", "x-inazina-user-id": "admin-1",
+                     "content-length": str(len(body))},
+            path="/internal/admin/compliance", rfile=io.BytesIO(body),
+            send_json=lambda status, value: response.update(status=status, value=value),
+        )
+        connection = object()
+        result = {"eventId": 8, "duplicate": False}
+        with patch.object(server, "INTERNAL_TOKEN", "secret"), \
+                patch.object(server, "identity", return_value={"userId": "admin-1", "role": "admin"}), \
+                patch.object(server, "connect_db", return_value=nullcontext(connection)), \
+                patch("managers.credit_risk_manager.CreditRiskManager.charge_off_loan",
+                      return_value=result) as chargeoff:
+            server.Handler.do_POST(handler)
+        chargeoff.assert_called_once()
+        args = chargeoff.call_args.kwargs
+        self.assertEqual(args["loan_id"], 17)
+        self.assertEqual(args["event_key"], "case-17-chargeoff")
+        self.assertEqual(args["actor_id"], "admin-1")
+        self.assertIs(chargeoff.call_args.args[0], connection)
+        self.assertEqual(response, {"status": 200, "value": {"success": True, "result": result}})
+
     def test_admin_dr_custody_reconciliation_is_read_only_and_audited(self):
         response = {}
         handler = SimpleNamespace(

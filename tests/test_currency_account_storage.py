@@ -14,6 +14,7 @@ from managers.bank_manager import BankManager
 from managers.user_manager import UserManager
 from managers.compliance_manager import ComplianceManager
 from managers.accounting_journal import AccountingJournal
+from functions.money import audit_amount_snapshots
 
 
 class CurrencyAccountStorageTests(unittest.TestCase):
@@ -142,6 +143,22 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         with self.db.atomic() as conn:
             checks = AccountingJournal.reconcile_subledgers(conn)
             self.assertEqual(next(item for item in checks if item['ledger_scope']=='customer')['status'],'matched')
+
+    def test_registered_currency_amount_snapshots_reconcile_to_source_rows(self):
+        with self.db.readonly() as conn:
+            findings = audit_amount_snapshots(conn)
+        self.assertEqual(findings, [])
+        row = self.db.currency.execute_one(
+            "SELECT source_table,source_key,amount_field FROM financial_amount_snapshots LIMIT 1"
+        )
+        self.assertIsNotNone(row)
+        self.db.currency.execute(
+            "DELETE FROM financial_amount_snapshots WHERE source_table=? AND source_key=? AND amount_field=?",
+            tuple(row),
+        )
+        with self.db.readonly() as conn:
+            findings = audit_amount_snapshots(conn)
+        self.assertTrue(any(item["status"] == "missing_snapshot" for item in findings), findings)
     def test_institution_ledger_minor_unit_upgrade_is_idempotent(self):
         self.db.currency.execute(
             "INSERT INTO financial_institution_ledger "

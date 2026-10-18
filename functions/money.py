@@ -89,6 +89,31 @@ def audit_amount_snapshots(conn):
     if not exists:
         return [{"status": "missing_inventory"}]
     findings = []
+    specifications = conn.execute(
+        "SELECT DISTINCT source_table,source_key_field,amount_field "
+        "FROM financial_amount_snapshots"
+    ).fetchall()
+    for spec in specifications:
+        table, key_field, field = (str(spec[name]) for name in
+                                   ("source_table", "source_key_field", "amount_field"))
+        if not all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+                   for name in (table, key_field, field)):
+            continue
+        columns = {item[1] for item in conn.execute(f'PRAGMA table_info("{table}")')}
+        if key_field not in columns or field not in columns:
+            continue
+        missing = conn.execute(
+            f'''SELECT CAST(src."{key_field}" AS TEXT) source_key
+                FROM "{table}" src LEFT JOIN financial_amount_snapshots snap
+                  ON snap.source_table=? AND snap.source_key_field=?
+                 AND snap.source_key=CAST(src."{key_field}" AS TEXT)
+                 AND snap.amount_field=?
+                WHERE src."{field}" IS NOT NULL AND snap.source_key IS NULL''',
+            (table, key_field, field),
+        ).fetchall()
+        findings.extend({"source_table": table, "source_key": str(row[0]),
+                         "amount_field": field, "status": "missing_snapshot"}
+                        for row in missing)
     rows = conn.execute("SELECT * FROM financial_amount_snapshots ORDER BY source_table,source_key,amount_field")
     for row in rows:
         table, key_field, key, field = (str(row[name]) for name in

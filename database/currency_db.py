@@ -633,7 +633,9 @@ class CurrencyDB(DBManager):
 
     def _ensure_money_snaps(self):
         """Money held in other tables is kept at its currency's minor unit (no float drift)."""
-        for table, column in (("market_orders", "reserved_cash"), ("loans", "outstanding_balance")):
+        for table, column in (("market_orders", "reserved_cash"),
+                              ("loans", "outstanding_balance"),
+                              ("loans", "charged_off_balance")):
             if not self.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)):
                 continue
             places = "(SELECT COALESCE(MAX(decimal_places),0) FROM currencies WHERE code=COALESCE(NEW.quote_currency,'NWX'))"

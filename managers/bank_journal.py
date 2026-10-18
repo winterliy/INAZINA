@@ -255,6 +255,40 @@ class BankJournal:
         } for currency in currencies]
 
     @staticmethod
+    def reconcile_charged_off_balances(conn, issuer):
+        """Reconcile contractual off-balance memo balances to immutable events."""
+        from functions.money import currency_precision, to_minor_units
+
+        loans = conn.execute(
+            "SELECT l.quote_currency,l.charged_off_balance FROM accounts.loans l "
+            "JOIN product.liability p USING(product_code) WHERE p.issuer=?",
+            (str(issuer),),
+        ).fetchall()
+        source = {}
+        for row in loans:
+            currency = str(row["quote_currency"] or "NWX").upper()
+            places = currency_precision(conn, currency)
+            source[currency] = source.get(currency, 0) + to_minor_units(
+                row["charged_off_balance"] or 0, places
+            )
+        event_rows = conn.execute(
+            "SELECT currency_code,SUM(CASE event_type WHEN 'charge_off' "
+            "THEN amount_minor_units ELSE -amount_minor_units END) memo_units "
+            "FROM accounts.loan_chargeoff_events WHERE issuer=? GROUP BY currency_code",
+            (str(issuer),),
+        ).fetchall()
+        events = {str(row["currency_code"]): int(row["memo_units"] or 0)
+                  for row in event_rows}
+        currencies = sorted(set(source) | set(events))
+        return [{"issuer": str(issuer), "currency_code": currency,
+                 "subledger_units": source.get(currency, 0),
+                 "event_units": events.get(currency, 0),
+                 "difference_units": source.get(currency, 0)-events.get(currency, 0),
+                 "decimal_places": currency_precision(conn, currency),
+                 "status": "matched" if source.get(currency, 0) == events.get(currency, 0)
+                 else "mismatch"} for currency in currencies]
+
+    @staticmethod
     def reconcile_deposit_insurance_claims(conn, issuer):
         """Compare resolved claim totals with the two posted liability accounts."""
         from functions.money import currency_precision, round_currency
@@ -313,6 +347,7 @@ class BankJournal:
             "customer_deposits": BankJournal.reconcile_customer_deposits(conn, issuer),
             "loan_receivables": BankJournal.reconcile_loan_receivables(conn, issuer),
             "ecl_allowances": BankJournal.reconcile_ecl_allowances(conn, issuer),
+            "charged_off_memo_balances": BankJournal.reconcile_charged_off_balances(conn, issuer),
             "deposit_insurance_claims": BankJournal.reconcile_deposit_insurance_claims(
                 conn, issuer
             ),

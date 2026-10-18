@@ -1558,6 +1558,7 @@ def audit_admin_access(actor_id, action, payload):
 def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
     """Read-only bank-book controls for an administrator's audit workbench."""
     from managers.bank_journal import BankJournal
+    from managers.accounting_journal import AccountingJournal
     from functions.money import currency_precision
     from decimal import Decimal
 
@@ -1570,10 +1571,17 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
                 "SELECT 1 FROM financial_institutions WHERE issuer=?", (str(issuer),)).fetchone():
             raise ValueError("financial_institution_not_found")
         trial_balance = BankJournal.trial_balance(connection, issuer, currency)
+        common_journal_reconciliation = AccountingJournal.reconcile_subledgers(connection)
+        common_journal_unbalanced = AccountingJournal.audit_unbalanced(connection)
+        from functions.money import audit_amount_snapshots
+        amount_snapshot_findings = audit_amount_snapshots(connection)
         unbalanced = BankJournal.audit_unbalanced(connection, issuer)
         deposit_reconciliation = BankJournal.reconcile_customer_deposits(connection, issuer)
         loan_reconciliation = BankJournal.reconcile_loan_receivables(connection, issuer)
         ecl_allowance_reconciliation = BankJournal.reconcile_ecl_allowances(connection, issuer)
+        chargeoff_memo_reconciliation = BankJournal.reconcile_charged_off_balances(
+            connection, issuer,
+        )
         deposit_insurance_reconciliation = BankJournal.reconcile_deposit_insurance_claims(
             connection, issuer,
         )
@@ -1599,6 +1607,9 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
         risk_report = balance_sheet["rwa_report"]
         from managers.credit_risk_manager import CreditRiskManager
         credit_stress = CreditRiskManager.portfolio_default_stress(connection, issuer)
+        correlated_credit_stress = CreditRiskManager.correlated_default_stress(
+            connection, issuer,
+        )
         borrower_concentration = CreditRiskManager.borrower_concentration_stress(
             connection, issuer
         )
@@ -1690,12 +1701,21 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
             "depositReconciliation": deposit_reconciliation,
             "loanReconciliation": loan_reconciliation,
             "eclAllowanceReconciliation": ecl_allowance_reconciliation,
+            "chargeoffMemoReconciliation": chargeoff_memo_reconciliation,
             "depositInsuranceReconciliation": deposit_insurance_reconciliation,
             "depositInsuranceClaims": insurance_claims,
+            "commonJournalReconciliation": common_journal_reconciliation,
+            "commonJournalUnbalancedEntries": common_journal_unbalanced,
+            "amountSnapshotAudit": {
+                "findingCount": len(amount_snapshot_findings),
+                "findings": amount_snapshot_findings[:100],
+                "status": "clean" if not amount_snapshot_findings else "attention_required",
+            },
             "maturityGap": maturity_gap,
             "liquidityStress": liquidity_stress, "rateStress": rate_stress,
             "fixedRateEveStress": fixed_rate_eve_stress, "fxStress": fx_stress,
             "prudential": prudential, "creditStress": credit_stress,
+            "correlatedCreditStress": correlated_credit_stress,
             "borrowerConcentrationStress": borrower_concentration}
 
 
@@ -1753,10 +1773,18 @@ def admin_compliance_overview(nationality=None):
         aml_events = [dict(row) for row in connection.execute(aml_event_sql, params).fetchall()]
         scenario_sql = ("SELECT nationality,scenario_key,probability,pd_multiplier,lgd_multiplier,updated_epoch "
                         "FROM credit_risk_scenarios")
+        ecl_columns = {row[1] for row in connection.execute(
+            "PRAGMA table_info(loan_ecl_assessments)"
+        ).fetchall()}
+        loan_columns = {row[1] for row in connection.execute(
+            "PRAGMA table_info(loans)"
+        ).fetchall()}
+        risk_grade_column = "e.risk_grade" if "risk_grade" in ecl_columns else "NULL AS risk_grade"
+        nonaccrual_column = "l.nonaccrual_since_epoch" if "nonaccrual_since_epoch" in loan_columns else "NULL AS nonaccrual_since_epoch"
         ecl_sql = ("SELECT e.assessment_id,e.loan_id,e.as_of_day,e.stage,e.pd_12m,e.lifetime_pd,e.lgd,"
                    "e.ead,e.expected_loss,e.discount_factor,e.quote_currency,e.scenario,"
                    "e.effective_interest_rate,e.expected_loss_time_years,e.macro_pd_multiplier,"
-                   "e.calculated_epoch,u.nationality "
+                   f"e.calculated_epoch,{risk_grade_column},{nonaccrual_column},u.nationality "
                    "FROM loan_ecl_assessments e JOIN loans l USING(loan_id) "
                    "JOIN users u ON u.user_id=l.user_id")
         if nationality:
@@ -1765,17 +1793,88 @@ def admin_compliance_overview(nationality=None):
         scenario_sql += " ORDER BY nationality,CASE scenario_key WHEN 'optimistic' THEN 1 WHEN 'base' THEN 2 ELSE 3 END"
         ecl_sql += " ORDER BY e.calculated_epoch DESC LIMIT 100"
         scenarios = [dict(row) for row in connection.execute(scenario_sql, params).fetchall()]
+        try:
+            support_exists = bool(connection.execute(
+                "PRAGMA accounts.table_info(loan_credit_support)"
+            ).fetchall())
+        except Exception:
+            support_exists = False
+        credit_support = []
+        policy_overrides = []
+        future_commitments = []
+        collateral_recovery = []
+        if support_exists:
+            support_sql = ("SELECT s.support_id,s.loan_id,s.party_user_id,s.support_type,"
+                           "s.exposure_share_bps,s.underwriting_dti,s.underwriting_dsr,"
+                           "s.guarantee_limit_minor_units,s.quote_currency,"
+                           "s.guarantee_recovery_bps,s.recovery_days,s.recovery_cost_bps,"
+                           "s.seniority_rank,s.active,s.updated_epoch FROM accounts.loan_credit_support s")
+            if nationality:
+                support_sql += " JOIN accounts.loans l ON l.loan_id=s.loan_id JOIN users.users u ON u.user_id=l.user_id WHERE u.nationality=?"
+            support_sql += " ORDER BY s.updated_epoch DESC LIMIT 100"
+            credit_support = [dict(row) for row in connection.execute(support_sql, params).fetchall()]
+            policy_overrides = [dict(row) for row in connection.execute(
+                "SELECT nationality,product_code,pd_multiplier,grade_a_max,grade_b_max,"
+                "grade_c_max,grade_d_max,grade_e_max,grade_f_max,updated_epoch,updated_by "
+                "FROM accounts.credit_risk_policy_overrides "
+                + ("WHERE nationality=? " if nationality else "")
+                + "ORDER BY nationality,product_code LIMIT 200", params,
+            ).fetchall()]
+            future_commitments = [dict(row) for row in connection.execute(
+                "SELECT c.loan_id,c.committed_limit_minor_units,l.quote_currency,"
+                "c.credit_conversion_factor_bps,c.expires_epoch,c.active,c.updated_epoch,c.updated_by "
+                "FROM accounts.loan_future_commitments c JOIN accounts.loans l USING(loan_id) "
+                "JOIN users.users u ON u.user_id=l.user_id "
+                + ("WHERE u.nationality=? " if nationality else "")
+                + "ORDER BY c.updated_epoch DESC LIMIT 100", params,
+            ).fetchall()]
+            for commitment in future_commitments:
+                places = currency_precision(connection, commitment["quote_currency"])
+                commitment["decimal_places"] = places
+                commitment["committed_limit_text"] = f"{Decimal(int(commitment['committed_limit_minor_units'])).scaleb(-places):.{places}f}"
+            collateral_recovery = [dict(row) for row in connection.execute(
+                "SELECT c.collateral_id,c.loan_id,c.asset_code,c.seniority_rank,c.recovery_days,"
+                "c.recovery_cost_bps,c.last_value,l.quote_currency,c.status,u.nationality "
+                "FROM accounts.loan_collateral_assets c JOIN accounts.loans l USING(loan_id) "
+                "JOIN users.users u ON u.user_id=l.user_id "
+                + ("WHERE u.nationality=? " if nationality else "")
+                + "ORDER BY c.collateral_id DESC LIMIT 100", params,
+            ).fetchall()]
         ecl_assessments = [dict(row) for row in connection.execute(ecl_sql, params).fetchall()]
         from managers.credit_risk_manager import CreditRiskManager
         ecl_backtest = CreditRiskManager.backtest_12m(connection, nationality)
+        ecl_backtest["gradeTransitions"] = CreditRiskManager.grade_transition_report(
+            connection, nationality,
+        )["transitions"]
+        ecl_backtest["gradeTransitionMethod"] = (
+            "per-loan first grade to latest grade; simulator-only, not an independent migration matrix"
+        )
         for row in ecl_assessments:
             places = currency_precision(connection, row["quote_currency"])
             row["decimal_places"] = places
             row["ead_text"] = f"{Decimal(str(row['ead'])):.{places}f}"
             row["expected_loss_text"] = f"{Decimal(str(row['expected_loss'])):.{places}f}"
+        try:
+            has_chargeoff_events = bool(connection.execute(
+                "PRAGMA accounts.table_info(loan_chargeoff_events)"
+            ).fetchall())
+        except Exception:
+            has_chargeoff_events = False
+        chargeoff_events = ([dict(row) for row in connection.execute(
+            "SELECT e.event_id,e.loan_id,e.event_key,e.event_type,e.amount_minor_units,"
+            "e.decimal_places,e.currency_code,e.actor_id,e.created_epoch,e.memo,u.nationality "
+            "FROM accounts.loan_chargeoff_events e JOIN accounts.loans l USING(loan_id) "
+            "JOIN users.users u ON u.user_id=l.user_id "
+            + ("WHERE u.nationality=? " if nationality else "")
+            + "ORDER BY e.event_id DESC LIMIT 100", params,
+        ).fetchall()] if has_chargeoff_events else [])
     return {"kycProfiles": profiles, "amlAlerts": alerts, "amlRules": rules,
             "kycEvents": kyc_events, "amlEvents": aml_events,
-            "creditRiskScenarios": scenarios, "eclAssessments": ecl_assessments,
+            "creditRiskScenarios": scenarios, "creditSupport": credit_support,
+            "creditPolicyOverrides": policy_overrides,
+            "futureCommitments": future_commitments,
+            "collateralRecovery": collateral_recovery, "chargeoffEvents": chargeoff_events,
+            "eclAssessments": ecl_assessments,
             "eclBacktest": ecl_backtest}
 
 
@@ -3691,6 +3790,38 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 self.send_json(201 if success else 400, {"success": success, "result": result})
                 return
+            if path == "/internal/admin/bank-journal/close":
+                user = identity(verified_id)
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                    return
+                required = {"ledgerScope", "entityId", "currencyCode",
+                            "periodStartEpoch", "periodEndEpoch"}
+                if set(payload) != required:
+                    raise ValueError("invalid_accounting_period_close_payload")
+                from managers.accounting_journal import AccountingJournal
+                from managers.bank_journal import BankJournal
+                scope = str(payload["ledgerScope"])
+                if scope not in {"customer", "company", "institution"}:
+                    raise ValueError("invalid_accounting_ledger_scope")
+                start = BankJournal.validate_epoch(payload["periodStartEpoch"])
+                end = BankJournal.validate_epoch(payload["periodEndEpoch"])
+                with domain().db.atomic() as connection:
+                    closing_id = AccountingJournal.close_period(
+                        connection, ledger_scope=scope,
+                        entity_id=str(payload["entityId"]).strip(),
+                        currency_code=str(payload["currencyCode"]).strip().upper(),
+                        period_start_epoch=start, period_end_epoch=end,
+                        actor_id=user["userId"], closed_epoch=int(time.time()),
+                    )
+                audit_admin_access(user["userId"], "accounting.period.close", {
+                    "scope": scope, "entity_id": str(payload["entityId"])[:100],
+                    "currency": str(payload["currencyCode"]).upper(),
+                    "period_start": start, "period_end": end,
+                    "closing_id": closing_id,
+                })
+                self.send_json(200, {"success": True, "closingId": closing_id})
+                return
             if path == "/internal/admin/compliance":
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
@@ -3739,6 +3870,80 @@ class Handler(BaseHTTPRequestHandler):
                         from managers.credit_risk_manager import CreditRiskManager
                         result = CreditRiskManager.configure_scenarios(
                             connection, payload["nationality"], user["userId"], payload["scenarios"],
+                        )
+                    elif action == "loan_credit_support":
+                        allowed = {"action", "loanId", "partyUserId", "supportType",
+                                   "exposureShareBps", "guaranteeLimit", "quoteCurrency",
+                                   "guaranteeRecoveryBps", "recoveryDays", "recoveryCostBps",
+                                   "seniorityRank", "underwritingDti", "underwritingDsr", "active"}
+                        if set(payload) - allowed or not {"action", "loanId", "partyUserId", "supportType"}.issubset(payload):
+                            raise ValueError("invalid_loan_credit_support_payload")
+                        from managers.credit_risk_manager import CreditRiskManager
+                        result = CreditRiskManager.configure_loan_credit_support(
+                            connection, loan_id=payload["loanId"],
+                            party_user_id=payload["partyUserId"], actor_id=user["userId"],
+                            support_type=payload["supportType"],
+                            exposure_share_bps=payload.get("exposureShareBps", 0),
+                            guarantee_limit=payload.get("guaranteeLimit", 0),
+                            quote_currency=payload.get("quoteCurrency"),
+                            guarantee_recovery_bps=payload.get("guaranteeRecoveryBps", 10000),
+                            recovery_days=payload.get("recoveryDays", 180),
+                            recovery_cost_bps=payload.get("recoveryCostBps", 0),
+                            seniority_rank=payload.get("seniorityRank", 1),
+                            underwriting_dti=payload.get("underwritingDti"),
+                            underwriting_dsr=payload.get("underwritingDsr"),
+                            active=payload.get("active", True),
+                        )
+                    elif action == "credit_risk_policy":
+                        allowed = {"action", "nationality", "productCode", "pdMultiplier", "gradeThresholds"}
+                        if set(payload) - allowed or not {"action", "nationality"}.issubset(payload):
+                            raise ValueError("invalid_credit_risk_policy_payload")
+                        from managers.credit_risk_manager import CreditRiskManager
+                        result = CreditRiskManager.configure_policy_override(
+                            connection, payload["nationality"], payload.get("productCode", "*"),
+                            user["userId"], pd_multiplier=payload.get("pdMultiplier", 1),
+                            grade_thresholds=payload.get("gradeThresholds"),
+                        )
+                    elif action == "loan_future_commitment":
+                        allowed = {"action", "loanId", "committedLimit", "creditConversionFactorBps", "active", "expiresEpoch"}
+                        if set(payload) - allowed or not {"action", "loanId", "committedLimit", "creditConversionFactorBps"}.issubset(payload):
+                            raise ValueError("invalid_loan_future_commitment_payload")
+                        from managers.credit_risk_manager import CreditRiskManager
+                        result = CreditRiskManager.configure_future_commitment(
+                            connection, payload["loanId"], user["userId"],
+                            payload["committedLimit"], payload["creditConversionFactorBps"],
+                            active=payload.get("active", True),
+                            expires_epoch=payload.get("expiresEpoch"),
+                        )
+                    elif action == "loan_collateral_recovery":
+                        allowed = {"action", "collateralId", "seniorityRank", "recoveryDays", "recoveryCostBps"}
+                        if set(payload) - allowed or not {"action", "collateralId"}.issubset(payload):
+                            raise ValueError("invalid_loan_collateral_recovery_payload")
+                        from managers.credit_risk_manager import CreditRiskManager
+                        result = CreditRiskManager.configure_collateral_recovery(
+                            connection, payload["collateralId"], user["userId"],
+                            seniority_rank=payload.get("seniorityRank", 1),
+                            recovery_days=payload.get("recoveryDays", 0),
+                            recovery_cost_bps=payload.get("recoveryCostBps", 0),
+                        )
+                    elif action == "loan_charge_off":
+                        allowed = {"action", "loanId", "eventKey", "memo"}
+                        if set(payload) - allowed or not {"action", "loanId", "eventKey"}.issubset(payload):
+                            raise ValueError("invalid_loan_charge_off_payload")
+                        from managers.credit_risk_manager import CreditRiskManager
+                        result = CreditRiskManager.charge_off_loan(
+                            connection, loan_id=payload["loanId"], event_key=payload["eventKey"],
+                            actor_id=user["userId"], memo=payload.get("memo", ""),
+                        )
+                    elif action == "loan_chargeoff_recovery":
+                        allowed = {"action", "loanId", "amount", "eventKey", "memo"}
+                        if set(payload) - allowed or not {"action", "loanId", "amount", "eventKey"}.issubset(payload):
+                            raise ValueError("invalid_loan_chargeoff_recovery_payload")
+                        from managers.credit_risk_manager import CreditRiskManager
+                        result = CreditRiskManager.record_chargeoff_recovery(
+                            connection, loan_id=payload["loanId"], amount=payload["amount"],
+                            event_key=payload["eventKey"], actor_id=user["userId"],
+                            memo=payload.get("memo", ""),
                         )
                     else:
                         raise ValueError("unsupported_compliance_action")

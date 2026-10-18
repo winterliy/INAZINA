@@ -139,10 +139,48 @@ class FinancialTests(unittest.TestCase):
                          "BEGIN SELECT RAISE(ABORT,'injected partial failure'); END")
             with self.assertRaisesRegex(sqlite3.IntegrityError,'injected partial failure'):
                 AccountingJournal.post(conn,ledger_scope='test',entity_type='customer',entity_id='u1',
-                    source_key='partial',currency_code='INZ',decimal_places=0,recorded_epoch=1,
+                    source_key='partial',currency_code='NWX',decimal_places=0,recorded_epoch=1,
                     lines=[('receivables','debit',10),('revenue','credit',10)])
             conn.execute("DROP TRIGGER fail_common_line")
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM accounting_entries WHERE ledger_scope='test'").fetchone()[0],0)
+
+    def test_common_journal_period_close_blocks_backdating_and_allows_next_period_adjustment(self):
+        from managers.accounting_journal import AccountingJournal
+        with self.db.atomic() as conn:
+            for account in ("cash", "revenue"):
+                AccountingJournal.register_mapping(conn, "period_test", account, account)
+            with self.assertRaisesRegex(ValueError, "정수 최소단위"):
+                AccountingJournal.post(conn, ledger_scope="period_test", entity_type="entity",
+                    entity_id="one", source_key="fractional-units", currency_code="NWX",
+                    decimal_places=0, recorded_epoch=99,
+                    lines=[("cash", "debit", 1.5), ("revenue", "credit", 1.5)])
+            with self.assertRaisesRegex(ValueError, "실제 최소단위"):
+                AccountingJournal.post(conn, ledger_scope="period_test", entity_type="entity",
+                    entity_id="one", source_key="wrong-currency-scale", currency_code="NWX",
+                    decimal_places=2, recorded_epoch=99,
+                    lines=[("cash", "debit", 10), ("revenue", "credit", 10)])
+            lines = [("cash", "debit", 125), ("revenue", "credit", 125)]
+            AccountingJournal.post(conn, ledger_scope="period_test", entity_type="entity",
+                entity_id="one", source_key="sale:1", currency_code="NWX", decimal_places=0,
+                recorded_epoch=100, lines=lines)
+            closing_id = AccountingJournal.close_period(
+                conn, ledger_scope="period_test", entity_id="one", currency_code="NWX",
+                period_start_epoch=100, period_end_epoch=200, actor_id="admin", closed_epoch=200,
+            )
+            self.assertEqual(AccountingJournal.close_period(
+                conn, ledger_scope="period_test", entity_id="one", currency_code="NWX",
+                period_start_epoch=100, period_end_epoch=200, actor_id="admin", closed_epoch=201,
+            ), closing_id)
+            with self.assertRaisesRegex(ValueError, "마감된 회계기간"):
+                AccountingJournal.post(conn, ledger_scope="period_test", entity_type="entity",
+                    entity_id="one", source_key="late:backdate", currency_code="NWX",
+                    decimal_places=0, recorded_epoch=199, lines=lines)
+            adjustment = [("revenue", "debit", 5), ("cash", "credit", 5)]
+            AccountingJournal.post(conn, ledger_scope="period_test", entity_type="entity",
+                entity_id="one", source_key=f"adjustment:close:{closing_id}",
+                currency_code="NWX", decimal_places=0, recorded_epoch=200,
+                lines=adjustment, description="prior-period correction in next open period")
+            self.assertEqual(AccountingJournal.audit_unbalanced(conn, "period_test"), [])
 
     def test_manual_authorization_balance_and_reversal(self):
         self.setup_company()

@@ -5,6 +5,9 @@ same posting in product-currency minor units, with explicit source-account
 mapping and a stable idempotency key, in the caller's SQLite transaction.
 """
 
+import hashlib
+import json
+
 
 class AccountingJournal:
     @staticmethod
@@ -31,6 +34,19 @@ class AccountingJournal:
                 CHECK(typeof(credit_units)='integer' AND credit_units>=0),
             CHECK((debit_units=0)<>(credit_units=0)))""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_accounting_lines_entry ON accounting_lines(entry_id,account_code)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS accounting_period_closings (
+            closing_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ledger_scope TEXT NOT NULL, entity_id TEXT NOT NULL, currency_code TEXT NOT NULL,
+            period_start_epoch INTEGER NOT NULL, period_end_epoch INTEGER NOT NULL,
+            closed_epoch INTEGER NOT NULL, actor_id TEXT NOT NULL,
+            entry_count INTEGER NOT NULL CHECK(entry_count>=0),
+            closing_digest TEXT NOT NULL,
+            CHECK(period_start_epoch<period_end_epoch),
+            UNIQUE(ledger_scope,entity_id,currency_code,period_start_epoch,period_end_epoch))""")
+        for operation in ("UPDATE", "DELETE"):
+            conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_accounting_period_closings_{operation.lower()}_immutable
+                BEFORE {operation} ON accounting_period_closings
+                BEGIN SELECT RAISE(ABORT,'accounting period closings are append-only'); END""")
         for table in ("accounting_entries", "accounting_lines"):
             for operation in ("UPDATE", "DELETE"):
                 name = f"trg_{table}_{operation.lower()}_immutable"
@@ -69,11 +85,20 @@ class AccountingJournal:
         places = int(decimal_places)
         if not all((scope, kind, entity, key, currency)) or not 0 <= places <= 6:
             raise ValueError("공통 원장 식별자 또는 통화 정밀도가 올바르지 않습니다.")
+        from functions.money import currency_precision
+        if places != currency_precision(conn, currency):
+            raise ValueError("공통 원장 정밀도는 통화의 실제 최소단위와 같아야 합니다.")
         combined = {}
         for local, side, units in lines:
             if isinstance(units, bool):
                 raise ValueError("공통 분개는 0 이상의 정수 최소단위와 차변/대변을 사용해야 합니다.")
-            units = int(units)
+            try:
+                parsed_units = int(units)
+            except (TypeError, ValueError, OverflowError):
+                raise ValueError("공통 분개 금액은 정수 최소단위여야 합니다.") from None
+            if parsed_units != units:
+                raise ValueError("공통 분개 금액은 정수 최소단위여야 합니다.")
+            units = parsed_units
             if units < 0 or side not in ("debit", "credit"):
                 raise ValueError("공통 분개는 0 이상의 정수 최소단위와 차변/대변을 사용해야 합니다.")
             mapping = conn.execute(
@@ -104,6 +129,14 @@ class AccountingJournal:
                 raise ValueError("동일한 공통 원장 멱등성 키에 다른 금액/분개가 들어왔습니다.")
             return int(prior[0])
 
+        closed = conn.execute("""SELECT 1 FROM accounting_period_closings
+            WHERE ledger_scope=? AND entity_id=? AND currency_code=?
+              AND ? >= period_start_epoch AND ? < period_end_epoch LIMIT 1""",
+            (scope, entity, currency, int(recorded_epoch), int(recorded_epoch)),
+        ).fetchone()
+        if closed:
+            raise ValueError("마감된 회계기간에는 소급 전기할 수 없습니다. 다음 기간에 조정전기를 기록하세요.")
+
         conn.execute("SAVEPOINT common_accounting_post")
         try:
             cur = conn.execute(
@@ -122,6 +155,57 @@ class AccountingJournal:
             raise
         conn.execute("RELEASE common_accounting_post")
         return entry_id
+
+    @classmethod
+    def close_period(cls, conn, *, ledger_scope, entity_id, currency_code,
+                     period_start_epoch, period_end_epoch, actor_id, closed_epoch):
+        """Seal a common-ledger period after balance and integrity checks.
+
+        Epoch interval is half-open [start,end). Corrections must be posted in a
+        later open period and reference the closing in their source key.
+        """
+        cls.ensure_schema(conn)
+        scope, entity, currency, actor = map(
+            str, (ledger_scope, entity_id, currency_code, actor_id)
+        )
+        start, end, closed_at = (int(period_start_epoch), int(period_end_epoch),
+                                 int(closed_epoch))
+        if not all((scope, entity, currency, actor)) or start < 0 or end <= start or closed_at < 0:
+            raise ValueError("회계기간 마감 인자가 올바르지 않습니다.")
+        unbalanced = conn.execute("""SELECT e.entry_id
+            FROM accounting_entries e LEFT JOIN accounting_lines l USING(entry_id)
+            WHERE e.ledger_scope=? AND e.entity_id=? AND e.currency_code=?
+              AND e.recorded_epoch>=? AND e.recorded_epoch<?
+            GROUP BY e.entry_id
+            HAVING COUNT(l.line_id)<2 OR SUM(l.debit_units)<>SUM(l.credit_units)
+            LIMIT 1""", (scope, entity, currency, start, end)).fetchone()
+        if unbalanced:
+            raise ValueError(f"불균형 분개가 있어 기간을 마감할 수 없습니다: {unbalanced[0]}")
+        rows = conn.execute("""SELECT e.entry_id,e.source_key,l.account_code,
+                l.debit_units,l.credit_units
+            FROM accounting_entries e JOIN accounting_lines l USING(entry_id)
+            WHERE e.ledger_scope=? AND e.entity_id=? AND e.currency_code=?
+              AND e.recorded_epoch>=? AND e.recorded_epoch<?
+            ORDER BY e.entry_id,l.account_code""",
+            (scope, entity, currency, start, end)).fetchall()
+        normalized = [tuple(row) for row in rows]
+        digest = hashlib.sha256(json.dumps(normalized, separators=(",", ":"),
+                                 ensure_ascii=False).encode()).hexdigest()
+        prior = conn.execute("""SELECT closing_id,entry_count,closing_digest FROM accounting_period_closings
+            WHERE ledger_scope=? AND entity_id=? AND currency_code=?
+              AND period_start_epoch=? AND period_end_epoch=?""",
+            (scope, entity, currency, start, end)).fetchone()
+        if prior:
+            if (int(prior[1]), str(prior[2])) != (len({row[0] for row in normalized}), digest):
+                raise ValueError("기존 회계기간 마감 스냅샷과 현재 원장이 다릅니다.")
+            return int(prior[0])
+        cursor = conn.execute("""INSERT INTO accounting_period_closings
+            (ledger_scope,entity_id,currency_code,period_start_epoch,period_end_epoch,
+             closed_epoch,actor_id,entry_count,closing_digest)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (scope, entity, currency, start, end, closed_at, actor,
+             len({row[0] for row in normalized}), digest))
+        return int(cursor.lastrowid)
 
     @staticmethod
     def audit_unbalanced(conn, ledger_scope=None):

@@ -11,6 +11,12 @@ from managers.credit_risk_manager import CreditRiskManager
 
 
 class CreditRiskStageTests(unittest.TestCase):
+    def test_simulator_pd_rating_bands_are_ordered_and_boundary_stable(self):
+        self.assertEqual(
+            [CreditRiskManager.risk_grade(pd) for pd in (0, .005, .0051, .01, .025, .05, .1, .2, 1)],
+            ["A", "A", "B", "B", "C", "D", "E", "F", "G"],
+        )
+
     def test_performing_and_significantly_deteriorated_loans(self):
         self.assertEqual(CreditRiskManager._stage("active", "current", 0, .5, False), 1)
         self.assertEqual(CreditRiskManager._stage("active", "overdue", 0, .5, True), 2)
@@ -135,7 +141,10 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         DBManager.database_dir = Path(self.tempdir.name)
         self.db = DatabaseManager()
+        self.db.users.create_user("support-admin", "Admin", "낙원", 0, role="admin")
         self.db.users.create_user("ecl-borrower", "Borrower", "낙원", 0)
+        self.db.users.create_user("ecl-coborrower", "Co-borrower", "낙원", 0)
+        self.db.users.create_user("ecl-guarantor", "Guarantor", "낙원", 0)
         self.db.products.execute(
             "INSERT INTO liability(product_code,name,interest_rate,loan_limit,maturity_days,"
             "interest_cycle,min_credit_score,issuer,quote_currency) "
@@ -173,11 +182,12 @@ class DefaultedLoanEclTests(unittest.TestCase):
             self.assertEqual(BankJournal.audit_unbalanced(conn), [])
         self.assertEqual(count, 1)
         row = self.db.accounts.execute_one(
-            "SELECT stage,pd_12m,lifetime_pd,lgd,ead,expected_loss,discount_factor,"
+            "SELECT stage,risk_grade,pd_12m,lifetime_pd,lgd,ead,expected_loss,discount_factor,"
             "effective_interest_rate,expected_loss_time_years,macro_pd_multiplier,scenario "
             "FROM loan_ecl_assessments"
         )
         self.assertEqual(row["stage"], 3)
+        self.assertEqual(row["risk_grade"], "G")
         self.assertEqual(row["pd_12m"], 1)
         self.assertEqual(row["lifetime_pd"], 1)
         self.assertEqual(row["ead"], 1000)
@@ -194,8 +204,234 @@ class DefaultedLoanEclTests(unittest.TestCase):
             "SELECT ecl_allowance FROM loans WHERE product_code='ECL3'"
         )["ecl_allowance"], row["expected_loss"])
         self.assertEqual(self.db.accounts.execute_one(
+            "SELECT nonaccrual_since_epoch FROM loans WHERE product_code='ECL3'"
+        )["nonaccrual_since_epoch"], 1_800_000_000)
+        self.assertEqual(self.db.accounts.execute_one(
             "SELECT COUNT(*) count FROM bank_journal_entries WHERE event_type='expected_credit_loss'"
         )["count"], 1)
+
+    def test_defaulted_loan_nonaccrual_does_not_book_interest(self):
+        from managers.interest_manager import InterestManager
+        loan_before = self.db.accounts.execute_one(
+            "SELECT loan_id,outstanding_balance FROM loans WHERE product_code='ECL3'"
+        )
+        InterestManager(self.db).process_all_interests(now=1_800_000_000)
+        loan_after = self.db.accounts.execute_one(
+            "SELECT outstanding_balance,nonaccrual_since_epoch FROM loans WHERE loan_id=?",
+            (loan_before["loan_id"],),
+        )
+        self.assertEqual(loan_after["outstanding_balance"], loan_before["outstanding_balance"])
+        self.assertIsNotNone(loan_after["nonaccrual_since_epoch"])
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT COUNT(*) count FROM bank_journal_entries "
+            "WHERE event_type IN ('loan_interest','overdue_interest')"
+        )["count"], 0)
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT stage FROM loan_ecl_assessments WHERE loan_id=?",
+            (loan_before["loan_id"],),
+        )["stage"], 3)
+        with self.db.readonly() as conn:
+            self.assertEqual(BankJournal.audit_unbalanced(conn), [])
+
+    def test_chargeoff_uses_allowance_and_recovery_is_idempotent_and_reconciled(self):
+        from managers.rate_manager import RateManager
+        loan = self.db.accounts.execute_one(
+            "SELECT loan_id,outstanding_balance FROM loans WHERE product_code='ECL3'"
+        )
+        loan_id = loan["loan_id"]
+        with self.db.atomic() as conn:
+            BankJournal.post(conn, "Bank", "loan_origination", f"loan:{loan_id}:origin",
+                             "NWX", [("loans_receivable", "debit", 1000),
+                                     ("settlement_asset", "credit", 1000)], now=1_800_000_000)
+            BankJournal.post(conn, "Bank", "expected_credit_loss", f"loan:{loan_id}:seed-ecl",
+                             "NWX", [("impairment_expense", "debit", 300),
+                                     ("ecl_allowance", "credit", 300)], now=1_800_000_001)
+            RateManager.record_institution_result(
+                conn, "Bank", -300, "expected_credit_loss", f"loan:{loan_id}:seed-ecl",
+                now=1_800_000_001, currency_code="NWX",
+            )
+            conn.execute("UPDATE accounts.loans SET ecl_allowance=300 WHERE loan_id=?", (loan_id,))
+            result = CreditRiskManager.charge_off_loan(
+                conn, loan_id=loan_id, event_key="chargeoff-1", actor_id="support-admin",
+                now=1_800_000_002,
+            )
+        self.assertEqual(result["allowanceMinorUnits"], 300)
+        self.assertEqual(result["lossMinorUnits"], 700)
+        state = self.db.accounts.execute_one(
+            "SELECT outstanding_balance,charged_off_balance,status,ecl_allowance "
+            "FROM loans WHERE loan_id=?", (loan_id,),
+        )
+        self.assertEqual((state["outstanding_balance"], state["charged_off_balance"],
+                          state["status"], state["ecl_allowance"]), (0, 1000, "charged_off", 0))
+        with self.db.atomic() as conn:
+            duplicate = CreditRiskManager.charge_off_loan(
+                conn, loan_id=loan_id, event_key="chargeoff-1", actor_id="support-admin",
+                now=1_800_000_003,
+            )
+            recovery = CreditRiskManager.record_chargeoff_recovery(
+                conn, loan_id=loan_id, amount=100, event_key="recovery-1",
+                actor_id="support-admin", now=1_800_000_004,
+            )
+            recovery_duplicate = CreditRiskManager.record_chargeoff_recovery(
+                conn, loan_id=loan_id, amount=100, event_key="recovery-1",
+                actor_id="support-admin", now=1_800_000_005,
+            )
+            self.assertEqual(BankJournal.audit_unbalanced(conn), [])
+            self.assertEqual(BankJournal.reconcile_loan_receivables(conn, "Bank")[0]["status"], "matched")
+        self.assertTrue(duplicate["duplicate"])
+        self.assertEqual(recovery["remainingMinorUnits"], 900)
+        self.assertTrue(recovery_duplicate["duplicate"])
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT charged_off_balance FROM loans WHERE loan_id=?", (loan_id,),
+        )[0], 900)
+
+    def test_credit_support_changes_are_audited_and_guarantee_reduces_lgd(self):
+        loan_id = self.db.accounts.execute_one(
+            "SELECT loan_id FROM loans WHERE product_code='ECL3'"
+        )["loan_id"]
+        with self.db.atomic() as conn:
+            loan = conn.execute("SELECT * FROM accounts.loans WHERE loan_id=?", (loan_id,)).fetchone()
+            before = CreditRiskManager._lgd(conn, loan)
+            CreditRiskManager.configure_loan_credit_support(
+                conn, loan_id=loan_id, party_user_id="ecl-guarantor",
+                actor_id="support-admin", support_type="guarantor",
+                guarantee_limit=400, recovery_days=0,
+            )
+            after = CreditRiskManager._lgd(conn, loan)
+            events = conn.execute(
+                "SELECT COUNT(*) FROM accounts.loan_credit_support_events"
+            ).fetchone()[0]
+        self.assertLess(after, before)
+        self.assertEqual(events, 1)
+        with self.assertRaisesRegex(ValueError, "범위를 벗어났습니다"):
+            with self.db.atomic() as conn:
+                CreditRiskManager.configure_loan_credit_support(
+                    conn, loan_id=loan_id, party_user_id="ecl-coborrower",
+                    actor_id="support-admin", support_type="co_borrower",
+                    exposure_share_bps=10001,
+                )
+
+    def test_coborrower_pd_is_exposure_weighted_in_new_assessment(self):
+        loan_id = self.db.accounts.execute_one(
+            "SELECT loan_id FROM loans WHERE product_code='ECL3'"
+        )["loan_id"]
+        self.db.accounts.execute(
+            "UPDATE loans SET status='active',collection_status='current',"
+            "defaulted_epoch=NULL,overdue_since_epoch=NULL,missed_payment_count=0,"
+            "current_ltv=0,underwriting_dti=0,underwriting_dsr=0 WHERE loan_id=?",
+            (loan_id,),
+        )
+        self.db.users.execute(
+            "UPDATE users SET credit_score=1000 WHERE user_id='ecl-coborrower'"
+        )
+        epoch = 1_800_000_000
+        with self.db.atomic() as conn:
+            CreditRiskManager.assess_conn(conn, epoch)
+            baseline = conn.execute(
+                "SELECT pd_12m FROM accounts.loan_ecl_assessments WHERE loan_id=?",
+                (loan_id,),
+            ).fetchone()[0]
+            CreditRiskManager.configure_loan_credit_support(
+                conn, loan_id=loan_id, party_user_id="ecl-coborrower",
+                actor_id="support-admin", support_type="co_borrower",
+                exposure_share_bps=10000, underwriting_dti=100, underwriting_dsr=100,
+            )
+            CreditRiskManager.assess_conn(conn, epoch+86400)
+            weighted = conn.execute(
+                "SELECT pd_12m FROM accounts.loan_ecl_assessments WHERE loan_id=? "
+                "ORDER BY calculated_epoch DESC LIMIT 1", (loan_id,),
+            ).fetchone()[0]
+        self.assertLess(weighted, baseline)
+        self.assertAlmostEqual(weighted, CreditRiskManager._pd_12m(1000, 100, 100, 0, 0, False))
+
+    def test_jurisdiction_product_policy_overrides_pd_and_grade_bands(self):
+        thresholds = {"a": .001, "b": .002, "c": .003, "d": .004, "e": .005, "f": .006}
+        loan_id = self.db.accounts.execute_one(
+            "SELECT loan_id FROM loans WHERE product_code='ECL3'"
+        )["loan_id"]
+        self.db.accounts.execute(
+            "UPDATE loans SET status='active',collection_status='current',"
+            "defaulted_epoch=NULL,overdue_since_epoch=NULL WHERE loan_id=?", (loan_id,),
+        )
+        with self.db.atomic() as conn:
+            configured = CreditRiskManager.configure_policy_override(
+                conn, "낙원", "ECL3", "support-admin", pd_multiplier=1.5,
+                grade_thresholds=thresholds,
+            )
+            row = conn.execute(
+                "SELECT pd_multiplier,grade_f_max,updated_by FROM accounts.credit_risk_policy_overrides "
+                "WHERE nationality='낙원' AND product_code='ECL3'"
+            ).fetchone()
+            event_count = conn.execute(
+                "SELECT COUNT(*) FROM accounts.credit_risk_policy_events"
+            ).fetchone()[0]
+            CreditRiskManager.assess_conn(conn, 1_800_000_000)
+            assessment = conn.execute(
+                "SELECT pd_12m,risk_grade FROM accounts.loan_ecl_assessments WHERE loan_id=?",
+                (loan_id,),
+            ).fetchone()
+            transitions = CreditRiskManager.grade_transition_report(conn, "낙원")["transitions"]
+        self.assertEqual(configured["productCode"], "ECL3")
+        self.assertEqual(tuple(row), (1.5, .006, "support-admin"))
+        self.assertEqual(event_count, 1)
+        self.assertEqual(assessment["risk_grade"], "G")
+        self.assertGreater(assessment["pd_12m"], .006)
+        self.assertEqual(transitions, [{"issuer": "Bank", "nationality": "낙원",
+                                        "from_grade": "G", "to_grade": "G",
+                                        "loan_count": 1}])
+        with self.assertRaisesRegex(ValueError, "오름차순"):
+            with self.db.atomic() as conn:
+                CreditRiskManager.configure_policy_override(
+                    conn, "낙원", "ECL3", "support-admin", grade_thresholds={
+                        "a": .02, "b": .01, "c": .03, "d": .04, "e": .1, "f": .2,
+                    },
+                )
+
+    def test_future_undrawn_commitment_contributes_ccf_weighted_ead(self):
+        loan_id = self.db.accounts.execute_one(
+            "SELECT loan_id FROM loans WHERE product_code='ECL3'"
+        )["loan_id"]
+        with self.db.atomic() as conn:
+            CreditRiskManager.configure_future_commitment(
+                conn, loan_id, "support-admin", 1500, 5000,
+            )
+            ead, method = CreditRiskManager._ead_at_expected_loss(
+                conn, loan_id, 1000, 1_800_000_000, .5, 1, "NWX",
+            )
+            events = conn.execute(
+                "SELECT COUNT(*) FROM accounts.loan_future_commitment_events"
+            ).fetchone()[0]
+        self.assertEqual(ead, 1250)
+        self.assertIn("undrawn_commitment", method)
+        self.assertEqual(events, 1)
+
+    def test_collateral_recovery_assumption_update_is_audited_and_versioned(self):
+        loan_id = self.db.accounts.execute_one(
+            "SELECT loan_id FROM loans WHERE product_code='ECL3'"
+        )["loan_id"]
+        self.db.accounts.execute(
+            "INSERT INTO loan_collateral_assets(loan_id,user_id,asset_code,quantity,pledged_epoch,"
+            "last_price,last_value,status) VALUES (?,?,?,1,1,500,500,'pledged')",
+            (loan_id, "ecl-borrower", "COLLATERAL"),
+        )
+        collateral_id = self.db.accounts.execute_one(
+            "SELECT collateral_id FROM loan_collateral_assets WHERE loan_id=?", (loan_id,)
+        )["collateral_id"]
+        with self.db.atomic() as conn:
+            result = CreditRiskManager.configure_collateral_recovery(
+                conn, collateral_id, "support-admin", seniority_rank=3,
+                recovery_days=365, recovery_cost_bps=500,
+            )
+            event = conn.execute(
+                "SELECT prior_snapshot,new_snapshot FROM accounts.loan_collateral_recovery_events"
+            ).fetchone()
+        self.assertEqual(result["seniority_rank"], 3)
+        self.assertEqual(json.loads(event["prior_snapshot"]), {
+            "seniority_rank": 1, "recovery_days": 0, "recovery_cost_bps": 0,
+        })
+        self.assertEqual(json.loads(event["new_snapshot"]), {
+            "seniority_rank": 3, "recovery_days": 365, "recovery_cost_bps": 500,
+        })
 
     def test_matured_pd_backtest_uses_one_snapshot_per_loan(self):
         sample_epoch = 1_700_000_000.0
@@ -235,6 +471,47 @@ class DefaultedLoanEclTests(unittest.TestCase):
                         CreditRiskManager.backtest_12m(
                             conn, "낙원", issuer="Bank", now=invalid_epoch
                         )
+
+    def test_pd_backtest_reports_out_of_time_discrimination_and_cohort_stability(self):
+        epoch = 1_800_000_000.0
+        cohorts = ((epoch-5*365*86400, (.01, .01)),
+                   (epoch-2*365*86400, (.30, .30)))
+        for cohort_index, (assessed, probabilities) in enumerate(cohorts):
+            for loan_index, pd in enumerate(probabilities):
+                borrower_id = f"ecl-borrower-{cohort_index}-{loan_index}"
+                product_code = f"ECL-VAL-{cohort_index}-{loan_index}"
+                self.db.users.create_user(borrower_id, "Borrower", "낙원", 0)
+                self.db.products.execute(
+                    "INSERT INTO liability(product_code,name,interest_rate,loan_limit,maturity_days,"
+                    "interest_cycle,min_credit_score,issuer,quote_currency) "
+                    "VALUES (?, 'Validation',5,10000,365,86400,0,'ValidationBank','NWX')",
+                    (product_code,),
+                )
+                is_default = cohort_index == 0 and loan_index == 0
+                default_epoch = assessed+100*86400 if is_default else None
+                self.db.accounts.execute(
+                    "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,status,"
+                    "created_at,collection_status,quote_currency,defaulted_epoch) "
+                    "VALUES (?, ?,100,100,'active',datetime('now'),'current','NWX',?)",
+                    (borrower_id,product_code,default_epoch),
+                )
+                loan_id = self.db.accounts.execute_one(
+                    "SELECT MAX(loan_id) FROM loans WHERE user_id=? AND product_code=?",
+                    (borrower_id,product_code),
+                )[0]
+                self.db.accounts.execute(
+                    "INSERT INTO loan_ecl_assessments(loan_id,as_of_day,stage,pd_12m,lifetime_pd,"
+                    "lgd,ead,expected_loss,quote_currency,calculated_epoch,risk_grade) "
+                    "VALUES (?, ?,1,?, ?, .4,100,1,'NWX',?,?)",
+                    (loan_id, f"{cohort_index}-{loan_index}", pd, pd, assessed,
+                     CreditRiskManager.risk_grade(pd)),
+                )
+        with self.db.readonly() as conn:
+            report = CreditRiskManager.backtest_12m(conn, "낙원", issuer="ValidationBank", now=epoch)
+        self.assertAlmostEqual(report["discrimination"][0]["auroc"], 1/6)
+        stability = report["stability"][0]
+        self.assertEqual((stability["olderCount"], stability["recentCount"]), (2, 2))
+        self.assertGreater(stability["populationStabilityIndex"], 0)
 
     def test_ecl_assessment_rejects_invalid_epoch_before_recording(self):
         before = self.db.accounts.execute_one(

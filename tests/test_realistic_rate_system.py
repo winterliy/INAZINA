@@ -329,6 +329,10 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertAlmostEqual(group["calibrationGap"], .40)
         self.assertAlmostEqual(group["observedToExpected"], 5.0)
         self.assertTrue(group["predictedPdWithinObserved95"])
+        self.assertEqual(len(report["discrimination"]), 1)
+        self.assertAlmostEqual(report["discrimination"][0]["auroc"], .5)
+        self.assertEqual(len(report["stability"]), 1)
+        self.assertIsNone(report["stability"][0]["populationStabilityIndex"])
 
     def test_kyc_profile_gates_loan_origination(self):
         self.add_loan(code="KYC-LOAN", maturity=365, collateral_ratio=0, origination_fee=0)
@@ -660,7 +664,8 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(report["status"], "matched")
         self.assertEqual(set(report["coverage"]), {
             "institution_pnl", "customer_deposits", "loan_receivables",
-            "ecl_allowances", "deposit_insurance_claims", "journal_invariants",
+            "ecl_allowances", "charged_off_memo_balances",
+            "deposit_insurance_claims", "journal_invariants",
         })
         self.assertFalse(report["findings"])
 
@@ -1173,6 +1178,13 @@ class RealisticRateSystemTests(unittest.TestCase):
         from web_api.server import admin_bank_journal_report
         with patch("web_api.server.connect_readonly", self.db.readonly):
             report = admin_bank_journal_report("Bank")
+        self.assertEqual(
+            {row["ledger_scope"] for row in report["commonJournalReconciliation"]},
+            {"customer", "company", "institution"},
+        )
+        self.assertEqual(report["commonJournalUnbalancedEntries"], [])
+        self.assertIn(report["amountSnapshotAudit"]["status"], {"clean", "attention_required"})
+        self.assertLessEqual(len(report["amountSnapshotAudit"]["findings"]), 100)
         self.assertEqual(len(report["depositInsuranceClaims"]), 2)
         self.assertEqual(sum(int(row["covered_amount_text"]) for row in report["depositInsuranceClaims"]), 600)
         self.assertEqual(sum(int(row["uninsured_amount_text"]) for row in report["depositInsuranceClaims"]), 900)
@@ -1368,6 +1380,10 @@ class RealisticRateSystemTests(unittest.TestCase):
             rwa = RateManager.institution_risk_weighted_assets(conn, "Bank")
             sheet = RateManager.institution_balance_sheet(conn, "Bank")
             stress = CreditRiskManager.portfolio_default_stress(conn, "Bank")
+            independent_credit = CreditRiskManager.correlated_default_stress(
+                conn, "Bank", asset_correlation=0.0,
+            )
+            correlated_credit = CreditRiskManager.correlated_default_stress(conn, "Bank")
         self.assertEqual(rwa["amount"], 249_000)
         self.assertEqual(rwa["weightedComponents"]["performing_unsecured"], 75_000)
         self.assertEqual(rwa["weightedComponents"]["higher_risk_unsecured"], 100_000)
@@ -1380,6 +1396,9 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(stress["scenarios"][0]["defaultedEad"], 10_000)
         self.assertEqual(stress["scenarios"][0]["incrementalProvision"], 6_500)
         self.assertAlmostEqual(stress["scenarios"][0]["capitalConsumedPercent"], .65)
+        self.assertGreater(correlated_credit["correlatedTailLoss"],
+                           independent_credit["independentExpectedLoss"])
+        self.assertEqual(correlated_credit["exposureCount"], 2)
         self.db.currency.execute(
             "UPDATE financial_institutions SET equity_capital=20000,target_capital_ratio=.1 "
             "WHERE issuer='Bank'"
@@ -1775,6 +1794,17 @@ class RealisticRateSystemTests(unittest.TestCase):
             web_report["borrowerConcentrationStress"]["borrowers"][0]["borrowerId"],
             "other-borrower",
         )
+        loan_id = self.db.accounts.execute_one(
+            "SELECT loan_id FROM loans WHERE user_id='borrower' AND product_code='CONCENTRATION'"
+        )["loan_id"]
+        with self.db.atomic() as conn:
+            CreditRiskManager.configure_loan_credit_support(
+                conn, loan_id=loan_id, party_user_id="other-borrower", actor_id="admin",
+                support_type="connected_party",
+            )
+            grouped = CreditRiskManager.borrower_concentration_stress(conn, "Bank")
+        self.assertEqual(grouped["borrowerCount"], 1)
+        self.assertEqual(grouped["borrowers"][0]["exposure"], 301)
 
     def test_mandatory_finance_cost_is_included_in_legal_maximum(self):
         self.add_loan(code="COSTCAP", collateral_ratio=0, origination_fee=0)
