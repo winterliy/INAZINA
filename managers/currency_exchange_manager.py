@@ -207,7 +207,10 @@ class CurrencyExchangeManager:
                         tenor_days=row['benchmark_tenor_days'], apply_legal_max=False,
                     )
                     next_reset = float(next_reset)+cycle
-            credit = int(exact)
+            # Keep only whole minor units in the spendable balance; sub-minor
+            # accrual remains in the Decimal remainder for the next settlement.
+            quantum = Decimal(10 ** (6 - CurrencyManager.precision(conn, row["quote_currency"])))
+            credit = int(exact / quantum) * int(quantum)
             if credit < -int(row['balance_units']):
                 credit, exact = -int(row['balance_units']), Decimal(0)
             if row['balance_units'] + credit > MAX_UNITS:

@@ -13,6 +13,7 @@ from managers.currency_manager import CurrencyManager, SCALE
 from managers.bank_manager import BankManager
 from managers.user_manager import UserManager
 from managers.compliance_manager import ComplianceManager
+from managers.accounting_journal import AccountingJournal
 
 
 class CurrencyAccountStorageTests(unittest.TestCase):
@@ -96,6 +97,51 @@ class CurrencyAccountStorageTests(unittest.TestCase):
                 with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
                     conn.execute(f"DELETE FROM {table}")
 
+    def test_account_balance_storage_enforces_currency_minor_units(self):
+        number = CurrencyExchangeManager(self.db).open_account('us-user','FX_EUR')
+        with self.assertRaisesRegex(sqlite3.IntegrityError,'currency minor units'):
+            self.db.accounts.execute(
+                "UPDATE accounts SET balance_units=1 WHERE account_number=?", (number,)
+            )
+        self.db.accounts.execute(
+            "UPDATE accounts SET balance_units=1230000 WHERE account_number=?", (number,)
+        )
+        row = self.db.accounts.execute_one(
+            "SELECT balance_units,balance_minor_units,balance_decimal_places FROM accounts WHERE account_number=?",
+            (number,),
+        )
+        self.assertEqual(tuple(row),(1230000,123,2))
+
+    def test_customer_wallet_changes_post_atomically_and_reconcile(self):
+        with self.db.atomic() as conn:
+            before = conn.execute(
+                "SELECT COUNT(*) FROM customer_wallet_ledger WHERE user_id='us-user'"
+            ).fetchone()[0]
+            conn.execute("UPDATE users SET cash_minor=cash_minor+100 WHERE user_id='us-user'")
+            after = conn.execute(
+                "SELECT COUNT(*) FROM customer_wallet_ledger WHERE user_id='us-user'"
+            ).fetchone()[0]
+            self.assertEqual(after,before+1)
+            checks = AccountingJournal.reconcile_subledgers(conn)
+            customer = next(item for item in checks if item['ledger_scope']=='customer')
+            self.assertEqual(customer['status'],'matched',customer)
+            self.assertEqual(AccountingJournal.audit_unbalanced(conn,'customer'),[])
+
+        number = CurrencyExchangeManager(self.db).open_account('us-user','FX_EUR')
+        with self.db.atomic() as conn:
+            conn.execute(
+                "UPDATE accounts SET balance_minor_units=100 WHERE account_number=?",(number,)
+            )
+            checks = AccountingJournal.reconcile_subledgers(conn)
+            self.assertEqual(next(item for item in checks if item['ledger_scope']=='customer')['status'],'matched')
+
+        with self.assertRaisesRegex(RuntimeError,'rollback marker'):
+            with self.db.atomic() as conn:
+                conn.execute("UPDATE users SET cash_minor=cash_minor+100 WHERE user_id='us-user'")
+                raise RuntimeError('rollback marker')
+        with self.db.atomic() as conn:
+            checks = AccountingJournal.reconcile_subledgers(conn)
+            self.assertEqual(next(item for item in checks if item['ledger_scope']=='customer')['status'],'matched')
     def test_institution_ledger_minor_unit_upgrade_is_idempotent(self):
         self.db.currency.execute(
             "INSERT INTO financial_institution_ledger "

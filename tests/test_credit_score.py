@@ -44,7 +44,8 @@ class CreditScoreTests(unittest.TestCase):
     def annuity_loan(self, code="CREDIT", amount=90_000):
         self.db.products.register_liability(code, "Credit Loan", 0, 0, 90, 3600, 0, "Bank")
         self.db.products.execute(
-            "UPDATE liability SET amortization_type='annuity',payment_frequency_days=30 "
+            "UPDATE liability SET amortization_type='annuity',payment_frequency_days=30,"
+            "default_after_days=365,delinquency_spread=0 "
             "WHERE product_code=?", (code,),
         )
         success, message = self.bank.apply_loan("borrower", code, amount)

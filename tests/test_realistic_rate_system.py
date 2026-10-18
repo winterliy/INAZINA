@@ -19,6 +19,7 @@ from managers.compliance_manager import ComplianceManager
 from functions.interest_calc import (
     calculate_compound_interest, calculate_simple_interest, year_fraction,
 )
+from functions.money import audit_amount_snapshots
 
 
 class RealisticRateSystemTests(unittest.TestCase):
@@ -430,7 +431,7 @@ class RealisticRateSystemTests(unittest.TestCase):
                       origination_fee=0)
         self.db.products.execute(
             "UPDATE liability SET rate_type='fixed',interest_rate=0,"
-            "amortization_type='annuity',payment_frequency_days=30 "
+            "amortization_type='annuity',payment_frequency_days=30,default_after_days=365 "
             "WHERE product_code='ECL-SCHEDULE'"
         )
         success, message = BankManager(self.db).apply_loan(
@@ -440,6 +441,11 @@ class RealisticRateSystemTests(unittest.TestCase):
         loan = self.db.accounts.execute_one(
             "SELECT loan_id FROM loans WHERE product_code='ECL-SCHEDULE'"
         )
+        loan_amount = self.db.currency.execute_one(
+            "SELECT amount_minor_units FROM financial_amount_snapshots WHERE source_table='loans' "
+            "AND source_key=? AND amount_field='outstanding_balance'", (str(loan["loan_id"]),)
+        )
+        self.assertEqual(loan_amount[0], 90_000)
         schedule = self.db.accounts.execute(
             "SELECT due_epoch FROM loan_payment_schedule WHERE loan_id=? ORDER BY installment_number",
             (loan["loan_id"],),
@@ -450,7 +456,7 @@ class RealisticRateSystemTests(unittest.TestCase):
                 (loan["loan_id"],),
             )
             conn.execute(
-                "UPDATE loan_payment_schedule SET principal_due=30000,interest_due=0,fee_due=0 "
+                "UPDATE loan_payment_schedule SET principal_due=30005,interest_due=0,fee_due=0 "
                 "WHERE loan_id=?",
                 (loan["loan_id"],),
             )
@@ -991,6 +997,22 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(
             self.db.products.get_saving("USD-SAVE")["deposit_amount"], 1.01
         )
+        product_money = self.db.currency.execute_one(
+            "SELECT currency_code,decimal_places,amount_minor_units FROM financial_amount_snapshots "
+            "WHERE source_table='saving' AND source_key='USD-SAVE' AND amount_field='deposit_amount'"
+        )
+        self.assertEqual(tuple(product_money), ("USD", 2, 101))
+        self.db.assets.execute(
+            "INSERT INTO market_assets(code,name,exchange_id,price,type,quote_currency) "
+            "VALUES ('USD-ASSET','USD asset','NASDAQ',1.235,'stock','USD')"
+        )
+        market_money = self.db.currency.execute_one(
+            "SELECT decimal_places,amount_minor_units FROM financial_amount_snapshots "
+            "WHERE source_table='market_assets' AND source_key='USD-ASSET' AND amount_field='price'"
+        )
+        self.assertEqual(tuple(market_money), (2, 124))
+        with self.db.readonly() as conn:
+            self.assertEqual(audit_amount_snapshots(conn), [])
         bank = BankManager(self.db)
         ok, message = bank.open_account("usd-user", "USD-SAVE", "1234", 10.55)
         self.assertTrue(ok, message)
@@ -999,8 +1021,13 @@ class RealisticRateSystemTests(unittest.TestCase):
         )
         self.assertEqual(account["balance"], 10.55)
         self.assertEqual(self.db.users.get_user("usd-user")["cash"], 89.58)
+        with self.assertRaisesRegex(sqlite3.IntegrityError,'currency minor units'):
+            self.db.accounts.execute(
+                "UPDATE accounts SET balance_units=1239000 WHERE account_number=?",
+                (account["account_number"],),
+            )
         self.db.accounts.execute(
-            "UPDATE accounts SET balance_units=1239000 WHERE account_number=?",
+            "UPDATE accounts SET balance_units=1240000 WHERE account_number=?",
             (account["account_number"],),
         )
         self.assertEqual(

@@ -247,14 +247,17 @@ class CurrencyDB(DBManager):
             ("accounts", ("balance", "principal", "insurance_paid", "uninsured_claim"),
              "account_number", "NEW.quote_currency"),
             ("loans", ("principal", "outstanding_balance", "origination_fee",
-                       "mandatory_cost_fee", "collateral_amount", "collateral_seized",
+                       "mandatory_cost_fee", "collateral_amount", "collateral_released", "collateral_seized",
                        "collateral_asset_value", "collateral_liquidated_value",
-                       "provisioned_loss", "underwriting_income",
+                       "liquidation_proceeds", "provisioned_loss", "underwriting_income",
                        "ecl_allowance",
                        "prepayment_fees_paid"),
              "loan_id", "NEW.quote_currency"),
             ("market_orders", ("limit_price", "reserved_cash"), "order_id",
-             "NEW.quote_currency"),
+             "SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code "
+             "UNION ALL SELECT quote_currency FROM company WHERE company_code=NEW.asset_code "
+             "UNION ALL SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code LIMIT 1"),
+            ("financial_institution_ledger", ("amount",), "entry_id", "NEW.currency_code"),
             ("financial_institution_ledger", ("base_amount",), "entry_id",
              "NEW.base_currency_code"),
         )
@@ -268,7 +271,7 @@ class CurrencyDB(DBManager):
             ("users", ("cash", "annual_income"), "user_id",
              "SELECT currency_code FROM country_currencies WHERE nationality=NEW.nationality"),
             ("loan_payment_schedule",
-             ("principal_due", "interest_due", "fee_due", "amount_paid"), "schedule_id",
+             ("principal_due", "interest_due", "fee_due", "amount_paid", "principal_paid", "interest_paid", "fee_paid"), "schedule_id",
              "SELECT quote_currency FROM loans WHERE loan_id=NEW.loan_id"),
             ("loan_ecl_assessments", ("ead", "expected_loss"), "assessment_id",
              "SELECT quote_currency FROM loans WHERE loan_id=NEW.loan_id"),
@@ -279,11 +282,23 @@ class CurrencyDB(DBManager):
             ("deposit_insurance_claims", ("covered_amount", "uninsured_amount"), "claim_id",
              "SELECT quote_currency FROM accounts WHERE account_number=NEW.account_number"),
             ("collateral_liquidation_events",
-             ("mark_price", "gross_proceeds", "liquidation_cost", "net_proceeds"),
+             ("mark_price", "execution_price", "gross_proceeds", "liquidation_cost", "net_proceeds"),
              "event_id", "SELECT quote_currency FROM loans WHERE loan_id=NEW.loan_id"),
             ("treasury_bond_holdings", ("principal", "face_value", "acquisition_cost"),
              "holding_id", "SELECT quote_currency FROM treasury_bond_products "
              "WHERE product_code=NEW.product_code"),
+            ("market_trade_history", ("price",), "trade_id",
+             "SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code "
+             "UNION ALL SELECT quote_currency FROM company WHERE company_code=NEW.asset_code "
+             "UNION ALL SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code LIMIT 1"),
+            ("market_last_trade", ("price",), "asset_code",
+             "SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code "
+             "UNION ALL SELECT quote_currency FROM company WHERE company_code=NEW.asset_code "
+             "UNION ALL SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code LIMIT 1"),
+            ("fund_accounts", ("cash", "initial_nav"), "product_code",
+             "SELECT quote_currency FROM investment WHERE product_code=NEW.product_code"),
+            ("fund_cash_ledger", ("amount", "balance"), "entry_id",
+             "SELECT quote_currency FROM investment WHERE product_code=NEW.product_code"),
             ("user_assets", ("average_cost",), "holding_id",
              "SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code "
              "UNION ALL SELECT quote_currency FROM company WHERE company_code=NEW.asset_code "
@@ -291,6 +306,10 @@ class CurrencyDB(DBManager):
             ("depositary_receipt_movements", ("underlying_average_cost",), "movement_id",
              "SELECT quote_currency FROM company WHERE company_code=(SELECT underlying_code "
              "FROM depositary_receipts WHERE dr_code=NEW.dr_code)"),
+            ("dr_deviation_samples", ("dr_price", "reference_value"), "sample_id",
+             "SELECT quote_currency FROM depositary_receipts WHERE dr_code=NEW.dr_code"),
+            ("dr_deviation_alert_events", ("dr_price", "reference_value"), "event_id",
+             "SELECT quote_currency FROM depositary_receipts WHERE dr_code=NEW.dr_code"),
             ("market_price_history", ("price",), "history_id",
              "SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code "
              "UNION ALL SELECT quote_currency FROM company WHERE company_code=NEW.asset_code "
@@ -324,6 +343,241 @@ class CurrencyDB(DBManager):
         self._ensure_account_units()
         self._ensure_cash_minor()
         self._ensure_money_snaps()
+        self._ensure_minor_amount_snapshots(direct, derived)
+        self._ensure_customer_wallet_journal()
+
+    def _ensure_customer_wallet_journal(self):
+        """Capture every customer cash/account balance delta in one native journal.
+
+        Triggers run in the same SQLite transaction as the balance update, so
+        direct SQL call sites cannot bypass the wallet subledger or its mapped
+        double-entry record.
+        """
+        self.execute("""CREATE TABLE IF NOT EXISTS accounting_account_mappings (
+            ledger_scope TEXT NOT NULL, local_code TEXT NOT NULL, common_code TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 1 CHECK(active IN (0,1)),
+            PRIMARY KEY(ledger_scope,local_code))""")
+        self.execute("""CREATE TABLE IF NOT EXISTS accounting_entries (
+            entry_id INTEGER PRIMARY KEY AUTOINCREMENT, ledger_scope TEXT NOT NULL,
+            entity_type TEXT NOT NULL, entity_id TEXT NOT NULL, source_key TEXT NOT NULL,
+            currency_code TEXT NOT NULL, decimal_places INTEGER NOT NULL CHECK(decimal_places BETWEEN 0 AND 6),
+            recorded_epoch INTEGER NOT NULL, description TEXT NOT NULL DEFAULT '',
+            UNIQUE(ledger_scope,entity_type,entity_id,source_key))""")
+        self.execute("""CREATE TABLE IF NOT EXISTS accounting_lines (
+            line_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entry_id INTEGER NOT NULL REFERENCES accounting_entries(entry_id),
+            account_code TEXT NOT NULL, debit_units INTEGER NOT NULL DEFAULT 0
+                CHECK(typeof(debit_units)='integer' AND debit_units>=0),
+            credit_units INTEGER NOT NULL DEFAULT 0
+                CHECK(typeof(credit_units)='integer' AND credit_units>=0),
+            CHECK((debit_units=0)<>(credit_units=0)))""")
+        self.execute("""CREATE TABLE IF NOT EXISTS customer_wallet_ledger (
+            entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_key TEXT NOT NULL UNIQUE, user_id TEXT NOT NULL,
+            source_type TEXT NOT NULL CHECK(source_type IN ('cash','account')),
+            source_account TEXT NOT NULL, currency_code TEXT NOT NULL,
+            decimal_places INTEGER NOT NULL CHECK(decimal_places BETWEEN 0 AND 6),
+            delta_minor_units INTEGER NOT NULL CHECK(typeof(delta_minor_units)='integer' AND delta_minor_units<>0),
+            balance_minor_units INTEGER NOT NULL CHECK(typeof(balance_minor_units)='integer'),
+            recorded_epoch INTEGER NOT NULL)""")
+        for local in ("customer_funds_payable", "wallet_clearing", "opening_balance_equity"):
+            self.execute("INSERT OR IGNORE INTO accounting_account_mappings(ledger_scope,local_code,common_code) VALUES ('customer',?,?)", (local,local))
+        # Historical state is one opening transaction per wallet, guarded by a
+        # deterministic source key so startup retries are harmless.
+        cash_rows = self.execute("""SELECT u.user_id,u.cash_minor,
+            COALESCE(n.currency_code,'NWX') currency_code,COALESCE(c.decimal_places,0) decimal_places
+            FROM users u LEFT JOIN country_currencies n ON n.nationality=u.nationality
+            LEFT JOIN currencies c ON c.code=n.currency_code WHERE u.cash_minor<>0""")
+        for row in cash_rows:
+            source = f"opening:cash:{row['user_id']}"
+            self.execute("""INSERT OR IGNORE INTO customer_wallet_ledger
+                (source_key,user_id,source_type,source_account,currency_code,decimal_places,
+                 delta_minor_units,balance_minor_units,recorded_epoch)
+                VALUES (?,?, 'cash', ?,?,?,?,?,unixepoch())""",
+                (source,str(row['user_id']),str(row['user_id']),str(row['currency_code']),
+                 int(row['decimal_places']),int(row['cash_minor']),int(row['cash_minor'])))
+        account_rows = self.execute("""SELECT account_number,user_id,quote_currency,
+            balance_minor_units,balance_decimal_places FROM accounts
+            WHERE balance_minor_units<>0 AND user_id IS NOT NULL""")
+        for row in account_rows:
+            source = f"opening:account:{row['account_number']}"
+            self.execute("""INSERT OR IGNORE INTO customer_wallet_ledger
+                (source_key,user_id,source_type,source_account,currency_code,decimal_places,
+                 delta_minor_units,balance_minor_units,recorded_epoch)
+                VALUES (?,?, 'account', ?,?,?,?,?,unixepoch())""",
+                (source,str(row['user_id']),str(row['account_number']),str(row['quote_currency']),
+                 int(row['balance_decimal_places']),int(row['balance_minor_units']),int(row['balance_minor_units'])))
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_customer_wallet_common_post
+            AFTER INSERT ON customer_wallet_ledger BEGIN
+            INSERT INTO accounting_entries(ledger_scope,entity_type,entity_id,source_key,
+                currency_code,decimal_places,recorded_epoch,description)
+            VALUES ('customer','wallet_holder',NEW.user_id,'wallet:'||NEW.entry_id,
+                NEW.currency_code,NEW.decimal_places,NEW.recorded_epoch,
+                NEW.source_type||' balance movement');
+            INSERT INTO accounting_lines(entry_id,account_code,debit_units,credit_units)
+            SELECT entry_id,'customer_funds_payable',
+                CASE WHEN NEW.delta_minor_units<0 THEN -NEW.delta_minor_units ELSE 0 END,
+                CASE WHEN NEW.delta_minor_units>0 THEN NEW.delta_minor_units ELSE 0 END
+            FROM accounting_entries WHERE ledger_scope='customer' AND entity_type='wallet_holder'
+                AND entity_id=NEW.user_id AND source_key='wallet:'||NEW.entry_id;
+            INSERT INTO accounting_lines(entry_id,account_code,debit_units,credit_units)
+            SELECT entry_id,'wallet_clearing',
+                CASE WHEN NEW.delta_minor_units>0 THEN NEW.delta_minor_units ELSE 0 END,
+                CASE WHEN NEW.delta_minor_units<0 THEN -NEW.delta_minor_units ELSE 0 END
+            FROM accounting_entries WHERE ledger_scope='customer' AND entity_type='wallet_holder'
+                AND entity_id=NEW.user_id AND source_key='wallet:'||NEW.entry_id;
+            END""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_customer_cash_ledger_insert AFTER INSERT ON users
+            WHEN NEW.cash_minor<>0 BEGIN
+            INSERT OR IGNORE INTO customer_wallet_ledger(source_key,user_id,source_type,source_account,
+                currency_code,decimal_places,delta_minor_units,balance_minor_units,recorded_epoch)
+            SELECT 'insert:cash:'||NEW.user_id,NEW.user_id,'cash',NEW.user_id,
+                COALESCE(n.currency_code,'NWX'),COALESCE(c.decimal_places,0),NEW.cash_minor,NEW.cash_minor,unixepoch()
+            FROM (SELECT 1) LEFT JOIN country_currencies n ON n.nationality=NEW.nationality
+            LEFT JOIN currencies c ON c.code=n.currency_code; END""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_customer_cash_ledger_update AFTER UPDATE OF cash_minor ON users
+            WHEN NEW.cash_minor<>OLD.cash_minor BEGIN
+            INSERT INTO customer_wallet_ledger(source_key,user_id,source_type,source_account,
+                currency_code,decimal_places,delta_minor_units,balance_minor_units,recorded_epoch)
+            SELECT 'change:cash:'||NEW.user_id||':'||unixepoch()||':'||lower(hex(randomblob(8))),
+                NEW.user_id,'cash',NEW.user_id,COALESCE(n.currency_code,'NWX'),COALESCE(c.decimal_places,0),
+                NEW.cash_minor-OLD.cash_minor,NEW.cash_minor,unixepoch()
+            FROM (SELECT 1) LEFT JOIN country_currencies n ON n.nationality=NEW.nationality
+            LEFT JOIN currencies c ON c.code=n.currency_code; END""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_customer_account_ledger_insert AFTER INSERT ON accounts
+            WHEN NEW.balance_minor_units<>0 AND NEW.user_id IS NOT NULL BEGIN
+            INSERT OR IGNORE INTO customer_wallet_ledger(source_key,user_id,source_type,source_account,
+                currency_code,decimal_places,delta_minor_units,balance_minor_units,recorded_epoch)
+            VALUES ('insert:account:'||NEW.account_number,NEW.user_id,'account',NEW.account_number,
+                NEW.quote_currency,NEW.balance_decimal_places,NEW.balance_minor_units,NEW.balance_minor_units,unixepoch()); END""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_customer_account_ledger_update AFTER UPDATE OF balance_minor_units ON accounts
+            WHEN NEW.balance_minor_units<>OLD.balance_minor_units AND NEW.user_id IS NOT NULL BEGIN
+            INSERT INTO customer_wallet_ledger(source_key,user_id,source_type,source_account,
+                currency_code,decimal_places,delta_minor_units,balance_minor_units,recorded_epoch)
+            VALUES ('change:account:'||NEW.account_number||':'||unixepoch()||':'||lower(hex(randomblob(8))),
+                NEW.user_id,'account',NEW.account_number,NEW.quote_currency,NEW.balance_decimal_places,
+                NEW.balance_minor_units-OLD.balance_minor_units,NEW.balance_minor_units,unixepoch()); END""")
+        # Opening rows are seeded before the posting trigger is installed on a
+        # first boot. Backfill their balanced common entries idempotently.
+        self.execute("""INSERT OR IGNORE INTO accounting_entries
+            (ledger_scope,entity_type,entity_id,source_key,currency_code,decimal_places,recorded_epoch,description)
+            SELECT 'customer','wallet_holder',user_id,'wallet:'||entry_id,currency_code,decimal_places,
+                recorded_epoch,source_type||' balance movement'
+            FROM customer_wallet_ledger""")
+        self.execute("""INSERT OR IGNORE INTO accounting_lines(entry_id,account_code,debit_units,credit_units)
+            SELECT e.entry_id,'customer_funds_payable',
+                CASE WHEN w.delta_minor_units<0 THEN -w.delta_minor_units ELSE 0 END,
+                CASE WHEN w.delta_minor_units>0 THEN w.delta_minor_units ELSE 0 END
+            FROM customer_wallet_ledger w JOIN accounting_entries e
+              ON e.ledger_scope='customer' AND e.entity_type='wallet_holder'
+             AND e.entity_id=w.user_id AND e.source_key='wallet:'||w.entry_id""")
+        self.execute("""INSERT OR IGNORE INTO accounting_lines(entry_id,account_code,debit_units,credit_units)
+            SELECT e.entry_id,'wallet_clearing',
+                CASE WHEN w.delta_minor_units>0 THEN w.delta_minor_units ELSE 0 END,
+                CASE WHEN w.delta_minor_units<0 THEN -w.delta_minor_units ELSE 0 END
+            FROM customer_wallet_ledger w JOIN accounting_entries e
+              ON e.ledger_scope='customer' AND e.entity_type='wallet_holder'
+             AND e.entity_id=w.user_id AND e.source_key='wallet:'||w.entry_id""")
+
+    def _ensure_minor_amount_snapshots(self, direct, derived):
+        """Maintain a currency-minor-unit lineage row for every configured amount.
+
+        Operational schemas remain compatible while migration proceeds. This
+        register is the auditable integer representation used by reconciliation
+        and provides a complete inventory of the explicitly classified money
+        columns; rates, quantities and timestamps are intentionally excluded.
+        """
+        self.execute("""CREATE TABLE IF NOT EXISTS financial_amount_snapshots (
+            source_table TEXT NOT NULL, source_key_field TEXT NOT NULL,
+            source_key TEXT NOT NULL, amount_field TEXT NOT NULL,
+            currency_code TEXT NOT NULL, decimal_places INTEGER NOT NULL
+                CHECK(decimal_places BETWEEN 0 AND 6), amount_minor_units INTEGER NOT NULL
+                CHECK(typeof(amount_minor_units)='integer'),
+            PRIMARY KEY(source_table,source_key,amount_field))""")
+        snapshot_columns = {row[1] for row in self.execute(
+            "PRAGMA table_info(financial_amount_snapshots)")}
+        if "source_key_field" not in snapshot_columns:
+            self.execute("ALTER TABLE financial_amount_snapshots ADD COLUMN source_key_field TEXT NOT NULL DEFAULT ''")
+        specifications = [(table, key, currency, set(columns))
+                          for table, columns, key, currency in (*direct, *derived)]
+        from functions.money import to_minor_units
+        for spec_index, (table, key, currency_expr, columns) in enumerate(specifications):
+            available = {row[1] for row in self.execute(f'PRAGMA table_info("{table}")')}
+            key_col = key if key in available else None
+            if not key_col:
+                continue
+            amount_cols = sorted(columns & available)
+            if not amount_cols:
+                continue
+            rows = self.execute(f'SELECT "{key_col}",{",".join(chr(34)+c+chr(34) for c in amount_cols)} FROM "{table}"')
+            for row in rows:
+                # Existing-row currency lookup uses the row context; handle the
+                # direct and derived forms without interpolating data values.
+                if currency_expr == "NEW.quote_currency":
+                    currency_value = self.execute_one(
+                        f'SELECT COALESCE(quote_currency,"NWX") FROM "{table}" WHERE "{key_col}"=?',
+                        (row[0],),
+                    )[0]
+                else:
+                    sql_expr = currency_expr.replace("NEW.", f'"{table}".')
+                    currency_value = self.execute_one(
+                        f'SELECT COALESCE(({sql_expr}),\'NWX\') FROM "{table}" WHERE "{key_col}"=?',
+                        (row[0],),
+                    )[0]
+                precision = self.execute_one(
+                    "SELECT decimal_places FROM currencies WHERE code=?", (str(currency_value or 'NWX').upper(),)
+                )
+                currency_value = str(currency_value or 'NWX').upper()
+                places = int(precision[0]) if precision else 0
+                for index, amount_col in enumerate(amount_cols, start=1):
+                    amount = row[index]
+                    if amount is None:
+                        continue
+                    units = to_minor_units(amount, places)
+                    self.execute("""INSERT INTO financial_amount_snapshots
+                        (source_table,source_key_field,source_key,amount_field,currency_code,decimal_places,amount_minor_units)
+                        VALUES (?,?,?,?,?,?,?) ON CONFLICT(source_table,source_key,amount_field)
+                        DO UPDATE SET currency_code=excluded.currency_code,
+                        decimal_places=excluded.decimal_places,amount_minor_units=excluded.amount_minor_units,
+                        source_key_field=excluded.source_key_field""",
+                        (table, key_col, str(row[0]), amount_col, currency_value, places, units))
+            for amount_col in amount_cols:
+                code_expr = currency_expr.replace("NEW.", "NEW.")
+                places_expr = f"COALESCE((SELECT decimal_places FROM currencies WHERE code=({code_expr})),0)"
+                factor_expr = f"CASE {places_expr} WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END"
+                units_expr = f"CAST(ROUND(NEW.\"{amount_col}\"*({factor_expr})) AS INTEGER)"
+                for timing, events in (("INSERT", "AFTER INSERT"),
+                                       ("UPDATE", f'AFTER UPDATE OF "{amount_col}"')):
+                    name = f"trg_amount_snapshot_{table}_{amount_col}_{timing.lower()}"
+                    self.execute(f'DROP TRIGGER IF EXISTS "{name}"')
+                    self.execute(f"""CREATE TRIGGER "{name}" {events} ON "{table}"
+                        WHEN NEW."{amount_col}" IS NOT NULL
+                        BEGIN INSERT INTO financial_amount_snapshots
+                        (source_table,source_key_field,source_key,amount_field,currency_code,decimal_places,amount_minor_units)
+                        VALUES ('{table}','{key_col}',CAST(NEW."{key_col}" AS TEXT),'{amount_col}',
+                            COALESCE(({code_expr}),'NWX'),{places_expr},{units_expr})
+                        ON CONFLICT(source_table,source_key,amount_field) DO UPDATE SET
+                            currency_code=excluded.currency_code,decimal_places=excluded.decimal_places,
+                            amount_minor_units=excluded.amount_minor_units,
+                            source_key_field=excluded.source_key_field; END""")
+            if "quote_currency" in available:
+                name = f"trg_amount_snapshot_{table}_currency_update_{spec_index}"
+                updates = []
+                for amount_col in amount_cols:
+                    places_expr = "COALESCE((SELECT decimal_places FROM currencies WHERE code=NEW.quote_currency),0)"
+                    factor_expr = f"CASE {places_expr} WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END"
+                    updates.append(f"""INSERT INTO financial_amount_snapshots
+                        (source_table,source_key_field,source_key,amount_field,currency_code,decimal_places,amount_minor_units)
+                        SELECT '{table}','{key_col}',CAST(NEW."{key_col}" AS TEXT),'{amount_col}',NEW.quote_currency,
+                            {places_expr},CAST(ROUND(NEW."{amount_col}"*({factor_expr})) AS INTEGER)
+                        WHERE NEW."{amount_col}" IS NOT NULL
+                        ON CONFLICT(source_table,source_key,amount_field) DO UPDATE SET
+                            currency_code=excluded.currency_code,decimal_places=excluded.decimal_places,
+                            amount_minor_units=excluded.amount_minor_units,
+                            source_key_field=excluded.source_key_field;""")
+                self.execute(f'DROP TRIGGER IF EXISTS "{name}"')
+                self.execute(f"CREATE TRIGGER \"{name}\" AFTER UPDATE OF quote_currency ON \"{table}\" "
+                             "BEGIN "+" ".join(updates)+" END")
 
     # Minor units of a citizen's home currency: x1 for 0 decimal places, x10, x100.
     PLACES = ("(SELECT COALESCE(MAX(c.decimal_places),0) FROM country_currencies n "
@@ -412,13 +666,36 @@ class CurrencyDB(DBManager):
             self.execute("UPDATE accounts SET balance_units=CAST(ROUND(COALESCE(balance,0)*1000000) AS INTEGER) "
                          "WHERE account_type<>'currency_saving'")
             self.execute("INSERT INTO settings(key,value) VALUES ('account_units_v1', ?)", (str(int(time.time())),))
+        # Historical account credits could retain fractional micro-units of a
+        # cent after old interest paths. Round once during migration; ongoing
+        # balance writes are rejected unless aligned to the account currency.
+        legacy_places = "COALESCE((SELECT decimal_places FROM currencies WHERE code=accounts.quote_currency),0)"
+        legacy_factor = f"CASE {legacy_places} WHEN 0 THEN 1000000 WHEN 1 THEN 100000 ELSE 10000 END"
+        self.execute(f"UPDATE accounts SET balance_units=CAST(ROUND(balance_units*1.0/({legacy_factor}))*({legacy_factor}) AS INTEGER) "
+                     f"WHERE balance_units%({legacy_factor})<>0")
+        places_from_currency = "COALESCE((SELECT decimal_places FROM currencies WHERE code=NEW.quote_currency),0)"
+        factor_from_currency = f"CASE {places_from_currency} WHEN 0 THEN 1000000 WHEN 1 THEN 100000 ELSE 10000 END"
+        self.execute("DROP TRIGGER IF EXISTS trg_accounts_currency_quantum_insert")
+        self.execute("DROP TRIGGER IF EXISTS trg_accounts_currency_quantum_update")
+        self.execute("DROP TRIGGER IF EXISTS trg_accounts_currency_quantum_change")
+        self.execute(f"""CREATE TRIGGER trg_accounts_currency_quantum_insert BEFORE INSERT ON accounts
+            WHEN NEW.balance_units%({factor_from_currency})<>0
+            BEGIN SELECT RAISE(ABORT,'Account balance must align to currency minor units'); END""")
+        self.execute(f"""CREATE TRIGGER trg_accounts_currency_quantum_update BEFORE UPDATE OF balance_units ON accounts
+            WHEN NEW.balance_units%({factor_from_currency})<>0
+            BEGIN SELECT RAISE(ABORT,'Account balance must align to currency minor units'); END""")
+        self.execute(f"""CREATE TRIGGER trg_accounts_currency_quantum_change BEFORE UPDATE OF quote_currency ON accounts
+            WHEN NEW.balance_units%({factor_from_currency})<>0
+            BEGIN SELECT RAISE(ABORT,'Account balance must align to destination currency minor units'); END""")
         self.execute("""CREATE TRIGGER trg_accounts_units_mirror AFTER UPDATE OF balance_units ON accounts
             WHEN NEW.balance_units IS NOT OLD.balance_units
             BEGIN UPDATE accounts SET balance=NEW.balance_units/1000000.0 WHERE account_number=NEW.account_number; END""")
         # Inserts that still give only balance (older code paths) are converted once.
-        self.execute("""CREATE TRIGGER trg_accounts_units_insert AFTER INSERT ON accounts
+        insert_places = "COALESCE((SELECT decimal_places FROM currencies WHERE code=NEW.quote_currency),0)"
+        self.execute(f"""CREATE TRIGGER trg_accounts_units_insert AFTER INSERT ON accounts
             BEGIN UPDATE accounts SET balance_units=CASE WHEN NEW.balance_units=0 AND COALESCE(NEW.balance,0)<>0
-                     THEN CAST(ROUND(NEW.balance*1000000) AS INTEGER) ELSE NEW.balance_units END
+                     THEN CAST(ROUND(ROUND(NEW.balance,{insert_places})*1000000) AS INTEGER)
+                     ELSE NEW.balance_units END
                  WHERE account_number=NEW.account_number; END""")
         # Writing balance without balance_units would desynchronise the two; reject it.
         self.execute("""CREATE TRIGGER trg_accounts_balance_guard BEFORE UPDATE OF balance ON accounts

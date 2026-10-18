@@ -5,6 +5,7 @@ amounts are rounded half-up to that currency's configured smallest unit.
 """
 
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+import re
 
 
 _WHOLE = Decimal("1")
@@ -73,6 +74,51 @@ def from_minor_units(units, decimal_places):
     if integer_units != units or not 0 <= places <= 6:
         raise ValueError("최소단위 금액은 정수이며 통화 소수 자릿수는 0~6이어야 합니다.")
     return Decimal(integer_units).scaleb(-places)
+
+
+def audit_amount_snapshots(conn):
+    """Check the explicit money-field inventory against its integer snapshot.
+
+    Identifiers come only from the internal registry and are still validated
+    before interpolation. Missing source rows and stale amount values are
+    returned as findings rather than silently repaired.
+    """
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='financial_amount_snapshots'"
+    ).fetchone()
+    if not exists:
+        return [{"status": "missing_inventory"}]
+    findings = []
+    rows = conn.execute("SELECT * FROM financial_amount_snapshots ORDER BY source_table,source_key,amount_field")
+    for row in rows:
+        table, key_field, key, field = (str(row[name]) for name in
+                                        ("source_table", "source_key_field", "source_key", "amount_field"))
+        if not all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in (table,key_field,field)):
+            findings.append({"source_table": table, "source_key": key,
+                             "amount_field": field, "status": "invalid_inventory_identifier"})
+            continue
+        columns = {item[1] for item in conn.execute(f'PRAGMA table_info("{table}")')}
+        if key_field not in columns or field not in columns:
+            findings.append({"source_table": table, "source_key": key,
+                             "amount_field": field, "status": "missing_source_field"})
+            continue
+        source = conn.execute(
+            f'SELECT "{field}" FROM "{table}" WHERE "{key_field}"=?', (key,)
+        ).fetchone()
+        if source is None:
+            findings.append({"source_table": table, "source_key": key,
+                             "amount_field": field, "status": "missing_source_row"})
+            continue
+        if source[0] is None:
+            continue
+        expected = to_minor_units(source[0], int(row["decimal_places"]))
+        actual = int(row["amount_minor_units"])
+        if expected != actual:
+            findings.append({"source_table": table, "source_key": key,
+                             "amount_field": field, "currency_code": row["currency_code"],
+                             "expected_minor_units": expected, "snapshot_minor_units": actual,
+                             "status": "mismatch"})
+    return findings
 
 
 def round_currency(conn, value, currency_code):

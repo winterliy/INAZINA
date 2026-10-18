@@ -187,4 +187,26 @@ class AccountingJournal:
             checks.append({"ledger_scope": scope, "native_entries": native,
                            "common_entries": common, "missing_entries": native-common,
                            "status": "matched" if native == common else "mismatch"})
+        native = int(conn.execute("""SELECT
+            (SELECT COUNT(*) FROM users WHERE cash_minor<>0) +
+            (SELECT COUNT(*) FROM accounts WHERE user_id IS NOT NULL AND balance_minor_units<>0)""").fetchone()[0])
+        common = int(conn.execute("SELECT COUNT(*) FROM accounting_entries WHERE ledger_scope='customer'").fetchone()[0])
+        wallet = int(conn.execute("SELECT COUNT(*) FROM customer_wallet_ledger").fetchone()[0])
+        gaps = int(conn.execute("""SELECT COUNT(*) FROM (
+            SELECT u.user_id,'cash' source_type,u.user_id source_account,
+                   COALESCE(n.currency_code,'NWX') currency_code,u.cash_minor expected
+            FROM users u LEFT JOIN country_currencies n ON n.nationality=u.nationality
+            UNION ALL
+            SELECT a.user_id,'account',a.account_number,a.quote_currency,a.balance_minor_units
+            FROM accounts a WHERE a.user_id IS NOT NULL
+        ) live LEFT JOIN (
+            SELECT user_id,source_type,source_account,currency_code,SUM(delta_minor_units) actual
+            FROM customer_wallet_ledger GROUP BY user_id,source_type,source_account,currency_code
+        ) ledger USING(user_id,source_type,source_account,currency_code)
+        WHERE COALESCE(live.expected,0)<>COALESCE(ledger.actual,0)""").fetchone()[0])
+        status = "matched" if wallet == common and gaps == 0 else "mismatch"
+        checks.append({"ledger_scope": "customer", "native_balances": native,
+                       "wallet_entries": wallet, "common_entries": common,
+                       "balance_gaps": gaps, "missing_entries": wallet-common,
+                       "status": status})
         return checks
