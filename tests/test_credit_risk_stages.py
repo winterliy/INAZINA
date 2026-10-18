@@ -708,6 +708,10 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.assertEqual(sum(row["borrowerCount"] for row in report["borrowerHoldout"]), 2)
         self.assertTrue(all("20% SHA-256 borrower holdout" in row["method"]
                             for row in report["borrowerHoldout"]))
+        for row in report["borrowerHoldout"]:
+            self.assertLessEqual(row["observedRateLower95"], row["observedDefaultRate"])
+            self.assertGreaterEqual(row["observedRateUpper95"], row["observedDefaultRate"])
+            self.assertIn("borrower-level Wilson 95% interval", row["method"])
         stability = report["stability"][0]
         self.assertEqual((stability["olderCount"], stability["recentCount"]), (2, 2))
         self.assertGreater(stability["populationStabilityIndex"], 0)

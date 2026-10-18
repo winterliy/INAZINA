@@ -632,6 +632,17 @@ class CreditRiskManager:
         for (bank, country), metric in sorted(holdout.items()):
             predictions, labels = metric["predicted"], metric["observed"]
             positives, negatives = sum(labels), len(labels)-sum(labels)
+            borrower_count = len(predictions)
+            observed_rate = positives/borrower_count
+            z = 1.959963984540054
+            denominator = 1+(z*z/borrower_count)
+            center = (observed_rate+(z*z/(2*borrower_count)))/denominator
+            margin = z*math.sqrt(
+                observed_rate*(1-observed_rate)/borrower_count
+                +(z*z/(4*borrower_count*borrower_count))
+            )/denominator
+            lower95 = max(0.0, center-margin)
+            upper95 = min(1.0, center+margin)
             auc = None
             if positives and negatives:
                 ordered = sorted(zip(predictions, labels), key=lambda item: item[0])
@@ -647,13 +658,16 @@ class CreditRiskManager:
                 auc = (rank_sum-positives*(positives+1)/2)/(positives*negatives)
             borrower_holdout.append({
                 "issuer": bank, "nationality": country,
-                "borrowerCount": len(predictions), "defaults": positives,
+                "borrowerCount": borrower_count, "defaults": positives,
                 "meanPredictedPd": sum(predictions)/len(predictions),
-                "observedDefaultRate": positives/len(predictions),
+                "observedDefaultRate": observed_rate,
+                "observedRateLower95": lower95,
+                "observedRateUpper95": upper95,
+                "predictedPdWithinObserved95": lower95 <= sum(predictions)/len(predictions) <= upper95,
                 "brierScore": sum((pd-label)**2 for pd, label in
                                   zip(predictions, labels))/len(predictions),
                 "auroc": auc,
-                "method": "deterministic 20% SHA-256 borrower holdout; latest matured loan per borrower; simulator outcomes, not an external independent validation set",
+                "method": "deterministic 20% SHA-256 borrower holdout; latest matured loan per borrower; borrower-level Wilson 95% interval; simulator outcomes, not an external independent validation set",
             })
         return {"issuer": issuer, "horizonDays": 365,
                 "maturedThroughEpoch": epoch-horizon, "groups": result,
