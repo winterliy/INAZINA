@@ -1578,6 +1578,9 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
         unbalanced = BankJournal.audit_unbalanced(connection, issuer)
         deposit_reconciliation = BankJournal.reconcile_customer_deposits(connection, issuer)
         loan_reconciliation = BankJournal.reconcile_loan_receivables(connection, issuer)
+        loan_schedule_reconciliation = BankJournal.reconcile_loan_payment_schedules(
+            connection, issuer,
+        )
         ecl_allowance_reconciliation = BankJournal.reconcile_ecl_allowances(connection, issuer)
         chargeoff_memo_reconciliation = BankJournal.reconcile_charged_off_balances(
             connection, issuer,
@@ -1700,6 +1703,7 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
             "resultReconciliation": reconciliation,
             "depositReconciliation": deposit_reconciliation,
             "loanReconciliation": loan_reconciliation,
+            "loanScheduleReconciliation": loan_schedule_reconciliation,
             "eclAllowanceReconciliation": ecl_allowance_reconciliation,
             "chargeoffMemoReconciliation": chargeoff_memo_reconciliation,
             "depositInsuranceReconciliation": deposit_insurance_reconciliation,

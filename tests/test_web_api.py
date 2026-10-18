@@ -530,10 +530,12 @@ class WebApiTests(unittest.TestCase):
                     "userId": "admin-1", "role": "admin",
                 }), patch.object(server, "admin_bank_journal_report", return_value={
                     "trialBalance": [{}], "depositInsuranceClaims": [],
+                    "loanScheduleReconciliation": [],
                 }):
             server.Handler.do_GET(handler)
         self.assertEqual(response, {"status": 200, "value": {
             "trialBalance": [{}], "depositInsuranceClaims": [],
+            "loanScheduleReconciliation": [],
         }})
         entry = server.admin_audit()[0]
         self.assertEqual(entry["actorId"], "admin-1")
