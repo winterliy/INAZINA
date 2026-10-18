@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from database import DatabaseManager
 from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY, IS_TREASURY
 from functions.money import (round_money, round_currency, parse_currency_money,
-                             currency_precision)
+                             currency_precision, to_minor_units)
 from functions.interest_calc import year_fraction
 from managers.bank_journal import BankJournal
 from managers.credit_score_manager import CreditScoreManager
@@ -2258,10 +2258,15 @@ class BankManager:
             "INSERT OR IGNORE INTO accounts.collateral_liquidation_events "
             "(loan_id,collateral_id,asset_code,quantity,mark_price,execution_price,"
             "gross_proceeds,liquidation_cost,net_proceeds,book_filled_quantity,"
-            "backstop_quantity,liquidated_epoch) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "backstop_quantity,liquidated_epoch,gross_proceeds_minor_units,"
+            "liquidation_cost_minor_units,net_proceeds_minor_units) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (loan_id, row["collateral_id"], row["asset_code"], total_quantity,
              mark_price, weighted_price, gross, liquidation_cost, net,
-             book_quantity, backstop_quantity, float(now)),
+             book_quantity, backstop_quantity, float(now),
+             to_minor_units(gross, currency_precision(conn, currency)),
+             to_minor_units(liquidation_cost, currency_precision(conn, currency)),
+             to_minor_units(net, currency_precision(conn, currency))),
         )
         return net
 

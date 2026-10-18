@@ -687,7 +687,8 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(set(report["coverage"]), {
             "institution_pnl", "customer_deposits", "loan_receivables",
             "ecl_allowances", "charged_off_memo_balances",
-            "loan_payment_schedules", "deposit_insurance_claims", "journal_invariants",
+            "loan_payment_schedules", "collateral_liquidations",
+            "deposit_insurance_claims", "journal_invariants",
         })
         self.assertFalse(report["findings"])
 

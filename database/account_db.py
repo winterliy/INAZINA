@@ -476,6 +476,8 @@ class AccountDB(DBManager):
             ("mark_price", "gross_proceeds", "liquidation_cost", "net_proceeds"),
             "event_id",
         )
+        self.execute("DROP TRIGGER IF EXISTS trg_collateral_liquidation_events_immutable_update")
+        self.execute("DROP TRIGGER IF EXISTS trg_collateral_liquidation_events_immutable_delete")
         self.execute("""CREATE TABLE IF NOT EXISTS loan_credit_support (
             support_id INTEGER PRIMARY KEY AUTOINCREMENT,
             loan_id INTEGER NOT NULL,

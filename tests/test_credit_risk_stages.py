@@ -587,6 +587,48 @@ class DefaultedLoanEclTests(unittest.TestCase):
             "seniority_rank": 3, "recovery_days": 365, "recovery_cost_bps": 500,
         })
 
+    def test_collateral_liquidation_minor_units_reconcile_to_immutable_event(self):
+        loan_id = self.db.accounts.execute_one(
+            "SELECT loan_id FROM loans WHERE product_code='ECL3'"
+        )["loan_id"]
+        self.db.accounts.execute(
+            "INSERT INTO loan_collateral_assets(loan_id,user_id,asset_code,quantity,pledged_epoch,"
+            "last_price,last_value,status,liquidation_cost,liquidation_proceeds) "
+            "VALUES (?,?,?,1,1,100,100,'liquidated',10,90)",
+            (loan_id, "ecl-borrower", "COLLATERAL"),
+        )
+        collateral_id = self.db.accounts.execute_one(
+            "SELECT collateral_id FROM loan_collateral_assets WHERE loan_id=?", (loan_id,)
+        )["collateral_id"]
+        asset = self.db.accounts.execute_one(
+            "SELECT liquidation_cost_minor_units,liquidation_proceeds_minor_units "
+            "FROM loan_collateral_assets WHERE collateral_id=?", (collateral_id,)
+        )
+        self.assertEqual((asset["liquidation_cost_minor_units"],
+                          asset["liquidation_proceeds_minor_units"]), (10, 90))
+        self.db.accounts.execute(
+            "INSERT INTO collateral_liquidation_events(loan_id,collateral_id,asset_code,quantity,"
+            "mark_price,execution_price,gross_proceeds,liquidation_cost,net_proceeds,"
+            "liquidated_epoch,gross_proceeds_minor_units,liquidation_cost_minor_units,"
+            "net_proceeds_minor_units) VALUES (?,?,?,1,100,100,100,10,90,1,100,10,90)",
+            (loan_id, collateral_id, "COLLATERAL"),
+        )
+        with self.db.atomic() as conn:
+            findings = BankJournal.reconcile_collateral_liquidations(conn, "Bank")
+        self.assertEqual(findings[0]["status"], "matched")
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+            self.db.accounts.execute(
+                "UPDATE collateral_liquidation_events SET net_proceeds=91 WHERE collateral_id=?",
+                (collateral_id,),
+            )
+        self.db.accounts.execute(
+            "UPDATE loan_collateral_assets SET liquidation_proceeds=89 WHERE collateral_id=?",
+            (collateral_id,),
+        )
+        with self.db.atomic() as conn:
+            findings = BankJournal.reconcile_collateral_liquidations(conn, "Bank")
+        self.assertEqual(findings[0]["status"], "mismatch")
+
     def test_matured_pd_backtest_uses_one_snapshot_per_loan(self):
         sample_epoch = 1_700_000_000.0
         loan_id = self.db.accounts.execute_one(

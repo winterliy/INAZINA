@@ -396,6 +396,59 @@ class BankJournal:
         return results
 
     @staticmethod
+    def reconcile_collateral_liquidations(conn, issuer):
+        """Reconcile realized collateral proceeds to liquidation events."""
+        from functions.money import currency_precision, to_minor_units
+
+        rows = conn.execute(
+            "SELECT e.event_id,e.loan_id,e.collateral_id,e.gross_proceeds,"
+            "e.gross_proceeds_minor_units,e.liquidation_cost,e.liquidation_cost_minor_units,"
+            "e.net_proceeds,e.net_proceeds_minor_units,c.status collateral_status,"
+            "c.liquidation_proceeds asset_proceeds,"
+            "c.liquidation_proceeds_minor_units asset_proceeds_minor_units,l.quote_currency "
+            "FROM accounts.collateral_liquidation_events e "
+            "JOIN accounts.loan_collateral_assets c USING(collateral_id) "
+            "JOIN accounts.loans l USING(loan_id) "
+            "JOIN product.liability p USING(product_code) WHERE p.issuer=? "
+            "ORDER BY e.event_id", (str(issuer),),
+        ).fetchall()
+        findings = []
+        for row in rows:
+            currency = str(row["quote_currency"] or "NWX").upper()
+            places = currency_precision(conn, currency)
+
+            def units(minor, legacy):
+                return (int(row[minor] or 0) if minor in row.keys()
+                        else to_minor_units(row[legacy] or 0, places))
+
+            gross = units("gross_proceeds_minor_units", "gross_proceeds")
+            cost = units("liquidation_cost_minor_units", "liquidation_cost")
+            net = units("net_proceeds_minor_units", "net_proceeds")
+            asset_net = units("asset_proceeds_minor_units", "asset_proceeds")
+            findings.append({
+                "event_id": int(row["event_id"]), "loan_id": int(row["loan_id"]),
+                "collateral_id": int(row["collateral_id"]), "currency_code": currency,
+                "gross_proceeds_units": gross, "liquidation_cost_units": cost,
+                "net_proceeds_units": net, "asset_proceeds_units": asset_net,
+                "difference_units": net-asset_net,
+                "status": ("matched" if row["collateral_status"] == "liquidated"
+                           and gross-cost == net and net == asset_net else "mismatch"),
+            })
+        missing = conn.execute(
+            "SELECT c.collateral_id,c.loan_id,l.quote_currency "
+            "FROM accounts.loan_collateral_assets c JOIN accounts.loans l USING(loan_id) "
+            "JOIN product.liability p USING(product_code) LEFT JOIN "
+            "accounts.collateral_liquidation_events e USING(collateral_id) "
+            "WHERE p.issuer=? AND c.status='liquidated' AND e.event_id IS NULL",
+            (str(issuer),),
+        ).fetchall()
+        findings.extend({"collateral_id": int(row["collateral_id"]),
+                         "loan_id": int(row["loan_id"]),
+                         "currency_code": str(row["quote_currency"] or "NWX").upper(),
+                         "status": "missing_event"} for row in missing)
+        return findings
+
+    @staticmethod
     def reconcile_all(conn, issuer):
         """Run every implemented institution subledger-to-journal reconciliation.
 
@@ -410,6 +463,9 @@ class BankJournal:
             "ecl_allowances": BankJournal.reconcile_ecl_allowances(conn, issuer),
             "charged_off_memo_balances": BankJournal.reconcile_charged_off_balances(conn, issuer),
             "loan_payment_schedules": BankJournal.reconcile_loan_payment_schedules(
+                conn, issuer
+            ),
+            "collateral_liquidations": BankJournal.reconcile_collateral_liquidations(
                 conn, issuer
             ),
             "deposit_insurance_claims": BankJournal.reconcile_deposit_insurance_claims(
