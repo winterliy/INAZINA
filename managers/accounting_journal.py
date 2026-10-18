@@ -260,17 +260,109 @@ class AccountingJournal:
 
     @staticmethod
     def reconcile_subledgers(conn):
-        """Report missing common postings without silently manufacturing balances."""
+        """Compare native rows/lines with common postings; never repair gaps silently."""
         checks = []
-        for scope, native_sql in (
-            ("company", "SELECT COUNT(*) FROM financial_entries WHERE status='posted'"),
-            ("institution", "SELECT COUNT(*) FROM bank_journal_entries WHERE status='posted'"),
-        ):
-            native = int(conn.execute(native_sql).fetchone()[0])
+        scopes = (
+            ("company", "SELECT e.entry_id,e.company_code entity_id,e.source_key,"
+             "e.recorded_epoch,f.currency currency_code,f.decimal_places "
+             "FROM financial_entries e JOIN financial_entities f USING(company_code) "
+             "WHERE e.status='posted' ORDER BY e.entry_id"),
+            ("institution", "SELECT entry_id,issuer entity_id,event_type,reference_key,"
+             "currency_code,decimal_places,created_epoch FROM bank_journal_entries "
+             "WHERE status='posted' ORDER BY entry_id"),
+        )
+        for scope, native_query in scopes:
+            native_rows = conn.execute(native_query).fetchall()
+            native = len(native_rows)
             common = int(conn.execute("SELECT COUNT(*) FROM accounting_entries WHERE ledger_scope=?", (scope,)).fetchone()[0])
+            common_rows = conn.execute(
+                "SELECT entry_id,entity_id,source_key,currency_code,decimal_places,recorded_epoch "
+                "FROM accounting_entries WHERE ledger_scope=?", (scope,),
+            ).fetchall()
+            common_by_key = {(str(row["entity_id"]), str(row["source_key"])): row
+                             for row in common_rows}
+            common_lines = {}
+            for line in conn.execute(
+                    "SELECT l.entry_id,l.account_code,l.debit_units,l.credit_units "
+                    "FROM accounting_lines l JOIN accounting_entries e USING(entry_id) "
+                    "WHERE e.ledger_scope=?", (scope,)).fetchall():
+                entry_lines = common_lines.setdefault(int(line["entry_id"]), {})
+                code = str(line["account_code"])
+                old_debit, old_credit = entry_lines.get(code, (0, 0))
+                entry_lines[code] = (old_debit+int(line["debit_units"]),
+                                     old_credit+int(line["credit_units"]))
+            mapping = {str(row["local_code"]): str(row["common_code"])
+                       for row in conn.execute(
+                           "SELECT local_code,common_code FROM accounting_account_mappings "
+                           "WHERE ledger_scope=? AND active=1", (scope,)).fetchall()}
+            native_lines = {}
+            if scope == "company":
+                source_lines = conn.execute(
+                    "SELECT entry_id,account,amount FROM financial_lines ORDER BY entry_id,line_id"
+                ).fetchall()
+                for line in source_lines:
+                    entry_lines = native_lines.setdefault(int(line["entry_id"]), {})
+                    code = str(line["account"])
+                    entry_lines[code] = (entry_lines.get(code, (0,))[0]
+                                         +int(line["amount"]),)
+            else:
+                source_lines = conn.execute(
+                    "SELECT l.entry_id,l.account_code,l.debit_units,l.credit_units "
+                    "FROM bank_journal_lines l JOIN bank_journal_entries e USING(entry_id) "
+                    "WHERE e.status='posted' ORDER BY l.entry_id,l.line_id"
+                ).fetchall()
+                for line in source_lines:
+                    entry_lines = native_lines.setdefault(int(line["entry_id"]), {})
+                    code = str(line["account_code"])
+                    old_debit, old_credit = entry_lines.get(code, (0, 0))
+                    entry_lines[code] = (old_debit+int(line["debit_units"]),
+                                         old_credit+int(line["credit_units"]))
+            posting_gaps = 0
+            seen_common = set()
+            for entry in native_rows:
+                entity_id = str(entry["entity_id"])
+                if scope == "company":
+                    source_key = str(entry["source_key"])
+                    currency = str(entry["currency_code"])
+                    places = int(entry["decimal_places"])
+                    recorded = int(entry["recorded_epoch"])
+                else:
+                    source_key = f"{entry['event_type']}:{entry['reference_key']}"
+                    currency = str(entry["currency_code"])
+                    places = int(entry["decimal_places"])
+                    recorded = int(float(entry["created_epoch"]))
+                common_entry = common_by_key.get((entity_id, source_key))
+                if (common_entry is None or str(common_entry["currency_code"]) != currency
+                        or int(common_entry["decimal_places"]) != places
+                        or int(common_entry["recorded_epoch"]) != recorded):
+                    posting_gaps += 1
+                    continue
+                seen_common.add(int(common_entry["entry_id"]))
+                expected = {}
+                for local_code, amounts in native_lines.get(int(entry["entry_id"]), {}).items():
+                    common_code = mapping.get(local_code)
+                    if common_code is None:
+                        posting_gaps += 1
+                        expected = None
+                        break
+                    if scope == "company":
+                        amount = amounts[0]
+                        debit, credit = (amount, 0) if amount > 0 else (0, -amount)
+                    else:
+                        debit, credit = amounts
+                    old_debit, old_credit = expected.get(common_code, (0, 0))
+                    expected[common_code] = (old_debit+debit, old_credit+credit)
+                if expected is not None and common_lines.get(int(common_entry["entry_id"]), {}) != expected:
+                    posting_gaps += 1
+            # An equal row count can conceal an orphan common entry substituted
+            # for a missing native posting; row-level lookup above detects it.
+            if len(seen_common) != native:
+                posting_gaps = max(posting_gaps, native-len(seen_common))
             checks.append({"ledger_scope": scope, "native_entries": native,
                            "common_entries": common, "missing_entries": native-common,
-                           "status": "matched" if native == common else "mismatch"})
+                           "posting_gaps": posting_gaps,
+                           "status": "matched" if native == common and posting_gaps == 0
+                           else "mismatch"})
         native = int(conn.execute("""SELECT
             (SELECT COUNT(*) FROM users WHERE cash_minor<>0) +
             (SELECT COUNT(*) FROM accounts WHERE user_id IS NOT NULL AND balance_minor_units<>0)""").fetchone()[0])

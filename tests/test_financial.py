@@ -124,6 +124,13 @@ class FinancialTests(unittest.TestCase):
             self.assertEqual(AccountingJournal.rebuild_from_subledgers(conn)['company'],1)
             self.assertEqual(AccountingJournal.rebuild_from_subledgers(conn)['company'],0)
             self.assertEqual(AccountingJournal.reconcile_subledgers(conn)[0]['status'],'matched')
+            conn.execute("UPDATE accounting_account_mappings SET common_code='misrouted_revenue' "
+                         "WHERE ledger_scope='company' AND local_code='revenue'")
+            company_check = AccountingJournal.reconcile_subledgers(conn)[0]
+            self.assertEqual(company_check['status'],'mismatch')
+            self.assertGreater(company_check['posting_gaps'],0)
+            conn.execute("UPDATE accounting_account_mappings SET common_code='revenue' "
+                         "WHERE ledger_scope='company' AND local_code='revenue'")
             self.assertEqual(AccountingJournal.audit_unbalanced(conn),[])
             with self.assertRaisesRegex(sqlite3.IntegrityError,'append-only'):
                 conn.execute("UPDATE accounting_lines SET debit_units=126 WHERE entry_id=?",(common['entry_id'],))
