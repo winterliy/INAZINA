@@ -2,6 +2,7 @@ import tempfile
 import time
 import unittest
 import sqlite3
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -19,7 +20,7 @@ from managers.compliance_manager import ComplianceManager
 from functions.interest_calc import (
     calculate_compound_interest, calculate_simple_interest, year_fraction,
 )
-from functions.money import audit_amount_snapshots
+from functions.money import audit_amount_snapshots, currency_precision, to_minor_units
 
 
 class RealisticRateSystemTests(unittest.TestCase):
@@ -1075,6 +1076,71 @@ class RealisticRateSystemTests(unittest.TestCase):
                 "DELETE FROM contract_rate_reset_history WHERE reset_id=?",
                 (reset["reset_id"],),
             )
+
+    def test_floating_recast_preserves_paid_components_without_capitalizing_them(self):
+        self.add_loan(code="RECAST-PAID", maturity=90, collateral_ratio=0,
+                      origination_fee=0)
+        self.db.products.execute(
+            "UPDATE liability SET amortization_type='annuity',payment_frequency_days=30 "
+            "WHERE product_code='RECAST-PAID'"
+        )
+        self.assertTrue(BankManager(self.db).apply_loan(
+            "borrower", "RECAST-PAID", 90_000
+        )[0])
+        loan = self.db.accounts.execute_one(
+            "SELECT * FROM loans WHERE product_code='RECAST-PAID'"
+        )
+        first = self.db.accounts.execute_one(
+            "SELECT * FROM loan_payment_schedule WHERE loan_id=? "
+            "ORDER BY installment_number LIMIT 1", (loan["loan_id"],)
+        )
+        # Model a partial installment: total cash received is 10, but only 5
+        # reduced principal; the other 3 paid interest and 2 paid fees.
+        self.db.accounts.execute(
+            "UPDATE loan_payment_schedule SET status='partial',fee_due=2,amount_paid=10,"
+            "fee_paid=2,interest_paid=3,principal_paid=5 WHERE schedule_id=?",
+            (first["schedule_id"],),
+        )
+        self.db.accounts.execute(
+            "UPDATE loans SET outstanding_balance=outstanding_balance-5 WHERE loan_id=?",
+            (loan["loan_id"],),
+        )
+        loan = self.db.accounts.execute_one(
+            "SELECT * FROM loans WHERE loan_id=?", (loan["loan_id"],)
+        )
+        as_of = float(loan["last_payment_epoch"] or first["due_epoch"] - 86400) + 1
+        rows = self.db.accounts.conn.execute(
+            "SELECT * FROM loan_payment_schedule WHERE loan_id=? AND due_epoch>? "
+            "AND status NOT IN ('paid','waived') ORDER BY installment_number",
+            (loan["loan_id"], as_of),
+        ).fetchall()
+        places = currency_precision(self.db.accounts.conn, "NWX")
+        balance = round(loan["outstanding_balance"])
+        expected = BankManager._loan_cashflows(
+            balance, 12, max(1, math.ceil(
+                (float(rows[-1]["due_epoch"])-as_of)/86400
+            )), int(loan["payment_frequency_days"] or 30), loan["amortization_type"],
+            loan["day_count_convention"], as_of,
+            [float(row["due_epoch"]) for row in rows], places,
+        )
+        with self.db.atomic() as conn:
+            count = BankManager._recast_payment_schedule(
+                conn, loan, 12, as_of, outstanding_balance=loan["outstanding_balance"]
+            )
+            BankJournal.reconcile_loan_payment_schedules(conn, "Bank")
+        self.assertEqual(count, len(rows))
+        recast = self.db.accounts.execute_one(
+            "SELECT * FROM loan_payment_schedule WHERE schedule_id=?",
+            (first["schedule_id"],),
+        )
+        self.assertEqual(
+            recast["principal_due_minor_units"] - recast["principal_paid_minor_units"],
+            to_minor_units(expected[0][1], places),
+        )
+        self.assertEqual(
+            recast["interest_due_minor_units"] - recast["interest_paid_minor_units"],
+            to_minor_units(expected[0][2], places),
+        )
 
     def test_manual_prepayment_charges_snapshotted_declining_fee(self):
         self.add_loan(code="PREPAY", collateral_ratio=0, origination_fee=0)

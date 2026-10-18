@@ -123,6 +123,8 @@ class BankManager:
     def _recast_payment_schedule(cls, conn, loan, annual_rate, as_of,
                                  outstanding_balance=None):
         """Recalculate only unpaid future installments after a floating reset."""
+        from functions.money import from_minor_units, to_minor_units
+
         mode = str(loan["amortization_type"] or "legacy")
         if mode == "legacy":
             return 0
@@ -148,11 +150,22 @@ class BankManager:
             loan["day_count_convention"], float(as_of), due_epochs, places,
         )
         for row, (_days, principal_due, interest_due) in zip(rows, cashflows):
-            already_paid = max(0, float(row["amount_paid"] or 0))
+            principal_paid_units = (int(row["principal_paid_minor_units"] or 0)
+                                    if "principal_paid_minor_units" in row.keys()
+                                    else to_minor_units(row["principal_paid"] or 0, places))
+            interest_paid_units = (int(row["interest_paid_minor_units"] or 0)
+                                   if "interest_paid_minor_units" in row.keys()
+                                   else to_minor_units(row["interest_paid"] or 0, places))
+            principal_due_units = (to_minor_units(principal_due, places)
+                                   + principal_paid_units)
+            interest_due_units = (to_minor_units(interest_due, places)
+                                  + interest_paid_units)
+            principal_due_amount = float(from_minor_units(principal_due_units, places))
+            interest_due_amount = float(from_minor_units(interest_due_units, places))
             conn.execute(
                 "UPDATE accounts.loan_payment_schedule SET principal_due=?,interest_due=?,"
                 "rate_applied=?,day_count_convention=?,recast_epoch=? WHERE schedule_id=?",
-                (principal_due+already_paid, interest_due, float(annual_rate),
+                (principal_due_amount, interest_due_amount, float(annual_rate),
                  loan["day_count_convention"], float(as_of), row["schedule_id"]),
             )
         return len(cashflows)
