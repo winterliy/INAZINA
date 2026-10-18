@@ -9,6 +9,7 @@ import re
 
 
 _WHOLE = Decimal("1")
+SUBMINOR_SCALE = 1_000_000
 
 
 def round_money(value, decimal_places=0):
@@ -74,6 +75,33 @@ def from_minor_units(units, decimal_places):
     if integer_units != units or not 0 <= places <= 6:
         raise ValueError("최소단위 금액은 정수이며 통화 소수 자릿수는 0~6이어야 합니다.")
     return Decimal(integer_units).scaleb(-places)
+
+
+def to_subminor_units(value, decimal_places):
+    """Store a fractional currency remainder at one-millionth of a minor unit."""
+    try:
+        amount = Decimal(str(value))
+        places = int(decimal_places)
+    except (InvalidOperation, TypeError, ValueError, OverflowError):
+        raise ValueError("금액 또는 통화 소수 자릿수가 올바르지 않습니다.") from None
+    if not amount.is_finite() or not 0 <= places <= 6:
+        raise ValueError("금액 또는 통화 소수 자릿수가 올바르지 않습니다.")
+    scaled = amount * (10 ** places) * SUBMINOR_SCALE
+    return int(scaled.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def from_subminor_units(units, decimal_places):
+    """Return an exact Decimal currency amount from fractional-minor units."""
+    if isinstance(units, bool):
+        raise ValueError("최소단위 잔여는 정수여야 합니다.")
+    try:
+        integer_units = int(units)
+        places = int(decimal_places)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError("최소단위 잔여 또는 통화 소수 자릿수가 올바르지 않습니다.") from None
+    if integer_units != units or not 0 <= places <= 6:
+        raise ValueError("최소단위 잔여는 정수이며 통화 소수 자릿수는 0~6이어야 합니다.")
+    return Decimal(integer_units).scaleb(-(places+6))
 
 
 def audit_amount_snapshots(conn):

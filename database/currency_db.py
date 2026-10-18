@@ -349,6 +349,40 @@ class CurrencyDB(DBManager):
                     UPDATE loans SET {legacy}=CAST(NEW.{minor} AS REAL)/({loan_scale})
                     WHERE loan_id=NEW.loan_id;
                 END""")
+        remainder_fields = (
+            ("interest_remainder", "interest_remainder_subminor_units"),
+            ("overdue_interest_remainder", "overdue_interest_remainder_subminor_units"),
+        )
+        for loan in self.execute(
+                "SELECT loan_id,quote_currency,interest_remainder,"
+                "interest_remainder_subminor_units,overdue_interest_remainder,"
+                "overdue_interest_remainder_subminor_units FROM loans"):
+            places = currency_precision(self.conn, loan["quote_currency"] or "NWX")
+            for legacy, subminor in remainder_fields:
+                if int(loan[subminor] or 0) == 0 and float(loan[legacy] or 0) != 0:
+                    self.execute(
+                        f"UPDATE loans SET {subminor}=CAST(ROUND(?*?) AS INTEGER) "
+                        "WHERE loan_id=?",
+                        (float(loan[legacy]), (10 ** places)*1_000_000, loan["loan_id"]),
+                    )
+        remainder_scale = "CASE COALESCE((SELECT decimal_places FROM currencies WHERE code=NEW.quote_currency),0) " \
+                          "WHEN 0 THEN 1000000 WHEN 1 THEN 10000000 ELSE 100000000 END"
+        for legacy, subminor in remainder_fields:
+            stem = f"trg_loan_{subminor}"
+            for suffix in ("from_legacy", "from_legacy_update", "to_legacy"):
+                self.execute(f"DROP TRIGGER IF EXISTS {stem}_{suffix}")
+            self.execute(f"""CREATE TRIGGER {stem}_from_legacy AFTER INSERT ON loans
+                BEGIN UPDATE loans SET {subminor}=
+                  CAST(ROUND(COALESCE(NEW.{legacy},0)*({remainder_scale})) AS INTEGER)
+                  WHERE loan_id=NEW.loan_id; END""")
+            self.execute(f"""CREATE TRIGGER {stem}_from_legacy_update
+                AFTER UPDATE OF {legacy},quote_currency ON loans
+                BEGIN UPDATE loans SET {subminor}=
+                  CAST(ROUND(COALESCE(NEW.{legacy},0)*({remainder_scale})) AS INTEGER)
+                  WHERE loan_id=NEW.loan_id; END""")
+            self.execute(f"""CREATE TRIGGER {stem}_to_legacy AFTER UPDATE OF {subminor} ON loans
+                BEGIN UPDATE loans SET {legacy}=CAST(NEW.{subminor} AS REAL)/({remainder_scale})
+                  WHERE loan_id=NEW.loan_id; END""")
         for table, key in (("loan_collateral_assets", "collateral_id"),
                            ("collateral_liquidation_events", "event_id")):
             fields = next(item[2] for item in collateral_amount_fields if item[0] == table)

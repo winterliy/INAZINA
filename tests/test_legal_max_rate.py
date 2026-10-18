@@ -8,6 +8,7 @@ from database import DatabaseManager
 from database.db_manager import DBManager
 from managers.interest_manager import InterestManager
 from managers.rate_manager import RateManager
+from functions.money import to_subminor_units
 
 
 class LegalMaximumRateTests(unittest.TestCase):
@@ -115,7 +116,7 @@ class LegalMaximumRateTests(unittest.TestCase):
 
     def test_matured_loan_gets_contractual_overdue_interest(self):
         self.db.users.create_user("borrower", "Borrower", "낙원", 0)
-        self.db.products.register_liability("LOAN", "Loan", 0, 10_000, 1, 86400, 0, "Bank")
+        self.db.products.register_liability("LOAN", "Loan", 12, 10_000, 1, 86400, 0, "Bank")
         now = time.time()
         self.db.accounts.execute(
             "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,created_at,"
@@ -125,10 +126,16 @@ class LegalMaximumRateTests(unittest.TestCase):
         )
         InterestManager(self.db).process_user_interests("borrower", now=now)
         row = self.db.accounts.execute_one(
-            "SELECT outstanding_balance,collection_status FROM loans WHERE user_id='borrower'"
+            "SELECT outstanding_balance,collection_status,overdue_interest_remainder,"
+            "overdue_interest_remainder_subminor_units FROM loans WHERE user_id='borrower'"
         )
         self.assertGreater(row["outstanding_balance"], 10000)
         self.assertIn(row["collection_status"], {"grace", "overdue"})
+        self.assertNotEqual(row["overdue_interest_remainder_subminor_units"], 0)
+        self.assertEqual(
+            row["overdue_interest_remainder_subminor_units"],
+            to_subminor_units(row["overdue_interest_remainder"], 0),
+        )
 
 
 if __name__ == "__main__":

@@ -171,12 +171,23 @@ class InterestManager:
         elapsed = max(0, end-last)
         rate = cls._number(loan['contract_rate'], float(product['interest_rate']))
         cycle = float(product['interest_cycle'])
-        accrued = float(loan['interest_remainder'] or 0)
+        from functions.money import (currency_precision, from_subminor_units,
+                                     to_subminor_units)
+        places = currency_precision(conn, loan["quote_currency"])
+        accrued = (float(from_subminor_units(
+            loan["interest_remainder_subminor_units"], places
+        )) if "interest_remainder_subminor_units" in loan.keys()
+            else float(loan['interest_remainder'] or 0))
         if elapsed and rate:
             accrued += float(loan['outstanding_balance'])*math.expm1(elapsed/cycle*math.log1p(rate/100*cycle/cls.YEAR_SECONDS))
         whole = round_currency(conn, accrued, loan['quote_currency'])
-        conn.execute('UPDATE loans SET outstanding_balance=outstanding_balance+?,interest_remainder=?,last_payment_epoch=? WHERE loan_id=?',
-            (whole, accrued-whole, max(last, now), loan['loan_id']))
+        remainder = accrued-whole
+        remainder_subunits = to_subminor_units(remainder, places)
+        conn.execute('UPDATE loans SET outstanding_balance=outstanding_balance+?,'
+                     'interest_remainder=?,interest_remainder_subminor_units=?,last_payment_epoch=? '
+                     'WHERE loan_id=?',
+            (whole, float(from_subminor_units(remainder_subunits, places)), remainder_subunits,
+             max(last, now), loan['loan_id']))
         cls._log_company_interest(conn, loan['user_id'], 'interest_expense', whole, 0, loan['quote_currency'], product['issuer'])
 
     @staticmethod
@@ -588,6 +599,7 @@ class InterestManager:
             return
         fresh = conn.execute(
             "SELECT outstanding_balance,status,overdue_last_epoch,overdue_interest_remainder,"
+            "overdue_interest_remainder_subminor_units,"
             "collection_status,collateral_amount,collateral_released,collateral_seized,"
             "provisioned_loss,ecl_allowance "
             "FROM accounts.loans WHERE loan_id=?", (loan["loan_id"],)
@@ -602,7 +614,12 @@ class InterestManager:
         )
         overdue_rate = min(legal, max(0.0, float(loan["contract_rate"] or 0)
                                      + float(product["delinquency_spread"] or 0)))
-        fractional = float(fresh["overdue_interest_remainder"] or 0)
+        from functions.money import currency_precision, from_subminor_units, to_subminor_units
+        places = currency_precision(conn, loan["quote_currency"])
+        fractional = (float(from_subminor_units(
+            fresh["overdue_interest_remainder_subminor_units"], places
+        )) if "overdue_interest_remainder_subminor_units" in fresh.keys()
+            else float(fresh["overdue_interest_remainder"] or 0))
         raw_interest = calculate_simple_interest(
             balance, overdue_rate, max(0, now-cursor),
             loan["day_count_convention"], cursor
@@ -610,7 +627,8 @@ class InterestManager:
         whole_interest = round_currency(
             conn, raw_interest, loan["quote_currency"]
         )
-        remainder = 0
+        remainder = raw_interest-whole_interest
+        remainder_subunits = to_subminor_units(remainder, places)
         if whole_interest:
             balance += whole_interest
             cls._log_company_interest(conn, loan["user_id"], "overdue_interest", whole_interest, 0,
@@ -720,10 +738,12 @@ class InterestManager:
         conn.execute(
             "UPDATE accounts.loans SET outstanding_balance=?,overdue_since_epoch=COALESCE("
             "overdue_since_epoch,?),overdue_last_epoch=?,overdue_interest_remainder=?,"
+            "overdue_interest_remainder_subminor_units=?,"
             "collection_status=?,accelerated_epoch=?,defaulted_epoch=?,status=?,"
             "collateral_released=?,collateral_seized=?,provisioned_loss=?,ecl_allowance=? "
             "WHERE loan_id=?",
-            (balance, maturity, now, remainder, state, accelerated_epoch, defaulted_epoch,
+            (balance, maturity, now, float(from_subminor_units(remainder_subunits, places)),
+             remainder_subunits, state, accelerated_epoch, defaulted_epoch,
              status, released, seized, provisioned, ecl_allowance, loan["loan_id"]),
         )
         if state != fresh["collection_status"] or status != fresh["status"]:
