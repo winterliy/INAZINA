@@ -263,7 +263,8 @@ class BankJournal:
         from functions.money import currency_precision, to_minor_units
 
         loans = conn.execute(
-            "SELECT l.quote_currency,l.charged_off_balance FROM accounts.loans l "
+            "SELECT l.quote_currency,l.charged_off_balance,"
+            "l.charged_off_balance_minor_units FROM accounts.loans l "
             "JOIN product.liability p USING(product_code) WHERE p.issuer=?",
             (str(issuer),),
         ).fetchall()
@@ -271,9 +272,10 @@ class BankJournal:
         for row in loans:
             currency = str(row["quote_currency"] or "NWX").upper()
             places = currency_precision(conn, currency)
-            source[currency] = source.get(currency, 0) + to_minor_units(
-                row["charged_off_balance"] or 0, places
-            )
+            units = (int(row["charged_off_balance_minor_units"] or 0)
+                     if "charged_off_balance_minor_units" in row.keys()
+                     else to_minor_units(row["charged_off_balance"] or 0, places))
+            source[currency] = source.get(currency, 0) + units
         event_rows = conn.execute(
             "SELECT currency_code,SUM(CASE event_type WHEN 'charge_off' "
             "THEN amount_minor_units ELSE -amount_minor_units END) memo_units "

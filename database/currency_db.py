@@ -237,7 +237,8 @@ class CurrencyDB(DBManager):
         loan_columns = {row[1] for row in self.execute("PRAGMA table_info(loans)")}
         for legacy, minor in (("principal", "principal_minor_units"),
                               ("outstanding_balance", "outstanding_balance_minor_units"),
-                              ("ecl_allowance", "ecl_allowance_minor_units")):
+                              ("ecl_allowance", "ecl_allowance_minor_units"),
+                              ("charged_off_balance", "charged_off_balance_minor_units")):
             if minor not in loan_columns:
                 self.execute(f"ALTER TABLE loans ADD COLUMN {minor} INTEGER NOT NULL DEFAULT 0")
         ecl_columns = {row[1] for row in self.execute(
@@ -250,11 +251,13 @@ class CurrencyDB(DBManager):
         for loan in self.execute(
                 "SELECT loan_id,quote_currency,principal,principal_minor_units,"
                 "outstanding_balance,outstanding_balance_minor_units,ecl_allowance,"
-                "ecl_allowance_minor_units FROM loans"):
+                "ecl_allowance_minor_units,charged_off_balance,"
+                "charged_off_balance_minor_units FROM loans"):
             places = currency_precision(self.conn, loan["quote_currency"] or "NWX")
             for legacy, minor in (("principal", "principal_minor_units"),
                                   ("outstanding_balance", "outstanding_balance_minor_units"),
-                                  ("ecl_allowance", "ecl_allowance_minor_units")):
+                                  ("ecl_allowance", "ecl_allowance_minor_units"),
+                                  ("charged_off_balance", "charged_off_balance_minor_units")):
                 if int(loan[minor] or 0) == 0 and float(loan[legacy] or 0) != 0:
                     self.execute(
                         f"UPDATE loans SET {minor}=? WHERE loan_id=?",
@@ -264,7 +267,8 @@ class CurrencyDB(DBManager):
                      "WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END"
         for legacy, minor in (("principal", "principal_minor_units"),
                               ("outstanding_balance", "outstanding_balance_minor_units"),
-                              ("ecl_allowance", "ecl_allowance_minor_units")):
+                              ("ecl_allowance", "ecl_allowance_minor_units"),
+                              ("charged_off_balance", "charged_off_balance_minor_units")):
             self.execute(f"DROP TRIGGER IF EXISTS trg_loan_{minor}_from_legacy")
             self.execute(f"DROP TRIGGER IF EXISTS trg_loan_{minor}_from_legacy_update")
             self.execute(f"DROP TRIGGER IF EXISTS trg_loan_{minor}_to_legacy")

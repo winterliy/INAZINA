@@ -259,6 +259,11 @@ class DefaultedLoanEclTests(unittest.TestCase):
             ).fetchone()
             self.assertIsNotNone(memo_snapshot)
             self.assertEqual(memo_snapshot["amount_minor_units"], recovery["remainingMinorUnits"])
+            memo_units = conn.execute(
+                "SELECT charged_off_balance_minor_units FROM accounts.loans WHERE loan_id=?",
+                (loan_id,),
+            ).fetchone()[0]
+            self.assertEqual(memo_units, recovery["remainingMinorUnits"])
         self.assertGreater(chargeoff["allowanceMinorUnits"], 0)
         self.assertEqual(recovery["recoveryMinorUnits"], 5)
         self.assertEqual(self.db.accounts.execute_one(
@@ -313,11 +318,14 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.assertEqual(result["allowanceMinorUnits"], 300)
         self.assertEqual(result["lossMinorUnits"], 700)
         state = self.db.accounts.execute_one(
-            "SELECT outstanding_balance,charged_off_balance,status,ecl_allowance "
+            "SELECT outstanding_balance,charged_off_balance,status,ecl_allowance,"
+            "outstanding_balance_minor_units,charged_off_balance_minor_units "
             "FROM loans WHERE loan_id=?", (loan_id,),
         )
         self.assertEqual((state["outstanding_balance"], state["charged_off_balance"],
                           state["status"], state["ecl_allowance"]), (0, 1000, "charged_off", 0))
+        self.assertEqual((state["outstanding_balance_minor_units"],
+                          state["charged_off_balance_minor_units"]), (0, 1000))
         with self.db.atomic() as conn:
             duplicate = CreditRiskManager.charge_off_loan(
                 conn, loan_id=loan_id, event_key="chargeoff-1", actor_id="support-admin",

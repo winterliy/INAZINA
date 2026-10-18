@@ -55,7 +55,7 @@ class CreditRiskManager:
             return {"eventId": int(prior["event_id"]), "duplicate": True}
         epoch = RateManager._validated_epoch(now, "invalid_loan_chargeoff_epoch")
         loan = conn.execute("""SELECT l.loan_id,l.outstanding_balance,
-            l.outstanding_balance_minor_units,l.ecl_allowance,
+            l.outstanding_balance_minor_units,l.ecl_allowance,l.ecl_allowance_minor_units,
             l.quote_currency,l.status,l.collection_status,p.issuer
             FROM accounts.loans l JOIN product.liability p USING(product_code)
             WHERE l.loan_id=?""", (loan_id,)).fetchone()
@@ -81,10 +81,11 @@ class CreditRiskManager:
             VALUES (?,?,?,'charge_off',?,?,?,?,?,?)""",
             (loan_id, str(loan["issuer"]), key, gross, places, currency,
              str(actor_id), epoch, str(memo or "")[:500]))
-        conn.execute("""UPDATE accounts.loans SET outstanding_balance=0,
-            charged_off_balance=charged_off_balance+?,ecl_allowance=0,status='charged_off',
+        conn.execute("""UPDATE accounts.loans SET outstanding_balance_minor_units=0,
+            charged_off_balance_minor_units=charged_off_balance_minor_units+?,
+            ecl_allowance_minor_units=0,status='charged_off',
             collection_status='charged_off',nonaccrual_since_epoch=COALESCE(nonaccrual_since_epoch,?)
-            WHERE loan_id=?""", (float(loan["outstanding_balance"] or 0), epoch, loan_id))
+            WHERE loan_id=?""", (gross, epoch, loan_id))
         reference = f"loan:{loan_id}:charge-off:{key}"
         lines = []
         if allowance:
@@ -146,7 +147,8 @@ class CreditRiskManager:
         if prior:
             return {"eventId": int(prior["event_id"]), "duplicate": True}
         epoch = RateManager._validated_epoch(now, "invalid_loan_recovery_epoch")
-        loan = conn.execute("""SELECT l.loan_id,l.charged_off_balance,l.quote_currency,
+        loan = conn.execute("""SELECT l.loan_id,l.charged_off_balance,
+            l.charged_off_balance_minor_units,l.quote_currency,
             l.status,p.issuer FROM accounts.loans l JOIN product.liability p USING(product_code)
             WHERE l.loan_id=?""", (loan_id,)).fetchone()
         if not loan or loan["status"] != "charged_off":
@@ -154,7 +156,9 @@ class CreditRiskManager:
         currency = str(loan["quote_currency"] or "NWX").upper()
         places = currency_precision(conn, currency)
         amount_units = to_minor_units(amount, places)
-        remaining = to_minor_units(loan["charged_off_balance"] or 0, places)
+        remaining = (int(loan["charged_off_balance_minor_units"] or 0)
+                     if "charged_off_balance_minor_units" in loan.keys()
+                     else to_minor_units(loan["charged_off_balance"] or 0, places))
         if amount_units <= 0 or amount_units > remaining:
             raise ValueError("회수액은 양수이며 미회수 상각잔액 이하여야 합니다.")
         conn.execute("""INSERT INTO accounts.loan_chargeoff_events
@@ -163,8 +167,9 @@ class CreditRiskManager:
             VALUES (?,?,?,'recovery',?,?,?,?,?,?)""",
             (loan_id, str(loan["issuer"]), key, amount_units, places, currency,
              str(actor_id), epoch, str(memo or "")[:500]))
-        conn.execute("UPDATE accounts.loans SET charged_off_balance=charged_off_balance-? WHERE loan_id=?",
-                     (amount_units / (10 ** places), loan_id))
+        conn.execute("UPDATE accounts.loans SET charged_off_balance_minor_units="
+                     "charged_off_balance_minor_units-? WHERE loan_id=?",
+                     (amount_units, loan_id))
         value = amount_units / (10 ** places)
         reference = f"loan:{loan_id}:recovery:{key}"
         BankJournal.post(conn, loan["issuer"], "loan_chargeoff_recovery", reference,
