@@ -57,4 +57,10 @@ function wideLearningData(): Plugin {
 export default defineConfig({
   plugins: [wideLearningData()],
   server: { host: "127.0.0.1", port: 4315, strictPort: true },
+  // The entry screen imports Three.js lazily. Bundle it when the server starts, so the
+  // first visit does not race a dependency re-optimisation (a failed dynamic import).
+  optimizeDeps: {
+    include: ["three", "three/addons/effects/AsciiEffect.js", "three/addons/controls/OrbitControls.js",
+      "three/addons/loaders/GLTFLoader.js", "three/addons/environments/RoomEnvironment.js"],
+  },
 });

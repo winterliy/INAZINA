@@ -10,6 +10,7 @@
   --line: #e4e1d8;
   --soft: #efede6;
   --accent: #2f5d50;
+  /* CLAUDE and CODEX keep their own colours in every theme. */
   --claude: #c8623b;
   --claude-bg: #fbefe8;
   --codex: #2f5d8a;
@@ -27,7 +28,7 @@
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #161714; --panel: #1f201d; --ink: #ecebe6; --ink-2: #c8c6bf; --muted: #9a988f; --line: #33342f; --soft: #2a2b27;
-    --accent: #7fc2ae; --claude: #f0956b; --claude-bg: #3a2a22; --codex: #8ab6e6; --codex-bg: #1f2c3a;
+    --accent: #7fc2ae; --claude-bg: #3a2a22; --codex-bg: #1f2c3a;
     --ok: #7fd19c; --ok-bg: #1e3326; --warn: #f0c560; --warn-bg: #3a3119; --bad: #f08a80; --bad-bg: #3d2320;
     color-scheme: dark;
   }
@@ -43,10 +44,10 @@
   --line: color-mix(in srgb, var(--t-bg) 80%, var(--t-fg));
   --ink-2: color-mix(in srgb, var(--t-fg) 82%, var(--t-bg));
   --muted: color-mix(in srgb, var(--t-fg) 58%, var(--t-bg));
-  --accent: var(--a2); --claude: var(--a3); --codex: var(--a4);
+  --accent: var(--a2);
   --ok: var(--a2); --warn: var(--a3); --bad: var(--a1);
-  --claude-bg: color-mix(in srgb, var(--a3) 13%, var(--t-bg));
-  --codex-bg: color-mix(in srgb, var(--a4) 13%, var(--t-bg));
+  --claude-bg: color-mix(in srgb, var(--claude) 16%, var(--t-bg));
+  --codex-bg: color-mix(in srgb, var(--codex) 16%, var(--t-bg));
   --ok-bg: color-mix(in srgb, var(--a2) 16%, var(--t-bg));
   --warn-bg: color-mix(in srgb, var(--a3) 16%, var(--t-bg));
   --bad-bg: color-mix(in srgb, var(--a1) 16%, var(--t-bg));
@@ -69,13 +70,13 @@ pre code { padding: 0; background: none; font-size: inherit; }
 /* Terminal window (Terminal app UI reference): title bar with the window buttons and actions,
    an equal-width tab bar for the pages, the page, and a tmux-style status line. No outline ring. */
 .term { display: flex; flex-direction: column; height: 100vh; height: 100dvh; background: var(--bg); }
-.term-bar { position: relative; display: flex; flex: none; align-items: center; height: 34px; padding: 0 8px 0 12px; background: var(--chrome); }
-.term-title { position: absolute; left: 50%; transform: translateX(-50%); color: var(--chrome-ink); font: 500 13px var(--mono); white-space: nowrap; pointer-events: none; }
+.term-bar { position: relative; display: flex; flex: none; align-items: center; height: 26px; padding: 0 6px 0 10px; background: var(--chrome); }
+.term-title { position: absolute; left: 50%; transform: translateX(-50%); color: var(--chrome-ink); font: 500 12px var(--mono); white-space: nowrap; pointer-events: none; }
 .term-title b { font-weight: 700; }
-.cursor { display: inline-block; width: 7px; height: 14px; margin-left: 6px; vertical-align: -2px; background: var(--cursor); animation: blink 1.1s steps(1) infinite; }
+.cursor { display: inline-block; width: 6px; height: 12px; margin-left: 5px; vertical-align: -2px; background: var(--cursor); animation: blink 1.1s steps(1) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
 .bar-actions { display: flex; gap: 2px; margin-left: auto; }
-.icon-btn { display: grid; place-items: center; width: 28px; height: 26px; border: 0; border-radius: 6px; background: none; color: var(--chrome-ink); font-size: 15px; cursor: pointer; }
+.icon-btn { display: grid; place-items: center; width: 24px; height: 20px; border: 0; border-radius: 5px; background: none; color: var(--chrome-ink); font-size: 13px; cursor: pointer; }
 .icon-btn:hover { background: color-mix(in srgb, var(--chrome-ink) 16%, transparent); }
 .icon-btn:disabled { cursor: progress; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -126,7 +127,7 @@ tr.focus td { background: var(--warn-bg); }
 .status-verified, .status-approved, .status-done, .tier-S1 { background: var(--ok-bg); color: var(--ok); }
 .status-proposed, .status-in-review, .tier-S2 { background: var(--warn-bg); color: var(--warn); }
 .status-disputed, .status-rejected, .tier-S3 { background: var(--bad-bg); color: var(--bad); }
-.status-simulator-assumption { background: var(--codex-bg); color: var(--codex); }
+.status-simulator-assumption { background: var(--codex); color: #ffffff; }
 .status-draft, .status-parked { background: var(--soft); color: var(--muted); }
 
 /* Status page */
@@ -162,7 +163,7 @@ tr.focus td { background: var(--warn-bg); }
 .day::before, .day::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
 .msg { display: flex; align-items: flex-start; gap: 10px; max-width: 84%; scroll-margin: 120px; }
 .msg.right { flex-direction: row-reverse; margin-left: auto; }
-.avatar { display: grid; place-items: center; flex: none; width: 34px; height: 34px; border-radius: 50%; color: var(--bg); font: 600 14px var(--mono); }
+.avatar { display: grid; place-items: center; flex: none; width: 34px; height: 34px; border-radius: 50%; color: #ffffff; font: 600 14px var(--mono); }
 .avatar.left { background: var(--claude); }
 .avatar.right { background: var(--codex); }
 .bubble { display: grid; gap: 6px; min-width: 0; padding: 12px 16px; border-radius: 4px 16px 16px 16px; background: var(--claude-bg); border: 1px solid transparent; }
@@ -171,7 +172,7 @@ tr.focus td { background: var(--warn-bg); }
 .bubble header { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 13px; }
 .bubble header time, .bubble header .mid { color: var(--muted); font-family: var(--mono); font-size: 12px; }
 .type { padding: 0 8px; border-radius: 999px; background: var(--panel); font-size: 12px; font-weight: 500; }
-.type-review { color: var(--codex); }
+.type-review { background: var(--codex); color: #ffffff; }
 .type-correction { color: var(--ok); }
 .type-question { color: var(--warn); }
 .bubble p { margin: 0; }
@@ -209,8 +210,8 @@ tr.focus td { background: var(--warn-bg); }
 :root[data-chat="log"] .bubble, :root[data-chat="log"] .msg.right .bubble { width: 100%; padding: 6px 12px; border: 0; border-left: 2px solid var(--claude); border-radius: 0; background: none; font-size: 13px; }
 :root[data-chat="log"] .msg.right .bubble { border-left-color: var(--codex); }
 :root[data-chat="log"] .msg.focus .bubble { background: var(--warn-bg); box-shadow: none; }
-:root[data-chat="log"] .bubble header b { color: var(--claude); }
-:root[data-chat="log"] .msg.right .bubble header b { color: var(--codex); }
+:root[data-chat="log"] .bubble header b { padding: 0 6px; border-radius: 3px; background: var(--claude); color: #ffffff; }
+:root[data-chat="log"] .msg.right .bubble header b { background: var(--codex); }
 :root[data-chat="log"] .bubble header b::before { content: "❯ "; color: var(--accent); }
 :root[data-chat="log"] .claim, :root[data-chat="log"] .detail { font-size: 13px; }
 :root[data-chat="log"] .type, :root[data-chat="log"] .note, :root[data-chat="log"] .source { background: var(--soft); }
@@ -297,3 +298,82 @@ th { font: 700 12px var(--mono); text-transform: uppercase; letter-spacing: .04e
 .theme-card { border-radius: 6px; }
 .seg, .seg span { border-radius: 4px; }
 .seg span { font-family: var(--mono); font-size: 12px; }
+
+/* Entry screen: a terminal window with a 3D model drawn in ASCII ("3D ASCII Model Viewer"
+   reference: white characters on #007BE5, DM Mono), model list left, controls right, colours inverted. */
+.entry { position: fixed; inset: 0; z-index: 50; transition: opacity .25s ease; }
+.entry.leaving { opacity: 0; pointer-events: none; }
+.entry-term { height: 100%; }
+.entry-stage { --entry-font: "DM Mono", var(--mono); position: relative; flex: 1; min-height: 0; overflow: hidden; background: var(--entry-bg); color: var(--entry-fg); font-family: var(--entry-font); }
+.entry-canvas { position: absolute; inset: 0; }
+.entry-ascii { position: absolute; inset: 0; overflow: hidden; cursor: grab; user-select: none; -webkit-user-select: none; }
+.entry-ascii:active { cursor: grabbing; }
+/* A window of model names, a divider, then ▲ ▼; the list steps one line at a time (no scrollbar, no easing). */
+.entry-models { position: absolute; left: clamp(16px, 4vw, 56px); top: 50%; z-index: 2; display: flex; flex-direction: column; gap: 18px; min-width: 120px; transform: translateY(-50%); }
+.entry-model-page { display: flex; flex-direction: column; gap: 18px; }
+.entry-models hr { width: 100%; margin: 0; border: 0; border-top: 1px solid rgba(255, 255, 255, .45); }
+.entry-model-arrows { display: flex; gap: 14px; }
+.entry-model-arrows[hidden] { display: none; }
+.entry-models .entry-model-arrows button { opacity: 1; font-size: 14px; }
+.entry-models .entry-model-arrows button:disabled { opacity: .3; cursor: default; }
+.entry-models button, .entry-link, .entry-start { border: 0; background: none; color: inherit; font: 400 15px var(--entry-font); cursor: pointer; }
+.entry-models button { padding: 0; text-align: left; opacity: .6; }
+.entry-models button:hover, .entry-models button[aria-current="true"] { opacity: 1; }
+.entry-btn { width: 100%; padding: 6px 12px; border: 1px solid rgba(255, 255, 255, .3); border-radius: 6px; background: rgba(255, 255, 255, .2); color: inherit; font: 400 15px var(--entry-font); text-align: left; cursor: pointer; }
+.entry-panel { position: absolute; right: clamp(12px, 3vw, 32px); top: 50%; z-index: 2; display: grid; gap: 26px; width: 200px; padding: 16px; transform: translateY(-50%); }
+.entry-panel h2 { margin: 0 0 10px; font: 400 15px var(--entry-font); }
+.entry-panel section { display: grid; gap: 8px; }
+.entry-btn:hover, .entry-btn[aria-pressed="true"] { background: rgba(255, 255, 255, .32); }
+.entry-panel input[type="range"] { width: 100%; height: 6px; margin: 4px 0; appearance: none; border-radius: 99px; background: rgba(255, 255, 255, .2); accent-color: #fff; }
+.entry-panel input[type="range"]::-webkit-slider-thumb { width: 18px; height: 18px; appearance: none; border-radius: 50%; background: #fff; }
+.entry-panel input[type="range"]::-moz-range-thumb { width: 18px; height: 18px; border: 0; border-radius: 50%; background: #fff; }
+.entry-panel output { color: rgba(255, 255, 255, .6); font-size: 15px; }
+.entry-link { justify-self: start; margin-top: -14px; padding: 0; color: rgba(255, 255, 255, .6); text-decoration: underline; }
+.entry-link:hover { color: #fff; }
+.entry-start { position: absolute; left: 50%; bottom: clamp(20px, 6vh, 56px); z-index: 2; padding: 8px 14px; transform: translateX(-50%); font-size: 17px; letter-spacing: .04em; }
+.entry-start .cursor { background: currentColor; }
+.entry-start:hover { text-decoration: underline; }
+.entry-start:focus, .entry-start:focus-visible { outline: none; }  /* focused on open; no theme ring here */
+.entry-status { position: absolute; left: 50%; top: 16px; z-index: 2; margin: 0; transform: translateX(-50%); color: rgba(255, 255, 255, .75); font-size: 13px; }
+.entry-credits { max-width: 420px; padding: 20px 24px; border: 0; border-radius: 12px; background: rgba(255, 255, 255, .96); color: #000; font: 400 14px/1.6 "DM Mono", var(--mono); }
+.entry-credits h2 { margin: 0 0 10px; font-size: 15px; }
+.entry-credits .entry-btn { margin-top: 12px; width: auto; border-color: rgba(0, 0, 0, .2); background: rgba(0, 0, 0, .06); }
+body.entering .term:not(.entry-term) { visibility: hidden; }
+@media (max-width: 720px) {
+  .entry-models { top: auto; bottom: 90px; left: 16px; transform: none; }
+  .entry-model-page { flex-direction: row; flex-wrap: wrap; gap: 14px; }
+  .entry-panel { top: 12px; right: 8px; transform: none; width: 160px; gap: 14px; padding: 8px; font-size: 13px; }
+}
+
+/* Password box: a black TUI window with an inner line in the stage colour and a blinking cursor. */
+.entry-prompt { position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; }
+.entry-prompt[hidden] { display: none; }
+/* Fixed size: typing never resizes the box; a long entry scrolls its oldest * out on the left. */
+.entry-prompt-box { position: relative; width: min(420px, calc(100% - 32px)); height: 66px; margin: 0; padding: 22px 26px; overflow: hidden; background: #000; color: #fff;
+  box-shadow: inset 0 0 0 6px #000, inset 0 0 0 8px var(--entry-bg); font: 400 16px/1.4 var(--entry-font); }
+.entry-prompt-box label { display: flex; align-items: center; gap: 0; height: 22px; white-space: pre; cursor: text; }
+.entry-prompt-box .cursor { flex: none; width: 9px; height: 18px; margin-left: 2px; background: #fff; }
+.entry-mask { flex: 0 1 auto; min-width: 0; overflow: hidden; direction: rtl; letter-spacing: .1em; }
+.entry-secret { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+/* Laplace Blue (the entry screen's colours): every text is white on #007BE5, whatever its
+   rank; only CLAUDE/CODEX keep their own colours. Nothing is black. Where a chip used to print
+   the page colour on the accent, it loses its fill and keeps a white outline instead. */
+:root[data-theme="laplace-blue"] {
+  --ink: #ffffff; --ink-2: #ffffff; --muted: #ffffff; --cursor: #ffffff;
+  --accent: #ffffff; --ok: #ffffff; --warn: #ffffff; --bad: #ffffff;
+  --chrome: #0062bd; --chrome-ink: #ffffff; --chrome-line: rgba(255, 255, 255, .18); --desk: #004a8f;
+}
+:root[data-theme="laplace-blue"] .count,
+:root[data-theme="laplace-blue"] .statusline .mode { background: none; color: #ffffff; box-shadow: inset 0 0 0 1px #ffffff; }
+/* CLAUDE/CODEX on the blue: their colours are as bright as the page (≈1.1:1), so they get
+   a white ring. Bubbles drop their tint for a 2px author-colour border inside a white ring. */
+:root[data-theme="laplace-blue"] :is(.avatar, .dot, .type-review, .status-simulator-assumption) { box-shadow: 0 0 0 1.5px #ffffff; }
+:root[data-theme="laplace-blue"] .bubble { background: none; border: 2px solid var(--claude); box-shadow: 0 0 0 1.5px #ffffff; }
+:root[data-theme="laplace-blue"] .msg.right .bubble { background: none; border-color: var(--codex); }
+:root[data-theme="laplace-blue"] .msg.focus .bubble { box-shadow: 0 0 0 1.5px #ffffff, 0 0 0 5px rgba(255, 255, 255, .35); }
+/* Terminal-log chat: the author bar keeps its colour with a white line beside it. */
+:root[data-theme="laplace-blue"][data-chat="log"] .bubble { border: 0; border-left: 3px solid var(--claude); box-shadow: -1.5px 0 0 #ffffff; }
+:root[data-theme="laplace-blue"][data-chat="log"] .msg.right .bubble { border-left-color: var(--codex); }
+:root[data-theme="laplace-blue"][data-chat="log"] .msg.focus .bubble { background: rgba(255, 255, 255, .12); box-shadow: -1.5px 0 0 #ffffff; }
+:root[data-theme="laplace-blue"][data-chat="log"] .bubble header b { box-shadow: 0 0 0 1.5px #ffffff; }

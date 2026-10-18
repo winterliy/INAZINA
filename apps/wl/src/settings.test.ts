@@ -21,3 +21,10 @@ test("normalize keeps known values and drops broken ones", () => {
     author: "ME", status: "x", order: 1, collapse: "y", notify: 0 }, ["overview"]);
   assert.deepEqual(bad, DEFAULTS);
 });
+
+test("Laplace Blue is the default theme and matches the entry screen", () => {
+  assert.equal(DEFAULTS.theme, "laplace-blue");
+  const blue = THEMES.find((theme) => theme.id === "laplace-blue")!;
+  assert.deepEqual([blue.name, blue.bg, blue.fg], ["Laplace Blue", "#007be5", "#ffffff"]);
+  assert.equal(normalize({ theme: "system" }).theme, "system");  // the system theme stays available
+});

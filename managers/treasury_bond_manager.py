@@ -1,6 +1,7 @@
 import math
 import re
 import time
+from decimal import Decimal
 from contextlib import nullcontext
 
 from database import DatabaseManager
@@ -22,8 +23,10 @@ def _issuer(conn, product_code):
 def _treasury_move(conn, product_code, amount):
     """Positive amount: the issuing treasury receives; negative: it pays."""
     from managers.currency_manager import CurrencyManager, SCALE
+    from functions.money import currency_precision, to_minor_units
     treasury, currency = _issuer(conn, product_code)
-    units = int(round(amount * SCALE))
+    places = currency_precision(conn, currency)
+    units = to_minor_units(amount, places) * (10 ** (6 - places))
     if units > 0:
         CurrencyManager.treasury_receive(conn, treasury, currency, units)
     elif units < 0:
@@ -292,9 +295,11 @@ class TreasuryBondManager:
             with self.db.atomic(("users", "accounts", "assets", "tax")) as conn:
                 query = (
                     "SELECT h.holding_id, h.user_id, h.product_code, h.principal, "
+                    "h.principal_minor_units, COALESCE(p.quote_currency,'NWX') AS currency, "
                     "h.purchased_epoch, h.maturity_epoch, h.maturity_days, "
                     "h.product_name AS name, h.annual_rate,h.coupon_frequency_days "
                     "FROM accounts.treasury_bond_holdings h "
+                    "JOIN product.treasury_bond_products p ON p.product_code=h.product_code "
                     "WHERE h.status = 'active' AND h.maturity_epoch <= ? "
                 )
                 params = [now]
@@ -305,29 +310,45 @@ class TreasuryBondManager:
                 rows = conn.execute(query, params).fetchall()
                 matured_codes = set()
                 for holding in rows:
-                    principal = int(holding["principal"])
+                    from functions.money import currency_precision, from_minor_units, to_minor_units
+                    from managers.currency_manager import CurrencyManager, SCALE
+                    currency = str(holding["currency"] or "NWX").upper()
+                    places = currency_precision(conn, currency)
+                    principal_units = int(holding["principal_minor_units"] or
+                                          to_minor_units(holding["principal"], places))
+                    principal = from_minor_units(principal_units, places)
                     days = int(holding["maturity_days"])
-                    gross_interest = (0 if int(holding["coupon_frequency_days"] or 0)>0 else
-                                      round_money(principal * float(holding["annual_rate"]) * days
-                                                  / (100 * self.YEAR_DAYS)))
+                    interest_units = (0 if int(holding["coupon_frequency_days"] or 0)>0 else
+                                      to_minor_units(principal * Decimal(str(holding["annual_rate"]))
+                                                     * days / Decimal(100 * self.YEAR_DAYS), places))
+                    gross_interest = from_minor_units(interest_units, places)
                     from database.fund_accounting import account, change_cash
                     fund = account(conn, holding['user_id'])
                     from managers.user_manager import UserManager
                     tax = UserManager._tax(
-                        conn, holding['user_id'], 'treasury_bond_interest', gross_interest
+                        conn, holding['user_id'], 'treasury_bond_interest', gross_interest,
+                        currency=currency if currency != 'NWX' else None,
                     )
-                    gross_payment = principal + gross_interest
-                    net_payment = principal + gross_interest - tax
+                    tax_units = to_minor_units(tax, places)
+                    gross_payment_units = principal_units + interest_units
+                    net_payment_units = gross_payment_units - tax_units
+                    gross_payment = from_minor_units(gross_payment_units, places)
+                    net_payment = from_minor_units(net_payment_units, places)
                     _treasury_move(conn, holding["product_code"], -gross_payment)
                     if fund:
                         change_cash(conn, holding['user_id'], net_payment, 'bond_redemption', holding['product_code'])
-                    else:
+                    elif currency == 'NWX' or currency == CurrencyManager.home(conn, holding['user_id']):
                         credit = conn.execute(
                             "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
-                            (net_payment, holding["user_id"]),
+                            (float(net_payment), holding["user_id"]),
                         )
                         if credit.rowcount != 1:
                             raise RuntimeError("국채 보유자가 활성 사용자가 아니어서 상환을 취소했습니다.")
+                    else:
+                        CurrencyManager.change(
+                            conn, holding["user_id"], currency,
+                            net_payment_units * (10 ** (6 - places)), allow_deficit=True,
+                        )
                     closed = conn.execute(
                         "UPDATE accounts.treasury_bond_holdings SET status = 'redeemed', "
                         "redeemed_epoch = ? WHERE holding_id = ? AND status = 'active'",
@@ -335,13 +356,23 @@ class TreasuryBondManager:
                     )
                     if closed.rowcount != 1:
                         raise RuntimeError("국채 상태가 변경되어 상환을 취소했습니다.")
+                    from managers.accounting_journal import AccountingJournal
+                    AccountingJournal.post_treasury_bond_cash_event(
+                        conn, event_key=f"redemption:{holding['holding_id']}",
+                        event_type="redemption", holding_id=holding["holding_id"],
+                        product_code=holding["product_code"], user_id=holding["user_id"],
+                        currency_code=currency, decimal_places=places,
+                        principal_minor_units=principal_units,
+                        interest_minor_units=interest_units, tax_minor_units=tax_units,
+                        net_minor_units=net_payment_units, recorded_epoch=now,
+                    )
                     redeemed.append({
                         "user_id": str(holding["user_id"]),
                         "name": str(holding["name"]),
-                        "principal": principal,
-                        "interest": gross_interest,
-                        "tax": tax,
-                        "net": net_payment,
+                        "principal": float(principal),
+                        "interest": float(gross_interest),
+                        "tax": float(from_minor_units(tax_units, places)),
+                        "net": float(net_payment),
                     })
                     matured_codes.add((str(holding["user_id"]), str(holding["product_code"])))
                 for matured_user_id, product_code in matured_codes:
@@ -365,11 +396,17 @@ class TreasuryBondManager:
         paid = []
         with self.db.atomic(("users", "accounts", "tax")) as conn:
             rows = conn.execute(
-                "SELECT * FROM accounts.treasury_bond_holdings WHERE status='active' "
-                "AND coupon_frequency_days>0 AND (? IS NULL OR user_id=?)",
+                "SELECT h.*,COALESCE(p.quote_currency,'NWX') AS currency "
+                "FROM accounts.treasury_bond_holdings h JOIN product.treasury_bond_products p "
+                "ON p.product_code=h.product_code WHERE h.status='active' "
+                "AND h.coupon_frequency_days>0 AND (? IS NULL OR h.user_id=?)",
                 (user_id, user_id),
             ).fetchall()
             for holding in rows:
+                from functions.money import currency_precision, from_minor_units, to_minor_units
+                from managers.currency_manager import CurrencyManager
+                currency = str(holding["currency"] or "NWX").upper()
+                places = currency_precision(conn, currency)
                 frequency = int(holding["coupon_frequency_days"])
                 cursor = int(holding["last_coupon_epoch"] or holding["purchased_epoch"])
                 boundary = min(now, int(holding["maturity_epoch"]))
@@ -382,33 +419,59 @@ class TreasuryBondManager:
                     paid_until = boundary
                 if elapsed <= 0:
                     continue
-                coupon = round_money(
-                    int(holding["principal"])*float(holding["annual_rate"])/100
-                    * year_fraction(
-                        elapsed*86400, holding["day_count_convention"], cursor
-                    )
+                principal_units = int(holding["principal_minor_units"] or
+                                      to_minor_units(holding["principal"], places))
+                fraction = Decimal(str(year_fraction(
+                    elapsed*86400, holding["day_count_convention"], cursor
+                )))
+                coupon_units = to_minor_units(
+                    from_minor_units(principal_units, places)
+                    * Decimal(str(holding["annual_rate"])) / Decimal(100) * fraction, places
                 )
+                coupon = from_minor_units(coupon_units, places)
                 from database.fund_accounting import account, change_cash
                 fund = account(conn, holding['user_id'])
                 from managers.user_manager import UserManager
                 tax = UserManager._tax(
-                    conn, holding['user_id'], 'treasury_bond_interest', coupon
+                    conn, holding['user_id'], 'treasury_bond_interest', coupon,
+                    currency=currency if currency != 'NWX' else None,
                 )
+                tax_units = to_minor_units(tax, places)
                 _treasury_move(conn, holding["product_code"], -coupon)
                 if fund:
-                    change_cash(conn, holding['user_id'], coupon-tax, 'bond_coupon', holding['product_code'])
-                else:
+                    change_cash(conn, holding['user_id'],
+                                float(from_minor_units(coupon_units-tax_units, places)),
+                                'bond_coupon', holding['product_code'])
+                elif currency == 'NWX' or currency == CurrencyManager.home(conn, holding['user_id']):
                     conn.execute(
                         "UPDATE users.users SET cash=cash+? WHERE user_id=?",
-                        (coupon-tax, holding["user_id"]),
+                        (float(from_minor_units(coupon_units-tax_units, places)),
+                         holding["user_id"]),
+                    )
+                else:
+                    CurrencyManager.change(
+                        conn, holding["user_id"], currency,
+                        (coupon_units-tax_units) * (10 ** (6 - places)), allow_deficit=True,
                     )
                 conn.execute(
                     "UPDATE accounts.treasury_bond_holdings SET last_coupon_epoch=? "
                     "WHERE holding_id=?", (paid_until, holding["holding_id"]),
                 )
+                if coupon_units:
+                    from managers.accounting_journal import AccountingJournal
+                    AccountingJournal.post_treasury_bond_cash_event(
+                        conn, event_key=f"coupon:{holding['holding_id']}:{paid_until}",
+                        event_type="coupon", holding_id=holding["holding_id"],
+                        product_code=holding["product_code"], user_id=holding["user_id"],
+                        currency_code=currency, decimal_places=places,
+                        principal_minor_units=0, interest_minor_units=coupon_units,
+                        tax_minor_units=tax_units,
+                        net_minor_units=coupon_units-tax_units, recorded_epoch=now,
+                    )
                 paid.append({"user_id": str(holding["user_id"]),
                              "product_code": holding["product_code"],
-                             "coupon": coupon, "tax": tax})
+                             "coupon": float(coupon),
+                             "tax": float(from_minor_units(tax_units, places))})
         return paid
 
     def get_user_holdings(self, user_id, now=None, *, conn=None):

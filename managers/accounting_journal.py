@@ -34,6 +34,21 @@ class AccountingJournal:
                 CHECK(typeof(credit_units)='integer' AND credit_units>=0),
             CHECK((debit_units=0)<>(credit_units=0)))""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_accounting_lines_entry ON accounting_lines(entry_id,account_code)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS treasury_bond_cash_events (
+            event_key TEXT PRIMARY KEY,
+            event_type TEXT NOT NULL CHECK(event_type IN ('coupon','redemption')),
+            holding_id INTEGER NOT NULL, product_code TEXT NOT NULL, user_id TEXT NOT NULL,
+            currency_code TEXT NOT NULL, decimal_places INTEGER NOT NULL
+                CHECK(decimal_places BETWEEN 0 AND 6),
+            principal_minor_units INTEGER NOT NULL CHECK(typeof(principal_minor_units)='integer' AND principal_minor_units>=0),
+            interest_minor_units INTEGER NOT NULL CHECK(typeof(interest_minor_units)='integer' AND interest_minor_units>=0),
+            tax_minor_units INTEGER NOT NULL CHECK(typeof(tax_minor_units)='integer' AND tax_minor_units>=0),
+            net_minor_units INTEGER NOT NULL CHECK(typeof(net_minor_units)='integer' AND net_minor_units>=0),
+            recorded_epoch INTEGER NOT NULL)""")
+        for operation in ("UPDATE", "DELETE"):
+            conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_treasury_bond_cash_events_{operation.lower()}_immutable
+                BEFORE {operation} ON treasury_bond_cash_events
+                BEGIN SELECT RAISE(ABORT,'treasury bond cash events are append-only'); END""")
         conn.execute("""CREATE TABLE IF NOT EXISTS accounting_period_closings (
             closing_id INTEGER PRIMARY KEY AUTOINCREMENT,
             ledger_scope TEXT NOT NULL, entity_id TEXT NOT NULL, currency_code TEXT NOT NULL,
@@ -206,6 +221,97 @@ class AccountingJournal:
             (scope, entity, currency, start, end, closed_at, actor,
              len({row[0] for row in normalized}), digest))
         return int(cursor.lastrowid)
+
+    @classmethod
+    def post_treasury_bond_cash_event(cls, conn, *, event_key, event_type,
+            holding_id, product_code, user_id, currency_code, decimal_places,
+            principal_minor_units, interest_minor_units, tax_minor_units,
+            net_minor_units, recorded_epoch):
+        """Append a bond cash event and its balanced common posting atomically."""
+        cls.ensure_schema(conn)
+        event_type = str(event_type)
+        if event_type not in {"coupon", "redemption"}:
+            raise ValueError("국채 현금 이벤트 유형이 올바르지 않습니다.")
+        principal, interest, tax, net = map(int, (
+            principal_minor_units, interest_minor_units, tax_minor_units, net_minor_units
+        ))
+        if principal + interest != tax + net or min(principal, interest, tax, net) < 0:
+            raise ValueError("국채 지급 이벤트 금액이 최소단위 기준으로 일치하지 않습니다.")
+        if event_type == "coupon" and principal != 0:
+            raise ValueError("쿠폰 이벤트에 원금 상환액을 포함할 수 없습니다.")
+        currency = str(currency_code).upper()
+        entity = str(holding_id)
+        source_key = str(event_key)
+        lines = []
+        if principal:
+            lines.append(("bond_principal_payable", "debit", principal))
+        if interest:
+            lines.append(("bond_interest_expense", "debit", interest))
+        if net:
+            lines.append(("customer_cash_payable", "credit", net))
+        if tax:
+            lines.append(("tax_payable", "credit", tax))
+        for local, _, _ in lines:
+            cls.register_mapping(conn, "treasury_bond", local, local)
+        cls.post(conn, ledger_scope="treasury_bond", entity_type="holding",
+            entity_id=entity, source_key=source_key, currency_code=currency,
+            decimal_places=int(decimal_places), recorded_epoch=int(recorded_epoch),
+            lines=lines, description=f"Treasury bond {event_type}")
+        conn.execute("""INSERT INTO treasury_bond_cash_events
+            (event_key,event_type,holding_id,product_code,user_id,currency_code,decimal_places,
+             principal_minor_units,interest_minor_units,tax_minor_units,net_minor_units,recorded_epoch)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (source_key,event_type,int(holding_id),str(product_code),str(user_id),currency,
+             int(decimal_places),principal,interest,tax,net,int(recorded_epoch)))
+
+    @classmethod
+    def reconcile_treasury_bond_cash_events(cls, conn):
+        """Check immutable bond cash events against common-journal lines and keys."""
+        gaps = []
+        seen = set()
+        for event in conn.execute("SELECT * FROM treasury_bond_cash_events ORDER BY event_key"):
+            journal = conn.execute("""SELECT entry_id,currency_code,decimal_places,recorded_epoch
+                FROM accounting_entries WHERE ledger_scope='treasury_bond' AND entity_type='holding'
+                  AND entity_id=? AND source_key=?""",
+                (str(event["holding_id"]),event["event_key"])).fetchone()
+            expected = {}
+            amounts = (("bond_principal_payable",int(event["principal_minor_units"])),
+                       ("bond_interest_expense",int(event["interest_minor_units"])),
+                       ("customer_cash_payable",-int(event["net_minor_units"])),
+                       ("tax_payable",-int(event["tax_minor_units"])))
+            for local, signed in amounts:
+                if not signed:
+                    continue
+                mapping = conn.execute("SELECT common_code FROM accounting_account_mappings "
+                    "WHERE ledger_scope='treasury_bond' AND local_code=? AND active=1",(local,)).fetchone()
+                if not mapping:
+                    gaps.append({"event_key":event["event_key"],"missing_mapping":local})
+                    continue
+                code = str(mapping[0])
+                debit,credit = expected.get(code,(0,0))
+                expected[code] = (debit+max(0,signed),credit+max(0,-signed))
+            actual = {}
+            if journal:
+                seen.add(int(journal["entry_id"]))
+                for line in conn.execute("SELECT account_code,debit_units,credit_units FROM accounting_lines WHERE entry_id=?",
+                                         (journal["entry_id"],)):
+                    actual[str(line["account_code"])] = (int(line["debit_units"]),int(line["credit_units"]))
+            if (int(event["principal_minor_units"])+int(event["interest_minor_units"])
+                    != int(event["tax_minor_units"])+int(event["net_minor_units"])
+                    or not journal or journal["currency_code"] != event["currency_code"]
+                    or int(journal["decimal_places"]) != int(event["decimal_places"])
+                    or int(journal["recorded_epoch"]) != int(event["recorded_epoch"])
+                    or actual != expected):
+                gaps.append({"event_key":event["event_key"],"expected_lines":expected,
+                             "actual_lines":actual,"status":"mismatch"})
+        orphan_count = int(conn.execute("""SELECT COUNT(*) FROM accounting_entries a
+            WHERE a.ledger_scope='treasury_bond' AND NOT EXISTS (
+                SELECT 1 FROM treasury_bond_cash_events e WHERE e.holding_id=a.entity_id
+                  AND e.event_key=a.source_key)""").fetchone()[0])
+        if orphan_count:
+            gaps.append({"orphan_common_entries":orphan_count,"status":"mismatch"})
+        return {"event_count":int(conn.execute("SELECT COUNT(*) FROM treasury_bond_cash_events").fetchone()[0]),
+                "common_journal_gaps":gaps,"status":"matched" if not gaps else "mismatch"}
 
     @staticmethod
     def audit_unbalanced(conn, ledger_scope=None):
@@ -390,6 +496,53 @@ class AccountingJournal:
                        "order_count": len(orders),
                        "reservation_gaps": reservation_gaps,
                        "status": "matched" if not reservation_gaps else "mismatch"})
+        order_wallet_gaps = []
+        tracked_cash_orders = conn.execute("""SELECT o.order_id,o.user_id,o.quote_currency,
+            o.status,o.reserved_cash_minor_units FROM market_orders o
+            WHERE o.order_kind='asset' AND o.side='buy'
+              AND COALESCE(o.fractional_order,0)=0
+              AND NOT EXISTS(SELECT 1 FROM market_order_wallet_baselines b
+                             WHERE b.order_id=o.order_id)
+            ORDER BY o.order_id""").fetchall()
+        for order in tracked_cash_orders:
+            order_id = int(order["order_id"])
+            currency = str(order["quote_currency"] or "NWX").upper()
+            places = currency_precision(conn, currency)
+            linked = conn.execute("""SELECT l.user_id,l.currency_code,l.decimal_places,
+                l.delta_minor_units FROM market_order_wallet_links w
+                JOIN customer_wallet_ledger l ON l.entry_id=w.wallet_entry_id
+                WHERE w.order_id=? ORDER BY l.entry_id""", (order_id,)).fetchall()
+            linked_net_debit = 0
+            for movement in linked:
+                if (str(movement["user_id"]) != str(order["user_id"])
+                        or str(movement["currency_code"]).upper() != currency
+                        or int(movement["decimal_places"]) != places):
+                    order_wallet_gaps.append({"order_id": order_id,
+                        "wallet_user": movement["user_id"],
+                        "wallet_currency": movement["currency_code"],
+                        "status": "incompatible_link"})
+                linked_net_debit -= int(movement["delta_minor_units"])
+            executed = int(conn.execute("""SELECT COALESCE(SUM(gross_minor_units),0)
+                FROM market_execution_events WHERE buy_order_id=?""", (order_id,)).fetchone()[0])
+            expected_net_debit = executed + int(order["reserved_cash_minor_units"] or 0)
+            if linked_net_debit != expected_net_debit:
+                order_wallet_gaps.append({"order_id": order_id,
+                    "linked_net_debit_minor_units": linked_net_debit,
+                    "execution_plus_reserve_minor_units": expected_net_debit,
+                    "status": "mismatch"})
+        orphan_order_wallet_links = int(conn.execute("""SELECT COUNT(*)
+            FROM market_order_wallet_links w LEFT JOIN market_orders o USING(order_id)
+            LEFT JOIN customer_wallet_ledger l ON l.entry_id=w.wallet_entry_id
+            WHERE o.order_id IS NULL OR l.entry_id IS NULL""").fetchone()[0])
+        if orphan_order_wallet_links:
+            order_wallet_gaps.append({"orphan_market_order_wallet_links": orphan_order_wallet_links,
+                                      "status": "mismatch"})
+        checks.append({"ledger_scope": "market_order_wallet_cash",
+                       "tracked_buy_order_count": len(tracked_cash_orders),
+                       "wallet_link_gaps": order_wallet_gaps,
+                       "legacy_baseline_count": int(conn.execute(
+                           "SELECT COUNT(*) FROM market_order_wallet_baselines").fetchone()[0]),
+                       "status": "matched" if not order_wallet_gaps else "mismatch"})
         execution_gaps = []
         tracked_orders = conn.execute("""SELECT o.order_id,o.side,o.asset_code,o.user_id,
             o.filled_quantity,COALESCE(b.baseline_filled_quantity,0) baseline_filled
@@ -481,16 +634,62 @@ class AccountingJournal:
         if orphan_market_posts:
             market_journal_gaps.append({"orphan_market_journal_entries": orphan_market_posts,
                                         "status": "mismatch"})
+        wallet_link_gaps = []
+        linked_wallet_rows = conn.execute("""SELECT e.execution_key,e.execution_type,
+            e.seller_id,e.seller_proceeds_minor_units,e.currency_code,e.decimal_places,
+            w.wallet_entry_id,l.user_id,l.currency_code wallet_currency,
+            l.decimal_places wallet_places,l.delta_minor_units
+            FROM market_execution_wallet_links w
+            LEFT JOIN market_execution_events e USING(execution_key)
+            LEFT JOIN customer_wallet_ledger l ON l.entry_id=w.wallet_entry_id
+            ORDER BY w.execution_key,w.wallet_entry_id""").fetchall()
+        seller_credits = {}
+        for link in linked_wallet_rows:
+            if (link["execution_type"] is None or link["user_id"] is None
+                    or link["wallet_currency"] != link["currency_code"]
+                    or int(link["wallet_places"]) != int(link["decimal_places"])):
+                wallet_link_gaps.append({"execution_key": link["execution_key"],
+                                         "wallet_entry_id": int(link["wallet_entry_id"]),
+                                         "status": "missing_or_incompatible_wallet_entry"})
+                continue
+            if (link["execution_type"] == "secondary"
+                    and str(link["user_id"]) == str(link["seller_id"])
+                    and int(link["delta_minor_units"]) > 0):
+                key = (str(link["execution_key"]), str(link["seller_id"]))
+                seller_credits[key] = seller_credits.get(key, 0) + int(link["delta_minor_units"])
+        for event in market_events:
+            if event["execution_type"] != "secondary":
+                continue
+            proceeds = int(event["seller_proceeds_minor_units"])
+            if proceeds <= 0:
+                continue
+            actual = seller_credits.get((str(event["execution_key"]), str(event["seller_id"])), 0)
+            if actual != proceeds:
+                wallet_link_gaps.append({"execution_key": event["execution_key"],
+                    "seller_id": event["seller_id"],
+                    "expected_seller_credit_minor_units": proceeds,
+                    "linked_seller_credit_minor_units": actual,
+                    "status": "mismatch"})
+        orphan_wallet_links = int(conn.execute("""SELECT COUNT(*)
+            FROM market_execution_wallet_links w LEFT JOIN market_execution_events e USING(execution_key)
+            WHERE e.execution_key IS NULL""").fetchone()[0])
+        if orphan_wallet_links:
+            wallet_link_gaps.append({"orphan_wallet_links": orphan_wallet_links,
+                                     "status": "mismatch"})
         checks.append({"ledger_scope": "market_executions",
                        "tracked_order_count": len(tracked_orders),
                        "execution_event_count": int(conn.execute(
                            "SELECT COUNT(*) FROM market_execution_events").fetchone()[0]),
                        "execution_gaps": execution_gaps,
                        "common_journal_gaps": market_journal_gaps,
+                       "wallet_link_gaps": wallet_link_gaps,
                        "unjournaled_legacy_baselines": int(conn.execute(
                            "SELECT COUNT(*) FROM market_execution_journal_baselines").fetchone()[0]),
                        "historical_baseline_policy": "pre-migration fills are baseline-only; only subsequent fills are event-reconciled",
-                       "status": "matched" if not execution_gaps and not market_journal_gaps else "mismatch"})
+                       "status": "matched" if not execution_gaps and not market_journal_gaps
+                       and not wallet_link_gaps else "mismatch"})
+        checks.append({"ledger_scope":"treasury_bond_cash",
+                       **AccountingJournal.reconcile_treasury_bond_cash_events(conn)})
         native = int(conn.execute("""SELECT
             (SELECT COUNT(*) FROM users WHERE cash_minor<>0) +
             (SELECT COUNT(*) FROM accounts WHERE user_id IS NOT NULL AND balance_minor_units<>0)""").fetchone()[0])

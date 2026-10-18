@@ -732,12 +732,34 @@ class AssetDB(DBManager):
         self.execute("""CREATE TABLE IF NOT EXISTS market_execution_journal_baselines (
             execution_key TEXT PRIMARY KEY,
             captured_epoch INTEGER NOT NULL)""")
+        self.execute("""CREATE TABLE IF NOT EXISTS market_execution_wallet_links (
+            execution_key TEXT NOT NULL,
+            wallet_entry_id INTEGER NOT NULL,
+            PRIMARY KEY(execution_key,wallet_entry_id))""")
+        self.execute("""CREATE TABLE IF NOT EXISTS market_order_wallet_links (
+            order_id INTEGER NOT NULL,
+            wallet_entry_id INTEGER NOT NULL,
+            PRIMARY KEY(order_id,wallet_entry_id))""")
+        self.execute("""CREATE TABLE IF NOT EXISTS market_order_wallet_baselines (
+            order_id INTEGER PRIMARY KEY,
+            captured_epoch INTEGER NOT NULL)""")
+        self.execute("""CREATE TABLE IF NOT EXISTS market_order_wallet_migrations (
+            migration_key TEXT PRIMARY KEY, applied_epoch INTEGER NOT NULL)""")
+        already_migrated = self.execute_one("""SELECT 1 FROM market_order_wallet_migrations
+            WHERE migration_key='initial_order_baseline'""")
+        self.execute("""INSERT OR IGNORE INTO market_order_wallet_migrations
+            (migration_key,applied_epoch) VALUES ('initial_order_baseline',unixepoch())""")
+        if not already_migrated:
+            self.execute("""INSERT OR IGNORE INTO market_order_wallet_baselines
+                (order_id,captured_epoch) SELECT order_id,unixepoch() FROM market_orders""")
         self.execute("""INSERT OR IGNORE INTO market_execution_order_baselines
             (order_id,baseline_filled_quantity,captured_epoch)
             SELECT order_id,filled_quantity,unixepoch() FROM market_orders
             WHERE order_kind='asset'""")
         for table in ("market_execution_events", "market_execution_order_baselines",
-                      "market_execution_journal_baselines"):
+                      "market_execution_journal_baselines", "market_execution_wallet_links",
+                      "market_order_wallet_links", "market_order_wallet_baselines",
+                      "market_order_wallet_migrations"):
             for operation in ("UPDATE", "DELETE"):
                 self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_{operation.lower()}_immutable
                     BEFORE {operation} ON {table}

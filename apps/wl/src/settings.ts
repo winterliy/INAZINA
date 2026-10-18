@@ -8,6 +8,10 @@ const theme = (id: string, name: string, light: boolean, [bg, fg, cursor, select
   ({ id, name, light, bg, fg, cursor, selection, ansi: ansi.split(" ").map((hex) => `#${hex}`) });
 
 export const THEMES: Theme[] = [
+  // The entry screen's colours (white on #007BE5). Its ANSI colours are light so that
+  // accents, author colours and states stay readable on the blue.
+  theme("laplace-blue", "Laplace Blue", false, ["#007be5", "#ffffff", "#ffffff", "#0a5fb4"],
+    "003d73 ffb4b4 a6ffcb ffe486 d6ecff ffc2f1 9ff4ff eaf4ff 7cbcf5 ffcaca c4ffdb fff0b3 ebf6ff ffd6f6 c4f9ff ffffff"),
   theme("dracula", "Dracula", false, ["#282a36", "#f8f8f2", "#f8f8f2", "#44475a"],
     "21222c ff5555 50fa7b f1fa8c bd93f9 ff79c6 8be9fd f8f8f2 6272a4 ff6e6e 69ff94 ffffa5 d6acff ff92df a4ffff ffffff"),
   theme("tokyonight", "TokyoNight", false, ["#1a1b26", "#c0caf5", "#c0caf5", "#33467c"],
@@ -50,7 +54,7 @@ export type Settings = {
   notify: boolean;          // count new records in the tab title while the tab is hidden
 };
 
-export const DEFAULTS: Settings = { theme: "dracula", font: "sans", zoom: 100, chat: "bubble", autoRefresh: true, home: "overview",
+export const DEFAULTS: Settings = { theme: "laplace-blue", font: "sans", zoom: 100, chat: "bubble", autoRefresh: true, home: "overview",
   author: "all", status: "all", order: "asc", collapse: false, notify: true };
 export const ZOOMS = [90, 100, 110, 125];
 const KEY = "wl.settings";
@@ -94,6 +98,7 @@ export function apply(settings: Settings) {
     for (const name of vars) root.style.removeProperty(name);
     delete root.dataset.term;
   }
+  root.dataset.theme = settings.theme;  // lets a theme fine-tune what the palette alone cannot
   root.dataset.font = settings.font;
   root.dataset.chat = settings.chat;
   root.style.setProperty("--zoom", String(settings.zoom / 100));

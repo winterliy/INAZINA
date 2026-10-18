@@ -134,6 +134,7 @@ class OrderBookManager:
                 funding_account = None
                 reserved_cash = 0
                 reserved_cash_minor_units = 0
+                wallet_watermark = None
                 if side == "buy":
                     # A finite-supply instrument must not let one buyer reserve more
                     # units than they could ever own. Include this buyer's existing
@@ -188,6 +189,9 @@ class OrderBookManager:
                     if not funds:
                         return False, "❌ 등록된 사용자만 주문할 수 있습니다."
                     balance, funding_account = funds
+                    wallet_watermark = int(conn.execute(
+                        "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
+                    ).fetchone()[0])
                     if balance < reserved_cash or not self.user_manager._debit_source(
                         conn, user_id, funding_account, reserved_cash
                     ):
@@ -248,6 +252,8 @@ class OrderBookManager:
                      reserved_cash_minor_units),
                 )
                 order_id = int(cursor.lastrowid)
+                if side == "buy" and wallet_watermark is not None:
+                    self._link_order_wallet_entries(conn, order_id, wallet_watermark)
                 fill_count, filled_quantity, traded_value = (0, 0, 0) if deferred else self._match_incoming_order(conn, order_id, now)
                 order = conn.execute(
                     "SELECT remaining_quantity, status, reserved_cash "
@@ -345,12 +351,16 @@ class OrderBookManager:
                     and (not maker or reference_price < int(maker["limit_price"]))
                 ):
                     quantity = min(int(incoming["remaining_quantity"]), primary_remaining)
+                    wallet_watermark = int(conn.execute(
+                        "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
+                    ).fetchone()[0])
                     self._settle_primary_fill(
                         conn, incoming, asset, source, quantity, reference_price, now
                     )
                     self._reduce_order(conn, incoming, quantity, now)
                     self._record_execution_event(
-                        conn, incoming, None, quantity, reference_price, now
+                        conn, incoming, None, quantity, reference_price, now,
+                        wallet_watermark=wallet_watermark,
                     )
                     self._apply_execution_price(
                         conn, incoming["asset_code"], reference_price, now
@@ -375,6 +385,9 @@ class OrderBookManager:
             )
             # Price-time priority: an incoming order executes at the resting maker's price.
             execution_price = int(maker["limit_price"])
+            wallet_watermark = int(conn.execute(
+                "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
+            ).fetchone()[0])
             settlement = self._settle_fill(
                 conn, buy_order, sell_order, quantity, execution_price, now
             )
@@ -384,6 +397,7 @@ class OrderBookManager:
                 conn, buy_order, sell_order, quantity, execution_price, now,
                 tax_amount=settlement["tax_amount"],
                 seller_proceeds=settlement["seller_proceeds"],
+                wallet_watermark=wallet_watermark,
             )
             self._apply_execution_price(
                 conn, incoming["asset_code"], execution_price, now
@@ -400,7 +414,8 @@ class OrderBookManager:
 
     @staticmethod
     def _record_execution_event(conn, buy_order, sell_order, quantity, price, now,
-                                *, tax_amount=0, seller_proceeds=0):
+                                *, tax_amount=0, seller_proceeds=0,
+                                wallet_watermark=None):
         """Persist the matched order pair and consideration in quote minor units."""
         currency = str(buy_order["quote_currency"] or "NWX").upper()
         places = currency_precision(conn, currency)
@@ -456,6 +471,11 @@ class OrderBookManager:
             entity_id=str(buy_order["asset_code"]), source_key=key,
             currency_code=currency, decimal_places=places, recorded_epoch=int(now),
             lines=accounts, description=f"{execution_type} fill settlement")
+        if wallet_watermark is not None:
+            conn.execute("""INSERT INTO assets.market_execution_wallet_links
+                (execution_key,wallet_entry_id)
+                SELECT ?,entry_id FROM customer_wallet_ledger
+                WHERE entry_id>? ORDER BY entry_id""", (key, int(wallet_watermark)))
 
     def _settle_primary_fill(self, conn, buy_order, asset, source, quantity, price, now):
         buyer_id = str(buy_order["user_id"])
@@ -464,7 +484,8 @@ class OrderBookManager:
         if improvement < 0:
             raise RuntimeError("기준가가 매수 지정가를 초과했습니다.")
         if improvement:
-            self._credit_reserved_source(conn, buyer_id, buyer_account, improvement, now)
+            self._credit_reserved_source(conn, buyer_id, buyer_account, improvement, now,
+                                        order_id=buy_order["order_id"])
         if source == "treasury_bond":
             face_value = int(asset["face_value"])
             principal = face_value * int(quantity)
@@ -599,7 +620,8 @@ class OrderBookManager:
         if price_improvement < 0:
             raise RuntimeError("체결 가격이 매수 지정가를 초과했습니다.")
         if price_improvement:
-            self._credit_reserved_source(conn, buyer_id, buyer_account, price_improvement, now)
+            self._credit_reserved_source(conn, buyer_id, buyer_account, price_improvement, now,
+                                        order_id=buy_order["order_id"])
 
         asset, source = self.user_manager._asset_row(conn, buy_order["asset_code"])
         if source == "treasury_bond":
@@ -693,13 +715,18 @@ class OrderBookManager:
 
     @staticmethod
     def _credit_reserved_source(conn, user_id, account_number, amount, now,
-                                currency="NWX"):
+                                currency="NWX", order_id=None):
         amount = parse_currency_money(conn, amount, currency, minimum=0)
         if amount <= 0:
             return
+        wallet_watermark = int(conn.execute(
+            "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
+        ).fetchone()[0])
         from database.fund_accounting import account, change_cash
         if account(conn, user_id):
             change_cash(conn, user_id, amount, 'order_refund')
+            if order_id is not None:
+                OrderBookManager._link_order_wallet_entries(conn, order_id, wallet_watermark)
             return
         if account_number is None:
             cursor = conn.execute(
@@ -714,6 +741,8 @@ class OrderBookManager:
                 ForeignSecuritiesManager.credit_units(
                     conn,user_id,foreign['currency_code'],int(round(amount*SCALE))
                 )
+                if order_id is not None:
+                    OrderBookManager._link_order_wallet_entries(conn, order_id, wallet_watermark)
                 return
             cursor = conn.execute(
                 "UPDATE accounts.accounts SET balance_units = balance_units + CAST(ROUND(? * 1000000) AS INTEGER), "
@@ -723,6 +752,14 @@ class OrderBookManager:
             )
         if cursor.rowcount != 1:
             raise RuntimeError("매수 주문 예치금을 환불할 계좌를 찾지 못했습니다.")
+        if order_id is not None:
+            OrderBookManager._link_order_wallet_entries(conn, order_id, wallet_watermark)
+
+    @staticmethod
+    def _link_order_wallet_entries(conn, order_id, wallet_watermark):
+        conn.execute("""INSERT INTO assets.market_order_wallet_links(order_id,wallet_entry_id)
+            SELECT ?,entry_id FROM customer_wallet_ledger WHERE entry_id>?
+            ORDER BY entry_id""", (int(order_id), int(wallet_watermark)))
 
     @staticmethod
     def _reduce_order(conn, order, quantity, now):
@@ -792,7 +829,7 @@ class OrderBookManager:
                 if refund:
                     self._credit_reserved_source(
                         conn, user_id, order["funding_account"], refund, now,
-                        currency,
+                        currency, order_id=order_id,
                     )
                 conn.execute(
                     "UPDATE assets.market_orders SET status = 'cancelled', "
@@ -813,16 +850,21 @@ class OrderBookManager:
         refund = (self._reserved_cash_amount(conn, order)
                   if order['side'] == 'buy' else 0)
         if refund:
+            wallet_watermark = int(conn.execute(
+                "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
+            ).fetchone()[0])
             from managers.currency_manager import CurrencyManager
             # The user's own (nationality) currency sits in cash/home accounts; others in FX accounts.
             if currency == CurrencyManager.home(conn, order['user_id']):
-                self._credit_reserved_source(conn, order['user_id'], order['funding_account'], refund, now)
+                self._credit_reserved_source(conn, order['user_id'], order['funding_account'],
+                                             refund, now, order_id=order["order_id"])
             else:
                 from managers.foreign_securities_manager import ForeignSecuritiesManager
                 ForeignSecuritiesManager.credit_units(
                     conn, order['user_id'], currency,
                     int(round(refund * 1_000_000)), order['funding_account']
                 )
+            self._link_order_wallet_entries(conn, order["order_id"], wallet_watermark)
         conn.execute("UPDATE market_orders SET status='rejected', reserved_cash=0, updated_epoch=? WHERE order_id=?",
                      (now, order['order_id']))
 

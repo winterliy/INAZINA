@@ -208,6 +208,9 @@ class EconomyTests(unittest.TestCase):
                 if check["ledger_scope"] == "market_order_reservations"
             )
             self.assertEqual(reservation["status"], "matched", reservation)
+            cash_check = next(check for check in AccountingJournal.reconcile_subledgers(conn)
+                              if check["ledger_scope"] == "market_order_wallet_cash")
+            self.assertEqual(cash_check["status"], "matched", cash_check)
             conn.execute(
                 "UPDATE assets.market_orders SET reserved_cash_minor_units=99 WHERE order_id=?",
                 (order["order_id"],),
@@ -227,6 +230,10 @@ class EconomyTests(unittest.TestCase):
             "SELECT reserved_cash_minor_units FROM market_orders WHERE order_id = ?",
             (order["order_id"],),
         )[0], 0)
+        with self.db.atomic() as conn:
+            cash_check = next(check for check in AccountingJournal.reconcile_subledgers(conn)
+                              if check["ledger_scope"] == "market_order_wallet_cash")
+            self.assertEqual(cash_check["status"], "matched", cash_check)
 
     def test_secondary_market_fill_has_immutable_minor_unit_execution_and_order_reconcile(self):
         from managers.accounting_journal import AccountingJournal
@@ -255,6 +262,13 @@ class EconomyTests(unittest.TestCase):
                           if item["ledger_scope"] == "market_executions")
             self.assertEqual(result["status"], "matched", result)
             self.assertEqual(result["common_journal_gaps"], [])
+            self.assertEqual(result["wallet_link_gaps"], [])
+            seller_cash = conn.execute("""SELECT COALESCE(SUM(l.delta_minor_units),0)
+                FROM market_execution_wallet_links w JOIN customer_wallet_ledger l
+                  ON l.entry_id=w.wallet_entry_id
+                WHERE w.execution_key=? AND l.user_id=? AND l.delta_minor_units>0""",
+                (event["execution_key"], event["seller_id"])).fetchone()[0]
+            self.assertEqual(seller_cash, event["seller_proceeds_minor_units"])
             self.assertEqual(conn.execute(
                 "SELECT COUNT(*) FROM accounting_entries WHERE ledger_scope='market' "
                 "AND source_key=?", (event["execution_key"],),
@@ -269,6 +283,17 @@ class EconomyTests(unittest.TestCase):
             self.assertEqual(result["status"], "mismatch")
             self.assertIn({"orphan_market_journal_entries": 1, "status": "mismatch"},
                           result["common_journal_gaps"])
+            conn.execute("INSERT INTO market_execution_wallet_links VALUES (?,?)",
+                         (event["execution_key"], 999999999))
+            result = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                          if item["ledger_scope"] == "market_executions")
+            self.assertEqual(result["status"], "mismatch")
+            self.assertTrue(result["wallet_link_gaps"])
+            conn.execute("INSERT INTO market_order_wallet_links VALUES (?,?)",
+                         (event["buy_order_id"], 999999998))
+            cash_check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                              if item["ledger_scope"] == "market_order_wallet_cash")
+            self.assertEqual(cash_check["status"], "mismatch")
             conn.execute("UPDATE assets.market_orders SET filled_quantity=0 WHERE order_id=?",
                          (event["buy_order_id"],))
             result = next(item for item in AccountingJournal.reconcile_subledgers(conn)

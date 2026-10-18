@@ -5,6 +5,7 @@
 import { PAGES, escapeHtml, filterThread, finalStatus, ids, inline, markdown, registry as registryOf, threadEntries as entriesOf,
   topics as topicsOf, type Entry, type Files } from "./wlmd.ts";
 import { DEFAULTS, THEMES, ZOOMS, apply, load, save, type Settings } from "./settings.ts";
+import { showEntry } from "./entry.ts";
 
 let files: Files = {};
 let check = { claude: "", codex: "" };
@@ -229,12 +230,13 @@ async function refresh(force = false) {
 }
 
 // ---------------------------------------------------------------- keys
-// 1–9 switch tabs, r refreshes, "," opens settings (ignored while typing).
+// 1–9 switch tabs, 0 returns to the ASCII entry screen, r refreshes, "," opens settings (ignored while typing).
 document.addEventListener("keydown", (event) => {
   const target = event.target as HTMLElement;
   if (event.metaKey || event.ctrlKey || event.altKey || target.closest("input, select, textarea, dialog")) return;
   const page = PAGES[Number(event.key) - 1];
-  if (page) location.hash = `#/${page[0]}`;
+  if (event.key === "0") void showEntry(enterTerminal);
+  else if (page) location.hash = `#/${page[0]}`;
   else if (event.key === "r") void refresh(true);
   else if (event.key === ",") openSettings();
 });
@@ -299,3 +301,6 @@ document.getElementById("reload")!.addEventListener("click", () => void refresh(
 import.meta.hot?.on("wl:changed", () => { if (settings.autoRefresh) void refresh(); });
 void refresh();
 window.setInterval(() => { if (settings.autoRefresh) void refresh(); }, 30_000);
+// The ASCII entry screen comes first; the docs load behind it.
+function enterTerminal() { document.getElementById("view")?.focus({ preventScroll: true }); }
+void showEntry(enterTerminal);

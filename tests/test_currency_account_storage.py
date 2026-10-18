@@ -14,6 +14,7 @@ from managers.bank_manager import BankManager
 from managers.user_manager import UserManager
 from managers.compliance_manager import ComplianceManager
 from managers.accounting_journal import AccountingJournal
+from managers.treasury_bond_manager import TreasuryBondManager
 from functions.money import audit_amount_snapshots
 
 
@@ -148,6 +149,77 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertEqual(self.db.assets.execute_one(
             "SELECT reserved_cash FROM market_orders WHERE order_id=?", (order_id,),
         )[0], 12.35)
+
+    def test_instrument_price_tables_use_quote_currency_minor_units(self):
+        self.db.assets.execute(
+            "INSERT INTO market_assets(code,name,exchange_id,price,type,quote_currency) "
+            "VALUES ('USD-QUOTE','USD Quote','FX',1.23,'stock','USD')"
+        )
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT price_minor_units FROM market_assets WHERE code='USD-QUOTE'"
+        )[0], 123)
+        self.db.assets.execute(
+            "UPDATE market_assets SET price_minor_units=124 WHERE code='USD-QUOTE'"
+        )
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT price,price_minor_units FROM market_assets WHERE code='USD-QUOTE'"
+        )[:], (1.24, 124))
+        self.db.assets.execute(
+            "UPDATE market_assets SET price=2.36 WHERE code='USD-QUOTE'"
+        )
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT price_minor_units FROM market_assets WHERE code='USD-QUOTE'"
+        )[0], 236)
+        self.db.assets.execute(
+            "INSERT INTO market_price_history(asset_code,price,recorded_epoch) "
+            "VALUES ('USD-QUOTE',3.45,1)"
+        )
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT price_minor_units FROM market_price_history WHERE asset_code='USD-QUOTE'"
+        )[0], 345)
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "instrument price minor units must be an integer"):
+            self.db.assets.execute(
+                "UPDATE market_assets SET price_minor_units=12.5 WHERE code='USD-QUOTE'"
+            )
+        self.db.companies.execute(
+            "INSERT INTO company(company_code,name,industry,capital,total_shares,share_price,"
+            "max_shareholder_id,exchange_id,quote_currency) "
+            "VALUES ('USD-SHARE','USD share','test',500,5,1.23,'us-user','FX','USD')"
+        )
+        self.assertEqual(self.db.companies.execute_one(
+            "SELECT share_price_minor_units FROM company WHERE company_code='USD-SHARE'"
+        )[0], 123)
+        self.db.products.execute(
+            "INSERT INTO investment(product_code,name,product_type,total_supply,unit_price,quote_currency) "
+            "VALUES ('USD-FUND','USD fund','mutual_fund',100,1.23,'USD')"
+        )
+        self.assertEqual(self.db.products.execute_one(
+            "SELECT unit_price_minor_units FROM investment WHERE product_code='USD-FUND'"
+        )[0], 123)
+
+    def test_tax_transactions_use_balanced_currency_minor_units(self):
+        self.db.tax.execute(
+            "INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount,"
+            "currency_code) VALUES ('us-user','test',1.23,0.12,1.11,'USD')"
+        )
+        row = self.db.tax.execute_one(
+            "SELECT gross_amount_minor_units,tax_amount_minor_units,net_amount_minor_units "
+            "FROM tax_transactions WHERE user_id='us-user' AND source='test'"
+        )
+        self.assertEqual(tuple(row), (123, 12, 111))
+        self.db.tax.execute(
+            "UPDATE tax_transactions SET gross_amount_minor_units=124,"
+            "tax_amount_minor_units=13,net_amount_minor_units=111 WHERE user_id='us-user' "
+            "AND source='test'"
+        )
+        self.assertEqual(tuple(self.db.tax.execute_one(
+            "SELECT gross_amount,tax_amount,net_amount FROM tax_transactions "
+            "WHERE user_id='us-user' AND source='test'"
+        )), (1.24, 0.13, 1.11))
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "tax transaction currency minor units"):
+            self.db.tax.execute(
+                "UPDATE tax_transactions SET net_amount=1.12 WHERE user_id='us-user' AND source='test'"
+            )
 
     def test_customer_wallet_changes_post_atomically_and_reconcile(self):
         with self.db.atomic() as conn:
@@ -536,6 +608,78 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertEqual(self.db.accounts.execute_one(
             "SELECT principal FROM treasury_bond_holdings WHERE product_code='USD-BOND'"
         )[0], 20.10)
+
+    def test_usd_bond_maturity_posts_currency_minor_unit_interest_tax_and_credit(self):
+        self.db.currency.execute(
+            "INSERT INTO country_tax_rules(nationality,income_source,tax_percent,updated_by,updated_epoch) "
+            "VALUES ('미국','treasury_bond_interest',20,'test',1)"
+        )
+        now = 2_000_000_000
+        self.db.products.execute(
+            "INSERT INTO treasury_bond_products "
+            "(product_code,name,annual_rate,maturity_days,face_value,exchange_id,"
+            "market_price,total_supply,quote_currency) VALUES ('USD-MATURE','USD maturity',10,365,"
+            "1.25,'BOND',1.25,1.25,'USD')"
+        )
+        self.db.accounts.execute(
+            "INSERT INTO treasury_bond_holdings "
+            "(user_id,product_code,product_name,annual_rate,maturity_days,principal,face_value,"
+            "acquisition_cost,purchased_epoch,maturity_epoch) "
+            "VALUES ('us-user','USD-MATURE','USD maturity',10,365,1.25,1.25,1.25,"
+            "?,?)", (now-365*86400, now-1),
+        )
+        redeemed = TreasuryBondManager(self.db).redeem_matured('us-user', now=now)
+        self.assertEqual(len(redeemed), 1)
+        self.assertEqual((redeemed[0]['principal'], redeemed[0]['interest'],
+                          redeemed[0]['tax'], redeemed[0]['net']), (1.25, 0.13, 0.03, 1.35))
+        user = self.db.users.get_user('us-user')
+        self.assertAlmostEqual(user['cash'], 1001.35)
+        tax = self.db.tax.execute_one(
+            "SELECT gross_amount,tax_amount,net_amount,currency_code FROM tax_transactions "
+            "WHERE user_id='us-user' AND source='treasury_bond_interest'"
+        )
+        self.assertEqual(tuple(tax), (0.13, 0.03, 0.10, 'USD'))
+        with self.db.readonly() as conn:
+            bond_check = AccountingJournal.reconcile_treasury_bond_cash_events(conn)
+        self.assertEqual(bond_check['status'], 'matched', bond_check)
+        self.db.products.execute(
+            "INSERT INTO treasury_bond_products "
+            "(product_code,name,annual_rate,maturity_days,face_value,exchange_id,"
+            "market_price,total_supply,quote_currency,coupon_frequency_days) "
+            "VALUES ('USD-COUPON','USD coupon',10,365,1.25,'BOND',1.25,1.25,'USD',180)"
+        )
+        self.db.accounts.execute(
+            "INSERT INTO treasury_bond_holdings "
+            "(user_id,product_code,product_name,annual_rate,maturity_days,principal,face_value,"
+            "acquisition_cost,purchased_epoch,maturity_epoch,coupon_frequency_days,"
+            "day_count_convention,last_coupon_epoch) VALUES ('us-user','USD-COUPON','USD coupon',"
+            "10,365,1.25,1.25,1.25,?,?,180,'ACT/365',?)",
+            (now-180*86400, now+86400, now-180*86400),
+        )
+        paid = TreasuryBondManager(self.db).pay_due_coupons('us-user', now=now)
+        self.assertEqual(len(paid), 1)
+        self.assertEqual((paid[0]['coupon'], paid[0]['tax']), (0.06, 0.01))
+        self.assertAlmostEqual(self.db.users.get_user('us-user')['cash'], 1001.40)
+        with self.db.readonly() as conn:
+            bond_check = AccountingJournal.reconcile_treasury_bond_cash_events(conn)
+        self.assertEqual(bond_check['status'], 'matched', bond_check)
+        self.assertEqual(bond_check['event_count'], 2)
+        with self.assertRaisesRegex(sqlite3.IntegrityError, 'append-only'):
+            self.db.currency.execute(
+                "UPDATE treasury_bond_cash_events SET net_minor_units=99 "
+                "WHERE event_type='coupon'"
+            )
+
+    def test_bond_cash_reconciliation_finds_event_without_common_post(self):
+        with self.db.atomic() as conn:
+            AccountingJournal.ensure_schema(conn)
+            conn.execute("""INSERT INTO treasury_bond_cash_events
+                (event_key,event_type,holding_id,product_code,user_id,currency_code,decimal_places,
+                 principal_minor_units,interest_minor_units,tax_minor_units,net_minor_units,recorded_epoch)
+                VALUES ('missing-post','coupon',1,'B','us-user','USD',2,0,100,10,90,1)""")
+            check = AccountingJournal.reconcile_treasury_bond_cash_events(conn)
+        self.assertEqual(check['status'], 'mismatch')
+        self.assertEqual(check['common_journal_gaps'][0]['event_key'], 'missing-post')
 
 
 class LegacyCurrencySchemaMigrationTests(unittest.TestCase):

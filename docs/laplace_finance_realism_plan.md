@@ -153,6 +153,30 @@ ECL 충당금도 대출별 `ecl_allowance_minor_units`를 추가해 백필·양�
 
 2026-10-19 추가: 국채 발행상품(face value/market price/total supply/sold amount)과 보유 lot(principal/face value/acquisition cost)에 프로그램 통화 기준 `*_minor_units` 열을 추가하고 기존 금액 열과 양방향 동기화한다. 레거시 행을 최소단위로 backfill하며, USD 소수 액면가의 발행한도 배수 검사도 실수 `%` 비교 대신 최소단위 정수 modulo로 수행한다. USD 발행/보유 값의 backfill과 양방향 수정 회귀 테스트가 통과했다. 이는 저장 표현 개선이며 이자·쿠폰/상환·시가평가 소비자의 전체 정수화, 국채 지급의 고객/국고/시장 공통원장 연결이나 결산 대사는 아니다. M4 체크 항목은 여전히 미완료다.
 
+국채 만기상환과 정기 쿠폰의 이자 계산도 계약통화 `Decimal` 중간값에서 최소단위 정수로 한 번 반올림한 뒤 세금·순지급·국고 이동에 재사용한다. 고객의 외화표시 국채 수익은 해당 통화 지갑에 입금되며 기존 NWX 동작은 호환 유지한다. USD 통화의 원금 1.25, 연이자 0.13, 원천세 0.03, 순상환 1.35 및 쿠폰 0.06/세금 0.01 회귀와 NWX 만기상환·거래소 만기 테스트가 통과했다. 쿠폰/만기의 지급 이벤트 및 공통 journal은 다음 기록에서 추가 완료했다. 다만 국채 매수·secondary sale·시가평가 및 이 이벤트들의 국고/세금/고객 보조원장까지 이어지는 전체 결제 대사는 아직 미완료다.
+
+2026-10-19 추가: 국채 쿠폰/만기상환을 `treasury_bond_cash_events` 불변 최소단위 보조원장과 공통 `treasury_bond` journal에 같은 트랜잭션으로 전기한다. 지급 산식(principal+interest=tax+net), 통화·정밀도·시각, 계정별 공통 분개, 이벤트 없는 고아 전기를 `AccountingJournal.reconcile_subledgers`가 검사한다. 쿠폰 이벤트 키는 보유 lot+지급시각, 만기는 보유 lot 기준으로 멱등하며 부분 실패 시 업무 지급과 이벤트·분개가 함께 rollback된다. 정상 USD coupon/redemption, legacy NWX redemption, 이벤트는 있으나 공통 전기가 없는 오류 탐지와 append-only 검증, 관련 99개 테스트가 통과했다. 이 연결은 쿠폰·만기 지급에 한정된다. 국채 매수·secondary sale, 국고 현금/세금/고객 지갑을 해당 업무 이벤트 키로 끝까지 대사하는 흐름과 나머지 상품의 최소단위 이관/전사 마감은 남아 있어 M4 완료가 아니다.
+
+읽기 전용 관리자 리포트에서 대사를 호출해도 DDL이 발생하지 않도록 reconciliation은 순수 조회로 유지하고, 지급 이벤트 테이블/append-only 보호는 DB writable startup에서 설치한다. database 패키지는 manager 계층에 의존하지 않는다. 이 변경 뒤 전체 `python -m unittest discover -s tests` 837 tests가 641.947초에 통과했으며 관련 아키텍처·보고서 타깃 테스트, `compileall`, `git diff --check`도 통과했다.
+
+2026-10-19 추가: 표준 현물 체결 처리 시작 시 고객 지갑 ledger watermark를 잡고, 체결 결제 중 생성된 실제 지갑 원장 entry를 append-only `market_execution_wallet_links`로 해당 execution key에 연결한다. 시장 체결 대사는 연결된 지갑 이벤트의 존재·통화·정밀도를 확인하고, 매도자 수령액 합계가 execution event의 순매도대금과 일치하는지도 검사한다. 정상 체결과 고아 지갑 링크 오류 탐지 회귀를 추가했다. `tests.test_economy.EconomyTests.test_secondary_market_fill_has_immutable_minor_unit_execution_and_order_reconcile` 통과. 이 연결은 체결 시점의 고객 지갑 변동 추적을 강화하지만, 매수 예약 인출의 사전 연결, 증권 보유 이동, 발행자/국고 정산, clearing 전체 대사와 잔여 상품은 미완료다. M4 여섯 체크 항목은 그대로 미체크다.
+
+2026-10-19 추가: 신규 표준 매수 주문의 최초 현금 차감 및 이후 가격개선/취소/거절 환불 wallet entry를 주문키에 append-only 연결한다. 신규 주문별 `누적 현금 순차감 = 연결된 체결 총액 + 현재 예약잔액`을 대사하며, 과거 주문은 단발성 마이그레이션 baseline으로 격리해 거래별 자료를 임의 생성하지 않는다. primary 부분체결+잔량 취소, secondary 가격개선 환불 및 고아 링크 오류 테스트가 통과했다. 신규 표준 매수 주문 cash 경로는 대사되나 주식/채권 보유 이동, 발행자 현금 수령/clearing, 다수의 상품·파생 매처 및 M4 전사 재구성·마감 조건은 남아 있다.
+
+위 시장 현금 연결 뒤 `python -m unittest discover -s tests` 전체 837 tests가 694.005초에 통과했다. 관련 경제 테스트 61개, 관리자 대사 보고서, 아키텍처 검사, `compileall`, `git diff --check`도 통과했다. 이 검증은 이번 추가 경로의 회귀 안전성을 확인할 뿐, 아래 M4 미완료 이관·보조원장 연결을 닫지 않는다.
+
+2026-10-19 추가: 상장 자산 현 시세(`market_assets.price`), 회사주가(`company.share_price`), 투자상품 가격(`investment.unit_price`) 및 과거 시세(`market_price_history.price`)를 각 quote currency 기준 최소단위 열로 백필하고 양방향 동기화한다. DB 경계는 최소단위 필드에 소수/비정수 값을 거부하며 legacy 가격 편집은 실제 통화 자릿수로 정규화한다. USD 1.23→123, 최소단위 124→legacy 1.24, 과거 시세 USD 3.45→345를 테스트했다. 일부 가격 소비자는 아직 legacy값을 읽고 지정가/전체 가격 소비자의 canonical consumer migration, 실제 주문·증권 결제·전사 보조원장 대사는 남아 있으므로 M4는 미완료다.
+
+2026-10-19 추가: 세금 거래의 총액·세액·순액을 거래 통화의 `*_minor_units`로 백필하고 양방향 동기화한다. 새 입력 경계는 통화 최소단위 반올림 후 `gross = tax + net`이 아니거나 단위값이 정수가 아니면 DB에서 거부한다. USD 1.23/0.12/1.11 저장, 일치하는 단위 변경 후 legacy값 갱신 및 불균형 입력 거부를 검사했다. 세금은 이벤트 수준으로 보완됐지만 원천별 세액 계산/고객 debit·수취기관 cash·기관 journal 간 전사 대사와 전체 수수료·상품·FX 경로는 남아 있어 M4 완료가 아니다.
+
+세금/상품가격 단위 경로 추가 후 `python -m unittest discover -s tests` 전체 839 tests가 559.747초에 통과했고, 변경 Python 모듈 `compileall`과 `git diff --check`도 통과했다. 이는 현재 구현 회귀 증거이며 M4 전체 잔여 필드·전사 결제·기간마감 완료 증거는 아니다.
+
+2026-10-19 추가: 신규 표준 매수 주문의 최초 현금 차감 및 이후 가격개선/취소/거절 환불 wallet entry를 주문키에 append-only 연결한다. 신규 주문별 `누적 현금 순차감 = 연결된 체결 총액 + 현재 예약잔액`을 대사하며, 과거 주문은 단발성 마이그레이션 baseline으로 격리해 거래별 자료를 임의 생성하지 않는다. primary 부분체결+잔량 취소, secondary 가격개선 환불 및 고아 링크 오류 테스트가 통과했다. 신규 표준 매수 주문 cash 경로는 대사되나 주식/채권 보유 이동, 발행자 현금 수령/clearing, 다수의 상품·파생 매처 및 M4 전사 재구성·마감 조건은 남아 있다.
+
+후속 전체 회귀 `python -m unittest discover -s tests` 836 tests가 623.007초에 통과했다. 변경된 관리자 경로 컴파일과 `git diff --check`도 통과했다. 이 테스트는 국채 쿠폰/만기 이관과 기존 시스템 호환성을 검증하며 M4 전체 인벤토리·전사 대사·마감 조건을 통과시킨 것은 아니다.
+
+이 변경 이후 전체 회귀 `python -m unittest discover -s tests` 835 tests가 698.664초에 통과했다. `compileall` 및 `git diff --check`도 통과했다. 이는 이번 변경의 회귀 안전성 증거이지, M4 전체 완료조건이 충족됐다는 뜻은 아니다.
+
 ### M5 — #74 신용위험·ECL·심사
 
 - [x] 차주별 등급/PD 전이, 관할과 상품별 기준, 보증·공동차주·연결차주를 모델링한다. 첫 평가→최근 평가 등급 전이표는 차주별 immutable ECL 스냅샷을 집계한다.
