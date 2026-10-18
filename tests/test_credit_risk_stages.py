@@ -245,6 +245,8 @@ class DefaultedLoanEclTests(unittest.TestCase):
             self.assertEqual(BankJournal.reconcile_loan_receivables(conn, "Bank")[0]["status"], "matched")
             self.assertEqual(BankJournal.reconcile_ecl_allowances(conn, "Bank")[0]["status"], "matched")
             self.assertEqual(BankJournal.reconcile_charged_off_balances(conn, "Bank")[0]["status"], "matched")
+            integrated = BankJournal.reconcile_all(conn, "Bank")
+            self.assertEqual(integrated["status"], "matched", integrated["findings"])
             memo_snapshot = conn.execute("""SELECT amount_minor_units FROM financial_amount_snapshots
                 WHERE source_table='loans' AND source_key=? AND amount_field='charged_off_balance'""",
                 (str(loan_id),),
