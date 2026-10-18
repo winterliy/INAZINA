@@ -126,6 +126,7 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             checks = AccountingJournal.reconcile_subledgers(conn)
             customer = next(item for item in checks if item['ledger_scope']=='customer')
             self.assertEqual(customer['status'],'matched',customer)
+            self.assertEqual(customer['posting_gaps'],0)
             self.assertEqual(AccountingJournal.audit_unbalanced(conn,'customer'),[])
 
         number = CurrencyExchangeManager(self.db).open_account('us-user','FX_EUR')
@@ -135,6 +136,14 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             )
             checks = AccountingJournal.reconcile_subledgers(conn)
             self.assertEqual(next(item for item in checks if item['ledger_scope']=='customer')['status'],'matched')
+            conn.execute("UPDATE accounting_account_mappings SET common_code='wrong_wallet_clearing' "
+                         "WHERE ledger_scope='customer' AND local_code='wallet_clearing'")
+            customer = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                            if item['ledger_scope']=='customer')
+            self.assertEqual(customer['status'],'mismatch')
+            self.assertGreater(customer['posting_gaps'],0)
+            conn.execute("UPDATE accounting_account_mappings SET common_code='wallet_clearing' "
+                         "WHERE ledger_scope='customer' AND local_code='wallet_clearing'")
 
         with self.assertRaisesRegex(RuntimeError,'rollback marker'):
             with self.db.atomic() as conn:
