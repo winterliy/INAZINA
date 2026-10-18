@@ -1,12 +1,13 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
+import { BoardPage } from "./BoardPage";
 import "./style.css";
 import "../../shared/typography.css";
 import "../../shared/backdrop.css";
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    {/^\/board\/?$/.test(location.pathname) ? <BoardPage /> : <App />}
   </React.StrictMode>,
 );

@@ -34,7 +34,7 @@ const errorText = (cause: unknown) => cause instanceof Error ? cause.message : "
  * HTS board. Reading needs no login; writing, comments, replies, reactions and reports do.
  * `user` is null for a visitor, and `onLogin` takes them to the login screen.
  */
-export function BoardPanel({ user, initialAsset = "", onClose, onLogin }: { user: ApiUser | null; initialAsset?: string; onClose: () => void; onLogin: () => void }) {
+export function BoardPanel({ user, initialAsset = "", onClose, onLogin, asPage = false }: { user: ApiUser | null; initialAsset?: string; onClose: () => void; onLogin: () => void; asPage?: boolean }) {
   const admin = user?.role === "admin";
   const [boards, setBoards] = useState<BoardInfo[]>([]);
   const [board, setBoard] = useState("");
@@ -73,10 +73,11 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin }: { user
   }, [board, category, asset, term, page]);
   useEffect(() => { loadList().catch((cause) => setError(errorText(cause))); }, [loadList]);
   useEffect(() => {
+    if (asPage) return;  // a page has no dialog to dismiss
     const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, asPage]);
 
   async function open(postId: number) {
     setError("");
@@ -210,13 +211,14 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin }: { user
   const opensText = opens ? new Intl.DateTimeFormat("ko-KR", { dateStyle: "long" }).format(opens * 1000) : "";
   const writable = boards.filter((item) => admin || (!item.admin_only && !item.suspension));
 
-  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className="board-modal" role="dialog" aria-modal="true" aria-labelledby="board-title">
+  const Shell = asPage ? "main" : "div";
+  return <Shell className={asPage ? "board-page" : "modal-backdrop"} onMouseDown={asPage ? undefined : (event) => { if (event.target === event.currentTarget) onClose(); }}>
+    <section className="board-modal" {...(asPage ? { "aria-labelledby": "board-title" } : { role: "dialog", "aria-modal": true, "aria-labelledby": "board-title" })}>
       <div className="board-head">
         <div><p className="eyebrow">BOARD{user ? "" : " · 읽기 전용"}</p><h2 id="board-title">게시판</h2></div>
         <div className="board-head-actions">
           <button type="button" className="board-primary" disabled={closed} title={closed ? `${opensText}부터 쓸 수 있습니다` : undefined} onClick={() => startDraft()}>{closed ? `${opensText}부터 글쓰기` : user ? "글쓰기" : "로그인하고 글쓰기"}</button>
-          <button type="button" onClick={onClose}>닫기</button>
+          {asPage ? <a className="board-back" href="/">← HTS로</a> : <button type="button" onClick={onClose}>닫기</button>}
         </div>
       </div>
       {closed && <p className="board-notice">게시판은 지금 읽기만 할 수 있습니다. 글쓰기·댓글·신고는 개인정보 처리방침 개정에 따라 <b>{opensText}</b>부터 열립니다. 작성·신고 시 접속 IP가 1년간 보관됩니다.</p>}
@@ -369,5 +371,5 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin }: { user
         </div>
       </div>
     </section>
-  </div>;
+  </Shell>;
 }

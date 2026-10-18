@@ -793,8 +793,8 @@ def instruments(include_inactive=False):
         opening = {code: price for code, price, _ in connection.execute(
             "SELECT asset_code,price,MIN(recorded_epoch) FROM market_price_history "
             "WHERE recorded_epoch>=? GROUP BY asset_code", (since,))} if _table_exists(connection, "market_price_history") else {}
-        traded = {code: (value, count) for code, value, count in connection.execute(
-            "SELECT asset_code,SUM(quantity*price),COUNT(*) FROM market_trade_history "
+        traded = {code: (value, count, volume) for code, value, count, volume in connection.execute(
+            "SELECT asset_code,SUM(quantity*price),COUNT(*),SUM(quantity) FROM market_trade_history "
             "WHERE recorded_epoch>=? GROUP BY asset_code", (since,))} if _table_exists(connection, "market_trade_history") else {}
         for row in rows:
             if row["source"] == "treasury_bond":
@@ -858,7 +858,7 @@ def instruments(include_inactive=False):
                         pass
             start = opening.get(row["code"])
             row["change24h"] = (float(row["price"]) / float(start) - 1) * 100 if start and row["price"] else None
-            row["tradeValue24h"], row["trades24h"] = traded.get(row["code"], (0, 0))
+            row["tradeValue24h"], row["trades24h"], row["volume24h"] = traded.get(row["code"], (0, 0, 0))
             if row["type"] == "mutual_fund":
                 row["components"] = components.get(row["code"], [])
             warning = warnings.get(row["code"])

@@ -328,6 +328,39 @@ class WebApiTests(unittest.TestCase):
         self.assertGreater(bond["bondRisk"]["dv01"], 0)
         self.assertNotIn("warning", bond)
 
+    def test_market_instruments_report_24h_value_trades_and_volume(self):
+        now = server.time.time()
+        with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
+            connection.executescript("""
+                CREATE TABLE market_assets(code TEXT,name TEXT,type TEXT,price REAL,exchange_id TEXT,
+                    quote_currency TEXT,status TEXT);
+                CREATE TABLE company(company_code TEXT,name TEXT,share_price REAL,exchange_id TEXT,
+                    quote_currency TEXT,status TEXT);
+                CREATE TABLE investment(product_code TEXT,name TEXT,product_type TEXT,unit_price REAL,
+                    exchange_id TEXT,quote_currency TEXT,status TEXT,fund_category TEXT);
+                CREATE TABLE treasury_bond_products(product_code TEXT,name TEXT,market_price REAL,
+                    exchange_id TEXT,quote_currency TEXT,status TEXT,face_value INTEGER,annual_rate REAL,
+                    maturity_days INTEGER,coupon_frequency_days INTEGER,day_count_convention TEXT,
+                    credit_spread REAL,liquidity_spread REAL,created_at TEXT);
+                CREATE TABLE trading_warnings(asset_code TEXT,level TEXT,reason TEXT,set_by TEXT,
+                    created_epoch REAL,expires_epoch REAL);
+                CREATE TABLE depositary_receipts(dr_code TEXT,underlying_code TEXT,receipt_type TEXT,
+                    depositary_bank TEXT,custodian TEXT,home_exchange_id TEXT,listing_exchange_id TEXT,
+                    underlying_per_receipt REAL,receipt_supply INTEGER,deposited_underlying_quantity REAL,
+                    program_status TEXT);
+                CREATE TABLE depositary_receipt_movements(dr_code TEXT,movement_type TEXT,
+                    underlying_quantity REAL,dr_quantity REAL);
+                CREATE TABLE fund_components(product_code TEXT,asset_code TEXT,weight REAL,asset_class TEXT);
+                CREATE TABLE market_trade_history(asset_code TEXT,quantity REAL,price REAL,recorded_epoch REAL);
+                INSERT INTO market_assets VALUES ('GOLD','Gold','commodity',100,'MAIN','NWX','active');
+            """)
+            connection.executemany("INSERT INTO market_trade_history VALUES (?,?,?,?)", [
+                ("GOLD", 3, 100, now - 60), ("GOLD", 2, 110, now - 30), ("GOLD", 50, 90, now - 3 * 86400),
+            ])
+        with patch.object(server, "domain", return_value=None):
+            gold = next(row for row in server.instruments() if row["code"] == "GOLD")
+        self.assertEqual((gold["tradeValue24h"], gold["trades24h"], gold["volume24h"]), (520, 2, 5))
+
     def test_dr_web_ledgers_distinguish_holder_basis_from_custody_pool_basis(self):
         with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
             connection.executescript("""

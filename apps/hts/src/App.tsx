@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api, clearToken, type ApiUser } from "../../shared/api";
 import { AuthPanel } from "../../shared/AuthPanel";
-import { BoardPanel } from "./BoardPanel";
 import { PriceChart, type Candle, type Drawing, type Point, type Tool } from "./PriceChart";
 import { CommandPanel } from "./CommandPanel";
+import { Backdrop } from "./Backdrop";
 
 type Warning = { level: "caution" | "warning" | "danger"; label: string; reason: string; expiresEpoch: number | null };
 type DrMovement = { movement_id: number; dr_code: string; underlying_code: string; underlying_currency: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; underlying_average_cost: number; underlying_average_cost_text: string; decimal_places: number; recorded_epoch: number };
@@ -12,7 +12,7 @@ type DrCustodyInstruction = { reference_key: string; dr_code: string; underlying
 type DrVotingDelegation = { delegation_id: number; dr_code: string; underlying_code: string; proxy_user_id: string; dr_quantity: number; status: "active" | "revoked"; created_epoch: number; revoked_epoch: number | null; events: { event_type: string; recorded_epoch: number }[] };
 type ReceivedDrVotingDelegation = { delegation_id: number; dr_code: string; underlying_code: string; owner_user_id: string; dr_quantity: number; created_epoch: number };
 type DrVotingAgenda = { meetingId: number; agendaItemId: number; underlyingCode: string; meetingTitle: string; agendaTitle: string; choices: string[]; recordEpoch: number; opensEpoch: number | null; closesEpoch: number | null; quorumPercent: number; votingPower: number; totalEligible: number; myChoice: string | null; state: "unscheduled" | "upcoming" | "open" | "closed" };
-type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; quote_currency?: string; fund_category?: string | null; bondRisk?: { faceValue: number; macaulay_duration: number; modified_duration: number; convexity: number; dv01: number } | null; drProgram?: { underlyingCode: string; underlyingPerReceipt: number; receiptType: string; programStatus: string; depositaryBank?: string | null; custodian?: string | null; homeExchangeId?: string | null; referenceValue?: number; referencePremiumPercent?: number; referenceDeviationAlert?: boolean }; warning?: Warning; change24h?: number | null; tradeValue24h?: number; trades24h?: number };
+type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; quote_currency?: string; fund_category?: string | null; bondRisk?: { faceValue: number; macaulay_duration: number; modified_duration: number; convexity: number; dv01: number } | null; drProgram?: { underlyingCode: string; underlyingPerReceipt: number; receiptType: string; programStatus: string; depositaryBank?: string | null; custodian?: string | null; homeExchangeId?: string | null; referenceValue?: number; referencePremiumPercent?: number; referenceDeviationAlert?: boolean }; warning?: Warning; change24h?: number | null; tradeValue24h?: number; trades24h?: number; volume24h?: number };
 
 // Administrator trading warnings (투자주의·경고·위험).
 const WarningBadge = ({ warning }: { warning?: Warning }) => warning ? <span className={`warn-badge ${warning.level}`} title={warning.reason || warning.label}>{warning.label}</span> : null;
@@ -70,10 +70,25 @@ const searchTab = (item: Instrument): Exclude<SearchTab, "recommended"> =>
     : ["etf", "etn", "mutual_fund", "index_fund", "leveraged_etf", "inverse_etf", "reit"].includes(item.type) ? "fund"
       : item.type === "국채" || item.type.includes("bond") ? "bond"
         : item.type === "commodity" || item.type === "forex" ? "commodity" : "other";
-// Most traded value in 24 hours first, then the biggest movers.
-const recommended = (items: Instrument[]) => [...items]
-  .sort((a, b) => (b.tradeValue24h ?? 0) - (a.tradeValue24h ?? 0) || Math.abs(b.change24h ?? 0) - Math.abs(a.change24h ?? 0))
-  .slice(0, 20);
+// "실시간 추천" rankings over the last 24 hours, top 20 each.
+type RecommendSort = "value" | "volume" | "rising" | "falling";
+const RECOMMEND_SORTS: [RecommendSort, string, string][] = [
+  ["value", "거래대금", "최근 24시간 거래대금이 많은 순"],
+  ["volume", "거래량", "최근 24시간 거래 수량이 많은 순"],
+  ["rising", "급상승", "최근 24시간 상승률이 높은 순 (상승 종목만)"],
+  ["falling", "급하락", "최근 24시간 하락률이 큰 순 (하락 종목만)"],
+];
+const recommended = (items: Instrument[], sort: RecommendSort) => {
+  const change = (item: Instrument) => item.change24h ?? 0;
+  const ranked = sort === "rising" ? items.filter((item) => change(item) > 0).sort((a, b) => change(b) - change(a))
+    : sort === "falling" ? items.filter((item) => change(item) < 0).sort((a, b) => change(a) - change(b))
+      : [...items].sort(sort === "volume"
+        ? (a, b) => (b.volume24h ?? 0) - (a.volume24h ?? 0) || (b.tradeValue24h ?? 0) - (a.tradeValue24h ?? 0)
+        : (a, b) => (b.tradeValue24h ?? 0) - (a.tradeValue24h ?? 0) || Math.abs(change(b)) - Math.abs(change(a)));
+  return ranked.slice(0, 20);
+};
+/** The board is its own page (/board); "종목 토론" opens it filtered to one instrument. */
+const boardUrl = (asset = "") => asset ? `/board?asset=${encodeURIComponent(asset)}` : "/board";
 const errorText = (cause: unknown, fallback: string) => cause instanceof Error ? cause.message : fallback;
 
 export default function App() {
@@ -87,8 +102,7 @@ export default function App() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchTabValue, setSearchTabValue] = useState<SearchTab>("recommended");
   const [commandsOpen, setCommandsOpen] = useState<string | null>(null);
-  // null: closed; "" : every board; a code: that instrument's market discussion.
-  const [boardAsset, setBoardAsset] = useState<string | null>(null);
+  const [recommendSort, setRecommendSort] = useState<RecommendSort>("value");
   const [accountSettingsOpen, setAccountSettingsOpen] = useState(false);
   const [htsId, setHtsId] = useState("");
   const [htsIdInput, setHtsIdInput] = useState("");
@@ -135,9 +149,9 @@ export default function App() {
   const selected = instruments.find((item) => item.code === selectedCode) ?? null;
   const filtered = useMemo(() => {
     const term = search.trim().toLocaleLowerCase();
-    if (!term) return searchTabValue === "recommended" ? recommended(instruments) : instruments.filter((item) => searchTab(item) === searchTabValue);
+    if (!term) return searchTabValue === "recommended" ? recommended(instruments, recommendSort) : instruments.filter((item) => searchTab(item) === searchTabValue);
     return instruments.filter((item) => `${item.code} ${item.name} ${item.type} ${instrumentType(item)}`.toLocaleLowerCase().includes(term));
-  }, [instruments, search, searchTabValue]);
+  }, [instruments, search, searchTabValue, recommendSort]);
   const tabCounts = useMemo(() => {
     const counts: Partial<Record<SearchTab, number>> = { recommended: Math.min(20, instruments.length) };
     for (const item of instruments) counts[searchTab(item)] = (counts[searchTab(item)] ?? 0) + 1;
@@ -454,9 +468,8 @@ export default function App() {
     setSearchOpen(false);
   }
 
-  if (!user) return <div className="stage"><Backdrop /><AuthPanel app="hts" onAuthenticated={setUser} />
-    <button type="button" className="board-guest-button" onClick={() => setBoardAsset("")}>로그인 없이 게시판 보기</button>
-    {boardAsset !== null && <BoardPanel user={null} initialAsset={boardAsset} onClose={() => setBoardAsset(null)} onLogin={() => setBoardAsset(null)} />}
+  if (!user) return <div className="stage"><Backdrop /><AuthPanel app="hts" onAuthenticated={(next) => { const back = new URLSearchParams(location.search).get("return"); if (back?.startsWith("/board")) location.assign(back); else setUser(next); }} />
+    <a className="board-guest-button" href={boardUrl()}>로그인 없이 게시판 보기</a>
   </div>;
 
   const current = points.at(-1)?.price ?? selected?.price ?? 0;
@@ -476,7 +489,7 @@ export default function App() {
       <div className="top-center"><span className="connection"><i />API {health}</span><span>{user.nickname}</span></div>
       <div className="top-actions">
         <button className="header-action" title="종목 검색 (시장 목록)" onClick={() => setSearchOpen(true)}>종목 검색</button>
-        <button className="header-action" title="공지 · 자유 · 시장 토론" onClick={() => setBoardAsset("")}>게시판</button>
+        <a className="header-action" title="공지 · 자유 · 시장 토론" href={boardUrl()}>게시판</a>
         <button className="header-action" title="Discord 사용자 명령어" onClick={() => setCommandsOpen("")}>명령어</button>
         <button className="header-action account-action" onClick={() => { setSettingsMessage(""); setSettingsError(""); setAccountSettingsOpen(true); }}>계정 <small>{htsId || "아이디 만들기"}</small></button>
         <button className="icon-button" title="로그아웃" onClick={() => { clearToken(); void api("/api/auth/logout", { method: "POST" }); setUser(null); }}>로그아웃</button>
@@ -590,7 +603,7 @@ export default function App() {
       </aside>
       <section className="main-market">
         <div className="quote-strip"><div><p className="eyebrow">{selected?.exchange_id || "MARKET"} · {selected ? instrumentType(selected) : "—"}</p><h1>{selected?.name || "종목을 선택하세요"}<small>{selected?.code}</small><WarningBadge warning={selected?.warning} /></h1>{selected?.drProgram && <><p className="orders-hint">{selected.drProgram.receiptType} · 원주 {selected.drProgram.underlyingCode} · 1 DR = {money(selected.drProgram.underlyingPerReceipt, 6)}주 · 원주 거래소 {selected.drProgram.homeExchangeId || "—"} · 예탁 {selected.drProgram.depositaryBank || "—"} · 수탁 {selected.drProgram.custodian || "—"}</p>{selected.drProgram.referenceValue !== undefined && <p className="orders-hint">단순 원주 환산 참고가 {money(selected.drProgram.referenceValue, 4)} {selected.quote_currency || ""}{selected.drProgram.referencePremiumPercent !== undefined && ` · 현재가 괴리 ${selected.drProgram.referencePremiumPercent >= 0 ? "+" : ""}${selected.drProgram.referencePremiumPercent.toFixed(2)}%`}{selected.drProgram.referenceDeviationAlert && " · ⚠ 괴리 주의 (±10% 이상)"} · 수수료·세금·유동성 미반영</p>}</>}{selected?.bondRisk && <p className="orders-hint">액면 {money(selected.bondRisk.faceValue)} 기준 · Macaulay {selected.bondRisk.macaulay_duration.toFixed(3)}년 · 수정듀레이션 {selected.bondRisk.modified_duration.toFixed(3)} · 컨벡서티 {selected.bondRisk.convexity.toFixed(3)} · DV01 {money(selected.bondRisk.dv01, 4)} {selected.quote_currency || "NWX"} / 1bp. 현 국채 곡선의 평행이동 민감도이며 거래가격 예측이나 규제지표가 아닙니다.</p>}{selected?.warning?.reason && <p className="warn-reason">⚠️ {selected.warning.label} · {selected.warning.reason}</p>}</div>
-          <div className="quote-side"><div className="quote-value"><strong>{money(current)}</strong><span>{selected?.quote_currency || "NWX"}</span></div><button className="quote-switch" onClick={() => setSearchOpen(true)}>종목 바꾸기</button>{selected && <button className="quote-switch" onClick={() => setBoardAsset(selected.code)}>종목 토론</button>}</div></div>
+          <div className="quote-side"><div className="quote-value"><strong>{money(current)}</strong><span>{selected?.quote_currency || "NWX"}</span></div><button className="quote-switch" onClick={() => setSearchOpen(true)}>종목 바꾸기</button>{selected && <a className="quote-switch" href={boardUrl(selected.code)}>종목 토론</a>}</div></div>
         <PriceChart points={points} candles={candles} candleInterval={candleInterval} mode={chartMode} fallbackPrice={selected?.price ?? 1}
           drawings={drawings} onDrawingsChange={setDrawings} tool={tool} onToolChange={setTool} resetKey={`${selectedCode}-${range}-${interval}-${chartMode}`} label={selected?.name || "가격"}
           controls={<>{ranges.map((item) => <button key={item} className={range === item ? "selected" : ""} onClick={() => setRange(item)}>{rangeNames[item]}</button>)}
@@ -641,8 +654,7 @@ export default function App() {
       </aside>
     </main>
     {review && <div className="modal-backdrop"><section className="review-modal" role="dialog" aria-modal="true" aria-labelledby="review-title"><p className="eyebrow">ORDER REVIEW</p><h2 id="review-title">주문을 확인하세요</h2><dl><div><dt>종목</dt><dd>{selected?.name} ({selectedCode}) <WarningBadge warning={selected?.warning} /></dd></div><div><dt>유형</dt><dd className={side === "buy" ? "buy-text" : "sell-text"}>{side === "buy" ? "지정가 매수" : "지정가 매도"}</dd></div><div><dt>지정가</dt><dd>{money(Number(price), 2)} {selected?.quote_currency || "NWX"}</dd></div><div><dt>수량</dt><dd>{money(Number(quantity), 3)}</dd></div><div><dt>예상 금액</dt><dd>{money(Number(price) * Number(quantity), 2)} {selected?.quote_currency || "NWX"}</dd></div></dl><div className="modal-actions"><button disabled={busy} onClick={() => setReview(false)}>돌아가기</button><button className={side === "buy" ? "buy-confirm" : "sell-confirm"} disabled={busy} onClick={() => void submitOrder()}>{busy ? "제출 중" : "주문 확정"}</button></div></section></div>}
-    {searchOpen && <div className="modal-backdrop search-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSearchOpen(false); }}><section className="search-modal" role="dialog" aria-modal="true" aria-labelledby="search-title"><div className="search-modal-head"><h2 id="search-title">종목 검색</h2><button type="button" title="닫기" onClick={() => setSearchOpen(false)}>닫기</button></div><label className="search-field"><span aria-hidden="true">⌕</span><input ref={searchInputRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="종목명 또는 코드" /></label>{!search.trim() && <div className="search-tabs" role="tablist" aria-label="상품 종류">{SEARCH_TABS.filter(([id]) => id === "recommended" || tabCounts[id]).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={searchTabValue === id} className={searchTabValue === id ? "active" : ""} onClick={() => setSearchTabValue(id)}>{label}<span>{tabCounts[id] ?? 0}</span></button>)}</div>}{!search.trim() && searchTabValue === "recommended" && <p className="search-caption">최근 24시간 거래대금이 많은 순, 같으면 등락폭이 큰 순</p>}<div className="search-results">{filtered.slice(0, 200).map((item, index) => <button type="button" key={item.code} className={selectedCode === item.code ? "search-result active" : "search-result"} onClick={() => chooseInstrument(item.code)}><span>{!search.trim() && searchTabValue === "recommended" && <em className="search-rank">{index + 1}</em>}<span className="search-name"><b>{item.name} <WarningBadge warning={item.warning} /></b><small>{item.code} · {instrumentType(item)}{item.trades24h ? ` · 24시간 ${money(item.trades24h)}건` : ""}</small></span></span><span className="search-price"><strong>{money(item.price, 2)} {item.quote_currency || "NWX"}</strong>{item.change24h !== null && item.change24h !== undefined && <small className={item.change24h > 0 ? "up" : item.change24h < 0 ? "down" : undefined}>{item.change24h > 0 ? "+" : ""}{item.change24h.toFixed(2)}%</small>}</span></button>)}{!filtered.length && <p className="empty">{search.trim() ? "검색 결과가 없습니다." : "이 종류의 상품이 없습니다."}</p>}</div></section></div>}
-    {boardAsset !== null && <BoardPanel user={user} initialAsset={boardAsset} onClose={() => setBoardAsset(null)} onLogin={() => setBoardAsset(null)} />}
+    {searchOpen && <div className="modal-backdrop search-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSearchOpen(false); }}><section className="search-modal" role="dialog" aria-modal="true" aria-labelledby="search-title"><div className="search-modal-head"><h2 id="search-title">종목 검색</h2><button type="button" title="닫기" onClick={() => setSearchOpen(false)}>닫기</button></div><label className="search-field"><span aria-hidden="true">⌕</span><input ref={searchInputRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="종목명 또는 코드" /></label>{!search.trim() && <div className="search-tabs" role="tablist" aria-label="상품 종류">{SEARCH_TABS.filter(([id]) => id === "recommended" || tabCounts[id]).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={searchTabValue === id} className={searchTabValue === id ? "active" : ""} onClick={() => setSearchTabValue(id)}>{label}<span>{tabCounts[id] ?? 0}</span></button>)}</div>}{!search.trim() && searchTabValue === "recommended" && <><div className="recommend-sorts" role="group" aria-label="추천 기준">{RECOMMEND_SORTS.map(([id, label]) => <button key={id} type="button" aria-pressed={recommendSort === id} className={recommendSort === id ? "active" : ""} onClick={() => setRecommendSort(id)}>{label}</button>)}</div><p className="search-caption">{RECOMMEND_SORTS.find(([id]) => id === recommendSort)![2]}</p></>}<div className="search-results">{filtered.slice(0, 200).map((item, index) => <button type="button" key={item.code} className={selectedCode === item.code ? "search-result active" : "search-result"} onClick={() => chooseInstrument(item.code)}><span>{!search.trim() && searchTabValue === "recommended" && <em className="search-rank">{index + 1}</em>}<span className="search-name"><b>{item.name} <WarningBadge warning={item.warning} /></b><small>{item.code} · {instrumentType(item)}{!search.trim() && searchTabValue === "recommended" && recommendSort === "volume" ? (item.volume24h ? ` · 24시간 ${money(item.volume24h, 2)}주` : "") : item.trades24h ? ` · 24시간 ${money(item.trades24h)}건` : ""}</small></span></span><span className="search-price"><strong>{money(item.price, 2)} {item.quote_currency || "NWX"}</strong>{item.change24h !== null && item.change24h !== undefined && <small className={item.change24h > 0 ? "up" : item.change24h < 0 ? "down" : undefined}>{item.change24h > 0 ? "+" : ""}{item.change24h.toFixed(2)}%</small>}</span></button>)}{!filtered.length && <p className="empty">{search.trim() ? "검색 결과가 없습니다." : searchTabValue === "recommended" ? "최근 24시간 동안 해당하는 종목이 없습니다." : "이 종류의 상품이 없습니다."}</p>}</div></section></div>}
     {commandsOpen !== null && <CommandPanel initial={commandsOpen} instruments={instruments} portfolio={portfolio} orders={orders} homeCurrency={portfolio?.national_currency || user.currency || "NWX"} onClose={() => setCommandsOpen(null)} onDone={() => void refreshAccount().catch(() => undefined)} />}
     {accountSettingsOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setAccountSettingsOpen(false); }}><section className="account-modal" role="dialog" aria-modal="true" aria-labelledby="account-title"><div className="account-modal-head"><div><p className="eyebrow">HTS ACCOUNT</p><h2 id="account-title">아이디 설정</h2></div><button type="button" title="닫기" onClick={() => setAccountSettingsOpen(false)}>닫기</button></div><p className="account-description">로그인에 사용할 아이디를 설정합니다.</p><form className="account-form" onSubmit={saveHtsId}><label>아이디<input autoComplete="username" minLength={3} maxLength={32} pattern="[A-Za-z0-9_.\-]{3,32}" value={htsIdInput} onChange={(event) => setHtsIdInput(event.target.value)} placeholder="예: inazina_user" required /></label><p className="account-hint">영문, 숫자, 점, 밑줄, 하이픈으로 3~32자</p><label>현재 비밀번호<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label>{settingsMessage && <p className="account-success" role="status">{settingsMessage}</p>}{settingsError && <p className="account-error" role="alert">{settingsError}</p>}<div className="modal-actions"><button type="button" disabled={settingsBusy} onClick={() => setAccountSettingsOpen(false)}>닫기</button><button className="account-save" disabled={settingsBusy || !htsIdInput}>{settingsBusy ? "저장 중…" : htsId ? "아이디 변경" : "아이디 설정"}</button></div></form></section></div>}
   </div>;
@@ -654,10 +666,3 @@ function groupAmount(value: string) {
   return fraction === undefined ? grouped : `${grouped}.${fraction}`;
 }
 
-function Backdrop() {
-  return <>
-    <div className="wall" aria-hidden="true" />
-    <div className="blob b1" aria-hidden="true" />
-    <div className="blob b2" aria-hidden="true" />
-  </>;
-}
