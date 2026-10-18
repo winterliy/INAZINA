@@ -282,9 +282,53 @@ def board_cleanup():
         board.cleanup_files(connection, BOARD_FILES_DIR)
 
 
+def publish_due_news(post_id=None):
+    """Publish news whose time has come: register its market event, then show it.
+
+    The board connection is closed while the event is created (that opens its
+    own write transaction on the same database). With ``post_id`` (news just
+    written to go out now) a failure deletes the post and raises the reason;
+    scheduled news that fails stays hidden as 'failed' for administrators.
+    """
+    with board_db() as connection:
+        due = [item for item in board.due_news(connection) if post_id is None or item["post_id"] == post_id]
+    published = 0
+    for item in due:
+        created = {}
+        try:
+            success, message = domain().admin_manager.create_market_event(
+                item["author_id"], item["event_type"], item["severity"], item["asset_code"], item["duration_seconds"],
+                target_price=item["target_price"], created=created, stacking=True)  # news adds up
+        except (ValueError, TypeError) as exc:
+            success, message = False, str(exc)
+        with board_db() as connection:
+            if success and created.get("event_id"):
+                board.mark_news(connection, item["post_id"], created["event_id"])
+                _audit_db(connection, item["author_id"], "board.news.publish",
+                          {"post_id": item["post_id"], "event_id": created["event_id"]})
+                published += 1
+            elif post_id is not None:
+                connection.execute("DELETE FROM board_posts WHERE post_id=?", (item["post_id"],))
+            else:
+                board.mark_news(connection, item["post_id"], error=plain_message(message))
+        if not success and post_id is not None:
+            raise ValueError("뉴스의 시장 영향을 등록하지 못해 글을 올리지 않았습니다: " + plain_message(message))
+    return published
+
+
+def plain_message(message):
+    return re.sub(r"^[❌✅⚠️\s]+", "", str(message or "")).strip()
+
+
 def board_post(path, user, payload):
     ip = payload.get("clientIp")
     parts = path.removeprefix("/internal/board/").split("/")
+    if parts == ["posts"] and payload.get("news"):
+        result = _board_post(parts, user, payload, ip)
+        publish = payload["news"].get("publishEpoch") if isinstance(payload["news"], dict) else None
+        if not publish or publish <= time.time():
+            publish_due_news(result["postId"])
+        return result
     if parts[-1] in {"delete", "edit"}:
         try:
             return _board_post(parts, user, payload, ip)
@@ -4245,6 +4289,15 @@ def main():
                 return
 
     threading.Thread(target=apply_documents, name="document-revisions", daemon=True).start()
+
+    def publish_news():
+        while not stopping.wait(15):
+            try:
+                publish_due_news()
+            except Exception:
+                logging.getLogger("inazina.news").exception("publishing scheduled news failed")
+
+    threading.Thread(target=publish_news, name="board-news", daemon=True).start()
 
     def stop(_signum, _frame):
         if not stopping.is_set():

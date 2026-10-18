@@ -21,9 +21,18 @@ const view = document.getElementById("view")!;
 
 function renderNav(active: string) {
   const all = threadEntries();
-  document.getElementById("nav")!.innerHTML = PAGES.map(([id, label]) =>
-    `<a href="#/${id}" class="${id === active ? "active" : ""}">${escapeHtml(label)}${id === "chat" && all.length ? `<span class="count">${all.length}</span>` : ""}</a>`).join("");
+  document.getElementById("nav")!.innerHTML = PAGES.map(([id, label], i) =>
+    `<a href="#/${id}" class="tab${id === active ? " active" : ""}"${id === active ? ' aria-current="page"' : ""}><span class="tab-no">${i + 1}</span>${escapeHtml(label)}${id === "chat" && all.length ? `<span class="count">${all.length}</span>` : ""}</a>`).join("");
+  const file = PAGES.find(([id]) => id === active)?.[2];
+  document.getElementById("where")!.textContent = file ? `${active} · ${file}` : active;
+  document.querySelector(".tabs .active")?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
+
+/** A block progress bar, e.g. ███░░░ — the TUI design system's "progress" primitive. */
+const bar = (part: number, total: number, width = 12) => {
+  const filled = total ? Math.round((part / total) * width) : 0;
+  return `<span class="bar" aria-label="${part}/${total}">${"█".repeat(filled)}<span>${"░".repeat(width - filled)}</span></span>`;
+};
 
 function docPage(file: string, intro = "") {
   return `<article class="doc">${intro}${markdown(files[file] || "_(파일이 비어 있습니다)_")}<p class="file-path">docs/wide-learning/${escapeHtml(file)}</p></article>`;
@@ -43,6 +52,7 @@ function statusPage(): string {
       <header><span class="tid">${escapeHtml(topic.id)}</span><span class="chip status-${escapeHtml(topic.fields.status ?? "")}">${escapeHtml(topic.fields.status ?? "")}</span></header>
       <h3>${inline(topic.title)}</h3>
       <p>${inline(topic.fields.question ?? "")}</p>
+      <p class="progress">${bar(mine.filter((claim) => finalStatus(claim, all) === "verified").length, mine.length)} <span class="muted">확정 ${mine.filter((claim) => finalStatus(claim, all) === "verified").length}/${mine.length}</span></p>
       <footer><span>Laplace ${escapeHtml(topic.fields.laplace ?? "-")}장</span>
         <span>${breakdown.length ? breakdown.map(([status, n]) => `<span class="chip status-${status}">${status} ${n}</span>`).join(" ") : "주장 없음"}</span>
         ${mine.length ? `<a href="#/chat?topic=${escapeHtml(topic.id)}">대화 보기 →</a>` : ""}</footer>
@@ -197,8 +207,8 @@ async function refresh(force = false) {
       fetch("/wl-api/check", { cache: "no-store" }).then((response) => response.json() as Promise<{ claude: string; codex: string }>),
     ]);
     const next = JSON.stringify([data.files, checks]);
-    document.getElementById("sync")!.textContent = `마지막 확인 ${new Date().toLocaleTimeString("ko-KR")} · 파일을 저장하면 바로 반영`;
-    if (next === signature && !force) return;
+    const stamp = () => { document.getElementById("sync")!.textContent = `${threadEntries().length} records · 확인 ${new Date().toLocaleTimeString("ko-KR")}${settings.autoRefresh ? " · live" : ""}`; };
+    if (next === signature && !force) { stamp(); return; }
     signature = next;
     const before = new Set(threadEntries().map((entry) => entry.id));
     const first = !Object.keys(files).length;
@@ -209,13 +219,25 @@ async function refresh(force = false) {
     }
     check = checks;
     render();
+    stamp();
   } catch {
-    document.getElementById("sync")!.textContent = "파일을 읽지 못했습니다. 개발 서버를 확인해 주세요.";
+    document.getElementById("sync")!.textContent = "✕ 파일을 읽지 못했습니다 — 개발 서버 확인";
   } finally {
     loading = false;
     button.disabled = false;
   }
 }
+
+// ---------------------------------------------------------------- keys
+// 1–9 switch tabs, r refreshes, "," opens settings (ignored while typing).
+document.addEventListener("keydown", (event) => {
+  const target = event.target as HTMLElement;
+  if (event.metaKey || event.ctrlKey || event.altKey || target.closest("input, select, textarea, dialog")) return;
+  const page = PAGES[Number(event.key) - 1];
+  if (page) location.hash = `#/${page[0]}`;
+  else if (event.key === "r") void refresh(true);
+  else if (event.key === ",") openSettings();
+});
 
 // ---------------------------------------------------------------- settings
 const dialog = document.getElementById("settings-dialog") as HTMLDialogElement;
@@ -236,7 +258,6 @@ function renderSettings() {
     option("chat", "대화 보기", [["bubble", "말풍선"], ["log", "터미널 로그"]]),
     option("font", "본문 글꼴", [["sans", "Noto Sans KR"], ["mono", "JetBrains Mono"]]),
     option("zoom", "글자 크기", ZOOMS.map((zoom) => [zoom, `${zoom}%`])),
-    option("frame", "터미널 창 프레임", [[true, "켜기"], [false, "끄기"]]),
     option("autoRefresh", "자동 새로고침", [[true, "켜기"], [false, "끄기 (버튼만)"]]),
     option("home", "시작 페이지", PAGES.map(([id, label]) => [id, label])),
     `<h3 class="rows-head">대화 기록</h3>`,
@@ -268,7 +289,7 @@ dialog.addEventListener("change", (event) => {
   update({ [key]: typeof DEFAULTS[key] === "boolean" ? raw === "true" : typeof DEFAULTS[key] === "number" ? Number(raw) : raw });
 });
 document.getElementById("settings-reset")!.addEventListener("click", () => update({ ...DEFAULTS }));
-const openSettings = () => { renderSettings(); dialog.showModal(); };
+function openSettings() { renderSettings(); dialog.showModal(); }
 document.getElementById("settings")!.addEventListener("click", openSettings);
 view.addEventListener("click", (event) => { if ((event.target as Element).closest("[data-open-settings]")) openSettings(); });
 

@@ -5,8 +5,11 @@ import { DateTimePicker } from "./DateTimePicker";
 
 type Category = { category_id: number; name: string };
 // suspension: the notice while an administrator has stopped writing on the board.
-type BoardInfo = { board_id: string; name: string; description: string; admin_only: number; allow_asset: number; secret: number; suspension: string | null; categories: Category[] };
-type Summary = { post_id: number; board: string; board_name: string; category_id: number | null; category_name: string | null; notice: number; author_admin: number; title: string; asset_code: string | null; pinned: number; anonymous: number; view_count: number; created_epoch: number; updated_epoch: number; author: string; comment_count: number; like_count: number; dislike_count: number; mine: boolean; has_attachments: number; has_poll: number };
+type BoardInfo = { board_id: string; name: string; description: string; admin_only: number; allow_asset: number; secret: number; news: number; suspension: string | null; categories: Category[] };
+// News moves the market from publication: administrators see its impact, readers only that it is news.
+type News = { status: "scheduled" | "live" | "ended" | "failed"; publish_epoch: number; event_type?: "good" | "bad"; severity?: number; asset_code?: string | null; duration_seconds?: number; target_price?: number | null; error?: string | null };
+type NewsDraft = { eventType: "good" | "bad"; severity: string; minutes: string; targetPrice: string; publish: number | null };
+type Summary = { post_id: number; board: string; board_name: string; category_id: number | null; category_name: string | null; notice: number; author_admin: number; title: string; asset_code: string | null; pinned: number; anonymous: number; view_count: number; created_epoch: number; updated_epoch: number; author: string; comment_count: number; like_count: number; dislike_count: number; mine: boolean; has_attachments: number; has_poll: number; news_status: News["status"] | null; news_publish_epoch: number | null };
 type Reaction = 1 | -1 | 0;
 type Attachment = { attachment_id: number; kind: "file" | "link"; name: string; url: string | null; size: number | null };
 type PollOption = { option_id: number; label: string; votes: number; voters?: string[] };
@@ -15,11 +18,12 @@ type Upload = { attachmentId: number; name: string; size: number };
 type PollDraft = { question: string; options: string[]; anonymous: boolean; multiple: boolean; closes: number | null };
 // parent_id null: a top-level comment. removed: a comment hidden by moderation, kept as the anchor of its replies.
 type Comment = { comment_id: number; parent_id: number | null; removed: boolean; body: string; created_epoch: number; author: string; author_admin: number; mine: boolean; like_count: number; dislike_count: number; my_reaction: Reaction };
-type Post = Summary & { body: string; my_reaction: Reaction; comments: Comment[]; attachments: Attachment[]; poll: Poll | null };
+type Post = Summary & { body: string; my_reaction: Reaction; comments: Comment[]; attachments: Attachment[]; poll: Poll | null; news: News | null };
 type Page = { posts: Summary[]; total: number; page: number; pageSize: number; writeOpensEpoch?: number };
 type Draft = { postId: number | null; board: string; categoryId: number | null; title: string; body: string; assetCode: string; anonymous: boolean; pinned: boolean; notice: boolean;
   // Files uploaded for this draft, links, attachments to drop (editing) and a poll (new posts).
-  uploads: Upload[]; links: { title: string; url: string }[]; existing: Attachment[]; remove: number[]; poll: PollDraft | null };
+  uploads: Upload[]; links: { title: string; url: string }[]; existing: Attachment[]; remove: number[]; poll: PollDraft | null; news: NewsDraft | null };
+const NEWS_STATUS: Record<News["status"], string> = { scheduled: "예약", live: "게시됨", ended: "영향 종료", failed: "게시 실패" };
 const when = (epoch: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "short" }).format(epoch * 1000);
 const count = (value: number) => new Intl.NumberFormat("ko-KR").format(value);
 const bytes = (value: number | null) => !value ? "" : value < 1024 * 1024 ? `${Math.ceil(value / 1024)}KB` : `${(value / 1024 / 1024).toFixed(1)}MB`;
@@ -100,7 +104,9 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin }: { user
       closesEpoch: draft.poll.closes } : undefined;
     const body = { board: draft.board, categoryId: draft.categoryId, title: draft.title, body: draft.body,
       assetCode: boardInfo(draft.board)?.allow_asset ? draft.assetCode.trim() : "", anonymous: draft.anonymous, pinned: draft.pinned, notice: draft.notice,
-      attachments: draft.uploads.map((item) => item.attachmentId), links: draft.links.filter((link) => link.url.trim()), removeAttachments: draft.remove, ...(poll ? { poll } : {}) };
+      attachments: draft.uploads.map((item) => item.attachmentId), links: draft.links.filter((link) => link.url.trim()), removeAttachments: draft.remove, ...(poll ? { poll } : {}),
+      ...(draft.news && !draft.postId ? { news: { eventType: draft.news.eventType, severity: Math.round(Number(draft.news.severity)), durationSeconds: Math.round(Number(draft.news.minutes) * 60),
+        targetPrice: draft.news.targetPrice.trim() ? Math.round(Number(draft.news.targetPrice)) : null, publishEpoch: draft.news.publish } } : {}) };
     if (draft.postId) void write(`/api/board/posts/${draft.postId}/edit`, body, async () => { await open(draft.postId!); await loadList(); });
     else void write<{ postId: number }>("/api/board/posts", body, async (result) => { setPage(1); await loadList(); await open(result.postId); });
   }
@@ -142,7 +148,7 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin }: { user
     setPost(null);
     const first = writable[0]?.board_id ?? "";
     const target = board && writable.some((item) => item.board_id === board) ? board : first;
-    const empty = { uploads: [], links: [], existing: [], remove: [], poll: null };
+    const empty = { uploads: [], links: [], existing: [], remove: [], poll: null, news: null };
     setDraft(existing
       ? { ...empty, postId: existing.post_id, board: existing.board, categoryId: existing.category_id, title: existing.title, body: existing.body, assetCode: existing.asset_code ?? "", anonymous: existing.anonymous === 1, pinned: existing.pinned === 1, notice: existing.notice === 1, existing: existing.attachments }
       : { ...empty, postId: null, board: target, categoryId: target === board ? category : null, title: "", body: "", assetCode: asset, anonymous: false, pinned: false, notice: false });
@@ -228,7 +234,7 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin }: { user
           </form>
           {asset && <p className="board-filter">종목 <b>{asset}</b> 토론만 보는 중 <button type="button" onClick={() => { setAsset(""); setPage(1); }}>해제</button></p>}
           <ul>{list?.posts.map((item) => <li key={item.post_id}><button type="button" className={post?.post_id === item.post_id ? "board-item active" : "board-item"} onClick={() => void open(item.post_id)}>
-            <span className="board-item-title">{item.notice ? <em className="board-notice-label">[공지]</em> : item.pinned && item.board === board ? <em className="board-pin">고정</em> : null}{(!board || item.board !== board) && <em className="board-kind">{item.board_name}</em>}{item.category_name && <em className="board-kind">{item.category_name}</em>}{item.asset_code && <em className="board-kind">{item.asset_code}</em>}{item.title}{item.has_attachments ? <span className="board-icon" title="첨부 있음"> 📎</span> : null}{item.has_poll ? <span className="board-icon" title="설문 있음"> 📊</span> : null}{item.comment_count > 0 && <small> [{item.comment_count}]</small>}</span>
+            <span className="board-item-title">{item.notice ? <em className="board-notice-label">[공지]</em> : item.pinned && item.board === board ? <em className="board-pin">고정</em> : null}{(!board || item.board !== board) && <em className="board-kind">{item.board_name}</em>}{item.category_name && <em className="board-kind">{item.category_name}</em>}{item.asset_code && <em className="board-kind">{item.asset_code}</em>}{item.news_status ? <em className="board-news-label">📰{item.news_status === "scheduled" && item.news_publish_epoch ? ` 예약 ${when(item.news_publish_epoch)}` : item.news_status === "failed" ? " 게시 실패" : ""}</em> : null}{item.title}{item.has_attachments ? <span className="board-icon" title="첨부 있음"> 📎</span> : null}{item.has_poll ? <span className="board-icon" title="설문 있음"> 📊</span> : null}{item.comment_count > 0 && <small> [{item.comment_count}]</small>}</span>
             <span className="board-item-meta">{authorView(item.author, item.author_admin)} · {when(item.created_epoch)} · 조회 {count(item.view_count)} · 👍 {count(item.like_count)} · 👎 {count(item.dislike_count)}</span>
           </button></li>)}</ul>
           {list && !list.posts.length && <p className="board-empty">{term ? "검색 결과가 없습니다." : "아직 글이 없습니다."}</p>}
@@ -270,14 +276,30 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin }: { user
               </div> : <button type="button" className="board-add" onClick={() => setDraft({ ...draft, poll: { question: "", options: ["", ""], anonymous: true, multiple: false, closes: null } })}>+ 설문/투표</button>)}
               {draft.postId && <small className="board-hint">설문은 글을 쓸 때만 만들 수 있습니다.</small>}
             </fieldset>
+            {admin && !draft.postId && !!boardInfo(draft.board)?.news && (draft.news ? <fieldset className="board-extras board-news-draft">
+              <legend>📰 시장 영향 <small>게시하는 순간 시세에 반영</small></legend>
+              <div className="board-form-row">
+                <label>방향<select value={draft.news.eventType} onChange={(event) => setDraft({ ...draft, news: { ...draft.news!, eventType: event.target.value as "good" | "bad" } })}><option value="good">호재</option><option value="bad">악재</option></select></label>
+                <label>강도 (%)<input type="number" min={0} max={100} required value={draft.news.severity} onChange={(event) => setDraft({ ...draft, news: { ...draft.news!, severity: event.target.value } })} /></label>
+                <label>영향 시간 (분)<input type="number" min={1} max={10080} required value={draft.news.minutes} onChange={(event) => setDraft({ ...draft, news: { ...draft.news!, minutes: event.target.value } })} /></label>
+                <label>목표가 (선택)<input type="number" min={1} disabled={!draft.assetCode.trim()} placeholder={draft.assetCode.trim() ? "비우면 강도만큼" : "종목 코드를 먼저"} value={draft.news.targetPrice} onChange={(event) => setDraft({ ...draft, news: { ...draft.news!, targetPrice: event.target.value } })} /></label>
+              </div>
+              <small className="board-hint">대상: {draft.assetCode.trim() ? `종목 ${draft.assetCode.trim()}` : "시장 전체 (위 종목 코드를 비우면)"} · 강도는 움직이는 동안의 변동성이자 목표가가 없을 때의 목표 변동률입니다.</small>
+              <div className="board-check">예약 게시 <DateTimePicker value={draft.news.publish} min={Math.ceil(Date.now() / 1000) + 60} max={Math.floor(Date.now() / 1000) + 90 * 86400} placeholder="지금 바로 게시" onChange={(publish) => setDraft({ ...draft, news: { ...draft.news!, publish } })} /><small>예약하면 그 시각까지 관리자만 보고, 게시와 동시에 시세 영향이 시작됩니다.</small></div>
+              <button type="button" className="board-add" onClick={() => setDraft({ ...draft, news: null })}>시장 영향 빼기</button>
+            </fieldset> : <button type="button" className="board-add" onClick={() => setDraft({ ...draft, news: { eventType: "good", severity: "10", minutes: "60", targetPrice: "", publish: null } })}>📰 시장 영향 넣기</button>)}
             {admin && !draft.postId && <div className="board-admin-options"><label className="board-check"><input type="checkbox" checked={draft.pinned} onChange={(event) => setDraft({ ...draft, pinned: event.target.checked })} />이 게시판 맨 위에 고정</label><label className="board-check"><input type="checkbox" checked={draft.notice} onChange={(event) => setDraft({ ...draft, notice: event.target.checked })} />공지로 설정 (이 게시판 맨 위에 [공지] 표시)</label></div>}
             <div className="board-form-actions"><button type="button" onClick={() => setDraft(null)}>취소</button><button className="board-primary" disabled={busy}>{busy ? "저장 중…" : draft.postId ? "수정" : "등록"}</button></div>
           </form>}
 
           {!draft && post && <article className="board-post">
-            <p className="board-post-kind">{post.notice ? <b className="board-notice-label">[공지] </b> : null}{post.board_name}{post.category_name ? ` · ${post.category_name}` : ""}{post.asset_code ? ` · ${post.asset_code}` : ""}{post.pinned ? " · 고정" : ""}</p>
+            <p className="board-post-kind">{post.notice ? <b className="board-notice-label">[공지] </b> : null}{post.news ? <b className="board-news-label">📰 뉴스 </b> : null}{post.board_name}{post.category_name ? ` · ${post.category_name}` : ""}{post.asset_code ? ` · ${post.asset_code}` : ""}{post.pinned ? " · 고정" : ""}</p>
             <h3>{post.title}</h3>
             <p className="board-post-meta">{authorView(post.author, post.author_admin)} · {when(post.created_epoch)}{post.updated_epoch > post.created_epoch ? ` (수정 ${when(post.updated_epoch)})` : ""} · 조회 {count(post.view_count)}</p>
+            {admin && post.news?.event_type && <p className="board-news-impact">
+              시장 영향 · {post.news.event_type === "good" ? "호재" : "악재"} {post.news.severity}% · {post.news.asset_code || "시장 전체"} · {Math.round((post.news.duration_seconds ?? 0) / 60)}분{post.news.target_price ? ` · 목표가 ${count(post.news.target_price)}` : ""}
+              {" · "}{NEWS_STATUS[post.news.status]}{post.news.status === "scheduled" ? ` (${when(post.news.publish_epoch)} 게시)` : ""}{post.news.error ? ` — ${post.news.error}` : ""}
+              <small>뉴스를 지우거나 숨기면 이후 영향이 멈춥니다(이미 움직인 가격은 그대로).</small></p>}
             <div className="board-post-body">{post.body}</div>
             {post.attachments.length > 0 && <ul className="board-attachments" aria-label="첨부">{post.attachments.map((item) => <li key={item.attachment_id}>{item.kind === "file"
               ? <a href={`/api/board/files/${item.attachment_id}`} download>📎 {item.name} <small>{bytes(item.size)}</small></a>

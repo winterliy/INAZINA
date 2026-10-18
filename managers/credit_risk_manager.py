@@ -669,10 +669,60 @@ class CreditRiskManager:
                 "auroc": auc,
                 "method": "deterministic 20% SHA-256 borrower holdout; latest matured loan per borrower; borrower-level Wilson 95% interval; simulator outcomes, not an external independent validation set",
             })
+        temporal = {}
+        for record in borrower_records.values():
+            if float(record["calculated_epoch"]) < recent_cutoff:
+                continue
+            key = (record["issuer"], record["nationality"])
+            metric = temporal.setdefault(key, {"predicted": [], "observed": []})
+            metric["predicted"].append(record["pd"])
+            metric["observed"].append(record["observed"])
+        out_of_time_holdout = []
+        for (bank, country), metric in sorted(temporal.items()):
+            predictions, labels = metric["predicted"], metric["observed"]
+            count = len(predictions)
+            defaults = sum(labels)
+            observed_rate = defaults/count
+            z = 1.959963984540054
+            denominator = 1+(z*z/count)
+            center = (observed_rate+(z*z/(2*count)))/denominator
+            margin = math.sqrt(
+                observed_rate*(1-observed_rate)/count
+                +(z*z/(4*count*count))
+            )*z/denominator
+            ordered = sorted(zip(predictions, labels), key=lambda item: item[0])
+            positives, negatives = defaults, count-defaults
+            auc = None
+            if positives and negatives:
+                rank_sum = 0.0
+                start = 0
+                while start < count:
+                    end = start+1
+                    while end < count and ordered[end][0] == ordered[start][0]:
+                        end += 1
+                    rank = ((start+1)+end)/2
+                    rank_sum += rank*sum(int(label) for _, label in ordered[start:end])
+                    start = end
+                auc = (rank_sum-positives*(positives+1)/2)/(positives*negatives)
+            mean_pd = sum(predictions)/count
+            out_of_time_holdout.append({
+                "issuer": bank, "nationality": country, "borrowerCount": count,
+                "defaults": defaults, "meanPredictedPd": mean_pd,
+                "observedDefaultRate": observed_rate,
+                "observedRateLower95": max(0.0, center-margin),
+                "observedRateUpper95": min(1.0, center+margin),
+                "predictedPdWithinObserved95": center-margin <= mean_pd <= center+margin,
+                "brierScore": sum((pd-label)**2 for pd, label in zip(predictions, labels))/count,
+                "auroc": auc,
+                "cohortStartEpoch": recent_cutoff,
+                "cohortEndEpoch": epoch-horizon,
+                "method": "chronological out-of-time holdout; latest matured loan per borrower from 3–1y cohort; simulator outcomes, no external independent data",
+            })
         return {"issuer": issuer, "horizonDays": 365,
                 "maturedThroughEpoch": epoch-horizon, "groups": result,
                 "discrimination": discrimination, "stability": stability,
                 "borrowerHoldout": borrower_holdout,
+                "outOfTimeBorrowerHoldout": out_of_time_holdout,
                 "method": "most recent matured Stage 1/2 assessment per loan; includes only snapshots with a full 365-day outcome window; outcome is recorded default within the following 12 months; capped at 5000 loans; Wilson intervals use Kish effective sample size to discount repeated loans per borrower, as a conservative clustering approximation; simulator-only calibration diagnostic"}
 
     @staticmethod
@@ -821,15 +871,32 @@ class CreditRiskManager:
             "gdpGrowthPercent": float(row["real_gdp_growth_percent"] if row else 2.0),
             "unemploymentPercent": float(row["unemployment_percent"] if row else 5.0),
         }
-        shocks = {
+        # Illustrative macro-factor correlation assumptions (inflation, growth,
+        # unemployment). They are deliberately visible in the returned report;
+        # this simulator does not claim they were calibrated to market data.
+        correlations = ((1.0, -0.25, 0.10),
+                        (-0.25, 1.0, -0.55),
+                        (0.10, -0.55, 1.0))
+        independent_shocks = {
             "optimistic": (0.0, 0.5, -0.5),
             "base": (0.0, 0.0, 0.0),
             "downside": (0.5, -1.5, 1.5),
         }
-        if scenario_key not in shocks:
+        if scenario_key not in independent_shocks:
             raise ValueError("invalid_macro_scenario")
         horizon = max(1, min(30, int(math.ceil(float(horizon_years or 1)))))
-        inflation_shock, growth_shock, unemployment_shock = shocks[scenario_key]
+        # Lower-triangular Cholesky transform turns the scenario's independent
+        # factor shocks into jointly stressed macro shocks.
+        l00 = 1.0
+        l10 = correlations[1][0]
+        l11 = math.sqrt(1.0-l10*l10)
+        l20 = correlations[2][0]
+        l21 = (correlations[2][1]-l20*l10)/l11
+        l22 = math.sqrt(max(0.0, 1.0-l20*l20-l21*l21))
+        z0, z1, z2 = independent_shocks[scenario_key]
+        inflation_shock = l00*z0
+        growth_shock = l10*z0+l11*z1
+        unemployment_shock = l20*z0+l21*z1+l22*z2
         current_factor = cls._macro_pd_multiplier(conn, nationality)
         path = []
         for year in range(1, horizon+1):
@@ -852,7 +919,12 @@ class CreditRiskManager:
             /max(1e-9, current_factor), 0.5, 2.5,
         )
         return {"horizonYears": horizon, "relativePdMultiplier": relative_factor,
-                "path": path, "method": "deterministic scenario shocks fade in by 50% per year; simulator assumptions, not external forecasts"}
+                "path": path,
+                "macroFactorOrder": ["inflation", "real_gdp_growth", "unemployment"],
+                "macroFactorCorrelation": [list(row) for row in correlations],
+                "independentScenarioShocks": list(independent_shocks[scenario_key]),
+                "correlationCalibration": "illustrative_simulator_assumption_not_empirically_calibrated",
+                "method": "Cholesky-correlated deterministic scenario shocks fade in by 50% per year; simulator assumptions, not external forecasts"}
 
     @classmethod
     def origination_pd_12m(cls, conn, nationality, credit_score, dti, dsr, ltv):

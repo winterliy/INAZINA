@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from web_api import board
+import test_inazina as fixtures
 
 ADMIN = {"userId": "admin", "role": "admin"}
 ALICE = {"userId": "alice", "role": "user"}
@@ -311,6 +312,7 @@ class BoardStructureTests(unittest.TestCase):
     def test_the_last_board_cannot_be_deleted(self):
         board.admin_action(self.conn, "board", "notice", "delete", {})
         board.admin_action(self.conn, "board", "market", "delete", {})
+        board.admin_action(self.conn, "board", "news", "delete", {})
         with self.assertRaisesRegex(ValueError, "하나 이상"):
             board.admin_action(self.conn, "board", "free", "delete", {})
 
@@ -564,3 +566,154 @@ class SecretAndSuspendedBoardTests(unittest.TestCase):
         self.post(ALICE)
         with self.assertRaisesRegex(ValueError, "이후"):
             board.admin_action(self.conn, "board", "free", "suspend", {"until": 1})
+
+
+class BoardNewsTests(unittest.TestCase):
+    setUp, tearDown, post = BoardTests.setUp, BoardTests.tearDown, BoardTests.post
+
+    def news(self, **impact):
+        values = {"eventType": "good", "severity": 10, "durationSeconds": 3600, **impact}
+        return self.post(ADMIN, board="news", title="속보", news=values)
+
+    def market_tables(self):
+        self.conn.executescript("""
+            CREATE TABLE market_events (event_id INTEGER PRIMARY KEY, starts_epoch INTEGER, ends_epoch INTEGER);
+            CREATE TABLE market_event_targets (event_id INTEGER, asset_code TEXT, state TEXT);
+            INSERT INTO market_events VALUES (7, 0, 99999999999);
+            INSERT INTO market_event_targets VALUES (7, 'SELO', 'active');""")
+
+    def test_news_stays_hidden_until_published_then_reads_like_any_post(self):
+        post_id = self.news(publishEpoch=int(time.time()) + 3600)
+        self.assertEqual(board.list_posts(self.conn, viewer="bob")["total"], 0)
+        with self.assertRaises(ValueError):
+            board.read_post(self.conn, post_id, viewer="bob")
+        with self.assertRaises(ValueError):
+            board.react(self.conn, BOB, "post", post_id, 1)
+        admin_view = board.read_post(self.conn, post_id, viewer="admin", admin=True)
+        self.assertEqual((admin_view["news"]["status"], admin_view["news"]["event_type"]), ("scheduled", "good"))
+        self.assertEqual(board.due_news(self.conn), [])
+        due = board.due_news(self.conn, now=int(time.time()) + 3601)
+        self.assertEqual([item["post_id"] for item in due], [post_id])
+        board.mark_news(self.conn, post_id, event_id=7)
+        public = board.read_post(self.conn, post_id, viewer="bob")
+        self.assertEqual(public["news"], {"status": "live", "publish_epoch": public["news"]["publish_epoch"]})
+        self.assertEqual(board.list_posts(self.conn)["posts"][0]["news_status"], "live")
+        # Like other posts: reactions, comments and replies.
+        board.react(self.conn, BOB, "post", post_id, -1)
+        top = board.add_comment(self.conn, BOB, post_id, {"body": "c"}, "ip")
+        board.add_comment(self.conn, ALICE, post_id, {"body": "r", "parentId": top}, "ip")
+        self.assertEqual(board.read_post(self.conn, post_id)["comment_count"], 2)
+
+    def test_failed_publication_keeps_the_news_hidden(self):
+        post_id = self.news()
+        board.mark_news(self.conn, post_id, error="❌ 종목 없음")
+        with self.assertRaises(ValueError):
+            board.read_post(self.conn, post_id, viewer="bob")
+        self.assertEqual(board.read_post(self.conn, post_id, viewer="admin", admin=True)["news"]["status"], "failed")
+
+    def test_news_that_disappears_stops_its_market_event(self):
+        self.market_tables()
+        for remove in (lambda post_id: board.delete_post(self.conn, ADMIN, post_id),
+                       lambda post_id: board.admin_action(self.conn, "post", post_id, "hide"),
+                       lambda post_id: board.admin_action(self.conn, "post", post_id, "purge")):
+            self.conn.execute("UPDATE market_event_targets SET state='active'")
+            self.conn.execute("UPDATE market_events SET ends_epoch=99999999999")
+            post_id = self.news()
+            board.mark_news(self.conn, post_id, event_id=7)
+            remove(post_id)
+            self.assertEqual(self.conn.execute("SELECT state FROM market_event_targets").fetchone()[0], "superseded")
+            self.assertLessEqual(self.conn.execute("SELECT ends_epoch FROM market_events").fetchone()[0], time.time() + 1)
+
+    def test_news_hidden_by_reports_stops_its_market_event(self):
+        self.market_tables()
+        post_id = self.news()
+        board.mark_news(self.conn, post_id, event_id=7)
+        for name in ("bob", "carol", "dave"):
+            board.report(self.conn, {"userId": name, "role": "user"}, {"postId": post_id, "reason": "가짜"}, "ip")
+        self.assertEqual(self.conn.execute("SELECT state FROM market_event_targets").fetchone()[0], "superseded")
+        self.assertEqual(self.conn.execute("SELECT status FROM board_news").fetchone()[0], "ended")
+
+    def test_news_is_validated_and_admin_only(self):
+        with self.assertRaisesRegex(ValueError, "관리자"):
+            self.post(BOB, board="free", news={"eventType": "good", "severity": 1, "durationSeconds": 60})
+        with self.assertRaisesRegex(ValueError, "뉴스 게시판이 아닙니다"):
+            self.post(ADMIN, board="free", news={"eventType": "good", "severity": 1, "durationSeconds": 60})
+        for impact, message in (({"eventType": "maybe"}, "호재 또는 악재"), ({"severity": 101}, "강도"),
+                                ({"durationSeconds": 10}, "영향 시간"), ({"targetPrice": 100}, "목표가"),
+                                ({"publishEpoch": int(time.time()) + 100 * 86400}, "90일")):
+            with self.assertRaisesRegex(ValueError, message):
+                self.news(**impact)
+        # A target price needs an instrument.
+        post_id = self.post(ADMIN, board="news", assetCode="SELO", news={"eventType": "bad", "severity": 5, "durationSeconds": 60, "targetPrice": 900})
+        self.assertEqual(board.read_post(self.conn, post_id, admin=True)["news"]["asset_code"], "SELO")
+
+
+class NewsMarketIntegrationTests(unittest.TestCase):
+    """A real market event from create_market_event ends when its news goes away."""
+    setUp, tearDown, seed = fixtures.InazinaTests.setUp, fixtures.InazinaTests.tearDown, fixtures.InazinaTests.seed
+
+    def test_deleting_news_supersedes_the_registered_event(self):
+        self.seed()
+        conn = self.db.users.conn
+        board.ensure_tables(conn)
+        created = {}
+        ok, message = self.bot.admin_mgr.create_market_event("admin", "good", 10, None, 3600, created=created)
+        self.assertTrue(ok, message)
+        event_id = created["event_id"]
+        self.assertGreater(conn.execute("SELECT COUNT(*) FROM market_event_targets WHERE event_id=? AND state='active'", (event_id,)).fetchone()[0], 0)
+        opens, board.WRITE_OPENS_EPOCH = board.WRITE_OPENS_EPOCH, 0
+        try:
+            post_id = board.create_post(conn, {"userId": "admin", "role": "admin"},
+                                        {"board": "news", "title": "속보", "body": "b", "news": {"eventType": "good", "severity": 10, "durationSeconds": 3600}}, "ip")
+        finally:
+            board.WRITE_OPENS_EPOCH = opens
+        board.mark_news(conn, post_id, event_id)
+        board.delete_post(conn, {"userId": "admin", "role": "admin"}, post_id)
+        conn.commit()
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM market_event_targets WHERE event_id=? AND state='active'", (event_id,)).fetchone()[0], 0)
+        self.assertLessEqual(conn.execute("SELECT ends_epoch FROM market_events WHERE event_id=?", (event_id,)).fetchone()[0], time.time() + 1)
+
+
+class StackingNewsEventTests(unittest.TestCase):
+    """News events add up on the price engine; an ordinary event still replaces them."""
+    setUp, tearDown, seed = fixtures.InazinaTests.setUp, fixtures.InazinaTests.tearDown, fixtures.InazinaTests.seed
+
+    def active(self, code):
+        return [row[0] for row in self.db.system.execute(
+            "SELECT event_id FROM market_event_targets WHERE asset_code=? AND state='active' ORDER BY event_id", (code,))]
+
+    def event(self, code, severity, now, stacking=True, duration=1000):
+        created = {}
+        ok, message = self.bot.admin_mgr.create_market_event("admin", "good", severity, code, duration, now=now,
+                                                            created=created, stacking=stacking)
+        self.assertTrue(ok, message)
+        return created["event_id"]
+
+    def price(self, code):
+        return self.bot.market_mgr.get_asset_info(code)["price"]
+
+    def test_two_news_on_one_asset_compound_and_removing_one_keeps_the_other(self):
+        self.seed()
+        code = self.db.system.execute_one("SELECT code FROM market_assets WHERE status='active' AND type='stock' LIMIT 1") \
+            or self.db.system.execute_one("SELECT company_code FROM company WHERE status='active' LIMIT 1")
+        code = code[0]
+        start = int(time.time())
+        first = self.event(code, 10, start)
+        second = self.event(code, 10, start)
+        self.assertEqual(self.active(code), [first, second])  # the second did not stop the first
+        before = self.price(code)
+        self.bot.market_mgr.update_prices(now=start + 1000)
+        after = self.price(code)
+        # Two +10% bridges over the same period: about +21%, not +10%.
+        self.assertGreater(after / before, 1.17)
+        # Removing one news stops only its share.
+        third, fourth = self.event(code, 10, start + 1000), self.event(code, 20, start + 1000)
+        self.db.system.execute("UPDATE market_event_targets SET state='superseded' WHERE event_id=?", (fourth,))
+        base = self.price(code)
+        self.bot.market_mgr.update_prices(now=start + 2000)
+        ratio = self.price(code) / base
+        self.assertGreater(ratio, 1.07)
+        self.assertLess(ratio, 1.14)
+        # An ordinary administrator event still replaces whatever is running.
+        ordinary = self.event(code, 5, start + 2000, stacking=False)
+        self.assertEqual(self.active(code), [ordinary])

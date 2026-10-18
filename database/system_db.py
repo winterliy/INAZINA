@@ -166,6 +166,9 @@ class SystemDB(DBManager):
         if "volatility_percent" not in event_columns:
             self.execute("ALTER TABLE market_events ADD COLUMN volatility_percent REAL "
                          "CHECK(volatility_percent BETWEEN 0 AND 100)")
+        if "stacking" not in event_columns:
+            # 1: the event adds to running events instead of replacing them (news).
+            self.execute("ALTER TABLE market_events ADD COLUMN stacking INTEGER NOT NULL DEFAULT 0 CHECK(stacking IN (0,1))")
         self.execute("CREATE INDEX IF NOT EXISTS idx_market_events_active ON market_events(ends_epoch, starts_epoch)")
         # One row is the complete current state of one exchange: its index and
         # its trading session.  Index components/history remain separate

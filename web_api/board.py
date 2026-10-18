@@ -23,7 +23,12 @@ DEFAULT_BOARDS = (
     ("notice", "공지", "운영진이 알리는 소식입니다.", 1, 0, 0),
     ("free", "자유", "자유롭게 이야기하는 곳입니다.", 0, 0, 1),
     ("market", "시장 토론", "종목 코드를 붙여 종목별로 이야기합니다.", 0, 1, 2),
+    ("news", "뉴스", "시장 소식입니다. 뉴스는 시세에 영향을 줄 수 있습니다.", 1, 1, 3),
 )
+# Boards whose administrators' posts may carry a market impact (뉴스).
+DEFAULT_NEWS_BOARDS = ("news",)
+NEWS_LONGEST_SECONDS = 604_800      # a market event lasts at most 7 days
+NEWS_SCHEDULE_SECONDS = 90 * 86400  # publication can be scheduled up to 90 days ahead
 BOARD_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 BOARD_NAME_MAX, BOARD_DESCRIPTION_MAX, CATEGORY_NAME_MAX = 30, 200, 20
 PAGE_SIZE = 20
@@ -120,12 +125,14 @@ def ensure_tables(connection):
     """)
     board_columns = {row[1] for row in connection.execute("PRAGMA table_info(board_boards)")}
     for column, definition in (("secret", "INTEGER NOT NULL DEFAULT 0"), ("suspended", "INTEGER NOT NULL DEFAULT 0"),
-                               ("suspended_reason", "TEXT NOT NULL DEFAULT ''"), ("suspended_until", "INTEGER")):
+                               ("suspended_reason", "TEXT NOT NULL DEFAULT ''"), ("suspended_until", "INTEGER"),
+                               ("news", "INTEGER NOT NULL DEFAULT 0")):
         if column not in board_columns:
             connection.execute(f"ALTER TABLE board_boards ADD COLUMN {column} {definition}")
     connection.executemany(
         "INSERT OR IGNORE INTO board_boards(board_id,name,description,admin_only,allow_asset,sort_order,created_epoch) "
         "VALUES (?,?,?,?,?,?,0)", DEFAULT_BOARDS)
+    connection.executemany("UPDATE board_boards SET news=1 WHERE board_id=? AND created_epoch=0", [(b,) for b in DEFAULT_NEWS_BOARDS])
     connection.commit()
     existing = connection.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='board_posts'").fetchone()
     if not existing:
@@ -197,6 +204,20 @@ def ensure_tables(connection):
             created_epoch INTEGER NOT NULL,
             PRIMARY KEY(option_id, user_id));
         CREATE INDEX IF NOT EXISTS idx_board_poll_votes_poll ON board_poll_votes(poll_id, user_id);
+        -- 뉴스: a post that moves the market. It stays hidden (status 'scheduled')
+        -- until publish_epoch, when the server registers its market event; the
+        -- event ends as soon as the post is deleted or hidden.
+        CREATE TABLE IF NOT EXISTS board_news (
+            post_id INTEGER PRIMARY KEY REFERENCES board_posts(post_id) ON DELETE CASCADE,
+            event_type TEXT NOT NULL CHECK(event_type IN ('good','bad')),
+            severity INTEGER NOT NULL CHECK(severity BETWEEN 0 AND 100),
+            asset_code TEXT,
+            duration_seconds INTEGER NOT NULL CHECK(duration_seconds BETWEEN 60 AND 604800),
+            target_price INTEGER,
+            publish_epoch INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'scheduled' CHECK(status IN ('scheduled','live','ended','failed')),
+            event_id INTEGER, error TEXT);
+        CREATE INDEX IF NOT EXISTS idx_board_news_due ON board_news(status, publish_epoch);
     """)
     columns = {row[1] for row in connection.execute("PRAGMA table_info(board_comments)")}
     # Replies: a comment may answer one top-level comment of the same post.
@@ -362,11 +383,20 @@ def _asset(connection, board, code):
 
 
 def _visible_post(connection, post_id, user_id, admin):
-    """The post row when its board is visible to the viewer; hidden boards look like missing posts."""
+    """The post row when the viewer may see it: its board is visible to them and,
+    unless they are an administrator, it is not news waiting for publication."""
     row = connection.execute("SELECT * FROM board_posts WHERE post_id=?", (post_id,)).fetchone()
-    if not row or not _can_see(connection, _board(connection, row["board"]), user_id, admin):
+    if not row or not _can_see(connection, _board(connection, row["board"]), user_id, admin) or (
+            not admin and _unpublished(connection, post_id)):
         raise ValueError("글을 찾을 수 없거나 숨겨진 글입니다.")
     return row
+
+
+_UNPUBLISHED = "EXISTS(SELECT 1 FROM board_news n WHERE n.post_id=p.post_id AND n.status IN ('scheduled','failed'))"
+
+
+def _unpublished(connection, post_id):
+    return connection.execute("SELECT 1 FROM board_news WHERE post_id=? AND status IN ('scheduled','failed')", (post_id,)).fetchone() is not None
 
 
 def _post_for(connection, user, post_id, frozen_too=False):
@@ -400,7 +430,9 @@ _PUBLIC_POST = (
     "(SELECT COUNT(*) FROM board_post_reactions r WHERE r.post_id=p.post_id AND r.value=1) AS like_count,"
     "(SELECT COUNT(*) FROM board_post_reactions r WHERE r.post_id=p.post_id AND r.value=-1) AS dislike_count,"
     "EXISTS(SELECT 1 FROM board_attachments a WHERE a.post_id=p.post_id) AS has_attachments,"
-    "EXISTS(SELECT 1 FROM board_polls v WHERE v.post_id=p.post_id) AS has_poll "
+    "EXISTS(SELECT 1 FROM board_polls v WHERE v.post_id=p.post_id) AS has_poll,"
+    "(SELECT n.status FROM board_news n WHERE n.post_id=p.post_id) AS news_status,"
+    "(SELECT n.publish_epoch FROM board_news n WHERE n.post_id=p.post_id) AS news_publish_epoch "
     "FROM board_posts p LEFT JOIN users u ON u.user_id=p.author_id "
     "JOIN board_boards b ON b.board_id=p.board LEFT JOIN board_categories k ON k.category_id=p.category_id ")
 REMOVED = {"hidden": "숨겨진 댓글입니다."}
@@ -453,6 +485,8 @@ def list_posts(connection, board=None, search="", asset_code=None, page=1, viewe
         _visible_board(connection, board, viewer, admin)
     page = max(1, min(_id(page, "페이지"), 10_000))
     where, params = ["p.status='active'", _VISIBLE], [ANONYMOUS, 1 if admin else 0, viewer or ""]
+    if not admin:
+        where.append(f"NOT {_UNPUBLISHED}")
     if board:
         where.append("p.board=?"); params.append(board)
     if category not in (None, ""):
@@ -513,6 +547,9 @@ def read_post(connection, post_id, viewer=None, count_view=False, admin=False):
         "SELECT attachment_id,kind,name,url,size FROM board_attachments WHERE post_id=? ORDER BY attachment_id", (post_id,))]
     poll = connection.execute("SELECT * FROM board_polls WHERE post_id=?", (post_id,)).fetchone()
     post["poll"] = _poll_view(connection, poll, viewer) if poll else None
+    news = connection.execute("SELECT * FROM board_news WHERE post_id=?", (post_id,)).fetchone()
+    # Readers only learn that it is news; its direction and strength are for administrators.
+    post["news"] = (dict(news) if admin else {"status": news["status"], "publish_epoch": news["publish_epoch"]}) if news else None
     return post
 
 
@@ -530,6 +567,7 @@ def create_post(connection, user, payload, ip):
     category = _category(connection, board["board_id"], payload.get("categoryId"))
     asset = _asset(connection, board, payload.get("assetCode"))
     extras = _extras(user, payload)  # attachments and poll are checked before anything is written
+    news = _news_values(board, user, payload.get("news"), asset)
     _throttle(connection, "board_posts", user["userId"], POSTS_PER_MINUTE, "글")
     now = int(time.time())
     # Only administrators may pin a post or make it a 공지 (also later, from the post).
@@ -540,6 +578,10 @@ def create_post(connection, user, payload, ip):
         (board["board_id"], category, user["userId"], 1 if admin else 0, _flag(payload.get("anonymous")),
          title, body, asset, pinned, notice, _ip(ip), now, now))
     post_id = cursor.lastrowid
+    if news:
+        connection.execute(
+            "INSERT INTO board_news(post_id,event_type,severity,asset_code,duration_seconds,target_price,publish_epoch) VALUES (?,?,?,?,?,?,?)",
+            (post_id, news["eventType"], news["severity"], asset, news["durationSeconds"], news["targetPrice"], news["publishEpoch"]))
     _attach(connection, user, post_id, extras)
     if extras["poll"]:
         _create_poll(connection, post_id, extras["poll"])
@@ -573,7 +615,9 @@ def delete_post(connection, user, post_id):
     row = _post(connection, _id(post_id))
     if row["author_id"] != user["userId"]:
         raise ValueError("본인이 쓴 글만 삭제할 수 있습니다.")
-    # Comments, replies, reactions and reports go with it (ON DELETE CASCADE).
+    # Comments, replies, reactions and reports go with it (ON DELETE CASCADE);
+    # news first stops moving the market.
+    end_news(connection, [row["post_id"]])
     connection.execute("DELETE FROM board_posts WHERE post_id=?", (row["post_id"],))
 
 
@@ -678,6 +722,8 @@ def report(connection, user, payload, ip):
         f"SELECT COUNT(DISTINCT reporter_id) FROM board_reports WHERE {key}=? AND status='new'", (target,)).fetchone()[0]
     if open_reports >= AUTO_HIDE_REPORTS:
         connection.execute(f"UPDATE {table} SET status='hidden',hidden_reason='reports' WHERE {key}=? AND status='active'", (target,))
+        if table == "board_posts":
+            end_news(connection, [target])
 
 
 # ---------------------------------------------------------------------------
@@ -699,7 +745,9 @@ def admin_list(connection, status="all", reported=False, search=""):
         "p.pinned,p.notice,p.author_admin,p.status,p.hidden_reason,p.anonymous,"
         "p.author_id,COALESCE(u.nickname,'') AS nickname,p.author_ip,p.view_count,p.created_epoch,"
         "(SELECT COUNT(*) FROM board_comments c WHERE c.post_id=p.post_id AND c.status='active') AS comment_count,"
-        "(SELECT COUNT(*) FROM board_reports r WHERE r.post_id=p.post_id AND r.status='new') AS open_reports "
+        "(SELECT COUNT(*) FROM board_reports r WHERE r.post_id=p.post_id AND r.status='new') AS open_reports,"
+        "(SELECT n.status FROM board_news n WHERE n.post_id=p.post_id) AS news_status,"
+        "(SELECT n.publish_epoch FROM board_news n WHERE n.post_id=p.post_id) AS news_publish_epoch "
         "FROM board_posts p LEFT JOIN users u ON u.user_id=p.author_id JOIN board_boards b ON b.board_id=p.board "
         f"LEFT JOIN board_categories k ON k.category_id=p.category_id {'WHERE ' + ' AND '.join(where) if where else ''} "
         "ORDER BY p.post_id DESC LIMIT 200", params).fetchall()
@@ -765,6 +813,8 @@ def admin_action(connection, kind, target, action, payload=None):
         raise ValueError("대상 종류를 확인해주세요.")
     if action not in statements:
         raise ValueError("작업을 확인해주세요.")
+    if kind == "post" and action in {"hide", "purge"}:
+        end_news(connection, [target])  # news that disappears stops moving the market
     if kind == "comment" and action == "purge":
         # Replies to a purged comment stay, as ordinary comments.
         connection.execute("UPDATE board_comments SET parent_id=NULL WHERE parent_id=?", (target,))
@@ -784,14 +834,14 @@ def _board_action(connection, board_id, action, payload):
             raise ValueError("이미 있는 게시판 ID입니다.")
         values = _board_values(connection, payload, None)
         connection.execute(
-            "INSERT INTO board_boards(board_id,name,description,admin_only,allow_asset,sort_order,secret,created_epoch) "
-            "VALUES (?,?,?,?,?,?,?,?)", (board_id, *values, int(time.time())))
+            "INSERT INTO board_boards(board_id,name,description,admin_only,allow_asset,sort_order,secret,news,created_epoch) "
+            "VALUES (?,?,?,?,?,?,?,?,?)", (board_id, *values, int(time.time())))
         return 1
     board = _board(connection, board_id)
     if action == "edit":
         values = _board_values(connection, payload, board["board_id"])
         return connection.execute(
-            "UPDATE board_boards SET name=?,description=?,admin_only=?,allow_asset=?,sort_order=?,secret=? WHERE board_id=?",
+            "UPDATE board_boards SET name=?,description=?,admin_only=?,allow_asset=?,sort_order=?,secret=?,news=? WHERE board_id=?",
             (*values, board["board_id"])).rowcount
     if action == "suspend":
         # Writing stops (reading and reports go on); administrators still write. No end time: until resumed.
@@ -844,7 +894,7 @@ def _board_values(connection, payload, own_id):
     if len(description) > BOARD_DESCRIPTION_MAX:
         raise ValueError(f"설명은 {BOARD_DESCRIPTION_MAX}자 이하로 입력해주세요.")
     return (name, description, _flag(payload.get("adminOnly")), _flag(payload.get("allowAsset")),
-            _order(payload.get("sortOrder")), _flag(payload.get("secret")))
+            _order(payload.get("sortOrder")), _flag(payload.get("secret")), _flag(payload.get("news")))
 
 
 def _order(value):
@@ -908,6 +958,71 @@ def register_upload(connection, user, payload):
     return connection.execute(
         "INSERT INTO board_attachments(post_id,uploader_id,kind,name,stored_name,size,sha256,created_epoch) "
         "VALUES (NULL,?,'file',?,?,?,?,?)", (user["userId"], name, stored, size, sha256, int(time.time()))).lastrowid
+
+
+def _news_values(board, user, news, asset):
+    """Validate a news post's market impact; the market event itself is registered at publication."""
+    if not news:
+        return None
+    if user["role"] != "admin":
+        raise ValueError("뉴스는 관리자만 쓸 수 있습니다.")
+    if not board["news"]:
+        raise ValueError(f"{board['name']} 게시판은 뉴스 게시판이 아닙니다.")
+    if not isinstance(news, dict) or news.get("eventType") not in {"good", "bad"}:
+        raise ValueError("호재 또는 악재를 골라 주세요.")
+    severity, duration, target = news.get("severity"), news.get("durationSeconds"), news.get("targetPrice")
+    if isinstance(severity, bool) or not isinstance(severity, int) or not 0 <= severity <= 100:
+        raise ValueError("강도는 0~100 사이 정수로 입력해주세요.")
+    if isinstance(duration, bool) or not isinstance(duration, int) or not 60 <= duration <= NEWS_LONGEST_SECONDS:
+        raise ValueError("영향 시간은 1분~7일 사이로 정해 주세요.")
+    if target is not None and (isinstance(target, bool) or not isinstance(target, int) or target < 1 or not asset):
+        raise ValueError("목표가는 종목을 정한 뉴스에서 1 이상의 정수로 입력해주세요.")
+    now = int(time.time())
+    publish = news.get("publishEpoch")
+    if publish in (None, ""):
+        publish = now
+    elif isinstance(publish, bool) or not isinstance(publish, (int, float)) or not now - 60 <= publish <= now + NEWS_SCHEDULE_SECONDS:
+        raise ValueError("예약 게시는 지금부터 90일 안으로 정해 주세요.")
+    return {"eventType": news["eventType"], "severity": severity, "durationSeconds": duration,
+            "targetPrice": target, "publishEpoch": max(now, int(publish))}
+
+
+def due_news(connection, now=None):
+    """News posts whose publication time has come, oldest first."""
+    return [dict(row) for row in connection.execute(
+        "SELECT n.*,p.author_id FROM board_news n JOIN board_posts p ON p.post_id=n.post_id "
+        "WHERE n.status='scheduled' AND n.publish_epoch<=? AND p.status='active' ORDER BY n.publish_epoch,n.post_id",
+        (int(now if now is not None else time.time()),))]
+
+
+def mark_news(connection, post_id, event_id=None, error=None, now=None):
+    """Record the outcome of publication: live with its event, or failed (kept hidden)."""
+    now = int(now if now is not None else time.time())
+    if error:
+        connection.execute("UPDATE board_news SET status='failed',error=? WHERE post_id=?", (str(error)[:300], post_id))
+        return
+    connection.execute("UPDATE board_news SET status='live',event_id=?,error=NULL WHERE post_id=?", (event_id, post_id))
+    connection.execute("UPDATE board_posts SET created_epoch=?,updated_epoch=? WHERE post_id=?", (now, now, post_id))
+
+
+def end_news(connection, post_ids, now=None):
+    """Stop the market events of news that is going away; prices stay where they are."""
+    now = int(now if now is not None else time.time())
+    ids = [int(post_id) for post_id in post_ids]
+    if not ids:
+        return 0
+    marks = ",".join("?" for _ in ids)
+    events = [row[0] for row in connection.execute(
+        f"SELECT event_id FROM board_news WHERE post_id IN ({marks}) AND event_id IS NOT NULL AND status='live'", ids)]
+    tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    for event_id in events:
+        if "market_event_targets" in tables:
+            connection.execute("UPDATE market_event_targets SET state='superseded' WHERE event_id=? AND state='active'", (event_id,))
+        if "market_events" in tables:
+            connection.execute("UPDATE market_events SET ends_epoch=MAX(starts_epoch+1,?) WHERE event_id=? AND ends_epoch>?",
+                               (now, event_id, now))
+    connection.execute(f"UPDATE board_news SET status='ended' WHERE post_id IN ({marks}) AND status='live'", ids)
+    return len(events)
 
 
 def _extras(user, payload):

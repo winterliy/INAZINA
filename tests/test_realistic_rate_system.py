@@ -424,8 +424,15 @@ class RealisticRateSystemTests(unittest.TestCase):
         with self.db.atomic() as conn:
             result = BankJournal.reconcile_ecl_allowances(conn, "Bank")
             p_and_l = BankJournal.reconcile_institution_results(conn, "Bank")
+            bank = BankJournal.reconcile_all(conn, "Bank")
+            from managers.accounting_journal import AccountingJournal
+            common = {row["ledger_scope"]: row
+                      for row in AccountingJournal.reconcile_subledgers(conn)}
         self.assertEqual(result[0]["status"], "matched")
         self.assertEqual(result[0]["journal_units"], 0)
+        self.assertEqual(bank["status"], "matched", bank["findings"])
+        self.assertEqual(common["customer"]["status"], "matched", common["customer"])
+        self.assertEqual(common["institution"]["status"], "matched", common["institution"])
         release = next(row for row in p_and_l
                        if row["reference_key"].startswith(f"loan:{loan['loan_id']}:ecl-release:"))
         self.assertEqual(release["status"], "matched")
@@ -1459,7 +1466,8 @@ class RealisticRateSystemTests(unittest.TestCase):
             report = admin_bank_journal_report("Bank")
         self.assertEqual(
             {row["ledger_scope"] for row in report["commonJournalReconciliation"]},
-            {"customer", "company", "institution"},
+            {"customer", "company", "institution", "market_order_reservations",
+             "market_executions"},
         )
         self.assertEqual(report["commonJournalUnbalancedEntries"], [])
         self.assertIn(report["amountSnapshotAudit"]["status"], {"clean", "attention_required"})

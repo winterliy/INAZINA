@@ -59,3 +59,51 @@ class BoardApiTests(unittest.TestCase):
         self.assertEqual([p["post_id"] for p in listed["posts"]], [post_id])
         audit = self.execute("SELECT action,payload FROM admin_audit")
         self.assertIn("board.post.move", [row[0] for row in audit])
+
+    def fake_market(self, succeed=True):
+        from types import SimpleNamespace
+        calls = []
+
+        def create_market_event(actor, event_type, severity, asset_code, duration, target_price=None, created=None, stacking=False):
+            calls.append((actor, event_type, severity, asset_code, duration, stacking))
+            if not succeed:
+                return False, "❌ 선택한 자산을 찾을 수 없습니다."
+            created["event_id"] = 41
+            return True, "✅ 등록"
+        self._domain = server.domain
+        server.domain = lambda: SimpleNamespace(admin_manager=SimpleNamespace(create_market_event=create_market_event))
+        self.addCleanup(lambda: setattr(server, "domain", self._domain))
+        return calls
+
+    def news_post(self, **news):
+        return server.board_post("/internal/board/posts", ADMIN, {"board": "news", "title": "속보", "body": "b", "clientIp": "ip",
+                                                                 "news": {"eventType": "good", "severity": 10, "durationSeconds": 600, **news}})
+
+    def test_news_goes_out_at_once_with_its_market_event(self):
+        server._board_ready = False
+        calls = self.fake_market()
+        post_id = self.news_post()["postId"]
+        self.assertEqual(calls, [("admin-1", "good", 10, None, 600, True)])
+        post = server.board_get(f"/internal/board/posts/{post_id}", {}, None)["post"]
+        self.assertEqual(post["news"]["status"], "live")
+        self.assertIn("board.news.publish", [row[0] for row in self.execute("SELECT action FROM admin_audit")])
+
+    def test_news_whose_event_cannot_be_registered_is_not_posted(self):
+        server._board_ready = False
+        self.fake_market(succeed=False)
+        with self.assertRaisesRegex(ValueError, "자산을 찾을 수 없습니다"):
+            self.news_post()
+        self.assertEqual(self.execute("SELECT COUNT(*) FROM board_posts")[0][0], 0)
+
+    def test_scheduled_news_waits_and_a_failure_stays_hidden(self):
+        import time
+        server._board_ready = False
+        calls = self.fake_market(succeed=False)
+        post_id = self.news_post(publishEpoch=int(time.time()) + 3600)["postId"]
+        self.assertEqual(calls, [])
+        self.assertEqual(server.publish_due_news(), 0)
+        self.execute("UPDATE board_news SET publish_epoch=0")
+        server.publish_due_news()
+        self.assertEqual(self.execute("SELECT status FROM board_news")[0][0], "failed")
+        with self.assertRaises(ValueError):
+            server.board_get(f"/internal/board/posts/{post_id}", {}, None)

@@ -96,6 +96,16 @@ class EclScenarioConfigurationTests(unittest.TestCase):
                 conn, "낙원", "downside", 3.0,
             )
         self.assertEqual([point["year"] for point in downside["path"]], [1, 2, 3])
+        self.assertEqual(downside["macroFactorOrder"],
+                         ["inflation", "real_gdp_growth", "unemployment"])
+        matrix = downside["macroFactorCorrelation"]
+        self.assertEqual(len(matrix), 3)
+        self.assertTrue(all(abs(matrix[i][j]-matrix[j][i]) < 1e-12
+                            for i in range(3) for j in range(3)))
+        self.assertTrue(all(abs(matrix[i][i]-1.0) < 1e-12 for i in range(3)))
+        self.assertEqual(downside["correlationCalibration"],
+                         "illustrative_simulator_assumption_not_empirically_calibrated")
+        self.assertIn("Cholesky-correlated", downside["method"])
         self.assertLess(optimistic["relativePdMultiplier"], 1)
         self.assertEqual(base["relativePdMultiplier"], 1)
         self.assertGreater(downside["relativePdMultiplier"], 1)
@@ -253,6 +263,15 @@ class DefaultedLoanEclTests(unittest.TestCase):
             self.assertEqual(BankJournal.reconcile_charged_off_balances(conn, "Bank")[0]["status"], "matched")
             integrated = BankJournal.reconcile_all(conn, "Bank")
             self.assertEqual(integrated["status"], "matched", integrated["findings"])
+            from managers.accounting_journal import AccountingJournal
+            common_checks = {
+                row["ledger_scope"]: row
+                for row in AccountingJournal.reconcile_subledgers(conn)
+            }
+            self.assertEqual(common_checks["customer"]["status"], "matched",
+                             common_checks["customer"])
+            self.assertEqual(common_checks["institution"]["status"], "matched",
+                             common_checks["institution"])
             memo_snapshot = conn.execute("""SELECT amount_minor_units FROM financial_amount_snapshots
                 WHERE source_table='loans' AND source_key=? AND amount_field='charged_off_balance'""",
                 (str(loan_id),),
@@ -292,6 +311,13 @@ class DefaultedLoanEclTests(unittest.TestCase):
         )["stage"], 3)
         with self.db.readonly() as conn:
             self.assertEqual(BankJournal.audit_unbalanced(conn), [])
+            from managers.accounting_journal import AccountingJournal
+            common = {row["ledger_scope"]: row
+                      for row in AccountingJournal.reconcile_subledgers(conn)}
+            self.assertEqual(common["customer"]["status"], "matched",
+                             common["customer"])
+            self.assertEqual(common["institution"]["status"], "matched",
+                             common["institution"])
 
     def test_chargeoff_uses_allowance_and_recovery_is_idempotent_and_reconciled(self):
         from managers.rate_manager import RateManager
@@ -708,6 +734,16 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.assertEqual(sum(row["borrowerCount"] for row in report["borrowerHoldout"]), 2)
         self.assertTrue(all("20% SHA-256 borrower holdout" in row["method"]
                             for row in report["borrowerHoldout"]))
+        self.assertEqual(
+            sum(row["borrowerCount"] for row in report["outOfTimeBorrowerHoldout"]), 2
+        )
+        recent_holdout = report["outOfTimeBorrowerHoldout"][0]
+        self.assertIn("chronological out-of-time holdout", recent_holdout["method"])
+        self.assertGreater(recent_holdout["cohortEndEpoch"], recent_holdout["cohortStartEpoch"])
+        self.assertLessEqual(recent_holdout["observedRateLower95"],
+                             recent_holdout["observedDefaultRate"])
+        self.assertGreaterEqual(recent_holdout["observedRateUpper95"],
+                                recent_holdout["observedDefaultRate"])
         for row in report["borrowerHoldout"]:
             self.assertLessEqual(row["observedRateLower95"], row["observedDefaultRate"])
             self.assertGreaterEqual(row["observedRateUpper95"], row["observedDefaultRate"])

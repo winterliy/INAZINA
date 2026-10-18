@@ -41,7 +41,6 @@ export type Settings = {
   font: "sans" | "mono";
   zoom: number;             // reading area scale, %
   chat: "bubble" | "log";
-  frame: boolean;           // terminal window frame around the app
   autoRefresh: boolean;
   home: string;             // page shown when the URL has no #/page
   author: "all" | "CLAUDE" | "CODEX";
@@ -51,7 +50,7 @@ export type Settings = {
   notify: boolean;          // count new records in the tab title while the tab is hidden
 };
 
-export const DEFAULTS: Settings = { theme: "dracula", font: "sans", zoom: 100, chat: "bubble", frame: true, autoRefresh: true, home: "overview",
+export const DEFAULTS: Settings = { theme: "dracula", font: "sans", zoom: 100, chat: "bubble", autoRefresh: true, home: "overview",
   author: "all", status: "all", order: "asc", collapse: false, notify: true };
 export const ZOOMS = [90, 100, 110, 125];
 const KEY = "wl.settings";
@@ -65,7 +64,6 @@ export function normalize(raw: unknown, pages: string[] = []): Settings {
     font: pick((v) => v === "sans" || v === "mono", "font"),
     zoom: pick((v) => ZOOMS.includes(v as number), "zoom"),
     chat: pick((v) => v === "bubble" || v === "log", "chat"),
-    frame: pick((v) => typeof v === "boolean", "frame"),
     autoRefresh: pick((v) => typeof v === "boolean", "autoRefresh"),
     home: pick((v) => typeof v === "string" && (!pages.length || pages.includes(v)), "home"),
     author: pick((v) => v === "all" || v === "CLAUDE" || v === "CODEX", "author"),
@@ -98,6 +96,5 @@ export function apply(settings: Settings) {
   }
   root.dataset.font = settings.font;
   root.dataset.chat = settings.chat;
-  root.dataset.frame = settings.frame ? "on" : "off";
   root.style.setProperty("--zoom", String(settings.zoom / 100));
 }

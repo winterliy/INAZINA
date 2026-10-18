@@ -363,6 +363,134 @@ class AccountingJournal:
                            "posting_gaps": posting_gaps,
                            "status": "matched" if native == common and posting_gaps == 0
                            else "mismatch"})
+        # A standard limit-buy's locked cash is an asset subledger balance,
+        # distinct from customer spendable cash. Validate it against remaining
+        # quantity and the order's quote-currency limit price.
+        from functions.money import currency_precision, to_minor_units
+        active = {"scheduled", "open", "partial"}
+        reservation_gaps = []
+        orders = conn.execute(
+            "SELECT order_id,side,status,limit_price,remaining_quantity,quote_currency,"
+            "reserved_cash_minor_units,fractional_order,order_kind FROM market_orders "
+            "WHERE order_kind='asset' AND COALESCE(fractional_order,0)=0"
+        ).fetchall()
+        for order in orders:
+            currency = str(order["quote_currency"] or "NWX")
+            places = currency_precision(conn, currency)
+            expected = (to_minor_units(order["limit_price"], places)*int(order["remaining_quantity"])
+                        if order["side"] == "buy" and order["status"] in active else 0)
+            actual = int(order["reserved_cash_minor_units"] or 0)
+            if actual != expected:
+                reservation_gaps.append({"order_id": int(order["order_id"]),
+                                         "currency_code": currency,
+                                         "expected_minor_units": expected,
+                                         "actual_minor_units": actual,
+                                         "status": "mismatch"})
+        checks.append({"ledger_scope": "market_order_reservations",
+                       "order_count": len(orders),
+                       "reservation_gaps": reservation_gaps,
+                       "status": "matched" if not reservation_gaps else "mismatch"})
+        execution_gaps = []
+        tracked_orders = conn.execute("""SELECT o.order_id,o.side,o.asset_code,o.user_id,
+            o.filled_quantity,COALESCE(b.baseline_filled_quantity,0) baseline_filled
+            FROM market_orders o LEFT JOIN market_execution_order_baselines b USING(order_id)
+            WHERE o.order_kind='asset' AND COALESCE(o.fractional_order,0)=0""").fetchall()
+        for order in tracked_orders:
+            order_id = int(order["order_id"])
+            field = "buy_order_id" if order["side"] == "buy" else "sell_order_id"
+            if field == "sell_order_id":
+                recorded = int(conn.execute(
+                    "SELECT COALESCE(SUM(quantity),0) FROM market_execution_events "
+                    "WHERE execution_type='secondary' AND sell_order_id=?", (order_id,)
+                ).fetchone()[0])
+            else:
+                recorded = int(conn.execute(
+                    "SELECT COALESCE(SUM(quantity),0) FROM market_execution_events "
+                    "WHERE buy_order_id=?", (order_id,)
+                ).fetchone()[0])
+            expected = int(order["filled_quantity"])-int(order["baseline_filled"])
+            if expected != recorded or expected < 0:
+                execution_gaps.append({"order_id": order_id,
+                    "expected_new_filled_quantity": expected,
+                    "recorded_execution_quantity": recorded, "status": "mismatch"})
+        malformed = int(conn.execute("""SELECT COUNT(*) FROM market_execution_events e
+            LEFT JOIN market_orders b ON b.order_id=e.buy_order_id
+            LEFT JOIN market_orders s ON s.order_id=e.sell_order_id
+            WHERE b.order_id IS NULL OR b.side<>'buy' OR b.asset_code<>e.asset_code
+              OR b.user_id<>e.buyer_id
+              OR (e.execution_type='secondary' AND (s.order_id IS NULL OR s.side<>'sell'
+                  OR s.asset_code<>e.asset_code OR s.user_id<>e.seller_id
+                  OR b.quote_currency<>s.quote_currency))
+              OR e.gross_minor_units<>e.price_minor_units*e.quantity
+              OR (e.execution_type='secondary' AND
+                  e.tax_minor_units+e.seller_proceeds_minor_units<>e.gross_minor_units)
+              OR (e.execution_type='primary' AND
+                  (e.tax_minor_units<>0 OR e.seller_proceeds_minor_units<>0))""").fetchone()[0])
+        if malformed:
+            execution_gaps.append({"malformed_execution_events": malformed,
+                                   "status": "mismatch"})
+        market_journal_gaps = []
+        market_events = conn.execute("""SELECT e.* FROM market_execution_events e
+            LEFT JOIN market_execution_journal_baselines b USING(execution_key)
+            WHERE b.execution_key IS NULL ORDER BY e.execution_key""").fetchall()
+        for event in market_events:
+            journal = conn.execute("""SELECT entry_id,currency_code,decimal_places,recorded_epoch
+                FROM accounting_entries WHERE ledger_scope='market' AND entity_type='market_trade'
+                  AND entity_id=? AND source_key=?""",
+                (event["asset_code"], event["execution_key"])).fetchone()
+            expected_local = ([
+                ("buyer_trade_receivable", int(event["gross_minor_units"]), 0),
+                ("issuer_proceeds_clearing", 0, int(event["gross_minor_units"])),
+            ] if event["execution_type"] == "primary" else [
+                ("buyer_trade_receivable", int(event["gross_minor_units"]), 0),
+                ("seller_trade_payable", 0, int(event["seller_proceeds_minor_units"])),
+                ("tax_payable", 0, int(event["tax_minor_units"])),
+            ])
+            expected = {}
+            for local, debit, credit in expected_local:
+                if debit == 0 and credit == 0:
+                    continue
+                mapping = conn.execute("""SELECT common_code FROM accounting_account_mappings
+                    WHERE ledger_scope='market' AND local_code=? AND active=1""", (local,)).fetchone()
+                if not mapping:
+                    market_journal_gaps.append({"execution_key": event["execution_key"],
+                                                "missing_mapping": local})
+                    continue
+                code = str(mapping[0])
+                old_debit, old_credit = expected.get(code, (0, 0))
+                expected[code] = (old_debit+debit, old_credit+credit)
+            actual = {}
+            if journal:
+                for line in conn.execute("SELECT account_code,debit_units,credit_units "
+                    "FROM accounting_lines WHERE entry_id=?", (journal["entry_id"],)):
+                    code = str(line["account_code"])
+                    debit, credit = actual.get(code, (0, 0))
+                    actual[code] = (debit+int(line["debit_units"]),
+                                    credit+int(line["credit_units"]))
+            if (not journal or journal["currency_code"] != event["currency_code"]
+                    or int(journal["decimal_places"]) != int(event["decimal_places"])
+                    or int(journal["recorded_epoch"]) != int(event["recorded_epoch"])
+                    or actual != expected):
+                market_journal_gaps.append({"execution_key": event["execution_key"],
+                    "expected_lines": expected, "actual_lines": actual,
+                    "status": "mismatch"})
+        orphan_market_posts = int(conn.execute("""SELECT COUNT(*) FROM accounting_entries a
+            WHERE a.ledger_scope='market' AND NOT EXISTS (
+                SELECT 1 FROM market_execution_events e
+                WHERE e.asset_code=a.entity_id AND e.execution_key=a.source_key)""").fetchone()[0])
+        if orphan_market_posts:
+            market_journal_gaps.append({"orphan_market_journal_entries": orphan_market_posts,
+                                        "status": "mismatch"})
+        checks.append({"ledger_scope": "market_executions",
+                       "tracked_order_count": len(tracked_orders),
+                       "execution_event_count": int(conn.execute(
+                           "SELECT COUNT(*) FROM market_execution_events").fetchone()[0]),
+                       "execution_gaps": execution_gaps,
+                       "common_journal_gaps": market_journal_gaps,
+                       "unjournaled_legacy_baselines": int(conn.execute(
+                           "SELECT COUNT(*) FROM market_execution_journal_baselines").fetchone()[0]),
+                       "historical_baseline_policy": "pre-migration fills are baseline-only; only subsequent fills are event-reconciled",
+                       "status": "matched" if not execution_gaps and not market_journal_gaps else "mismatch"})
         native = int(conn.execute("""SELECT
             (SELECT COUNT(*) FROM users WHERE cash_minor<>0) +
             (SELECT COUNT(*) FROM accounts WHERE user_id IS NOT NULL AND balance_minor_units<>0)""").fetchone()[0])

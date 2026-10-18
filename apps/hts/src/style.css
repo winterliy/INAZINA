@@ -593,3 +593,9 @@ button.book-row:hover:not(:disabled) { filter: brightness(1.04); }
 .picker-preview { margin: 10px 0 0; color: var(--ink); font-size: 12px; }
 .picker-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px; }
 .picker-actions button:not(.board-primary) { background: var(--hover); }
+
+/* Board: news */
+.board-news-label { margin-right: 5px; color: #b8860b; font-style: normal; font-weight: 700; }
+.board-news-impact { margin: -8px 0 14px; padding: 8px 12px; border-radius: 10px; background: rgba(184, 134, 11, .1); color: #8a5a00; font-size: 12px; line-height: 1.5; }
+.board-news-impact small { display: block; color: var(--ink2); }
+.board-news-draft { background: rgba(184, 134, 11, .08); }

@@ -13,11 +13,11 @@ test("every theme has a full 16-colour ANSI palette", () => {
 test("normalize keeps known values and drops broken ones", () => {
   assert.deepEqual(normalize(null), DEFAULTS);
   assert.deepEqual(normalize("x"), DEFAULTS);
-  const kept = normalize({ theme: "nord", font: "mono", zoom: 110, chat: "log", frame: false, autoRefresh: false, home: "chat",
+  const kept = normalize({ theme: "nord", font: "mono", zoom: 110, chat: "log", autoRefresh: false, home: "chat",
     author: "CODEX", status: "open", order: "desc", collapse: true, notify: false }, ["overview", "chat"]);
-  assert.deepEqual(kept, { theme: "nord", font: "mono", zoom: 110, chat: "log", frame: false, autoRefresh: false, home: "chat",
+  assert.deepEqual(kept, { theme: "nord", font: "mono", zoom: 110, chat: "log", autoRefresh: false, home: "chat",
     author: "CODEX", status: "open", order: "desc", collapse: true, notify: false });
-  const bad = normalize({ theme: "nope", font: "serif", zoom: 300, chat: 1, frame: "yes", autoRefresh: null, home: "gone",
+  const bad = normalize({ theme: "nope", font: "serif", zoom: 300, chat: 1, autoRefresh: null, home: "gone",
     author: "ME", status: "x", order: 1, collapse: "y", notify: 0 }, ["overview"]);
   assert.deepEqual(bad, DEFAULTS);
 });

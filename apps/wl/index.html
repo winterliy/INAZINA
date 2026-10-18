@@ -13,24 +13,20 @@
 <body>
   <div class="term">
   <header class="term-bar">
-    <img src="/window-buttons.svg" width="58" height="14" alt="">
-    <span class="term-title">wl — docs/wide-learning — zsh<i class="cursor" aria-hidden="true"></i></span>
+    <span class="term-title"><b>wl@laplace</b> — docs/wide-learning<i class="cursor" aria-hidden="true"></i></span>
+    <div class="bar-actions">
+      <button type="button" id="reload" class="icon-btn" title="새로고침 (r)" aria-label="새로고침">⟳</button>
+      <button type="button" id="settings" class="icon-btn" title="설정 (,)" aria-label="설정">⚙</button>
+    </div>
   </header>
-  <div class="shell">
-    <aside class="side">
-      <div class="logo"><span class="logo-mark">WL</span><span><b>Wide-Learning</b><small>Laplace plan detail no. 2</small></span></div>
-      <nav id="nav" aria-label="메뉴"></nav>
-      <div class="sync-box">
-        <div class="sync-actions">
-          <button type="button" id="reload" class="reload">⟳ 새로고침</button>
-          <button type="button" id="settings" class="reload gear" aria-label="설정" title="설정">⚙</button>
-        </div>
-        <p class="sync" id="sync">불러오는 중…</p>
-      </div>
-    </aside>
-    <main id="view" class="view" tabindex="-1"></main>
-  </div>
-  </div>
+  <nav id="nav" class="tabs" aria-label="메뉴"></nav>
+  <main id="view" class="view" tabindex="-1"></main>
+  <footer class="statusline">
+    <span class="mode">WL</span><span class="seg-path" id="where">overview</span>
+    <span class="sync" id="sync">불러오는 중…</span>
+    <span class="hint">Laplace plan detail no. 2</span>
+  </footer>
+</div>
   <dialog id="settings-dialog" class="settings" aria-labelledby="settings-title">
     <form method="dialog">
       <header><h2 id="settings-title">설정</h2><button value="close" class="close" aria-label="닫기">✕</button></header>

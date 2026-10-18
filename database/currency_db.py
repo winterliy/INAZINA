@@ -579,6 +579,8 @@ class CurrencyDB(DBManager):
         self._ensure_cash_minor()
         self._ensure_money_snaps()
         self._ensure_market_trade_price_units()
+        self._ensure_market_order_reservation_units()
+        self._ensure_treasury_bond_minor_units()
         self._ensure_minor_amount_snapshots(direct, derived)
         self._ensure_customer_wallet_journal()
 
@@ -634,6 +636,33 @@ class CurrencyDB(DBManager):
                 BEGIN UPDATE {table} SET price=CAST(NEW.price_minor_units AS REAL)/({scale})
                   WHERE {key}=NEW.{key}; END""")
 
+    def _ensure_market_order_reservation_units(self):
+        """Use quote-currency minor units as the authority for order cash locks."""
+        from functions.money import currency_precision, to_minor_units
+
+        columns = {row[1] for row in self.execute("PRAGMA table_info(market_orders)")}
+        if "reserved_cash_minor_units" not in columns:
+            self.execute("ALTER TABLE market_orders ADD COLUMN reserved_cash_minor_units INTEGER NOT NULL DEFAULT 0")
+        for row in self.execute("SELECT order_id,quote_currency,reserved_cash,reserved_cash_minor_units FROM market_orders"):
+            if int(row["reserved_cash_minor_units"] or 0) == 0 and float(row["reserved_cash"] or 0) != 0:
+                places = currency_precision(self.conn, row["quote_currency"] or "NWX")
+                self.execute("UPDATE market_orders SET reserved_cash_minor_units=? WHERE order_id=?",
+                             (to_minor_units(row["reserved_cash"], places), row["order_id"]))
+        scale = ("CASE COALESCE((SELECT decimal_places FROM currencies WHERE code=NEW.quote_currency),0) "
+                 "WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END")
+        for suffix in ("legacy", "legacy_update", "minor"):
+            self.execute(f"DROP TRIGGER IF EXISTS trg_market_order_reserved_{suffix}")
+        self.execute(f"""CREATE TRIGGER trg_market_order_reserved_legacy AFTER INSERT ON market_orders
+            BEGIN UPDATE market_orders SET reserved_cash_minor_units=CAST(ROUND(COALESCE(NEW.reserved_cash,0)*({scale})) AS INTEGER)
+            WHERE order_id=NEW.order_id; END""")
+        self.execute(f"""CREATE TRIGGER trg_market_order_reserved_legacy_update
+            AFTER UPDATE OF reserved_cash,quote_currency ON market_orders
+            BEGIN UPDATE market_orders SET reserved_cash_minor_units=CAST(ROUND(COALESCE(NEW.reserved_cash,0)*({scale})) AS INTEGER)
+            WHERE order_id=NEW.order_id; END""")
+        self.execute(f"""CREATE TRIGGER trg_market_order_reserved_minor AFTER UPDATE OF reserved_cash_minor_units ON market_orders
+            BEGIN UPDATE market_orders SET reserved_cash=CAST(NEW.reserved_cash_minor_units AS REAL)/({scale})
+            WHERE order_id=NEW.order_id; END""")
+
     def _ensure_customer_wallet_journal(self):
         """Capture every customer cash/account balance delta in one native journal.
 
@@ -659,6 +688,15 @@ class CurrencyDB(DBManager):
             credit_units INTEGER NOT NULL DEFAULT 0
                 CHECK(typeof(credit_units)='integer' AND credit_units>=0),
             CHECK((debit_units=0)<>(credit_units=0)))""")
+        # Older execution events predate common market settlement postings. Keep
+        # them as an explicit non-reconstructed baseline rather than inventing
+        # tax/net settlement values during migration.
+        self.execute("""INSERT OR IGNORE INTO market_execution_journal_baselines
+            (execution_key,captured_epoch)
+            SELECT e.execution_key,unixepoch() FROM market_execution_events e
+            WHERE NOT EXISTS (SELECT 1 FROM accounting_entries a
+              WHERE a.ledger_scope='market' AND a.entity_id=e.asset_code
+                AND a.source_key=e.execution_key)""")
         self.execute("""CREATE TABLE IF NOT EXISTS customer_wallet_ledger (
             entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_key TEXT NOT NULL UNIQUE, user_id TEXT NOT NULL,
@@ -766,6 +804,104 @@ class CurrencyDB(DBManager):
             FROM customer_wallet_ledger w JOIN accounting_entries e
               ON e.ledger_scope='customer' AND e.entity_type='wallet_holder'
              AND e.entity_id=w.user_id AND e.source_key='wallet:'||w.entry_id""")
+
+    def _ensure_treasury_bond_minor_units(self):
+        """Make bond offer and lot cash amounts authoritative in quote-currency units."""
+        from functions.money import currency_precision, to_minor_units
+
+        fields = {
+            "treasury_bond_products": ("product_code", "quote_currency", (
+                "face_value", "market_price", "total_supply", "sold_amount")),
+            "treasury_bond_holdings": ("holding_id", "product_code", (
+                "principal", "face_value", "acquisition_cost")),
+        }
+        for table, (key, currency_field, amounts) in fields.items():
+            columns = {row[1] for row in self.execute(f'PRAGMA table_info("{table}")')}
+            if not columns or any(amount not in columns for amount in amounts):
+                continue
+            for amount in amounts:
+                minor = f"{amount}_minor_units"
+                if minor not in columns:
+                    self.execute(
+                        f'ALTER TABLE "{table}" ADD COLUMN "{minor}" INTEGER NOT NULL DEFAULT 0'
+                    )
+            if table == "treasury_bond_products":
+                scale_expr = (
+                    "CASE COALESCE((SELECT decimal_places FROM currencies WHERE code="
+                    "NEW.quote_currency),0) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END"
+                )
+                face_minor = f"CAST(ROUND(NEW.face_value*({scale_expr})) AS INTEGER)"
+                supply_minor = f"CAST(ROUND(NEW.total_supply*({scale_expr})) AS INTEGER)"
+                sold_minor = f"CAST(ROUND(NEW.sold_amount*({scale_expr})) AS INTEGER)"
+                self.execute("DROP TRIGGER IF EXISTS validate_treasury_bond_insert")
+                self.execute("DROP TRIGGER IF EXISTS validate_treasury_bond_update")
+                self.execute(f"""CREATE TRIGGER validate_treasury_bond_insert
+                    BEFORE INSERT ON treasury_bond_products
+                    WHEN {face_minor}<=0 OR {supply_minor}<=0
+                      OR {supply_minor}%{face_minor}<>0 OR {sold_minor}<0
+                      OR {sold_minor}>{supply_minor} OR {sold_minor}%{face_minor}<>0
+                    BEGIN SELECT RAISE(ABORT,'국채 발행한도와 판매액은 양의 액면가 배수여야 합니다.'); END""")
+                self.execute(f"""CREATE TRIGGER validate_treasury_bond_update
+                    BEFORE UPDATE OF face_value,total_supply,sold_amount,quote_currency
+                    ON treasury_bond_products
+                    WHEN {face_minor}<=0 OR {supply_minor}<=0
+                      OR {supply_minor}%{face_minor}<>0 OR {sold_minor}<0
+                      OR {sold_minor}>{supply_minor} OR {sold_minor}%{face_minor}<>0
+                    BEGIN SELECT RAISE(ABORT,'국채 발행한도와 판매액은 양의 액면가 배수여야 합니다.'); END""")
+                rows = self.execute(
+                    "SELECT product_code,quote_currency,face_value,market_price,total_supply,"
+                    "sold_amount,face_value_minor_units,market_price_minor_units,"
+                    "total_supply_minor_units,sold_amount_minor_units FROM treasury_bond_products"
+                )
+                for row in rows:
+                    places = currency_precision(self.conn, row["quote_currency"] or "NWX")
+                    for amount in amounts:
+                        minor = f"{amount}_minor_units"
+                        if not int(row[minor] or 0) and float(row[amount] or 0):
+                            self.execute(
+                                f"UPDATE treasury_bond_products SET {minor}=? WHERE product_code=?",
+                                (to_minor_units(row[amount], places), row["product_code"]),
+                            )
+                currency_sql = "NEW.quote_currency"
+            else:
+                rows = self.execute(
+                    "SELECT h.holding_id,h.product_code,p.quote_currency,h.principal,h.face_value,"
+                    "h.acquisition_cost,h.principal_minor_units,h.face_value_minor_units,"
+                    "h.acquisition_cost_minor_units FROM treasury_bond_holdings h "
+                    "JOIN treasury_bond_products p USING(product_code)"
+                )
+                for row in rows:
+                    places = currency_precision(self.conn, row["quote_currency"] or "NWX")
+                    for amount in amounts:
+                        minor = f"{amount}_minor_units"
+                        if not int(row[minor] or 0) and float(row[amount] or 0):
+                            self.execute(
+                                f"UPDATE treasury_bond_holdings SET {minor}=? WHERE holding_id=?",
+                                (to_minor_units(row[amount], places), row["holding_id"]),
+                            )
+                currency_sql = "(SELECT quote_currency FROM treasury_bond_products " \
+                               "WHERE product_code=NEW.product_code)"
+            scale = (
+                "CASE COALESCE((SELECT decimal_places FROM currencies WHERE code="
+                f"({currency_sql})),0) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END"
+            )
+            for amount in amounts:
+                minor = f"{amount}_minor_units"
+                stem = f"trg_{table}_{amount}_minor_units"
+                for suffix in ("from_legacy", "from_legacy_update", "to_legacy"):
+                    self.execute(f"DROP TRIGGER IF EXISTS {stem}_{suffix}")
+                self.execute(f"""CREATE TRIGGER {stem}_from_legacy AFTER INSERT ON {table}
+                    BEGIN UPDATE {table} SET {minor}=
+                      CAST(ROUND(COALESCE(NEW.{amount},0)*({scale})) AS INTEGER)
+                      WHERE {key}=NEW.{key}; END""")
+                self.execute(f"""CREATE TRIGGER {stem}_from_legacy_update
+                    AFTER UPDATE OF {amount},{currency_field if table == 'treasury_bond_products' else 'product_code'} ON {table}
+                    BEGIN UPDATE {table} SET {minor}=
+                      CAST(ROUND(COALESCE(NEW.{amount},0)*({scale})) AS INTEGER)
+                      WHERE {key}=NEW.{key}; END""")
+                self.execute(f"""CREATE TRIGGER {stem}_to_legacy AFTER UPDATE OF {minor} ON {table}
+                    BEGIN UPDATE {table} SET {amount}=CAST(NEW.{minor} AS REAL)/({scale})
+                      WHERE {key}=NEW.{key}; END""")
 
     def _ensure_minor_amount_snapshots(self, direct, derived):
         """Maintain a currency-minor-unit lineage row for every configured amount.

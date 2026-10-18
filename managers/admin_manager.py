@@ -25,7 +25,12 @@ class AdminManager:
         return f"✅ 사용자 {user_id}가 성공적으로 등록되었습니다."
 
     def create_market_event(self, actor_id, event_type, severity, asset_code=None, duration_seconds=3600, now=None,
-                            target_price=None, target_percent=None):
+                            target_price=None, target_percent=None, created=None, stacking=False):
+        """Register a 호재/악재. ``created`` (a dict, optional) receives the new ``event_id``.
+
+        A ``stacking`` event (news) adds its move to events already running on
+        the same assets; an ordinary event replaces them.
+        """
         actor = self.db.users.get_user(str(actor_id))
         if not actor or str(actor['role']).strip().lower() != "admin":
             return False, "❌ 관리자 전용 기능입니다."
@@ -121,22 +126,25 @@ class AdminManager:
             if not plans and (mode == "price" or value > 0):
                 return False, "❌ 사건을 적용할 변동 가격 자산이 없습니다. 고정·만료·연동 상품은 제외됩니다."
             event_id = conn.execute(
-                "INSERT INTO system.market_events(asset_code,event_type,severity,starts_epoch,ends_epoch,created_by,target_mode,target_value,volatility_percent) "
-                "VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO system.market_events(asset_code,event_type,severity,starts_epoch,ends_epoch,created_by,target_mode,target_value,volatility_percent,stacking) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (asset_code or None, event_type, severity, now, now + duration_seconds,
-                 str(actor_id), mode, value, percent),
+                 str(actor_id), mode, value, percent, 1 if stacking else 0),
             ).lastrowid
-            if mode=='percent' and value==0:
+            if created is not None:
+                created["event_id"] = event_id
+            if mode=='percent' and value==0 and not stacking:
                 conn.execute(
                     "UPDATE market_event_targets SET state='superseded' WHERE state='active' "
                     "AND (? IS NULL OR asset_code=?)", (asset_code, asset_code)
                 )
                 conn.execute("DELETE FROM market_quote_overrides WHERE ? IS NULL OR asset_code=?",(asset_code,asset_code))
             for code, (price, target) in plans.items():
-                conn.execute(
-                    "UPDATE system.market_event_targets SET state='superseded' "
-                    "WHERE asset_code=? AND state='active'", (code,)
-                )
+                if not stacking:
+                    conn.execute(
+                        "UPDATE system.market_event_targets SET state='superseded' "
+                        "WHERE asset_code=? AND state='active'", (code,)
+                    )
                 conn.execute(
                     "INSERT INTO system.market_event_targets(event_id,asset_code,start_price,target_price,start_epoch,end_epoch,last_tick_epoch,last_price) "
                     "VALUES (?,?,?,?,?,?,?,?)",

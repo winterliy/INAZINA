@@ -113,6 +113,42 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         )
         self.assertEqual(tuple(row),(1230000,123,2))
 
+    def test_market_order_reservation_migration_backfills_and_is_idempotent(self):
+        self.db.assets.execute(
+            "INSERT INTO market_assets(code,name,exchange_id,price,type,quote_currency) "
+            "VALUES ('LEGACY-USD','Legacy USD','FX',1,'stock','USD')"
+        )
+        for suffix in ("legacy", "legacy_update", "minor"):
+            self.db.currency.execute(
+                f"DROP TRIGGER IF EXISTS trg_market_order_reserved_{suffix}"
+            )
+        self.db.assets.execute(
+            "INSERT INTO market_orders(user_id,asset_code,side,limit_price,quantity,"
+            "remaining_quantity,reserved_cash,quote_currency,status,created_epoch,updated_epoch) "
+            "VALUES ('us-user','LEGACY-USD','buy',12,1,1,12.34,'USD','open',1,1)"
+        )
+        order_id = self.db.assets.execute_one(
+            "SELECT order_id FROM market_orders WHERE asset_code='LEGACY-USD'"
+        )[0]
+
+        self.db.currency._ensure_market_order_reservation_units()
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT reserved_cash_minor_units FROM market_orders WHERE order_id=?",
+            (order_id,),
+        )[0], 1234)
+        self.db.currency._ensure_market_order_reservation_units()
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT reserved_cash,reserved_cash_minor_units FROM market_orders WHERE order_id=?",
+            (order_id,),
+        )[:], (12.34, 1234))
+        self.db.assets.execute(
+            "UPDATE market_orders SET reserved_cash_minor_units=1235 WHERE order_id=?",
+            (order_id,),
+        )
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT reserved_cash FROM market_orders WHERE order_id=?", (order_id,),
+        )[0], 12.35)
+
     def test_customer_wallet_changes_post_atomically_and_reconcile(self):
         with self.db.atomic() as conn:
             before = conn.execute(
@@ -462,6 +498,44 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertEqual(insured['journal_units'], 50)
         self.assertEqual(insured['difference_units'], 75)
         self.assertEqual(insured['status'], 'mismatch')
+
+    def test_treasury_bond_offer_and_holding_use_currency_minor_units(self):
+        self.db.products.execute(
+            "INSERT INTO treasury_bond_products "
+            "(product_code,name,annual_rate,maturity_days,face_value,exchange_id,"
+            "market_price,total_supply,quote_currency) VALUES ('USD-BOND','USD bond',3,365,"
+            "10.25,'BOND',10.50,1025,'USD')"
+        )
+        self.db.accounts.execute(
+            "INSERT INTO treasury_bond_holdings "
+            "(user_id,product_code,product_name,annual_rate,maturity_days,principal,"
+            "face_value,acquisition_cost,purchased_epoch,maturity_epoch) "
+            "VALUES ('us-user','USD-BOND','USD bond',3,365,20.50,10.25,20.75,1,2)"
+        )
+        offer = self.db.products.execute_one(
+            "SELECT face_value_minor_units,market_price_minor_units,total_supply_minor_units,"
+            "sold_amount_minor_units FROM treasury_bond_products WHERE product_code='USD-BOND'"
+        )
+        self.assertEqual(tuple(offer), (1025, 1050, 102500, 0))
+        holding = self.db.accounts.execute_one(
+            "SELECT principal_minor_units,face_value_minor_units,acquisition_cost_minor_units "
+            "FROM treasury_bond_holdings WHERE product_code='USD-BOND'"
+        )
+        self.assertEqual(tuple(holding), (2050, 1025, 2075))
+        self.db.products.execute(
+            "UPDATE treasury_bond_products SET market_price_minor_units=1099 "
+            "WHERE product_code='USD-BOND'"
+        )
+        self.assertEqual(self.db.products.execute_one(
+            "SELECT market_price FROM treasury_bond_products WHERE product_code='USD-BOND'"
+        )[0], 10.99)
+        self.db.accounts.execute(
+            "UPDATE treasury_bond_holdings SET principal_minor_units=2010 "
+            "WHERE product_code='USD-BOND'"
+        )
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT principal FROM treasury_bond_holdings WHERE product_code='USD-BOND'"
+        )[0], 20.10)
 
 
 class LegacyCurrencySchemaMigrationTests(unittest.TestCase):

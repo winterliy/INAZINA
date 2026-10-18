@@ -4,8 +4,9 @@ import { Card, Field, Tabs, date, number, plain, type Ctx } from "./common";
 
 type Category = { category_id: number; name: string; sort_order: number };
 type BoardInfo = { board_id: string; name: string; description: string; admin_only: number; allow_asset: number; sort_order: number; post_count: number; categories: Category[];
-  secret: number; members?: { user_id: string; nickname: string }[]; suspended: number; suspended_reason: string; suspended_until: number | null; suspension: string | null };
-type Post = { post_id: number; board: string; board_name: string; category_id: number | null; category_name: string | null; notice: number; author_admin: number; title: string; body: string; asset_code: string | null; pinned: number; status: "active" | "hidden" | "deleted"; hidden_reason: string | null; anonymous: number; author_id: string; nickname: string; author_ip: string; view_count: number; created_epoch: number; comment_count: number; open_reports: number };
+  secret: number; news: number; members?: { user_id: string; nickname: string }[]; suspended: number; suspended_reason: string; suspended_until: number | null; suspension: string | null };
+// news_status: 뉴스 that moves the market (scheduled → live → ended, or failed).
+type Post = { news_status: "scheduled" | "live" | "ended" | "failed" | null; news_publish_epoch: number | null; post_id: number; board: string; board_name: string; category_id: number | null; category_name: string | null; notice: number; author_admin: number; title: string; body: string; asset_code: string | null; pinned: number; status: "active" | "hidden" | "deleted"; hidden_reason: string | null; anonymous: number; author_id: string; nickname: string; author_ip: string; view_count: number; created_epoch: number; comment_count: number; open_reports: number };
 type Report = { report_id: number; post_id: number | null; comment_id: number | null; target_post: number; reporter_id: string; reason: string; reporter_ip: string; created_epoch: number; comment_body: string | null; comment_author: string | null; comment_ip: string | null; comment_status: string | null };
 type Filter = "reported" | "all" | "active" | "hidden";
 type Result = { message: string; success: boolean };
@@ -82,7 +83,7 @@ export function BoardAdminPage({ ctx }: { ctx: Ctx }) {
               <select className="mini-select" aria-label={`#${post.post_id} 게시판`} value={post.board} disabled={busy} onChange={(event) => structure("post", post.post_id, { action: "move", board: event.target.value }, `글 #${post.post_id}을(를) ${boards.find((item) => item.board_id === event.target.value)?.name} 게시판으로 옮길까요? 카테고리는 해제됩니다.`)}>{boards.map((item) => <option key={item.board_id} value={item.board_id}>{item.name}</option>)}</select>
               {(boards.find((item) => item.board_id === post.board)?.categories.length ?? 0) > 0 && <select className="mini-select block" aria-label={`#${post.post_id} 카테고리`} value={post.category_id ?? ""} disabled={busy} onChange={(event) => structure("post", post.post_id, { action: "category", categoryId: event.target.value ? Number(event.target.value) : null })}><option value="">카테고리 없음</option>{boards.find((item) => item.board_id === post.board)!.categories.map((item) => <option key={item.category_id} value={item.category_id}>{item.name}</option>)}</select>}
               {post.asset_code && <span className="tag inline">{post.asset_code}</span>}</td>
-            <td className="audit-payload" title={post.title}>{post.notice ? <span className="tag warn inline-start">공지</span> : null}{post.pinned ? <span className="tag ok inline-start">고정</span> : null}{post.title}</td>
+            <td className="audit-payload" title={post.title}>{post.news_status ? <span className={post.news_status === "failed" ? "tag warn inline-start" : "tag inline-start"} title="시장에 영향을 주는 뉴스입니다. 숨기거나 지우면 영향이 멈춥니다.">📰 {{ scheduled: `예약 ${post.news_publish_epoch ? date(post.news_publish_epoch) : ""}`, live: "뉴스", ended: "영향 종료", failed: "게시 실패" }[post.news_status]}</span> : null}{post.notice ? <span className="tag warn inline-start">공지</span> : null}{post.pinned ? <span className="tag ok inline-start">고정</span> : null}{post.title}</td>
             <td>{author(post.nickname, post.author_id, post.anonymous === 1, post.author_ip, post.author_admin === 1)}</td>
             <td><span className={STATUS[post.status][1]}>{STATUS[post.status][0]}{post.hidden_reason === "reports" ? " · 신고" : ""}</span></td>
             <td className="r">{number(post.comment_count)}</td><td className="r">{number(post.view_count)}</td>
@@ -106,7 +107,7 @@ export function BoardAdminPage({ ctx }: { ctx: Ctx }) {
 
 /** Boards and their categories: create, rename, reorder, delete. */
 function BoardStructure({ busy, boards, onSubmit }: { busy: boolean; boards: BoardInfo[]; onSubmit: (kind: "board" | "category", id: string | number, body: Record<string, unknown>, question?: string) => void }) {
-  const blank = { boardId: "", name: "", description: "", adminOnly: false, allowAsset: false, secret: false, sortOrder: "0" };
+  const blank = { boardId: "", name: "", description: "", adminOnly: false, allowAsset: false, secret: false, news: false, sortOrder: "0" };
   const [draft, setDraft] = useState(blank);
   const [edits, setEdits] = useState<Record<string, typeof blank>>({});
   const [newCategory, setNewCategory] = useState<Record<string, string>>({});
@@ -114,12 +115,12 @@ function BoardStructure({ busy, boards, onSubmit }: { busy: boolean; boards: Boa
   const [moveTo, setMoveTo] = useState<Record<string, string>>({});
   const [newMember, setNewMember] = useState<Record<string, string>>({});
   const [suspend, setSuspend] = useState<Record<string, { reason: string; until: string }>>({});
-  const valuesOf = (item: BoardInfo) => edits[item.board_id] ?? { boardId: item.board_id, name: item.name, description: item.description, adminOnly: item.admin_only === 1, allowAsset: item.allow_asset === 1, secret: item.secret === 1, sortOrder: String(item.sort_order) };
+  const valuesOf = (item: BoardInfo) => edits[item.board_id] ?? { boardId: item.board_id, name: item.name, description: item.description, adminOnly: item.admin_only === 1, allowAsset: item.allow_asset === 1, secret: item.secret === 1, news: item.news === 1, sortOrder: String(item.sort_order) };
   const edit = (item: BoardInfo, change: Partial<typeof blank>) => setEdits({ ...edits, [item.board_id]: { ...valuesOf(item), ...change } });
-  const send = (values: typeof blank) => ({ name: values.name, description: values.description, adminOnly: values.adminOnly, allowAsset: values.allowAsset, secret: values.secret, sortOrder: Number(values.sortOrder) || 0 });
+  const send = (values: typeof blank) => ({ name: values.name, description: values.description, adminOnly: values.adminOnly, allowAsset: values.allowAsset, secret: values.secret, news: values.news, sortOrder: Number(values.sortOrder) || 0 });
 
   return <Card title="게시판 · 카테고리" caption="게시판을 만들고 이름·설명·순서·쓰기 권한을 바꿉니다. 비밀게시판은 허용 목록의 Discord 아이디와 관리자만 보고 씁니다. 정지한 게시판은 읽기·신고만 됩니다(관리자는 계속 씀). 글이 있는 게시판을 지우려면 글을 옮길 게시판을 고르세요.">
-    <div className="scroll-x"><table><thead><tr><th>ID</th><th>이름</th><th>설명</th><th className="r">순서</th><th>쓰기</th><th>종목 코드</th><th>비밀</th><th className="r">글</th><th>카테고리</th><th>정지</th><th /></tr></thead><tbody>
+    <div className="scroll-x"><table><thead><tr><th>ID</th><th>이름</th><th>설명</th><th className="r">순서</th><th>쓰기</th><th>종목 코드</th><th>비밀</th><th>뉴스</th><th className="r">글</th><th>카테고리</th><th>정지</th><th /></tr></thead><tbody>
       {boards.map((item) => {
         const values = valuesOf(item);
         const others = boards.filter((other) => other.board_id !== item.board_id);
@@ -136,6 +137,7 @@ function BoardStructure({ busy, boards, onSubmit }: { busy: boolean; boards: Boa
               <span className="category-chip"><input className="mini-input mono" aria-label={`${item.name}에 허용할 Discord 아이디`} placeholder="Discord 아이디" value={newMember[item.board_id] ?? ""} onChange={(event) => setNewMember({ ...newMember, [item.board_id]: event.target.value.trim() })} />
                 <button className="soft small" type="button" disabled={busy || !(newMember[item.board_id] ?? "")} onClick={() => { onSubmit("board", item.board_id, { action: "member_add", userId: newMember[item.board_id] }); setNewMember({ ...newMember, [item.board_id]: "" }); }}>허용</button></span>
               {!(item.members ?? []).length && <small className="muted">아직 허용된 사람이 없습니다(관리자만 봄).</small>}</div>}</td>
+          <td><label className="check" title="관리자 글에 시장 영향(호재·악재)을 넣을 수 있는 게시판"><input type="checkbox" checked={values.news} onChange={(event) => edit(item, { news: event.target.checked })} />뉴스</label></td>
           <td className="r">{number(item.post_count)}</td>
           <td><div className="chips">{item.categories.map((category) => <span key={category.category_id} className="category-chip">
             <input className="mini-input" aria-label={`카테고리 ${category.name}`} value={categoryNames[category.category_id] ?? category.name} maxLength={20} onChange={(event) => setCategoryNames({ ...categoryNames, [category.category_id]: event.target.value })} />
@@ -172,6 +174,7 @@ function BoardStructure({ busy, boards, onSubmit }: { busy: boolean; boards: Boa
       <Field label="순서" hint="작을수록 앞"><input type="number" value={draft.sortOrder} onChange={(event) => setDraft({ ...draft, sortOrder: event.target.value })} /></Field>
       <label className="check"><input type="checkbox" checked={draft.adminOnly} onChange={(event) => setDraft({ ...draft, adminOnly: event.target.checked })} />관리자만 쓰기</label>
       <label className="check"><input type="checkbox" checked={draft.allowAsset} onChange={(event) => setDraft({ ...draft, allowAsset: event.target.checked })} />종목 코드 허용</label>
+      <label className="check"><input type="checkbox" checked={draft.news} onChange={(event) => setDraft({ ...draft, news: event.target.checked })} />뉴스 게시판 (관리자 글에 시장 영향)</label>
       <label className="check"><input type="checkbox" checked={draft.secret} onChange={(event) => setDraft({ ...draft, secret: event.target.checked })} />비밀게시판 (만든 뒤 허용할 Discord 아이디 추가)</label>
       <button className="btn primary" disabled={busy || !draft.boardId || !draft.name.trim()}>게시판 만들기</button>
     </form>

@@ -196,8 +196,99 @@ class EconomyTests(unittest.TestCase):
         order = order_book.get_user_open_orders("citizen-2")[0]
         self.assertEqual(order["remaining_quantity"], 1)
         self.assertEqual(order["reserved_cash"], 100)
+        stored_order = self.db.assets.execute_one(
+            "SELECT reserved_cash_minor_units FROM market_orders WHERE order_id = ?",
+            (order["order_id"],),
+        )
+        self.assertEqual(stored_order["reserved_cash_minor_units"], 100)
+        from managers.accounting_journal import AccountingJournal
+        with self.db.atomic() as conn:
+            reservation = next(
+                check for check in AccountingJournal.reconcile_subledgers(conn)
+                if check["ledger_scope"] == "market_order_reservations"
+            )
+            self.assertEqual(reservation["status"], "matched", reservation)
+            conn.execute(
+                "UPDATE assets.market_orders SET reserved_cash_minor_units=99 WHERE order_id=?",
+                (order["order_id"],),
+            )
+            reservation = next(
+                check for check in AccountingJournal.reconcile_subledgers(conn)
+                if check["ledger_scope"] == "market_order_reservations"
+            )
+            self.assertEqual(reservation["status"], "mismatch")
+            conn.execute(
+                "UPDATE assets.market_orders SET reserved_cash_minor_units=100 WHERE order_id=?",
+                (order["order_id"],),
+            )
         self.assertTrue(order_book.cancel_order("citizen-2", order["order_id"])[0])
         self.assertEqual(self.db.users.get_user("citizen-2")["cash"], 900)
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT reserved_cash_minor_units FROM market_orders WHERE order_id = ?",
+            (order["order_id"],),
+        )[0], 0)
+
+    def test_secondary_market_fill_has_immutable_minor_unit_execution_and_order_reconcile(self):
+        from managers.accounting_journal import AccountingJournal
+
+        self.db.companies.create_company(
+            "FILL", "Execution Ledger", "Industry", 500, 5, 500,
+            "citizen-1", "EX-FILL",
+        )
+        self.db.assets.add_user_asset("citizen-1", "FILL", 1, unit_cost=400)
+        self.db.users.update_cash("citizen-2", 1000)
+        book = OrderBookManager(self.db, self.users)
+        self.assertTrue(book.place_limit_order("citizen-1", "FILL", "sell", 1, 450)[0])
+        success, message = book.place_limit_order("citizen-2", "FILL", "buy", 1, 500)
+        self.assertTrue(success, message)
+        event = self.db.assets.execute_one(
+            "SELECT * FROM market_execution_events WHERE execution_type='secondary'"
+        )
+        self.assertIsNotNone(event)
+        self.assertEqual(event["quantity"], 1)
+        self.assertEqual(event["price_minor_units"], 450)
+        self.assertEqual(event["gross_minor_units"], 450)
+        self.assertEqual(event["currency_code"], "NWX")
+        self.assertEqual(event["tax_minor_units"] + event["seller_proceeds_minor_units"], 450)
+        with self.db.atomic() as conn:
+            result = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                          if item["ledger_scope"] == "market_executions")
+            self.assertEqual(result["status"], "matched", result)
+            self.assertEqual(result["common_journal_gaps"], [])
+            self.assertEqual(conn.execute(
+                "SELECT COUNT(*) FROM accounting_entries WHERE ledger_scope='market' "
+                "AND source_key=?", (event["execution_key"],),
+            ).fetchone()[0], 1)
+            AccountingJournal.post(conn, ledger_scope="market", entity_type="market_trade",
+                entity_id="FILL", source_key="orphan-execution", currency_code="NWX",
+                decimal_places=0, recorded_epoch=int(event["recorded_epoch"]),
+                lines=[("buyer_trade_receivable", "debit", 1),
+                       ("seller_trade_payable", "credit", 1)])
+            result = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                          if item["ledger_scope"] == "market_executions")
+            self.assertEqual(result["status"], "mismatch")
+            self.assertIn({"orphan_market_journal_entries": 1, "status": "mismatch"},
+                          result["common_journal_gaps"])
+            conn.execute("UPDATE assets.market_orders SET filled_quantity=0 WHERE order_id=?",
+                         (event["buy_order_id"],))
+            result = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                          if item["ledger_scope"] == "market_executions")
+            self.assertEqual(result["status"], "mismatch")
+            conn.execute("UPDATE assets.market_orders SET filled_quantity=1 WHERE order_id=?",
+                         (event["buy_order_id"],))
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+            self.db.assets.execute(
+                "UPDATE market_execution_events SET quantity=2 WHERE execution_key=?",
+                (event["execution_key"],),
+            )
+        self.db.assets.execute(
+            "INSERT INTO market_execution_order_baselines VALUES (-1,0,unixepoch())"
+        )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
+            self.db.assets.execute(
+                "UPDATE market_execution_order_baselines SET baseline_filled_quantity=1 "
+                "WHERE order_id=-1"
+            )
 
     def test_leveraged_and_inverse_etfs_follow_exchange_index_daily_base(self):
         self.db.companies.create_company(

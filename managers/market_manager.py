@@ -367,6 +367,32 @@ class MarketManager:
             shocks[(key, epoch)] = standardized_shock(random, config.student_df)
         return shocks[(key, epoch)]
 
+    @staticmethod
+    def _stacked_event_price(conn, code, price, now, running, context=None):
+        """Several events at once (news adds to what is running): every running
+        bridge contributes its own progress since its last tick, multiplied
+        onto the live price. Removing one event stops only its share."""
+        factor, volatility = 1.0, 0.0
+        for row in running:
+            duration = row["end_epoch"] - row["start_epoch"]
+            start, goal = float(row["start_price"]), float(row["target_price"])
+            path = lambda epoch: start + (goal - start) * max(0, min(duration, epoch - row["start_epoch"])) / duration
+            previous = row["last_tick_epoch"] if row["last_tick_epoch"] is not None else row["start_epoch"]
+            if now > previous:
+                factor *= path(now) / max(1.0, path(previous))
+            volatility = max(volatility, float(row["volatility_percent"] or 0))
+            finished = now >= row["end_epoch"]
+            conn.execute("UPDATE system.market_event_targets SET last_tick_epoch = ?, last_price = ?, "
+                         "state = CASE WHEN ? THEN 'completed' ELSE state END, "
+                         "completed_epoch = CASE WHEN ? THEN ? ELSE completed_epoch END "
+                         "WHERE event_id = ? AND asset_code = ?",
+                         (now, int(round(path(now))), finished, finished, now, row["event_id"], code))
+        next_price = min(MAX_PRICE, max(1, int(Decimal(str(price * factor)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))))
+        if context is not None:
+            context.update(event_id=running[-1]["event_id"], advanced=True, latent_price=float(price * factor),
+                           volatility_percent=volatility)
+        return next_price
+
     def _event_target_price(self, conn, code, price, now, legacy_events, *, sample_noise, context=None, batch=None):
         """Advance a persisted random price bridge to its exact goal."""
         for event in legacy_events:
@@ -392,6 +418,13 @@ class MarketManager:
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (event["event_id"], code, price, target, now, event["ends_epoch"],
                  "superseded" if newer else "active", now, price))
+        running = (batch['running'].get(code, []) if batch is not None and not legacy_events else conn.execute(
+            "SELECT t.*, e.stacking, COALESCE(e.volatility_percent, CASE WHEN e.target_mode = 'percent' THEN e.target_value "
+            "ELSE e.severity END) AS volatility_percent FROM system.market_event_targets t "
+            "JOIN system.market_events e ON e.event_id = t.event_id "
+            "WHERE t.asset_code = ? AND t.start_epoch <= ? AND t.state = 'active' ORDER BY t.event_id", (code, now)).fetchall())
+        if any(row["stacking"] for row in running):
+            return self._stacked_event_price(conn, code, price, now, running, context)
         target = batch['events'].get(code) if batch is not None and not legacy_events else conn.execute("SELECT t.*, e.event_type, COALESCE(e.volatility_percent, "
             "CASE WHEN e.target_mode = 'percent' THEN e.target_value ELSE e.severity END) AS volatility_percent "
             "FROM system.market_event_targets t JOIN system.market_events e ON e.event_id = t.event_id "
@@ -726,7 +759,11 @@ class MarketManager:
 
     @staticmethod
     def _load_tick(conn, now):
-        events = {}
+        events, running = {}, {}
+        for row in conn.execute("SELECT t.*, e.stacking, COALESCE(e.volatility_percent, CASE WHEN e.target_mode='percent' "
+                "THEN e.target_value ELSE e.severity END) volatility_percent FROM market_event_targets t "
+                "JOIN market_events e USING(event_id) WHERE t.start_epoch<=? AND t.state='active' ORDER BY t.event_id", (now,)):
+            running.setdefault(row['asset_code'], []).append(row)
         for row in conn.execute("SELECT t.*, e.event_type, COALESCE(e.volatility_percent, "
                 "CASE WHEN e.target_mode='percent' THEN e.target_value ELSE e.severity END) volatility_percent "
                 "FROM market_event_targets t JOIN market_events e USING(event_id) "
@@ -736,7 +773,7 @@ class MarketManager:
         return dict(states={r['asset_code']: r for r in conn.execute('SELECT * FROM market_simulation_state')},
             targets={r['asset_code']: r for r in conn.execute('SELECT * FROM market_auto_targets')},
             factor=conn.execute("SELECT * FROM market_factor_state WHERE key='market'").fetchone(),
-            events=events, state_updates={}, target_updates={}, target_deletes=set(), sector_shocks={})
+            events=events, running=running, state_updates={}, target_updates={}, target_deletes=set(), sector_shocks={})
 
     def _delete_auto_target(self, conn, code):
         batch = getattr(self._tick, 'batch', None)

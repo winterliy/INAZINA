@@ -699,6 +699,49 @@ class AssetDB(DBManager):
             "CREATE INDEX IF NOT EXISTS idx_market_orders_scheduled "
             "ON market_orders(status, created_epoch, order_id)"
         )
+        self.execute("""CREATE TABLE IF NOT EXISTS market_execution_events (
+            execution_key TEXT PRIMARY KEY,
+            execution_type TEXT NOT NULL CHECK(execution_type IN ('primary','secondary')),
+            asset_code TEXT NOT NULL,
+            buy_order_id INTEGER NOT NULL,
+            sell_order_id INTEGER,
+            buyer_id TEXT NOT NULL,
+            seller_id TEXT,
+            quantity INTEGER NOT NULL CHECK(quantity>0),
+            price_minor_units INTEGER NOT NULL CHECK(typeof(price_minor_units)='integer' AND price_minor_units>0),
+            gross_minor_units INTEGER NOT NULL CHECK(typeof(gross_minor_units)='integer' AND gross_minor_units>0),
+            tax_minor_units INTEGER NOT NULL DEFAULT 0 CHECK(typeof(tax_minor_units)='integer' AND tax_minor_units>=0),
+            seller_proceeds_minor_units INTEGER NOT NULL DEFAULT 0 CHECK(typeof(seller_proceeds_minor_units)='integer' AND seller_proceeds_minor_units>=0),
+            currency_code TEXT NOT NULL,
+            decimal_places INTEGER NOT NULL CHECK(decimal_places BETWEEN 0 AND 6),
+            recorded_epoch INTEGER NOT NULL,
+            CHECK((execution_type='primary' AND sell_order_id IS NULL AND seller_id IS NULL)
+               OR (execution_type='secondary' AND sell_order_id IS NOT NULL AND seller_id IS NOT NULL)))""")
+        execution_columns = {row[1] for row in self.execute(
+            "PRAGMA table_info(market_execution_events)")}
+        for column, declaration in (
+            ("tax_minor_units", "INTEGER NOT NULL DEFAULT 0"),
+            ("seller_proceeds_minor_units", "INTEGER NOT NULL DEFAULT 0"),
+        ):
+            if column not in execution_columns:
+                self.execute(f"ALTER TABLE market_execution_events ADD COLUMN {column} {declaration}")
+        self.execute("""CREATE TABLE IF NOT EXISTS market_execution_order_baselines (
+            order_id INTEGER PRIMARY KEY,
+            baseline_filled_quantity INTEGER NOT NULL CHECK(baseline_filled_quantity>=0),
+            captured_epoch INTEGER NOT NULL)""")
+        self.execute("""CREATE TABLE IF NOT EXISTS market_execution_journal_baselines (
+            execution_key TEXT PRIMARY KEY,
+            captured_epoch INTEGER NOT NULL)""")
+        self.execute("""INSERT OR IGNORE INTO market_execution_order_baselines
+            (order_id,baseline_filled_quantity,captured_epoch)
+            SELECT order_id,filled_quantity,unixepoch() FROM market_orders
+            WHERE order_kind='asset'""")
+        for table in ("market_execution_events", "market_execution_order_baselines",
+                      "market_execution_journal_baselines"):
+            for operation in ("UPDATE", "DELETE"):
+                self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_{operation.lower()}_immutable
+                    BEFORE {operation} ON {table}
+                    BEGIN SELECT RAISE(ABORT,'market execution audit rows are append-only'); END""")
         self.execute(
             """CREATE TABLE IF NOT EXISTS option_contracts (
                 contract_id INTEGER PRIMARY KEY AUTOINCREMENT,
