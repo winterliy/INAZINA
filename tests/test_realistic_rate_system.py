@@ -249,14 +249,29 @@ class RealisticRateSystemTests(unittest.TestCase):
             "journal_units": 1025, "difference_units": 0,
             "decimal_places": 2, "status": "matched",
         }])
+        loan = self.db.accounts.execute_one(
+            "SELECT principal_minor_units,outstanding_balance_minor_units "
+            "FROM loans WHERE product_code='FX-RECON'"
+        )
+        self.assertEqual((loan["principal_minor_units"],
+                          loan["outstanding_balance_minor_units"]), (1025, 1025))
         self.db.accounts.execute(
             "UPDATE loans SET outstanding_balance=outstanding_balance+0.01 "
             "WHERE product_code='FX-RECON'"
         )
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT outstanding_balance_minor_units FROM loans WHERE product_code='FX-RECON'"
+        )["outstanding_balance_minor_units"], 1026)
         with self.db.atomic() as conn:
             result = BankJournal.reconcile_loan_receivables(conn, "Bank")
         self.assertEqual(result[0]["difference_units"], 1)
         self.assertEqual(result[0]["status"], "mismatch")
+        self.db.accounts.execute(
+            "UPDATE loans SET outstanding_balance_minor_units=1027 WHERE product_code='FX-RECON'"
+        )
+        self.assertAlmostEqual(self.db.accounts.execute_one(
+            "SELECT outstanding_balance FROM loans WHERE product_code='FX-RECON'"
+        )["outstanding_balance"], 10.27)
 
     def test_ecl_allowance_reconciliation_uses_currency_minor_units(self):
         self.db.currency.execute(

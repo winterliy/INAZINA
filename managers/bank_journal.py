@@ -172,10 +172,11 @@ class BankJournal:
     @staticmethod
     def reconcile_loan_receivables(conn, issuer):
         """Compare live gross loan balances with the posted receivable account."""
-        from functions.money import currency_precision, round_currency
+        from functions.money import currency_precision, round_currency, to_minor_units
 
         accounts = conn.execute(
-            "SELECT l.quote_currency,l.outstanding_balance FROM accounts.loans l "
+            "SELECT l.quote_currency,l.outstanding_balance,l.outstanding_balance_minor_units "
+            "FROM accounts.loans l "
             "JOIN product.liability p USING(product_code) WHERE p.issuer=? "
             "AND l.status IN ('active','defaulted')",
             (str(issuer),),
@@ -184,12 +185,12 @@ class BankJournal:
         for row in accounts:
             currency = str(row["quote_currency"] or "NWX").upper()
             places = currency_precision(conn, currency)
-            rounded = Decimal(str(round_currency(
-                conn, Decimal(str(row["outstanding_balance"] or 0)), currency,
-            )))
-            account_units[currency] = account_units.get(currency, 0) + int(
-                rounded * (10 ** places)
-            )
+            units = (int(row["outstanding_balance_minor_units"] or 0)
+                     if "outstanding_balance_minor_units" in row.keys()
+                     else to_minor_units(round_currency(
+                         conn, Decimal(str(row["outstanding_balance"] or 0)), currency,
+                     ), places))
+            account_units[currency] = account_units.get(currency, 0) + units
 
         journal = conn.execute(
             "SELECT e.currency_code,SUM(l.debit_units-l.credit_units) receivable_units "

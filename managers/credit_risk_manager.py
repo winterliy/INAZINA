@@ -17,6 +17,15 @@ class CreditRiskManager:
     """
     STAGE_2_CURE_DAYS = 90
 
+    @staticmethod
+    def _outstanding_balance(conn, loan):
+        """Read loan exposure from its denomination-specific minor-unit field."""
+        if "outstanding_balance_minor_units" not in loan.keys():
+            return max(0.0, float(loan["outstanding_balance"] or 0))
+        places = currency_precision(conn, loan["quote_currency"] or "NWX")
+        return max(0.0, int(loan["outstanding_balance_minor_units"] or 0)
+                   / (10 ** places))
+
     @classmethod
     def charge_off_loan(cls, conn, *, loan_id, event_key, actor_id, now=None, memo=""):
         """Write off a defaulted loan against its ECL allowance, then loss expense.
@@ -45,7 +54,8 @@ class CreditRiskManager:
         if prior:
             return {"eventId": int(prior["event_id"]), "duplicate": True}
         epoch = RateManager._validated_epoch(now, "invalid_loan_chargeoff_epoch")
-        loan = conn.execute("""SELECT l.loan_id,l.outstanding_balance,l.ecl_allowance,
+        loan = conn.execute("""SELECT l.loan_id,l.outstanding_balance,
+            l.outstanding_balance_minor_units,l.ecl_allowance,
             l.quote_currency,l.status,l.collection_status,p.issuer
             FROM accounts.loans l JOIN product.liability p USING(product_code)
             WHERE l.loan_id=?""", (loan_id,)).fetchone()
@@ -54,7 +64,9 @@ class CreditRiskManager:
             raise ValueError("부도 상태인 대출만 상각할 수 있습니다.")
         currency = str(loan["quote_currency"] or "NWX").upper()
         places = currency_precision(conn, currency)
-        gross = to_minor_units(max(0, loan["outstanding_balance"] or 0), places)
+        gross = (int(loan["outstanding_balance_minor_units"] or 0)
+                 if "outstanding_balance_minor_units" in loan.keys()
+                 else to_minor_units(max(0, loan["outstanding_balance"] or 0), places))
         allowance = min(gross, to_minor_units(max(0, loan["ecl_allowance"] or 0), places))
         if gross <= 0:
             raise ValueError("상각할 대출 잔액이 없습니다.")
@@ -890,7 +902,7 @@ class CreditRiskManager:
 
     @classmethod
     def _lgd(cls, conn, loan):
-        ead = max(0.0, float(loan["outstanding_balance"] or 0))
+        ead = cls._outstanding_balance(conn, loan)
         if ead <= 0:
             return 0.0
         currency = str(loan["quote_currency"] or "NWX").upper()
@@ -1300,7 +1312,8 @@ class CreditRiskManager:
         epoch = RateManager._validated_epoch(now, "invalid_ecl_assessment_epoch")
         as_of_day = datetime.fromtimestamp(epoch, timezone.utc).date().isoformat()
         loans = conn.execute(
-            "SELECT l.loan_id,l.user_id,l.product_code,l.outstanding_balance,l.quote_currency,"
+            "SELECT l.loan_id,l.user_id,l.product_code,l.outstanding_balance,"
+            "l.outstanding_balance_minor_units,l.quote_currency,"
             "l.collateral_amount,l.collateral_released,l.collateral_seized,l.underwriting_dti,"
             "l.underwriting_dsr,l.current_ltv,l.missed_payment_count,l.overdue_since_epoch,"
             "l.collection_status,l.status,l.maturity_epoch,l.created_at,l.ecl_allowance,"
@@ -1322,7 +1335,7 @@ class CreditRiskManager:
             ).fetchone():
                 continue
             issuer = str(loan["issuer"] or "").strip()
-            if not issuer or float(loan["outstanding_balance"] or 0) <= 0:
+            if not issuer or cls._outstanding_balance(conn, loan) <= 0:
                 continue
             overdue = bool(loan["overdue_since_epoch"] is not None
                            or loan["collection_status"] in {"grace", "overdue", "accelerated"})
@@ -1409,7 +1422,7 @@ class CreditRiskManager:
             if not math.isfinite(discount_factor) or discount_factor <= 0:
                 discount_factor = 1.0
             ead, ead_method = cls._ead_at_expected_loss(
-                conn, loan["loan_id"], loan["outstanding_balance"], epoch,
+                conn, loan["loan_id"], cls._outstanding_balance(conn, loan), epoch,
                 expected_loss_time, stage, loan["quote_currency"],
             )
             scenarios = conn.execute(
