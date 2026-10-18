@@ -209,6 +209,34 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.assertEqual(self.db.accounts.execute_one(
             "SELECT COUNT(*) count FROM bank_journal_entries WHERE event_type='expected_credit_loss'"
         )["count"], 1)
+        with self.db.atomic() as conn:
+            BankJournal.post(conn, "Bank", "loan_origination", f"loan:{loan_id}:origin",
+                             "NWX", [("loans_receivable", "debit", 1000),
+                                     ("settlement_asset", "credit", 1000)],
+                             now=1_800_000_000)
+            chargeoff = CreditRiskManager.charge_off_loan(
+                conn, loan_id=loan_id, event_key="lifecycle-chargeoff",
+                actor_id="support-admin", now=1_800_000_010,
+            )
+            recovery = CreditRiskManager.record_chargeoff_recovery(
+                conn, loan_id=loan_id, amount=5, event_key="lifecycle-recovery",
+                actor_id="support-admin", now=1_800_000_020,
+            )
+            self.assertEqual(BankJournal.audit_unbalanced(conn), [])
+            self.assertEqual(BankJournal.reconcile_loan_receivables(conn, "Bank")[0]["status"], "matched")
+            self.assertEqual(BankJournal.reconcile_ecl_allowances(conn, "Bank")[0]["status"], "matched")
+            self.assertEqual(BankJournal.reconcile_charged_off_balances(conn, "Bank")[0]["status"], "matched")
+            memo_snapshot = conn.execute("""SELECT amount_minor_units FROM financial_amount_snapshots
+                WHERE source_table='loans' AND source_key=? AND amount_field='charged_off_balance'""",
+                (str(loan_id),),
+            ).fetchone()
+            self.assertIsNotNone(memo_snapshot)
+            self.assertEqual(memo_snapshot["amount_minor_units"], recovery["remainingMinorUnits"])
+        self.assertGreater(chargeoff["allowanceMinorUnits"], 0)
+        self.assertEqual(recovery["recoveryMinorUnits"], 5)
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT status,charged_off_balance FROM loans WHERE loan_id=?", (loan_id,),
+        )["status"], "charged_off")
 
     def test_defaulted_loan_nonaccrual_does_not_book_interest(self):
         from managers.interest_manager import InterestManager
@@ -284,6 +312,29 @@ class DefaultedLoanEclTests(unittest.TestCase):
         self.assertEqual(self.db.accounts.execute_one(
             "SELECT charged_off_balance FROM loans WHERE loan_id=?", (loan_id,),
         )[0], 900)
+        audit_actions = {row[0] for row in self.db.system.execute(
+            "SELECT action FROM admin_audit WHERE action LIKE 'credit_risk.loan_chargeoff%' "
+            "OR action='credit_risk.loan_charge_off'"
+        )}
+        self.assertIn("credit_risk.loan_charge_off", audit_actions)
+        self.assertIn("credit_risk.loan_chargeoff_recovery", audit_actions)
+
+    def test_chargeoff_recovery_cannot_exceed_memorandum_balance(self):
+        loan_id = self.db.accounts.execute_one(
+            "SELECT loan_id FROM loans WHERE product_code='ECL3'"
+        )["loan_id"]
+        with self.db.atomic() as conn:
+            conn.execute("UPDATE accounts.loans SET status='charged_off',"
+                         "collection_status='charged_off',charged_off_balance=25 WHERE loan_id=?",
+                         (loan_id,))
+            with self.assertRaisesRegex(ValueError, "미회수 상각잔액"):
+                CreditRiskManager.record_chargeoff_recovery(
+                    conn, loan_id=loan_id, amount=26, event_key="over-recovery",
+                    actor_id="support-admin", now=1_800_000_100,
+                )
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT COUNT(*) FROM loan_chargeoff_events WHERE event_key='over-recovery'"
+        )[0], 0)
 
     def test_credit_support_changes_are_audited_and_guarantee_reduces_lgd(self):
         loan_id = self.db.accounts.execute_one(

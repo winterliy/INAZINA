@@ -250,7 +250,7 @@ class CurrencyDB(DBManager):
                        "mandatory_cost_fee", "collateral_amount", "collateral_released", "collateral_seized",
                        "collateral_asset_value", "collateral_liquidated_value",
                        "liquidation_proceeds", "provisioned_loss", "underwriting_income",
-                       "ecl_allowance",
+                       "ecl_allowance", "charged_off_balance",
                        "prepayment_fees_paid"),
              "loan_id", "NEW.quote_currency"),
             ("market_orders", ("limit_price", "reserved_cash"), "order_id",

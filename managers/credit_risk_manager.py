@@ -95,6 +95,11 @@ class CreditRiskManager:
                 conn, loan["issuer"], excess, "expected_credit_loss_release", excess_ref,
                 now=epoch, currency_code=currency,
             )
+        ComplianceManager._audit(conn, actor_id, "credit_risk.loan_charge_off", {
+            "loan_id": loan_id, "event_key": key, "gross_minor_units": gross,
+            "allowance_minor_units": allowance, "loss_minor_units": loss,
+            "currency_code": currency,
+        }, epoch)
         return {"eventId": int(conn.execute(
             "SELECT event_id FROM accounts.loan_chargeoff_events WHERE event_key=?", (key,)
         ).fetchone()[0]), "duplicate": False, "grossMinorUnits": gross,
@@ -154,6 +159,10 @@ class CreditRiskManager:
             conn, loan["issuer"], value, "credit_loss_recovery_income", reference,
             now=epoch, currency_code=currency,
         )
+        ComplianceManager._audit(conn, actor_id, "credit_risk.loan_chargeoff_recovery", {
+            "loan_id": loan_id, "event_key": key, "amount_minor_units": amount_units,
+            "currency_code": currency,
+        }, epoch)
         return {"eventId": int(conn.execute(
             "SELECT event_id FROM accounts.loan_chargeoff_events WHERE event_key=?", (key,)
         ).fetchone()[0]), "duplicate": False, "recoveryMinorUnits": amount_units,
