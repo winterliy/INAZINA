@@ -963,6 +963,13 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual((second["amount_paid"], second["fee_paid"],
                           second["interest_paid"], second["principal_paid"]),
                          (.04, .03, .01, 0))
+        cashflows = BankManager._loan_cashflows(
+            100.01, 6, 90, 30, "equal_principal", start_epoch=1_800_000_000,
+            decimal_places=2,
+        )
+        from functions.money import to_minor_units
+        self.assertEqual(sum(to_minor_units(row[1], 2) for row in cashflows), 10001)
+        self.assertTrue(all(to_minor_units(row[2], 2) >= 0 for row in cashflows))
 
     def test_floating_reset_recasts_unpaid_future_schedule(self):
         self.add_loan(code="RECAST", maturity=90, collateral_ratio=0,

@@ -111,7 +111,7 @@
 
 상각 후 계약상 메모잔액(`loans.charged_off_balance`)도 계약통화 정밀도 guard와 정수 최소단위 snapshot 등록부에 연결됐다. 이는 M4 원천→최소단위 미러의 추가 범위일 뿐, 대출/상환·시장·상품·채권의 권위 저장값 이관으로 간주하지 않는다.
 
-대출 회차 지급을 미납 수수료→이자→원금으로 배분하는 두 경로(`_allocate_schedule_payment`, `_apply_schedule_installment`)는 이제 배분 중간값을 계약통화 최소단위 정수로 계산하고, 저장/기존 호출 경계에서만 legacy 금액값으로 변환한다. USD 센트 단위 통합 테스트가 분할배분과 금액 snapshot을 확인한다. 상환 스케줄 DB 열과 이자/상환표 산출은 아직 legacy 수치 필드를 사용하므로 전체 대출 금액 경로의 canonical-unit 이관은 미완료다.
+대출 계약 현금흐름 산출과 회차 지급 배분(`_loan_cashflows`, `_allocate_schedule_payment`, `_apply_schedule_installment`)은 이제 원금 분배·잔액 이월·수수료→이자→원금 배분 중간값을 계약통화 최소단위 정수로 처리하고, 저장/기존 호출 경계에서만 legacy 금액값으로 변환한다. USD 센트 단위 통합 테스트가 현금흐름 원금 총액, 분할배분과 금액 snapshot을 확인한다. 상환 스케줄 DB 열과 다수의 이자/상환 호출부는 아직 legacy 수치 필드를 사용하므로 전체 대출 금액 경로의 canonical-unit 이관은 미완료다.
 
 ### M5 — #74 신용위험·ECL·심사
 

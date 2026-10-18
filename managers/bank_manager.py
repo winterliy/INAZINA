@@ -29,7 +29,18 @@ class BankManager:
                         amortization_type, day_count_convention="ACT/365",
                         start_epoch=None, due_epochs=None, decimal_places=0):
         """Build contractual installment cash flows for APR and servicing."""
-        principal = float(principal)
+        from functions.money import from_minor_units, to_minor_units
+
+        principal_units = max(0, to_minor_units(principal, decimal_places))
+        principal = float(from_minor_units(principal_units, decimal_places))
+
+        def amount_value(units):
+            exact = from_minor_units(units, decimal_places)
+            return int(exact) if int(decimal_places) == 0 else float(exact)
+
+        def amount_units(value):
+            return max(0, to_minor_units(value, decimal_places))
+
         days = max(1, int(maturity_days or 1))
         frequency = max(1, int(frequency_days or days))
         mode = str(amortization_type or "legacy")
@@ -62,19 +73,23 @@ class BankManager:
             previous = due
         rows = []
         if mode == "bullet":
-            interest = round_money(principal*rate*sum(fractions), decimal_places)
-            return [(due_days[-1], principal, max(0, interest))]
+            interest_units = amount_units(principal*rate*sum(fractions))
+            return [(due_days[-1], amount_value(principal_units),
+                     amount_value(interest_units))]
         if mode == "equal_principal":
-            remaining = principal
-            allocated = 0
+            remaining_units = principal_units
+            allocated_units = 0
             for index, (due_day, fraction) in enumerate(zip(due_days, fractions), 1):
-                principal_due = (principal-allocated if index == count
-                                 else round_money(principal/count, decimal_places))
-                principal_due = max(0, min(remaining, principal_due))
-                interest = round_money(remaining*rate*fraction, decimal_places)
-                rows.append((due_day, principal_due, max(0, interest)))
-                remaining -= principal_due
-                allocated += principal_due
+                principal_due_units = (principal_units-allocated_units if index == count
+                                        else principal_units//count)
+                principal_due_units = max(0, min(remaining_units, principal_due_units))
+                interest_units = amount_units(
+                    float(from_minor_units(remaining_units, decimal_places))*rate*fraction
+                )
+                rows.append((due_day, amount_value(principal_due_units),
+                             amount_value(interest_units)))
+                remaining_units -= principal_due_units
+                allocated_units += principal_due_units
             return rows
         # Annuity: discount each potentially irregular period separately so
         # holidays and the selected day-count convention affect the payment.
@@ -87,18 +102,21 @@ class BankManager:
             discount /= 1.0+periodic_rate
             discounts.append(discount)
         payment = principal/max(1e-12, sum(discounts))
-        remaining = principal
-        allocated = 0
+        remaining_units = principal_units
+        allocated_units = 0
         for index, (due_day, periodic_rate) in enumerate(
             zip(due_days, period_rates), 1
         ):
-            interest = max(0, round_money(remaining*periodic_rate, decimal_places))
-            principal_due = (principal-allocated if index == count else
-                             max(0, round_money(payment-interest, decimal_places)))
-            principal_due = min(remaining, principal_due)
-            rows.append((due_day, principal_due, interest))
-            remaining -= principal_due
-            allocated += principal_due
+            remaining = float(from_minor_units(remaining_units, decimal_places))
+            interest_units = amount_units(remaining*periodic_rate)
+            payment_units = amount_units(payment)
+            principal_due_units = (principal_units-allocated_units if index == count else
+                                   max(0, payment_units-interest_units))
+            principal_due_units = min(remaining_units, principal_due_units)
+            rows.append((due_day, amount_value(principal_due_units),
+                         amount_value(interest_units)))
+            remaining_units -= principal_due_units
+            allocated_units += principal_due_units
         return rows
 
     @classmethod
