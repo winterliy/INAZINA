@@ -295,6 +295,13 @@ class AccountDB(DBManager):
             ("principal_paid", "INTEGER NOT NULL DEFAULT 0 CHECK(principal_paid >= 0)"),
             ("interest_paid", "INTEGER NOT NULL DEFAULT 0 CHECK(interest_paid >= 0)"),
             ("fee_paid", "INTEGER NOT NULL DEFAULT 0 CHECK(fee_paid >= 0)"),
+            ("principal_due_minor_units", "INTEGER NOT NULL DEFAULT 0 CHECK(principal_due_minor_units >= 0)"),
+            ("interest_due_minor_units", "INTEGER NOT NULL DEFAULT 0 CHECK(interest_due_minor_units >= 0)"),
+            ("fee_due_minor_units", "INTEGER NOT NULL DEFAULT 0 CHECK(fee_due_minor_units >= 0)"),
+            ("amount_paid_minor_units", "INTEGER NOT NULL DEFAULT 0 CHECK(amount_paid_minor_units >= 0)"),
+            ("principal_paid_minor_units", "INTEGER NOT NULL DEFAULT 0 CHECK(principal_paid_minor_units >= 0)"),
+            ("interest_paid_minor_units", "INTEGER NOT NULL DEFAULT 0 CHECK(interest_paid_minor_units >= 0)"),
+            ("fee_paid_minor_units", "INTEGER NOT NULL DEFAULT 0 CHECK(fee_paid_minor_units >= 0)"),
         ):
             if column not in schedule_columns:
                 self.execute(

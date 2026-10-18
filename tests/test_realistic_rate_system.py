@@ -946,7 +946,10 @@ class RealisticRateSystemTests(unittest.TestCase):
                 conn, second_id, .04, 1_800_000_001,
             )
             row = conn.execute(
-                "SELECT amount_paid,fee_paid,interest_paid,principal_paid,status "
+                "SELECT amount_paid,fee_paid,interest_paid,principal_paid,status,"
+                "amount_paid_minor_units,fee_paid_minor_units,interest_paid_minor_units,"
+                "principal_paid_minor_units,principal_due_minor_units,interest_due_minor_units,"
+                "fee_due_minor_units "
                 "FROM accounts.loan_payment_schedule WHERE schedule_id=?", (schedule_id,),
             ).fetchone()
             second = conn.execute(
@@ -958,6 +961,10 @@ class RealisticRateSystemTests(unittest.TestCase):
                   AND amount_field='amount_paid'""", (str(schedule_id),)).fetchone()
         self.assertEqual((row["amount_paid"], row["fee_paid"], row["interest_paid"],
                           row["principal_paid"], row["status"]), (4.25, 1.1, 1.2, 1.95, "partial"))
+        self.assertEqual((row["amount_paid_minor_units"], row["fee_paid_minor_units"],
+                          row["interest_paid_minor_units"], row["principal_paid_minor_units"],
+                          row["principal_due_minor_units"], row["interest_due_minor_units"],
+                          row["fee_due_minor_units"]), (425, 110, 120, 195, 300, 120, 110))
         self.assertEqual(mirror["amount_minor_units"], 425)
         self.assertEqual(applied, .04)
         self.assertEqual((second["amount_paid"], second["fee_paid"],
@@ -981,6 +988,43 @@ class RealisticRateSystemTests(unittest.TestCase):
         from functions.money import to_minor_units
         self.assertEqual(sum(to_minor_units(row[1], 2) for row in cashflows), 10001)
         self.assertTrue(all(to_minor_units(row[2], 2) >= 0 for row in cashflows))
+
+    def test_legacy_schedule_rows_backfill_currency_minor_units(self):
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('USD','Dollar','1',2)"
+        )
+        self.db.products.execute(
+            "INSERT INTO liability(product_code,name,interest_rate,loan_limit,maturity_days,"
+            "interest_cycle,min_credit_score,issuer,quote_currency) "
+            "VALUES ('SCHED-MIGRATE','Migration schedule',5,10000,30,86400,0,'Bank','USD')"
+        )
+        self.db.accounts.execute(
+            "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,status,"
+            "created_at,quote_currency) VALUES ('borrower','SCHED-MIGRATE',1.23,1.23,'active',"
+            "datetime('now'),'USD')"
+        )
+        loan_id = self.db.accounts.execute_one(
+            "SELECT loan_id FROM loans WHERE product_code='SCHED-MIGRATE'"
+        )["loan_id"]
+        self.db.accounts.execute(
+            "INSERT INTO loan_payment_schedule(loan_id,installment_number,due_epoch,principal_due) "
+            "VALUES (?,1,1900000000,1.23)", (loan_id,),
+        )
+        schedule_id = self.db.accounts.execute_one(
+            "SELECT schedule_id FROM loan_payment_schedule WHERE loan_id=?", (loan_id,)
+        )["schedule_id"]
+        self.db.accounts.execute(
+            "UPDATE loan_payment_schedule SET principal_due_minor_units=0 WHERE schedule_id=?",
+            (schedule_id,),
+        )
+        self.db.currency._init_currency_precision_triggers()
+        row = self.db.accounts.execute_one(
+            "SELECT principal_due,principal_due_minor_units FROM loan_payment_schedule "
+            "WHERE schedule_id=?", (schedule_id,),
+        )
+        self.assertEqual((row["principal_due"], row["principal_due_minor_units"]),
+                         (1.23, 123))
 
     def test_floating_reset_recasts_unpaid_future_schedule(self):
         self.add_loan(code="RECAST", maturity=90, collateral_ratio=0,

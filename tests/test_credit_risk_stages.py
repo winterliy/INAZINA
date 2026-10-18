@@ -579,6 +579,9 @@ class DefaultedLoanEclTests(unittest.TestCase):
         with self.db.readonly() as conn:
             report = CreditRiskManager.backtest_12m(conn, "낙원", issuer="ValidationBank", now=epoch)
         self.assertAlmostEqual(report["discrimination"][0]["auroc"], 1/6)
+        self.assertEqual(sum(row["borrowerCount"] for row in report["borrowerHoldout"]), 2)
+        self.assertTrue(all("20% SHA-256 borrower holdout" in row["method"]
+                            for row in report["borrowerHoldout"]))
         stability = report["stability"][0]
         self.assertEqual((stability["olderCount"], stability["recentCount"]), (2, 2))
         self.assertGreater(stability["populationStabilityIndex"], 0)

@@ -308,7 +308,11 @@ class BankJournal:
         for row in rows:
             currency = str(row["quote_currency"] or "NWX").upper()
             places = currency_precision(conn, currency)
-            units = lambda field: to_minor_units(row[field] or 0, places)
+            def units(field):
+                minor_field = f"{field}_minor_units"
+                if minor_field in row.keys():
+                    return int(row[minor_field] or 0)
+                return to_minor_units(row[field] or 0, places)
             due = sum(units(field) for field in ("principal_due", "interest_due", "fee_due"))
             paid_components = sum(units(field) for field in
                                   ("principal_paid", "interest_paid", "fee_paid"))

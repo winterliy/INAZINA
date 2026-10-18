@@ -1,6 +1,7 @@
 """Lightweight forward-looking loan loss estimates for the bank simulation."""
 
 from datetime import datetime, timezone
+import hashlib
 import json
 import math
 
@@ -483,6 +484,7 @@ class CreditRiskManager:
                  (.05, .20, "5–20%"), (.20, 1.000001, "≥20%"))
         grouped = {}
         diagnostics = {}
+        borrower_records = {}
         recent_cutoff = epoch-3*horizon
         for row in rows:
             pd = cls._bounded(row["pd_12m"], 0, 1)
@@ -501,6 +503,16 @@ class CreditRiskManager:
             observed = int(default_epoch is not None
                            and row["calculated_epoch"] < float(default_epoch)
                            <= row["calculated_epoch"]+horizon)
+            borrower_key = (str(row["issuer"] or ""), str(row["nationality"] or ""),
+                            str(row["user_id"] or ""))
+            candidate = {"issuer": borrower_key[0], "nationality": borrower_key[1],
+                         "user_id": borrower_key[2], "pd": pd, "observed": observed,
+                         "calculated_epoch": float(row["calculated_epoch"]),
+                         "loan_id": int(row["loan_id"])}
+            prior = borrower_records.get(borrower_key)
+            if (prior is None or (candidate["calculated_epoch"], candidate["loan_id"])
+                    > (prior["calculated_epoch"], prior["loan_id"])):
+                borrower_records[borrower_key] = candidate
             diagnostic["labels"].append(observed)
             diagnostic["pd"].append(pd)
             cohort = "older" if float(row["calculated_epoch"]) < recent_cutoff else "recent"
@@ -585,9 +597,48 @@ class CreditRiskManager:
                               "populationStabilityIndex": psi,
                               "cohortSplitEpoch": recent_cutoff,
                               "method": "older (6–3y matured snapshots) vs recent (3–1y matured snapshots); smoothed PD-band PSI; simulator-only"})
+        holdout = {}
+        for record in borrower_records.values():
+            partition_key = "inazina-ecl-borrower-holdout-v1|"+"|".join(
+                (record["issuer"], record["nationality"], record["user_id"])
+            )
+            if int(hashlib.sha256(partition_key.encode("utf-8")).hexdigest()[:8], 16) % 5:
+                continue
+            key = (record["issuer"], record["nationality"])
+            metric = holdout.setdefault(key, {"predicted": [], "observed": []})
+            metric["predicted"].append(record["pd"])
+            metric["observed"].append(record["observed"])
+        borrower_holdout = []
+        for (bank, country), metric in sorted(holdout.items()):
+            predictions, labels = metric["predicted"], metric["observed"]
+            positives, negatives = sum(labels), len(labels)-sum(labels)
+            auc = None
+            if positives and negatives:
+                ordered = sorted(zip(predictions, labels), key=lambda item: item[0])
+                rank_sum = 0.0
+                start = 0
+                while start < len(ordered):
+                    end = start+1
+                    while end < len(ordered) and ordered[end][0] == ordered[start][0]:
+                        end += 1
+                    average_rank = ((start+1)+end)/2
+                    rank_sum += average_rank*sum(int(label) for _, label in ordered[start:end])
+                    start = end
+                auc = (rank_sum-positives*(positives+1)/2)/(positives*negatives)
+            borrower_holdout.append({
+                "issuer": bank, "nationality": country,
+                "borrowerCount": len(predictions), "defaults": positives,
+                "meanPredictedPd": sum(predictions)/len(predictions),
+                "observedDefaultRate": positives/len(predictions),
+                "brierScore": sum((pd-label)**2 for pd, label in
+                                  zip(predictions, labels))/len(predictions),
+                "auroc": auc,
+                "method": "deterministic 20% SHA-256 borrower holdout; latest matured loan per borrower; simulator outcomes, not an external independent validation set",
+            })
         return {"issuer": issuer, "horizonDays": 365,
                 "maturedThroughEpoch": epoch-horizon, "groups": result,
                 "discrimination": discrimination, "stability": stability,
+                "borrowerHoldout": borrower_holdout,
                 "method": "most recent matured Stage 1/2 assessment per loan; includes only snapshots with a full 365-day outcome window; outcome is recorded default within the following 12 months; capped at 5000 loans; Wilson intervals use Kish effective sample size to discount repeated loans per borrower, as a conservative clustering approximation; simulator-only calibration diagnostic"}
 
     @staticmethod

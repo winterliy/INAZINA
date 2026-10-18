@@ -326,6 +326,51 @@ class CurrencyDB(DBManager):
             available = tuple(column for column in columns if column in existing)
             if available:
                 self.enforce_currency_money(table, available, key, currency)
+        schedule_amounts = (
+            ("principal_due", "principal_due_minor_units"),
+            ("interest_due", "interest_due_minor_units"),
+            ("fee_due", "fee_due_minor_units"),
+            ("amount_paid", "amount_paid_minor_units"),
+            ("principal_paid", "principal_paid_minor_units"),
+            ("interest_paid", "interest_paid_minor_units"),
+            ("fee_paid", "fee_paid_minor_units"),
+        )
+        from functions.money import currency_precision, to_minor_units
+        for schedule_row in self.execute(
+                "SELECT s.*,l.quote_currency FROM loan_payment_schedule s "
+                "JOIN loans l USING(loan_id)"):
+            places = currency_precision(self.conn, schedule_row["quote_currency"] or "NWX")
+            missing = [(minor, to_minor_units(schedule_row[legacy] or 0, places))
+                       for legacy, minor in schedule_amounts
+                       if not int(schedule_row[minor] or 0)
+                       and float(schedule_row[legacy] or 0)]
+            if not missing:
+                continue
+            assignments = ",".join(f"{minor}=?" for minor, _ in missing)
+            self.execute(
+                f"UPDATE loan_payment_schedule SET {assignments} WHERE schedule_id=?",
+                (*(value for _, value in missing), schedule_row["schedule_id"]),
+            )
+        schedule_scale = "CASE COALESCE((SELECT decimal_places FROM currencies WHERE code=" \
+                         "(SELECT quote_currency FROM loans WHERE loan_id=NEW.loan_id)),0) " \
+                         "WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END"
+        minor_assignments = ",".join(
+            f"{minor}=CAST(ROUND(COALESCE(NEW.{legacy},0)*({schedule_scale})) AS INTEGER)"
+            for legacy, minor in schedule_amounts
+        )
+        self.execute("DROP TRIGGER IF EXISTS trg_loan_schedule_minor_insert")
+        self.execute("DROP TRIGGER IF EXISTS trg_loan_schedule_minor_update")
+        self.execute(f"""CREATE TRIGGER trg_loan_schedule_minor_insert
+            AFTER INSERT ON loan_payment_schedule BEGIN
+                UPDATE loan_payment_schedule SET {minor_assignments}
+                WHERE schedule_id=NEW.schedule_id;
+            END""")
+        self.execute(f"""CREATE TRIGGER trg_loan_schedule_minor_update
+            AFTER UPDATE OF {','.join(legacy for legacy, _ in schedule_amounts)}
+            ON loan_payment_schedule BEGIN
+                UPDATE loan_payment_schedule SET {minor_assignments}
+                WHERE schedule_id=NEW.schedule_id;
+            END""")
         self.execute("""CREATE TRIGGER IF NOT EXISTS trg_insurance_payout_precision_insert
             BEFORE INSERT ON deposit_insurance_claims
             WHEN NEW.payout_amount IS NOT NULL AND NEW.payout_currency IS NOT NULL

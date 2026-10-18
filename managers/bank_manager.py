@@ -1707,14 +1707,17 @@ class BankManager:
         currency = str(loan["quote_currency"] or "NWX")
         places = currency_precision(conn, currency)
 
-        def units(value):
-            return max(0, to_minor_units(value or 0, places))
+        def units(row, field):
+            minor_field = f"{field}_minor_units"
+            if minor_field in row.keys():
+                return max(0, int(row[minor_field] or 0))
+            return max(0, to_minor_units(row[field] or 0, places))
 
         def amount_value(value):
             exact = from_minor_units(value, places)
             return int(exact) if places == 0 else float(exact)
 
-        remaining = units(amount)
+        remaining = max(0, to_minor_units(amount or 0, places))
         if not remaining:
             return
         rows = conn.execute(
@@ -1724,18 +1727,18 @@ class BankManager:
             (loan_id,),
         ).fetchall()
         for row in rows:
-            unpaid_fee = max(0, units(row["fee_due"])-units(row["fee_paid"]))
-            unpaid_interest = max(0, units(row["interest_due"])-units(row["interest_paid"]))
-            unpaid_principal = max(0, units(row["principal_due"])-units(row["principal_paid"]))
-            due = units(row["principal_due"])+units(row["interest_due"])+units(row["fee_due"])
-            unpaid = max(0, due-units(row["amount_paid"]))
+            unpaid_fee = max(0, units(row, "fee_due")-units(row, "fee_paid"))
+            unpaid_interest = max(0, units(row, "interest_due")-units(row, "interest_paid"))
+            unpaid_principal = max(0, units(row, "principal_due")-units(row, "principal_paid"))
+            due = units(row, "principal_due")+units(row, "interest_due")+units(row, "fee_due")
+            unpaid = max(0, due-units(row, "amount_paid"))
             applied = min(remaining, unpaid)
             if not applied:
                 continue
             fee_applied = min(applied, unpaid_fee)
             interest_applied = min(applied-fee_applied, unpaid_interest)
             principal_applied = min(applied-fee_applied-interest_applied, unpaid_principal)
-            new_paid = units(row["amount_paid"])+applied
+            new_paid = units(row, "amount_paid")+applied
             status = "paid" if new_paid >= due else "partial"
             conn.execute(
                 "UPDATE accounts.loan_payment_schedule SET amount_paid=?,fee_paid=fee_paid+?,"
@@ -1776,22 +1779,26 @@ class BankManager:
             return 0.0
         places = currency_precision(conn, str(row["quote_currency"] or "NWX"))
 
-        def units(value):
-            return max(0, to_minor_units(value or 0, places))
+        def units(row, field):
+            minor_field = f"{field}_minor_units"
+            if minor_field in row.keys():
+                return max(0, int(row[minor_field] or 0))
+            return max(0, to_minor_units(row[field] or 0, places))
 
         def amount_value(value):
             exact = from_minor_units(value, places)
             return int(exact) if places == 0 else float(exact)
 
-        fee_due = max(0, units(row["fee_due"])-units(row["fee_paid"]))
-        interest_due = max(0, units(row["interest_due"])-units(row["interest_paid"]))
-        principal_due = max(0, units(row["principal_due"])-units(row["principal_paid"]))
-        applied = min(units(amount), fee_due+interest_due+principal_due)
+        fee_due = max(0, units(row, "fee_due")-units(row, "fee_paid"))
+        interest_due = max(0, units(row, "interest_due")-units(row, "interest_paid"))
+        principal_due = max(0, units(row, "principal_due")-units(row, "principal_paid"))
+        applied = min(max(0, to_minor_units(amount or 0, places)),
+                      fee_due+interest_due+principal_due)
         fee_applied = min(applied, fee_due)
         interest_applied = min(applied-fee_applied, interest_due)
         principal_applied = min(applied-fee_applied-interest_applied, principal_due)
-        new_paid = units(row["amount_paid"])+applied
-        total_due = units(row["fee_due"])+units(row["interest_due"])+units(row["principal_due"])
+        new_paid = units(row, "amount_paid")+applied
+        total_due = units(row, "fee_due")+units(row, "interest_due")+units(row, "principal_due")
         status = "paid" if new_paid >= total_due else "partial"
         conn.execute(
             "UPDATE accounts.loan_payment_schedule SET amount_paid=?,fee_paid=fee_paid+?,"
