@@ -1680,7 +1680,23 @@ class BankManager:
 
     @staticmethod
     def _allocate_schedule_payment(conn, loan_id, amount, paid_epoch):
-        remaining = max(0.0, float(amount or 0))
+        from functions.money import currency_precision, from_minor_units, to_minor_units
+
+        loan = conn.execute("SELECT quote_currency FROM accounts.loans WHERE loan_id=?",
+                            (loan_id,)).fetchone()
+        if not loan:
+            return
+        currency = str(loan["quote_currency"] or "NWX")
+        places = currency_precision(conn, currency)
+
+        def units(value):
+            return max(0, to_minor_units(value or 0, places))
+
+        def amount_value(value):
+            exact = from_minor_units(value, places)
+            return int(exact) if places == 0 else float(exact)
+
+        remaining = units(amount)
         if not remaining:
             return
         rows = conn.execute(
@@ -1690,24 +1706,25 @@ class BankManager:
             (loan_id,),
         ).fetchall()
         for row in rows:
-            unpaid_fee = max(0.0, float(row["fee_due"] or 0)-float(row["fee_paid"] or 0))
-            unpaid_interest = max(0.0, float(row["interest_due"] or 0)-float(row["interest_paid"] or 0))
-            unpaid_principal = max(0.0, float(row["principal_due"] or 0)-float(row["principal_paid"] or 0))
-            due = float(row["principal_due"] or 0)+float(row["interest_due"] or 0)+float(row["fee_due"] or 0)
-            unpaid = max(0.0, due-float(row["amount_paid"] or 0))
+            unpaid_fee = max(0, units(row["fee_due"])-units(row["fee_paid"]))
+            unpaid_interest = max(0, units(row["interest_due"])-units(row["interest_paid"]))
+            unpaid_principal = max(0, units(row["principal_due"])-units(row["principal_paid"]))
+            due = units(row["principal_due"])+units(row["interest_due"])+units(row["fee_due"])
+            unpaid = max(0, due-units(row["amount_paid"]))
             applied = min(remaining, unpaid)
             if not applied:
                 continue
             fee_applied = min(applied, unpaid_fee)
             interest_applied = min(applied-fee_applied, unpaid_interest)
             principal_applied = min(applied-fee_applied-interest_applied, unpaid_principal)
-            new_paid = float(row["amount_paid"] or 0)+applied
-            status = "paid" if new_paid >= due-1e-9 else "partial"
+            new_paid = units(row["amount_paid"])+applied
+            status = "paid" if new_paid >= due else "partial"
             conn.execute(
                 "UPDATE accounts.loan_payment_schedule SET amount_paid=?,fee_paid=fee_paid+?,"
                 "interest_paid=interest_paid+?,principal_paid=principal_paid+?,status=?,"
                 "paid_epoch=CASE WHEN ?='paid' THEN ? ELSE paid_epoch END WHERE schedule_id=?",
-                (new_paid, fee_applied, interest_applied, principal_applied,
+                (amount_value(new_paid), amount_value(fee_applied),
+                 amount_value(interest_applied), amount_value(principal_applied),
                  status, status, paid_epoch, row["schedule_id"]),
             )
             # Bureau-style reporting: a missed installment paid late is a cure;
@@ -1730,30 +1747,43 @@ class BankManager:
 
     @staticmethod
     def _apply_schedule_installment(conn, schedule_id, amount, paid_epoch):
+        from functions.money import currency_precision, from_minor_units, to_minor_units
+
         row = conn.execute(
-            "SELECT * FROM accounts.loan_payment_schedule WHERE schedule_id=?",
+            "SELECT s.*,l.quote_currency FROM accounts.loan_payment_schedule s "
+            "JOIN accounts.loans l ON l.loan_id=s.loan_id WHERE s.schedule_id=?",
             (schedule_id,),
         ).fetchone()
         if not row:
             return 0.0
-        fee_due = max(0.0, float(row["fee_due"] or 0)-float(row["fee_paid"] or 0))
-        interest_due = max(0.0, float(row["interest_due"] or 0)-float(row["interest_paid"] or 0))
-        principal_due = max(0.0, float(row["principal_due"] or 0)-float(row["principal_paid"] or 0))
-        applied = min(max(0.0, float(amount or 0)), fee_due+interest_due+principal_due)
+        places = currency_precision(conn, str(row["quote_currency"] or "NWX"))
+
+        def units(value):
+            return max(0, to_minor_units(value or 0, places))
+
+        def amount_value(value):
+            exact = from_minor_units(value, places)
+            return int(exact) if places == 0 else float(exact)
+
+        fee_due = max(0, units(row["fee_due"])-units(row["fee_paid"]))
+        interest_due = max(0, units(row["interest_due"])-units(row["interest_paid"]))
+        principal_due = max(0, units(row["principal_due"])-units(row["principal_paid"]))
+        applied = min(units(amount), fee_due+interest_due+principal_due)
         fee_applied = min(applied, fee_due)
         interest_applied = min(applied-fee_applied, interest_due)
         principal_applied = min(applied-fee_applied-interest_applied, principal_due)
-        new_paid = float(row["amount_paid"] or 0)+applied
-        total_due = float(row["fee_due"] or 0)+float(row["interest_due"] or 0)+float(row["principal_due"] or 0)
-        status = "paid" if new_paid >= total_due-1e-9 else "partial"
+        new_paid = units(row["amount_paid"])+applied
+        total_due = units(row["fee_due"])+units(row["interest_due"])+units(row["principal_due"])
+        status = "paid" if new_paid >= total_due else "partial"
         conn.execute(
             "UPDATE accounts.loan_payment_schedule SET amount_paid=?,fee_paid=fee_paid+?,"
             "interest_paid=interest_paid+?,principal_paid=principal_paid+?,status=?,"
             "paid_epoch=CASE WHEN ?='paid' THEN ? ELSE paid_epoch END WHERE schedule_id=?",
-            (new_paid, fee_applied, interest_applied, principal_applied,
+            (amount_value(new_paid), amount_value(fee_applied),
+             amount_value(interest_applied), amount_value(principal_applied),
              status, status, paid_epoch, schedule_id),
         )
-        return applied
+        return amount_value(applied)
 
     @classmethod
     def _process_due_schedule(cls, conn, loan, now):

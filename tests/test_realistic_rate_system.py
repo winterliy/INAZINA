@@ -906,6 +906,64 @@ class RealisticRateSystemTests(unittest.TestCase):
         )
         self.assertGreater(second["interest_paid"], 0)
 
+    def test_usd_schedule_payment_allocation_uses_minor_units(self):
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('USD','Dollar','1',2)"
+        )
+        self.db.products.execute(
+            "INSERT INTO liability(product_code,name,interest_rate,loan_limit,maturity_days,"
+            "interest_cycle,min_credit_score,issuer,quote_currency) "
+            "VALUES ('SCHEDUSD','USD schedule',5,10000,30,86400,0,'Bank','USD')"
+        )
+        self.db.accounts.execute(
+            "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,status,"
+            "created_at,quote_currency) VALUES ('borrower','SCHEDUSD',10,10,'active',datetime('now'),'USD')"
+        )
+        loan_id = self.db.accounts.execute_one(
+            "SELECT loan_id FROM loans WHERE product_code='SCHEDUSD'"
+        )["loan_id"]
+        self.db.accounts.execute(
+            "INSERT INTO loan_payment_schedule(loan_id,installment_number,due_epoch,"
+            "principal_due,interest_due,fee_due) VALUES (?,?,?,?,?,?)",
+            (loan_id, 1, 1_900_000_000, 3, 1.20, 1.10),
+        )
+        schedule_id = self.db.accounts.execute_one(
+            "SELECT schedule_id FROM loan_payment_schedule WHERE loan_id=?", (loan_id,)
+        )["schedule_id"]
+        self.db.accounts.execute(
+            "INSERT INTO loan_payment_schedule(loan_id,installment_number,due_epoch,"
+            "principal_due,interest_due,fee_due) VALUES (?,?,?,?,?,?)",
+            (loan_id, 2, 1_900_000_100, .10, .02, .03),
+        )
+        second_id = self.db.accounts.execute_one(
+            "SELECT schedule_id FROM loan_payment_schedule WHERE loan_id=? AND installment_number=2",
+            (loan_id,),
+        )["schedule_id"]
+        with self.db.atomic() as conn:
+            BankManager._allocate_schedule_payment(conn, loan_id, 4.25, 1_800_000_000)
+            applied = BankManager._apply_schedule_installment(
+                conn, second_id, .04, 1_800_000_001,
+            )
+            row = conn.execute(
+                "SELECT amount_paid,fee_paid,interest_paid,principal_paid,status "
+                "FROM accounts.loan_payment_schedule WHERE schedule_id=?", (schedule_id,),
+            ).fetchone()
+            second = conn.execute(
+                "SELECT amount_paid,fee_paid,interest_paid,principal_paid "
+                "FROM accounts.loan_payment_schedule WHERE schedule_id=?", (second_id,),
+            ).fetchone()
+            mirror = conn.execute("""SELECT amount_minor_units FROM financial_amount_snapshots
+                WHERE source_table='loan_payment_schedule' AND source_key=?
+                  AND amount_field='amount_paid'""", (str(schedule_id),)).fetchone()
+        self.assertEqual((row["amount_paid"], row["fee_paid"], row["interest_paid"],
+                          row["principal_paid"], row["status"]), (4.25, 1.1, 1.2, 1.95, "partial"))
+        self.assertEqual(mirror["amount_minor_units"], 425)
+        self.assertEqual(applied, .04)
+        self.assertEqual((second["amount_paid"], second["fee_paid"],
+                          second["interest_paid"], second["principal_paid"]),
+                         (.04, .03, .01, 0))
+
     def test_floating_reset_recasts_unpaid_future_schedule(self):
         self.add_loan(code="RECAST", maturity=90, collateral_ratio=0,
                       origination_fee=0)
