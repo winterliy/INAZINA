@@ -506,6 +506,41 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(result[0]["status"], "matched")
         self.assertEqual(result[0]["journal_units"], 0)
 
+    def test_legacy_scheduled_repayment_uses_loan_minor_units(self):
+        self.add_loan(code="LEGACY-SCHEDULE", maturity=90, collateral_ratio=0,
+                      origination_fee=0)
+        self.db.products.execute(
+            "UPDATE liability SET rate_type='fixed',interest_rate=0,"
+            "repayment_cycle_seconds=30,repayment_amount=1000 "
+            "WHERE product_code='LEGACY-SCHEDULE'"
+        )
+        success, message = BankManager(self.db).apply_loan(
+            "borrower", "LEGACY-SCHEDULE", 3000
+        )
+        self.assertTrue(success, message)
+        loan = self.db.accounts.execute_one(
+            "SELECT loan_id FROM loans WHERE product_code='LEGACY-SCHEDULE'"
+        )
+        now = time.time()
+        self.db.accounts.execute(
+            "UPDATE loans SET contract_rate=0,last_repayment_epoch=? WHERE loan_id=?",
+            (now-31, loan["loan_id"]),
+        )
+        paid, missed, _notifications = BankManager(self.db).process_scheduled_loan_payments(
+            now=now
+        )
+        settled = self.db.accounts.execute_one(
+            "SELECT outstanding_balance,outstanding_balance_minor_units,status FROM loans "
+            "WHERE loan_id=?", (loan["loan_id"],)
+        )
+        self.assertEqual((paid, missed), (1, 0))
+        self.assertEqual((settled["outstanding_balance"],
+                          settled["outstanding_balance_minor_units"],
+                          settled["status"]), (2000, 2000, "active"))
+        with self.db.atomic() as conn:
+            self.assertEqual(BankJournal.reconcile_loan_receivables(conn, "Bank")[0]["status"],
+                             "matched")
+
     def test_withholding_tax_ledger_keeps_income_currency_precision(self):
         self.db.currency.execute(
             "INSERT INTO currencies(code,name,reference_rate,decimal_places) "

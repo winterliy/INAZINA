@@ -1558,20 +1558,30 @@ class BankManager:
                             })
                         continue
                     try:
+                        from functions.money import currency_precision, from_minor_units, to_minor_units
+
                         cycle = int(loan["repayment_cycle_seconds"] or 0)
-                        installment = round_currency(
-                            conn, loan["repayment_amount"] or 0, loan["quote_currency"]
-                        )
-                        balance = round_currency(
-                            conn, loan["outstanding_balance"] or 0, loan["quote_currency"]
-                        )
+                        currency = str(loan["quote_currency"] or "NWX")
+                        places = currency_precision(conn, currency)
+                        installment_units = max(0, to_minor_units(
+                            loan["repayment_amount"] or 0, places
+                        ))
+                        balance_units = (max(0, int(loan["outstanding_balance_minor_units"] or 0))
+                                         if "outstanding_balance_minor_units" in loan.keys()
+                                         else max(0, to_minor_units(
+                                             loan["outstanding_balance"] or 0, places
+                                         )))
                         last = float(loan["last_repayment_epoch"] or now)
                     except (TypeError, ValueError, OverflowError):
                         continue
-                    if cycle <= 0 or installment <= 0:
+                    def amount_value(value):
+                        exact = from_minor_units(value, places)
+                        return int(exact) if places == 0 else float(exact)
+
+                    if cycle <= 0 or installment_units <= 0:
                         continue
-                    if balance <= 0 or not math.isfinite(last):
-                        if balance <= 0:
+                    if balance_units <= 0 or not math.isfinite(last):
+                        if balance_units <= 0:
                             self._release_collateral(
                                 conn, loan["loan_id"], str(loan["user_id"])
                             )
@@ -1598,9 +1608,9 @@ class BankManager:
                     periods_to_process = min(due_periods, max_catch_up)
                     processed = 0
                     loan_paid_count = loan_missed_count = 0
-                    loan_paid_amount = 0
+                    loan_paid_amount_units = 0
                     for _ in range(periods_to_process):
-                        if balance <= 0:
+                        if balance_units <= 0:
                             conn.execute(
                                 "UPDATE accounts.loans SET outstanding_balance = 0, status = 'paid' "
                                 "WHERE loan_id = ?",
@@ -1608,17 +1618,18 @@ class BankManager:
                             )
                             break
 
-                        payment = min(installment, balance)
+                        payment_units = min(installment_units, balance_units)
+                        payment = amount_value(payment_units)
                         funds = UserFunds.choose(
                             conn, str(loan["user_id"]), loan["quote_currency"]
                         )
                         if funds and funds[0] >= payment and UserFunds.debit(
                             conn, str(loan["user_id"]), funds[1], payment
                         ):
-                            balance = max(0, balance - payment)
+                            balance_units = max(0, balance_units-payment_units)
                             paid_count += 1
                             loan_paid_count += 1
-                            loan_paid_amount += payment
+                            loan_paid_amount_units += payment_units
                             due_epoch = last+(processed+1)*cycle
                             CreditScoreManager.record(
                                 conn, loan["user_id"], "payment_on_time",
@@ -1640,9 +1651,9 @@ class BankManager:
                                 "UPDATE accounts.loans SET outstanding_balance = ?, "
                                 "status = CASE WHEN ? <= 0 THEN 'paid' ELSE 'active' END "
                                 "WHERE loan_id = ?",
-                                (balance, balance, loan["loan_id"]),
+                                (amount_value(balance_units), balance_units, loan["loan_id"]),
                             )
-                            if balance <= 0:
+                            if balance_units <= 0:
                                 self._release_collateral(
                                     conn, loan["loan_id"], str(loan["user_id"])
                                 )
@@ -1662,7 +1673,7 @@ class BankManager:
                                 loan_id=loan["loan_id"], refresh=False,
                             )
                         processed += 1
-                        if balance <= 0:
+                        if balance_units <= 0:
                             break
 
                     if processed:
@@ -1671,12 +1682,12 @@ class BankManager:
                             "WHERE loan_id = ? AND status = 'active'",
                             (last + processed * cycle, loan["loan_id"]),
                         )
-                    if balance <= 0:
+                    if balance_units <= 0:
                         CreditScoreManager.record(
                             conn, loan["user_id"], "loan_closed", f"loan:{loan['loan_id']}",
                             now=now, loan_id=loan["loan_id"], refresh=False,
                         )
-                    if loan_paid_count or loan_missed_count or balance <= 0:
+                    if loan_paid_count or loan_missed_count or balance_units <= 0:
                         CreditScoreManager.refresh(
                             conn, loan["user_id"], now, trigger="scheduled_payment"
                         )
@@ -1685,11 +1696,9 @@ class BankManager:
                             "user_id": str(loan["user_id"]),
                             "product_name": str(loan["product_name"] or loan["product_code"]),
                             "paid_count": loan_paid_count,
-                            "paid_amount": round_currency(
-                                conn, loan_paid_amount, loan["quote_currency"]
-                            ),
+                            "paid_amount": amount_value(loan_paid_amount_units),
                             "missed_count": loan_missed_count,
-                            "remaining": balance,
+                            "remaining": amount_value(balance_units),
                         })
                 RateManager.refresh_all_market_pressure(conn, now=now)
             return paid_count, missed_count, notifications
