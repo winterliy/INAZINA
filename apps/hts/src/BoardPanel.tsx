@@ -5,7 +5,8 @@ import { DateTimePicker } from "./DateTimePicker";
 
 type Category = { category_id: number; name: string };
 // suspension: the notice while an administrator has stopped writing on the board.
-type BoardInfo = { board_id: string; name: string; description: string; admin_only: number; allow_asset: number; secret: number; news: number; suspension: string | null; categories: Category[] };
+type BoardInfo = { board_id: string; name: string; description: string; admin_only: number; allow_asset: number; secret: number; news: number; sort_order: number; post_count?: number; suspension: string | null; categories: Category[] };
+type BoardDraft = { boardId: string; name: string; description: string; adminOnly: boolean; allowAsset: boolean; secret: boolean; news: boolean; sortOrder: string };
 // News moves the market from publication: administrators see its impact, readers only that it is news.
 type News = { status: "scheduled" | "live" | "ended" | "failed"; publish_epoch: number; event_type?: "good" | "bad"; severity?: number; asset_code?: string | null; duration_seconds?: number; target_price?: number | null; error?: string | null };
 type NewsDraft = { eventType: "good" | "bad"; severity: string; minutes: string; targetPrice: string; publish: number | null };
@@ -34,7 +35,7 @@ const errorText = (cause: unknown) => cause instanceof Error ? cause.message : "
  * HTS board. Reading needs no login; writing, comments, replies, reactions and reports do.
  * `user` is null for a visitor, and `onLogin` takes them to the login screen.
  */
-export function BoardPanel({ user, initialAsset = "", onClose, onLogin, asPage = false }: { user: ApiUser | null; initialAsset?: string; onClose: () => void; onLogin: () => void; asPage?: boolean }) {
+export function BoardPanel({ user, initialAsset = "", onClose, onLogin, onLogout, asPage = false }: { user: ApiUser | null; initialAsset?: string; onClose: () => void; onLogin: () => void; onLogout: () => void; asPage?: boolean }) {
   const admin = user?.role === "admin";
   const [boards, setBoards] = useState<BoardInfo[]>([]);
   const [board, setBoard] = useState("");
@@ -52,6 +53,11 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin, asPage =
   const [reply, setReply] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [manageBoards, setManageBoards] = useState(false);
+  const [adminPostsBoard, setAdminPostsBoard] = useState("");
+  const [boardDraft, setBoardDraft] = useState<BoardDraft | null>(null);
+  const [editingBoardId, setEditingBoardId] = useState<string | null>(null);
+  const [deleteTargets, setDeleteTargets] = useState<Record<string, string>>({});
 
   useEffect(() => {
     api<{ boards: BoardInfo[] }>("/api/board/boards").then((result) => {
@@ -62,6 +68,46 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin, asPage =
   }, [initialAsset]);
   const boardInfo = (id: string) => boards.find((item) => item.board_id === id);
   const current = boardInfo(board);
+
+  function editBoard(item?: BoardInfo) {
+    setEditingBoardId(item?.board_id ?? null);
+    setBoardDraft(item ? { boardId: item.board_id, name: item.name, description: item.description,
+      adminOnly: !!item.admin_only, allowAsset: !!item.allow_asset, secret: !!item.secret, news: !!item.news,
+      sortOrder: String(item.sort_order ?? 0) }
+      : { boardId: "", name: "", description: "", adminOnly: false, allowAsset: false, secret: false, news: false, sortOrder: String(boards.length) });
+  }
+
+  async function reloadBoards() {
+    const result = await api<{ boards: BoardInfo[] }>("/api/board/boards");
+    setBoards(result.boards);
+    return result.boards;
+  }
+
+  function saveBoard(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!boardDraft) return;
+    const creating = editingBoardId === null;
+    const path = creating ? "/api/admin/board/board/new" : `/api/admin/board/board/${encodeURIComponent(boardDraft.boardId)}`;
+    const payload = { action: creating ? "create" : "edit", ...boardDraft, adminOnly: boardDraft.adminOnly,
+      allowAsset: boardDraft.allowAsset, sortOrder: Number(boardDraft.sortOrder) };
+    void write(path, payload, async () => { await reloadBoards(); setBoardDraft(null); setEditingBoardId(null); setError(""); });
+  }
+
+  function removeBoard(item: BoardInfo) {
+    const moveTo = deleteTargets[item.board_id] || boards.find((other) => other.board_id !== item.board_id)?.board_id || "";
+    if (!window.confirm(item.post_count
+      ? `“${item.name}” 게시판을 삭제하고 게시글 ${item.post_count}개를 “${boardInfo(moveTo)?.name ?? moveTo}”으로 옮길까요?`
+      : `“${item.name}” 게시판을 삭제할까요?`)) return;
+    void write(`/api/admin/board/board/${encodeURIComponent(item.board_id)}`,
+      { action: "delete", moveTo }, async () => {
+        const updated = await reloadBoards();
+        if (board === item.board_id) { setBoard(""); setCategory(null); setPost(null); }
+        if (editingBoardId === item.board_id) { setBoardDraft(null); setEditingBoardId(null); }
+        setDeleteTargets((previous) => { const next = { ...previous }; delete next[item.board_id]; return next; });
+        if (!updated.length) setBoard("");
+        setError("");
+      });
+  }
 
   const loadList = useCallback(async () => {
     const query = new URLSearchParams({ page: String(page) });
@@ -215,17 +261,45 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin, asPage =
   return <Shell className={asPage ? "board-page" : "modal-backdrop"} onMouseDown={asPage ? undefined : (event) => { if (event.target === event.currentTarget) onClose(); }}>
     <section className="board-modal" {...(asPage ? { "aria-labelledby": "board-title" } : { role: "dialog", "aria-modal": true, "aria-labelledby": "board-title" })}>
       <div className="board-head">
-        <div><p className="eyebrow">BOARD{user ? "" : " · 읽기 전용"}</p><h2 id="board-title">게시판</h2></div>
+        <div><p className="eyebrow">BOARD{user ? "" : " · 읽기 전용"}</p><h2 id="board-title">{adminPostsBoard ? `게시물 관리 · ${boardInfo(adminPostsBoard)?.name ?? adminPostsBoard}` : "게시판"}</h2></div>
         <div className="board-head-actions">
+          {adminPostsBoard && <button type="button" onClick={() => { setAdminPostsBoard(""); setBoard(""); setCategory(null); setPage(1); setPost(null); }}>게시판 목록</button>}
+          {admin && <button type="button" disabled={busy} aria-expanded={manageBoards} onClick={() => { setManageBoards((value) => !value); setBoardDraft(null); setEditingBoardId(null); }}>{manageBoards ? "게시판 관리 닫기" : "게시판 관리"}</button>}
           <button type="button" className="board-primary" disabled={closed} title={closed ? `${opensText}부터 쓸 수 있습니다` : undefined} onClick={() => startDraft()}>{closed ? `${opensText}부터 글쓰기` : user ? "글쓰기" : "로그인하고 글쓰기"}</button>
+          {user && <button type="button" onClick={onLogout}>로그아웃</button>}
           {asPage ? <a className="board-back" href="/">← HTS로</a> : <button type="button" onClick={onClose}>닫기</button>}
         </div>
       </div>
       {closed && <p className="board-notice">게시판은 지금 읽기만 할 수 있습니다. 글쓰기·댓글·신고는 개인정보 처리방침 개정에 따라 <b>{opensText}</b>부터 열립니다. 작성·신고 시 접속 IP가 1년간 보관됩니다.</p>}
       {error && <p className="board-error" role="alert">{error}</p>}
+      {admin && manageBoards && <section className="board-manager" aria-label="게시판 종류 관리">
+        <div className="board-manager-head"><div><h3>게시판 종류 관리</h3><p>게시판의 이름·설명·공개 및 글쓰기 설정을 관리합니다.</p></div><button type="button" disabled={busy} onClick={() => editBoard()}>게시판 추가</button></div>
+        {boardDraft && <form className="board-manager-form" onSubmit={saveBoard}>
+          <h4>{editingBoardId ? "게시판 수정" : "새 게시판"}</h4>
+          <div className="board-manager-fields">
+            <label>게시판 ID<input value={boardDraft.boardId} disabled={editingBoardId !== null} required maxLength={32} pattern="[a-z0-9][a-z0-9_-]{0,31}" placeholder="예: lounge" onChange={(event) => setBoardDraft({ ...boardDraft, boardId: event.target.value })} /></label>
+            <label>이름<input value={boardDraft.name} required maxLength={30} onChange={(event) => setBoardDraft({ ...boardDraft, name: event.target.value })} /></label>
+            <label>정렬 순서<input type="number" min={-1000} max={1000} value={boardDraft.sortOrder} onChange={(event) => setBoardDraft({ ...boardDraft, sortOrder: event.target.value })} /></label>
+            <label className="board-manager-description">설명<input value={boardDraft.description} maxLength={200} onChange={(event) => setBoardDraft({ ...boardDraft, description: event.target.value })} /></label>
+          </div>
+          <div className="board-manager-options">
+            <label><input type="checkbox" checked={boardDraft.adminOnly} onChange={(event) => setBoardDraft({ ...boardDraft, adminOnly: event.target.checked })} />관리자만 글쓰기</label>
+            <label><input type="checkbox" checked={boardDraft.allowAsset} onChange={(event) => setBoardDraft({ ...boardDraft, allowAsset: event.target.checked })} />종목 코드 연결</label>
+            <label><input type="checkbox" checked={boardDraft.secret} onChange={(event) => setBoardDraft({ ...boardDraft, secret: event.target.checked })} />비밀 게시판</label>
+            <label><input type="checkbox" checked={boardDraft.news} onChange={(event) => setBoardDraft({ ...boardDraft, news: event.target.checked })} />시장 영향 뉴스 허용</label>
+          </div>
+          <div className="board-form-actions"><button type="button" disabled={busy} onClick={() => { setBoardDraft(null); setEditingBoardId(null); }}>취소</button><button type="submit" className="board-primary" disabled={busy}>{busy ? "저장 중…" : "저장"}</button></div>
+        </form>}
+        <ul className="board-manager-list">{boards.map((item) => <li key={item.board_id}>
+          <div><button type="button" className="board-manager-name" onClick={() => { setBoard(item.board_id); setCategory(null); setAsset(""); setSearch(""); setTerm(""); setPage(1); setPost(null); setDraft(null); setAdminPostsBoard(item.board_id); setManageBoards(false); setBoardDraft(null); setEditingBoardId(null); }}>{item.name}</button><code>{item.board_id}</code><small>{item.post_count ?? 0}개 글{item.secret ? " · 비밀" : ""}{item.admin_only ? " · 관리자 전용" : ""}</small></div>
+          <div className="board-manager-actions"><button type="button" disabled={busy} onClick={() => editBoard(item)}>수정</button>
+            {boards.length > 1 && <><label className="sr-only" htmlFor={`board-delete-target-${item.board_id}`}>삭제 시 게시글을 옮길 게시판</label><select id={`board-delete-target-${item.board_id}`} value={deleteTargets[item.board_id] || boards.find((other) => other.board_id !== item.board_id)?.board_id || ""} onChange={(event) => setDeleteTargets({ ...deleteTargets, [item.board_id]: event.target.value })}>{boards.filter((other) => other.board_id !== item.board_id).map((other) => <option key={other.board_id} value={other.board_id}>{other.name}으로 이동</option>)}</select><button type="button" className="danger" disabled={busy} onClick={() => removeBoard(item)}>삭제</button></>}
+          </div>
+        </li>)}</ul>
+      </section>}
       <div className="board-body">
         <aside className="board-list">
-          <div className="board-tabs" role="tablist" aria-label="게시판">{[{ board_id: "", name: "전체" }, ...boards].map((item) => <button key={item.board_id || "all"} type="button" role="tab" aria-selected={board === item.board_id} className={board === item.board_id ? "active" : ""} onClick={() => { setBoard(item.board_id); setCategory(null); setPage(1); if (!boardInfo(item.board_id)?.allow_asset) setAsset(""); }}>{boardInfo(item.board_id)?.secret ? "🔒 " : ""}{item.name}</button>)}</div>
+          <div className="board-tabs" role="tablist" aria-label="게시판">{[{ board_id: "", name: "전체" }, ...boards].map((item) => <button key={item.board_id || "all"} type="button" role="tab" aria-selected={board === item.board_id} className={board === item.board_id ? "active" : ""} onClick={() => { setBoard(item.board_id); setAdminPostsBoard(""); setCategory(null); setPage(1); if (!boardInfo(item.board_id)?.allow_asset) setAsset(""); }}>{boardInfo(item.board_id)?.secret ? "🔒 " : ""}{item.name}</button>)}</div>
           {current?.description && <p className="board-description">{current.description}</p>}
           {current?.secret ? <p className="board-description">🔒 허용된 사람만 보는 비밀게시판입니다.</p> : null}
           {current?.suspension && <p className="board-notice">⛔ {current.suspension} 지금은 읽기만 할 수 있습니다.</p>}

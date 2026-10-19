@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type ApiUser } from "../../shared/api";
+import { api, clearToken, type ApiUser } from "../../shared/api";
 import { Backdrop } from "./Backdrop";
 import { BoardPanel } from "./BoardPanel";
 
@@ -15,8 +15,13 @@ export function BoardPage() {
   }, []);
   const asset = new URLSearchParams(location.search).get("asset") ?? "";
   const here = location.pathname + location.search;
+  const logout = () => {
+    clearToken();
+    void api("/api/auth/logout", { method: "POST" });
+    setUser(null);
+  };
   return <div className="stage board-stage"><Backdrop />
-    {user !== undefined && <BoardPanel asPage user={user} initialAsset={asset}
+    {user !== undefined && <BoardPanel asPage user={user} initialAsset={asset} onLogout={logout}
       onClose={() => location.assign("/")}
       onLogin={() => location.assign(`/?return=${encodeURIComponent(here)}`)} />}
   </div>;

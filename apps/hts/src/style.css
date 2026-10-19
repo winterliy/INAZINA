@@ -491,6 +491,30 @@ button.book-row:hover:not(:disabled) { filter: brightness(1.04); }
 .board-admin-bar button.active { color: #fff; background: #8a5a00; }
 .board-admin-bar label { display: flex; align-items: center; gap: 6px; color: var(--ink2); font-size: 12px; }
 .board-admin-bar select { min-height: 30px; padding: 0 8px; border: 0; border-radius: 8px; color: var(--ink); background: var(--field); box-shadow: inset 0 0 0 1px var(--line); font: inherit; font-size: 12px; }
+.board-manager { flex: none; max-height: 46%; overflow: auto; margin: 0 0 14px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 14px; background: rgba(var(--glass-rgb), .48); }
+.board-manager-head, .board-manager-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.board-manager-head h3 { font-size: 16px; }
+.board-manager-head p { margin-top: 3px; color: var(--ink2); font-size: 12px; }
+.board-manager-form { display: grid; gap: 10px; margin: 12px 0; padding: 12px; border-radius: 12px; background: var(--hover); }
+.board-manager-form h4 { margin: 0; font-size: 14px; }
+.board-manager-fields { display: grid; grid-template-columns: minmax(120px, .7fr) minmax(140px, 1fr) minmax(100px, .5fr); gap: 8px; }
+.board-manager-fields label { display: grid; gap: 4px; color: var(--ink2); font-size: 12px; }
+.board-manager-fields input, .board-manager-actions select { width: 100%; min-width: 0; min-height: 32px; padding: 5px 9px; border: 0; border-radius: 8px; color: var(--ink); background: var(--field); box-shadow: inset 0 0 0 1px var(--line); font: inherit; }
+.board-manager-fields .board-manager-description { grid-column: 1 / -1; }
+.board-manager-options { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.board-manager-options label { display: inline-flex; align-items: center; gap: 5px; color: var(--ink2); font-size: 12px; }
+.board-manager-options input { accent-color: var(--accent); }
+.board-manager-list { display: grid; gap: 6px; margin: 10px 0 0; padding: 0; list-style: none; }
+.board-manager-list li { padding: 8px 0; border-top: 1px solid var(--line); }
+.board-manager-list li > div:first-child { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; min-width: 0; }
+.board-manager-name { min-height: 0 !important; padding: 0 !important; color: var(--accent); background: transparent !important; box-shadow: none !important; font-size: 13px !important; font-weight: 700 !important; text-align: left; }
+.board-manager-name:hover { text-decoration: underline; }
+.board-manager-list code, .board-manager-list small { color: var(--ink2); font-size: 11px; }
+.board-manager-actions { display: flex; flex: none; align-items: center; gap: 6px; }
+.board-manager-actions select { width: auto; max-width: 170px; }
+.board-manager-actions button { min-height: 30px; padding: 0 10px; }
+.board-manager-actions .danger { color: var(--up); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; clip-path: inset(50%); }
 .board-pages { display: flex; align-items: center; justify-content: center; gap: 10px; padding-top: 8px; color: var(--ink2); font-size: 13px; }
 .board-pages button { background: var(--hover); }
 .board-main { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 4px 4px 4px 16px; border-left: 1px solid var(--line); }
@@ -539,6 +563,9 @@ button.book-row:hover:not(:disabled) { filter: brightness(1.04); }
   .board-modal { height: calc(100vh - 16px); padding: 16px; }
   .board-body { grid-template-columns: 1fr; grid-template-rows: minmax(160px, 38%) 1fr; }
   .board-main { padding: 12px 0 0; border-top: 1px solid var(--line); border-left: 0; }
+  .board-manager { max-height: 42%; padding: 10px; }
+  .board-manager-list li { align-items: flex-start; flex-direction: column; }
+  .board-manager-actions { max-width: 100%; flex-wrap: wrap; }
 }
 
 /* Board: attachments and polls */
