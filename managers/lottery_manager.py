@@ -205,6 +205,81 @@ class LotteryManager:
             )
             return {'round_id':round['round_id'],'price':price,'tickets':tickets}
 
+    @staticmethod
+    def _backfill_legacy_ledger(conn, round_row, now):
+        """Reconstruct only pre-ledger rounds; never repair a partial ledger.
+
+        Older databases can contain tickets and frozen pools but no purchase or
+        pool-ledger rows.  A modern purchase always creates both atomically, so
+        the absence of *all* of those rows identifies the legacy shape without
+        masking later tampering or partial corruption.
+        """
+        round_id = int(round_row['round_id'])
+        if conn.execute(
+            "SELECT 1 FROM lottery_pool_ledger WHERE round_id=? LIMIT 1", (round_id,)
+        ).fetchone():
+            return False
+        if conn.execute(
+            "SELECT 1 FROM lottery_purchases WHERE round_id=? LIMIT 1", (round_id,)
+        ).fetchone():
+            return False
+        tickets = conn.execute(
+            "SELECT price,created_epoch FROM lottery_tickets WHERE round_id=? ORDER BY ticket_id",
+            (round_id,),
+        ).fetchall()
+        sales_total = sum(int(ticket['price']) for ticket in tickets)
+        if sales_total != int(round_row['sales_total'] or 0):
+            return False
+        rules = json.loads(round_row['rules_json'])
+        LotteryManager.validate(rules)
+        sale_by_rank = [0] * 5
+        reserve_total = 0
+        treasury_total = 0
+        for ticket in tickets:
+            price = int(ticket['price'])
+            prize = price * int(rules['prize_percent']) // 100
+            treasury = price * int(rules['treasury_percent']) // 100
+            reserve = price - prize - treasury
+            changes = [prize * weight // 100 for weight in WEIGHTS]
+            changes[0] += prize - sum(changes)
+            sale_by_rank = [total + change for total, change in zip(sale_by_rank, changes)]
+            reserve_total += reserve
+            treasury_total += treasury
+        paid_by_rank = {
+            int(row['rank']): int(row['amount'] or 0)
+            for row in conn.execute(
+                "SELECT rank,COALESCE(SUM(gross),0) AS amount FROM lottery_payouts "
+                "WHERE round_id=? GROUP BY rank", (round_id,)
+            )
+        }
+        pools = [int(value) for value in json.loads(round_row['pools_json'])]
+        carry_by_rank = [
+            pools[index] - sale_by_rank[index] + paid_by_rank.get(index + 1, 0)
+            for index in range(5)
+        ]
+        if any(amount < 0 for amount in carry_by_rank):
+            return False
+        recorded_epoch = min(
+            (int(ticket['created_epoch']) for ticket in tickets), default=int(now)
+        )
+        entries = []
+        for rank, amount in enumerate(carry_by_rank, 1):
+            if amount:
+                entries.append((round_id, 'carry_in', rank, amount, recorded_epoch))
+        for rank, amount in enumerate(sale_by_rank, 1):
+            if amount:
+                entries.append((round_id, 'sale', rank, amount, recorded_epoch))
+        if reserve_total:
+            entries.append((round_id, 'reserve', 0, reserve_total, recorded_epoch))
+        if treasury_total:
+            entries.append((round_id, 'treasury', 0, treasury_total, recorded_epoch))
+        if entries:
+            conn.executemany(
+                "INSERT INTO lottery_pool_ledger(round_id,kind,rank,amount,recorded_epoch) "
+                "VALUES (?,?,?,?,?)", entries,
+            )
+        return True
+
     def process_due(self,now=None):
         now = int(RateManager._validated_epoch(now, "invalid_lottery_processing_epoch"))
         # A selling round spends almost all of its lifetime before the close.
@@ -235,6 +310,7 @@ class LotteryManager:
             round = conn.execute('SELECT * FROM lottery_rounds ORDER BY round_id DESC LIMIT 1').fetchone()
             if round['status']!='drawn':
                 return None
+            self._backfill_legacy_ledger(conn, round, now)
             winning = json.loads(round['winning_json'])
             pools = json.loads(round['pools_json'])
             allocated = conn.execute(

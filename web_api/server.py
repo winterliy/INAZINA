@@ -23,6 +23,11 @@ from urllib.parse import urlsplit, parse_qs, unquote
 ROOT = Path(__file__).resolve().parents[1]
 DATABASE = Path(os.environ.get("INAZINA_DB_PATH", ROOT / "database" / "inazina.db")).resolve()
 INTERNAL_TOKEN = os.environ.get("INAZINA_INTERNAL_TOKEN", "")
+BROWSER_PASSWORD_SHA256 = os.environ.get(
+    "INAZINA_BROWSER_PASSWORD_SHA256",
+    "04b2ad6979a436129b5f30cd00a3804bd87fc8bef73b0bb38640bf49a8479c64",
+)
+_browser_login_attempts = {}
 PORT = int(os.environ.get("INAZINA_PYTHON_PORT", "4313"))
 MAX_HTTP_THREADS = max(1, min(int(os.environ.get("INAZINA_MAX_HTTP_THREADS", "16")), 64))
 BOOTSTRAP_ADMIN_IDS = {"1076861147560542278"}
@@ -3127,13 +3132,15 @@ class Handler(BaseHTTPRequestHandler):
         if not INTERNAL_TOKEN or not hmac.compare_digest(
             self.headers.get("x-inazina-internal-token", ""), INTERNAL_TOKEN
         ):
-            # A person who opens this port in a browser gets a page, not raw JSON;
-            # the API server always calls with the token and Accept: */*.
+            # Browsers must pass the one-shot password screen; the API server
+            # continues to use the private internal token and Accept: */*.
             if "text/html" in self.headers.get("accept", ""):
-                self.send_landing(urlsplit(self.path).path)
+                if not getattr(self, "browser_access_granted", False):
+                    self.send_browser_access_page(self.path)
+                    return
+            elif not getattr(self, "browser_access_granted", False):
+                self.send_json(401, {"error": "internal_authentication_required"})
                 return
-            self.send_json(401, {"error": "internal_authentication_required"})
-            return
 
         try:
             parsed = urlsplit(self.path)
@@ -3592,6 +3599,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(503, {"error": "database_unavailable"})
 
     def do_POST(self):
+        if urlsplit(self.path).path == "/__browser-access":
+            self.browser_access_login()
+            return
         if not INTERNAL_TOKEN or not hmac.compare_digest(
             self.headers.get("x-inazina-internal-token", ""), INTERNAL_TOKEN
         ):
@@ -4200,6 +4210,53 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(400, {"error": "database_rejected", "message": str(exc)})
         except sqlite3.Error:
             self.send_json(503, {"error": "database_unavailable"})
+
+    def browser_access_login(self):
+        address = self.client_address[0] if self.client_address else "local"
+        now = time.time()
+        count, reset_at = _browser_login_attempts.get(address, (0, now + 600))
+        if reset_at > now and count >= 10:
+            self.send_json(429, {"error": "browser_login_rate_limited"})
+            return
+        try:
+            length = min(int(self.headers.get("content-length", "0")), 2048)
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            password = payload.get("password", "") if isinstance(payload, dict) else ""
+            target = payload.get("target", "") if isinstance(payload, dict) else ""
+            actual = hashlib.sha256(password.encode("utf-8")).hexdigest() if isinstance(password, str) else ""
+        except (ValueError, UnicodeDecodeError):
+            self.send_json(400, {"error": "invalid_request"})
+            return
+        if not hmac.compare_digest(actual, BROWSER_PASSWORD_SHA256):
+            _browser_login_attempts[address] = (count + 1 if reset_at > now else 1,
+                                                reset_at if reset_at > now else now + 600)
+            self.send_json(403, {"error": "invalid_browser_password"})
+            return
+        _browser_login_attempts.pop(address, None)
+        target_path = urlsplit(target).path if isinstance(target, str) else ""
+        if (not isinstance(target, str) or
+                (target_path not in {"", "/", "/internal", "/internal/"} and not target_path.startswith("/internal/")) or
+                target.startswith("//") or "\\" in target):
+            self.send_json(400, {"error": "invalid_target"})
+            return
+        self.path = target
+        self.browser_access_granted = True
+        if target_path in {"", "/", "/internal", "/internal/"}:
+            self.send_landing(target_path)
+            return
+        self.do_GET()
+
+    def send_browser_access_page(self, target):
+        import html
+        body = f'''<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>INAZINA · 비밀번호</title><style>*{{box-sizing:border-box}}body{{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#f8e9ee;color:#1d1d1f;font:16px -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif}}main{{width:min(620px,100%);padding:32px;border-radius:24px;background:#ffffffd9;box-shadow:0 24px 60px #3c1e642e}}h1{{font-size:24px;margin:0}}p{{color:#515154;line-height:1.5}}form{{display:flex;gap:8px;margin-top:22px}}input,button{{font:inherit;padding:12px;border-radius:12px}}input{{min-width:0;flex:1;border:1px solid #ccc}}button{{border:0;background:#0071e3;color:white;cursor:pointer}}#error{{color:#c42020;min-height:1.5em}}pre{{white-space:pre-wrap;overflow-wrap:anywhere;max-height:75vh;overflow:auto}}</style><main data-target="{html.escape(target, quote=True)}"><h1>비밀번호를 입력하세요</h1><p>이 주소의 응답만 한 번 표시합니다. 새로고침하거나 이동하면 다시 확인합니다.</p><form><input type="password" name="password" autocomplete="current-password" aria-label="비밀번호" required autofocus><button>확인</button></form><p id="error" role="alert"></p></main><script>const target=document.querySelector('main').dataset.target;document.querySelector('form').addEventListener('submit',async e=>{{e.preventDefault();const password=new FormData(e.currentTarget).get('password');const r=await fetch('/__browser-access',{{method:'POST',headers:{{'content-type':'application/json'}},body:JSON.stringify({{password,target}})}});const text=await r.text();if(!text.includes('invalid_browser_password')){{history.replaceState(null,'',target);let shown=text;try{{shown=JSON.stringify(JSON.parse(text),null,2)}}catch{{}}document.querySelector('main').innerHTML='<h1>API 응답</h1><pre></pre>';document.querySelector('pre').textContent=shown}}else document.querySelector('#error').textContent=r.status===429?'잠시 후 다시 시도해 주세요.':'비밀번호가 올바르지 않습니다. 다시 입력해 주세요.'}});window.addEventListener('pagehide',()=>document.querySelector('main').replaceChildren());window.addEventListener('pageshow',e=>{{if(e.persisted)location.reload()}})</script></html>'''.encode("utf-8")
+        self.send_response(401)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def send_landing(self, path):
         from web_api.landing import landing_page

@@ -10,6 +10,12 @@ workspace. The API starts the private Python data service automatically:
 - Wide-Learning viewer: `http://127.0.0.1:4315` — reads `docs/wide-learning` read-only (rules, status, CThread↔GThread chat); `npm run test:wl` tests its parser
 - Private Python data service: `127.0.0.1:4313` (API-managed; not exposed to the browser)
 
+Opening API JSON URLs directly in a browser on ports 4312 or 4313 asks for the same
+entry password as the Wide-Learning viewer (4315). A correct password reveals only
+that URL's one response; refreshes and other ports ask again. No successful access
+state is stored. App-to-API requests continue using their existing auth flows; the
+Python service still requires the private internal token for server-to-server calls.
+
 ```
 Browser ─▶ Dashboard :4310 ─┐
         ─▶ HTS       :4311 ─┴─ /api proxy ─▶ Node API :4312 ─▶ Python service :4313 ─▶ database/inazina.db

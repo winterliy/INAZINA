@@ -463,3 +463,28 @@ class LatestRequestsTests(unittest.TestCase):
         with self.assertRaises(ValueError):lottery.process_due(now=round['draw_epoch'])
         self.assertEqual(lottery.result(round['round_id'])['status'],'drawn')
         self.assertEqual(self.db.lottery.execute_one('SELECT COUNT(*) FROM lottery_payouts')[0],0)
+
+    def test_lottery_backfills_only_completely_missing_legacy_ledger(self):
+        lottery = self.bot.lottery_mgr
+        round_row = lottery.current(now=1_000_000)
+        lottery.purchase('alice', 1, '1 2 3 4 5 6', 'legacy', now=1_000_001)
+        self.db.lottery.execute(
+            "UPDATE lottery_rounds SET status='drawn',winning_json='[1,2,3,4,5,6]',"
+            "bonus=7,entropy=? WHERE round_id=?", ('ab' * 32, round_row['round_id'])
+        )
+        self.db.lottery.execute(
+            "DELETE FROM lottery_pool_ledger WHERE round_id=?", (round_row['round_id'],)
+        )
+        self.db.lottery.execute(
+            "DELETE FROM lottery_purchases WHERE round_id=?", (round_row['round_id'],)
+        )
+
+        self.assertEqual(
+            lottery.process_due(now=round_row['draw_epoch']), round_row['round_id']
+        )
+        ledger = self.db.lottery.execute(
+            "SELECT kind,rank,amount FROM lottery_pool_ledger WHERE round_id=? "
+            "ORDER BY kind,rank", (round_row['round_id'],)
+        )
+        self.assertTrue(any(row['kind'] == 'sale' for row in ledger))
+        self.assertEqual(lottery.result(round_row['round_id'])['status'], 'settled')

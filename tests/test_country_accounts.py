@@ -1,3 +1,5 @@
+import io
+import json
 import tempfile
 import unittest
 from contextlib import closing
@@ -15,6 +17,8 @@ class CountryAccountTests(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.old_database_dir = DBManager.database_dir
         self.old_database = server.DATABASE
+        self.old_browser_password_hash = server.BROWSER_PASSWORD_SHA256
+        server.BROWSER_PASSWORD_SHA256 = server.hashlib.sha256(b"TestPass123").hexdigest()
         root = Path(self.tempdir.name)
         DBManager.database_dir = root
         server.DATABASE = root / "inazina.db"
@@ -41,6 +45,7 @@ class CountryAccountTests(unittest.TestCase):
     def tearDown(self):
         DBManager.database_dir = self.old_database_dir
         server.DATABASE = self.old_database
+        server.BROWSER_PASSWORD_SHA256 = self.old_browser_password_hash
         self.tempdir.cleanup()
 
     def test_country_id_is_the_user_id_and_country_password_login_works(self):
@@ -147,14 +152,29 @@ class CountryAccountTests(unittest.TestCase):
         handler.do_GET()
         return handler.send_response.call_args[0][0], b"".join(call.args[0] for call in handler.wfile.write.call_args_list)
 
-    def test_browser_on_data_service_port_gets_a_page_not_json(self):
-        status, body = self._get("/", "text/html,application/xhtml+xml")
-        self.assertEqual(status, 200)
-        self.assertIn("내부 데이터 서비스".encode(), body)
-        self.assertIn(b"127.0.0.1:4313", body)
-        status, body = self._get("/internal/me", "text/html")
-        self.assertEqual(status, 404)
-        self.assertIn(b"/internal/me", body)
+    def test_browser_on_data_service_port_requires_one_shot_password_for_json(self):
+        status, body = self._get("/internal/health", "text/html,application/xhtml+xml")
+        self.assertEqual(status, 401)
+        self.assertIn("비밀번호를 입력하세요".encode(), body)
+        self.assertIn(b"/__browser-access", body)
+        handler = object.__new__(server.Handler)
+        payload = json.dumps({"password": "TestPass123", "target": "/internal/health"}).encode()
+        handler.path = "/__browser-access"
+        handler.headers = {"content-length": str(len(payload))}
+        handler.rfile = io.BytesIO(payload)
+        handler.client_address = ("127.0.0.1", 12345)
+        handler.send_response = Mock()
+        handler.send_header = Mock()
+        handler.end_headers = Mock()
+        handler.wfile = Mock()
+        handler.do_POST()
+        self.assertEqual(handler.send_response.call_args.args[0], 200)
+        self.assertFalse(any(call.args[0].lower() == "set-cookie" for call in handler.send_header.call_args_list))
+        response = b"".join(call.args[0] for call in handler.wfile.write.call_args_list)
+        self.assertIn(b'"service":"inazina-python-data"', response)
+        status, body = self._get("/internal/health", "text/html")
+        self.assertEqual(status, 401)
+        self.assertIn("비밀번호를 입력하세요".encode(), body)
         # Programmatic callers without the internal token still get the JSON error.
         status, body = self._get("/internal/me", "*/*")
         self.assertEqual(status, 401)

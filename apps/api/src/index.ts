@@ -24,6 +24,8 @@ const host = "127.0.0.1";
 const port = Number(process.env.PORT ?? 4312);
 const pythonPort = Number(process.env.INAZINA_PYTHON_PORT ?? 4313);
 const internalToken = randomBytes(32).toString("hex");
+const browserPasswordHash = process.env.INAZINA_BROWSER_PASSWORD_SHA256 || "04b2ad6979a436129b5f30cd00a3804bd87fc8bef73b0bb38640bf49a8479c64";
+const browserLoginAttempts = new Map<string, { count: number; resetAt: number }>();
 const authSecret = process.env.INAZINA_AUTH_SECRET || randomBytes(32).toString("hex");
 const sessionCookie = "inazina_session";
 const discordCookie = "inazina_discord_verification";
@@ -39,7 +41,8 @@ const python = existsSync(join(projectRoot, ".venv", "bin", "python"))
   : process.env.PYTHON ?? "python3";
 const pythonProcess = spawn(python, [join(projectRoot, "web_api", "server.py")], {
   cwd: projectRoot,
-  env: { ...process.env, INAZINA_INTERNAL_TOKEN: internalToken, INAZINA_PYTHON_PORT: String(pythonPort) },
+  env: { ...process.env, INAZINA_INTERNAL_TOKEN: internalToken,
+    INAZINA_BROWSER_PASSWORD_SHA256: browserPasswordHash, INAZINA_PYTHON_PORT: String(pythonPort) },
   stdio: ["ignore", "inherit", "inherit"],
 });
 
@@ -86,6 +89,24 @@ function cookieValue(request: IncomingMessage, name: string): string | undefined
 function cookieHeader(name: string, value: string, maxAge: number): string {
   const secure = process.env.INAZINA_COOKIE_SECURE === "true" ? "; Secure" : "";
   return `${name}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${secure}`;
+}
+
+function browserAccessPage(target: string): string {
+  const safeTarget = JSON.stringify(target).replace(/</g, "\\u003c");
+  return `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>INAZINA · 비밀번호</title><style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#f8e9ee;color:#1d1d1f;font:16px -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif}main{width:min(620px,100%);padding:32px;border-radius:24px;background:#ffffffd9;box-shadow:0 24px 60px #3c1e642e}h1{font-size:24px;margin:0}p{color:#515154;line-height:1.5}form{display:flex;gap:8px;margin-top:22px}input,button{font:inherit;padding:12px;border-radius:12px}input{min-width:0;flex:1;border:1px solid #ccc}button{border:0;background:#0071e3;color:white;cursor:pointer}#error{color:#c42020;min-height:1.5em}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:75vh;overflow:auto}</style><main><h1>비밀번호를 입력하세요</h1><p>이 주소의 응답만 한 번 표시합니다. 새로고침하거나 이동하면 다시 확인합니다.</p><form><input type="password" name="password" autocomplete="current-password" aria-label="비밀번호" required autofocus><button>확인</button></form><p id="error" role="alert"></p></main><script>const target=${safeTarget};document.querySelector('form').addEventListener('submit',async e=>{e.preventDefault();const password=new FormData(e.currentTarget).get('password');const r=await fetch('/__browser-access',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password,target})});const text=await r.text();if(!text.includes('invalid_browser_password')){history.replaceState(null,'',target);let shown=text;try{shown=JSON.stringify(JSON.parse(text),null,2)}catch{}document.querySelector('main').innerHTML='<h1>API 응답</h1><pre></pre>';document.querySelector('pre').textContent=shown}else document.querySelector('#error').textContent=r.status===429?'잠시 후 다시 시도해 주세요.':'비밀번호가 올바르지 않습니다. 다시 입력해 주세요.'});window.addEventListener('pagehide',()=>document.querySelector('main').replaceChildren());window.addEventListener('pageshow',e=>{if(e.persisted)location.reload()})</script></html>`;
+}
+
+async function requestBrowserAccess(request: IncomingMessage): Promise<{ password: string; target: string }> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > 2048) throw new Error("request_too_large");
+    chunks.push(Buffer.from(chunk));
+  }
+  const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { password?: unknown; target?: unknown };
+  return { password: typeof body.password === "string" ? body.password : "",
+    target: typeof body.target === "string" ? body.target : "" };
 }
 
 function sessionHeader(userId: string, authVersion: number): string {
@@ -314,12 +335,54 @@ async function requestJson(request: IncomingMessage, limit = 32_768): Promise<un
   }
 }
 
-async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+async function handle(request: IncomingMessage, response: ServerResponse, browserAuthorized = false): Promise<void> {
   const url = new URL(request.url ?? "/", `http://${host}:${port}`);
+
+  if (request.method === "POST" && url.pathname === "/__browser-access") {
+    const key = request.socket.remoteAddress ?? "local";
+    const now = Date.now();
+    const attempt = browserLoginAttempts.get(key);
+    if (attempt && attempt.resetAt > now && attempt.count >= 10) {
+      send(response, 429, { error: "browser_login_rate_limited" });
+      return;
+    }
+    try {
+      const { password, target } = await requestBrowserAccess(request);
+      if (!target.startsWith("/api/") || target.startsWith("//") || target.includes("\\") || target.includes("#__browser-access")) {
+        send(response, 400, { error: "invalid_target" });
+        return;
+      }
+      const actual = createHash("sha256").update(password).digest();
+      const expected = Buffer.from(browserPasswordHash, "hex");
+      if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+        browserLoginAttempts.set(key, { count: attempt && attempt.resetAt > now ? attempt.count + 1 : 1, resetAt: attempt && attempt.resetAt > now ? attempt.resetAt : now + 10 * 60_000 });
+        send(response, 403, { error: "invalid_browser_password" });
+        return;
+      }
+      browserLoginAttempts.delete(key);
+      request.method = "GET";
+      request.url = target;
+      await handle(request, response, true);
+    } catch {
+      send(response, 400, { error: "invalid_request" });
+    }
+    return;
+  }
+
+  const browserNavigation = request.method === "GET" &&
+    ((request.headers.accept ?? "").includes("text/html") || request.headers["sec-fetch-mode"] === "navigate");
+  const browserAuthExempt = url.pathname === "/api/auth/discord/start" || url.pathname === "/api/auth/discord/callback";
+  if (browserNavigation && url.pathname.startsWith("/api/") && !browserAuthExempt && !browserAuthorized) {
+    response.writeHead(401, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
+      "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'",
+      "x-content-type-options": "nosniff" });
+    response.end(browserAccessPage(`${url.pathname}${url.search}`));
+    return;
+  }
 
   // People who open the API port in a browser get a page instead of raw JSON;
   // the apps' fetch calls (Accept: */*) keep receiving JSON.
-  const browser = request.method === "GET" && (request.headers.accept ?? "").includes("text/html");
+  const browser = browserNavigation;
   if (browser && (url.pathname === "/" || url.pathname === "/api" || !url.pathname.startsWith("/api/"))) {
     await sendLanding(response, url.pathname === "/" || url.pathname === "/api" ? "home" : "not_found", url.pathname);
     return;
