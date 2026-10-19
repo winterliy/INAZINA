@@ -7,10 +7,10 @@ JSON; a browser asking for HTML gets this page instead of a raw JSON error.
 import html
 
 REASONS = {
-    "home": ("여기는 내부 데이터 서비스예요",
-             "이 주소는 API 서버만 데이터를 가져가는 내부 통로라서 화면이 없고, 브라우저로는 열 수 없어요. 아래에서 가려던 곳을 골라 주세요."),
+    "home": ("여기는 API 서버예요",
+             "이 주소는 앱이 데이터를 주고받는 통로라서 화면이 없어요. 아래에서 가려던 곳을 골라 주세요."),
     "not_found": ("찾는 페이지가 없어요",
-                  "내부 데이터 서비스에는 브라우저로 볼 수 있는 페이지가 없어요. 대시보드나 HTS로 이동해 주세요."),
+                  "API 서버에는 이 주소가 없어요. 대시보드나 HTS로 이동해 주세요."),
 }
 
 STYLE = """
@@ -57,7 +57,7 @@ def landing_page(reason, path, database_ok):
     style = STYLE.format(dot="#1e8e3e" if database_ok else "#d93025",
                          halo="rgba(30,142,62,.18)" if database_ok else "rgba(217,48,37,.18)")
     path_chip = "" if reason == "home" else f'<span class="path">{html.escape(path)}</span>'
-    status = "서비스 정상" if database_ok else "데이터베이스 연결 확인 필요"
+    status = "서비스 정상" if database_ok else "서비스 점검 필요"
     return f"""<!doctype html>
 <html lang="ko">
 <head>
@@ -65,13 +65,13 @@ def landing_page(reason, path, database_ok):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
 <meta name="theme-color" content="#f8e9ee">
-<title>INAZINA 데이터 서비스</title>
+<title>INAZINA API</title>
 <style>{style}</style>
 </head>
 <body>
 <div class="wall" aria-hidden="true"></div><div class="blob b1" aria-hidden="true"></div><div class="blob b2" aria-hidden="true"></div>
 <main>
-  <div class="brand"><span class="mark">I</span><span>INAZINA<small>내부 데이터 서비스 · 127.0.0.1:4313</small></span></div>
+  <div class="brand"><span class="mark">I</span><span>INAZINA<small>API 서버 · 127.0.0.1:4313</small></span></div>
   <h1>{title}</h1>
   <p>{text}</p>
   {path_chip}
@@ -79,7 +79,7 @@ def landing_page(reason, path, database_ok):
     <a class="card" href="http://127.0.0.1:4311/"><span class="icon i2" aria-hidden="true">📈</span><span><b>HTS</b><span>시세 보기 · 주문 · 내 지갑</span></span><span class="arrow" aria-hidden="true">›</span></a>
     <a class="card" href="http://127.0.0.1:4310/"><span class="icon i1" aria-hidden="true">🛠</span><span><b>관리자 대시보드</b><span>운영 · 상품 · 사용자 관리</span></span><span class="arrow" aria-hidden="true">›</span></a>
   </nav>
-  <footer><span class="status"><span class="dot"></span>{status}</span><a href="http://127.0.0.1:4312/api/health">API 상태 확인 (JSON)</a></footer>
+  <footer><span class="status"><span class="dot"></span>{status}</span><a href="/internal/health">상태 확인 (JSON)</a></footer>
 </main>
 </body>
 </html>"""

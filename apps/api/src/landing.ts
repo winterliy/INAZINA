@@ -68,7 +68,7 @@ footer a{color:var(--accent);text-decoration:none}footer a:hover{text-decoration
     <a class="card" href="http://127.0.0.1:4311/"><span class="icon i2" aria-hidden="true">📈</span><span><b>HTS</b><span>시세 보기 · 주문 · 내 지갑</span></span><span class="arrow" aria-hidden="true">›</span></a>
     <a class="card" href="http://127.0.0.1:4310/"><span class="icon i1" aria-hidden="true">🛠</span><span><b>관리자 대시보드</b><span>운영 · 상품 · 사용자 관리</span></span><span class="arrow" aria-hidden="true">›</span></a>
   </nav>
-  <footer><span class="status"><span class="dot"></span>${pythonConnected ? "서비스 정상" : "데이터 서비스 연결 끊김"}</span><a href="/api/health">상태 확인 (JSON)</a></footer>
+  <footer><span class="status"><span class="dot"></span>${pythonConnected ? "서비스 정상" : "서비스 점검 필요"}</span><a href="/api/health">상태 확인 (JSON)</a></footer>
 </main>
 </body>
 </html>`;

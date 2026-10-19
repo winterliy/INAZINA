@@ -92,8 +92,8 @@ function cookieHeader(name: string, value: string, maxAge: number): string {
 }
 
 function browserAccessPage(target: string): string {
-  const safeTarget = JSON.stringify(target).replace(/</g, "\\u003c");
-  return `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>INAZINA · 비밀번호</title><style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#f8e9ee;color:#1d1d1f;font:16px -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif}main{width:min(620px,100%);padding:32px;border-radius:24px;background:#ffffffd9;box-shadow:0 24px 60px #3c1e642e}h1{font-size:24px;margin:0}p{color:#515154;line-height:1.5}form{display:flex;gap:8px;margin-top:22px}input,button{font:inherit;padding:12px;border-radius:12px}input{min-width:0;flex:1;border:1px solid #ccc}button{border:0;background:#0071e3;color:white;cursor:pointer}#error{color:#c42020;min-height:1.5em}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:75vh;overflow:auto}</style><main><h1>비밀번호를 입력하세요</h1><p>이 주소의 응답만 한 번 표시합니다. 새로고침하거나 이동하면 다시 확인합니다.</p><form><input type="password" name="password" autocomplete="current-password" aria-label="비밀번호" required autofocus><button>확인</button></form><p id="error" role="alert"></p></main><script>const target=${safeTarget};document.querySelector('form').addEventListener('submit',async e=>{e.preventDefault();const password=new FormData(e.currentTarget).get('password');const r=await fetch('/__browser-access',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password,target})});const text=await r.text();if(!text.includes('invalid_browser_password')){history.replaceState(null,'',target);let shown=text;try{shown=JSON.stringify(JSON.parse(text),null,2)}catch{}document.querySelector('main').innerHTML='<h1>API 응답</h1><pre></pre>';document.querySelector('pre').textContent=shown}else document.querySelector('#error').textContent=r.status===429?'잠시 후 다시 시도해 주세요.':'비밀번호가 올바르지 않습니다. 다시 입력해 주세요.'});window.addEventListener('pagehide',()=>document.querySelector('main').replaceChildren());window.addEventListener('pageshow',e=>{if(e.persisted)location.reload()})</script></html>`;
+  const escapedTarget = target.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" })[character]!);
+  return `<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>INAZINA · 비밀번호</title><style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:#f8e9ee;color:#1d1d1f;font:16px -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo",sans-serif}main{width:min(420px,100%);padding:32px;border-radius:24px;background:#ffffffd9;box-shadow:0 24px 60px #3c1e642e}h1{font-size:24px;margin:0}form{display:flex;gap:8px;margin-top:22px}input,button{font:inherit;padding:12px;border-radius:12px}input{min-width:0;flex:1;border:1px solid #ccc}button{border:0;background:#0071e3;color:white;cursor:pointer}</style><main><h1>API 비밀번호</h1><form method="post" action="/__browser-access"><input type="hidden" name="target" value="${escapedTarget}"><input type="password" name="password" autocomplete="current-password" aria-label="비밀번호" required autofocus><button>확인</button></form></main></html>`;
 }
 
 async function requestBrowserAccess(request: IncomingMessage): Promise<{ password: string; target: string }> {
@@ -104,9 +104,13 @@ async function requestBrowserAccess(request: IncomingMessage): Promise<{ passwor
     if (size > 2048) throw new Error("request_too_large");
     chunks.push(Buffer.from(chunk));
   }
-  const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { password?: unknown; target?: unknown };
-  return { password: typeof body.password === "string" ? body.password : "",
-    target: typeof body.target === "string" ? body.target : "" };
+  const body = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+  return { password: body.get("password") ?? "", target: body.get("target") ?? "" };
+}
+
+function redirectBrowserToMain(response: ServerResponse): void {
+  response.writeHead(303, { location: "/", "cache-control": "no-store", "content-length": "0" });
+  response.end();
 }
 
 function sessionHeader(userId: string, authVersion: number): string {
@@ -343,7 +347,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     const now = Date.now();
     const attempt = browserLoginAttempts.get(key);
     if (attempt && attempt.resetAt > now && attempt.count >= 10) {
-      send(response, 429, { error: "browser_login_rate_limited" });
+      redirectBrowserToMain(response);
       return;
     }
     try {
@@ -356,7 +360,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
       const expected = Buffer.from(browserPasswordHash, "hex");
       if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
         browserLoginAttempts.set(key, { count: attempt && attempt.resetAt > now ? attempt.count + 1 : 1, resetAt: attempt && attempt.resetAt > now ? attempt.resetAt : now + 10 * 60_000 });
-        send(response, 403, { error: "invalid_browser_password" });
+        redirectBrowserToMain(response);
         return;
       }
       browserLoginAttempts.delete(key);

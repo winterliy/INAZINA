@@ -1,5 +1,4 @@
 import io
-import json
 import tempfile
 import unittest
 from contextlib import closing
@@ -153,12 +152,16 @@ class CountryAccountTests(unittest.TestCase):
         return handler.send_response.call_args[0][0], b"".join(call.args[0] for call in handler.wfile.write.call_args_list)
 
     def test_browser_on_data_service_port_requires_one_shot_password_for_json(self):
+        status, body = self._get("/", "text/html,application/xhtml+xml")
+        self.assertEqual(status, 200)
+        self.assertIn("상태 확인 (JSON)".encode(), body)
+        self.assertIn(b'href="/internal/health"', body)
         status, body = self._get("/internal/health", "text/html,application/xhtml+xml")
         self.assertEqual(status, 401)
-        self.assertIn("비밀번호를 입력하세요".encode(), body)
+        self.assertIn("API 비밀번호".encode(), body)
         self.assertIn(b"/__browser-access", body)
         handler = object.__new__(server.Handler)
-        payload = json.dumps({"password": "TestPass123", "target": "/internal/health"}).encode()
+        payload = b"password=TestPass123&target=%2Finternal%2Fhealth"
         handler.path = "/__browser-access"
         handler.headers = {"content-length": str(len(payload))}
         handler.rfile = io.BytesIO(payload)
@@ -170,11 +173,26 @@ class CountryAccountTests(unittest.TestCase):
         handler.do_POST()
         self.assertEqual(handler.send_response.call_args.args[0], 200)
         self.assertFalse(any(call.args[0].lower() == "set-cookie" for call in handler.send_header.call_args_list))
+        self.assertIn(("content-type", "application/json; charset=utf-8"),
+                      [call.args for call in handler.send_header.call_args_list])
         response = b"".join(call.args[0] for call in handler.wfile.write.call_args_list)
         self.assertIn(b'"service":"inazina-python-data"', response)
         status, body = self._get("/internal/health", "text/html")
         self.assertEqual(status, 401)
-        self.assertIn("비밀번호를 입력하세요".encode(), body)
+        self.assertIn("API 비밀번호".encode(), body)
+        wrong = object.__new__(server.Handler)
+        wrong_payload = b"password=wrong&target=%2Finternal%2Fhealth"
+        wrong.path = "/__browser-access"
+        wrong.headers = {"content-length": str(len(wrong_payload))}
+        wrong.rfile = io.BytesIO(wrong_payload)
+        wrong.client_address = ("127.0.0.1", 12346)
+        wrong.send_response = Mock()
+        wrong.send_header = Mock()
+        wrong.end_headers = Mock()
+        wrong.wfile = Mock()
+        wrong.do_POST()
+        self.assertEqual(wrong.send_response.call_args.args[0], 303)
+        self.assertIn(("Location", "/"), [call.args for call in wrong.send_header.call_args_list])
         # Programmatic callers without the internal token still get the JSON error.
         status, body = self._get("/internal/me", "*/*")
         self.assertEqual(status, 401)
