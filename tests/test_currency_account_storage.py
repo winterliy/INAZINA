@@ -221,6 +221,28 @@ class CurrencyAccountStorageTests(unittest.TestCase):
                 "UPDATE tax_transactions SET net_amount=1.12 WHERE user_id='us-user' AND source='test'"
             )
 
+    def test_market_order_limit_price_uses_quote_currency_minor_units(self):
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('USD','Dollar',1300,2) ON CONFLICT(code) DO UPDATE SET decimal_places=2"
+        )
+        with self.db.atomic() as conn:
+            order_id = conn.execute(
+                "INSERT INTO market_orders(user_id,asset_code,side,limit_price,quantity,"
+                "remaining_quantity,status,created_epoch,updated_epoch,quote_currency) "
+                "VALUES ('us-user','USD-PRICE','buy',1.23,2,2,'open',1,1,'USD')"
+            ).lastrowid
+            row = conn.execute("SELECT limit_price_minor_units,limit_price_decimal_places "
+                               "FROM market_orders WHERE order_id=?", (order_id,)).fetchone()
+            self.assertEqual(tuple(row), (123, 2))
+            conn.execute("UPDATE market_orders SET limit_price_minor_units=124 WHERE order_id=?",
+                         (order_id,))
+            self.assertEqual(conn.execute("SELECT limit_price FROM market_orders WHERE order_id=?",
+                                          (order_id,)).fetchone()[0], 1.24)
+            conn.execute("UPDATE market_orders SET limit_price=1.25 WHERE order_id=?", (order_id,))
+            self.assertEqual(conn.execute("SELECT limit_price_minor_units FROM market_orders "
+                                          "WHERE order_id=?", (order_id,)).fetchone()[0], 125)
+
     def test_customer_wallet_changes_post_atomically_and_reconcile(self):
         with self.db.atomic() as conn:
             before = conn.execute(

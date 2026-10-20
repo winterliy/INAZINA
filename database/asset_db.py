@@ -699,6 +699,10 @@ class AssetDB(DBManager):
             self.execute("ALTER TABLE market_orders ADD COLUMN activation_epoch INTEGER")
         if "scheduled_reason" not in order_columns:
             self.execute("ALTER TABLE market_orders ADD COLUMN scheduled_reason TEXT")
+        if "limit_price_minor_units" not in order_columns:
+            self.execute("ALTER TABLE market_orders ADD COLUMN limit_price_minor_units INTEGER NOT NULL DEFAULT 0")
+        if "limit_price_decimal_places" not in order_columns:
+            self.execute("ALTER TABLE market_orders ADD COLUMN limit_price_decimal_places INTEGER")
         self.enforce_integer_money("market_orders", ("reserved_cash",), "order_id")
         self.execute(
             "CREATE INDEX IF NOT EXISTS idx_market_orders_book "

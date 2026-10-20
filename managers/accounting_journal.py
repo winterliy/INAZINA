@@ -476,14 +476,22 @@ class AccountingJournal:
         active = {"scheduled", "open", "partial"}
         reservation_gaps = []
         orders = conn.execute(
-            "SELECT order_id,side,status,limit_price,remaining_quantity,quote_currency,"
+            "SELECT order_id,side,status,limit_price,limit_price_minor_units,"
+            "limit_price_decimal_places,remaining_quantity,quote_currency,"
             "reserved_cash_minor_units,fractional_order,order_kind FROM market_orders "
             "WHERE order_kind='asset' AND COALESCE(fractional_order,0)=0"
         ).fetchall()
         for order in orders:
             currency = str(order["quote_currency"] or "NWX")
             places = currency_precision(conn, currency)
-            expected = (to_minor_units(order["limit_price"], places)*int(order["remaining_quantity"])
+            canonical_price = int(order["limit_price_minor_units"] or 0)
+            if (int(order["limit_price_decimal_places"] or 0) != places
+                    or canonical_price != to_minor_units(order["limit_price"], places)):
+                reservation_gaps.append({"order_id": int(order["order_id"]),
+                    "expected_limit_price_minor_units": to_minor_units(order["limit_price"], places),
+                    "actual_limit_price_minor_units": canonical_price,
+                    "status": "price_mismatch"})
+            expected = (canonical_price*int(order["remaining_quantity"])
                         if order["side"] == "buy" and order["status"] in active else 0)
             actual = int(order["reserved_cash_minor_units"] or 0)
             if actual != expected:

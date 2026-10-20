@@ -503,9 +503,10 @@ class CurrencyDB(DBManager):
                        "prepayment_fees_paid"),
              "loan_id", "NEW.quote_currency"),
             ("market_orders", ("limit_price", "reserved_cash"), "order_id",
-             "SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code "
+             "COALESCE((SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code "
              "UNION ALL SELECT quote_currency FROM company WHERE company_code=NEW.asset_code "
-             "UNION ALL SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code LIMIT 1"),
+             "UNION ALL SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code LIMIT 1),"
+             "NEW.quote_currency)"),
             ("financial_institution_ledger", ("amount",), "entry_id", "NEW.currency_code"),
             ("financial_institution_ledger", ("base_amount",), "entry_id",
              "NEW.base_currency_code"),
@@ -686,6 +687,7 @@ class CurrencyDB(DBManager):
         self._ensure_money_snaps()
         self._ensure_market_asset_price_minor_units()
         self._ensure_market_trade_price_units()
+        self._ensure_market_order_price_units()
         self._ensure_market_order_reservation_units()
         self._ensure_treasury_bond_minor_units()
         self._ensure_tax_transaction_minor_units()
@@ -875,6 +877,49 @@ class CurrencyDB(DBManager):
             self.execute(f"""CREATE TRIGGER {stem}_to_legacy AFTER UPDATE OF price_minor_units ON {table}
                 BEGIN UPDATE {table} SET price=CAST(NEW.price_minor_units AS REAL)/({scale})
                   WHERE {key}=NEW.{key}; END""")
+
+    def _ensure_market_order_price_units(self):
+        """Store every order limit price in its quote-currency quantum."""
+        from functions.money import currency_precision, to_minor_units
+        columns = {row[1] for row in self.execute("PRAGMA table_info(market_orders)")}
+        if not columns:
+            return
+        if "limit_price_minor_units" not in columns:
+            self.execute("ALTER TABLE market_orders ADD COLUMN limit_price_minor_units INTEGER NOT NULL DEFAULT 0")
+        if "limit_price_decimal_places" not in columns:
+            self.execute("ALTER TABLE market_orders ADD COLUMN limit_price_decimal_places INTEGER")
+        for row in self.execute("SELECT order_id,quote_currency,limit_price,limit_price_minor_units,"
+                                "limit_price_decimal_places FROM market_orders"):
+            places = currency_precision(self.conn, row["quote_currency"] or "NWX")
+            units = to_minor_units(row["limit_price"], places)
+            if row["limit_price_minor_units"] != units or row["limit_price_decimal_places"] != places:
+                self.execute("UPDATE market_orders SET limit_price_minor_units=?,"
+                             "limit_price_decimal_places=? WHERE order_id=?",
+                             (units, places, row["order_id"]))
+        scale = ("CASE COALESCE((SELECT decimal_places FROM currencies "
+                 "WHERE code=NEW.quote_currency),0) " + " ".join(
+                    f"WHEN {i} THEN {10**i}" for i in range(0, 7)) + " ELSE 100 END")
+        for suffix in ("legacy_insert", "legacy_update", "minor"):
+            self.execute(f"DROP TRIGGER IF EXISTS trg_market_order_limit_price_{suffix}")
+        self.execute(f"""CREATE TRIGGER trg_market_order_limit_price_legacy_insert
+            AFTER INSERT ON market_orders BEGIN
+              UPDATE market_orders SET limit_price_minor_units=CAST(ROUND(NEW.limit_price*({scale})) AS INTEGER),
+                limit_price_decimal_places=COALESCE((SELECT decimal_places FROM currencies WHERE code=NEW.quote_currency),0)
+              WHERE order_id=NEW.order_id; END""")
+        self.execute(f"""CREATE TRIGGER trg_market_order_limit_price_legacy_update
+            AFTER UPDATE OF limit_price,quote_currency ON market_orders
+            WHEN NEW.limit_price IS NOT OLD.limit_price OR NEW.quote_currency IS NOT OLD.quote_currency BEGIN
+              UPDATE market_orders SET limit_price_minor_units=CAST(ROUND(NEW.limit_price*({scale})) AS INTEGER),
+                limit_price_decimal_places=COALESCE((SELECT decimal_places FROM currencies WHERE code=NEW.quote_currency),0)
+              WHERE order_id=NEW.order_id; END""")
+        self.execute(f"""CREATE TRIGGER trg_market_order_limit_price_minor
+            AFTER UPDATE OF limit_price_minor_units,limit_price_decimal_places ON market_orders
+            WHEN NEW.limit_price_minor_units IS NOT OLD.limit_price_minor_units
+              OR NEW.limit_price_decimal_places IS NOT OLD.limit_price_decimal_places BEGIN
+              UPDATE market_orders SET limit_price=CAST(NEW.limit_price_minor_units AS REAL)/
+                (CASE COALESCE(NEW.limit_price_decimal_places,0) WHEN 0 THEN 1 WHEN 1 THEN 10
+                 WHEN 2 THEN 100 WHEN 3 THEN 1000 WHEN 4 THEN 10000 WHEN 5 THEN 100000
+                 ELSE 1000000 END) WHERE order_id=NEW.order_id; END""")
 
     def _ensure_market_order_reservation_units(self):
         """Use quote-currency minor units as the authority for order cash locks."""

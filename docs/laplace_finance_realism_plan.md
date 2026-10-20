@@ -117,6 +117,8 @@
 
 2026-10-21 추가: 세금 원장 gross/tax/net에 통화 최소단위 정수 열을 사용하고 기존 불변식(통화 scale 일치 및 gross = tax + net)을 유지했다. 회계 대사 결과에 세금 거래의 정수값/legacy mirror 및 산식 불일치를 검출하는 `tax_transactions` 범주를 추가했으며 관리자 대사 응답에도 나타난다. 허용된 단위 변경과 불균형 차단, 의도적 불일치 탐지 타깃 3 tests가 통과했다. 변경 후 현재 전체 Python suite는 **846 tests, 734.323초, OK**이며, 세금 거래를 실제 국고 수취/고객 지급 이벤트까지 원천키로 결합하는 전사 현금대사는 계속 남아 있다.
 
+2026-10-21 추가: `market_orders.limit_price`도 주문별 quote currency 기준 `limit_price_minor_units`와 `limit_price_decimal_places`를 저장하도록 이관했다. 기존 지정가는 통화별로 backfill하고 legacy/canonical 양방향 writer 동기화를 추가했다. 미체결 예약 대사는 지정가×잔량을 canonical 정수로 계산하며 정밀도/미러 불일치도 탐지한다. 미등록 자산 주문은 주문 자체 `quote_currency`로 정밀도를 fallback한다. USD 1.23→123, canonical 변경의 legacy mirror, legacy 변경의 canonical mirror, 예약 reconciliation을 확인하는 타깃 테스트와 `git diff --check`가 통과했다. 새 코드 포함 전체 Python suite는 **847 tests, 529.058초, OK**다. 지정가 산식의 일부 소비자가 여전히 REAL 값을 사용하고 증권 결제·보유원장·전사 clearing 연결은 미완료이므로 M4는 계속 미완료다.
+
 금액 필드 인벤토리 문서([`financial_amount_inventory.md`](financial_amount_inventory.md))와 `financial_amount_snapshots` 등록부를 추가했다. 등록된 범위는 원본 변경 시 통화별 정수 최소단위 미러로 갱신되고 `audit_amount_snapshots`가 누락/불일치를 보고한다. 이 레지스트리는 업무 테이블을 정수값으로 대체하지 않으므로 M4 이관 완료 증거가 아니다. 계좌 quantum guard가 드러낸 기존 경로 두 곳도 수정했다: 외화 레거시 이자는 spendable 잔액에 최소단위만 지급하고 잔여 Decimal을 이월하며, 구형 계좌 삽입은 통화 최소단위로 먼저 정규화한다. *(당시 기록 기준 M4 전체 미완료.)*
 
 상각 후 계약상 메모잔액(`loans.charged_off_balance`)도 계약통화 정밀도 guard와 정수 최소단위 snapshot 등록부에 연결됐다. 이는 M4 원천→최소단위 미러의 추가 범위일 뿐, 대출/상환·시장·상품·채권의 권위 저장값 이관으로 간주하지 않는다.
