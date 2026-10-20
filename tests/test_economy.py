@@ -543,6 +543,24 @@ class EconomyTests(unittest.TestCase):
         loan = self.db.accounts.execute_one("SELECT outstanding_balance FROM loans WHERE user_id='citizen-1'")
         self.assertEqual(loan["outstanding_balance"], 750)
 
+    def test_loan_interest_reads_and_writes_canonical_minor_balance(self):
+        self.db.products.register_liability(
+            "UNITLOAN", "Unit Loan", 20, 5000, 365, 86400, 600, "Bank"
+        )
+        self.assertTrue(self.bank.apply_loan("citizen-1", "UNITLOAN", 1000)[0])
+        now = time.time()
+        self.db.accounts.execute(
+            "UPDATE loans SET last_payment_epoch=? WHERE user_id='citizen-1'",
+            (now - 86400,),
+        )
+        InterestManager(self.db).process_all_interests(now=now)
+        loan = self.db.accounts.execute_one(
+            "SELECT outstanding_balance,outstanding_balance_minor_units FROM loans "
+            "WHERE user_id='citizen-1' AND product_code='UNITLOAN'"
+        )
+        self.assertEqual(loan["outstanding_balance_minor_units"], 1001)
+        self.assertEqual(loan["outstanding_balance"], 1001)
+
     def test_account_close_requires_correct_password(self):
         self.db.products.register_saving("SAVE", "Saving", 3, 100, 365, 3600, 0, "Bank")
         self.assertTrue(self.bank.open_account("citizen-1", "SAVE", "1234", 1000)[0])
@@ -636,6 +654,16 @@ class EconomyTests(unittest.TestCase):
             "UPDATE financial_institutions SET equity_capital=10000000 "
             "WHERE issuer='Open Bank'"
         )
+        capital = self.db.currency.execute_one(
+            "SELECT equity_capital_minor_units,equity_capital_decimal_places "
+            "FROM financial_institutions WHERE issuer='Open Bank'"
+        )
+        self.assertEqual(tuple(capital), (10000000, 0))
+        from managers.rate_manager import RateManager
+        terms = RateManager.institution_components(
+            self.db.currency.conn, "Open Bank"
+        )
+        self.assertEqual(terms["equity_capital"], 10000000)
 
         success, message = self.bank.apply_loan("citizen-1", "OPEN", 10000000)
 

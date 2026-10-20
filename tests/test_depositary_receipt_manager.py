@@ -775,10 +775,12 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
         self.assertEqual(returned["average_cost"], 43.75)
         redemption = self.db.assets.execute_one(
             "SELECT underlying_average_cost,custody_underlying_average_cost,"
-            "holder_underlying_average_cost,custody_underlying_currency "
+            "holder_underlying_average_cost,custody_underlying_currency,"
+            "underlying_average_cost_minor_units,holder_underlying_average_cost_minor_units,"
+            "custody_underlying_average_cost_minor_units,underlying_average_cost_decimal_places "
             "FROM depositary_receipt_movements WHERE movement_type='redeem'"
         )
-        self.assertEqual(tuple(redemption), (40.25, 40.25, 50.75, 'USD'))
+        self.assertEqual(tuple(redemption), (40.25, 40.25, 50.75, 'USD', 4025, 5075, 4025, 2))
 
     def test_dr_redemption_translates_holder_basis_from_receipt_currency(self):
         self.create_program()
@@ -799,6 +801,32 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
             "FROM depositary_receipt_movements WHERE movement_type='redeem'"
         )
         self.assertEqual(tuple(redemption), (65, 'NWX'))
+
+    def test_dr_movement_minor_units_backfill_legacy_costs(self):
+        self.create_program()
+        ok, message = self.manager.convert("citizen", "UNDER_DR", "issue", 1, "legacy-cost")
+        self.assertTrue(ok, message)
+        self.db.assets.execute("DROP TRIGGER trg_dr_movements_immutable_update")
+        self.db.assets.execute(
+            "UPDATE depositary_receipt_movements SET underlying_average_cost_minor_units=NULL,"
+            "underlying_average_cost_decimal_places=NULL,underlying_average_cost_currency=NULL,"
+            "holder_underlying_average_cost_minor_units=NULL,"
+            "holder_underlying_average_cost_decimal_places=NULL,holder_underlying_currency=NULL,"
+            "custody_underlying_average_cost_minor_units=NULL,"
+            "custody_underlying_average_cost_decimal_places=NULL,custody_underlying_currency=NULL "
+            "WHERE reference_key='legacy-cost'"
+        )
+        self.db.assets.execute("""CREATE TRIGGER trg_dr_movements_immutable_update
+            BEFORE UPDATE ON depositary_receipt_movements
+            BEGIN SELECT RAISE(ABORT,'DR custody movements are append-only'); END""")
+        self.db.currency._ensure_dr_movement_cost_units()
+        row = self.db.assets.execute_one(
+            "SELECT underlying_average_cost_minor_units,holder_underlying_average_cost_minor_units,"
+            "custody_underlying_average_cost_minor_units,underlying_average_cost_currency,"
+            "holder_underlying_currency,custody_underlying_currency "
+            "FROM depositary_receipt_movements WHERE reference_key='legacy-cost'"
+        )
+        self.assertEqual(tuple(row), (40, 40, 40, 'NWX', 'NWX', 'NWX'))
 
 
 if __name__ == "__main__":

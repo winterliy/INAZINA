@@ -7,6 +7,7 @@ government identifiers, document images, or free-text evidence.
 from decimal import Decimal, InvalidOperation
 import json
 import math
+from functions.money import currency_precision, to_minor_units
 
 
 class ComplianceManager:
@@ -334,15 +335,18 @@ class ComplianceManager:
                 and len(recent) >= int(rule["rolling_24h_count_limit"])):
             flags.append("rolling_24h_count")
         opened = []
+        alert_places = currency_precision(conn, home_currency)
         for rule_code in flags:
             alert_amount = (rolling_amount if rule_code == "rolling_24h_amount"
                             else current_amount)
             cursor = conn.execute(
                 "INSERT OR IGNORE INTO aml_alerts(user_id,nationality,rule_code,"
-                "reference_key,currency_code,amount,opened_epoch) VALUES (?,?,?,?,?,?,?)",
+                "reference_key,currency_code,amount,amount_minor_units,"
+                "amount_decimal_places,opened_epoch) VALUES (?,?,?,?,?,?,?,?,?)",
                 (str(user_id), str(nationality), rule_code,
                  f"transfer:{int(transaction_id)}", home_currency,
-                 float(alert_amount), when),
+                 float(alert_amount), to_minor_units(alert_amount, alert_places),
+                 alert_places, when),
             )
             if cursor.rowcount != 1:
                 continue

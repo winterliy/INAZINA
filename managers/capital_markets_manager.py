@@ -374,8 +374,19 @@ class CapitalMarketsManager:
         quote = InvestmentManager.component_quote(conn, product["reference_code"], active_only=False)
         if not quote or float(quote["price"] or 0) <= 0:
             return balance, 0
+        from functions.money import currency_precision, to_minor_units
+        currency = str(product["quote_currency"] or "NWX").upper()
+        places = currency_precision(conn, currency)
+        reference_minor = (account["reference_price_minor_units"]
+                           if "reference_price_minor_units" in account.keys() else None)
+        reference_units = (int(reference_minor)
+                           if reference_minor is not None
+                           else to_minor_units(account["reference_price"], places))
+        quote_units = to_minor_units(quote["price"], places)
+        if reference_units <= 0:
+            return balance, 0
         principal = Decimal(str(account["principal"] or 0))
-        growth = Decimal(str(quote["price"])) / Decimal(str(account["reference_price"])) - 1
+        growth = Decimal(quote_units) / Decimal(reference_units) - 1
         share = principal * max(Decimal(0), growth) * Decimal(str(product["participation_percent"])) / 100
         target = (principal + share).to_integral_value(rounding=ROUND_FLOOR)
         top_up = max(0, int(target) - int(balance))
@@ -393,10 +404,17 @@ class CapitalMarketsManager:
                     continue
                 if conn.execute("SELECT 1 FROM bank_deficit_alerts WHERE issuer=?", (row["issuer"],)).fetchone():
                     continue
-                conn.execute("INSERT INTO bank_deficit_alerts(issuer,cash,alerted_epoch) VALUES (?,?,?)",
-                             (row["issuer"], float(row["cash"]), now))
-                alerts.append({"issuer": row["issuer"], "account": row["user_id"], "cash": float(row["cash"]),
-                               "currency": CurrencyManager.home(conn, row["user_id"])})
+                from functions.money import currency_precision, from_minor_units, to_minor_units
+                currency = CurrencyManager.home(conn, row["user_id"])
+                places = currency_precision(conn, currency)
+                cash_units = to_minor_units(row["cash"], places)
+                cash = from_minor_units(cash_units, places)
+                conn.execute("INSERT INTO bank_deficit_alerts(issuer,cash,cash_minor_units,"
+                             "cash_decimal_places,cash_currency_code,alerted_epoch) VALUES (?,?,?,?,?,?)",
+                             (row["issuer"], float(cash), cash_units, places, currency, now))
+                alerts.append({"issuer": row["issuer"], "account": row["user_id"], "cash": float(cash),
+                               "cash_minor_units": cash_units, "decimal_places": places,
+                               "currency": currency})
         return alerts
 
     @staticmethod
@@ -405,8 +423,10 @@ class CapitalMarketsManager:
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='bank_accounts'").fetchone():
             return []
         return [dict(row) for row in conn.execute(
-            "SELECT b.issuer,b.user_id account,u.cash,u.nationality FROM bank_accounts b JOIN users u "
-            "ON u.user_id=b.user_id WHERE u.cash<0 ORDER BY u.cash")]
+            "SELECT b.issuer,b.user_id account,a.cash_minor_units,a.cash_decimal_places,"
+            "a.cash_currency_code,u.cash,u.nationality FROM bank_accounts b "
+            "JOIN users u ON u.user_id=b.user_id LEFT JOIN bank_deficit_alerts a ON a.issuer=b.issuer "
+            "WHERE u.cash<0 ORDER BY u.cash")]
 
     def process_due(self, now=None):
         now = RateManager._validated_epoch(now, "invalid_capital_markets_processing_epoch")

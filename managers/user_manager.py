@@ -880,9 +880,11 @@ class UserManager:
         )
 
         deposit_insurance_claims = []
+        from functions.money import from_minor_units
         for claim in conn.execute(
             "SELECT c.claim_id,c.issuer,c.account_number,c.covered_amount,"
-            "c.uninsured_amount,c.payout_currency,c.payout_amount,c.resolved_epoch,a.quote_currency "
+            "c.uninsured_amount,c.payout_currency,c.payout_amount,"
+            "c.payout_amount_minor_units,c.payout_decimal_places,c.resolved_epoch,a.quote_currency "
             "FROM deposit_insurance_claims c LEFT JOIN accounts a "
             "ON a.account_number=c.account_number WHERE c.user_id=? "
             "ORDER BY c.resolved_epoch DESC,c.claim_id DESC LIMIT 100",
@@ -901,8 +903,11 @@ class UserManager:
                 "payout_decimal_places": (currency_snapshot.precision(
                     str(claim["payout_currency"])
                 ) if claim["payout_currency"] else None),
-                "payout_amount": (float(claim["payout_amount"])
-                                  if claim["payout_amount"] is not None else None),
+                "payout_amount": (float(from_minor_units(
+                    claim["payout_amount_minor_units"], claim["payout_decimal_places"]
+                )) if claim["payout_amount_minor_units"] is not None else
+                    (float(claim["payout_amount"])
+                     if claim["payout_amount"] is not None else None)),
                 "resolved_epoch": float(claim["resolved_epoch"] or 0),
             })
 

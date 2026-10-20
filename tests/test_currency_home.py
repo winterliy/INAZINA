@@ -118,7 +118,8 @@ class CurrencyHomeTests(unittest.TestCase):
         self.bot.currency_mgr.transfer('citizen','recipient','30')
         self.bot.currency_mgr.transfer('citizen','recipient','10')
         alerts=self.db.currency.execute(
-            "SELECT user_id,rule_code,currency_code,amount FROM aml_alerts "
+            "SELECT user_id,rule_code,currency_code,amount,amount_minor_units,"
+            "amount_decimal_places FROM aml_alerts "
             "ORDER BY user_id,opened_epoch"
         )
         recipient_alerts=[r for r in alerts if r['user_id']=='recipient']
@@ -128,6 +129,8 @@ class CurrencyHomeTests(unittest.TestCase):
              ('rolling_24h_amount','AAA')],
         )
         self.assertEqual([r['amount'] for r in recipient_alerts],[30,10,40])
+        self.assertEqual([r['amount_minor_units'] for r in recipient_alerts], [3000,1000,4000])
+        self.assertTrue(all(r['amount_decimal_places'] == 2 for r in recipient_alerts))
         sender_alerts=[r for r in alerts if r['user_id']=='citizen']
         self.assertEqual(len(sender_alerts),3)
 

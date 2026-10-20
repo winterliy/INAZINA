@@ -745,4 +745,24 @@ class AccountingJournal:
                        "balance_gaps": gaps, "posting_gaps": posting_gaps,
                        "missing_entries": wallet-common,
                        "status": status})
+        from functions.money import currency_precision, to_minor_units
+        tax_gaps = []
+        tax_rows = conn.execute("SELECT * FROM tax_transactions ORDER BY transaction_id").fetchall()
+        for row in tax_rows:
+            currency = str(row["currency_code"] or "NWX").upper()
+            places = currency_precision(conn, currency)
+            gross = to_minor_units(row["gross_amount"], places)
+            tax = to_minor_units(row["tax_amount"], places)
+            net = to_minor_units(row["net_amount"], places)
+            if (int(row["gross_amount_minor_units"] or 0) != gross
+                    or int(row["tax_amount_minor_units"] or 0) != tax
+                    or int(row["net_amount_minor_units"] or 0) != net
+                    or gross != tax + net):
+                tax_gaps.append({"transaction_id": int(row["transaction_id"]),
+                    "currency_code": currency, "gross_minor_units": gross,
+                    "tax_minor_units": tax, "net_minor_units": net,
+                    "status": "mismatch"})
+        checks.append({"ledger_scope": "tax_transactions",
+                       "transaction_count": len(tax_rows), "gaps": tax_gaps,
+                       "status": "matched" if not tax_gaps else "mismatch"})
         return checks

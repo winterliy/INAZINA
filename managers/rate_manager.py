@@ -450,11 +450,20 @@ class RateManager:
             "(SELECT MIN(nationality) FROM country_currencies c "
             "WHERE c.currency_code=p.quote_currency))=?", (country,)
         ).fetchone()
-        capital = conn.execute(
-            "SELECT COALESCE(SUM(MAX(0,equity_capital+retained_earnings)),0) amount "
-            "FROM financial_institutions "
-            "WHERE nationality=?", (country,)
+        capital_rows = conn.execute(
+            "SELECT equity_capital_minor_units,retained_earnings_minor_units "
+            "FROM financial_institutions WHERE nationality=?", (country,)
+        ).fetchall()
+        currency_row = conn.execute(
+            "SELECT currency_code FROM country_currencies WHERE nationality=?", (country,)
         ).fetchone()
+        from functions.money import currency_precision, from_minor_units
+        base_currency = str(currency_row["currency_code"] if currency_row else "NWX").upper()
+        capital_places = currency_precision(conn, base_currency)
+        capital_units = sum(max(0, int(row["equity_capital_minor_units"] or 0)
+                                +int(row["retained_earnings_minor_units"] or 0))
+                            for row in capital_rows)
+        capital_amount = float(from_minor_units(capital_units, capital_places))
         treasury = conn.execute(
             "SELECT COALESCE(SUM(p.sold_amount),0) sold,COALESCE(SUM(p.total_supply),0) total "
             "FROM treasury_bond_products p JOIN market_exchanges e "
@@ -463,7 +472,7 @@ class RateManager:
         ).fetchone()
         deposits_value = max(0.0, float(deposits["amount"] or 0))
         loans = max(0.0, float(loan_row["amount"] or 0))
-        equity = max(1.0, float(capital["amount"] or 0))
+        equity = max(1.0, capital_amount)
         funding_ratio = loans/max(1.0, deposits_value+equity)
         funding_target = max(-2.0, min(10.0, (funding_ratio-.90)*.75))
         default_ratio = float(loan_row["bad"] or 0)/max(1.0, loans)
@@ -702,7 +711,9 @@ class RateManager:
             "competition_adjustment,equity_capital,target_capital_ratio,"
             "target_loan_deposit_ratio,funding_pressure_sensitivity,"
             "capital_pressure_sensitivity,competition_sensitivity,reserve_ratio,"
-            "deposit_insurance_limit,retained_earnings,status "
+            "deposit_insurance_limit,retained_earnings,status,equity_capital_minor_units,"
+            "equity_capital_decimal_places,retained_earnings_minor_units,"
+            "retained_earnings_decimal_places "
             "FROM financial_institutions WHERE issuer=?",
             (str(issuer or ""),),
         ).fetchone()
@@ -723,6 +734,15 @@ class RateManager:
             key: float(row[key] if row and row[key] is not None else default)
             for key, default in defaults.items()
         }
+        from functions.money import from_minor_units
+        if row and row["equity_capital_minor_units"] is not None:
+            result["equity_capital"] = float(from_minor_units(
+                row["equity_capital_minor_units"], row["equity_capital_decimal_places"]
+            ))
+        if row and row["retained_earnings_minor_units"] is not None:
+            result["retained_earnings"] = float(from_minor_units(
+                row["retained_earnings_minor_units"], row["retained_earnings_decimal_places"]
+            ))
         result["status"] = str(row["status"] if row and row["status"] else "active")
         result["effective_equity"] = (
             result["equity_capital"]+result["retained_earnings"]

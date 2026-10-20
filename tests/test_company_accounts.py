@@ -5,6 +5,7 @@ from pathlib import Path
 import test_inazina as fixtures
 from functions import company_actions
 from managers.company_account_manager import CompanyAccounts
+from managers.bank_journal import BankJournal
 from managers.corporate_actions_manager import CorporateActionsManager
 from managers.financial_manager import FinancialManager
 
@@ -232,6 +233,20 @@ class CompanyAccountTests(unittest.TestCase):
             from managers.interest_manager import InterestManager
             InterestManager.settle_loan_rate_boundary(conn, loan, product, 1_000_000 + 10 * 86400)
             CompanyAccounts.reconcile(conn, 'CO')
+            # Reusing the stale fetched contract row must not accrue the same
+            # interval again; institution journal and common mirror are atomic.
+            InterestManager.settle_loan_rate_boundary(
+                conn, loan, product, 1_000_000 + 10 * 86400
+            )
+            interest_posts = conn.execute(
+                "SELECT COUNT(*) FROM bank_journal_entries WHERE issuer='Bank' "
+                "AND event_type='loan_interest'"
+            ).fetchone()[0]
+            self.assertEqual(interest_posts, 1)
+            from managers.accounting_journal import AccountingJournal
+            common = {row['ledger_scope']: row
+                      for row in AccountingJournal.reconcile_subledgers(conn)}
+            self.assertEqual(common['institution']['status'], 'matched', common['institution'])
         changes = FinancialManager(self.db).report('CO')['changes']
         interest = self.db.accounts.execute_one("SELECT outstanding_balance FROM loans WHERE user_id=?", (account,))[0] - 36500
         self.assertGreater(interest, 0)

@@ -1639,7 +1639,8 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
         )
         insurance_claims = [dict(row) for row in connection.execute(
             "SELECT c.user_id,c.account_number,a.quote_currency AS currency_code,"
-            "c.covered_amount,c.uninsured_amount,c.payout_currency,c.payout_amount,c.resolved_epoch "
+            "c.covered_amount,c.uninsured_amount,c.payout_currency,c.payout_amount,"
+            "c.payout_amount_minor_units,c.payout_decimal_places,c.resolved_epoch "
             "FROM accounts.deposit_insurance_claims c "
             "LEFT JOIN accounts.accounts a ON a.account_number=c.account_number "
             "WHERE c.issuer=? ORDER BY c.resolved_epoch DESC,c.claim_id DESC LIMIT 100",
@@ -1730,20 +1731,32 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
             row["difference"] = money_text(Decimal(row["difference_units"]) / scale,
                                            row["decimal_places"])
         for row in deposit_insurance_reconciliation:
+            if row["decimal_places"] is None:
+                row["claim_amount"] = row["journal_amount"] = row["difference"] = None
+                continue
             scale = 10 ** row["decimal_places"]
             row["claim_amount"] = money_text(Decimal(row["claim_units"]) / scale,
                                              row["decimal_places"])
-            row["journal_amount"] = money_text(Decimal(row["journal_units"]) / scale,
-                                               row["decimal_places"])
-            row["difference"] = money_text(Decimal(row["difference_units"]) / scale,
-                                           row["decimal_places"])
+            row["journal_amount"] = (money_text(Decimal(row["journal_units"]) / scale,
+                                                 row["decimal_places"])
+                                      if row["journal_units"] is not None else None)
+            row["difference"] = (money_text(Decimal(row["difference_units"]) / scale,
+                                            row["decimal_places"])
+                                 if row["difference_units"] is not None else None)
         for row in insurance_claims:
             row["currency_code"] = str(row["currency_code"] or balance_sheet["base_currency"])
             places = currency_precision(connection, row["currency_code"])
             row["covered_amount_text"] = money_text(row["covered_amount"], places)
             row["uninsured_amount_text"] = money_text(row["uninsured_amount"], places)
             row["decimal_places"] = places
-            if row["payout_currency"] and row["payout_amount"] is not None:
+            if row["payout_currency"] and row["payout_amount_minor_units"] is not None:
+                payout_places = currency_precision(connection, row["payout_currency"])
+                row["payout_amount_text"] = money_text(
+                    Decimal(row["payout_amount_minor_units"]) / (10 ** payout_places),
+                    payout_places,
+                )
+                row["payout_decimal_places"] = payout_places
+            elif row["payout_currency"] and row["payout_amount"] is not None:
                 payout_places = currency_precision(connection, row["payout_currency"])
                 row["payout_amount_text"] = money_text(row["payout_amount"], payout_places)
                 row["payout_decimal_places"] = payout_places
@@ -1779,7 +1792,14 @@ def admin_compliance_overview(nationality=None):
     with connect_readonly() as connection:
         kyc_sql = ("SELECT user_id,status,risk_tier,reviewed_by,reviewed_epoch,expires_epoch,updated_epoch "
                    "FROM kyc_profiles")
+        aml_columns = {row[1] for row in connection.execute(
+            "PRAGMA table_info(aml_alerts)"
+        ).fetchall()}
+        aml_unit_columns = "amount_minor_units,amount_decimal_places," if {
+            "amount_minor_units", "amount_decimal_places"
+        } <= aml_columns else ""
         alert_sql = ("SELECT alert_id,user_id,nationality,rule_code,reference_key,currency_code,amount,"
+                     f"{aml_unit_columns}"
                      "status,outcome_code,opened_epoch,reviewed_by,reviewed_epoch FROM aml_alerts")
         params = ()
         if nationality:
@@ -1805,7 +1825,10 @@ def admin_compliance_overview(nationality=None):
         alerts = [dict(row) for row in connection.execute(alert_sql, params).fetchall()]
         for row in alerts:
             places = currency_precision(connection, row["currency_code"])
-            row["amount_text"] = f"{Decimal(str(row['amount'] or 0)):.{places}f}"
+            value = (Decimal(int(row["amount_minor_units"])).scaleb(
+                -int(row["amount_decimal_places"])
+            ) if "amount_minor_units" in row else Decimal(str(row["amount"] or 0)))
+            row["amount_text"] = f"{value:.{places}f}"
         rule_sql = "SELECT nationality,currency_code,large_transaction_limit,rolling_24h_amount_limit,rolling_24h_count_limit,enabled,updated_epoch FROM aml_monitoring_rules"
         if nationality:
             rule_sql += " WHERE nationality=?"

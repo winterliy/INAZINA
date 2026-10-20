@@ -1467,7 +1467,8 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(
             {row["ledger_scope"] for row in report["commonJournalReconciliation"]},
             {"customer", "company", "institution", "market_order_reservations",
-             "market_order_wallet_cash", "market_executions", "treasury_bond_cash"},
+             "market_order_wallet_cash", "market_executions", "treasury_bond_cash",
+             "tax_transactions"},
         )
         self.assertEqual(report["commonJournalUnbalancedEntries"], [])
         self.assertIn(report["amountSnapshotAudit"]["status"], {"clean", "attention_required"})

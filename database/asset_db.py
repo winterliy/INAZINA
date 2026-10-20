@@ -103,6 +103,13 @@ class AssetDB(DBManager):
             "holder_underlying_currency": "TEXT",
             "custody_underlying_average_cost": "REAL CHECK(custody_underlying_average_cost >= 0)",
             "custody_underlying_currency": "TEXT",
+            "underlying_average_cost_minor_units": "INTEGER",
+            "underlying_average_cost_decimal_places": "INTEGER",
+            "underlying_average_cost_currency": "TEXT",
+            "holder_underlying_average_cost_minor_units": "INTEGER",
+            "holder_underlying_average_cost_decimal_places": "INTEGER",
+            "custody_underlying_average_cost_minor_units": "INTEGER",
+            "custody_underlying_average_cost_decimal_places": "INTEGER",
         }.items():
             if column not in movement_columns:
                 self.execute(
@@ -386,11 +393,17 @@ class AssetDB(DBManager):
             sample_bucket INTEGER NOT NULL,
             sampled_epoch REAL NOT NULL,
             dr_price REAL,
+            dr_price_minor_units INTEGER,
             reference_value REAL,
+            reference_value_minor_units INTEGER,
             deviation_percent REAL,
             state TEXT NOT NULL CHECK(state IN ('normal','premium','discount','unavailable')),
             UNIQUE(dr_code,sample_bucket)
         )""")
+        sample_columns = {row[1] for row in self.execute("PRAGMA table_info(dr_deviation_samples)")}
+        for column in ("dr_price_minor_units", "reference_value_minor_units"):
+            if column not in sample_columns:
+                self.execute(f"ALTER TABLE dr_deviation_samples ADD COLUMN {column} INTEGER")
         self.execute("CREATE INDEX IF NOT EXISTS idx_dr_deviation_samples_recent "
                      "ON dr_deviation_samples(dr_code,sampled_epoch DESC)")
         self.execute("""CREATE TABLE IF NOT EXISTS dr_deviation_alert_events (
@@ -399,10 +412,18 @@ class AssetDB(DBManager):
             from_state TEXT NOT NULL,
             to_state TEXT NOT NULL CHECK(to_state IN ('premium','discount','normal','unavailable')),
             dr_price REAL,
+            dr_price_minor_units INTEGER,
             reference_value REAL,
+            reference_value_minor_units INTEGER,
             deviation_percent REAL,
             recorded_epoch REAL NOT NULL
         )""")
+        deviation_event_columns = {row[1] for row in self.execute(
+            "PRAGMA table_info(dr_deviation_alert_events)"
+        )}
+        for column in ("dr_price_minor_units", "reference_value_minor_units"):
+            if column not in deviation_event_columns:
+                self.execute(f"ALTER TABLE dr_deviation_alert_events ADD COLUMN {column} INTEGER")
         self.execute("CREATE INDEX IF NOT EXISTS idx_dr_deviation_alerts_recent "
                      "ON dr_deviation_alert_events(recorded_epoch DESC,event_id DESC)")
         for operation in ("UPDATE", "DELETE"):

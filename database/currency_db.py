@@ -163,6 +163,8 @@ class CurrencyDB(DBManager):
             reference_key TEXT NOT NULL,
             currency_code TEXT NOT NULL,
             amount REAL NOT NULL CHECK(amount >= 0),
+            amount_minor_units INTEGER NOT NULL DEFAULT 0 CHECK(amount_minor_units >= 0),
+            amount_decimal_places INTEGER NOT NULL DEFAULT 0 CHECK(amount_decimal_places BETWEEN 0 AND 6),
             status TEXT NOT NULL DEFAULT 'open'
                 CHECK(status IN ('open','reviewing','closed')),
             outcome_code TEXT,
@@ -171,6 +173,13 @@ class CurrencyDB(DBManager):
             reviewed_epoch REAL,
             UNIQUE(user_id,rule_code,reference_key)
         )""")
+        aml_columns = {row[1] for row in self.execute("PRAGMA table_info(aml_alerts)")}
+        for column, declaration in (
+            ("amount_minor_units", "INTEGER NOT NULL DEFAULT 0 CHECK(amount_minor_units >= 0)"),
+            ("amount_decimal_places", "INTEGER NOT NULL DEFAULT 0 CHECK(amount_decimal_places BETWEEN 0 AND 6)"),
+        ):
+            if column not in aml_columns:
+                self.execute(f"ALTER TABLE aml_alerts ADD COLUMN {column} {declaration}")
         self.execute("CREATE INDEX IF NOT EXISTS idx_aml_alerts_opened "
                      "ON aml_alerts(status,opened_epoch)")
         self.execute("""CREATE TABLE IF NOT EXISTS aml_case_events (
@@ -198,8 +207,20 @@ class CurrencyDB(DBManager):
         self.execute("""CREATE TABLE IF NOT EXISTS bank_deficit_alerts (
             issuer TEXT PRIMARY KEY,
             cash REAL NOT NULL,
+            cash_minor_units INTEGER,
+            cash_decimal_places INTEGER,
+            cash_currency_code TEXT,
             alerted_epoch REAL NOT NULL
         )""")
+        deficit_columns = {row[1] for row in self.execute("PRAGMA table_info(bank_deficit_alerts)")}
+        for column, declaration in (
+            ("cash_minor_units", "INTEGER"),
+            ("cash_decimal_places", "INTEGER"),
+            ("cash_currency_code", "TEXT"),
+        ):
+            if column not in deficit_columns:
+                self.execute(f"ALTER TABLE bank_deficit_alerts ADD COLUMN {column} {declaration}")
+        self._ensure_bank_deficit_alert_units()
         self.execute("""CREATE TABLE IF NOT EXISTS financial_holidays (
             nationality TEXT NOT NULL REFERENCES country_currencies(nationality),
             holiday_date TEXT NOT NULL,
@@ -252,10 +273,11 @@ class CurrencyDB(DBManager):
         )}
         collateral_amount_fields = (
             ("loan_collateral_assets", collateral_columns,
-             ("last_value", "liquidation_cost", "liquidation_proceeds")),
+             ("average_cost", "last_price", "last_value", "liquidation_price",
+              "liquidation_cost", "liquidation_proceeds")),
             ("collateral_liquidation_events",
              {row[1] for row in self.execute("PRAGMA table_info(collateral_liquidation_events)")},
-             ("gross_proceeds", "liquidation_cost", "net_proceeds")),
+             ("mark_price", "execution_price", "gross_proceeds", "liquidation_cost", "net_proceeds")),
         )
         for table, columns, fields in collateral_amount_fields:
             for field in fields:
@@ -264,6 +286,24 @@ class CurrencyDB(DBManager):
                     self.execute(
                         f"ALTER TABLE {table} ADD COLUMN {minor} INTEGER NOT NULL DEFAULT 0"
                     )
+        from functions.money import to_minor_units
+        for event in self.execute(
+            "SELECT e.event_id,e.mark_price,e.execution_price,e.mark_price_minor_units,"
+            "e.execution_price_minor_units,l.quote_currency "
+            "FROM collateral_liquidation_events e JOIN loans l USING(loan_id)"
+        ):
+            places = currency_precision(self.conn, event["quote_currency"] or "NWX")
+            updates = []
+            if not int(event["mark_price_minor_units"] or 0) and float(event["mark_price"] or 0):
+                updates.append(("mark_price_minor_units", to_minor_units(event["mark_price"], places)))
+            if not int(event["execution_price_minor_units"] or 0) and float(event["execution_price"] or 0):
+                updates.append(("execution_price_minor_units", to_minor_units(event["execution_price"], places)))
+            if updates:
+                assignments = ",".join(f"{field}=?" for field, _ in updates)
+                self.execute(
+                    f"UPDATE collateral_liquidation_events SET {assignments} WHERE event_id=?",
+                    (*(value for _, value in updates), event["event_id"]),
+                )
         liquidation_scale = (
             "CASE COALESCE((SELECT decimal_places FROM currencies WHERE code="
             "(SELECT quote_currency FROM loans WHERE loan_id=OLD.loan_id)),0) "
@@ -286,6 +326,12 @@ class CurrencyDB(DBManager):
                   AND NEW.mark_price IS NOT OLD.mark_price)
               OR (NEW.execution_price IS NOT {normalized_old('execution_price')}
                   AND NEW.execution_price IS NOT OLD.execution_price)
+              OR (NEW.mark_price_minor_units IS NOT CAST(ROUND(
+                COALESCE(OLD.mark_price,0)*({liquidation_scale})) AS INTEGER)
+                AND NEW.mark_price_minor_units IS NOT OLD.mark_price_minor_units)
+              OR (NEW.execution_price_minor_units IS NOT CAST(ROUND(
+                COALESCE(OLD.execution_price,0)*({liquidation_scale})) AS INTEGER)
+                AND NEW.execution_price_minor_units IS NOT OLD.execution_price_minor_units)
               OR (NEW.gross_proceeds IS NOT {normalized_old('gross_proceeds')}
                   AND NEW.gross_proceeds IS NOT OLD.gross_proceeds)
               OR (NEW.liquidation_cost IS NOT {normalized_old('liquidation_cost')}
@@ -309,6 +355,19 @@ class CurrencyDB(DBManager):
         self.execute("""CREATE TRIGGER trg_collateral_liquidation_events_immutable_delete
             BEFORE DELETE ON collateral_liquidation_events
             BEGIN SELECT RAISE(ABORT,'collateral liquidation events are append-only'); END""")
+        new_liquidation_scale = (
+            "CASE COALESCE((SELECT decimal_places FROM currencies WHERE code="
+            "(SELECT quote_currency FROM loans WHERE loan_id=NEW.loan_id)),0) "
+            "WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END"
+        )
+        self.execute("DROP TRIGGER IF EXISTS trg_collateral_liquidation_price_minor_insert")
+        self.execute(f"""CREATE TRIGGER trg_collateral_liquidation_price_minor_insert
+            AFTER INSERT ON collateral_liquidation_events BEGIN
+              UPDATE collateral_liquidation_events SET
+                mark_price_minor_units=CAST(ROUND(COALESCE(NEW.mark_price,0)*({new_liquidation_scale})) AS INTEGER),
+                execution_price_minor_units=CAST(ROUND(COALESCE(NEW.execution_price,0)*({new_liquidation_scale})) AS INTEGER)
+              WHERE event_id=NEW.event_id;
+            END""")
         from functions.money import currency_precision, to_minor_units
         for loan in self.execute(
                 "SELECT loan_id,quote_currency,principal,principal_minor_units,"
@@ -496,6 +555,10 @@ class CurrencyDB(DBManager):
             ("depositary_receipt_movements", ("underlying_average_cost",), "movement_id",
              "SELECT quote_currency FROM company WHERE company_code=(SELECT underlying_code "
              "FROM depositary_receipts WHERE dr_code=NEW.dr_code)"),
+            ("depositary_receipt_movements", ("holder_underlying_average_cost",), "movement_id",
+             "NEW.holder_underlying_currency"),
+            ("depositary_receipt_movements", ("custody_underlying_average_cost",), "movement_id",
+             "NEW.custody_underlying_currency"),
             ("dr_deviation_samples", ("dr_price", "reference_value"), "sample_id",
              "SELECT quote_currency FROM depositary_receipts WHERE dr_code=NEW.dr_code"),
             ("dr_deviation_alert_events", ("dr_price", "reference_value"), "event_id",
@@ -510,6 +573,7 @@ class CurrencyDB(DBManager):
              "WHERE c.nationality=NEW.nationality"),
             ("tax_transactions", ("gross_amount", "tax_amount", "net_amount"),
              "transaction_id", "NEW.currency_code"),
+            ("aml_alerts", ("amount",), "alert_id", "NEW.currency_code"),
         )
         for table, columns, key, currency in derived:
             existing = {row[1] for row in self.execute(f"PRAGMA table_info({table})")}
@@ -569,6 +633,44 @@ class CurrencyDB(DBManager):
                   COALESCE((SELECT decimal_places FROM currencies
                             WHERE code=NEW.payout_currency),0))
             BEGIN SELECT RAISE(ABORT,'insurance payout amount exceeds currency precision'); END""")
+        # Upgrade historical payout mirrors before enforcing the append-only
+        # contract.  The INTEGER amount is canonical; REAL remains a read/API
+        # compatibility mirror only.
+        from functions.money import to_minor_units
+        payout_backfill = self.execute(
+            "SELECT claim_id,payout_currency,payout_amount,payout_amount_minor_units "
+            "FROM deposit_insurance_claims WHERE payout_currency IS NOT NULL "
+            "AND payout_amount IS NOT NULL AND payout_amount_minor_units IS NULL"
+        )
+        if payout_backfill:
+            self.execute("DROP TRIGGER IF EXISTS trg_deposit_insurance_claims_immutable_update")
+            try:
+                for claim in payout_backfill:
+                    try:
+                        places = currency_precision(self.conn, claim["payout_currency"])
+                        minor = to_minor_units(claim["payout_amount"], places)
+                    except ValueError:
+                        # Preserve an unverifiable legacy record; reconciler reports it.
+                        continue
+                    self.execute(
+                        "UPDATE deposit_insurance_claims SET payout_amount_minor_units=?,"
+                        "payout_decimal_places=? WHERE claim_id=?",
+                        (minor, places, claim["claim_id"]),
+                    )
+            finally:
+                self.execute("""CREATE TRIGGER IF NOT EXISTS trg_deposit_insurance_claims_immutable_update
+                    BEFORE UPDATE ON deposit_insurance_claims
+                    BEGIN SELECT RAISE(ABORT,'deposit insurance claims are append-only'); END""")
+        self.execute("DROP TRIGGER IF EXISTS trg_insurance_payout_minor_insert")
+        self.execute("""CREATE TRIGGER trg_insurance_payout_minor_insert
+            BEFORE INSERT ON deposit_insurance_claims
+            WHEN (NEW.payout_amount IS NULL AND (NEW.payout_amount_minor_units IS NOT NULL OR NEW.payout_decimal_places IS NOT NULL))
+              OR (NEW.payout_amount IS NOT NULL AND (
+                    NEW.payout_amount_minor_units IS NULL OR NEW.payout_decimal_places IS NULL
+                    OR NEW.payout_decimal_places <> COALESCE((SELECT decimal_places FROM currencies WHERE code=NEW.payout_currency),-1)
+                    OR NEW.payout_amount_minor_units <> CAST(ROUND(NEW.payout_amount * CASE NEW.payout_decimal_places WHEN 0 THEN 1 WHEN 1 THEN 10 WHEN 2 THEN 100 END) AS INTEGER)
+                  ))
+            BEGIN SELECT RAISE(ABORT,'insurance payout minor units are missing or inconsistent'); END""")
         self.execute("""CREATE TRIGGER IF NOT EXISTS trg_insurance_payout_pair_insert
             BEFORE INSERT ON deposit_insurance_claims
             WHEN (NEW.payout_currency IS NULL) <> (NEW.payout_amount IS NULL)
@@ -576,6 +678,10 @@ class CurrencyDB(DBManager):
                   SELECT 1 FROM currencies WHERE code=NEW.payout_currency))
             BEGIN SELECT RAISE(ABORT,'insurance payout currency and amount must be paired and use a known currency'); END""")
         self._ensure_account_units()
+        self._ensure_account_reference_price_units()
+        self._ensure_aml_amount_units()
+        self._ensure_dr_deviation_price_units()
+        self._ensure_dr_movement_cost_units()
         self._ensure_cash_minor()
         self._ensure_money_snaps()
         self._ensure_market_asset_price_minor_units()
@@ -583,7 +689,9 @@ class CurrencyDB(DBManager):
         self._ensure_market_order_reservation_units()
         self._ensure_treasury_bond_minor_units()
         self._ensure_tax_transaction_minor_units()
-        self._ensure_minor_amount_snapshots(direct, derived)
+        snapshot_direct = (*direct, ("accounts", ("reference_price",),
+                                     "account_number", "NEW.quote_currency"))
+        self._ensure_minor_amount_snapshots(snapshot_direct, derived)
         self._ensure_customer_wallet_journal()
 
     def _ensure_market_asset_price_minor_units(self):
@@ -1221,6 +1329,265 @@ class CurrencyDB(DBManager):
                     WHEN NEW.{column} IS NOT NULL AND NEW.{column} <> ROUND(NEW.{column}, {places})
                     BEGIN UPDATE {table} SET {column}=ROUND(NEW.{column}, {places}) WHERE {key}=NEW.{key}; END""")
 
+    def _ensure_account_reference_price_units(self):
+        columns = {row[1] for row in self.execute("PRAGMA table_info(accounts)")}
+        if "reference_price_minor_units" not in columns:
+            self.execute("ALTER TABLE accounts ADD COLUMN reference_price_minor_units INTEGER")
+        from functions.money import currency_precision, to_minor_units
+        for row in self.execute(
+            "SELECT account_number,quote_currency,reference_price "
+            "FROM accounts WHERE reference_price IS NOT NULL "
+            "AND reference_price_minor_units IS NULL"
+        ):
+            places = currency_precision(self.conn, row["quote_currency"] or "NWX")
+            self.execute(
+                "UPDATE accounts SET reference_price_minor_units=? WHERE account_number=?",
+                (to_minor_units(row["reference_price"], places), row["account_number"]),
+            )
+        scale = (
+            "CASE COALESCE((SELECT decimal_places FROM currencies WHERE code=NEW.quote_currency),0) "
+            "WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END"
+        )
+        self.execute("DROP TRIGGER IF EXISTS trg_account_reference_price_from_legacy")
+        self.execute("DROP TRIGGER IF EXISTS trg_account_reference_price_legacy_update")
+        self.execute("DROP TRIGGER IF EXISTS trg_account_reference_price_minor_mirror")
+        self.execute(f"""CREATE TRIGGER trg_account_reference_price_from_legacy
+            AFTER INSERT ON accounts WHEN NEW.reference_price IS NOT NULL BEGIN
+              UPDATE accounts SET reference_price_minor_units=
+                CAST(ROUND(NEW.reference_price*({scale})) AS INTEGER)
+              WHERE account_number=NEW.account_number;
+            END""")
+        self.execute(f"""CREATE TRIGGER trg_account_reference_price_legacy_update
+            AFTER UPDATE OF reference_price,quote_currency ON accounts
+            WHEN NEW.reference_price IS NOT NULL BEGIN
+              UPDATE accounts SET reference_price_minor_units=
+                CAST(ROUND(NEW.reference_price*({scale})) AS INTEGER)
+              WHERE account_number=NEW.account_number;
+            END""")
+        mirror_scale = (
+            "CASE COALESCE((SELECT decimal_places FROM currencies WHERE code=NEW.quote_currency),0) "
+            "WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END"
+        )
+        self.execute(f"""CREATE TRIGGER trg_account_reference_price_minor_mirror
+            AFTER UPDATE OF reference_price_minor_units ON accounts
+            WHEN NEW.reference_price_minor_units IS NOT OLD.reference_price_minor_units
+              AND NEW.reference_price_minor_units IS NOT NULL BEGIN
+              UPDATE accounts SET reference_price=NEW.reference_price_minor_units*1.0/({mirror_scale})
+              WHERE account_number=NEW.account_number;
+            END""")
+
+    def _ensure_aml_amount_units(self):
+        from functions.money import currency_precision, to_minor_units
+        for row in self.execute(
+            "SELECT alert_id,currency_code,amount,amount_minor_units "
+            "FROM aml_alerts WHERE amount_minor_units=0 AND amount<>0"
+        ):
+            places = currency_precision(self.conn, row["currency_code"])
+            self.execute(
+                "UPDATE aml_alerts SET amount_minor_units=?,amount_decimal_places=? "
+                "WHERE alert_id=?",
+                (to_minor_units(row["amount"], places), places, row["alert_id"]),
+            )
+        for trigger in (
+            "trg_aml_amount_minor_insert", "trg_aml_amount_minor_update",
+            "trg_aml_amount_minor_mirror",
+        ):
+            self.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        scale = (
+            "CASE COALESCE((SELECT decimal_places FROM currencies WHERE code=NEW.currency_code),0) "
+            "WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END"
+        )
+        self.execute(f"""CREATE TRIGGER trg_aml_amount_minor_insert
+            AFTER INSERT ON aml_alerts BEGIN
+              UPDATE aml_alerts SET amount_decimal_places=COALESCE((SELECT decimal_places
+                FROM currencies WHERE code=NEW.currency_code),0),
+                amount_minor_units=CAST(ROUND(NEW.amount*({scale})) AS INTEGER)
+              WHERE alert_id=NEW.alert_id;
+            END""")
+        self.execute(f"""CREATE TRIGGER trg_aml_amount_minor_update
+            AFTER UPDATE OF amount,currency_code ON aml_alerts
+            WHEN NEW.amount IS NOT OLD.amount OR NEW.currency_code IS NOT OLD.currency_code BEGIN
+              UPDATE aml_alerts SET amount_decimal_places=COALESCE((SELECT decimal_places
+                FROM currencies WHERE code=NEW.currency_code),0),
+                amount_minor_units=CAST(ROUND(NEW.amount*({scale})) AS INTEGER)
+              WHERE alert_id=NEW.alert_id;
+            END""")
+        mirror_scale = (
+            "CASE COALESCE((SELECT decimal_places FROM currencies WHERE code=NEW.currency_code),0) "
+            "WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END"
+        )
+        self.execute(f"""CREATE TRIGGER trg_aml_amount_minor_mirror
+            AFTER UPDATE OF amount_minor_units ON aml_alerts
+            WHEN NEW.amount_minor_units IS NOT OLD.amount_minor_units BEGIN
+              UPDATE aml_alerts SET amount=NEW.amount_minor_units*1.0/({mirror_scale})
+              WHERE alert_id=NEW.alert_id;
+            END""")
+
+    def _ensure_dr_deviation_price_units(self):
+        from functions.money import currency_precision, to_minor_units
+        sample_rows = self.execute(
+            "SELECT s.sample_id,s.dr_price,s.reference_value,s.dr_price_minor_units,"
+            "s.reference_value_minor_units,d.quote_currency FROM dr_deviation_samples s "
+            "JOIN depositary_receipts d ON d.dr_code=s.dr_code"
+        )
+        for row in sample_rows:
+            places = currency_precision(self.conn, row["quote_currency"] or "NWX")
+            updates = []
+            if row["dr_price"] is not None and row["dr_price_minor_units"] is None:
+                updates.append(("dr_price_minor_units", to_minor_units(row["dr_price"], places)))
+            if row["reference_value"] is not None and row["reference_value_minor_units"] is None:
+                updates.append(("reference_value_minor_units", to_minor_units(row["reference_value"], places)))
+            if updates:
+                assignments = ",".join(f"{field}=?" for field, _ in updates)
+                self.execute(f"UPDATE dr_deviation_samples SET {assignments} WHERE sample_id=?",
+                             (*(value for _, value in updates), row["sample_id"]))
+        event_rows = self.execute(
+            "SELECT e.event_id,e.dr_price,e.reference_value,e.dr_price_minor_units,"
+            "e.reference_value_minor_units,d.quote_currency FROM dr_deviation_alert_events e "
+            "JOIN depositary_receipts d ON d.dr_code=e.dr_code"
+        )
+        if event_rows:
+            self.execute("DROP TRIGGER IF EXISTS trg_dr_deviation_alert_immutable_update")
+            try:
+                for row in event_rows:
+                    places = currency_precision(self.conn, row["quote_currency"] or "NWX")
+                    updates = []
+                    if row["dr_price"] is not None and row["dr_price_minor_units"] is None:
+                        updates.append(("dr_price_minor_units", to_minor_units(row["dr_price"], places)))
+                    if row["reference_value"] is not None and row["reference_value_minor_units"] is None:
+                        updates.append(("reference_value_minor_units", to_minor_units(row["reference_value"], places)))
+                    if updates:
+                        assignments = ",".join(f"{field}=?" for field, _ in updates)
+                        self.execute(f"UPDATE dr_deviation_alert_events SET {assignments} WHERE event_id=?",
+                                     (*(value for _, value in updates), row["event_id"]))
+            finally:
+                self.execute("""CREATE TRIGGER IF NOT EXISTS trg_dr_deviation_alert_immutable_update
+                    BEFORE UPDATE ON dr_deviation_alert_events
+                    BEGIN SELECT RAISE(ABORT,'DR deviation alert events are append-only'); END""")
+
+    def _ensure_dr_movement_cost_units(self):
+        """Migrate the three denomination-specific DR custody cost snapshots."""
+        from functions.money import currency_precision, to_minor_units
+        rows = self.execute(
+            "SELECT m.*,d.underlying_code,c.quote_currency AS underlying_currency "
+            "FROM depositary_receipt_movements m JOIN depositary_receipts d USING(dr_code) "
+            "LEFT JOIN company c ON c.company_code=d.underlying_code"
+        )
+        if rows:
+            self.execute("DROP TRIGGER IF EXISTS trg_dr_movements_immutable_update")
+            try:
+                for row in rows:
+                    currencies = {
+                        "underlying_average_cost": str(row["underlying_average_cost_currency"]
+                            or row["underlying_currency"] or "NWX").upper(),
+                        "holder_underlying_average_cost": str(row["holder_underlying_currency"]
+                            or row["underlying_currency"] or "NWX").upper(),
+                        "custody_underlying_average_cost": str(row["custody_underlying_currency"]
+                            or row["underlying_currency"] or "NWX").upper(),
+                    }
+                    updates = []
+                    for field, currency in currencies.items():
+                        places = currency_precision(self.conn, currency)
+                        amount = row[field]
+                        if amount is None:
+                            continue
+                        minor_field = f"{field}_minor_units"
+                        places_field = f"{field}_decimal_places"
+                        if row[minor_field] is None or row[places_field] is None:
+                            updates.extend(((minor_field, to_minor_units(amount, places)),
+                                            (places_field, places)))
+                        if field == "underlying_average_cost" and row["underlying_average_cost_currency"] is None:
+                            updates.append(("underlying_average_cost_currency", currency))
+                        if field == "holder_underlying_average_cost" and row["holder_underlying_currency"] is None:
+                            updates.append(("holder_underlying_currency", currency))
+                        if field == "custody_underlying_average_cost" and row["custody_underlying_currency"] is None:
+                            updates.append(("custody_underlying_currency", currency))
+                    if updates:
+                        assignments = ",".join(f'"{field}"=?' for field, _ in updates)
+                        self.execute(f"UPDATE depositary_receipt_movements SET {assignments} WHERE movement_id=?",
+                                     (*(value for _, value in updates), row["movement_id"]))
+            finally:
+                self.execute("""CREATE TRIGGER IF NOT EXISTS trg_dr_movements_immutable_update
+                    BEFORE UPDATE ON depositary_receipt_movements
+                    BEGIN SELECT RAISE(ABORT,'DR custody movements are append-only'); END""")
+
+        fields = (
+            ("underlying_average_cost", "underlying_average_cost_minor_units",
+             "underlying_average_cost_decimal_places", "underlying_average_cost_currency",
+             "(SELECT quote_currency FROM company WHERE company_code=(SELECT underlying_code "
+             "FROM depositary_receipts WHERE dr_code=NEW.dr_code))"),
+            ("holder_underlying_average_cost", "holder_underlying_average_cost_minor_units",
+             "holder_underlying_average_cost_decimal_places", "holder_underlying_currency",
+             "NEW.holder_underlying_currency"),
+            ("custody_underlying_average_cost", "custody_underlying_average_cost_minor_units",
+             "custody_underlying_average_cost_decimal_places", "custody_underlying_currency",
+             "NEW.custody_underlying_currency"),
+        )
+        checks = []
+        for amount, minor, places, currency_col, currency_expr in fields:
+            currency = f"COALESCE({currency_expr},'NWX')"
+            scale = "CASE COALESCE(NEW.\"%s\",0) " % places + " ".join(
+                f"WHEN {i} THEN {10**i}" for i in range(0, 7)) + " END"
+            checks.append(
+                f"NEW.\"{minor}\" IS NULL OR NEW.\"{places}\" IS NULL "
+                f"OR NEW.\"{currency_col}\" IS NOT {currency} "
+                f"OR NEW.\"{places}\"<>COALESCE((SELECT decimal_places FROM currencies "
+                f"WHERE code={currency}),-1) OR NEW.\"{minor}\"<>CAST(ROUND(NEW.\"{amount}\"*({scale})) AS INTEGER)"
+            )
+        self.execute("DROP TRIGGER IF EXISTS trg_dr_movements_cost_units_insert")
+        self.execute("""CREATE TRIGGER trg_dr_movements_cost_units_insert
+            BEFORE INSERT ON depositary_receipt_movements WHEN """ + " OR ".join(checks) + "\n"
+            "BEGIN SELECT RAISE(ABORT,'DR movement cost minor units are missing or inconsistent'); END")
+
+    def _ensure_bank_deficit_alert_units(self):
+        """Pin a deficit warning to the bank account's home-currency quantum."""
+        from functions.money import currency_precision, to_minor_units
+        rows = self.execute(
+            "SELECT a.issuer,a.cash,a.cash_minor_units,a.cash_currency_code,"
+            "u.nationality,c.currency_code FROM bank_deficit_alerts a "
+            "JOIN bank_accounts b ON b.issuer=a.issuer JOIN users u ON u.user_id=b.user_id "
+            "LEFT JOIN country_currencies c ON c.nationality=u.nationality"
+        )
+        for row in rows:
+            currency = str(row["cash_currency_code"] or row["currency_code"] or "NWX").upper()
+            places = currency_precision(self.conn, currency)
+            if row["cash_minor_units"] is None or row["cash_currency_code"] is None:
+                self.execute(
+                    "UPDATE bank_deficit_alerts SET cash_minor_units=?,cash_decimal_places=?,"
+                    "cash_currency_code=? WHERE issuer=?",
+                    (to_minor_units(row["cash"], places), places, currency, row["issuer"]),
+                )
+        factor = "CASE COALESCE(NEW.cash_decimal_places,0) WHEN 0 THEN 1 " \
+                 "WHEN 1 THEN 10 ELSE 100 END"
+        currency_sql = "COALESCE((SELECT currency_code FROM country_currencies WHERE nationality=" \
+                       "(SELECT nationality FROM users WHERE user_id=" \
+                       "(SELECT user_id FROM bank_accounts WHERE issuer=NEW.issuer))), 'NWX')"
+        self.execute("DROP TRIGGER IF EXISTS trg_bank_deficit_alert_units_insert")
+        self.execute(f"""CREATE TRIGGER trg_bank_deficit_alert_units_insert
+            AFTER INSERT ON bank_deficit_alerts WHEN NEW.cash_minor_units IS NULL
+            BEGIN UPDATE bank_deficit_alerts SET cash_currency_code={currency_sql},
+                cash_decimal_places=COALESCE((SELECT decimal_places FROM currencies
+                    WHERE code={currency_sql}),0),
+                cash_minor_units=CAST(ROUND(NEW.cash*(CASE COALESCE((SELECT decimal_places
+                    FROM currencies WHERE code={currency_sql}),0) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END)) AS INTEGER)
+                WHERE issuer=NEW.issuer; END""")
+        self.execute("DROP TRIGGER IF EXISTS trg_bank_deficit_alert_units_update")
+        self.execute(f"""CREATE TRIGGER trg_bank_deficit_alert_units_update
+            AFTER UPDATE OF cash ON bank_deficit_alerts WHEN NEW.cash IS NOT OLD.cash
+            BEGIN UPDATE bank_deficit_alerts SET cash_currency_code={currency_sql},
+                cash_decimal_places=COALESCE((SELECT decimal_places FROM currencies
+                    WHERE code={currency_sql}),0),
+                cash_minor_units=CAST(ROUND(NEW.cash*(CASE COALESCE((SELECT decimal_places
+                    FROM currencies WHERE code={currency_sql}),0) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END)) AS INTEGER)
+                WHERE issuer=NEW.issuer; END""")
+        self.execute("DROP TRIGGER IF EXISTS trg_bank_deficit_alert_units_mirror")
+        self.execute("""CREATE TRIGGER trg_bank_deficit_alert_units_mirror
+            AFTER UPDATE OF cash_minor_units ON bank_deficit_alerts
+            WHEN NEW.cash_minor_units IS NOT OLD.cash_minor_units
+            BEGIN UPDATE bank_deficit_alerts SET cash=NEW.cash_minor_units*1.0/
+                (CASE COALESCE(NEW.cash_decimal_places,0) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END)
+                WHERE issuer=NEW.issuer; END""")
+
     def _ensure_account_units(self):
         """Keep legacy micro-unit balances and product-minor-unit mirrors aligned.
 
@@ -1672,6 +2039,9 @@ class CurrencyDB(DBManager):
         }
         for column, declaration in {
             "equity_capital": "REAL NOT NULL DEFAULT 1000000 CHECK(equity_capital > 0)",
+            "equity_capital_minor_units": "INTEGER",
+            "equity_capital_decimal_places": "INTEGER",
+            "equity_capital_currency_code": "TEXT",
             "retained_earnings": "REAL NOT NULL DEFAULT 0",
             "retained_earnings_minor_units": "INTEGER",
             "retained_earnings_decimal_places": "INTEGER",
@@ -1692,6 +2062,23 @@ class CurrencyDB(DBManager):
                     f"ALTER TABLE financial_institutions ADD COLUMN {column} {declaration}"
                 )
         from functions.money import currency_precision, to_minor_units
+        for row in self.execute(
+            "SELECT issuer,nationality,equity_capital FROM financial_institutions "
+            "WHERE equity_capital_minor_units IS NULL OR "
+            "equity_capital_currency_code IS NULL OR equity_capital_decimal_places IS NULL"
+        ):
+            denomination = self.execute_one(
+                "SELECT currency_code FROM country_currencies WHERE nationality=?",
+                (row["nationality"],),
+            )
+            currency = str(denomination["currency_code"] if denomination else "NWX").upper()
+            places = currency_precision(self.conn, currency)
+            self.execute(
+                "UPDATE financial_institutions SET equity_capital_minor_units=?,"
+                "equity_capital_decimal_places=?,equity_capital_currency_code=? WHERE issuer=?",
+                (to_minor_units(row["equity_capital"], places), places, currency,
+                 row["issuer"]),
+            )
         for row in self.execute(
             "SELECT issuer,nationality,retained_earnings FROM financial_institutions "
             "WHERE retained_earnings_minor_units IS NULL OR "
@@ -1741,6 +2128,39 @@ class CurrencyDB(DBManager):
             WHEN NEW.retained_earnings_minor_units IS NOT OLD.retained_earnings_minor_units
             BEGIN UPDATE financial_institutions SET retained_earnings=
               NEW.retained_earnings_minor_units*1.0/CASE NEW.retained_earnings_decimal_places
+                WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END WHERE issuer=NEW.issuer; END""")
+        self.execute("DROP TRIGGER IF EXISTS trg_institution_equity_units_insert")
+        self.execute("DROP TRIGGER IF EXISTS trg_institution_equity_units_legacy_update")
+        self.execute("DROP TRIGGER IF EXISTS trg_institution_equity_units_mirror")
+        self.execute("""CREATE TRIGGER trg_institution_equity_units_insert
+            AFTER INSERT ON financial_institutions
+            WHEN NEW.equity_capital_minor_units IS NULL BEGIN
+              UPDATE financial_institutions SET
+                equity_capital_currency_code=COALESCE((SELECT currency_code
+                  FROM country_currencies WHERE nationality=NEW.nationality),'NWX'),
+                equity_capital_decimal_places=COALESCE((SELECT decimal_places FROM currencies
+                  WHERE code=COALESCE((SELECT currency_code FROM country_currencies
+                    WHERE nationality=NEW.nationality),'NWX')),0),
+                equity_capital_minor_units=CAST(ROUND(COALESCE(NEW.equity_capital,0)*
+                  CASE COALESCE((SELECT decimal_places FROM currencies WHERE code=COALESCE(
+                    (SELECT currency_code FROM country_currencies WHERE nationality=NEW.nationality),
+                    'NWX')),0) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END) AS INTEGER)
+              WHERE issuer=NEW.issuer;
+            END""")
+        self.execute("""CREATE TRIGGER trg_institution_equity_units_legacy_update
+            AFTER UPDATE OF equity_capital ON financial_institutions
+            WHEN NEW.equity_capital IS NOT OLD.equity_capital BEGIN
+              UPDATE financial_institutions SET equity_capital_minor_units=CAST(ROUND(
+                COALESCE(NEW.equity_capital,0)*CASE NEW.equity_capital_decimal_places
+                  WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END) AS INTEGER)
+              WHERE issuer=NEW.issuer;
+            END""")
+        self.execute("""CREATE TRIGGER trg_institution_equity_units_mirror
+            AFTER UPDATE OF equity_capital_minor_units ON financial_institutions
+            WHEN NEW.equity_capital_minor_units IS NOT OLD.equity_capital_minor_units
+              AND NEW.equity_capital_minor_units IS NOT NULL
+            BEGIN UPDATE financial_institutions SET equity_capital=
+              NEW.equity_capital_minor_units*1.0/CASE NEW.equity_capital_decimal_places
                 WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END WHERE issuer=NEW.issuer; END""")
         self.execute("""CREATE TABLE IF NOT EXISTS financial_institution_ledger (
             entry_id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -125,7 +125,7 @@ class BankJournal:
         Balances created before journal coverage was introduced are intentionally
         reported as missing/mismatched rather than silently repaired.
         """
-        from functions.money import currency_precision, round_currency
+        from functions.money import currency_precision, round_currency, to_minor_units
 
         accounts = conn.execute(
             "SELECT a.quote_currency,a.account_type,a.balance,a.balance_units "
@@ -157,7 +157,11 @@ class BankJournal:
         currencies = sorted(set(account_units) | set(journal_units))
         results = []
         for currency in currencies:
-            places = currency_precision(conn, currency)
+            try:
+                places = currency_precision(conn, currency)
+            except ValueError:
+                entry["invalid"] += 1
+                continue
             actual = account_units.get(currency, 0)
             posted = journal_units.get(currency, 0)
             results.append({
@@ -351,8 +355,8 @@ class BankJournal:
 
     @staticmethod
     def reconcile_deposit_insurance_claims(conn, issuer):
-        """Compare resolved claim totals with the two posted liability accounts."""
-        from functions.money import currency_precision, round_currency
+        """Reconcile claim liabilities and canonical payout-unit snapshots."""
+        from functions.money import currency_precision, round_currency, to_minor_units
 
         claims = conn.execute(
             "SELECT COALESCE(a.quote_currency,'NWX') currency_code,"
@@ -393,6 +397,43 @@ class BankJournal:
                     "status": ("missing_journal" if expected_units and not actual_units else
                                "matched" if difference == 0 else "mismatch"),
                 })
+        payout_rows = conn.execute(
+            "SELECT claim_id,payout_currency,payout_amount,payout_amount_minor_units,"
+            "payout_decimal_places FROM accounts.deposit_insurance_claims "
+            "WHERE issuer=? AND (payout_currency IS NOT NULL OR payout_amount IS NOT NULL "
+            "OR payout_amount_minor_units IS NOT NULL)", (str(issuer),),
+        ).fetchall()
+        payout_by_currency = {}
+        for row in payout_rows:
+            currency = str(row["payout_currency"] or "")
+            entry = payout_by_currency.setdefault(currency, {"units": 0, "invalid": 0})
+            if (not currency or row["payout_amount_minor_units"] is None
+                    or row["payout_decimal_places"] is None):
+                entry["invalid"] += 1
+                continue
+            try:
+                places = currency_precision(conn, currency)
+            except ValueError:
+                entry["invalid"] += 1
+                continue
+            canonical = int(row["payout_amount_minor_units"])
+            legacy = to_minor_units(row["payout_amount"] or 0, places)
+            if int(row["payout_decimal_places"]) != places or canonical != legacy:
+                entry["invalid"] += 1
+            entry["units"] += canonical
+        for currency, entry in sorted(payout_by_currency.items()):
+            try:
+                places = currency_precision(conn, currency) if currency else None
+            except ValueError:
+                places = None
+            results.append({
+                "issuer": str(issuer), "currency_code": currency or None,
+                "account_code": "deposit_insurance_payout_subledger",
+                "claim_units": entry["units"], "journal_units": None,
+                "difference_units": None, "decimal_places": places,
+                "unverifiable_claim_count": entry["invalid"],
+                "status": "mismatch" if entry["invalid"] else "matched",
+            })
         return results
 
     @staticmethod
@@ -401,7 +442,8 @@ class BankJournal:
         from functions.money import currency_precision, to_minor_units
 
         rows = conn.execute(
-            "SELECT e.event_id,e.loan_id,e.collateral_id,e.gross_proceeds,"
+            "SELECT e.event_id,e.loan_id,e.collateral_id,e.mark_price,e.mark_price_minor_units,"
+            "e.execution_price,e.execution_price_minor_units,e.gross_proceeds,"
             "e.gross_proceeds_minor_units,e.liquidation_cost,e.liquidation_cost_minor_units,"
             "e.net_proceeds,e.net_proceeds_minor_units,c.status collateral_status,"
             "c.liquidation_proceeds asset_proceeds,"
@@ -425,14 +467,23 @@ class BankJournal:
             cost = units("liquidation_cost_minor_units", "liquidation_cost")
             net = units("net_proceeds_minor_units", "net_proceeds")
             asset_net = units("asset_proceeds_minor_units", "asset_proceeds")
+            price_mismatches = [
+                field for field, legacy, minor in (
+                    ("mark_price", "mark_price", "mark_price_minor_units"),
+                    ("execution_price", "execution_price", "execution_price_minor_units"),
+                )
+                if int(row[minor] or 0) != to_minor_units(row[legacy] or 0, places)
+            ]
             findings.append({
                 "event_id": int(row["event_id"]), "loan_id": int(row["loan_id"]),
                 "collateral_id": int(row["collateral_id"]), "currency_code": currency,
                 "gross_proceeds_units": gross, "liquidation_cost_units": cost,
                 "net_proceeds_units": net, "asset_proceeds_units": asset_net,
+                "price_mirror_mismatches": price_mismatches,
                 "difference_units": net-asset_net,
                 "status": ("matched" if row["collateral_status"] == "liquidated"
-                           and gross-cost == net and net == asset_net else "mismatch"),
+                           and gross-cost == net and net == asset_net
+                           and not price_mismatches else "mismatch"),
             })
         missing = conn.execute(
             "SELECT c.collateral_id,c.loan_id,l.quote_currency "

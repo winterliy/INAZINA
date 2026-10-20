@@ -494,6 +494,11 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertEqual(insurance_rows['uninsured_deposit_claim']['status'], 'matched')
         self.assertEqual(insurance_rows['uninsured_deposit_claim']['claim_units'], 138)
         self.assertEqual(insurance_rows['uninsured_deposit_claim']['journal_units'], 138)
+        payout_subledger = insurance_rows['deposit_insurance_payout_subledger']
+        self.assertEqual(payout_subledger['currency_code'], 'USD')
+        self.assertEqual(payout_subledger['claim_units'], 199)
+        self.assertEqual(payout_subledger['unverifiable_claim_count'], 0)
+        self.assertEqual(payout_subledger['status'], 'matched')
         fx_record = self.db.currency.execute_one(
             "SELECT source_currency,target_currency FROM currency_transactions "
             "WHERE user_id='us-user' ORDER BY transaction_id DESC LIMIT 1"
@@ -509,6 +514,11 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertEqual(claims[0]['uninsured_amount'], 1.38)
         self.assertEqual(claims[0]['payout_currency'], 'USD')
         self.assertAlmostEqual(claims[0]['payout_amount'], 1.99)
+        claim_units = self.db.accounts.execute_one(
+            "SELECT payout_amount_minor_units,payout_decimal_places "
+            "FROM deposit_insurance_claims WHERE issuer='FXBank'"
+        )
+        self.assertEqual(tuple(claim_units), (199, 2))
         self.assertEqual(
             UserManager(self.db).get_total_assets('admin', settle=False)[
                 'deposit_insurance_claims'
@@ -525,7 +535,7 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         number = CurrencyExchangeManager(self.db).open_account(
             'us-user', 'FX_EUR', password='1234', deposit_amount='1.25'
         )
-        with self.assertRaisesRegex(sqlite3.IntegrityError, "currency precision"):
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "insurance payout"):
             self.db.accounts.execute(
                 "INSERT INTO deposit_insurance_claims "
                 "(issuer,user_id,account_number,covered_amount,uninsured_amount,"
@@ -570,6 +580,26 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertEqual(insured['journal_units'], 50)
         self.assertEqual(insured['difference_units'], 75)
         self.assertEqual(insured['status'], 'mismatch')
+
+    def test_insurance_payout_reconciler_reports_unverifiable_legacy_currency(self):
+        from managers.bank_journal import BankJournal
+
+        self.db.accounts.execute("DROP TRIGGER IF EXISTS trg_insurance_payout_precision_insert")
+        self.db.accounts.execute("DROP TRIGGER IF EXISTS trg_insurance_payout_pair_insert")
+        self.db.accounts.execute("DROP TRIGGER IF EXISTS trg_insurance_payout_minor_insert")
+        self.db.accounts.execute(
+            "INSERT INTO deposit_insurance_claims "
+            "(issuer,user_id,account_number,payout_currency,payout_amount,resolved_epoch) "
+            "VALUES ('LegacyBank','legacy-user','legacy-account','OLD',1.25,1)"
+        )
+        with self.db.atomic() as conn:
+            findings = BankJournal.reconcile_deposit_insurance_claims(conn, 'LegacyBank')
+        payout = next(row for row in findings
+                      if row['account_code'] == 'deposit_insurance_payout_subledger')
+        self.assertEqual(payout['currency_code'], 'OLD')
+        self.assertIsNone(payout['decimal_places'])
+        self.assertEqual(payout['unverifiable_claim_count'], 1)
+        self.assertEqual(payout['status'], 'mismatch')
 
     def test_treasury_bond_offer_and_holding_use_currency_minor_units(self):
         self.db.products.execute(
@@ -695,23 +725,27 @@ class LegacyCurrencySchemaMigrationTests(unittest.TestCase):
                     issuer TEXT NOT NULL,user_id TEXT NOT NULL,account_number TEXT NOT NULL,
                     covered_amount INTEGER NOT NULL DEFAULT 0,
                     uninsured_amount INTEGER NOT NULL DEFAULT 0,
+                    payout_currency TEXT,payout_amount REAL,
                     resolved_epoch REAL NOT NULL,UNIQUE(issuer,account_number))""")
                 connection.execute(
                     "INSERT INTO deposit_insurance_claims "
-                    "(issuer,user_id,account_number,covered_amount,uninsured_amount,resolved_epoch) "
-                    "VALUES ('Bank','u','acct',12,3,1)"
+                    "(issuer,user_id,account_number,covered_amount,uninsured_amount,"
+                    "payout_currency,payout_amount,resolved_epoch) "
+                    "VALUES ('Bank','u','acct',12,3,'NWX',12,1)"
                 )
             db = DatabaseManager()
             try:
                 columns = {row[1] for row in db.accounts.execute(
                     "PRAGMA table_info(deposit_insurance_claims)"
                 )}
-                self.assertTrue({'payout_currency', 'payout_amount'} <= columns)
+                self.assertTrue({'payout_currency', 'payout_amount',
+                                 'payout_amount_minor_units', 'payout_decimal_places'} <= columns)
                 claim = db.accounts.execute_one(
-                    "SELECT covered_amount,uninsured_amount,payout_currency,payout_amount "
+                    "SELECT covered_amount,uninsured_amount,payout_currency,payout_amount,"
+                    "payout_amount_minor_units,payout_decimal_places "
                     "FROM deposit_insurance_claims WHERE issuer='Bank'"
                 )
-                self.assertEqual(tuple(claim), (12, 3, None, None))
+                self.assertEqual(tuple(claim), (12, 3, 'NWX', 12.0, 12, 0))
                 with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
                     db.accounts.execute(
                         "UPDATE deposit_insurance_claims SET payout_currency='EUR' "

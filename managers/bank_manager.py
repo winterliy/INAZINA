@@ -398,7 +398,8 @@ class BankManager:
             with self.db.atomic(("users", "accounts", "assets")) as conn:
                 source = conn.execute(
                     "SELECT account_number,user_id,balance,balance_units,password,principal,created_at,"
-                    "early_withdrawal_rate,early_withdrawal_fee_percent,product_code,account_type,reference_price "
+                    "early_withdrawal_rate,early_withdrawal_fee_percent,product_code,account_type,"
+                    "reference_price,reference_price_minor_units "
                     "FROM accounts.accounts "
                     "WHERE account_number = ? AND user_id = ? AND account_type IN ('saving','currency_saving')",
                     (str(account_number), str(user_id)),
@@ -2106,7 +2107,7 @@ class BankManager:
             user_currency = CurrencyManager.home(conn, user_id)
             account_currency = str(account["quote_currency"] or "NWX").upper()
             covered_units = int(round(covered*SCALE))
-            payout_currency = payout_amount = None
+            payout_currency = payout_amount = payout_amount_minor_units = payout_decimal_places = None
             if covered:
                 payout_currency = user_currency
                 payout_units = (covered_units if account_currency == user_currency else
@@ -2115,6 +2116,11 @@ class BankManager:
                                 ))
                 payout_amount = round_currency(
                     conn, payout_units/SCALE, payout_currency
+                )
+                from functions.money import currency_precision, to_minor_units
+                payout_decimal_places = currency_precision(conn, payout_currency)
+                payout_amount_minor_units = to_minor_units(
+                    payout_amount, payout_decimal_places
                 )
                 CurrencyManager.change(conn, user_id, user_currency, payout_units)
                 CurrencyManager.treasury_pay(
@@ -2150,9 +2156,11 @@ class BankManager:
             conn.execute(
                 "INSERT OR IGNORE INTO accounts.deposit_insurance_claims "
                 "(issuer,user_id,account_number,covered_amount,uninsured_amount,"
-                "payout_currency,payout_amount,resolved_epoch) VALUES (?,?,?,?,?,?,?,?)",
+                "payout_currency,payout_amount,payout_amount_minor_units,"
+                "payout_decimal_places,resolved_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (issuer, user_id, account["account_number"], covered, uninsured,
-                 payout_currency, payout_amount, when),
+                 payout_currency, payout_amount, payout_amount_minor_units,
+                 payout_decimal_places, when),
             )
             covered_total += covered_base
             uninsured_total += uninsured_base
@@ -2302,12 +2310,15 @@ class BankManager:
             "INSERT OR IGNORE INTO accounts.collateral_liquidation_events "
             "(loan_id,collateral_id,asset_code,quantity,mark_price,execution_price,"
             "gross_proceeds,liquidation_cost,net_proceeds,book_filled_quantity,"
-            "backstop_quantity,liquidated_epoch,gross_proceeds_minor_units,"
+            "backstop_quantity,liquidated_epoch,mark_price_minor_units,"
+            "execution_price_minor_units,gross_proceeds_minor_units,"
             "liquidation_cost_minor_units,net_proceeds_minor_units) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (loan_id, row["collateral_id"], row["asset_code"], total_quantity,
              mark_price, weighted_price, gross, liquidation_cost, net,
              book_quantity, backstop_quantity, float(now),
+             to_minor_units(mark_price, currency_precision(conn, currency)),
+             to_minor_units(weighted_price, currency_precision(conn, currency)),
              to_minor_units(gross, currency_precision(conn, currency)),
              to_minor_units(liquidation_cost, currency_precision(conn, currency)),
              to_minor_units(net, currency_precision(conn, currency))),
@@ -2328,7 +2339,9 @@ class BankManager:
         currency = conn.execute(
             "SELECT quote_currency FROM accounts.loans WHERE loan_id=?", (loan_id,)
         ).fetchone()[0]
-        total = 0
+        from functions.money import from_minor_units, to_minor_units
+        places = currency_precision(conn, currency)
+        total_minor_units = 0
         marked = []
         for row in rows:
             quote = conn.execute(
@@ -2337,17 +2350,22 @@ class BankManager:
                 "UNION ALL SELECT unit_price FROM product.investment WHERE product_code=? LIMIT 1",
                 (row["asset_code"], row["asset_code"], row["asset_code"]),
             ).fetchone()
-            price = max(10**(-currency_precision(conn, currency)),
-                        float(quote["price"] if quote else row["last_price"]))
-            value = max(0, round_currency(conn,
-                price*float(row["quantity"])*(1-float(row["haircut"])), currency
+            raw_price = quote["price"] if quote else row["last_price"]
+            price_minor_units = max(1, to_minor_units(raw_price or 0, places))
+            price_decimal = from_minor_units(price_minor_units, places)
+            value_minor_units = max(0, to_minor_units(
+                price_decimal*Decimal(str(row["quantity"]))
+                *(Decimal(1)-Decimal(str(row["haircut"] or 0))), places,
             ))
-            total += value
+            value = from_minor_units(value_minor_units, places)
+            total_minor_units += value_minor_units
+            price = float(price_decimal)
             marked.append((row, price, value))
             conn.execute(
                 "UPDATE accounts.loan_collateral_assets SET last_price=?,last_value=? "
-                "WHERE collateral_id=?", (price, value, row["collateral_id"]),
+                "WHERE collateral_id=?", (price, float(value), row["collateral_id"]),
             )
+        total = float(from_minor_units(total_minor_units, places))
         ltv = float(outstanding_balance)/total if total > 0 else float("inf")
         margin_ltv = float(product["margin_call_ltv"] or .85)
         liquidation_ltv = max(margin_ltv, float(product["liquidation_ltv"] or 1))

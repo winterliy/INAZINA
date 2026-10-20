@@ -230,6 +230,38 @@ class FinancialTests(unittest.TestCase):
         self.assertEqual(r['currency'],'USD');self.assertEqual(r['income']['profit'],125)
         with self.assertRaises(ValueError):self.fin.manual('admin','CO','bad',[{'account':'receivables','amount':'0.001'},{'account':'revenue','amount':'-0.001'}])
 
+    def test_tax_receipt_minor_units_and_reconciliation(self):
+        from managers.accounting_journal import AccountingJournal
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('USD','Dollar',1300,2)"
+        )
+        self.db.tax.execute(
+            "INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount,currency_code) "
+            "VALUES ('citizen','fixture',1.23,0.12,1.11,'USD')"
+        )
+        row = self.db.tax.execute_one(
+            "SELECT gross_amount_minor_units,tax_amount_minor_units,"
+            "net_amount_minor_units FROM tax_transactions ORDER BY transaction_id DESC LIMIT 1"
+        )
+        self.assertEqual(tuple(row), (123, 12, 111))
+        with self.db.atomic() as conn:
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item['ledger_scope'] == 'tax_transactions')
+            self.assertEqual(check['status'], 'matched')
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "tax transaction currency minor units"):
+                conn.execute("UPDATE tax_transactions SET tax_amount_minor_units=13 "
+                             "WHERE source='fixture'")
+            conn.execute("DROP TRIGGER trg_tax_transactions_minor_units_guard_update")
+            conn.execute("UPDATE tax_transactions SET tax_amount_minor_units=13 "
+                         "WHERE source='fixture'")
+            self.assertEqual(conn.execute(
+                "SELECT tax_amount FROM tax_transactions WHERE source='fixture'"
+            ).fetchone()[0], 0.13)
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item['ledger_scope'] == 'tax_transactions')
+            self.assertEqual(check['status'], 'mismatch')
+
     def test_cumulative_preferred_liability(self):
         self.setup_company()
         self.db.companies.create_company('PR','우선주','게임',1000,10,100,'admin','INZ')

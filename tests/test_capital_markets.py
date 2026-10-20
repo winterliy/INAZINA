@@ -148,6 +148,11 @@ class CapitalMarketsTests(unittest.TestCase):
                     deposit_amount=0, maturity_days=1, interest_rate=0, issuer='Inazina')
         self.assertTrue(self.bot.bank_mgr.open_account('citizen', 'IMA1', 'pass1234', 100000)[0])
         number = self.db.accounts.execute_one("SELECT account_number FROM accounts WHERE product_code='IMA1'")[0]
+        reference = self.db.accounts.execute_one(
+            "SELECT reference_price,reference_price_minor_units FROM accounts WHERE account_number=?",
+            (number,),
+        )
+        self.assertEqual(reference['reference_price_minor_units'], reference['reference_price'])
         self.db.companies.execute("UPDATE company SET share_price=share_price*2 WHERE company_code='INZST001'")
         self.db.accounts.execute("UPDATE accounts SET created_at=datetime('now','-2 days') WHERE account_number=?", (number,))
         cash = self.db.users.get_user('citizen')['cash']
@@ -159,6 +164,11 @@ class CapitalMarketsTests(unittest.TestCase):
         # The head office paid the excess and fell into deficit: administrators are warned once.
         alerts = self.bot.capital_markets.bank_deficit_alerts()
         self.assertEqual([alert['issuer'] for alert in alerts], ['Inazina'])
+        self.assertEqual(alerts[0]['cash_minor_units'], alerts[0]['cash'])  # NWX has zero decimals.
+        saved_alert = self.db.currency.execute_one(
+            "SELECT cash,cash_minor_units,cash_decimal_places,cash_currency_code "
+            "FROM bank_deficit_alerts WHERE issuer='Inazina'")
+        self.assertEqual(tuple(saved_alert), (alerts[0]['cash'], alerts[0]['cash_minor_units'], 0, 'NWX'))
         self.assertEqual(self.bot.capital_markets.bank_deficit_alerts(), [])
         with self.db.atomic() as conn:
             self.assertEqual(len(CapitalMarketsManager.bank_deficits(conn)), 1)

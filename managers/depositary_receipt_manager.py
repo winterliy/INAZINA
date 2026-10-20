@@ -1129,6 +1129,7 @@ class DepositaryReceiptManager:
             return False, "❌ 중복 실행 방지 참조값을 확인해주세요."
 
         from managers.bank_journal import BankJournal
+        from functions.money import currency_precision, from_minor_units, round_currency, to_minor_units
         try:
             when = BankJournal.validate_epoch(now)
         except (TypeError, ValueError, OverflowError):
@@ -1299,7 +1300,6 @@ class DepositaryReceiptManager:
                             break
                     if remaining:
                         raise RuntimeError("예약 주문을 제외한 원주 수량이 부족해 전환을 취소했습니다.")
-                    from functions.money import round_currency
                     from managers.currency_manager import CurrencyManager
                     underlying_cost = round_currency(conn, total_cost / shares, underlying["quote_currency"])
                     fx = CurrencyManager.quote(conn, underlying["quote_currency"], program["dr_currency"])
@@ -1333,9 +1333,10 @@ class DepositaryReceiptManager:
                         "SELECT COALESCE(SUM(CASE WHEN movement_type='issue' THEN underlying_quantity "
                         "ELSE -underlying_quantity END),0) AS shares, "
                         "COALESCE(SUM(CASE WHEN movement_type='issue' THEN underlying_quantity*"
-                        "COALESCE(custody_underlying_average_cost,underlying_average_cost) "
-                        "ELSE -underlying_quantity*COALESCE(custody_underlying_average_cost,"
-                        "underlying_average_cost) END),0) AS cost "
+                        "COALESCE(custody_underlying_average_cost_minor_units,"
+                        "underlying_average_cost_minor_units) ELSE -underlying_quantity*"
+                        "COALESCE(custody_underlying_average_cost_minor_units,"
+                        "underlying_average_cost_minor_units) END),0) AS cost_minor_units "
                         "FROM assets.depositary_receipt_movements WHERE dr_code=?",
                         (code,),
                     ).fetchone()
@@ -1377,9 +1378,11 @@ class DepositaryReceiptManager:
                             break
                     if remaining:
                         raise RuntimeError("DR 보유 수량이 부족해 상환을 취소했습니다.")
-                    from functions.money import round_currency
                     underlying_average_cost = round_currency(
-                        conn, Decimal(str(custody["cost"] or 0)) / Decimal(int(custody["shares"])),
+                        conn, Decimal(str(from_minor_units(
+                            int(custody["cost_minor_units"] or 0),
+                            currency_precision(conn, underlying["quote_currency"]),
+                        ))) / Decimal(int(custody["shares"])),
                         underlying["quote_currency"],
                     )
                     from managers.currency_manager import CurrencyManager
@@ -1398,12 +1401,26 @@ class DepositaryReceiptManager:
                     "INSERT INTO assets.depositary_receipt_movements(reference_key,dr_code,user_id,"
                     "movement_type,dr_quantity,underlying_quantity,underlying_average_cost,recorded_epoch,"
                     "holder_underlying_average_cost,holder_underlying_currency,"
-                    "custody_underlying_average_cost,custody_underlying_currency) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "custody_underlying_average_cost,custody_underlying_currency,"
+                    "underlying_average_cost_minor_units,underlying_average_cost_decimal_places,"
+                    "underlying_average_cost_currency,holder_underlying_average_cost_minor_units,"
+                    "holder_underlying_average_cost_decimal_places,custody_underlying_average_cost_minor_units,"
+                    "custody_underlying_average_cost_decimal_places) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (reference_key, code, user, action, quantity, shares,
                      underlying_average_cost, when, holder_underlying_average_cost,
                      underlying["quote_currency"], underlying_average_cost,
-                     underlying["quote_currency"]),
+                     underlying["quote_currency"],
+                     to_minor_units(underlying_average_cost, currency_precision(
+                         conn, underlying["quote_currency"])),
+                     currency_precision(conn, underlying["quote_currency"]),
+                     underlying["quote_currency"],
+                     to_minor_units(holder_underlying_average_cost, currency_precision(
+                         conn, underlying["quote_currency"])),
+                     currency_precision(conn, underlying["quote_currency"]),
+                     to_minor_units(underlying_average_cost, currency_precision(
+                         conn, underlying["quote_currency"])),
+                     currency_precision(conn, underlying["quote_currency"])),
                 )
                 fee = self._charge_conversion_fee(
                     conn, reference_key=reference_key, dr_code=code, user_id=user,

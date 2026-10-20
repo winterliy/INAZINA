@@ -1,10 +1,16 @@
 """Foreign-currency accounts behave like savings: interest, opening, closing and storage."""
 import unittest
+from decimal import Decimal
 
 import test_inazina as fixtures
 from managers.interest_manager import InterestManager
 from managers.currency_manager import SCALE, CurrencyManager
 from managers.bank_manager import BankManager
+from functions.interest_calc import (
+    calculate_compound_interest_decimal,
+    calculate_simple_interest_decimal,
+    year_fraction_decimal,
+)
 
 DAY = 86400
 
@@ -13,6 +19,18 @@ class FxInterestTests(unittest.TestCase):
     setUp = fixtures.InazinaTests.setUp
     tearDown = fixtures.InazinaTests.tearDown
     seed = fixtures.InazinaTests.seed
+
+    def test_interest_calculation_keeps_monetary_multiplication_in_decimal(self):
+        simple = calculate_simple_interest_decimal("100.01", "10", 365 * DAY)
+        compound = calculate_compound_interest_decimal(
+            "100", "10", 2, 365 * DAY / 2
+        )
+        self.assertIsInstance(simple, Decimal)
+        self.assertEqual(simple, Decimal("10.001"))
+        self.assertEqual(compound, Decimal("10.2500"))
+        self.assertEqual(year_fraction_decimal("0.1", "ACT/365"),
+                         Decimal("0.1") / Decimal(365 * DAY))
+        self.assertEqual(year_fraction_decimal(86400, "ACT/360"), Decimal(1) / 360)
 
     def open_usd(self, rate):
         self.seed()

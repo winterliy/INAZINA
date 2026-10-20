@@ -1,13 +1,19 @@
 from datetime import datetime, timezone
 from contextlib import nullcontext
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 import math
 import time
 from database import DatabaseManager
 from database.user_db import TREASURY_USER_ID
-from functions.interest_calc import calculate_compound_interest, calculate_simple_interest
+from functions.interest_calc import (
+    calculate_compound_interest_decimal,
+    calculate_simple_interest_decimal,
+)
 from functions.tax_calc import calculate_income_tax
-from functions.money import round_money, round_currency, currency_precision
+from functions.money import (
+    from_minor_units, round_money, round_currency, currency_precision,
+    to_minor_units,
+)
 from managers.bank_journal import BankJournal
 from managers.bank_manager import BankManager
 from managers.credit_score_manager import CreditScoreManager
@@ -54,11 +60,11 @@ class InterestManager:
         if principal <= 0 or periods <= 0:
             return 0.0
         try:
-            return calculate_compound_interest(
+            return calculate_compound_interest_decimal(
                 principal, annual_rate_percent, periods, cycle_seconds,
                 convention, start_epoch
             )
-        except (OverflowError, ValueError):
+        except (OverflowError, ValueError, DecimalException):
             return None
 
     @staticmethod
@@ -166,6 +172,13 @@ class InterestManager:
 
     @classmethod
     def settle_loan_rate_boundary(cls, conn, loan, product, now):
+        loan_id = loan["loan_id"]
+        current = conn.execute(
+            "SELECT * FROM loans WHERE loan_id=?", (loan_id,)
+        ).fetchone()
+        if not current or current["status"] != "active":
+            return
+        loan = current
         last = cls._number(loan['last_payment_epoch'], now)
         end = min(now, float(loan['maturity_epoch'])) if loan['maturity_epoch'] is not None else now
         elapsed = max(0, end-last)
@@ -174,21 +187,45 @@ class InterestManager:
         from functions.money import (currency_precision, from_subminor_units,
                                      to_subminor_units)
         places = currency_precision(conn, loan["quote_currency"])
-        accrued = (float(from_subminor_units(
+        accrued = (from_subminor_units(
             loan["interest_remainder_subminor_units"], places
-        )) if "interest_remainder_subminor_units" in loan.keys()
-            else float(loan['interest_remainder'] or 0))
+        ) if "interest_remainder_subminor_units" in loan.keys()
+            else Decimal(str(loan['interest_remainder'] or 0)))
         if elapsed and rate:
-            accrued += float(loan['outstanding_balance'])*math.expm1(elapsed/cycle*math.log1p(rate/100*cycle/cls.YEAR_SECONDS))
-        whole = round_currency(conn, accrued, loan['quote_currency'])
-        remainder = accrued-whole
+            principal_minor = (int(loan["outstanding_balance_minor_units"] or 0)
+                               if "outstanding_balance_minor_units" in loan.keys()
+                               else to_minor_units(loan['outstanding_balance'], places))
+            principal = from_minor_units(principal_minor, places)
+            periodic_rate = (Decimal(str(rate)) / Decimal(100)
+                             * Decimal(str(cycle)) / Decimal(cls.YEAR_SECONDS))
+            elapsed_periods = Decimal(str(elapsed)) / Decimal(str(cycle))
+            accrued += principal * ((Decimal(1) + periodic_rate) ** elapsed_periods - 1)
+        whole_minor = to_minor_units(accrued, places)
+        whole = float(from_minor_units(whole_minor, places))
+        remainder = accrued-from_minor_units(whole_minor, places)
         remainder_subunits = to_subminor_units(remainder, places)
-        conn.execute('UPDATE loans SET outstanding_balance=outstanding_balance+?,'
+        conn.execute('UPDATE loans SET outstanding_balance_minor_units='
+                     'outstanding_balance_minor_units+?,'
                      'interest_remainder=?,interest_remainder_subminor_units=?,last_payment_epoch=? '
                      'WHERE loan_id=?',
-            (whole, float(from_subminor_units(remainder_subunits, places)), remainder_subunits,
+            (whole_minor, float(from_subminor_units(remainder_subunits, places)), remainder_subunits,
              max(last, now), loan['loan_id']))
         cls._log_company_interest(conn, loan['user_id'], 'interest_expense', whole, 0, loan['quote_currency'], product['issuer'])
+        if whole_minor > 0:
+            reference = f"loan:{loan['loan_id']}:{int(last)}:{int(max(last, now))}"
+            RateManager.record_institution_result(
+                conn, product["issuer"], whole, "loan_interest", reference,
+                now=max(last, now), currency_code=loan["quote_currency"],
+            )
+            from managers.bank_journal import BankJournal
+            BankJournal.post(
+                conn, product["issuer"], "loan_interest", reference,
+                loan["quote_currency"],
+                [("loans_receivable", "debit", whole),
+                 ("interest_income", "credit", whole)],
+                description=f"Rate-boundary loan interest for {loan['loan_id']}",
+                now=max(last, now),
+            )
 
     @staticmethod
     def _log_company_interest(conn, user_id, kind, gross, tax, currency, issuer):
@@ -280,7 +317,7 @@ class InterestManager:
                          product["day_count_convention"],
                          paid_until-periods*cycle)
                      if compound else
-                     calculate_simple_interest(
+                     calculate_simple_interest_decimal(
                          principal, segment_rate, periods*cycle,
                          product["day_count_convention"],
                          paid_until-periods*cycle))
@@ -415,7 +452,8 @@ class InterestManager:
                     account_count += int(credited)
 
                 loans = conn.execute(
-                    "SELECT loan_id,user_id,product_code,principal,outstanding_balance,created_at,last_payment_epoch,status,"
+                    "SELECT loan_id,user_id,product_code,principal,outstanding_balance,"
+                    "outstanding_balance_minor_units,created_at,last_payment_epoch,status,"
                     "contract_rate,rate_type,rate_nationality,base_rate_spread,rate_floor,rate_cap,"
                     "repricing_cycle_seconds,next_repricing_epoch,benchmark_key,benchmark_tenor_days,"
                     "repricing_lag_seconds,maturity_epoch,overdue_since_epoch,overdue_last_epoch,"
@@ -456,7 +494,11 @@ class InterestManager:
                         continue
                     rate = self._number(loan["contract_rate"], self._number(product["interest_rate"]))
                     cycle = self._number(product["interest_cycle"])
-                    balance = self._number(loan["outstanding_balance"], 0.0)
+                    places = currency_precision(conn, loan["quote_currency"])
+                    balance_minor = (int(loan["outstanding_balance_minor_units"] or 0)
+                                     if "outstanding_balance_minor_units" in loan.keys()
+                                     else to_minor_units(loan["outstanding_balance"] or 0, places))
+                    balance = float(from_minor_units(balance_minor, places))
                     last = self._number(loan["last_payment_epoch"])
                     created = self._utc_epoch(loan["created_at"])
                     if rate is None or cycle is None or cycle <= 0 or balance is None or last is None or rate < 0:
@@ -469,6 +511,8 @@ class InterestManager:
                     balance, _ltv, _liquidated = BankManager.revalue_asset_collateral(
                         conn, loan["loan_id"], balance, product
                     )
+                    balance_minor = to_minor_units(balance, places)
+                    balance = float(from_minor_units(balance_minor, places))
                     if balance <= 0:
                         BankManager._release_collateral(
                             conn, loan["loan_id"], str(loan["user_id"])
@@ -492,7 +536,8 @@ class InterestManager:
                     charged = False
                     for periods, segment_rate, paid_until in segments:
                         interest = self._period_interest(
-                            balance, segment_rate, cycle, periods,
+                            from_minor_units(balance_minor, places),
+                            segment_rate, cycle, periods,
                             loan["day_count_convention"],
                             paid_until-periods*cycle
                         )
@@ -502,9 +547,8 @@ class InterestManager:
                                 (now, loan["loan_id"]),
                             )
                             break
-                        whole_interest = round_currency(
-                            conn, interest, loan["quote_currency"]
-                        )
+                        interest_minor = to_minor_units(interest, places)
+                        whole_interest = float(from_minor_units(interest_minor, places))
                         if whole_interest <= 0:
                             if loan["rate_type"] == "floating":
                                 conn.execute(
@@ -512,10 +556,12 @@ class InterestManager:
                                     (paid_until, loan["loan_id"]),
                                 )
                             continue
+                        balance_minor += interest_minor
+                        balance = float(from_minor_units(balance_minor, places))
                         conn.execute(
-                            "UPDATE accounts.loans SET outstanding_balance=outstanding_balance+?,"
+                            "UPDATE accounts.loans SET outstanding_balance_minor_units=?,"
                             "last_payment_epoch=? WHERE loan_id=? AND status='active'",
-                            (whole_interest, paid_until, loan["loan_id"]),
+                            (balance_minor, paid_until, loan["loan_id"]),
                         )
                         self._log_company_interest(conn, loan["user_id"], "interest_expense", whole_interest, 0,
                                                    loan["quote_currency"], product["issuer"])
@@ -534,7 +580,6 @@ class InterestManager:
                             description=f"Loan interest for {loan['loan_id']}",
                             now=paid_until,
                         )
-                        balance += whole_interest
                         charged = True
                     if loan["rate_type"] == "floating":
                         recast_count = 0
@@ -598,15 +643,23 @@ class InterestManager:
         if maturity is None or now <= maturity:
             return
         fresh = conn.execute(
-            "SELECT outstanding_balance,status,overdue_last_epoch,overdue_interest_remainder,"
+            "SELECT outstanding_balance,outstanding_balance_minor_units,status,"
+            "overdue_last_epoch,overdue_interest_remainder,"
             "overdue_interest_remainder_subminor_units,"
             "collection_status,collateral_amount,collateral_released,collateral_seized,"
             "provisioned_loss,ecl_allowance "
             "FROM accounts.loans WHERE loan_id=?", (loan["loan_id"],)
         ).fetchone()
-        if not fresh or float(fresh["outstanding_balance"] or 0) <= 0:
+        if not fresh:
             return
-        balance = float(fresh["outstanding_balance"])
+        from functions.money import from_subminor_units, to_subminor_units
+        places = currency_precision(conn, loan["quote_currency"])
+        balance_minor = (int(fresh["outstanding_balance_minor_units"] or 0)
+                         if "outstanding_balance_minor_units" in fresh.keys()
+                         else to_minor_units(fresh["outstanding_balance"] or 0, places))
+        if balance_minor <= 0:
+            return
+        balance = float(from_minor_units(balance_minor, places))
         cursor = max(maturity, cls._number(fresh["overdue_last_epoch"], maturity))
         legal = RateManager.from_connection(
             conn, "legal_max_rate", loan["rate_nationality"],
@@ -614,23 +667,22 @@ class InterestManager:
         )
         overdue_rate = min(legal, max(0.0, float(loan["contract_rate"] or 0)
                                      + float(product["delinquency_spread"] or 0)))
-        from functions.money import currency_precision, from_subminor_units, to_subminor_units
-        places = currency_precision(conn, loan["quote_currency"])
-        fractional = (float(from_subminor_units(
+        fractional = (from_subminor_units(
             fresh["overdue_interest_remainder_subminor_units"], places
-        )) if "overdue_interest_remainder_subminor_units" in fresh.keys()
-            else float(fresh["overdue_interest_remainder"] or 0))
-        raw_interest = calculate_simple_interest(
-            balance, overdue_rate, max(0, now-cursor),
+        ) if "overdue_interest_remainder_subminor_units" in fresh.keys()
+            else Decimal(str(fresh["overdue_interest_remainder"] or 0)))
+        raw_interest = calculate_simple_interest_decimal(
+            from_minor_units(balance_minor, places), overdue_rate, max(0, now-cursor),
             loan["day_count_convention"], cursor
-        )+fractional
-        whole_interest = round_currency(
-            conn, raw_interest, loan["quote_currency"]
-        )
-        remainder = raw_interest-whole_interest
+        ) + Decimal(str(fractional))
+        interest_minor = to_minor_units(raw_interest, places)
+        whole_interest_decimal = from_minor_units(interest_minor, places)
+        whole_interest = float(whole_interest_decimal)
+        remainder = raw_interest-whole_interest_decimal
         remainder_subunits = to_subminor_units(remainder, places)
         if whole_interest:
-            balance += whole_interest
+            balance_minor += interest_minor
+            balance = float(from_minor_units(balance_minor, places))
             cls._log_company_interest(conn, loan["user_id"], "overdue_interest", whole_interest, 0,
                                       loan["quote_currency"], product["issuer"])
             RateManager.record_institution_result(
@@ -736,13 +788,15 @@ class InterestManager:
                 provisioned = balance
                 ecl_allowance = 0.0
         conn.execute(
-            "UPDATE accounts.loans SET outstanding_balance=?,overdue_since_epoch=COALESCE("
+            "UPDATE accounts.loans SET outstanding_balance_minor_units=?,"
+            "overdue_since_epoch=COALESCE("
             "overdue_since_epoch,?),overdue_last_epoch=?,overdue_interest_remainder=?,"
             "overdue_interest_remainder_subminor_units=?,"
             "collection_status=?,accelerated_epoch=?,defaulted_epoch=?,status=?,"
             "collateral_released=?,collateral_seized=?,provisioned_loss=?,ecl_allowance=? "
             "WHERE loan_id=?",
-            (balance, maturity, now, float(from_subminor_units(remainder_subunits, places)),
+            (to_minor_units(balance, places), maturity, now,
+             float(from_subminor_units(remainder_subunits, places)),
              remainder_subunits, state, accelerated_epoch, defaulted_epoch,
              status, released, seized, provisioned, ecl_allowance, loan["loan_id"]),
         )

@@ -642,6 +642,12 @@ class DefaultedLoanEclTests(unittest.TestCase):
         with self.db.atomic() as conn:
             findings = BankJournal.reconcile_collateral_liquidations(conn, "Bank")
         self.assertEqual(findings[0]["status"], "matched")
+        price_units = self.db.accounts.execute_one(
+            "SELECT mark_price_minor_units,execution_price_minor_units "
+            "FROM collateral_liquidation_events WHERE collateral_id=?", (collateral_id,)
+        )
+        self.assertEqual(tuple(price_units), (100, 100))
+        self.assertEqual(findings[0]["price_mirror_mismatches"], [])
         with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
             self.db.accounts.execute(
                 "UPDATE collateral_liquidation_events SET net_proceeds=91 WHERE collateral_id=?",

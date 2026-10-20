@@ -75,6 +75,12 @@ class DrDeviationMonitorTests(unittest.TestCase):
                          ["discount", "discount", "normal", "normal", "premium", "premium"])
         self.assertEqual([row["to_state"] for row in history["events"]],
                          ["discount", "normal", "premium"])
+        self.assertEqual([row["dr_price_minor_units"] for row in history["samples"]],
+                         [88, 88, 105, 105, 111, 111])
+        self.assertEqual([row["reference_value_minor_units"] for row in history["samples"]],
+                         [100, 100, 100, 100, 100, 100])
+        self.assertEqual([row["dr_price_minor_units"] for row in history["events"]],
+                         [88, 105, 111])
 
     def test_invalid_sample_epoch_does_not_create_observation_or_alert(self):
         before_samples = self.db.assets.execute_one(

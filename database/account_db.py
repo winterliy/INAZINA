@@ -68,6 +68,7 @@ class AccountDB(DBManager):
             "insurance_paid": "INTEGER NOT NULL DEFAULT 0",
             "uninsured_claim": "INTEGER NOT NULL DEFAULT 0",
             "reference_price": "REAL",  # IMA: reference product price at opening
+            "reference_price_minor_units": "INTEGER",
             "fee_paid_epoch": "REAL",  # wrap: management fee charged up to here
             "managed_by": "TEXT",  # wrap: manager allowed to trade this account
         }
@@ -582,6 +583,8 @@ class AccountDB(DBManager):
             uninsured_amount INTEGER NOT NULL DEFAULT 0 CHECK(uninsured_amount >= 0),
             payout_currency TEXT,
             payout_amount REAL CHECK(payout_amount IS NULL OR payout_amount >= 0),
+            payout_amount_minor_units INTEGER CHECK(payout_amount_minor_units IS NULL OR payout_amount_minor_units >= 0),
+            payout_decimal_places INTEGER CHECK(payout_decimal_places IS NULL OR payout_decimal_places BETWEEN 0 AND 6),
             resolved_epoch REAL NOT NULL,
             UNIQUE(issuer,account_number)
         )""")
@@ -591,6 +594,8 @@ class AccountDB(DBManager):
         for column, declaration in (
             ("payout_currency", "TEXT"),
             ("payout_amount", "REAL CHECK(payout_amount IS NULL OR payout_amount >= 0)"),
+            ("payout_amount_minor_units", "INTEGER CHECK(payout_amount_minor_units IS NULL OR payout_amount_minor_units >= 0)"),
+            ("payout_decimal_places", "INTEGER CHECK(payout_decimal_places IS NULL OR payout_decimal_places BETWEEN 0 AND 6)"),
         ):
             if column not in claim_columns:
                 self.execute(
