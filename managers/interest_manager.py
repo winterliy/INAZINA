@@ -372,9 +372,8 @@ class InterestManager:
                     now=paid_until,
                 )
             balance += net
-            conn.execute('INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount,currency_code) VALUES (?,?,?,?,?,?)',
-                (account['user_id'], 'saving_interest', accounting_gross, tax, net,
-                 account['quote_currency']))
+            tax_wallet_watermark = None
+            tax_treasury_id = None
             company_kind = "interest_income" if accounting_gross >= 0 else "interest_expense"
             cls._log_company_interest(
                 conn, account['user_id'], company_kind, abs(accounting_gross), tax,
@@ -388,6 +387,10 @@ class InterestManager:
                 treasury_units = CurrencyManager.convert(
                     conn, tax_units, account["quote_currency"], home_currency
                 )
+                tax_treasury_id = treasury_id
+                tax_wallet_watermark = int(conn.execute(
+                    "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
+                ).fetchone()[0])
                 treasury = conn.execute(
                     "UPDATE users.users SET cash=cash+? WHERE user_id=?",
                     (treasury_units//SCALE, treasury_id),
@@ -402,6 +405,18 @@ class InterestManager:
                     account["quote_currency"], tax, home_currency, settlement_amount,
                     description=f"Withholding tax remittance for {account['account_number']}",
                     now=paid_until,
+                )
+            tax_transaction = conn.execute(
+                'INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount,currency_code) '
+                'VALUES (?,?,?,?,?,?)',
+                (account['user_id'], 'saving_interest', accounting_gross, tax, net,
+                 account['quote_currency']),
+            )
+            if tax > 0:
+                from managers.accounting_journal import AccountingJournal
+                AccountingJournal.link_tax_transaction_wallet_entries(
+                    conn, tax_transaction.lastrowid, tax_wallet_watermark,
+                    tax_treasury_id,
                 )
             total += net
             credited = True

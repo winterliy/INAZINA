@@ -44,6 +44,32 @@ class FundAccountingTests(unittest.TestCase):
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.products.execute("DELETE FROM fund_cash_ledger WHERE product_code='FD'")
 
+    def test_fund_cash_common_journal_reconciles_and_detects_missing_posting(self):
+        from database.fund_accounting import change_cash
+        from managers.accounting_journal import AccountingJournal
+        fund = self.fund()
+        self.ok(fund.activate('admin', 'FD'))
+        with self.db.atomic() as conn:
+            change_cash(conn, PREFIX+'FD', 25, 'fixture', 'fund-journal-test')
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item['ledger_scope'] == 'fund')
+            self.assertEqual(check['status'], 'matched', check)
+            self.assertEqual(AccountingJournal.audit_unbalanced(conn, 'fund'), [])
+        self.db.currency.execute("DROP TRIGGER trg_fund_cash_common_post")
+        with self.db.atomic() as conn:
+            change_cash(conn, PREFIX+'FD', 5, 'fixture', 'fund-journal-missing')
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item['ledger_scope'] == 'fund')
+            self.assertEqual(check['status'], 'mismatch', check)
+            self.assertTrue(any(gap['status'] == 'missing_or_mismatched_posting'
+                                for gap in check['posting_gaps']), check)
+        self.db.currency._ensure_fund_cash_common_journal()
+        self.db.currency._ensure_fund_cash_common_journal()
+        with self.db.atomic() as conn:
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item['ledger_scope'] == 'fund')
+            self.assertEqual(check['status'], 'matched', check)
+
     def test_buy_hold_sell_redeem_real_nav_and_cash_conservation(self):
         fund = self.fund()
         initial = sum(r[0] for r in self.db.users.execute('SELECT cash FROM users'))
@@ -117,6 +143,7 @@ class FundAccountingTests(unittest.TestCase):
         self.assertTrue(fund.snapshot('FD')['ledgerBalanced'])
 
     def test_dividend_is_received_by_fund_not_manager(self):
+        from managers.accounting_journal import AccountingJournal
         fund = self.fund()
         self.ok(self.users.buy_asset('alice', 'FD', 10))
         self.ok(fund.order('admin', 'FD', 'CO', 'buy', 6, 100))
@@ -125,6 +152,9 @@ class FundAccountingTests(unittest.TestCase):
         self.assertEqual(fund.snapshot('FD')['availableCash'], 430)
         self.assertEqual(self.db.users.get_user('admin')['cash'], admin_cash)
         self.assertEqual(fund.snapshot('FD')['nav'], 103)
+        with self.db.readonly() as conn:
+            settlement = AccountingJournal.reconcile_dividend_payment_settlements(conn)
+        self.assertEqual(settlement['status'], 'matched', settlement)
 
     def test_all_asset_classes_are_bought_with_fund_cash(self):
         self.issue('CB', 'corporate_bond', price=100, underlying='CO', days=30)
@@ -184,6 +214,7 @@ class FundAccountingTests(unittest.TestCase):
         )], holding_before)
 
     def test_treasury_bond_sale_and_maturity_credit_fund(self):
+        from managers.accounting_journal import AccountingJournal
         self.ok(self.users.bond_manager.issue('TB', 'Treasury', 10, 365, 100, 10000, 'EX'))
         fund = self.fund(components={'TB': 1}, category='bond')
         self.ok(self.users.buy_asset('alice', 'FD', 10))
@@ -196,6 +227,12 @@ class FundAccountingTests(unittest.TestCase):
         self.users.bond_manager.redeem_matured(user_id=PREFIX+'FD')
         self.assertEqual(fund.snapshot('FD')['availableCash'], 1040)
         self.assertTrue(fund.snapshot('FD')['ledgerBalanced'])
+        with self.db.readonly() as conn:
+            bond_check = AccountingJournal.reconcile_treasury_bond_cash_events(conn)
+            link = conn.execute("SELECT fund_entry_id FROM treasury_bond_cash_fund_links "
+                                "WHERE event_key LIKE 'redemption:%'").fetchone()
+        self.assertEqual(bond_check['status'], 'matched', bond_check)
+        self.assertIsNotNone(link)
 
     def test_fund_distribution_comes_from_fund_not_treasury(self):
         fund = self.fund()

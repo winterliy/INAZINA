@@ -335,6 +335,12 @@ class TreasuryBondManager:
                     gross_payment = from_minor_units(gross_payment_units, places)
                     net_payment = from_minor_units(net_payment_units, places)
                     _treasury_move(conn, holding["product_code"], -gross_payment)
+                    wallet_watermark = int(conn.execute(
+                        "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
+                    ).fetchone()[0])
+                    fund_watermark = int(conn.execute(
+                        "SELECT COALESCE(MAX(entry_id),0) FROM fund_cash_ledger"
+                    ).fetchone()[0])
                     if fund:
                         change_cash(conn, holding['user_id'], net_payment, 'bond_redemption', holding['product_code'])
                     elif currency == 'NWX' or currency == CurrencyManager.home(conn, holding['user_id']):
@@ -365,6 +371,7 @@ class TreasuryBondManager:
                         principal_minor_units=principal_units,
                         interest_minor_units=interest_units, tax_minor_units=tax_units,
                         net_minor_units=net_payment_units, recorded_epoch=now,
+                        wallet_watermark=wallet_watermark, fund_watermark=fund_watermark,
                     )
                     redeemed.append({
                         "user_id": str(holding["user_id"]),
@@ -438,6 +445,12 @@ class TreasuryBondManager:
                 )
                 tax_units = to_minor_units(tax, places)
                 _treasury_move(conn, holding["product_code"], -coupon)
+                wallet_watermark = int(conn.execute(
+                    "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
+                ).fetchone()[0])
+                fund_watermark = int(conn.execute(
+                    "SELECT COALESCE(MAX(entry_id),0) FROM fund_cash_ledger"
+                ).fetchone()[0])
                 if fund:
                     change_cash(conn, holding['user_id'],
                                 float(from_minor_units(coupon_units-tax_units, places)),
@@ -467,6 +480,7 @@ class TreasuryBondManager:
                         principal_minor_units=0, interest_minor_units=coupon_units,
                         tax_minor_units=tax_units,
                         net_minor_units=coupon_units-tax_units, recorded_epoch=now,
+                        wallet_watermark=wallet_watermark, fund_watermark=fund_watermark,
                     )
                 paid.append({"user_id": str(holding["user_id"]),
                              "product_code": holding["product_code"],

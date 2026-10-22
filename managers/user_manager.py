@@ -222,9 +222,14 @@ class UserManager:
         tax_amount = calculate_income_tax(gross, rate / 100.0, places)
         tax_amount = round_currency(conn, tax_amount, tax_currency)
         net_income = max(0, round_currency(conn, gross - tax_amount, tax_currency))
+        treasury_id = None
+        wallet_watermark = None
         if tax_amount > 0:
             from managers.currency_manager import CurrencyManager
             treasury_id = CurrencyManager.user_treasury_id(conn, user_id)
+            wallet_watermark = int(conn.execute(
+                "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
+            ).fetchone()[0])
             if income_currency_was_supplied and tax_currency != CurrencyManager.home(conn, user_id):
                 from managers.currency_manager import SCALE
                 CurrencyManager.treasury_receive(
@@ -238,11 +243,16 @@ class UserManager:
                 )
                 if treasury.rowcount != 1:
                     raise RuntimeError("국고 계정을 찾을 수 없어 세금 처리를 취소했습니다.")
-        conn.execute(
+        inserted = conn.execute(
             "INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount,currency_code) "
             "VALUES (?,?,?,?,?,?)",
             (str(user_id), str(source), gross, tax_amount, net_income, tax_currency),
         )
+        if tax_amount > 0:
+            from managers.accounting_journal import AccountingJournal
+            AccountingJournal.link_tax_transaction_wallet_entries(
+                conn, inserted.lastrowid, wallet_watermark, treasury_id
+            )
         return tax_amount
 
     @staticmethod

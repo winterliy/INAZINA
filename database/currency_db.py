@@ -695,6 +695,96 @@ class CurrencyDB(DBManager):
                                      "account_number", "NEW.quote_currency"))
         self._ensure_minor_amount_snapshots(snapshot_direct, derived)
         self._ensure_customer_wallet_journal()
+        self._ensure_fund_cash_common_journal()
+        with self.lock, self.conn:
+            self._ensure_tax_transaction_wallet_links()
+
+    def _ensure_fund_cash_common_journal(self):
+        """Mirror the NWX-only fund cash subledger into the common journal."""
+        self.execute("""INSERT OR IGNORE INTO accounting_account_mappings
+            (ledger_scope,local_code,common_code) VALUES
+            ('fund','fund_cash','fund_cash'),
+            ('fund','fund_cash_clearing','fund_cash_clearing')""")
+        self.execute("""INSERT OR IGNORE INTO accounting_entries
+            (ledger_scope,entity_type,entity_id,source_key,currency_code,decimal_places,
+             recorded_epoch,description)
+            SELECT 'fund','fund_cash',product_code,'fund-cash:'||entry_id,
+                'NWX',0,recorded_epoch,event
+            FROM fund_cash_ledger ORDER BY entry_id""")
+        self.execute("""INSERT INTO accounting_lines(entry_id,account_code,debit_units,credit_units)
+            SELECT e.entry_id,'fund_cash',
+                CASE WHEN f.amount>0 THEN f.amount ELSE 0 END,
+                CASE WHEN f.amount<0 THEN -f.amount ELSE 0 END
+            FROM fund_cash_ledger f JOIN accounting_entries e
+              ON e.ledger_scope='fund' AND e.entity_type='fund_cash'
+             AND e.entity_id=f.product_code AND e.source_key='fund-cash:'||f.entry_id
+            WHERE NOT EXISTS (SELECT 1 FROM accounting_lines l
+                WHERE l.entry_id=e.entry_id AND l.account_code='fund_cash')""")
+        self.execute("""INSERT INTO accounting_lines(entry_id,account_code,debit_units,credit_units)
+            SELECT e.entry_id,'fund_cash_clearing',
+                CASE WHEN f.amount<0 THEN -f.amount ELSE 0 END,
+                CASE WHEN f.amount>0 THEN f.amount ELSE 0 END
+            FROM fund_cash_ledger f JOIN accounting_entries e
+              ON e.ledger_scope='fund' AND e.entity_type='fund_cash'
+             AND e.entity_id=f.product_code AND e.source_key='fund-cash:'||f.entry_id
+            WHERE NOT EXISTS (SELECT 1 FROM accounting_lines l
+                WHERE l.entry_id=e.entry_id AND l.account_code='fund_cash_clearing')""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_fund_cash_common_post
+            AFTER INSERT ON fund_cash_ledger BEGIN
+            INSERT INTO accounting_entries(ledger_scope,entity_type,entity_id,source_key,
+                currency_code,decimal_places,recorded_epoch,description)
+            VALUES ('fund','fund_cash',NEW.product_code,'fund-cash:'||NEW.entry_id,
+                'NWX',0,NEW.recorded_epoch,NEW.event);
+            INSERT INTO accounting_lines(entry_id,account_code,debit_units,credit_units)
+            SELECT entry_id,'fund_cash',CASE WHEN NEW.amount>0 THEN NEW.amount ELSE 0 END,
+                CASE WHEN NEW.amount<0 THEN -NEW.amount ELSE 0 END FROM accounting_entries
+            WHERE ledger_scope='fund' AND entity_type='fund_cash'
+              AND entity_id=NEW.product_code AND source_key='fund-cash:'||NEW.entry_id;
+            INSERT INTO accounting_lines(entry_id,account_code,debit_units,credit_units)
+            SELECT entry_id,'fund_cash_clearing',CASE WHEN NEW.amount<0 THEN -NEW.amount ELSE 0 END,
+                CASE WHEN NEW.amount>0 THEN NEW.amount ELSE 0 END FROM accounting_entries
+            WHERE ledger_scope='fund' AND entity_type='fund_cash'
+              AND entity_id=NEW.product_code AND source_key='fund-cash:'||NEW.entry_id;
+            END""")
+
+    def _ensure_tax_transaction_wallet_links(self):
+        """Create immutable tax-to-treasury wallet links and freeze legacy rows."""
+        self.execute("""CREATE TABLE IF NOT EXISTS tax_transaction_wallet_links (
+            transaction_id INTEGER NOT NULL REFERENCES tax_transactions(transaction_id),
+            wallet_entry_id INTEGER NOT NULL REFERENCES customer_wallet_ledger(entry_id),
+            treasury_user_id TEXT NOT NULL,
+            PRIMARY KEY(transaction_id,wallet_entry_id))""")
+        self.execute("""CREATE TABLE IF NOT EXISTS tax_transaction_wallet_baselines (
+            transaction_id INTEGER PRIMARY KEY REFERENCES tax_transactions(transaction_id),
+            reason TEXT NOT NULL DEFAULT 'pre-link historical tax row')""")
+        self.execute("""CREATE TABLE IF NOT EXISTS tax_transaction_wallet_baseline_state (
+            singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),
+            through_transaction_id INTEGER NOT NULL CHECK(through_transaction_id>=0))""")
+        self.execute("""CREATE UNIQUE INDEX IF NOT EXISTS
+            idx_tax_transaction_wallet_link_entry_unique
+            ON tax_transaction_wallet_links(wallet_entry_id)""")
+        self.execute("""INSERT OR IGNORE INTO tax_transaction_wallet_baseline_state
+            (singleton_id,through_transaction_id)
+            SELECT 1,COALESCE(MAX(transaction_id),0) FROM tax_transactions""")
+        self.execute("""INSERT OR IGNORE INTO tax_transaction_wallet_baselines
+            (transaction_id,reason)
+            SELECT t.transaction_id,'pre-link historical tax row'
+            FROM tax_transactions t CROSS JOIN tax_transaction_wallet_baseline_state b
+            WHERE t.transaction_id<=b.through_transaction_id
+              AND COALESCE(t.tax_amount_minor_units,0)>0""")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS
+                trg_tax_transaction_wallet_links_{operation.lower()}_immutable
+                BEFORE {operation} ON tax_transaction_wallet_links
+                BEGIN SELECT RAISE(ABORT,'tax wallet links are append-only'); END""")
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS
+                trg_tax_transaction_wallet_baselines_{operation.lower()}_immutable
+                BEFORE {operation} ON tax_transaction_wallet_baselines
+                BEGIN SELECT RAISE(ABORT,'tax wallet baselines are append-only'); END""")
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS
+                trg_tax_transaction_wallet_baseline_state_{operation.lower()}_immutable
+                BEFORE {operation} ON tax_transaction_wallet_baseline_state
+                BEGIN SELECT RAISE(ABORT,'tax wallet baseline watermark is immutable'); END""")
 
     def _ensure_market_asset_price_minor_units(self):
         """Make listed instrument quotes available as canonical currency units."""
@@ -1107,6 +1197,35 @@ class CurrencyDB(DBManager):
             self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_treasury_bond_cash_events_{operation.lower()}_immutable
                 BEFORE {operation} ON treasury_bond_cash_events
                 BEGIN SELECT RAISE(ABORT,'treasury bond cash events are append-only'); END""")
+        self.execute("""CREATE TABLE IF NOT EXISTS treasury_bond_cash_link_baseline_state (
+            singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),
+            through_rowid INTEGER NOT NULL CHECK(through_rowid>=0))""")
+        self.execute("""INSERT OR IGNORE INTO treasury_bond_cash_link_baseline_state
+            (singleton_id,through_rowid)
+            SELECT 1,COALESCE(MAX(rowid),0) FROM treasury_bond_cash_events""")
+        self.execute("""CREATE TABLE IF NOT EXISTS treasury_bond_cash_link_baselines (
+            event_key TEXT PRIMARY KEY REFERENCES treasury_bond_cash_events(event_key),
+            reason TEXT NOT NULL DEFAULT 'pre-link historical bond cash event')""")
+        self.execute("""INSERT OR IGNORE INTO treasury_bond_cash_link_baselines(event_key)
+            SELECT event_key FROM treasury_bond_cash_events
+            WHERE rowid<=(SELECT through_rowid FROM treasury_bond_cash_link_baseline_state
+                         WHERE singleton_id=1)""")
+        self.execute("""CREATE TABLE IF NOT EXISTS treasury_bond_cash_wallet_links (
+            event_key TEXT PRIMARY KEY REFERENCES treasury_bond_cash_events(event_key),
+            wallet_entry_id INTEGER NOT NULL UNIQUE REFERENCES customer_wallet_ledger(entry_id))""")
+        self.execute("""CREATE TABLE IF NOT EXISTS treasury_bond_cash_fund_links (
+            event_key TEXT PRIMARY KEY REFERENCES treasury_bond_cash_events(event_key),
+            fund_entry_id INTEGER NOT NULL UNIQUE REFERENCES fund_cash_ledger(entry_id))""")
+        for table, message in (
+            ("treasury_bond_cash_link_baselines", "treasury bond cash baselines are append-only"),
+            ("treasury_bond_cash_wallet_links", "treasury bond wallet links are append-only"),
+            ("treasury_bond_cash_fund_links", "treasury bond fund links are append-only"),
+            ("treasury_bond_cash_link_baseline_state", "treasury bond baseline watermark is immutable"),
+        ):
+            for operation in ("UPDATE", "DELETE"):
+                self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_{operation.lower()}
+                    BEFORE {operation} ON {table}
+                    BEGIN SELECT RAISE(ABORT,'{message}'); END""")
 
     def _ensure_treasury_bond_minor_units(self):
         """Make bond offer and lot cash amounts authoritative in quote-currency units."""

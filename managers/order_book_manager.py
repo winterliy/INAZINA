@@ -354,6 +354,10 @@ class OrderBookManager:
                     wallet_watermark = int(conn.execute(
                         "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
                     ).fetchone()[0])
+                    holding_before = self._capture_execution_holding(
+                        conn, incoming["asset_code"], {"buyer": str(incoming["user_id"])},
+                        source, now,
+                    )
                     self._settle_primary_fill(
                         conn, incoming, asset, source, quantity, reference_price, now
                     )
@@ -361,6 +365,9 @@ class OrderBookManager:
                     self._record_execution_event(
                         conn, incoming, None, quantity, reference_price, now,
                         wallet_watermark=wallet_watermark,
+                        holding_before=holding_before, inventory_type=(
+                            "treasury_bond" if source == "treasury_bond" else "user_asset"
+                        ),
                     )
                     self._apply_execution_price(
                         conn, incoming["asset_code"], reference_price, now
@@ -388,6 +395,15 @@ class OrderBookManager:
             wallet_watermark = int(conn.execute(
                 "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
             ).fetchone()[0])
+            _, inventory_source = self.user_manager._asset_row(
+                conn, buy_order["asset_code"]
+            )
+            holding_before = self._capture_execution_holding(
+                conn, buy_order["asset_code"],
+                {"buyer": str(buy_order["user_id"]),
+                 "seller": str(sell_order["user_id"])},
+                inventory_source, now,
+            )
             settlement = self._settle_fill(
                 conn, buy_order, sell_order, quantity, execution_price, now
             )
@@ -398,6 +414,9 @@ class OrderBookManager:
                 tax_amount=settlement["tax_amount"],
                 seller_proceeds=settlement["seller_proceeds"],
                 wallet_watermark=wallet_watermark,
+                holding_before=holding_before, inventory_type=(
+                    "treasury_bond" if inventory_source == "treasury_bond" else "user_asset"
+                ),
             )
             self._apply_execution_price(
                 conn, incoming["asset_code"], execution_price, now
@@ -413,9 +432,27 @@ class OrderBookManager:
         return fill_count, filled_quantity, traded_value
 
     @staticmethod
+    def _capture_execution_holding(conn, asset_code, parties, source, now):
+        inventory_type = "treasury_bond" if source == "treasury_bond" else "user_asset"
+        result = {}
+        for role, user_id in parties.items():
+            if inventory_type == "treasury_bond":
+                quantity = conn.execute("""SELECT COALESCE(SUM(principal / NULLIF(face_value,0)),0)
+                    FROM accounts.treasury_bond_holdings
+                    WHERE user_id=? AND product_code=? AND status='active' AND maturity_epoch>?""",
+                    (user_id, asset_code, int(now))).fetchone()[0]
+            else:
+                quantity = conn.execute("""SELECT COALESCE(SUM(quantity),0)
+                    FROM assets.user_assets WHERE user_id=? AND asset_code=?""",
+                    (user_id, asset_code)).fetchone()[0]
+            result[role] = (str(user_id), int(quantity or 0))
+        return result
+
+    @staticmethod
     def _record_execution_event(conn, buy_order, sell_order, quantity, price, now,
                                 *, tax_amount=0, seller_proceeds=0,
-                                wallet_watermark=None):
+                                wallet_watermark=None, holding_before=None,
+                                inventory_type=None):
         """Persist the matched order pair and consideration in quote minor units."""
         currency = str(buy_order["quote_currency"] or "NWX").upper()
         places = currency_precision(conn, currency)
@@ -458,6 +495,26 @@ class OrderBookManager:
             (key, execution_type, str(buy_order["asset_code"]), buy_id, sell_id,
              str(buy_order["user_id"]), seller_id, quantity, price_units,
              price_units*quantity, tax_units, proceeds_units, currency, places, int(now)))
+        if holding_before is not None:
+            expected = {"buyer": int(quantity)}
+            if sell_order is not None:
+                expected["seller"] = -int(quantity)
+            for role, signed_quantity in expected.items():
+                user_id, before_quantity = holding_before[role]
+                after = OrderBookManager._capture_execution_holding(
+                    conn, str(buy_order["asset_code"]), {role: user_id},
+                    "treasury_bond" if inventory_type == "treasury_bond" else "asset",
+                    now,
+                )[role][1]
+                actual_delta = after - int(before_quantity)
+                if actual_delta != signed_quantity:
+                    raise RuntimeError(
+                        f"체결 보유량 이동 불일치: {role} expected={signed_quantity} actual={actual_delta}"
+                    )
+                conn.execute("""INSERT INTO assets.market_execution_holding_movements
+                    (execution_key,party_role,user_id,inventory_type,signed_quantity)
+                    VALUES (?,?,?,?,?)""",
+                    (key, role, user_id, inventory_type, actual_delta))
         from managers.accounting_journal import AccountingJournal
         accounts = ([("buyer_trade_receivable", "debit", price_units*quantity),
                      ("issuer_proceeds_clearing", "credit", price_units*quantity)]

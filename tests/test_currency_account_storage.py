@@ -243,6 +243,56 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT limit_price_minor_units FROM market_orders "
                                           "WHERE order_id=?", (order_id,)).fetchone()[0], 125)
 
+    def test_market_order_limit_price_migration_backfills_and_is_idempotent(self):
+        for suffix in ("legacy_insert", "legacy_update", "minor"):
+            self.db.currency.execute(
+                f"DROP TRIGGER IF EXISTS trg_market_order_limit_price_{suffix}"
+            )
+        self.db.assets.execute(
+            "INSERT INTO market_orders(user_id,asset_code,side,limit_price,quantity,"
+            "remaining_quantity,quote_currency,status,created_epoch,updated_epoch) "
+            "VALUES ('us-user','OLD-USD','buy',1.23,1,1,'USD','open',1,1)"
+        )
+        order_id = self.db.assets.execute_one(
+            "SELECT order_id FROM market_orders WHERE asset_code='OLD-USD'"
+        )[0]
+
+        self.db.currency._ensure_market_order_price_units()
+        self.db.currency._ensure_market_order_price_units()
+        row = self.db.assets.execute_one(
+            "SELECT limit_price,limit_price_minor_units,limit_price_decimal_places "
+            "FROM market_orders WHERE order_id=?", (order_id,),
+        )
+        self.assertEqual(tuple(row), (1.23, 123, 2))
+
+    def test_market_order_reconciliation_flags_canonical_limit_price_corruption(self):
+        self.db.assets.execute(
+            "INSERT INTO market_orders(user_id,asset_code,side,limit_price,quantity,"
+            "remaining_quantity,reserved_cash,quote_currency,status,created_epoch,updated_epoch) "
+            "VALUES ('us-user','BROKEN-USD','buy',1.23,2,2,2.46,'USD','open',1,1)"
+        )
+        order_id = self.db.assets.execute_one(
+            "SELECT order_id FROM market_orders WHERE asset_code='BROKEN-USD'"
+        )[0]
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT reserved_cash_minor_units FROM market_orders WHERE order_id=?",
+            (order_id,),
+        )[0], 246)
+        self.db.currency.execute(
+            "DROP TRIGGER IF EXISTS trg_market_order_limit_price_minor"
+        )
+        self.db.assets.execute(
+            "UPDATE market_orders SET limit_price_minor_units=124 WHERE order_id=?",
+            (order_id,),
+        )
+
+        with self.db.readonly() as conn:
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item["ledger_scope"] == "market_order_reservations")
+        self.assertEqual(check["status"], "mismatch")
+        self.assertIn(124, [gap.get("actual_limit_price_minor_units")
+                            for gap in check["reservation_gaps"]])
+
     def test_customer_wallet_changes_post_atomically_and_reconcile(self):
         with self.db.atomic() as conn:
             before = conn.execute(
@@ -694,6 +744,10 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         with self.db.readonly() as conn:
             bond_check = AccountingJournal.reconcile_treasury_bond_cash_events(conn)
         self.assertEqual(bond_check['status'], 'matched', bond_check)
+        wallet_links = self.db.currency.execute_one(
+            "SELECT COUNT(*) FROM treasury_bond_cash_wallet_links"
+        )[0]
+        self.assertEqual(wallet_links, 1)
         self.db.products.execute(
             "INSERT INTO treasury_bond_products "
             "(product_code,name,annual_rate,maturity_days,face_value,exchange_id,"
@@ -716,6 +770,13 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             bond_check = AccountingJournal.reconcile_treasury_bond_cash_events(conn)
         self.assertEqual(bond_check['status'], 'matched', bond_check)
         self.assertEqual(bond_check['event_count'], 2)
+        with self.db.atomic() as conn:
+            conn.execute("DROP TRIGGER trg_treasury_bond_cash_wallet_links_delete")
+            conn.execute("DELETE FROM treasury_bond_cash_wallet_links WHERE event_key LIKE 'coupon:%'")
+            bond_check = AccountingJournal.reconcile_treasury_bond_cash_events(conn)
+            self.assertEqual(bond_check['status'], 'mismatch', bond_check)
+            self.assertTrue(any(gap['status'] == 'missing_or_invalid_wallet_settlement_link'
+                                for gap in bond_check['common_journal_gaps']), bond_check)
         with self.assertRaisesRegex(sqlite3.IntegrityError, 'append-only'):
             self.db.currency.execute(
                 "UPDATE treasury_bond_cash_events SET net_minor_units=99 "

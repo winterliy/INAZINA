@@ -196,16 +196,28 @@ class CorporateActionsManager:
         from managers.currency_manager import CurrencyManager
         amount_decimal = Decimal(str(amount))
         amount_units = int((amount_decimal*SCALE).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
-        if account(conn, user):
+        fund = account(conn, user)
+        if fund:
             if currency != 'NWX':
                 raise ValueError('펀드 배당 수령 통화는 NWX만 지원합니다.')
+            fund_watermark = int(conn.execute(
+                "SELECT COALESCE(MAX(entry_id),0) FROM fund_cash_ledger"
+            ).fetchone()[0])
             change_cash(conn, user, amount, 'dividend', code)
+            fund_entry = conn.execute(
+                "SELECT entry_id FROM fund_cash_ledger WHERE entry_id>? AND product_code=? "
+                "AND event='dividend' AND reference=? ORDER BY entry_id LIMIT 1",
+                (fund_watermark, str(fund['product_code']), str(code)),
+            ).fetchone()
+            if amount_units > 0 and not fund_entry:
+                raise RuntimeError('펀드 배당 현금 원장 입금이 없습니다.')
             return 0, amount*SCALE, {
                 'issuer_nationality': '낙원', 'underlying_nationality': '낙원',
                 'recipient_nationality': '낙원', 'recipient_residency': '낙원',
                 'product_type': 'fund', 'contract_epoch': int(now), 'rule_id': None,
                 'treaty_code': None, 'tax_rate_percent': '0', 'dr_code': None,
                 'remittance': None,
+                'recipient_fund_entry_id': int(fund_entry['entry_id']) if fund_entry else None,
             }
         rate = CurrencyExchangeManager._rate(conn, currency)
         dr_context = self._dr_tax_context(conn, user, code, currency, kind, now,
@@ -240,6 +252,7 @@ class CorporateActionsManager:
         tax_units = int((tax_major * SCALE).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
         net_units = max(0, amount_units-tax_units)
         remittance = None
+        remittance_wallet_watermark = None
         if tax_units:
             try:
                 treasury = CurrencyManager.treasury_id(conn, jurisdiction)
@@ -250,25 +263,54 @@ class CorporateActionsManager:
                 treasury = TREASURY_USER_ID
             settlement_currency = (currency if CurrencyManager._treasury_target(conn, treasury, currency)
                                    else CurrencyManager.home(conn, treasury))
+            remittance_wallet_watermark = int(conn.execute(
+                "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
+            ).fetchone()[0])
             settlement_units = CurrencyManager.treasury_receive(conn, treasury, currency, tax_units)
             remittance = {"treasury_id": treasury, "jurisdiction": jurisdiction,
                           "source_currency": currency, "source_units": tax_units,
                           "settlement_currency": settlement_currency,
                           "settlement_units": settlement_units}
-            conn.execute('INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount,currency_code) VALUES (?,?,?,?,?,?)',
+            tax_transaction = conn.execute('INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount,currency_code) VALUES (?,?,?,?,?,?)',
                          (str(user), f'{"dr_cross_border_" if dr_context else ""}{kind}_dividend:{code}',
                           amount, tax, float(Decimal(net_units)/Decimal(SCALE)), currency))
+            from managers.accounting_journal import AccountingJournal
+            AccountingJournal.link_tax_transaction_wallet_entries(
+                conn, tax_transaction.lastrowid, remittance_wallet_watermark, treasury
+            )
+        recipient_wallet_watermark = None
         if CurrencyManager.home(conn,user) == currency:
             net_units = max(0, amount_units-tax_units)
+            recipient_wallet_watermark = int(conn.execute(
+                "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
+            ).fetchone()[0])
             changed = conn.execute('UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?',
                                    (net_units//SCALE, user, self.MAX_MONEY-net_units//SCALE))
         else:
             CurrencyExchangeManager._settle(conn, user, now)
             account = self._currency_account(conn, user, currency, now)
+            recipient_wallet_watermark = int(conn.execute(
+                "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
+            ).fetchone()[0])
             changed = conn.execute("UPDATE accounts SET balance_units=balance_units+? WHERE account_number=? AND account_type='currency_saving' AND balance_units<=?",
                                    (net_units, account, MAX_UNITS-net_units))
         if changed.rowcount != 1:
             raise ValueError('배당 수령자의 계정 또는 잔액 한도를 확인해주세요.')
+        from functions.money import to_minor_units
+        expected_recipient_minor = to_minor_units(
+            Decimal(net_units) / Decimal(SCALE), places,
+        )
+        recipient_wallet_entry = None
+        if expected_recipient_minor > 0:
+            recipient_wallet_entry = conn.execute(
+                "SELECT entry_id FROM customer_wallet_ledger WHERE entry_id>? AND user_id=? "
+                "AND currency_code=? AND decimal_places=? AND delta_minor_units=? "
+                "ORDER BY entry_id LIMIT 1",
+                (recipient_wallet_watermark, str(user), str(currency).upper(), places,
+                 expected_recipient_minor),
+            ).fetchone()
+            if not recipient_wallet_entry:
+                raise RuntimeError('배당 고객 지갑 입금 원장 항목이 없습니다.')
         from managers.company_account_manager import CompanyAccounts
         if CompanyAccounts.is_company(conn, user):
             # A company's dividend income is 영업외수익 in its statements.
@@ -278,6 +320,9 @@ class CorporateActionsManager:
         if dr_context:
             dr_context['remittance'] = remittance
             dr_context['tax_rate_percent'] = str(tax_rate)
+            dr_context['recipient_wallet_entry_id'] = (
+                int(recipient_wallet_entry['entry_id']) if recipient_wallet_entry else None
+            )
         else:
             dr_context = {"issuer_nationality": jurisdiction,
                           "underlying_nationality": jurisdiction,
@@ -286,7 +331,11 @@ class CorporateActionsManager:
                           "product_type": "ordinary_equity", "contract_epoch": int(now),
                           "rule_id": None, "treaty_code": None,
                           "tax_rate_percent": str(tax_rate), "dr_code": None,
-                          "remittance": remittance}
+                          "remittance": remittance,
+                          "recipient_wallet_entry_id": (
+                              int(recipient_wallet_entry['entry_id'])
+                              if recipient_wallet_entry else None
+                          )}
         return tax, net_units, dr_context
 
     @staticmethod
@@ -549,6 +598,21 @@ class CorporateActionsManager:
                     (distribution,user,float(component_quantity),component_amount,tax,net_units,
                      payout_currency,int(now),allocation_key))
                 payment_id = int(payment_cursor.lastrowid)
+                if net_units > 0:
+                    wallet_entry_id = tax_context.get('recipient_wallet_entry_id')
+                    fund_entry_id = tax_context.get('recipient_fund_entry_id')
+                    if bool(wallet_entry_id) == bool(fund_entry_id):
+                        raise RuntimeError('배당 지급을 고객 또는 펀드 현금 원장에 하나만 연결해야 합니다.')
+                    if wallet_entry_id:
+                        conn.execute(
+                            "INSERT INTO dividend_payment_wallet_links(payment_id,wallet_entry_id) "
+                            "VALUES (?,?)", (payment_id, int(wallet_entry_id)),
+                        )
+                    else:
+                        conn.execute(
+                            "INSERT INTO dividend_payment_fund_links(payment_id,fund_entry_id) "
+                            "VALUES (?,?)", (payment_id, int(fund_entry_id)),
+                        )
                 journal_issuer = f"{'DR_' if dr_code else ''}DIVIDEND:{tax_context['underlying_nationality']}"
                 journal_ref = f"dr-dividend:{distribution}:{user}:{allocation_key}:{payout_currency}"
                 net_amount = Decimal(net_units)/Decimal(SCALE)
@@ -573,6 +637,15 @@ class CorporateActionsManager:
                         raise ValueError("배당 원천징수 국고 납부 분개 참조키가 이미 사용되었습니다.")
                 dr_tax = tax_context if dr_code else None
                 if dr_tax:
+                    from functions.money import currency_precision, to_minor_units
+                    payout_places = currency_precision(conn, payout_currency)
+                    gross_minor = to_minor_units(component_amount, payout_places)
+                    tax_minor = to_minor_units(tax, payout_places)
+                    net_minor = to_minor_units(
+                        Decimal(net_units) / Decimal(SCALE), payout_places,
+                    )
+                    if gross_minor != tax_minor + net_minor:
+                        raise ValueError("DR 배당 원천징수 최소단위 금액이 일치하지 않습니다.")
                     if dr_tax.get('remittance'):
                         remittance_treasury = dr_tax['remittance']['treasury_id']
                     else:
@@ -585,13 +658,15 @@ class CorporateActionsManager:
                         (payment_id,distribution_id,rule_id,dr_code,issuer_nationality,underlying_nationality,
                          recipient_nationality,recipient_residency,product_type,contract_epoch,treaty_code,
                          tax_rate_percent,gross_amount,tax_amount,net_amount_units,currency_code,
-                         remittance_treasury_id,recorded_epoch)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                         remittance_treasury_id,decimal_places,gross_minor_units,
+                         tax_minor_units,net_minor_units,recorded_epoch)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                         (payment_id,distribution,dr_tax['rule_id'],dr_code,dr_tax['issuer_nationality'],
                          dr_tax['underlying_nationality'],dr_tax['recipient_nationality'],
                          dr_tax['recipient_residency'],dr_tax['product_type'],dr_tax['contract_epoch'],
                          dr_tax['treaty_code'],dr_tax['tax_rate_percent'],component_amount,tax,
-                         net_units,payout_currency,remittance_treasury,int(now)))
+                         net_units,payout_currency,remittance_treasury,payout_places,gross_minor,
+                         tax_minor,net_minor,int(now)))
             if cumulative and entitlement > source_amount:
                 conn.execute('INSERT INTO preferred_dividend_claims(issuer_code,asset_code,distribution_id,user_id,quantity,gross_amount,quote_currency,funding_source,due_epoch,created_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)',
                              (issuer,listing['code'],distribution,user,quantity,entitlement-source_amount,currency,funding,due,now))

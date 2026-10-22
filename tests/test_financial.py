@@ -188,6 +188,21 @@ class FinancialTests(unittest.TestCase):
                 currency_code="NWX", decimal_places=0, recorded_epoch=200,
                 lines=adjustment, description="prior-period correction in next open period")
             self.assertEqual(AccountingJournal.audit_unbalanced(conn, "period_test"), [])
+            balance = AccountingJournal.trial_balance(
+                conn, ledger_scope="period_test", entity_id="one", currency_code="NWX",
+                period_start_epoch=100, period_end_epoch=200,
+            )
+            self.assertEqual({row['account_code']: row['balance_units'] for row in balance},
+                             {'cash': 125, 'revenue': -125})
+            lifetime = AccountingJournal.trial_balance(
+                conn, ledger_scope="period_test", entity_id="one", currency_code="NWX",
+            )
+            self.assertEqual(sum(row['balance_units'] for row in lifetime), 0)
+            with self.assertRaisesRegex(ValueError, "유효한 구간"):
+                AccountingJournal.trial_balance(
+                    conn, ledger_scope="period_test", entity_id="one", currency_code="NWX",
+                    period_start_epoch=200, period_end_epoch=100,
+                )
 
     def test_manual_authorization_balance_and_reversal(self):
         self.setup_company()
@@ -232,14 +247,24 @@ class FinancialTests(unittest.TestCase):
 
     def test_tax_receipt_minor_units_and_reconciliation(self):
         from managers.accounting_journal import AccountingJournal
+        from managers.currency_manager import CurrencyManager
         self.db.currency.execute(
             "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
             "VALUES ('USD','Dollar',1300,2)"
         )
-        self.db.tax.execute(
-            "INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount,currency_code) "
-            "VALUES ('citizen','fixture',1.23,0.12,1.11,'USD')"
-        )
+        with self.db.atomic() as conn:
+            watermark = conn.execute(
+                "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
+            ).fetchone()[0]
+            treasury_id = CurrencyManager.treasury_id(conn, '낙원')
+            CurrencyManager.treasury_receive(conn, treasury_id, 'USD', 12*10_000)
+            tax_transaction = conn.execute(
+                "INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount,currency_code) "
+                "VALUES ('citizen','fixture',1.23,0.12,1.11,'USD')"
+            )
+            AccountingJournal.link_tax_transaction_wallet_entries(
+                conn, tax_transaction.lastrowid, watermark, treasury_id
+            )
         row = self.db.tax.execute_one(
             "SELECT gross_amount_minor_units,tax_amount_minor_units,"
             "net_amount_minor_units FROM tax_transactions ORDER BY transaction_id DESC LIMIT 1"
@@ -249,6 +274,28 @@ class FinancialTests(unittest.TestCase):
             check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
                          if item['ledger_scope'] == 'tax_transactions')
             self.assertEqual(check['status'], 'matched')
+            self.assertEqual(check['wallet_gaps'], [])
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "tax wallet links are append-only"):
+                conn.execute("DELETE FROM tax_transaction_wallet_links")
+            linked_wallet_entry = conn.execute(
+                "SELECT wallet_entry_id FROM tax_transaction_wallet_links LIMIT 1"
+            ).fetchone()[0]
+            duplicate_tax = conn.execute(
+                "INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount,currency_code) "
+                "VALUES ('citizen','fixture-duplicate-link',1.00,0.10,0.90,'USD')"
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                conn.execute("INSERT INTO tax_transaction_wallet_links "
+                             "(transaction_id,wallet_entry_id,treasury_user_id) VALUES (?,?,?)",
+                             (duplicate_tax.lastrowid, linked_wallet_entry, '20230216'))
+            conn.execute(
+                "INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount,currency_code) "
+                "VALUES ('citizen','fixture-unlinked',1.00,0.10,0.90,'USD')"
+            )
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item['ledger_scope'] == 'tax_transactions')
+            self.assertTrue(any(gap['status'] == 'missing_treasury_receipt'
+                                for gap in check['wallet_gaps']), check)
             with self.assertRaisesRegex(sqlite3.IntegrityError, "tax transaction currency minor units"):
                 conn.execute("UPDATE tax_transactions SET tax_amount_minor_units=13 "
                              "WHERE source='fixture'")

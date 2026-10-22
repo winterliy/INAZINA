@@ -22,6 +22,64 @@ class ShareholderRegisterTests(unittest.TestCase):
     def cash(self, user):
         return self.db.users.get_user(user)['cash']
 
+    def test_legacy_dr_withholding_rows_migrate_to_currency_minor_units(self):
+        from database.corporate_db import CorporateDB
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('USD','US Dollar','1500',2)"
+        )
+        conn = self.db.corporate.conn
+        conn.execute("DROP TRIGGER IF EXISTS dr_dividend_withholding_no_update")
+        conn.execute("DROP TRIGGER IF EXISTS dr_dividend_withholding_no_delete")
+        conn.execute("DROP TABLE dr_dividend_withholding_events")
+        conn.execute("""CREATE TABLE dr_dividend_withholding_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,payment_id INTEGER NOT NULL UNIQUE,
+            distribution_id INTEGER NOT NULL,rule_id INTEGER,dr_code TEXT NOT NULL,
+            issuer_nationality TEXT NOT NULL,underlying_nationality TEXT NOT NULL,
+            recipient_nationality TEXT NOT NULL,recipient_residency TEXT NOT NULL,
+            product_type TEXT NOT NULL,contract_epoch INTEGER NOT NULL,treaty_code TEXT,
+            tax_rate_percent TEXT NOT NULL,gross_amount INTEGER NOT NULL,tax_amount INTEGER NOT NULL,
+            net_amount_units INTEGER NOT NULL,currency_code TEXT NOT NULL,
+            remittance_treasury_id TEXT NOT NULL,recorded_epoch INTEGER NOT NULL)""")
+        conn.execute("""INSERT INTO dr_dividend_withholding_events
+            (payment_id,distribution_id,rule_id,dr_code,issuer_nationality,
+             underlying_nationality,recipient_nationality,recipient_residency,
+             product_type,contract_epoch,treaty_code,tax_rate_percent,gross_amount,
+             tax_amount,net_amount_units,currency_code,remittance_treasury_id,recorded_epoch)
+            VALUES (1,1,NULL,'LEGACY','A','B','C','C','depositary_receipt',1,NULL,
+                    '10',1.23,0.12,1110000,'USD','treasury',1)""")
+        conn.commit()
+        migrated = CorporateDB()
+        try:
+            event = migrated.execute_one(
+                "SELECT decimal_places,gross_minor_units,tax_minor_units,net_minor_units "
+                "FROM dr_dividend_withholding_events WHERE payment_id=1"
+            )
+            self.assertEqual(tuple(event), (2, 123, 12, 111))
+            with self.assertRaisesRegex(Exception, 'dr_withholding_events_are_immutable'):
+                migrated.execute(
+                    "UPDATE dr_dividend_withholding_events SET gross_minor_units=124 "
+                    "WHERE payment_id=1"
+                )
+        finally:
+            migrated.close()
+
+    def test_positive_dividend_tax_links_treasury_wallet_receipt(self):
+        from managers.accounting_journal import AccountingJournal
+        self.prepare()
+        self.db.system.set_setting('tax_percent', 10)
+        with self.db.atomic() as conn:
+            tax, net, _context = self.manager._credit_dividend(
+                conn, 'citizen', 'CO', 'stock', 50, 'NWX', 123
+            )
+            self.assertEqual((tax, net), (5, 45_000_000))
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item['ledger_scope'] == 'tax_transactions')
+            self.assertEqual(check['status'], 'matched', check)
+            self.assertEqual(len(conn.execute(
+                "SELECT * FROM tax_transaction_wallet_links"
+            ).fetchall()), 1)
+
     def move_shares(self, quantity):
         self.db.assets.execute("UPDATE user_assets SET quantity=quantity-? WHERE user_id='citizen' AND asset_code='CO'", (quantity,))
         self.db.assets.add_user_asset('admin', 'CO', quantity)
@@ -68,11 +126,28 @@ class ShareholderRegisterTests(unittest.TestCase):
         )[0], 0)
 
     def test_regular_dividend_without_a_closed_register_uses_holders_at_payment(self):
+        from managers.accounting_journal import AccountingJournal
         due = 100_000
         self.prepare(due)
         citizen = self.cash('citizen')
         self.assertEqual(self.manager.process_due(now=due), [('CO', True, 50)])
         self.assertEqual(self.cash('citizen') - citizen, 50)
+        with self.db.readonly() as conn:
+            settlement = AccountingJournal.reconcile_dividend_payment_settlements(conn)
+        self.assertEqual(settlement['status'], 'matched', settlement)
+        self.assertEqual(settlement['payment_count'], 1)
+
+    def test_dividend_payout_without_wallet_receipt_rolls_back_payment(self):
+        due = 100_000
+        self.prepare(due)
+        citizen_before = self.cash('citizen')
+        self.db.currency.execute("DROP TRIGGER trg_customer_cash_ledger_update")
+        with self.assertRaisesRegex(RuntimeError, '배당 고객 지갑 입금 원장 항목이 없습니다'):
+            self.manager.process_due(now=due)
+        self.assertEqual(self.cash('citizen'), citizen_before)
+        self.assertEqual(self.db.corporate.execute_one(
+            'SELECT COUNT(*) FROM dividend_payments'
+        )[0], 0)
 
     def test_legacy_dividend_payment_key_migrates_without_losing_rows(self):
         from database.corporate_db import CorporateDB
@@ -192,6 +267,19 @@ class ShareholderRegisterTests(unittest.TestCase):
         self.assertEqual((fx['source_currency'], fx['target_currency'], fx['source_units'],
                           fx['target_units'], fx['fee_nwx']),
                          ('NWX', 'USD', 30 * SCALE, expected_usd_units, 0))
+        dr_tax = self.db.corporate.execute_one(
+            "SELECT currency_code,decimal_places,gross_minor_units,tax_minor_units,"
+            "net_minor_units FROM dr_dividend_withholding_events WHERE currency_code='USD'"
+        )
+        self.assertIsNotNone(dr_tax)
+        self.assertEqual((dr_tax['currency_code'], dr_tax['decimal_places'],
+                          dr_tax['gross_minor_units'], dr_tax['tax_minor_units'],
+                          dr_tax['net_minor_units']),
+                         ('USD', 2, expected_usd_units // 10_000, 0,
+                          expected_usd_units // 10_000))
+        from managers.dr_dividend_tax_manager import DrDividendTaxManager
+        self.assertEqual(DrDividendTaxManager.reconciliation(
+            self.db.corporate.conn)['eventGaps'], [])
         distribution = self.db.corporate.execute_one(
             "SELECT gross_amount,entitlement_amount,quote_currency FROM dividend_distributions"
         )
@@ -318,6 +406,39 @@ class ShareholderRegisterTests(unittest.TestCase):
         report = DrDividendTaxManager.reconciliation(self.db.corporate.conn)
         self.assertEqual(report['unloggedPaymentCount'], 0)
         self.assertEqual(report['currencies'][0]['difference_minor_units'], 0)
+        self.assertEqual(report['eventGaps'], [])
+        self.assertEqual(report['journalGaps'], [])
+        self.assertEqual(report['settlements']['status'], 'matched', report['settlements'])
+        payment_id = self.db.corporate.execute_one(
+            "SELECT payment_id FROM dividend_payment_wallet_links ORDER BY payment_id LIMIT 1"
+        )[0]
+        self.db.corporate.execute(
+            "DROP TRIGGER trg_dividend_payment_wallet_links_delete"
+        )
+        self.db.corporate.execute(
+            "DELETE FROM dividend_payment_wallet_links WHERE payment_id=?", (payment_id,)
+        )
+        settlement = DrDividendTaxManager.reconciliation(self.db.corporate.conn)['settlements']
+        self.assertEqual(settlement['status'], 'mismatch', settlement)
+        self.assertTrue(any(gap.get('payment_id') == payment_id
+                            and gap['status'] == 'missing_or_duplicate_settlement_link'
+                            for gap in settlement['gaps']))
+        entry = self.db.currency.execute_one(
+            "SELECT entry_id FROM bank_journal_entries "
+            "WHERE event_type='dr_dividend_payment' ORDER BY entry_id LIMIT 1"
+        )
+        self.db.currency.execute("DROP TRIGGER trg_bank_journal_lines_immutable_delete")
+        self.db.currency.execute("DROP TRIGGER trg_bank_journal_entry_no_delete")
+        self.db.currency.execute(
+            "DELETE FROM bank_journal_lines WHERE entry_id=?", (entry['entry_id'],)
+        )
+        self.db.currency.execute(
+            "DELETE FROM bank_journal_entries WHERE entry_id=?", (entry['entry_id'],)
+        )
+        broken = DrDividendTaxManager.reconciliation(self.db.corporate.conn)
+        self.assertEqual(len(broken['journalGaps']), 1)
+        self.assertEqual(broken['journalGaps'][0]['status'],
+                         'missing_or_duplicate_payment_journal')
 
     def test_special_dividend_closes_register_now_and_pays_ten_minutes_later(self):
         self.prepare()

@@ -50,6 +50,7 @@ class EconomyTests(unittest.TestCase):
         self.tempdir.cleanup()
 
     def test_income_tax_credits_citizen_country_treasury(self):
+        from managers.accounting_journal import AccountingJournal
         self.db.currency.execute("INSERT INTO currencies(code,name) VALUES ('NAC','Nac 화폐')")
         self.db.currency.execute(
             "INSERT INTO country_currencies(nationality,currency_code,base_rate,legal_max_rate,tax_percent) "
@@ -64,6 +65,34 @@ class EconomyTests(unittest.TestCase):
             self.assertIsNotNone(treasury)
             self.assertEqual(treasury['cash'], 7)
             self.assertEqual(conn.execute("SELECT cash FROM users WHERE user_id=?", (TREASURY_USER_ID,)).fetchone()[0], 0)
+            tax_check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                             if item['ledger_scope'] == 'tax_transactions')
+            self.assertEqual(tax_check['status'], 'matched', tax_check)
+            self.assertEqual(len(conn.execute(
+                "SELECT * FROM tax_transaction_wallet_links"
+            ).fetchall()), 1)
+
+    def test_tax_receipt_link_failure_rolls_back_treasury_and_tax_row(self):
+        self.db.currency.execute("INSERT INTO currencies(code,name) VALUES ('NAC','Nac 화폐')")
+        self.db.currency.execute(
+            "INSERT INTO country_currencies(nationality,currency_code,base_rate,legal_max_rate,tax_percent) "
+            "VALUES ('Nac','NAC',3,20,7)"
+        )
+        self.db.currency.execute("DROP TRIGGER trg_customer_cash_ledger_update")
+        before_treasury_count = self.db.currency.execute_one(
+            "SELECT COUNT(*) FROM country_treasuries WHERE nationality='Nac'"
+        )[0]
+        before_default_cash = self.db.users.get_treasury_balance()
+        before_tax = self.db.tax.execute_one("SELECT COUNT(*) FROM tax_transactions")[0]
+        with self.assertRaisesRegex(RuntimeError, "국고 지갑 입금이 없습니다"):
+            with self.db.atomic() as conn:
+                UserManager._tax(conn, 'citizen-1', 'test', 100)
+        self.assertEqual(self.db.currency.execute_one(
+            "SELECT COUNT(*) FROM country_treasuries WHERE nationality='Nac'"
+        )[0], before_treasury_count)
+        self.assertEqual(self.db.users.get_treasury_balance(), before_default_cash)
+        self.assertEqual(self.db.tax.execute_one("SELECT COUNT(*) FROM tax_transactions")[0],
+                         before_tax)
 
     def test_buy_sell_tracks_funding_account_and_taxes_realized_gain(self):
         self.db.assets.register_asset("TEST", "Test Co", "EX", 10, "stock")
@@ -188,6 +217,19 @@ class EconomyTests(unittest.TestCase):
         self.assertTrue(success, message)
         self.assertIn("즉시 체결 1개", message)
         self.assertIn("미체결 1개", message)
+        primary_execution = self.db.assets.execute_one(
+            "SELECT execution_key FROM market_execution_events "
+            "WHERE asset_code='ISSUE' AND execution_type='primary'"
+        )
+        primary_movements = self.db.assets.execute(
+            "SELECT party_role,user_id,inventory_type,signed_quantity "
+            "FROM market_execution_holding_movements WHERE execution_key=?",
+            (primary_execution["execution_key"],),
+        )
+        self.assertEqual([(row["party_role"], row["user_id"], row["inventory_type"],
+                           row["signed_quantity"]) for row in primary_movements], [
+            ("buyer", "citizen-2", "user_asset", 1),
+        ])
         total_held = self.db.assets.execute_one(
             "SELECT SUM(quantity) AS quantity FROM user_assets WHERE asset_code = 'ISSUE'"
         )["quantity"]
@@ -257,10 +299,26 @@ class EconomyTests(unittest.TestCase):
         self.assertEqual(event["gross_minor_units"], 450)
         self.assertEqual(event["currency_code"], "NWX")
         self.assertEqual(event["tax_minor_units"] + event["seller_proceeds_minor_units"], 450)
+        # Simulate application restart: initialization must not move this newly
+        # created order's baseline forward and hide its already-recorded fill.
+        self.db.assets._init_db()
+        self.assertIsNone(self.db.assets.execute_one(
+            "SELECT 1 FROM market_execution_order_baselines_v2 WHERE order_id=?",
+            (event["buy_order_id"],),
+        ))
         with self.db.atomic() as conn:
             result = next(item for item in AccountingJournal.reconcile_subledgers(conn)
                           if item["ledger_scope"] == "market_executions")
             self.assertEqual(result["status"], "matched", result)
+            self.assertEqual(result["holding_movement_gaps"], [])
+            movement = conn.execute("""SELECT party_role,user_id,inventory_type,signed_quantity
+                FROM market_execution_holding_movements WHERE execution_key=?
+                ORDER BY party_role""", (event["execution_key"],)).fetchall()
+            self.assertEqual([(row["party_role"], row["user_id"], row["inventory_type"],
+                               row["signed_quantity"]) for row in movement], [
+                ("buyer", "citizen-2", "user_asset", 1),
+                ("seller", "citizen-1", "user_asset", -1),
+            ])
             self.assertEqual(result["common_journal_gaps"], [])
             self.assertEqual(result["wallet_link_gaps"], [])
             seller_cash = conn.execute("""SELECT COALESCE(SUM(l.delta_minor_units),0)
@@ -406,6 +464,12 @@ class EconomyTests(unittest.TestCase):
         self.assertEqual(redeemed[0]["net"], 10080)
         self.assertEqual(self.db.users.get_user("citizen-1")["cash"], 10080)
         self.assertEqual(self.db.users.get_treasury_balance(), -100)
+        from managers.accounting_journal import AccountingJournal
+        with self.db.readonly() as conn:
+            bond_check = AccountingJournal.reconcile_treasury_bond_cash_events(conn)
+        self.assertEqual(bond_check['status'], 'mismatch', bond_check)
+        self.assertTrue(any(gap['status'] == 'wallet_settlement_amount_or_currency_mismatch'
+                            for gap in bond_check['common_journal_gaps']), bond_check)
         nac_treasury = self.db.currency.execute_one(
             "SELECT u.cash FROM country_treasuries t JOIN users.users u ON u.user_id=t.user_id "
             "WHERE t.nationality='Nac'"
@@ -749,6 +813,7 @@ class EconomyTests(unittest.TestCase):
         self.assertEqual(InterestManager._due_periods(0.3, 0.1), 3)
 
     def test_saving_interest_tax_is_deposited_into_treasury(self):
+        from managers.accounting_journal import AccountingJournal
         self.db.users.execute("UPDATE users SET cash = 2000000 WHERE user_id = 'citizen-1'")
         self.db.products.register_saving("TAXSAVE", "Tax Saving", 525600, 0, 0, 1, 0, "Bank")
         self.assertTrue(self.bank.open_account("citizen-1", "TAXSAVE", "1234", 1000000)[0])
@@ -765,6 +830,10 @@ class EconomyTests(unittest.TestCase):
         self.assertIsNotNone(tax)
         self.assertGreater(tax["tax_amount"], 0)
         self.assertEqual(self.db.users.get_treasury_balance(), tax["tax_amount"])
+        with self.db.atomic() as conn:
+            tax_check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                             if item['ledger_scope'] == 'tax_transactions')
+            self.assertEqual(tax_check['status'], 'matched', tax_check)
 
     def test_saving_interest_uses_country_source_tax_override(self):
         self.db.currency.execute("INSERT INTO currencies(code,name) VALUES ('NAC','Nac 화폐')")

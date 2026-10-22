@@ -1620,6 +1620,26 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
                 "SELECT 1 FROM financial_institutions WHERE issuer=?", (str(issuer),)).fetchone():
             raise ValueError("financial_institution_not_found")
         trial_balance = BankJournal.trial_balance(connection, issuer, currency)
+        common_currencies = [str(row[0]) for row in connection.execute(
+            "SELECT DISTINCT currency_code FROM accounting_entries "
+            "WHERE ledger_scope='institution' AND entity_id=? "
+            + ("AND currency_code=? " if currency else "")
+            + "ORDER BY currency_code",
+            (str(issuer), str(currency).upper()) if currency else (str(issuer),),
+        ).fetchall()]
+        common_trial_balance = []
+        for common_currency in common_currencies:
+            places = currency_precision(connection, common_currency)
+            scale = 10 ** places
+            for row in AccountingJournal.trial_balance(
+                    connection, ledger_scope="institution", entity_id=issuer,
+                    currency_code=common_currency):
+                common_trial_balance.append({
+                    **row,
+                    "debit_amount": money_text(Decimal(row["debit_units"]) / scale, places),
+                    "credit_amount": money_text(Decimal(row["credit_units"]) / scale, places),
+                    "balance_amount": money_text(Decimal(row["balance_units"]) / scale, places),
+                })
         common_journal_reconciliation = AccountingJournal.reconcile_subledgers(connection)
         common_journal_unbalanced = AccountingJournal.audit_unbalanced(connection)
         from functions.money import audit_amount_snapshots
@@ -1771,6 +1791,7 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
             "depositInsuranceReconciliation": deposit_insurance_reconciliation,
             "depositInsuranceClaims": insurance_claims,
             "commonJournalReconciliation": common_journal_reconciliation,
+            "commonTrialBalance": common_trial_balance,
             "commonJournalUnbalancedEntries": common_journal_unbalanced,
             "amountSnapshotAudit": {
                 "findingCount": len(amount_snapshot_findings),

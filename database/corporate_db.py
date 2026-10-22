@@ -7,6 +7,57 @@ class CorporateDB(DBManager):
         super().__init__('corporate')
         self._init_db()
 
+    def _migrate_dr_dividend_cash_minor_units(self, existing_columns):
+        """Add canonical DR withholding amounts without rewriting legacy mirrors."""
+        required = {
+            "decimal_places": "INTEGER NOT NULL DEFAULT 0 CHECK(decimal_places BETWEEN 0 AND 6)",
+            "gross_minor_units": "INTEGER NOT NULL DEFAULT 0 CHECK(typeof(gross_minor_units)='integer' AND gross_minor_units>=0)",
+            "tax_minor_units": "INTEGER NOT NULL DEFAULT 0 CHECK(typeof(tax_minor_units)='integer' AND tax_minor_units>=0)",
+            "net_minor_units": "INTEGER NOT NULL DEFAULT 0 CHECK(typeof(net_minor_units)='integer' AND net_minor_units>=0)",
+        }
+        missing = {name: declaration for name, declaration in required.items()
+                   if name not in existing_columns}
+        if not missing:
+            return
+        from decimal import Decimal
+        from functions.money import currency_precision, to_minor_units
+
+        with self.lock:
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                self.conn.execute("DROP TRIGGER IF EXISTS dr_dividend_withholding_no_update")
+                for name, declaration in missing.items():
+                    self.conn.execute(
+                        f"ALTER TABLE dr_dividend_withholding_events ADD COLUMN {name} {declaration}"
+                    )
+                rows = self.conn.execute(
+                    "SELECT event_id,gross_amount,tax_amount,net_amount_units,currency_code "
+                    "FROM dr_dividend_withholding_events ORDER BY event_id"
+                ).fetchall()
+                for row in rows:
+                    places = currency_precision(self.conn, row["currency_code"])
+                    gross = to_minor_units(row["gross_amount"], places)
+                    tax = to_minor_units(row["tax_amount"], places)
+                    net_major = Decimal(int(row["net_amount_units"] or 0)) / Decimal(1_000_000)
+                    net = to_minor_units(net_major, places)
+                    if gross != tax + net:
+                        raise ValueError(
+                            "기존 DR 원천징수 금액이 통화 최소단위에서 일치하지 않습니다: "
+                            f"event_id={row['event_id']}"
+                        )
+                    self.conn.execute(
+                        "UPDATE dr_dividend_withholding_events SET decimal_places=?,"
+                        "gross_minor_units=?,tax_minor_units=?,net_minor_units=? WHERE event_id=?",
+                        (places, gross, tax, net, int(row["event_id"])),
+                    )
+                self.conn.execute("""CREATE TRIGGER dr_dividend_withholding_no_update
+                    BEFORE UPDATE ON dr_dividend_withholding_events BEGIN
+                    SELECT RAISE(ABORT,'dr_withholding_events_are_immutable'); END""")
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
+
     def _init_db(self):
         # balance is spendable cash; locked_amount is a separate reserve, not a
         # deduction from balance. Capital is deliberately never copied here.
@@ -178,6 +229,24 @@ class CorporateDB(DBManager):
             created_epoch INTEGER NOT NULL,
             allocation_key TEXT NOT NULL DEFAULT 'legacy',
             UNIQUE(distribution_id,user_id,quote_currency,allocation_key))''')
+        self.execute('''CREATE TABLE IF NOT EXISTS dividend_payment_settlement_baseline_state (
+            singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),
+            through_payment_id INTEGER NOT NULL CHECK(through_payment_id>=0))''')
+        self.execute('''INSERT OR IGNORE INTO dividend_payment_settlement_baseline_state
+            (singleton_id,through_payment_id)
+            SELECT 1,COALESCE(MAX(payment_id),0) FROM dividend_payments''')
+        self.execute('''CREATE TABLE IF NOT EXISTS dividend_payment_wallet_links (
+            payment_id INTEGER PRIMARY KEY REFERENCES dividend_payments(payment_id),
+            wallet_entry_id INTEGER NOT NULL UNIQUE REFERENCES customer_wallet_ledger(entry_id))''')
+        self.execute('''CREATE TABLE IF NOT EXISTS dividend_payment_fund_links (
+            payment_id INTEGER PRIMARY KEY REFERENCES dividend_payments(payment_id),
+            fund_entry_id INTEGER NOT NULL UNIQUE REFERENCES fund_cash_ledger(entry_id))''')
+        for table in ("dividend_payment_settlement_baseline_state",
+                      "dividend_payment_wallet_links", "dividend_payment_fund_links"):
+            for operation in ("UPDATE", "DELETE"):
+                self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_{operation.lower()}
+                    BEFORE {operation} ON {table} BEGIN
+                    SELECT RAISE(ABORT,'dividend payment settlement links are append-only'); END""")
         # Cross-border DR withholding is versioned: administrators append rules,
         # while paid receipts retain the exact rule and jurisdictions used.
         self.execute('''CREATE TABLE IF NOT EXISTS dr_dividend_tax_rules (
@@ -217,6 +286,10 @@ class CorporateDB(DBManager):
             net_amount_units INTEGER NOT NULL,
             currency_code TEXT NOT NULL,
             remittance_treasury_id TEXT NOT NULL,
+            decimal_places INTEGER NOT NULL DEFAULT 0 CHECK(decimal_places BETWEEN 0 AND 6),
+            gross_minor_units INTEGER NOT NULL DEFAULT 0 CHECK(typeof(gross_minor_units)='integer' AND gross_minor_units>=0),
+            tax_minor_units INTEGER NOT NULL DEFAULT 0 CHECK(typeof(tax_minor_units)='integer' AND tax_minor_units>=0),
+            net_minor_units INTEGER NOT NULL DEFAULT 0 CHECK(typeof(net_minor_units)='integer' AND net_minor_units>=0),
             recorded_epoch INTEGER NOT NULL)''')
         self.execute('''CREATE TRIGGER IF NOT EXISTS dr_dividend_tax_rules_no_update
             BEFORE UPDATE ON dr_dividend_tax_rules BEGIN
@@ -289,6 +362,7 @@ class CorporateDB(DBManager):
         withholding_columns = {row[1] for row in self.execute("PRAGMA table_info('dr_dividend_withholding_events')")}
         if 'dr_code' not in withholding_columns:
             self.execute("ALTER TABLE dr_dividend_withholding_events ADD COLUMN dr_code TEXT NOT NULL DEFAULT ''")
+        self._migrate_dr_dividend_cash_minor_units(withholding_columns)
         self.execute('''CREATE INDEX IF NOT EXISTS idx_dividend_distributions_asset
             ON dividend_distributions(asset_code,created_epoch)''')
         self.execute('''CREATE INDEX IF NOT EXISTS idx_dividend_payments_user

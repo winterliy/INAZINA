@@ -1468,9 +1468,16 @@ class RealisticRateSystemTests(unittest.TestCase):
             {row["ledger_scope"] for row in report["commonJournalReconciliation"]},
             {"customer", "company", "institution", "market_order_reservations",
              "market_order_wallet_cash", "market_executions", "treasury_bond_cash",
-             "tax_transactions"},
+             "tax_transactions", "fund", "dividend_payment_settlements"},
         )
         self.assertEqual(report["commonJournalUnbalancedEntries"], [])
+        self.assertTrue(all(row["currency_code"] == "NWX"
+                            and row["decimal_places"] == 0
+                            and row["debit_units"] - row["credit_units"] == row["balance_units"]
+                            for row in report["commonTrialBalance"]))
+        with patch("web_api.server.connect_readonly", self.db.readonly):
+            filtered_report = admin_bank_journal_report("Bank", currency="NWX")
+        self.assertEqual(filtered_report["commonTrialBalance"], report["commonTrialBalance"])
         self.assertIn(report["amountSnapshotAudit"]["status"], {"clean", "attention_required"})
         self.assertLessEqual(len(report["amountSnapshotAudit"]["findings"]), 100)
         self.assertEqual(len(report["depositInsuranceClaims"]), 2)
