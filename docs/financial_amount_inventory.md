@@ -1,6 +1,6 @@
 # 통화 금액 필드 인벤토리 (M4 종료 기준)
 
-`financial_amount_field_registry`는 명시 분류된 모든 금액 필드와 통화 선택식을 원천행이 0건이어도 등록한다. `financial_amount_snapshots`는 각 원천행의 통화, scale, 최소단위 수치를 보존하며 `audit_amount_snapshots`가 등록 누락, snapshot 누락·불일치, 잘못된 원천 스키마를 보고한다. 생성 규칙은 [`currency_db.py`](../database/currency_db.py)의 `_ensure_minor_amount_snapshots`에 있다. 호환용 업무 열과 legacy 소비 경로가 남는 범위는 아래 잔여목록에 적으며, snapshot 존재 자체를 해당 업무 경로가 전부 정수 연산으로 바뀌었다는 뜻으로 보지 않는다.
+`financial_amount_field_registry`는 명시 분류된 금액 필드와 통화 선택식을 원천행이 0건이어도 등록한다. 뒤늦게 초기화되는 DB 모듈은 `register_late_amount_fields()`에서 추가 등록한다. `financial_amount_snapshots`는 각 원천행의 통화, scale, 최소단위 수치를 보존하며 `audit_amount_snapshots`가 등록 누락, snapshot 누락·불일치, 잘못된 원천 스키마를 보고한다. 별도 `audit_amount_field_coverage`는 초기화된 모든 SQLite 테이블의 숫자형 스키마를 이름 휴리스틱으로 검사하고, 레지스트리나 사유가 있는 명시 제외표에 없는 금액 후보를 통합 대사에서 mismatch로 표시한다. 해당 검사는 스키마 누락 탐지이지 소비자 코드까지 추적하는 데이터 계보 증명은 아니다. 생성 규칙은 [`currency_db.py`](../database/currency_db.py)의 `_ensure_minor_amount_snapshots`에 있다. 호환용 업무 열과 legacy 소비 경로가 남는 범위는 아래 잔여목록에 적으며, snapshot 존재 자체를 해당 업무 경로가 전부 정수 연산으로 바뀌었다는 뜻으로 보지 않는다.
 
 | 영역 | 포함 테이블/필드 | 통화 출처 |
 |---|---|---|
@@ -15,6 +15,10 @@
 가격·원금·현금·수수료·세금·충당금은 금액으로 분류한다. 이자율, 수익률, 비율, 수량/주식수, 확률, 만기/epoch, 변동성 및 지수 민감도는 통화 금액이 아니므로 이 레지스트리의 대상이 아니다. 가격×수량의 평가액은 주문/거래/원장 경로에서 별도로 검증되어야 한다.
 
 ## 잔여 호환 경로와 제한
+
+### 2026-10-24 통합 금액 스키마 감사 보강
+
+초기화 순서 때문에 통화 DB 생성 시점에 존재하지 않았던 복권·기업행사·ELS 등의 테이블을 별도 등록 단계로 포함했다. 레거시 복합키 테이블의 `rowid`도 스냅샷 키로 감사한다. 숫자형 금액 후보를 레지스트리 또는 `financial_amount_field_exemptions` 사유표에 대조하고, 미분류 후보가 있으면 `reconcile_all_financial_ledgers` 전체 상태를 mismatch로 만든다. 명시 제외에는 지수 포인트·비율·점수·canonical 최소단위/호환 mirror만 포함하며 각 제외 이유를 DB에 보존한다. `market_events.target_value`는 비율과 통화 가격이 혼용되므로, 현재 실제 `price` 모드 이벤트가 있으면 미분류 금액 후보로 잡아 마감을 막는다. 이 동적 필드의 통화별 등록/스냅샷 규칙은 미완료다. 테스트는 초기 스키마의 미분류 후보 0건, 신규 `gross_amount` 열과 가격형 이벤트 후보의 검출을 확인한다. 이 감사는 고정된 DB 스키마의 분류를 강화하지만 업무 코드의 동적 SQL·표시·비정형 저장 경로까지 증명하지 않으므로, 아래 소비자별 잔여 제한과는 별개다.
 
 ### 2026-10-20 초기 스키마 재점검 (아래 M4 종료 기록으로 갱신됨)
 

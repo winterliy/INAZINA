@@ -15,7 +15,7 @@ from managers.user_manager import UserManager
 from managers.compliance_manager import ComplianceManager
 from managers.accounting_journal import AccountingJournal
 from managers.treasury_bond_manager import TreasuryBondManager
-from functions.money import audit_amount_snapshots
+from functions.money import audit_amount_field_coverage, audit_amount_snapshots
 
 
 class CurrencyAccountStorageTests(unittest.TestCase):
@@ -357,6 +357,106 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             findings = audit_amount_snapshots(conn)
         self.assertTrue(any(item["status"] == "missing_snapshot" for item in findings), findings)
 
+    def test_late_initialized_financial_schemas_are_included_in_amount_registry(self):
+        with self.db.readonly() as conn:
+            registered = {
+                (row["source_table"], row["amount_field"])
+                for row in conn.execute("""SELECT source_table,amount_field
+                    FROM financial_amount_field_registry
+                    WHERE (source_table,amount_field) IN (
+                      ('preferred_dividend_claims','gross_amount'),
+                      ('els_products','face_value'),
+                      ('lottery_purchases','price'))""")
+            }
+            findings = audit_amount_snapshots(conn)
+        self.assertEqual(registered, {
+            ("preferred_dividend_claims", "gross_amount"),
+            ("els_products", "face_value"),
+            ("lottery_purchases", "price"),
+        })
+        self.assertEqual(findings, [])
+
+    def test_late_dividend_amount_field_uses_each_currency_scale(self):
+        for distribution_id, asset_code, amount, currency in (
+            (1, "PREF-USD", 12.34, "USD"),
+            (2, "PREF-EUR", 56.78, "EUR"),
+            (3, "PREF-NWX", 90, "NWX"),
+        ):
+            self.db.corporate.execute(
+                "INSERT INTO preferred_dividend_claims "
+                "(issuer_code,asset_code,distribution_id,user_id,quantity,gross_amount,"
+                "quote_currency,funding_source,due_epoch,created_epoch) "
+                "VALUES ('Issuer',?,?, 'us-user',1,?,?,'treasury',100,100)",
+                (asset_code, distribution_id, amount, currency),
+            )
+        with self.db.readonly() as conn:
+            snapshots = conn.execute("""SELECT s.amount_minor_units,s.decimal_places,s.currency_code
+                FROM financial_amount_snapshots s
+                JOIN preferred_dividend_claims p ON p.claim_id=CAST(s.source_key AS INTEGER)
+                WHERE s.source_table='preferred_dividend_claims'
+                  AND s.amount_field='gross_amount' ORDER BY p.distribution_id""").fetchall()
+            findings = audit_amount_snapshots(conn)
+        self.assertEqual([tuple(snapshot) for snapshot in snapshots], [
+            (1234, 2, "USD"), (5678, 2, "EUR"), (90, 0, "NWX"),
+        ])
+        self.assertEqual(findings, [])
+
+    def test_amount_audit_supports_rowid_keys_for_legacy_composite_tables(self):
+        with self.db.atomic() as conn:
+            conn.execute("CREATE TABLE rowid_money_fixture (amount REAL NOT NULL)")
+            conn.execute("INSERT INTO rowid_money_fixture(amount) VALUES (1.23)")
+            conn.execute("INSERT INTO financial_amount_field_registry "
+                "(source_table,source_key_field,amount_field,currency_expression) "
+                "VALUES ('rowid_money_fixture','rowid','amount','NWX')")
+            findings = audit_amount_snapshots(conn)
+        self.assertTrue(any(
+            item["source_table"] == "rowid_money_fixture"
+            and item["status"] == "missing_snapshot"
+            for item in findings
+        ), findings)
+
+    def test_amount_field_coverage_flags_new_unregistered_money_columns(self):
+        with self.db.readonly() as conn:
+            before = audit_amount_field_coverage(conn)
+        self.assertEqual(before["unclassified"], [])
+        with self.db.atomic() as conn:
+            conn.execute("CREATE TABLE new_money_source (record_id INTEGER PRIMARY KEY, gross_amount REAL)")
+            after = audit_amount_field_coverage(conn)
+        self.assertTrue(any(
+            item["source_table"] == "new_money_source"
+            and item["amount_field"] == "gross_amount"
+            for item in after["unclassified"]
+        ), after)
+
+    def test_mode_dependent_price_event_value_is_not_blanket_exempted(self):
+        with self.db.atomic() as conn:
+            conn.execute("""INSERT INTO market_events
+                (asset_code,event_type,severity,starts_epoch,ends_epoch,created_by,target_mode,target_value)
+                VALUES ('USD_ASSET','good',1,1,2,'test','price',12.34)""")
+            report = audit_amount_field_coverage(conn)
+        self.assertTrue(any(
+            item["source_table"] == "market_events"
+            and item["amount_field"] == "target_value"
+            for item in report["unclassified"]
+        ), report)
+
+    def test_market_event_target_snapshots_use_asset_code_and_rowid(self):
+        self.db.assets.execute("""INSERT INTO market_assets
+            (code,name,type,price,total_supply,status,exchange_id,quote_currency)
+            VALUES ('USD_ASSET','Dollar Asset','stock',12.34,100,'active','NYSE','USD')""")
+        self.db.currency.execute("""INSERT INTO system.market_event_targets
+            (event_id,asset_code,start_price,target_price,start_epoch,end_epoch,last_tick_epoch,last_price)
+            VALUES (1,'USD_ASSET',12.34,13.45,1,10,1,12.34)""")
+        with self.db.readonly() as conn:
+            rows = conn.execute("""SELECT amount_field,currency_code,decimal_places,amount_minor_units
+                FROM financial_amount_snapshots WHERE source_table='market_event_targets'
+                ORDER BY amount_field""").fetchall()
+        self.assertEqual({row[0]: (row[1], row[2], row[3]) for row in rows}, {
+            "last_price": ("USD", 2, 1234),
+            "start_price": ("USD", 2, 1234),
+            "target_price": ("USD", 2, 1345),
+        })
+
     def test_amount_audit_checks_registered_schema_even_when_source_table_is_empty(self):
         self.db.currency.execute(
             "INSERT INTO financial_amount_field_registry "
@@ -377,9 +477,11 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             report = AccountingJournal.reconcile_all_financial_ledgers(conn)
         self.assertEqual(report["status"], "matched", report)
         self.assertIn("amount_snapshot_registry", report["coverage"])
+        self.assertIn("amount_schema_coverage", report["coverage"])
         self.assertIn("common_journals", report["coverage"])
         self.assertIn("institution_subledgers", report["coverage"])
         self.assertEqual(report["institution_count"], 0)
+        self.assertEqual(report["amount_field_coverage"]["status"], "matched")
 
 
     def test_institution_ledger_minor_unit_upgrade_is_idempotent(self):

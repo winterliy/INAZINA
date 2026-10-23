@@ -1350,9 +1350,13 @@ class CurrencyDB(DBManager):
             self.execute("ALTER TABLE financial_amount_snapshots ADD COLUMN source_key_field TEXT NOT NULL DEFAULT ''")
         specifications = [(table, key, currency, set(columns))
                           for table, columns, key, currency in (*direct, *derived)]
+        rowid_tables = {str(row[1]) for row in self.execute("PRAGMA table_list")
+                        if len(row) > 4 and int(row[4]) == 0}
         from functions.money import to_minor_units
         for spec_index, (table, key, currency_expr, columns) in enumerate(specifications):
             available = {row[1] for row in self.execute(f'PRAGMA table_info("{table}")')}
+            if key == "rowid" and table in rowid_tables:
+                available.add("rowid")
             key_col = key if key in available else None
             if not key_col:
                 continue
@@ -1434,6 +1438,141 @@ class CurrencyDB(DBManager):
                 self.execute(f'DROP TRIGGER IF EXISTS "{name}"')
                 self.execute(f"CREATE TRIGGER \"{name}\" AFTER UPDATE OF quote_currency ON \"{table}\" "
                              "BEGIN "+" ".join(updates)+" END")
+
+    def register_late_amount_fields(self):
+        """Register amount fields whose tables are initialized after CurrencyDB."""
+        asset_currency = (
+            "COALESCE((SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code),"
+            "(SELECT quote_currency FROM company WHERE company_code=NEW.asset_code),"
+            "(SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code),"
+            "(SELECT quote_currency FROM treasury_bond_products WHERE product_code=NEW.asset_code),'NWX')"
+        )
+        underlying_currency = (
+            "COALESCE((SELECT quote_currency FROM market_assets WHERE code=NEW.underlying_code),"
+            "(SELECT quote_currency FROM company WHERE company_code=NEW.underlying_code),"
+            "(SELECT quote_currency FROM investment WHERE product_code=NEW.underlying_code),"
+            "(SELECT quote_currency FROM treasury_bond_products WHERE product_code=NEW.underlying_code),'NWX')"
+        )
+        corporate_currency = (
+            "COALESCE((SELECT quote_currency FROM company WHERE company_code=NEW.company_code),'NWX')"
+        )
+        specifications = (
+            ("lottery_tickets", ("price",), "ticket_id", "'NWX'"),
+            ("lottery_purchases", ("price",), "request_id", "'NWX'"),
+            ("lottery_payouts", ("gross", "tax", "net"), "ticket_id", "'NWX'"),
+            ("lottery_pool_ledger", ("amount",), "entry_id", "'NWX'"),
+            ("lottery_rounds", ("reserve_total",), "round_id", "'NWX'"),
+            ("issuer_cash_accounts", ("balance", "locked_amount"), "company_code", corporate_currency),
+            ("issuer_cash_transfers", ("old_balance", "new_balance", "delta"), "transfer_id",
+             "SELECT quote_currency FROM company WHERE company_code=NEW.company_code"),
+            ("dividend_distributions", ("reference_price", "gross_amount", "entitlement_amount",
+                                         "deferred_amount"), "distribution_id", "NEW.quote_currency"),
+            ("dividend_payments", ("gross_amount", "tax_amount"), "payment_id", "NEW.quote_currency"),
+            ("preferred_dividend_claims", ("gross_amount", "paid_amount"), "claim_id", "NEW.quote_currency"),
+            ("corporate_liquidation_payments", ("claim_amount", "paid_amount", "tax_amount"),
+             "payment_id", asset_currency),
+            ("dr_dividend_withholding_events", ("gross_amount", "tax_amount"), "event_id",
+             "NEW.currency_code"),
+            ("company_income_log", ("tax_nwx",), "entry_id", "'NWX'"),
+            ("els_products", ("face_value", "principal_amount", "coupon_amount", "locked_amount"),
+             "product_code", "SELECT quote_currency FROM investment WHERE product_code=NEW.product_code"),
+            ("els_subscriptions", ("principal", "coupon_reserved"), "subscription_id",
+             "SELECT quote_currency FROM investment WHERE product_code=NEW.product_code"),
+            ("els_settlements", ("principal", "gross_amount", "tax_amount", "net_amount"),
+             "settlement_id", "SELECT quote_currency FROM investment WHERE product_code=NEW.product_code"),
+            ("hybrid_bond_events", ("cash",), "event_id",
+             "SELECT quote_currency FROM investment WHERE product_code=NEW.product_code"),
+            ("product_settlements", ("gross_amount", "tax_amount"), "settlement_id",
+             "COALESCE((SELECT quote_currency FROM market_assets WHERE code=NEW.product_code),"
+             "(SELECT quote_currency FROM company WHERE company_code=NEW.product_code),"
+             "(SELECT quote_currency FROM investment WHERE product_code=NEW.product_code),'NWX')"),
+            ("corporate_equity_offerings", ("issue_price",), "offering_id", asset_currency),
+            ("market_quote_overrides", ("price",), "asset_code",
+             "COALESCE((SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code),"
+             "(SELECT quote_currency FROM company WHERE company_code=NEW.asset_code),"
+             "(SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code),'NWX')"),
+            ("market_future_expiry_prices", ("price",), "product_code",
+             "COALESCE((SELECT quote_currency FROM market_assets WHERE code=NEW.underlying_code),"
+             "(SELECT quote_currency FROM company WHERE company_code=NEW.underlying_code),"
+             "(SELECT quote_currency FROM investment WHERE product_code=NEW.underlying_code),'NWX')"),
+            ("market_auto_targets", ("anchor_price", "target_price"), "asset_code", asset_currency),
+            ("market_auto_target_history", ("anchor_price", "target_price"), "history_id", asset_currency),
+            ("market_simulation_state", ("latent_price", "last_display_price"),
+             "asset_code", asset_currency),
+            ("market_event_targets", ("start_price", "target_price", "last_price"),
+             "rowid", asset_currency),
+            ("els_underlyings", ("initial_price", "last_price"), "rowid",
+             "COALESCE((SELECT quote_currency FROM market_assets WHERE code=NEW.underlying_code),"
+             "(SELECT quote_currency FROM company WHERE company_code=NEW.underlying_code),"
+             "(SELECT quote_currency FROM investment WHERE product_code=NEW.underlying_code),'NWX')"),
+            ("market_exchange_index_components", ("previous_price",), "rowid",
+             "SELECT quote_currency FROM company WHERE company_code=NEW.company_code"),
+            ("fund_components", ("base_price",), "rowid",
+             "COALESCE((SELECT quote_currency FROM company WHERE company_code=NEW.asset_code),"
+             "(SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code),"
+             "(SELECT quote_currency FROM treasury_bond_products WHERE product_code=NEW.asset_code),"
+             "(SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code),'NWX')"),
+            ("option_contracts", ("strike_price",), "contract_id", underlying_currency),
+            ("option_positions", ("average_premium",), "rowid",
+             "SELECT COALESCE((SELECT quote_currency FROM market_assets WHERE code=o.underlying_code),"
+             "(SELECT quote_currency FROM company WHERE company_code=o.underlying_code),"
+             "(SELECT quote_currency FROM investment WHERE product_code=o.underlying_code),'NWX') "
+             "FROM option_contracts o WHERE o.contract_id=NEW.contract_id"),
+            ("option_collateral_lots", ("average_cost",), "collateral_id", underlying_currency),
+            ("option_collateral_cash_lots", ("amount",), "collateral_id",
+             "COALESCE((SELECT quote_currency FROM accounts WHERE account_number=NEW.account_number),"
+             "(SELECT COALESCE((SELECT quote_currency FROM market_assets WHERE code=o.underlying_code),"
+             "(SELECT quote_currency FROM company WHERE company_code=o.underlying_code),"
+             "(SELECT quote_currency FROM investment WHERE product_code=o.underlying_code),'NWX') "
+             "FROM option_contracts o WHERE o.contract_id=NEW.contract_id),'NWX')"),
+            ("investment", ("nav_anchor", "conversion_price", "warrant_exercise_price"),
+             "product_code", "NEW.quote_currency"),
+            ("financial_institution_ledger", ("amount", "base_amount"), "entry_id", "NEW.currency_code"),
+            ("bank_deficit_alerts", ("cash",), "issuer", "NEW.cash_currency_code"),
+            ("aml_monitoring_rules", ("rolling_24h_amount_limit",), "nationality", "NEW.currency_code"),
+            ("deposit_insurance_claims", ("payout_amount",), "claim_id", "NEW.payout_currency"),
+            ("futures_positions", ("settlement_price", "collateral", "net_pnl"), "rowid",
+             "SELECT quote_currency FROM investment WHERE product_code=NEW.product_code"),
+            ("dr_custody_instructions", ("fee_price",), "reference_key",
+             "COALESCE(NEW.fee_currency,(SELECT quote_currency FROM depositary_receipts "
+             "WHERE dr_code=NEW.dr_code),'NWX')"),
+            ("leveraged_etf_state", ("base_nav",), "product_code",
+             "SELECT quote_currency FROM investment WHERE product_code=NEW.product_code"),
+            ("company", ("cumulative_dividend",), "company_code", "NEW.quote_currency"),
+            ("currency_transactions", ("fee_nwx",), "transaction_id", "'NWX'"),
+            ("currency_transfer_transactions", ("fee_nwx",), "transaction_id", "'NWX'"),
+        )
+        with self.lock, self.conn:
+            self._ensure_minor_amount_snapshots((), specifications)
+            self.execute("""CREATE TABLE IF NOT EXISTS financial_amount_field_exemptions (
+                source_table TEXT NOT NULL, amount_field TEXT NOT NULL,
+                reason TEXT NOT NULL, PRIMARY KEY(source_table,amount_field))""")
+            exemptions = (
+                ("saving", "collateral_discount_max", "담보 할인 비율"),
+                ("liability", "collateral_discount_max", "담보 할인 비율"),
+                ("market_exchanges", "index_value", "통화 금액이 아닌 지수 포인트"),
+                ("market_exchange_indices", "index_value", "통화 금액이 아닌 지수 포인트"),
+                ("market_exchange_index_history", "index_value", "통화 금액이 아닌 지수 포인트"),
+                ("leveraged_etf_state", "base_index_value", "통화 금액이 아닌 기초 지수 포인트"),
+                ("users", "income_stability", "소득 안정성 점수"),
+                ("credit_score_policy", "value", "신용점수 정책값"),
+                ("financial_institutions", "operating_cost_spread", "금액이 아닌 비용 가산율"),
+                ("financial_lines", "amount", "이미 회사 원장 통화 최소단위로 저장된 서명 분개액"),
+                ("users", "cash_minor", "이미 고객 통화 최소단위로 저장된 권위 잔액"),
+                ("accounts", "balance_units", "통화 최소단위에 정렬된 레거시 micro-unit 잔액; balance_minor_units가 권위값"),
+                ("market_orders", "reserved_cash_units", "레거시 micro-unit 미러; reserved_cash_minor_units가 권위값"),
+                ("market_orders", "executed_value_units", "부분체결 반올림 잔여를 보존하는 micro-unit 중간 누계"),
+                ("dividend_payments", "net_amount_units", "레거시 micro-unit 미러; 지급 정산은 고객/펀드 원장 최소단위로 대사"),
+                ("dr_dividend_withholding_events", "net_amount_units", "레거시 micro-unit 미러; net_minor_units가 권위값"),
+                ("financial_bond_basis", "discount_units", "회사채 발행차금 통화 최소단위 잔액"),
+            )
+            for exemption in exemptions:
+                self.execute("""INSERT INTO financial_amount_field_exemptions
+                    (source_table,amount_field,reason) VALUES (?,?,?)
+                    ON CONFLICT(source_table,amount_field) DO UPDATE SET reason=excluded.reason""",
+                    exemption)
+            self.execute("DELETE FROM financial_amount_field_exemptions "
+                         "WHERE source_table='market_events' AND amount_field='target_value'")
 
     # Minor units of a citizen's home currency: x1 for 0 decimal places, x10, x100.
     PLACES = ("(SELECT COALESCE(MAX(c.decimal_places),0) FROM country_currencies n "

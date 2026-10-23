@@ -1224,10 +1224,11 @@ class AccountingJournal:
         means every registered check passed; it does not certify unconnected
         legacy or special-product transaction paths.
         """
-        from functions.money import audit_amount_snapshots
+        from functions.money import audit_amount_field_coverage, audit_amount_snapshots
         from managers.bank_journal import BankJournal
 
         amount_findings = audit_amount_snapshots(conn)
+        amount_field_coverage = audit_amount_field_coverage(conn)
         common_checks = cls.reconcile_subledgers(conn)
         common_findings = [dict(row) for row in common_checks
                            if row.get("status") != "matched"]
@@ -1241,14 +1242,20 @@ class AccountingJournal:
             for report in institution_reports
             for finding in report["findings"]
         ]
+        schema_findings = [
+            {"scope": "amount_schema_coverage", **finding}
+            for finding in amount_field_coverage["unclassified"]
+        ]
         findings = ([{"scope": "amount_snapshot_registry", **finding}
                      for finding in amount_findings]
+                    + schema_findings
                     + [{"scope": "common_journals", **finding}
                        for finding in common_findings]
                     + [{"scope": "institution_subledgers", **finding}
                        for finding in institution_findings])
         coverage = (
             "amount_snapshot_registry",
+            "amount_schema_coverage",
             "common_journals",
             "institution_subledgers",
             "institution_pnl",
@@ -1266,6 +1273,7 @@ class AccountingJournal:
             "coverage": coverage,
             "institution_count": len(issuers),
             "amount_snapshot_findings": amount_findings,
+            "amount_field_coverage": amount_field_coverage,
             "common_journal_checks": common_checks,
             "institution_reports": institution_reports,
             "findings": findings,
@@ -1283,61 +1291,79 @@ class AccountingJournal:
         ).fetchone()
         through = int(baseline[0]) if baseline else 0
         gaps = []
-        rows = conn.execute("""SELECT p.payment_id,p.user_id,p.net_amount_units,
-            p.quote_currency,p.allocation_key,d.asset_code
-            FROM dividend_payments p JOIN dividend_distributions d USING(distribution_id)
+        rows = conn.execute("""WITH wallet_links AS (
+                SELECT x.payment_id,COUNT(*) link_count,MIN(l.entry_id) entry_id,
+                    MIN(l.user_id) user_id,MIN(l.currency_code) currency_code,
+                    MIN(l.decimal_places) decimal_places,MIN(l.delta_minor_units) delta_minor_units
+                FROM dividend_payment_wallet_links x
+                LEFT JOIN customer_wallet_ledger l ON l.entry_id=x.wallet_entry_id
+                GROUP BY x.payment_id
+            ), fund_links AS (
+                SELECT x.payment_id,COUNT(*) link_count,MIN(l.entry_id) entry_id,
+                    MIN(l.product_code) product_code,MIN(l.event) event,
+                    MIN(l.reference) reference,MIN(l.amount) amount
+                FROM dividend_payment_fund_links x
+                LEFT JOIN fund_cash_ledger l ON l.entry_id=x.fund_entry_id
+                GROUP BY x.payment_id
+            )
+            SELECT p.payment_id,p.user_id,p.net_amount_units,p.quote_currency,d.asset_code,
+                COALESCE(w.link_count,0) wallet_link_count,w.entry_id wallet_entry_id,
+                w.user_id wallet_user_id,w.currency_code wallet_currency_code,
+                w.decimal_places wallet_decimal_places,w.delta_minor_units wallet_delta_minor_units,
+                COALESCE(f.link_count,0) fund_link_count,f.entry_id fund_entry_id,
+                f.product_code fund_product_code,f.event fund_event,f.reference fund_reference,
+                f.amount fund_amount,a.product_code owner_product_code
+            FROM dividend_payments p
+            JOIN dividend_distributions d USING(distribution_id)
+            LEFT JOIN wallet_links w USING(payment_id)
+            LEFT JOIN fund_links f USING(payment_id)
+            LEFT JOIN fund_accounts a ON a.owner_id=p.user_id
             WHERE p.payment_id>? ORDER BY p.payment_id""", (through,)).fetchall()
         checked = 0
+        currency_places = {}
         for payment in rows:
             payment_id = int(payment["payment_id"])
             currency = str(payment["quote_currency"] or "NWX").upper()
-            places = currency_precision(conn, currency)
+            if currency not in currency_places:
+                currency_places[currency] = currency_precision(conn, currency)
+            places = currency_places[currency]
             expected = to_minor_units(
                 Decimal(int(payment["net_amount_units"] or 0)) / Decimal(1_000_000),
                 places,
             )
-            wallet = conn.execute("""SELECT l.entry_id,l.user_id,l.currency_code,
-                l.decimal_places,l.delta_minor_units FROM dividend_payment_wallet_links x
-                LEFT JOIN customer_wallet_ledger l ON l.entry_id=x.wallet_entry_id
-                WHERE x.payment_id=?""", (payment_id,)).fetchall()
-            fund = conn.execute("""SELECT l.entry_id,l.product_code,l.event,l.reference,l.amount
-                FROM dividend_payment_fund_links x LEFT JOIN fund_cash_ledger l
-                ON l.entry_id=x.fund_entry_id WHERE x.payment_id=?""", (payment_id,)).fetchall()
+            wallet_count = int(payment["wallet_link_count"])
+            fund_count = int(payment["fund_link_count"])
             if expected <= 0:
-                if wallet or fund:
+                if wallet_count or fund_count:
                     gaps.append({"payment_id": payment_id,
                         "status": "unexpected_zero_payment_settlement_link"})
                 continue
             checked += 1
-            if len(wallet) + len(fund) != 1:
+            if wallet_count + fund_count != 1:
                 gaps.append({"payment_id": payment_id,
-                    "wallet_link_count": len(wallet), "fund_link_count": len(fund),
+                    "wallet_link_count": wallet_count, "fund_link_count": fund_count,
                     "status": "missing_or_duplicate_settlement_link"})
                 continue
-            if wallet:
-                receipt = wallet[0]
-                if (receipt["entry_id"] is None
-                        or str(receipt["user_id"]) != str(payment["user_id"])
-                        or str(receipt["currency_code"]).upper() != currency
-                        or int(receipt["decimal_places"]) != places
-                        or int(receipt["delta_minor_units"]) != expected):
+            if wallet_count:
+                if (payment["wallet_entry_id"] is None
+                        or str(payment["wallet_user_id"]) != str(payment["user_id"])
+                        or str(payment["wallet_currency_code"]).upper() != currency
+                        or int(payment["wallet_decimal_places"]) != places
+                        or int(payment["wallet_delta_minor_units"]) != expected):
                     gaps.append({"payment_id": payment_id,
                         "expected_minor_units": expected,
-                        "actual_minor_units": (int(receipt["delta_minor_units"])
-                                               if receipt["delta_minor_units"] is not None else None),
+                        "actual_minor_units": (
+                            int(payment["wallet_delta_minor_units"])
+                            if payment["wallet_delta_minor_units"] is not None else None),
                         "status": "wallet_settlement_mismatch"})
                 continue
-            receipt = fund[0]
-            owner = conn.execute(
-                "SELECT product_code FROM fund_accounts WHERE owner_id=?",
-                (str(payment["user_id"]),),
-            ).fetchone()
-            amount = (to_minor_units(receipt["amount"], 0)
-                      if receipt["amount"] is not None and currency == "NWX" else None)
-            if (receipt["entry_id"] is None or currency != "NWX" or not owner
-                    or str(receipt["product_code"]) != str(owner["product_code"])
-                    or receipt["event"] != "dividend"
-                    or str(receipt["reference"]) != str(payment["asset_code"])
+            amount = (to_minor_units(payment["fund_amount"], 0)
+                      if payment["fund_amount"] is not None and currency == "NWX" else None)
+            if (payment["fund_entry_id"] is None or currency != "NWX"
+                    or not payment["owner_product_code"]
+                    or str(payment["fund_product_code"]) != str(payment["owner_product_code"])
+                    or payment["fund_event"] != "dividend"
+                    or str(payment["fund_reference"]) != str(payment["asset_code"])
                     or amount != expected):
                 gaps.append({"payment_id": payment_id,
                     "expected_minor_units": expected,

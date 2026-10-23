@@ -116,6 +116,8 @@ def audit_amount_snapshots(conn):
     ).fetchone()
     if not exists:
         return [{"status": "missing_inventory"}]
+    rowid_tables = {str(row[1]) for row in conn.execute("PRAGMA table_list").fetchall()
+                    if len(row) > 4 and int(row[4]) == 0}
     findings = []
     registry_exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='financial_amount_field_registry'"
@@ -139,6 +141,8 @@ def audit_amount_snapshots(conn):
                    for name in (table, key_field, field)):
             continue
         columns = {item[1] for item in conn.execute(f'PRAGMA table_info("{table}")')}
+        if key_field == "rowid" and table in rowid_tables:
+            columns.add("rowid")
         if key_field not in columns or field not in columns:
             findings.append({"source_table": table, "source_key": "*",
                              "amount_field": field, "status": "missing_source_field"})
@@ -164,6 +168,8 @@ def audit_amount_snapshots(conn):
                              "amount_field": field, "status": "invalid_inventory_identifier"})
             continue
         columns = {item[1] for item in conn.execute(f'PRAGMA table_info("{table}")')}
+        if key_field == "rowid" and table in rowid_tables:
+            columns.add("rowid")
         if key_field not in columns or field not in columns:
             findings.append({"source_table": table, "source_key": key,
                              "amount_field": field, "status": "missing_source_field"})
@@ -185,6 +191,75 @@ def audit_amount_snapshots(conn):
                              "expected_minor_units": expected, "snapshot_minor_units": actual,
                              "status": "mismatch"})
     return findings
+
+
+def audit_amount_field_coverage(conn):
+    """Find money-shaped numeric columns without registration or an explicit reason.
+
+    This schema heuristic complements row-level snapshots. It intentionally
+    returns candidates instead of guessing that names such as ``value`` or
+    ``price`` always represent currency.
+    """
+    table_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='financial_amount_field_registry'"
+    ).fetchone()
+    exemption_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='financial_amount_field_exemptions'"
+    ).fetchone()
+    if not table_exists or not exemption_exists:
+        return {"status": "missing_inventory", "registered_count": 0,
+                "exempt_count": 0, "unclassified": [{"status": "missing_inventory"}]}
+
+    registered = {(str(row[0]), str(row[1])) for row in conn.execute(
+        "SELECT source_table,amount_field FROM financial_amount_field_registry"
+    ).fetchall()}
+    exemptions = {(str(row[0]), str(row[1])) for row in conn.execute(
+        "SELECT source_table,amount_field FROM financial_amount_field_exemptions"
+    ).fetchall()}
+    money_tokens = {
+        "amount", "balance", "price", "cost", "fee", "tax", "cash", "principal",
+        "income", "revenue", "proceeds", "premium", "capital", "allowance", "payout",
+        "discount", "nav", "face", "strike", "payment", "dividend", "claim", "reserve",
+        "deposit", "earning", "expense", "value",
+    }
+    non_amount_tokens = {
+        "id", "epoch", "percent", "bps", "rate", "ratio", "count", "quantity", "shares",
+        "supply", "decimal", "frequency", "days", "seconds", "years", "score", "sensitivity",
+        "volatility", "liquidity", "kind", "status", "type", "cycle", "number", "mode",
+        "active", "insured", "priority", "remainder", "factor", "weight", "stage", "date", "time",
+    }
+    numeric_types = {"REAL", "FLOAT", "DOUBLE", "NUMERIC", "INTEGER", "INT"}
+    unclassified = []
+    tables = conn.execute("PRAGMA table_list").fetchall()
+    for table_row in tables:
+        table = str(table_row[1])
+        if str(table_row[2]) != "table" or table.startswith("sqlite_"):
+            continue
+        for column in conn.execute(f'PRAGMA table_info("{table}")').fetchall():
+            field, declared_type = str(column[1]), str(column[2] or "").upper()
+            key = (table, field)
+            if declared_type not in numeric_types:
+                continue
+            # target_value is a percentage for most events, but a quote-currency
+            # amount for explicit price-target events. Do not blanket-exempt the
+            # column: report it when that monetary mode is actually present.
+            if key == ("market_events", "target_value"):
+                has_price_targets = conn.execute(
+                    "SELECT 1 FROM market_events WHERE target_mode='price' LIMIT 1"
+                ).fetchone()
+                if not has_price_targets:
+                    continue
+            if (key in registered or key in exemptions
+                    or field.endswith(("_minor", "_minor_units", "_subminor_units", "_decimal_places"))):
+                continue
+            tokens = set(field.lower().split("_"))
+            if tokens & money_tokens and not tokens & non_amount_tokens:
+                unclassified.append({"source_table": table, "amount_field": field,
+                                     "declared_type": declared_type,
+                                     "status": "unclassified_money_candidate"})
+    return {"status": "matched" if not unclassified else "unclassified",
+            "registered_count": len(registered), "exempt_count": len(exemptions),
+            "unclassified": unclassified}
 
 
 def round_currency(conn, value, currency_code):

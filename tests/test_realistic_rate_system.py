@@ -1474,6 +1474,9 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(report["commonJournalUnbalancedEntries"], [])
         self.assertIn("financialCloseControl", report)
         self.assertIn("amount_snapshot_registry", report["financialCloseControl"]["coverage"])
+        self.assertIn("amount_schema_coverage", report["financialCloseControl"]["coverage"])
+        self.assertEqual(report["financialCloseControl"]["amount_field_coverage"]["status"], "matched")
+        self.assertEqual(report["financialCloseControl"]["amount_field_coverage"]["unclassified"], [])
         self.assertIn("institution_subledgers", report["financialCloseControl"]["coverage"])
         self.assertTrue(any(item["issuer"] == "Bank"
                             for item in report["financialCloseControl"]["institution_reports"]))

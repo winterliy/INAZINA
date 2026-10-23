@@ -57,6 +57,7 @@ class DatabaseManager:
             self.els = ELSDB()
             self.financial = FinancialDB()
             self.credit = CreditDB()
+            self.currency.register_late_amount_fields()
             from .numeric_guards import install as install_numeric_guards
             install_numeric_guards(self.users)
             # Refresh planner statistics opportunistically after schema/index

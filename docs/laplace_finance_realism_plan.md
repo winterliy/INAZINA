@@ -2,6 +2,15 @@
 
 목표는 실제 금융기관 운영 시스템이 아니라 현실 요소를 갖춘 금융 시뮬레이터다. 기존 기능과 데이터 구조를 최대한 재사용하며, 겹치는 기능은 재작성하지 않고 확장한다. 기준금리 결정권은 관리자에게 둔다.
 
+## 한눈에 보는 요약 (2026-10-24)
+
+- 범위는 내부 금융 시뮬레이터다. 실제 은행·수탁기관·세무기관 연결과 외부 인증 취득은 포함하지 않는다.
+- 12개 챕터는 시장금리·은행 조달·건전성/ALM·차주심사/ECL·계약·법률/세금·회수·예금보험·채권·외환·회계로 구성된다. 관리자만 기준금리를 결정한다.
+- #80 DR 의결권·내부 수탁·배당 원천징수는 내부 시뮬레이터 범위에서 완료로 판정했다.
+- #74의 M5 신용위험/ECL은 계획상 완료 체크되어 있다. M4 회계·금액 전사 이관은 **미완료**이고, M6–M8도 미완료 항목이 남아 있다.
+- M4의 핵심 잔여는 시장·대출·채권 등 모든 금액 소비자의 상품통화 최소단위 이관, 고객/회사/기관 공통 전기와 전체 보조원장 대사, 과거 잔액·마감 통합 검증이다. 상세 항목과 현재 체크 상태는 아래 M4 WBS 및 [금액 인벤토리](financial_amount_inventory.md)를 따른다.
+- 금액 모델은 통화별 최소 단위와 Decimal 경계를 확대하고 있지만, 일부 legacy REAL mirror와 simulator proxy가 남는다. 이 문서는 실제 금융기관 운영 적합성이나 규제 인증을 주장하지 않는다.
+
 ## 현재 기반과 남은 범위
 
 | 장 | 이미 있는 기반 | 남은 구현 |
@@ -17,7 +26,7 @@
 | 9. 예금보험·정리 | 고객·기관별 한도 합산, 다계좌 잔액비례 보장 배분, 보장액·미보장채권 원장, 외화 보험금 환산, 원청구·실지급 통화/금액 이력, 실패기관 상품 정지, 관리자 은행원장과 개인 HTS의 정리내역 조회, 통화별 청구액-분개장 부채 대사 | 보험기금·보험료, 대출과 상계, 단계별 지급 지연, 가교은행·손실순위, 외환통장 정리 |
 | 10. 채권·금리위험 | 국채·회사채 현금흐름 평가, 만기별 곡선, 신용·유동성 스프레드 | 거래기반 곡선, 듀레이션·DV01·컨벡서티, 변동채·옵션채·스왑·헤지 |
 | 11. 다중통화 | 상품통화 정밀도, 환전·국가별 화폐, 기관 대차대조표 환산, 대출·예금 순외화포지션 및 ±10/20% 환율 민감도 | 통화별 만기·유동성, 순외화포지션 헤지·한도, 외화차주 상환 스트레스 및 전체 자산·부채 환산 충격 |
-| 12. 회계·정밀도 | M4 여섯 종료 게이트: 금액 필드 등록·감사, 상품통화 최소단위 경계, 표준 고객·기관·회사·시장·대출·채권 흐름의 공통 전기, 보조원장 대사, 재구성·재실행·실패·마감 검증 | 특수 매처와 일부 과거/외화 이벤트의 거래별 재생 및 fixing은 [금액 인벤토리](financial_amount_inventory.md)에 제한으로 열거 |
+| 12. 회계·정밀도 | 상품통화 최소단위/Decimal 도구, 고객·기관·회사 공통원장 일부, 등록 금액 필드 감사, 거래별 보조원장 대사의 일부 | M4 미완료: 전 금액 소비자 이관, 모든 보조원장 연결, 과거 재구성·부분 실패·마감 통합검증. 상세는 [M4 체크리스트](#m4--74-상품화폐-회계-기반)와 [금액 인벤토리](financial_amount_inventory.md) 참조 |
 
 ## 보안·준법 작업 흐름
 
@@ -98,12 +107,12 @@
 
 ### M4 — #74 상품화폐 회계 기반
 
-- [x] 금액 원천·저장 필드를 통화 선택식과 함께 `financial_amount_field_registry`에 등록하고, 표가 비어 있어도 인벤토리에 남기며 `audit_amount_snapshots`가 누락 스냅샷·불일치·원천 스키마 누락을 찾는다. 레거시 호환 필드와 미지원 FX/특수상품 경로는 [금액 인벤토리](financial_amount_inventory.md)의 잔여 제한으로 열거한다.
-- [x] 상품통화 scale 기반 정수 최소단위 또는 Decimal을 공통 금액 경계로 확대하고 변환·반올림 규칙을 명시한다. `functions.money`의 `to_minor_units`/`from_minor_units`와 half-up 규칙, `AccountingJournal.post`의 통화정밀도 일치·정수 분개 검증이 공통 계약이다. 소비자 전체 이관은 별도 항목이다.
-- [x] 표준 고객·기관·회사·세금·시장·펀드·대출·국채·회사채 흐름을 상품통화 최소단위/Decimal 경계로 이관하고, 레거시 잔액은 결정적 opening/baseline으로 분리한다. 회사채 신규 발행·쿠폰·만기도 동일통화에서 회사 분개장에 연결한다. 나머지 외화 fixing·특수 매처는 아래 제한에 둔다.
-- [x] 고객·기관·회사 원장을 연결할 공통 전기 규약, 계정과목 매핑, 외화청산·차이계정을 정의한다. `AccountingJournal`의 원장/주체/원천키, 계정 매핑, 멱등 정수 분개 및 FX clearing 계정을 기준으로 둔다. 모든 거래 소비자가 여기에 연결된 것은 아니다.
-- [x] 거래 유형별 누락·중복·불균형 및 원장/보조원장 불일치를 관리자 대사로 노출하고, 통화·scale별 시산표를 제공한다. 정상 상태를 자동 보정하지 않는다.
-- [x] 재실행 멱등성, 트랜잭션 중간 실패 rollback, opening 재구성, 과거 baseline 분리, 기간 마감과 다음 기간 정정 경계를 타깃 및 통합 회귀로 확인한다.
+- [x] 금액 원천·저장 필드를 통화 선택식과 함께 `financial_amount_field_registry`에 등록하고, 행 단위 snapshot·스키마 누락 감사를 통합 대사에 연결한다. 실제 가격형 시장 이벤트는 별도 미분류 후보로 close를 막으며, 통화별 snapshot 규칙은 남아 있다. 이 스키마 검사는 소비자 코드의 전사 계보를 증명하지 않는다.
+- [ ] 상품통화 scale 기반 정수 최소단위 또는 Decimal을 공통 경계로 확대한다. `to_minor_units`/`from_minor_units`와 `AccountingJournal.post`가 공통 계약이지만, 시장 가격매칭, 옵션·선물, 대출 생애주기, 담보처분 등 남은 consumer를 모두 canonical 정수 경로로 옮겨야 한다.
+- [ ] 표준 고객·기관·회사·세금·시장·펀드·대출·국채·회사채의 원금/현금/수수료/세금/손익 경로를 상품통화 최소단위로 연결한다. 현재 일부 회사채·시장·세금·지급 경로가 남아 있으며 [금액 인벤토리](financial_amount_inventory.md)의 미완료 항목을 종결해야 한다.
+- [ ] 고객·기관·회사 원장을 공통 전기 규약/계정 매핑에 연결한다. 공통 분개 프레임은 있지만 모든 거래유형의 settlement, cash clearing, FX clearing 및 회사/기관 손익 연결은 아직 일치하지 않는다.
+- [ ] 고객·상품·시장·대출·채권·펀드·세금의 전체 보조원장을 관리자 대사로 묶고 통화/scale별 시산표와 누락·중복·불균형 finding을 제공한다. 현재 `reconcile_all_financial_ledgers`는 구현된 검사 범위 집계이며 미연결 보조원장은 완료되지 않았다.
+- [ ] 실제 데이터에서 기존 잔액 재구성, 과거 baseline 경계, 부분 실패 rollback, 재실행 멱등성, 마감/정정 경계를 전사 업무 흐름별 통합 검증한다. 현재 각 일부 경로의 개별 검증만으로 전사 완료를 선언하지 않는다.
 
 2026-10-23 추가: 원천징수 tax transaction을 국고 customer-wallet 입금 이벤트와 불변 링크로 연결하고, 지갑 입금 하나가 여러 세금 행에 재사용되지 않도록 unique constraint를 둔다. 과거 세금 행은 이관 시점 watermark로 분리해 가짜 과거 입금 이벤트를 만들지 않는다. 신규 양수 세금은 국고 입금 없이 커밋되지 않으며, 통화가 같은 경우 금액·국고 주체·양수 입금 여부를 보조원장 대사에서 검사한다. 펀드 현금(현재 NWX 정수 전용)도 기존 `fund_cash_ledger`를 공통 원장의 `fund_cash`/`fund_cash_clearing` 균형 분개로 재구성하고 신규 원장 입력 trigger로 원자 연결했다. 펀드 잔액 대사, 분개 누락 탐지, 마이그레이션 재실행 복구 및 균형 검사를 추가했다. 최초 전체 852개 테스트, 후속 unique 제약 영향 범위 테스트 3개가 통과했으며 `compileall`과 `git diff --check`도 통과했다. 상품 NAV/보유자산, 펀드 수익배분·지급, 다른 세금 지급 통화의 FX clearing과 기관 손익 연결은 아직 미완료이므로 M4 체크 항목은 그대로 미완료다.
 
@@ -369,14 +378,20 @@ ECL 충당금도 대출별 `ecl_allowance_minor_units`를 추가해 백필·양�
 
 2026-10-24 회사채 지급 전기 후속: 앞 단락 작성 뒤 신규 동일통화 회사채 발행을 `cash`/`bond_discount`/`bonds`에 멱등 전기하고, 정기 쿠폰의 총이자비용·현금 감소 및 만기상환의 액면부채 제거·총이자비용·현금 감소를 회사 분개장에 연결했다. 지급은 보유원장·현금 갱신과 같은 DB 트랜잭션에서 처리하며, 재무원장 만기 상각과 중복 쿠폰 방지용 source key를 사용한다. 회사채 타깃 3 tests와 전체 회귀에서 검증했다. 외화 회사채, 과거 지급의 재구성, 발행자 cash subledger와 보조원장의 완전 일치 검증은 잔여 제한에 기록했다.
 
-### M4 최종 완료 기록 — 2026-10-24
+### M4 기존 완료 판정 재검토 — 2026-10-24
 
-M4 여섯 완료 게이트를 종료했다. 금액 필드 등록부는 원천행이 비어 있어도 통화 선택식과 필드 분류를 보존하고, 감사 함수는 등록 필드의 원천 스키마·행별 snapshot 누락·금액 및 scale 불일치를 보고한다. 공통 분개/계정 매핑, 상품통화 최소단위 대사, opening/baseline 재구성, 불변 settlement link, 원장 시산표, 중복·부분 실패·마감 경계 검증을 기존 서비스에 연결했다. 회사채 동일통화 신규 발행·쿠폰·만기상환도 회사 재무 분개장에 포함했다.
+이 날짜의 기존 기록은 여섯 체크박스를 완료로 표기했지만, 같은 인벤토리에 상품·시장·대출·채권 소비자의 미이관 경로, 전체 보조원장 연결 부족, 과거 거래별 재생 제한이 남아 있어 사용자가 지정한 “전사 금액 경로 이관 및 전체 보조원장 대사” 완료를 입증하지 못한다. 따라서 이를 M4 총완료 증거로 취급하지 않고 재검토 상태로 되돌린다. 완료 범위와 제외 범위를 사용자 요청에 맞춰 항목별로 대조한 뒤에만 다시 닫는다.
 
-최종 검증: `PYTHONPATH=tests PYTHONWARNINGS=ignore python -m unittest discover -s tests` **864 tests, 738.015초, OK**. API/dashboard/HTS/site/WL `npm run build` 성공(기존 dashboard와 Three.js bundle 크기 경고만 표시). `python -m compileall -q database functions managers web_api tests` 및 `git diff --check` 통과. 해당 전체 회귀에는 신규 회사채 발행/쿠폰/만기 멱등 분개, 빈 AML 테이블 필드 등록, snapshot 누락 탐지 검증 및 최종 작업 트리 회귀가 포함됐다.
+이전 완료 판정 당시 검증: `PYTHONPATH=tests PYTHONWARNINGS=ignore python -m unittest discover -s tests` **864 tests, 738.015초, OK**. API/dashboard/HTS/site/WL `npm run build` 성공(기존 dashboard와 Three.js bundle 크기 경고만 표시). `python -m compileall -q database functions managers web_api tests` 및 `git diff --check` 통과. 이 결과는 당시 포함된 회귀만 검증하며, 위 누락 범위가 완료됐음을 증명하지 않는다.
 
 완료선은 내부 금융 시뮬레이터다. 외부 은행/수탁/세무 연결은 없다. 잔여 제한은 호환 목적으로 남긴 일부 SQLite REAL/float mirror, 비표준·특수 매처의 레거시 소비, 과거 거래 이벤트가 없던 잔액의 거래별 재생 대신 opening/baseline 분리, 일부 외화 회사채와 송금/세금의 거래시점 FX fixing·clearing이다. 이들은 인벤토리와 관리자 대사에서 명시적으로 구분하며 과거 근거가 없는 거래를 새로 만들지 않는다. 실제 금융기관 운영 인증이나 외부 독립 회계/신용 검증은 M4 범위가 아니다.
 
 2026-10-24 통합 대사 보완: `audit_amount_snapshots`가 스냅샷 행만으로 검사 대상을 찾던 문제를 고쳐, 원천 테이블이 비어도 등록부의 필드 정의와 원천 스키마를 검사한다. 공통원장·등록 스냅샷·각 금융기관의 구현된 BankJournal 보조원장 검사를 `AccountingJournal.reconcile_all_financial_ledgers`로 묶고 은행 관리자 웹 보고서에 통합 상태·범위·finding을 노출했다. 이 결과의 `matched`는 등록되고 구현된 검사 범위에 한정되며 inventory에 적은 특수 매처/거래별 과거 재생 제한까지 모두 해결했다는 뜻은 아니다.
 
-재개 후 통합 검증: `PYTHONPATH=tests PYTHONWARNINGS=ignore python -m unittest discover -s tests` **869 tests, 715.739초, OK**. `npm run build`의 API/dashboard/HTS/site/WL 빌드, `python -m compileall -q database functions managers web_api tests`, `git diff --check`도 통과했다. 이 결과는 재개 시점의 main 코드 및 M4 대사 보완을 검증했다.
+재개 전 통합 검증: `PYTHONPATH=tests PYTHONWARNINGS=ignore python -m unittest discover -s tests` **869 tests, 715.739초, OK**. `npm run build`의 API/dashboard/HTS/site/WL 빌드, `python -m compileall -q database functions managers web_api tests`, `git diff --check`도 통과했다. 이후 발견된 금액 필드 커버리지 보강은 별도 회귀 검증 중이며, M4 전체 완료 검증은 아직 닫히지 않았다.
+
+2026-10-24 재검토 후 변경: late-init 복권/법인행사/ELS/시장/파생 스키마 금액 필드 및 legacy rowid 테이블을 감사 등록에 추가했다. 숫자 금액형 열의 분류 감사는 통합 financial close 보고서와 관리자 대시보드에 연결되어, 신규 미분류 금액 열은 전체 상태를 mismatch로 만든다. `market_events.target_value`는 `price` 모드에서만 금액 후보로 검사하며, 회귀 테스트가 이 모드의 누락 후보를 잡는다. 검증: 금액 감사·통합 close·관리자 API 타깃 4 tests 통과, dashboard production build 통과, compileall 및 `git diff --check` 통과. 전체 회귀는 이 패치 후 재실행 예정. 이 변경은 스키마 커버리지 한 항목만 닫으며 나머지 M4 미완료 체크는 해제 상태로 둔다.
+
+2026-10-24 전체 회귀 결과 및 트리거 수정: 첫 회귀 875 tests에서 새 `market_event_targets` currency expression 오류로 41 errors가 났다. 원인은 자산 코드 필드에 존재하지 않는 `NEW.underlying_code` 참조였다. 이를 `NEW.asset_code`로 바로잡고 USD quote currency의 rowid snapshot 회귀 및 기존 시장 이벤트 테스트를 통과시켰다. 수정 후 전체 `python -m unittest discover -s tests`: **877 tests, 1 failure**. 유일한 실패는 기본 interpreter에 optional `maxminddb` 모듈이 없어 GeoIP를 “외부 인터넷”으로 반환한 별도 환경 테스트다. 동일 테스트는 `.venv/bin/python`에서 통과했고 `tools/update_geoip.py --check`도 DB build 2026-10-01, 8.8.8.8 → 미국·California·Mountain View로 확인했다. `npm run build` 전체 workspace(API/dashboard/HTS/site/WL), `compileall`, `git diff --check` 통과. M4는 남은 전사 금액 소비자 이관 및 전체 보조원장 대사 항목이 있어 아직 미완료다.
+
+2026-10-24 문서 요약·배당 검증 일반화·조회 최적화: 이 계획서 첫머리에 목표/범위, 완료 단계, M4/M6–M8 잔여를 요약하고 12장 표의 M4 설명을 현재 WBS 체크와 일치시켰다. 배당 금액 필드 snapshot 테스트는 USD/EUR(2자리)와 NWX(0자리)를 함께 검증한다. 구현은 USD 상수가 아니라 각 행의 `quote_currency`와 `currencies.decimal_places`를 읽는다. 고객 wallet payout 대사도 지급 통화 scale을 사용한다. 펀드 cash ledger와 펀드 배당 수령은 아직 NWX 전용이라 별도 제한으로 유지한다. 대사 함수의 지급별 링크 SELECT를 집계 CTE로 묶고 통화 정밀도를 통화별 한 번만 조회해 쿼리를 결제 수가 아닌 distinct currency 수에 비례하도록 줄였다. 검증: 통화/금액·주주명부·펀드 회귀 **69 tests, 67.916초, OK**.
