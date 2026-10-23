@@ -1,19 +1,23 @@
-/* INAZINA HTS — Apple-style glass, matching the dashboard (glass-dashboard/index.html).
-   Trading screens stay dense: smaller radii and paddings than the dashboard, softer wallpaper. */
+/* INAZINA HTS — Apple design (VoltAgent/awesome-design-md · design-md/apple/DESIGN.md),
+   kept dense for trading: white hairline panels, black global nav, one blue accent.
+   Market colours stay: rise/buy red, fall/sell blue (Korean convention; data, not chrome). */
 :root {
   color-scheme: light;
-  --a1: .86; --a2: .76;
-  --accent: #0071e3;
+  --accent: #0066cc;          /* Action Blue: the only interactive colour */
+  --accent-focus: #0071e3;    /* focus ring */
+  --accent-ink: #fff;
   --ink: #1d1d1f;
   --ink2: #6e6e73;
-  --line: rgba(0, 0, 0, .08);
+  --line: rgba(0, 0, 0, .08); /* 1px hairline */
+  --canvas: #f5f5f7;          /* parchment */
+  --surface: #ffffff;         /* utility cards */
+  --pearl: #fafafc;           /* secondary capsules */
+  --chip: #e8e8ed;            /* segmented-control track */
+  --tile: #272729;            /* near-black tile */
   --glass-rgb: 255, 255, 255;
-  --win: rgba(255, 255, 255, .42);
-  --field: rgba(255, 255, 255, .85);
-  --hover: rgba(0, 113, 227, .06);
-  --select: rgba(0, 113, 227, .1);
-  --shadow: 60, 30, 100;
-  /* Korean market convention: rise/buy red, fall/sell blue. */
+  --field: #ffffff;
+  --hover: rgba(0, 0, 0, .04);
+  --select: rgba(0, 102, 204, .08);
   --up: #e0362c;
   --up-soft: rgba(224, 54, 44, .1);
   --down: #1a6fe0;
@@ -24,19 +28,21 @@
   font-family: var(--font-system);
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --a1: .66; --a2: .56;
-    --accent: #0a84ff;
+    --accent: #2997ff;
+    --accent-focus: #2997ff;
     --ink: #f5f5f7;
     --ink2: #a1a1a6;
     --line: rgba(255, 255, 255, .1);
-    --glass-rgb: 40, 40, 48;
-    --win: rgba(16, 16, 24, .55);
-    --field: rgba(58, 58, 66, .9);
+    --canvas: #000000;
+    --surface: #1d1d1f;
+    --pearl: #2a2a2c;
+    --chip: #2a2a2c;
+    --glass-rgb: 29, 29, 31;
+    --field: #2a2a2c;
     --hover: rgba(255, 255, 255, .06);
-    --select: rgba(10, 132, 255, .2);
-    --shadow: 0, 0, 0;
+    --select: rgba(41, 151, 255, .16);
     --up: #ff5a4f;
     --up-soft: rgba(255, 90, 79, .16);
     --down: #4d9bff;
@@ -46,12 +52,11 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; min-height: 100%; }
-body { min-width: 320px; min-height: 100vh; color: var(--ink); background: #f8e9ee; font-family: var(--font-system); -webkit-font-smoothing: antialiased; }
-@media (prefers-color-scheme: dark) { body { background: #17121f; } }
+body { min-width: 320px; min-height: 100vh; color: var(--ink); background: var(--canvas); font-family: var(--font-system); font-size: 17px; letter-spacing: -.022em; -webkit-font-smoothing: antialiased; }
 h1, h2, p, dl { margin: 0; }
 button, input, select { color: inherit; font: inherit; }
-button { min-height: 32px; padding: 0 12px; border: 0; border-radius: 999px; background: rgba(var(--glass-rgb), .7); font-size: 12px; font-weight: 550; cursor: pointer; box-shadow: inset 0 0 0 1px var(--line); transition: transform .18s var(--spring), background-color .2s, box-shadow .2s; }
-button:hover:not(:disabled) { background: rgba(var(--glass-rgb), .98); }
+button { min-height: 32px; padding: 0 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--pearl); font-size: 12px; font-weight: 550; cursor: pointer; transition: transform .18s var(--spring), background-color .2s; }
+button:hover:not(:disabled) { background: var(--pearl); }
 button:active:not(:disabled) { transform: scale(.96); }
 button:disabled { opacity: .45; cursor: not-allowed; }
 button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -61,13 +66,13 @@ input::placeholder { color: var(--ink2); }
 /* clip keeps the sticky top bar and market list working while scrolling. */
 .stage { position: relative; min-height: 100vh; overflow-x: clip; }
 .stage .auth-shell { position: relative; z-index: 1; background: transparent; }
-.stage .auth-panel { border: 0; border-radius: 24px; background: linear-gradient(135deg, rgba(var(--glass-rgb), var(--a1)), rgba(var(--glass-rgb), var(--a2))); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .55), inset 0 0 0 1px rgba(255, 255, 255, .3), 0 18px 44px rgba(var(--shadow), .18); backdrop-filter: blur(30px) saturate(120%); -webkit-backdrop-filter: blur(30px) saturate(120%); animation: rise 700ms var(--ease) backwards; }
+.stage .auth-panel { border: 0; border-radius: 24px; background: var(--surface); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .55), inset 0 0 0 1px rgba(255, 255, 255, .3), 0 18px 44px rgba(0, 0, 0, .18); backdrop-filter: blur(30px) saturate(120%); -webkit-backdrop-filter: blur(30px) saturate(120%); animation: rise 700ms var(--ease) backwards; }
 @media (prefers-color-scheme: dark) { .stage .auth-panel, .stage .auth-panel h1, .stage .auth-wordmark { color: var(--ink); } .stage .auth-panel input, .stage .auth-panel select { color: var(--ink); background: var(--field); border-color: var(--line); } }
 
 /* Shared glass surface */
 .hts-topbar, .wallet-summary-card, .quote-strip, .chart-panel, .data-panel, .toast, .review-modal, .search-modal, .account-modal, .command-modal, .board-modal {
-  background: linear-gradient(135deg, rgba(var(--glass-rgb), var(--a1)), rgba(var(--glass-rgb), var(--a2)));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .55), inset 0 0 0 1px rgba(255, 255, 255, .28), 0 8px 26px rgba(var(--shadow), .1);
+  background: var(--surface);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .55), inset 0 0 0 1px rgba(255, 255, 255, .28), 0 8px 26px rgba(0, 0, 0, .1);
   backdrop-filter: blur(28px) saturate(140%);
   -webkit-backdrop-filter: blur(28px) saturate(140%);
 }
@@ -123,7 +128,7 @@ input::placeholder { color: var(--ink2); }
 .segmented, .drawing-tools { display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px; background: rgba(var(--glass-rgb), .55); box-shadow: inset 0 0 0 1px var(--line); }
 .segmented button, .drawing-tools button { min-height: 28px; padding: 0 11px; background: transparent; box-shadow: none; color: var(--ink2); font-size: 12px; }
 .segmented button:hover:not(:disabled), .drawing-tools button:hover:not(:disabled) { color: var(--ink); background: rgba(var(--glass-rgb), .6); }
-.segmented button.selected, .drawing-tools button.selected { color: var(--ink); background: rgba(var(--glass-rgb), .98); box-shadow: 0 1px 4px rgba(var(--shadow), .18), inset 0 1px 0 rgba(255, 255, 255, .8); font-weight: 650; }
+.segmented button.selected, .drawing-tools button.selected { color: var(--ink); background: rgba(var(--glass-rgb), .98); box-shadow: 0 1px 4px rgba(0, 0, 0, .18), inset 0 1px 0 rgba(255, 255, 255, .8); font-weight: 650; }
 .segmented .divider { width: 1px; height: 16px; margin: 0 4px; background: var(--line); }
 .interval-select { height: 28px; margin: 0 2px 0 4px; padding: 0 8px; border: 0; border-radius: 999px; background: rgba(var(--glass-rgb), .9); font-size: 12px; box-shadow: inset 0 0 0 1px var(--line); }
 .drawing-tools { margin-left: auto; }
@@ -319,7 +324,7 @@ td small { display: block; margin-top: 2px; color: var(--ink2); font-size: 11px;
 .orders-panel .panel-title { gap: 12px; }
 .order-tabs { display: flex; gap: 2px; padding: 3px; border-radius: 999px; background: rgba(var(--glass-rgb), .55); box-shadow: inset 0 0 0 1px var(--line); }
 .order-tabs button { min-height: 28px; padding: 0 12px; background: transparent; box-shadow: none; color: var(--ink2); font-size: 12px; }
-.order-tabs button.selected { color: var(--ink); background: rgba(var(--glass-rgb), .98); box-shadow: 0 1px 4px rgba(var(--shadow), .18); font-weight: 650; }
+.order-tabs button.selected { color: var(--ink); background: rgba(var(--glass-rgb), .98); box-shadow: 0 1px 4px rgba(0, 0, 0, .18); font-weight: 650; }
 .orders-hint { margin: 10px 16px 0; color: var(--ink2); font-size: 12px; line-height: 1.5; }
 .orders-hint b { color: #c9342f; }
 .status { display: inline-block; padding: 3px 9px; border-radius: 999px; background: rgba(var(--glass-rgb), .7); color: var(--ink2); font-size: 11px; font-weight: 600; box-shadow: inset 0 0 0 1px var(--line); }
@@ -368,11 +373,11 @@ button.book-row:hover:not(:disabled) { filter: brightness(1.04); }
 .command-title h3 { font-size: 22px; font-weight: 700; letter-spacing: -.02em; }
 .command-title p { margin-top: 2px; color: var(--ink2); font-size: 13px; }
 .command-title .tag { margin-left: auto; padding: 4px 10px; border-radius: 999px; color: var(--accent); background: var(--select); font-size: 11px; font-weight: 650; }
-.command-icon { display: grid; place-items: center; flex: none; width: 44px; height: 44px; border-radius: 14px; background: rgba(var(--glass-rgb), .9); box-shadow: inset 0 0 0 1px var(--line), 0 4px 12px rgba(var(--shadow), .1); font-size: 22px; }
+.command-icon { display: grid; place-items: center; flex: none; width: 44px; height: 44px; border-radius: 14px; background: rgba(var(--glass-rgb), .9); box-shadow: inset 0 0 0 1px var(--line), 0 4px 12px rgba(0, 0, 0, .1); font-size: 22px; }
 .info-tip { position: relative; display: inline-flex; margin-left: 8px; vertical-align: middle; }
 /* min-height: 0 — the global button min-height (32px) used to stretch this circle into an oval. */
 .info-icon { display: grid; place-items: center; flex: none; width: 18px; height: 18px; min-width: 18px; min-height: 0; aspect-ratio: 1; padding: 0; border: 0; border-radius: 50%; color: #fff; background: var(--accent); font-size: 11px; font-weight: 700; font-style: normal; line-height: 1; cursor: help; }
-.info-bubble { position: absolute; z-index: 20; left: 50%; top: calc(100% + 8px); width: max-content; max-width: min(360px, 70vw); padding: 10px 12px; border-radius: 12px; color: var(--ink); background: rgb(var(--glass-rgb)); border: 1px solid var(--line); box-shadow: 0 8px 24px rgba(var(--shadow), .2); font-size: 13px; font-weight: 400; line-height: 1.6; white-space: normal; transform: translateX(-50%); opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .12s; }
+.info-bubble { position: absolute; z-index: 20; left: 50%; top: calc(100% + 8px); width: max-content; max-width: min(360px, 70vw); padding: 10px 12px; border-radius: 12px; color: var(--ink); background: rgb(var(--glass-rgb)); border: 1px solid var(--line); box-shadow: 0 8px 24px rgba(0, 0, 0, .2); font-size: 13px; font-weight: 400; line-height: 1.6; white-space: normal; transform: translateX(-50%); opacity: 0; visibility: hidden; pointer-events: none; transition: opacity .12s; }
 .info-icon:hover + .info-bubble, .info-icon:focus-visible + .info-bubble { opacity: 1; visibility: visible; }
 .command-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; margin-top: 16px; }
 .command-fields label { display: grid; align-content: start; gap: 6px; min-width: 0; }
@@ -389,7 +394,7 @@ button.book-row:hover:not(:disabled) { filter: brightness(1.04); }
 .choice button.active small { color: rgba(255, 255, 255, .8); }
 .picker { position: relative; }
 .picker-chosen { display: block; overflow: hidden; margin-top: 4px; color: var(--accent); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.picker-list { position: absolute; z-index: 5; left: 0; right: 0; top: calc(100% + 6px); display: grid; max-height: 260px; overflow-y: auto; padding: 6px; border-radius: 14px; background: var(--field); box-shadow: 0 14px 34px rgba(var(--shadow), .22), inset 0 0 0 1px var(--line); backdrop-filter: blur(20px); }
+.picker-list { position: absolute; z-index: 5; left: 0; right: 0; top: calc(100% + 6px); display: grid; max-height: 260px; overflow-y: auto; padding: 6px; border-radius: 14px; background: var(--field); box-shadow: 0 14px 34px rgba(0, 0, 0, .22), inset 0 0 0 1px var(--line); backdrop-filter: blur(20px); }
 .picker-list button { display: grid; gap: 1px; justify-items: start; min-height: 0; padding: 8px 10px; border-radius: 10px; background: transparent; box-shadow: none; text-align: left; }
 .picker-list button b { font-size: 13px; }
 .picker-list button span { color: var(--ink2); font-size: 11px; font-weight: 400; }
@@ -399,12 +404,12 @@ button.book-row:hover:not(:disabled) { filter: brightness(1.04); }
 .command-run { min-width: 140px; min-height: 46px; color: #fff; background: var(--accent); font-size: 15px; box-shadow: inset 0 1px 0 rgba(255, 255, 255, .35), 0 6px 16px rgba(0, 80, 200, .3); }
 .command-run:hover:not(:disabled) { background: var(--accent); filter: brightness(1.06); transform: translateY(-1px); }
 .command-results { display: grid; gap: 12px; margin-top: 16px; }
-.result-card { padding: 14px 16px; border-radius: 18px; background: rgba(var(--glass-rgb), .78); box-shadow: inset 0 0 0 1px var(--line), 0 6px 18px rgba(var(--shadow), .08); animation: rise 400ms var(--ease) backwards; }
+.result-card { padding: 14px 16px; border-radius: 18px; background: rgba(var(--glass-rgb), .78); box-shadow: inset 0 0 0 1px var(--line), 0 6px 18px rgba(0, 0, 0, .08); animation: rise 400ms var(--ease) backwards; }
 .result-card header { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
 .result-card header b { font-size: 15px; }
 .result-card header time { margin-left: auto; color: var(--ink2); font-size: 12px; }
 .result-icon { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; color: #fff; background: #1e8e3e; font-size: 13px; font-weight: 700; }
-.result-card.failed { box-shadow: inset 0 0 0 1px rgba(201, 52, 47, .35), 0 6px 18px rgba(var(--shadow), .08); }
+.result-card.failed { box-shadow: inset 0 0 0 1px rgba(201, 52, 47, .35), 0 6px 18px rgba(0, 0, 0, .08); }
 .result-card.failed .result-icon { background: #c9342f; }
 .result-message { margin: 0; font-size: 14px; line-height: 1.6; white-space: pre-wrap; }
 .result-card.failed .result-message { color: #c9342f; }
@@ -558,7 +563,7 @@ button.book-row:hover:not(:disabled) { filter: brightness(1.04); }
 .board-check { display: flex !important; flex-wrap: wrap; align-items: center; gap: 6px !important; color: var(--ink) !important; font-size: 13px; }
 .board-check input { width: 16px !important; height: 16px; padding: 0 !important; accent-color: var(--accent); box-shadow: none !important; }
 .board-check small { flex-basis: 100%; color: var(--ink2); font-size: 11px; }
-.board-guest-button { position: fixed; left: 50%; bottom: 24px; z-index: 5; min-height: 40px; padding: 0 18px; border-radius: 999px; color: var(--accent); background: rgba(var(--glass-rgb), .85); box-shadow: inset 0 0 0 1px var(--line), 0 6px 18px rgba(var(--shadow), .12); font-size: 14px; font-weight: 600; transform: translateX(-50%); backdrop-filter: blur(16px); }
+.board-guest-button { position: fixed; left: 50%; bottom: 24px; z-index: 5; min-height: 40px; padding: 0 18px; border-radius: 999px; color: var(--accent); background: rgba(var(--glass-rgb), .85); box-shadow: inset 0 0 0 1px var(--line), 0 6px 18px rgba(0, 0, 0, .12); font-size: 14px; font-weight: 600; transform: translateX(-50%); backdrop-filter: blur(16px); }
 @media (max-width: 760px) {
   .board-modal { height: calc(100vh - 16px); padding: 16px; }
   .board-body { grid-template-columns: 1fr; grid-template-rows: minmax(160px, 38%) 1fr; }
@@ -604,7 +609,7 @@ button.book-row:hover:not(:disabled) { filter: brightness(1.04); }
 .picker-button.set { color: var(--ink); font-weight: 600; }
 .picker-clear { min-height: 26px !important; padding: 0 8px !important; background: var(--hover); font-size: 11px !important; }
 /* Opens in place, below the button, so a scrolling panel never clips it. */
-.picker-pop { flex-basis: 100%; max-width: 300px; margin-top: 6px; padding: 14px; border-radius: 16px; background: rgb(var(--glass-rgb)); box-shadow: inset 0 0 0 1px var(--line), 0 18px 40px rgba(var(--shadow), .22); }
+.picker-pop { flex-basis: 100%; max-width: 300px; margin-top: 6px; padding: 14px; border-radius: 16px; background: rgb(var(--glass-rgb)); box-shadow: inset 0 0 0 1px var(--line), 0 18px 40px rgba(0, 0, 0, .22); }
 .picker-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 14px; }
 .picker-head button { min-height: 28px !important; padding: 0 10px !important; background: var(--hover); font-size: 16px !important; }
 .picker-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
@@ -646,3 +651,58 @@ a.board-back { min-height: 34px; padding: 0 14px; border-radius: 10px; font-size
 .recommend-sorts { display: flex; gap: 6px; margin: 0 0 6px; }
 .recommend-sorts button { min-height: 28px; padding: 0 12px; border-radius: 8px; color: var(--ink2); background: transparent; font-size: 12px; font-weight: 600; }
 .recommend-sorts button.active { color: var(--accent); background: var(--select); box-shadow: inset 0 0 0 1px var(--accent); }
+
+/* ---- Apple design: surfaces, actions, controls (appended last so it wins without !important) ---- */
+.stage { background: var(--canvas); }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-focus); outline-offset: 2px; }
+a { color: var(--accent); }
+.stage .auth-shell { background: var(--canvas); }
+.stage .auth-panel { border: 1px solid var(--line); border-radius: 18px; background: var(--surface); box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.modal-backdrop { background: rgba(0, 0, 0, .4); }
+.primary, .account-save, .search-tabs button.active { color: #fff; background: var(--accent); box-shadow: none; font-weight: 400; }
+.account-save:hover:not(:disabled) { background: var(--accent); filter: none; }
+button:active:not(:disabled) { transform: scale(.95); }
+th { background: var(--surface); box-shadow: inset 0 -1px 0 var(--line); font-weight: 600; }
+
+/* Surfaces: white hairline panels, no glass. */
+.hts-topbar, .wallet-summary-card, .quote-strip, .chart-panel, .data-panel, .toast,
+.review-modal, .search-modal, .account-modal, .command-modal, .board-modal {
+  border: 1px solid var(--line); background: var(--surface); box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none;
+}
+.review-modal, .search-modal, .account-modal, .command-modal, .board-modal { border-radius: 18px; }
+.wallet-summary { color: #fff; background: var(--tile); box-shadow: none; }
+.quote-value strong, .asset-total strong, .wallet-summary strong { font-weight: 600; }
+.quote-strip h1, .review-modal h2, .search-modal-head h2, .account-modal-head h2 { font-weight: 600; letter-spacing: -.374px; }
+
+/* Top bar: the slim black global nav, full width. */
+.hts-topbar {
+  height: 48px; margin: 0; padding: 0 12px 0 20px; border: 0; border-radius: 0; color: #f5f5f7;
+  background: rgba(0, 0, 0, .86); backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+.hts-topbar .brand { color: #f5f5f7; font-weight: 600; }
+.hts-topbar .brand span { color: #2997ff; }
+.hts-topbar .top-center { color: rgba(245, 245, 247, .8); font-size: 12px; }
+.hts-topbar button, .hts-topbar a.header-action {
+  min-height: 32px; padding: 0 12px; border: 0; border-radius: 8px; color: #f5f5f7; background: transparent; box-shadow: none; font-size: 12px; font-weight: 400;
+}
+.hts-topbar button:hover:not(:disabled), .hts-topbar a.header-action:hover { background: rgba(255, 255, 255, .12); }
+.hts-topbar .account-action small { color: rgba(245, 245, 247, .7); }
+.connection i { box-shadow: none; }
+.wallet-rail { top: 60px; }
+
+/* Segmented controls and chips. */
+.segmented, .drawing-tools, .order-tabs, .order-sides { border: 0; background: var(--chip); box-shadow: none; }
+.segmented button.selected, .drawing-tools button.selected, .order-tabs button.selected { background: var(--surface); box-shadow: none; font-weight: 600; }
+.book-current, .interval-select, .status, .chart-empty { border: 1px solid var(--line); background: var(--pearl); box-shadow: none; }
+.order-sides .buy.active, .order-sides .sell.active, .buy-submit, .sell-submit, .buy-confirm, .sell-confirm, .cancel-button { box-shadow: none; }
+.buy-submit:hover:not(:disabled), .sell-submit:hover:not(:disabled), .buy-confirm:hover:not(:disabled), .sell-confirm:hover:not(:disabled) { transform: none; }
+
+/* Inputs: white field, hairline, Focus Blue ring; search is a pill. */
+.order-entry input, .account-form input { border: 1px solid rgba(0, 0, 0, .14); border-radius: 11px; background: var(--field); box-shadow: none; }
+.order-entry input:focus, .account-form input:focus { border-color: var(--accent-focus); box-shadow: 0 0 0 1px var(--accent-focus); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .order-entry input, :root:not([data-theme="light"]) .account-form input { border-color: rgba(255, 255, 255, .16); } }
+.search-field { border: 1px solid var(--line); border-radius: 9999px; background: var(--surface); box-shadow: none; }
+.search-field:focus-within { border-color: var(--accent-focus); box-shadow: none; }
+/* Buttons that are rows or segments, not capsules: no capsule border. */
+.segmented button, .drawing-tools button, .order-tabs button, .order-sides button,
+.holding, .search-result, .link, .search-tabs button, .modal-actions .link { border: 0; }

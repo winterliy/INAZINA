@@ -17,48 +17,41 @@ export function landingPage(reason: LandingReason, path: string, pythonConnected
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<meta name="theme-color" content="#f8e9ee">
+<meta name="theme-color" content="#f5f5f7">
 <title>INAZINA API</title>
 <style>
-:root{color-scheme:light;--ink:#1d1d1f;--ink2:#515154;--accent:#0071e3;--glass:255,255,255;--a1:.82;--a2:.7;--line:rgba(0,0,0,.08);--base:#f8e9ee;--m1:rgba(255,178,130,.9);--m2:rgba(198,180,255,.85);--m3:rgba(140,204,255,.8);--m4:rgba(255,162,192,.8);--m5:rgba(255,233,212,.9);--ease:cubic-bezier(.22,1,.36,1);--spring:cubic-bezier(.34,1.56,.64,1)}
-@media (prefers-color-scheme:dark){:root{color-scheme:dark;--ink:#f5f5f7;--ink2:#c7c7cc;--accent:#0a84ff;--glass:40,40,52;--a1:.66;--a2:.56;--line:rgba(255,255,255,.12);--base:#17121f;--m1:rgba(120,58,150,.55);--m2:rgba(42,64,150,.55);--m3:rgba(16,92,128,.5);--m4:rgba(130,40,80,.45);--m5:rgba(60,40,90,.5)}}
+:root{color-scheme:light;--ink:#1d1d1f;--ink2:#6e6e73;--accent:#0066cc;--focus:#0071e3;--surface:#fff;--pearl:#fafafc;--line:rgba(0,0,0,.08);--base:#f5f5f7;--ease:cubic-bezier(.22,1,.36,1)}
+@media (prefers-color-scheme:dark){:root{color-scheme:dark;--ink:#f5f5f7;--ink2:#a1a1a6;--accent:#2997ff;--focus:#2997ff;--surface:#1d1d1f;--pearl:#2a2a2c;--line:rgba(255,255,255,.1);--base:#000}}
 *{box-sizing:border-box}
 html,body{margin:0;min-height:100%}
-body{min-height:100vh;display:grid;place-items:center;padding:24px 16px;color:var(--ink);background:var(--base);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Apple SD Gothic Neo","Noto Sans KR",system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow-x:clip}
+body{min-height:100vh;display:grid;place-items:center;padding:24px 16px;color:var(--ink);background:var(--base);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Apple SD Gothic Neo","Noto Sans KR",system-ui,sans-serif;font-size:17px;letter-spacing:-.022em;-webkit-font-smoothing:antialiased;overflow-x:clip}
 @media (prefers-color-scheme:dark){body{background:var(--base)}}
-.wall{position:fixed;inset:-18%;background:radial-gradient(42% 46% at 20% 26%,var(--m1),transparent 70%),radial-gradient(40% 44% at 80% 20%,var(--m2),transparent 72%),radial-gradient(46% 50% at 74% 78%,var(--m3),transparent 72%),radial-gradient(42% 46% at 24% 80%,var(--m4),transparent 70%),radial-gradient(60% 60% at 50% 50%,var(--m5),transparent 80%),var(--base);filter:blur(24px) saturate(112%);animation:mesh 70s ease-in-out infinite alternate}
-.blob{position:fixed;border-radius:50%;pointer-events:none;filter:blur(60px);opacity:.5;animation:drift 48s ease-in-out infinite alternate}
-.b1{left:-10%;top:4%;width:46vmax;height:46vmax;background:radial-gradient(circle,var(--m1),transparent 65%)}
-.b2{right:-12%;bottom:-14%;width:52vmax;height:52vmax;background:radial-gradient(circle,var(--m3),transparent 65%);animation-delay:-16s}
-main{position:relative;z-index:1;width:min(520px,100%);padding:36px 32px 28px;border-radius:28px;background:linear-gradient(135deg,rgba(var(--glass),var(--a1)),rgba(var(--glass),var(--a2)));box-shadow:inset 0 1px 0 rgba(255,255,255,.55),inset 0 0 0 1px rgba(255,255,255,.3),0 24px 60px rgba(60,30,100,.22);backdrop-filter:blur(30px) saturate(130%);-webkit-backdrop-filter:blur(30px) saturate(130%);animation:rise 800ms var(--ease) backwards}
-.brand{display:flex;align-items:center;gap:10px;margin-bottom:26px;font-size:14px;font-weight:700;letter-spacing:.02em}
-.mark{display:grid;place-items:center;width:36px;height:36px;border-radius:11px;color:#fff;background:var(--accent);box-shadow:inset 0 1px 0 rgba(255,255,255,.4),0 6px 16px rgba(0,80,200,.3)}
+main{position:relative;z-index:1;width:min(520px,100%);padding:40px 32px 28px;border:1px solid var(--line);border-radius:18px;background:var(--surface);animation:rise 600ms var(--ease) backwards}
+.brand{display:flex;align-items:center;gap:10px;margin-bottom:28px;font-size:14px;font-weight:600;letter-spacing:-.224px}
+.mark{display:grid;place-items:center;width:36px;height:36px;border-radius:8px;color:var(--surface);background:var(--ink)}
 .brand small{display:block;color:var(--ink2);font-size:12px;font-weight:500;letter-spacing:0}
-h1{margin:0;font-size:30px;line-height:1.15;font-weight:700;letter-spacing:-.025em}
-p{margin:10px 0 0;color:var(--ink2);font-size:15px;line-height:1.55}
-.path{display:inline-block;margin-top:14px;padding:5px 11px;border-radius:999px;background:rgba(var(--glass),.7);box-shadow:inset 0 0 0 1px var(--line);font:500 12px/1.4 "SF Mono",ui-monospace,Menlo,monospace;word-break:break-all}
+h1{margin:0;font-size:34px;line-height:1.12;font-weight:600;letter-spacing:-.374px}
+p{margin:12px 0 0;color:var(--ink2);font-size:17px;line-height:1.47}
+.path{display:inline-block;margin-top:14px;padding:5px 11px;border-radius:9999px;background:var(--pearl);border:1px solid var(--line);font:500 12px/1.4 "SF Mono",ui-monospace,Menlo,monospace;word-break:break-all}
 nav{display:grid;gap:10px;margin-top:26px}
-a.card{display:flex;align-items:center;gap:14px;padding:16px 18px;border-radius:18px;color:inherit;text-decoration:none;background:rgba(var(--glass),.72);box-shadow:inset 0 0 0 1px var(--line),0 4px 14px rgba(60,30,100,.08);transition:transform .35s var(--spring),box-shadow .3s}
-a.card:hover{transform:translateY(-2px);box-shadow:inset 0 0 0 1px var(--line),0 12px 26px rgba(60,30,100,.16)}
+a.card{display:flex;align-items:center;gap:14px;padding:16px 18px;border:1px solid var(--line);border-radius:18px;color:inherit;text-decoration:none;background:var(--pearl);transition:transform .2s var(--ease)}
+a.card:active{transform:scale(.98)}
 a.card:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 .icon{display:grid;place-items:center;flex:none;width:42px;height:42px;border-radius:13px;color:#fff;font-size:19px}
-.i1{background:linear-gradient(145deg,#0a84ff,#0060d6)}.i2{background:linear-gradient(145deg,#ff6b5a,#e0362c)}
-.card b{display:block;font-size:16px}.card span{display:block;margin-top:2px;color:var(--ink2);font-size:13px}
-.arrow{margin-left:auto;color:var(--ink2);font-size:20px;transition:transform .3s var(--spring)}
-a.card:hover .arrow{transform:translateX(3px)}
+.i1{background:var(--accent)}.i2{background:var(--ink);color:var(--surface)}
+.card b{display:block;color:var(--ink);font-size:17px;font-weight:600}.card .icon{display:grid;margin:0}.card span{display:block;margin-top:2px;color:var(--ink2);font-size:14px}
+.arrow{margin-left:auto;color:var(--accent);font-size:20px}
 footer{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin-top:24px;padding-top:16px;border-top:1px solid var(--line);color:var(--ink2);font-size:12px}
 .status{display:inline-flex;align-items:center;gap:7px}
 .dot{width:8px;height:8px;border-radius:50%;background:${pythonConnected ? "#1e8e3e" : "#d93025"};box-shadow:0 0 0 3px ${pythonConnected ? "rgba(30,142,62,.18)" : "rgba(217,48,37,.18)"}}
 footer a{color:var(--accent);text-decoration:none}footer a:hover{text-decoration:underline}
-@keyframes mesh{0%{transform:translate3d(0,0,0) rotate(0) scale(1)}50%{transform:translate3d(-2.5%,1.5%,0) rotate(5deg) scale(1.05)}100%{transform:translate3d(2.5%,-1.5%,0) rotate(-3deg) scale(1.02)}}
-@keyframes drift{to{transform:translate3d(6vmax,-4vmax,0) scale(1.12)}}
 @keyframes rise{from{opacity:0;transform:translateY(18px)}}
 @media (max-width:480px){main{padding:28px 20px 22px}h1{font-size:25px}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
-<div class="wall" aria-hidden="true"></div><div class="blob b1" aria-hidden="true"></div><div class="blob b2" aria-hidden="true"></div>
+
 <main>
   <div class="brand"><span class="mark">I</span><span>INAZINA<small>API 서버 · 127.0.0.1:4312</small></span></div>
   <h1>${title}</h1>
