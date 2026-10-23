@@ -1,5 +1,6 @@
 {
   "name": "inazina-local-web",
+  "version": "0.2.0",
   "private": true,
   "workspaces": [
     "apps/*"
