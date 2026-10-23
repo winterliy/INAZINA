@@ -359,6 +359,17 @@ class EconomyTests(unittest.TestCase):
             self.assertEqual(result["status"], "mismatch")
             conn.execute("UPDATE assets.market_orders SET filled_quantity=1 WHERE order_id=?",
                          (event["buy_order_id"],))
+            missing_receipt_key = "market-fill:missing-primary-receipt"
+            conn.execute("""INSERT INTO assets.market_execution_events
+                (execution_key,execution_type,asset_code,buy_order_id,sell_order_id,
+                 buyer_id,seller_id,quantity,price_minor_units,gross_minor_units,
+                 tax_minor_units,seller_proceeds_minor_units,currency_code,decimal_places,recorded_epoch)
+                VALUES (?,'primary',?,?,NULL,?,NULL,1,450,450,0,0,'NWX',0,?)""",
+                (missing_receipt_key, event["asset_code"], event["buy_order_id"],
+                 event["buyer_id"], int(event["recorded_epoch"])))
+            result = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                          if item["ledger_scope"] == "market_executions")
+            self.assertTrue(result["primary_settlement_gaps"], result)
         with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
             self.db.assets.execute(
                 "UPDATE market_execution_events SET quantity=2 WHERE execution_key=?",

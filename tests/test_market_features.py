@@ -736,16 +736,80 @@ class MarketFeatureTests(unittest.TestCase):
 
     def test_corporate_bond_primary_proceeds_go_to_company_and_maturity_pays_once(self):
         self.assertTrue(self.rates.set_country_rate("legal_max_rate", "낙원", 40, "admin")[0])
+        from managers.accounting_journal import AccountingJournal
+        from managers.financial_manager import FinancialManager
+        with self.db.atomic() as conn:
+            FinancialManager.ensure(conn, "CO")
         self.issue("CB", "corporate_bond", rate=36.5)
         start = self.db.companies.get_company("CO")["capital"]
         self.assertTrue(self.book.place_limit_order("alice", "CB", "buy", 10, 100)[0])
         self.assertEqual(self.db.companies.get_company("CO")["capital"], start + 1000)
+        with self.db.readonly() as conn:
+            issue_lines = conn.execute("""SELECT l.account,l.amount FROM financial_lines l
+                JOIN financial_entries e USING(entry_id)
+                WHERE e.company_code='CO' AND e.source_key LIKE 'bond-primary-issue:%'""").fetchall()
+            self.assertEqual({row["account"]: int(row["amount"]) for row in issue_lines},
+                             {"cash": 1000, "bonds": -1000})
+            bond_check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                              if item["ledger_scope"] == "company_bond_liabilities")
+        self.assertEqual(bond_check["status"], "matched", bond_check)
+        self.assertEqual(bond_check["gaps"], [], bond_check)
         expiry = self.db.products.get_investment("CB")["maturity_epoch"]
         result = self.products.redeem_corporate_bonds(now=expiry)
         self.assertEqual(result[0]["net"], 1010)
         self.assertEqual(self.db.users.get_user("alice")["cash"], 10010)
         self.assertEqual(self.db.companies.get_company("CO")["capital"], start - 10)
+        with self.db.readonly() as conn:
+            bond_check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                              if item["ledger_scope"] == "company_bond_liabilities")
+            redemption = conn.execute("""SELECT l.account,l.amount FROM financial_lines l
+                JOIN financial_entries e USING(entry_id)
+                WHERE e.company_code='CO' AND e.source_key='bond-redemption:CB:' || ?""",
+                (str(expiry),)).fetchall()
+        self.assertEqual(bond_check["status"], "matched", bond_check)
+        self.assertEqual({row["account"]: int(row["amount"]) for row in redemption},
+                         {"bonds": 1000, "interest_expense": 10, "cash": -1010})
         self.assertEqual(self.products.redeem_corporate_bonds(now=expiry + 1), [])
+
+    def test_company_bond_primary_issue_opens_books_and_reconciles(self):
+        from managers.accounting_journal import AccountingJournal
+        from managers.financial_manager import FinancialManager
+        self.issue("CB-OPEN", "corporate_bond", rate=5)
+        self.assertTrue(self.book.place_limit_order("alice", "CB-OPEN", "buy", 3, 100)[0])
+        with self.db.atomic() as conn:
+            self.assertIsNotNone(FinancialManager.entity(conn, "CO"))
+            bond_check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                              if item["ledger_scope"] == "company_bond_liabilities")
+        self.assertEqual(bond_check["status"], "matched", bond_check)
+
+    def test_corporate_bond_coupon_posts_once_to_company_books(self):
+        from managers.accounting_journal import AccountingJournal
+        from managers.financial_manager import FinancialManager
+        with self.db.atomic() as conn:
+            FinancialManager.ensure(conn, "CO")
+        self.issue("CB-COUPON", "corporate_bond", rate=36.5)
+        self.assertTrue(self.book.place_limit_order("alice", "CB-COUPON", "buy", 10, 100)[0])
+        now = int(time.time())
+        paid_until = now
+        with self.db.atomic() as conn:
+            conn.execute("UPDATE investment SET coupon_frequency_days=5,last_coupon_epoch=?,"
+                         "next_coupon_epoch=? WHERE product_code='CB-COUPON'",
+                         (now - 5 * 86400, now))
+        first = self.products.pay_corporate_bond_coupons(now=now)
+        second = self.products.pay_corporate_bond_coupons(now=now)
+        self.assertEqual(len(first), 1)
+        self.assertEqual(second, [])
+        with self.db.readonly() as conn:
+            rows = conn.execute("""SELECT l.account,l.amount FROM financial_lines l
+                JOIN financial_entries e USING(entry_id)
+                WHERE e.company_code='CO' AND e.source_key=?""",
+                (f"bond-coupon:CB-COUPON:{paid_until}",)).fetchall()
+            bond_check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                              if item["ledger_scope"] == "company_bond_liabilities")
+        coupon = int(first[0]["coupon"])
+        self.assertEqual({row["account"]: int(row["amount"]) for row in rows},
+                         {"interest_expense": coupon, "cash": -coupon})
+        self.assertEqual(bond_check["status"], "matched", bond_check)
 
     def test_corporate_bond_default_preserves_claim_and_retries_after_capital_injection(self):
         self.assertTrue(self.rates.set_country_rate("legal_max_rate", "낙원", 40, "admin")[0])

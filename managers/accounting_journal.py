@@ -660,6 +660,69 @@ class AccountingJournal:
                            "posting_gaps": posting_gaps,
                            "status": "matched" if native == common and posting_gaps == 0
                            else "mismatch"})
+        from decimal import Decimal
+        from functions.money import to_minor_units
+        company_bond_gaps = []
+        financial_entities = conn.execute("SELECT company_code,currency,decimal_places "
+            "FROM financial_entities ORDER BY company_code").fetchall()
+        tracked_bond_issuers = {str(entity["company_code"]) for entity in financial_entities}
+        for entity in financial_entities:
+            issuer = str(entity["company_code"])
+            currency = str(entity["currency"]).upper()
+            places = int(entity["decimal_places"])
+            bond_rows = conn.execute("""SELECT p.product_code,
+                COALESCE(p.quote_currency,'NWX') currency_code,
+                p.face_value,COALESCE(h.quantity,0) quantity
+                FROM product.investment p LEFT JOIN assets.user_assets h
+                  ON h.asset_code=p.product_code
+                WHERE p.product_type='corporate_bond' AND p.issuer_code=?
+                ORDER BY p.product_code,h.user_id""",
+                (issuer,)).fetchall()
+            expected_signed_units = 0
+            unsupported = []
+            for bond in bond_rows:
+                bond_currency = str(bond["currency_code"]).upper()
+                if bond_currency != currency:
+                    unsupported.append({"product_code": bond["product_code"],
+                        "currency_code": bond_currency})
+                    continue
+                face_value = Decimal(str(bond["face_value"])) * int(bond["quantity"])
+                expected_signed_units -= to_minor_units(face_value, places)
+            discount_units = int(conn.execute("SELECT COALESCE(SUM(discount_units),0) "
+                "FROM financial_bond_basis WHERE company_code=?", (issuer,)).fetchone()[0])
+            expected_signed_units += discount_units
+            actual_signed_units = int(conn.execute("""SELECT COALESCE(SUM(l.amount),0)
+                FROM financial_lines l JOIN financial_entries e USING(entry_id)
+                WHERE e.company_code=? AND e.status='posted'
+                  AND l.account IN ('bonds','bond_discount')""",
+                (issuer,)).fetchone()[0])
+            if unsupported or actual_signed_units != expected_signed_units:
+                company_bond_gaps.append({"issuer": issuer, "currency_code": currency,
+                    "expected_signed_minor_units": expected_signed_units,
+                    "actual_signed_minor_units": actual_signed_units,
+                    "difference_minor_units": actual_signed_units-expected_signed_units,
+                    "unsupported_product_currencies": unsupported,
+                    "status": "unsupported_currency" if unsupported else "mismatch"})
+        unbooked_bond_issuers = conn.execute("""SELECT p.issuer_code,
+            p.product_code,COALESCE(p.quote_currency,'NWX') currency_code,
+            p.face_value,SUM(h.quantity) quantity
+            FROM product.investment p JOIN assets.user_assets h
+              ON h.asset_code=p.product_code
+            WHERE p.product_type='corporate_bond' AND p.issuer_code IS NOT NULL
+            GROUP BY p.issuer_code,p.product_code,COALESCE(p.quote_currency,'NWX'),p.face_value
+            ORDER BY p.issuer_code,p.product_code""").fetchall()
+        for bond in unbooked_bond_issuers:
+            issuer = str(bond["issuer_code"])
+            if issuer not in tracked_bond_issuers:
+                company_bond_gaps.append({"issuer": issuer,
+                    "currency_code": str(bond["currency_code"]).upper(),
+                    "product_code": str(bond["product_code"]),
+                    "outstanding_face_amount": int(bond["face_value"]) * int(bond["quantity"]),
+                    "status": "missing_financial_entity"})
+        checks.append({"ledger_scope": "company_bond_liabilities",
+                       "issuer_count": len(financial_entities),
+                       "gaps": company_bond_gaps,
+                       "status": "matched" if not company_bond_gaps else "mismatch"})
         # A standard limit-buy's locked cash is an asset subledger balance,
         # distinct from customer spendable cash. Validate it against remaining
         # quantity and the order's quote-currency limit price.
@@ -879,6 +942,64 @@ class AccountingJournal:
         if orphan_wallet_links:
             wallet_link_gaps.append({"orphan_wallet_links": orphan_wallet_links,
                                      "status": "mismatch"})
+        primary_settlement_gaps = []
+        from managers.currency_manager import CurrencyManager
+        for event in market_events:
+            if event["execution_type"] != "primary":
+                continue
+            asset_code = str(event["asset_code"])
+            counterparty_kind = "treasury"
+            recipient_id = None
+            issuer = conn.execute("""SELECT COALESCE(parent_company_code,company_code)
+                FROM company WHERE company_code=? AND dividend_funding='issuer'""",
+                (asset_code,)).fetchone()
+            corporate_bond = conn.execute("""SELECT issuer_code FROM product.investment
+                WHERE product_code=? AND product_type='corporate_bond'""",
+                (asset_code,)).fetchone()
+            if issuer:
+                counterparty_kind = "issuer_cash"
+                issuer_code = str(issuer[0])
+                company_account = conn.execute(
+                    "SELECT user_id FROM company_accounts WHERE company_code=?",
+                    (issuer_code,)).fetchone()
+                recipient_id = str(company_account[0]) if company_account else None
+            elif corporate_bond:
+                counterparty_kind = "issuer_cash"
+                issuer_code = str(corporate_bond[0])
+                company_account = conn.execute(
+                    "SELECT user_id FROM company_accounts WHERE company_code=?",
+                    (issuer_code,)).fetchone()
+                recipient_id = str(company_account[0]) if company_account else None
+            else:
+                recipient_id = str(CurrencyManager.exchange_treasury(conn, asset_code))
+            if not recipient_id:
+                primary_settlement_gaps.append({
+                    "execution_key": event["execution_key"],
+                    "counterparty_kind": counterparty_kind,
+                    "counterparty_id": issuer_code,
+                    "status": "counterparty_cash_not_wallet_linkable",
+                })
+                continue
+            receipt_rows = conn.execute("""SELECT l.currency_code,l.decimal_places,
+                SUM(l.delta_minor_units) amount_minor_units
+                FROM market_execution_wallet_links w
+                JOIN customer_wallet_ledger l ON l.entry_id=w.wallet_entry_id
+                WHERE w.execution_key=? AND l.user_id=? AND l.delta_minor_units>0
+                GROUP BY l.currency_code,l.decimal_places""",
+                (event["execution_key"], recipient_id)).fetchall()
+            if (len(receipt_rows) != 1
+                    or str(receipt_rows[0]["currency_code"]).upper() != str(event["currency_code"]).upper()
+                    or int(receipt_rows[0]["decimal_places"]) != int(event["decimal_places"])
+                    or int(receipt_rows[0]["amount_minor_units"]) != int(event["gross_minor_units"])):
+                primary_settlement_gaps.append({
+                    "execution_key": event["execution_key"],
+                    "counterparty_kind": counterparty_kind,
+                    "counterparty_id": recipient_id,
+                    "expected_currency": event["currency_code"],
+                    "expected_minor_units": int(event["gross_minor_units"]),
+                    "linked_receipts": [dict(row) for row in receipt_rows],
+                    "status": "missing_or_mismatched_primary_receipt",
+                })
         holding_movement_gaps = []
         holding_events = conn.execute("""SELECT e.* FROM market_execution_events e
             LEFT JOIN market_execution_holding_baselines b USING(execution_key)
@@ -917,6 +1038,7 @@ class AccountingJournal:
                        "execution_gaps": execution_gaps,
                        "common_journal_gaps": market_journal_gaps,
                        "wallet_link_gaps": wallet_link_gaps,
+                       "primary_settlement_gaps": primary_settlement_gaps,
                        "holding_movement_gaps": holding_movement_gaps,
                        "legacy_holding_baseline_count": int(conn.execute(
                            "SELECT COUNT(*) FROM market_execution_holding_baselines").fetchone()[0]),
@@ -924,7 +1046,8 @@ class AccountingJournal:
                            "SELECT COUNT(*) FROM market_execution_journal_baselines").fetchone()[0]),
                        "historical_baseline_policy": "pre-migration fills are baseline-only; only subsequent fills are event-reconciled",
                        "status": "matched" if not execution_gaps and not market_journal_gaps
-                       and not wallet_link_gaps and not holding_movement_gaps else "mismatch"})
+                       and not wallet_link_gaps and not primary_settlement_gaps
+                       and not holding_movement_gaps else "mismatch"})
         checks.append({"ledger_scope":"treasury_bond_cash",
                        **AccountingJournal.reconcile_treasury_bond_cash_events(conn)})
         native = int(conn.execute("""SELECT

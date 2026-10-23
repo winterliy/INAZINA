@@ -537,6 +537,21 @@ class OrderBookManager:
     def _settle_primary_fill(self, conn, buy_order, asset, source, quantity, price, now):
         buyer_id = str(buy_order["user_id"])
         buyer_account = buy_order["funding_account"]
+        bond_product = conn.execute("SELECT product_type,issuer_code,face_value,quote_currency "
+                                    "FROM product.investment WHERE product_code=?",
+                                    (buy_order["asset_code"],)).fetchone()
+        bond_finance = None
+        if bond_product and bond_product["product_type"] == "corporate_bond":
+            from managers.financial_manager import FinancialManager
+            issuer = str(bond_product["issuer_code"] or "")
+            if issuer:
+                # Snapshot opening balances before this issuance changes either
+                # the holder subledger or the issuer's cash balance.
+                FinancialManager.ensure(conn, issuer, now)
+                entity = FinancialManager.entity(conn, issuer)
+                issue_currency = str(bond_product["quote_currency"] or "NWX").upper()
+                if str(entity["currency"]).upper() == issue_currency:
+                    bond_finance = (FinancialManager, issuer, int(bond_product["face_value"]))
         improvement = (int(buy_order["limit_price"]) - price) * quantity
         if improvement < 0:
             raise RuntimeError("기준가가 매수 지정가를 초과했습니다.")
@@ -581,8 +596,7 @@ class OrderBookManager:
             (buyer_id, buy_order["asset_code"], buyer_account, quantity, price),
         )
         proceeds = int(price * quantity)
-        product = conn.execute("SELECT product_type, issuer_code FROM product.investment WHERE product_code = ?",
-                               (buy_order["asset_code"],)).fetchone()
+        product = bond_product
         if source=='company' and conn.execute("SELECT 1 FROM company WHERE company_code=? AND dividend_funding='issuer'",(buy_order['asset_code'],)).fetchone():
             owner=conn.execute('SELECT COALESCE(parent_company_code,company_code) FROM company WHERE company_code=?',(buy_order['asset_code'],)).fetchone()[0]
             conn.execute('INSERT OR IGNORE INTO issuer_cash_accounts(company_code) VALUES (?)',(owner,))
@@ -593,6 +607,20 @@ class OrderBookManager:
             if conn.execute('SELECT 1 FROM issuer_cash_accounts WHERE company_code=?',(product['issuer_code'],)).fetchone():
                 cash_credit=conn.execute('UPDATE issuer_cash_accounts SET balance=balance+? WHERE company_code=? AND balance<=?',(proceeds,product['issuer_code'],self.MAX_LIMIT_PRICE-proceeds))
                 if cash_credit.rowcount!=1:raise ValueError('법인 현금 한도를 초과합니다.')
+            if bond_finance:
+                finance, issuer, face_value = bond_finance
+                face_amount = face_value * int(quantity)
+                discount = face_amount - proceeds
+                order_progress = int(conn.execute(
+                    "SELECT filled_quantity FROM assets.market_orders WHERE order_id=?",
+                    (buy_order["order_id"],)).fetchone()[0]) + int(quantity)
+                finance.event(conn, issuer, "회사채 1차 발행 및 발행대금 수취",
+                    [("cash", proceeds), ("bond_discount", discount), ("bonds", -face_amount)],
+                    "financing", now=now,
+                    key=f"bond-primary-issue:{buy_order['order_id']}:{order_progress}",
+                    currency=str(product["quote_currency"] or "NWX").upper())
+                if discount:
+                    finance.record_bond_discount(conn, issuer, buy_order["asset_code"], discount)
         else:
             from managers.currency_manager import CurrencyManager, SCALE
             asset_currency = conn.execute(

@@ -21,7 +21,7 @@ type CreditStress = { issuer: string; currency: string; decimalPlaces: number; p
 type CorrelatedCreditStress = { issuer: string; currency: string; decimalPlaces: number; confidence: number; assetCorrelation: number; exposureCount: number; performingEad: number; independentExpectedLoss: number; correlatedTailLoss: number; connectedPartyCorrelation: number; connectedPartyBorrowerCount: number; connectedPartyExposureCount: number; connectedPartyEad: number; connectedPartyJointTailLoss: number; method: string };
 type BorrowerConcentrationStress = { issuer: string; currency: string; decimalPlaces: number; borrowerCount: number; totalLoanExposure: number; largestBorrowerSharePercent: number; topFiveExposureSharePercent: number; borrowers: { borrowerId: string; loanCount: number; exposure: number; exposureSharePercent: number; grossLoss: number; existingAllowanceApplied: number; incrementalProvision: number; equityAfterProvision: number }[]; method: string };
 type Prudential = { issuer: string; currency: string; decimalPlaces: number; status: string; effectiveEquity: number; riskWeightedAssets: number; capitalRatioPercent: number | null; targetCapitalRatioPercent: number; leverageExposure: number; leverageRatioPercent: number | null; minimumLeverageRatioPercent: number; exposureCount: number; cashCollateralCovered: number; weightedComponents: Record<string, number>; method: string };
-type CommonJournalReconciliation = { ledger_scope: string; native_entries?: number; native_balances?: number; wallet_entries?: number; common_entries: number; missing_entries: number; balance_gaps?: number; status: string; execution_gaps?: unknown[]; common_journal_gaps?: unknown[]; wallet_link_gaps?: unknown[]; holding_movement_gaps?: unknown[] };
+type CommonJournalReconciliation = { ledger_scope: string; native_entries?: number; native_balances?: number; wallet_entries?: number; common_entries: number; missing_entries: number; balance_gaps?: number; status: string; execution_gaps?: unknown[]; common_journal_gaps?: unknown[]; wallet_link_gaps?: unknown[]; primary_settlement_gaps?: unknown[]; holding_movement_gaps?: unknown[]; gaps?: unknown[] };
 type AmountSnapshotAudit = { status: string; findingCount: number; findings: { source_table?: string; source_key?: string; amount_field?: string; currency_code?: string; status: string }[] };
 type Report = { issuer: string; currency: string | null; trialBalance: Trial[]; commonTrialBalance: Trial[]; unbalancedEntries: Unbalanced[]; resultReconciliation: Reconciliation[]; depositReconciliation: DepositReconciliation[]; loanReconciliation: LoanReconciliation[]; loanScheduleReconciliation: LoanScheduleFinding[]; eclAllowanceReconciliation: LoanReconciliation[]; chargeoffMemoReconciliation: ChargeoffMemoReconciliation[]; depositInsuranceReconciliation: DepositInsuranceReconciliation[]; depositInsuranceClaims: DepositInsuranceClaim[]; commonJournalReconciliation: CommonJournalReconciliation[]; commonJournalUnbalancedEntries: { entry_id: number; ledger_scope: string; entity_type: string; entity_id: string; currency_code: string }[]; amountSnapshotAudit: AmountSnapshotAudit; maturityGap: MaturityGap; liquidityStress: LiquidityStress; rateStress: RateStress; fixedRateEveStress: FixedRateEveStress; fxStress: FxStress; prudential: Prudential; creditStress: CreditStress; correlatedCreditStress: CorrelatedCreditStress; borrowerConcentrationStress: BorrowerConcentrationStress };
 
@@ -81,12 +81,17 @@ export function BankJournalPage({ ctx }: { ctx: Ctx }) {
       {report.commonJournalReconciliation.filter((row) => row.ledger_scope === "market_executions").map((row) => {
         const findings = [
           ["체결량", row.execution_gaps], ["공통분개", row.common_journal_gaps],
-          ["지갑 결제", row.wallet_link_gaps], ["증권 보유 이동", row.holding_movement_gaps],
+          ["지갑 결제", row.wallet_link_gaps], ["1차 발행 수취처", row.primary_settlement_gaps],
+          ["증권 보유 이동", row.holding_movement_gaps],
         ].filter(([, items]) => Array.isArray(items) && items.length > 0) as [string, unknown[]][];
         return <section key="market-execution-findings"><h4>현물 체결 상세 대사</h4>
-          {findings.length ? findings.map(([label, items]) => <div className="scroll-x" key={label}><h5>{label} · {items.length}건</h5><pre className="mono">{JSON.stringify(items, null, 2)}</pre></div>) : <p className="empty">신규 표준 현물 체결의 체결량·분개·지갑·보유 이동 불일치가 없습니다.</p>}
+          {findings.length ? findings.map(([label, items]) => <div className="scroll-x" key={label}><h5>{label} · {items.length}건</h5><pre className="mono">{JSON.stringify(items, null, 2)}</pre></div>) : <p className="empty">신규 표준 현물 체결의 체결량·분개·지갑·1차 발행 수취처·보유 이동 불일치가 없습니다.</p>}
         </section>;
       })}
+      {report.commonJournalReconciliation.filter((row) => row.ledger_scope === "company_bond_liabilities").map((row) => <section key="company-bond-findings"><h4>회사채 발행잔액 · 회사 원장 대사</h4>
+        {row.gaps?.length ? <div className="scroll-x"><pre className="mono">{JSON.stringify(row.gaps, null, 2)}</pre></div> : <p className="empty">회사 재무원장에 등록된 회사채 발행잔액이 현재 보유 잔액과 일치합니다.</p>}
+        <p className="hint">기말 잔액 비교입니다. 과거 발행·쿠폰·상환의 개별 전기나 현금 지급 시점을 증명하지 않습니다.</p>
+      </section>)}
       <p className="hint">공통 원장 불균형 분개: {report.commonJournalUnbalancedEntries.length}건</p>
       {report.commonJournalUnbalancedEntries.length > 0 && <div className="scroll-x"><table><thead><tr><th>분개</th><th>원장 범위</th><th>주체 유형</th><th>주체 ID</th><th>통화</th></tr></thead><tbody>
         {report.commonJournalUnbalancedEntries.map((row) => <tr key={row.entry_id}><td>#{row.entry_id}</td><td>{row.ledger_scope}</td><td>{row.entity_type}</td><td className="mono">{row.entity_id}</td><td>{row.currency_code}</td></tr>)}

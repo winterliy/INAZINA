@@ -332,6 +332,14 @@ class InvestmentManager:
                 product = conn.execute("SELECT * FROM product.investment WHERE product_code = ?", (item["product_code"],)).fetchone()
                 if product["status"] not in {"active", "defaulted"}:
                     continue
+                from managers.financial_manager import FinancialManager
+                issuer = str(product["issuer_code"] or "")
+                bond_finance = None
+                if issuer:
+                    issuer = FinancialManager.ensure(conn, issuer, now)
+                    entity = FinancialManager.entity(conn, issuer)
+                    if str(entity["currency"]).upper() == str(product["quote_currency"] or "NWX").upper():
+                        bond_finance = (FinancialManager, issuer)
                 # Cancel resting orders before releasing the debt claim, including sell reservations.
                 orders = conn.execute("SELECT * FROM assets.market_orders WHERE asset_code = ? AND order_kind = 'asset' "
                     "AND status IN ('open', 'partial')", (product["product_code"],)).fetchall()
@@ -364,6 +372,16 @@ class InvestmentManager:
                     self.users._credit_source(conn, user_id, None, principal + coupon - tax,
                                               event='bond_redemption', reference=product['product_code'])
                     notifications.append(dict(user_id=user_id, product_code=product["product_code"], net=principal + coupon - tax))
+                if bond_finance and due:
+                    finance, issuer = bond_finance
+                    principal_total = sum(principal for _, _, principal, _ in payments)
+                    coupon_total = sum(coupon for _, _, _, coupon in payments)
+                    finance.amortize_bond(conn, issuer, product["product_code"], now)
+                    finance.event(conn, issuer, "회사채 만기 원금·이자 지급",
+                        [("bonds", principal_total), ("interest_expense", coupon_total),
+                         ("cash", -due)], "financing", now=now,
+                        key=f"bond-redemption:{product['product_code']}:{int(product['maturity_epoch'])}",
+                        currency=str(product["quote_currency"] or "NWX").upper())
                 conn.execute("DELETE FROM assets.user_assets WHERE asset_code = ?", (product["product_code"],))
                 conn.execute("UPDATE product.investment SET status = 'redeemed' WHERE product_code = ?", (product["product_code"],))
         return notifications
@@ -386,6 +404,14 @@ class InvestmentManager:
                 ).fetchone()
                 if not product or product["status"] != "active":
                     continue
+                from managers.financial_manager import FinancialManager
+                issuer = str(product["issuer_code"] or "")
+                bond_finance = None
+                if issuer:
+                    issuer = FinancialManager.ensure(conn, issuer, now)
+                    entity = FinancialManager.entity(conn, issuer)
+                    if str(entity["currency"]).upper() == str(product["quote_currency"] or "NWX").upper():
+                        bond_finance = (FinancialManager, issuer)
                 frequency = int(product["coupon_frequency_days"] or 0)
                 created = int(product["last_coupon_epoch"] or datetime.strptime(
                     product["created_at"], "%Y-%m-%d %H:%M:%S"
@@ -438,6 +464,13 @@ class InvestmentManager:
                     notifications.append({"user_id": str(user_id),
                                           "product_code": product["product_code"],
                                           "coupon": coupon, "tax": tax})
+                if bond_finance and due_total:
+                    finance, issuer = bond_finance
+                    finance.event(conn, issuer, "회사채 정기 쿠폰 지급",
+                        [("interest_expense", due_total), ("cash", -due_total)],
+                        "financing", now=now,
+                        key=f"bond-coupon:{product['product_code']}:{paid_until}",
+                        currency=str(product["quote_currency"] or "NWX").upper())
                 conn.execute(
                     "UPDATE product.investment SET last_coupon_epoch=?,next_coupon_epoch=? "
                     "WHERE product_code=?",

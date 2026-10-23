@@ -1468,7 +1468,8 @@ class RealisticRateSystemTests(unittest.TestCase):
             {row["ledger_scope"] for row in report["commonJournalReconciliation"]},
             {"customer", "company", "institution", "market_order_reservations",
              "market_order_wallet_cash", "market_executions", "treasury_bond_cash",
-             "tax_transactions", "fund", "dividend_payment_settlements"},
+             "tax_transactions", "fund", "dividend_payment_settlements",
+             "company_bond_liabilities"},
         )
         self.assertEqual(report["commonJournalUnbalancedEntries"], [])
         self.assertTrue(all(row["currency_code"] == "NWX"
