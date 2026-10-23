@@ -1,3 +1,4 @@
+from functions.money import base_currency_code
 import math
 import re
 import time
@@ -11,13 +12,13 @@ from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY, IS_TREASURY
 def _issuer(conn, product_code):
     """Treasury of the country whose exchange lists the bond, and the bond's currency."""
     from managers.currency_manager import CurrencyManager
-    row = conn.execute("SELECT p.exchange_id,COALESCE(p.quote_currency,'NWX') AS currency,e.nationality "
+    row = conn.execute("SELECT p.exchange_id,COALESCE(p.quote_currency,base_currency_code()) AS currency,e.nationality "
                        "FROM treasury_bond_products p LEFT JOIN market_exchanges e ON e.exchange_id=p.exchange_id "
                        "WHERE p.product_code=?", (product_code,)).fetchone()
     nationality = row["nationality"] if row and row["nationality"] else None
     if not nationality or not conn.execute("SELECT 1 FROM country_currencies WHERE nationality=?", (nationality,)).fetchone():
         nationality = '낙원'
-    return CurrencyManager.treasury_id(conn, nationality), (row["currency"] if row else 'NWX')
+    return CurrencyManager.treasury_id(conn, nationality), (row["currency"] if row else base_currency_code(conn))
 
 
 def _treasury_move(conn, product_code, amount):
@@ -136,8 +137,8 @@ class TreasuryBondManager:
                 )
             return True, (
                 f"✅ 국채 `{code}` · **{name}** 발행 완료\n"
-                f"액면가 {face_value:,} NWX · 총 {total_supply // face_value:,}매 "
-                f"(총 발행한도 {total_supply:,} NWX) · 거래소 `{exchange_id}`\n"
+                f"액면가 {face_value:,} 기준 통화 · 총 {total_supply // face_value:,}매 "
+                f"(총 발행한도 {total_supply:,} 기준 통화) · 거래소 `{exchange_id}`\n"
                 f"연이율 {annual_rate:g}% · 만기 {maturity_days:,}일"
             )
         except Exception as exc:
@@ -190,7 +191,7 @@ class TreasuryBondManager:
         try:
             amount = parse_money(amount, minimum=1)
         except ValueError as exc:
-            return False, f"❌ 매수 금액은 정수 NWX로 입력해주세요. ({exc})"
+            return False, f"❌ 매수 금액은 정수 기준 통화로 입력해주세요. ({exc})"
 
         try:
             from managers.interest_manager import InterestManager
@@ -217,12 +218,12 @@ class TreasuryBondManager:
                 face_value = int(bond["face_value"])
                 if amount % face_value:
                     return False, (
-                        f"❌ 이 국채는 액면가 {face_value:,} NWX 단위로만 매수할 수 있습니다. "
+                        f"❌ 이 국채는 액면가 {face_value:,} 기준 통화 단위로만 매수할 수 있습니다. "
                         f"매수 금액을 액면가의 배수로 입력해주세요."
                     )
                 remaining = int(bond["total_supply"]) - int(bond["sold_amount"] or 0)
                 if amount > remaining:
-                    return False, f"❌ 발행 잔여 한도를 초과했습니다. 남은 한도: {remaining:,} NWX"
+                    return False, f"❌ 발행 잔여 한도를 초과했습니다. 남은 한도: {remaining:,} 기준 통화"
                 debited, reason = self._debit_funds(conn, str(user_id), amount)
                 if not debited:
                     return False, f"❌ {reason}"
@@ -271,8 +272,8 @@ class TreasuryBondManager:
                 )
                 RateManager.refresh_all_market_pressure(conn, now=now)
             return True, (
-                f"✅ **{bond['name']}** 국채를 {amount:,} NWX 매수했습니다. "
-                f"(액면가 {face_value:,} NWX · {amount // face_value:,}매) "
+                f"✅ **{bond['name']}** 국채를 {amount:,} 기준 통화 매수했습니다. "
+                f"(액면가 {face_value:,} 기준 통화 · {amount // face_value:,}매) "
                 f"만기: <t:{maturity}:D> · 대금은 국고에 입금됐습니다."
             )
         except Exception as exc:
@@ -295,7 +296,7 @@ class TreasuryBondManager:
             with self.db.atomic(("users", "accounts", "assets", "tax")) as conn:
                 query = (
                     "SELECT h.holding_id, h.user_id, h.product_code, h.principal, "
-                    "h.principal_minor_units, COALESCE(p.quote_currency,'NWX') AS currency, "
+                    "h.principal_minor_units, COALESCE(p.quote_currency,base_currency_code()) AS currency, "
                     "h.purchased_epoch, h.maturity_epoch, h.maturity_days, "
                     "h.product_name AS name, h.annual_rate,h.coupon_frequency_days "
                     "FROM accounts.treasury_bond_holdings h "
@@ -312,7 +313,7 @@ class TreasuryBondManager:
                 for holding in rows:
                     from functions.money import currency_precision, from_minor_units, to_minor_units
                     from managers.currency_manager import CurrencyManager, SCALE
-                    currency = str(holding["currency"] or "NWX").upper()
+                    currency = str(holding["currency"] or base_currency_code(conn)).upper()
                     places = currency_precision(conn, currency)
                     principal_units = int(holding["principal_minor_units"] or
                                           to_minor_units(holding["principal"], places))
@@ -327,7 +328,7 @@ class TreasuryBondManager:
                     from managers.user_manager import UserManager
                     tax = UserManager._tax(
                         conn, holding['user_id'], 'treasury_bond_interest', gross_interest,
-                        currency=currency if currency != 'NWX' else None,
+                        currency=currency if currency != base_currency_code(conn) else None,
                     )
                     tax_units = to_minor_units(tax, places)
                     gross_payment_units = principal_units + interest_units
@@ -343,7 +344,7 @@ class TreasuryBondManager:
                     ).fetchone()[0])
                     if fund:
                         change_cash(conn, holding['user_id'], net_payment, 'bond_redemption', holding['product_code'])
-                    elif currency == 'NWX' or currency == CurrencyManager.home(conn, holding['user_id']):
+                    elif currency == base_currency_code(conn) or currency == CurrencyManager.home(conn, holding['user_id']):
                         credit = conn.execute(
                             "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
                             (float(net_payment), holding["user_id"]),
@@ -403,7 +404,7 @@ class TreasuryBondManager:
         paid = []
         with self.db.atomic(("users", "accounts", "tax")) as conn:
             rows = conn.execute(
-                "SELECT h.*,COALESCE(p.quote_currency,'NWX') AS currency "
+                "SELECT h.*,COALESCE(p.quote_currency,base_currency_code()) AS currency "
                 "FROM accounts.treasury_bond_holdings h JOIN product.treasury_bond_products p "
                 "ON p.product_code=h.product_code WHERE h.status='active' "
                 "AND h.coupon_frequency_days>0 AND (? IS NULL OR h.user_id=?)",
@@ -412,7 +413,7 @@ class TreasuryBondManager:
             for holding in rows:
                 from functions.money import currency_precision, from_minor_units, to_minor_units
                 from managers.currency_manager import CurrencyManager
-                currency = str(holding["currency"] or "NWX").upper()
+                currency = str(holding["currency"] or base_currency_code(conn)).upper()
                 places = currency_precision(conn, currency)
                 frequency = int(holding["coupon_frequency_days"])
                 cursor = int(holding["last_coupon_epoch"] or holding["purchased_epoch"])
@@ -441,7 +442,7 @@ class TreasuryBondManager:
                 from managers.user_manager import UserManager
                 tax = UserManager._tax(
                     conn, holding['user_id'], 'treasury_bond_interest', coupon,
-                    currency=currency if currency != 'NWX' else None,
+                    currency=currency if currency != base_currency_code(conn) else None,
                 )
                 tax_units = to_minor_units(tax, places)
                 _treasury_move(conn, holding["product_code"], -coupon)
@@ -455,7 +456,7 @@ class TreasuryBondManager:
                     change_cash(conn, holding['user_id'],
                                 float(from_minor_units(coupon_units-tax_units, places)),
                                 'bond_coupon', holding['product_code'])
-                elif currency == 'NWX' or currency == CurrencyManager.home(conn, holding['user_id']):
+                elif currency == base_currency_code(conn) or currency == CurrencyManager.home(conn, holding['user_id']):
                     conn.execute(
                         "UPDATE users.users SET cash=cash+? WHERE user_id=?",
                         (float(from_minor_units(coupon_units-tax_units, places)),

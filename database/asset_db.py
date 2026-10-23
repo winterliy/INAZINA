@@ -75,7 +75,7 @@ class AssetDB(DBManager):
             custodian TEXT,
             home_exchange_id TEXT,
             listing_exchange_id TEXT NOT NULL,
-            quote_currency TEXT NOT NULL DEFAULT 'NWX',
+            quote_currency TEXT,
             underlying_per_receipt REAL NOT NULL CHECK(underlying_per_receipt > 0),
             receipt_supply INTEGER NOT NULL CHECK(receipt_supply > 0),
             deposited_underlying_quantity REAL NOT NULL CHECK(deposited_underlying_quantity >= 0),
@@ -954,7 +954,7 @@ class AssetDB(DBManager):
         places += "(SELECT quote_currency FROM company WHERE company_code=h.asset_code),"
         places += "(SELECT quote_currency FROM investment WHERE product_code=h.asset_code),"
         places += "(SELECT quote_currency FROM treasury_bond_products WHERE product_code=h.asset_code),"
-        places += "'NWX')),0)"
+        places += "base_currency_code())),0)"
         return self.execute(
             "SELECT h.recorded_epoch,h.side,h.quantity,"
             f"CAST(h.price_minor_units AS REAL)/CASE ({places}) "
@@ -973,7 +973,7 @@ class AssetDB(DBManager):
             "(SELECT quote_currency FROM company WHERE company_code=t.asset_code),"
             "(SELECT quote_currency FROM investment WHERE product_code=t.asset_code),"
             "(SELECT quote_currency FROM treasury_bond_products WHERE product_code=t.asset_code),"
-            "'NWX') currency_code "
+            "base_currency_code()) currency_code "
             "FROM market_last_trade t WHERE t.asset_code=?", (str(code),),
         )
         if not row:

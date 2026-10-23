@@ -264,7 +264,7 @@ class InazinaBot(discord.Client):
                                       "els_early": "ELS 조기상환", "els_maturity": "ELS 만기상환",
                                       "els_maturity_loss": "ELS 만기 손실상환"}.get(result.get("reason"), "회사채 만기")
                             await recipient.send(embed=discord.Embed(title=f"📄 {reason}",
-                                description=f"`{result['product_code']}` 정산 · 지갑 입금 **{result['net']:,} NWX**", color=discord.Color.gold()))
+                                description=f"`{result['product_code']}` 정산 · 지갑 입금 **{result['net']:,} {self.db.base_currency_code()}**", color=discord.Color.gold()))
                         except (discord.HTTPException, ValueError, TypeError):
                             pass
                 except Exception as exc:
@@ -308,8 +308,8 @@ class InazinaBot(discord.Client):
                             title=("📄 옵션 작성 계약 만기" if result.get("is_writer") else "📄 옵션 만기 정산"),
                             description=(
                                 f"`{result['contract_code']}` · {result['underlying_code']} "
-                                f"{option_name} · 만기 주가 {result['spot_price']:,} NWX · "
-                                f"행사가 {result['strike_price']:,} NWX"
+                                f"{option_name} · 만기 주가 {result['spot_price']:,} {self.db.base_currency_code()} · "
+                                f"행사가 {result['strike_price']:,} {self.db.base_currency_code()}"
                             ),
                             color=(discord.Color.green() if result["exercised"] else discord.Color.orange()),
                         )
@@ -326,13 +326,13 @@ class InazinaBot(discord.Client):
                         elif result["option_type"] == "call":
                             settlement = (
                                 f"기초주식 {result['exercised']:,}주 인도 · "
-                                f"행사대금 {result['cash_paid']:,} NWX 지급"
+                                f"행사대금 {result['cash_paid']:,} {self.db.base_currency_code()} 지급"
                                 if result["exercised"] else "행사하지 않은 계약은 만료되었습니다."
                             )
                         else:
                             settlement = (
                                 f"기초주식 {result['exercised']:,}주 인도 · "
-                                f"정산 입금 {result['cash_received']:,} NWX"
+                                f"정산 입금 {result['cash_received']:,} {self.db.base_currency_code()}"
                                 if result["exercised"] else "행사하지 않은 계약은 만료되었습니다."
                             )
                         notice.add_field(name="정산", value=settlement, inline=False)
@@ -351,10 +351,10 @@ class InazinaBot(discord.Client):
                             description=f"**{bond['name']}** 국채가 만기되어 자동 상환됐습니다.",
                             color=discord.Color.gold(),
                         )
-                        notice.add_field(name="원금", value=f"{bond['principal']:,} NWX", inline=True)
-                        notice.add_field(name="이자", value=f"{bond['interest']:,} NWX", inline=True)
-                        notice.add_field(name="세금", value=f"{bond['tax']:,} NWX", inline=True)
-                        notice.add_field(name="지갑 입금", value=f"**{bond['net']:,} NWX**", inline=False)
+                        notice.add_field(name="원금", value=f"{bond['principal']:,} {self.db.base_currency_code()}", inline=True)
+                        notice.add_field(name="이자", value=f"{bond['interest']:,} {self.db.base_currency_code()}", inline=True)
+                        notice.add_field(name="세금", value=f"{bond['tax']:,} {self.db.base_currency_code()}", inline=True)
+                        notice.add_field(name="지갑 입금", value=f"**{bond['net']:,} {self.db.base_currency_code()}**", inline=False)
                         await recipient.send(embed=notice)
                     except (discord.HTTPException, ValueError, TypeError):
                         pass
@@ -373,7 +373,7 @@ class InazinaBot(discord.Client):
                         if result["paid_count"]:
                             notice.add_field(
                                 name="자동 상환",
-                                value=f"{result['paid_count']}회 · {result['paid_amount']:,.0f} NWX",
+                                value=f"{result['paid_count']}회 · {result['paid_amount']:,.0f} {self.db.base_currency_code()}",
                                 inline=False,
                             )
                         if result["missed_count"]:
@@ -384,7 +384,7 @@ class InazinaBot(discord.Client):
                                 inline=False,
                             )
                         notice.add_field(
-                            name="남은 원리금", value=f"{result['remaining']:,.0f} NWX", inline=False
+                            name="남은 원리금", value=f"{result['remaining']:,.0f} {self.db.base_currency_code()}", inline=False
                         )
                         await recipient.send(embed=notice)
                     except (discord.HTTPException, ValueError, TypeError) as exc:

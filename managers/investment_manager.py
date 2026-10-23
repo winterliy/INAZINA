@@ -1,4 +1,5 @@
 """Typed game products: stock futures, corporate debt, NAV funds and physical spot."""
+from functions.money import base_currency_code
 
 import math
 import time
@@ -109,8 +110,8 @@ class InvestmentManager:
                 raise ValueError("펀드는 자기 자신을 구성 자산으로 담을 수 없습니다.")
             if not quote or float(quote["price"] or 0) <= 0:
                 raise ValueError(f"활성 펀드 구성 자산을 확인해주세요: {asset_code}")
-            if str(quote.get("quote_currency") or "NWX").upper() != "NWX":
-                raise ValueError("펀드 구성 자산은 현재 NWX 결제 자산만 지원합니다.")
+            if str(quote.get("quote_currency") or base_currency_code(conn)).upper() != base_currency_code(conn):
+                raise ValueError("펀드 구성 자산은 현재 기준 통화 결제 자산만 지원합니다.")
             bucket = quote["asset_class"] if quote["asset_class"] in {"equity", "bond"} else "other"
             totals[bucket] += weight
             total += weight
@@ -168,7 +169,7 @@ class InvestmentManager:
                 if product_type == "commodity_spot":
                     conn.execute("INSERT INTO assets.market_assets (code, name, exchange_id, price, type, total_supply) "
                                  "VALUES (?, ?, ?, ?, 'commodity_spot', ?)", (code, name, exchange_id, price, supply))
-                    return True, f"✅ 현물 원자재 `{code}`를 상장했습니다. 1개당 {price:,} NWX"
+                    return True, f"✅ 현물 원자재 `{code}`를 상장했습니다. 1개당 {price:,} 기준 통화"
                 underlying, issuer, index_id = None, None, None
                 constituents = []
                 if product_type == "stock_future":
@@ -338,7 +339,7 @@ class InvestmentManager:
                 if issuer:
                     issuer = FinancialManager.ensure(conn, issuer, now)
                     entity = FinancialManager.entity(conn, issuer)
-                    if str(entity["currency"]).upper() == str(product["quote_currency"] or "NWX").upper():
+                    if str(entity["currency"]).upper() == str(product["quote_currency"] or base_currency_code(conn)).upper():
                         bond_finance = (FinancialManager, issuer)
                 # Cancel resting orders before releasing the debt claim, including sell reservations.
                 orders = conn.execute("SELECT * FROM assets.market_orders WHERE asset_code = ? AND order_kind = 'asset' "
@@ -381,7 +382,7 @@ class InvestmentManager:
                         [("bonds", principal_total), ("interest_expense", coupon_total),
                          ("cash", -due)], "financing", now=now,
                         key=f"bond-redemption:{product['product_code']}:{int(product['maturity_epoch'])}",
-                        currency=str(product["quote_currency"] or "NWX").upper())
+                        currency=str(product["quote_currency"] or base_currency_code(conn)).upper())
                 conn.execute("DELETE FROM assets.user_assets WHERE asset_code = ?", (product["product_code"],))
                 conn.execute("UPDATE product.investment SET status = 'redeemed' WHERE product_code = ?", (product["product_code"],))
         return notifications
@@ -410,7 +411,7 @@ class InvestmentManager:
                 if issuer:
                     issuer = FinancialManager.ensure(conn, issuer, now)
                     entity = FinancialManager.entity(conn, issuer)
-                    if str(entity["currency"]).upper() == str(product["quote_currency"] or "NWX").upper():
+                    if str(entity["currency"]).upper() == str(product["quote_currency"] or base_currency_code(conn)).upper():
                         bond_finance = (FinancialManager, issuer)
                 frequency = int(product["coupon_frequency_days"] or 0)
                 created = int(product["last_coupon_epoch"] or datetime.strptime(
@@ -470,7 +471,7 @@ class InvestmentManager:
                         [("interest_expense", due_total), ("cash", -due_total)],
                         "financing", now=now,
                         key=f"bond-coupon:{product['product_code']}:{paid_until}",
-                        currency=str(product["quote_currency"] or "NWX").upper())
+                        currency=str(product["quote_currency"] or base_currency_code(conn)).upper())
                 conn.execute(
                     "UPDATE product.investment SET last_coupon_epoch=?,next_coupon_epoch=? "
                     "WHERE product_code=?",

@@ -36,12 +36,12 @@ export function FundPanel({ code, ctx, close }: { code: string; ctx: Ctx; close:
     });
   }
 
-  return <Card title={`${code} · 펀드 운용`} caption="시민 계정이 아닌 펀드 전용 계정입니다. 구성자산 매수는 자동이 아니며, 아래 주문으로 운용합니다. 금액은 NWX입니다."
+  return <Card title={`${code} · 펀드 운용`} caption="시민 계정이 아닌 펀드 전용 계정입니다. 구성자산 매수는 자동이 아니며, 아래 주문으로 운용합니다. 금액은 기준 통화입니다."
     actions={<><button className="soft" disabled={ctx.busy} onClick={() => setRevision((value) => value + 1)}>새로고침</button><button className="soft" onClick={close}>닫기</button></>}>
     {error && <p role="alert">{error}</p>}
     {!fund ? <p>불러오는 중…</p> : fund.mode === "synthetic" ? <>
-      <p>기존 가격추종형 펀드입니다. 기존 {number(fund.issuedUnits ?? 0)}좌를 유지하려면 국고에서 {number(fund.conversionCash ?? 0)} NWX를 펀드로 이전해야 합니다. 전환 후 구성자산은 별도로 매수하세요.</p>
-      <button disabled={ctx.busy} onClick={() => { if (window.confirm(`국고에서 ${number(fund.conversionCash ?? 0)} NWX를 이전하고 실보유형으로 전환할까요? 이후 가입금은 펀드 계정에 적립됩니다. 되돌리는 자동 기능은 없습니다.`)) act({ action: "activate", expectedFunding: fund.conversionCash ?? 0 }); }}>자금 이전 및 펀드 계정 개설</button>
+      <p>기존 가격추종형 펀드입니다. 기존 {number(fund.issuedUnits ?? 0)}좌를 유지하려면 국고에서 {number(fund.conversionCash ?? 0)} 기준 통화를 펀드로 이전해야 합니다. 전환 후 구성자산은 별도로 매수하세요.</p>
+      <button disabled={ctx.busy} onClick={() => { if (window.confirm(`국고에서 ${number(fund.conversionCash ?? 0)} 기준 통화를 이전하고 실보유형으로 전환할까요? 이후 가입금은 펀드 계정에 적립됩니다. 되돌리는 자동 기능은 없습니다.`)) act({ action: "activate", expectedFunding: fund.conversionCash ?? 0 }); }}>자금 이전 및 펀드 계정 개설</button>
     </> : <>
       <p>사용 가능 현금 {number(fund.availableCash ?? 0)} · 주문 예약금 {number(fund.reservedCash ?? 0)} · 미수배당 {number(fund.receivables ?? 0)} · 순자산 {number(fund.netAssets ?? 0)} · 발행좌수 {number(fund.issuedUnits ?? 0)} · NAV {number(fund.nav ?? 0)}</p>
       <p className="hint">원장 대사: {fund.ledgerBalanced ? "일치" : "불일치 — 거래 중단 필요"}. 현금이 부족한 환매는 거절되며, 매도 체결 또는 매수 주문 취소 후 다시 요청해야 합니다.</p>
@@ -55,14 +55,14 @@ export function FundPanel({ code, ctx, close }: { code: string; ctx: Ctx; close:
       }}>목표 비중으로 리밸런싱</button>
       <form className="form-grid" onSubmit={(event) => {
         event.preventDefault();
-        if (window.confirm(`${code}의 자금으로 ${asset} ${quantity}개를 ${price} NWX 지정가에 ${side === "buy" ? "매수" : "매도"}할까요?`)) {
+        if (window.confirm(`${code}의 자금으로 ${asset} ${quantity}개를 ${price} 기준 통화 지정가에 ${side === "buy" ? "매수" : "매도"}할까요?`)) {
           act({ action: "order", assetCode: asset.trim(), side, quantity, price: Number(price) });
         }
       }}>
         <Field label="구성자산 코드"><input required value={asset} onChange={(event) => setAsset(event.target.value)} /></Field>
         <Field label="방향"><select value={side} onChange={(event) => setSide(event.target.value)}><option value="buy">매수</option><option value="sell">매도</option></select></Field>
         <Field label="수량"><input required type="number" min="0.001" step="0.001" value={quantity} onChange={(event) => setQuantity(event.target.value)} /></Field>
-        <Field label="지정가 NWX"><input required type="number" min="1" step="1" value={price} onChange={(event) => setPrice(event.target.value)} /></Field>
+        <Field label="지정가 기준 통화"><input required type="number" min="1" step="1" value={price} onChange={(event) => setPrice(event.target.value)} /></Field>
         <button disabled={ctx.busy || !fund.ledgerBalanced} type="submit">펀드 명의 주문</button>
       </form>
       <h3>실제 보유자산</h3>

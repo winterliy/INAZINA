@@ -71,7 +71,7 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
     {company && <Card title={`${company.name} (${company.company_code}) 법인 자본`} caption={<>계정 <span className="mono">{detail?.account ?? company.account ?? "첫 실행 때 개설"}</span> · 현금은 법인 현금 장부와 같은 돈입니다 · 거래는 재무제표에 자동 기록됩니다</>}
       actions={<button className="soft" type="button" onClick={() => { setSelected(""); setDetail(null); }}>닫기</button>}>
       <div className="stats">
-        <div><small>현금</small><b>{number(company.cash)} NWX</b></div>
+        <div><small>현금</small><b>{number(company.cash)} 기준 통화</b></div>
         <div><small>잠금 예치금</small><b>{number(company.locked)}</b></div>
         <div><small>총자산</small><b>{detail ? number(Math.round(detail.assets.grand_total)) : "…"}</b></div>
         <div><small>대출</small><b>{number(company.loans)}</b></div>

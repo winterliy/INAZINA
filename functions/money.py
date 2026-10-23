@@ -1,6 +1,6 @@
 """Currency-aware decimal helpers.
 
-Database values are expressed in the named currency (not always NWX).  Calculated
+Database values are expressed in the named currency (not always 기준 통화).  Calculated
 amounts are rounded half-up to that currency's configured smallest unit.
 """
 
@@ -10,7 +10,23 @@ import re
 
 _WHOLE = Decimal("1")
 SUBMINOR_SCALE = 1_000_000
-DEFAULT_CURRENCY_CODE = "NWX"
+
+def base_currency_code(conn):
+    """Read the configured simulation base currency from the currency ledger."""
+    try:
+        row = conn.execute("SELECT base_currency_code FROM currency_system_settings "
+                           "WHERE singleton_id=1").fetchone()
+    except Exception as exc:
+        if "no such table" in str(exc).lower():
+            raise ValueError("기본 통화 설정이 초기화되지 않았습니다.") from None
+        raise
+    if not row or not str(row[0] or "").strip():
+        raise ValueError("기본 통화를 설정해주세요.")
+    code = str(row[0]).strip().upper()
+    active = conn.execute("SELECT 1 FROM currencies WHERE code=? AND status='active'", (code,)).fetchone()
+    if not active:
+        raise ValueError(f"활성 기본 통화를 찾을 수 없습니다: {code}")
+    return code
 
 
 def round_money(value, decimal_places=0):
@@ -286,16 +302,16 @@ def parse_currency_money(conn, value, currency_code, *, minimum=0):
 
 
 def parse_money(value, *, minimum=0):
-    """Parse a whole-NWX user/configured amount; reject fractional currency."""
+    """Parse a whole-unit user/configured amount; reject fractional currency."""
     if isinstance(value, bool):
-        raise ValueError("금액은 정수 NWX로 입력해주세요.")
+        raise ValueError("금액은 정수로 입력해주세요.")
     try:
         amount = Decimal(str(value).strip().replace(",", ""))
     except (InvalidOperation, TypeError, ValueError):
-        raise ValueError("금액은 정수 NWX로 입력해주세요.") from None
+        raise ValueError("금액은 정수로 입력해주세요.") from None
     if not amount.is_finite() or amount != amount.to_integral_value():
-        raise ValueError("금액은 소수점 없는 정수 NWX로 입력해주세요.")
+        raise ValueError("금액은 소수점 없는 정수로 입력해주세요.")
     result = int(amount)
     if result < minimum:
-        raise ValueError(f"금액은 {minimum:,} NWX 이상이어야 합니다.")
+        raise ValueError(f"금액은 {minimum:,} 이상이어야 합니다.")
     return result

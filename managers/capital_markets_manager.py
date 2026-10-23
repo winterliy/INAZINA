@@ -10,6 +10,7 @@ These products reuse existing engines:
 - IMA accounts are principal-protected savings accounts that share a reference
   product's gain; the issuing bank's head office pays the excess.
 """
+from functions.money import base_currency_code
 import time
 from decimal import Decimal, ROUND_FLOOR, ROUND_HALF_UP
 
@@ -375,7 +376,7 @@ class CapitalMarketsManager:
         if not quote or float(quote["price"] or 0) <= 0:
             return balance, 0
         from functions.money import currency_precision, to_minor_units
-        currency = str(product["quote_currency"] or "NWX").upper()
+        currency = str(product["quote_currency"] or base_currency_code(conn)).upper()
         places = currency_precision(conn, currency)
         reference_minor = (account["reference_price_minor_units"]
                            if "reference_price_minor_units" in account.keys() else None)

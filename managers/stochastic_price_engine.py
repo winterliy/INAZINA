@@ -2,7 +2,7 @@
 
 One physical scheduler step represents a configurable number of trading
 minutes. Prices remain fractional here so that small, realistic returns are
-not discarded when the displayed NWX quote is rounded by the caller.
+not discarded when the displayed 기준 통화 quote is rounded by the caller.
 """
 
 from dataclasses import dataclass

@@ -1,3 +1,5 @@
+from functions.money import base_currency_code
+import re
 import time
 import uuid
 
@@ -20,7 +22,6 @@ class CurrencyDB(DBManager):
             if column not in currency_columns:
                 self.execute(f"ALTER TABLE currencies ADD COLUMN {column} {definition}")
         self.execute("INSERT OR IGNORE INTO currencies(code,name) VALUES ('NWX','낙원자화')")
-        self.execute("UPDATE currencies SET decimal_places=0 WHERE code='NWX'")
         # Currencies have at most two decimal places (cents). The column's legacy
         # default is 6, so new rows are clamped and explicit larger values refused.
         self.execute("UPDATE currencies SET decimal_places=2 WHERE decimal_places>2")
@@ -88,6 +89,19 @@ class CurrencyDB(DBManager):
             self.execute("ALTER TABLE country_currencies DROP COLUMN statutory_rate")
         self._ensure_negative_policy_rates()
         self.execute("INSERT OR IGNORE INTO country_currencies(nationality,currency_code) VALUES ('낙원','NWX')")
+        self.execute("""CREATE TABLE IF NOT EXISTS currency_system_settings (
+            singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),
+            base_currency_code TEXT NOT NULL REFERENCES currencies(code),
+            updated_epoch INTEGER NOT NULL DEFAULT 0
+        )""")
+        self.execute("""INSERT OR IGNORE INTO currency_system_settings(singleton_id,base_currency_code)
+            SELECT 1,currency_code FROM country_currencies WHERE nationality=?""", ('낙원',))
+        self.execute("""CREATE TRIGGER IF NOT EXISTS currency_system_settings_base_precision
+            BEFORE UPDATE OF base_currency_code ON currency_system_settings
+            WHEN COALESCE((SELECT decimal_places FROM currencies
+                           WHERE code=NEW.base_currency_code),-1)<>0
+            BEGIN SELECT RAISE(ABORT,'기본 통화는 현재 정수 잔액 경로를 위해 0자리 통화여야 합니다.'); END""")
+        self.execute("UPDATE currencies SET decimal_places=0 WHERE code=base_currency_code()")
         self.execute("""CREATE TABLE IF NOT EXISTS country_macro_indicators (
             nationality TEXT PRIMARY KEY REFERENCES country_currencies(nationality) ON DELETE CASCADE,
             inflation_percent REAL NOT NULL DEFAULT 2 CHECK(inflation_percent BETWEEN -100 AND 1000),
@@ -247,11 +261,79 @@ class CurrencyDB(DBManager):
         for table in ('company','investment','market_assets','market_orders'):
             columns = {r[1] for r in self.execute(f'PRAGMA table_info({table})')}
             if 'quote_currency' not in columns:
-                self.execute(f"ALTER TABLE {table} ADD COLUMN quote_currency TEXT NOT NULL DEFAULT 'NWX'")
+                self.execute(f"ALTER TABLE {table} ADD COLUMN quote_currency TEXT")
         self._init_legal_rate_caps()
         self._init_floating_rate_pricing()
         self._seed_liquidity_states()
         self._init_currency_precision_triggers()
+        self._remove_legacy_currency_defaults()
+
+    def base_currency_code(self):
+        from functions.money import base_currency_code
+        return base_currency_code(self.conn)
+
+    def _remove_legacy_currency_defaults(self, targets=None):
+        """Rebuild legacy tables whose currency columns defaulted to a fixed code.
+
+        SQLite cannot alter a column default in place. Recreating only affected
+        tables preserves their rows, indexes, triggers, keys, and AUTOINCREMENT
+        sequence while allowing the post-insert base-currency triggers to apply.
+        """
+        targets = targets or {
+            "accounts": {"quote_currency"}, "loans": {"quote_currency"},
+            "guarantee_claims": {"quote_currency"}, "market_assets": {"quote_currency"},
+            "company": {"quote_currency"}, "investment": {"quote_currency"},
+            "saving": {"quote_currency"}, "liability": {"quote_currency"},
+            "market_orders": {"quote_currency"}, "tax_transactions": {"currency_code"},
+            "financial_institution_ledger": {"currency_code", "base_currency_code"},
+        }
+        self.execute("PRAGMA foreign_keys=OFF")
+        try:
+            for table, currency_columns in targets.items():
+                row = self.execute_one(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                )
+                if not row or not row[0]:
+                    continue
+                ddl = str(row[0])
+                columns = {item[1] for item in self.execute(f'PRAGMA table_info("{table}")')}
+                replacements = {}
+                for column in currency_columns & columns:
+                    pattern = re.compile(
+                        rf'(?i)(["`\[]?{re.escape(column)}["`\]]?\s+)TEXT\s+NOT\s+NULL\s+DEFAULT\s+[\'\"]NWX[\'\"]'
+                    )
+                    ddl, count = pattern.subn(r'\1TEXT', ddl)
+                    replacements[column] = count
+                if not any(replacements.values()):
+                    continue
+
+                indexes_triggers = self.execute(
+                    "SELECT sql FROM sqlite_master WHERE tbl_name=? "
+                    "AND type IN ('index','trigger') AND sql IS NOT NULL ORDER BY type,name",
+                    (table,),
+                )
+                sequence = None
+                if self.execute_one("SELECT 1 FROM sqlite_master WHERE name='sqlite_sequence'"):
+                    seq_row = self.execute_one("SELECT seq FROM sqlite_sequence WHERE name=?", (table,))
+                    sequence = int(seq_row[0]) if seq_row else None
+                temp = f"__currency_migrate_{table}"
+                escaped = table.replace('"', '""')
+                ddl = re.sub(
+                    rf'(?i)^(CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+)["`\[]?{re.escape(table)}["`\]]?',
+                    rf'\1"{temp}"', ddl.strip(), count=1,
+                )
+                self.execute(ddl)
+                names = ",".join(f'"{name.replace(chr(34), chr(34)*2)}"' for name in columns)
+                self.execute(f'INSERT INTO "{temp}" ({names}) SELECT {names} FROM "{escaped}"')
+                self.execute(f'DROP TABLE "{escaped}"')
+                self.execute(f'ALTER TABLE "{temp}" RENAME TO "{escaped}"')
+                if sequence is not None:
+                    self.execute("DELETE FROM sqlite_sequence WHERE name IN (?,?)", (table, temp))
+                    self.execute("INSERT INTO sqlite_sequence(name,seq) VALUES (?,?)", (table, sequence))
+                for (statement,) in indexes_triggers:
+                    self.execute(statement)
+        finally:
+            self.execute("PRAGMA foreign_keys=ON")
 
     def _init_currency_precision_triggers(self):
         """Replace legacy whole-NWX rounding with denomination-aware rounding."""
@@ -292,7 +374,7 @@ class CurrencyDB(DBManager):
             "e.execution_price_minor_units,l.quote_currency "
             "FROM collateral_liquidation_events e JOIN loans l USING(loan_id)"
         ):
-            places = currency_precision(self.conn, event["quote_currency"] or "NWX")
+            places = currency_precision(self.conn, event["quote_currency"] or base_currency_code(self.conn))
             updates = []
             if not int(event["mark_price_minor_units"] or 0) and float(event["mark_price"] or 0):
                 updates.append(("mark_price_minor_units", to_minor_units(event["mark_price"], places)))
@@ -374,7 +456,7 @@ class CurrencyDB(DBManager):
                 "outstanding_balance,outstanding_balance_minor_units,ecl_allowance,"
                 "ecl_allowance_minor_units,charged_off_balance,"
                 "charged_off_balance_minor_units FROM loans"):
-            places = currency_precision(self.conn, loan["quote_currency"] or "NWX")
+            places = currency_precision(self.conn, loan["quote_currency"] or base_currency_code(self.conn))
             for legacy, minor in (("principal", "principal_minor_units"),
                                   ("outstanding_balance", "outstanding_balance_minor_units"),
                                   ("ecl_allowance", "ecl_allowance_minor_units"),
@@ -416,7 +498,7 @@ class CurrencyDB(DBManager):
                 "SELECT loan_id,quote_currency,interest_remainder,"
                 "interest_remainder_subminor_units,overdue_interest_remainder,"
                 "overdue_interest_remainder_subminor_units FROM loans"):
-            places = currency_precision(self.conn, loan["quote_currency"] or "NWX")
+            places = currency_precision(self.conn, loan["quote_currency"] or base_currency_code(self.conn))
             for legacy, subminor in remainder_fields:
                 if int(loan[subminor] or 0) == 0 and float(loan[legacy] or 0) != 0:
                     self.execute(
@@ -452,7 +534,7 @@ class CurrencyDB(DBManager):
                     f"FROM {table} x JOIN loans l USING(loan_id)"
                 )
                 for amount in rows:
-                    places = currency_precision(self.conn, amount["quote_currency"] or "NWX")
+                    places = currency_precision(self.conn, amount["quote_currency"] or base_currency_code(self.conn))
                     if int(amount[minor] or 0) == 0 and amount[field]:
                         self.execute(f"UPDATE {table} SET {minor}=? WHERE {key}=?",
                                      (to_minor_units(amount[field], places), amount[key]))
@@ -594,7 +676,7 @@ class CurrencyDB(DBManager):
         for schedule_row in self.execute(
                 "SELECT s.*,l.quote_currency FROM loan_payment_schedule s "
                 "JOIN loans l USING(loan_id)"):
-            places = currency_precision(self.conn, schedule_row["quote_currency"] or "NWX")
+            places = currency_precision(self.conn, schedule_row["quote_currency"] or base_currency_code(self.conn))
             missing = [(minor, to_minor_units(schedule_row[legacy] or 0, places))
                        for legacy, minor in schedule_amounts
                        if not int(schedule_row[minor] or 0)
@@ -802,7 +884,7 @@ class CurrencyDB(DBManager):
              "COALESCE((SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code),"
              "(SELECT quote_currency FROM company WHERE company_code=NEW.asset_code),"
              "(SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code),"
-             "'NWX')", "price,asset_code"),
+             "base_currency_code())", "price,asset_code"),
         )
         for table, key, asset_code, amount_column, minor_column, currency_sql, update_columns in specs:
             columns = {row[1] for row in self.execute(f'PRAGMA table_info("{table}")')}
@@ -816,7 +898,7 @@ class CurrencyDB(DBManager):
                     currency = self.execute_one(
                         "SELECT COALESCE((SELECT quote_currency FROM market_assets WHERE code=?),"
                         "(SELECT quote_currency FROM company WHERE company_code=?),"
-                        "(SELECT quote_currency FROM investment WHERE product_code=?),'NWX')",
+                        "(SELECT quote_currency FROM investment WHERE product_code=?),base_currency_code())",
                         (row[asset_code], row[asset_code], row[asset_code]),
                     )[0]
                     places = currency_precision(self.conn, currency)
@@ -870,7 +952,7 @@ class CurrencyDB(DBManager):
                 "SELECT transaction_id,currency_code,gross_amount,tax_amount,net_amount "
                 "FROM tax_transactions"
             ):
-                places = currency_precision(self.conn, row["currency_code"] or "NWX")
+                places = currency_precision(self.conn, row["currency_code"] or base_currency_code(self.conn))
                 values = [to_minor_units(row[field], places) for field in fields]
                 self.execute("""UPDATE tax_transactions SET gross_amount_minor_units=?,
                     tax_amount_minor_units=?,net_amount_minor_units=? WHERE transaction_id=?""",
@@ -927,7 +1009,7 @@ class CurrencyDB(DBManager):
             "(SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code),"
             "(SELECT quote_currency FROM treasury_bond_products WHERE product_code=NEW.asset_code),"
             "(SELECT base.quote_currency FROM option_contracts o JOIN market_assets base "
-            "ON base.code=o.underlying_code WHERE o.contract_code=NEW.asset_code),'NWX')"
+            "ON base.code=o.underlying_code WHERE o.contract_code=NEW.asset_code),base_currency_code())"
         )
         for table, key in (("market_trade_history", "trade_id"),
                            ("market_last_trade", "asset_code")):
@@ -944,7 +1026,7 @@ class CurrencyDB(DBManager):
                         + " AS code FROM (SELECT ? AS asset_code)",
                         (row["asset_code"],),
                     )["code"]
-                    places = currency_precision(self.conn, currency or "NWX")
+                    places = currency_precision(self.conn, currency or base_currency_code(self.conn))
                     self.execute(
                         f"UPDATE {table} SET price_minor_units=? WHERE {key}=?",
                         (to_minor_units(row["price"], places), row[key]),
@@ -981,7 +1063,7 @@ class CurrencyDB(DBManager):
             self.execute("ALTER TABLE market_orders ADD COLUMN limit_price_decimal_places INTEGER")
         for row in self.execute("SELECT order_id,quote_currency,limit_price,limit_price_minor_units,"
                                 "limit_price_decimal_places FROM market_orders"):
-            places = currency_precision(self.conn, row["quote_currency"] or "NWX")
+            places = currency_precision(self.conn, row["quote_currency"] or base_currency_code(self.conn))
             units = to_minor_units(row["limit_price"], places)
             if row["limit_price_minor_units"] != units or row["limit_price_decimal_places"] != places:
                 self.execute("UPDATE market_orders SET limit_price_minor_units=?,"
@@ -1021,7 +1103,7 @@ class CurrencyDB(DBManager):
             self.execute("ALTER TABLE market_orders ADD COLUMN reserved_cash_minor_units INTEGER NOT NULL DEFAULT 0")
         for row in self.execute("SELECT order_id,quote_currency,reserved_cash,reserved_cash_minor_units FROM market_orders"):
             if int(row["reserved_cash_minor_units"] or 0) == 0 and float(row["reserved_cash"] or 0) != 0:
-                places = currency_precision(self.conn, row["quote_currency"] or "NWX")
+                places = currency_precision(self.conn, row["quote_currency"] or base_currency_code(self.conn))
                 self.execute("UPDATE market_orders SET reserved_cash_minor_units=? WHERE order_id=?",
                              (to_minor_units(row["reserved_cash"], places), row["order_id"]))
         scale = ("CASE COALESCE((SELECT decimal_places FROM currencies WHERE code=NEW.quote_currency),0) "
@@ -1087,7 +1169,7 @@ class CurrencyDB(DBManager):
         # Historical state is one opening transaction per wallet, guarded by a
         # deterministic source key so startup retries are harmless.
         cash_rows = self.execute("""SELECT u.user_id,u.cash_minor,
-            COALESCE(n.currency_code,'NWX') currency_code,COALESCE(c.decimal_places,0) decimal_places
+            COALESCE(n.currency_code,base_currency_code()) currency_code,COALESCE(c.decimal_places,0) decimal_places
             FROM users u LEFT JOIN country_currencies n ON n.nationality=u.nationality
             LEFT JOIN currencies c ON c.code=n.currency_code WHERE u.cash_minor<>0""")
         for row in cash_rows:
@@ -1134,7 +1216,7 @@ class CurrencyDB(DBManager):
             INSERT OR IGNORE INTO customer_wallet_ledger(source_key,user_id,source_type,source_account,
                 currency_code,decimal_places,delta_minor_units,balance_minor_units,recorded_epoch)
             SELECT 'insert:cash:'||NEW.user_id,NEW.user_id,'cash',NEW.user_id,
-                COALESCE(n.currency_code,'NWX'),COALESCE(c.decimal_places,0),NEW.cash_minor,NEW.cash_minor,unixepoch()
+                COALESCE(n.currency_code,base_currency_code()),COALESCE(c.decimal_places,0),NEW.cash_minor,NEW.cash_minor,unixepoch()
             FROM (SELECT 1) LEFT JOIN country_currencies n ON n.nationality=NEW.nationality
             LEFT JOIN currencies c ON c.code=n.currency_code; END""")
         self.execute("""CREATE TRIGGER IF NOT EXISTS trg_customer_cash_ledger_update AFTER UPDATE OF cash_minor ON users
@@ -1142,7 +1224,7 @@ class CurrencyDB(DBManager):
             INSERT INTO customer_wallet_ledger(source_key,user_id,source_type,source_account,
                 currency_code,decimal_places,delta_minor_units,balance_minor_units,recorded_epoch)
             SELECT 'change:cash:'||NEW.user_id||':'||unixepoch()||':'||lower(hex(randomblob(8))),
-                NEW.user_id,'cash',NEW.user_id,COALESCE(n.currency_code,'NWX'),COALESCE(c.decimal_places,0),
+                NEW.user_id,'cash',NEW.user_id,COALESCE(n.currency_code,base_currency_code()),COALESCE(c.decimal_places,0),
                 NEW.cash_minor-OLD.cash_minor,NEW.cash_minor,unixepoch()
             FROM (SELECT 1) LEFT JOIN country_currencies n ON n.nationality=NEW.nationality
             LEFT JOIN currencies c ON c.code=n.currency_code; END""")
@@ -1277,7 +1359,7 @@ class CurrencyDB(DBManager):
                     "total_supply_minor_units,sold_amount_minor_units FROM treasury_bond_products"
                 )
                 for row in rows:
-                    places = currency_precision(self.conn, row["quote_currency"] or "NWX")
+                    places = currency_precision(self.conn, row["quote_currency"] or base_currency_code(self.conn))
                     for amount in amounts:
                         minor = f"{amount}_minor_units"
                         if not int(row[minor] or 0) and float(row[amount] or 0):
@@ -1294,7 +1376,7 @@ class CurrencyDB(DBManager):
                     "JOIN treasury_bond_products p USING(product_code)"
                 )
                 for row in rows:
-                    places = currency_precision(self.conn, row["quote_currency"] or "NWX")
+                    places = currency_precision(self.conn, row["quote_currency"] or base_currency_code(self.conn))
                     for amount in amounts:
                         minor = f"{amount}_minor_units"
                         if not int(row[minor] or 0) and float(row[amount] or 0):
@@ -1376,19 +1458,19 @@ class CurrencyDB(DBManager):
                 # direct and derived forms without interpolating data values.
                 if currency_expr == "NEW.quote_currency":
                     currency_value = self.execute_one(
-                        f'SELECT COALESCE(quote_currency,"NWX") FROM "{table}" WHERE "{key_col}"=?',
+                        f'SELECT COALESCE(quote_currency,base_currency_code()) FROM "{table}" WHERE "{key_col}"=?',
                         (row[0],),
                     )[0]
                 else:
                     sql_expr = currency_expr.replace("NEW.", f'"{table}".')
                     currency_value = self.execute_one(
-                        f'SELECT COALESCE(({sql_expr}),\'NWX\') FROM "{table}" WHERE "{key_col}"=?',
+                        f'SELECT COALESCE(({sql_expr}),base_currency_code()) FROM "{table}" WHERE "{key_col}"=?',
                         (row[0],),
                     )[0]
                 precision = self.execute_one(
-                    "SELECT decimal_places FROM currencies WHERE code=?", (str(currency_value or 'NWX').upper(),)
+                    "SELECT decimal_places FROM currencies WHERE code=?", (str(currency_value or base_currency_code()).upper(),)
                 )
-                currency_value = str(currency_value or 'NWX').upper()
+                currency_value = str(currency_value or base_currency_code()).upper()
                 places = int(precision[0]) if precision else 0
                 for index, amount_col in enumerate(amount_cols, start=1):
                     amount = row[index]
@@ -1416,7 +1498,7 @@ class CurrencyDB(DBManager):
                         BEGIN INSERT INTO financial_amount_snapshots
                         (source_table,source_key_field,source_key,amount_field,currency_code,decimal_places,amount_minor_units)
                         VALUES ('{table}','{key_col}',CAST(NEW."{key_col}" AS TEXT),'{amount_col}',
-                            COALESCE(({code_expr}),'NWX'),{places_expr},{units_expr})
+                            COALESCE(({code_expr}),base_currency_code()),{places_expr},{units_expr})
                         ON CONFLICT(source_table,source_key,amount_field) DO UPDATE SET
                             currency_code=excluded.currency_code,decimal_places=excluded.decimal_places,
                             amount_minor_units=excluded.amount_minor_units,
@@ -1442,20 +1524,43 @@ class CurrencyDB(DBManager):
 
     def register_late_amount_fields(self):
         """Register amount fields whose tables are initialized after CurrencyDB."""
+        # Resolve missing currencies from the configured base currency at row
+        # insertion time. SQLite does not allow a user-defined function in a
+        # DEFAULT expression, so new schemas keep these columns nullable.
+        for table, column in (
+            ("accounts", "quote_currency"), ("market_assets", "quote_currency"),
+            ("company", "quote_currency"), ("investment", "quote_currency"),
+            ("saving", "quote_currency"), ("liability", "quote_currency"),
+            ("loans", "quote_currency"), ("tax_transactions", "currency_code"),
+            ("market_orders", "quote_currency"),
+            ("financial_institution_ledger", "currency_code"),
+            ("financial_institution_ledger", "base_currency_code"),
+        ):
+            columns = {row[1] for row in self.execute(f'PRAGMA table_info("{table}")')}
+            if column not in columns:
+                continue
+            self.execute(f'UPDATE "{table}" SET "{column}"=base_currency_code() '
+                         f'WHERE "{column}" IS NULL OR "{column}"=\'\'')
+            trigger = f"trg_currency_default_{table}_{column}"
+            self.execute(f'DROP TRIGGER IF EXISTS "{trigger}"')
+            self.execute(f'''CREATE TRIGGER "{trigger}" AFTER INSERT ON "{table}"
+                WHEN NEW."{column}" IS NULL OR NEW."{column}"=''
+                BEGIN UPDATE "{table}" SET "{column}"=base_currency_code()
+                WHERE rowid=NEW.rowid; END''')
         asset_currency = (
             "COALESCE((SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code),"
             "(SELECT quote_currency FROM company WHERE company_code=NEW.asset_code),"
             "(SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code),"
-            "(SELECT quote_currency FROM treasury_bond_products WHERE product_code=NEW.asset_code),'NWX')"
+            "(SELECT quote_currency FROM treasury_bond_products WHERE product_code=NEW.asset_code),base_currency_code())"
         )
         underlying_currency = (
             "COALESCE((SELECT quote_currency FROM market_assets WHERE code=NEW.underlying_code),"
             "(SELECT quote_currency FROM company WHERE company_code=NEW.underlying_code),"
             "(SELECT quote_currency FROM investment WHERE product_code=NEW.underlying_code),"
-            "(SELECT quote_currency FROM treasury_bond_products WHERE product_code=NEW.underlying_code),'NWX')"
+            "(SELECT quote_currency FROM treasury_bond_products WHERE product_code=NEW.underlying_code),base_currency_code())"
         )
         corporate_currency = (
-            "COALESCE((SELECT quote_currency FROM company WHERE company_code=NEW.company_code),'NWX')"
+            "COALESCE((SELECT quote_currency FROM company WHERE company_code=NEW.company_code),base_currency_code())"
         )
         specifications = (
             ("lottery_tickets", ("price",), "ticket_id", "'NWX'"),
@@ -1474,7 +1579,7 @@ class CurrencyDB(DBManager):
              "payment_id", asset_currency),
             ("dr_dividend_withholding_events", ("gross_amount", "tax_amount"), "event_id",
              "NEW.currency_code"),
-            ("company_income_log", ("tax_nwx",), "entry_id", "'NWX'"),
+            ("company_income_log", ("tax_nwx",), "entry_id", "base_currency_code()"),
             ("els_products", ("face_value", "principal_amount", "coupon_amount", "locked_amount"),
              "product_code", "SELECT quote_currency FROM investment WHERE product_code=NEW.product_code"),
             ("els_subscriptions", ("principal", "coupon_reserved"), "subscription_id",
@@ -1486,16 +1591,16 @@ class CurrencyDB(DBManager):
             ("product_settlements", ("gross_amount", "tax_amount"), "settlement_id",
              "COALESCE((SELECT quote_currency FROM market_assets WHERE code=NEW.product_code),"
              "(SELECT quote_currency FROM company WHERE company_code=NEW.product_code),"
-             "(SELECT quote_currency FROM investment WHERE product_code=NEW.product_code),'NWX')"),
+             "(SELECT quote_currency FROM investment WHERE product_code=NEW.product_code),base_currency_code())"),
             ("corporate_equity_offerings", ("issue_price",), "offering_id", asset_currency),
             ("market_quote_overrides", ("price",), "asset_code",
              "COALESCE((SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code),"
              "(SELECT quote_currency FROM company WHERE company_code=NEW.asset_code),"
-             "(SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code),'NWX')"),
+             "(SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code),base_currency_code())"),
             ("market_future_expiry_prices", ("price",), "product_code",
              "COALESCE((SELECT quote_currency FROM market_assets WHERE code=NEW.underlying_code),"
              "(SELECT quote_currency FROM company WHERE company_code=NEW.underlying_code),"
-             "(SELECT quote_currency FROM investment WHERE product_code=NEW.underlying_code),'NWX')"),
+             "(SELECT quote_currency FROM investment WHERE product_code=NEW.underlying_code),base_currency_code())"),
             ("market_auto_targets", ("anchor_price", "target_price"), "asset_code", asset_currency),
             ("market_auto_target_history", ("anchor_price", "target_price"), "history_id", asset_currency),
             ("market_simulation_state", ("latent_price", "last_display_price"),
@@ -1505,27 +1610,27 @@ class CurrencyDB(DBManager):
             ("els_underlyings", ("initial_price", "last_price"), "rowid",
              "COALESCE((SELECT quote_currency FROM market_assets WHERE code=NEW.underlying_code),"
              "(SELECT quote_currency FROM company WHERE company_code=NEW.underlying_code),"
-             "(SELECT quote_currency FROM investment WHERE product_code=NEW.underlying_code),'NWX')"),
+             "(SELECT quote_currency FROM investment WHERE product_code=NEW.underlying_code),base_currency_code())"),
             ("market_exchange_index_components", ("previous_price",), "rowid",
              "SELECT quote_currency FROM company WHERE company_code=NEW.company_code"),
             ("fund_components", ("base_price",), "rowid",
              "COALESCE((SELECT quote_currency FROM company WHERE company_code=NEW.asset_code),"
              "(SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code),"
              "(SELECT quote_currency FROM treasury_bond_products WHERE product_code=NEW.asset_code),"
-             "(SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code),'NWX')"),
+             "(SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code),base_currency_code())"),
             ("option_contracts", ("strike_price",), "contract_id", underlying_currency),
             ("option_positions", ("average_premium",), "rowid",
              "SELECT COALESCE((SELECT quote_currency FROM market_assets WHERE code=o.underlying_code),"
              "(SELECT quote_currency FROM company WHERE company_code=o.underlying_code),"
-             "(SELECT quote_currency FROM investment WHERE product_code=o.underlying_code),'NWX') "
+             "(SELECT quote_currency FROM investment WHERE product_code=o.underlying_code),base_currency_code()) "
              "FROM option_contracts o WHERE o.contract_id=NEW.contract_id"),
             ("option_collateral_lots", ("average_cost",), "collateral_id", underlying_currency),
             ("option_collateral_cash_lots", ("amount",), "collateral_id",
              "COALESCE((SELECT quote_currency FROM accounts WHERE account_number=NEW.account_number),"
              "(SELECT COALESCE((SELECT quote_currency FROM market_assets WHERE code=o.underlying_code),"
              "(SELECT quote_currency FROM company WHERE company_code=o.underlying_code),"
-             "(SELECT quote_currency FROM investment WHERE product_code=o.underlying_code),'NWX') "
-             "FROM option_contracts o WHERE o.contract_id=NEW.contract_id),'NWX')"),
+             "(SELECT quote_currency FROM investment WHERE product_code=o.underlying_code),base_currency_code()) "
+             "FROM option_contracts o WHERE o.contract_id=NEW.contract_id),base_currency_code())"),
             ("investment", ("nav_anchor", "conversion_price", "warrant_exercise_price"),
              "product_code", "NEW.quote_currency"),
             ("financial_institution_ledger", ("amount", "base_amount"), "entry_id", "NEW.currency_code"),
@@ -1536,12 +1641,12 @@ class CurrencyDB(DBManager):
              "SELECT quote_currency FROM investment WHERE product_code=NEW.product_code"),
             ("dr_custody_instructions", ("fee_price",), "reference_key",
              "COALESCE(NEW.fee_currency,(SELECT quote_currency FROM depositary_receipts "
-             "WHERE dr_code=NEW.dr_code),'NWX')"),
+             "WHERE dr_code=NEW.dr_code),base_currency_code())"),
             ("leveraged_etf_state", ("base_nav",), "product_code",
              "SELECT quote_currency FROM investment WHERE product_code=NEW.product_code"),
             ("company", ("cumulative_dividend",), "company_code", "NEW.quote_currency"),
-            ("currency_transactions", ("fee_nwx",), "transaction_id", "'NWX'"),
-            ("currency_transfer_transactions", ("fee_nwx",), "transaction_id", "'NWX'"),
+            ("currency_transactions", ("fee_nwx",), "transaction_id", "base_currency_code()"),
+            ("currency_transfer_transactions", ("fee_nwx",), "transaction_id", "base_currency_code()"),
         )
         with self.lock, self.conn:
             self._ensure_minor_amount_snapshots((), specifications)
@@ -1634,7 +1739,7 @@ class CurrencyDB(DBManager):
                               ("loans", "charged_off_balance")):
             if not self.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)):
                 continue
-            places = "(SELECT COALESCE(MAX(decimal_places),0) FROM currencies WHERE code=COALESCE(NEW.quote_currency,'NWX'))"
+            places = "(SELECT COALESCE(MAX(decimal_places),0) FROM currencies WHERE code=COALESCE(NEW.quote_currency,base_currency_code()))"
             key = "rowid"
             for event, name in ((f"AFTER UPDATE OF {column} ON {table}", f"trg_{table}_{column}_snap"),
                                 (f"AFTER INSERT ON {table}", f"trg_{table}_{column}_snap_insert")):
@@ -1653,7 +1758,7 @@ class CurrencyDB(DBManager):
             "FROM accounts WHERE reference_price IS NOT NULL "
             "AND reference_price_minor_units IS NULL"
         ):
-            places = currency_precision(self.conn, row["quote_currency"] or "NWX")
+            places = currency_precision(self.conn, row["quote_currency"] or base_currency_code(self.conn))
             self.execute(
                 "UPDATE accounts SET reference_price_minor_units=? WHERE account_number=?",
                 (to_minor_units(row["reference_price"], places), row["account_number"]),
@@ -1745,7 +1850,7 @@ class CurrencyDB(DBManager):
             "JOIN depositary_receipts d ON d.dr_code=s.dr_code"
         )
         for row in sample_rows:
-            places = currency_precision(self.conn, row["quote_currency"] or "NWX")
+            places = currency_precision(self.conn, row["quote_currency"] or base_currency_code(self.conn))
             updates = []
             if row["dr_price"] is not None and row["dr_price_minor_units"] is None:
                 updates.append(("dr_price_minor_units", to_minor_units(row["dr_price"], places)))
@@ -1764,7 +1869,7 @@ class CurrencyDB(DBManager):
             self.execute("DROP TRIGGER IF EXISTS trg_dr_deviation_alert_immutable_update")
             try:
                 for row in event_rows:
-                    places = currency_precision(self.conn, row["quote_currency"] or "NWX")
+                    places = currency_precision(self.conn, row["quote_currency"] or base_currency_code(self.conn))
                     updates = []
                     if row["dr_price"] is not None and row["dr_price_minor_units"] is None:
                         updates.append(("dr_price_minor_units", to_minor_units(row["dr_price"], places)))
@@ -1793,11 +1898,11 @@ class CurrencyDB(DBManager):
                 for row in rows:
                     currencies = {
                         "underlying_average_cost": str(row["underlying_average_cost_currency"]
-                            or row["underlying_currency"] or "NWX").upper(),
+                            or row["underlying_currency"] or base_currency_code(self.conn)).upper(),
                         "holder_underlying_average_cost": str(row["holder_underlying_currency"]
-                            or row["underlying_currency"] or "NWX").upper(),
+                            or row["underlying_currency"] or base_currency_code(self.conn)).upper(),
                         "custody_underlying_average_cost": str(row["custody_underlying_currency"]
-                            or row["underlying_currency"] or "NWX").upper(),
+                            or row["underlying_currency"] or base_currency_code(self.conn)).upper(),
                     }
                     updates = []
                     for field, currency in currencies.items():
@@ -1839,7 +1944,7 @@ class CurrencyDB(DBManager):
         )
         checks = []
         for amount, minor, places, currency_col, currency_expr in fields:
-            currency = f"COALESCE({currency_expr},'NWX')"
+            currency = f"COALESCE({currency_expr},base_currency_code())"
             scale = "CASE COALESCE(NEW.\"%s\",0) " % places + " ".join(
                 f"WHEN {i} THEN {10**i}" for i in range(0, 7)) + " END"
             checks.append(
@@ -1863,7 +1968,7 @@ class CurrencyDB(DBManager):
             "LEFT JOIN country_currencies c ON c.nationality=u.nationality"
         )
         for row in rows:
-            currency = str(row["cash_currency_code"] or row["currency_code"] or "NWX").upper()
+            currency = str(row["cash_currency_code"] or row["currency_code"] or base_currency_code(self.conn)).upper()
             places = currency_precision(self.conn, currency)
             if row["cash_minor_units"] is None or row["cash_currency_code"] is None:
                 self.execute(
@@ -1875,7 +1980,7 @@ class CurrencyDB(DBManager):
                  "WHEN 1 THEN 10 ELSE 100 END"
         currency_sql = "COALESCE((SELECT currency_code FROM country_currencies WHERE nationality=" \
                        "(SELECT nationality FROM users WHERE user_id=" \
-                       "(SELECT user_id FROM bank_accounts WHERE issuer=NEW.issuer))), 'NWX')"
+                       "(SELECT user_id FROM bank_accounts WHERE issuer=NEW.issuer))), base_currency_code())"
         self.execute("DROP TRIGGER IF EXISTS trg_bank_deficit_alert_units_insert")
         self.execute(f"""CREATE TRIGGER trg_bank_deficit_alert_units_insert
             AFTER INSERT ON bank_deficit_alerts WHEN NEW.cash_minor_units IS NULL
@@ -2385,7 +2490,7 @@ class CurrencyDB(DBManager):
                 "SELECT currency_code FROM country_currencies WHERE nationality=?",
                 (row["nationality"],),
             )
-            currency = str(denomination["currency_code"] if denomination else "NWX").upper()
+            currency = str(denomination["currency_code"] if denomination else base_currency_code(self.conn)).upper()
             places = currency_precision(self.conn, currency)
             self.execute(
                 "UPDATE financial_institutions SET equity_capital_minor_units=?,"
@@ -2402,7 +2507,7 @@ class CurrencyDB(DBManager):
                 "SELECT currency_code FROM country_currencies WHERE nationality=?",
                 (row["nationality"],),
             )
-            currency = str(denomination["currency_code"] if denomination else "NWX").upper()
+            currency = str(denomination["currency_code"] if denomination else base_currency_code(self.conn)).upper()
             places = currency_precision(self.conn, currency)
             self.execute(
                 "UPDATE financial_institutions SET retained_earnings_minor_units=?,"
@@ -2419,14 +2524,14 @@ class CurrencyDB(DBManager):
             WHEN NEW.retained_earnings_minor_units IS NULL BEGIN
               UPDATE financial_institutions SET
                 retained_earnings_currency_code=COALESCE((SELECT currency_code
-                  FROM country_currencies WHERE nationality=NEW.nationality),'NWX'),
+                  FROM country_currencies WHERE nationality=NEW.nationality),base_currency_code()),
                 retained_earnings_decimal_places=COALESCE((SELECT decimal_places FROM currencies
                   WHERE code=COALESCE((SELECT currency_code FROM country_currencies
-                    WHERE nationality=NEW.nationality),'NWX')),0),
+                    WHERE nationality=NEW.nationality),base_currency_code())),0),
                 retained_earnings_minor_units=CAST(ROUND(COALESCE(NEW.retained_earnings,0)*
                   CASE COALESCE((SELECT decimal_places FROM currencies WHERE code=COALESCE(
                     (SELECT currency_code FROM country_currencies WHERE nationality=NEW.nationality),
-                    'NWX')),0) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END) AS INTEGER)
+                    base_currency_code())),0) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END) AS INTEGER)
               WHERE issuer=NEW.issuer;
             END""")
         self.execute("""CREATE TRIGGER trg_institution_retained_units_legacy_update
@@ -2451,14 +2556,14 @@ class CurrencyDB(DBManager):
             WHEN NEW.equity_capital_minor_units IS NULL BEGIN
               UPDATE financial_institutions SET
                 equity_capital_currency_code=COALESCE((SELECT currency_code
-                  FROM country_currencies WHERE nationality=NEW.nationality),'NWX'),
+                  FROM country_currencies WHERE nationality=NEW.nationality),base_currency_code()),
                 equity_capital_decimal_places=COALESCE((SELECT decimal_places FROM currencies
                   WHERE code=COALESCE((SELECT currency_code FROM country_currencies
-                    WHERE nationality=NEW.nationality),'NWX')),0),
+                    WHERE nationality=NEW.nationality),base_currency_code())),0),
                 equity_capital_minor_units=CAST(ROUND(COALESCE(NEW.equity_capital,0)*
                   CASE COALESCE((SELECT decimal_places FROM currencies WHERE code=COALESCE(
                     (SELECT currency_code FROM country_currencies WHERE nationality=NEW.nationality),
-                    'NWX')),0) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END) AS INTEGER)
+                    base_currency_code())),0) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END) AS INTEGER)
               WHERE issuer=NEW.issuer;
             END""")
         self.execute("""CREATE TRIGGER trg_institution_equity_units_legacy_update
@@ -2489,8 +2594,8 @@ class CurrencyDB(DBManager):
             row[1] for row in self.execute("PRAGMA table_info(financial_institution_ledger)")
         }
         for column, declaration in (
-            ("currency_code", "TEXT NOT NULL DEFAULT 'NWX'"),
-            ("base_currency_code", "TEXT NOT NULL DEFAULT 'NWX'"),
+            ("currency_code", "TEXT"),
+            ("base_currency_code", "TEXT"),
             ("base_amount", "REAL NOT NULL DEFAULT 0"),
             ("amount_minor_units", "INTEGER"),
             ("base_amount_minor_units", "INTEGER"),
@@ -2510,8 +2615,8 @@ class CurrencyDB(DBManager):
             "OR base_amount_minor_units IS NULL"
         )
         for row in legacy_rows:
-            currency = str(row["currency_code"] or "NWX").upper()
-            base_currency = str(row["base_currency_code"] or "NWX").upper()
+            currency = str(row["currency_code"] or base_currency_code(self.conn)).upper()
+            base_currency = str(row["base_currency_code"] or base_currency_code(self.conn)).upper()
             amount_places = currency_precision(self.conn, currency)
             base_places = currency_precision(self.conn, base_currency)
             self.execute(
@@ -2967,14 +3072,14 @@ class CurrencyDB(DBManager):
             # whose nationality mapped to another currency.
             legacy_cash = self.conn.execute("""SELECT u.user_id,u.cash,n.currency_code home_currency
                 FROM users u JOIN country_currencies n ON n.nationality=u.nationality
-                WHERE n.currency_code<>'NWX' AND u.cash<>0""").fetchall()
+                WHERE n.currency_code<>base_currency_code() AND u.cash<>0""").fetchall()
             for row in legacy_cash:
-                foreign_account(row['user_id'], 'NWX', int(row['cash']) * SCALE)
+                foreign_account(row['user_id'], base_currency_code(self.conn), int(row['cash']) * SCALE)
                 self.conn.execute('UPDATE users SET cash=0 WHERE user_id=?', (row['user_id'],))
 
             rows = self.conn.execute(
                 "SELECT w.user_id,w.currency_code,w.balance_units,"
-                "COALESCE(n.currency_code,(SELECT value FROM settings WHERE key='default_currency')) home_currency "
+                "COALESCE(n.currency_code,base_currency_code()) home_currency "
                 "FROM currency_wallets w JOIN users u ON u.user_id=w.user_id "
                 "LEFT JOIN country_currencies n ON n.nationality=u.nationality "
                 "WHERE w.balance_units<>0 ORDER BY w.user_id,w.currency_code"

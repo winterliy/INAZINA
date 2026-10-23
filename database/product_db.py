@@ -22,13 +22,13 @@ class ProductDB(DBManager):
                 compound_type INTEGER, -- 0: 단리, 1: 복리
                 issuer TEXT,
                 status TEXT DEFAULT 'active',
-                quote_currency TEXT NOT NULL DEFAULT 'NWX',
+                quote_currency TEXT,
                 product_kind TEXT NOT NULL DEFAULT 'saving'
             )
         ''')
         saving_columns = {row[1] for row in self.execute("PRAGMA table_info(saving)")}
         if "quote_currency" not in saving_columns:
-            self.execute("ALTER TABLE saving ADD COLUMN quote_currency TEXT NOT NULL DEFAULT 'NWX'")
+            self.execute("ALTER TABLE saving ADD COLUMN quote_currency TEXT")
         if "product_kind" not in saving_columns:
             self.execute("ALTER TABLE saving ADD COLUMN product_kind TEXT NOT NULL DEFAULT 'saving'")
         self._init_rate_pricing_columns("saving", saving_columns)
@@ -214,7 +214,7 @@ class ProductDB(DBManager):
                     f"ALTER TABLE treasury_bond_products ADD COLUMN {column} {declaration}"
                 )
         if "face_value" not in bond_columns:
-            # Existing offers used arbitrary whole-NWX purchase amounts; 1 NWX
+            # Existing offers used arbitrary whole-기준 통화 purchase amounts; 1 기준 통화
             # preserves that behavior while new issues specify their denomination.
             self.execute(
                 "ALTER TABLE treasury_bond_products "
@@ -271,7 +271,7 @@ class ProductDB(DBManager):
         for table in ("liability", "investment", "treasury_bond_products"):
             columns = {row[1] for row in self.execute(f"PRAGMA table_info({table})")}
             if "quote_currency" not in columns:
-                self.execute(f"ALTER TABLE {table} ADD COLUMN quote_currency TEXT NOT NULL DEFAULT 'NWX'")
+                self.execute(f"ALTER TABLE {table} ADD COLUMN quote_currency TEXT")
 
     def _init_rate_pricing_columns(self, table, existing_columns):
         """Add benchmark, institution, borrower-risk, and delinquency pricing terms.
@@ -335,7 +335,7 @@ class ProductDB(DBManager):
             """INSERT OR REPLACE INTO saving
                (product_code,name,interest_rate,deposit_amount,maturity_days,interest_cycle,
                 compound_type,issuer,status,quote_currency,product_kind)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 'NWX', 'saving')""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', base_currency_code(), 'saving')""",
             (code, name, rate, deposit, maturity, cycle, compound, issuer),
         )
 

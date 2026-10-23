@@ -1,4 +1,5 @@
 """Append-only, currency-minor-unit journal for financial institutions."""
+from functions.money import base_currency_code
 
 from decimal import Decimal
 from functions.time_utils import MAX_SUPPORTED_EPOCH as _MAX_SUPPORTED_EPOCH, validate_epoch
@@ -135,7 +136,7 @@ class BankJournal:
         ).fetchall()
         account_units = {}
         for row in accounts:
-            currency = str(row["quote_currency"] or "NWX").upper()
+            currency = str(row["quote_currency"] or base_currency_code(conn)).upper()
             places = currency_precision(conn, currency)
             balance = (Decimal(int(row["balance_units"] or 0)) / Decimal(1_000_000)
                        if row["account_type"] == "currency_saving"
@@ -187,7 +188,7 @@ class BankJournal:
         ).fetchall()
         account_units = {}
         for row in accounts:
-            currency = str(row["quote_currency"] or "NWX").upper()
+            currency = str(row["quote_currency"] or base_currency_code(conn)).upper()
             places = currency_precision(conn, currency)
             units = (int(row["outstanding_balance_minor_units"] or 0)
                      if "outstanding_balance_minor_units" in row.keys()
@@ -231,7 +232,7 @@ class BankJournal:
         ).fetchall()
         account_units = {}
         for row in exposures:
-            currency = str(row["quote_currency"] or "NWX").upper()
+            currency = str(row["quote_currency"] or base_currency_code(conn)).upper()
             places = currency_precision(conn, currency)
             units = (int(row["ecl_allowance_minor_units"] or 0)
                      if "ecl_allowance_minor_units" in row.keys()
@@ -274,7 +275,7 @@ class BankJournal:
         ).fetchall()
         source = {}
         for row in loans:
-            currency = str(row["quote_currency"] or "NWX").upper()
+            currency = str(row["quote_currency"] or base_currency_code(conn)).upper()
             places = currency_precision(conn, currency)
             units = (int(row["charged_off_balance_minor_units"] or 0)
                      if "charged_off_balance_minor_units" in row.keys()
@@ -315,7 +316,7 @@ class BankJournal:
         ).fetchall()
         findings = []
         for row in rows:
-            currency = str(row["quote_currency"] or "NWX").upper()
+            currency = str(row["quote_currency"] or base_currency_code(conn)).upper()
             places = currency_precision(conn, currency)
             def units(field):
                 minor_field = f"{field}_minor_units"
@@ -359,11 +360,11 @@ class BankJournal:
         from functions.money import currency_precision, round_currency, to_minor_units
 
         claims = conn.execute(
-            "SELECT COALESCE(a.quote_currency,'NWX') currency_code,"
+            "SELECT COALESCE(a.quote_currency,base_currency_code()) currency_code,"
             "SUM(c.covered_amount) covered_amount,SUM(c.uninsured_amount) uninsured_amount "
             "FROM accounts.deposit_insurance_claims c LEFT JOIN accounts.accounts a "
             "ON a.account_number=c.account_number WHERE c.issuer=? "
-            "GROUP BY COALESCE(a.quote_currency,'NWX')", (str(issuer),),
+            "GROUP BY COALESCE(a.quote_currency,base_currency_code())", (str(issuer),),
         ).fetchall()
         posted = conn.execute(
             "SELECT e.currency_code,l.account_code,SUM(l.credit_units-l.debit_units) balance_units "
@@ -456,7 +457,7 @@ class BankJournal:
         ).fetchall()
         findings = []
         for row in rows:
-            currency = str(row["quote_currency"] or "NWX").upper()
+            currency = str(row["quote_currency"] or base_currency_code(conn)).upper()
             places = currency_precision(conn, currency)
 
             def units(minor, legacy):
@@ -495,7 +496,7 @@ class BankJournal:
         ).fetchall()
         findings.extend({"collateral_id": int(row["collateral_id"]),
                          "loan_id": int(row["loan_id"]),
-                         "currency_code": str(row["quote_currency"] or "NWX").upper(),
+                         "currency_code": str(row["quote_currency"] or base_currency_code(conn)).upper(),
                          "status": "missing_event"} for row in missing)
         return findings
 

@@ -86,7 +86,7 @@ class DBManager:
             self.conn.close()
 
     def enforce_integer_money(self, table, columns, primary_key):
-        """Round legacy currency rows and keep SQL/browser edits whole-NWX only."""
+        """Round legacy currency rows and keep SQL/browser edits whole-기준 통화 only."""
         columns = tuple(columns)
         if not columns:
             return
@@ -147,7 +147,7 @@ class DBManager:
 
         ``currency_sql`` is a trusted schema expression containing ``NEW`` (for
         example ``NEW.quote_currency`` or a scalar subquery).  This replaces the
-        legacy whole-NWX trigger while keeping NWX at zero decimals.
+        legacy whole-기준 통화 trigger while keeping 기준 통화 at zero decimals.
         """
         columns = tuple(columns)
         if not columns:

@@ -1,3 +1,4 @@
+from functions.money import base_currency_code
 import math
 import random
 import sqlite3
@@ -738,8 +739,8 @@ class MarketManager:
         try:
             from managers.currency_manager import CurrencyManager
             fx = CurrencyManager.quote(
-                conn, str(underlying["quote_currency"] or "NWX"),
-                str(program["dr_currency"] or "NWX"),
+                conn, str(underlying["quote_currency"] or base_currency_code(conn)),
+                str(program["dr_currency"] or base_currency_code(conn)),
             )
             value = (float(underlying["price"])*float(program["underlying_per_receipt"])
                      * float(fx))
@@ -1637,7 +1638,7 @@ class MarketManager:
                 UNION ALL SELECT o.contract_code,
                     COALESCE(l.name, o.underlying_code) || ' ' ||
                     CASE o.option_type WHEN 'call' THEN '콜' ELSE '풋' END || ' ' || o.strike_price,
-                    COALESCE(l.quote_currency, 'NWX')
+                    COALESCE(l.quote_currency, base_currency_code())
                 FROM option_contracts o LEFT JOIN listings l ON l.code=o.underlying_code
                 """)}
             fills = {row['asset_code']: dict(row) for row in conn.execute("""
@@ -1669,7 +1670,7 @@ class MarketManager:
                 details = metadata.get(code)
                 if not details:
                     continue
-                currency = details['quote_currency'] or 'NWX'
+                currency = details['quote_currency'] or base_currency_code(conn)
                 fill = fills.get(code, {})
                 volume = float(fill.get('volume', 0) or 0)
                 if volume.is_integer():

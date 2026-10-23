@@ -1,4 +1,5 @@
 """Atomic currency exchange. Foreign amounts are integer millionths of a unit."""
+from functions.money import base_currency_code
 import time
 import uuid
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
@@ -32,7 +33,7 @@ class CurrencyExchangeManager:
 
     @staticmethod
     def _rate(conn, code):
-        value = CurrencyManager.rate(conn, code) / CurrencyManager.rate(conn, 'NWX')
+        value = CurrencyManager.rate(conn, code) / CurrencyManager.rate(conn, base_currency_code(conn))
         return int(value) if value == value.to_integral_value() else value
 
     @staticmethod
@@ -46,7 +47,7 @@ class CurrencyExchangeManager:
         with self.db.readonly() as conn:
             user = self._user(conn, user_id)
             row = conn.execute("SELECT currency_code FROM country_currencies n JOIN currencies c ON c.code=n.currency_code WHERE nationality=? AND c.status='active'", (user['nationality'],)).fetchone()
-            return user['nationality'], row['currency_code'] if row else 'NWX'
+            return user['nationality'], row['currency_code'] if row else base_currency_code(conn)
 
     def rates(self):
         with self.db.readonly() as conn:
@@ -248,7 +249,7 @@ class CurrencyExchangeManager:
             CurrencyManager.credit_treasury_fee(conn, user_id, fee)
             conn.execute('INSERT INTO currency_transactions(user_id,source_currency,target_currency,source_units,target_units,fee_nwx,recorded_epoch) VALUES (?,?,?,?,?,?,?)',
                 (str(user_id),source,target,units,output,fee,now))
-            return f"✅ {display_units(units)} {source} → {display_units(output)} {target} · 수수료 {fee:,} NWX"
+            return f"✅ {display_units(units)} {source} → {display_units(output)} {target} · 수수료 {fee:,} 기준 통화"
 
     def accounts(self, user_id):
         with self.db.atomic() as conn:
@@ -501,10 +502,10 @@ class CurrencyExchangeManager:
                 # Company books classify transfers as 영업외 income/expense (and consolidation eliminates intra-group ones).
                 from managers.company_account_manager import CompanyAccounts
                 if CompanyAccounts.is_company(conn, sender):
-                    CompanyAccounts.log_income(conn, sender, 'transfer_out', CurrencyManager.convert(conn, units, src[5], 'NWX')//SCALE,
+                    CompanyAccounts.log_income(conn, sender, 'transfer_out', CurrencyManager.convert(conn, units, src[5], base_currency_code(conn))//SCALE,
                                                counterparty=CompanyAccounts.issuer_of(conn, dst[4]) or dst[4])
                 if CompanyAccounts.is_company(conn, dst[4]):
-                    CompanyAccounts.log_income(conn, dst[4], 'transfer_in', CurrencyManager.convert(conn, output, dst[5], 'NWX')//SCALE,
+                    CompanyAccounts.log_income(conn, dst[4], 'transfer_in', CurrencyManager.convert(conn, output, dst[5], base_currency_code(conn))//SCALE,
                                                counterparty=CompanyAccounts.issuer_of(conn, sender) or sender)
             sources_label = ', '.join(debited_sources)
             basis_label = (
@@ -513,4 +514,4 @@ class CurrencyExchangeManager:
             )
             return (f'✅ {basis_label}송금 {display_units(units)} {src[5]} → '
                     f'{display_units(output)} {dst[5]} · 받는 곳 {destination_label} · '
-                    f'출금 {sources_label} · 환전 수수료 {fee:,} NWX')
+                    f'출금 {sources_label} · 환전 수수료 {fee:,} 기준 통화')

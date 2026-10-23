@@ -1,4 +1,5 @@
 """Validated administrator forms; no arbitrary SQL execution surface."""
+from functions.money import base_currency_code
 import json
 import math
 import time
@@ -219,12 +220,12 @@ class AdminControlManager:
                     if category=='currency' and conn.execute("SELECT 1 FROM accounts WHERE account_type='currency_saving' AND quote_currency=? AND balance_units>0",(code,)).fetchone():
                         raise ValueError("보유 잔액이 있는 통화는 삭제할 수 없습니다.")
                     currency = code if category=='currency' else (conn.execute('SELECT code FROM currencies WHERE asset_code=?',(code,)).fetchone() or [None])[0] if category=='asset' else None
-                    if currency and currency!='NWX' and any(conn.execute(f'SELECT 1 FROM {table} WHERE quote_currency=? LIMIT 1',(currency,)).fetchone() for table in ('company','investment','market_assets')):
+                    if currency and currency!=base_currency_code(conn) and any(conn.execute(f'SELECT 1 FROM {table} WHERE quote_currency=? LIMIT 1',(currency,)).fetchone() for table in ('company','investment','market_assets')):
                         raise ValueError('이 통화로 결제하는 종목이 있어 통화·환율을 삭제할 수 없습니다.')
                     if category=='asset' and conn.execute("SELECT 1 FROM currencies c JOIN accounts a ON a.quote_currency=c.code WHERE c.asset_code=? AND a.account_type='currency_saving' AND a.balance_units>0",(code,)).fetchone():
                         raise ValueError("외환통장 잔액이 있는 환율 종목은 삭제할 수 없습니다.")
-                    if category=='currency' and code=='NWX':
-                        raise ValueError("기준 통화 NWX는 삭제할 수 없습니다.")
+                    if category=='currency' and code==base_currency_code(conn):
+                        raise ValueError("기준 통화 기준 통화는 삭제할 수 없습니다.")
                 # Preserve historical claims/holdings and payout definitions.
                 conn.execute(f'UPDATE "{table}" SET status=? WHERE "{key}"=?',('inactive' if operation=='delete' else 'active',code))
                 if category == 'dr':
@@ -272,11 +273,11 @@ class AdminControlManager:
                 values['quote_currency']=str(values['quote_currency']).strip().upper()
                 if category not in {
                     'stock','asset','dr','commodity','loan', *DEPOSIT_CATEGORIES
-                } and values['quote_currency']!='NWX':
+                } and values['quote_currency']!=base_currency_code(conn):
                     raise ValueError('이 상품 유형은 외화 결제를 지원하지 않습니다.')
                 if not conn.execute("SELECT 1 FROM currencies WHERE code=? AND status='active'",(values['quote_currency'],)).fetchone():
                     raise ValueError('활성 결제 통화를 입력해주세요.')
-                if category in {'asset','dr'} and values['quote_currency']!='NWX' and extra.get('type',(dict(existing) if existing else {}).get('type','stock')) not in {'stock','주식','commodity_spot','depositary_receipt'}:
+                if category in {'asset','dr'} and values['quote_currency']!=base_currency_code(conn) and extra.get('type',(dict(existing) if existing else {}).get('type','stock')) not in {'stock','주식','commodity_spot','depositary_receipt'}:
                     raise ValueError('외화 결제 자산은 주식·현물 원자재만 지원합니다.')
                 if existing and values['quote_currency']!=existing['quote_currency']:
                     raise ValueError('기존 종목의 결제 통화는 변경할 수 없습니다. 새 종목을 생성해주세요.')
@@ -285,7 +286,7 @@ class AdminControlManager:
             if price and price_key:
                 price_currency = str(
                     values.get('quote_currency')
-                    or (existing['quote_currency'] if existing and 'quote_currency' in existing.keys() else 'NWX')
+                    or (existing['quote_currency'] if existing and 'quote_currency' in existing.keys() else base_currency_code(conn))
                 ).upper()
                 values[price_key] = parse_currency_money(
                     conn, price, price_currency, minimum=0
@@ -349,7 +350,7 @@ class AdminControlManager:
                 'commodity': {'unit_price','face_value','dividend_per_share'},
                 'bond': {'market_price','face_value'},
             }.get(category, set())
-            denomination = str(merged.get('quote_currency') or 'NWX').upper()
+            denomination = str(merged.get('quote_currency') or base_currency_code(conn)).upper()
             for field in money_fields & values.keys():
                 values[field] = parse_currency_money(
                     conn, values[field], denomination, minimum=0
@@ -375,7 +376,7 @@ class AdminControlManager:
                     if benchmark != 'policy' and tenor == 0:
                         tenor = max(1, int(merged.get('maturity_days') or 30))
                     values.update(benchmark_key=benchmark, benchmark_tenor_days=tenor)
-                    currency = str(merged.get('quote_currency') or 'NWX').upper()
+                    currency = str(merged.get('quote_currency') or base_currency_code(conn)).upper()
                     nationality = str(merged.get('rate_nationality') or '').strip()
                     if not nationality:
                         countries = conn.execute(
@@ -512,7 +513,7 @@ class AdminControlManager:
                         raise ValueError('우선주의 parent_company_code에 활성 보통주 법인 id를 입력해주세요.')
                     if existing and merged['parent_company_code']!=existing['parent_company_code']:
                         raise ValueError('우선주의 소속 법인은 $합병으로 변경해주세요.')
-                    if parent['quote_currency']!=merged.get('quote_currency','NWX'):
+                    if parent['quote_currency']!=merged.get('quote_currency',base_currency_code(conn)):
                         raise ValueError('우선주와 소속 법인의 결제 통화가 같아야 합니다.')
                     if operation=='create' and 'industry' not in extra:
                         values['industry']=parent['industry']
@@ -521,8 +522,8 @@ class AdminControlManager:
                         values.setdefault('liquidation_value_per_share',values.get('share_price',merged.get('share_price',0)))
                 if merged.get('dividend_funding','treasury') not in {'treasury','issuer'}:
                     raise ValueError('dividend_funding은 treasury(국고) 또는 issuer(법인현금)입니다.')
-                if merged.get('dividend_funding')=='issuer' and merged.get('quote_currency','NWX')!='NWX':
-                    raise ValueError('법인현금 재원 배당은 NWX 결제 회사만 지원합니다.')
+                if merged.get('dividend_funding')=='issuer' and merged.get('quote_currency',base_currency_code(conn))!=base_currency_code(conn):
+                    raise ValueError('법인현금 재원 배당은 기준 통화 결제 회사만 지원합니다.')
                 for field,maximum in (('dividend_priority',1000),('cumulative_dividend',1)):
                     if field in values:values[field]=self._number(values[field],0,maximum,integer=True)
                 if 'liquidation_value_per_share' in values:
@@ -601,7 +602,7 @@ class AdminControlManager:
                 RateManager.require_legal_rate(
                     conn, values.get('interest_rate', merged.get('interest_rate', 0)),
                     nationality=merged.get('rate_nationality'),
-                    currency_code=values.get('quote_currency', merged.get('quote_currency', 'NWX')),
+                    currency_code=values.get('quote_currency', merged.get('quote_currency', base_currency_code(conn))),
                 )
             for field in ('face_value','loan_limit','capital','contract_size','deposit_amount','maturity_days','repayment_cycle_seconds','repayment_amount'):
                 if field in merged and merged[field] is not None:
@@ -636,8 +637,8 @@ class AdminControlManager:
                 underlying = merged.get('underlying_code') if category=='future' else merged.get('issuer_code')
                 if not conn.execute("SELECT 1 FROM company WHERE company_code=? AND status='active'",(underlying,)).fetchone():
                     raise ValueError("활성 회사 주식 코드를 기초/발행 회사로 입력해주세요.")
-                if conn.execute('SELECT quote_currency FROM company WHERE company_code=?',(underlying,)).fetchone()[0]!='NWX':
-                    raise ValueError('현재 선물·회사채 발행은 NWX 결제 회사만 지원합니다.')
+                if conn.execute('SELECT quote_currency FROM company WHERE company_code=?',(underlying,)).fetchone()[0]!=base_currency_code(conn):
+                    raise ValueError('현재 선물·회사채 발행은 기준 통화 결제 회사만 지원합니다.')
                 if not 1 <= int(merged.get('maturity_days',0)) <= 3650:
                     raise ValueError("만기일수는 1~3650일입니다.")
                 if operation=='create':
@@ -653,9 +654,9 @@ class AdminControlManager:
                 for account in conn.execute("SELECT DISTINCT user_id FROM accounts WHERE account_type='currency_saving' AND product_code=?",(code,)).fetchall():
                     self.bot.currency_mgr._settle(conn,account['user_id'],time.time())
             if category=='currency':
-                if code=='NWX' and any(k!='name' for k in values):
-                    raise ValueError("기준 통화 NWX의 환율은 고정됩니다.")
-                if code!='NWX' and not conn.execute("SELECT 1 FROM market_assets WHERE code=? AND type='forex' AND status='active'",(merged.get('asset_code'),)).fetchone():
+                if code==base_currency_code(conn) and any(k!='name' for k in values):
+                    raise ValueError("기준 통화 기준 통화의 환율은 고정됩니다.")
+                if code!=base_currency_code(conn) and not conn.execute("SELECT 1 FROM market_assets WHERE code=? AND type='forex' AND status='active'",(merged.get('asset_code'),)).fetchone():
                     raise ValueError("먼저 $상품생성에서 type=forex 자산을 생성해주세요.")
             if category == 'dr':
                 if operation != 'create':
@@ -689,7 +690,7 @@ class AdminControlManager:
                             > int(original['total_shares'] or 0)):
                         raise ValueError('활성 DR 프로그램의 최대 예탁 가능량 합계가 원주 발행량을 초과합니다.')
                     listing_exchange = str(values.get('exchange_id') or '').strip()
-                    currency = str(values.get('quote_currency') or 'NWX').upper()
+                    currency = str(values.get('quote_currency') or base_currency_code(conn)).upper()
                     if not listing_exchange:
                         raise ValueError('DR 상장 거래소 exchange_id가 필요합니다.')
                     if not conn.execute("SELECT 1 FROM currencies WHERE code=? AND status='active'", (currency,)).fetchone():
@@ -862,7 +863,7 @@ class AdminControlManager:
                 "SELECT currency_code FROM country_currencies WHERE nationality=?",
                 (target_nationality,),
             ).fetchone()
-            currency = str(currency_row[0]) if currency_row else 'NWX'
+            currency = str(currency_row[0]) if currency_row else base_currency_code(conn)
             for key in ('cash','annual_income'):
                 if key in changes:
                     changes[key] = parse_currency_money(

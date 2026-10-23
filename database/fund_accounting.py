@@ -3,7 +3,7 @@
 import time
 from decimal import Decimal
 
-from functions.money import DEFAULT_CURRENCY_CODE, currency_precision, from_minor_units, to_minor_units
+from functions.money import currency_precision, from_minor_units, to_minor_units
 
 PREFIX = "__fund__:"
 MAX_MONEY = 2**53 - 1
@@ -106,7 +106,7 @@ def account(conn, owner):
 def change_cash(conn, owner, delta, event="settlement", reference=None):
     """Compatibility boundary for existing integer fund cash call sites."""
     if isinstance(delta, bool) or int(delta) != delta:
-        raise ValueError("기존 펀드 결제 경로는 정수 NWX만 허용합니다.")
+        raise ValueError("기존 펀드 결제 경로는 정수 기준 통화만 허용합니다.")
     product_code = str(owner)[len(PREFIX):]
     currency = conn.execute("SELECT quote_currency FROM investment WHERE product_code=?",
                             (product_code,)).fetchone()
@@ -128,13 +128,13 @@ def initialize(db):
         product_code TEXT NOT NULL REFERENCES fund_accounts(product_code),
         event TEXT NOT NULL, amount INTEGER NOT NULL, balance INTEGER NOT NULL,
         reference TEXT, recorded_epoch INTEGER NOT NULL,
-        currency_code TEXT NOT NULL DEFAULT '{DEFAULT_CURRENCY_CODE}',
+        currency_code TEXT NOT NULL,
         decimal_places INTEGER NOT NULL DEFAULT 0,
         amount_minor_units INTEGER, balance_minor_units INTEGER
     )""")
     columns = {row[1] for row in db.execute("PRAGMA table_info(fund_cash_ledger)")}
     for name, declaration in (
-        ("currency_code", f"TEXT NOT NULL DEFAULT '{DEFAULT_CURRENCY_CODE}'"),
+        ("currency_code", "TEXT"),
         ("decimal_places", "INTEGER NOT NULL DEFAULT 0"),
         ("amount_minor_units", "INTEGER"),
         ("balance_minor_units", "INTEGER"),

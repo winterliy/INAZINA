@@ -115,6 +115,7 @@ def connect_readonly():
     connection = sqlite3.connect(uri, uri=True, timeout=2)
     try:
         connection.row_factory = sqlite3.Row
+        connection.create_function("base_currency_code", 0, lambda: _configured_base_currency(connection))
         connection.execute("PRAGMA query_only=ON")
         yield connection
     finally:
@@ -126,12 +127,20 @@ def connect_db(timeout=2):
     connection = sqlite3.connect(DATABASE, timeout=timeout)
     try:
         connection.row_factory = sqlite3.Row
+        connection.create_function("base_currency_code", 0, lambda: _configured_base_currency(connection))
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA busy_timeout={max(1, int(timeout * 1000))}")
         with connection:
             yield connection
     finally:
         connection.close()
+
+
+def _configured_base_currency(connection):
+    row = connection.execute(
+        "SELECT base_currency_code FROM currency_system_settings WHERE singleton_id=1"
+    ).fetchone()
+    return str(row[0]).upper() if row and row[0] else None
 
 
 def identity(user_id):
@@ -167,7 +176,9 @@ def identity(user_id):
         "userId": str(row["user_id"]),
         "nickname": str(row["nickname"] or row["user_id"]),
         "nationality": str(row["nationality"] or ""),
-        "currency": str(currency[0]) if currency else "NWX",
+        "currency": str(currency[0]) if currency else str(connection.execute(
+            "SELECT base_currency_code()"
+        ).fetchone()[0]),
         "cash": int((treasury["cash"] if treasury else row["cash"]) or 0),
         "creditScore": int(row["credit_score"] or 0),
         "role": role,
@@ -858,8 +869,8 @@ def instruments(include_inactive=False):
                         if underlying and float(underlying["price"] or 0) > 0:
                             from managers.currency_manager import CurrencyManager
                             fx = float(CurrencyManager.quote(
-                                connection, str(underlying["quote_currency"] or "NWX"),
-                                str(row.get("quote_currency") or "NWX"),
+                                connection, str(underlying["quote_currency"] or connection.execute("SELECT base_currency_code()").fetchone()[0]),
+                                str(row.get("quote_currency") or connection.execute("SELECT base_currency_code()").fetchone()[0]),
                             ))
                             metrics = dr_reference_metrics(
                                 row["price"], underlying["price"],
@@ -867,7 +878,7 @@ def instruments(include_inactive=False):
                             )
                             if metrics:
                                 program["underlyingPrice"] = float(underlying["price"])
-                                program["underlyingCurrency"] = str(underlying["quote_currency"] or "NWX")
+                                program["underlyingCurrency"] = str(underlying["quote_currency"] or connection.execute("SELECT base_currency_code()").fetchone()[0])
                                 program.update(metrics)
                     except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError):
                         pass
@@ -984,7 +995,7 @@ def user_dr_movements(user_id, limit=50):
             "m.underlying_quantity,COALESCE(m.holder_underlying_average_cost,m.underlying_average_cost) underlying_average_cost,"
             "m.recorded_epoch,COALESCE(m.holder_underlying_currency,"
             "(SELECT quote_currency FROM company WHERE company_code=d.underlying_code),"
-            "(SELECT quote_currency FROM market_assets WHERE code=d.underlying_code),'NWX') underlying_currency "
+            "(SELECT quote_currency FROM market_assets WHERE code=d.underlying_code),base_currency_code()) underlying_currency "
             "FROM depositary_receipt_movements m JOIN depositary_receipts d USING(dr_code) "
             "WHERE m.user_id=? ORDER BY m.recorded_epoch DESC,m.movement_id DESC LIMIT ?",
             (str(user_id), max(1, min(100, int(limit)))),
@@ -1164,7 +1175,7 @@ def admin_dr_movements(limit=100):
             "m.holder_underlying_currency,m.recorded_epoch,"
             "COALESCE(m.custody_underlying_currency,"
             "COALESCE((SELECT quote_currency FROM company WHERE company_code=d.underlying_code),"
-            "(SELECT quote_currency FROM market_assets WHERE code=d.underlying_code),'NWX')) underlying_currency "
+            "(SELECT quote_currency FROM market_assets WHERE code=d.underlying_code),base_currency_code())) underlying_currency "
             "FROM depositary_receipt_movements m JOIN depositary_receipts d USING(dr_code) "
             "ORDER BY m.recorded_epoch DESC,m.movement_id DESC LIMIT ?",
             (max(1, min(200, int(limit))),),
@@ -2340,12 +2351,12 @@ def product_list(group):
                         ).fetchone()
                         if underlying and float(underlying["price"] or 0) > 0:
                             dr_program["underlyingPrice"] = float(underlying["price"])
-                            dr_program["underlyingCurrency"] = str(underlying["quote_currency"] or "NWX")
+                            dr_program["underlyingCurrency"] = str(underlying["quote_currency"] or connection.execute("SELECT base_currency_code()").fetchone()[0])
                             try:
                                 from managers.currency_manager import CurrencyManager
                                 fx = float(CurrencyManager.quote(
                                     connection, dr_program["underlyingCurrency"],
-                                    str(item.get("quote_currency") or "NWX"),
+                                    str(item.get("quote_currency") or connection.execute("SELECT base_currency_code()").fetchone()[0]),
                                 ))
                                 dr_program.update(dr_reference_metrics(
                                     item.get("price"), dr_program["underlyingPrice"],
@@ -2567,8 +2578,8 @@ def product_delete(actor, code):
                 if _table_exists(connection, other) and connection.execute(
                         f"SELECT 1 FROM {other} WHERE {column}=? LIMIT 1", (code,)).fetchone():
                     reasons.append(f"{other}에서 이 통화를 사용합니다")
-            if code == "NWX":
-                reasons.append("기준 통화 NWX는 삭제할 수 없습니다")
+            if code == str(connection.execute("SELECT base_currency_code()").fetchone()[0]):
+                reasons.append("기준 통화는 삭제할 수 없습니다")
         if reasons:
             raise ValueError("삭제할 수 없습니다: " + " · ".join(dict.fromkeys(reasons)))
         for runtime, column in PRODUCT_RUNTIME:

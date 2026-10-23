@@ -19,7 +19,7 @@ class AccountDB(DBManager):
                 password TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 last_payment DATETIME DEFAULT CURRENT_TIMESTAMP,
-                quote_currency TEXT NOT NULL DEFAULT 'NWX',
+                quote_currency TEXT,
                 balance_units INTEGER NOT NULL DEFAULT 0,
                 balance_minor_units INTEGER NOT NULL DEFAULT 0,
                 balance_decimal_places INTEGER NOT NULL DEFAULT 0 CHECK(balance_decimal_places BETWEEN 0 AND 6),
@@ -39,7 +39,7 @@ class AccountDB(DBManager):
         if "account_type" not in columns:
             self.execute("ALTER TABLE accounts ADD COLUMN account_type TEXT NOT NULL DEFAULT 'saving'")
         if "quote_currency" not in columns:
-            self.execute("ALTER TABLE accounts ADD COLUMN quote_currency TEXT NOT NULL DEFAULT 'NWX'")
+            self.execute("ALTER TABLE accounts ADD COLUMN quote_currency TEXT")
         if "balance_units" not in columns:
             self.execute("ALTER TABLE accounts ADD COLUMN balance_units INTEGER NOT NULL DEFAULT 0")
         if "balance_minor_units" not in columns:
@@ -201,7 +201,7 @@ class AccountDB(DBManager):
             ("prepayment_fee_percent", "REAL NOT NULL DEFAULT 0"),
             ("prepayment_fee_decline_days", "INTEGER NOT NULL DEFAULT 0"),
             ("prepayment_fees_paid", "INTEGER NOT NULL DEFAULT 0"),
-            ("quote_currency", "TEXT NOT NULL DEFAULT 'NWX'"),
+            ("quote_currency", "TEXT"),
         ):
             if column not in loan_columns:
                 self.execute(f"ALTER TABLE loans ADD COLUMN {column} {declaration}")
@@ -211,7 +211,7 @@ class AccountDB(DBManager):
         )
         self.execute(
             "UPDATE loans SET quote_currency=COALESCE((SELECT quote_currency FROM liability p "
-            "WHERE p.product_code=loans.product_code),quote_currency,'NWX')"
+            "WHERE p.product_code=loans.product_code),quote_currency,base_currency_code())"
         )
         self.execute("""CREATE TABLE IF NOT EXISTS loan_chargeoff_events (
             event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -491,7 +491,7 @@ class AccountDB(DBManager):
             underwriting_dsr REAL CHECK(underwriting_dsr IS NULL OR underwriting_dsr BETWEEN 0 AND 200),
             guarantee_limit_minor_units INTEGER NOT NULL DEFAULT 0
                 CHECK(typeof(guarantee_limit_minor_units)='integer' AND guarantee_limit_minor_units>=0),
-            quote_currency TEXT NOT NULL DEFAULT 'NWX',
+            quote_currency TEXT,
             guarantee_recovery_bps INTEGER NOT NULL DEFAULT 10000 CHECK(guarantee_recovery_bps BETWEEN 0 AND 10000),
             recovery_days INTEGER NOT NULL DEFAULT 180 CHECK(recovery_days BETWEEN 0 AND 3650),
             recovery_cost_bps INTEGER NOT NULL DEFAULT 0 CHECK(recovery_cost_bps BETWEEN 0 AND 10000),
