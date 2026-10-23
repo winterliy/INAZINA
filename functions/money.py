@@ -117,10 +117,21 @@ def audit_amount_snapshots(conn):
     if not exists:
         return [{"status": "missing_inventory"}]
     findings = []
-    specifications = conn.execute(
-        "SELECT DISTINCT source_table,source_key_field,amount_field "
-        "FROM financial_amount_snapshots"
-    ).fetchall()
+    registry_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='financial_amount_field_registry'"
+    ).fetchone()
+    if registry_exists:
+        specifications = conn.execute(
+            "SELECT source_table,source_key_field,amount_field "
+            "FROM financial_amount_field_registry "
+            "UNION SELECT source_table,source_key_field,amount_field "
+            "FROM financial_amount_snapshots"
+        ).fetchall()
+    else:
+        specifications = conn.execute(
+            "SELECT DISTINCT source_table,source_key_field,amount_field "
+            "FROM financial_amount_snapshots"
+        ).fetchall()
     for spec in specifications:
         table, key_field, field = (str(spec[name]) for name in
                                    ("source_table", "source_key_field", "amount_field"))

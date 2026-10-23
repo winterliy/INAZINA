@@ -1217,6 +1217,61 @@ class AccountingJournal:
         return checks
 
     @classmethod
+    def reconcile_all_financial_ledgers(cls, conn):
+        """Aggregate implemented amount, common-journal, and bank subledger checks.
+
+        The report is deliberately explicit about its coverage. A clean result
+        means every registered check passed; it does not certify unconnected
+        legacy or special-product transaction paths.
+        """
+        from functions.money import audit_amount_snapshots
+        from managers.bank_journal import BankJournal
+
+        amount_findings = audit_amount_snapshots(conn)
+        common_checks = cls.reconcile_subledgers(conn)
+        common_findings = [dict(row) for row in common_checks
+                           if row.get("status") != "matched"]
+        issuers = [str(row[0]) for row in conn.execute(
+            "SELECT issuer FROM financial_institutions ORDER BY issuer"
+        ).fetchall()]
+        institution_reports = [BankJournal.reconcile_all(conn, issuer)
+                               for issuer in issuers]
+        institution_findings = [
+            {"issuer": report["issuer"], **finding}
+            for report in institution_reports
+            for finding in report["findings"]
+        ]
+        findings = ([{"scope": "amount_snapshot_registry", **finding}
+                     for finding in amount_findings]
+                    + [{"scope": "common_journals", **finding}
+                       for finding in common_findings]
+                    + [{"scope": "institution_subledgers", **finding}
+                       for finding in institution_findings])
+        coverage = (
+            "amount_snapshot_registry",
+            "common_journals",
+            "institution_subledgers",
+            "institution_pnl",
+            "customer_deposits",
+            "loan_receivables",
+            "ecl_allowances",
+            "charged_off_memo_balances",
+            "loan_payment_schedules",
+            "collateral_liquidations",
+            "deposit_insurance_claims",
+            "journal_invariants",
+        )
+        return {
+            "status": "matched" if not findings else "mismatch",
+            "coverage": coverage,
+            "institution_count": len(issuers),
+            "amount_snapshot_findings": amount_findings,
+            "common_journal_checks": common_checks,
+            "institution_reports": institution_reports,
+            "findings": findings,
+        }
+
+    @classmethod
     def reconcile_dividend_payment_settlements(cls, conn):
         """Reconcile new dividend receipts to exactly one wallet or fund cash row."""
         from decimal import Decimal

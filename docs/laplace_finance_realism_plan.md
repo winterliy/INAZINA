@@ -17,7 +17,7 @@
 | 9. 예금보험·정리 | 고객·기관별 한도 합산, 다계좌 잔액비례 보장 배분, 보장액·미보장채권 원장, 외화 보험금 환산, 원청구·실지급 통화/금액 이력, 실패기관 상품 정지, 관리자 은행원장과 개인 HTS의 정리내역 조회, 통화별 청구액-분개장 부채 대사 | 보험기금·보험료, 대출과 상계, 단계별 지급 지연, 가교은행·손실순위, 외환통장 정리 |
 | 10. 채권·금리위험 | 국채·회사채 현금흐름 평가, 만기별 곡선, 신용·유동성 스프레드 | 거래기반 곡선, 듀레이션·DV01·컨벡서티, 변동채·옵션채·스왑·헤지 |
 | 11. 다중통화 | 상품통화 정밀도, 환전·국가별 화폐, 기관 대차대조표 환산, 대출·예금 순외화포지션 및 ±10/20% 환율 민감도 | 통화별 만기·유동성, 순외화포지션 헤지·한도, 외화차주 상환 스트레스 및 전체 자산·부채 환산 충격 |
-| 12. 회계·정밀도 | 고객 예금·대출·이자·ECL·정리 및 일부 FX의 상품통화 최소단위 복식분개·대사, 회사용 불변 원장 | 거래 유형 전체 연결, 시민/은행 원장 통합, 전 구간 Decimal/최소단위, 기간 조정·마감 |
+| 12. 회계·정밀도 | M4 여섯 종료 게이트: 금액 필드 등록·감사, 상품통화 최소단위 경계, 표준 고객·기관·회사·시장·대출·채권 흐름의 공통 전기, 보조원장 대사, 재구성·재실행·실패·마감 검증 | 특수 매처와 일부 과거/외화 이벤트의 거래별 재생 및 fixing은 [금액 인벤토리](financial_amount_inventory.md)에 제한으로 열거 |
 
 ## 보안·준법 작업 흐름
 
@@ -376,3 +376,7 @@ M4 여섯 완료 게이트를 종료했다. 금액 필드 등록부는 원천행
 최종 검증: `PYTHONPATH=tests PYTHONWARNINGS=ignore python -m unittest discover -s tests` **864 tests, 738.015초, OK**. API/dashboard/HTS/site/WL `npm run build` 성공(기존 dashboard와 Three.js bundle 크기 경고만 표시). `python -m compileall -q database functions managers web_api tests` 및 `git diff --check` 통과. 해당 전체 회귀에는 신규 회사채 발행/쿠폰/만기 멱등 분개, 빈 AML 테이블 필드 등록, snapshot 누락 탐지 검증 및 최종 작업 트리 회귀가 포함됐다.
 
 완료선은 내부 금융 시뮬레이터다. 외부 은행/수탁/세무 연결은 없다. 잔여 제한은 호환 목적으로 남긴 일부 SQLite REAL/float mirror, 비표준·특수 매처의 레거시 소비, 과거 거래 이벤트가 없던 잔액의 거래별 재생 대신 opening/baseline 분리, 일부 외화 회사채와 송금/세금의 거래시점 FX fixing·clearing이다. 이들은 인벤토리와 관리자 대사에서 명시적으로 구분하며 과거 근거가 없는 거래를 새로 만들지 않는다. 실제 금융기관 운영 인증이나 외부 독립 회계/신용 검증은 M4 범위가 아니다.
+
+2026-10-24 통합 대사 보완: `audit_amount_snapshots`가 스냅샷 행만으로 검사 대상을 찾던 문제를 고쳐, 원천 테이블이 비어도 등록부의 필드 정의와 원천 스키마를 검사한다. 공통원장·등록 스냅샷·각 금융기관의 구현된 BankJournal 보조원장 검사를 `AccountingJournal.reconcile_all_financial_ledgers`로 묶고 은행 관리자 웹 보고서에 통합 상태·범위·finding을 노출했다. 이 결과의 `matched`는 등록되고 구현된 검사 범위에 한정되며 inventory에 적은 특수 매처/거래별 과거 재생 제한까지 모두 해결했다는 뜻은 아니다.
+
+재개 후 통합 검증: `PYTHONPATH=tests PYTHONWARNINGS=ignore python -m unittest discover -s tests` **869 tests, 715.739초, OK**. `npm run build`의 API/dashboard/HTS/site/WL 빌드, `python -m compileall -q database functions managers web_api tests`, `git diff --check`도 통과했다. 이 결과는 재개 시점의 main 코드 및 M4 대사 보완을 검증했다.

@@ -1472,6 +1472,11 @@ class RealisticRateSystemTests(unittest.TestCase):
              "company_bond_liabilities"},
         )
         self.assertEqual(report["commonJournalUnbalancedEntries"], [])
+        self.assertIn("financialCloseControl", report)
+        self.assertIn("amount_snapshot_registry", report["financialCloseControl"]["coverage"])
+        self.assertIn("institution_subledgers", report["financialCloseControl"]["coverage"])
+        self.assertTrue(any(item["issuer"] == "Bank"
+                            for item in report["financialCloseControl"]["institution_reports"]))
         self.assertTrue(all(row["currency_code"] == "NWX"
                             and row["decimal_places"] == 0
                             and row["debit_units"] - row["credit_units"] == row["balance_units"]

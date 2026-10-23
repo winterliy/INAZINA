@@ -16,7 +16,7 @@
 
 ## 잔여 호환 경로와 제한
 
-### 2026-10-20 스키마형 재점검 (초기화된 SQLite 스키마 기준)
+### 2026-10-20 초기 스키마 재점검 (아래 M4 종료 기록으로 갱신됨)
 
 임시 DB를 새로 초기화하고 모든 테이블의 `PRAGMA table_info`를 순회해 금액 이름 패턴(`amount/balance/price/cost/fee/tax/cash/principal/income/revenue/proceeds/premium/capital/allowance/payment/deposit/dividend/claim`)과 REAL/float·INTEGER 저장형을 대조했다. 이는 스키마 필드 후보를 찾는 정적 휴리스틱이며, 모든 코드 소비자·런타임 migration 이후 데이터·웹/Discord 표시 경로를 증명하는 검사는 아니다.
 
@@ -25,7 +25,7 @@
 - REAL이지만 금액이 아닌 것으로 분류한 후보: 금리·수수료율·배당률·비율·민감도, 시간(epoch), 수량(`deposited_underlying_quantity`), 유동성/시장 파라미터, 신용모형 점수·정책값. 시장 지수·기준 가격(`market_exchange_index_history.index_value`, `market_simulation_state.latent_price`, `market_auto_targets.anchor_price/target_price`, `market_event_targets.*_price`, `fund_components.base_price`, `els_underlyings.initial_price/last_price`)은 통화 현금은 아니지만 가격표시 단위 및 quote currency를 명확히 할 필요가 있다.
 - INTEGER로 저장되지만 스키마명만으로 전용 최소단위 권위 필드를 확인할 수 없었던 통화 금액 후보에는 고객 현금/연소득, 상품 예치/상환액, `user_assets.average_cost`, 옵션 strike/premium/collateral, 펀드 현금원장, 회사자본/배당, 대출 수수료·담보, 예금보험 한도/청구, 회사청산·DR 배당·ELS 지급, 복권 금액, 송금 수수료가 포함된다. 일부는 NWX whole-unit 전용, 별도 원장 또는 snapshot으로 관리되므로 이름만으로 이관 여부를 단정할 수 없다. 업무별 quote currency와 권위열·소비자를 인벤토리에 매핑해야 한다.
 
-이 패스는 REAL/INTEGER 후보 명단을 추가하지만 업무원천→중간 산식→저장→API/화면 소비자 lineage까지 닫지 않으므로 M4 첫째 체크 항목은 미완료로 둔다.
+이 초기 패스는 REAL/INTEGER 후보를 모은 상태라 당시에는 M4 첫째 게이트가 미완료였다. 이후 명시 금액 필드 레지스트리와 최소단위 스냅샷 감사가 추가됐다. 아래 소비자별 제한은 최종 M4 종료 기록의 범위를 보충한다.
 
 ### 시장 지정가 추적 (확인 범위: 표준 자산 주문, 미완료)
 

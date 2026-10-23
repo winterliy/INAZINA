@@ -356,6 +356,32 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         with self.db.readonly() as conn:
             findings = audit_amount_snapshots(conn)
         self.assertTrue(any(item["status"] == "missing_snapshot" for item in findings), findings)
+
+    def test_amount_audit_checks_registered_schema_even_when_source_table_is_empty(self):
+        self.db.currency.execute(
+            "INSERT INTO financial_amount_field_registry "
+            "(source_table,source_key_field,amount_field,currency_expression) "
+            "VALUES ('aml_alerts','alert_id','missing_amount','NEW.currency_code')"
+        )
+        with self.db.readonly() as conn:
+            findings = audit_amount_snapshots(conn)
+        self.assertTrue(any(
+            item["source_table"] == "aml_alerts"
+            and item["amount_field"] == "missing_amount"
+            and item["status"] == "missing_source_field"
+            for item in findings
+        ), findings)
+
+    def test_full_financial_reconciliation_returns_each_implemented_ledger_scope(self):
+        with self.db.readonly() as conn:
+            report = AccountingJournal.reconcile_all_financial_ledgers(conn)
+        self.assertEqual(report["status"], "matched", report)
+        self.assertIn("amount_snapshot_registry", report["coverage"])
+        self.assertIn("common_journals", report["coverage"])
+        self.assertIn("institution_subledgers", report["coverage"])
+        self.assertEqual(report["institution_count"], 0)
+
+
     def test_institution_ledger_minor_unit_upgrade_is_idempotent(self):
         self.db.currency.execute(
             "INSERT INTO financial_institution_ledger "

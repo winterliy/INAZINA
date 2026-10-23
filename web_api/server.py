@@ -1650,10 +1650,11 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
                     "credit_amount": money_text(Decimal(row["credit_units"]) / scale, places),
                     "balance_amount": money_text(Decimal(row["balance_units"]) / scale, places),
                 })
-        common_journal_reconciliation = AccountingJournal.reconcile_subledgers(connection)
+        financial_close_control = AccountingJournal.reconcile_all_financial_ledgers(connection)
+        common_journal_reconciliation = financial_close_control["common_journal_checks"]
         common_journal_unbalanced = AccountingJournal.audit_unbalanced(connection)
         from functions.money import audit_amount_snapshots
-        amount_snapshot_findings = audit_amount_snapshots(connection)
+        amount_snapshot_findings = financial_close_control["amount_snapshot_findings"]
         unbalanced = BankJournal.audit_unbalanced(connection, issuer)
         deposit_reconciliation = BankJournal.reconcile_customer_deposits(connection, issuer)
         loan_reconciliation = BankJournal.reconcile_loan_receivables(connection, issuer)
@@ -1801,6 +1802,7 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
             "depositInsuranceReconciliation": deposit_insurance_reconciliation,
             "depositInsuranceClaims": insurance_claims,
             "commonJournalReconciliation": common_journal_reconciliation,
+            "financialCloseControl": financial_close_control,
             "commonTrialBalance": common_trial_balance,
             "commonJournalUnbalancedEntries": common_journal_unbalanced,
             "amountSnapshotAudit": {
