@@ -14,41 +14,40 @@ REASONS = {
 }
 
 STYLE = """
-:root{{color-scheme:light;--ink:#1d1d1f;--ink2:#6e6e73;--accent:#0066cc;--focus:#0071e3;--surface:#fff;--pearl:#fafafc;--line:rgba(0,0,0,.08);--base:#f5f5f7;--ease:cubic-bezier(.22,1,.36,1)}}
-@media (prefers-color-scheme:dark){{:root{{color-scheme:dark;--ink:#f5f5f7;--ink2:#a1a1a6;--accent:#2997ff;--focus:#2997ff;--surface:#1d1d1f;--pearl:#2a2a2c;--line:rgba(255,255,255,.1);--base:#000}}}}
+:root{{color-scheme:light;--ink:#1d1d1f;--ink2:#6e6e73;--accent:#0066cc;--focus:#0071e3;--canvas:#fff;--surface:#f5f5f7;--line:rgba(0,0,0,.08);--ease:cubic-bezier(.22,1,.36,1)}}
+@media (prefers-color-scheme:dark){{:root{{color-scheme:dark;--ink:#f5f5f7;--ink2:#a1a1a6;--accent:#2997ff;--focus:#2997ff;--canvas:#000;--surface:#161617;--line:rgba(255,255,255,.1)}}}}
 *{{box-sizing:border-box}}
 html,body{{margin:0;min-height:100%}}
-body{{min-height:100vh;display:grid;place-items:center;padding:24px 16px;color:var(--ink);background:var(--base);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Apple SD Gothic Neo","Noto Sans KR",system-ui,sans-serif;font-size:17px;letter-spacing:-.022em;-webkit-font-smoothing:antialiased;overflow-x:clip}}
-@media (prefers-color-scheme:dark){{body{{background:var(--base)}}}}
-main{{position:relative;z-index:1;width:min(520px,100%);padding:40px 32px 28px;border:1px solid var(--line);border-radius:18px;background:var(--surface);animation:rise 600ms var(--ease) backwards}}
-.brand{{display:flex;align-items:center;gap:10px;margin-bottom:28px;font-size:14px;font-weight:600;letter-spacing:-.224px}}
-.mark{{display:grid;place-items:center;width:36px;height:36px;border-radius:8px;color:var(--surface);background:var(--ink)}}
-.brand small{{display:block;color:var(--ink2);font-size:12px;font-weight:500;letter-spacing:0}}
-h1{{margin:0;font-size:34px;line-height:1.12;font-weight:600;letter-spacing:-.374px}}
-p{{margin:12px 0 0;color:var(--ink2);font-size:17px;line-height:1.47}}
-.path{{display:inline-block;margin-top:14px;padding:5px 11px;border-radius:9999px;background:var(--pearl);border:1px solid var(--line);font:500 12px/1.4 "SF Mono",ui-monospace,Menlo,monospace;word-break:break-all}}
-nav{{display:grid;gap:10px;margin-top:26px}}
-a.card{{display:flex;align-items:center;gap:14px;padding:16px 18px;border:1px solid var(--line);border-radius:18px;color:inherit;text-decoration:none;background:var(--pearl);transition:transform .2s var(--ease)}}
+body{{min-height:100vh;display:grid;place-items:center;padding:64px 20px;color:var(--ink);background:var(--canvas);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Apple SD Gothic Neo","Noto Sans KR",system-ui,sans-serif;font-size:17px;letter-spacing:-.022em;-webkit-font-smoothing:antialiased;overflow-x:clip}}
+main{{width:min(760px,100%);text-align:center;animation:rise 700ms var(--ease) backwards}}
+.brand{{display:inline-flex;align-items:center;gap:10px;margin-bottom:40px;font-size:14px;font-weight:600;letter-spacing:-.224px;text-align:left}}
+.mark{{display:grid;place-items:center;width:28px;height:28px;border-radius:7px;color:var(--canvas);background:var(--ink);font-size:14px}}
+.brand small{{display:block;color:var(--ink2);font-size:12px;font-weight:400;letter-spacing:0}}
+h1{{margin:0;font-size:56px;line-height:1.07;font-weight:600;letter-spacing:-.015em}}
+p{{max-width:560px;margin:16px auto 0;color:var(--ink2);font-size:21px;line-height:1.38;letter-spacing:-.01em}}
+.path{{display:inline-block;margin-top:20px;padding:6px 14px;border-radius:9999px;background:var(--surface);font:400 12px/1.4 "SF Mono",ui-monospace,Menlo,monospace;word-break:break-all}}
+nav{{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:56px;text-align:left}}
+a.card{{display:flex;flex-direction:column;align-items:flex-start;min-height:240px;padding:28px 28px 26px;border-radius:28px;color:inherit;text-decoration:none;background:var(--surface);transition:transform .16s var(--ease)}}
 a.card:active{{transform:scale(.98)}}
-a.card:focus-visible{{outline:2px solid var(--accent);outline-offset:3px}}
-.icon{{display:grid;place-items:center;flex:none;width:42px;height:42px;border-radius:13px;color:#fff;font-size:19px}}
-.i1{{background:var(--accent)}}.i2{{background:var(--ink);color:var(--surface)}}
-.card b{{display:block;color:var(--ink);font-size:17px;font-weight:600}}.card .icon{{display:grid;margin:0}}.card span{{display:block;margin-top:2px;color:var(--ink2);font-size:14px}}
-.arrow{{margin-left:auto;color:var(--accent);font-size:20px}}
-footer{{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin-top:24px;padding-top:16px;border-top:1px solid var(--line);color:var(--ink2);font-size:12px}}
+a.card:focus-visible{{outline:2px solid var(--focus);outline-offset:3px}}
+.icon{{display:grid;place-items:center;flex:none;width:48px;height:48px;border-radius:12px;color:#fff;font-size:22px}}
+.i1{{background:var(--accent)}}.i2{{background:var(--ink);color:var(--canvas)}}
+.card b{{display:block;margin-top:40px;color:var(--ink);font-size:24px;line-height:1.17;font-weight:600;letter-spacing:-.01em}}.card .icon{{display:grid;margin:0}}.card span{{display:block;margin-top:6px;color:var(--ink2);font-size:15px;line-height:1.4}}
+.card .arrow{{margin-top:auto;padding-top:20px;color:var(--accent);font-size:28px;line-height:1;transition:transform .2s var(--ease)}}
+a.card:hover .arrow{{transform:translateX(4px)}}
+footer{{display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:8px 24px;margin-top:40px;color:var(--ink2);font-size:12px}}
 .status{{display:inline-flex;align-items:center;gap:7px}}
-.dot{{width:8px;height:8px;border-radius:50%;background:{dot};box-shadow:0 0 0 3px {halo}}}
+.dot{{width:8px;height:8px;border-radius:50%;background:{dot}}}
 footer a{{color:var(--accent);text-decoration:none}}footer a:hover{{text-decoration:underline}}
 @keyframes rise{{from{{opacity:0;transform:translateY(18px)}}}}
-@media (max-width:480px){{main{{padding:28px 20px 22px}}h1{{font-size:25px}}}}
+@media (max-width:600px){{body{{padding:48px 16px}}h1{{font-size:40px}}p{{font-size:19px}}nav{{grid-template-columns:1fr;margin-top:40px}}a.card{{min-height:0}}.card b{{margin-top:28px}}}}
 @media (prefers-reduced-motion:reduce){{*{{animation:none!important;transition:none!important}}}}
 """
 
 
 def landing_page(reason, path, database_ok):
     title, text = REASONS[reason]
-    style = STYLE.format(dot="#1e8e3e" if database_ok else "#d93025",
-                         halo="rgba(30,142,62,.18)" if database_ok else "rgba(217,48,37,.18)")
+    style = STYLE.format(dot="#30d158" if database_ok else "#ff453a")
     path_chip = "" if reason == "home" else f'<span class="path">{html.escape(path)}</span>'
     status = "서비스 정상" if database_ok else "서비스 점검 필요"
     return f"""<!doctype html>
@@ -57,7 +56,7 @@ def landing_page(reason, path, database_ok):
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<meta name="theme-color" content="#f5f5f7">
+<meta name="theme-color" content="#ffffff">
 <title>INAZINA API</title>
 <style>{style}</style>
 </head>

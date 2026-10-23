@@ -1,5 +1,6 @@
-/* INAZINA HTS — Apple design (VoltAgent/awesome-design-md · design-md/apple/DESIGN.md),
-   kept dense for trading: white hairline panels, black global nav, one blue accent.
+/* INAZINA HTS — Apple product-page design (VoltAgent/awesome-design-md · design-md/apple/DESIGN.md),
+   kept dense for trading: a frosted sub-nav, borderless parchment panels on a white canvas,
+   white controls on the panels, ink-filled selections, one blue accent.
    Market colours stay: rise/buy red, fall/sell blue (Korean convention; data, not chrome). */
 :root {
   color-scheme: light;
@@ -8,15 +9,15 @@
   --accent-ink: #fff;
   --ink: #1d1d1f;
   --ink2: #6e6e73;
-  --line: rgba(0, 0, 0, .08); /* 1px hairline */
-  --canvas: #f5f5f7;          /* parchment */
-  --surface: #ffffff;         /* utility cards */
-  --pearl: #fafafc;           /* secondary capsules */
-  --chip: #e8e8ed;            /* segmented-control track */
-  --tile: #272729;            /* near-black tile */
+  --line: rgba(0, 0, 0, .08); /* dividers inside panels only */
+  --canvas: #ffffff;          /* white page */
+  --surface: #f5f5f7;         /* parchment panels */
+  --pearl: #ffffff;           /* controls sit white on a panel */
+  --chip: #e8e8ed;
+  --tile: #000000;            /* black tile */
   --glass-rgb: 255, 255, 255;
   --field: #ffffff;
-  --hover: rgba(0, 0, 0, .04);
+  --hover: rgba(0, 0, 0, .035);
   --select: rgba(0, 102, 204, .08);
   --up: #e0362c;
   --up-soft: rgba(224, 54, 44, .1);
@@ -24,7 +25,7 @@
   --down-soft: rgba(26, 111, 224, .1);
   --spring: cubic-bezier(.34, 1.56, .64, 1);
   --ease: cubic-bezier(.22, 1, .36, 1);
-  --radius: 18px;
+  --radius: 24px;
   font-family: var(--font-system);
 }
 @media (prefers-color-scheme: dark) {
@@ -36,12 +37,13 @@
     --ink2: #a1a1a6;
     --line: rgba(255, 255, 255, .1);
     --canvas: #000000;
-    --surface: #1d1d1f;
+    --surface: #161617;
     --pearl: #2a2a2c;
     --chip: #2a2a2c;
-    --glass-rgb: 29, 29, 31;
+    --tile: #1d1d1f;
+    --glass-rgb: 22, 22, 23;
     --field: #2a2a2c;
-    --hover: rgba(255, 255, 255, .06);
+    --hover: rgba(255, 255, 255, .05);
     --select: rgba(41, 151, 255, .16);
     --up: #ff5a4f;
     --up-soft: rgba(255, 90, 79, .16);
@@ -652,57 +654,127 @@ a.board-back { min-height: 34px; padding: 0 14px; border-radius: 10px; font-size
 .recommend-sorts button { min-height: 28px; padding: 0 12px; border-radius: 8px; color: var(--ink2); background: transparent; font-size: 12px; font-weight: 600; }
 .recommend-sorts button.active { color: var(--accent); background: var(--select); box-shadow: inset 0 0 0 1px var(--accent); }
 
-/* ---- Apple design: surfaces, actions, controls (appended last so it wins without !important) ---- */
+/* ---- Apple product-page design (appended last so it wins without !important) ---- */
 .stage { background: var(--canvas); }
 button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid var(--accent-focus); outline-offset: 2px; }
 a { color: var(--accent); }
-.stage .auth-shell { background: var(--canvas); }
-.stage .auth-panel { border: 1px solid var(--line); border-radius: 18px; background: var(--surface); box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
-.modal-backdrop { background: rgba(0, 0, 0, .4); }
+.modal-backdrop { background: rgba(0, 0, 0, .48); }
+button { border: 0; font-weight: 400; transition: transform .16s var(--ease), background-color .2s, color .2s; }
+button:active:not(:disabled) { transform: scale(.97); }
 .primary, .account-save, .search-tabs button.active { color: #fff; background: var(--accent); box-shadow: none; font-weight: 400; }
-.account-save:hover:not(:disabled) { background: var(--accent); filter: none; }
-button:active:not(:disabled) { transform: scale(.95); }
-th { background: var(--surface); box-shadow: inset 0 -1px 0 var(--line); font-weight: 600; }
+.account-save:hover:not(:disabled) { background: #0077ed; filter: none; }
 
-/* Surfaces: white hairline panels, no glass. */
+/* Panels: parchment, borderless, 24px; the colour change is the divider. */
 .hts-topbar, .wallet-summary-card, .quote-strip, .chart-panel, .data-panel, .toast,
 .review-modal, .search-modal, .account-modal, .command-modal, .board-modal {
-  border: 1px solid var(--line); background: var(--surface); box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none;
+  border: 0; background: var(--surface); box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none;
 }
-.review-modal, .search-modal, .account-modal, .command-modal, .board-modal { border-radius: 18px; }
-.wallet-summary { color: #fff; background: var(--tile); box-shadow: none; }
-.quote-value strong, .asset-total strong, .wallet-summary strong { font-weight: 600; }
-.quote-strip h1, .review-modal h2, .search-modal-head h2, .account-modal-head h2 { font-weight: 600; letter-spacing: -.374px; }
+.review-modal, .search-modal, .account-modal, .command-modal, .board-modal { border-radius: 28px; }
+.hts-layout { gap: 16px; padding: 16px 20px 24px; }
+.main-market, .trade-rail { gap: 16px; }
+.lower-market { gap: 16px; }
+.rail-head, .panel-title { min-height: 54px; padding: 0 20px; }
+.rail-head strong, .panel-title h2 { font-size: 17px; font-weight: 600; letter-spacing: -.374px; }
 
-/* Top bar: the slim black global nav, full width. */
+/* Top bar: the frosted sub-nav, full width. */
 .hts-topbar {
-  height: 48px; margin: 0; padding: 0 12px 0 20px; border: 0; border-radius: 0; color: #f5f5f7;
-  background: rgba(0, 0, 0, .86); backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px);
+  height: 52px; margin: 0; padding: 0 16px 0 24px; border-radius: 0; color: var(--ink);
+  background: rgba(255, 255, 255, .8); box-shadow: inset 0 -1px 0 var(--line);
+  backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px);
 }
-.hts-topbar .brand { color: #f5f5f7; font-weight: 600; }
-.hts-topbar .brand span { color: #2997ff; }
-.hts-topbar .top-center { color: rgba(245, 245, 247, .8); font-size: 12px; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .hts-topbar { background: rgba(0, 0, 0, .72); } }
+.hts-topbar .brand { color: var(--ink); font-size: 19px; font-weight: 600; letter-spacing: -.01em; }
+.hts-topbar .brand span { color: var(--ink2); font-weight: 400; }
+.hts-topbar .top-center { color: var(--ink2); font-size: 12px; }
 .hts-topbar button, .hts-topbar a.header-action {
-  min-height: 32px; padding: 0 12px; border: 0; border-radius: 8px; color: #f5f5f7; background: transparent; box-shadow: none; font-size: 12px; font-weight: 400;
+  min-height: 32px; padding: 0 14px; border: 0; border-radius: 999px; color: var(--ink); background: transparent; box-shadow: none; font-size: 13px; font-weight: 400;
 }
-.hts-topbar button:hover:not(:disabled), .hts-topbar a.header-action:hover { background: rgba(255, 255, 255, .12); }
-.hts-topbar .account-action small { color: rgba(245, 245, 247, .7); }
-.connection i { box-shadow: none; }
-.wallet-rail { top: 60px; }
+.hts-topbar button:hover:not(:disabled), .hts-topbar a.header-action:hover { background: var(--surface); }
+.hts-topbar .account-action small { color: var(--ink2); }
+.connection i { background: #30d158; box-shadow: none; }
+.wallet-rail { top: 68px; gap: 12px; max-height: calc(100vh - 84px); }
 
-/* Segmented controls and chips. */
-.segmented, .drawing-tools, .order-tabs, .order-sides { border: 0; background: var(--chip); box-shadow: none; }
-.segmented button.selected, .drawing-tools button.selected, .order-tabs button.selected { background: var(--surface); box-shadow: none; font-weight: 600; }
-.book-current, .interval-select, .status, .chart-empty { border: 1px solid var(--line); background: var(--pearl); box-shadow: none; }
-.order-sides .buy.active, .order-sides .sell.active, .buy-submit, .sell-submit, .buy-confirm, .sell-confirm, .cancel-button { box-shadow: none; }
+/* Wallet: the one black tile. */
+.wallet-summary { gap: 6px; padding: 20px; border-radius: 24px; color: #f5f5f7; background: var(--tile); box-shadow: none; }
+.wallet-summary > span, .wallet-summary strong small, .wallet-summary p { color: #86868b; }
+.wallet-summary strong { font-size: 30px; font-weight: 600; letter-spacing: -.02em; }
+.wallet-row { padding: 11px 20px; }
+.asset-total { padding: 18px 20px; }
+.asset-total strong { font-size: 28px; font-weight: 600; }
+.holding { padding: 8px 20px; }
+.holdings-head { padding: 14px 20px 6px; }
+
+/* Quote: a headline, not a label. */
+.quote-strip { min-height: 112px; padding: 22px 28px; }
+.quote-strip h1 { font-size: 34px; line-height: 1.12; font-weight: 600; letter-spacing: -.015em; }
+.quote-value strong { font-size: 48px; font-weight: 600; letter-spacing: -.02em; }
+.eyebrow { font-size: 12px; font-weight: 600; letter-spacing: 0; }
+
+/* Segments: white pills on the panel; the chosen one is filled with ink. */
+.segmented, .drawing-tools, .order-tabs { gap: 4px; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.segmented button, .drawing-tools button, .order-tabs button { min-height: 30px; padding: 0 12px; color: var(--ink); background: var(--pearl); }
+.segmented button:hover:not(:disabled), .drawing-tools button:hover:not(:disabled), .order-tabs button:hover:not(:disabled) { color: var(--ink); background: var(--chip); }
+.segmented button.selected, .drawing-tools button.selected, .order-tabs button.selected,
+.segmented button.selected:hover:not(:disabled), .drawing-tools button.selected:hover:not(:disabled), .order-tabs button.selected:hover:not(:disabled) {
+  color: var(--canvas); background: var(--ink); box-shadow: none; font-weight: 600;
+}
+.drawing-tools .live, .drawing-tools .live.selected { color: #1e8e3e; }
+.drawing-tools .live.selected { color: #30d158; }
+.chart-head { padding: 14px 16px; }
+.order-sides { border: 0; background: var(--pearl); box-shadow: none; }
+.order-sides button { font-size: 15px; }
+.book-current, .interval-select, .status, .chart-empty { border: 0; background: var(--pearl); box-shadow: none; }
+.status.open { background: var(--select); }
+.order-sides .buy.active, .order-sides .sell.active, .buy-submit, .sell-submit, .buy-confirm, .sell-confirm, .cancel-button { box-shadow: none; font-weight: 600; }
+.submit { min-height: 50px; border-radius: 999px; font-size: 17px; }
 .buy-submit:hover:not(:disabled), .sell-submit:hover:not(:disabled), .buy-confirm:hover:not(:disabled), .sell-confirm:hover:not(:disabled) { transform: none; }
 
-/* Inputs: white field, hairline, Focus Blue ring; search is a pill. */
-.order-entry input, .account-form input { border: 1px solid rgba(0, 0, 0, .14); border-radius: 11px; background: var(--field); box-shadow: none; }
-.order-entry input:focus, .account-form input:focus { border-color: var(--accent-focus); box-shadow: 0 0 0 1px var(--accent-focus); }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .order-entry input, :root:not([data-theme="light"]) .account-form input { border-color: rgba(255, 255, 255, .16); } }
-.search-field { border: 1px solid var(--line); border-radius: 9999px; background: var(--surface); box-shadow: none; }
-.search-field:focus-within { border-color: var(--accent-focus); box-shadow: none; }
-/* Buttons that are rows or segments, not capsules: no capsule border. */
-.segmented button, .drawing-tools button, .order-tabs button, .order-sides button,
-.holding, .search-result, .link, .search-tabs button, .modal-actions .link { border: 0; }
+/* Inputs: white fields on the panel, no outline until focus. */
+.order-entry input, .account-form input { border: 0; border-radius: 12px; background: var(--field); box-shadow: none; }
+.order-entry input { height: 46px; font-size: 17px; }
+.order-entry input:focus, .account-form input:focus { border: 0; box-shadow: 0 0 0 2px var(--accent-focus); }
+.order-entry label, .account-form label { font-weight: 600; }
+.search-field { border: 0; border-radius: 999px; background: var(--field); box-shadow: none; }
+.search-field:focus-within { box-shadow: 0 0 0 2px var(--accent-focus); }
+.search-tabs button { color: var(--ink); background: var(--pearl); font-weight: 400; }
+.review-modal h2, .search-modal-head h2, .account-modal-head h2 { font-size: 28px; font-weight: 600; letter-spacing: -.015em; }
+
+/* Toast: inverted, like a system banner. */
+.toast { color: var(--canvas); background: var(--ink); }
+.toast button { color: inherit; background: rgba(127, 127, 127, .28); }
+
+/* Tables: a quiet caption row and hairlines. */
+th { color: var(--ink2); background: var(--surface); box-shadow: inset 0 -1px 0 var(--line); font-size: 12px; font-weight: 600; backdrop-filter: none; -webkit-backdrop-filter: none; }
+th:first-child, td:first-child { padding-left: 20px; }
+th:last-child, td:last-child { padding-right: 20px; }
+
+/* Sign-in: one parchment tile on the white page. */
+.stage .auth-shell { background: var(--canvas); }
+.stage .auth-panel { border: 0; border-radius: 28px; background: var(--surface); box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.stage .auth-heading h1 { font-size: 34px; font-weight: 600; letter-spacing: -.015em; }
+.stage .auth-form input, .stage .auth-form select { border: 0; background: var(--field); }
+.stage .auth-form input:focus, .stage .auth-form select:focus { box-shadow: 0 0 0 2px var(--accent-focus); }
+.stage .auth-account-types { border: 0; background: var(--chip); }
+.stage .auth-primary { border-radius: 999px; background: var(--accent); font-size: 17px; font-weight: 400; }
+
+@media (max-width: 760px) {
+  .hts-topbar { height: 48px; margin: 0; padding: 0 8px 0 16px; }
+  .hts-layout { gap: 12px; padding: 12px; }
+  .quote-strip { min-height: 88px; padding: 16px 18px; }
+  .quote-strip h1 { font-size: 24px; }
+  .quote-value strong { font-size: 32px; }
+}
+/* Wallet shortcuts sit on the canvas, not on a panel. */
+.wallet-actions button { min-height: 36px; background: var(--surface); }
+.wallet-actions button:hover:not(:disabled) { background: var(--chip); }
+/* The search field draws the focus ring; its input does not draw a second one. */
+.search-field input:focus-visible { outline: 0; }
+.stage .auth-wordmark { text-decoration: none; }
+/* Phones: the sub-nav keeps one line and scrolls its actions sideways. */
+@media (max-width: 760px) {
+  .hts-topbar .brand { flex: none; font-size: 16px; }
+  .hts-topbar .top-center { flex: none; }
+  .connection, .hts-topbar button, .hts-topbar a.header-action { white-space: nowrap; }
+  .top-actions { min-width: 0; overflow-x: auto; scrollbar-width: none; }
+  .hts-topbar button, .hts-topbar a.header-action { flex: none; padding: 0 10px; font-size: 12px; }
+}
