@@ -166,15 +166,22 @@ export default function App() {
     }
   }, []);
 
+  const userRole = user?.role;
   const refreshAccount = useCallback(async () => {
-    const [wallet, orderData, loanData, dividendData, custodyData, taxResidencyData] = await Promise.all([
+    const [wallet, orderData, loanData, dividendData, custodyData] = await Promise.all([
       api<{ portfolio: Portfolio }>("/api/me/portfolio"),
       api<{ orders: Order[] }>("/api/market/orders"),
       api<{ loans: LoanScheduleView[] }>("/api/me/loan-schedules"),
       api<{ payments: DividendPayment[] }>("/api/me/dividend-payments"),
       api<{ instructions: DrCustodyInstruction[] }>("/api/me/dr/conversions"),
-      api<TaxResidency>("/api/me/tax-residency"),
     ]);
+    // Tax residency exists only for ordinary user accounts (the server refuses admin, nation and
+    // company accounts); like the credit panel, it must never block the wallet or the instrument list.
+    if (userRole === "user") {
+      api<TaxResidency>("/api/me/tax-residency")
+        .then((data) => { setTaxResidency(data); setTaxResidencyValue(data.taxResidency ?? ""); })
+        .catch(() => setTaxResidency(null));
+    } else setTaxResidency(null);
     // The credit panel is optional; a failed report must not hide the wallet.
     api<Partial<CreditReport>>("/api/me/credit")
       .then((report) => setCredit(typeof report.score === "number" ? report as CreditReport : null))
@@ -184,9 +191,7 @@ export default function App() {
     setLoanSchedules(loanData.loans);
     setDividendPayments(dividendData.payments);
     setDrCustodyInstructions(custodyData.instructions);
-    setTaxResidency(taxResidencyData);
-    setTaxResidencyValue(taxResidencyData.taxResidency ?? "");
-  }, []);
+  }, [userRole]);
 
   async function saveTaxResidency(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -214,13 +219,15 @@ export default function App() {
   useEffect(() => {
     if (!user) return;
     let cancelled = false;
-    Promise.all([api<{ instruments: Instrument[] }>("/api/market/instruments"), refreshAccount()])
-      .then(([market]) => {
+    // The market list and the account load independently: an account error must not empty 종목검색.
+    api<{ instruments: Instrument[] }>("/api/market/instruments")
+      .then((market) => {
         if (cancelled) return;
         setInstruments(market.instruments);
         setSelectedCode((current) => current || market.instruments[0]?.code || "");
       })
-      .catch((cause) => { if (!cancelled) setNotice(errorText(cause, "화면 데이터를 불러오지 못했습니다.")); });
+      .catch((cause) => { if (!cancelled) setNotice(errorText(cause, "종목 목록을 불러오지 못했습니다.")); });
+    refreshAccount().catch((cause) => { if (!cancelled) setNotice(errorText(cause, "계좌 정보를 불러오지 못했습니다.")); });
     const timer = window.setInterval(() => void refreshAccount().catch(() => undefined), 15000);
     void api<{ movements: DrMovement[] }>("/api/me/dr/movements")
       .then(({ movements }) => setDrMovements(movements)).catch(() => undefined);
@@ -503,8 +510,8 @@ export default function App() {
           <strong>{money(portfolio?.cash ?? user.cash, homeDigits)} <small>{homeCurrency}</small></strong>
           <p>총자산 {money(inHome(portfolio?.grand_total ?? 0), homeDigits)} · 순자산 {money(inHome(portfolio?.net_worth ?? 0), homeDigits)} {homeCurrency}</p>
           {portfolio?.kyc_profile && <p>KYC · {KYC_STATUS[portfolio.kyc_profile.status]} · {KYC_RISK[portfolio.kyc_profile.risk_tier]}{portfolio.kyc_profile.expires_epoch ? ` · 만료 ${date(portfolio.kyc_profile.expires_epoch)}` : ""}</p>}
-          <button type="button" className="text-button" onClick={() => setTaxResidencyOpen((open) => !open)}>세무거주지 · {taxResidency?.taxResidency || `국적(${taxResidency?.nationality ?? user.nationality}) 사용 중`} 변경</button>
-          {taxResidencyOpen && <form className="account-form tax-residency-form" onSubmit={saveTaxResidency}>
+          {taxResidency && <button type="button" className="text-button" onClick={() => setTaxResidencyOpen((open) => !open)}>세무거주지 · {taxResidency?.taxResidency || `국적(${taxResidency?.nationality ?? user.nationality}) 사용 중`} 변경</button>}
+          {taxResidency && taxResidencyOpen && <form className="account-form tax-residency-form" onSubmit={saveTaxResidency}>
             <label>세무거주 국가<select value={taxResidencyValue} onChange={(event) => setTaxResidencyValue(event.target.value)}>
               <option value="">국적 기본값 사용 ({taxResidency?.nationality ?? user.nationality})</option>
               {(taxResidency?.countries ?? []).map((country) => <option key={country} value={country}>{country}</option>)}
