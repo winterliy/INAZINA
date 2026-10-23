@@ -492,10 +492,15 @@ export default function App() {
 
   return <div className="hts-shell stage">
     <Backdrop />
-    <header className="hts-topbar"><a className="brand" href="/">INAZINA <span>HTS</span></a>
-      <div className="top-center"><span className="connection"><i />API {health}</span><span>{user.nickname}</span></div>
+    <header className="hts-topbar">
+      <a className="brand" href="/">INAZINA <span>HTS</span></a>
+      <button type="button" className="search-trigger" title="종목 검색 (시장 목록)" onClick={() => setSearchOpen(true)}>
+        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M20 20l-4-4" /></svg>
+        종목 검색
+      </button>
       <div className="top-actions">
-        <button className="header-action" title="종목 검색 (시장 목록)" onClick={() => setSearchOpen(true)}>종목 검색</button>
+        <span className="connection"><i />API {health}</span>
+        <span className="top-user">{user.nickname}</span>
         <a className="header-action" title="공지 · 자유 · 시장 토론" href={boardUrl()}>게시판</a>
         <button className="header-action" title="Discord 사용자 명령어" onClick={() => setCommandsOpen("")}>명령어</button>
         <button className="header-action account-action" onClick={() => { setSettingsMessage(""); setSettingsError(""); setAccountSettingsOpen(true); }}>계정 <small>{htsId || "아이디 만들기"}</small></button>
@@ -503,40 +508,104 @@ export default function App() {
       </div>
     </header>
     {notice && <div className="toast" role="status">{notice}<button onClick={() => setNotice("")}>닫기</button></div>}
-    <main className="hts-layout">
-      <aside className="wallet-rail" aria-label="내 지갑">
-        <section className="wallet-summary">
-          <span>내 지갑 · {portfolio?.nationality ?? user.nationality} · {homeCurrency}</span>
-          <strong>{money(portfolio?.cash ?? user.cash, homeDigits)} <small>{homeCurrency}</small></strong>
-          <p>총자산 {money(inHome(portfolio?.grand_total ?? 0), homeDigits)} · 순자산 {money(inHome(portfolio?.net_worth ?? 0), homeDigits)} {homeCurrency}</p>
-          {portfolio?.kyc_profile && <p>KYC · {KYC_STATUS[portfolio.kyc_profile.status]} · {KYC_RISK[portfolio.kyc_profile.risk_tier]}{portfolio.kyc_profile.expires_epoch ? ` · 만료 ${date(portfolio.kyc_profile.expires_epoch)}` : ""}</p>}
-          {taxResidency && <button type="button" className="text-button" onClick={() => setTaxResidencyOpen((open) => !open)}>세무거주지 · {taxResidency?.taxResidency || `국적(${taxResidency?.nationality ?? user.nationality}) 사용 중`} 변경</button>}
-          {taxResidency && taxResidencyOpen && <form className="account-form tax-residency-form" onSubmit={saveTaxResidency}>
-            <label>세무거주 국가<select value={taxResidencyValue} onChange={(event) => setTaxResidencyValue(event.target.value)}>
-              <option value="">국적 기본값 사용 ({taxResidency?.nationality ?? user.nationality})</option>
-              {(taxResidency?.countries ?? []).map((country) => <option key={country} value={country}>{country}</option>)}
-            </select></label>
-            <p className="account-hint">시뮬레이터 세칙 선택에 사용합니다. 증빙 확인이나 법률상 거주자 판정은 수행하지 않습니다.</p>
-            {settingsMessage && <p className="account-success" role="status">{settingsMessage}</p>}{settingsError && <p className="account-error" role="alert">{settingsError}</p>}
-            <button className="account-save" disabled={settingsBusy}>{settingsBusy ? "저장 중…" : "세무거주지 저장"}</button>
-          </form>}
-        </section>
-        <div className="wallet-actions">
-          <button onClick={() => setCommandsOpen("송금")}>송금</button>
-          <button onClick={() => setCommandsOpen("계좌개설")}>계좌개설</button>
-          <button onClick={() => setCommandsOpen("대출신청")}>대출</button>
-          <button onClick={() => void refreshAccount().catch((cause) => setNotice(errorText(cause, "지갑을 새로 고치지 못했습니다.")))}>새로고침</button>
+    <main className="hts-main">
+      <div className="quote-strip"><div><p className="eyebrow">{selected?.exchange_id || "MARKET"} · {selected ? instrumentType(selected) : "—"}</p><h1>{selected?.name || "종목을 선택하세요"}<small>{selected?.code}</small><WarningBadge warning={selected?.warning} /></h1>{selected?.drProgram && <><p className="orders-hint">{selected.drProgram.receiptType} · 원주 {selected.drProgram.underlyingCode} · 1 DR = {money(selected.drProgram.underlyingPerReceipt, 6)}주 · 원주 거래소 {selected.drProgram.homeExchangeId || "—"} · 예탁 {selected.drProgram.depositaryBank || "—"} · 수탁 {selected.drProgram.custodian || "—"}</p>{selected.drProgram.referenceValue !== undefined && <p className="orders-hint">단순 원주 환산 참고가 {money(selected.drProgram.referenceValue, 4)} {selected.quote_currency || ""}{selected.drProgram.referencePremiumPercent !== undefined && ` · 현재가 괴리 ${selected.drProgram.referencePremiumPercent >= 0 ? "+" : ""}${selected.drProgram.referencePremiumPercent.toFixed(2)}%`}{selected.drProgram.referenceDeviationAlert && " · ⚠ 괴리 주의 (±10% 이상)"} · 수수료·세금·유동성 미반영</p>}</>}{selected?.bondRisk && <p className="orders-hint">액면 {money(selected.bondRisk.faceValue)} 기준 · Macaulay {selected.bondRisk.macaulay_duration.toFixed(3)}년 · 수정듀레이션 {selected.bondRisk.modified_duration.toFixed(3)} · 컨벡서티 {selected.bondRisk.convexity.toFixed(3)} · DV01 {money(selected.bondRisk.dv01, 4)} {selected.quote_currency || "NWX"} / 1bp. 현 국채 곡선의 평행이동 민감도이며 거래가격 예측이나 규제지표가 아닙니다.</p>}{selected?.warning?.reason && <p className="warn-reason">⚠️ {selected.warning.label} · {selected.warning.reason}</p>}</div>
+        <div className="quote-side"><div className="quote-value"><strong>{money(current)}</strong><span>{selected?.quote_currency || "NWX"}</span></div><button className="quote-switch" onClick={() => setSearchOpen(true)}>종목 바꾸기</button>{selected && <a className="quote-switch" href={boardUrl(selected.code)}>종목 토론</a>}</div></div>
+      <div className="trade-row">
+        <div className="chart-col">
+          <PriceChart points={points} candles={candles} candleInterval={candleInterval} mode={chartMode} fallbackPrice={selected?.price ?? 1}
+            drawings={drawings} onDrawingsChange={setDrawings} tool={tool} onToolChange={setTool} resetKey={`${selectedCode}-${range}-${interval}-${chartMode}`} label={selected?.name || "가격"}
+            controls={<>{ranges.map((item) => <button key={item} className={range === item ? "selected" : ""} onClick={() => setRange(item)}>{rangeNames[item]}</button>)}
+              <span className="divider" aria-hidden="true" />
+              <button className={chartMode === "candle" ? "selected" : ""} onClick={() => setChartMode("candle")}>캔들</button>
+              <button className={chartMode === "line" ? "selected" : ""} onClick={() => setChartMode("line")}>선</button>
+              {chartMode === "candle" && <select className="interval-select" aria-label="봉 주기" value={interval ?? ""} onChange={(event) => setIntervalSeconds(event.target.value ? Number(event.target.value) : null)}><option value="">자동 ({intervals.find(([seconds]) => seconds === candleInterval)?.[1] ?? "봉"})</option>{intervals.map(([seconds, name]) => <option key={seconds} value={seconds}>{name}</option>)}</select>}</>} />
         </div>
-        <section className="data-panel wallet-panel">
-          <div className="wallet-row"><span>현금</span><b>{money(portfolio?.cash || 0, homeDigits)} {homeCurrency}</b></div>
-          {(portfolio?.wallets ?? []).filter((wallet) => wallet.is_foreign && wallet.balance_units).map((wallet) => <div className="wallet-row" key={wallet.currency_code}><span>외화 · {wallet.currency_code}</span><b>{money(wallet.balance_units / UNIT_SCALE, wallet.decimal_places ?? 6)} {wallet.currency_code}</b></div>)}
-          <div className="wallet-row"><span>통장</span><b>{money(portfolio?.account_total || 0, homeDigits)} {homeCurrency}</b></div>
-          <div className="wallet-row"><span>투자 평가액</span><b>{money(inHome(portfolio?.stock_total || 0), homeDigits)} {homeCurrency}</b></div>
-          <div className="wallet-row"><span>매수 예치금</span><b>{money(inHome(portfolio?.order_reserved_total || 0), homeDigits)} {homeCurrency}</b></div>
-          <div className="wallet-row"><span>대출</span><b>{money(inHome(portfolio?.loan_total || 0), homeDigits)} {homeCurrency}</b></div>
-          <div className="wallet-row net-worth"><span>순자산</span><b>{money(inHome(portfolio?.net_worth || 0), homeDigits)} {homeCurrency}</b></div>
-          {(portfolio?.accounts ?? []).filter((account) => account.resolution_status === "active").map((account) => <div className="wallet-row account-detail" key={account.number}><span>{account.product_name} · {account.currency_code}<small>{account.number}</small>{account.rate_type === "floating" && account.next_repricing_epoch != null && <small>현재 연 {account.contract_rate?.toFixed(4) ?? "—"}% · 지표 관측 기준일 {date(Math.max(0, account.next_repricing_epoch - account.repricing_lag_seconds))} · 재산정 예정 {date(account.next_repricing_epoch)} · {RATE_BENCHMARK_LABELS[account.benchmark_key || ""] || account.benchmark_key || "기준금리"} {account.benchmark_tenor_days}일 · 새 금리는 재산정 시 확정</small>}{account.rate_resets.map((reset, index) => <small key={`${reset.applied_epoch}-${index}`}>이전 재산정 {date(reset.applied_epoch)} · {RATE_BENCHMARK_LABELS[reset.benchmark_key] || reset.benchmark_key} {reset.benchmark_tenor_days}일 · 연 {reset.old_rate}% → {reset.new_rate}%</small>)}</span><b>{money(account.balance, account.decimal_places)} {account.currency_code}</b></div>)}
+        <div className="ticket-col">
+          <section className="data-panel order-entry"><div className="panel-title"><h2>주문 입력</h2><span>지정가</span></div>
+            <div className="order-sides"><button className={side === "buy" ? "buy active" : "buy"} onClick={() => setSide("buy")}>매수</button><button className={side === "sell" ? "sell active" : "sell"} onClick={() => setSide("sell")}>매도</button></div>
+            <label>지정가 ({selected?.quote_currency || "NWX"})<input inputMode="numeric" value={price} onChange={(event) => setPrice(event.target.value.replace(/[^\d]/g, ""))} /></label>
+            <label>주문 수량<input inputMode="numeric" value={quantity} onChange={(event) => setQuantity(event.target.value.replace(/[^\d]/g, ""))} /></label>
+            <div className="form-total"><span>주문 금액</span><b>{money(Number(price || 0) * Number(quantity || 0), 2)} {selected?.quote_currency || "NWX"}</b></div>
+            <button className={side === "buy" ? "submit buy-submit" : "submit sell-submit"} disabled={!selected || !Number(price) || !Number(quantity) || busy} onClick={() => setReview(true)}>{side === "buy" ? "매수 주문 검토" : "매도 주문 검토"}</button>
+            <p className="risk-note">호가를 누르면 그 가격이 지정가로 들어갑니다. 펀드 가입·환매와 소수점 수량은 명령어의 매수·매도를 사용하세요.</p>
+          </section>
+          {selected?.type === "depositary_receipt" && <section className="data-panel order-entry dr-conversion"><div className="panel-title"><h2>DR 발행 · 상환</h2><span>{selected.drProgram?.programStatus === "active" && selected.status === "active" ? "기초주식 예탁 방식" : "프로그램 중지"}</span></div>
+            <p className="orders-hint">{selected.drProgram?.programStatus === "active" && selected.status === "active" ? "DR 수량을 입력하세요. 발행은 보유 원주를 잠그고 DR을 지급하며, 상환은 보유 DR을 소각하고 보관 원주를 지급합니다." : "중지되거나 종료된 DR 프로그램은 새 전환을 할 수 없습니다."}</p>
+            <label>전환할 DR 수량<input inputMode="numeric" value={drQuantity} onChange={(event) => setDrQuantity(event.target.value.replace(/[^\d]/g, ""))} /></label>
+            <div className="actions"><button className="submit buy-submit" disabled={busy || !Number(drQuantity) || selected.drProgram?.programStatus !== "active" || selected.status !== "active"} onClick={() => void convertDr("issue")}>원주 예탁 · DR 발행</button><button className="submit sell-submit" disabled={busy || !Number(drQuantity) || selected.drProgram?.programStatus !== "active" || selected.status !== "active"} onClick={() => void convertDr("redeem")}>DR 반납 · 원주 상환</button></div>
+            <hr />
+            <h3>DR 의결권 위임</h3>
+            <p className="orders-hint">시뮬레이터 내부 위임 기록입니다. 위임된 수량은 매도·상환할 수 없으며, 기준일 의결권은 주주총회 투표에서 대리인에게 합산됩니다. 실제 수탁기관 지시는 포함하지 않습니다.</p>
+            <label>대리 사용자 ID<input value={drProxyUserId} onChange={(event) => setDrProxyUserId(event.target.value)} placeholder="예: user-123" /></label>
+            <label>위임 수량 (DR)<input inputMode="numeric" value={drVoteQuantity} onChange={(event) => setDrVoteQuantity(event.target.value.replace(/[^\d]/g, ""))} /></label>
+            <button className="submit buy-submit" disabled={busy || !drProxyUserId.trim() || !Number(drVoteQuantity)} onClick={() => void delegateDrVotes()}>의결권 위임</button>
+            {drDelegations.filter((item) => item.dr_code === selected.code).map((item) => <div className="holding" key={item.delegation_id}>
+              <span><b>{item.proxy_user_id} · {item.dr_quantity} DR · {item.status === "active" ? "위임 중" : "철회됨"}</b><small>위임 {date(item.created_epoch)}{item.revoked_epoch ? ` · 철회 ${date(item.revoked_epoch)}` : ""}</small></span>
+              {item.status === "active" && <button className="cancel-button" disabled={busy} onClick={() => void revokeDrVotes(item)}>철회</button>}
+            </div>)}
+          </section>}
+        </div>
+      </div>
+      <div className="board-row">
+        <section className="data-panel orderbook-panel"><div className="panel-title"><h2>호가</h2><span>수량 · 가격</span></div><div className="book-head"><span>수량</span><span>가격</span></div>
+          <div className="book-side asks">{[...book.asks].reverse().map((item, index) => <button type="button" className="book-row" key={`${item.limit_price}-${index}`} title="이 가격으로 주문" onClick={() => setPrice(String(item.limit_price))}><span>{money(item.quantity, 3)}</span><b>{money(item.limit_price, 2)}</b></button>)}</div>
+          <div className="book-current"><span>현재가</span><strong>{money(current)}</strong></div>
+          <div className="book-side bids">{book.bids.map((item, index) => <button type="button" className="book-row" key={`${item.limit_price}-${index}`} title="이 가격으로 주문" onClick={() => setPrice(String(item.limit_price))}><span>{money(item.quantity, 3)}</span><b>{money(item.limit_price, 2)}</b></button>)}</div>
         </section>
+        <section className="data-panel orders-panel">
+          <div className="panel-title"><h2>주문 · 체결</h2><div className="order-tabs" role="tablist" aria-label="주문 필터"><button role="tab" aria-selected={orderFilter === "open"} className={orderFilter === "open" ? "selected" : ""} onClick={() => setOrderFilter("open")}>미체결 {openCount}</button><button role="tab" aria-selected={orderFilter === "all"} className={orderFilter === "all" ? "selected" : ""} onClick={() => setOrderFilter("all")}>전체</button></div></div>
+          <p className="orders-hint">미체결·부분 체결·예약 주문은 오른쪽 <b>취소</b> 버튼으로 바로 취소할 수 있어요. 남은 예치금과 수량은 즉시 돌려받습니다.</p>
+          <div className="table-scroll"><table><thead><tr><th>주문</th><th>종목</th><th>구분</th><th className="r">가격</th><th className="r">수량</th><th className="r">체결</th><th className="r">잔량</th><th>상태</th><th /></tr></thead><tbody>{visibleOrders.map((order) => <tr key={order.order_id}>
+            <td className="mono">#{order.order_id}</td><td><button className="link" onClick={() => chooseInstrument(order.asset_code)}>{order.asset_code}</button></td>
+            <td className={order.side === "buy" ? "buy-text" : "sell-text"}>{order.side === "buy" ? "매수" : "매도"}</td><td className="r">{money(order.limit_price, 2)}</td><td className="r">{money(order.quantity, 3)}</td><td className="r">{money(order.filled_quantity, 3)}</td><td className="r">{money(order.remaining_quantity, 3)}</td>
+            <td><span className={OPEN.has(order.status) ? "status open" : "status"}>{STATUS[order.status] ?? order.status}</span></td>
+            <td>{OPEN.has(order.status) && <button className="cancel-button" disabled={busy} onClick={() => void cancelOrder(order)}>취소</button>}</td>
+          </tr>)}</tbody></table>{!visibleOrders.length && <p className="empty">{orderFilter === "open" ? "미체결 주문이 없습니다." : "최근 주문이 없습니다."}</p>}</div>
+        </section>
+        <section className="wallet-tile" aria-label="내 지갑">
+          <section className="wallet-summary">
+            <span>내 지갑 · {portfolio?.nationality ?? user.nationality} · {homeCurrency}</span>
+            <strong>{money(portfolio?.cash ?? user.cash, homeDigits)} <small>{homeCurrency}</small></strong>
+            <p>총자산 {money(inHome(portfolio?.grand_total ?? 0), homeDigits)} · 순자산 {money(inHome(portfolio?.net_worth ?? 0), homeDigits)} {homeCurrency}</p>
+            {portfolio?.kyc_profile && <p>KYC · {KYC_STATUS[portfolio.kyc_profile.status]} · {KYC_RISK[portfolio.kyc_profile.risk_tier]}{portfolio.kyc_profile.expires_epoch ? ` · 만료 ${date(portfolio.kyc_profile.expires_epoch)}` : ""}</p>}
+            {taxResidency && <button type="button" className="text-button" onClick={() => setTaxResidencyOpen((open) => !open)}>세무거주지 · {taxResidency?.taxResidency || `국적(${taxResidency?.nationality ?? user.nationality}) 사용 중`} 변경</button>}
+            {taxResidency && taxResidencyOpen && <form className="account-form tax-residency-form" onSubmit={saveTaxResidency}>
+              <label>세무거주 국가<select value={taxResidencyValue} onChange={(event) => setTaxResidencyValue(event.target.value)}>
+                <option value="">국적 기본값 사용 ({taxResidency?.nationality ?? user.nationality})</option>
+                {(taxResidency?.countries ?? []).map((country) => <option key={country} value={country}>{country}</option>)}
+              </select></label>
+              <p className="account-hint">시뮬레이터 세칙 선택에 사용합니다. 증빙 확인이나 법률상 거주자 판정은 수행하지 않습니다.</p>
+              {settingsMessage && <p className="account-success" role="status">{settingsMessage}</p>}{settingsError && <p className="account-error" role="alert">{settingsError}</p>}
+              <button className="account-save" disabled={settingsBusy}>{settingsBusy ? "저장 중…" : "세무거주지 저장"}</button>
+            </form>}
+          </section>
+          <div className="wallet-actions">
+            <button onClick={() => setCommandsOpen("송금")}>송금</button>
+            <button onClick={() => setCommandsOpen("계좌개설")}>계좌개설</button>
+            <button onClick={() => setCommandsOpen("대출신청")}>대출</button>
+            <button onClick={() => void refreshAccount().catch((cause) => setNotice(errorText(cause, "지갑을 새로 고치지 못했습니다.")))}>새로고침</button>
+          </div>
+          <section className="data-panel wallet-panel">
+            <div className="wallet-row"><span>현금</span><b>{money(portfolio?.cash || 0, homeDigits)} {homeCurrency}</b></div>
+            {(portfolio?.wallets ?? []).filter((wallet) => wallet.is_foreign && wallet.balance_units).map((wallet) => <div className="wallet-row" key={wallet.currency_code}><span>외화 · {wallet.currency_code}</span><b>{money(wallet.balance_units / UNIT_SCALE, wallet.decimal_places ?? 6)} {wallet.currency_code}</b></div>)}
+            <div className="wallet-row"><span>통장</span><b>{money(portfolio?.account_total || 0, homeDigits)} {homeCurrency}</b></div>
+            <div className="wallet-row"><span>투자 평가액</span><b>{money(inHome(portfolio?.stock_total || 0), homeDigits)} {homeCurrency}</b></div>
+            <div className="wallet-row"><span>매수 예치금</span><b>{money(inHome(portfolio?.order_reserved_total || 0), homeDigits)} {homeCurrency}</b></div>
+            <div className="wallet-row"><span>대출</span><b>{money(inHome(portfolio?.loan_total || 0), homeDigits)} {homeCurrency}</b></div>
+            <div className="wallet-row net-worth"><span>순자산</span><b>{money(inHome(portfolio?.net_worth || 0), homeDigits)} {homeCurrency}</b></div>
+            {(portfolio?.accounts ?? []).filter((account) => account.resolution_status === "active").map((account) => <div className="wallet-row account-detail" key={account.number}><span>{account.product_name} · {account.currency_code}<small>{account.number}</small>{account.rate_type === "floating" && account.next_repricing_epoch != null && <small>현재 연 {account.contract_rate?.toFixed(4) ?? "—"}% · 지표 관측 기준일 {date(Math.max(0, account.next_repricing_epoch - account.repricing_lag_seconds))} · 재산정 예정 {date(account.next_repricing_epoch)} · {RATE_BENCHMARK_LABELS[account.benchmark_key || ""] || account.benchmark_key || "기준금리"} {account.benchmark_tenor_days}일 · 새 금리는 재산정 시 확정</small>}{account.rate_resets.map((reset, index) => <small key={`${reset.applied_epoch}-${index}`}>이전 재산정 {date(reset.applied_epoch)} · {RATE_BENCHMARK_LABELS[reset.benchmark_key] || reset.benchmark_key} {reset.benchmark_tenor_days}일 · 연 {reset.old_rate}% → {reset.new_rate}%</small>)}</span><b>{money(account.balance, account.decimal_places)} {account.currency_code}</b></div>)}
+          </section>
+          <section className="data-panel holdings-panel">
+            <div className="panel-title"><h2>보유 종목</h2><span>{holdings.length}</span></div>
+            <div className="holdings">{holdings.map((item) => <button type="button" key={`${item.code}-${item.is_collateral ? "c" : "h"}`} className={item.code === selectedCode ? "holding active" : "holding"} onClick={() => chooseInstrument(item.code)}>
+              <span><b>{item.name}</b><small>{item.code} · {money(item.qty, 3)}주{item.sell_reserved_qty ? ` · 매도 대기 ${money(item.sell_reserved_qty, 3)}` : ""}{item.is_collateral ? " · 담보" : ""}</small></span>
+              <strong>{money(inHome(item.value), homeDigits)} <em>{homeCurrency}</em></strong>
+            </button>)}{!holdings.length && <p className="empty">보유 종목이 없습니다. 위의 종목 검색으로 시장을 찾아보세요.</p>}</div>
+          </section>
+        </section>
+      </div>
+      <div className="extras">
         {(portfolio?.deposit_insurance_claims?.length ?? 0) > 0 && <section className="data-panel holdings-panel">
           <div className="panel-title"><h2>예금보험 정리 이력</h2><span>{portfolio?.deposit_insurance_claims?.length}건</span></div>
           <div className="holdings">{portfolio?.deposit_insurance_claims?.map((claim) => <div className="holding" key={claim.claim_id}>
@@ -574,13 +643,6 @@ export default function App() {
           </div>)}</div>
           <p className="orders-hint">통화별 지급액 기준 최근 100건입니다. DR 교차통화 배당은 실제 배당통화로 환산된 지급을 표시합니다.</p>
         </section>}
-        <section className="data-panel holdings-panel">
-          <div className="panel-title"><h2>보유 종목</h2><span>{holdings.length}</span></div>
-          <div className="holdings">{holdings.map((item) => <button type="button" key={`${item.code}-${item.is_collateral ? "c" : "h"}`} className={item.code === selectedCode ? "holding active" : "holding"} onClick={() => chooseInstrument(item.code)}>
-            <span><b>{item.name}</b><small>{item.code} · {money(item.qty, 3)}주{item.sell_reserved_qty ? ` · 매도 대기 ${money(item.sell_reserved_qty, 3)}` : ""}{item.is_collateral ? " · 담보" : ""}</small></span>
-            <strong>{money(inHome(item.value), homeDigits)} <em>{homeCurrency}</em></strong>
-          </button>)}{!holdings.length && <p className="empty">보유 종목이 없습니다. 위의 종목 검색으로 시장을 찾아보세요.</p>}</div>
-        </section>
         {drMovements.length > 0 && <section className="data-panel holdings-panel"><div className="panel-title"><h2>DR 전환 이력</h2><span>최근 {drMovements.length}건</span></div>
           <div className="holdings">{drMovements.map((item) => <div className="holding" key={item.movement_id}>
             <span><b>{item.movement_type === "issue" ? "DR 발행" : "원주 상환"} · {item.dr_code}</b><small>{date(item.recorded_epoch)} · {money(item.dr_quantity, 0)} DR ↔ {money(item.underlying_quantity, 0)}주 {item.underlying_code} · 원주 평균원가 {groupAmount(item.underlying_average_cost_text)} {item.underlying_currency}</small></span>
@@ -607,58 +669,7 @@ export default function App() {
           </div>)}</div>
           <p className="orders-hint">기준일 현재 직접·DR 및 위임 권리를 합산합니다. 투표는 기간 중 안건마다 한 번 가능하고 변경·철회할 수 없습니다.</p>
         </section>}
-      </aside>
-      <section className="main-market">
-        <div className="quote-strip"><div><p className="eyebrow">{selected?.exchange_id || "MARKET"} · {selected ? instrumentType(selected) : "—"}</p><h1>{selected?.name || "종목을 선택하세요"}<small>{selected?.code}</small><WarningBadge warning={selected?.warning} /></h1>{selected?.drProgram && <><p className="orders-hint">{selected.drProgram.receiptType} · 원주 {selected.drProgram.underlyingCode} · 1 DR = {money(selected.drProgram.underlyingPerReceipt, 6)}주 · 원주 거래소 {selected.drProgram.homeExchangeId || "—"} · 예탁 {selected.drProgram.depositaryBank || "—"} · 수탁 {selected.drProgram.custodian || "—"}</p>{selected.drProgram.referenceValue !== undefined && <p className="orders-hint">단순 원주 환산 참고가 {money(selected.drProgram.referenceValue, 4)} {selected.quote_currency || ""}{selected.drProgram.referencePremiumPercent !== undefined && ` · 현재가 괴리 ${selected.drProgram.referencePremiumPercent >= 0 ? "+" : ""}${selected.drProgram.referencePremiumPercent.toFixed(2)}%`}{selected.drProgram.referenceDeviationAlert && " · ⚠ 괴리 주의 (±10% 이상)"} · 수수료·세금·유동성 미반영</p>}</>}{selected?.bondRisk && <p className="orders-hint">액면 {money(selected.bondRisk.faceValue)} 기준 · Macaulay {selected.bondRisk.macaulay_duration.toFixed(3)}년 · 수정듀레이션 {selected.bondRisk.modified_duration.toFixed(3)} · 컨벡서티 {selected.bondRisk.convexity.toFixed(3)} · DV01 {money(selected.bondRisk.dv01, 4)} {selected.quote_currency || "NWX"} / 1bp. 현 국채 곡선의 평행이동 민감도이며 거래가격 예측이나 규제지표가 아닙니다.</p>}{selected?.warning?.reason && <p className="warn-reason">⚠️ {selected.warning.label} · {selected.warning.reason}</p>}</div>
-          <div className="quote-side"><div className="quote-value"><strong>{money(current)}</strong><span>{selected?.quote_currency || "NWX"}</span></div><button className="quote-switch" onClick={() => setSearchOpen(true)}>종목 바꾸기</button>{selected && <a className="quote-switch" href={boardUrl(selected.code)}>종목 토론</a>}</div></div>
-        <PriceChart points={points} candles={candles} candleInterval={candleInterval} mode={chartMode} fallbackPrice={selected?.price ?? 1}
-          drawings={drawings} onDrawingsChange={setDrawings} tool={tool} onToolChange={setTool} resetKey={`${selectedCode}-${range}-${interval}-${chartMode}`} label={selected?.name || "가격"}
-          controls={<>{ranges.map((item) => <button key={item} className={range === item ? "selected" : ""} onClick={() => setRange(item)}>{rangeNames[item]}</button>)}
-            <span className="divider" aria-hidden="true" />
-            <button className={chartMode === "candle" ? "selected" : ""} onClick={() => setChartMode("candle")}>캔들</button>
-            <button className={chartMode === "line" ? "selected" : ""} onClick={() => setChartMode("line")}>선</button>
-            {chartMode === "candle" && <select className="interval-select" aria-label="봉 주기" value={interval ?? ""} onChange={(event) => setIntervalSeconds(event.target.value ? Number(event.target.value) : null)}><option value="">자동 ({intervals.find(([seconds]) => seconds === candleInterval)?.[1] ?? "봉"})</option>{intervals.map(([seconds, name]) => <option key={seconds} value={seconds}>{name}</option>)}</select>}</>} />
-        <section className="data-panel orders-panel">
-          <div className="panel-title"><h2>주문 · 체결</h2><div className="order-tabs" role="tablist" aria-label="주문 필터"><button role="tab" aria-selected={orderFilter === "open"} className={orderFilter === "open" ? "selected" : ""} onClick={() => setOrderFilter("open")}>미체결 {openCount}</button><button role="tab" aria-selected={orderFilter === "all"} className={orderFilter === "all" ? "selected" : ""} onClick={() => setOrderFilter("all")}>전체</button></div></div>
-          <p className="orders-hint">미체결·부분 체결·예약 주문은 오른쪽 <b>취소</b> 버튼으로 바로 취소할 수 있어요. 남은 예치금과 수량은 즉시 돌려받습니다.</p>
-          <div className="table-scroll"><table><thead><tr><th>주문</th><th>종목</th><th>구분</th><th className="r">가격</th><th className="r">수량</th><th className="r">체결</th><th className="r">잔량</th><th>상태</th><th /></tr></thead><tbody>{visibleOrders.map((order) => <tr key={order.order_id}>
-            <td className="mono">#{order.order_id}</td><td><button className="link" onClick={() => chooseInstrument(order.asset_code)}>{order.asset_code}</button></td>
-            <td className={order.side === "buy" ? "buy-text" : "sell-text"}>{order.side === "buy" ? "매수" : "매도"}</td><td className="r">{money(order.limit_price, 2)}</td><td className="r">{money(order.quantity, 3)}</td><td className="r">{money(order.filled_quantity, 3)}</td><td className="r">{money(order.remaining_quantity, 3)}</td>
-            <td><span className={OPEN.has(order.status) ? "status open" : "status"}>{STATUS[order.status] ?? order.status}</span></td>
-            <td>{OPEN.has(order.status) && <button className="cancel-button" disabled={busy} onClick={() => void cancelOrder(order)}>취소</button>}</td>
-          </tr>)}</tbody></table>{!visibleOrders.length && <p className="empty">{orderFilter === "open" ? "미체결 주문이 없습니다." : "최근 주문이 없습니다."}</p>}</div>
-        </section>
-      </section>
-      <aside className="trade-rail">
-        <section className="data-panel orderbook-panel"><div className="panel-title"><h2>호가</h2><span>수량 · 가격</span></div><div className="book-head"><span>수량</span><span>가격</span></div>
-          <div className="book-side asks">{[...book.asks].reverse().map((item, index) => <button type="button" className="book-row" key={`${item.limit_price}-${index}`} title="이 가격으로 주문" onClick={() => setPrice(String(item.limit_price))}><span>{money(item.quantity, 3)}</span><b>{money(item.limit_price, 2)}</b></button>)}</div>
-          <div className="book-current"><span>현재가</span><strong>{money(current)}</strong></div>
-          <div className="book-side bids">{book.bids.map((item, index) => <button type="button" className="book-row" key={`${item.limit_price}-${index}`} title="이 가격으로 주문" onClick={() => setPrice(String(item.limit_price))}><span>{money(item.quantity, 3)}</span><b>{money(item.limit_price, 2)}</b></button>)}</div>
-        </section>
-        {selected?.type === "depositary_receipt" && <section className="data-panel order-entry dr-conversion"><div className="panel-title"><h2>DR 발행 · 상환</h2><span>{selected.drProgram?.programStatus === "active" && selected.status === "active" ? "기초주식 예탁 방식" : "프로그램 중지"}</span></div>
-          <p className="orders-hint">{selected.drProgram?.programStatus === "active" && selected.status === "active" ? "DR 수량을 입력하세요. 발행은 보유 원주를 잠그고 DR을 지급하며, 상환은 보유 DR을 소각하고 보관 원주를 지급합니다." : "중지되거나 종료된 DR 프로그램은 새 전환을 할 수 없습니다."}</p>
-          <label>전환할 DR 수량<input inputMode="numeric" value={drQuantity} onChange={(event) => setDrQuantity(event.target.value.replace(/[^\d]/g, ""))} /></label>
-          <div className="actions"><button className="submit buy-submit" disabled={busy || !Number(drQuantity) || selected.drProgram?.programStatus !== "active" || selected.status !== "active"} onClick={() => void convertDr("issue")}>원주 예탁 · DR 발행</button><button className="submit sell-submit" disabled={busy || !Number(drQuantity) || selected.drProgram?.programStatus !== "active" || selected.status !== "active"} onClick={() => void convertDr("redeem")}>DR 반납 · 원주 상환</button></div>
-          <hr />
-          <h3>DR 의결권 위임</h3>
-          <p className="orders-hint">시뮬레이터 내부 위임 기록입니다. 위임된 수량은 매도·상환할 수 없으며, 기준일 의결권은 주주총회 투표에서 대리인에게 합산됩니다. 실제 수탁기관 지시는 포함하지 않습니다.</p>
-          <label>대리 사용자 ID<input value={drProxyUserId} onChange={(event) => setDrProxyUserId(event.target.value)} placeholder="예: user-123" /></label>
-          <label>위임 수량 (DR)<input inputMode="numeric" value={drVoteQuantity} onChange={(event) => setDrVoteQuantity(event.target.value.replace(/[^\d]/g, ""))} /></label>
-          <button className="submit buy-submit" disabled={busy || !drProxyUserId.trim() || !Number(drVoteQuantity)} onClick={() => void delegateDrVotes()}>의결권 위임</button>
-          {drDelegations.filter((item) => item.dr_code === selected.code).map((item) => <div className="holding" key={item.delegation_id}>
-            <span><b>{item.proxy_user_id} · {item.dr_quantity} DR · {item.status === "active" ? "위임 중" : "철회됨"}</b><small>위임 {date(item.created_epoch)}{item.revoked_epoch ? ` · 철회 ${date(item.revoked_epoch)}` : ""}</small></span>
-            {item.status === "active" && <button className="cancel-button" disabled={busy} onClick={() => void revokeDrVotes(item)}>철회</button>}
-          </div>)}
-        </section>}
-        <section className="data-panel order-entry"><div className="panel-title"><h2>주문 입력</h2><span>지정가</span></div>
-          <div className="order-sides"><button className={side === "buy" ? "buy active" : "buy"} onClick={() => setSide("buy")}>매수</button><button className={side === "sell" ? "sell active" : "sell"} onClick={() => setSide("sell")}>매도</button></div>
-          <label>지정가 ({selected?.quote_currency || "NWX"})<input inputMode="numeric" value={price} onChange={(event) => setPrice(event.target.value.replace(/[^\d]/g, ""))} /></label>
-          <label>주문 수량<input inputMode="numeric" value={quantity} onChange={(event) => setQuantity(event.target.value.replace(/[^\d]/g, ""))} /></label>
-          <div className="form-total"><span>주문 금액</span><b>{money(Number(price || 0) * Number(quantity || 0), 2)} {selected?.quote_currency || "NWX"}</b></div>
-          <button className={side === "buy" ? "submit buy-submit" : "submit sell-submit"} disabled={!selected || !Number(price) || !Number(quantity) || busy} onClick={() => setReview(true)}>{side === "buy" ? "매수 주문 검토" : "매도 주문 검토"}</button>
-          <p className="risk-note">호가를 누르면 그 가격이 지정가로 들어갑니다. 펀드 가입·환매와 소수점 수량은 명령어의 매수·매도를 사용하세요.</p>
-        </section>
-      </aside>
+      </div>
     </main>
     {review && <div className="modal-backdrop"><section className="review-modal" role="dialog" aria-modal="true" aria-labelledby="review-title"><p className="eyebrow">ORDER REVIEW</p><h2 id="review-title">주문을 확인하세요</h2><dl><div><dt>종목</dt><dd>{selected?.name} ({selectedCode}) <WarningBadge warning={selected?.warning} /></dd></div><div><dt>유형</dt><dd className={side === "buy" ? "buy-text" : "sell-text"}>{side === "buy" ? "지정가 매수" : "지정가 매도"}</dd></div><div><dt>지정가</dt><dd>{money(Number(price), 2)} {selected?.quote_currency || "NWX"}</dd></div><div><dt>수량</dt><dd>{money(Number(quantity), 3)}</dd></div><div><dt>예상 금액</dt><dd>{money(Number(price) * Number(quantity), 2)} {selected?.quote_currency || "NWX"}</dd></div></dl><div className="modal-actions"><button disabled={busy} onClick={() => setReview(false)}>돌아가기</button><button className={side === "buy" ? "buy-confirm" : "sell-confirm"} disabled={busy} onClick={() => void submitOrder()}>{busy ? "제출 중" : "주문 확정"}</button></div></section></div>}
     {searchOpen && <div className="modal-backdrop search-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSearchOpen(false); }}><section className="search-modal" role="dialog" aria-modal="true" aria-labelledby="search-title"><div className="search-modal-head"><h2 id="search-title">종목 검색</h2><button type="button" title="닫기" onClick={() => setSearchOpen(false)}>닫기</button></div><label className="search-field"><span aria-hidden="true">⌕</span><input ref={searchInputRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="종목명 또는 코드" /></label>{!search.trim() && <div className="search-tabs" role="tablist" aria-label="상품 종류">{SEARCH_TABS.filter(([id]) => id === "recommended" || tabCounts[id]).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={searchTabValue === id} className={searchTabValue === id ? "active" : ""} onClick={() => setSearchTabValue(id)}>{label}<span>{tabCounts[id] ?? 0}</span></button>)}</div>}{!search.trim() && searchTabValue === "recommended" && <><div className="recommend-sorts" role="group" aria-label="추천 기준">{RECOMMEND_SORTS.map(([id, label]) => <button key={id} type="button" aria-pressed={recommendSort === id} className={recommendSort === id ? "active" : ""} onClick={() => setRecommendSort(id)}>{label}</button>)}</div><p className="search-caption">{RECOMMEND_SORTS.find(([id]) => id === recommendSort)![2]}</p></>}<div className="search-results">{filtered.slice(0, 200).map((item, index) => <button type="button" key={item.code} className={selectedCode === item.code ? "search-result active" : "search-result"} onClick={() => chooseInstrument(item.code)}><span>{!search.trim() && searchTabValue === "recommended" && <em className="search-rank">{index + 1}</em>}<span className="search-name"><b>{item.name} <WarningBadge warning={item.warning} /></b><small>{item.code} · {instrumentType(item)}{!search.trim() && searchTabValue === "recommended" && recommendSort === "volume" ? (item.volume24h ? ` · 24시간 ${money(item.volume24h, 2)}주` : "") : item.trades24h ? ` · 24시간 ${money(item.trades24h)}건` : ""}</small></span></span><span className="search-price"><strong>{money(item.price, 2)} {item.quote_currency || "NWX"}</strong>{item.change24h !== null && item.change24h !== undefined && <small className={item.change24h > 0 ? "up" : item.change24h < 0 ? "down" : undefined}>{item.change24h > 0 ? "+" : ""}{item.change24h.toFixed(2)}%</small>}</span></button>)}{!filtered.length && <p className="empty">{search.trim() ? "검색 결과가 없습니다." : searchTabValue === "recommended" ? "최근 24시간 동안 해당하는 종목이 없습니다." : "이 종류의 상품이 없습니다."}</p>}</div></section></div>}

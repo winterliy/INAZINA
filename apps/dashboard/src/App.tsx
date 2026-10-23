@@ -38,22 +38,22 @@ type Cell = string | number | null;
 type Row = Record<string, Cell> & { __rowid__?: number };
 type TablePage = { table: string; editable: boolean; columns: Column[]; total: number; offset: number; pageSize: number; rows: Row[] };
 
-const pages: { id: Page; label: string; color: string; icon: ReactNode }[] = [
-  { id: "overview", label: "운영 현황", color: "#0060d6", icon: <><rect x="3.5" y="3.5" width="7" height="7" rx="2" /><rect x="13.5" y="3.5" width="7" height="7" rx="2" /><rect x="3.5" y="13.5" width="7" height="7" rx="2" /><rect x="13.5" y="13.5" width="7" height="7" rx="2" /></> },
-  { id: "instruments", label: "종목 · 상품", color: "#0f7a2e", icon: <path d="M5 20v-7M12 20V5M19 20v-10" /> },
-  { id: "finance", label: "금융 상품", color: "#b8860b", icon: <><rect x="3.5" y="6.5" width="17" height="11" rx="2.5" /><path d="M3.5 10.5h17M7 14.5h4" /></> },
-  { id: "exchanges", label: "거래소", color: "#1f6fe0", icon: <><path d="M4 20h16M5 20V10l7-5 7 5v10" /><path d="M9 20v-6h6v6" /></> },
-  { id: "companies", label: "법인 자본", color: "#2f7d5b", icon: <><rect x="4" y="7.5" width="16" height="12.5" rx="2" /><path d="M9 7.5V5.5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 5.5v2M4 12.5h16" /></> },
-  { id: "users", label: "사용자 · 국가", color: "#c24e00", icon: <><circle cx="12" cy="8" r="3.5" /><path d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6" /></> },
-  { id: "feedback", label: "문의·신고", color: "#d14b3b", icon: <><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" /><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" /></> },
-  { id: "board", label: "게시판 관리", color: "#8a5a00", icon: <><path d="M5 4.5h14v11H9l-4 4z" /><path d="M8.5 8.5h7M8.5 11.5h4.5" /></> },
-  { id: "compliance", label: "KYC · AML", color: "#6248a8", icon: <><path d="M12 3.5 19 6v5.5c0 4.2-2.8 7.2-7 9-4.2-1.8-7-4.8-7-9V6z" /><path d="m9 11.5 2 2 4-4" /></> },
-  { id: "accounting", label: "은행 원장", color: "#087e8b", icon: <><path d="M3.5 9 12 4l8.5 5M5 10v8m4-8v8m6-8v8m4-8v8M3.5 20h17" /></> },
-  { id: "documents", label: "문서 · 약관", color: "#3b6e8f", icon: <><path d="M6 3.5h8l4 4V20.5H6z" /><path d="M14 3.5V7.5h4M9 12h6M9 15.5h6M9 9h2" /></> },
-  { id: "events", label: "시장 사건", color: "#c4205f", icon: <path d="M13 3 5 14h6l-1 7 8-11h-6z" /> },
-  { id: "commands", label: "관리자 명령어", color: "#7b3fd8", icon: <><path d="m5 8 4 4-4 4" /><path d="M12 17h7" /></> },
-  { id: "database", label: "DB 편집", color: "#0a7d8c", icon: <><ellipse cx="12" cy="6" rx="7" ry="2.5" /><path d="M5 6v12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5V6" /><path d="M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5" /></> },
-  { id: "audit", label: "작업 기록", color: "#5a5a5f", icon: <><path d="M7 3.5h7l4.5 4.5V20.5H7z" /><path d="M14 3.5V8h4.5M10 13h5M10 16.5h5" /></> },
+const pages: { id: Page; label: string }[] = [
+  { id: "overview", label: "운영 현황" },
+  { id: "instruments", label: "종목 · 상품" },
+  { id: "finance", label: "금융 상품" },
+  { id: "exchanges", label: "거래소" },
+  { id: "companies", label: "법인 자본" },
+  { id: "users", label: "사용자 · 국가" },
+  { id: "feedback", label: "문의·신고" },
+  { id: "board", label: "게시판 관리" },
+  { id: "compliance", label: "KYC · AML" },
+  { id: "accounting", label: "은행 원장" },
+  { id: "documents", label: "문서 · 약관" },
+  { id: "events", label: "시장 사건" },
+  { id: "commands", label: "관리자 명령어" },
+  { id: "database", label: "DB 편집" },
+  { id: "audit", label: "작업 기록" },
 ];
 const subtitles: Record<Page, string> = {
   overview: "시장 상태와 서비스 연결을 확인하고 거래소를 제어합니다.",
@@ -337,59 +337,70 @@ export default function App() {
   }
 
   const current = pages.find((item) => item.id === page)!;
-  const pageIndex = pages.findIndex((item) => item.id === page);
   const searchable = page === "instruments" || page === "finance" || page === "exchanges" || page === "companies" || page === "users" || page === "feedback" || page === "board" || page === "database";
+  const openExchanges = overview ? overview.market.filter((item) => item.status === "open" && !item.trading_halted).length : 0;
 
   return <Stage>
-    <div className="win">
-      <aside className="sidebar">
-        <div className="brand"><span className="brand-mark">I</span><span><strong>INAZINA</strong><small>운영 Dashboard</small></span></div>
-        <nav aria-label="관리 메뉴">
-          <div className="nav-thumb" aria-hidden="true" style={{ transform: `translateY(${pageIndex * 46}px)` }} />
-          {pages.map((item, index) => <button key={item.id} type="button" className="nav-item" aria-current={page === item.id ? "page" : undefined} style={{ animationDelay: `${200 + index * 60}ms` }} onClick={() => setPage(item.id)}>
-            <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={item.color} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">{item.icon}</svg>
-            <span>{item.label}</span>
+    <div className="shell">
+      <header className="gnav">
+        <div className="gnav-in">
+          <div className="brand"><span className="brand-mark">I</span><strong>INAZINA</strong><small>운영 Dashboard</small></div>
+          <div className="gnav-meta">
+            <span className="status"><span className={connected ? "dot ok" : "dot"} />{health}</span>
+            <span className="mono dim">127.0.0.1</span>
+            <span>{user.nickname} · 관리자</span>
+            <button type="button" onClick={() => void refresh()} disabled={busy}>새로고침</button>
+            <button type="button" onClick={logout}>로그아웃</button>
+          </div>
+        </div>
+      </header>
+      <nav className="subnav" aria-label="관리 메뉴">
+        <div className="subnav-in">
+          <span className="subnav-title">관리</span>
+          {pages.map((item) => <button key={item.id} type="button" className="subnav-item" aria-current={page === item.id ? "page" : undefined} onClick={() => setPage(item.id)}>
+            {item.label}
             {item.id === "feedback" && unreadFeedback > 0 && <span className="nav-badge" aria-label={`새 알림 ${unreadFeedback}건`}>{unreadFeedback}</span>}
           </button>)}
-        </nav>
-        <div className="sidebar-foot"><span className={connected ? "dot ok" : "dot"} />{health}<br /><span className="mono">127.0.0.1</span></div>
-      </aside>
-      <main className="content">
-        <div className="toolbar">
-          <div className="grow" />
-          {searchable && <label className="pill search">
-            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>
-            <input type="search" aria-label="검색" placeholder={page === "users" ? "이름 또는 ID" : page === "database" ? "모든 열에서 검색" : "이름 또는 코드"} value={query} onChange={(event) => setQuery(event.target.value)} />
-          </label>}
-          <span className="pill user-pill">{user.nickname} · 관리자</span>
-          <button className="pill ghost-pill" type="button" onClick={() => void refresh()} disabled={busy}>새로고침</button>
-          <button className="pill ghost-pill" type="button" onClick={logout}>로그아웃</button>
         </div>
-        <h1 className="title">{current.label}</h1>
-        <p className="sub">{subtitles[page]}</p>
+      </nav>
+      <main className="content">
+        {page === "overview"
+          ? <section className="hero">
+            <div className="hero-copy"><p className="eyebrow">INAZINA 로컬 관리 콘솔</p><h1 className="title">{current.label}</h1><p className="sub">{subtitles[page]}</p></div>
+            <div className="hero-figure"><div className="hero-number">{overview ? <>{openExchanges}<span> / </span>{overview.market.length}</> : "—"}</div><p>개장 중 거래소</p></div>
+          </section>
+          : <section className="page-head">
+            <div className="page-copy"><h1 className="title">{current.label}</h1><p className="sub">{subtitles[page]}</p></div>
+            {searchable && <label className="search">
+              <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></svg>
+              <input type="search" aria-label="검색" placeholder={page === "users" ? "이름 또는 ID" : page === "database" ? "모든 열에서 검색" : "이름 또는 코드"} value={query} onChange={(event) => setQuery(event.target.value)} />
+            </label>}
+          </section>}
         {notice && <div className={notice.error ? "notice error" : "notice"} role={notice.error ? "alert" : "status"}><span>{notice.text}</span><button type="button" className="ghost" aria-label="알림 닫기" onClick={() => setNotice(null)}>×</button></div>}
 
         {page === "overview" && <>
-          <section className="row-wrap mb" aria-label="주요 지표">
-            <Metric label="활성 사용자" value={overview ? number(overview.activeUsers) : "—"} delay={0} />
-            <Metric label="거래 중 종목·상품" value={overview ? number(overview.activeInstruments) : "—"} delay={1} />
-            <Metric label="미체결 주문" value={overview ? number(overview.openOrders) : "—"} delay={2} />
-            <Metric label="개장 중 거래소" value={overview ? `${overview.market.filter((item) => item.status === "open" && !item.trading_halted).length} / ${overview.market.length}` : "—"} delay={3} />
+          <section className="spec-strip" aria-label="주요 지표">
+            <Metric label="활성 사용자" value={overview ? number(overview.activeUsers) : "—"} />
+            <Metric label="거래 중 종목·상품" value={overview ? number(overview.activeInstruments) : "—"} />
+            <Metric label="미체결 주문" value={overview ? number(overview.openOrders) : "—"} />
           </section>
           {!!overview?.bankDeficits?.length && <section className="glass card mb rise warn-card" role="alert"><div className="card-head"><div><h2>⚠️ 은행 본사 계좌 적자</h2><p className="cap">적자는 허용되지만 자본 확충을 검토하세요. 처음 적자가 될 때 관리자에게 Discord DM으로도 알립니다.</p></div></div>
             <div className="scroll-x"><table><thead><tr><th>은행</th><th>본사 계좌</th><th>국가</th><th className="r">잔액</th></tr></thead><tbody>{overview.bankDeficits.map((bank) => <tr key={bank.issuer}><td>{bank.issuer}</td><td className="mono">{bank.account}</td><td>{bank.nationality}</td><td className="r mono">{number(Math.round(bank.cash))}</td></tr>)}</tbody></table></div></section>}
-          <section className="row-wrap mb">
-            <article className="glass card grow-2 rise">
-              <div className="card-head"><div><h2>시장 제어</h2><p className="cap">전체 또는 거래소별로 개장·휴장·정지합니다. 기존 Python 시장 제어와 기록을 거칩니다.</p></div>
-                <div className="actions"><button className="btn primary small" disabled={busy} onClick={() => marketAction("open")}>전체 개장</button><button className="soft" disabled={busy} onClick={() => marketAction("close")}>전체 휴장</button><button className="soft" disabled={busy} onClick={() => marketAction("pause")}>일시 정지</button><button className="soft" disabled={busy} onClick={() => marketAction("resume")}>재개</button></div></div>
-              <div className="scroll-x"><table><thead><tr><th>거래소</th><th>상태</th><th>사유</th><th>서킷</th><th>변경 시각</th><th /></tr></thead><tbody>
-                {(overview?.market ?? []).map((item) => <tr key={item.exchange_id}><td className="mono">{item.exchange_id}</td><td><span className={item.status === "open" && !item.trading_halted ? "tag ok" : "tag warn"}>{item.trading_halted ? "거래 정지" : marketStatusName[item.status] ?? item.status}</span></td><td>{item.reason || "—"}</td><td>{item.circuit_stage ? `${item.circuit_stage}단계` : "—"}</td><td>{item.updated_epoch ? date(item.updated_epoch) : "—"}</td><td className="row-actions">{item.status === "open" ? <button className="soft small" disabled={busy} onClick={() => marketAction("close", item.exchange_id)}>휴장</button> : <button className="soft small" disabled={busy} onClick={() => marketAction("open", item.exchange_id)}>개장</button>}{item.trading_halted ? <button className="soft small" disabled={busy} onClick={() => marketAction("resume", item.exchange_id)}>재개</button> : <button className="soft small" disabled={busy} onClick={() => marketAction("pause", item.exchange_id)}>정지</button>}<button className="soft small" disabled={busy || item.status === "closed"} onClick={() => marketAction("sidecar", item.exchange_id)}>사이드카</button><select className="mini-select" aria-label={`${item.exchange_id} 서킷브레이커`} value="" disabled={busy || item.status === "closed"} onChange={(event) => { if (event.target.value) marketAction("circuit", item.exchange_id, Number(event.target.value)); }}><option value="">서킷…</option><option value="1">1단계 (20분)</option><option value="2">2단계 (20분)</option><option value="3">3단계 (다음 날)</option></select></td></tr>)}
-              </tbody></table>{overview && !overview.market.length && <p className="empty">등록된 거래소가 없습니다.</p>}</div>
-            </article>
-            <article className="dark-card rise">
-              <h2>서비스 연결</h2><p className="cap">모든 서비스는 이 컴퓨터(127.0.0.1)에서만 열립니다.</p>
-              <dl className="service-list"><div><dt>웹 API</dt><dd>:4312</dd></div><div><dt>Python 데이터 서비스</dt><dd>:4313</dd></div><div><dt>데이터베이스</dt><dd>inazina.db</dd></div><div><dt>상태</dt><dd>{health}</dd></div></dl>
-            </article>
+          <section className="section">
+            <div className="section-head"><div><h2>시장 제어</h2><p className="cap">전체 또는 거래소별로 개장·휴장·정지합니다. 기존 Python 시장 제어와 기록을 거칩니다.</p></div>
+              <div className="actions"><button className="btn primary" disabled={busy} onClick={() => marketAction("open")}>전체 개장</button><button className="outline" disabled={busy} onClick={() => marketAction("close")}>전체 휴장</button><button className="outline" disabled={busy} onClick={() => marketAction("pause")}>일시 정지</button><button className="outline" disabled={busy} onClick={() => marketAction("resume")}>재개</button></div></div>
+            <div className="exchange-grid">
+              {(overview?.market ?? []).map((item) => <article key={item.exchange_id} className="exchange-tile">
+                <div className="exchange-top"><h3>{item.exchange_id}</h3><span className={item.status === "open" && !item.trading_halted ? "state ok" : "state warn"}>{item.trading_halted ? "거래 정지" : marketStatusName[item.status] ?? item.status}</span></div>
+                <dl className="exchange-facts"><div><dt>사유</dt><dd>{item.reason || "—"}</dd></div><div><dt>서킷</dt><dd>{item.circuit_stage ? `${item.circuit_stage}단계` : "—"}</dd></div><div><dt>변경 시각</dt><dd>{item.updated_epoch ? date(item.updated_epoch) : "—"}</dd></div></dl>
+                <div className="exchange-actions">{item.status === "open" ? <button className="tile-btn" disabled={busy} onClick={() => marketAction("close", item.exchange_id)}>휴장</button> : <button className="tile-btn" disabled={busy} onClick={() => marketAction("open", item.exchange_id)}>개장</button>}{item.trading_halted ? <button className="tile-btn" disabled={busy} onClick={() => marketAction("resume", item.exchange_id)}>재개</button> : <button className="tile-btn" disabled={busy} onClick={() => marketAction("pause", item.exchange_id)}>정지</button>}<button className="tile-btn" disabled={busy || item.status === "closed"} onClick={() => marketAction("sidecar", item.exchange_id)}>사이드카</button><select className="tile-select" aria-label={`${item.exchange_id} 서킷브레이커`} value="" disabled={busy || item.status === "closed"} onChange={(event) => { if (event.target.value) marketAction("circuit", item.exchange_id, Number(event.target.value)); }}><option value="">서킷…</option><option value="1">1단계 (20분)</option><option value="2">2단계 (20분)</option><option value="3">3단계 (다음 날)</option></select></div>
+              </article>)}
+            </div>
+            {overview && !overview.market.length && <p className="empty">등록된 거래소가 없습니다.</p>}
+          </section>
+          <section className="service-tile">
+            <div className="section-head"><h2>서비스 연결</h2><p className="cap">모든 서비스는 이 컴퓨터(127.0.0.1)에서만 열립니다.</p></div>
+            <dl className="service-grid"><div><dt>웹 API</dt><dd className="mono">:4312</dd></div><div><dt>Python 데이터 서비스</dt><dd className="mono">:4313</dd></div><div><dt>데이터베이스</dt><dd className="mono">inazina.db</dd></div><div><dt>상태</dt><dd className="state-line"><span className={connected ? "dot ok" : "dot"} />{health}</dd></div></dl>
           </section>
         </>}
 
@@ -500,6 +511,6 @@ function Stage({ children }: { children: ReactNode }) {
   </div>;
 }
 
-function Metric({ label, value, delay }: { label: string; value: string; delay: number }) {
-  return <div className="glass kpi rise lift" style={{ animationDelay: `${150 + delay * 80}ms` }}><span className="k-label">{label}</span><span className="k-value">{value}</span></div>;
+function Metric({ label, value }: { label: string; value: string }) {
+  return <div className="spec"><span className="spec-value">{value}</span><span className="spec-label">{label}</span></div>;
 }

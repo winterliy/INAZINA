@@ -1,5 +1,5 @@
 /* INAZINA HTS — Apple product-page design (VoltAgent/awesome-design-md · design-md/apple/DESIGN.md),
-   kept dense for trading: a frosted sub-nav, borderless parchment panels on a white canvas,
+   kept dense for trading: a black global nav, a headline quote, borderless parchment panels on a white canvas,
    white controls on the panels, ink-filled selections, one blue accent.
    Market colours stay: rise/buy red, fall/sell blue (Korean convention; data, not chrome). */
 :root {
@@ -78,14 +78,11 @@ input::placeholder { color: var(--ink2); }
   backdrop-filter: blur(28px) saturate(140%);
   -webkit-backdrop-filter: blur(28px) saturate(140%);
 }
-/* Content sits above the fixed wallpaper; toasts and modals keep their own fixed positions. */
-.hts-layout { position: relative; z-index: 1; }
 
 /* Top bar */
 .hts-topbar { position: sticky; top: 0; z-index: 4; display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 56px; margin: 12px 12px 0; padding: 0 10px 0 18px; border-radius: 999px; animation: rise 600ms var(--ease) backwards; }
 .brand { color: var(--ink); font-size: 15px; font-weight: 750; letter-spacing: .01em; text-decoration: none; }
 .brand span { margin-left: 6px; color: var(--accent); font-weight: 650; }
-.top-center { display: flex; align-items: center; gap: 16px; color: var(--ink2); font-size: 13px; }
 .connection { display: flex; align-items: center; gap: 7px; }
 .connection i { width: 8px; height: 8px; border-radius: 50%; background: #1e8e3e; box-shadow: 0 0 0 3px rgba(30, 142, 62, .18); }
 .top-actions { display: flex; align-items: center; gap: 6px; }
@@ -94,16 +91,7 @@ input::placeholder { color: var(--ink2); }
 .account-action small { max-width: 140px; overflow: hidden; color: var(--ink2); font-size: 12px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Layout */
-.hts-layout { display: grid; grid-template-columns: 270px minmax(420px, 1fr) 290px; gap: 12px; min-height: calc(100vh - 68px); padding: 12px; }
-.wallet-rail, .main-market, .trade-rail { min-width: 0; }
 .data-panel, .chart-panel, .quote-strip { overflow: hidden; border-radius: var(--radius); animation: rise 700ms var(--ease) backwards; }
-.wallet-rail { position: sticky; top: 80px; display: flex; flex-direction: column; gap: 10px; max-height: calc(100vh - 92px); overflow-y: auto; scrollbar-width: thin; }
-.main-market { display: flex; flex-direction: column; gap: 12px; }
-.main-market > :nth-child(1) { animation-delay: 60ms; }
-.main-market > :nth-child(2) { animation-delay: 120ms; }
-.trade-rail { display: flex; flex-direction: column; gap: 12px; }
-.trade-rail > :nth-child(1) { animation-delay: 160ms; }
-.trade-rail > :nth-child(2) { animation-delay: 220ms; }
 
 /* Instrument rail */
 .rail-head, .panel-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 46px; padding: 0 16px; border-bottom: 1px solid var(--line); }
@@ -155,7 +143,6 @@ input::placeholder { color: var(--ink2); }
 .chart-empty { position: absolute; left: 50%; top: 50%; padding: 10px 16px; border-radius: 999px; color: var(--ink2); background: rgba(var(--glass-rgb), .9); box-shadow: inset 0 0 0 1px var(--line); font-size: 13px; transform: translate(-50%, -50%); pointer-events: none; }
 
 /* Panels and tables */
-.lower-market { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(240px, .9fr); gap: 12px; }
 .data-panel { min-width: 0; }
 .table-scroll { overflow: auto; max-height: 280px; }
 table { width: 100%; border-collapse: collapse; white-space: nowrap; font-size: 13px; }
@@ -279,19 +266,9 @@ td small { display: block; margin-top: 2px; color: var(--ink2); font-size: 11px;
 @keyframes drop { from { opacity: 0; transform: translate(-50%, -10px); } }
 
 /* Responsive */
-@media (max-width: 1180px) {
-  .hts-layout { grid-template-columns: 220px minmax(360px, 1fr); }
-  .trade-rail { grid-column: 2; display: grid; grid-template-columns: minmax(200px, .85fr) minmax(240px, 1fr); align-items: start; }
-  .orderbook-panel { min-height: 0; }
-  .lower-market { grid-template-columns: 1fr; }
-}
 @media (max-width: 760px) {
   .hts-topbar { gap: 6px; height: 52px; margin: 8px 8px 0; padding: 0 6px 0 14px; }
-  .top-center { gap: 8px; font-size: 12px; }
-  .top-center > span:last-child, .account-action small { display: none; }
   .header-action, .icon-button { min-height: 36px; padding: 0 12px; font-size: 12px; }
-  .hts-layout { display: flex; flex-direction: column; gap: 10px; padding: 8px; }
-  .trade-rail { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
   .quote-strip { min-height: 76px; padding: 12px 14px; }
   .quote-strip h1 { font-size: 20px; }
   .quote-value strong { font-size: 26px; }
@@ -304,7 +281,6 @@ td small { display: block; margin-top: 2px; color: var(--ink2); font-size: 11px;
   .table-scroll { max-height: 220px; }
 }
 @media (max-width: 460px) {
-  .trade-rail { grid-template-columns: 1fr; }
   .orderbook-panel { min-height: 260px; }
   .quote-strip { flex-wrap: wrap; }
   .quote-strip h1 small { display: block; margin: 4px 0 0; }
@@ -429,7 +405,6 @@ button.book-row:hover:not(:disabled) { filter: brightness(1.04); }
 .chip { display: inline-grid; place-items: center; min-width: 26px; height: 26px; padding: 0 7px; border-radius: 999px; color: var(--accent); background: var(--select); font-size: 12px; font-weight: 700; }
 .muted { color: var(--ink2); }
 @media (max-width: 760px) {
-  .wallet-rail { position: static; max-height: none; overflow: visible; }
   .command-modal { height: calc(100vh - 16px); padding: 16px; }
   .command-body { grid-template-columns: 1fr; grid-template-rows: auto 1fr; overflow: hidden; }
   .command-list { display: flex; gap: 8px; overflow-x: auto; overflow-y: hidden; padding-bottom: 6px; }
@@ -670,44 +645,66 @@ button:active:not(:disabled) { transform: scale(.97); }
   border: 0; background: var(--surface); box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none;
 }
 .review-modal, .search-modal, .account-modal, .command-modal, .board-modal { border-radius: 28px; }
-.hts-layout { gap: 16px; padding: 16px 20px 24px; }
-.main-market, .trade-rail { gap: 16px; }
-.lower-market { gap: 16px; }
 .rail-head, .panel-title { min-height: 54px; padding: 0 20px; }
 .rail-head strong, .panel-title h2 { font-size: 17px; font-weight: 600; letter-spacing: -.374px; }
 
-/* Top bar: the frosted sub-nav, full width. */
+/* Top bar: Apple's black global nav, with the search in the middle. */
 .hts-topbar {
-  height: 52px; margin: 0; padding: 0 16px 0 24px; border-radius: 0; color: var(--ink);
-  background: rgba(255, 255, 255, .8); box-shadow: inset 0 -1px 0 var(--line);
-  backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px);
+  flex-wrap: wrap; gap: 0 24px; height: auto; min-height: 52px; margin: 0; padding: 4px max(24px, calc(50% - 656px));
+  border-radius: 0; color: #f5f5f7; background: #000; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none;
 }
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .hts-topbar { background: rgba(0, 0, 0, .72); } }
-.hts-topbar .brand { color: var(--ink); font-size: 19px; font-weight: 600; letter-spacing: -.01em; }
-.hts-topbar .brand span { color: var(--ink2); font-weight: 400; }
-.hts-topbar .top-center { color: var(--ink2); font-size: 12px; }
-.hts-topbar button, .hts-topbar a.header-action {
-  min-height: 32px; padding: 0 14px; border: 0; border-radius: 999px; color: var(--ink); background: transparent; box-shadow: none; font-size: 13px; font-weight: 400;
+.hts-topbar .brand { flex: none; color: #f5f5f7; font-size: 15px; font-weight: 600; letter-spacing: 0; }
+.hts-topbar .brand span { margin-left: 4px; color: #a1a1a6; font-weight: 400; }
+.hts-topbar .search-trigger {
+  flex: 1 1 260px; max-width: 520px; display: flex; align-items: center; gap: 10px; min-height: 36px; margin: 0 auto; padding: 0 16px;
+  border: 0; border-radius: 999px; color: #a1a1a6; background: #1d1d1f; font-size: 13px; text-align: left;
 }
-.hts-topbar button:hover:not(:disabled), .hts-topbar a.header-action:hover { background: var(--surface); }
-.hts-topbar .account-action small { color: var(--ink2); }
+.hts-topbar .search-trigger:hover:not(:disabled) { color: #f5f5f7; background: #2a2a2c; }
+.top-actions { gap: 0 18px; }
+.top-actions .connection, .top-user { color: #d2d2d7; font-size: 12px; white-space: nowrap; }
+.hts-topbar .top-actions button, .hts-topbar a.header-action {
+  min-height: 44px; padding: 0 2px; border: 0; border-radius: 0; color: #f5f5f7; background: transparent; box-shadow: none; font-size: 12px; font-weight: 400; white-space: nowrap;
+}
+.hts-topbar .top-actions button:hover:not(:disabled), .hts-topbar a.header-action:hover { background: transparent; text-decoration: underline; text-underline-offset: 3px; }
+.hts-topbar .account-action small { color: #a1a1a6; }
 .connection i { background: #30d158; box-shadow: none; }
-.wallet-rail { top: 68px; gap: 12px; max-height: calc(100vh - 84px); }
 
-/* Wallet: the one black tile. */
-.wallet-summary { gap: 6px; padding: 20px; border-radius: 24px; color: #f5f5f7; background: var(--tile); box-shadow: none; }
-.wallet-summary > span, .wallet-summary strong small, .wallet-summary p { color: #86868b; }
-.wallet-summary strong { font-size: 30px; font-weight: 600; letter-spacing: -.02em; }
-.wallet-row { padding: 11px 20px; }
-.asset-total { padding: 18px 20px; }
-.asset-total strong { font-size: 28px; font-weight: 600; }
-.holding { padding: 8px 20px; }
-.holdings-head { padding: 14px 20px 6px; }
+/* Wallet: the one black tile — summary, shortcuts, balances, holdings. */
+.wallet-tile { display: flex; flex-direction: column; gap: 20px; min-width: 0; padding: 28px; border-radius: 28px; color: #f5f5f7; background: var(--tile); }
+.wallet-summary { display: grid; gap: 6px; padding: 0; border-radius: 0; color: inherit; background: transparent; box-shadow: none; }
+.wallet-summary > span, .wallet-summary strong small, .wallet-summary p { color: #a1a1a6; }
+.wallet-summary strong { font-size: 44px; line-height: 1.05; font-weight: 600; letter-spacing: -.025em; white-space: normal; overflow-wrap: anywhere; }
+.wallet-summary strong small { font-size: 17px; font-weight: 400; letter-spacing: 0; }
+.wallet-tile .text-button { justify-self: start; min-height: 32px; padding: 0; border: 0; color: #2997ff; background: transparent; font-size: 13px; }
+.wallet-tile .wallet-actions button { min-height: 44px; border-radius: 12px; color: #f5f5f7; background: rgba(255, 255, 255, .1); }
+.wallet-tile .wallet-actions button:hover:not(:disabled) { background: rgba(255, 255, 255, .16); }
+.wallet-tile .data-panel { overflow: visible; border-radius: 0; color: inherit; background: transparent; animation: none; }
+.wallet-tile .wallet-panel { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 16px; padding: 0; }
+.wallet-tile .wallet-row { display: grid; align-content: start; gap: 4px; padding: 0; border: 0; font-size: 13px; }
+.wallet-tile .wallet-row span { color: #a1a1a6; }
+.wallet-tile .wallet-row b { font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
+.wallet-tile .wallet-row.net-worth b { color: #2997ff; }
+.wallet-tile .wallet-row.account-detail { grid-column: 1 / -1; }
+.wallet-tile .holdings-panel { min-height: 0; padding-top: 16px; border-top: 1px solid rgba(255, 255, 255, .16); }
+.wallet-tile .panel-title { min-height: 0; padding: 0 0 8px; border: 0; }
+.wallet-tile .panel-title h2, .wallet-tile .panel-title span { color: #a1a1a6; font-size: 13px; font-weight: 600; letter-spacing: 0; }
+.wallet-tile .holding { min-height: 56px; padding: 8px 12px; border-radius: 12px; color: #f5f5f7; }
+.wallet-tile .holding small, .wallet-tile .holding em, .wallet-tile .empty { color: #a1a1a6; }
+.wallet-tile .holding:hover:not(:disabled), .wallet-tile .holding.active { background: rgba(255, 255, 255, .1); }
 
-/* Quote: a headline, not a label. */
-.quote-strip { min-height: 112px; padding: 22px 28px; }
-.quote-strip h1 { font-size: 34px; line-height: 1.12; font-weight: 600; letter-spacing: -.015em; }
-.quote-value strong { font-size: 48px; font-weight: 600; letter-spacing: -.02em; }
+/* Quote: a headline on the canvas, not a panel. */
+.quote-strip { flex-wrap: wrap; align-items: flex-end; gap: 24px 48px; min-height: 0; padding: 56px 0 36px; border-radius: 0; background: transparent; overflow: visible; }
+.quote-strip > div:first-child { flex: 1 1 420px; min-width: 0; }
+.quote-strip .eyebrow { margin-bottom: 12px; font-size: 14px; }
+.quote-strip h1 { font-size: 64px; line-height: 1.04; font-weight: 600; letter-spacing: -.025em; overflow-wrap: anywhere; }
+.quote-strip h1 small { font-size: 15px; }
+.quote-side { flex-direction: row; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 0 20px; }
+.quote-value { flex-basis: 100%; justify-content: flex-end; }
+.quote-value strong { font-size: 80px; line-height: 1; font-weight: 600; letter-spacing: -.035em; }
+.quote-value span { font-size: 21px; }
+.quote-side .quote-switch, .quote-side a.quote-switch { min-height: 44px; padding: 0; border: 0; border-radius: 0; color: var(--accent); background: transparent; box-shadow: none; font-size: 17px; }
+.quote-side .quote-switch::after { content: "›"; margin-left: 4px; }
+.quote-side .quote-switch:hover:not(:disabled), .quote-side a.quote-switch:hover { background: transparent; text-decoration: underline; }
 .eyebrow { font-size: 12px; font-weight: 600; letter-spacing: 0; }
 
 /* Segments: white pills on the panel; the chosen one is filled with ink. */
@@ -757,24 +754,32 @@ th:last-child, td:last-child { padding-right: 20px; }
 .stage .auth-account-types { border: 0; background: var(--chip); }
 .stage .auth-primary { border-radius: 999px; background: var(--accent); font-size: 17px; font-weight: 400; }
 
-@media (max-width: 760px) {
-  .hts-topbar { height: 48px; margin: 0; padding: 0 8px 0 16px; }
-  .hts-layout { gap: 12px; padding: 12px; }
-  .quote-strip { min-height: 88px; padding: 16px 18px; }
-  .quote-strip h1 { font-size: 24px; }
-  .quote-value strong { font-size: 32px; }
-}
-/* Wallet shortcuts sit on the canvas, not on a panel. */
-.wallet-actions button { min-height: 36px; background: var(--surface); }
-.wallet-actions button:hover:not(:disabled) { background: var(--chip); }
 /* The search field draws the focus ring; its input does not draw a second one. */
 .search-field input:focus-visible { outline: 0; }
 .stage .auth-wordmark { text-decoration: none; }
-/* Phones: the sub-nav keeps one line and scrolls its actions sideways. */
+/* ---- Layout: quote headline, chart | order ticket, book | orders | wallet, then everything else ---- */
+.hts-main { position: relative; z-index: 1; max-width: 1360px; margin: 0 auto; padding: 0 24px 80px; }
+.trade-row { display: flex; flex-wrap: wrap; align-items: stretch; gap: 20px; }
+.chart-col { display: flex; flex: 2 1 640px; min-width: 0; }
+.chart-col .chart-panel { flex: 1; min-width: 0; }
+.ticket-col { display: flex; flex: 1 1 340px; flex-direction: column; gap: 20px; min-width: 0; }
+.board-row, .extras { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); align-items: start; gap: 20px; margin-top: 20px; }
+.extras:empty { display: none; }
+.data-panel, .chart-panel { border-radius: 28px; }
+.orderbook-panel { min-height: 0; }
+
+/* Phones: brand and actions on one line (actions scroll), the search under them. */
 @media (max-width: 760px) {
-  .hts-topbar .brand { flex: none; font-size: 16px; }
-  .hts-topbar .top-center { flex: none; }
-  .connection, .hts-topbar button, .hts-topbar a.header-action { white-space: nowrap; }
-  .top-actions { min-width: 0; overflow-x: auto; scrollbar-width: none; }
-  .hts-topbar button, .hts-topbar a.header-action { flex: none; padding: 0 10px; font-size: 12px; }
+  .hts-topbar { padding: 4px 16px; }
+  .hts-topbar .search-trigger { order: 3; flex-basis: 100%; max-width: none; margin: 4px 0 8px; }
+  .top-actions { margin-left: auto; min-width: 0; overflow-x: auto; scrollbar-width: none; gap: 0 14px; }
+  .top-user, .account-action small { display: none; }
+  .hts-main { padding: 0 12px 48px; }
+  .quote-strip { gap: 16px; padding: 32px 0 24px; }
+  .quote-strip h1 { font-size: 40px; }
+  .quote-side, .quote-value { justify-content: flex-start; }
+  .quote-value strong { font-size: 48px; }
+  .trade-row, .board-row, .extras { gap: 12px; }
+  .board-row, .extras { margin-top: 12px; }
+  .wallet-tile { padding: 22px; border-radius: 24px; }
 }
