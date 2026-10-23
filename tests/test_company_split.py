@@ -62,7 +62,7 @@ class CompanySplitTests(unittest.TestCase):
         self.assertEqual(self.company('CO')[0], 100)  # parent price unchanged
         self.assertEqual(self.company('CO')[2], 10000)  # parent capital unchanged
         self.assertEqual(tuple(self.company('SUB'))[:3], (4, 1000, 4000))
-        account = CompanyAccounts.account_id(self.db.companies.conn, 'CO')
+        account = self.db.companies.execute_one("SELECT user_id FROM company_accounts WHERE company_code='CO'")[0]
         self.assertEqual(self.holding(account, 'SUB')[0], 1000)
         self.assertEqual(self.holding('citizen', 'SUB')[0], 0)
         self.assertEqual(self.holding('citizen', 'CO'), (70, 80))
@@ -70,8 +70,85 @@ class CompanySplitTests(unittest.TestCase):
         parent = self.fin.report('CO')
         self.assertTrue(parent['checks']['balance_sheet'])
         self.assertTrue(parent['checks']['live_cash'])
-        self.assertEqual(parent['balances']['investments'], 400)
+        # The parent holds the subsidiary at the book value it handed over (400 cash for 1,000 shares).
+        self.assertEqual(self.holding(account, 'SUB')[1], 0)  # round(400/1000)
         self.assertIn('SUB', [item['code'] for item in FinancialManager.subsidiaries(self.db.companies.conn, 'CO')])
+
+    def company_with_assets(self):
+        """CO's company account holds 100 OTHER shares, a 10,000 NWX deposit and a 6,000 NWX loan."""
+        from functions import company_actions
+        self.setup_company()
+        self.db.companies.create_company('OTHER', '다른회사', '게임', 1000, 1000, 50, 'admin', 'INZ')
+        with self.db.atomic() as conn:
+            account = CompanyAccounts.account_id(conn, 'CO')
+        self.db.assets.add_user_asset(account, 'OTHER', 100, unit_cost=50)
+        self.db.products.execute("INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,"
+                                 "interest_cycle,compound_type,issuer,quote_currency) VALUES ('DEP','예금',0,0,0,86400,0,'Bank','NWX')")
+        self.assertTrue(self.actions.fund_issuer('admin', 'CO', 'add', 10000)[0])
+        ok, message, _ = company_actions.run(self.bot, 'admin', 'CO', '계좌개설', {'product': 'DEP', 'password': 'pass1234', 'deposit': '10000'})
+        self.assertTrue(ok, message)
+        self.db.products.execute("INSERT INTO liability(product_code,name,interest_rate,loan_limit,maturity_days,"
+                                 "interest_cycle,min_credit_score,issuer) VALUES ('LN','대출',0,1000000,365,86400,0,'Bank')")
+        with self.db.atomic() as conn:
+            loan = conn.execute("INSERT INTO loans(user_id,product_code,principal,outstanding_balance,status,quote_currency,"
+                                "contract_rate,last_payment_epoch) VALUES (?,'LN',6000,6000,'active','NWX',0,?)",
+                                (account, 1_000_000)).lastrowid
+            for number in (1, 2):
+                conn.execute("INSERT INTO loan_payment_schedule(loan_id,installment_number,due_epoch,principal_due,interest_due) "
+                             "VALUES (?,?,?,3000,10)", (loan, number, 2_000_000 + number))
+            CompanyAccounts.reconcile(conn, 'CO')
+        return account
+
+    def test_split_divides_securities_deposits_and_loans_by_the_ratio(self):
+        account = self.company_with_assets()
+        ok, message = self.actions.split('admin', '인적', 'CO', 'NEW', '신설', '30%')
+        self.assertTrue(ok, message)
+        conn = self.db.companies.conn
+        new_account = conn.execute("SELECT user_id FROM company_accounts WHERE company_code='NEW'").fetchone()[0]
+        self.assertEqual(self.holding(account, 'OTHER'), (70, 50))
+        self.assertEqual(self.holding(new_account, 'OTHER'), (30, 50))
+        deposits = {row[0]: row[1] // 1_000_000 for row in conn.execute(
+            "SELECT user_id,SUM(balance_units) FROM accounts WHERE product_code='DEP' GROUP BY user_id")}
+        self.assertEqual(deposits, {account: 7000, new_account: 3000})
+        loans = {row[0]: (row[1], row[2]) for row in conn.execute(
+            "SELECT user_id,principal,outstanding_balance FROM loans WHERE product_code='LN'")}
+        self.assertEqual(loans, {account: (4200, 4200), new_account: (1800, 1800)})
+        schedule = conn.execute("SELECT l.user_id,s.installment_number,s.principal_due,s.interest_due "
+                                "FROM loan_payment_schedule s JOIN loans l USING(loan_id) ORDER BY l.user_id,s.installment_number").fetchall()
+        self.assertEqual(sorted(tuple(row) for row in schedule), sorted([
+            (account, 1, 2100, 7), (account, 2, 2100, 7), (new_account, 1, 900, 3), (new_account, 2, 900, 3)]))
+        self.assertIn('보유 증권 1건', message)
+        for code in ('CO', 'NEW'):
+            report = self.fin.report(code)
+            self.assertTrue(report['checks']['balance_sheet'], code)
+            self.assertTrue(report['checks']['live_cash'], code)
+        # Cash 300 (1,000 left after the deposit) + OTHER 1,500 + deposit 3,000 - loan 1,800 = 3,000 went to NEW.
+        new = self.fin.report('NEW')
+        self.assertEqual(new['summary']['equity'], 3000)
+        self.assertEqual(new['balances']['common_capital'], -3000)
+
+    def test_split_off_values_the_subsidiary_at_the_book_value_handed_over(self):
+        account = self.company_with_assets()
+        before = self.fin.report('CO')['changes']  # setup gifts (shares, a loan without cash) are already booked
+        ok, message = self.actions.split('admin', '물적', 'CO', 'SUB', '자회사', '50', '100')
+        self.assertTrue(ok, message)
+        # Cash 500 + OTHER 2,500 + deposit 5,000 - loan 3,000 = 5,000 of book value for 100 shares.
+        self.assertEqual(self.holding(account, 'SUB'), (100, 50))
+        parent = self.fin.report('CO')
+        self.assertTrue(parent['checks']['balance_sheet'])
+        # Handing assets to a wholly owned subsidiary at book value is neither a gain nor a loss.
+        self.assertEqual(parent['changes']['investment_gain'], before['investment_gain'])
+        self.assertEqual(parent['changes']['investment_loss'], before['investment_loss'])
+        self.assertEqual(self.fin.report('SUB')['summary']['equity'], 5000)
+
+    def test_split_refuses_loans_that_are_not_in_good_standing(self):
+        account = self.company_with_assets()
+        self.db.accounts.execute("UPDATE loans SET collection_status='delinquent',overdue_since_epoch=1 WHERE user_id=?", (account,))
+        ok, message = self.actions.split('admin', '인적', 'CO', 'NEW', '신설', '30')
+        self.assertFalse(ok)
+        self.assertIn('대출', message)
+        self.assertIsNone(self.company('NEW'))
+        self.assertEqual(self.holding(account, 'OTHER')[0], 100)
 
     def test_split_refuses_bad_input_and_changes_nothing(self):
         self.setup_company()

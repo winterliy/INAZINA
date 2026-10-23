@@ -5,10 +5,53 @@ failed attempt on an admin ID is visible too. Rows older than the retention
 period are deleted on every write.
 """
 import ipaddress
+import os
+import threading
 import time
+from pathlib import Path
 
 RETENTION_SECONDS = 365 * 86400
 APPS = {"dashboard": "대시보드", "hts": "HTS"}
+# DB-IP City Lite (CC BY 4.0), installed by tools/update_geoip.py. Without it, public
+# addresses are only labelled "외부 인터넷".
+GEOIP_PATH = Path(os.environ.get("INAZINA_GEOIP_PATH",
+                                 Path(__file__).resolve().parents[1] / "database" / "geoip" / "dbip-city-lite.mmdb"))
+_geoip = {"reader": None, "mtime": None}
+_geoip_lock = threading.Lock()
+
+
+def _reader():
+    """The GeoIP reader, reopened when the file is replaced by a monthly update."""
+    try:
+        mtime = GEOIP_PATH.stat().st_mtime
+    except OSError:
+        return None
+    with _geoip_lock:
+        if _geoip["mtime"] != mtime:
+            try:
+                import maxminddb
+                old, _geoip["reader"] = _geoip["reader"], maxminddb.open_database(str(GEOIP_PATH))
+                _geoip["mtime"] = mtime
+                if old:
+                    old.close()
+            except (ImportError, OSError, ValueError):
+                return None
+        return _geoip["reader"]
+
+
+def place(ip):
+    """'국가 · 지역 · 도시' for a public address, Korean names where the database has them."""
+    reader = _reader()
+    if reader is None:
+        return None
+    try:
+        record = reader.get(str(ip)) or {}
+    except ValueError:
+        return None
+    name = lambda part: (part or {}).get("names", {}).get("ko") or (part or {}).get("names", {}).get("en")
+    parts = [name(record.get("country")), *(name(item) for item in record.get("subdivisions", [])[:1]), name(record.get("city"))]
+    parts = [part for index, part in enumerate(parts) if part and part not in parts[:index]]
+    return " · ".join(parts) or None
 
 
 def ensure_table(connection):
@@ -38,7 +81,7 @@ def location(ip):
         return "이 컴퓨터 (로컬)"
     if address.is_private or address.is_link_local:
         return "내부 네트워크"
-    return "외부 인터넷"
+    return place(address) or "외부 인터넷"
 
 
 def device(user_agent):

@@ -1,5 +1,7 @@
 import sqlite3
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from web_api import admin_logins
 
@@ -39,7 +41,8 @@ class AdminLoginTests(unittest.TestCase):
     def test_location_device_and_untrusted_meta(self):
         self.assertEqual(admin_logins.location("::ffff:127.0.0.1"), "이 컴퓨터 (로컬)")
         self.assertEqual(admin_logins.location("192.168.0.12"), "내부 네트워크")
-        self.assertEqual(admin_logins.location("8.8.8.8"), "외부 인터넷")
+        with patch.object(admin_logins, "GEOIP_PATH", Path("/nonexistent/geoip.mmdb")):
+            self.assertEqual(admin_logins.location("8.8.8.8"), "외부 인터넷")  # no database: no place
         self.assertEqual(admin_logins.location("not-an-ip"), "알 수 없음")
         self.assertEqual(admin_logins.device("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0) Safari/604.1"), "iPhone · Safari")
         self.assertEqual(admin_logins.device("Mozilla/5.0 (Windows NT 10.0) Chrome/142 Edg/142"), "Windows · Edge")
@@ -51,6 +54,14 @@ class AdminLoginTests(unittest.TestCase):
         self.assertEqual(len(event["userAgent"]), 300)
         admin_logins.record(self.conn, "111", True, None, now=6)
         self.assertEqual(admin_logins.history(self.conn)[0]["ip"], "unknown")
+
+    @unittest.skipUnless(admin_logins.GEOIP_PATH.exists(), "GeoIP database not installed (npm run geoip:update)")
+    def test_public_addresses_get_country_region_and_city(self):
+        self.assertEqual(admin_logins.location("8.8.8.8").split(" · ")[0], "미국")
+        self.assertTrue(admin_logins.location("211.234.1.1").startswith("대한민국 · "))
+        self.assertEqual(admin_logins.location("127.0.0.1"), "이 컴퓨터 (로컬)")  # never looked up
+        admin_logins.record(self.conn, "111", True, dict(self.meta, clientIp="211.234.1.1"), now=7)
+        self.assertTrue(admin_logins.history(self.conn)[0]["location"].startswith("대한민국"))
 
     def test_old_records_are_deleted_after_retention(self):
         admin_logins.record(self.conn, "111", True, self.meta, now=100)

@@ -17,4 +17,5 @@ coverage/
 .pytest_cache/
 database/backups/
 database/board_files/
+database/geoip/
 database/document_history/

@@ -69,6 +69,12 @@ if lsof -nP -iTCP:4310 -sTCP:LISTEN >/dev/null 2>&1 \
   exit 1
 fi
 
+# The admin login map (DB-IP City Lite) is refreshed monthly; a failed download keeps the old file.
+GEOIP="$ROOT/database/geoip/dbip-city-lite.mmdb"
+if [[ ! -f "$GEOIP" ]] || [[ -n "$(find "$GEOIP" -mtime +35 2>/dev/null)" ]]; then
+  "$PYTHON" "$ROOT/tools/update_geoip.py" >/dev/null 2>&1 &
+fi
+
 npm run dev:api &
 pids+=("$!")
 npm run dev:dashboard &

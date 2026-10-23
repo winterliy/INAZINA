@@ -1,2 +1,4 @@
 # Runtime dependencies for the Discord bot and the private Python data service.
 discord.py==2.7.1
+# Admin login locations from the DB-IP City Lite database (tools/update_geoip.py).
+maxminddb==3.1.1

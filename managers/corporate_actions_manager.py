@@ -1373,13 +1373,110 @@ class CorporateActionsManager:
             raise ValueError('분할비율은 0 초과 100 미만의 %로 입력해주세요 (소수점 둘째 자리까지). 예: 30%') from None
         return Fraction(percent) / 100
 
+    # Positions a company account may hold that a split cannot divide; settle them first.
+    SPLIT_BLOCKERS = (
+        ('market_orders', "user_id=? AND status IN ('scheduled','open','partial')", '미체결 주문'),
+        ('futures_positions', 'user_id=?', '선물 포지션'),
+        ('option_collateral_lots', 'writer_id=?', '옵션 담보 주식'),
+        ('option_collateral_cash_lots', 'writer_id=?', '옵션 담보 현금'),
+        ('els_subscriptions', "user_id=? AND status IN ('subscribed','issued')", 'ELS 청약'),
+        ('treasury_bond_holdings', "user_id=? AND status='active'", '국채 보유'),
+        ('loan_collateral_assets', 'user_id=?', '대출 담보로 잡힌 자산'),
+    )
+
+    @staticmethod
+    def _part(value, ratio, places=0):
+        """The split ratio's share of an amount, rounded to the currency's minor unit."""
+        scale = 10 ** int(places)
+        return float(round(Fraction(str(value or 0)) * scale * ratio)) / scale if places else int(round(Fraction(str(value or 0)) * ratio))
+
+    def _split_account(self, conn, source, target, ratio, now):
+        """Move the split ratio of a company account's securities, deposits and loans to ``target``."""
+        from managers.interest_manager import InterestManager
+        from managers.bank_manager import BankManager
+        for table, where, label in self.SPLIT_BLOCKERS:
+            if self._has_table(conn, table) and conn.execute(f'SELECT 1 FROM {table} WHERE {where} LIMIT 1', (source,)).fetchone():
+                raise ValueError(f'분할 회사 계정의 {label}을(를) 먼저 정리해주세요.')
+        moved = {'securities': 0, 'deposits': 0, 'loans': 0}
+        # Securities, own shares included: each lot keeps its cost basis.
+        for lot in conn.execute('SELECT * FROM user_assets WHERE user_id=? ORDER BY holding_id', (source,)).fetchall():
+            quantity = Fraction(str(lot['quantity']))
+            part = quantity * ratio
+            part = Fraction(round(part)) if quantity.denominator == 1 else Fraction(round(part * 1000), 1000)
+            if not part:
+                continue
+            left = quantity - part
+            if left:
+                conn.execute('UPDATE user_assets SET quantity=? WHERE holding_id=?',
+                             (int(left) if left.denominator == 1 else float(left), lot['holding_id']))
+            else:
+                conn.execute('DELETE FROM user_assets WHERE holding_id=?', (lot['holding_id'],))
+            conn.execute("INSERT INTO user_assets(user_id,asset_code,quantity,average_cost) VALUES (?,?,?,?) "
+                         "ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET "
+                         "average_cost=(quantity*average_cost+excluded.quantity*excluded.average_cost)/(quantity+excluded.quantity),"
+                         "quantity=quantity+excluded.quantity",
+                         (target, lot['asset_code'], int(part) if part.denominator == 1 else float(part), lot['average_cost']))
+            moved['securities'] += 1
+        # Deposits: pay the interest earned so far, then open a sibling account on the same terms.
+        quantum = {0: 1_000_000, 1: 100_000}
+        for row in conn.execute('SELECT * FROM accounts WHERE user_id=? ORDER BY account_number', (source,)).fetchall():
+            if (row['resolution_status'] or 'active') != 'active' or (self._has_table(conn, 'deposit_insurance_claims') and conn.execute(
+                    'SELECT 1 FROM deposit_insurance_claims WHERE account_number=? LIMIT 1', (row['account_number'],)).fetchone()):
+                raise ValueError(f'정리 중인 예금 계좌 {row["account_number"]}가 있어 분할할 수 없습니다.')
+            if conn.execute('SELECT 1 FROM saving WHERE product_code=?', (row['product_code'],)).fetchone():
+                InterestManager._settle_saving_account(conn, row, now)
+            account = dict(conn.execute('SELECT * FROM accounts WHERE account_number=?', (row['account_number'],)).fetchone())
+            step = quantum.get(int(account['balance_decimal_places'] or 0), 10_000)
+            units = int(account['balance_units'] or 0) * ratio // step * step
+            principal = self._part(account['principal'], ratio)
+            if units <= 0 and not principal:
+                continue
+            sibling = dict(account, account_number=BankManager._generate_account_number(conn), user_id=target,
+                           balance_units=int(units), balance=int(units) / SCALE, principal=principal, interest_remainder='0')
+            for derived in ('balance_minor_units', 'created_at'):
+                sibling.pop(derived, None)
+            columns = ','.join(sibling)
+            conn.execute(f'INSERT INTO accounts({columns}) VALUES ({",".join("?" for _ in sibling)})', tuple(sibling.values()))
+            conn.execute('UPDATE accounts SET balance_units=balance_units-?,principal=principal-? WHERE account_number=?',
+                         (int(units), principal, account['account_number']))
+            moved['deposits'] += 1
+        # Loans in good standing: every amount and every installment is divided by the ratio.
+        loan_money = ('principal', 'outstanding_balance', 'origination_fee', 'mandatory_cost_fee',
+                      'provisioned_loss', 'ecl_allowance', 'prepayment_fees_paid')
+        schedule_money = ('principal_due', 'interest_due', 'fee_due', 'amount_paid', 'principal_paid', 'interest_paid', 'fee_paid')
+        for loan in conn.execute("SELECT * FROM loans WHERE user_id=? AND status NOT IN ('closed','repaid','paid')", (source,)).fetchall():
+            loan = dict(loan)
+            linked = [table for table in ('loan_credit_support', 'loan_future_commitments', 'loan_chargeoff_events')
+                      if self._has_table(conn, table) and conn.execute(f'SELECT 1 FROM {table} WHERE loan_id=? LIMIT 1', (loan['loan_id'],)).fetchone()]
+            if (loan['status'] != 'active' or loan['collection_status'] != 'current' or loan['overdue_since_epoch']
+                    or int(loan['collateral_amount'] or 0) or float(loan['charged_off_balance'] or 0) or linked):
+                raise ValueError(f'대출 #{loan["loan_id"]}이 연체·담보·상각·보증 상태라 분할할 수 없습니다. 먼저 정리해주세요.')
+            places = int((conn.execute('SELECT decimal_places FROM currencies WHERE code=?', (loan['quote_currency'] or 'NWX',)).fetchone() or [0])[0])
+            parts = {column: self._part(loan[column], ratio, places) for column in loan_money if column in loan}
+            sibling = {k: v for k, v in loan.items() if k != 'loan_id' and not k.endswith(('_minor_units', '_subminor_units'))}
+            sibling.update(parts, user_id=target, interest_remainder=0, overdue_interest_remainder=0)
+            new_loan = conn.execute(f'INSERT INTO loans({",".join(sibling)}) VALUES ({",".join("?" for _ in sibling)})',
+                                    tuple(sibling.values())).lastrowid
+            conn.execute(f'UPDATE loans SET {",".join(f"{c}={c}-?" for c in parts)} WHERE loan_id=?', (*parts.values(), loan['loan_id']))
+            for item in conn.execute('SELECT * FROM loan_payment_schedule WHERE loan_id=? ORDER BY installment_number', (loan['loan_id'],)).fetchall():
+                item = dict(item)
+                share = {column: self._part(item[column], ratio, places) for column in schedule_money}
+                copy = {k: v for k, v in item.items() if k != 'schedule_id' and not k.endswith('_minor_units')}
+                copy.update(share, loan_id=new_loan)
+                conn.execute(f'INSERT INTO loan_payment_schedule({",".join(copy)}) VALUES ({",".join("?" for _ in copy)})', tuple(copy.values()))
+                conn.execute(f'UPDATE loan_payment_schedule SET {",".join(f"{c}={c}-?" for c in share)} WHERE schedule_id=?',
+                             (*share.values(), item['schedule_id']))
+            moved['loans'] += 1
+        return moved
+
     def split(self, actor, kind, code, new_code, new_name, ratio_text, new_shares=None):
         """인적분할 (spin-off) or 물적분할 (split-off) of a listed common-stock company.
 
-        The split ratio's share of the parent's issuer cash and capital moves to a new listed
-        company. 인적: the parent's shareholders receive the new shares pro rata and the
-        parent's price drops by the same share. 물적: the parent's capital account owns every
-        new share, so the parent's price is unchanged and the new company is its subsidiary.
+        The split ratio of everything the parent owns and owes moves to a new listed company:
+        issuer cash and capital, and its company account's securities, deposits and loans.
+        인적: the parent's shareholders receive the new shares pro rata and the parent's price
+        drops by the same share. 물적: the parent's company account owns every new share at the
+        book value it handed over, so the parent's price is unchanged.
         """
         try:
             kind = str(kind).strip().removesuffix('분할')
@@ -1392,6 +1489,7 @@ class CorporateActionsManager:
                 raise ValueError('신설회사 이름은 1~80자로 입력해주세요.')
             ratio = self._split_ratio(ratio_text)
             now = int(time.time())
+            from managers.company_account_manager import CompanyAccounts
             with DBManager.admin_scope(actor), self.db.atomic() as conn:
                 self._require(conn, actor)
                 listing = self._listing(conn, code)
@@ -1412,10 +1510,21 @@ class CorporateActionsManager:
                 capital = int(listing['capital'] or 0)
                 moved_capital = round(capital * ratio)
                 Finance.ensure(conn, code, now)
+                entity = Finance.entity(conn, code)
+                places = int(entity['decimal_places'])
                 cash = conn.execute('SELECT balance,locked_amount FROM issuer_cash_accounts WHERE company_code=?', (code,)).fetchone()
                 if cash and int(cash['locked_amount']):
                     raise ValueError('법인의 잠금 예치금을 먼저 정산해주세요.')
                 moved_cash = round(int(cash['balance']) * ratio) if cash and int(cash['balance']) > 0 else 0
+                parent_account = CompanyAccounts.account_id(conn, code) if kind == '물적' else \
+                    (conn.execute('SELECT user_id FROM company_accounts WHERE company_code=?', (code,)).fetchone() or [None])[0]
+                # The statements follow the live accounts (NWX books); other currencies move cash only.
+                live_books = entity['currency'] == 'NWX'
+                if parent_account and live_books:
+                    CompanyAccounts.reconcile(conn, code)
+                before = CompanyAccounts.positions(conn, parent_account, code) if parent_account else None
+                if parent_account and not live_books and any(before.values()):
+                    raise ValueError('NWX가 아닌 통화로 장부를 쓰는 법인은 법인 계정의 증권·예금·대출을 먼저 정리해야 분할할 수 있습니다.')
 
                 # The new company keeps the parent's market and simulation settings, no dividend schedule.
                 conn.execute(
@@ -1427,29 +1536,24 @@ class CorporateActionsManager:
                      listing['exchange_id'], listing['is_fixed'], listing['market_condition'], listing['market_volatility'],
                      currency, listing['liquidity'], listing['trend_sensitivity'], listing['sector_sensitivity'],
                      listing['jump_intensity'], listing['mean_reversion'], listing['Fractal']))
-                Finance.ensure(conn, new_code, now)  # opens an empty ledger; the split entry below fills it
+                new_account = CompanyAccounts.account_id(conn, new_code)  # opens the new company's empty ledger too
                 conn.execute('UPDATE company SET capital=? WHERE company_code=?', (moved_capital, new_code))
-                conn.execute('INSERT INTO issuer_cash_accounts(company_code,balance) VALUES (?,?)', (new_code, moved_cash))
                 if moved_cash:
                     conn.execute('UPDATE issuer_cash_accounts SET balance=balance-? WHERE company_code=?', (moved_cash, code))
+                    conn.execute('UPDATE issuer_cash_accounts SET balance=balance+? WHERE company_code=?', (moved_cash, new_code))
+                moved = self._split_account(conn, parent_account, new_account, ratio, now) if parent_account \
+                    else {'securities': 0, 'deposits': 0, 'loans': 0}
+                after = CompanyAccounts.positions(conn, parent_account, code) if parent_account else None
+                # Book value handed over, in NWX: cash plus assets less debts that left the parent.
+                net_moved = moved_cash + ((before['investments'] - after['investments']) + (before['treasury'] - after['treasury'])
+                                          - (before['debt'] - after['debt']) if parent_account else 0)
 
-                entity = Finance.entity(conn, code)
-                places = int(entity['decimal_places'])
                 cash_units = Finance.converted(conn, moved_cash, 'NWX', entity['currency'], places)
                 capital_units = Finance.converted(conn, moved_capital, currency, entity['currency'], places)
                 label = f'{kind}분할'
-                # New company: receives the cash; capital as set, the rest is capital surplus.
-                Finance.post(conn, new_code, f'split:in:{code}:{now}', f'{label} 신설 · `{code}`에서 이전',
-                             [('cash', cash_units), ('common_capital', -capital_units),
-                              ('capital_surplus', capital_units - cash_units)], 'financing', now)
-
                 allocations = []
                 if kind == '인적':
-                    # Shareholders receive the new company; the parent's equity shrinks by what left.
                     conn.execute('UPDATE company SET capital=? WHERE company_code=?', (capital - moved_capital, code))
-                    Finance.post(conn, code, f'split:out:{new_code}:{now}', f'{label} · `{new_code}` 신설, 주주에게 배정',
-                                 [('cash', -cash_units), ('common_capital', capital_units),
-                                  ('adjustment', cash_units - capital_units)], 'financing', now)
                     lots = conn.execute('SELECT * FROM user_assets WHERE asset_code=? ORDER BY holding_id', (code,)).fetchall()
                     owned = sum(Fraction(str(lot['quantity'])) for lot in lots)
                     if owned > supply:
@@ -1485,15 +1589,31 @@ class CorporateActionsManager:
                                  'ON CONFLICT(asset_code,recorded_epoch) DO UPDATE SET price=excluded.price', (code, parent_price, now))
                     owner_text = f'주주 {len({lot["user_id"] for lot in lots}):,}명에게 비례 배정'
                 else:
-                    # The parent swaps the cash it handed over for a 100% holding in the new company.
-                    from managers.company_account_manager import CompanyAccounts
-                    owner = CompanyAccounts.account_id(conn, code)
-                    Finance.post(conn, code, f'split:out:{new_code}:{now}', f'{label} · `{new_code}` 지분 100% 취득',
-                                 [('cash', -cash_units), ('investments', cash_units)], 'investing', now)
+                    # The parent holds every new share at the book value it handed over.
                     conn.execute('INSERT INTO user_assets(user_id,asset_code,quantity,average_cost) VALUES (?,?,?,?)',
-                                 (owner, new_code, shares, new_price))
+                                 (parent_account, new_code, shares, max(0, round(Fraction(str(net_moved)) / shares)) if live_books else new_price))
                     parent_price = price
                     owner_text = f'`{code}` 법인이 100% 보유 (자회사)'
+
+                # Statements: books move to the live accounts; what left the parent is equity
+                # (인적) or the subsidiary holding (물적); the new company's net assets are its equity.
+                if live_books:
+                    CompanyAccounts.reconcile(conn, code, residual='adjustment')
+                    CompanyAccounts.reconcile(conn, new_code, residual='capital_surplus')
+                    if kind == '인적' and capital_units:
+                        Finance.post(conn, code, f'split:capital:{new_code}:{now}', f'{label} · 자본금 이전',
+                                     [('common_capital', capital_units), ('adjustment', -capital_units)], 'financing', now)
+                    if capital_units:
+                        Finance.post(conn, new_code, f'split:capital:{code}:{now}', f'{label} 신설 · 자본금 설정',
+                                     [('capital_surplus', capital_units), ('common_capital', -capital_units)], 'financing', now)
+                else:
+                    Finance.post(conn, new_code, f'split:in:{code}:{now}', f'{label} 신설 · `{code}`에서 이전',
+                                 [('cash', cash_units), ('common_capital', -capital_units),
+                                  ('capital_surplus', capital_units - cash_units)], 'financing', now)
+                    Finance.post(conn, code, f'split:out:{new_code}:{now}', f'{label} · `{new_code}` 신설',
+                                 [('cash', -cash_units)] + ([('common_capital', capital_units), ('adjustment', cash_units - capital_units)]
+                                                            if kind == '인적' else [('investments', cash_units)]),
+                                 'financing' if kind == '인적' else 'investing', now)
                 conn.execute('INSERT INTO market_price_history(asset_code,price,recorded_epoch) VALUES (?,?,?) '
                              'ON CONFLICT(asset_code,recorded_epoch) DO UPDATE SET price=excluded.price', (new_code, new_price, now))
                 Finance.record_shares(conn, new_code, now)
@@ -1501,14 +1621,17 @@ class CorporateActionsManager:
                 UserManager._refresh_max_shareholder(conn, code)
                 payload = {'kind': kind, 'parent': code, 'new': new_code, 'name': new_name, 'ratio': str(ratio),
                            'new_shares': shares, 'new_price': new_price, 'old_price': price, 'parent_price': parent_price,
-                           'moved_cash': moved_cash, 'moved_capital': moved_capital, 'currency': currency,
-                           'allocations': allocations}
+                           'moved_cash': moved_cash, 'moved_capital': moved_capital, 'moved_book_value_nwx': round(net_moved),
+                           'moved_positions': moved, 'currency': currency, 'allocations': allocations}
                 self._record(conn, f'split:{uuid.uuid4().hex}', 'spin_off' if kind == '인적' else 'split_off', code, new_code, payload, now)
                 self._audit(conn, actor, 'split', code, payload, now)
             percent = f'{float(ratio * 100):g}%'
+            positions = ' · '.join(f'{label} {moved[key]:,}건' for key, label in
+                                   (('securities', '보유 증권'), ('deposits', '예금'), ('loans', '대출')) if moved[key])
             return True, (f'✅ `{code}` {kind}분할 완료 · 신설 `{new_code}` {new_name} ({percent}) · '
                           f'{shares:,}주 × {new_price:,} {currency} · {owner_text} · '
-                          f'`{code}` 가격 {price:,} → {parent_price:,} · 이전 현금 {moved_cash:,} NWX · 자본금 {moved_capital:,}')
+                          f'`{code}` 가격 {price:,} → {parent_price:,} · 이전 현금 {moved_cash:,} NWX · 자본금 {moved_capital:,}'
+                          + (f' · 함께 이전: {positions}' if positions else ''))
         except (ValueError, TypeError, OverflowError, ZeroDivisionError) as exc:
             return False, f'❌ {exc}'
 
