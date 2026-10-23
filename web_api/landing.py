@@ -29,7 +29,7 @@ p{{margin:12px 0 0;color:var(--ink2);font-size:17px;line-height:1.47}}
 .path{{display:inline-block;margin-top:14px;padding:5px 11px;border-radius:9999px;background:var(--pearl);border:1px solid var(--line);font:500 12px/1.4 "SF Mono",ui-monospace,Menlo,monospace;word-break:break-all}}
 nav{{display:grid;gap:10px;margin-top:26px}}
 a.card{{display:flex;align-items:center;gap:14px;padding:16px 18px;border:1px solid var(--line);border-radius:18px;color:inherit;text-decoration:none;background:var(--pearl);transition:transform .2s var(--ease)}}
-a.card:active{transform:scale(.98)}
+a.card:active{{transform:scale(.98)}}
 a.card:focus-visible{{outline:2px solid var(--accent);outline-offset:3px}}
 .icon{{display:grid;place-items:center;flex:none;width:42px;height:42px;border-radius:13px;color:#fff;font-size:19px}}
 .i1{{background:var(--accent)}}.i2{{background:var(--ink);color:var(--surface)}}
