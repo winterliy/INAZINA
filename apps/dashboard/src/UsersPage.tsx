@@ -179,7 +179,7 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
   const [treasury, setTreasury] = useState({ amount: "", reason: "" });
   const [password, setPassword] = useState("");
   const [htsId, setHtsId] = useState("");
-  const [draft, setDraft] = useState({ nationality: "", currencyCode: "NWX", baseRate: "", legalMaxRate: "", taxPercent: "" });
+  const [draft, setDraft] = useState({ nationality: "", currencyCode: "", baseRate: "", legalMaxRate: "", taxPercent: "" });
   const [marketRate, setMarketRate] = useState({ benchmarkKey: "funding", tenorDays: "30", annualRate: "" });
   const [macro, setMacro] = useState({ inflationPercent: "2", realGdpGrowthPercent: "2", unemploymentPercent: "5", fiscalDebtPercent: "60", creditStressShockBps: "200", fxStressShockPercent: "10" });
   const country = countries.find((item) => item.nationality === selected);

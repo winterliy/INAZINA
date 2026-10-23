@@ -1,4 +1,5 @@
-"""Cash-backed NWX funds. Fund owners are not rows in the citizens table."""
+"""Cash-backed 기준 통화 funds. Fund owners are not rows in the citizens table."""
+from functions.money import base_currency_code
 import time
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 
@@ -24,8 +25,8 @@ class FundManager:
         product = conn.execute('SELECT * FROM investment WHERE product_code=?', (code,)).fetchone()
         if not product or product['product_type'] not in FUND_TYPES:
             raise ValueError('펀드 코드를 확인해주세요.')
-        if product['quote_currency'] != 'NWX':
-            raise ValueError('실보유형 펀드는 NWX 결제만 지원합니다.')
+        if product['quote_currency'] != base_currency_code(conn):
+            raise ValueError('실보유형 펀드는 기준 통화 결제만 지원합니다.')
         if conn.execute('SELECT 1 FROM fund_accounts WHERE product_code=?', (code,)).fetchone():
             return
         if not funded_conversion and conn.execute('SELECT 1 FROM user_assets WHERE asset_code=? AND quantity>0', (code,)).fetchone():
@@ -68,12 +69,12 @@ class FundManager:
                 if resolve_user_role(str(actor), dict(user)) != 'admin':
                     raise ValueError('기존 펀드의 국고 자금 이전은 관리자만 할 수 있습니다.')
                 if isinstance(expected_funding, bool) or expected_funding != funding:
-                    raise ValueError(f'국고에서 {funding:,} NWX를 이전해야 합니다. 현재 전환 금액을 확인하고 승인해주세요.')
+                    raise ValueError(f'국고에서 {funding:,} 기준 통화를 이전해야 합니다. 현재 전환 금액을 확인하고 승인해주세요.')
                 from managers.currency_manager import CurrencyManager
                 # The treasury of the country listing the fund funds the conversion.
                 from managers.currency_manager import SCALE
                 treasury = CurrencyManager.exchange_treasury(conn, str(code))
-                CurrencyManager.treasury_pay(conn, treasury, 'NWX', funding * SCALE)
+                CurrencyManager.treasury_pay(conn, treasury, base_currency_code(conn), funding * SCALE)
             self.create_empty(conn, str(code), funded_conversion=bool(funding))
             if funding:
                 change_cash(conn, PREFIX+str(code), funding, 'conversion', str(actor))
@@ -390,7 +391,7 @@ class FundManager:
                     raise ValueError('펀드 순자산이 없어 가입·환매할 수 없습니다.')
                 gross = int((nav * Decimal(str(qty))).to_integral_value(rounding=ROUND_FLOOR if redeem else ROUND_CEILING))
                 if not 0 < gross <= MAX_MONEY:
-                    raise ValueError('거래 금액은 1 NWX 이상이며 결제 한도 이하여야 합니다.')
+                    raise ValueError('거래 금액은 1 기준 통화 이상이며 결제 한도 이하여야 합니다.')
                 if redeem:
                     if fractions._held(conn, code, user) - fractions._reserved(conn, code, user, 'sell') < units:
                         raise ValueError('환매 가능한 좌수가 부족합니다.')
@@ -407,18 +408,18 @@ class FundManager:
                             break
                     change_cash(conn, state['ownerId'], -gross, 'redemption', str(user))
                     sold, _ = fractions._remove_lots(conn, user, code, units, float(nav))
-                    fractions._pay_seller(conn, user, code, 'NWX', gross*SCALE, sold, int(gain*SCALE), int(time.time()))
+                    fractions._pay_seller(conn, user, code, base_currency_code(conn), gross*SCALE, sold, int(gain*SCALE), int(time.time()))
                 else:
                     if issued + Decimal(str(qty)) > product['total_supply']:
                         raise ValueError('펀드 발행 한도를 초과합니다.')
-                    source = fractions._funds(conn, user, 'NWX', gross*SCALE, int(time.time()))
-                    fractions._debit(conn, user, 'NWX', gross*SCALE, source)
+                    source = fractions._funds(conn, user, base_currency_code(conn), gross*SCALE, int(time.time()))
+                    fractions._debit(conn, user, base_currency_code(conn), gross*SCALE, source)
                     change_cash(conn, state['ownerId'], gross, 'subscription', str(user))
                     fractions._add_lot(conn, user, code, source, units, gross / float(qty))
                 after = self.snapshot_conn(conn, code)
                 conn.execute('UPDATE investment SET unit_price=? WHERE product_code=?', (max(1, round_money(after['nav'])), code))
                 conn.execute('INSERT INTO market_trade_history(asset_code,side,quantity,price,recorded_epoch) VALUES (?,?,?,?,?)',
                              (code, 'sell' if redeem else 'buy', qty, max(1, round_money(nav)), int(time.time())))
-            return True, f"✅ {code} {qty:,}좌 {'환매' if redeem else '가입'} · {gross:,} NWX"
+            return True, f"✅ {code} {qty:,}좌 {'환매' if redeem else '가입'} · {gross:,} 기준 통화"
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f'❌ {exc}'

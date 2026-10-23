@@ -1,4 +1,5 @@
 """A small, price/time-priority limit order book backed by SQLite."""
+from functions.money import base_currency_code
 
 import time
 from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY
@@ -76,7 +77,7 @@ class OrderBookManager:
             except ValueError:
                 pass
         # Instruments in the user's own currency settle from cash/home accounts; others via FX accounts.
-        if foreign and (foreign['quote_currency'] or 'NWX') != home:
+        if foreign and (foreign['quote_currency'] or base_currency_code(conn)) != home:
             if funding_account is not None:
                 return False, "❌ 랩어카운트는 계좌 통화로 결제하는 종목만 운용할 수 있습니다."
             from managers.foreign_securities_manager import ForeignSecuritiesManager
@@ -94,7 +95,7 @@ class OrderBookManager:
         validated, error = validate_limit_order(
             side, quantity, limit_price,
             max_quantity=self.MAX_QUANTITY, max_price=self.MAX_LIMIT_PRICE,
-            quantity_label="주문 수량", price_label="지정가 NWX",
+            quantity_label="주문 수량", price_label="지정가 기준 통화",
         )
         if error:
             return False, error
@@ -128,7 +129,7 @@ class OrderBookManager:
                 if float(asset["price"] or 0) <= 0:
                     return False, "❌ 자산 가격이 올바르지 않습니다."
                 # This path settles in the user's own currency, which is the instrument's.
-                currency = str(asset.get("quote_currency") or "NWX")
+                currency = str(asset.get("quote_currency") or base_currency_code(conn))
 
                 wrap_account = funding_account
                 funding_account = None
@@ -454,7 +455,7 @@ class OrderBookManager:
                                 wallet_watermark=None, holding_before=None,
                                 inventory_type=None):
         """Persist the matched order pair and consideration in quote minor units."""
-        currency = str(buy_order["quote_currency"] or "NWX").upper()
+        currency = str(buy_order["quote_currency"] or base_currency_code(conn)).upper()
         places = currency_precision(conn, currency)
         price_units = to_minor_units(price, places)
         quantity = int(quantity)
@@ -471,7 +472,7 @@ class OrderBookManager:
             tax_units = 0
             proceeds_units = 0
         else:
-            if str(sell_order["quote_currency"] or "NWX").upper() != currency:
+            if str(sell_order["quote_currency"] or base_currency_code(conn)).upper() != currency:
                 raise RuntimeError("체결 주문의 결제 통화가 일치하지 않습니다.")
             execution_type = "secondary"
             sell_id = int(sell_order["order_id"])
@@ -549,7 +550,7 @@ class OrderBookManager:
                 # the holder subledger or the issuer's cash balance.
                 FinancialManager.ensure(conn, issuer, now)
                 entity = FinancialManager.entity(conn, issuer)
-                issue_currency = str(bond_product["quote_currency"] or "NWX").upper()
+                issue_currency = str(bond_product["quote_currency"] or base_currency_code(conn)).upper()
                 if str(entity["currency"]).upper() == issue_currency:
                     bond_finance = (FinancialManager, issuer, int(bond_product["face_value"]))
         improvement = (int(buy_order["limit_price"]) - price) * quantity
@@ -583,7 +584,7 @@ class OrderBookManager:
             # The listing country's treasury issues the bond and receives the principal.
             CurrencyManager.treasury_receive(
                 conn, CurrencyManager.exchange_treasury(conn, asset["code"]),
-                asset.get("quote_currency") or "NWX", int(round(principal * SCALE)))
+                asset.get("quote_currency") or base_currency_code(conn), int(round(principal * SCALE)))
             return
         conn.execute(
             """INSERT INTO assets.user_assets
@@ -618,7 +619,7 @@ class OrderBookManager:
                     [("cash", proceeds), ("bond_discount", discount), ("bonds", -face_amount)],
                     "financing", now=now,
                     key=f"bond-primary-issue:{buy_order['order_id']}:{order_progress}",
-                    currency=str(product["quote_currency"] or "NWX").upper())
+                    currency=str(product["quote_currency"] or base_currency_code(conn)).upper())
                 if discount:
                     finance.record_bond_discount(conn, issuer, buy_order["asset_code"], discount)
         else:
@@ -629,7 +630,7 @@ class OrderBookManager:
                 (buy_order["asset_code"],) * 3).fetchone()
             CurrencyManager.treasury_receive(
                 conn, CurrencyManager.exchange_treasury(conn, buy_order["asset_code"]),
-                (asset_currency[0] if asset_currency else None) or "NWX", proceeds * SCALE)
+                (asset_currency[0] if asset_currency else None) or base_currency_code(conn), proceeds * SCALE)
             cursor = None
         if cursor is not None and cursor.rowcount != 1:
             raise RuntimeError("국고 계정을 찾을 수 없어 발행주식 매수를 취소했습니다.")
@@ -778,7 +779,7 @@ class OrderBookManager:
                 raise RuntimeError("보유 수량이 변경되어 체결을 취소했습니다.")
             net_proceeds = max(0, execution_price * take - tax_share)
             from managers.currency_manager import CurrencyManager, SCALE
-            sale_currency = str(sell_order["quote_currency"] or "NWX")
+            sale_currency = str(sell_order["quote_currency"] or base_currency_code(conn))
             if sale_currency != CurrencyManager.home(conn, seller_id):
                 # The seller lives in another currency (e.g. an order placed from an FX account).
                 from managers.foreign_securities_manager import ForeignSecuritiesManager
@@ -800,7 +801,8 @@ class OrderBookManager:
 
     @staticmethod
     def _credit_reserved_source(conn, user_id, account_number, amount, now,
-                                currency="NWX", order_id=None):
+                                currency=None, order_id=None):
+        currency = currency or base_currency_code(conn)
         amount = parse_currency_money(conn, amount, currency, minimum=0)
         if amount <= 0:
             return
@@ -852,7 +854,7 @@ class OrderBookManager:
         new_remaining = old_remaining - quantity
         if new_remaining < 0:
             raise RuntimeError("주문 잔량보다 많은 수량이 체결되었습니다.")
-        currency = str(order["quote_currency"] or "NWX")
+        currency = str(order["quote_currency"] or base_currency_code(conn))
         places = currency_precision(conn, currency)
         reserved_units = (int(order["reserved_cash_minor_units"] or 0)
                           if "reserved_cash_minor_units" in order.keys()
@@ -870,7 +872,7 @@ class OrderBookManager:
 
     @staticmethod
     def _reserved_cash_amount(conn, order):
-        currency = str(order["quote_currency"] or "NWX")
+        currency = str(order["quote_currency"] or base_currency_code(conn))
         places = currency_precision(conn, currency)
         units = (int(order["reserved_cash_minor_units"] or 0)
                  if "reserved_cash_minor_units" in order.keys()
@@ -908,7 +910,7 @@ class OrderBookManager:
                     return False, "❌ 본인의 주문을 찾을 수 없습니다."
                 if order["status"] not in {"scheduled", "open", "partial"}:
                     return False, f"❌ 이미 {order['status']} 상태라 취소할 수 없습니다."
-                currency = str(order["quote_currency"] or "NWX")
+                currency = str(order["quote_currency"] or base_currency_code(conn))
                 refund = (self._reserved_cash_amount(conn, order)
                           if order["side"] == "buy" else 0)
                 if refund:
@@ -931,7 +933,7 @@ class OrderBookManager:
 
     def _reject_scheduled_order(self, conn, order, now):
         """Release a reservation that became invalid before its exchange opened."""
-        currency = str(order['quote_currency'] or 'NWX')
+        currency = str(order['quote_currency'] or base_currency_code(conn))
         refund = (self._reserved_cash_amount(conn, order)
                   if order['side'] == 'buy' else 0)
         if refund:
@@ -1000,7 +1002,7 @@ class OrderBookManager:
                         continue
                     conn.execute("UPDATE market_orders SET status='open', activation_epoch=?, scheduled_reason=NULL, updated_epoch=? "
                                  "WHERE order_id=?", (now, now, order['order_id']))
-                    currency = str(order['quote_currency'] or 'NWX')
+                    currency = str(order['quote_currency'] or base_currency_code(conn))
                     from managers.currency_manager import CurrencyManager
                     if currency == CurrencyManager.home(conn, order['user_id']):
                         self._match_incoming_order(conn, order['order_id'], now)

@@ -142,7 +142,7 @@ class CatalogManager:
                     raise ValueError(f"기본 통화 코드 중복: {currency}")
                 if self.db.code_locations(conn,code):
                     raise ValueError(f"외환 종목 코드 중복: {code}")
-                conn.execute("INSERT INTO market_assets(code,name,exchange_id,price,type,market_volatility) VALUES (?,?, 'CURRENCY',?,'forex',.05)", (code,f'{name}/NWX',price))
+                conn.execute("INSERT INTO market_assets(code,name,exchange_id,price,type,market_volatility) VALUES (?,?, 'CURRENCY',?,'forex',.05)", (code,f'{name}/{self.db.base_currency_code()}',price))
                 conn.execute("INSERT INTO currencies(code,name,asset_code) VALUES (?,?,?)", (currency,name,code))
                 conn.execute("INSERT OR IGNORE INTO country_currencies(nationality,currency_code) VALUES (?,?)", (country,currency))
                 conn.execute("INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,interest_cycle,compound_type,issuer,status,quote_currency,product_kind) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (f'INZCU{i:03d}',f'{name} 외환통장',1+(i%5)*.25,0,0,0,1,'currency','active',currency,'currency_saving'))

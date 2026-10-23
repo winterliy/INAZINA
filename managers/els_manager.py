@@ -1,6 +1,7 @@
 """Fully funded step-down ELS for the Inazina game economy.
 
-A treasury-issued ELS is denominated in that treasury's currency; a company-issued one in NWX."""
+A treasury-issued ELS is denominated in that treasury's currency; a company-issued one in 기준 통화."""
+from functions.money import base_currency_code
 
 import json
 import math
@@ -145,7 +146,7 @@ class ELSManager:
             if not company or company["share_class"] == "preferred":
                 raise ValueError("발행법인은 거래 중인 보통주 법인 코드를 입력해주세요.")
             conn.execute("INSERT OR IGNORE INTO issuer_cash_accounts(company_code,balance,locked_amount) VALUES (?,0,0)", (issuer,))
-        currency = CurrencyManager.home(conn, issuer) if CurrencyManager.is_treasury(conn, issuer) else 'NWX'
+        currency = CurrencyManager.home(conn, issuer) if CurrencyManager.is_treasury(conn, issuer) else base_currency_code(conn)
         requested = str(fields.get("quote_currency") or currency).upper()
         if requested != currency:
             raise ValueError(f"이 ELS는 발행자 통화 {currency}로만 발행할 수 있습니다.")
@@ -170,8 +171,8 @@ class ELSManager:
 
     @staticmethod
     def _currency(conn, code):
-        row = conn.execute("SELECT COALESCE(quote_currency,'NWX') FROM investment WHERE product_code=?", (code,)).fetchone()
-        return row[0] if row else 'NWX'
+        row = conn.execute("SELECT COALESCE(quote_currency,base_currency_code()) FROM investment WHERE product_code=?", (code,)).fetchone()
+        return row[0] if row else base_currency_code(conn)
 
     @staticmethod
     def _coupon(principal, annual_coupon, days):
@@ -215,7 +216,7 @@ class ELSManager:
                 error = MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=code)
                 if error:
                     return False, error
-                terms = conn.execute("SELECT t.*,i.total_supply,COALESCE(i.quote_currency,'NWX') AS quote_currency FROM els_products t JOIN investment i USING(product_code) "
+                terms = conn.execute("SELECT t.*,i.total_supply,COALESCE(i.quote_currency,base_currency_code()) AS quote_currency FROM els_products t JOIN investment i USING(product_code) "
                     "WHERE t.product_code=? AND i.status='active'", (code,)).fetchone()
                 if not terms or terms["state"] != "subscription" or now >= terms["subscription_end_epoch"]:
                     return False, "❌ 모집 중인 ELS만 청약할 수 있습니다."
@@ -434,7 +435,7 @@ class ELSManager:
             raise ValueError("ELS 예치금이 부족하여 정산을 보류합니다.")
         orders = conn.execute("SELECT * FROM market_orders WHERE asset_code=? AND status IN ('open','partial')", (code,)).fetchall()
         for order in orders:
-            self._safe_credit(conn, order["user_id"], order["funding_account"], order["reserved_cash"], order["quote_currency"] or "NWX")
+            self._safe_credit(conn, order["user_id"], order["funding_account"], order["reserved_cash"], order["quote_currency"] or base_currency_code(conn))
             conn.execute("UPDATE market_orders SET status='expired',reserved_cash=0,updated_epoch=? WHERE order_id=?", (now, order["order_id"]))
         notifications = []
         for subscription, gross in payments:
@@ -469,7 +470,7 @@ class ELSManager:
         # Details are used by wallet and catalogue views; they do not mutate
         # settlement state, so keep them off SQLite's single writer.
         with (self.db.readonly() if conn is None else nullcontext(conn)) as conn:
-            row = conn.execute("SELECT t.*,i.name,i.total_supply,COALESCE(i.quote_currency,'NWX') AS quote_currency FROM els_products t JOIN investment i USING(product_code) WHERE product_code=?", (code,)).fetchone()
+            row = conn.execute("SELECT t.*,i.name,i.total_supply,COALESCE(i.quote_currency,base_currency_code()) AS quote_currency FROM els_products t JOIN investment i USING(product_code) WHERE product_code=?", (code,)).fetchone()
             if not row:
                 return None
             details = dict(row)

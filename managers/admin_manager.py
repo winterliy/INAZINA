@@ -49,7 +49,7 @@ class AdminManager:
             if not asset_code:
                 return False, "❌ 목표 가격을 지정하려면 개별 자산을 선택해주세요."
             if isinstance(target_price, bool) or not isinstance(target_price, int) or not 1 <= target_price <= 2**53 - 1:
-                return False, "❌ 목표 가격은 1~9,007,199,254,740,991 NWX 사이의 정수여야 합니다."
+                return False, "❌ 목표 가격은 1~9,007,199,254,740,991 기준 통화 사이의 정수여야 합니다."
             mode, value = "price", target_price
         else:
             mode, value = "percent", percent
@@ -151,7 +151,7 @@ class AdminManager:
                     (event_id, code, price, target, now, now + duration_seconds, now, price),
                 )
         label = "호재" if event_type == "good" else "악재"
-        target_label = f"목표 {target_price:,} NWX" if mode == "price" else f"목표 {'+' if event_type == 'good' else '-'}{value:g}%"
+        target_label = f"목표 {target_price:,} 기준 통화" if mode == "price" else f"목표 {'+' if event_type == 'good' else '-'}{value:g}%"
         return True, (f"✅ {asset_code or '시장 전체'}에 {label} 사건을 등록했습니다. "
                       f"{duration_seconds:,}초 동안 {percent:g}% 강도로 무작위 등락하며 {target_label}에 도달합니다.")
 

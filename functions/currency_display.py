@@ -1,4 +1,5 @@
 """Home-currency summaries, while contract details retain their actual denominations."""
+from functions.money import base_currency_code
 from decimal import Decimal, ROUND_FLOOR
 from managers.currency_exchange_manager import SCALE, display_units
 
@@ -43,13 +44,15 @@ class MoneyDisplay:
         from managers.currency_manager import CurrencyManager
         with db.readonly() as conn:
             self.relative_currency=CurrencyManager.home(conn,user_id)
+            self.base_currency=base_currency_code(conn)
             self.places={r['code']:int(r['decimal_places']) for r in conn.execute("SELECT code,decimal_places FROM currencies WHERE status='active'")}
-            self.nwx_quote=CurrencyManager.quote(conn,'NWX',self.relative_currency)
+            self.base_quote=CurrencyManager.quote(conn,self.base_currency,self.relative_currency)
 
-    def relative(self,value,source='NWX'):
+    def relative(self,value,source=None):
         from fractions import Fraction
-        if source!='NWX':raise ValueError('이 요약 값은 NWX 평가액이어야 합니다.')
-        amount=Fraction(str(value))*self.nwx_quote
+        source = self.base_currency if source is None else source
+        if source!=self.base_currency:raise ValueError('기본 통화 평가액만 상대 통화로 표시할 수 있습니다.')
+        amount=Fraction(str(value))*self.base_quote
         number=Decimal(amount.numerator)/Decimal(amount.denominator)
         return f"{number:,.{self.places[self.relative_currency]}f} {self.relative_currency}"
 
@@ -60,7 +63,7 @@ class MoneyDisplay:
         pattern=r'(?<![\w.])([−-]?\d[\d,]*(?:\.\d+)?)[ \t]+('+ '|'.join(re.escape(k) for k in self.places) +r')\b'
         def money(match):
             amount=match[1].replace(',','').replace('−','-');code=match[2]
-            if relative and code=='NWX':return self.relative(amount)
+            if relative and code==self.base_currency:return self.relative(amount)
             return f"{Decimal(amount):,.{self.places[code]}f} {code}"
         return re.sub(pattern,money,str(text))
 

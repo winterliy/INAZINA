@@ -59,7 +59,7 @@ class FuturesManager:
                     return False, "❌ 증거금 금액이 너무 큽니다."
                 funds = self.users._choose_funds(conn, user_id)
                 if not funds or funds[0] < reserved or not self.users._debit_source(conn, user_id, funds[1], reserved):
-                    return False, f"❌ 선물 주문 증거금 {reserved:,} NWX가 필요합니다."
+                    return False, f"❌ 선물 주문 증거금 {reserved:,} 기준 통화가 필요합니다."
                 cursor = conn.execute("INSERT INTO assets.market_orders "
                     "(user_id, asset_code, side, limit_price, quantity, remaining_quantity, reserved_cash, funding_account, "
                     "order_kind, created_epoch, updated_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'future', ?, ?)",
@@ -180,7 +180,7 @@ class FuturesManager:
             if not order or order["status"] not in {"open", "partial"}:
                 return False, "❌ 취소 가능한 본인의 선물 주문을 찾을 수 없습니다."
             self._cancel(conn, order, int(time.time()))
-            return True, f"✅ 선물 주문 #{order_id} 취소 · 증거금 {int(order['reserved_cash']):,} NWX 반환"
+            return True, f"✅ 선물 주문 #{order_id} 취소 · 증거금 {int(order['reserved_cash']):,} 기준 통화 반환"
 
     def settle_positions(self, now=None):
         now = int(RateManager._validated_epoch(now, "invalid_futures_settlement_epoch"))
@@ -235,7 +235,7 @@ class FuturesManager:
 
     def add_margin(self, user_id, code, amount):
         if isinstance(amount, bool) or not isinstance(amount, int) or not 1 <= amount <= 2**53 - 1:
-            return False, "❌ 추가 증거금은 양의 정수 NWX여야 합니다."
+            return False, "❌ 추가 증거금은 양의 정수 기준 통화여야 합니다."
         with self.db.atomic(("users", "accounts", "assets")) as conn:
             position = conn.execute("SELECT 1 FROM assets.futures_positions WHERE user_id = ? AND product_code = ?", (str(user_id), code)).fetchone()
             funds = self.users._choose_funds(conn, str(user_id))
@@ -245,4 +245,4 @@ class FuturesManager:
                 return False, "❌ 증거금을 추가할 잔액이 부족합니다."
             conn.execute("UPDATE assets.futures_positions SET collateral = collateral + ? WHERE user_id = ? AND product_code = ?",
                          (amount, str(user_id), code))
-            return True, f"✅ 선물 `{code}`에 증거금 {amount:,} NWX를 추가했습니다."
+            return True, f"✅ 선물 `{code}`에 증거금 {amount:,} 기준 통화를 추가했습니다."

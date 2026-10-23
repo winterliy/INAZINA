@@ -18,7 +18,7 @@ def load_active_wallet_loans(db, user_id, *, require_product=False, ordered=Fals
         "SELECT l.loan_id,l.product_code,l.principal,l.outstanding_balance,l.maturity_epoch,"
         "l.contract_rate,l.contract_effective_rate,l.contract_apr,l.collection_status,"
         "l.collateral_amount,l.collateral_released,l.collateral_seized,"
-        "l.collateral_asset_value,l.current_ltv,COALESCE(l.quote_currency,'NWX') AS quote_currency,p.name FROM loans l "
+        "l.collateral_asset_value,l.current_ltv,COALESCE(l.quote_currency,base_currency_code()) AS quote_currency,p.name FROM loans l "
         f"{join} liability p ON p.product_code=l.product_code "
         "WHERE l.user_id=? AND l.status IN ('active','defaulted')" + order,
         (str(user_id),),
@@ -42,7 +42,7 @@ def els_position_lines(positions):
         principal = item.get('principal', quantity * float(item.get('face_value') or 0))
         lines.append(
             f"• **{str(item.get('name') or code)[:70]}** (`{code}`) · {quantity:,}좌 · "
-            f"인수 원금 **{float(principal or 0):,.0f} {item.get('quote_currency') or 'NWX'}**\n"
+            f"인수 원금 **{float(principal or 0):,.0f} {item.get('quote_currency') or '—'}**\n"
             f"  {els_status_text(item)} · 연 쿠폰 {float(item.get('annual_coupon') or 0):g}% · "
             f"낙인 **{barrier}** · 다음 평가 {next_text}"
         )
@@ -62,7 +62,7 @@ def preferred_claim_lines(claims):
         lines.append(
             f"• **`{str(item.get('asset_code') or '')}`** · 발행법인 `{issuer}`\n"
             f"  확정수량 {int(item.get('quantity') or 0):,}주 · 미지급 배당 "
-            f"**{float(remaining):,.0f} {item.get('quote_currency') or 'NWX'}** · {due_text}"
+            f"**{float(remaining):,.0f} {item.get('quote_currency') or '—'}** · {due_text}"
         )
     return lines
 
@@ -118,7 +118,7 @@ class WalletCategoryView(discord.ui.View):
 
     def add_obligation_field(self,embed):
         name='📄 옵션 작성 의무 평가'
-        value=f"```{'−' if self.option_liability else ''}{self.option_liability:,} NWX```\n미만기 작성 옵션의 현재 의무 가치 · 순자산 차감\n만기에 이 금액을 그대로 납부하는 것은 아닙니다."
+        value=f"```{'−' if self.option_liability else ''}{self.option_liability:,} 기준 통화```\n미만기 작성 옵션의 현재 의무 가치 · 순자산 차감\n만기에 이 금액을 그대로 납부하는 것은 아닙니다."
         index=next((i for i,f in enumerate(embed.fields) if f.name==name),None)
         if index is None:embed.add_field(name=name,value=value,inline=True)
         else:embed.set_field_at(index,name=name,value=value,inline=True)

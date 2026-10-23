@@ -122,10 +122,10 @@ export function CommandPanel({ initial, instruments, portfolio, orders, homeCurr
   const groups = useMemo(() => Array.from(new Set(commands.map((item) => item.group))), [commands]);
 
   const sources = useMemo<Record<string, Option[]>>(() => {
-    const instrumentOptions = instruments.map((item) => ({ value: item.code, label: item.name, detail: `${number(item.price)} ${item.quote_currency || "NWX"}` }));
+    const instrumentOptions = instruments.map((item) => ({ value: item.code, label: item.name, detail: `${number(item.price)} ${item.quote_currency || homeCurrency}` }));
     return {
       instruments: instrumentOptions,
-      stocks: instruments.filter((item) => item.type === "stock").map((item) => ({ value: item.code, label: item.name, detail: `${number(item.price)} ${item.quote_currency || "NWX"}` })),
+      stocks: instruments.filter((item) => item.type === "stock").map((item) => ({ value: item.code, label: item.name, detail: `${number(item.price)} ${item.quote_currency || homeCurrency}` })),
       holdings: (portfolio?.stocks ?? []).filter((item) => item.qty).map((item) => ({ value: item.code, label: item.name, detail: `보유 ${number(item.qty)}` })),
       orders: orders.filter((order) => OPEN.has(order.status)).map((order) => ({ value: String(order.order_id), label: `#${order.order_id} ${order.asset_code} ${order.side === "buy" ? "매수" : "매도"}`, detail: `${number(order.limit_price)} × 잔량 ${number(order.remaining_quantity)}` })),
       accounts: (lookups?.accounts ?? []).map((account) => ({ value: account.account_number, label: `${account.account_type === "currency_saving" ? "외환통장" : "통장"} ${account.product_code}`, detail: account.account_type === "currency_saving" ? `${number((account.balance_units ?? 0) / 1_000_000)} ${account.quote_currency}` : `${number(account.balance ?? 0)} ${account.quote_currency}` })),

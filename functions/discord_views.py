@@ -147,9 +147,9 @@ class AccountOpenModal(discord.ui.Modal):
             max_length=16,
         )
         self.deposit_input = discord.ui.TextInput(
-            label="초기 예치금 (NWX · 숫자만)",
+            label="초기 예치금 (기준 통화 · 숫자만)",
             default=str(deposit_default),
-            placeholder=f"최소 {self.minimum_deposit:,} NWX",
+            placeholder=f"최소 {self.minimum_deposit:,} 기준 통화",
         )
         self.add_item(self.password_input)
         self.add_item(self.deposit_input)
@@ -187,7 +187,7 @@ class AccountOpenModal(discord.ui.Modal):
                 title="⚠️ 초기 예치금이 최소 금액보다 적습니다",
                 description=(
                     f"**{self.product_name}**의 최소 예치금은 "
-                    f"**{current_minimum:,} NWX**입니다. 아래 버튼으로 입력값을 수정해주세요."
+                    f"**{current_minimum:,} 기준 통화**입니다. 아래 버튼으로 입력값을 수정해주세요."
                 ),
                 color=discord.Color.orange(),
             )
@@ -373,8 +373,8 @@ class LoanRepaymentModal(discord.ui.Modal):
         self.loan_id = int(loan_id)
         self.product_code = product_code
         self.amount_input = discord.ui.TextInput(
-            label="상환 금액 (NWX · 숫자만)",
-            placeholder=f"남은 원리금 {outstanding_balance:,.0f} NWX 이하",
+            label="상환 금액 (기준 통화 · 숫자만)",
+            placeholder=f"남은 원리금 {outstanding_balance:,.0f} 기준 통화 이하",
             min_length=1,
             max_length=15,
         )
@@ -528,13 +528,13 @@ class LoanAmountModal(discord.ui.Modal):
         self.user_id = str(user_id)
         self.product_code = product_code
         self.amount_input = discord.ui.TextInput(
-            label="대출 신청 금액 (NWX · 숫자만)",
+            label="대출 신청 금액 (기준 통화 · 숫자만)",
             placeholder="예: 1000000",
             min_length=1,
             max_length=15,
         )
         self.collateral_input = discord.ui.TextInput(
-            label="현금 담보 금액 (선택 · NWX)",
+            label="현금 담보 금액 (선택 · 기준 통화)",
             placeholder="없으면 0",
             default="0",
             required=False,
@@ -660,10 +660,10 @@ class FXRatesView(discord.ui.View):
         rates = self.bot.currency_mgr.rates()
         pages = max(1,(len(rates)+self.PAGE_SIZE-1)//self.PAGE_SIZE)
         self.page = min(max(0,self.page),pages-1)
-        embed = discord.Embed(title='🌐 환율',description=f'국적 **{str(country)[:100]}** · 기본 통화 **{currency}**\n1 NWX 기준 외화 금액 (수수료 제외)',color=discord.Color.blue())
+        embed = discord.Embed(title='🌐 환율',description=f'국적 **{str(country)[:100]}** · 기본 통화 **{currency}**\n1 기준 통화 기준 외화 금액 (수수료 제외)',color=discord.Color.blue())
         for row in rates[self.page*self.PAGE_SIZE:(self.page+1)*self.PAGE_SIZE]:
             note = f"그래프 코드 `{row['asset_code']}`" if row['asset_code'] else '기준 통화'
-            embed.add_field(name=f"{row['code']} · {row['name']}"[:80],value=f"1 NWX = **{inverse_rate_text(row['rate'])} {row['code']}**\n{note}"[:120],inline=False)
+            embed.add_field(name=f"{row['code']} · {row['name']}"[:80],value=f"1 기준 통화 = **{inverse_rate_text(row['rate'])} {row['code']}**\n{note}"[:120],inline=False)
         embed.set_footer(text=f'{len(rates)}개 통화 · {self.page+1}/{pages} 페이지 · 페이지 이동 시 최신 환율 조회')
         self.previous.disabled = self.page==0
         self.next.disabled = self.page==pages-1
@@ -680,7 +680,7 @@ class FXRatesView(discord.ui.View):
         await interaction.response.edit_message(embed=await asyncio.to_thread(self.build_embed),view=self)
 
 class AssetAccountsView(discord.ui.View):
-    """Page NWX and foreign accounts together on the asset summary."""
+    """Page 기준 통화 and foreign accounts together on the asset summary."""
     PAGE_SIZE = 4
 
     def __init__(self,owner,embed,lines,sections=None):
@@ -876,7 +876,7 @@ class InfoPanelView(discord.ui.View):
         inactive = item.get('dividend_is_active') == 0
         status = ' **OFF · 지급 중지**' if inactive else ''
         payment = (f'지급 시 가격의 {percent:g}%/주·좌' if mode == 'percent'
-                   else f"주·좌당 {per_share:,.0f} {item.get('quote_currency', 'NWX')}")
+                   else f"주·좌당 {per_share:,.0f} {item.get('quote_currency') or '—'}")
         return f" · 정기배당{status} {period}마다 {payment}"
 
     def _category_lines(self, category, market_groups=None):
@@ -934,7 +934,7 @@ class InfoPanelView(discord.ui.View):
                                      if details.get('status') == 'subscription' and subscription_end else '')
                 lines.append(
                     f"• **{str(details.get('name') or item['name'])[:70]}** (`{item['code']}`) · **{els_status_text(details)}**\n"
-                    f"  액면 {float(details['face_value']):,.0f} NWX/좌 · 연 쿠폰 {float(details['annual_coupon']):g}% · "
+                    f"  액면 {float(details['face_value']):,.0f} 기준 통화/좌 · 연 쿠폰 {float(details['annual_coupon']):g}% · "
                     f"낙인 {'발생' if details.get('knocked_in') else '미발생'}\n"
                     f"  기초 {underlyings} · 만기 {float(details.get('maturity_days') or 0):g}일 · "
                     f"다음 평가 {next_text} · 상환 {next_level_text} · "
@@ -951,8 +951,8 @@ class InfoPanelView(discord.ui.View):
                     +(f" · 원주 `{r.get('underlying_code')}` · {float(r.get('underlying_per_receipt') or 0):g}주/DR · "
                       f"상장 {r.get('listing_exchange_id') or r.get('exchange_id')}" if category=='depositary_receipt' else '')
                     +(f" · {fund_names.get(r.get('fund_category'), '미분류')}" if category in {'mutual_fund','index_fund'} else '')
-                    +f" · {r['price']:,} {r.get('quote_currency','NWX')} · {r['status']}"
-                    +(f" · 액면 {r['face_value']:,} NWX · 연 {r['annual_rate']:g}% · {r['maturity_days']}일" if category=='treasury_bond' else '')
+                    +f" · {r['price']:,} {r.get('quote_currency') or self.bot.db.base_currency_code()} · {r['status']}"
+                    +(f" · 액면 {r['face_value']:,} 기준 통화 · 연 {r['annual_rate']:g}% · {r['maturity_days']}일" if category=='treasury_bond' else '')
                     +self._dividend_note(r)
                     for r in investments if kind(r) == category]
         if category == "stocks":
@@ -963,11 +963,11 @@ class InfoPanelView(discord.ui.View):
                 if preferred:
                     class_note += (' · 배당 우선' if int(item.get('dividend_priority') or 0) > 0 else '')
                     class_note += ' · 누적형' if item.get('cumulative_dividend') else ' · 비누적형'
-                    class_note += f" · 청산 우선한도 {float(item.get('liquidation_value_per_share') or 0):,.0f} NWX/주"
+                    class_note += f" · 청산 우선한도 {float(item.get('liquidation_value_per_share') or 0):,.0f} 기준 통화/주"
                 price_text = self.bot.market_mgr.format_price(item["price"], item["type"])
-                risk = " · ⚠️ 위험 알림 (100 NWX 이하)" if item["price"] <= 100 else ""
+                risk = " · ⚠️ 위험 알림 (100 기준 통화 이하)" if item["price"] <= 100 else ""
                 lines.append(
-                    f"• **{item['name']}** (`{item['code']}`) — {price_text} {item.get('quote_currency','NWX')} · "
+                    f"• **{item['name']}** (`{item['code']}`) — {price_text} {item.get('quote_currency') or self.bot.db.base_currency_code()} · "
                     f"{item['status']}{class_note}{self._dividend_note(item)}{risk}"
                 )
             return lines
@@ -991,11 +991,11 @@ class InfoPanelView(discord.ui.View):
             lines = []
             for row in self.bot.db.products.get_active_liabilities():
                 limit = self._number(row["loan_limit"])
-                limit_text = "한도 없음" if limit == 0 else f"한도 {limit:,.0f} NWX"
+                limit_text = "한도 없음" if limit == 0 else f"한도 {limit:,.0f} 기준 통화"
                 cycle = self._number(row["repayment_cycle_seconds"])
                 installment = self._number(row["repayment_amount"])
                 repayment_text = (
-                    f" · 정기납부 {installment:,.0f} NWX/{cycle}초"
+                    f" · 정기납부 {installment:,.0f} 기준 통화/{cycle}초"
                     if cycle > 0 and installment > 0 else " · 정기납부 미설정"
                 )
                 amortization_names = {
@@ -1040,7 +1040,7 @@ class InfoPanelView(discord.ui.View):
                 name = product["name"] if product else row["product_code"]
                 lines.append(
                     f"• 통장 **{name}** · 끝번호 {str(row['account_number'])[-4:]} · "
-                    f"잔액 {float(row['balance'] or 0):,.0f} NWX"
+                    f"잔액 {float(row['balance'] or 0):,.0f} 기준 통화"
                 )
 
             positions = self.bot.db.assets.execute(
@@ -1058,11 +1058,11 @@ class InfoPanelView(discord.ui.View):
                     is_stock = self.bot.market_mgr.is_stock_type(asset["type"])
                     unit = "주" if is_stock else "개"
                     price_text = self.bot.market_mgr.format_price(asset["price"], asset["type"])
-                    risk = " · ⚠️ 위험 알림 (100 NWX 이하)" if asset["price"] <= 100 else ""
+                    risk = " · ⚠️ 위험 알림 (100 기준 통화 이하)" if asset["price"] <= 100 else ""
                     lines.append(
                         f"• 보유 **{asset['name']}** (`{row['asset_code']}`) · "
-                        f"{int(row['quantity']):,}{unit} · 주당/단가 {price_text} NWX · "
-                        f"평가액 {value:,.0f} NWX{risk}"
+                        f"{int(row['quantity']):,}{unit} · 주당/단가 {price_text} 기준 통화 · "
+                        f"평가액 {value:,.0f} 기준 통화{risk}"
                     )
 
             try:
@@ -1072,8 +1072,8 @@ class InfoPanelView(discord.ui.View):
             for bond in bond_holdings:
                 lines.append(
                     f"• 국채 **{bond['name']}** (`{bond['product_code']}`) · "
-                    f"{bond['quantity']:,}매 · 시장가 {bond['market_price']:,} NWX/매 · "
-                    f"평가액 {bond['market_value']:,} NWX · "
+                    f"{bond['quantity']:,}매 · 시장가 {bond['market_price']:,} 기준 통화/매 · "
+                    f"평가액 {bond['market_value']:,} 기준 통화 · "
                     f"만기 <t:{bond['maturity_epoch']}:D>"
                 )
 
@@ -1087,7 +1087,7 @@ class InfoPanelView(discord.ui.View):
                 name = product["name"] if product else row["product_code"]
                 lines.append(
                     f"• 대출 **{name}** · 남은 원리금 "
-                    f"{float(row['outstanding_balance'] or 0):,.0f} NWX"
+                    f"{float(row['outstanding_balance'] or 0):,.0f} 기준 통화"
                 )
             return lines
         return []
@@ -1138,7 +1138,7 @@ class InfoPanelView(discord.ui.View):
         )
         embed.set_footer(text=f"{len(lines)}개 · {self.page + 1}/{total_pages} 페이지")
         if self.category == 'forex':
-            embed.description = '1 NWX 기준 외화 금액 · 수수료 제외\n\n' + embed.description
+            embed.description = '1 기준 통화 기준 외화 금액 · 수수료 제외\n\n' + embed.description
             embed.set_footer(text=f"{len(lines)}개 통화 · {self.page + 1}/{total_pages} 페이지 · 페이지 이동 시 최신 환율 조회")
         self.previous_button.disabled = self.page <= 0
         self.next_button.disabled = self.page >= total_pages - 1
@@ -1233,8 +1233,8 @@ class InfoPanelView(discord.ui.View):
             embed.add_field(
                 name=f"{medal} {rank}위 · {row['nickname']}"[:256],
                 value=(
-                    f"총자산 **{row['grand_total']:,} NWX** · "
-                    f"대출 {row['loan_total']:,} NWX · 순자산 {row['net_worth']:,} NWX"
+                    f"총자산 **{row['grand_total']:,} 기준 통화** · "
+                    f"대출 {row['loan_total']:,} 기준 통화 · 순자산 {row['net_worth']:,} 기준 통화"
                 ),
                 inline=False,
             )
@@ -1609,16 +1609,16 @@ class PriceMovementView(discord.ui.View):
         change_text = f"{change:+,.0f}" if integer_prices else f"{change:+,.2f}"
         current_measure = (
             f"현재 지수: **{current_price_text} pt**"
-            if is_exchange_index else f"현재가: **{current_price_text} {asset.get('quote_currency','NWX')}**"
+            if is_exchange_index else f"현재가: **{current_price_text} {asset.get('quote_currency') or self.bot.db.base_currency_code()}**"
         )
         change_measure = (
             f"기간 변동: **{change_text} pt ({change_percent:+.2f}%)**"
-            if is_exchange_index else f"기간 변동: **{change_text} {asset.get('quote_currency','NWX')} ({change_percent:+.2f}%)**"
+            if is_exchange_index else f"기간 변동: **{change_text} {asset.get('quote_currency') or self.bot.db.base_currency_code()} ({change_percent:+.2f}%)**"
         )
         volume_note = " · 체결량은 기능 적용 이후 거래부터 집계"
         risk_warning = (
-            "\n\n⚠️ **위험 알림: 가격이 100 NWX 이하입니다.**"
-            if not is_exchange_index and asset.get('quote_currency','NWX')=='NWX' and current_price <= 100 else ""
+            "\n\n⚠️ **위험 알림: 가격이 100 기준 통화 이하입니다.**"
+            if not is_exchange_index and (asset.get('quote_currency') or self.bot.db.base_currency_code())==self.bot.db.base_currency_code() and current_price <= 100 else ""
         )
         embed = discord.Embed(
             title=(
@@ -1646,7 +1646,7 @@ class PriceMovementView(discord.ui.View):
             embed.title = f"📊 ELS {self.els_code} · {asset['name']}"[:256]
             embed.add_field(
                 name='📜 ELS 발행 조건',
-                value=(f"**{els_status_text(details)}** · 액면 {float(details['face_value']):,.0f} NWX/좌 · "
+                value=(f"**{els_status_text(details)}** · 액면 {float(details['face_value']):,.0f} 기준 통화/좌 · "
                        f"연 쿠폰 {float(details['annual_coupon']):g}%\n"
                        f"낙인 **{barrier}** · 다음 평가 {next_text}\n"
                        "여러 기초자산 중 최초기준가 대비 가장 낮은 비율로 상환을 판단합니다. "
@@ -1776,7 +1776,7 @@ class MyOrdersView(discord.ui.View):
                     label=f"#{order['order_id']} {side} · {order['asset_code']}"[:100],
                     description=(
                         f"잔량 {order['remaining_quantity']:,} · "
-                        f"지정가 {int(order['limit_price']):,} {order.get('quote_currency','NWX')}"
+                        f"지정가 {int(order['limit_price']):,} {order.get('quote_currency') or self.bot.db.base_currency_code()}"
                     )[:100],
                     value=str(order["order_id"]),
                 ))
@@ -1817,8 +1817,8 @@ class MyOrdersView(discord.ui.View):
                 else "주" if self.bot.market_mgr.is_stock_type(asset_type) else "개"
             )
             reserve = (
-                f" · 주문 증거금 {int(order['reserved_cash']):,} NWX" if order.get("order_kind") == "future" and active else
-                f" · 예치 {int(order['reserved_cash']):,} {order.get('quote_currency','NWX')}"
+                f" · 주문 증거금 {int(order['reserved_cash']):,} 기준 통화" if order.get("order_kind") == "future" and active else
+                f" · 예치 {int(order['reserved_cash']):,} {order.get('quote_currency') or self.bot.db.base_currency_code()}"
                 if order["side"] == "buy" and active
                 else (
                     " · 옵션 발행 담보 잠금" if order.get("option_order_type") == "write"
@@ -1831,7 +1831,7 @@ class MyOrdersView(discord.ui.View):
                 f"{order['quantity']:,}{unit}"
                 + (f" · 잔량 {order['remaining_quantity']:,}{unit}" if active else "")
                 + (f" · {order.get('scheduled_reason') or '개장 대기'}" if order['status'] == 'scheduled' else "")
-                + f" · 지정가 {int(order['limit_price']):,} {order.get('quote_currency','NWX')}{reserve}"
+                + f" · 지정가 {int(order['limit_price']):,} {order.get('quote_currency') or self.bot.db.base_currency_code()}{reserve}"
             )
         embed = discord.Embed(
             title="📋 나의 주문 (최근 24시간 · 미체결 포함)",
@@ -1904,9 +1904,9 @@ class AllAssetsView(discord.ui.View):
             embed.add_field(
                 name=f"{nickname[:230]} · `{user_id}`",
                 value=(
-                    f"현금 {info['cash']:,.0f} · 통장 {info['account_total']:,.0f} NWX\n"
-                    f"투자 {investment_total:,} · 총자산 {info['grand_total']:,.0f} NWX\n"
-                    f"대출 {info['loan_total']:,.0f} NWX"
+                    f"현금 {info['cash']:,.0f} · 통장 {info['account_total']:,.0f} 기준 통화\n"
+                    f"투자 {investment_total:,} · 총자산 {info['grand_total']:,.0f} 기준 통화\n"
+                    f"대출 {info['loan_total']:,.0f} 기준 통화"
                 ),
                 inline=False,
             )

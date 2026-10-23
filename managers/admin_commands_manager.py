@@ -1,4 +1,5 @@
 """Validated inline administrator commands; treasury trades retain their own forms."""
+from functions.money import base_currency_code
 import json
 import re
 import shlex
@@ -470,7 +471,7 @@ class AdminCommandsManager:
                     current=row[price_key]
                 else:
                     raise ValueError('가격이 없는 상품입니다. 상품 이율은 $상품수정으로 변경해주세요.')
-                currency_code=str(row.get('quote_currency') or 'NWX')
+                currency_code=str(row.get('quote_currency') or base_currency_code(conn))
                 entered=parse_currency_money(conn,args[2],currency_code,minimum=0)
                 value=self.adjust(float(current),args[1],entered)
                 value=parse_currency_money(conn,value,currency_code,minimum=0)
@@ -486,7 +487,7 @@ class AdminCommandsManager:
                 from managers.market_manager import MarketManager
                 MarketManager(self.db).clear_runtime_targets(args[0],conn=conn)
                 self.control._audit(conn,actor,command,{'code':args[0],'operation':args[1],'before':current,'after':value})
-                return f'✅ {args[0]} 가격 {current:,} → {value:,} {row.get("quote_currency","NWX")}'
+                return f'✅ {args[0]} 가격 {current:,} → {value:,} {row.get("quote_currency",base_currency_code(conn))}'
 
     @staticmethod
     def result_text(result):
@@ -651,9 +652,9 @@ class AdminCommandsManager:
         from fractions import Fraction
         ratio=Decimal(raw_ratio)
         if not ratio.is_finite() or ratio<=0:raise ValueError('비율은 0보다 큰 유한한 값이어야 합니다.')
-        # Keep the inverse exact: 1 NWX = 3 AAA must mean 1 AAA = 1/3 NWX, not 0.333…
+        # Keep the inverse exact: 1 기준 통화 = 3 AAA must mean 1 AAA = 1/3 기준 통화, not 0.333…
         exact=Fraction(ratio)
-        if a == 'NWX':
+        if a == base_currency_code(conn):
             a,b,exact = b,a,1/exact
             ratio=Decimal(exact.numerator)/Decimal(exact.denominator)
         ar=self.bot.currency_mgr._rate(conn,a);br=self.bot.currency_mgr._rate(conn,b)
@@ -673,7 +674,7 @@ class AdminCommandsManager:
         from managers.market_manager import MarketManager
         MarketManager(self.db).clear_runtime_targets(row['asset_code'],conn=conn)
         self.control._audit(conn,actor,'currency.cross_rate',{'a':a,'b':b,'ratio':str(ratio),'before':str(ar),'after':target})
-        return f'✅ 1 {a} = {Decimal(target)/br:.12g} {b} · {a} 시세 {target:,} NWX (정수 호가 반올림)'
+        return f'✅ 1 {a} = {Decimal(target)/br:.12g} {b} · {a} 시세 {target:,} 기준 통화 (정수 호가 반올림)'
 
     def lottery(self,actor,command,args):
         with self.db.atomic() as conn:

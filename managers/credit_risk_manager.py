@@ -1,4 +1,5 @@
 """Lightweight forward-looking loan loss estimates for the bank simulation."""
+from functions.money import base_currency_code
 
 from datetime import datetime, timezone
 import hashlib
@@ -22,7 +23,7 @@ class CreditRiskManager:
         """Read loan exposure from its denomination-specific minor-unit field."""
         if "outstanding_balance_minor_units" not in loan.keys():
             return max(0.0, float(loan["outstanding_balance"] or 0))
-        places = currency_precision(conn, loan["quote_currency"] or "NWX")
+        places = currency_precision(conn, loan["quote_currency"] or base_currency_code(conn))
         return max(0.0, int(loan["outstanding_balance_minor_units"] or 0)
                    / (10 ** places))
 
@@ -62,7 +63,7 @@ class CreditRiskManager:
         if (not loan or loan["status"] != "defaulted"
                 or loan["collection_status"] != "defaulted"):
             raise ValueError("부도 상태인 대출만 상각할 수 있습니다.")
-        currency = str(loan["quote_currency"] or "NWX").upper()
+        currency = str(loan["quote_currency"] or base_currency_code(conn)).upper()
         places = currency_precision(conn, currency)
         gross = (int(loan["outstanding_balance_minor_units"] or 0)
                  if "outstanding_balance_minor_units" in loan.keys()
@@ -153,7 +154,7 @@ class CreditRiskManager:
             WHERE l.loan_id=?""", (loan_id,)).fetchone()
         if not loan or loan["status"] != "charged_off":
             raise ValueError("상각 완료된 대출만 회수할 수 있습니다.")
-        currency = str(loan["quote_currency"] or "NWX").upper()
+        currency = str(loan["quote_currency"] or base_currency_code(conn)).upper()
         places = currency_precision(conn, currency)
         amount_units = to_minor_units(amount, places)
         remaining = (int(loan["charged_off_balance_minor_units"] or 0)
@@ -249,7 +250,7 @@ class CreditRiskManager:
         dsr = ratio(underwriting_dsr, "공동차주 DSR")
         if not isinstance(active, bool):
             raise ValueError("지원 상태는 boolean이어야 합니다.")
-        currency = str(quote_currency or loan["quote_currency"] or "NWX").strip().upper()
+        currency = str(quote_currency or loan["quote_currency"] or base_currency_code(conn)).strip().upper()
         if kind == "co_borrower" and (share <= 0 or float(guarantee_limit or 0) != 0):
             raise ValueError("공동차주는 양수의 익스포저 비율만 설정할 수 있습니다.")
         if kind == "guarantor" and share != 0:
@@ -396,7 +397,7 @@ class CreditRiskManager:
             raise ValueError("신용환산율은 0~10000bp 정수여야 합니다.")
         if not isinstance(active, bool):
             raise ValueError("약정 상태는 boolean이어야 합니다.")
-        currency = str(loan["quote_currency"] or "NWX").upper()
+        currency = str(loan["quote_currency"] or base_currency_code(conn)).upper()
         places = currency_precision(conn, currency)
         limit_units = to_minor_units(committed_limit, places)
         outstanding_units = to_minor_units(loan["outstanding_balance"], places)
@@ -999,7 +1000,7 @@ class CreditRiskManager:
         ead = cls._outstanding_balance(conn, loan)
         if ead <= 0:
             return 0.0
-        currency = str(loan["quote_currency"] or "NWX").upper()
+        currency = str(loan["quote_currency"] or base_currency_code(conn)).upper()
         cash_collateral = max(
             0.0,
             float(loan["collateral_amount"] or 0)
@@ -1078,7 +1079,7 @@ class CreditRiskManager:
         ).fetchall()
         totals_by_currency = {}
         for loan in loans:
-            currency = str(loan["quote_currency"] or "NWX")
+            currency = str(loan["quote_currency"] or base_currency_code(conn))
             ead = round_currency(
                 conn, max(0.0, float(loan["outstanding_balance"] or 0)), currency
             )

@@ -11,6 +11,7 @@ offerings and these trades all move the same money. Changes that bypass the
 corporate-action journal are booked to the company's financial statements by
 :meth:`CompanyAccounts.reconcile`.
 """
+from functions.money import base_currency_code
 from functions.time_utils import MAX_SUPPORTED_EPOCH
 
 PREFIX = "company:"
@@ -36,10 +37,10 @@ class CompanyAccounts:
         company = conn.execute("SELECT * FROM company WHERE company_code=? AND status='active'", (code,)).fetchone()
         if not company or company["share_class"] == "preferred":
             raise ValueError("거래 중인 보통주 법인 코드를 입력해주세요. 우선주는 소속 법인의 자본을 사용합니다.")
-        # The issuer's cash is NWX, so the account lives in an NWX country:
-        # the listing country when it uses NWX, otherwise 낙원.
+        # The issuer's cash is 기준 통화, so the account lives in an 기준 통화 country:
+        # the listing country when it uses 기준 통화, otherwise 낙원.
         listing = conn.execute("SELECT e.nationality FROM market_exchanges e JOIN country_currencies c "
-                               "ON c.nationality=e.nationality WHERE e.exchange_id=? AND c.currency_code='NWX'",
+                               "ON c.nationality=e.nationality WHERE e.exchange_id=? AND c.currency_code=base_currency_code()",
                                (company["exchange_id"],)).fetchone()
         nationality = listing[0] if listing else "낙원"
         conn.execute("INSERT OR IGNORE INTO issuer_cash_accounts(company_code) VALUES (?)", (code,))
@@ -54,14 +55,14 @@ class CompanyAccounts:
 
     @staticmethod
     def _nwx(conn, amount, currency):
-        """A native amount in ``currency`` valued in whole NWX."""
+        """A native amount in ``currency`` valued in whole 기준 통화."""
         from managers.currency_manager import CurrencyManager, SCALE
-        currency = str(currency or "NWX").upper()
-        if currency == "NWX" or not amount:
+        currency = str(currency or base_currency_code(conn)).upper()
+        if currency == base_currency_code(conn) or not amount:
             return float(amount or 0)
         units = int(round(float(amount) * SCALE))
         sign = -1 if units < 0 else 1
-        return sign * CurrencyManager.convert(conn, abs(units), currency, "NWX") / SCALE
+        return sign * CurrencyManager.convert(conn, abs(units), currency, base_currency_code(conn)) / SCALE
 
     @staticmethod
     def _currency_of(conn, code):
@@ -71,11 +72,11 @@ class CompanyAccounts:
             "SELECT quote_currency FROM market_assets WHERE code=? UNION ALL "
             "SELECT quote_currency FROM treasury_bond_products WHERE product_code=? LIMIT 1",
             (code, code, code, code)).fetchone()
-        return (row[0] if row else None) or "NWX"
+        return (row[0] if row else None) or base_currency_code(conn)
 
     @classmethod
     def positions(cls, conn, account, issuer):
-        """Cost basis of what the account holds and owes, in NWX.
+        """Cost basis of what the account holds and owes, in 기준 통화.
 
         investments: securities at cost, deposits at balance, cash locked in orders
         and collateral; treasury: the company's own shares at cost; debt: loans.
@@ -114,7 +115,7 @@ class CompanyAccounts:
         from managers.financial_manager import FinancialManager
         issuer = FinancialManager.ensure(conn, code)
         entity = FinancialManager.entity(conn, issuer)
-        if entity["currency"] != "NWX":
+        if entity["currency"] != base_currency_code(conn):
             return 0
         account = conn.execute("SELECT user_id FROM company_accounts WHERE company_code=?", (issuer,)).fetchone()
         scale = 10 ** int(entity["decimal_places"])

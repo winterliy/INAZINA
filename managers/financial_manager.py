@@ -1,4 +1,5 @@
 """Company journals and reports. No share-price-derived fictional operating income."""
+from functions.money import base_currency_code
 import json
 import time
 import uuid
@@ -130,33 +131,33 @@ class FinancialManager:
         company = cls.resolve(conn,code)
         issuer = company['company_code']
         existing = cls.entity(conn,issuer)
-        currency = company.get('quote_currency') or 'NWX'
+        currency = company.get('quote_currency') or base_currency_code(conn)
         if existing:
             if existing['currency']!=currency:
                 raise ValueError('회계 원장 개설 후 기준통화를 변경할 수 없습니다.')
             return issuer
         precision = conn.execute('SELECT decimal_places FROM currencies WHERE code=?', (currency,)).fetchone()
-        places = int(precision[0]) if precision else (0 if currency=='NWX' else 6)
+        places = int(precision[0]) if precision else (0 if currency==base_currency_code(conn) else 6)
         conn.execute('INSERT INTO financial_entities VALUES (?,?,?,?)', (issuer,currency,places,now))
         cash = conn.execute('SELECT * FROM issuer_cash_accounts WHERE company_code=?', (issuer,)).fetchone()
         lines = []
         if cash:
-            lines += [(k,cls.converted(conn,cash[col],'NWX',currency,places)) for k,col in [('cash','balance'),('restricted_cash','locked_amount')]]
+            lines += [(k,cls.converted(conn,cash[col],base_currency_code(conn),currency,places)) for k,col in [('cash','balance'),('restricted_cash','locked_amount')]]
         shares = conn.execute('SELECT capital,share_class,quote_currency FROM company WHERE company_code=? OR parent_company_code=?', (issuer,issuer)).fetchall()
         for share in shares:
-            lines.append(('preferred_capital' if share['share_class']=='preferred' else 'common_capital', -cls.converted(conn,share['capital'] or 0,share['quote_currency'] or 'NWX',currency,places)))
-        debt_rows=conn.execute("""SELECT COALESCE(p.quote_currency,'NWX') currency,SUM(a.quantity*p.face_value) amount
+            lines.append(('preferred_capital' if share['share_class']=='preferred' else 'common_capital', -cls.converted(conn,share['capital'] or 0,share['quote_currency'] or base_currency_code(conn),currency,places)))
+        debt_rows=conn.execute("""SELECT COALESCE(p.quote_currency,base_currency_code()) currency,SUM(a.quantity*p.face_value) amount
             FROM investment p JOIN user_assets a ON a.asset_code=p.product_code
             WHERE p.product_type='corporate_bond' AND p.status IN ('active','defaulted')
             AND p.issuer_code IN (SELECT company_code FROM company WHERE company_code=? OR parent_company_code=?)
-            GROUP BY COALESCE(p.quote_currency,'NWX')""",(issuer,issuer))
+            GROUP BY COALESCE(p.quote_currency,base_currency_code())""",(issuer,issuer))
         for row in debt_rows:lines.append(('bonds',-cls.converted(conn,row['amount'],row['currency'],currency,places)))
         arrears=conn.execute("""SELECT quote_currency currency,SUM(gross_amount-paid_amount) amount
             FROM preferred_dividend_claims WHERE issuer_code=? AND funding_source='issuer'
             AND status IN ('unpaid','partial') GROUP BY quote_currency""",(issuer,))
         for row in arrears:lines.append(('dividend_payable',-cls.converted(conn,row['amount'],row['currency'],currency,places)))
         els=conn.execute('SELECT COALESCE(SUM(principal_amount),0) FROM els_products WHERE issuer_code=?',(issuer,)).fetchone()[0]
-        lines.append(('els_liability',-cls.converted(conn,els,'NWX',currency,places)))
+        lines.append(('els_liability',-cls.converted(conn,els,base_currency_code(conn),currency,places)))
         lines.append(('opening_adjustment',-sum(v for _,v in lines)))
         cls.record_shares(conn,issuer,now)
         cls.post(conn,issuer,'opening','기초 잔액 이관: 미확인 과거 자산·손익은 자본조정에 표시',lines,'opening',now)
@@ -249,7 +250,7 @@ class FinancialManager:
             capex+=min(max(0,-int(row['cash'])),max(0,int(row['assets'])))
         cash_difference = b.get('cash',0)-opening.get('cash',0)-sum(flows.values())
         actual = cls.cash_state(conn,code)
-        cash_matches = None if ent['currency']!='NWX' or period!=month() else b.get('cash',0)==actual[0]*10**ent['decimal_places']
+        cash_matches = None if ent['currency']!=base_currency_code(conn) or period!=month() else b.get('cash',0)==actual[0]*10**ent['decimal_places']
         count = conn.execute("SELECT COUNT(*) FROM financial_entries WHERE company_code=? AND period=? AND status='posted'",(code,period)).fetchone()[0]
         report = dict(code=code,name=company['name'],currency=ent['currency'],places=ent['decimal_places'],period=period,
             opened_epoch=ent['opened_epoch'],balances=b,opening=opening,changes=changes,summary=s,previous=previous,
@@ -263,7 +264,7 @@ class FinancialManager:
                    '총자본은 총자산과 동일하게 정의합니다. 평균 잔액이 없는 최초 월의 회전율·ROA·ROE는 미산출입니다.',
                    'EPS는 우선주 확정배당 차감 후 보통주 시간가중 유통주식수로 계산합니다. 국고 보유분 제외, 담보주식 포함. 완전한 기간 이력 없으면 미산출. FFO/AFFO는 부동산 모델 미지원',
                    '기타포괄손익 미지원: 총포괄손익은 당기순이익과 같습니다.',
-                   '기존 NWX 법인현금은 거래 시 환율로 회사 통화에 환산합니다. 기말환산·외화 현금대사는 미지원입니다.',
+                   '기존 기준 통화 법인현금은 거래 시 환율로 회사 통화에 환산합니다. 기말환산·외화 현금대사는 미지원입니다.',
                    '회사채 이자는 기존 만기 지급 시점에 인식합니다. 발행차금은 만기 일괄 상각합니다.'])
         report['consolidated'] = cls.consolidate(conn, code, period, report) if consolidate else None
         return report
@@ -301,8 +302,8 @@ class FinancialManager:
         from functions.money import round_currency
         for row in dr_positions:
             underlying_code = row["underlying_code"]
-            underlying_currency = str(row["underlying_currency"] or "NWX")
-            dr_currency = str(row["dr_currency"] or "NWX")
+            underlying_currency = str(row["underlying_currency"] or base_currency_code(conn))
+            dr_currency = str(row["dr_currency"] or base_currency_code(conn))
             quote = CurrencyManager.quote(conn, dr_currency, underlying_currency)
             dr_cost = (Decimal(str(row["dr_cost"] or 0)) * Decimal(quote.numerator)
                        / Decimal(quote.denominator))
@@ -451,7 +452,7 @@ class FinancialManager:
         """Intra-group flows of the period and cross-holdings, in the parent's minor units."""
         start, end = period_bounds(period)
         marks = ','.join('?' for _ in group)
-        factor = cls._translation(conn, 'NWX', currency, 0, places)
+        factor = cls._translation(conn, base_currency_code(conn), currency, 0, places)
         rows = conn.execute(
             f"SELECT kind,COALESCE(SUM(gross_nwx),0) amount FROM company_income_log WHERE company_code IN ({marks}) "
             f"AND counterparty IN ({marks}) AND recorded_epoch>=? AND recorded_epoch<? GROUP BY kind",
@@ -528,7 +529,7 @@ class FinancialManager:
             if any(k in protected for k,_ in entries):raise ValueError('발행자본·회사채·배당채무·기초잔액·예치금은 자동 연동 계정입니다. 원본 관리 명령어를 이용해주세요.')
             cash_delta=sum(v for k,v in entries if k=='cash')
             if cash_delta:
-                if self.entity(conn,issuer)['currency']!='NWX':raise ValueError('외화 법인현금 직접 입력은 아직 지원하지 않습니다. 외상거래 계정을 이용해주세요.')
+                if self.entity(conn,issuer)['currency']!=base_currency_code(conn):raise ValueError('외화 법인현금 직접 입력은 아직 지원하지 않습니다. 외상거래 계정을 이용해주세요.')
                 if flow not in {'operating','investing','financing'}:raise ValueError('현금 분개는 현금흐름 구분 operating/investing/financing이 필요합니다.')
                 before=self.cash_state(conn,issuer)[0]
                 if not 0<=before+cash_delta<=2**53-1:raise ValueError('법인 현금 잔액 또는 한도를 확인해주세요.')

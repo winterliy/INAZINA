@@ -64,6 +64,9 @@ class DatabaseManager:
             # initialization. SQLite decides internally when analysis is needed.
             self.users.execute("PRAGMA optimize")
 
+    def base_currency_code(self):
+        return self.currency.base_currency_code()
+
     def close(self):
         for database in (self.users, self.assets, self.products, self.companies,
                          self.accounts, self.pot, self.tax, self.system, self.currency,self.lottery,

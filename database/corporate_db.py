@@ -78,7 +78,7 @@ class CorporateDB(DBManager):
             gross_amount INTEGER NOT NULL CHECK(gross_amount > 0),
             paid_amount INTEGER NOT NULL DEFAULT 0
                 CHECK(paid_amount >= 0 AND paid_amount <= gross_amount),
-            quote_currency TEXT NOT NULL DEFAULT 'NWX',
+            quote_currency TEXT,
             funding_source TEXT NOT NULL CHECK(funding_source IN ('treasury','issuer')),
             due_epoch INTEGER NOT NULL, created_epoch INTEGER NOT NULL,
             status TEXT NOT NULL DEFAULT 'unpaid'

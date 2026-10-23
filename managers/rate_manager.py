@@ -1,4 +1,5 @@
 """Game policy rates and nationality-specific legal interest-rate caps."""
+from functions.money import base_currency_code
 
 import math
 import json
@@ -280,7 +281,7 @@ class RateManager:
         rows = conn.execute(
             "SELECT nationality, legal_max_rate FROM country_currencies "
             "WHERE currency_code=? ORDER BY nationality",
-            (str(currency_code or "NWX").upper(),),
+            (str(currency_code or base_currency_code(conn)).upper(),),
         ).fetchall()
         if rows:
             row = min(rows, key=lambda item: float(item["legal_max_rate"]))
@@ -289,7 +290,7 @@ class RateManager:
         return fallback, "기본"
 
     @staticmethod
-    def legal_max_for_exchange(conn, exchange_id, quote_currency="NWX"):
+    def legal_max_for_exchange(conn, exchange_id, quote_currency=None):
         row = conn.execute(
             "SELECT c.nationality, c.legal_max_rate FROM market_exchanges e "
             "JOIN country_currencies c ON c.nationality=e.nationality "
@@ -298,7 +299,9 @@ class RateManager:
         ).fetchone()
         if row:
             return float(row["legal_max_rate"]), row["nationality"]
-        return RateManager.legal_max_for_currency(conn, quote_currency)
+        return RateManager.legal_max_for_currency(
+            conn, quote_currency or base_currency_code(conn)
+        )
 
     @staticmethod
     def require_legal_rate(conn, annual_rate, *, nationality=None,
@@ -314,11 +317,11 @@ class RateManager:
             country = str(nationality)
         elif exchange_id is not None:
             cap, country = RateManager.legal_max_for_exchange(
-                conn, exchange_id, currency_code or "NWX"
+                conn, exchange_id, currency_code or base_currency_code(conn)
             )
         else:
             cap, country = RateManager.legal_max_for_currency(
-                conn, currency_code or "NWX"
+                conn, currency_code or base_currency_code(conn)
             )
         if rate > cap:
             raise ValueError(
@@ -458,7 +461,7 @@ class RateManager:
             "SELECT currency_code FROM country_currencies WHERE nationality=?", (country,)
         ).fetchone()
         from functions.money import currency_precision, from_minor_units
-        base_currency = str(currency_row["currency_code"] if currency_row else "NWX").upper()
+        base_currency = str(currency_row["currency_code"] if currency_row else base_currency_code(conn)).upper()
         capital_places = currency_precision(conn, base_currency)
         capital_units = sum(max(0, int(row["equity_capital_minor_units"] or 0)
                                 +int(row["retained_earnings_minor_units"] or 0))
@@ -755,16 +758,16 @@ class RateManager:
 
         Contract balances remain denominated and rounded in their own product
         currency.  Only this consolidated prudential view translates them, so
-        unlike the old implementation it never adds (for example) USD and NWX
+        unlike the old implementation it never adds (for example) USD and 기준 통화
         native amounts as if they were the same unit.
         """
         issuer = str(issuer or "")
         institution = conn.execute(
-            "SELECT COALESCE(c.currency_code,'NWX') currency_code "
+            "SELECT COALESCE(c.currency_code,base_currency_code()) currency_code "
             "FROM financial_institutions f LEFT JOIN country_currencies c "
             "ON c.nationality=f.nationality WHERE f.issuer=?", (issuer,)
         ).fetchone()
-        base_currency = str(institution["currency_code"] if institution else "NWX")
+        base_currency = str(institution["currency_code"] if institution else base_currency_code(conn))
 
         deposit_rows = conn.execute(
             "SELECT a.quote_currency,"
@@ -803,7 +806,7 @@ class RateManager:
             total = 0.0
             for row in rows:
                 native = max(0.0, float(row["amount"] or 0))
-                currency = str(row["quote_currency"] or "NWX")
+                currency = str(row["quote_currency"] or base_currency_code(conn))
                 if currency == base_currency:
                     total += native
                 else:
@@ -834,11 +837,11 @@ class RateManager:
             raise ValueError("financial_institution_not_found")
         if not base_currency:
             row = conn.execute(
-                "SELECT COALESCE(c.currency_code,'NWX') currency_code FROM "
+                "SELECT COALESCE(c.currency_code,base_currency_code()) currency_code FROM "
                 "financial_institutions f LEFT JOIN country_currencies c "
                 "ON c.nationality=f.nationality WHERE f.issuer=?", (issuer,),
             ).fetchone()
-            base_currency = str(row["currency_code"] if row else "NWX")
+            base_currency = str(row["currency_code"] if row else base_currency_code(conn))
         loans = conn.execute(
             "SELECT l.loan_id,l.user_id,l.outstanding_balance,l.quote_currency,l.status,"
             "l.collateral_amount,l.collateral_released,l.collateral_seized,l.current_ltv,"
@@ -857,7 +860,7 @@ class RateManager:
         native_by_weight = {key: {} for key in components}
         native_cash_collateral = {}
         for loan in loans:
-            currency = str(loan["quote_currency"] or "NWX")
+            currency = str(loan["quote_currency"] or base_currency_code(conn))
             ead = round_currency(
                 conn, max(0.0, float(loan["outstanding_balance"] or 0)), currency
             )
@@ -930,11 +933,11 @@ class RateManager:
             raise ValueError("financial_institution_not_found")
         epoch = RateManager._validated_epoch(now, "invalid_fx_stress_epoch")
         row = conn.execute(
-            "SELECT COALESCE(c.currency_code,'NWX') currency_code FROM "
+            "SELECT COALESCE(c.currency_code,base_currency_code()) currency_code FROM "
             "financial_institutions f LEFT JOIN country_currencies c "
             "ON c.nationality=f.nationality WHERE f.issuer=?", (issuer,),
         ).fetchone()
-        base = str(row["currency_code"] if row else "NWX")
+        base = str(row["currency_code"] if row else base_currency_code(conn))
         exposure = {}
         for item in conn.execute(
             "SELECT currency,side,SUM(amount) amount FROM ("
@@ -951,7 +954,7 @@ class RateManager:
             "WHERE p.issuer=? AND l.status IN ('active','defaulted') GROUP BY l.quote_currency) "
             "GROUP BY currency,side", (issuer, issuer, issuer),
         ).fetchall():
-            currency = str(item["currency"] or "NWX")
+            currency = str(item["currency"] or base_currency_code(conn))
             exposure.setdefault(currency, {"assets": 0.0, "liabilities": 0.0})
             exposure[currency]["assets" if item["side"] == "asset" else "liabilities"] = float(item["amount"] or 0)
 
@@ -1025,7 +1028,7 @@ class RateManager:
             opened = conn.execute("SELECT CAST(strftime('%s',?) AS REAL)",
                                   (row["created_at"],)).fetchone()[0]
             maturity = float(opened or epoch) + max(0, int(row["maturity_days"] or 0)) * 86400
-            currency = str(row["quote_currency"] or "NWX")
+            currency = str(row["quote_currency"] or base_currency_code(conn))
             result.setdefault(currency, {name: {"inflows": 0.0, "outflows": 0.0} for name in bucket_names})
             result[currency][bucket_for(maturity)]["outflows"] += amount
             deposit_totals[currency] = deposit_totals.get(currency, 0.0) + amount
@@ -1050,7 +1053,7 @@ class RateManager:
             schedules_by_loan.setdefault(payment["loan_id"], []).append(payment)
         for row in loans:
             amount = float(row["outstanding_balance"] or 0)
-            currency = str(row["quote_currency"] or "NWX")
+            currency = str(row["quote_currency"] or base_currency_code(conn))
             result.setdefault(currency, {name: {"inflows": 0.0, "outflows": 0.0} for name in bucket_names})
             schedule = schedules_by_loan.get(row["loan_id"], [])
             scheduled_principal = 0.0
@@ -1253,7 +1256,7 @@ class RateManager:
         shock_bps = (-200, -100, 100, 200)
 
         def add(currency, side, amount, maturity, reset, current_rate, floor, cap):
-            currency = str(currency or "NWX")
+            currency = str(currency or base_currency_code(conn))
             maturity = float(maturity) if maturity is not None else horizon
             reset = max(epoch, float(reset)) if reset is not None else epoch
             days = max(0.0, min(horizon, maturity) - reset) / 86400
@@ -1338,7 +1341,7 @@ class RateManager:
         counts = {}
 
         def bucket(currency):
-            currency = str(currency or "NWX")
+            currency = str(currency or base_currency_code(conn))
             exposure.setdefault(currency, {"assetDurationAmountYears": 0.0,
                                            "liabilityDurationAmountYears": 0.0,
                                            "assetConvexityAmountYears2": 0.0,
@@ -1553,7 +1556,7 @@ class RateManager:
         ).fetchone()
         base_currency = str(
             institution["currency_code"] if institution and institution["currency_code"]
-            else "NWX"
+            else base_currency_code(conn)
         )
         if institution and institution["retained_earnings_currency_code"] \
                 and str(institution["retained_earnings_currency_code"]).upper() != base_currency.upper():

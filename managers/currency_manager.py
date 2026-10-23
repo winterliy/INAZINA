@@ -1,4 +1,5 @@
 """Nationality-relative cash and account-backed foreign currency balances."""
+from functions.money import base_currency_code
 from fractions import Fraction
 from contextlib import nullcontext
 from decimal import Decimal
@@ -10,6 +11,23 @@ SCALE = 1_000_000
 MAX_UNITS = 2**63 - 1
 
 class CurrencyManager:
+    @staticmethod
+    def base_currency(conn):
+        return base_currency_code(conn)
+
+    @staticmethod
+    def set_base_currency(conn, currency_code):
+        currency = str(currency_code or "").strip().upper()
+        row = conn.execute("SELECT decimal_places FROM currencies WHERE code=? AND status='active'",
+                           (currency,)).fetchone()
+        if not row:
+            raise ValueError("활성 기본 통화를 선택해주세요.")
+        if int(row[0]) != 0:
+            raise ValueError("지갑 기본 잔액의 소수 정밀도 이관 전에는 0자리 통화만 기본 통화로 지정할 수 있습니다.")
+        conn.execute("UPDATE currency_system_settings SET base_currency_code=?,updated_epoch=? "
+                     "WHERE singleton_id=1", (currency, int(time.time())))
+        return currency
+
     @staticmethod
     def treasury_id(conn, nationality):
         """Return the dedicated treasury account for one federation country."""
@@ -122,16 +140,15 @@ class CurrencyManager:
     def home(conn, user_id):
         from database.fund_accounting import account
         if account(conn, user_id):
-            return 'NWX'
+            return base_currency_code(conn)
         user = conn.execute('SELECT nationality FROM users WHERE user_id=?', (str(user_id),)).fetchone()
         if not user:
             raise ValueError('등록되지 않은 사용자입니다.')
         row = conn.execute("SELECT n.currency_code FROM country_currencies n JOIN currencies c ON c.code=n.currency_code WHERE nationality=? AND c.status='active'", (user['nationality'],)).fetchone()
         if row:
             return row[0]
-        # Existing citizens with no country mapping retain the legacy default.
-        default = conn.execute("SELECT value FROM settings WHERE key='default_currency'").fetchone()
-        return default[0] if default else 'NWX'
+        # Unmapped legacy citizens inherit the configured simulation base.
+        return base_currency_code(conn)
 
     @classmethod
     def rate_fraction(cls, conn, code):
@@ -142,7 +159,7 @@ class CurrencyManager:
             value = Fraction(str(row['reference_rate']))
         else:
             asset = conn.execute("SELECT price FROM market_assets WHERE code=? AND status='active'", (row['asset_code'],)).fetchone()
-            if code == 'NWX' and not asset:
+            if code == base_currency_code(conn) and not asset:
                 value = Fraction(1)
             elif not asset:
                 raise ValueError(f'{code} 환율을 조회할 수 없습니다.')
@@ -169,7 +186,7 @@ class CurrencyManager:
         if not row:raise ValueError(f'활성 통화를 확인해주세요: {code}')
         places=int(row[0])
         if not 0<=places<=2:raise ValueError('통화 소수 자릿수는 0~2로 설정해주세요.')
-        if code=='NWX' and places!=0:raise ValueError('기존 NWX 현금은 정수 단위로 설정해주세요.')
+        if code==base_currency_code(conn) and places!=0:raise ValueError('기존 기준 통화 현금은 정수 단위로 설정해주세요.')
         return places
 
     @classmethod
@@ -180,7 +197,7 @@ class CurrencyManager:
 
     @classmethod
     def exchange_amount(cls,conn,units,source,target,fee_nwx=0):
-        value=units*cls.quote(conn,source,target)-fee_nwx*SCALE*cls.quote(conn,'NWX',target)
+        value=units*cls.quote(conn,source,target)-fee_nwx*SCALE*cls.quote(conn,base_currency_code(conn),target)
         output=value.numerator//value.denominator
         quantum=10**(6-cls.precision(conn,target))
         output=output//quantum*quantum
@@ -188,15 +205,15 @@ class CurrencyManager:
 
     @classmethod
     def fee(cls,conn,units,source,percent):
-        value=units*cls.quote(conn,source,'NWX')*Fraction(str(percent))/(SCALE*100)
+        value=units*cls.quote(conn,source,base_currency_code(conn))*Fraction(str(percent))/(SCALE*100)
         return -(-value.numerator//value.denominator)
 
     @classmethod
     def convert(cls, conn, units, source, target):
         output=cls.exchange_amount(conn,units,source,target)
-        if target == 'NWX':  # Legacy cash has whole-unit precision.
+        if target == base_currency_code(conn):  # Legacy cash has whole-unit precision.
             output = output // SCALE * SCALE
-        limit=(2**53-1)*SCALE if target=='NWX' else MAX_UNITS
+        limit=(2**53-1)*SCALE if target==base_currency_code(conn) else MAX_UNITS
         if not 0 <= output <= limit:
             raise ValueError('환산 금액이 저장 한도를 초과했습니다.')
         return output
@@ -307,11 +324,11 @@ class CurrencyManager:
 
     @classmethod
     def credit_treasury_fee(cls, conn, user_id, fee_nwx):
-        """Exchange fees (quoted in NWX) go to the user's nationality treasury, in its currency."""
+        """Exchange fees (quoted in 기준 통화) go to the user's nationality treasury, in its currency."""
         if not fee_nwx:
             return None
         treasury = cls.user_treasury_id(conn, user_id)
-        cls.treasury_receive(conn, treasury, 'NWX', int(fee_nwx) * SCALE)
+        cls.treasury_receive(conn, treasury, base_currency_code(conn), int(fee_nwx) * SCALE)
         return treasury
 
     @classmethod
@@ -373,8 +390,7 @@ class CurrencyManager:
         mapping = conn.execute("SELECT n.currency_code FROM country_currencies n JOIN currencies c ON c.code=n.currency_code WHERE nationality=? AND c.status='active'",(nationality,)).fetchone()
         if not mapping:
             raise ValueError('등록 국가의 활성 통화를 먼저 설정해주세요.')
-        default = conn.execute("SELECT value FROM settings WHERE key='default_currency'").fetchone()
-        source = default[0] if default else 'NWX'
+        source = base_currency_code(conn)
         home=mapping[0]
         grant=cls.convert(conn,1_000_000*SCALE,source,home)
         if grant <= 0:
@@ -447,7 +463,7 @@ class CurrencyReadSnapshot:
         if code not in self._rates:
             row = self.row(code)
             raw = row['reference_rate'] if row['reference_rate'] is not None else row['asset_price']
-            if raw is None and code == 'NWX':
+            if raw is None and code == base_currency_code(self.conn):
                 raw = 1
             elif raw is None:
                 raise ValueError(f'{code} 환율을 조회할 수 없습니다.')
@@ -462,8 +478,8 @@ class CurrencyReadSnapshot:
         return self._rates[code]
 
     def rate_nwx(self, code):
-        # Keep the same Decimal rounding order as CurrencyExchangeManager._rate.
-        source, target = self.rate_fraction(code), self.rate_fraction('NWX')
+        # Preserve the legacy method name while valuing against the configured base.
+        source, target = self.rate_fraction(code), self.rate_fraction(base_currency_code(self.conn))
         value = ((Decimal(source.numerator) / Decimal(source.denominator)) /
                  (Decimal(target.numerator) / Decimal(target.denominator)))
         return int(value) if value == value.to_integral_value() else value
@@ -472,15 +488,15 @@ class CurrencyReadSnapshot:
         places = int(self.row(code)['decimal_places'])
         if not 0 <= places <= 6:
             raise ValueError('통화 소수 자릿수는 0~6으로 설정해주세요.')
-        if code == 'NWX' and places != 0:
-            raise ValueError('기존 NWX 현금은 정수 단위로 설정해주세요.')
+        if code == base_currency_code(self.conn) and places != 0:
+            raise ValueError('기본 통화 현금은 정수 단위로 설정해주세요.')
         return places
 
     def convert(self, units, source, target):
         value = units * self.rate_fraction(source) / self.rate_fraction(target)
         quantum = 10 ** (6 - self.precision(target))
         output = (value.numerator // value.denominator) // quantum * quantum
-        limit = (2**53 - 1) * SCALE if target == 'NWX' else MAX_UNITS
+        limit = (2**53 - 1) * SCALE if target == base_currency_code(self.conn) else MAX_UNITS
         if not 0 <= output <= limit:
             raise ValueError('환산 금액이 저장 한도를 초과했습니다.')
         return output

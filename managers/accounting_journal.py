@@ -4,6 +4,7 @@ Native subledgers keep their existing public schemas. This journal records the
 same posting in product-currency minor units, with explicit source-account
 mapping and a stable idempotency key, in the caller's SQLite transaction.
 """
+from functions.money import base_currency_code
 
 import hashlib
 import json
@@ -374,7 +375,7 @@ class AccountingJournal:
             fund_owner = conn.execute("SELECT product_code FROM fund_accounts WHERE owner_id=?",
                                       (str(user_id),)).fetchone()
             if fund_owner:
-                if currency != "NWX" or fund_watermark is None:
+                if currency != base_currency_code(conn) or fund_watermark is None:
                     raise ValueError("펀드 국채 지급의 현금 원장 기준점이 없습니다.")
                 fund_entry = conn.execute("""SELECT entry_id FROM fund_cash_ledger
                     WHERE entry_id>? AND product_code=? AND event=? AND reference=? AND amount=?
@@ -671,7 +672,7 @@ class AccountingJournal:
             currency = str(entity["currency"]).upper()
             places = int(entity["decimal_places"])
             bond_rows = conn.execute("""SELECT p.product_code,
-                COALESCE(p.quote_currency,'NWX') currency_code,
+                COALESCE(p.quote_currency,base_currency_code()) currency_code,
                 p.face_value,COALESCE(h.quantity,0) quantity
                 FROM product.investment p LEFT JOIN assets.user_assets h
                   ON h.asset_code=p.product_code
@@ -704,12 +705,12 @@ class AccountingJournal:
                     "unsupported_product_currencies": unsupported,
                     "status": "unsupported_currency" if unsupported else "mismatch"})
         unbooked_bond_issuers = conn.execute("""SELECT p.issuer_code,
-            p.product_code,COALESCE(p.quote_currency,'NWX') currency_code,
+            p.product_code,COALESCE(p.quote_currency,base_currency_code()) currency_code,
             p.face_value,SUM(h.quantity) quantity
             FROM product.investment p JOIN assets.user_assets h
               ON h.asset_code=p.product_code
             WHERE p.product_type='corporate_bond' AND p.issuer_code IS NOT NULL
-            GROUP BY p.issuer_code,p.product_code,COALESCE(p.quote_currency,'NWX'),p.face_value
+            GROUP BY p.issuer_code,p.product_code,COALESCE(p.quote_currency,base_currency_code()),p.face_value
             ORDER BY p.issuer_code,p.product_code""").fetchall()
         for bond in unbooked_bond_issuers:
             issuer = str(bond["issuer_code"])
@@ -736,7 +737,7 @@ class AccountingJournal:
             "WHERE order_kind='asset' AND COALESCE(fractional_order,0)=0"
         ).fetchall()
         for order in orders:
-            currency = str(order["quote_currency"] or "NWX")
+            currency = str(order["quote_currency"] or base_currency_code(conn))
             places = currency_precision(conn, currency)
             canonical_price = int(order["limit_price_minor_units"] or 0)
             if (int(order["limit_price_decimal_places"] or 0) != places
@@ -768,7 +769,7 @@ class AccountingJournal:
             ORDER BY o.order_id""").fetchall()
         for order in tracked_cash_orders:
             order_id = int(order["order_id"])
-            currency = str(order["quote_currency"] or "NWX").upper()
+            currency = str(order["quote_currency"] or base_currency_code(conn)).upper()
             places = currency_precision(conn, currency)
             linked = conn.execute("""SELECT l.user_id,l.currency_code,l.decimal_places,
                 l.delta_minor_units FROM market_order_wallet_links w
@@ -1057,7 +1058,7 @@ class AccountingJournal:
         wallet = int(conn.execute("SELECT COUNT(*) FROM customer_wallet_ledger").fetchone()[0])
         gaps = int(conn.execute("""SELECT COUNT(*) FROM (
             SELECT u.user_id,'cash' source_type,u.user_id source_account,
-                   COALESCE(n.currency_code,'NWX') currency_code,u.cash_minor expected
+                   COALESCE(n.currency_code,base_currency_code()) currency_code,u.cash_minor expected
             FROM users u LEFT JOIN country_currencies n ON n.nationality=u.nationality
             UNION ALL
             SELECT a.user_id,'account',a.account_number,a.quote_currency,a.balance_minor_units
@@ -1182,7 +1183,7 @@ class AccountingJournal:
         legacy_tax_through = int(baseline[0]) if baseline else 0
         tax_rows = conn.execute("SELECT * FROM tax_transactions ORDER BY transaction_id").fetchall()
         for row in tax_rows:
-            currency = str(row["currency_code"] or "NWX").upper()
+            currency = str(row["currency_code"] or base_currency_code(conn)).upper()
             places = currency_precision(conn, currency)
             gross = to_minor_units(row["gross_amount"], places)
             tax = to_minor_units(row["tax_amount"], places)
@@ -1344,7 +1345,7 @@ class AccountingJournal:
         currency_places = {}
         for payment in rows:
             payment_id = int(payment["payment_id"])
-            currency = str(payment["quote_currency"] or "NWX").upper()
+            currency = str(payment["quote_currency"] or base_currency_code(conn)).upper()
             if currency not in currency_places:
                 currency_places[currency] = currency_precision(conn, currency)
             places = currency_places[currency]

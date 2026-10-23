@@ -1,4 +1,5 @@
 """European, physically settled options backed by segregated collateral."""
+from functions.money import base_currency_code
 from functions.quantities import quantity_number
 
 import math
@@ -176,8 +177,8 @@ class OptionManager:
                     return False, "❌ 옵션 기초자산은 시장에 상장된 주식이어야 합니다."
                 if str(underlying["type"]).strip().casefold() not in {"stock", "주식"}:
                     return False, "❌ 현재는 주식만 옵션의 기초자산으로 사용할 수 있습니다."
-                if underlying.get('quote_currency','NWX')!='NWX':
-                    return False,'❌ 현재 옵션 작성은 NWX 결제 주식만 지원합니다.'
+                if underlying.get('quote_currency',base_currency_code(conn))!=base_currency_code(conn):
+                    return False,'❌ 현재 옵션 작성은 기준 통화 결제 주식만 지원합니다.'
                 if underlying["status"] != "active" or int(underlying["price"] or 0) <= 0:
                     return False, "❌ 거래 중이며 기준가가 있는 주식만 옵션을 발행할 수 있습니다."
 
@@ -224,7 +225,7 @@ class OptionManager:
                     if self._available_cash(conn, writer_id) < required_cash:
                         return False, (
                             f"❌ 현금 담보가 부족합니다. 풋 {quantity:,}계약에 "
-                            f"{required_cash:,} NWX가 필요합니다."
+                            f"{required_cash:,} 기준 통화가 필요합니다."
                         )
 
                 cursor = conn.execute(
@@ -286,12 +287,12 @@ class OptionManager:
                     (writer_id, contract_code, limit_price, quantity, quantity, now, now),
                 )
                 order_id = int(order_cursor.lastrowid)
-            security = "주식 담보" if option_type == "call" else f"현금 담보 {strike_price * quantity:,} NWX"
+            security = "주식 담보" if option_type == "call" else f"현금 담보 {strike_price * quantity:,} 기준 통화"
             return True, (
                 f"✅ 옵션 `{contract_code}` 발행 주문 #{order_id}을 등록했습니다. "
                 f"{underlying['name']} {('콜' if option_type == 'call' else '풋')} · "
-                f"행사가 {strike_price:,} NWX · 만기 {maturity_days}일 · "
-                f"{quantity:,}계약 · 지정 프리미엄 {limit_price:,} NWX · {security}. "
+                f"행사가 {strike_price:,} 기준 통화 · 만기 {maturity_days}일 · "
+                f"{quantity:,}계약 · 지정 프리미엄 {limit_price:,} 기준 통화 · {security}. "
                 "기준 프리미엄은 블랙-숄즈 참고값이며 체결가는 주문 호가로 결정됩니다."
             )
         except ValueError as exc:
@@ -364,7 +365,7 @@ class OptionManager:
         validated, error = validate_limit_order(
             side, quantity, limit_price,
             max_quantity=self.MAX_CONTRACTS, max_price=self.MAX_PRICE,
-            quantity_label="계약 수량", price_label="지정 프리미엄 NWX",
+            quantity_label="계약 수량", price_label="지정 프리미엄 기준 통화",
         )
         if error:
             return False, error
@@ -425,7 +426,7 @@ class OptionManager:
                     if balance < reserved_cash or not self.user_manager._debit_source(
                         conn, user_id, funding_account, reserved_cash
                     ):
-                        return False, f"❌ 잔액이 부족합니다. 지정가 기준 예치 필요액: {reserved_cash:,} NWX"
+                        return False, f"❌ 잔액이 부족합니다. 지정가 기준 예치 필요액: {reserved_cash:,} 기준 통화"
                 else:
                     owned = conn.execute(
                         "SELECT COALESCE(SUM(quantity), 0) AS quantity FROM assets.option_positions "
@@ -462,14 +463,14 @@ class OptionManager:
                 ).fetchone()
             note = (
                 f"미체결 {int(order['remaining_quantity']):,}계약이 호가에 남았습니다. "
-                + (f"매수 예치금 {int(order['reserved_cash']):,} NWX를 잠갔습니다." if side == "buy"
+                + (f"매수 예치금 {int(order['reserved_cash']):,} 기준 통화를 잠갔습니다." if side == "buy"
                    else "보유 옵션 수량을 잠갔습니다.")
                 if int(order["remaining_quantity"]) else "주문을 전량 체결했습니다."
             )
             return True, (
                 f"✅ 주문 #{order_id} 등록 ({'매수' if side == 'buy' else '매도'} · "
-                f"{contract_code} · 지정 프리미엄 {limit_price:,} NWX · {quantity:,}계약)\n"
-                f"즉시 체결 {filled_quantity:,}계약 · 체결대금 {traded_value:,} NWX\n{note}"
+                f"{contract_code} · 지정 프리미엄 {limit_price:,} 기준 통화 · {quantity:,}계약)\n"
+                f"즉시 체결 {filled_quantity:,}계약 · 체결대금 {traded_value:,} 기준 통화\n{note}"
             )
         except ValueError as exc:
             return False, f"❌ {exc}"
@@ -660,7 +661,7 @@ class OptionManager:
                 )
             message = f"✅ 옵션 주문 #{order_id}을 취소했습니다."
             if refund:
-                message += f" 매수 예치금 {refund:,} NWX를 반환했습니다."
+                message += f" 매수 예치금 {refund:,} 기준 통화를 반환했습니다."
             return True, message
         except Exception as exc:
             return False, f"❌ 옵션 주문 취소 중 오류가 발생했습니다: {exc}"

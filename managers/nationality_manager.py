@@ -14,6 +14,7 @@ Order (each step only runs when the previous one succeeded):
    rate, paying the usual exchange fee to the old nationality's treasury, and move
    the user to the new nationality.
 """
+from functions.money import base_currency_code
 import json
 import time
 from decimal import Decimal, ROUND_CEILING
@@ -91,7 +92,7 @@ class NationalityManager:
                 unit = unit_nwx.get(row["asset_code"])
                 if unit is None or not row["quantity"]:
                     continue
-                proceeds = CurrencyManager.convert(conn, int(unit * Decimal(str(row["quantity"])) * SCALE), "NWX", old)
+                proceeds = CurrencyManager.convert(conn, int(unit * Decimal(str(row["quantity"])) * SCALE), base_currency_code(conn), old)
                 CurrencyManager.change(conn, user_id, old, proceeds)
                 CurrencyManager.change(conn, treasury, old, -proceeds, allow_deficit=True)
                 conn.execute(
@@ -103,7 +104,7 @@ class NationalityManager:
                 conn.execute("DELETE FROM user_assets WHERE holding_id=?", (row["holding_id"],))
                 sold += proceeds
             for holding in conn.execute(
-                    "SELECT h.holding_id,COALESCE(p.quote_currency,'NWX') AS currency FROM treasury_bond_holdings h "
+                    "SELECT h.holding_id,COALESCE(p.quote_currency,base_currency_code()) AS currency FROM treasury_bond_holdings h "
                     "LEFT JOIN treasury_bond_products p ON p.product_code=h.product_code "
                     "WHERE h.user_id=? AND h.status='active'", (user_id,)).fetchall():
                 value = bond_values.get(holding["holding_id"], Decimal(0))

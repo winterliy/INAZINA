@@ -59,7 +59,7 @@ class MarketEventModal(discord.ui.Modal):
             description="기간 중 무작위 등락의 강도입니다. 목표가격을 비우면 호재 +N%, 악재 -N%가 최종 목표입니다.",
         ))
         self.target_price_input = discord.ui.TextInput(
-            placeholder="비우면 % 적용 · 개별 자산의 목표 가격(NWX)", required=False,
+            placeholder="비우면 % 적용 · 개별 자산의 목표 가격(기준 통화)", required=False,
             default="" if target_price is None else str(target_price), max_length=16,
         )
         self.add_item(discord.ui.Label(text="목표가격 (선택 사항)", component=self.target_price_input))
@@ -117,7 +117,7 @@ class MarketEventModal(discord.ui.Modal):
             target = None
             if raw_target:
                 if not raw_target.isdecimal() or not 1 <= int(raw_target) <= 2**53 - 1:
-                    raise ValueError("목표가격은 양의 정수 NWX로 입력해주세요.")
+                    raise ValueError("목표가격은 양의 정수 기준 통화로 입력해주세요.")
                 if asset_code is None:
                     raise ValueError("목표가격을 지정하려면 개별 자산을 선택해주세요.")
                 target = int(raw_target)

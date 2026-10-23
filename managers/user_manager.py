@@ -1,3 +1,4 @@
+from functions.money import base_currency_code
 import random
 import math
 import time
@@ -199,7 +200,7 @@ class UserManager:
         if account(conn, user_id):
             return 0  # Fund income stays in NAV; investor gains are taxed on redemption.
         income_currency_was_supplied = currency is not None
-        tax_currency = str(currency or "NWX").upper()
+        tax_currency = str(currency or base_currency_code(conn)).upper()
         from functions.money import currency_precision, round_currency
         places = currency_precision(conn, tax_currency)
         gross = max(0, round_currency(conn, gross_amount, tax_currency))
@@ -308,7 +309,7 @@ class UserManager:
                 if not asset:
                     return False, "❌ 존재하지 않는 자산 코드입니다."
                 from managers.currency_manager import CurrencyManager, SCALE
-                currency = asset.get("quote_currency") or "NWX"
+                currency = asset.get("quote_currency") or base_currency_code(conn)
                 if currency != CurrencyManager.home(conn, user_id):
                     return False, "❌ 자국 통화가 아닌 종목은 해당 외환통장을 개설하고 거래소 지정가 매수·매도로 거래해주세요."
                 if asset["type"] == "stock_future":
@@ -393,7 +394,7 @@ class UserManager:
                 if not asset:
                     return False, "❌ 존재하지 않는 자산 코드입니다."
                 from managers.currency_manager import CurrencyManager, SCALE
-                currency = asset.get("quote_currency") or "NWX"
+                currency = asset.get("quote_currency") or base_currency_code(conn)
                 if currency != CurrencyManager.home(conn, user_id):
                     return False, "❌ 자국 통화가 아닌 종목은 거래소 지정가 매수·매도로 거래해주세요."
                 if asset["status"] not in ("active", "matured"):
@@ -484,8 +485,8 @@ class UserManager:
             net_proceeds = max(0, gross_proceeds - total_tax)
             unit = "주" if str(asset["type"]).lower() in {"stock", "주식"} else "좌" if asset["type"] in {"mutual_fund", "index_fund"} else "개"
             return True, (
-                f"✅ {asset['name']} {quantity:,}{unit}를 {gross_proceeds:,} NWX에 매도했습니다.\n"
-                f"실현이익 과세: {total_tax:,} NWX · 계좌 입금: {net_proceeds:,} NWX"
+                f"✅ {asset['name']} {quantity:,}{unit}를 {gross_proceeds:,} 기준 통화에 매도했습니다.\n"
+                f"실현이익 과세: {total_tax:,} 기준 통화 · 계좌 입금: {net_proceeds:,} 기준 통화"
             )
         except ValueError as exc:
             return False, f"❌ {exc}"
@@ -508,7 +509,7 @@ class UserManager:
         try:
             amount = parse_money(amount, minimum=1)
         except ValueError as exc:
-            return False, f"❌ 송금 금액은 정수 NWX로 입력해주세요. ({exc})"
+            return False, f"❌ 송금 금액은 정수 기준 통화로 입력해주세요. ({exc})"
         interest_error = self._settle_user_interest(from_user_id)
         if interest_error:
             return False, interest_error
@@ -618,7 +619,7 @@ class UserManager:
                 if available_total < amount:
                     return False, (
                         f"❌ 잔액이 부족합니다. 출금 가능한 지갑·통장 합계는 "
-                        f"{available_total:,} NWX입니다."
+                        f"{available_total:,} 기준 통화입니다."
                     )
 
                 remaining = amount
@@ -666,7 +667,7 @@ class UserManager:
                 "지갑" if account_number is None else f"계좌 `{account_number}`"
                 for account_number, _debit_amount in debited_sources
             )
-            return True, f"✅ {source_label}에서 {destination}(으)로 {amount:,} NWX 이체를 완료했습니다."
+            return True, f"✅ {source_label}에서 {destination}(으)로 {amount:,} 기준 통화 이체를 완료했습니다."
         except Exception as exc:
             return False, f"❌ 송금 처리 중 오류가 발생했습니다: {exc}"
 
@@ -674,7 +675,7 @@ class UserManager:
         try:
             amount = parse_money(amount, minimum=1)
         except ValueError as exc:
-            return False, f"❌ 도박 금액은 정수 NWX로 입력해주세요. ({exc})"
+            return False, f"❌ 도박 금액은 정수 기준 통화로 입력해주세요. ({exc})"
         interest_error = self._settle_user_interest(user_id)
         if interest_error:
             return False, interest_error
@@ -734,10 +735,10 @@ class UserManager:
                 net_payout = max(0, payout_before_tax - tax)
                 return True, (
                     f"🎉 당첨! 지급률 {return_percent:,.2f}% · "
-                    f"상금 {payout_before_tax:,} NWX · 세금 {tax:,} NWX · "
-                    f"실수령 {net_payout:,} NWX (원금 별도, 국고 지급)"
+                    f"상금 {payout_before_tax:,} 기준 통화 · 세금 {tax:,} 기준 통화 · "
+                    f"실수령 {net_payout:,} 기준 통화 (원금 별도, 국고 지급)"
                 )
-            return False, f"💀 꽝! {amount:,} NWX를 잃어 국고에 입금했습니다."
+            return False, f"💀 꽝! {amount:,} 기준 통화를 잃어 국고에 입금했습니다."
         except Exception as exc:
             return False, f"❌ 도박 처리 중 오류가 발생했습니다: {exc}"
 
@@ -771,17 +772,17 @@ class UserManager:
             return asset_cache.get(str(code))
         quote_overrides = {str(row['asset_code']):int(row['price']) for row in
             conn.execute('SELECT asset_code,price FROM market_quote_overrides')}
-        currency_rates = {'NWX':1}
+        currency_rates = {base_currency_code(conn):1}
         for row in conn.execute("SELECT c.code,a.price FROM currencies c LEFT JOIN market_assets a "
                                       "ON a.code=c.asset_code WHERE c.status='active'"):
-            if row['code']=='NWX':
+            if row['code']==base_currency_code(conn):
                 continue
             if row['price'] is not None and float(row['price'])>0:
                 currency_rates[str(row['code'])]=int(round(float(row['price'])))
         currency_row = conn.execute("SELECT n.currency_code FROM country_currencies n "
             "JOIN currencies c ON c.code=n.currency_code WHERE n.nationality=? AND c.status='active'",(nationality,))
         currency_row = currency_row.fetchone()
-        national_currency = currency_row['currency_code'] if currency_row else 'NWX'
+        national_currency = currency_row['currency_code'] if currency_row else base_currency_code(conn)
         from managers.currency_manager import CurrencyManager, CurrencyReadSnapshot, SCALE
         currency_snapshot = CurrencyReadSnapshot(conn)
         wallets = CurrencyManager(self.db).wallets(
@@ -818,7 +819,7 @@ class UserManager:
         home_decimal_places = currency_snapshot.precision(national_currency)
         home_rate_nwx = currency_snapshot.rate_nwx(national_currency)
         cash_value_nwx = currency_snapshot.convert(
-            home_cash_units, national_currency, 'NWX'
+            home_cash_units, national_currency, base_currency_code(conn)
         ) // SCALE if user else 0
         account_details = []
         total_account_balance = 0
@@ -941,7 +942,7 @@ class UserManager:
             if asset and asset.get('type')=='els':
                 continue
             price = int(round(asset["price"] or 0)) if asset else 0
-            currency = asset.get('quote_currency','NWX') if asset else 'NWX'
+            currency = asset.get('quote_currency',base_currency_code(conn)) if asset else base_currency_code(conn)
             rate = currency_rates.get(currency,1)
             value = price * quantity * rate
             total_stock_value += value
@@ -1072,7 +1073,7 @@ class UserManager:
                 'name':f"{underlying['name'] if underlying else written['underlying_code']} "
                        f"{'콜' if written['option_type']=='call' else '풋'} {int(written['strike_price']):,}",
                 'price':mark,'theoretical_price':premium,'position_type':'writer',
-                'quote_currency':(underlying.get('quote_currency') if underlying else None) or 'NWX'})
+                'quote_currency':(underlying.get('quote_currency') if underlying else None) or base_currency_code(conn)})
 
         reserved_rows = conn.execute(
             "SELECT quote_currency,COALESCE(SUM(reserved_cash), 0) AS total FROM market_orders "
@@ -1081,7 +1082,7 @@ class UserManager:
         )
         order_reserved_total = 0
         for reserved in reserved_rows:
-            order_reserved_total += int(reserved['total'] or 0)*currency_rates.get(reserved['quote_currency'] or 'NWX',1)
+            order_reserved_total += int(reserved['total'] or 0)*currency_rates.get(reserved['quote_currency'] or base_currency_code(conn),1)
 
         futures_collateral = 0
         futures_unrealized = 0
@@ -1107,9 +1108,9 @@ class UserManager:
         bond_details = self.bond_manager.get_user_holdings(user_id, conn=conn)
         for item in bond_details:
             # Bonds are denominated in the currency of the country that issued them.
-            row = conn.execute("SELECT COALESCE(quote_currency,'NWX') FROM treasury_bond_products WHERE product_code=?",
+            row = conn.execute("SELECT COALESCE(quote_currency,base_currency_code()) FROM treasury_bond_products WHERE product_code=?",
                                (item["product_code"],)).fetchone()
-            item["quote_currency"] = row[0] if row else 'NWX'
+            item["quote_currency"] = row[0] if row else base_currency_code(conn)
         bond_face_total = sum(item["principal"] for item in bond_details)
         bond_total = sum(item["market_value"]*currency_rates.get(item["quote_currency"],1) for item in bond_details)
 
@@ -1133,7 +1134,7 @@ class UserManager:
             for r in currency_accounts
         ) // SCALE
         home_account_total_nwx = currency_snapshot.convert(
-            abs(account_total_home_units), national_currency, 'NWX'
+            abs(account_total_home_units), national_currency, base_currency_code(conn)
         ) // SCALE
         if account_total_home_units < 0:
             home_account_total_nwx = -home_account_total_nwx
@@ -1141,7 +1142,7 @@ class UserManager:
         if getattr(self.db,'els',None) is not None:
             from managers.els_manager import ELSManager
             els_positions=ELSManager(self.db,self).get_user_positions(user_id, conn=conn)
-        els_total=sum(int(item.get('principal',0))*currency_rates.get(item.get('quote_currency') or 'NWX',1) for item in els_positions)
+        els_total=sum(int(item.get('principal',0))*currency_rates.get(item.get('quote_currency') or base_currency_code(conn),1) for item in els_positions)
         preferred_claims=[]
         if getattr(self.db,'corporate',None) is not None:
             preferred_claims=[{**dict(row),'remaining_amount':int(row['gross_amount'])-int(row['paid_amount'])}
@@ -1186,7 +1187,7 @@ class UserManager:
             "futures_unrealized": futures_unrealized,
             "grand_total": grand_total,
             "loan_total": loan_total,
-            # Loans are owed in the home currency; totals are valued in NWX.
+            # Loans are owed in the home currency; totals are valued in 기준 통화.
             "net_worth": grand_total - int(Decimal(loan_total)*Decimal(str(home_rate_nwx))),
         }
 

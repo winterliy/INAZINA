@@ -1,3 +1,4 @@
+from functions.money import base_currency_code
 import hashlib
 import hmac
 import json
@@ -622,7 +623,7 @@ class BankManager:
         ).fetchone()
         if not asset or asset["status"] != "active" or float(asset["price"] or 0) <= 0:
             raise ValueError("담보로 설정할 수 있는 활성 자산 코드를 확인해주세요.")
-        if str(asset["quote_currency"] or "NWX") != str(currency_code):
+        if str(asset["quote_currency"] or base_currency_code(conn)) != str(currency_code):
             raise ValueError("대출과 같은 결제통화의 자산만 담보로 사용할 수 있습니다.")
         lots = conn.execute(
             "SELECT holding_id,account_number,quantity,average_cost FROM assets.user_assets "
@@ -1395,7 +1396,7 @@ class BankManager:
                 )
                 if amount <= 0:
                     return False, "❌ 상환액은 0보다 커야 합니다."
-                currency = str(loan["quote_currency"] or "NWX")
+                currency = str(loan["quote_currency"] or base_currency_code(conn))
                 places = currency_precision(conn, currency)
 
                 def amount_value(value):
@@ -1581,7 +1582,7 @@ class BankManager:
                         from functions.money import currency_precision, from_minor_units, to_minor_units
 
                         cycle = int(loan["repayment_cycle_seconds"] or 0)
-                        currency = str(loan["quote_currency"] or "NWX")
+                        currency = str(loan["quote_currency"] or base_currency_code(conn))
                         places = currency_precision(conn, currency)
                         installment_units = max(0, to_minor_units(
                             loan["repayment_amount"] or 0, places
@@ -1747,7 +1748,7 @@ class BankManager:
                             (loan_id,)).fetchone()
         if not loan:
             return
-        currency = str(loan["quote_currency"] or "NWX")
+        currency = str(loan["quote_currency"] or base_currency_code(conn))
         places = currency_precision(conn, currency)
 
         def units(row, field):
@@ -1820,7 +1821,7 @@ class BankManager:
         ).fetchone()
         if not row:
             return 0.0
-        places = currency_precision(conn, str(row["quote_currency"] or "NWX"))
+        places = currency_precision(conn, str(row["quote_currency"] or base_currency_code(conn)))
 
         def units(row, field):
             minor_field = f"{field}_minor_units"
@@ -1863,7 +1864,7 @@ class BankManager:
             "ORDER BY installment_number",
             (loan["loan_id"], now),
         ).fetchall()
-        currency = str(loan["quote_currency"] or "NWX")
+        currency = str(loan["quote_currency"] or base_currency_code(conn))
         places = currency_precision(conn, currency)
 
         def units(row, field):
@@ -2037,7 +2038,7 @@ class BankManager:
             raise ValueError("bank resolution requires a valid UNIX epoch")
         institution = conn.execute(
             "SELECT f.status,f.deposit_insurance_limit,"
-            "COALESCE(c.currency_code,'NWX') base_currency "
+            "COALESCE(c.currency_code,base_currency_code()) base_currency "
             "FROM financial_institutions f LEFT JOIN country_currencies c "
             "ON c.nationality=f.nationality WHERE f.issuer=?", (issuer,),
         ).fetchone()
@@ -2054,12 +2055,12 @@ class BankManager:
         ).fetchall()
         limit = max(0.0, float(institution["deposit_insurance_limit"] or 0))
         from managers.currency_manager import CurrencyManager, SCALE
-        base_currency = str(institution["base_currency"] or "NWX")
+        base_currency = str(institution["base_currency"] or base_currency_code(conn))
         insured_totals_base = {}
         for account in accounts:
             if not int(account["deposit_insured"] or 0):
                 continue
-            currency = str(account["quote_currency"] or "NWX")
+            currency = str(account["quote_currency"] or base_currency_code(conn))
             balance = max(0.0, float(account["balance"] or 0))
             if currency != base_currency and balance:
                 balance = CurrencyManager.convert(
@@ -2085,7 +2086,7 @@ class BankManager:
                 insured_total = insured_totals_base.get(user_id, 0.0)
                 share = min(1.0, limit/insured_total) if insured_total > 0 else 0.0
                 pro_rata_cover = round_currency(
-                    conn, balance*share, account["quote_currency"] or "NWX"
+                    conn, balance*share, account["quote_currency"] or base_currency_code(conn)
                 )
                 covered = min(balance, available_cover, pro_rata_cover)
             else:
@@ -2105,7 +2106,7 @@ class BankManager:
                 )/SCALE if uninsured else 0
             used_by_user[user_id] = used_base+covered_base
             user_currency = CurrencyManager.home(conn, user_id)
-            account_currency = str(account["quote_currency"] or "NWX").upper()
+            account_currency = str(account["quote_currency"] or base_currency_code(conn)).upper()
             covered_units = int(round(covered*SCALE))
             payout_currency = payout_amount = payout_amount_minor_units = payout_decimal_places = None
             if covered:
@@ -2140,7 +2141,7 @@ class BankManager:
                 BankJournal.post(
                     conn, issuer, "deposit_insurance_resolution",
                     f"deposit-insurance:{account['account_number']}",
-                    account["quote_currency"] or "NWX",
+                    account["quote_currency"] or base_currency_code(conn),
                     [("customer_deposits_payable", "debit", balance),
                      ("deposit_insurance_payable", "credit", covered),
                      ("uninsured_deposit_claim", "credit", uninsured)],
@@ -2406,8 +2407,9 @@ class UserFunds:
     """대출 상환에서만 재사용하는 가장 잔액이 큰 자금원 헬퍼."""
 
     @staticmethod
-    def choose(conn, user_id, currency="NWX"):
+    def choose(conn, user_id, currency=None):
         from managers.currency_manager import CurrencyManager
+        currency = str(currency or base_currency_code(conn)).upper()
         user = conn.execute("SELECT cash FROM users.users WHERE user_id = ?", (user_id,)).fetchone()
         if not user:
             return None
@@ -2446,7 +2448,8 @@ class UserFunds:
         return cursor.rowcount == 1
 
     @staticmethod
-    def credit(conn, user_id, amount, account_number=None, currency="NWX"):
+    def credit(conn, user_id, amount, account_number=None, currency=None):
+        currency = str(currency or base_currency_code(conn)).upper()
         if amount <= 0:
             return True
         if account_number is None:

@@ -27,6 +27,18 @@ class UnifiedConnection(sqlite3.Connection):
         super().__init__(*args, **kwargs)
         # Every Inazina connection enforces declared REFERENCES (see database/integrity.py).
         super().execute("PRAGMA foreign_keys=ON")
+        self.create_function("base_currency_code", 0, self._base_currency_code)
+
+    def _base_currency_code(self):
+        """Resolve the configured base denomination inside SQL expressions/triggers."""
+        try:
+            row = sqlite3.Connection.execute(
+                self,
+                "SELECT base_currency_code FROM currency_system_settings WHERE singleton_id=1",
+            ).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        return str(row[0]).upper() if row and row[0] else None
 
     def execute(self, statement, parameters=()):
         return super().execute(sql(statement), parameters)

@@ -1,4 +1,5 @@
 """Opt-in spot/fund trading with exact minor-unit cash and bounded decimal units."""
+from functions.money import base_currency_code
 import time
 from fractions import Fraction
 from decimal import Decimal
@@ -150,7 +151,7 @@ class FractionalTradingManager:
                     raise ValueError('현재 소수점 거래가 허용된 거래 중 상품이 아닙니다.')
                 if asset['type'] in {'mutual_fund', 'index_fund'}:
                     raise ValueError('일반·인덱스 펀드는 /매수·/매도에서 지정가 없이 NAV로 거래해주세요.')
-                currency = asset.get('quote_currency') or 'NWX'
+                currency = asset.get('quote_currency') or base_currency_code(conn)
                 reserve, account = 0, None
                 if side == 'buy':
                     supply = asset.get('supply')
@@ -216,7 +217,7 @@ class FractionalTradingManager:
             asset, source = self.users._asset_row(conn, incoming['asset_code'])
             if not fractional_enabled(asset) or asset['status'] != 'active':
                 break
-            currency = asset.get('quote_currency') or 'NWX'
+            currency = asset.get('quote_currency') or base_currency_code(conn)
             buy = incoming['side'] == 'buy'
             comparison, direction = ('<=','ASC') if buy else ('>=','DESC')
             maker = conn.execute("SELECT * FROM market_orders WHERE asset_code=? AND order_kind='asset' AND side=? AND user_id<>? "
@@ -248,7 +249,7 @@ class FractionalTradingManager:
                     from managers.corporate_actions_manager import CorporateActionsManager
                     CorporateActionsManager.record_issue_fill(conn,seller['order_id'],quantity_number(Fraction(units,QUANTITY_SCALE)),price)
                 self._reduce(conn,seller,units,currency,now)
-            elif source == 'company' and currency == 'NWX' and conn.execute("SELECT 1 FROM company WHERE company_code=? AND dividend_funding='issuer'", (asset['code'],)).fetchone():
+            elif source == 'company' and currency == base_currency_code(conn) and conn.execute("SELECT 1 FROM company WHERE company_code=? AND dividend_funding='issuer'", (asset['code'],)).fetchone():
                 owner = conn.execute('SELECT COALESCE(parent_company_code,company_code) FROM company WHERE company_code=?',(asset['code'],)).fetchone()[0]
                 conn.execute('INSERT OR IGNORE INTO issuer_cash_accounts(company_code) VALUES (?)',(owner,))
                 changed=conn.execute('UPDATE issuer_cash_accounts SET balance=balance+? WHERE company_code=? AND balance<=?',(spent//SCALE,owner,self.book.MAX_LIMIT_PRICE-spent//SCALE))
@@ -260,7 +261,7 @@ class FractionalTradingManager:
             if not seller and source=='company':
                 share=conn.execute('SELECT dividend_funding FROM company WHERE company_code=?',(asset['code'],)).fetchone()
                 amount=Decimal(spent)/SCALE
-                Finance.event(conn,asset['code'],'소수점 발행주식 판매',[('cash' if currency=='NWX' and share['dividend_funding']=='issuer' else 'treasury_receivable',amount),('adjustment',-amount)],'financing',now,currency=currency)
+                Finance.event(conn,asset['code'],'소수점 발행주식 판매',[('cash' if currency==base_currency_code(conn) and share['dividend_funding']=='issuer' else 'treasury_receivable',amount),('adjustment',-amount)],'financing',now,currency=currency)
             self._add_lot(conn,buyer['user_id'],asset['code'],buyer['funding_account'],units,price)
             self._reduce(conn,buyer,units,currency,now)
             qty = quantity_number(Fraction(units,QUANTITY_SCALE))
@@ -305,7 +306,7 @@ class FractionalTradingManager:
                 asset,source=self.users._asset_row(conn,code)
                 if not fractional_enabled(asset) or asset['status']!='active' or asset['price']<=0:
                     raise ValueError('소수점 거래 상품의 상태를 확인해주세요.')
-                currency=asset.get('quote_currency') or 'NWX'
+                currency=asset.get('quote_currency') or base_currency_code(conn)
                 price=int(asset['price'])
                 quantum=self._quantum(conn,currency)
                 raw=price*units*(SCALE//QUANTITY_SCALE)

@@ -1,4 +1,5 @@
 """Periodic, append-only DR price-deviation observations and alert transitions."""
+from functions.money import base_currency_code
 
 from functions.dr_pricing import alert_state, reference_metrics
 from managers.bank_journal import BankJournal
@@ -37,8 +38,8 @@ class DrDeviationMonitorManager:
                     and program["underlying_price"] is not None):
                 try:
                     fx = float(CurrencyManager.quote(
-                        conn, str(program["underlying_currency"] or "NWX"),
-                        str(program["dr_currency"] or "NWX"),
+                        conn, str(program["underlying_currency"] or base_currency_code(conn)),
+                        str(program["dr_currency"] or base_currency_code(conn)),
                     ))
                     metrics = reference_metrics(
                         program["dr_price"], program["underlying_price"],
@@ -47,7 +48,7 @@ class DrDeviationMonitorManager:
                 except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError):
                     metrics = {}
             state = alert_state(metrics)
-            places = currency_precision(conn, str(program["dr_currency"] or "NWX"))
+            places = currency_precision(conn, str(program["dr_currency"] or base_currency_code(conn)))
             dr_price_minor = (to_minor_units(program["dr_price"], places)
                               if program["dr_price"] is not None else None)
             reference_minor = (to_minor_units(metrics["referenceValue"], places)
