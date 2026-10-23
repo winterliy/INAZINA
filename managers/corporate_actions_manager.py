@@ -192,32 +192,26 @@ class CorporateActionsManager:
 
     def _credit_dividend(self, conn, user, code, kind, amount, currency, now,
                          operation_key=None, dr_code=None):
-        from database.fund_accounting import account, change_cash
+        from database.fund_accounting import account
         from managers.currency_manager import CurrencyManager
         amount_decimal = Decimal(str(amount))
         amount_units = int((amount_decimal*SCALE).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
         fund = account(conn, user)
         if fund:
-            if currency != 'NWX':
-                raise ValueError('펀드 배당 수령 통화는 NWX만 지원합니다.')
-            fund_watermark = int(conn.execute(
-                "SELECT COALESCE(MAX(entry_id),0) FROM fund_cash_ledger"
-            ).fetchone()[0])
-            change_cash(conn, user, amount, 'dividend', code)
-            fund_entry = conn.execute(
-                "SELECT entry_id FROM fund_cash_ledger WHERE entry_id>? AND product_code=? "
-                "AND event='dividend' AND reference=? ORDER BY entry_id LIMIT 1",
-                (fund_watermark, str(fund['product_code']), str(code)),
-            ).fetchone()
-            if amount_units > 0 and not fund_entry:
+            from managers.fund_dividend_receiver import FundDividendReceiver
+            receipt = FundDividendReceiver(conn).receive(
+                user, amount_decimal, currency_code=currency, reference=code,
+                recorded_epoch=int(now),
+            )
+            if amount_units > 0 and not receipt.get('entry_id'):
                 raise RuntimeError('펀드 배당 현금 원장 입금이 없습니다.')
-            return 0, amount*SCALE, {
+            return 0, receipt['net_amount_units'], {
                 'issuer_nationality': '낙원', 'underlying_nationality': '낙원',
                 'recipient_nationality': '낙원', 'recipient_residency': '낙원',
                 'product_type': 'fund', 'contract_epoch': int(now), 'rule_id': None,
                 'treaty_code': None, 'tax_rate_percent': '0', 'dr_code': None,
                 'remittance': None,
-                'recipient_fund_entry_id': int(fund_entry['entry_id']) if fund_entry else None,
+                'recipient_fund_entry_id': receipt['entry_id'],
             }
         rate = CurrencyExchangeManager._rate(conn, currency)
         dr_context = self._dr_tax_context(conn, user, code, currency, kind, now,

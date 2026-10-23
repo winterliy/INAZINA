@@ -547,8 +547,8 @@ class CurrencyDB(DBManager):
              "UNION ALL SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code LIMIT 1"),
             ("fund_accounts", ("cash", "initial_nav"), "product_code",
              "SELECT quote_currency FROM investment WHERE product_code=NEW.product_code"),
-            ("fund_cash_ledger", ("amount", "balance"), "entry_id",
-             "SELECT quote_currency FROM investment WHERE product_code=NEW.product_code"),
+            ("fund_cash_ledger", ("amount", "balance", "amount_minor_units", "balance_minor_units"), "entry_id",
+             "NEW.currency_code"),
             ("user_assets", ("average_cost",), "holding_id",
              "SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code "
              "UNION ALL SELECT quote_currency FROM company WHERE company_code=NEW.asset_code "
@@ -700,21 +700,22 @@ class CurrencyDB(DBManager):
             self._ensure_tax_transaction_wallet_links()
 
     def _ensure_fund_cash_common_journal(self):
-        """Mirror the NWX-only fund cash subledger into the common journal."""
+        """Mirror fund cash postings in their native currency minor units."""
         self.execute("""INSERT OR IGNORE INTO accounting_account_mappings
             (ledger_scope,local_code,common_code) VALUES
             ('fund','fund_cash','fund_cash'),
             ('fund','fund_cash_clearing','fund_cash_clearing')""")
+        self.execute("DROP TRIGGER IF EXISTS trg_fund_cash_common_post")
         self.execute("""INSERT OR IGNORE INTO accounting_entries
             (ledger_scope,entity_type,entity_id,source_key,currency_code,decimal_places,
              recorded_epoch,description)
             SELECT 'fund','fund_cash',product_code,'fund-cash:'||entry_id,
-                'NWX',0,recorded_epoch,event
+                currency_code,decimal_places,recorded_epoch,event
             FROM fund_cash_ledger ORDER BY entry_id""")
         self.execute("""INSERT INTO accounting_lines(entry_id,account_code,debit_units,credit_units)
             SELECT e.entry_id,'fund_cash',
-                CASE WHEN f.amount>0 THEN f.amount ELSE 0 END,
-                CASE WHEN f.amount<0 THEN -f.amount ELSE 0 END
+                CASE WHEN f.amount_minor_units>0 THEN f.amount_minor_units ELSE 0 END,
+                CASE WHEN f.amount_minor_units<0 THEN -f.amount_minor_units ELSE 0 END
             FROM fund_cash_ledger f JOIN accounting_entries e
               ON e.ledger_scope='fund' AND e.entity_type='fund_cash'
              AND e.entity_id=f.product_code AND e.source_key='fund-cash:'||f.entry_id
@@ -722,8 +723,8 @@ class CurrencyDB(DBManager):
                 WHERE l.entry_id=e.entry_id AND l.account_code='fund_cash')""")
         self.execute("""INSERT INTO accounting_lines(entry_id,account_code,debit_units,credit_units)
             SELECT e.entry_id,'fund_cash_clearing',
-                CASE WHEN f.amount<0 THEN -f.amount ELSE 0 END,
-                CASE WHEN f.amount>0 THEN f.amount ELSE 0 END
+                CASE WHEN f.amount_minor_units<0 THEN -f.amount_minor_units ELSE 0 END,
+                CASE WHEN f.amount_minor_units>0 THEN f.amount_minor_units ELSE 0 END
             FROM fund_cash_ledger f JOIN accounting_entries e
               ON e.ledger_scope='fund' AND e.entity_type='fund_cash'
              AND e.entity_id=f.product_code AND e.source_key='fund-cash:'||f.entry_id
@@ -734,15 +735,15 @@ class CurrencyDB(DBManager):
             INSERT INTO accounting_entries(ledger_scope,entity_type,entity_id,source_key,
                 currency_code,decimal_places,recorded_epoch,description)
             VALUES ('fund','fund_cash',NEW.product_code,'fund-cash:'||NEW.entry_id,
-                'NWX',0,NEW.recorded_epoch,NEW.event);
+                NEW.currency_code,NEW.decimal_places,NEW.recorded_epoch,NEW.event);
             INSERT INTO accounting_lines(entry_id,account_code,debit_units,credit_units)
-            SELECT entry_id,'fund_cash',CASE WHEN NEW.amount>0 THEN NEW.amount ELSE 0 END,
-                CASE WHEN NEW.amount<0 THEN -NEW.amount ELSE 0 END FROM accounting_entries
+            SELECT entry_id,'fund_cash',CASE WHEN NEW.amount_minor_units>0 THEN NEW.amount_minor_units ELSE 0 END,
+                CASE WHEN NEW.amount_minor_units<0 THEN -NEW.amount_minor_units ELSE 0 END FROM accounting_entries
             WHERE ledger_scope='fund' AND entity_type='fund_cash'
               AND entity_id=NEW.product_code AND source_key='fund-cash:'||NEW.entry_id;
             INSERT INTO accounting_lines(entry_id,account_code,debit_units,credit_units)
-            SELECT entry_id,'fund_cash_clearing',CASE WHEN NEW.amount<0 THEN -NEW.amount ELSE 0 END,
-                CASE WHEN NEW.amount>0 THEN NEW.amount ELSE 0 END FROM accounting_entries
+            SELECT entry_id,'fund_cash_clearing',CASE WHEN NEW.amount_minor_units<0 THEN -NEW.amount_minor_units ELSE 0 END,
+                CASE WHEN NEW.amount_minor_units>0 THEN NEW.amount_minor_units ELSE 0 END FROM accounting_entries
             WHERE ledger_scope='fund' AND entity_type='fund_cash'
               AND entity_id=NEW.product_code AND source_key='fund-cash:'||NEW.entry_id;
             END""")

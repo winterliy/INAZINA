@@ -70,6 +70,49 @@ class FundAccountingTests(unittest.TestCase):
                          if item['ledger_scope'] == 'fund')
             self.assertEqual(check['status'], 'matched', check)
 
+    def test_fund_cash_ledger_object_supports_native_currency_balances(self):
+        from database.fund_accounting import FundCashLedger
+        from managers.accounting_journal import AccountingJournal
+        fund = self.fund()
+        self.ok(fund.activate('admin', 'FD'))
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('USD','US Dollar',1500,2)"
+        )
+        with self.db.atomic() as conn:
+            ledger = FundCashLedger(conn)
+            entry_id = ledger.deposit(PREFIX+'FD', '12.34', currency_code='USD',
+                                      event='dividend', reference='CO')
+            balance = ledger.balance(PREFIX+'FD', currency_code='USD')
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item['ledger_scope'] == 'fund')
+        row = self.db.products.execute_one(
+            "SELECT currency_code,decimal_places,amount_minor_units,balance_minor_units "
+            "FROM fund_cash_ledger WHERE entry_id=?", (entry_id,)
+        )
+        self.assertEqual((balance, tuple(row)),
+                         (1234, ('USD', 2, 1234, 1234)))
+        self.assertEqual(check['status'], 'matched', check)
+
+    def test_fund_dividend_receiver_posts_currency_aware_fund_cash_entry(self):
+        from managers.fund_dividend_receiver import FundDividendReceiver
+        fund = self.fund()
+        self.ok(fund.activate('admin', 'FD'))
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('USD','US Dollar',1500,2)"
+        )
+        with self.db.atomic() as conn:
+            receipt = FundDividendReceiver(conn).receive(
+                PREFIX+'FD', '1.23', currency_code='USD', reference='CO'
+            )
+        row = self.db.products.execute_one(
+            "SELECT currency_code,amount_minor_units FROM fund_cash_ledger WHERE entry_id=?",
+            (receipt['entry_id'],),
+        )
+        self.assertEqual((receipt['net_amount_units'], tuple(row)),
+                         (1_230_000, ('USD', 123)))
+
     def test_buy_hold_sell_redeem_real_nav_and_cash_conservation(self):
         fund = self.fund()
         initial = sum(r[0] for r in self.db.users.execute('SELECT cash FROM users'))

@@ -10,6 +10,7 @@ import re
 
 _WHOLE = Decimal("1")
 SUBMINOR_SCALE = 1_000_000
+DEFAULT_CURRENCY_CODE = "NWX"
 
 
 def round_money(value, decimal_places=0):

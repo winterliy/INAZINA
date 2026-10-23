@@ -34,6 +34,11 @@ class FundManager:
             raise ValueError('펀드 소유자 ID가 기존 사용자와 충돌합니다.')
         conn.execute('INSERT INTO fund_accounts(product_code,owner_id,initial_nav,created_epoch) VALUES (?,?,?,?)',
                      (code, PREFIX+code, product['unit_price'], int(time.time())))
+        currency = str(product['quote_currency']).upper()
+        places = conn.execute("SELECT decimal_places FROM currencies WHERE code=?", (currency,)).fetchone()
+        conn.execute("INSERT OR IGNORE INTO fund_cash_currency_balances "
+                     "(product_code,currency_code,decimal_places,balance_minor_units) "
+                     "VALUES (?, ?, ?, 0)", (code, currency, int(places[0]) if places else 0))
 
     @staticmethod
     def _require(conn, actor, code):
@@ -81,16 +86,18 @@ class FundManager:
             if str(owner).startswith(PREFIX):
                 raise ValueError('등록되지 않은 펀드 계정입니다.')
             return
-        ledger = conn.execute('SELECT COALESCE(SUM(amount),0) FROM fund_cash_ledger WHERE product_code=?', (fund['product_code'],)).fetchone()[0]
+        product = conn.execute('SELECT * FROM investment WHERE product_code=?', (fund['product_code'],)).fetchone()
+        fund_currency = str(product['quote_currency']).upper()
+        ledger = conn.execute("SELECT COALESCE(SUM(amount_minor_units),0) FROM fund_cash_ledger "
+                              "WHERE product_code=? AND currency_code=?", (fund['product_code'], fund_currency)).fetchone()[0]
         if ledger != fund['cash']:
             raise ValueError('펀드 현금 원장 대사가 일치하지 않습니다.')
         from managers.investment_manager import InvestmentManager
-        product = conn.execute('SELECT * FROM investment WHERE product_code=?', (fund['product_code'],)).fetchone()
         if not product or product['status'] != 'active':
             raise ValueError('거래 중인 펀드만 구성자산을 주문할 수 있습니다.')
         quote = InvestmentManager.component_quote(conn, code)
-        if not quote or quote['quote_currency'] != 'NWX':
-            raise ValueError('펀드는 활성 NWX 주식·채권·원자재·부동산·특별자산만 거래할 수 있습니다.')
+        if not quote or str(quote['quote_currency']).upper() != fund_currency:
+            raise ValueError(f'펀드는 활성 {fund_currency} 주식·채권·원자재·부동산·특별자산만 거래할 수 있습니다.')
         if side == 'buy':
             allowed = conn.execute('SELECT 1 FROM fund_components WHERE product_code=? AND asset_code=?',
                                    (fund['product_code'], code)).fetchone()
@@ -137,9 +144,37 @@ class FundManager:
             "SELECT COALESCE(SUM(gross_amount-paid_amount),0) FROM preferred_dividend_claims "
             "WHERE user_id=? AND status IN ('unpaid','partial')", (owner,)
         ).fetchone()[0]))
-        net = value + fund['cash'] + reserved + receivables
+        from functions.money import from_minor_units
+        from managers.currency_manager import CurrencyManager
+        cash_rows = conn.execute("SELECT currency_code,decimal_places,balance_minor_units "
+                                 "FROM fund_cash_currency_balances WHERE product_code=? "
+                                 "ORDER BY currency_code", (code,)).fetchall()
+        cash_by_currency = {}
+        cash_nav_value = Decimal(0)
+        for cash_row in cash_rows:
+            currency = str(cash_row['currency_code']).upper()
+            places = int(cash_row['decimal_places'])
+            minor = int(cash_row['balance_minor_units'])
+            amount = from_minor_units(minor, places)
+            cash_by_currency[currency] = float(amount)
+            if currency == str(product['quote_currency']).upper():
+                cash_nav_value += amount
+            elif minor > 0:
+                source_units = minor * 10 ** (6 - places)
+                cash_nav_value += Decimal(CurrencyManager.convert(
+                    conn, source_units, currency, str(product['quote_currency']).upper()
+                )) / Decimal(1_000_000)
+        net = value + cash_nav_value + reserved + receivables
         nav = net / issued if issued else Decimal(fund['initial_nav'])
-        ledger = conn.execute('SELECT COALESCE(SUM(amount),0) FROM fund_cash_ledger WHERE product_code=?', (code,)).fetchone()[0]
+        ledger_gaps = conn.execute("""SELECT b.currency_code FROM fund_cash_currency_balances b
+            WHERE b.product_code=? AND b.balance_minor_units<>COALESCE((
+                SELECT SUM(l.amount_minor_units) FROM fund_cash_ledger l
+                WHERE l.product_code=b.product_code AND l.currency_code=b.currency_code),0)""",
+            (code,)).fetchall()
+        fund_currency = str(product['quote_currency']).upper()
+        home_cash_ledger = conn.execute("SELECT COALESCE(SUM(amount_minor_units),0) "
+            "FROM fund_cash_ledger WHERE product_code=? AND currency_code=?",
+            (code, fund_currency)).fetchone()[0]
         for position in positions:
             position['targetWeight'] = target_map.get(position['code'], 0.0)
             position['actualWeight'] = float(Decimal(str(position['value'])) / net) if net else 0.0
@@ -150,12 +185,13 @@ class FundManager:
                                'targetValue': float(net * Decimal(str(target['weight']))),
                                'actualWeight': position['actualWeight'] if position else 0.0})
         return {'code': code, 'mode': 'backed', 'ownerId': owner, 'availableCash': fund['cash'],
-                'reservedCash': float(reserved), 'cash': float(reserved + fund['cash']),
+                'cashByCurrency': cash_by_currency,
+                'reservedCash': float(reserved), 'cash': float(reserved + cash_nav_value),
                 'receivables': float(receivables),
                 'assetValue': float(value), 'netAssets': net if exact else float(net),
                 'issuedUnits': issued if exact else float(issued),
                 'nav': nav if exact else float(nav), 'positions': positions, 'allocations': allocations,
-                'ledgerBalanced': ledger == fund['cash']}
+                'ledgerBalanced': not ledger_gaps and int(home_cash_ledger) == fund['cash']}
 
     @staticmethod
     def target_weights(conn, product):
@@ -212,8 +248,10 @@ class FundManager:
                 targets = self.target_weights(conn, product)
                 if not targets:
                     raise ValueError('리밸런싱할 수 있는 목표 구성자산이 없습니다.')
-                ledger = conn.execute('SELECT COALESCE(SUM(amount),0) FROM fund_cash_ledger WHERE product_code=?',
-                                     (code,)).fetchone()[0]
+                fund_currency = str(product['quote_currency']).upper()
+                ledger = conn.execute("SELECT COALESCE(SUM(amount_minor_units),0) FROM fund_cash_ledger "
+                                      "WHERE product_code=? AND currency_code=?",
+                                      (code, fund_currency)).fetchone()[0]
                 if ledger != conn.execute('SELECT cash FROM fund_accounts WHERE product_code=?', (code,)).fetchone()[0]:
                     raise ValueError('현금 원장 대사 후 리밸런싱해주세요.')
                 error = MarketSessionManager(self.db).trading_error(conn=conn, asset_code=code)

@@ -1106,7 +1106,8 @@ class AccountingJournal:
                        "missing_entries": wallet-common,
                        "status": status})
         fund_rows = conn.execute("""SELECT entry_id,product_code,event,amount,balance,
-            reference,recorded_epoch FROM fund_cash_ledger ORDER BY entry_id""").fetchall()
+            reference,recorded_epoch,currency_code,decimal_places,amount_minor_units,
+            balance_minor_units FROM fund_cash_ledger ORDER BY entry_id""").fetchall()
         fund_posting_gaps = []
         seen_fund_entries = set()
         for row in fund_rows:
@@ -1116,15 +1117,15 @@ class AccountingJournal:
                 recorded_epoch FROM accounting_entries WHERE ledger_scope='fund'
                 AND entity_type='fund_cash' AND entity_id=? AND source_key=?""",
                 (entity_id, source_key)).fetchone()
-            if (not common_entry or common_entry["currency_code"] != "NWX"
-                    or int(common_entry["decimal_places"]) != 0
+            if (not common_entry or common_entry["currency_code"] != row["currency_code"]
+                    or int(common_entry["decimal_places"]) != int(row["decimal_places"])
                     or int(common_entry["recorded_epoch"]) != int(row["recorded_epoch"])):
                 fund_posting_gaps.append({"entry_id": int(row["entry_id"]),
                                           "status": "missing_or_mismatched_posting"})
                 continue
             common_id = int(common_entry["entry_id"])
             seen_fund_entries.add(common_id)
-            amount = int(row["amount"])
+            amount = int(row["amount_minor_units"] or 0)
             expected = {
                 "fund_cash": (max(amount, 0), max(-amount, 0)),
                 "fund_cash_clearing": (max(-amount, 0), max(amount, 0)),
@@ -1145,11 +1146,28 @@ class AccountingJournal:
             fund_posting_gaps.append({"status": "orphan_common_entry",
                                       "common_entries": common_fund_entries,
                                       "native_entries": len(fund_rows)})
-        fund_balance_gaps = [dict(row) for row in conn.execute("""SELECT a.product_code,
-            a.cash native_cash,COALESCE(SUM(l.amount),0) ledger_cash
-            FROM fund_accounts a LEFT JOIN fund_cash_ledger l USING(product_code)
-            GROUP BY a.product_code HAVING a.cash<>COALESCE(SUM(l.amount),0)
-            ORDER BY a.product_code""").fetchall()]
+        fund_balance_gaps = []
+        for balance in conn.execute("""SELECT product_code,currency_code,decimal_places,
+            balance_minor_units FROM fund_cash_currency_balances
+            ORDER BY product_code,currency_code""").fetchall():
+            ledger_balance = int(conn.execute("""SELECT COALESCE(SUM(amount_minor_units),0)
+                FROM fund_cash_ledger WHERE product_code=? AND currency_code=?""",
+                (balance["product_code"], balance["currency_code"])).fetchone()[0])
+            if int(balance["balance_minor_units"]) != ledger_balance:
+                fund_balance_gaps.append({"product_code": balance["product_code"],
+                    "currency_code": balance["currency_code"],
+                    "native_balance": int(balance["balance_minor_units"]),
+                    "ledger_balance": ledger_balance})
+        for account_row in conn.execute("""SELECT a.product_code,a.cash,i.quote_currency
+            FROM fund_accounts a JOIN investment i USING(product_code)""").fetchall():
+            native = conn.execute("""SELECT balance_minor_units FROM fund_cash_currency_balances
+                WHERE product_code=? AND currency_code=?""",
+                (account_row["product_code"], account_row["quote_currency"])).fetchone()
+            if not native or int(native[0]) != int(account_row["cash"]):
+                fund_balance_gaps.append({"product_code": account_row["product_code"],
+                    "currency_code": str(account_row["quote_currency"]),
+                    "native_balance": int(account_row["cash"]),
+                    "bucket_balance": int(native[0]) if native else None})
         checks.append({"ledger_scope": "fund", "native_entries": len(fund_rows),
                        "common_entries": common_fund_entries,
                        "balance_gaps": fund_balance_gaps,
@@ -1301,7 +1319,9 @@ class AccountingJournal:
             ), fund_links AS (
                 SELECT x.payment_id,COUNT(*) link_count,MIN(l.entry_id) entry_id,
                     MIN(l.product_code) product_code,MIN(l.event) event,
-                    MIN(l.reference) reference,MIN(l.amount) amount
+                    MIN(l.reference) reference,MIN(l.currency_code) currency_code,
+                    MIN(l.decimal_places) decimal_places,
+                    MIN(l.amount_minor_units) amount_minor_units
                 FROM dividend_payment_fund_links x
                 LEFT JOIN fund_cash_ledger l ON l.entry_id=x.fund_entry_id
                 GROUP BY x.payment_id
@@ -1312,7 +1332,8 @@ class AccountingJournal:
                 w.decimal_places wallet_decimal_places,w.delta_minor_units wallet_delta_minor_units,
                 COALESCE(f.link_count,0) fund_link_count,f.entry_id fund_entry_id,
                 f.product_code fund_product_code,f.event fund_event,f.reference fund_reference,
-                f.amount fund_amount,a.product_code owner_product_code
+                f.currency_code fund_currency_code,f.decimal_places fund_decimal_places,
+                f.amount_minor_units fund_amount_minor_units,a.product_code owner_product_code
             FROM dividend_payments p
             JOIN dividend_distributions d USING(distribution_id)
             LEFT JOIN wallet_links w USING(payment_id)
@@ -1357,13 +1378,15 @@ class AccountingJournal:
                             if payment["wallet_delta_minor_units"] is not None else None),
                         "status": "wallet_settlement_mismatch"})
                 continue
-            amount = (to_minor_units(payment["fund_amount"], 0)
-                      if payment["fund_amount"] is not None and currency == "NWX" else None)
-            if (payment["fund_entry_id"] is None or currency != "NWX"
+            amount = (int(payment["fund_amount_minor_units"])
+                      if payment["fund_amount_minor_units"] is not None else None)
+            if (payment["fund_entry_id"] is None
                     or not payment["owner_product_code"]
                     or str(payment["fund_product_code"]) != str(payment["owner_product_code"])
                     or payment["fund_event"] != "dividend"
                     or str(payment["fund_reference"]) != str(payment["asset_code"])
+                    or str(payment["fund_currency_code"]).upper() != currency
+                    or int(payment["fund_decimal_places"]) != places
                     or amount != expected):
                 gaps.append({"payment_id": payment_id,
                     "expected_minor_units": expected,
