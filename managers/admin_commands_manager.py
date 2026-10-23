@@ -15,7 +15,7 @@ from functions.money import parse_currency_money
 COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값','서버설치','소수점거래관리','상품이율수정',
             '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','소득세율','환율수정',
             '국가생성','국가삭제',
-            '복권가격설정','금리수정','시장금리수정','법정최고이자수정','자본변경','증자','정기배당수정','정기배당활성','특별배당실시','합병','액면분할병합',
+            '복권가격설정','금리수정','시장금리수정','법정최고이자수정','자본변경','증자','정기배당수정','정기배당활성','특별배당실시','합병','분할','액면분할병합',
             '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소','거래경고'}
 TAX_SOURCES = {
     'bond_sale_gain', 'corporate_bond_interest', 'els_profit', 'foreign_security_sale_gain',
@@ -55,6 +55,7 @@ USAGE = {
  '정기배당수정':'[id] [주기: 초 또는 1일/1주/1달] [주당 금액 또는 비율%]',
  '정기배당활성':'[id] [on/off 또는 1/0]',
  '특별배당실시':'[id] [주당 배당금]', '합병':'[존속 A id] [통합 B id] [A:B 교환비율(선택)]',
+ '분할':'[인적/물적] [분할회사 id] [신설회사 id] [신설회사 이름] [분할비율%] [신설 발행주식수(선택)] · 이름에 공백이 있으면 "따옴표"',
  '액면분할병합':'[분할/병합] [종목id] [비율]',
  '휴장':'[거래소ID(선택)]', '개장':'[거래소ID(선택)]', '장일시정지':'[거래소ID(선택)]', '장재개':'[거래소ID(선택)]',
  '서킷브레이커':'[거래소ID(선택)] [1/2/3단계]', '사이드카':'[거래소ID(선택)]'}
@@ -282,6 +283,7 @@ class AdminCommandsManager:
                         or (command=='국가생성' and len(args) in {2,3,4,5})
                         or (command=='세율' and len(args) in {1,2})
                         or (command=='합병' and len(args) in {2,3})
+                        or (command=='분할' and len(args) in {5,6})
                         or (command in {'휴장','개장','장일시정지','장재개','사이드카'} and len(args) in {0,1})
                         or (command=='서킷브레이커' and len(args) in {1,2})
                         or (command=='거래경고' and len(args) in {2,3,4}))
@@ -317,7 +319,7 @@ class AdminCommandsManager:
             if command=='ELS취소':
                 from managers.els_manager import ELSManager
                 return self.result_text(ELSManager(self.db,self.bot.user_mgr).cancel(actor,args[0]))
-            if command in {'자본변경','증자','정기배당수정','정기배당활성','특별배당실시','합병','액면분할병합','법인잔고수정','법인청산'}:
+            if command in {'자본변경','증자','정기배당수정','정기배당활성','특별배당실시','합병','분할','액면분할병합','법인잔고수정','법인청산'}:
                 from managers.corporate_actions_manager import CorporateActionsManager
                 manager=CorporateActionsManager(self.bot)
                 if command=='자본변경':result=manager.change_capital(actor,args[0],args[1],args[2],self.control._number(args[3],1,integer=True),self.control._number(args[4],1,integer=True) if len(args)==5 else None)
@@ -331,6 +333,7 @@ class AdminCommandsManager:
                 elif command=='액면분할병합':result=manager.adjust_face_value(actor,args[0],args[1],self.control._number(args[2],2,integer=True))
                 elif command=='법인잔고수정':result=manager.fund_issuer(actor,args[0],args[1],self.control._number(args[2],0,integer=True))
                 elif command=='법인청산':result=manager.liquidate(actor,args[0])
+                elif command=='분할':result=manager.split(actor,args[0],args[1],args[2],args[3],args[4],args[5] if len(args)==6 else None)
                 else:result=manager.merge(actor,args[0],args[1],args[2] if len(args)==3 else '1')
                 return self.result_text(result)
             if command=='기본소득':

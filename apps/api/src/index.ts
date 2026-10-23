@@ -271,6 +271,15 @@ function clientIp(request: IncomingMessage): string {
   return (loopback && forwarded.length ? forwarded[forwarded.length - 1] : peer).slice(0, 64);
 }
 
+// Which web app sent a request, from the page's origin: 4310 is the dashboard, 4311 the HTS.
+function loginApp(request: IncomingMessage): string {
+  const source = String(request.headers.origin ?? request.headers.referer ?? "");
+  try {
+    const port = new URL(source).port;
+    return port === "4310" ? "dashboard" : port === "4311" ? "hts" : "";
+  } catch { return ""; }
+}
+
 // Board attachments live on disk; the Python service keeps their records
 // (web_api/board.py). Same directory and limits on both sides.
 const boardFilesDir = resolve(process.env.INAZINA_BOARD_FILES_DIR ?? join(projectRoot, "database", "board_files"));
@@ -496,7 +505,10 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
       send(response, 429, { error: "login_rate_limited" });
       return;
     }
-    const result = await internalRequest("POST", "/internal/auth/login", undefined, body);
+    // Where the login came from, kept by the Python service for administrator accounts.
+    const meta = { clientIp: clientIp(request), userAgent: String(request.headers["user-agent"] ?? "").slice(0, 300), app: loginApp(request) };
+    const result = await internalRequest("POST", "/internal/auth/login", undefined,
+      { ...(body && typeof body === "object" ? body : {}), meta });
     if (result.status === 200 && result.body.user?.userId) {
       failedLogins.delete(attemptKey);
       send(response, 200, result.body, { "set-cookie": sessionHeader(result.body.user.userId, result.body.user.authVersion) });
@@ -602,6 +614,16 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/admin/login-history") {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const target = url.searchParams.get("user");
+    const result = await internalGet(`/internal/admin/login-history${target ? `?user=${encodeURIComponent(target)}` : ""}`, principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
   if (request.method === "GET" && url.pathname === "/api/admin/audit") {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });

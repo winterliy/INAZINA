@@ -336,7 +336,15 @@ class CurrencyAccountStorageTests(unittest.TestCase):
     def test_registered_currency_amount_snapshots_reconcile_to_source_rows(self):
         with self.db.readonly() as conn:
             findings = audit_amount_snapshots(conn)
+            registered = conn.execute("""SELECT 1 FROM financial_amount_field_registry
+                WHERE source_table='user_assets' AND amount_field='average_cost'""").fetchone()
+            empty_field = conn.execute("""SELECT 1 FROM financial_amount_field_registry
+                WHERE source_table='aml_alerts' AND amount_field='amount'""").fetchone()
+            alert_count = conn.execute("SELECT COUNT(*) FROM aml_alerts").fetchone()[0]
         self.assertEqual(findings, [])
+        self.assertIsNotNone(registered)
+        self.assertEqual(alert_count, 0)
+        self.assertIsNotNone(empty_field)
         row = self.db.currency.execute_one(
             "SELECT source_table,source_key,amount_field FROM financial_amount_snapshots LIMIT 1"
         )

@@ -1340,6 +1340,10 @@ class CurrencyDB(DBManager):
                 CHECK(decimal_places BETWEEN 0 AND 6), amount_minor_units INTEGER NOT NULL
                 CHECK(typeof(amount_minor_units)='integer'),
             PRIMARY KEY(source_table,source_key,amount_field))""")
+        self.execute("""CREATE TABLE IF NOT EXISTS financial_amount_field_registry (
+            source_table TEXT NOT NULL, source_key_field TEXT NOT NULL,
+            amount_field TEXT NOT NULL, currency_expression TEXT NOT NULL,
+            PRIMARY KEY(source_table,source_key_field,amount_field))""")
         snapshot_columns = {row[1] for row in self.execute(
             "PRAGMA table_info(financial_amount_snapshots)")}
         if "source_key_field" not in snapshot_columns:
@@ -1355,6 +1359,12 @@ class CurrencyDB(DBManager):
             amount_cols = sorted(columns & available)
             if not amount_cols:
                 continue
+            for amount_col in amount_cols:
+                self.execute("""INSERT INTO financial_amount_field_registry
+                    (source_table,source_key_field,amount_field,currency_expression)
+                    VALUES (?,?,?,?) ON CONFLICT(source_table,source_key_field,amount_field)
+                    DO UPDATE SET currency_expression=excluded.currency_expression""",
+                    (table, key_col, amount_col, currency_expr))
             rows = self.execute(f'SELECT "{key_col}",{",".join(chr(34)+c+chr(34) for c in amount_cols)} FROM "{table}"')
             for row in rows:
                 # Existing-row currency lookup uses the row context; handle the

@@ -129,6 +129,8 @@ def audit_amount_snapshots(conn):
             continue
         columns = {item[1] for item in conn.execute(f'PRAGMA table_info("{table}")')}
         if key_field not in columns or field not in columns:
+            findings.append({"source_table": table, "source_key": "*",
+                             "amount_field": field, "status": "missing_source_field"})
             continue
         missing = conn.execute(
             f'''SELECT CAST(src."{key_field}" AS TEXT) source_key

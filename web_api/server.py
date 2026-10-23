@@ -38,7 +38,7 @@ from functions.dr_pricing import (
     reference_metrics as dr_reference_metrics,
 )
 from functions.performance import log_slow
-from web_api import board, documents
+from web_api import admin_logins, board, documents
 _domain = None
 _domain_lock = threading.Lock()
 
@@ -426,6 +426,16 @@ def submit_feedback(payload):
             (kind, values["title"], values["body"], values["discordId"], values["email"], int(time.time())),
         ).lastrowid
     return {"id": feedback_id, "kind": kind}
+
+
+def record_admin_login(login_id, success, meta, reason=None):
+    """Keep a login record for administrator accounts; never lets a logging error block a login."""
+    try:
+        with connect_db(timeout=5) as connection:
+            admin_logins.record(connection, login_id, success, meta,
+                                bootstrap_ids=BOOTSTRAP_ADMIN_IDS, reason=reason)
+    except (sqlite3.Error, ValueError, TypeError):
+        logging.getLogger("inazina.auth").exception("admin login record failed")
 
 
 def admin_feedback(status=None):
@@ -2297,7 +2307,7 @@ def product_list(group):
                              "kind": kind, "status": item.get("status") or "active",
                              "exchangeId": item.get("exchange_id"), "currency": item.get("quote_currency"),
                              "value": item.get(headline)}
-                if source == "market_assets" and item.get("type") == "depositary_receipt":
+                if table == "market_assets" and item.get("type") == "depositary_receipt":
                     program = connection.execute(
                         "SELECT * FROM depositary_receipts WHERE dr_code=?", (str(item[key]),)
                     ).fetchone()
@@ -3361,6 +3371,15 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "admin_required"})
                 else:
                     self.send_json(200, {"events": admin_events(), "flows": admin_market_flows()})
+            elif path == "/internal/admin/login-history":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    target = parse_qs(parsed.query).get("user", [""])[0].strip() or None
+                    with connect_db(timeout=5) as connection:
+                        self.send_json(200, {"events": admin_logins.history(connection, target),
+                                             "retentionDays": admin_logins.RETENTION_SECONDS // 86400})
             elif path == "/internal/admin/audit":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -3672,6 +3691,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(401, {"error": "invalid_credentials"})
                     return
                 user, account_exists = authenticate_login_identifier(user_id, payload.get("password"))
+                record_admin_login(user_id, bool(user), payload.get("meta"),
+                                   None if user else "account_not_found" if not account_exists else "invalid_credentials")
                 if not account_exists:
                     self.send_json(404, {"error": "account_not_found"})
                     return

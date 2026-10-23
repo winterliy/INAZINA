@@ -1363,6 +1363,156 @@ class CorporateActionsManager:
             return False, f'❌ {exc}'
 
     @staticmethod
+    def _split_ratio(text):
+        """Share of the parent that moves to the new company, e.g. '30' or '30%' -> 3/10."""
+        try:
+            percent = Decimal(str(text).strip().removesuffix('%'))
+            if not percent.is_finite() or not 0 < percent < 100 or percent != percent.quantize(Decimal('0.01')):
+                raise ValueError()
+        except (InvalidOperation, ValueError):
+            raise ValueError('분할비율은 0 초과 100 미만의 %로 입력해주세요 (소수점 둘째 자리까지). 예: 30%') from None
+        return Fraction(percent) / 100
+
+    def split(self, actor, kind, code, new_code, new_name, ratio_text, new_shares=None):
+        """인적분할 (spin-off) or 물적분할 (split-off) of a listed common-stock company.
+
+        The split ratio's share of the parent's issuer cash and capital moves to a new listed
+        company. 인적: the parent's shareholders receive the new shares pro rata and the
+        parent's price drops by the same share. 물적: the parent's capital account owns every
+        new share, so the parent's price is unchanged and the new company is its subsidiary.
+        """
+        try:
+            kind = str(kind).strip().removesuffix('분할')
+            if kind not in {'인적', '물적'}:
+                raise ValueError('분할 유형은 인적 또는 물적입니다.')
+            code, new_code, new_name = str(code).strip(), str(new_code).strip(), str(new_name).strip()
+            if not new_code or len(new_code) > 80 or any(ch.isspace() for ch in new_code):
+                raise ValueError('신설회사 id는 공백 없는 1~80자로 입력해주세요.')
+            if not new_name or len(new_name) > 80:
+                raise ValueError('신설회사 이름은 1~80자로 입력해주세요.')
+            ratio = self._split_ratio(ratio_text)
+            now = int(time.time())
+            with DBManager.admin_scope(actor), self.db.atomic() as conn:
+                self._require(conn, actor)
+                listing = self._listing(conn, code)
+                if listing['table'] != 'company' or listing['status'] != 'active' or listing['share_class'] != 'common':
+                    raise ValueError('분할은 거래 중인 보통주 법인에만 사용할 수 있습니다.')
+                if DBManager.code_locations(conn, new_code):
+                    raise ValueError(f'`{new_code}`는 이미 사용 중인 코드입니다.')
+                if conn.execute("SELECT 1 FROM depositary_receipts WHERE underlying_code=? "
+                                "AND program_status<>'terminated' LIMIT 1", (code,)).fetchone():
+                    raise ValueError('기초주식에 미종료 DR 프로그램이 있습니다. 먼저 DR을 상환하고 프로그램을 종료해주세요.')
+                self._unencumbered(conn, [code])
+                price, supply = int(listing['share_price']), int(listing['total_shares'] or 0)
+                shares = supply if new_shares is None else self._integer(new_shares, '신설회사 발행주식수', 1)
+                if min(price, supply) <= 0:
+                    raise ValueError('가격과 발행주식수가 양수인 법인만 분할할 수 있습니다.')
+                currency = listing.get('quote_currency') or 'NWX'
+                new_price = max(1, round(Fraction(price * supply) * ratio / shares))
+                capital = int(listing['capital'] or 0)
+                moved_capital = round(capital * ratio)
+                Finance.ensure(conn, code, now)
+                cash = conn.execute('SELECT balance,locked_amount FROM issuer_cash_accounts WHERE company_code=?', (code,)).fetchone()
+                if cash and int(cash['locked_amount']):
+                    raise ValueError('법인의 잠금 예치금을 먼저 정산해주세요.')
+                moved_cash = round(int(cash['balance']) * ratio) if cash and int(cash['balance']) > 0 else 0
+
+                # The new company keeps the parent's market and simulation settings, no dividend schedule.
+                conn.execute(
+                    'INSERT INTO company(company_code,name,industry,capital,total_shares,share_price,max_shareholder_id,'
+                    'exchange_id,status,is_fixed,market_condition,market_volatility,quote_currency,liquidity,'
+                    'trend_sensitivity,sector_sensitivity,jump_intensity,mean_reversion,Fractal) '
+                    "VALUES (?,?,?,0,?,?,?,?,'active',?,?,?,?,?,?,?,?,?,?)",
+                    (new_code, new_name, listing['industry'], shares, new_price, TREASURY_USER_ID,
+                     listing['exchange_id'], listing['is_fixed'], listing['market_condition'], listing['market_volatility'],
+                     currency, listing['liquidity'], listing['trend_sensitivity'], listing['sector_sensitivity'],
+                     listing['jump_intensity'], listing['mean_reversion'], listing['Fractal']))
+                Finance.ensure(conn, new_code, now)  # opens an empty ledger; the split entry below fills it
+                conn.execute('UPDATE company SET capital=? WHERE company_code=?', (moved_capital, new_code))
+                conn.execute('INSERT INTO issuer_cash_accounts(company_code,balance) VALUES (?,?)', (new_code, moved_cash))
+                if moved_cash:
+                    conn.execute('UPDATE issuer_cash_accounts SET balance=balance-? WHERE company_code=?', (moved_cash, code))
+
+                entity = Finance.entity(conn, code)
+                places = int(entity['decimal_places'])
+                cash_units = Finance.converted(conn, moved_cash, 'NWX', entity['currency'], places)
+                capital_units = Finance.converted(conn, moved_capital, currency, entity['currency'], places)
+                label = f'{kind}분할'
+                # New company: receives the cash; capital as set, the rest is capital surplus.
+                Finance.post(conn, new_code, f'split:in:{code}:{now}', f'{label} 신설 · `{code}`에서 이전',
+                             [('cash', cash_units), ('common_capital', -capital_units),
+                              ('capital_surplus', capital_units - cash_units)], 'financing', now)
+
+                allocations = []
+                if kind == '인적':
+                    # Shareholders receive the new company; the parent's equity shrinks by what left.
+                    conn.execute('UPDATE company SET capital=? WHERE company_code=?', (capital - moved_capital, code))
+                    Finance.post(conn, code, f'split:out:{new_code}:{now}', f'{label} · `{new_code}` 신설, 주주에게 배정',
+                                 [('cash', -cash_units), ('common_capital', capital_units),
+                                  ('adjustment', cash_units - capital_units)], 'financing', now)
+                    lots = conn.execute('SELECT * FROM user_assets WHERE asset_code=? ORDER BY holding_id', (code,)).fetchall()
+                    owned = sum(Fraction(str(lot['quantity'])) for lot in lots)
+                    if owned > supply:
+                        raise ValueError('보유 수량이 총 발행량을 초과합니다.')
+                    scale = 1000 if listing.get('Fractal') else 1
+                    weights = [lot['quantity'] for lot in lots] + [supply - owned]
+                    allocated = [Fraction(value, scale) for value in self._allocate(shares * scale, weights)]
+                    for lot, units in zip(lots, allocated):
+                        quantity, cost = Fraction(str(lot['quantity'])), int(lot['average_cost'])
+                        conn.execute('UPDATE user_assets SET average_cost=? WHERE holding_id=?',
+                                     (round(cost * (1 - ratio)), lot['holding_id']))
+                        if units:
+                            conn.execute("INSERT INTO user_assets(user_id,asset_code,account_number,quantity,average_cost) VALUES (?,?,?,?,?) "
+                                         "ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET "
+                                         "average_cost=(quantity*average_cost+excluded.quantity*excluded.average_cost)/(quantity+excluded.quantity),"
+                                         "quantity=quantity+excluded.quantity",
+                                         (lot['user_id'], new_code, lot['account_number'], float(units) if scale > 1 else int(units),
+                                          round(cost * quantity * ratio / units)))
+                        allocations.append({'user_id': lot['user_id'], 'account_number': lot['account_number'],
+                                            'parent_quantity': float(quantity), 'new_shares': float(units)})
+                    if allocated[-1]:
+                        # Unissued parent shares sit with the listing treasury, as in a bonus issue.
+                        conn.execute("INSERT INTO user_assets(user_id,asset_code,quantity,average_cost) VALUES (?,?,?,0) "
+                                     "ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET "
+                                     "average_cost=quantity*average_cost/(quantity+excluded.quantity),quantity=quantity+excluded.quantity",
+                                     (CurrencyManager.exchange_treasury(conn, code), new_code,
+                                      float(allocated[-1]) if scale > 1 else int(allocated[-1])))
+                    parent_price = max(1, round(price * (1 - ratio)))
+                    conn.execute('UPDATE company SET share_price=? WHERE company_code=?', (parent_price, code))
+                    conn.execute('UPDATE fund_components SET base_price=base_price*?/ ? WHERE asset_code=?', (parent_price, price, code))
+                    self._reset_market_state(conn, code, parent_price, supply)
+                    conn.execute('INSERT INTO market_price_history(asset_code,price,recorded_epoch) VALUES (?,?,?) '
+                                 'ON CONFLICT(asset_code,recorded_epoch) DO UPDATE SET price=excluded.price', (code, parent_price, now))
+                    owner_text = f'주주 {len({lot["user_id"] for lot in lots}):,}명에게 비례 배정'
+                else:
+                    # The parent swaps the cash it handed over for a 100% holding in the new company.
+                    from managers.company_account_manager import CompanyAccounts
+                    owner = CompanyAccounts.account_id(conn, code)
+                    Finance.post(conn, code, f'split:out:{new_code}:{now}', f'{label} · `{new_code}` 지분 100% 취득',
+                                 [('cash', -cash_units), ('investments', cash_units)], 'investing', now)
+                    conn.execute('INSERT INTO user_assets(user_id,asset_code,quantity,average_cost) VALUES (?,?,?,?)',
+                                 (owner, new_code, shares, new_price))
+                    parent_price = price
+                    owner_text = f'`{code}` 법인이 100% 보유 (자회사)'
+                conn.execute('INSERT INTO market_price_history(asset_code,price,recorded_epoch) VALUES (?,?,?) '
+                             'ON CONFLICT(asset_code,recorded_epoch) DO UPDATE SET price=excluded.price', (new_code, new_price, now))
+                Finance.record_shares(conn, new_code, now)
+                UserManager._refresh_max_shareholder(conn, new_code)
+                UserManager._refresh_max_shareholder(conn, code)
+                payload = {'kind': kind, 'parent': code, 'new': new_code, 'name': new_name, 'ratio': str(ratio),
+                           'new_shares': shares, 'new_price': new_price, 'old_price': price, 'parent_price': parent_price,
+                           'moved_cash': moved_cash, 'moved_capital': moved_capital, 'currency': currency,
+                           'allocations': allocations}
+                self._record(conn, f'split:{uuid.uuid4().hex}', 'spin_off' if kind == '인적' else 'split_off', code, new_code, payload, now)
+                self._audit(conn, actor, 'split', code, payload, now)
+            percent = f'{float(ratio * 100):g}%'
+            return True, (f'✅ `{code}` {kind}분할 완료 · 신설 `{new_code}` {new_name} ({percent}) · '
+                          f'{shares:,}주 × {new_price:,} {currency} · {owner_text} · '
+                          f'`{code}` 가격 {price:,} → {parent_price:,} · 이전 현금 {moved_cash:,} NWX · 자본금 {moved_capital:,}')
+        except (ValueError, TypeError, OverflowError, ZeroDivisionError) as exc:
+            return False, f'❌ {exc}'
+
+    @staticmethod
     def _merge_components(conn, a, b, price_a, price_b):
         for row in conn.execute('SELECT * FROM fund_components WHERE asset_code=?', (b,)).fetchall():
             existing = conn.execute('SELECT * FROM fund_components WHERE product_code=? AND asset_code=?', (row['product_code'], a)).fetchone()

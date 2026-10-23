@@ -10,6 +10,7 @@ import { CompaniesPage } from "./CompaniesPage";
 import { WarningsCard } from "./WarningsCard";
 import { IdentityCard } from "./IdentityCard";
 import { FeedbackPage } from "./FeedbackPage";
+import { LoginHistoryCard } from "./LoginHistoryCard";
 import { LogCard } from "./LogCard";
 import { BoardAdminPage } from "./BoardAdminPage";
 import { DocumentsPage } from "./DocumentsPage";
@@ -69,7 +70,7 @@ const subtitles: Record<Page, string> = {
   events: "호재·악재 사건을 등록하고 최근 사건을 확인합니다.",
   commands: "Discord의 모든 $ 명령어와 도움말을 같은 검증과 기록으로 실행합니다.",
   database: "DB Browser에서 하던 설정 편집을 감사 기록과 함께 처리합니다.",
-  audit: "모든 관리자 작업의 최근 기록입니다.",
+  audit: "모든 관리자 작업과 관리자 계정 로그인의 최근 기록입니다.",
 };
 const number = (value: number) => new Intl.NumberFormat("ko-KR").format(value);
 const date = (value: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "medium" }).format(value * 1000);
@@ -482,6 +483,7 @@ export default function App() {
             <td>{date(entry.time)}</td><td className="mono">{entry.actorId}</td><td><span className="tag">{entry.action}</span></td><td className="audit-payload mono" title={JSON.stringify(entry.payload)}>{JSON.stringify(entry.payload)}</td>
           </tr>)}</tbody></table>{!audit.length && <p className="empty">기록이 없습니다.</p>}</div>
         </Card>}
+        {page === "audit" && <LoginHistoryCard ctx={ctx} />}
         <p className="foot">INAZINA 로컬 관리 콘솔 · 모든 관리자 요청은 API에서 권한을 다시 확인합니다.</p>
       </main>
     </div>
