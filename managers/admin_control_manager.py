@@ -875,8 +875,12 @@ class AdminControlManager:
                 changes['income_stability'] = self._number(
                     changes['income_stability'], 0, 1
                 )
-            if changes.get('role',user['role']) not in {'admin','user','nation'} or changes.get('status',user['status']) not in {'active','inactive','bankrupt'}:
+            # Company accounts keep their 'company' role; only a change has to be a settable role.
+            if (changes.get('role', user['role']) != user['role'] and changes['role'] not in {'admin','user','nation'}) \
+                    or changes.get('status',user['status']) not in {'active','inactive','bankrupt'}:
                 raise ValueError("role/status 값을 확인해주세요.")
+            if user['role'] == 'company' and changes.get('role', 'company') != 'company':
+                raise ValueError("법인 계정의 권한은 바꿀 수 없습니다.")
             if user_id==str(actor) and (changes.get('role')=='user' or changes.get('status') in {'inactive','bankrupt'}):
                 raise ValueError("현재 관리자는 자신의 관리 권한을 제거할 수 없습니다.")
             if changes:

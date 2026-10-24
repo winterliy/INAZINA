@@ -57,11 +57,6 @@ const pages: { id: Page; label: string }[] = [
   { id: "database", label: "DB 편집" },
   { id: "audit", label: "작업 기록" },
 ];
-// The sub-navigation groups pages by job, so fifteen links read as five short lists.
-const NAV_GROUPS: [string, Page[]][] = [
-  ["현황", ["overview"]], ["시장", ["instruments", "exchanges", "events"]], ["금융", ["finance", "companies", "accounting"]],
-  ["사용자", ["users", "compliance", "feedback", "board"]], ["운영", ["commands", "documents", "database", "audit"]],
-];
 const subtitles: Record<Page, string> = {
   account: "관리자 계정의 로그인 정보, 실행 명의와 최근 로그인을 관리합니다.",
   overview: "시장 상태와 서비스 연결을 확인하고 거래소를 제어합니다.",
@@ -441,14 +436,10 @@ export default function App() {
       </header>
       <nav className="subnav" aria-label="관리 메뉴">
         <div className="subnav-in">
-          <span className="subnav-title">관리</span>
-          {NAV_GROUPS.map(([group, ids]) => <div key={group} className="subnav-group" role="group" aria-label={group}><span className="subnav-group-label">{group}</span>
-            {ids.map((id) => pages.find((item) => item.id === id)!).map((item) => <button key={item.id} type="button" className="subnav-item" aria-current={page === item.id ? "page" : undefined} onClick={() => setPage(item.id)}>
-              {item.label}
-              {item.id === "feedback" && unreadFeedback > 0 && <span className="nav-badge" aria-label={`새 알림 ${unreadFeedback}건`}>{unreadFeedback}</span>}
-            </button>)}
-          </div>)}
-          <button type="button" className="subnav-jump" onClick={() => setJumpOpen(true)} title="페이지 바로가기 (⌘K)">바로가기 <kbd>⌘K</kbd></button>
+          {pages.filter((item) => item.id !== "account").map((item) => <button key={item.id} type="button" className="subnav-item" aria-current={page === item.id ? "page" : undefined} onClick={() => setPage(item.id)}>
+            {item.label}
+            {item.id === "feedback" && unreadFeedback > 0 && <span className="nav-badge" aria-label={`새 알림 ${unreadFeedback}건`}>{unreadFeedback}</span>}
+          </button>)}
         </div>
       </nav>
       <main className="content">

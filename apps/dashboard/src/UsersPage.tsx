@@ -117,7 +117,7 @@ function UserTab({ ctx, countries, currentUserId, companies }: { ctx: Ctx; count
             <input maxLength={200} value={creditReason} onChange={(event) => setCreditReason(event.target.value)} />
           </Field>}
           <Field label="상태"><select value={form.status ?? ""} disabled={id === currentUserId} onChange={(event) => setForm({ ...form, status: event.target.value })}><option value="active">active (활성)</option><option value="inactive">inactive (비활성)</option><option value="bankrupt">bankrupt (파산)</option></select></Field>
-          <Field label="권한"><select value={form.role ?? ""} disabled={id === currentUserId} onChange={(event) => setForm({ ...form, role: event.target.value })}><option value="user">user</option><option value="admin">admin</option><option value="nation">nation (국가)</option></select></Field>
+          <Field label="권한"><select value={form.role ?? ""} disabled={id === currentUserId || form.role === "company"} onChange={(event) => setForm({ ...form, role: event.target.value })}>{form.role === "company" && <option value="company">company (법인)</option>}<option value="user">user</option><option value="admin">admin</option><option value="nation">nation (국가)</option></select></Field>
           <button className="btn primary" disabled={busy}>저장</button>
         </form>
       </Card>

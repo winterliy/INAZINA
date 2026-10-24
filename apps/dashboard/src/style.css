@@ -377,8 +377,7 @@ tr.selected td { background: var(--select); }
 
 .subnav { position: sticky; top: 0; z-index: 10; background: rgba(255, 255, 255, .86); box-shadow: inset 0 -1px 0 var(--line); backdrop-filter: saturate(180%) blur(20px); -webkit-backdrop-filter: saturate(180%) blur(20px); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .subnav { background: rgba(0, 0, 0, .78); } }
-.subnav-in { display: flex; align-items: center; gap: 28px; overflow-x: auto; scrollbar-width: none; white-space: nowrap; }
-.subnav-title { flex: none; padding-right: 8px; font-size: 21px; font-weight: 600; letter-spacing: .01em; }
+.subnav-in { display: flex; align-items: center; justify-content: space-between; gap: 20px; overflow-x: auto; scrollbar-width: none; white-space: nowrap; }
 .subnav-item { flex: none; display: inline-flex; align-items: center; gap: 6px; min-height: 52px; padding: 0; border: 0; border-radius: 0; color: var(--ink); background: transparent; font-size: 13px; }
 .subnav-item:hover { color: var(--accent); }
 .subnav-item[aria-current="page"] { font-weight: 600; box-shadow: inset 0 -2px 0 var(--ink); }
@@ -541,14 +540,7 @@ tr.selected td { background: var(--select); }
 /* Links styled as buttons (HTS shortcuts) */
 a.btn, a.soft { display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 0 18px; border-radius: 999px; text-decoration: none; }
 a.btn.primary { color: #fff; background: var(--accent); }
-/* Grouped sub-navigation and the ⌘K jump palette */
-.subnav-in { gap: 0; }
-.subnav-group { display: flex; flex: none; align-items: center; gap: 22px; padding: 0 22px; }
-.subnav-group + .subnav-group { box-shadow: inset 1px 0 0 var(--line); }
-.subnav-group:first-of-type { padding-left: 0; }
-.subnav-group-label { color: var(--ink2); font-size: 11px; font-weight: 600; letter-spacing: .02em; }
-.subnav-jump { flex: none; display: inline-flex; align-items: center; gap: 8px; min-height: 32px; margin-left: auto; padding: 0 12px; border: 0; border-radius: 999px; color: var(--ink2); background: var(--chip); font-size: 12px; }
-.subnav-jump kbd { font-family: var(--font-mono); font-size: 11px; }
+/* The ⌘K jump palette */
 .jump-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; justify-items: center; align-items: start; padding: 12vh 16px 16px; background: rgba(0, 0, 0, .32); }
 .jump { display: grid; gap: 6px; width: min(560px, 100%); padding: 10px; border-radius: 20px; background: var(--canvas); box-shadow: 0 30px 80px rgba(0, 0, 0, .35); }
 .jump input { height: 48px; padding: 0 14px; border: 0; border-radius: 12px; outline: 0; background: var(--surface); font-size: 16px; }
@@ -556,5 +548,4 @@ a.btn.primary { color: #fff; background: var(--accent); }
 .jump li button { display: grid; gap: 2px; width: 100%; min-height: 0; padding: 10px 12px; border: 0; border-radius: 10px; background: transparent; text-align: left; }
 .jump li button:hover, .jump li:first-child button { background: var(--select); }
 .jump li small { overflow: hidden; color: var(--ink2); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-@media (max-width: 760px) { .subnav-group { gap: 16px; padding: 0 14px; } .subnav-jump { display: none; } }
 button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); background: none; box-shadow: none; font: inherit; cursor: pointer; text-align: left; }
