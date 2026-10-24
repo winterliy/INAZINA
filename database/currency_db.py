@@ -803,7 +803,8 @@ class CurrencyDB(DBManager):
         self.execute("""CREATE TRIGGER trg_insurance_payout_minor_insert
             BEFORE INSERT ON deposit_insurance_claims
             WHEN (NEW.payout_amount IS NULL AND (NEW.payout_amount_minor_units IS NOT NULL OR NEW.payout_decimal_places IS NOT NULL))
-              OR (NEW.payout_amount IS NOT NULL AND (
+              OR (NEW.payout_amount IS NOT NULL AND NEW.payout_currency IS NOT NULL
+                  AND EXISTS (SELECT 1 FROM currencies WHERE code=NEW.payout_currency) AND (
                     NEW.payout_amount_minor_units IS NULL OR NEW.payout_decimal_places IS NULL
                     OR NEW.payout_decimal_places <> COALESCE((SELECT decimal_places FROM currencies WHERE code=NEW.payout_currency),-1)
                     OR NEW.payout_amount_minor_units <> CAST(ROUND(NEW.payout_amount * CASE NEW.payout_decimal_places WHEN 0 THEN 1 WHEN 1 THEN 10 WHEN 2 THEN 100 END) AS INTEGER)
