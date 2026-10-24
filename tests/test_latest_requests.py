@@ -146,8 +146,46 @@ class LatestRequestsTests(unittest.TestCase):
         self.assertIsNone(self.db.assets.execute_one("SELECT quantity FROM user_assets WHERE user_id='alice' AND asset_code='INZUSDST001'"))
         self.assertEqual(self.db.assets.execute_one("SELECT quantity FROM user_assets WHERE user_id='bob' AND asset_code='INZUSDST001'")[0],1)
         tax=self.db.tax.execute_one("SELECT * FROM tax_transactions WHERE source='foreign_security_sale_gain'")
-        self.assertEqual((tax['gross_amount'],tax['tax_amount']),(15000,450))
+        self.assertEqual((tax['gross_amount'],tax['tax_amount'],tax['currency_code']),(10,0.3,'USD'))
         self.assertEqual(self.db.accounts.execute_one("SELECT balance_units FROM accounts WHERE user_id='alice' AND account_type='currency_saving' AND quote_currency='USD'")[0],276100000)
+
+    def test_foreign_orders_match_and_reserve_in_currency_minor_units(self):
+        self.seed()
+        CatalogManager(self.db).seed_foreign()
+        from managers.order_book_manager import OrderBookManager
+        book=OrderBookManager(self.db,self.bot.user_mgr)
+        self.bot.currency_mgr.open_account('alice','INZCU001')
+        self.bot.currency_mgr.exchange('alice','NWX','USD','400000')
+        self.db.currency.execute("UPDATE currencies SET decimal_places=2 WHERE code='USD'")
+        success,message=book.place_limit_order('alice','INZUSDST001','buy',1,80.20)
+        self.assertTrue(success,message)
+        reserved=self.db.assets.execute_one(
+            "SELECT limit_price_minor_units,reserved_cash_minor_units,status "
+            "FROM market_orders WHERE user_id='alice' AND asset_code='INZUSDST001' "
+            "ORDER BY order_id DESC LIMIT 1"
+        )
+        self.assertEqual(tuple(reserved),(8020,8020,'open'))
+
+        success,message=book.place_limit_order('alice','INZUSDST001','buy',1,110.20)
+        self.assertTrue(success,message)
+        order=self.db.assets.execute_one(
+            "SELECT limit_price_minor_units,reserved_cash_minor_units,status "
+            "FROM market_orders WHERE user_id='alice' AND asset_code='INZUSDST001' "
+            "ORDER BY order_id DESC LIMIT 1"
+        )
+        self.assertEqual(tuple(order),(11020,0,'filled'))
+        trade=self.db.assets.execute_one(
+            "SELECT price_minor_units,gross_minor_units FROM market_execution_events "
+            "WHERE asset_code='INZUSDST001' AND buyer_id='alice' "
+            "ORDER BY recorded_epoch DESC LIMIT 1"
+        )
+        self.assertEqual(tuple(trade),(11000,11000))
+        links=self.db.assets.execute_one(
+            "SELECT COUNT(*) FROM market_execution_wallet_links l "
+            "JOIN market_execution_events e USING(execution_key) "
+            "WHERE e.asset_code='INZUSDST001' AND e.buyer_id='alice'"
+        )[0]
+        self.assertGreater(links,0)
 
     def test_foreign_security_missing_account_and_insufficient_currency_do_not_use_nwx_cash(self):
         self.seed()

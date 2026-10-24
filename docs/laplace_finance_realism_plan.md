@@ -108,7 +108,7 @@
 ### M4 — #74 상품화폐 회계 기반
 
 - [x] 금액 원천·저장 필드를 통화 선택식과 함께 `financial_amount_field_registry`에 등록하고, 행 단위 snapshot·스키마 누락 감사를 통합 대사에 연결한다. 실제 가격형 시장 이벤트는 별도 미분류 후보로 close를 막으며, 통화별 snapshot 규칙은 남아 있다. 이 스키마 검사는 소비자 코드의 전사 계보를 증명하지 않는다.
-- [ ] 상품통화 scale 기반 정수 최소단위 또는 Decimal을 공통 경계로 확대한다. `to_minor_units`/`from_minor_units`와 `AccountingJournal.post`가 공통 계약이지만, 시장 가격매칭, 옵션·선물, 대출 생애주기, 담보처분 등 남은 consumer를 모두 canonical 정수 경로로 옮겨야 한다.
+- [ ] 상품통화 scale 기반 정수 최소단위 또는 Decimal을 공통 경계로 확대한다. `to_minor_units`/`from_minor_units`와 `AccountingJournal.post`가 공통 계약이다. 외화 증권 주문의 지정가 매칭·가격 개선·매도손익 과세 및 체결 이벤트는 상품통화 최소단위 경로로 이관했으나, 표준 매처, 옵션·선물, 대출 생애주기, 담보처분 등 남은 consumer를 모두 canonical 정수 경로로 옮겨야 한다.
 - [ ] 표준 고객·기관·회사·세금·시장·펀드·대출·국채·회사채의 원금/현금/수수료/세금/손익 경로를 상품통화 최소단위로 연결한다. 현재 일부 회사채·시장·세금·지급 경로가 남아 있으며 [금액 인벤토리](financial_amount_inventory.md)의 미완료 항목을 종결해야 한다.
 - [ ] 고객·기관·회사 원장을 공통 전기 규약/계정 매핑에 연결한다. 공통 분개 프레임은 있지만 모든 거래유형의 settlement, cash clearing, FX clearing 및 회사/기관 손익 연결은 아직 일치하지 않는다.
 - [ ] 고객·상품·시장·대출·채권·펀드·세금의 전체 보조원장을 관리자 대사로 묶고 통화/scale별 시산표와 누락·중복·불균형 finding을 제공한다. 현재 `reconcile_all_financial_ledgers`는 구현된 검사 범위 집계이며 미연결 보조원장은 완료되지 않았다.
@@ -397,3 +397,5 @@ ECL 충당금도 대출별 `ecl_allowance_minor_units`를 추가해 백필·양�
 2026-10-24 문서 요약·배당 검증 일반화·조회 최적화: 이 계획서 첫머리에 목표/범위, 완료 단계, M4/M6–M8 잔여를 요약하고 12장 표의 M4 설명을 현재 WBS 체크와 일치시켰다. 배당 금액 필드 snapshot 테스트는 USD/EUR(2자리)와 기준 통화(0자리)를 함께 검증한다. 구현은 USD 상수가 아니라 각 행의 `quote_currency`와 `currencies.decimal_places`를 읽는다. 고객 wallet payout 대사도 지급 통화 scale을 사용한다. 펀드 cash ledger와 펀드 배당 수령은 아직 기준 통화 전용이라 별도 제한으로 유지한다. 대사 함수의 지급별 링크 SELECT를 집계 CTE로 묶고 통화 정밀도를 통화별 한 번만 조회해 쿼리를 결제 수가 아닌 distinct currency 수에 비례하도록 줄였다. 검증: 통화/금액·주주명부·펀드 회귀 **69 tests, 67.916초, OK**.
 
 2026-10-24 추가: 펀드 현금 처리를 connection-bound `FundCashLedger`로, 펀드 배당 수령을 `FundDividendReceiver`로 분리했다. 현금 잔액·원장 항목에 수령 통화, 정밀도, 최소단위 정수를 저장하고 공통 복식부기 전기도 그 통화·최소단위를 그대로 사용한다. 기존 기준 통화 펀드 현금 API는 호환 wrapper로 유지했다. 외화 배당 현금은 상품 통화로 환산해 NAV에 포함하며, 기존 기준 통화 구성자산 주문 경로는 외화 잔액을 자동으로 지출하지 않는다. 테스트로 USD 12.34 입금·잔액/공통분개 대사, USD 1.23 펀드 배당 원장 수령 및 기존 기준 통화 배당 흐름을 확인한다. 이는 펀드의 외화 매매·환헤지나 전체 금융 코드의 모든 레거시 기본통화 fallback 제거를 뜻하지 않는다.
+
+2026-10-24 M4 재개 — 외화 증권 주문: `ForeignSecuritiesManager`가 주문 예치금, 호가 비교/우선순위, 가격 개선 환급, 발행대금, 매도손익 및 세금을 quote-currency 최소단위 정수로 계산한다. 매도세는 환율로 임의 환산해 기준 통화에 과세하지 않고 지급 통화 기준으로 세금 이벤트에 기록한다. 외화 체결도 공통 `market_execution_events` 및 균형 시장 분개에 연결하고, 체결 중 생성된 지갑 항목을 불변 체결 링크로 묶는다. USD 소수 지정가·예약·체결 총액/지갑링크와 외화 매도세 회귀 2건 및 `tests.test_market_sessions` 19건은 통과했다. `tests.test_latest_requests` 전체 26건 실행에는 기존 FX 표시 문자열 기대값 관련 실패 1건이 있었고, 외화 주문 관련 타깃 테스트는 통과했다. 외화 주식의 `user_assets.average_cost`와 기존 외화 계좌 micro-unit는 호환 저장 표현이므로 완전한 canonical 저장·전사 cash/position clearing까지 끝난 것은 아니며 M4 체크박스는 계속 미완료다.

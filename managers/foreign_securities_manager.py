@@ -1,12 +1,12 @@
 """Foreign-currency stock/spot orders using the common price-time order book."""
 import time
 import uuid
-from decimal import Decimal
 from database.user_db import TREASURY_USER_ID, IS_TREASURY
 from managers.currency_exchange_manager import CurrencyExchangeManager,SCALE,MAX_UNITS
 from managers.currency_manager import CurrencyManager
 from managers.market_session_manager import MarketSessionManager
-from functions.money import parse_currency_money, round_currency, currency_precision
+from functions.money import (parse_currency_money, currency_precision,
+                             to_minor_units, from_minor_units)
 
 
 class ForeignSecuritiesManager:
@@ -14,12 +14,21 @@ class ForeignSecuritiesManager:
         self.book,self.db,self.users = book,book.db,book.user_manager
 
     @staticmethod
+    def _minor_to_ledger_units(minor_units, places):
+        """Convert native-currency minor units to the wallet's millionth-major scale."""
+        return int(minor_units) * (SCALE // (10 ** int(places)))
+
+    @staticmethod
     def credit_units(conn,user,currency,units,account=None):
         CurrencyManager.validate_units(conn, int(units), currency)
         if CurrencyManager.home(conn,user) == currency:
-            native = units/SCALE
-            changed = conn.execute("UPDATE users SET cash=cash+? WHERE user_id=? AND cash<=?",
-                (native,str(user),(2**53-1)-native))
+            places = currency_precision(conn, currency)
+            quantum = SCALE // (10 ** places)
+            if int(units) % quantum:
+                raise ValueError(f'{currency} 금액이 통화 최소단위보다 작습니다.')
+            minor = int(units) // quantum
+            changed = conn.execute("UPDATE users SET cash_minor=cash_minor+? WHERE user_id=? AND cash_minor<=?",
+                (minor,str(user),(2**53-1)-minor))
             if changed.rowcount!=1:
                 raise ValueError(f'{currency} 현금 잔액 한도를 초과했습니다.')
             return
@@ -70,20 +79,23 @@ class ForeignSecuritiesManager:
                 supply = asset.get('supply')
                 if side=='buy' and supply is not None and owned+reserved+quantity>int(supply):
                     raise ValueError('종목 발행 수량 한도를 초과했습니다.')
-                cash = round_currency(conn,limit_price*quantity,currency) if side=='buy' else 0
-                cash_units = int(round(cash*SCALE))
+                places = currency_precision(conn, currency)
+                limit_minor = to_minor_units(limit_price, places)
+                cash_minor = limit_minor * quantity if side == 'buy' else 0
+                cash = from_minor_units(cash_minor, places)
+                cash_units = self._minor_to_ledger_units(cash_minor, places)
                 if cash_units>MAX_UNITS:
                     raise ValueError('주문 예치금 한도를 초과했습니다.')
                 if side=='buy':
                     if currency == home:
-                        changed=conn.execute(f"UPDATE users SET cash=cash-? WHERE user_id=? AND (cash>=? OR {IS_TREASURY})",(cash,str(user_id),cash))
+                        changed=conn.execute(f"UPDATE users SET cash_minor=cash_minor-? WHERE user_id=? AND (cash_minor>=? OR {IS_TREASURY})",(cash_minor,str(user_id),cash_minor))
                     else:
                         changed=conn.execute("UPDATE accounts SET balance_units=balance_units-? WHERE account_number=? AND account_type='currency_saving' AND balance_units>=?",(cash_units,account_number,cash_units))
                     if changed.rowcount!=1:
                         raise ValueError(f'예치할 {currency} 잔액이 부족합니다. 필요액 {cash:,} {currency}')
                 elif owned-reserved<quantity:
                     raise ValueError(f'매도 가능 수량이 부족합니다. 담보 주식은 매도할 수 없습니다. 가능 {max(0,owned-reserved):,}개')
-                order_id=conn.execute("INSERT INTO market_orders(user_id,asset_code,side,limit_price,quantity,remaining_quantity,reserved_cash,funding_account,order_kind,status,created_epoch,updated_epoch,quote_currency,activation_epoch,scheduled_reason) VALUES (?,?,?,?,?,?,?,?,'asset',?,?,?,?,?,?)",(user_id,code,side,limit_price,quantity,quantity,cash,account_number,'scheduled' if deferred else 'open',now,now,currency,state.get('resume_epoch') if deferred else now,state.get('reason') if deferred else None)).lastrowid
+                order_id=conn.execute("INSERT INTO market_orders(user_id,asset_code,side,limit_price,quantity,remaining_quantity,reserved_cash,funding_account,order_kind,status,created_epoch,updated_epoch,quote_currency,activation_epoch,scheduled_reason) VALUES (?,?,?,?,?,?,?,?,'asset',?,?,?,?,?,?)",(user_id,code,side,limit_price,quantity,quantity,float(cash),account_number,'scheduled' if deferred else 'open',now,now,currency,state.get('resume_epoch') if deferred else now,state.get('reason') if deferred else None)).lastrowid
                 filled = 0 if deferred else self.match(conn,order_id,now)
                 if deferred:
                     locked = f'예치금 {cash:,} {currency}' if side=='buy' else '매도 수량'
@@ -123,40 +135,49 @@ class ForeignSecuritiesManager:
                 break
             side=incoming['side']
             comparator,sort = ('<=','ASC') if side=='buy' else ('>=','DESC')
-            maker=conn.execute(f"SELECT * FROM market_orders WHERE asset_code=? AND order_kind='asset' AND side=? AND status IN ('open','partial') AND user_id<>? AND limit_price {comparator} ? ORDER BY limit_price {sort},created_epoch,order_id LIMIT 1",(incoming['asset_code'],'sell' if side=='buy' else 'buy',incoming['user_id'],incoming['limit_price'])).fetchone()
             asset,source=self.users._asset_row(conn,incoming['asset_code'])
             currency=asset['quote_currency']
-            price=float(asset['price'])
+            places = currency_precision(conn, currency)
+            incoming_limit_minor = int(incoming['limit_price_minor_units'])
+            maker=conn.execute(f"SELECT * FROM market_orders WHERE asset_code=? AND order_kind='asset' AND side=? AND status IN ('open','partial') AND user_id<>? AND limit_price_minor_units {comparator} ? ORDER BY limit_price_minor_units {sort},created_epoch,order_id LIMIT 1",(incoming['asset_code'],'sell' if side=='buy' else 'buy',incoming['user_id'],incoming_limit_minor)).fetchone()
+            price_minor = to_minor_units(asset['price'], places)
+            price = from_minor_units(price_minor, places)
             owned=conn.execute('SELECT COALESCE(SUM(quantity),0) FROM user_assets WHERE asset_code=?',(asset['code'],)).fetchone()[0]
             collateral=conn.execute('SELECT COALESCE(SUM(quantity),0) FROM option_collateral_lots WHERE underlying_code=?',(asset['code'],)).fetchone()[0]
             remaining=max(0,int(asset['supply'] or 0)-int(owned)-int(collateral)) if asset.get('supply') is not None else 0
-            primary=side=='buy' and remaining>0 and price<=float(incoming['limit_price']) and (not maker or price<float(maker['limit_price']))
+            primary=side=='buy' and remaining>0 and price_minor<=incoming_limit_minor and (not maker or price_minor<int(maker['limit_price_minor_units']))
             if not primary and not maker:
                 break
             quantity=min(incoming['remaining_quantity'],remaining if primary else maker['remaining_quantity'])
-            price=price if primary else float(maker['limit_price'])
+            price_minor=price_minor if primary else int(maker['limit_price_minor_units'])
+            price=from_minor_units(price_minor, places)
             buy=incoming if side=='buy' else maker
             sell=None if primary else maker if side=='buy' else incoming
-            improvement=round_currency(
-                conn,(float(buy['limit_price'])-price)*quantity,currency
-            )
-            if improvement:
-                self.credit_units(conn,buy['user_id'],currency,improvement*SCALE)
-            self.add_position(conn,buy['user_id'],asset['code'],buy['funding_account'],quantity,price)
+            wallet_watermark = int(conn.execute(
+                "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
+            ).fetchone()[0])
+            improvement_minor=max(0, int(buy['limit_price_minor_units'])-price_minor)*quantity
+            if improvement_minor:
+                self.credit_units(conn,buy['user_id'],currency,
+                                  self._minor_to_ledger_units(improvement_minor, places))
+            self.add_position(conn,buy['user_id'],asset['code'],buy['funding_account'],quantity,float(price))
             if primary:
                 # The listing country's treasury sells the primary issue; without an
                 # account in this currency it exchanges the proceeds into its own.
                 CurrencyManager.treasury_receive(
                     conn, CurrencyManager.exchange_treasury(conn, asset['code']), currency,
-                    int(round(round_currency(conn,quantity*price,currency)*SCALE)))
+                    self._minor_to_ledger_units(price_minor*quantity, places))
+                tax = 0
+                proceeds = 0
             else:
                 positions=conn.execute('SELECT * FROM user_assets WHERE user_id=? AND asset_code=? ORDER BY holding_id',(sell['user_id'],asset['code'])).fetchall()
-                left,gain = quantity,0
+                left,gain_minor = quantity,0
                 for position in positions:
                     take=min(left,position['quantity'])
                     if not take:
                         continue
-                    gain += max(0,price-float(position['average_cost'] or 0))*take
+                    cost_minor = to_minor_units(position['average_cost'] or 0, places)
+                    gain_minor += max(0, price_minor-cost_minor)*take
                     if take==position['quantity']:
                         conn.execute('DELETE FROM user_assets WHERE holding_id=?',(position['holding_id'],))
                     else:
@@ -166,26 +187,31 @@ class ForeignSecuritiesManager:
                         break
                 if left:
                     raise ValueError('매도 예약 수량과 보유 수량이 달라 체결을 취소했습니다.')
-                rate=CurrencyExchangeManager._rate(conn,currency)
-                tax=self.users._tax(conn,sell['user_id'],'foreign_security_sale_gain',Decimal(str(gain))*rate)
-                tax_units=(tax*SCALE+rate-1)//rate
-                proceeds_units = int(round(
-                    round_currency(conn,quantity*price,currency)*SCALE
-                ))-int(tax_units)
-                quantum = 10**(6-currency_precision(conn,currency))
+                gain = from_minor_units(gain_minor, places)
+                tax=self.users._tax(conn,sell['user_id'],'foreign_security_sale_gain',gain,
+                                    currency=currency)
+                tax_minor=to_minor_units(tax, places)
+                proceeds_units = self._minor_to_ledger_units(price_minor*quantity-tax_minor, places)
+                quantum = SCALE // (10 ** places)
                 proceeds_units = max(0, proceeds_units//quantum*quantum)
                 self.credit_units(conn,sell['user_id'],currency,proceeds_units)
+                proceeds = from_minor_units(price_minor*quantity-tax_minor, places)
                 if source == 'company':
                     from managers.corporate_actions_manager import CorporateActionsManager
-                    CorporateActionsManager.record_issue_fill(conn, sell['order_id'], quantity, price)
+                    CorporateActionsManager.record_issue_fill(conn, sell['order_id'], quantity, float(price))
                 self.book._reduce_order(conn,sell,quantity,now)
             self.book._reduce_order(conn,buy,quantity,now)
-            self.book._apply_execution_price(conn,asset['code'],price,now)
+            self.book._record_execution_event(
+                conn, buy, sell, quantity, price, now,
+                tax_amount=tax, seller_proceeds=proceeds,
+                wallet_watermark=wallet_watermark,
+            )
+            self.book._apply_execution_price(conn,asset['code'],float(price),now)
             conn.execute(
                 "INSERT INTO assets.market_trade_history "
                 "(asset_code, side, quantity, price, recorded_epoch) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (asset['code'], side, quantity, price, now),
+                (asset['code'], side, quantity, float(price), now),
             )
             if source=='company':
                 self.users._refresh_max_shareholder(conn,asset['code'])
