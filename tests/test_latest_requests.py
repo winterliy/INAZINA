@@ -298,7 +298,8 @@ class LatestRequestsTests(unittest.TestCase):
             self.assertEqual(len(set(seen)),26)
             self.db.assets.update_price('CUR_USD',1600)
             view.page=2
-            self.assertTrue(any('1 NWX = **0.000625 USD**' in f.value for f in view.build_embed().fields if f.name.startswith('USD')))
+            self.assertTrue(any('1 기준 통화 = **0.000625 USD**' in f.value
+                                for f in view.build_embed().fields if f.name.startswith('USD')))
             interaction=SimpleNamespace(user=SimpleNamespace(id='bob'),response=SimpleNamespace(send_message=AsyncMock()))
             self.assertFalse(await view.interaction_check(interaction))
         asyncio.run(run())

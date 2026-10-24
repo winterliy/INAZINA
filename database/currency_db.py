@@ -1064,7 +1064,8 @@ class CurrencyDB(DBManager):
             "(SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code),"
             "(SELECT quote_currency FROM treasury_bond_products WHERE product_code=NEW.asset_code),"
             "(SELECT base.quote_currency FROM option_contracts o JOIN market_assets base "
-            "ON base.code=o.underlying_code WHERE o.contract_code=NEW.asset_code),base_currency_code())"
+            "ON base.code=o.underlying_code WHERE o.contract_code=NEW.asset_code),"
+            "(SELECT base_currency_code FROM currency_system_settings WHERE singleton_id=1))"
         )
         for table, key in (("market_trade_history", "trade_id"),
                            ("market_last_trade", "asset_code")):

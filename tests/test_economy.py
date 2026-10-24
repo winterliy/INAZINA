@@ -452,7 +452,7 @@ class EconomyTests(unittest.TestCase):
         self.assertTrue(success, message)
         success, message = bonds.buy("citizen-1", "GOV1", 1500)
         self.assertFalse(success)
-        self.assertIn("액면가 1,000 NWX", message)
+        self.assertIn("액면가 1,000 기준 통화", message)
         self.assertEqual(self.db.users.get_user("citizen-1")["cash"], 10000)
         success, message = bonds.buy("citizen-1", "GOV1", 10000)
         self.assertTrue(success, message)

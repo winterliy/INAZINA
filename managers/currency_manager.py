@@ -423,7 +423,7 @@ class CurrencyReadSnapshot:
                     SUM(CASE WHEN user_id=? THEN balance_units ELSE 0 END) AS treasury
                 FROM accounts GROUP BY quote_currency
             )
-            SELECT c.*, a.price AS asset_price,
+            SELECT c.*, a.price AS asset_price, cfg.base_currency_code AS configured_base_currency,
                 (SELECT GROUP_CONCAT(n.nationality, ', ') FROM country_currencies n
                  WHERE n.currency_code=c.code ORDER BY n.nationality) AS countries,
                 cash.total AS cash_total, cash.treasury AS cash_treasury,
@@ -432,6 +432,7 @@ class CurrencyReadSnapshot:
                 s.baseline_supply_units, s.baseline_circulation_ratio,
                 s.issuance_elasticity, s.circulation_elasticity, s.min_multiplier, s.max_multiplier
             FROM currencies c
+            CROSS JOIN currency_system_settings cfg
             LEFT JOIN market_assets a ON a.code=c.asset_code AND a.status='active'
             LEFT JOIN cash ON cash.currency_code=c.code
             LEFT JOIN savings ON savings.currency_code=c.code
@@ -439,6 +440,7 @@ class CurrencyReadSnapshot:
             LEFT JOIN currency_liquidity_state s ON s.currency_code=c.code
             WHERE c.status='active' ORDER BY c.code
             """, (TREASURY_USER_ID, TREASURY_USER_ID, TREASURY_USER_ID))}
+        self.base_currency = next((r['configured_base_currency'] for r in self.rows.values()), None)
         self._rates = {}
         self._liquidity_states = {}
         self._liquidity_totals = {}
@@ -463,7 +465,7 @@ class CurrencyReadSnapshot:
         if code not in self._rates:
             row = self.row(code)
             raw = row['reference_rate'] if row['reference_rate'] is not None else row['asset_price']
-            if raw is None and code == base_currency_code(self.conn):
+            if raw is None and code == self.base_currency:
                 raw = 1
             elif raw is None:
                 raise ValueError(f'{code} 환율을 조회할 수 없습니다.')
@@ -479,7 +481,7 @@ class CurrencyReadSnapshot:
 
     def rate_nwx(self, code):
         # Preserve the legacy method name while valuing against the configured base.
-        source, target = self.rate_fraction(code), self.rate_fraction(base_currency_code(self.conn))
+        source, target = self.rate_fraction(code), self.rate_fraction(self.base_currency)
         value = ((Decimal(source.numerator) / Decimal(source.denominator)) /
                  (Decimal(target.numerator) / Decimal(target.denominator)))
         return int(value) if value == value.to_integral_value() else value
@@ -488,7 +490,7 @@ class CurrencyReadSnapshot:
         places = int(self.row(code)['decimal_places'])
         if not 0 <= places <= 6:
             raise ValueError('통화 소수 자릿수는 0~6으로 설정해주세요.')
-        if code == base_currency_code(self.conn) and places != 0:
+        if code == self.base_currency and places != 0:
             raise ValueError('기본 통화 현금은 정수 단위로 설정해주세요.')
         return places
 
@@ -496,7 +498,7 @@ class CurrencyReadSnapshot:
         value = units * self.rate_fraction(source) / self.rate_fraction(target)
         quantum = 10 ** (6 - self.precision(target))
         output = (value.numerator // value.denominator) // quantum * quantum
-        limit = (2**53 - 1) * SCALE if target == base_currency_code(self.conn) else MAX_UNITS
+        limit = (2**53 - 1) * SCALE if target == self.base_currency else MAX_UNITS
         if not 0 <= output <= limit:
             raise ValueError('환산 금액이 저장 한도를 초과했습니다.')
         return output

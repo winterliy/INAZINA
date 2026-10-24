@@ -1607,18 +1607,22 @@ class PriceMovementView(discord.ui.View):
         )
         current_price_text = f"{current_price:,.0f}" if integer_prices else f"{current_price:,.2f}"
         change_text = f"{change:+,.0f}" if integer_prices else f"{change:+,.2f}"
+        base_currency = (asset.get('quote_currency') or
+                         (self.bot.db.base_currency_code() if getattr(self.bot, 'db', None)
+                          else "기준 통화"))
         current_measure = (
             f"현재 지수: **{current_price_text} pt**"
-            if is_exchange_index else f"현재가: **{current_price_text} {asset.get('quote_currency') or self.bot.db.base_currency_code()}**"
+            if is_exchange_index else f"현재가: **{current_price_text} {base_currency}**"
         )
         change_measure = (
             f"기간 변동: **{change_text} pt ({change_percent:+.2f}%)**"
-            if is_exchange_index else f"기간 변동: **{change_text} {asset.get('quote_currency') or self.bot.db.base_currency_code()} ({change_percent:+.2f}%)**"
+            if is_exchange_index else f"기간 변동: **{change_text} {base_currency} ({change_percent:+.2f}%)**"
         )
         volume_note = " · 체결량은 기능 적용 이후 거래부터 집계"
         risk_warning = (
             "\n\n⚠️ **위험 알림: 가격이 100 기준 통화 이하입니다.**"
-            if not is_exchange_index and (asset.get('quote_currency') or self.bot.db.base_currency_code())==self.bot.db.base_currency_code() and current_price <= 100 else ""
+            if not is_exchange_index and getattr(self.bot, 'db', None)
+            and base_currency == self.bot.db.base_currency_code() and current_price <= 100 else ""
         )
         embed = discord.Embed(
             title=(

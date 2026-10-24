@@ -57,6 +57,14 @@ class InvestmentManager:
         ).fetchone()
         if row:
             return dict(row, asset_source="investment", asset_class="bond")
+        row = conn.execute(
+            "SELECT product_code code,market_price price,status,"
+            "COALESCE(quote_currency,base_currency_code()) quote_currency "
+            "FROM treasury_bond_products WHERE product_code=?" + status_clause,
+            (code,),
+        ).fetchone()
+        if row:
+            return dict(row, asset_source="treasury_bond", asset_class="bond")
         # Fund of funds: other funds, ETFs and ETNs may be components. They count
         # toward the asset class they invest in (index trackers are equity).
         row = conn.execute(

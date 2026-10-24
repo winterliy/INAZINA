@@ -131,12 +131,32 @@ class FundManager:
             value += market_value
             positions.append({'code': row['asset_code'], 'quantity': row['quantity'],
                               'price': quote['price'], 'value': float(market_value), 'assetClass': quote['asset_class']})
-        for row in conn.execute("SELECT h.product_code,SUM(h.principal*1.0/h.face_value) quantity,p.market_price price "
-                                "FROM treasury_bond_holdings h JOIN treasury_bond_products p ON p.product_code=h.product_code "
-                                "WHERE h.user_id=? AND h.status='active' GROUP BY h.product_code,p.market_price", (owner,)):
-            market_value = Decimal(str(row['quantity'])) * Decimal(str(row['price']))
+        from functions.money import currency_precision, from_minor_units, to_minor_units
+        bond_holdings = conn.execute("SELECT h.product_code,h.principal_minor_units,h.face_value_minor_units,"
+            "p.market_price_minor_units,p.quote_currency FROM treasury_bond_holdings h "
+            "JOIN treasury_bond_products p ON p.product_code=h.product_code "
+            "WHERE h.user_id=? AND h.status='active' ORDER BY h.holding_id", (owner,)).fetchall()
+        bond_positions = {}
+        for row in bond_holdings:
+            currency = str(row['quote_currency'] or base_currency_code(conn)).upper()
+            places = currency_precision(conn, currency)
+            face_units = int(row['face_value_minor_units'] or 0)
+            if face_units <= 0:
+                raise ValueError(f"국채 액면 최소단위를 확인할 수 없습니다: {row['product_code']}")
+            quantity = Decimal(int(row['principal_minor_units'] or 0)) / Decimal(face_units)
+            price = from_minor_units(int(row['market_price_minor_units'] or 0), places)
+            market_value = from_minor_units(to_minor_units(quantity * price, places), places)
+            current = bond_positions.get(row['product_code'])
+            if current is None:
+                bond_positions[row['product_code']] = [quantity, market_value, price, currency]
+            else:
+                if current[3] != currency:
+                    raise ValueError(f"국채 보유 통화가 서로 다릅니다: {row['product_code']}")
+                current[0] += quantity
+                current[1] += market_value
+        for code, (quantity, market_value, price, currency) in bond_positions.items():
             value += market_value
-            positions.append({'code': row['product_code'], 'quantity': row['quantity'], 'price': row['price'],
+            positions.append({'code': code, 'quantity': float(quantity), 'price': float(price),
                               'value': float(market_value), 'assetClass': 'bond'})
         reserved = Decimal(str(conn.execute("SELECT COALESCE(SUM(reserved_cash),0) FROM market_orders "
                                 "WHERE user_id=? AND status IN ('open','partial','scheduled')", (owner,)).fetchone()[0]))

@@ -298,6 +298,8 @@ class AdminControlManager:
             if operation=='create':
                 values[key] = code
                 values.update({k:v for k,v in EXAMPLES[category].items() if k in columns and k not in values})
+                if category == 'currencyproduct':
+                    values.setdefault('quote_currency', base_currency_code(conn))
                 if category == 'dr':
                     values['type'] = 'depositary_receipt'
                 if category in DEPOSIT_CATEGORIES:

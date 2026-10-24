@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from database import DatabaseManager
 from database.db_manager import DBManager
+from database.unified import UnifiedConnection
 from managers.futures_manager import FuturesManager
 from managers.investment_manager import InvestmentManager
 from managers.market_manager import MarketManager
@@ -115,7 +116,7 @@ class MovementDailyTests(unittest.TestCase):
         self.assertFalse(MovementHistoryManager(self.db).cleanup(day_later + 1))
 
     def test_latest_trade_cache_follows_sql_writes_and_preserves_price_after_deletion(self):
-        with closing(sqlite3.connect(self.db.assets.db_path)) as conn, conn:
+        with closing(sqlite3.connect(self.db.assets.db_path, factory=UnifiedConnection)) as conn, conn:
             for epoch, price in ((self.midnight - 2, 80), (self.midnight - 10, 70), (self.midnight - 2, 90)):
                 conn.execute(
                     "INSERT INTO market_trade_history (asset_code, side, quantity, price, recorded_epoch) "
@@ -127,7 +128,7 @@ class MovementDailyTests(unittest.TestCase):
         self.assertEqual(self.db.assets.get_last_trade("CO")["price"], 90)
         self.db.assets._init_db()
         self.assertEqual(self.db.assets.get_last_trade("CO")["price"], 90)
-        with closing(sqlite3.connect(self.db.assets.db_path)) as conn, conn:
+        with closing(sqlite3.connect(self.db.assets.db_path, factory=UnifiedConnection)) as conn, conn:
             conn.execute(
                 "INSERT INTO market_trade_history (asset_code, side, quantity, price, recorded_epoch) "
                 "VALUES ('CO', 'sell', 2, 105, ?)", (self.midnight + 1,),

@@ -137,9 +137,12 @@ def connect_db(timeout=2):
 
 
 def _configured_base_currency(connection):
-    row = connection.execute(
-        "SELECT base_currency_code FROM currency_system_settings WHERE singleton_id=1"
-    ).fetchone()
+    try:
+        row = connection.execute(
+            "SELECT base_currency_code FROM currency_system_settings WHERE singleton_id=1"
+        ).fetchone()
+    except sqlite3.Error:
+        return None
     return str(row[0]).upper() if row and row[0] else None
 
 
@@ -166,6 +169,7 @@ def identity(user_id):
         currency = connection.execute(
             "SELECT currency_code FROM country_currencies WHERE nationality=?", (row["nationality"],),
         ).fetchone() if row else None
+        base_currency = _configured_base_currency(connection)
     if (not row or row["status"] not in {"active", "nation"} or
             (auth_table and credential is None)):
         return None
@@ -176,9 +180,7 @@ def identity(user_id):
         "userId": str(row["user_id"]),
         "nickname": str(row["nickname"] or row["user_id"]),
         "nationality": str(row["nationality"] or ""),
-        "currency": str(currency[0]) if currency else str(connection.execute(
-            "SELECT base_currency_code()"
-        ).fetchone()[0]),
+        "currency": str(currency[0]) if currency else str(base_currency or ""),
         "cash": int((treasury["cash"] if treasury else row["cash"]) or 0),
         "creditScore": int(row["credit_score"] or 0),
         "role": role,

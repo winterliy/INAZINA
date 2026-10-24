@@ -48,6 +48,7 @@ class CommandPerformanceTests(unittest.TestCase):
             market.get_market_assets()
 
     def test_currency_snapshot_matches_exact_rounding_and_refreshes_each_request(self):
+        from functions.money import base_currency_code
         from managers.currency_manager import CurrencyManager, CurrencyReadSnapshot
         from managers.currency_exchange_manager import CurrencyExchangeManager
         self.db.assets.register_asset('CUR_T','환율','FX',137,'forex')
@@ -59,9 +60,10 @@ class CommandPerformanceTests(unittest.TestCase):
             conn.set_trace_callback(queries.append)
             snapshot = CurrencyReadSnapshot(conn)
             self.assertEqual(len(queries),1)
-            for code in ('NWX','AAA','BBB'):
+            base_currency = base_currency_code(conn)
+            for code in (base_currency,'AAA','BBB'):
                 self.assertEqual(snapshot.rate_nwx(code),CurrencyExchangeManager._rate(conn,code))
-                for target in ('NWX','AAA','BBB'):
+                for target in (base_currency,'AAA','BBB'):
                     for units in (0,1,999999,123456789):
                         self.assertEqual(snapshot.convert(units,code,target),CurrencyManager.convert(conn,units,code,target))
             before = len(queries)
