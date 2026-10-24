@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent, ReactNode, WheelEvent as ReactWheelEvent } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode, WheelEvent as ReactWheelEvent } from "react";
 
 export type Point = { time: number; price: number };
-export type Candle = { time: number; open: number; high: number; low: number; close: number; ticks: number };
+export type Candle = { time: number; open: number; high: number; low: number; close: number; ticks: number; volume?: number };
 export type Drawing = { id: string; type: "trend" | "horizontal"; anchors: Point[] };
 export type Tool = "select" | "trend" | "horizontal";
 type View = { minTime: number; maxTime: number; minPrice: number; maxPrice: number };
@@ -16,6 +16,23 @@ const AXIS = 72, BOTTOM = 26, TOP = 12, LEFT = 8;
 const BAR_SPACING = 9;
 const money = (value: number) => new Intl.NumberFormat("ko-KR", { maximumFractionDigits: value < 10 ? 2 : 0 }).format(value || 0);
 
+export type Series = { label: string; kind: "line" | "bar" | "marker" | "profile"; levels: number[]; color: string; values: (number | null)[] };
+export type IndicatorData = { upper: Record<string, Series[]>; lower: Record<string, Series[]> };
+export type IndicatorChoice = { upper: string[]; lower: string[] };
+/** Discord /그래프 defaults: 이동평균선 and 거래량. */
+export const DEFAULT_INDICATORS: IndicatorChoice = { upper: ["sma"], lower: ["volume"] };
+const entries = (labels: Record<string, string>) => Object.entries(labels).map(([key, label]) => ({ key, label }));
+/** Every Discord /그래프 상단·하단 지표 (functions/technical_indicators.py), so the menu is whole before the server answers. */
+export const INDICATOR_CATALOG: IndicatorCatalog = {
+  upper: entries({ high_low: "최고최저가", sma: "이동평균선", ichimoku: "일목균형표", bollinger: "볼린저 밴드", supertrend: "슈퍼트렌드", volume_profile: "매물대분석",
+    envelope: "엔벨로프", fractals: "윌리엄스 프랙탈", ema: "지수이동평균선", sar: "파라볼릭 SAR", price_channel: "프라이스 채널", vwap: "VWAP", anchored_vwap: "고정 VWAP" }),
+  lower: entries({ volume: "거래량", mass: "매스 인덱스", momentum: "모멘텀", volume_osc: "볼륨 오실레이터", bb_percent: "볼린저 밴드 %B", bb_width: "볼린저 밴드폭",
+    stochastic: "스토캐스틱", stoch_rsi: "스토캐스틱 RSI", williams_r: "윌리엄스 R", disparity: "이격도", intraday_intensity: "일중 강도지수", chaikin: "체이킨 오실레이터",
+    trix: "트릭스", price_osc: "프라이스 오실레이터", ad: "AD 라인", adx: "ADX", cci: "CCI", dmi: "DMI", macd: "MACD", mfi: "MFI", obv: "OBV", roc: "ROC", rmi: "RMI", rsi: "RSI" }),
+};
+export type IndicatorCatalog = { upper: { key: string; label: string }[]; lower: { key: string; label: string }[] };
+type Value = { time: number; value: number };
+
 /**
  * Price chart with persistent drawings.
  *
@@ -25,10 +42,12 @@ const money = (value: number) => new Intl.NumberFormat("ko-KR", { maximumFractio
  * quotes arriving every few seconds no longer rescale the chart under the lines.
  * "실시간" returns to the auto-fitted, live-following view.
  */
-export function PriceChart({ points, candles, candleInterval, mode, fallbackPrice, drawings, onDrawingsChange, tool, onToolChange, resetKey, controls, label }: {
+export function PriceChart({ points, candles, candleInterval, mode, fallbackPrice, drawings, onDrawingsChange, tool, onToolChange, resetKey, controls, label, indicators, data, catalog, onIndicatorsChange }: {
   points: Point[]; candles: Candle[]; candleInterval: number; mode: "candle" | "line"; fallbackPrice: number;
   drawings: Drawing[]; onDrawingsChange: (next: Drawing[]) => void; tool: Tool; onToolChange: (tool: Tool) => void;
   resetKey: string; controls: ReactNode; label: string;
+  /** Discord /그래프 상단·하단 지표: the choice, the server-computed series aligned to candles, and the option list. */
+  indicators: IndicatorChoice; data: IndicatorData; catalog: IndicatorCatalog; onIndicatorsChange: (next: IndicatorChoice) => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -39,6 +58,18 @@ export function PriceChart({ points, candles, candleInterval, mode, fallbackPric
   const [hover, setHover] = useState<{ x: number; y: number } | null>(null);
   const gesture = useRef<Gesture | null>(null);
   const history = useRef<Drawing[][]>([]);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsRef = useRef<HTMLDivElement>(null);
+  const toggleIndicator = (group: keyof IndicatorChoice, key: string) => onIndicatorsChange({ ...indicators, [group]: indicators[group].includes(key) ? indicators[group].filter((item) => item !== key) : [...indicators[group], key] });
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const close = (event: MouseEvent) => { if (!settingsRef.current?.contains(event.target as Node)) setSettingsOpen(false); };
+    const escape = (event: KeyboardEvent) => { if (event.key === "Escape") setSettingsOpen(false); };
+    document.addEventListener("mousedown", close);
+    window.addEventListener("keydown", escape);
+    return () => { document.removeEventListener("mousedown", close); window.removeEventListener("keydown", escape); };
+  }, [settingsOpen]);
 
   useLayoutEffect(() => {
     const element = wrapRef.current;
@@ -96,7 +127,13 @@ export function PriceChart({ points, candles, candleInterval, mode, fallbackPric
   }, [series, showCandles, candles, candleInterval, size.w]);
   const v = view ?? auto;
 
-  const R = size.w - AXIS, B = size.h - BOTTOM;
+  // Lower panels stack under the price plot in catalog order, sharing its time axis; the canvas grows per panel.
+  // A chosen panel shows even before its series arrive (it says so), so the choice is visible at once.
+  const lowers = catalog.lower.map((item) => item.key).filter((key) => indicators.lower.includes(key));
+  const PANEL_GAP = 10, PANEL_H = 64;
+  const R = size.w - AXIS, B = size.h - BOTTOM - (PANEL_GAP + PANEL_H) * lowers.length;
+  const panelTop = (index: number) => B + PANEL_GAP + (PANEL_GAP + PANEL_H) * index;
+  const plotBottom = size.h - BOTTOM;
   const X = (time: number) => LEFT + ((time - v.minTime) / (v.maxTime - v.minTime)) * (R - LEFT);
   const Y = (price: number) => B - ((price - v.minPrice) / (v.maxPrice - v.minPrice)) * (B - TOP);
   const toPoint = (x: number, y: number): Point => ({
@@ -220,10 +257,76 @@ export function PriceChart({ points, candles, candleInterval, mode, fallbackPric
   const span = v.maxTime - v.minTime;
   const timeText = (time: number) => new Date(time * 1000).toLocaleString("ko-KR", span > 2 * 86400 ? { month: "numeric", day: "numeric" } : span > 6 * 3600 ? { day: "numeric", hour: "2-digit", minute: "2-digit" } : { hour: "2-digit", minute: "2-digit" });
   const visibleCandles = showCandles ? candles.filter((item) => item.time + candleInterval >= v.minTime && item.time <= v.maxTime) : [];
+  const visibleVolumeCandles = showCandles ? visibleCandles : candles.filter((item) => item.time + candleInterval >= v.minTime && item.time <= v.maxTime);
+  // Traded quantity from the server; tick count when an older server sent none.
+  const volumeOf = (item: Candle) => item.volume ?? item.ticks;
+  const maxTicks = visibleVolumeCandles.reduce((max, item) => Math.max(max, volumeOf(item)), 1);
+  const near = (item: Value) => item.time >= v.minTime - span && item.time <= v.maxTime + span;
+  const path = (values: Value[], y: (value: number) => number) => values.filter(near).map((item, index) => `${index ? "L" : "M"}${X(item.time).toFixed(1)},${y(item.value).toFixed(1)}`).join(" ");
+
+  // Server series are index-aligned to candles; leading shifts (일목 선행스팬) run past the last candle.
+  const seriesTime = (index: number) => candles.length ? (index < candles.length ? candles[index].time : candles.at(-1)!.time + (index - candles.length + 1) * candleInterval) + candleInterval / 2 : 0;
+  const points2 = (item: Series): Value[] => item.values.flatMap((value, index) => value === null ? [] : [{ time: seriesTime(index), value }]);
+  const visibleIndex = (index: number) => { const time = seriesTime(index); return time >= v.minTime - span * .1 && time <= v.maxTime + span * .1; };
+  const upperSeries = useMemo(() => catalog.upper.filter((item) => indicators.upper.includes(item.key)).flatMap((item) => (data.upper[item.key] ?? []).map((entry) => ({ key: item.key, entry, values: points2(entry) }))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [catalog, indicators.upper, data, candles, candleInterval]);
   const linePath = showCandles ? "" : series.filter((item) => item.time >= v.minTime - span && item.time <= v.maxTime + span).map((item, index) => `${index ? "L" : "M"}${X(item.time).toFixed(1)},${Y(item.price).toFixed(1)}`).join(" ");
   const candleWidth = Math.max(1, Math.min(28, (candleInterval / span) * (R - LEFT) * .7));
   const hoverPoint = hover && hover.x >= LEFT && hover.x <= R && hover.y >= TOP && hover.y <= B ? toPoint(hover.x, hover.y) : null;
   const last = series.at(-1)!;
+
+  function lowerPanel(key: string, index: number) {
+    const top = panelTop(index), bottom = top + PANEL_H;
+    const label = catalog.lower.find((item) => item.key === key)?.label ?? key;
+    const empty = (text: string) => <text x={R - 4} y={top + 14} textAnchor="end" className="panel-empty">{text}</text>;
+    let body: ReactNode, legend: ReactNode = null;
+    if (key === "volume") {
+      body = <><g clipPath={`url(#${key}-plot)`}>{visibleVolumeCandles.map((item) => { const x = X(item.time + candleInterval / 2); const height = Math.max(1, (volumeOf(item) / maxTicks) * (PANEL_H - 18)); return <rect key={item.time} x={x - candleWidth / 2} y={bottom - height} width={Math.max(1, candleWidth)} height={height} className={item.close >= item.open ? "volume-bar up" : "volume-bar down"}><title>{`${timeText(item.time)} · 거래량 ${money(volumeOf(item))}`}</title></rect>; })}</g>
+        {!candles.length && empty("거래 데이터 없음")}</>;
+    } else {
+      const group = data.lower[key] ?? [];
+      const shown = group.flatMap((item) => item.values.filter((value, at): value is number => value !== null && visibleIndex(at)));
+      const levels = group.flatMap((item) => item.levels);
+      let low = Math.min(...shown, ...levels), high = Math.max(...shown, ...levels);
+      if (!Number.isFinite(low) || !Number.isFinite(high)) { low = 0; high = 1; }
+      if (low === high) { low -= 1; high += 1; }
+      const pad = (high - low) * .08, inner = PANEL_H - 18;
+      const y = (value: number) => bottom - 2 - ((value - (low - pad)) / (high - low + pad * 2)) * inner;
+      const width = Math.max(1, candleWidth * .8);
+      body = <>{[...new Set(levels)].map((level) => <g key={level}><line x1={LEFT} x2={R} y1={y(level)} y2={y(level)} className="indicator-guide" /><text x={R + 8} y={y(level) + 4} className="axis-label">{money(level)}</text></g>)}
+        <g clipPath={`url(#${key}-plot)`}>{group.map((item) => item.kind === "bar"
+          ? <g key={item.label}>{item.values.map((value, at) => value === null || !visibleIndex(at) ? null : <rect key={at} x={X(seriesTime(at)) - width / 2} y={Math.min(y(0), y(value))} width={width} height={Math.max(1, Math.abs(y(value) - y(0)))} className={value >= 0 ? "macd-bar up" : "macd-bar down"} />)}</g>
+          : <path key={item.label} d={path(points2(item), y)} className="indicator-line" style={{ stroke: item.color }} />)}</g>
+        {!shown.length && empty(key in data.lower ? "기록이 더 쌓이면 표시됩니다" : "지표 데이터를 받는 중…")}</>;
+      legend = group.map((item) => <tspan key={item.label} dx={8} style={{ fill: item.color }}>● {item.label}</tspan>);
+    }
+    return <g key={key} className="auxiliary-panel"><line x1={LEFT} x2={R} y1={top} y2={top} className="panel-divider" /><text x={LEFT + 4} y={top + 13} className="panel-label">{label}{legend}</text>{body}</g>;
+  }
+
+  // 매물대분석: traded volume by price band, drawn from the right edge of the price plot.
+  const profileBars = () => {
+    const bins = 24, step = (v.maxPrice - v.minPrice) / bins, totals = new Array(bins).fill(0);
+    for (const item of candles) {
+      const typical = (item.high + item.low + item.close) / 3, bin = Math.floor((typical - v.minPrice) / step);
+      if (bin >= 0 && bin < bins) totals[bin] += volumeOf(item);
+    }
+    const most = Math.max(1, ...totals), reach = (R - LEFT) * .28;
+    return totals.map((total, bin) => total ? <rect key={bin} x={R - (total / most) * reach} y={Y(v.minPrice + step * (bin + 1))} width={(total / most) * reach} height={Math.max(1, Y(v.minPrice + step * bin) - Y(v.minPrice + step * (bin + 1)) - 1)} className="profile-bar" /> : null);
+  };
+
+  // Indicator layers depend on the view and data, not on the pointer: hovering only redraws the crosshair.
+  const viewKey = `${v.minTime}:${v.maxTime}:${v.minPrice}:${v.maxPrice}:${size.w}:${size.h}`;
+  const overlayLayer = useMemo(() => <>
+          {indicators.upper.includes("volume_profile") && profileBars()}
+          {upperSeries.filter((item) => item.entry.kind !== "profile").map(({ key, entry, values }) => entry.kind === "marker"
+            ? <g key={`${key}-${entry.label}`} style={{ fill: entry.color }}>{values.filter(near).map((item) => <circle key={item.time} cx={X(item.time)} cy={Y(item.value)} r={2.4} />)}</g>
+            : <path key={`${key}-${entry.label}`} d={path(values, Y)} className="overlay-path" style={{ stroke: entry.color }} />)}
+  </>,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [viewKey, upperSeries, indicators.upper, candles]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const lowerLayer = useMemo(() => lowers.map(lowerPanel), [viewKey, lowers.join(","), data, candles, candleInterval, catalog]);
 
   return <section className="chart-panel">
     <div className="chart-head">
@@ -242,19 +345,32 @@ export function PriceChart({ points, candles, candleInterval, mode, fallbackPric
         <button title="선택한 선 삭제 (Delete)" disabled={!selected} onClick={remove}>삭제</button>
         <button title="모든 선 삭제" disabled={!drawings.length} onClick={() => { if (window.confirm("이 종목의 차트 선을 모두 삭제할까요?")) { commit([]); setSelected(""); } }}>전체 삭제</button>
       </div>
+      <div className="chart-settings" ref={settingsRef}>
+        <button type="button" className={settingsOpen ? "chart-settings-button selected" : "chart-settings-button"} aria-label="보조지표 · 하단 그래프 설정" title="보조지표 · 하단 그래프 설정" aria-expanded={settingsOpen} onClick={() => setSettingsOpen((open) => !open)}>
+          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" /><circle cx="12" cy="12" r="3" /></svg>
+        </button>
+        {settingsOpen && <div className="chart-settings-menu" role="group" aria-label="차트 설정">
+          {(["upper", "lower"] as const).map((group) => <section key={group}>
+            <p>{group === "upper" ? `보조지표 · 가격 위 (${indicators.upper.length})` : `하단 그래프 (${indicators.lower.length})`}</p>
+            <div className="chart-toggle-grid">{catalog[group].map((item) => <label key={item.key} className="chart-toggle"><span>{item.label}</span><input type="checkbox" role="switch" checked={indicators[group].includes(item.key)} onChange={() => toggleIndicator(group, item.key)} /></label>)}</div>
+          </section>)}
+          <button type="button" className="chart-reset" onClick={() => onIndicatorsChange(DEFAULT_INDICATORS)}>기본값 (이동평균선 · 거래량)</button>
+        </div>}
+      </div>
     </div>
-    <div className="chart-canvas" ref={wrapRef}>
+    <div className="chart-canvas" ref={wrapRef} style={{ "--lower-panels": lowers.length } as CSSProperties}>
       <svg ref={svgRef} width={size.w} height={size.h} viewBox={`0 0 ${size.w} ${size.h}`} role="img" aria-label={`${label} 차트`}
         className={`chart-svg ${tool !== "select" ? "drawing-mode" : gesture.current?.kind === "pan" ? "panning" : ""}`}
         onPointerDown={down} onMouseDown={(event) => event.preventDefault()} onDragStart={(event) => event.preventDefault()} onPointerMove={move} onPointerUp={up} onPointerCancel={() => { gesture.current = null; setDraft(null); }} onPointerLeave={() => setHover(null)} onWheel={wheel} onDoubleClick={() => setView(null)}>
-        <defs><clipPath id="plot"><rect x={LEFT} y={TOP} width={R - LEFT} height={B - TOP} /></clipPath></defs>
+        <defs><clipPath id="plot"><rect x={LEFT} y={TOP} width={R - LEFT} height={B - TOP} /></clipPath>{lowers.map((key, index) => <clipPath key={key} id={`${key}-plot`}><rect x={LEFT} y={panelTop(index)} width={R - LEFT} height={PANEL_H} /></clipPath>)}</defs>
         {Array.from({ length: 5 }, (_, index) => { const y = TOP + ((B - TOP) / 4) * index; return <g key={`y${index}`}><line x1={LEFT} x2={R} y1={y} y2={y} className="grid-line" /><text x={R + 8} y={y + 4} className="axis-label">{money(v.maxPrice - ((v.maxPrice - v.minPrice) / 4) * index)}</text></g>; })}
-        {Array.from({ length: 5 }, (_, index) => { const x = LEFT + ((R - LEFT) / 4) * index; return <g key={`x${index}`}><line x1={x} x2={x} y1={TOP} y2={B} className="grid-line vertical" /><text x={x} y={size.h - 8} textAnchor={index === 0 ? "start" : index === 4 ? "end" : "middle"} className="axis-label">{timeText(v.minTime + (span / 4) * index)}</text></g>; })}
+        {Array.from({ length: 5 }, (_, index) => { const x = LEFT + ((R - LEFT) / 4) * index; return <g key={`x${index}`}><line x1={x} x2={x} y1={TOP} y2={lowers.length ? plotBottom : B} className="grid-line vertical" /><text x={x} y={size.h - 8} textAnchor={index === 0 ? "start" : index === 4 ? "end" : "middle"} className="axis-label">{timeText(v.minTime + (span / 4) * index)}</text></g>; })}
         <g clipPath="url(#plot)">
           {showCandles ? visibleCandles.map((item) => {
             const x = X(item.time + candleInterval / 2), top = Y(Math.max(item.open, item.close)), bottom = Y(Math.min(item.open, item.close));
             return <g key={item.time} className={item.close >= item.open ? "candle up" : "candle down"}><title>{`${new Date(item.time * 1000).toLocaleString("ko-KR")}\n시 ${money(item.open)} 고 ${money(item.high)} 저 ${money(item.low)} 종 ${money(item.close)}`}</title><line x1={x} x2={x} y1={Y(item.high)} y2={Y(item.low)} /><rect x={x - candleWidth / 2} y={top} width={candleWidth} height={Math.max(1, bottom - top)} /></g>;
           }) : <><path d={linePath} className="price-path" />{linePath && <path d={`${linePath} L${X(series.at(-1)!.time)},${B} L${X(series[0].time)},${B} Z`} className="price-area" />}</>}
+          {overlayLayer}
           <line x1={LEFT} x2={R} y1={Y(last.price)} y2={Y(last.price)} className="last-line" />
           {drawings.map((drawing) => {
             const active = drawing.id === selected;
@@ -270,6 +386,8 @@ export function PriceChart({ points, candles, candleInterval, mode, fallbackPric
           {draft && <line x1={X(draft[0].time)} y1={Y(draft[0].price)} x2={X(draft[1].time)} y2={Y(draft[1].price)} className="drawing-draft" />}
           {hoverPoint && !gesture.current && <g className="crosshair"><line x1={hover!.x} x2={hover!.x} y1={TOP} y2={B} /><line x1={LEFT} x2={R} y1={hover!.y} y2={hover!.y} /></g>}
         </g>
+        {lowerLayer}
+        {upperSeries.length > 0 && <text x={LEFT + 6} y={TOP + 14} className="overlay-legend">{upperSeries.filter((item) => item.entry.kind !== "profile").map(({ key, entry }) => <tspan key={`${key}-${entry.label}`} dx={6} style={{ fill: entry.color }}>● {entry.label}</tspan>)}</text>}
         <g className="price-tag"><rect x={R + 2} y={Y(last.price) - 10} width={AXIS - 4} height={20} rx={6} /><text x={R + 8} y={Y(last.price) + 4}>{money(last.price)}</text></g>
         {hoverPoint && !gesture.current && <g className="hover-tag"><rect x={R + 2} y={hover!.y - 10} width={AXIS - 4} height={20} rx={6} /><text x={R + 8} y={hover!.y + 4}>{money(hoverPoint.price)}</text></g>}
       </svg>

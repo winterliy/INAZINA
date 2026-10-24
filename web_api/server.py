@@ -146,7 +146,29 @@ def _configured_base_currency(connection):
     return str(row[0]).upper() if row and row[0] else None
 
 
+# An administrator signed in as a country or company account ($login on the web): the API
+# passes the administrator's ID with each request of that session. Set per request thread.
+_DELEGATION = threading.local()
+DELEGABLE_ROLES = {"nation", "company"}
+
+
+def delegated_by():
+    return getattr(_DELEGATION, "by", "") or ""
+
+
 def identity(user_id):
+    by = delegated_by()
+    if by and by != user_id:
+        admin = identity_for(by)
+        target = identity_for(user_id, require_credential=False)
+        if not admin or admin["role"] != "admin" or not target or target["role"] not in DELEGABLE_ROLES:
+            return None
+        # The session lives on the administrator's credential: a password change ends it.
+        return {**target, "authVersion": admin["authVersion"], "delegatedBy": admin["userId"], "delegatedByName": admin["nickname"]}
+    return identity_for(user_id)
+
+
+def identity_for(user_id, require_credential=True):
     with connect_readonly() as connection:
         row = connection.execute(
             "SELECT user_id,nickname,nationality,cash,credit_score,status,role "
@@ -171,7 +193,7 @@ def identity(user_id):
         ).fetchone() if row else None
         base_currency = _configured_base_currency(connection)
     if (not row or row["status"] not in {"active", "nation"} or
-            (auth_table and credential is None)):
+            (require_credential and auth_table and credential is None)):
         return None
     role = "admin" if user_id in BOOTSTRAP_ADMIN_IDS else str(row["role"] or "user").strip().lower()
     if role not in {"admin", "user", "nation", "company"}:
@@ -386,7 +408,9 @@ def _board_post(parts, user, payload, ip):
 
 BOARD_ACTION_NAMES = {"hide": "숨김", "restore": "복원", "pin": "상단 고정", "unpin": "고정 해제", "notice": "공지 설정",
                       "unnotice": "공지 해제", "move": "게시판 이동", "category": "카테고리 지정", "purge": "영구 삭제",
-                      "resolve": "처리 완료", "create": "생성", "edit": "수정", "delete": "삭제"}
+                      "resolve": "처리 완료", "create": "생성", "edit": "수정", "delete": "삭제",
+                      "block": "검색어 숨김", "unblock": "검색어 숨김 해제", "reset": "검색 집계 초기화",
+                      "pin": "검색어 순위 고정", "unpin": "검색어 순위 고정 해제", "boost": "검색 수 추가"}
 
 
 def admin_board_action(actor, kind, target, action, payload=None):
@@ -1257,7 +1281,35 @@ def candles(connection, code, start, interval):
             for row in rows]
 
 
-def chart(code, range_key, interval=None):
+def candle_volumes(connection, code, start, interval):
+    """Traded quantity per candle bucket — the volume the Discord /그래프 indicators use."""
+    return {int(row[0]): float(row[1]) for row in connection.execute(
+        "SELECT (recorded_epoch/?)*? AS bucket,SUM(quantity) FROM market_trade_history "
+        "WHERE asset_code=? AND recorded_epoch>=? GROUP BY bucket", (interval, interval, code, start))}
+
+
+def chart_indicators(candle_rows, upper, lower):
+    """Same calculations and options as the Discord /그래프 chart, aligned to candle_rows."""
+    from functions.technical_indicators import UPPER_INDICATORS, LOWER_INDICATORS, calculate_indicators
+    upper = [key for key in upper if key in UPPER_INDICATORS]
+    lower = [key for key in lower if key in LOWER_INDICATORS and key != "volume"]
+    if not candle_rows or not (upper or lower):
+        return {"upper": {}, "lower": {}}
+    top, bottom = calculate_indicators(candle_rows, upper, lower)
+    clean = lambda groups: {key: [{"label": item["label"], "kind": item["kind"], "levels": list(item["levels"]),
+                                   "color": "#%02x%02x%02x" % tuple(item["color"]),
+                                   "values": [None if value is None or not math.isfinite(value) else round(value, 6) for value in item["values"]]}
+                                  for item in series] for key, series in groups.items()}
+    return {"upper": clean(top), "lower": clean(bottom)}
+
+
+def chart_catalog():
+    from functions.technical_indicators import UPPER_INDICATORS, LOWER_INDICATORS
+    return {"upper": [{"key": key, "label": label} for key, label in UPPER_INDICATORS.items()],
+            "lower": [{"key": key, "label": label} for key, label in LOWER_INDICATORS.items()]}
+
+
+def chart(code, range_key, interval=None, upper=(), lower=(), with_catalog=False):
     if range_key not in CHART_RANGES:
         raise ValueError("unsupported_chart_range")
     if interval is None:
@@ -1275,13 +1327,18 @@ def chart(code, range_key, interval=None):
             (code, start),
         ).fetchall()
         candle_rows = candles(connection, code, start, interval)
+        volumes = candle_volumes(connection, code, candle_rows[0]["time"], interval) if candle_rows else {}
+    for row in candle_rows:
+        row["volume"] = volumes.get(row["time"], 0.0)
     points = [{"time": int(row["recorded_epoch"]), "price": float(row["price"])}
               for row in reversed(rows)]
     if len(points) > 1200:
         stride = math.ceil(len(points) / 1200)
         points = points[::stride] + ([points[-1]] if points[-1] != points[::stride][-1] else [])
     return {"instrument": item, "points": points, "candles": candle_rows,
-            "interval": interval, "range": range_key}
+            "interval": interval, "range": range_key,
+            "indicators": chart_indicators(candle_rows, upper, lower),
+            **({"catalog": chart_catalog()} if with_catalog else {})}
 
 
 MAX_DRAWINGS = 200
@@ -2983,6 +3040,32 @@ def admin_help_pages():
     return asyncio.run(build())
 
 
+def _embed_json(embed):
+    return {"title": embed.title or "", "description": embed.description or "",
+            "fields": [{"name": field.name, "value": field.value, "inline": bool(field.inline)} for field in embed.fields],
+            "footer": embed.footer.text if embed.footer else ""}
+
+
+def info_panel(user_id, category="main", page=0):
+    """/검색 on the web: the same InfoPanelView the Discord bot shows, one category page at a time."""
+    import asyncio
+    from functions.discord_views import InfoPanelView
+
+    async def build():
+        view = InfoPanelView(domain().bot, user_id)
+        try:
+            if category not in dict(view.CATEGORIES):
+                raise ValueError("unknown_info_category")
+            view.category, view.page = category, max(0, int(page))
+            embed = view.build_embed()
+            return {"categories": [{"key": key, "label": label} for key, label in view.CATEGORIES],
+                    "category": view.category, "page": view.page, **_embed_json(embed),
+                    "hasPrevious": not view.previous_button.disabled, "hasNext": not view.next_button.disabled}
+        finally:
+            view.stop()
+    return asyncio.run(build())
+
+
 def ensure_bot_jobs_table(connection):
     connection.execute("""CREATE TABLE IF NOT EXISTS web_bot_jobs (
         job_id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, actor_id TEXT NOT NULL,
@@ -3059,6 +3142,25 @@ def admin_identity(actor):
     return {"identity": {"account": account, "name": name}, "countries": countries, "companies": companies}
 
 
+def admin_login_as(actor, payload):
+    """$login on the web: the account the administrator signs in as — a country's own account
+    (its ID is the country name) or a company's capital account."""
+    from managers.company_account_manager import CompanyAccounts
+    target = str(payload.get("target") or "").strip()
+    with connect_db(timeout=5) as connection:
+        if connection.execute("SELECT 1 FROM country_currencies WHERE nationality=?", (target,)).fetchone():
+            account = target
+        elif connection.execute("SELECT 1 FROM company WHERE company_code=? AND status='active'", (target,)).fetchone():
+            account = CompanyAccounts.account_id(connection, target)
+        else:
+            raise ValueError("등록된 국가 ID 또는 법인 ID를 입력해주세요.")
+    user = identity_for(account, require_credential=False)
+    if not user or user["role"] not in DELEGABLE_ROLES:
+        raise ValueError("이 계정으로는 로그인할 수 없습니다. 국가 계정 또는 법인 계정만 가능합니다.")
+    audit_admin_access(actor, "admin.login_as", {"target": target, "account": account})
+    return {"userId": account, "nickname": user["nickname"], "role": user["role"]}
+
+
 def admin_identity_action(actor, payload):
     from functions.admin_prefix import national_login, national_logout
     target = str(payload.get("target") or "").strip()
@@ -3069,6 +3171,74 @@ def admin_company_financial(code, period=None):
     from managers.financial_manager import FinancialManager
     manager = FinancialManager(domain().db)
     return {"report": manager.report(code, period or None), "periods": manager.periods(code)}
+
+
+def own_company_financial(user, period=None):
+    """A company account's own statements (read-only; editing stays with administrators)."""
+    if user["role"] != "company":
+        return None
+    with connect_readonly() as connection:
+        row = connection.execute("SELECT company_code FROM company_accounts WHERE user_id=?", (user["userId"],)).fetchone()
+    return {"company": row[0], **admin_company_financial(row[0], period)} if row else None
+
+
+def user_history(user_id, limit=150):
+    """거래내역: transfers sent and received, basic income and currency exchanges, newest first.
+    Amounts are stored in millionths of a currency unit."""
+    owner = trading_user_id(user_id)
+    events = []
+    with connect_readonly() as connection:
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        name = lambda alias: f"COALESCE((SELECT nickname FROM users WHERE user_id={alias}),{alias})"
+        if "currency_transfer_transactions" in tables:
+            for row in connection.execute(
+                    f"SELECT t.*,{name('t.sender_id')} AS sender,{name('t.recipient_id')} AS recipient FROM currency_transfer_transactions t "
+                    "WHERE t.sender_id=? OR t.recipient_id=? ORDER BY t.recorded_epoch DESC LIMIT ?", (owner, owner, limit)):
+                outgoing = row["sender_id"] == owner
+                events.append({"kind": "transfer_out" if outgoing else "transfer_in", "epoch": row["recorded_epoch"],
+                               "currency": row["source_currency"] if outgoing else row["target_currency"],
+                               "amount": (-row["source_units"] if outgoing else row["target_units"]) / 1_000_000,
+                               "counterpart": row["recipient"] if outgoing else row["sender"],
+                               "account": row["source_account"] if outgoing else row["target_account"]})
+        if "basic_income_payments" in tables:
+            for row in connection.execute("SELECT * FROM basic_income_payments WHERE user_id=? ORDER BY recorded_epoch DESC LIMIT ?", (owner, limit)):
+                events.append({"kind": "basic_income", "epoch": row["recorded_epoch"], "currency": row["target_currency"],
+                               "amount": row["target_units"] / 1_000_000, "counterpart": "국고", "account": None})
+        if "currency_transactions" in tables:
+            for row in connection.execute("SELECT * FROM currency_transactions WHERE user_id=? ORDER BY recorded_epoch DESC LIMIT ?", (owner, limit)):
+                events.append({"kind": "exchange", "epoch": row["recorded_epoch"], "currency": row["target_currency"],
+                               "amount": row["target_units"] / 1_000_000, "counterpart": f"{row['source_currency']} {row['source_units'] / 1_000_000:g} → {row['target_currency']}", "account": None})
+    events.sort(key=lambda item: item["epoch"], reverse=True)
+    return events[:limit]
+
+
+def admin_company_journal(code, period=None):
+    from managers.financial_manager import FinancialManager
+    return FinancialManager(domain().db).journal(code, period or None)
+
+
+def admin_company_journal_action(actor, code, payload):
+    """Adjusting entries, reversals, operating profile and month close — the Discord accounting forms."""
+    from managers.financial_manager import FinancialManager
+    manager = FinancialManager(domain().db)
+    action = str(payload.get("action") or "")
+    note = str(payload.get("description") or "").strip()
+    if action == "entry":
+        if not note:
+            raise ValueError("거래 설명을 입력해주세요.")
+        message = manager.manual(actor, code, note, payload.get("lines"), str(payload.get("flow") or "none"))
+    elif action == "reverse":
+        if not note:
+            raise ValueError("정정 사유를 입력해주세요.")
+        message = manager.manual(actor, code, note, [], reversal=int(payload.get("entryId")))
+    elif action == "configure":
+        message = manager.configure(actor, code, payload.get("config"))
+    elif action == "close":
+        message = manager.close_period(actor, code, str(payload.get("period") or ""))
+    else:
+        raise ValueError("invalid_action")
+    audit_admin_access(actor, f"company_financial.{action}", {"company": code, **{k: v for k, v in payload.items() if k != "action"}})
+    return message
 
 
 def admin_company_command(actor, code, payload):
@@ -3190,6 +3360,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             return super().handle_one_request()
         finally:
+            # The delegation header belongs to one request; keep-alive reuses the thread.
+            _DELEGATION.by = ""
             elapsed = (time.perf_counter() - started) * 1000
             if elapsed >= 100:
                 import logging
@@ -3198,6 +3370,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
 
     def do_GET(self):
+        _DELEGATION.by = unquote(self.headers.get("x-inazina-delegated-by", ""))
         if not INTERNAL_TOKEN or not hmac.compare_digest(
             self.headers.get("x-inazina-internal-token", ""), INTERNAL_TOKEN
         ):
@@ -3256,6 +3429,9 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     query = parse_qs(parsed.query)
                     with board_db() as connection:
+                        if query.get("view", [""])[0] == "search":
+                            self.send_json(200, board.admin_search_terms(connection))
+                            return
                         self.send_json(200, board.admin_list(connection, query.get("status", ["all"])[0],
                                                              query.get("reported", ["0"])[0] == "1", query.get("search", [""])[0]))
             elif path == "/internal/hts/account":
@@ -3323,6 +3499,25 @@ class Handler(BaseHTTPRequestHandler):
                         user["userId"],
                     )
                     self.send_json(200, {"agenda": agenda})
+            elif path == "/internal/info/panel":
+                user = identity(internal_user_id(self))
+                query = parse_qs(parsed.query)
+                if not user:
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    self.send_json(200, info_panel(trading_user_id(user["userId"]), query.get("category", ["main"])[0], query.get("page", ["0"])[0]))
+            elif path == "/internal/me/company-financial":
+                user = identity(internal_user_id(self))
+                if not user:
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    self.send_json(200, {"financial": own_company_financial(user, parse_qs(parsed.query).get("period", [None])[0])})
+            elif path == "/internal/me/history":
+                user = identity(internal_user_id(self))
+                if not user:
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    self.send_json(200, {"events": user_history(user["userId"])})
             elif path == "/internal/me/dividend-payments":
                 user = identity(internal_user_id(self))
                 if not user:
@@ -3617,6 +3812,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, admin_identity(user["userId"]))
                 elif len(parts) == 3 and parts[0] == "companies" and parts[2] == "financial":
                     self.send_json(200, admin_company_financial(parts[1], query.get("period", [None])[0]))
+                elif len(parts) == 3 and parts[0] == "companies" and parts[2] == "journal":
+                    self.send_json(200, admin_company_journal(parts[1], query.get("period", [None])[0]))
                 elif parts == ["warnings"]:
                     self.send_json(200, admin_warnings())
                 elif parts == ["feedback"]:
@@ -3671,7 +3868,9 @@ class Handler(BaseHTTPRequestHandler):
                 raw_interval = query.get("interval", [""])[0]
                 if raw_interval and not raw_interval.isdecimal():
                     raise ValueError("unsupported_candle_interval")
-                result = chart(code, range_key, int(raw_interval) if raw_interval else None)
+                pick = lambda key: [item for item in query.get(key, [""])[0].split(",") if item][:24]
+                result = chart(code, range_key, int(raw_interval) if raw_interval else None, pick("upper"), pick("lower"),
+                               query.get("catalog", [""])[0] == "1")
                 if result is None:
                     self.send_json(404, {"error": "instrument_not_found"})
                 else:
@@ -3684,6 +3883,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(503, {"error": "database_unavailable"})
 
     def do_POST(self):
+        _DELEGATION.by = unquote(self.headers.get("x-inazina-delegated-by", ""))
         if urlsplit(self.path).path == "/__browser-access":
             self.browser_access_login()
             return
@@ -4138,7 +4338,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(404, {"error": "not_found"})
                 return
             if path.startswith("/internal/admin/board/"):
-                parts = path.removeprefix("/internal/admin/board/").split("/")
+                parts = [unquote(part) for part in path.removeprefix("/internal/admin/board/").split("/")]
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
                 elif len(parts) != 2:
@@ -4220,6 +4420,11 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     success, message = create_fund(user["userId"], payload)
                     self.send_json(201 if success else 400, {"success": success, "message": message})
+            elif path == "/internal/admin/login-as":
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    self.send_json(200, admin_login_as(user["userId"], payload))
             elif path.startswith("/internal/admin/") and path.split("/")[3] in {
                     "products", "countries", "exchanges", "user", "companies", "warnings", "feedback", "logs"}:
                 if user["role"] != "admin":
@@ -4240,6 +4445,8 @@ class Handler(BaseHTTPRequestHandler):
                     message = admin_exchange_action(actor, parts[1], payload)
                 elif parts == ["companies", "identity"]:
                     message = admin_identity_action(actor, payload)
+                elif len(parts) == 3 and parts[0] == "companies" and parts[2] == "journal":
+                    message = admin_company_journal_action(actor, parts[1], payload)
                 elif len(parts) == 2 and parts[0] == "companies":
                     message = admin_company_command(actor, parts[1], payload)
                 elif len(parts) == 2 and parts[0] == "warnings":
@@ -4447,6 +4654,19 @@ def main():
                 logging.getLogger("inazina.news").exception("publishing scheduled news failed")
 
     threading.Thread(target=publish_news, name="board-news", daemon=True).start()
+
+    # The Node API starts this service with a per-start token. If the API dies without stopping
+    # it, an orphan would keep the port with a stale token and refuse the next API; exit instead.
+    parent = os.getppid()
+
+    def follow_parent():
+        while not stopping.wait(2):
+            if os.getppid() != parent:
+                logging.getLogger("inazina").warning("API process %s is gone; stopping the data service", parent)
+                stop(None, None)
+                return
+
+    threading.Thread(target=follow_parent, name="parent-watch", daemon=True).start()
 
     def stop(_signum, _frame):
         if not stopping.is_set():

@@ -109,6 +109,48 @@ class CountryAccountTests(unittest.TestCase):
             )
         self.assertIsNone(server.identity("no-web-auth"))
 
+    def test_admin_signs_in_as_a_country_account_without_its_password(self):
+        server.create_country_account("admin-1", "Testland", "CountryPass123")
+        with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
+            connection.execute("INSERT INTO web_auth_credentials(user_id,salt,password_hash,created_epoch,updated_epoch) "
+                               "VALUES ('admin-1','s','h',0,0)")
+            connection.execute("DELETE FROM web_auth_credentials WHERE user_id='Testland'")
+        self.assertIsNone(server.identity("Testland"))
+        self.assertEqual(server.admin_login_as("admin-1", {"target": "Testland"})["userId"], "Testland")
+        try:
+            server._DELEGATION.by = "admin-1"
+            acting = server.identity("Testland")
+            self.assertEqual((acting["role"], acting["delegatedBy"]), ("nation", "admin-1"))
+            self.assertEqual(acting["authVersion"], server.identity_for("admin-1")["authVersion"])
+            # Only administrators delegate, and only into country or company accounts.
+            server._DELEGATION.by = "discord-1"
+            self.assertIsNone(server.identity("Testland"))
+            server._DELEGATION.by = "admin-1"
+            self.assertIsNone(server.identity("discord-1"))
+        finally:
+            server._DELEGATION.by = ""
+        with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
+            connection.execute("CREATE TABLE company (company_code TEXT PRIMARY KEY, status TEXT)")
+        with self.assertRaisesRegex(ValueError, "국가 ID"):
+            server.admin_login_as("admin-1", {"target": "Nowhere"})
+
+    def test_user_history_lists_transfers_both_ways_and_basic_income(self):
+        with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
+            connection.executescript("""
+                INSERT INTO users(user_id,nickname,nationality) VALUES ('discord-2','Friend','Testland');
+                CREATE TABLE currency_transfer_transactions (transaction_id INTEGER PRIMARY KEY, sender_id TEXT, recipient_id TEXT,
+                    source_account TEXT, target_account TEXT, source_currency TEXT, target_currency TEXT,
+                    source_units INTEGER, target_units INTEGER, fee_nwx INTEGER, recorded_epoch REAL);
+                CREATE TABLE basic_income_payments (payment_id INTEGER PRIMARY KEY, batch_id TEXT, user_id TEXT, source_currency TEXT,
+                    target_currency TEXT, source_units INTEGER, target_units INTEGER, source_rate TEXT, target_rate TEXT, recorded_epoch REAL);
+                INSERT INTO currency_transfer_transactions VALUES (1,'discord-1','discord-2',NULL,NULL,'TST','TST',2500000,2500000,0,100);
+                INSERT INTO currency_transfer_transactions VALUES (2,'discord-2','discord-1',NULL,NULL,'TST','TST',1000000,1000000,0,200);
+                INSERT INTO basic_income_payments VALUES (1,'b','discord-1','TST','TST',5000000,5000000,'1','1',300);
+            """)
+        events = server.user_history("discord-1")
+        self.assertEqual([(item["kind"], item["amount"], item["counterpart"]) for item in events],
+                         [("basic_income", 5.0, "국고"), ("transfer_in", 1.0, "Friend"), ("transfer_out", -2.5, "Friend")])
+
     def test_hts_login_id_is_separate_and_password_confirmed(self):
         server.create_country_account("admin-1", "Testland", "CountryPass123")
         self.assertEqual(server.set_hts_login_id("Testland", "Test.User_1", "CountryPass123"), "test.user_1")

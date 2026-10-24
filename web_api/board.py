@@ -218,6 +218,15 @@ def ensure_tables(connection):
             status TEXT NOT NULL DEFAULT 'scheduled' CHECK(status IN ('scheduled','live','ended','failed')),
             event_id INTEGER, error TEXT);
         CREATE INDEX IF NOT EXISTS idx_board_news_due ON board_news(status, publish_epoch);
+        -- 실시간 검색어: one row per search (first page only), kept for a week.
+        CREATE TABLE IF NOT EXISTS board_search_terms (
+            term TEXT NOT NULL, searched_epoch INTEGER NOT NULL);
+        CREATE INDEX IF NOT EXISTS idx_board_search_terms ON board_search_terms(searched_epoch, term);
+        -- Terms an administrator keeps off the 실시간 검색어 list (still searchable).
+        CREATE TABLE IF NOT EXISTS board_search_blocks (term TEXT PRIMARY KEY, blocked_epoch INTEGER NOT NULL);
+        -- Terms an administrator places at a fixed rank (until_epoch NULL = until removed).
+        CREATE TABLE IF NOT EXISTS board_search_pins (term TEXT PRIMARY KEY, rank INTEGER NOT NULL CHECK(rank BETWEEN 1 AND 10),
+            until_epoch INTEGER, pinned_epoch INTEGER NOT NULL);
     """)
     columns = {row[1] for row in connection.execute("PRAGMA table_info(board_comments)")}
     # Replies: a comment may answer one top-level comment of the same post.
@@ -226,6 +235,10 @@ def ensure_tables(connection):
                            "REFERENCES board_comments(comment_id) ON DELETE CASCADE")
     if "author_admin" not in columns:
         connection.execute("ALTER TABLE board_comments ADD COLUMN author_admin INTEGER NOT NULL DEFAULT 0")
+    # 비밀글 · 비밀댓글: readable only by the writer, the post's writer (for comments) and administrators.
+    for table in ("board_comments", "board_posts"):
+        if "secret" not in {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN secret INTEGER NOT NULL DEFAULT 0 CHECK(secret IN (0,1))")
     connection.execute("CREATE INDEX IF NOT EXISTS idx_board_comments_parent ON board_comments(parent_id)")
     # Earlier versions kept likes only; carry them over as 좋아요.
     if connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='board_likes'").fetchone():
@@ -424,7 +437,7 @@ def _post(connection, post_id):
 # ---------------------------------------------------------------------------
 _PUBLIC_POST = (
     "SELECT p.post_id,p.board,b.name AS board_name,p.category_id,k.name AS category_name,p.title,p.asset_code,"
-    "p.pinned,p.notice,p.author_admin,p.anonymous,p.view_count,p.created_epoch,p.updated_epoch,"
+    "p.pinned,p.notice,p.author_admin,p.anonymous,p.secret,p.view_count,p.created_epoch,p.updated_epoch,"
     "p.author_id,CASE WHEN p.anonymous=1 THEN ? ELSE COALESCE(u.nickname,'알 수 없음') END AS author,"
     "(SELECT COUNT(*) FROM board_comments c WHERE c.post_id=p.post_id AND c.status='active') AS comment_count,"
     "(SELECT COUNT(*) FROM board_post_reactions r WHERE r.post_id=p.post_id AND r.value=1) AS like_count,"
@@ -436,6 +449,13 @@ _PUBLIC_POST = (
     "FROM board_posts p LEFT JOIN users u ON u.user_id=p.author_id "
     "JOIN board_boards b ON b.board_id=p.board LEFT JOIN board_categories k ON k.category_id=p.category_id ")
 REMOVED = {"hidden": "숨겨진 댓글입니다."}
+SECRET_POST = "비밀글입니다. 작성자와 관리자만 볼 수 있습니다."
+SECRET_COMMENT = "비밀 댓글입니다."
+
+
+def _secret_reader(viewer, admin, *writers):
+    """Who reads a 비밀글 or 비밀댓글: administrators and its writers (a comment's also the post's)."""
+    return admin or (bool(viewer) and viewer in writers)
 
 
 def _public(row, viewer):
@@ -495,7 +515,13 @@ def list_posts(connection, board=None, search="", asset_code=None, page=1, viewe
         where.append("p.asset_code=?"); params.append(str(asset_code).strip())
     term = str(search or "").strip()[:50]
     if term:
-        where.append("(p.title LIKE ? OR p.body LIKE ?)"); params += [f"%{term}%", f"%{term}%"]
+        # A 비밀글's body is searchable only by its writer and administrators.
+        where.append("(p.title LIKE ? OR (p.body LIKE ? AND (p.secret=0 OR p.author_id=? OR ?=1)))")
+        params += [f"%{term}%", f"%{term}%", viewer or "", 1 if admin else 0]
+        if page == 1:
+            now = int(time.time())
+            connection.execute("DELETE FROM board_search_terms WHERE searched_epoch<?", (now - 7 * 86400,))
+            connection.execute("INSERT INTO board_search_terms(term,searched_epoch) VALUES (?,?)", (term.lower(), now))
     clause = " AND ".join(where)
     total = connection.execute(f"SELECT COUNT(*) FROM board_posts p JOIN board_boards b ON b.board_id=p.board WHERE {clause}",
                                params[1:]).fetchone()[0]
@@ -504,7 +530,28 @@ def list_posts(connection, board=None, search="", asset_code=None, page=1, viewe
         _PUBLIC_POST + f"WHERE {clause} ORDER BY {order} LIMIT ? OFFSET ?",
         params + [PAGE_SIZE, (page - 1) * PAGE_SIZE]).fetchall()
     return {"posts": [_public(row, viewer) for row in rows], "total": total, "page": page, "pageSize": PAGE_SIZE,
-            "writeOpensEpoch": write_opens_epoch()}
+            "writeOpensEpoch": write_opens_epoch(), "trending": trending_terms(connection)}
+
+
+def trending_terms(connection, now=None, limit=10):
+    """실시간 검색어: the most searched terms of the last 24 hours, with the change in rank
+    against the 24 hours before (None = new entry)."""
+    now = int(now or time.time())
+    def ranking(start, end):
+        return [row[0] for row in connection.execute(
+            "SELECT term FROM board_search_terms WHERE searched_epoch>=? AND searched_epoch<? "
+            "AND term NOT IN (SELECT term FROM board_search_blocks) "
+            "GROUP BY term ORDER BY COUNT(*) DESC, MAX(searched_epoch) DESC LIMIT ?", (start, end, limit * 3))]
+    current, previous = ranking(now - 86400, now + 1), ranking(now - 2 * 86400, now - 86400)
+    # Administrator-fixed ranks take their slot; the organic order fills the rest around them.
+    pins = {row["rank"]: row["term"] for row in connection.execute(
+        "SELECT term, rank FROM board_search_pins WHERE (until_epoch IS NULL OR until_epoch>?) "
+        "AND term NOT IN (SELECT term FROM board_search_blocks) ORDER BY pinned_epoch", (now,))}
+    organic = iter([term for term in current if term not in pins.values()])
+    ordered = [pins.get(rank) or next(organic, None) for rank in range(1, limit + 1)]
+    ordered = [term for term in ordered if term]
+    return [{"term": term, "rank": index + 1, "change": None if term not in previous else previous.index(term) - index}
+            for index, term in enumerate(ordered)]
 
 
 def read_post(connection, post_id, viewer=None, count_view=False, admin=False):
@@ -515,11 +562,14 @@ def read_post(connection, post_id, viewer=None, count_view=False, admin=False):
     row = connection.execute(_PUBLIC_POST + "WHERE p.post_id=? AND p.status='active'", (ANONYMOUS, post_id)).fetchone()
     if not row:
         raise ValueError("글을 찾을 수 없거나 숨겨진 글입니다.")
+    post_author = row["author_id"]
     post = _public(row, viewer)
-    post["body"] = connection.execute("SELECT body FROM board_posts WHERE post_id=?", (post_id,)).fetchone()[0]
+    locked = bool(post["secret"]) and not _secret_reader(viewer, admin, post_author)
+    post["locked"] = locked
+    post["body"] = SECRET_POST if locked else connection.execute("SELECT body FROM board_posts WHERE post_id=?", (post_id,)).fetchone()[0]
     post["my_reaction"] = _reaction(connection, "board_post_reactions", "post_id", post_id, viewer)
     rows = connection.execute(
-        "SELECT c.comment_id,c.parent_id,c.status,c.body,c.created_epoch,c.author_id,c.author_admin,"
+        "SELECT c.comment_id,c.parent_id,c.status,c.body,c.secret,c.created_epoch,c.author_id,c.author_admin,"
         "CASE WHEN c.anonymous=1 THEN ? ELSE COALESCE(u.nickname,'알 수 없음') END AS author,"
         "(SELECT COUNT(*) FROM board_comment_reactions r WHERE r.comment_id=c.comment_id AND r.value=1) AS like_count,"
         "(SELECT COUNT(*) FROM board_comment_reactions r WHERE r.comment_id=c.comment_id AND r.value=-1) AS dislike_count,"
@@ -537,15 +587,18 @@ def read_post(connection, post_id, viewer=None, count_view=False, admin=False):
                              "body": REMOVED[row["status"]], "author": "", "author_admin": 0, "created_epoch": row["created_epoch"],
                              "like_count": 0, "dislike_count": 0, "my_reaction": 0, "mine": False})
             continue
+        hidden = row["secret"] and not _secret_reader(viewer, admin, row["author_id"], post_author)
         comment = _public(row, viewer)
         comment.pop("status")
+        if hidden:
+            comment.update(body=SECRET_COMMENT, author="", like_count=0, dislike_count=0, locked=True)
         comment["removed"] = False
         comment["my_reaction"] = comment["my_reaction"] or 0
         comments.append(comment)
     post["comments"] = comments
-    post["attachments"] = [dict(row) for row in connection.execute(
+    post["attachments"] = [] if locked else [dict(row) for row in connection.execute(
         "SELECT attachment_id,kind,name,url,size FROM board_attachments WHERE post_id=? ORDER BY attachment_id", (post_id,))]
-    poll = connection.execute("SELECT * FROM board_polls WHERE post_id=?", (post_id,)).fetchone()
+    poll = None if locked else connection.execute("SELECT * FROM board_polls WHERE post_id=?", (post_id,)).fetchone()
     post["poll"] = _poll_view(connection, poll, viewer) if poll else None
     news = connection.execute("SELECT * FROM board_news WHERE post_id=?", (post_id,)).fetchone()
     # Readers only learn that it is news; its direction and strength are for administrators.
@@ -573,9 +626,9 @@ def create_post(connection, user, payload, ip):
     # Only administrators may pin a post or make it a 공지 (also later, from the post).
     pinned, notice = (_flag(payload.get("pinned")), _flag(payload.get("notice"))) if admin else (0, 0)
     cursor = connection.execute(
-        "INSERT INTO board_posts(board,category_id,author_id,author_admin,anonymous,title,body,asset_code,pinned,notice,"
-        "author_ip,created_epoch,updated_epoch) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (board["board_id"], category, user["userId"], 1 if admin else 0, _flag(payload.get("anonymous")),
+        "INSERT INTO board_posts(board,category_id,author_id,author_admin,anonymous,secret,title,body,asset_code,pinned,notice,"
+        "author_ip,created_epoch,updated_epoch) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (board["board_id"], category, user["userId"], 1 if admin else 0, _flag(payload.get("anonymous")), _flag(payload.get("secret")),
          title, body, asset, pinned, notice, _ip(ip), now, now))
     post_id = cursor.lastrowid
     if news:
@@ -597,11 +650,11 @@ def edit_post(connection, user, post_id, payload):
         raise ValueError("숨겨진 글은 수정할 수 없습니다.")
     board = _board(connection, row["board"])
     connection.execute(
-        "UPDATE board_posts SET title=?,body=?,category_id=?,asset_code=?,anonymous=?,updated_epoch=? WHERE post_id=?",
+        "UPDATE board_posts SET title=?,body=?,category_id=?,asset_code=?,anonymous=?,secret=?,updated_epoch=? WHERE post_id=?",
         (_text(payload.get("title"), "제목", TITLE_MAX), _text(payload.get("body"), "내용", BODY_MAX),
          _category(connection, board["board_id"], payload.get("categoryId")),
          _asset(connection, board, payload.get("assetCode")),
-         _flag(payload.get("anonymous")), int(time.time()), row["post_id"]))
+         _flag(payload.get("anonymous")), _flag(payload.get("secret")), int(time.time()), row["post_id"]))
     remove = payload.get("removeAttachments") or []
     if not isinstance(remove, list):
         raise ValueError("지울 첨부를 확인해주세요.")
@@ -637,10 +690,10 @@ def add_comment(connection, user, post_id, payload, ip):
         parent = target["parent_id"] or target["comment_id"]
     _throttle(connection, "board_comments", user["userId"], COMMENTS_PER_MINUTE, "댓글")
     cursor = connection.execute(
-        "INSERT INTO board_comments(post_id,parent_id,author_id,author_admin,anonymous,body,author_ip,created_epoch) "
-        "VALUES (?,?,?,?,?,?,?,?)",
+        "INSERT INTO board_comments(post_id,parent_id,author_id,author_admin,anonymous,secret,body,author_ip,created_epoch) "
+        "VALUES (?,?,?,?,?,?,?,?,?)",
         (row["post_id"], parent, user["userId"], 1 if user["role"] == "admin" else 0, _flag(payload.get("anonymous")),
-         body, _ip(ip), int(time.time())))
+         _flag(payload.get("secret")), body, _ip(ip), int(time.time())))
     return cursor.lastrowid
 
 
@@ -760,6 +813,52 @@ def admin_list(connection, status="all", reported=False, search=""):
     return {"posts": [dict(row) for row in rows], "reports": [dict(row) for row in reports]}
 
 
+def admin_search_terms(connection, now=None, limit=50):
+    """실시간 검색어 관리: the last day's searches with counts (blocked ones marked) and the block list."""
+    now = int(now or time.time())
+    rows = connection.execute(
+        "SELECT term, COUNT(*) AS searches, MAX(searched_epoch) AS last_epoch, "
+        "EXISTS(SELECT 1 FROM board_search_blocks b WHERE b.term=s.term) AS blocked "
+        "FROM board_search_terms s WHERE searched_epoch>=? GROUP BY term "
+        "ORDER BY searches DESC, last_epoch DESC LIMIT ?", (now - 86400, limit)).fetchall()
+    return {"terms": [dict(row) for row in rows], "trending": trending_terms(connection, now),
+            "blocked": [dict(row) for row in connection.execute("SELECT term, blocked_epoch FROM board_search_blocks ORDER BY blocked_epoch DESC")],
+            "pinned": [dict(row) for row in connection.execute(
+                "SELECT term, rank, until_epoch, pinned_epoch FROM board_search_pins WHERE until_epoch IS NULL OR until_epoch>? ORDER BY rank", (now,))]}
+
+
+def _search_action(connection, term, action, payload=None):
+    payload = payload or {}
+    term = _text(term, "검색어", 50).lower()
+    now = int(time.time())
+    if action == "pin":
+        rank = _id(payload.get("rank"), "순위")
+        if rank > 10:
+            raise ValueError("순위는 1~10위로 고정할 수 있습니다.")
+        hours = payload.get("hours")
+        until = now + int(float(hours) * 3600) if hours not in (None, "", 0) else None
+        # One term per slot: a new pin at a taken rank replaces the old one.
+        connection.execute("DELETE FROM board_search_pins WHERE rank=? AND term<>?", (rank, term))
+        return connection.execute("INSERT INTO board_search_pins(term,rank,until_epoch,pinned_epoch) VALUES (?,?,?,?) "
+                                  "ON CONFLICT(term) DO UPDATE SET rank=excluded.rank,until_epoch=excluded.until_epoch,pinned_epoch=excluded.pinned_epoch",
+                                  (term, rank, until, now)).rowcount
+    if action == "unpin":
+        return connection.execute("DELETE FROM board_search_pins WHERE term=?", (term,)).rowcount
+    if action == "boost":
+        count = _id(payload.get("count"), "추가할 검색 수")
+        if count > 1000:
+            raise ValueError("검색 수는 한 번에 1,000회까지 추가할 수 있습니다.")
+        connection.executemany("INSERT INTO board_search_terms(term,searched_epoch) VALUES (?,?)", [(term, now)] * count)
+        return count
+    if action == "block":
+        return connection.execute("INSERT OR IGNORE INTO board_search_blocks(term,blocked_epoch) VALUES (?,?)", (term, int(time.time()))).rowcount
+    if action == "unblock":
+        return connection.execute("DELETE FROM board_search_blocks WHERE term=?", (term,)).rowcount
+    if action == "reset":
+        return connection.execute("DELETE FROM board_search_terms WHERE term=?", (term,)).rowcount
+    raise ValueError("검색어 작업을 확인해주세요.")
+
+
 def admin_action(connection, kind, target, action, payload=None):
     """Moderation and board structure.
 
@@ -769,6 +868,8 @@ def admin_action(connection, kind, target, action, payload=None):
     Returns how many rows changed (for create: the new id).
     """
     payload = payload or {}
+    if kind == "search":
+        return _search_action(connection, target, action, payload)
     if kind == "board":
         return _board_action(connection, target, action, payload)
     if kind == "category":

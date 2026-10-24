@@ -220,6 +220,23 @@ class FinancialTests(unittest.TestCase):
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.financial.execute('UPDATE financial_lines SET amount=1 WHERE entry_id=?',(ident,))
 
+    def test_journal_lists_entries_lines_and_reversal_links(self):
+        self.setup_company()
+        self.fin.manual('admin','CO','외상매출',[{'account':'receivables','amount':1000},{'account':'revenue','amount':-1000}])
+        ident=self.db.financial.execute_one("SELECT entry_id FROM financial_entries WHERE source_key LIKE 'manual:%'")[0]
+        self.fin.manual('admin','CO','취소',[],reversal=ident)
+        journal=self.fin.journal('CO')
+        self.assertEqual(journal['period'],month())
+        original=next(entry for entry in journal['entries'] if entry['id']==ident)
+        self.assertTrue(original['manual'])
+        self.assertEqual(sorted((line['account'],line['amount']) for line in original['lines']),[('receivables',1000),('revenue',-1000)])
+        self.assertIsNotNone(original['reversedBy'])
+        reversal=next(entry for entry in journal['entries'] if entry['id']==original['reversedBy'])
+        self.assertEqual(reversal['reversalOf'],ident)
+        self.assertTrue(next(account for account in journal['accounts'] if account['code']=='common_capital')['protected'])
+        self.assertIsNone(journal['profile'])
+        with self.assertRaises(ValueError):self.fin.journal('CO','2026-13')
+
     def test_close_freezes_report_and_rejects_backdating(self):
         self.setup_company()
         old=1756684800

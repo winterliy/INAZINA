@@ -261,6 +261,10 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
     return () => window.clearInterval(timer);
   }, [group, load]);
 
+  // The editor opens right under the kind picker; bring it into view when it opens or switches product.
+  const editorRef = useRef<HTMLDivElement>(null);
+  const editorKey = editor ? `${editor.mode}:${editor.kind}:${editor.mode === "edit" ? editor.code : ""}` : "";
+  useEffect(() => { if (editorKey) editorRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }); }, [editorKey]);
   const kindOf = (kind: string) => kinds.find((item) => item.kind === kind);
   // Savings and foreign-currency accounts are one family: same form, different account currency.
   const familyLabel = (kind: string) => kindOf(kind)?.family === "saving" ? "저축" : kindOf(kind)?.label ?? kind;
@@ -284,7 +288,6 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
       setEditor({ mode: "edit", kind: detail.kind, code: detail.code, original: detail,
         values: Object.fromEntries((spec?.fields ?? []).map((field) => [field.key, text(detail.values[field.key])])),
         advanced: Object.fromEntries((spec?.advanced ?? []).map((field) => [field.key, text(detail.row[field.key])])) });
-      window.scrollTo({ top: 0, behavior: "smooth" });
     });
   }
 
@@ -341,6 +344,35 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
       <div className="kind-grid">{families.map((kind) => <button key={kind.family} type="button" className={editor?.mode === "create" && kindOf(editor.kind)?.family === kind.family ? "command-chip active" : "command-chip"} onClick={() => startCreate(kind.kind)}><b>{familyLabel(kind.kind)}</b><small>{kind.family === "saving" ? "saving · 국적 통화/외환" : kind.token} · {counts[kind.family] ?? 0}개</small></button>)}</div>
     </Card>
 
+    {editor && spec && <div ref={editorRef} className="editor-anchor"><Card title={editor.mode === "create" ? `${spec.label} 생성` : `${editor.code} 수정`} caption={editor.kind === "dr" ? editor.mode === "create" ? "기초 코드는 활성 보통주여야 하고 결제 통화·상장 거래소도 이미 등록되어야 합니다. 발행량 × DR당 원주 수는 원주 발행량 한도 안에 있어야 합니다." : "기초주식·비율·통화·거래소 등 발행조건은 변경할 수 없습니다. 가격과 표시 이름만 수정할 수 있습니다." : editor.mode === "create" ? "선택 항목은 비워 둘 수 있습니다. 배당주기는 초 또는 1일·1주·1달, 배당은 5 또는 5%처럼 입력합니다." : "바꾼 값만 저장합니다. 결제 통화와 발행된 계약 조건처럼 바꿀 수 없는 값은 서버가 거부합니다."}
+      actions={<button className="soft" type="button" onClick={() => setEditor(null)}>닫기</button>}>
+      {spec.family === "saving" && <div className="saving-mode">
+        <div className="segment-tabs" role="radiogroup" aria-label="통장 방식">{kinds.filter((kind) => kind.family === "saving").map((kind) => <button key={kind.kind} type="button" role="radio" aria-checked={editor.kind === kind.kind} className={editor.kind === kind.kind ? "active" : ""} disabled={editor.mode === "edit"} onClick={() => startCreate(kind.kind, editor.values)}>{kind.kind === "saving" ? "국적 통화 저축" : "외환통장"}</button>)}</div>
+        <p className="hint">{editor.kind === "saving" ? "통장 화폐가 국적 통화인 시민이 비밀번호·예치금을 넣고 여는 저축입니다." : "통장 화폐가 국적 통화가 아닌 시민이 여는 저축입니다. 통화마다 한 사람당 하나만 열 수 있어요."} 입력 항목은 같고 통장 화폐만 다릅니다.</p>
+      </div>}
+      <form className="form-grid" onSubmit={save}>
+        <Field label="상품 코드" hint={editor.mode === "edit" ? "변경 불가" : "공백 없이"}><input className="mono" value={editor.code} readOnly={editor.mode === "edit"} required={editor.kind !== "option"} onChange={(event) => setEditor({ ...editor, code: event.target.value })} /></Field>
+        {spec.fields.map((field) => {
+          const drFixed = editor.kind === "dr" && ["total_supply", "exchange_id", "underlying_code", "underlying_per_receipt", "receipt_type", "depositary_bank", "custodian", "home_exchange_id", "quote_currency"].includes(field.key);
+          return <Field key={field.key} label={field.label} hint={`${field.key}${field.optional ? " · 선택" : ""}${editor.mode === "edit" && drFixed ? " · 발행조건 고정" : ""}`} wide={field.key === "components" || field.key === "underlyings"}>
+            <input className={field.text ? undefined : "mono"} readOnly={editor.mode === "edit" && drFixed} required={editor.mode === "create" && !field.optional} value={editor.values[field.key] ?? ""} onChange={(event) => setEditor({ ...editor, values: { ...editor.values, [field.key]: event.target.value } })} />
+          </Field>;
+        })}
+        <button className="btn primary" disabled={busy}>{busy ? "저장 중…" : editor.mode === "create" ? "생성" : "저장"}</button>
+      </form>
+      {editor.mode === "edit" && <RatioPanel key={editor.code} editor={editor} spec={spec} busy={busy} submit={(fields, advanced, summary) => {
+        if (!Object.keys(fields).length && !Object.keys(advanced).length) { say("변경된 비율이 없습니다.", true); return; }
+        if (!window.confirm(`${editor.code} 비율을 바꿀까요?\n\n${summary}`)) return;
+        void run(() => api<{ message: string; success: boolean }>("/api/admin/products", { method: "POST", body: JSON.stringify({ operation: "edit", kind: editor.kind, code: editor.code, fields, advanced }) }),
+          "비율을 저장하지 못했습니다.", async (result) => { say(plain(result.message), !result.success); if (result.success) { setEditor(null); await load(); } });
+      }} />}
+      {spec.advanced.length > 0 && editor.kind !== "els" && <details className="help advanced"><summary>고급 설정 ({spec.advanced.length}개 열)</summary>
+        <p className="hint">{editor.mode === "create" ? "필요한 항목만 입력하세요. 비우면 기본값을 씁니다." : "현재 값입니다. 바꾼 칸만 저장합니다."}</p>
+        <div className="form-grid">{spec.advanced.map((field) => <Field key={field.key} label={field.label} hint={`${field.key} · ${field.type || "ANY"}`}>
+          <input className="mono" value={editor.advanced[field.key] ?? ""} onChange={(event) => setEditor({ ...editor, advanced: { ...editor.advanced, [field.key]: event.target.value } })} />
+        </Field>)}</div>
+      </details>}
+    </Card></div>}
     {group === "market" && <Card title="DR 내부 수탁 처리 이력" caption="상품별 내부 정산 지연을 설정할 수 있습니다. 접수된 요청은 입력 자산 수량을 예약하고, 만기 후 봇 워커가 자동 정산합니다. 실패 시 예약을 보존해 다음 주기에 재시도하며 아래에 최근 사유를 표시합니다. 외부 수탁 증빙은 제공하지 않습니다.">
       <h3 className="sub-head">읽기 전용 원장 대사</h3>
       {drCustodyReconciliation ? <><p className="hint">{drCustodyReconciliation.programCount}개 DR 프로그램 검사 · 불일치 {drCustodyReconciliation.discrepancyCount}건 · 자동 수정 없음</p>
@@ -432,35 +464,6 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
       </tbody></table>{!drMonitorError && !drDeviationEvents.length && <p className="empty">경보 상태 전환 이력이 없습니다.</p>}</div>
     </Card>}
 
-    {editor && spec && <Card title={editor.mode === "create" ? `${spec.label} 생성` : `${editor.code} 수정`} caption={editor.kind === "dr" ? editor.mode === "create" ? "기초 코드는 활성 보통주여야 하고 결제 통화·상장 거래소도 이미 등록되어야 합니다. 발행량 × DR당 원주 수는 원주 발행량 한도 안에 있어야 합니다." : "기초주식·비율·통화·거래소 등 발행조건은 변경할 수 없습니다. 가격과 표시 이름만 수정할 수 있습니다." : editor.mode === "create" ? "선택 항목은 비워 둘 수 있습니다. 배당주기는 초 또는 1일·1주·1달, 배당은 5 또는 5%처럼 입력합니다." : "바꾼 값만 저장합니다. 결제 통화와 발행된 계약 조건처럼 바꿀 수 없는 값은 서버가 거부합니다."}
-      actions={<button className="soft" type="button" onClick={() => setEditor(null)}>닫기</button>}>
-      {spec.family === "saving" && <div className="saving-mode">
-        <div className="segment-tabs" role="radiogroup" aria-label="통장 방식">{kinds.filter((kind) => kind.family === "saving").map((kind) => <button key={kind.kind} type="button" role="radio" aria-checked={editor.kind === kind.kind} className={editor.kind === kind.kind ? "active" : ""} disabled={editor.mode === "edit"} onClick={() => startCreate(kind.kind, editor.values)}>{kind.kind === "saving" ? "국적 통화 저축" : "외환통장"}</button>)}</div>
-        <p className="hint">{editor.kind === "saving" ? "통장 화폐가 국적 통화인 시민이 비밀번호·예치금을 넣고 여는 저축입니다." : "통장 화폐가 국적 통화가 아닌 시민이 여는 저축입니다. 통화마다 한 사람당 하나만 열 수 있어요."} 입력 항목은 같고 통장 화폐만 다릅니다.</p>
-      </div>}
-      <form className="form-grid" onSubmit={save}>
-        <Field label="상품 코드" hint={editor.mode === "edit" ? "변경 불가" : "공백 없이"}><input className="mono" value={editor.code} readOnly={editor.mode === "edit"} required={editor.kind !== "option"} onChange={(event) => setEditor({ ...editor, code: event.target.value })} /></Field>
-        {spec.fields.map((field) => {
-          const drFixed = editor.kind === "dr" && ["total_supply", "exchange_id", "underlying_code", "underlying_per_receipt", "receipt_type", "depositary_bank", "custodian", "home_exchange_id", "quote_currency"].includes(field.key);
-          return <Field key={field.key} label={field.label} hint={`${field.key}${field.optional ? " · 선택" : ""}${editor.mode === "edit" && drFixed ? " · 발행조건 고정" : ""}`} wide={field.key === "components" || field.key === "underlyings"}>
-            <input className={field.text ? undefined : "mono"} readOnly={editor.mode === "edit" && drFixed} required={editor.mode === "create" && !field.optional} value={editor.values[field.key] ?? ""} onChange={(event) => setEditor({ ...editor, values: { ...editor.values, [field.key]: event.target.value } })} />
-          </Field>;
-        })}
-        <button className="btn primary" disabled={busy}>{busy ? "저장 중…" : editor.mode === "create" ? "생성" : "저장"}</button>
-      </form>
-      {editor.mode === "edit" && <RatioPanel key={editor.code} editor={editor} spec={spec} busy={busy} submit={(fields, advanced, summary) => {
-        if (!Object.keys(fields).length && !Object.keys(advanced).length) { say("변경된 비율이 없습니다.", true); return; }
-        if (!window.confirm(`${editor.code} 비율을 바꿀까요?\n\n${summary}`)) return;
-        void run(() => api<{ message: string; success: boolean }>("/api/admin/products", { method: "POST", body: JSON.stringify({ operation: "edit", kind: editor.kind, code: editor.code, fields, advanced }) }),
-          "비율을 저장하지 못했습니다.", async (result) => { say(plain(result.message), !result.success); if (result.success) { setEditor(null); await load(); } });
-      }} />}
-      {spec.advanced.length > 0 && editor.kind !== "els" && <details className="help advanced"><summary>고급 설정 ({spec.advanced.length}개 열)</summary>
-        <p className="hint">{editor.mode === "create" ? "필요한 항목만 입력하세요. 비우면 기본값을 씁니다." : "현재 값입니다. 바꾼 칸만 저장합니다."}</p>
-        <div className="form-grid">{spec.advanced.map((field) => <Field key={field.key} label={field.label} hint={`${field.key} · ${field.type || "ANY"}`}>
-          <input className="mono" value={editor.advanced[field.key] ?? ""} onChange={(event) => setEditor({ ...editor, advanced: { ...editor.advanced, [field.key]: event.target.value } })} />
-        </Field>)}</div>
-      </details>}
-    </Card>}
 
     <Card title={group === "market" ? "종목 · 상품" : "금융 상품"} caption={`${number(visible.length)}개 표시 · 중지는 거래만 멈추고, 중지된 상품은 아무도 보유·이용하지 않으면 삭제로 완전히 지울 수 있습니다.`}
       actions={<><select aria-label="종류" value={filter} onChange={(event) => setFilter(event.target.value)}><option value="all">전체 종류</option>{families.map((kind) => <option key={kind.family} value={kind.family}>{familyLabel(kind.kind)} ({counts[kind.family] ?? 0})</option>)}</select>

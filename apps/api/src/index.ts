@@ -1,6 +1,7 @@
 import { createHash, createHmac, timingSafeEqual, randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createReadStream, existsSync } from "node:fs";
 import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { resolve, join, dirname } from "node:path";
@@ -15,10 +16,10 @@ try {
   if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 }
 
-type Principal = { userId: string; authVersion: number };
+type Principal = { userId: string; authVersion: number; by?: string };
 type User = { userId: string; nickname: string; role: string; nationality: string; cash: number; creditScore: number; authVersion: number };
 type DiscordPurpose = "register" | "find-id" | "reset-password";
-type SignedPayload = { kind: "session" | "discord"; userId: string; exp: number; authVersion?: number; purpose?: DiscordPurpose; nickname?: string; nonce?: string };
+type SignedPayload = { kind: "session" | "discord"; userId: string; exp: number; authVersion?: number; by?: string; purpose?: DiscordPurpose; nickname?: string; nonce?: string };
 
 const host = "127.0.0.1";
 const port = Number(process.env.PORT ?? 4312);
@@ -113,16 +114,19 @@ function redirectBrowserToMain(response: ServerResponse): void {
   response.end();
 }
 
-function sessionHeader(userId: string, authVersion: number): string {
-  return cookieHeader(sessionCookie, signed({ kind: "session", userId, authVersion, exp: Math.floor(Date.now() / 1000) + 43_200 }), 43_200);
+// `by`: the administrator who signed in as this country or company account ($login on the web).
+function sessionHeader(userId: string, authVersion: number, by?: string): string {
+  return cookieHeader(sessionCookie, signed({ kind: "session", userId, authVersion, ...(by ? { by } : {}), exp: Math.floor(Date.now() / 1000) + 43_200 }), 43_200);
 }
+// The administrator behind the current request's delegated session, forwarded to the Python service.
+const delegation = new AsyncLocalStorage<string>();
 
 function principalFor(request: IncomingMessage): Principal | undefined {
   const session = verifiedCookie(cookieValue(request, sessionCookie));
   if (session?.kind === "session" && typeof session.userId === "string" &&
       session.userId.length > 0 && session.userId.length <= 120 && !/[\u0000-\u001f]/.test(session.userId) &&
       typeof session.authVersion === "number" && Number.isInteger(session.authVersion)) {
-    return { userId: session.userId, authVersion: session.authVersion };
+    return { userId: session.userId, authVersion: session.authVersion, ...(typeof session.by === "string" && session.by ? { by: session.by } : {}) };
   }
   return undefined;
 }
@@ -240,6 +244,7 @@ async function internalRequest(
       headers: {
         "x-inazina-internal-token": internalToken,
         ...(userId ? { "x-inazina-user-id": encodeURIComponent(userId) } : {}),
+        ...(userId && delegation.getStore() ? { "x-inazina-delegated-by": encodeURIComponent(delegation.getStore()!) } : {}),
         ...(body ? { "content-type": "application/json" } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
@@ -247,7 +252,14 @@ async function internalRequest(
     });
     const responseText = await result.text();
     try {
-      return { status: result.status, body: JSON.parse(responseText) };
+      const parsed = JSON.parse(responseText);
+      // During a restart the old data service may still answer with the previous token. That is the
+      // service being unavailable, not the user's session ending, so browsers must not sign out.
+      if (result.status === 401 && parsed?.error === "internal_authentication_required") {
+        console.error(`Python service rejected the internal token for ${method} ${path}; is an old data service still running?`);
+        return { status: 503, body: { error: "python_service_unavailable" } };
+      }
+      return { status: result.status, body: parsed };
     } catch {
       console.error(`Python service returned non-JSON for ${method} ${path} (${result.status}): ${responseText.slice(0, 500)}`);
       return { status: 503, body: { error: "python_service_unavailable" } };
@@ -543,7 +555,14 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
   }
   if (request.method === "POST" && url.pathname === "/api/auth/logout") {
     const session = verifiedCookie(cookieValue(request, sessionCookie));
-    if (session?.kind === "session") {
+    if (session?.kind === "session" && session.by) {
+      // Leaving a country or company account returns to the administrator who signed in as it.
+      const admin = await delegation.exit(() => internalGet("/internal/me", session.by));
+      if (admin.status === 200 && admin.body.user?.role === "admin") {
+        send(response, 200, { success: true, returnedTo: admin.body.user }, { "set-cookie": sessionHeader(admin.body.user.userId, admin.body.user.authVersion) });
+        return;
+      }
+    } else if (session?.kind === "session") {
       await internalRequest("POST", "/internal/auth/logout", session.userId, {});
     }
     send(response, 200, { success: true }, { "set-cookie": cookieHeader(sessionCookie, "", 0) });
@@ -570,6 +589,17 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
 
   if (request.method === "GET" && (url.pathname === "/api/auth/session" || url.pathname === "/api/me")) {
     send(response, 200, { user });
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/admin/login-as") {
+    if (user.role !== "admin" || principal.by) {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const result = await internalRequest("POST", "/internal/admin/login-as", principal.userId, await requestJson(request));
+    if (result.status === 200 && result.body.userId) {
+      send(response, 200, result.body, { "set-cookie": sessionHeader(result.body.userId, user.authVersion, user.userId) });
+    } else send(response, result.status, result.body);
     return;
   }
 
@@ -838,6 +868,25 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     return;
   }
 
+  const infoMatch = url.pathname.match(/^\/api\/info\/(panel)$/);
+  if (request.method === "GET" && infoMatch) {
+    const query = new URLSearchParams();
+    for (const key of ["category", "page"]) { const value = url.searchParams.get(key); if (value) query.set(key, value); }
+    const result = await internalGet(`/internal/info/${infoMatch[1]}?${query}`, principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/me/company-financial") {
+    const period = url.searchParams.get("period");
+    const result = await internalGet(`/internal/me/company-financial${period ? `?period=${encodeURIComponent(period)}` : ""}`, principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/me/history") {
+    const result = await internalGet("/internal/me/history", principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
   if (request.method === "GET" && url.pathname === "/api/me/dividend-payments") {
     const result = await internalGet("/internal/me/dividend-payments", principal.userId);
     send(response, result.status, result.body);
@@ -862,6 +911,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     const query = new URLSearchParams({ range: url.searchParams.get("range") ?? "1d" });
     const interval = url.searchParams.get("interval");
     if (interval) query.set("interval", interval);
+    for (const key of ["upper", "lower", "catalog"]) { const value = url.searchParams.get(key); if (value) query.set(key, value); }
     const result = await internalGet(`/internal/market/chart/${encodeURIComponent(decodeURIComponent(chartMatch[1]))}?${query}`, principal.userId);
     send(response, result.status, result.body);
     return;
@@ -1110,7 +1160,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
 
   // Moderation and board structure: post/comment/report/category take a number ("new" to create),
   // board takes its ID.
-  if (url.pathname === "/api/admin/board" || /^\/api\/admin\/board\/((post|comment|report|category|poll)\/(\d+|new)|board\/[a-z0-9_-]{1,32})$/.test(url.pathname)) {
+  if (url.pathname === "/api/admin/board" || /^\/api\/admin\/board\/((post|comment|report|category|poll)\/(\d+|new)|board\/[a-z0-9_-]{1,32}|search\/[^/]{1,300})$/.test(url.pathname)) {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });
       return;
@@ -1141,7 +1191,8 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
 }
 
 const server = createServer((request, response) => {
-  void handle(request, response).catch((error: unknown) => {
+  const by = principalFor(request)?.by;
+  void (by ? delegation.run(by, () => handle(request, response)) : handle(request, response)).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : "internal_error";
     if (message === "invalid_json" || message === "application_json_required") {
       send(response, 400, { error: message });
@@ -1166,3 +1217,5 @@ function shutdown(): void {
 
 process.once("SIGINT", shutdown);
 process.once("SIGTERM", shutdown);
+// Any other way out (a crash, process.exit) must not leave the data service holding its port.
+process.once("exit", () => { if (pythonProcess.exitCode === null) pythonProcess.kill("SIGTERM"); });

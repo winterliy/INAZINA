@@ -2,14 +2,17 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
 import { Card, Tabs, date, type Ctx } from "./common";
 
-type LoginEvent = { eventId: number; userId: string; nickname: string | null; loginId: string; success: boolean; reason: string | null;
+export type LoginEvent = { eventId: number; userId: string; nickname: string | null; loginId: string; success: boolean; reason: string | null;
   ip: string; location: string; app: string | null; device: string | null; userAgent: string | null; time: number };
 type Filter = "all" | "failed";
 
 const REASON: Record<string, string> = { invalid_credentials: "비밀번호 불일치", account_not_found: "계정 없음" };
 
-/** Every login to an administrator account (success and failure): time, IP, location, app and device. */
-export function LoginHistoryCard({ ctx }: { ctx: Ctx }) {
+/**
+ * Every login to an administrator account (success and failure): time, IP, location, app and device.
+ * With userId, only that administrator's logins (the account page).
+ */
+export function LoginHistoryCard({ ctx, userId, onLoaded }: { ctx: Ctx; userId?: string; onLoaded?: (events: LoginEvent[]) => void }) {
   const { say, query } = ctx;
   const [events, setEvents] = useState<LoginEvent[]>([]);
   const [retention, setRetention] = useState(365);
@@ -17,9 +20,11 @@ export function LoginHistoryCard({ ctx }: { ctx: Ctx }) {
 
   const load = useCallback(async () => {
     const result = await api<{ events: LoginEvent[]; retentionDays: number }>("/api/admin/login-history");
-    setEvents(result.events);
+    const mine = userId ? result.events.filter((item) => item.userId === userId) : result.events;
+    setEvents(mine);
+    onLoaded?.(mine);
     setRetention(result.retentionDays);
-  }, []);
+  }, [userId]);
   useEffect(() => { load().catch((cause) => say(cause instanceof Error ? cause.message : "로그인 기록을 불러오지 못했습니다.", true)); }, [load]);
 
   const term = query.trim().toLocaleLowerCase();
@@ -27,7 +32,7 @@ export function LoginHistoryCard({ ctx }: { ctx: Ctx }) {
   const visible = events.filter((item) => (filter === "all" || !item.success)
     && (!term || `${item.userId} ${item.nickname ?? ""} ${item.loginId} ${item.ip} ${item.location} ${item.device ?? ""}`.toLocaleLowerCase().includes(term)));
 
-  return <Card title="관리자 로그인 기록" caption={`관리자 계정으로 들어온 로그인 시도(성공·실패)를 최근 200건까지 보여 줍니다. 기록은 ${retention}일 뒤 자동 삭제됩니다.`}
+  return <Card title={userId ? "내 로그인 기록" : "관리자 로그인 기록"} caption={`${userId ? "이 계정" : "관리자 계정"}으로 들어온 로그인 시도(성공·실패)를 최근 200건까지 보여 줍니다. 기록은 ${retention}일 뒤 자동 삭제됩니다.`}
     actions={<button className="soft small" type="button" onClick={() => void load()}>새로고침</button>}>
     <Tabs label="로그인 기록 필터" value={filter} onChange={setFilter} options={[["all", "전체", events.length], ["failed", "실패만", failed]]} />
     <div className="scroll-x tall"><table><thead><tr><th>시각</th><th>관리자</th><th>결과</th><th>IP</th><th>위치</th><th>앱</th><th>기기</th></tr></thead><tbody>

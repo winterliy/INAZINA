@@ -50,6 +50,60 @@ class BoardTests(unittest.TestCase):
         admin = board.admin_list(self.conn)["posts"][0]
         self.assertEqual((admin["author_id"], admin["author_ip"]), ("alice", "10.0.0.1"))
 
+    def test_secret_post_and_comment_are_readable_only_by_their_parties(self):
+        post_id = self.post(secret=True, body="비밀 내용 키위")
+        self.assertEqual(board.read_post(self.conn, post_id, viewer="alice")["body"], "비밀 내용 키위")
+        self.assertEqual(board.read_post(self.conn, post_id, viewer="admin", admin=True)["body"], "비밀 내용 키위")
+        locked = board.read_post(self.conn, post_id, viewer="bob")
+        self.assertTrue(locked["locked"])
+        self.assertEqual(locked["body"], board.SECRET_POST)
+        self.assertEqual(board.list_posts(self.conn, search="키위", viewer="bob")["total"], 0)
+        self.assertEqual(board.list_posts(self.conn, search="키위", viewer="alice")["total"], 1)
+        open_post = self.post(body="공개")
+        board.add_comment(self.conn, BOB, open_post, {"body": "몰래 하는 말", "secret": True}, "10.0.0.2")
+        for viewer, admin, visible in (("bob", False, True), ("alice", False, True), ("admin", True, True), ("carol", False, False)):
+            comment = board.read_post(self.conn, open_post, viewer=viewer, admin=admin)["comments"][0]
+            self.assertEqual(comment["body"] == "몰래 하는 말", visible, viewer)
+
+    def test_trending_terms_rank_last_day_searches_with_change(self):
+        now = int(time.time())
+        rows = [("코인", now - 100)] * 3 + [("주식", now - 50)] * 2 + [("주식", now - 90_000)] * 5 + [("코인", now - 90_000)]
+        self.conn.executemany("INSERT INTO board_search_terms(term,searched_epoch) VALUES (?,?)", rows)
+        trending = board.trending_terms(self.conn, now)
+        self.assertEqual([(item["term"], item["change"]) for item in trending], [("코인", 1), ("주식", -1)])
+        board.list_posts(self.conn, search="새 검색어")
+        self.assertIn("새 검색어", [item["term"] for item in board.trending_terms(self.conn)])
+
+    def test_admin_blocks_unblocks_and_resets_trending_terms(self):
+        now = int(time.time())
+        self.conn.executemany("INSERT INTO board_search_terms(term,searched_epoch) VALUES (?,?)", [("욕설", now - 10)] * 3 + [("코인", now - 20)])
+        self.assertEqual(board.admin_action(self.conn, "search", "욕설", "block"), 1)
+        self.assertEqual([item["term"] for item in board.trending_terms(self.conn, now)], ["코인"])
+        view = board.admin_search_terms(self.conn, now)
+        self.assertEqual([(item["term"], item["searches"], item["blocked"]) for item in view["terms"]], [("욕설", 3, 1), ("코인", 1, 0)])
+        self.assertEqual(board.admin_action(self.conn, "search", "욕설", "unblock"), 1)
+        self.assertEqual(board.trending_terms(self.conn, now)[0]["term"], "욕설")
+        self.assertEqual(board.admin_action(self.conn, "search", "욕설", "reset"), 3)
+        self.assertEqual([item["term"] for item in board.trending_terms(self.conn, now)], ["코인"])
+        with self.assertRaises(ValueError):
+            board.admin_action(self.conn, "search", "코인", "explode")
+
+    def test_admin_pins_a_rank_and_boosts_searches(self):
+        now = int(time.time())
+        self.conn.executemany("INSERT INTO board_search_terms(term,searched_epoch) VALUES (?,?)", [("코인", now - 10)] * 5 + [("주식", now - 10)] * 3)
+        board.admin_action(self.conn, "search", "이벤트", "pin", {"rank": 1})
+        self.assertEqual([item["term"] for item in board.trending_terms(self.conn, now)], ["이벤트", "코인", "주식"])
+        board.admin_action(self.conn, "search", "주식", "boost", {"count": 10})
+        self.assertEqual([item["term"] for item in board.trending_terms(self.conn)][:3], ["이벤트", "주식", "코인"])
+        board.admin_action(self.conn, "search", "새글", "pin", {"rank": 1, "hours": 1})
+        self.assertNotIn("이벤트", [item["term"] for item in board.admin_search_terms(self.conn)["pinned"]])
+        self.assertEqual(board.trending_terms(self.conn, now + 7200)[0]["term"], "주식")
+        board.admin_action(self.conn, "search", "새글", "unpin")
+        with self.assertRaises(ValueError):
+            board.admin_action(self.conn, "search", "x", "pin", {"rank": 11})
+        with self.assertRaises(ValueError):
+            board.admin_action(self.conn, "search", "x", "boost", {"count": 5000})
+
     def test_reading_marks_only_the_viewers_own_posts(self):
         post_id = self.post()
         self.assertTrue(board.read_post(self.conn, post_id, viewer="alice")["mine"])

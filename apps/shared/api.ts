@@ -9,7 +9,16 @@ export type ApiUser = {
   role: "admin" | "user" | "nation" | "company";
   cash: number;
   creditScore: number;
+  /** Set when an administrator signed in as this country or company account ($login). */
+  delegatedBy?: string;
+  delegatedByName?: string;
 };
+
+/** The HTS and the dashboard run on neighbouring ports of the same host. */
+export const appUrl = (app: "hts" | "dashboard", path = "/") => `${location.protocol}//${location.hostname}:${app === "hts" ? 4311 : 4310}${path}`;
+
+/** True when the server said the session is gone (not when it was merely unreachable or slow). */
+export const signedOut = (cause: unknown) => [401, 403].includes((cause as { status?: number })?.status ?? 0);
 
 export function clearToken(): void {
   sessionStorage.removeItem(TOKEN_KEY);
@@ -43,7 +52,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
       python_service_unavailable: "Python 데이터 서비스에 연결할 수 없습니다.",
       database_unavailable: "데이터베이스를 읽지 못했습니다.",
     };
-    throw new Error(messages[body.error] ?? body.message ?? body.error ?? `HTTP ${response.status}`);
+    throw Object.assign(new Error(messages[body.error] ?? body.message ?? body.error ?? `HTTP ${response.status}`), { status: response.status });
   }
   return body as T;
 }

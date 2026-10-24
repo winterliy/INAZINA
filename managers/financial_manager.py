@@ -12,6 +12,8 @@ from functions.time_utils import validate_epoch
 
 KST = ZoneInfo('Asia/Seoul')
 MAX_UNITS = 2**52  # Exact SQLite TOTAL validation and bounded report aggregation.
+# Cash and tracked issuance accounts must remain reconciled with actual game settlement.
+PROTECTED_ACCOUNTS = frozenset({'restricted_cash','common_capital','preferred_capital','bonds','els_liability','dividend_payable','opening_adjustment','treasury_receivable'})
 
 
 def month(epoch=None):
@@ -490,6 +492,36 @@ class FinancialManager:
             issuer=self.resolve(conn,code)['company_code']
             return [r[0] for r in conn.execute('SELECT DISTINCT period FROM financial_entries WHERE company_code=? ORDER BY period DESC LIMIT 24',(issuer,))]
 
+    def journal(self, code, period=None):
+        """Entries of one month with their lines, for the administrator ledger editor."""
+        period = period or month()
+        period_bounds(period)
+        with self.db.readonly() as conn:
+            issuer=self.resolve(conn,code)['company_code']
+            exists=self.entity(conn,issuer)
+        if not exists:
+            with self.db.atomic() as conn:self.ensure(conn,code)
+        with self.db.readonly() as conn:
+            ent=self.entity(conn,issuer)
+            rows=conn.execute('''SELECT e.*, (SELECT entry_id FROM financial_entries r WHERE r.reversal_of=e.entry_id) AS reversed_by
+                FROM financial_entries e WHERE e.company_code=? AND e.period=? AND e.status='posted'
+                ORDER BY e.entry_id DESC LIMIT 200''',(issuer,period)).fetchall()
+            lines={}
+            for line in conn.execute(f'''SELECT entry_id,account,amount FROM financial_lines WHERE entry_id IN ({",".join("?"*len(rows)) or "NULL"})
+                ORDER BY line_id''',[r['entry_id'] for r in rows]):
+                lines.setdefault(line['entry_id'],[]).append({'account':line['account'],'amount':int(line['amount'])})
+            profile=conn.execute('SELECT * FROM financial_operating_profiles WHERE company_code=?',(issuer,)).fetchone()
+            closed=[r[0] for r in conn.execute('SELECT period FROM financial_periods WHERE company_code=? ORDER BY period DESC LIMIT 24',(issuer,))]
+        return {
+            'company':issuer,'period':period,'currency':ent['currency'],'places':int(ent['decimal_places']),
+            'accounts':[{'code':k,'name':v[0],'category':v[1],'protected':k in PROTECTED_ACCOUNTS} for k,v in ACCOUNTS.items()],
+            'entries':[{'id':r['entry_id'],'epoch':r['recorded_epoch'],'description':r['description'],'flow':r['cash_flow'],
+                        'manual':str(r['source_key']).startswith('manual:'),'reversalOf':r['reversal_of'],'reversedBy':r['reversed_by'],
+                        'lines':lines.get(r['entry_id'],[])} for r in rows],
+            'profile':({**json.loads(profile['config_json']),'enabled':bool(profile['enabled']),'start_period':profile['start_period']} if profile else None),
+            'closed':closed,
+        }
+
     def close_period(self, actor, code, period):
         start,end=period_bounds(period)
         if end>time.time():raise ValueError('아직 끝나지 않은 월은 결산할 수 없습니다.')
@@ -524,9 +556,7 @@ class FinancialManager:
                 if not isinstance(lines,list) or not 2<=len(lines)<=30:raise ValueError('분개는 2~30개 계정 행으로 입력해주세요.')
                 places=self.entity(conn,issuer)['decimal_places']
                 entries=[(row['account'],self.units(row['amount'],places)) for row in lines]
-            # Cash and tracked issuance accounts must remain reconciled with actual game settlement.
-            protected={'restricted_cash','common_capital','preferred_capital','bonds','els_liability','dividend_payable','opening_adjustment','treasury_receivable'}
-            if any(k in protected for k,_ in entries):raise ValueError('발행자본·회사채·배당채무·기초잔액·예치금은 자동 연동 계정입니다. 원본 관리 명령어를 이용해주세요.')
+            if any(k in PROTECTED_ACCOUNTS for k,_ in entries):raise ValueError('발행자본·회사채·배당채무·기초잔액·예치금은 자동 연동 계정입니다. 원본 관리 명령어를 이용해주세요.')
             cash_delta=sum(v for k,v in entries if k=='cash')
             if cash_delta:
                 if self.entity(conn,issuer)['currency']!=base_currency_code(conn):raise ValueError('외화 법인현금 직접 입력은 아직 지원하지 않습니다. 외상거래 계정을 이용해주세요.')

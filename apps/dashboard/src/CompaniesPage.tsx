@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
 import { Card, Field, number, plain, show, type Ctx } from "./common";
+import { CompanyLedger } from "./CompanyLedger";
 
 type Holding = { asset_code: string; quantity: number };
 type Company = { company_code: string; name: string; exchange_id: string; total_shares: number; share_price: number; cash: number; locked: number; account: string | null; holdings: Holding[]; accounts: number; loans: number; parents: { code: string; percent: number }[] };
@@ -126,6 +127,8 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
           <details className="help"><summary>연결 기준</summary><ul>{report.report.consolidated.notes.map((note) => <li key={note}>{note}</li>)}</ul></details>
         </> : <p className="hint">과반 지분을 가진 자회사가 없어 연결재무제표가 없습니다.</p>}
       </>}
+
+      <CompanyLedger key={company.company_code} code={company.company_code} ctx={ctx} onChanged={() => { if (report) loadReport(); }} />
 
       <h3 className="sub-head">법인 계정으로 실행</h3>
       <div className="kind-grid">{commands.map((item) => <button key={item.name} type="button" className={item.name === command ? "command-chip active" : "command-chip"} onClick={() => { setCommand(item.name); setValues({}); }}><b>{item.name}</b><small>{item.group}</small></button>)}</div>

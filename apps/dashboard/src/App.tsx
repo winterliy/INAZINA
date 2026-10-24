@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
-import { api, clearToken, type ApiUser } from "../../shared/api";
+import { api, appUrl, clearToken, signedOut, type ApiUser } from "../../shared/api";
 import { AuthPanel } from "../../shared/AuthPanel";
 import { Card, plain, type Ctx } from "./common";
 import { ProductsPage } from "./ProductsPage";
@@ -17,8 +17,9 @@ import { DocumentsPage } from "./DocumentsPage";
 import { CompliancePage } from "./CompliancePage";
 import { BankJournalPage } from "./BankJournalPage";
 import { COMMAND_FORMS, CommandForm } from "./CommandForm";
+import { AccountPage } from "./AccountPage";
 
-type Page = "overview" | "instruments" | "finance" | "exchanges" | "companies" | "users" | "feedback" | "board" | "documents" | "compliance" | "accounting" | "events" | "commands" | "database" | "audit";
+type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "users" | "feedback" | "board" | "documents" | "compliance" | "accounting" | "events" | "commands" | "database" | "audit";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
 type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
 type Exchange = { exchange_id: string; status: string; reason: string | null; trading_halted: number; updated_epoch: number | null; resume_epoch: number | null; circuit_stage: number | null };
@@ -39,6 +40,7 @@ type Row = Record<string, Cell> & { __rowid__?: number };
 type TablePage = { table: string; editable: boolean; columns: Column[]; total: number; offset: number; pageSize: number; rows: Row[] };
 
 const pages: { id: Page; label: string }[] = [
+  { id: "account", label: "내 계정" },
   { id: "overview", label: "운영 현황" },
   { id: "instruments", label: "종목 · 상품" },
   { id: "finance", label: "금융 상품" },
@@ -55,7 +57,13 @@ const pages: { id: Page; label: string }[] = [
   { id: "database", label: "DB 편집" },
   { id: "audit", label: "작업 기록" },
 ];
+// The sub-navigation groups pages by job, so fifteen links read as five short lists.
+const NAV_GROUPS: [string, Page[]][] = [
+  ["현황", ["overview"]], ["시장", ["instruments", "exchanges", "events"]], ["금융", ["finance", "companies", "accounting"]],
+  ["사용자", ["users", "compliance", "feedback", "board"]], ["운영", ["commands", "documents", "database", "audit"]],
+];
 const subtitles: Record<Page, string> = {
+  account: "관리자 계정의 로그인 정보, 실행 명의와 최근 로그인을 관리합니다.",
   overview: "시장 상태와 서비스 연결을 확인하고 거래소를 제어합니다.",
   instruments: "주식·자산·ETF·선물·채권·펀드·원자재·옵션·ELS를 생성·수정·중지합니다.",
   finance: "저축·대출·통화·외환통장 상품을 생성·수정·중지합니다.",
@@ -86,10 +94,19 @@ function parseCell(input: string, column: Column | undefined): Cell {
 }
 const showCell = (value: Cell | undefined) => value === null || value === undefined ? "NULL" : String(value);
 
+// Each page (and each command category) has its own address: #instruments, #commands/거래소.
+function readRoute(): { page: Page; sub: string } {
+  const [head, ...rest] = decodeURIComponent(location.hash.replace(/^#\/?/, "")).split("/");
+  return { page: pages.some((item) => item.id === head) ? head as Page : "overview", sub: rest.join("/") };
+}
+const NATIONAL = "국가 명의", HELP = "도움말";
+const scopeOf = (section: string) => section === NATIONAL ? "national" : section === HELP ? "help" : "admin";
+const initialRoute = readRoute();
+
 export default function App() {
   const [user, setUser] = useState<ApiUser | null>(null);
   const [checked, setChecked] = useState(false);
-  const [page, setPage] = useState<Page>("overview");
+  const [page, setPage] = useState<Page>(initialRoute.page);
   const [health, setHealth] = useState("확인 중");
   const [connected, setConnected] = useState(false);
   const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
@@ -110,7 +127,8 @@ export default function App() {
   const [commands, setCommands] = useState<Command[]>([]);
   const [nationalCommands, setNationalCommands] = useState<NationalCommand[]>([]);
   const [discordOnly, setDiscordOnly] = useState<string[]>([]);
-  const [commandScope, setCommandScope] = useState<"admin" | "national" | "help">("admin");
+  const [commandScope, setCommandScope] = useState<"admin" | "national" | "help">(initialRoute.page === "commands" ? scopeOf(initialRoute.sub) : "admin");
+  const [commandCategory, setCommandCategory] = useState(initialRoute.page === "commands" && scopeOf(initialRoute.sub) === "admin" ? initialRoute.sub : "");
   const [helpPages, setHelpPages] = useState<HelpPage[]>([]);
   const [helpPage, setHelpPage] = useState(0);
   const [jobs, setJobs] = useState<BotJob[]>([]);
@@ -128,14 +146,27 @@ export default function App() {
   const [newRow, setNewRow] = useState<Record<string, string> | null>(null);
 
   const say = useCallback((text: string, error = false) => setNotice({ text, error }), []);
+  // ⌘K / Ctrl+K: jump to any page or command category by typing.
+  const [jumpOpen, setJumpOpen] = useState(false);
+  const [jumpTerm, setJumpTerm] = useState("");
+  useEffect(() => {
+    const key = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); setJumpOpen((open) => !open); }
+      if (event.key === "Escape") setJumpOpen(false);
+    };
+    window.addEventListener("keydown", key);
+    return () => window.removeEventListener("keydown", key);
+  }, []);
 
   const loadSession = useCallback(async () => {
     try {
       const result = await api<{ user: ApiUser }>("/api/auth/session");
       setUser(result.user);
-    } catch {
+      setChecked(true);
+    } catch (cause) {
+      // Only a refused session signs out; a slow or unreachable server is retried.
+      if (!signedOut(cause)) { window.setTimeout(() => void loadSession(), 3000); return; }
       setUser(null);
-    } finally {
       setChecked(true);
     }
   }, []);
@@ -168,7 +199,6 @@ export default function App() {
         setNationalCommands(result.national);
         setDiscordOnly(result.discordOnly);
         setCreationHelp(result.creationHelp);
-        setCommand((current) => current || result.commands[0]?.name || "");
         setNationalCommand((current) => current || result.national[0]?.name || "");
       }
       if (page === "commands" && commandScope === "help" && !helpPages.length) setHelpPages((await api<{ pages: HelpPage[] }>("/api/admin/help")).pages);
@@ -208,6 +238,41 @@ export default function App() {
   useEffect(() => { setTableOffset(0); setNewRow(null); }, [table, query]);
 
   const selectedCommand = commands.find((item) => item.name === command);
+  const categoryOf = (name: string) => COMMAND_FORMS[name]?.group ?? "기타";
+  const commandCategories = Array.from(new Set(commands.map((item) => categoryOf(item.name))));
+  const activeCategory = commandCategories.includes(commandCategory) ? commandCategory : commandCategories[0] ?? "";
+  const visibleCommands = commands.filter((item) => categoryOf(item.name) === activeCategory);
+  const commandSection = commandScope === "national" ? NATIONAL : commandScope === "help" ? HELP : activeCategory;
+
+  // Keep the address in step with the page; back/forward restore it.
+  useEffect(() => {
+    const hash = `#${page}${page === "commands" && commandSection ? `/${encodeURIComponent(commandSection)}` : ""}`;
+    if (decodeURIComponent(location.hash) !== decodeURIComponent(hash)) history.pushState(null, "", hash);
+  }, [page, commandSection]);
+  useEffect(() => {
+    const restore = () => {
+      const route = readRoute();
+      setPage(route.page);
+      if (route.page !== "commands") return;
+      setCommandScope(scopeOf(route.sub));
+      if (route.sub && scopeOf(route.sub) === "admin") setCommandCategory(route.sub);
+    };
+    window.addEventListener("popstate", restore);
+    return () => window.removeEventListener("popstate", restore);
+  }, []);
+  // A command outside the open category (e.g. opened from another page) moves to its category.
+  useEffect(() => {
+    if (!commands.length) return;
+    if (!command) setCommand(visibleCommands[0]?.name ?? "");
+    else if (commandScope === "admin" && categoryOf(command) !== activeCategory) setCommandCategory(categoryOf(command));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [command, commands.length]);
+  function openCategory(category: string) {
+    setCommandScope(scopeOf(category));
+    if (scopeOf(category) !== "admin") return;
+    setCommandCategory(category);
+    if (categoryOf(command) !== category) { setCommand(commands.find((item) => categoryOf(item.name) === category)?.name ?? ""); setCommandArgs(""); }
+  }
   const selectedNational = nationalCommands.find((item) => item.name === nationalCommand);
   const eventInstrument = instruments.find((item) => item.code === eventAsset.trim());
   useEffect(() => { setNationalValues(selectedNational?.fields.map((field) => field.default) ?? []); }, [selectedNational]);
@@ -321,9 +386,17 @@ export default function App() {
       "행을 추가하지 못했습니다.", () => { setNewRow(null); say(`${table}에 행을 추가했습니다.`); });
   }
 
-  function logout() {
+  async function logout() {
+    // Leaving a country or company account ($login) returns to the administrator, on this page.
+    const delegated = Boolean(user?.delegatedBy);
+    let result: { returnedTo?: ApiUser } = {};
+    try {
+      result = await api<{ returnedTo?: ApiUser }>("/api/auth/logout", { method: "POST" });
+    } catch (cause) {
+      if (delegated) { say(message(cause, "관리자 계정으로 돌아가지 못했습니다. 잠시 후 다시 시도해주세요."), true); return; }
+    }
     clearToken();
-    void api("/api/auth/logout", { method: "POST" });
+    if (result.returnedTo) { setUser(result.returnedTo); setPage("account"); say(`관리자 ${result.returnedTo.nickname} 계정으로 돌아왔습니다.`); return; }
     setUser(null);
     setOverview(null);
     setInstruments([]);
@@ -332,8 +405,20 @@ export default function App() {
 
   if (!checked) return <Stage><main className="center-shell"><p className="loading">불러오는 중…</p></main></Stage>;
   if (!user) return <Stage><AuthPanel app="dashboard" onAuthenticated={setUser} /></Stage>;
+  // Users, country and company accounts get their own account dashboard, like the HTS.
   if (user.role !== "admin") {
-    return <Stage><main className="center-shell"><section className="glass card access-card"><p className="eyebrow">INAZINA · ACCESS</p><h1>관리자 권한이 필요합니다</h1><p className="cap">현재 계정: {user.nickname}</p><button className="btn primary" onClick={logout}>로그아웃</button></section></main></Stage>;
+    return <Stage><div className="shell">
+      <header className="gnav"><div className="gnav-in">
+        <div className="brand"><span className="brand-mark">I</span><strong>INAZINA</strong><small>내 Dashboard</small></div>
+        <div className="gnav-meta"><a className="gnav-link" href={appUrl("hts")}>HTS 열기</a><button type="button" onClick={logout}>{user.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button></div>
+      </div></header>
+      <main className="content">
+        {user.delegatedBy && <div className="notice" role="status"><span>관리자 {user.delegatedByName ?? user.delegatedBy}님이 {user.nickname} 계정으로 로그인 중입니다.</span></div>}
+        {notice && <div className={notice.error ? "notice error" : "notice"} role={notice.error ? "alert" : "status"}><span>{notice.text}</span><button type="button" className="ghost" aria-label="알림 닫기" onClick={() => setNotice(null)}>×</button></div>}
+        <AccountPage ctx={ctx} user={user} onLogout={logout} />
+        <p className="foot">© INAZINA. All rights reserved.</p>
+      </main>
+    </div></Stage>;
   }
 
   const current = pages.find((item) => item.id === page)!;
@@ -348,7 +433,7 @@ export default function App() {
           <div className="gnav-meta">
             <span className="status"><span className={connected ? "dot ok" : "dot"} />{health}</span>
             <span className="mono dim">127.0.0.1</span>
-            <span>{user.nickname} · 관리자</span>
+            <button type="button" className="gnav-account" aria-current={page === "account" ? "page" : undefined} onClick={() => setPage("account")} title="내 계정"><span aria-hidden="true">{user.nickname.slice(0, 1)}</span>{user.nickname} · 관리자</button>
             <button type="button" onClick={() => void refresh()} disabled={busy}>새로고침</button>
             <button type="button" onClick={logout}>로그아웃</button>
           </div>
@@ -357,10 +442,13 @@ export default function App() {
       <nav className="subnav" aria-label="관리 메뉴">
         <div className="subnav-in">
           <span className="subnav-title">관리</span>
-          {pages.map((item) => <button key={item.id} type="button" className="subnav-item" aria-current={page === item.id ? "page" : undefined} onClick={() => setPage(item.id)}>
-            {item.label}
-            {item.id === "feedback" && unreadFeedback > 0 && <span className="nav-badge" aria-label={`새 알림 ${unreadFeedback}건`}>{unreadFeedback}</span>}
-          </button>)}
+          {NAV_GROUPS.map(([group, ids]) => <div key={group} className="subnav-group" role="group" aria-label={group}><span className="subnav-group-label">{group}</span>
+            {ids.map((id) => pages.find((item) => item.id === id)!).map((item) => <button key={item.id} type="button" className="subnav-item" aria-current={page === item.id ? "page" : undefined} onClick={() => setPage(item.id)}>
+              {item.label}
+              {item.id === "feedback" && unreadFeedback > 0 && <span className="nav-badge" aria-label={`새 알림 ${unreadFeedback}건`}>{unreadFeedback}</span>}
+            </button>)}
+          </div>)}
+          <button type="button" className="subnav-jump" onClick={() => setJumpOpen(true)} title="페이지 바로가기 (⌘K)">바로가기 <kbd>⌘K</kbd></button>
         </div>
       </nav>
       <main className="content">
@@ -434,8 +522,22 @@ export default function App() {
             row={(item) => <><td className="mono">#{item.history_id}{item.active && <span className="tag ok inline">진행 중</span>}</td><td className="mono">{item.asset_code}</td><td><span className={item.change_percent >= 0 ? "tag up" : "tag down"}>{item.change_percent >= 0 ? "상승" : "하락"}</span></td><td className="r mono">{number(Math.round(item.anchor_price * 100) / 100)}</td><td className="r mono">{number(Math.round(item.target_price * 100) / 100)}</td><td className="r mono">{item.change_percent >= 0 ? "+" : ""}{item.change_percent.toFixed(2)}%</td><td>{date(item.start_epoch)}</td><td>{date(item.end_epoch)}</td></>} />
         </>}
 
-        {page === "commands" && <>
-          <div className="segment-tabs mb" role="tablist" aria-label="명령어 종류"><button role="tab" aria-selected={commandScope === "admin"} className={commandScope === "admin" ? "active" : ""} onClick={() => setCommandScope("admin")}>관리자 명령어 <span>{commands.length}</span></button><button role="tab" aria-selected={commandScope === "national"} className={commandScope === "national" ? "active" : ""} onClick={() => setCommandScope("national")}>국가 명의 <span>{nationalCommands.length}</span></button><button role="tab" aria-selected={commandScope === "help"} className={commandScope === "help" ? "active" : ""} onClick={() => setCommandScope("help")}>도움말 ($도움말)</button></div>
+        {page === "commands" && <div className="command-layout">
+          <nav className="command-rail" aria-label="명령어 카테고리">
+            <p>관리자 명령어</p>
+            {commandCategories.map((category) => <button key={category} type="button" aria-current={commandSection === category ? "page" : undefined} onClick={() => openCategory(category)}>{category}<span>{commands.filter((item) => categoryOf(item.name) === category).length}</span></button>)}
+            <p>국가 · 참고</p>
+            <button type="button" aria-current={commandSection === NATIONAL ? "page" : undefined} onClick={() => openCategory(NATIONAL)}>국가 명의 실행<span>{nationalCommands.length}</span></button>
+            <button type="button" aria-current={commandSection === HELP ? "page" : undefined} onClick={() => openCategory(HELP)}>도움말 ($도움말)</button>
+          </nav>
+          <div className="command-content">
+          {commandScope === "admin" && <section className="command-category-head rise"><p className="eyebrow">관리자 명령어</p><h2>{activeCategory || "불러오는 중…"}</h2><p className="cap">{visibleCommands.length}개 명령어 · 고르면 아래에 입력 칸이 열립니다. 시장 사건($사건)은 시장 사건 화면에서 등록합니다.</p>
+            <div className="command-list">{visibleCommands.map((item) => <button key={item.name} type="button" className={item.name === command ? "command-chip active" : "command-chip"} aria-pressed={item.name === command} onClick={() => { setCommand(item.name); setCommandArgs(""); }}><b>${item.name}</b><small>{item.usage || "인자 없음"}</small></button>)}</div>
+          </section>}
+          {commandScope === "admin" && command && <section className="glass card mb rise"><div className="card-head"><div><h2>${command}</h2><p className="cap">아래 미리보기는 Discord에 입력하는 `$명령어 인자`와 같습니다.</p></div></div>
+            <CommandForm key={`${command}-${commandArgs}`} command={command} usage={selectedCommand?.usage ?? ""} prefill={commandArgs} busy={busy} onRun={runCommand} openProducts={(group) => setPage(group === "market" ? "instruments" : "finance")} />
+            {(command === "상품생성" || command === "상품수정") && <details className="help"><summary>상품 종류별 순서형 인자</summary><pre>{creationHelp}</pre></details>}
+          </section>}
           {commandScope === "help" && <section className="glass card mb rise"><div className="card-head"><div><h2>{helpPages[helpPage]?.label ?? "도움말"}</h2><p className="cap">Discord $도움말과 같은 내용입니다.</p></div><div className="actions"><select aria-label="도움말 페이지" value={helpPage} onChange={(event) => setHelpPage(Number(event.target.value))}>{helpPages.map((item, index) => <option key={item.label} value={index}>{item.label}</option>)}</select></div></div>
             {helpPages[helpPage] && <div className="help-page"><pre>{plain(helpPages[helpPage].description)}</pre>{helpPages[helpPage].fields.map((field) => <div key={field.name} className="help-field"><h3>{field.name}</h3><pre>{plain(field.value)}</pre></div>)}</div>}
             {!helpPages.length && <p className="empty">도움말을 불러오는 중입니다.</p>}
@@ -453,19 +555,13 @@ export default function App() {
             empty="요청한 작업이 없습니다." onChanged={() => void refresh()}
             head={<><th>#</th><th>작업</th><th>상태</th><th>요청</th><th>결과</th><th>시각</th></>}
             row={(job) => <><td className="mono">#{job.job_id}</td><td>{job.kind === "shareholder_meeting" ? "$주총" : job.kind}</td><td><span className={job.status === "done" ? "tag ok" : job.status === "failed" ? "tag warn" : "tag"}>{{ pending: "대기", running: "처리 중", done: "완료", failed: "실패" }[job.status]}</span></td><td className="mono audit-payload">{job.payload}</td><td className="audit-payload">{job.result ? plain(job.result) : "—"}</td><td>{date(job.updated_epoch)}</td></>} />}
-          {commandScope === "admin" && <section className="glass card mb rise"><div className="card-head"><div><h2>명령어 실행</h2><p className="cap">명령어를 고르면 입력 칸이 나옵니다. 아래 미리보기는 Discord에 입력하는 `$명령어 인자`와 같습니다. 시장 사건($사건)은 시장 사건 화면에서 등록합니다.</p></div></div>
-            <div className="form-grid command-picker"><label>명령어<select value={command} onChange={(event) => { setCommand(event.target.value); setCommandArgs(""); }}>{Array.from(new Set(commands.map((item) => COMMAND_FORMS[item.name]?.group ?? "기타"))).map((group) => <optgroup key={group} label={group}>{commands.filter((item) => (COMMAND_FORMS[item.name]?.group ?? "기타") === group).map((item) => <option key={item.name} value={item.name}>${item.name}</option>)}</optgroup>)}</select></label></div>
-            {command && <CommandForm key={`${command}-${commandArgs}`} command={command} usage={selectedCommand?.usage ?? ""} prefill={commandArgs} busy={busy} onRun={runCommand} openProducts={(group) => setPage(group === "market" ? "instruments" : "finance")} />}
-            {(command === "상품생성" || command === "상품수정") && <details className="help"><summary>상품 종류별 순서형 인자</summary><pre>{creationHelp}</pre></details>}
-          </section>}
-          {commandScope !== "help" && <><section className="glass card mb rise"><div className="card-head"><div><h2>실행 결과</h2><p className="cap">이 화면에서 실행한 최근 20건 · 전체 기록은 작업 기록에서 확인합니다.</p></div></div>
+          {commandScope === "national" && <section className="glass card mb rise"><div className="card-head"><div><h2>국가 명의 명령어</h2><p className="cap">{nationalCommands.length}개 · 선택하면 위 입력에 적용됩니다.</p></div></div><div className="command-list">{nationalCommands.map((item) => <button key={item.name} type="button" className={item.name === nationalCommand ? "command-chip active" : "command-chip"} onClick={() => setNationalCommand(item.name)}><b>${item.name}</b><small>{item.fields.map((field) => field.label).join(" · ") || "조회"}</small></button>)}</div></section>}
+          {commandScope !== "help" && <section className="glass card mb rise"><div className="card-head"><div><h2>실행 결과</h2><p className="cap">이 화면에서 실행한 최근 20건 · 전체 기록은 작업 기록에서 확인합니다.</p></div></div>
             {commandResults.map((item) => <div key={item.time} className={item.success ? "result" : "result failed"}><div className="result-head"><span className="mono">{item.national && <span className="tag inline-start">국가</span>}${item.command} {item.arguments}</span><span>{date(item.time)}</span></div><pre>{plain(item.message)}</pre></div>)}
             {!commandResults.length && <p className="empty">아직 실행한 명령어가 없습니다.</p>}
-          </section>
-          <section className="glass card rise"><div className="card-head"><div><h2>전체 명령어</h2><p className="cap">{commandScope === "admin" ? commands.length : nationalCommands.length}개 · 선택하면 위 입력에 적용됩니다.</p></div></div><div className="command-list">{commandScope === "admin"
-            ? commands.map((item) => <button key={item.name} type="button" className={item.name === command ? "command-chip active" : "command-chip"} onClick={() => { setCommand(item.name); setCommandArgs(""); }}><b>${item.name}</b><small>{item.usage || "인자 없음"}</small></button>)
-            : nationalCommands.map((item) => <button key={item.name} type="button" className={item.name === nationalCommand ? "command-chip active" : "command-chip"} onClick={() => setNationalCommand(item.name)}><b>${item.name}</b><small>{item.fields.map((field) => field.label).join(" · ") || "조회"}</small></button>)}</div></section></>}
-        </>}
+          </section>}
+          </div>
+        </div>}
 
         {page === "database" && <>
           <section className="glass card mb rise"><div className="card-head"><div><h2>테이블</h2><p className="cap">값을 바꾸면 행의 저장 버튼이 켜집니다. `NULL`을 입력하면 NULL로 저장합니다. DB 제약과 트리거 검증을 그대로 거치며 모든 변경은 작업 기록에 남습니다. 비밀번호·작업 기록 테이블은 표시하지 않습니다.</p></div>
@@ -495,9 +591,26 @@ export default function App() {
           </tr>)}</tbody></table>{!audit.length && <p className="empty">기록이 없습니다.</p>}</div>
         </Card>}
         {page === "audit" && <LoginHistoryCard ctx={ctx} />}
-        <p className="foot">INAZINA 로컬 관리 콘솔 · 모든 관리자 요청은 API에서 권한을 다시 확인합니다.</p>
+        {page === "account" && <AccountPage ctx={ctx} user={user} onLogout={logout} />}
+        <p className="foot">© INAZINA. All rights reserved.</p>
       </main>
     </div>
+    {jumpOpen && (() => {
+      const term = jumpTerm.trim().toLocaleLowerCase();
+      const targets = [
+        ...pages.map((item) => ({ key: item.id, label: item.label, hint: subtitles[item.id], go: () => setPage(item.id) })),
+        ...commandCategories.map((category) => ({ key: `commands/${category}`, label: `관리자 명령어 · ${category}`, hint: `${commands.filter((item) => categoryOf(item.name) === category).length}개 명령어`, go: () => { setPage("commands"); openCategory(category); } })),
+        ...commands.map((item) => ({ key: `$${item.name}`, label: `$${item.name}`, hint: item.usage || categoryOf(item.name), go: () => openCommand(item.name, "") })),
+      ].filter((item) => !term || `${item.label} ${item.hint}`.toLocaleLowerCase().includes(term)).slice(0, 12);
+      const pick = (target: (typeof targets)[number]) => { target.go(); setJumpOpen(false); setJumpTerm(""); };
+      return <div className="jump-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setJumpOpen(false); }}>
+        <section className="jump" role="dialog" aria-modal="true" aria-label="바로가기">
+          <input autoFocus value={jumpTerm} onChange={(event) => setJumpTerm(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && targets[0]) pick(targets[0]); }} placeholder="페이지, 명령어 카테고리, $명령어 검색" aria-label="바로가기 검색" />
+          <ul>{targets.map((item) => <li key={item.key}><button type="button" onClick={() => pick(item)}><b>{item.label}</b><small>{item.hint}</small></button></li>)}</ul>
+          {!targets.length && <p className="empty">일치하는 항목이 없습니다.</p>}
+        </section>
+      </div>;
+    })()}
   </Stage>;
 }
 

@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { api, clearToken, type ApiUser } from "../../shared/api";
+import { api, clearToken, signedOut, type ApiUser } from "../../shared/api";
+import { navigate } from "./nav";
 import { AuthPanel } from "../../shared/AuthPanel";
-import { PriceChart, type Candle, type Drawing, type Point, type Tool } from "./PriceChart";
-import { CommandPanel } from "./CommandPanel";
+import { DEFAULT_INDICATORS, INDICATOR_CATALOG, PriceChart, type Candle, type Drawing, type IndicatorCatalog, type IndicatorChoice, type IndicatorData, type Point, type Tool } from "./PriceChart";
+import { OPEN } from "./commandKit";
+import { ErrorBoundary } from "./ErrorBoundary";
+import { ServicesApp, legacyCommandPath, servicePath } from "./services/ServicesApp";
+import { SERVICES } from "./services/ServiceKit";
 import { Backdrop } from "./Backdrop";
 
 type Warning = { level: "caution" | "warning" | "danger"; label: string; reason: string; expiresEpoch: number | null };
@@ -38,7 +42,6 @@ type Book = { bids: { limit_price: number; quantity: number; order_count: number
 const ranges = ["1h", "1d", "1w", "1m", "all"] as const;
 const rangeNames: Record<string, string> = { "1h": "1시간", "1d": "1일", "1w": "1주", "1m": "1개월", all: "전체" };
 const intervals: [number, string][] = [[60, "1분봉"], [300, "5분봉"], [600, "10분봉"], [1800, "30분봉"], [3600, "1시간봉"], [21600, "6시간봉"], [43200, "12시간봉"], [86400, "일봉"]];
-const OPEN = new Set(["open", "partial", "scheduled"]);
 const STATUS: Record<string, string> = { open: "미체결", partial: "부분 체결", scheduled: "예약", filled: "체결", cancelled: "취소", expired: "만료" };
 const UNIT_SCALE = 1_000_000;
 const money = (value: number, digits = 0) => new Intl.NumberFormat("ko-KR", { maximumFractionDigits: digits }).format(value || 0);
@@ -91,8 +94,23 @@ const recommended = (items: Instrument[], sort: RecommendSort) => {
 const boardUrl = (asset = "") => asset ? `/board?asset=${encodeURIComponent(asset)}` : "/board";
 const errorText = (cause: unknown, fallback: string) => cause instanceof Error ? cause.message : fallback;
 
+const ROLE_LABEL: Record<string, string> = { user: "개인 계정", admin: "관리자", nation: "국가 계정", company: "법인 계정" };
+const INDICATOR_KEY = "inazina.hts.chart-indicators.v2";
+
+const WATCH_KEY = "inazina.hts.watchlist";
+const USER_KEY = "inazina.hts.user";
+function cachedUser(): ApiUser | null {
+  try { return JSON.parse(sessionStorage.getItem(USER_KEY) ?? "null"); } catch { return null; }
+}
+
 export default function App() {
-  const [user, setUser] = useState<ApiUser | null>(null);
+  // The last signed-in user of this tab draws the page at once; the session check confirms it.
+  const [user, setUserState] = useState<ApiUser | null>(cachedUser);
+  const [checked, setChecked] = useState(() => cachedUser() !== null);
+  const setUser = useCallback((next: ApiUser | null) => {
+    setUserState(next);
+    try { if (next) sessionStorage.setItem(USER_KEY, JSON.stringify(next)); else sessionStorage.removeItem(USER_KEY); } catch { /* not cached */ }
+  }, []);
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [health, setHealth] = useState("확인 중");
@@ -101,9 +119,7 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchTabValue, setSearchTabValue] = useState<SearchTab>("recommended");
-  const [commandsOpen, setCommandsOpen] = useState<string | null>(null);
   const [recommendSort, setRecommendSort] = useState<RecommendSort>("value");
-  const [accountSettingsOpen, setAccountSettingsOpen] = useState(false);
   const [htsId, setHtsId] = useState("");
   const [htsIdInput, setHtsIdInput] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
@@ -118,6 +134,28 @@ export default function App() {
   const [interval, setIntervalSeconds] = useState<number | null>(null);
   const [candles, setCandles] = useState<Candle[]>([]);
   const [candleInterval, setCandleInterval] = useState(600);
+  // Same 상단·하단 지표 as Discord /그래프; the choice is a per-viewer convenience kept in this browser.
+  const [indicators, setIndicators] = useState<IndicatorChoice>(() => {
+    try { const saved = JSON.parse(localStorage.getItem(INDICATOR_KEY) ?? "null"); if (Array.isArray(saved?.upper) && Array.isArray(saved?.lower)) return saved; } catch { /* default */ }
+    return DEFAULT_INDICATORS;
+  });
+  const [indicatorData, setIndicatorData] = useState<IndicatorData>({ upper: {}, lower: {} });
+  const [indicatorCatalog, setIndicatorCatalog] = useState<IndicatorCatalog>(INDICATOR_CATALOG);
+  const indicatorQuery = `${indicators.upper.join(",")}|${indicators.lower.join(",")}`;
+  // 관심종목: a per-viewer convenience kept in this browser.
+  const [watch, setWatch] = useState<string[]>(() => { try { const saved = JSON.parse(localStorage.getItem(WATCH_KEY) ?? "[]"); return Array.isArray(saved) ? saved : []; } catch { return []; } });
+  const toggleWatch = (code: string) => setWatch((current) => {
+    const next = current.includes(code) ? current.filter((item) => item !== code) : [...current, code];
+    try { localStorage.setItem(WATCH_KEY, JSON.stringify(next)); } catch { /* not remembered */ }
+    return next;
+  });
+  const indicatorRef = useRef(indicators);
+  const catalogLoaded = useRef(false);
+  indicatorRef.current = indicators;
+  function chooseIndicators(next: IndicatorChoice) {
+    setIndicators(next);
+    try { localStorage.setItem(INDICATOR_KEY, JSON.stringify(next)); } catch { /* not remembered */ }
+  }
   const [points, setPoints] = useState<Point[]>([]);
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
@@ -158,13 +196,16 @@ export default function App() {
     return counts;
   }, [instruments]);
 
-  const authenticate = useCallback(async () => {
+  // Only a refused session signs out; a slow or unreachable server keeps the user and tries again.
+  const authenticate = useCallback(async (): Promise<void> => {
     try {
       setUser((await api<{ user: ApiUser }>("/api/auth/session")).user);
-    } catch {
-      setUser(null);
+      setChecked(true);
+    } catch (cause) {
+      if (signedOut(cause)) { setUser(null); setChecked(true); return; }
+      window.setTimeout(() => void authenticate(), 3000);
     }
-  }, []);
+  }, [setUser]);
 
   const userRole = user?.role;
   const refreshAccount = useCallback(async () => {
@@ -224,7 +265,8 @@ export default function App() {
       .then((market) => {
         if (cancelled) return;
         setInstruments(market.instruments);
-        setSelectedCode((current) => current || market.instruments[0]?.code || "");
+        const linked = new URLSearchParams(location.search).get("code");
+        setSelectedCode((current) => current || market.instruments.find((item) => item.code === linked)?.code || market.instruments[0]?.code || "");
       })
       .catch((cause) => { if (!cancelled) setNotice(errorText(cause, "종목 목록을 불러오지 못했습니다.")); });
     refreshAccount().catch((cause) => { if (!cancelled) setNotice(errorText(cause, "계좌 정보를 불러오지 못했습니다.")); });
@@ -247,13 +289,15 @@ export default function App() {
       .catch((cause) => setNotice(errorText(cause, "HTS 계정 정보를 불러오지 못했습니다.")));
   }, [user]);
 
+  // The search drops down under the top-bar field, like a portal's: Escape or a click elsewhere closes it.
+  const searchBoxRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (!searchOpen) { setSearch(""); return; }
-    setSearchTabValue("recommended");
-    searchInputRef.current?.focus();
-    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") setSearchOpen(false); };
+    if (!searchOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Escape") { setSearchOpen(false); searchInputRef.current?.blur(); } };
+    const onDown = (event: MouseEvent) => { if (!searchBoxRef.current?.contains(event.target as Node)) setSearchOpen(false); };
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
+    document.addEventListener("mousedown", onDown);
+    return () => { window.removeEventListener("keydown", onKeyDown); document.removeEventListener("mousedown", onDown); };
   }, [searchOpen]);
 
   const refreshMarket = useCallback(async (code: string, timeframe: string, candleSeconds: number | null) => {
@@ -261,20 +305,25 @@ export default function App() {
     try {
       const query = new URLSearchParams({ range: timeframe });
       if (candleSeconds) query.set("interval", String(candleSeconds));
+      if (indicatorRef.current.upper.length) query.set("upper", indicatorRef.current.upper.join(","));
+      if (indicatorRef.current.lower.length) query.set("lower", indicatorRef.current.lower.join(","));
+      if (!catalogLoaded.current) query.set("catalog", "1");
       const [chart, orderBook] = await Promise.all([
-        api<{ points: Point[]; candles?: Candle[]; interval?: number }>(`/api/market/chart/${encodeURIComponent(code)}?${query}`),
+        api<{ points: Point[]; candles?: Candle[]; interval?: number; indicators?: IndicatorData; catalog?: IndicatorCatalog }>(`/api/market/chart/${encodeURIComponent(code)}?${query}`),
         api<Book>(`/api/market/book/${encodeURIComponent(code)}`),
       ]);
       setPoints(chart.points);
       setCandles(chart.candles ?? []);
       if (chart.interval) setCandleInterval(chart.interval);
+      setIndicatorData(chart.indicators ?? { upper: {}, lower: {} });
+      if (chart.catalog) { setIndicatorCatalog(chart.catalog); catalogLoaded.current = true; }
       setBook(orderBook);
     } catch (cause) {
       setNotice(errorText(cause, "시세를 불러오지 못했습니다."));
     }
   }, []);
 
-  useEffect(() => { void refreshMarket(selectedCode, range, interval); }, [selectedCode, range, interval, refreshMarket]);
+  useEffect(() => { void refreshMarket(selectedCode, range, interval); }, [selectedCode, range, interval, indicatorQuery, refreshMarket]);
   useEffect(() => {
     if (!selectedCode) return;
     const timer = window.setInterval(() => void refreshMarket(selectedCode, range, interval), 5000);
@@ -468,6 +517,8 @@ export default function App() {
   }
 
   function chooseInstrument(code: string) {
+    setSearchOpen(false);
+    if (location.pathname !== "/") navigate(`/?code=${encodeURIComponent(code)}`);
     const instrument = instruments.find((item) => item.code === code);
     if (!instrument) { setNotice(`${code}은(는) 지금 거래 중인 종목이 아닙니다.`); return; }
     setSelectedCode(instrument.code);
@@ -475,6 +526,7 @@ export default function App() {
     setSearchOpen(false);
   }
 
+  if (!user && !checked) return <div className="stage"><Backdrop /><p className="page-loading" role="status">불러오는 중…</p></div>;
   if (!user) return <div className="stage"><Backdrop /><AuthPanel app="hts" onAuthenticated={(next) => { const back = new URLSearchParams(location.search).get("return"); if (back?.startsWith("/board")) location.assign(back); else setUser(next); }} />
     <a className="board-guest-button" href={boardUrl()}>로그인 없이 게시판 보기</a>
   </div>;
@@ -490,36 +542,119 @@ export default function App() {
   const visibleOrders = orders.filter((order) => orderFilter === "all" || OPEN.has(order.status));
   const openCount = orders.filter((order) => OPEN.has(order.status)).length;
 
+  // Leaving a country or company account ($login) returns to the administrator's own session.
+  // The administrator comes back here, in the HTS, as themselves; the wallet and orders reload for them.
+  const logout = async () => {
+    const delegated = Boolean(user?.delegatedBy);
+    let result: { returnedTo?: ApiUser };
+    try {
+      result = await api<{ returnedTo?: ApiUser }>("/api/auth/logout", { method: "POST" });
+    } catch (cause) {
+      if (delegated) { setNotice(errorText(cause, "관리자 계정으로 돌아가지 못했습니다. 잠시 후 다시 시도해주세요.")); return; }
+      result = {};
+    }
+    clearToken();
+    if (result.returnedTo) {
+      setPortfolio(null); setOrders([]); setCredit(null);
+      setUser(result.returnedTo);
+      setNotice(`관리자 ${result.returnedTo.nickname} 계정으로 돌아왔습니다.`);
+      return;
+    }
+    setUser(null);
+    if (location.pathname !== "/") navigate("/");
+  };
+  const topbar = (here: "home" | "account" | "services") => <header className="hts-topbar">
+    <a className="brand" href="/">INAZINA <span>HTS</span></a>
+    <div className="top-search" ref={searchBoxRef}>
+      <label className="top-search-field"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M20 20l-4-4" /></svg>
+        <input ref={searchInputRef} value={search} aria-label="종목 검색" aria-expanded={searchOpen} aria-controls="top-search-pop" placeholder="종목명 또는 코드 검색" onFocus={() => setSearchOpen(true)} onChange={(event) => { setSearch(event.target.value); setSearchOpen(true); }} onKeyDown={(event) => { if (event.key === "Enter" && filtered[0]) chooseInstrument(filtered[0].code); }} />
+        {search && <button type="button" className="top-search-clear" aria-label="검색어 지우기" onClick={() => { setSearch(""); searchInputRef.current?.focus(); }}>×</button>}
+      </label>
+      {searchOpen && <section id="top-search-pop" className="search-pop" aria-label="종목 검색 결과">{!search.trim() && <div className="search-tabs" role="tablist" aria-label="상품 종류">{SEARCH_TABS.filter(([id]) => id === "recommended" || tabCounts[id]).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={searchTabValue === id} className={searchTabValue === id ? "active" : ""} onClick={() => setSearchTabValue(id)}>{label}<span>{tabCounts[id] ?? 0}</span></button>)}</div>}{!search.trim() && searchTabValue === "recommended" && <><div className="recommend-sorts" role="group" aria-label="추천 기준">{RECOMMEND_SORTS.map(([id, label]) => <button key={id} type="button" aria-pressed={recommendSort === id} className={recommendSort === id ? "active" : ""} onClick={() => setRecommendSort(id)}>{label}</button>)}</div><p className="search-caption">{RECOMMEND_SORTS.find(([id]) => id === recommendSort)![2]}</p></>}<div className="search-results">{filtered.slice(0, 200).map((item, index) => <button type="button" key={item.code} className={selectedCode === item.code ? "search-result active" : "search-result"} onClick={() => chooseInstrument(item.code)}><span>{!search.trim() && searchTabValue === "recommended" && <em className="search-rank">{index + 1}</em>}<span className="search-name"><b>{item.name} <WarningBadge warning={item.warning} /></b><small>{item.code} · {instrumentType(item)}{!search.trim() && searchTabValue === "recommended" && recommendSort === "volume" ? (item.volume24h ? ` · 24시간 ${money(item.volume24h, 2)}주` : "") : item.trades24h ? ` · 24시간 ${money(item.trades24h)}건` : ""}</small></span></span><span className="search-price"><strong>{money(item.price, 2)} {item.quote_currency || homeCurrency}</strong>{item.change24h !== null && item.change24h !== undefined && <small className={item.change24h > 0 ? "up" : item.change24h < 0 ? "down" : undefined}>{item.change24h > 0 ? "+" : ""}{item.change24h.toFixed(2)}%</small>}</span></button>)}{!filtered.length && <p className="empty">{search.trim() ? "검색 결과가 없습니다." : searchTabValue === "recommended" ? "최근 24시간 동안 해당하는 종목이 없습니다." : "이 종류의 상품이 없습니다."}</p>}</div></section>}
+    </div>
+    <nav className="top-nav" aria-label="서비스">{SERVICES.slice(0, 4).map((item) => <a key={item.path} href={item.path} aria-current={here === "services" && location.pathname.startsWith(item.path) ? "page" : undefined}>{item.label}</a>)}<a href={boardUrl()}>게시판</a></nav>
+    <div className="top-actions">
+      {here === "home" && <span className="connection"><i />API {health}</span>}
+      <a className="header-action account-action" href="/account" aria-current={here === "account" ? "page" : undefined}>{user.nickname} <small>{htsId || "아이디 만들기"}</small></a>
+      <button className="icon-button" title={user.delegatedBy ? "관리자 계정으로 돌아갑니다" : "로그아웃"} onClick={() => void logout()}>{user.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button>
+    </div>
+    {user.delegatedBy && <p className="delegation-bar" role="status">관리자 {user.delegatedByName ?? user.delegatedBy}님이 <b>{ROLE_LABEL[user.role]} {user.nickname}</b>(으)로 로그인 중 · 모든 거래는 이 계정 명의로 처리됩니다.</p>}
+  </header>;
+
+  if (location.pathname.startsWith("/commands")) {
+    const target = legacyCommandPath(decodeURIComponent(location.pathname.split("/").filter(Boolean)[1] ?? ""));
+    queueMicrotask(() => navigate(target, true));
+    return null;
+  }
+  const service = servicePath(location.pathname);
+  if (service) return <div className="hts-shell stage service-shell">
+    <Backdrop />
+    {topbar("services")}
+    <ServicesApp path={service} instruments={instruments} portfolio={portfolio} orders={orders} homeCurrency={homeCurrency} homeDigits={homeDigits} cash={portfolio?.cash ?? user.cash} creditScore={credit?.score ?? user.creditScore} accounts={portfolio?.accounts ?? []} onDone={() => void refreshAccount().catch(() => undefined)} />
+    <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
+  </div>;
+
+  if (location.pathname === "/account" || location.pathname === "/account/") return <div className="hts-shell stage account-page-shell">
+    <Backdrop />
+    {topbar("account")}
+    <main className="account-page">
+      <aside className="account-card" aria-label="프로필">
+        <span className="account-avatar" aria-hidden="true">{user.nickname.slice(0, 1)}</span>
+        <h1>{user.nickname}</h1>
+        <p>{ROLE_LABEL[user.role] ?? user.role} · {user.nationality}</p>
+        <dl>
+          <div><dt>로그인 아이디</dt><dd>{htsId || "미설정"}</dd></div>
+          <div><dt>지갑</dt><dd>{money(portfolio?.cash ?? user.cash, homeDigits)} {homeCurrency}</dd></div>
+          <div><dt>순자산</dt><dd>{money(inHome(portfolio?.net_worth ?? 0), homeDigits)} {homeCurrency}</dd></div>
+          {credit && <div><dt>신용점수</dt><dd>{credit.score}점</dd></div>}
+        </dl>
+        <button type="button" onClick={() => void logout()}>{user.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button>
+      </aside>
+      <div className="account-sections">
+        <section className="account-section">
+          <header><h2>로그인 아이디</h2><p>HTS와 대시보드 로그인에 쓰는 아이디입니다. 영문, 숫자, 점, 밑줄, 하이픈으로 3~32자.</p></header>
+          <form className="account-form" onSubmit={saveHtsId}>
+            <label>아이디<input autoComplete="username" minLength={3} maxLength={32} pattern="[A-Za-z0-9_.-]{3,32}" value={htsIdInput} onChange={(event) => setHtsIdInput(event.target.value)} placeholder="예: inazina_user" required /></label>
+            <label>현재 비밀번호<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label>
+            {settingsMessage && <p className="account-success" role="status">{settingsMessage}</p>}{settingsError && <p className="account-error" role="alert">{settingsError}</p>}
+            <button className="account-save" disabled={settingsBusy || !htsIdInput}>{settingsBusy ? "저장 중…" : htsId ? "아이디 변경" : "아이디 설정"}</button>
+          </form>
+        </section>
+        {portfolio?.kyc_profile && <section className="account-section">
+          <header><h2>본인 확인 (KYC)</h2><p>국적별 확인 상태입니다.</p></header>
+          <dl className="account-facts"><div><dt>상태</dt><dd>{KYC_STATUS[portfolio.kyc_profile.status]}</dd></div><div><dt>위험 등급</dt><dd>{KYC_RISK[portfolio.kyc_profile.risk_tier]}</dd></div><div><dt>만료</dt><dd>{portfolio.kyc_profile.expires_epoch ? date(portfolio.kyc_profile.expires_epoch) : "—"}</dd></div></dl>
+        </section>}
+        <section className="account-section">
+          <header><h2>바로가기</h2></header>
+          <nav className="account-links">{SERVICES.map((item) => <a key={item.path} href={item.path}><b>{item.label}</b><small>{item.description}</small></a>)}</nav>
+        </section>
+      </div>
+    </main>
+    <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
+  </div>;
+
   return <div className="hts-shell stage">
     <Backdrop />
-    <header className="hts-topbar">
-      <a className="brand" href="/">INAZINA <span>HTS</span></a>
-      <button type="button" className="search-trigger" title="종목 검색 (시장 목록)" onClick={() => setSearchOpen(true)}>
-        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M20 20l-4-4" /></svg>
-        종목 검색
-      </button>
-      <div className="top-actions">
-        <span className="connection"><i />API {health}</span>
-        <span className="top-user">{user.nickname}</span>
-        <a className="header-action" title="공지 · 자유 · 시장 토론" href={boardUrl()}>게시판</a>
-        <button className="header-action" title="Discord 사용자 명령어" onClick={() => setCommandsOpen("")}>명령어</button>
-        <button className="header-action account-action" onClick={() => { setSettingsMessage(""); setSettingsError(""); setAccountSettingsOpen(true); }}>계정 <small>{htsId || "아이디 만들기"}</small></button>
-        <button className="icon-button" title="로그아웃" onClick={() => { clearToken(); void api("/api/auth/logout", { method: "POST" }); setUser(null); }}>로그아웃</button>
-      </div>
-    </header>
+    {topbar("home")}
     {notice && <div className="toast" role="status">{notice}<button onClick={() => setNotice("")}>닫기</button></div>}
     <main className="hts-main">
-      <div className="quote-strip"><div><p className="eyebrow">{selected?.exchange_id || "MARKET"} · {selected ? instrumentType(selected) : "—"}</p><h1>{selected?.name || "종목을 선택하세요"}<small>{selected?.code}</small><WarningBadge warning={selected?.warning} /></h1>{selected?.drProgram && <><p className="orders-hint">{selected.drProgram.receiptType} · 원주 {selected.drProgram.underlyingCode} · 1 DR = {money(selected.drProgram.underlyingPerReceipt, 6)}주 · 원주 거래소 {selected.drProgram.homeExchangeId || "—"} · 예탁 {selected.drProgram.depositaryBank || "—"} · 수탁 {selected.drProgram.custodian || "—"}</p>{selected.drProgram.referenceValue !== undefined && <p className="orders-hint">단순 원주 환산 참고가 {money(selected.drProgram.referenceValue, 4)} {selected.quote_currency || ""}{selected.drProgram.referencePremiumPercent !== undefined && ` · 현재가 괴리 ${selected.drProgram.referencePremiumPercent >= 0 ? "+" : ""}${selected.drProgram.referencePremiumPercent.toFixed(2)}%`}{selected.drProgram.referenceDeviationAlert && " · ⚠ 괴리 주의 (±10% 이상)"} · 수수료·세금·유동성 미반영</p>}</>}{selected?.bondRisk && <p className="orders-hint">액면 {money(selected.bondRisk.faceValue)} 기준 · Macaulay {selected.bondRisk.macaulay_duration.toFixed(3)}년 · 수정듀레이션 {selected.bondRisk.modified_duration.toFixed(3)} · 컨벡서티 {selected.bondRisk.convexity.toFixed(3)} · DV01 {money(selected.bondRisk.dv01, 4)} {selected.quote_currency || homeCurrency} / 1bp. 현 국채 곡선의 평행이동 민감도이며 거래가격 예측이나 규제지표가 아닙니다.</p>}{selected?.warning?.reason && <p className="warn-reason">⚠️ {selected.warning.label} · {selected.warning.reason}</p>}</div>
-        <div className="quote-side"><div className="quote-value"><strong>{money(current)}</strong><span>{selected?.quote_currency || homeCurrency}</span></div><button className="quote-switch" onClick={() => setSearchOpen(true)}>종목 바꾸기</button>{selected && <a className="quote-switch" href={boardUrl(selected.code)}>종목 토론</a>}</div></div>
+      {watch.length > 0 && <nav className="watch-strip" aria-label="관심종목">{watch.map((code) => instruments.find((item) => item.code === code)).filter((item): item is Instrument => Boolean(item)).map((item) => <button type="button" key={item.code} className={item.code === selectedCode ? "active" : ""} onClick={() => chooseInstrument(item.code)}>
+        <b>{item.name}</b><span>{money(item.price, 2)}</span>{item.change24h != null && <small className={item.change24h > 0 ? "up" : item.change24h < 0 ? "down" : undefined}>{item.change24h > 0 ? "+" : ""}{item.change24h.toFixed(2)}%</small>}
+      </button>)}</nav>}
+      <div className="quote-strip"><div><p className="eyebrow">{selected?.exchange_id || "MARKET"} · {selected ? instrumentType(selected) : "—"}</p><h1>{selected?.name || "종목을 선택하세요"}<small>{selected?.code}</small>{selected && <button type="button" className={watch.includes(selected.code) ? "watch-star on" : "watch-star"} aria-pressed={watch.includes(selected.code)} title={watch.includes(selected.code) ? "관심종목에서 빼기" : "관심종목에 추가"} onClick={() => toggleWatch(selected.code)}>{watch.includes(selected.code) ? "★" : "☆"}</button>}<WarningBadge warning={selected?.warning} /></h1>{selected?.drProgram && <><p className="orders-hint">{selected.drProgram.receiptType} · 원주 {selected.drProgram.underlyingCode} · 1 DR = {money(selected.drProgram.underlyingPerReceipt, 6)}주 · 원주 거래소 {selected.drProgram.homeExchangeId || "—"} · 예탁 {selected.drProgram.depositaryBank || "—"} · 수탁 {selected.drProgram.custodian || "—"}</p>{selected.drProgram.referenceValue !== undefined && <p className="orders-hint">단순 원주 환산 참고가 {money(selected.drProgram.referenceValue, 4)} {selected.quote_currency || ""}{selected.drProgram.referencePremiumPercent !== undefined && ` · 현재가 괴리 ${selected.drProgram.referencePremiumPercent >= 0 ? "+" : ""}${selected.drProgram.referencePremiumPercent.toFixed(2)}%`}{selected.drProgram.referenceDeviationAlert && " · ⚠ 괴리 주의 (±10% 이상)"} · 수수료·세금·유동성 미반영</p>}</>}{selected?.bondRisk && <p className="orders-hint">액면 {money(selected.bondRisk.faceValue)} 기준 · Macaulay {selected.bondRisk.macaulay_duration.toFixed(3)}년 · 수정듀레이션 {selected.bondRisk.modified_duration.toFixed(3)} · 컨벡서티 {selected.bondRisk.convexity.toFixed(3)} · DV01 {money(selected.bondRisk.dv01, 4)} {selected.quote_currency || homeCurrency} / 1bp. 현 국채 곡선의 평행이동 민감도이며 거래가격 예측이나 규제지표가 아닙니다.</p>}{selected?.warning?.reason && <p className="warn-reason">⚠️ {selected.warning.label} · {selected.warning.reason}</p>}</div>
+        <div className="quote-side"><div className="quote-value"><strong>{money(current)}</strong><span>{selected?.quote_currency || homeCurrency}</span></div><button className="quote-switch" onClick={() => { setSearchOpen(true); searchInputRef.current?.focus(); window.scrollTo({ top: 0, behavior: "smooth" }); }}>종목 바꾸기</button>{selected && <a className="quote-switch" href={boardUrl(selected.code)}>종목 토론</a>}</div></div>
       <div className="trade-row">
         <div className="chart-col">
+          <ErrorBoundary label="차트" resetKey={`${selectedCode}-${range}-${interval}-${chartMode}`}>
           <PriceChart points={points} candles={candles} candleInterval={candleInterval} mode={chartMode} fallbackPrice={selected?.price ?? 1}
             drawings={drawings} onDrawingsChange={setDrawings} tool={tool} onToolChange={setTool} resetKey={`${selectedCode}-${range}-${interval}-${chartMode}`} label={selected?.name || "가격"}
+            indicators={indicators} data={indicatorData} catalog={indicatorCatalog} onIndicatorsChange={chooseIndicators}
             controls={<>{ranges.map((item) => <button key={item} className={range === item ? "selected" : ""} onClick={() => setRange(item)}>{rangeNames[item]}</button>)}
               <span className="divider" aria-hidden="true" />
               <button className={chartMode === "candle" ? "selected" : ""} onClick={() => setChartMode("candle")}>캔들</button>
               <button className={chartMode === "line" ? "selected" : ""} onClick={() => setChartMode("line")}>선</button>
               {chartMode === "candle" && <select className="interval-select" aria-label="봉 주기" value={interval ?? ""} onChange={(event) => setIntervalSeconds(event.target.value ? Number(event.target.value) : null)}><option value="">자동 ({intervals.find(([seconds]) => seconds === candleInterval)?.[1] ?? "봉"})</option>{intervals.map(([seconds, name]) => <option key={seconds} value={seconds}>{name}</option>)}</select>}</>} />
+          </ErrorBoundary>
         </div>
         <div className="ticket-col">
           <section className="data-panel order-entry"><div className="panel-title"><h2>주문 입력</h2><span>지정가</span></div>
@@ -581,9 +716,9 @@ export default function App() {
             </form>}
           </section>
           <div className="wallet-actions">
-            <button onClick={() => setCommandsOpen("송금")}>송금</button>
-            <button onClick={() => setCommandsOpen("계좌개설")}>계좌개설</button>
-            <button onClick={() => setCommandsOpen("대출신청")}>대출</button>
+            <a href={`/commands/${encodeURIComponent("송금")}`}>송금</a>
+            <a href={`/commands/${encodeURIComponent("계좌개설")}`}>계좌개설</a>
+            <a href={`/commands/${encodeURIComponent("대출신청")}`}>대출</a>
             <button onClick={() => void refreshAccount().catch((cause) => setNotice(errorText(cause, "지갑을 새로 고치지 못했습니다.")))}>새로고침</button>
           </div>
           <section className="data-panel wallet-panel">
@@ -596,6 +731,19 @@ export default function App() {
             <div className="wallet-row net-worth"><span>순자산</span><b>{money(inHome(portfolio?.net_worth || 0), homeDigits)} {homeCurrency}</b></div>
             {(portfolio?.accounts ?? []).filter((account) => account.resolution_status === "active").map((account) => <div className="wallet-row account-detail" key={account.number}><span>{account.product_name} · {account.currency_code}<small>{account.number}</small>{account.rate_type === "floating" && account.next_repricing_epoch != null && <small>현재 연 {account.contract_rate?.toFixed(4) ?? "—"}% · 지표 관측 기준일 {date(Math.max(0, account.next_repricing_epoch - account.repricing_lag_seconds))} · 재산정 예정 {date(account.next_repricing_epoch)} · {RATE_BENCHMARK_LABELS[account.benchmark_key || ""] || account.benchmark_key || "기준금리"} {account.benchmark_tenor_days}일 · 새 금리는 재산정 시 확정</small>}{account.rate_resets.map((reset, index) => <small key={`${reset.applied_epoch}-${index}`}>이전 재산정 {date(reset.applied_epoch)} · {RATE_BENCHMARK_LABELS[reset.benchmark_key] || reset.benchmark_key} {reset.benchmark_tenor_days}일 · 연 {reset.old_rate}% → {reset.new_rate}%</small>)}</span><b>{money(account.balance, account.decimal_places)} {account.currency_code}</b></div>)}
           </section>
+          {credit && <section className="data-panel wallet-credit" aria-label="신용점수">
+            <div className="panel-title"><h2>신용점수</h2><span>시뮬레이터 · 기준 {credit.anchor}점</span></div>
+            <div className="credit-score"><b>{credit.score}</b><span>/ 1000</span></div>
+            <div className="credit-meter" role="meter" aria-label="신용점수" aria-valuemin={0} aria-valuemax={1000} aria-valuenow={credit.score}><i style={{ width: `${Math.min(100, Math.max(0, credit.score / 10))}%` }} /><em style={{ left: `${Math.min(100, Math.max(0, credit.anchor / 10))}%` }} title={`기준점수 ${credit.anchor}점`} /></div>
+            <div className="credit-factors">
+              {credit.factors.map((factor) => <div className="credit-factor" key={factor.key}><span>{factor.label}{factor.points < 0 && CREDIT_TIPS[factor.key] && <small>{CREDIT_TIPS[factor.key]}</small>}</span><b className={factor.points < 0 ? "minus" : "plus"}>{signedPoints(factor.points)}</b></div>)}
+              {!credit.factors.length && <div className="credit-factor"><span>아직 점수에 반영된 신용 이력이 없습니다.</span></div>}
+            </div>
+            {credit.events.some((event) => event.type !== "legacy_baseline") && <details className="credit-events"><summary>최근 신용 이력</summary>
+              {credit.events.filter((event) => event.type !== "legacy_baseline").slice(0, 5).map((event) => <div className="credit-factor" key={`${event.type}:${event.reference}`}><span>{CREDIT_EVENTS[event.type] ?? event.type}{event.loanId ? ` · 대출 #${event.loanId}` : ""}<small>{date(event.occurredEpoch)}{event.reason ? ` · ${event.reason}` : ""}</small></span></div>)}
+            </details>}
+            <p className="credit-note">기준점수에 요인을 더한 시뮬레이터 점수입니다. 연체 영향은 시간이 지나며 줄고, 정상 납부·완납은 점수를 올립니다. 실제 신용평가사 점수가 아닙니다.</p>
+          </section>}
           <section className="data-panel holdings-panel">
             <div className="panel-title"><h2>보유 종목</h2><span>{holdings.length}</span></div>
             <div className="holdings">{holdings.map((item) => <button type="button" key={`${item.code}-${item.is_collateral ? "c" : "h"}`} className={item.code === selectedCode ? "holding active" : "holding"} onClick={() => chooseInstrument(item.code)}>
@@ -612,14 +760,6 @@ export default function App() {
             <span><b>{claim.issuer} · {date(claim.resolved_epoch)}</b><small>원예금 통화 기준 보험금 {money(claim.covered_amount, claim.decimal_places)} · 미보장채권 {money(claim.uninsured_amount, claim.decimal_places)} {claim.currency_code}</small>{claim.payout_currency && claim.payout_amount != null && <small>실제 지급 기록 {money(claim.payout_amount, claim.payout_decimal_places ?? 0)} {claim.payout_currency}</small>}</span>
           </div>)}</div>
           <p className="orders-hint">보험금 지급은 고객 국적 통화로 환전될 수 있습니다. 이 내역은 예금 원통화 기준의 시뮬레이터 정리 결과이며 실제 예금보험 청구가 아닙니다.</p>
-        </section>}
-        {credit && <section className="data-panel holdings-panel"><div className="panel-title"><h2>신용점수</h2><span>{credit.score}점 / 1000</span></div>
-          <div className="holdings">
-            {credit.factors.map((factor) => <div className="holding" key={factor.key}><span><b>{factor.label} {signedPoints(factor.points)}</b>{factor.points < 0 && CREDIT_TIPS[factor.key] && <small>{CREDIT_TIPS[factor.key]}</small>}</span></div>)}
-            {!credit.factors.length && <div className="holding"><span><b>기준점수 {credit.anchor}점</b><small>아직 점수에 반영된 신용 이력이 없습니다.</small></span></div>}
-            {credit.events.filter((event) => event.type !== "legacy_baseline").slice(0, 5).map((event) => <div className="holding" key={`${event.type}:${event.reference}`}><span><b>{CREDIT_EVENTS[event.type] ?? event.type}{event.loanId ? ` · 대출 #${event.loanId}` : ""}</b><small>{date(event.occurredEpoch)}{event.reason ? ` · ${event.reason}` : ""}</small></span></div>)}
-          </div>
-          <p className="orders-hint">기준점수 {credit.anchor}점에 요인을 더한 시뮬레이터 점수입니다. 연체 영향은 시간이 지나며 줄고, 정상 납부·완납은 점수를 올립니다. 실제 신용평가사 점수가 아닙니다.</p>
         </section>}
         {loanSchedules.length > 0 && <section className="data-panel holdings-panel"><div className="panel-title"><h2>대출 상환 일정</h2><span>{loanSchedules.length}건</span></div>
           <div className="holdings">{loanSchedules.map((loan) => <div className="holding loan-schedule" key={loan.loan_id}>
@@ -671,10 +811,8 @@ export default function App() {
         </section>}
       </div>
     </main>
+    <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
     {review && <div className="modal-backdrop"><section className="review-modal" role="dialog" aria-modal="true" aria-labelledby="review-title"><p className="eyebrow">ORDER REVIEW</p><h2 id="review-title">주문을 확인하세요</h2><dl><div><dt>종목</dt><dd>{selected?.name} ({selectedCode}) <WarningBadge warning={selected?.warning} /></dd></div><div><dt>유형</dt><dd className={side === "buy" ? "buy-text" : "sell-text"}>{side === "buy" ? "지정가 매수" : "지정가 매도"}</dd></div><div><dt>지정가</dt><dd>{money(Number(price), 2)} {selected?.quote_currency || homeCurrency}</dd></div><div><dt>수량</dt><dd>{money(Number(quantity), 3)}</dd></div><div><dt>예상 금액</dt><dd>{money(Number(price) * Number(quantity), 2)} {selected?.quote_currency || homeCurrency}</dd></div></dl><div className="modal-actions"><button disabled={busy} onClick={() => setReview(false)}>돌아가기</button><button className={side === "buy" ? "buy-confirm" : "sell-confirm"} disabled={busy} onClick={() => void submitOrder()}>{busy ? "제출 중" : "주문 확정"}</button></div></section></div>}
-    {searchOpen && <div className="modal-backdrop search-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSearchOpen(false); }}><section className="search-modal" role="dialog" aria-modal="true" aria-labelledby="search-title"><div className="search-modal-head"><h2 id="search-title">종목 검색</h2><button type="button" title="닫기" onClick={() => setSearchOpen(false)}>닫기</button></div><label className="search-field"><span aria-hidden="true">⌕</span><input ref={searchInputRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="종목명 또는 코드" /></label>{!search.trim() && <div className="search-tabs" role="tablist" aria-label="상품 종류">{SEARCH_TABS.filter(([id]) => id === "recommended" || tabCounts[id]).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={searchTabValue === id} className={searchTabValue === id ? "active" : ""} onClick={() => setSearchTabValue(id)}>{label}<span>{tabCounts[id] ?? 0}</span></button>)}</div>}{!search.trim() && searchTabValue === "recommended" && <><div className="recommend-sorts" role="group" aria-label="추천 기준">{RECOMMEND_SORTS.map(([id, label]) => <button key={id} type="button" aria-pressed={recommendSort === id} className={recommendSort === id ? "active" : ""} onClick={() => setRecommendSort(id)}>{label}</button>)}</div><p className="search-caption">{RECOMMEND_SORTS.find(([id]) => id === recommendSort)![2]}</p></>}<div className="search-results">{filtered.slice(0, 200).map((item, index) => <button type="button" key={item.code} className={selectedCode === item.code ? "search-result active" : "search-result"} onClick={() => chooseInstrument(item.code)}><span>{!search.trim() && searchTabValue === "recommended" && <em className="search-rank">{index + 1}</em>}<span className="search-name"><b>{item.name} <WarningBadge warning={item.warning} /></b><small>{item.code} · {instrumentType(item)}{!search.trim() && searchTabValue === "recommended" && recommendSort === "volume" ? (item.volume24h ? ` · 24시간 ${money(item.volume24h, 2)}주` : "") : item.trades24h ? ` · 24시간 ${money(item.trades24h)}건` : ""}</small></span></span><span className="search-price"><strong>{money(item.price, 2)} {item.quote_currency || homeCurrency}</strong>{item.change24h !== null && item.change24h !== undefined && <small className={item.change24h > 0 ? "up" : item.change24h < 0 ? "down" : undefined}>{item.change24h > 0 ? "+" : ""}{item.change24h.toFixed(2)}%</small>}</span></button>)}{!filtered.length && <p className="empty">{search.trim() ? "검색 결과가 없습니다." : searchTabValue === "recommended" ? "최근 24시간 동안 해당하는 종목이 없습니다." : "이 종류의 상품이 없습니다."}</p>}</div></section></div>}
-    {commandsOpen !== null && <CommandPanel initial={commandsOpen} instruments={instruments} portfolio={portfolio} orders={orders} homeCurrency={homeCurrency} onClose={() => setCommandsOpen(null)} onDone={() => void refreshAccount().catch(() => undefined)} />}
-    {accountSettingsOpen && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setAccountSettingsOpen(false); }}><section className="account-modal" role="dialog" aria-modal="true" aria-labelledby="account-title"><div className="account-modal-head"><div><p className="eyebrow">HTS ACCOUNT</p><h2 id="account-title">아이디 설정</h2></div><button type="button" title="닫기" onClick={() => setAccountSettingsOpen(false)}>닫기</button></div><p className="account-description">로그인에 사용할 아이디를 설정합니다.</p><form className="account-form" onSubmit={saveHtsId}><label>아이디<input autoComplete="username" minLength={3} maxLength={32} pattern="[A-Za-z0-9_.\-]{3,32}" value={htsIdInput} onChange={(event) => setHtsIdInput(event.target.value)} placeholder="예: inazina_user" required /></label><p className="account-hint">영문, 숫자, 점, 밑줄, 하이픈으로 3~32자</p><label>현재 비밀번호<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label>{settingsMessage && <p className="account-success" role="status">{settingsMessage}</p>}{settingsError && <p className="account-error" role="alert">{settingsError}</p>}<div className="modal-actions"><button type="button" disabled={settingsBusy} onClick={() => setAccountSettingsOpen(false)}>닫기</button><button className="account-save" disabled={settingsBusy || !htsIdInput}>{settingsBusy ? "저장 중…" : htsId ? "아이디 변경" : "아이디 설정"}</button></div></form></section></div>}
   </div>;
 }
 

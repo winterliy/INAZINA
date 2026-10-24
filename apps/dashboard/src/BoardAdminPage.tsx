@@ -52,6 +52,7 @@ export function BoardAdminPage({ ctx }: { ctx: Ctx }) {
   const author = (name: string, id: string, anonymous: boolean, address: string, isAdmin = false) => <><span>{name || "—"}{isAdmin && <span className="tag ok inline">관리자</span>}{anonymous && <span className="tag inline">익명 표시</span>}</span><small className="mono muted block">{id} · {ip(address)}</small></>;
 
   return <>
+    <TrendingAdmin ctx={ctx} />
     <Card title="신고 대기" caption={`처리하지 않은 신고 ${number(reports.length)}건 · 서로 다른 3명이 신고한 글·댓글은 자동으로 숨겨집니다. 복원하면 그 대상의 신고가 함께 처리 완료됩니다.`}>
       <div className="scroll-x"><table><thead><tr><th>신고</th><th>대상</th><th>사유</th><th>신고자 · IP</th><th>시각</th><th /></tr></thead><tbody>
         {reports.map((item) => <tr key={item.report_id}>
@@ -178,5 +179,61 @@ function BoardStructure({ busy, boards, onSubmit }: { busy: boolean; boards: Boa
       <label className="check"><input type="checkbox" checked={draft.secret} onChange={(event) => setDraft({ ...draft, secret: event.target.checked })} />비밀게시판 (만든 뒤 허용할 Discord 아이디 추가)</label>
       <button className="btn primary" disabled={busy || !draft.boardId || !draft.name.trim()}>게시판 만들기</button>
     </form>
+  </Card>;
+}
+
+type Trending = { terms: { term: string; searches: number; last_epoch: number; blocked: number }[]; trending: { term: string; rank: number }[]; blocked: { term: string; blocked_epoch: number }[];
+  pinned: { term: string; rank: number; until_epoch: number | null }[] };
+
+/** 실시간 검색어 관리: see what people search, keep a term off the public list, or clear its count. */
+function TrendingAdmin({ ctx }: { ctx: Ctx }) {
+  const { busy, run, say } = ctx;
+  const [data, setData] = useState<Trending | null>(null);
+  const [term, setTerm] = useState("");
+  const [rank, setRank] = useState("1");
+  const [hours, setHours] = useState("");
+  const [boost, setBoost] = useState("10");
+  const load = useCallback(async () => setData(await api<Trending>("/api/admin/board?view=search")), []);
+  useEffect(() => { load().catch((cause) => say(cause instanceof Error ? cause.message : "검색어를 불러오지 못했습니다.", true)); }, [load]);
+  const act = (target: string, action: "block" | "unblock" | "reset" | "pin" | "unpin" | "boost", confirmText?: string, extra: Record<string, unknown> = {}) => {
+    if (confirmText && !window.confirm(confirmText)) return;
+    void run(() => api<{ message: string; success: boolean }>(`/api/admin/board/search/${encodeURIComponent(target)}`, { method: "POST", body: JSON.stringify({ action, ...extra }) }),
+      "검색어를 처리하지 못했습니다.", async (result) => { say(plain(result.message), !result.success); await load(); });
+  };
+  const live = new Map((data?.trending ?? []).map((item) => [item.term, item.rank]));
+  return <Card title="실시간 검색어" caption="광장 오른쪽 '실시간 검색어' 순위(최근 24시간)를 관리합니다. 고정한 검색어는 그 순위에 보이고 나머지는 실제 검색 순으로 채워집니다. 검색 수 추가는 지금 검색된 것으로 집계합니다. 숨긴 검색어는 순위에서 빠지지만 검색은 그대로 됩니다. 방문자에게는 고정·추가 여부가 보이지 않습니다."
+    actions={<button className="soft small" type="button" onClick={() => void load()}>새로고침</button>}>
+    <form className="form-grid" onSubmit={(event) => event.preventDefault()}>
+      <Field label="검색어" hint="아직 순위에 없는 검색어도 넣을 수 있습니다"><input value={term} maxLength={50} onChange={(event) => setTerm(event.target.value)} placeholder="예: 신규 이벤트" /></Field>
+      <Field label="고정 순위"><select value={rank} onChange={(event) => setRank(event.target.value)}>{Array.from({ length: 10 }, (_, index) => <option key={index} value={index + 1}>{index + 1}위</option>)}</select></Field>
+      <Field label="고정 시간" hint="비우면 직접 해제할 때까지"><input inputMode="decimal" value={hours} onChange={(event) => setHours(event.target.value.replace(/[^\d.]/g, ""))} placeholder="시간" /></Field>
+      <Field label="추가할 검색 수" hint="최대 1,000회"><input inputMode="numeric" value={boost} onChange={(event) => setBoost(event.target.value.replace(/\D/g, ""))} /></Field>
+      <div className="actions span-wide">
+        <button className="btn primary" type="button" disabled={busy || !term.trim()} onClick={() => act(term.trim(), "pin", undefined, { rank: Number(rank), hours: hours || null })}>{rank}위에 고정</button>
+        <button className="soft" type="button" disabled={busy || !term.trim() || !Number(boost)} onClick={() => act(term.trim(), "boost", undefined, { count: Number(boost) })}>검색 수 +{boost || 0}</button>
+        <button className="soft danger" type="button" disabled={busy || !term.trim()} onClick={() => { act(term.trim(), "block"); setTerm(""); }}>숨기기</button>
+      </div>
+    </form>
+    {(data?.pinned.length ?? 0) > 0 && <>
+      <h3 className="sub-head">순위 고정 {data!.pinned.length}개</h3>
+      <div className="command-list">{data!.pinned.map((item) => <button key={item.term} type="button" className="command-chip active" disabled={busy} title="눌러서 고정 해제" onClick={() => act(item.term, "unpin")}><b>{item.rank}위 · {item.term}</b><small>{item.until_epoch ? `${date(item.until_epoch)}까지` : "해제할 때까지"} · 눌러서 해제</small></button>)}</div>
+    </>}
+    <div className="scroll-x"><table><thead><tr><th>순위</th><th>검색어</th><th className="r">24시간 검색</th><th>마지막 검색</th><th>상태</th><th /></tr></thead><tbody>
+      {(data?.terms ?? []).map((item) => <tr key={item.term}>
+        <td>{live.has(item.term) ? `${live.get(item.term)}위` : "—"}</td>
+        <td><button type="button" className="link" onClick={() => setTerm(item.term)} title="위 입력칸에 넣기">{item.term}</button></td>
+        <td className="r mono">{number(item.searches)}</td>
+        <td>{date(item.last_epoch)}</td>
+        <td>{item.blocked ? <span className="tag warn">숨김</span> : live.has(item.term) ? <span className="tag ok">노출</span> : <span className="tag">순위 밖</span>}</td>
+        <td className="row-actions">{item.blocked
+          ? <button className="soft small" type="button" disabled={busy} onClick={() => act(item.term, "unblock")}>숨김 해제</button>
+          : <button className="soft small" type="button" disabled={busy} onClick={() => act(item.term, "block")}>숨기기</button>}
+          <button className="soft small danger" type="button" disabled={busy} onClick={() => act(item.term, "reset", `'${item.term}'의 검색 집계를 지울까요? 순위에서 바로 빠집니다.`)}>초기화</button></td>
+      </tr>)}
+    </tbody></table>{data && !data.terms.length && <p className="empty">최근 24시간 동안 검색 기록이 없습니다.</p>}</div>
+    {(data?.blocked.length ?? 0) > 0 && <>
+      <h3 className="sub-head">숨긴 검색어 {data!.blocked.length}개</h3>
+      <div className="command-list">{data!.blocked.map((item) => <button key={item.term} type="button" className="command-chip" disabled={busy} title="눌러서 숨김 해제" onClick={() => act(item.term, "unblock")}><b>{item.term}</b><small>{date(item.blocked_epoch)} · 눌러서 해제</small></button>)}</div>
+    </>}
   </Card>;
 }

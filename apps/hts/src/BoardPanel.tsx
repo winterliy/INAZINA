@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api, type ApiUser } from "../../shared/api";
 import { DateTimePicker } from "./DateTimePicker";
+import { PlazaLogo } from "./PlazaLogo";
+import { BoardAccount, loadBoardDefaults, type BoardDefaults } from "./BoardAccount";
 
 type Category = { category_id: number; name: string };
 // suspension: the notice while an administrator has stopped writing on the board.
@@ -10,7 +12,7 @@ type BoardDraft = { boardId: string; name: string; description: string; adminOnl
 // News moves the market from publication: administrators see its impact, readers only that it is news.
 type News = { status: "scheduled" | "live" | "ended" | "failed"; publish_epoch: number; event_type?: "good" | "bad"; severity?: number; asset_code?: string | null; duration_seconds?: number; target_price?: number | null; error?: string | null };
 type NewsDraft = { eventType: "good" | "bad"; severity: string; minutes: string; targetPrice: string; publish: number | null };
-type Summary = { post_id: number; board: string; board_name: string; category_id: number | null; category_name: string | null; notice: number; author_admin: number; title: string; asset_code: string | null; pinned: number; anonymous: number; view_count: number; created_epoch: number; updated_epoch: number; author: string; comment_count: number; like_count: number; dislike_count: number; mine: boolean; has_attachments: number; has_poll: number; news_status: News["status"] | null; news_publish_epoch: number | null };
+type Summary = { post_id: number; board: string; board_name: string; category_id: number | null; category_name: string | null; notice: number; author_admin: number; title: string; asset_code: string | null; pinned: number; anonymous: number; secret: number; view_count: number; created_epoch: number; updated_epoch: number; author: string; comment_count: number; like_count: number; dislike_count: number; mine: boolean; has_attachments: number; has_poll: number; news_status: News["status"] | null; news_publish_epoch: number | null };
 type Reaction = 1 | -1 | 0;
 type Attachment = { attachment_id: number; kind: "file" | "link"; name: string; url: string | null; size: number | null };
 type PollOption = { option_id: number; label: string; votes: number; voters?: string[] };
@@ -18,10 +20,10 @@ type Poll = { poll_id: number; question: string; anonymous: number; multiple: nu
 type Upload = { attachmentId: number; name: string; size: number };
 type PollDraft = { question: string; options: string[]; anonymous: boolean; multiple: boolean; closes: number | null };
 // parent_id null: a top-level comment. removed: a comment hidden by moderation, kept as the anchor of its replies.
-type Comment = { comment_id: number; parent_id: number | null; removed: boolean; body: string; created_epoch: number; author: string; author_admin: number; mine: boolean; like_count: number; dislike_count: number; my_reaction: Reaction };
-type Post = Summary & { body: string; my_reaction: Reaction; comments: Comment[]; attachments: Attachment[]; poll: Poll | null; news: News | null };
-type Page = { posts: Summary[]; total: number; page: number; pageSize: number; writeOpensEpoch?: number };
-type Draft = { postId: number | null; board: string; categoryId: number | null; title: string; body: string; assetCode: string; anonymous: boolean; pinned: boolean; notice: boolean;
+type Comment = { comment_id: number; parent_id: number | null; removed: boolean; body: string; created_epoch: number; author: string; author_admin: number; mine: boolean; like_count: number; dislike_count: number; my_reaction: Reaction; locked?: boolean };
+type Post = Summary & { locked?: boolean; body: string; my_reaction: Reaction; comments: Comment[]; attachments: Attachment[]; poll: Poll | null; news: News | null };
+type Page = { posts: Summary[]; total: number; page: number; pageSize: number; writeOpensEpoch?: number; trending?: { term: string; rank: number; change: number | null }[] };
+type Draft = { postId: number | null; board: string; categoryId: number | null; title: string; body: string; assetCode: string; anonymous: boolean; secret: boolean; pinned: boolean; notice: boolean;
   // Files uploaded for this draft, links, attachments to drop (editing) and a poll (new posts).
   uploads: Upload[]; links: { title: string; url: string }[]; existing: Attachment[]; remove: number[]; poll: PollDraft | null; news: NewsDraft | null };
 const NEWS_STATUS: Record<News["status"], string> = { scheduled: "예약", live: "게시됨", ended: "영향 종료", failed: "게시 실패" };
@@ -35,7 +37,7 @@ const errorText = (cause: unknown) => cause instanceof Error ? cause.message : "
  * HTS board. Reading needs no login; writing, comments, replies, reactions and reports do.
  * `user` is null for a visitor, and `onLogin` takes them to the login screen.
  */
-export function BoardPanel({ user, initialAsset = "", onClose, onLogin, onLogout, asPage = false }: { user: ApiUser | null; initialAsset?: string; onClose: () => void; onLogin: () => void; onLogout: () => void; asPage?: boolean }) {
+export function BoardPanel({ user, initialAsset = "", onLogin, onLogout }: { user: ApiUser | null; initialAsset?: string; onLogin: () => void; onLogout: () => void }) {
   const admin = user?.role === "admin";
   const [boards, setBoards] = useState<BoardInfo[]>([]);
   const [board, setBoard] = useState("");
@@ -48,7 +50,11 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin, onLogout
   const [post, setPost] = useState<Post | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [comment, setComment] = useState("");
-  const [commentAnonymous, setCommentAnonymous] = useState(false);
+  // 계정설정's writing defaults: new posts and comments start from them.
+  const [defaults, setDefaults] = useState<BoardDefaults>(loadBoardDefaults);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [commentAnonymous, setCommentAnonymous] = useState(defaults.commentAnonymous);
+  const [commentSecret, setCommentSecret] = useState(defaults.commentSecret);
   const [replyTo, setReplyTo] = useState<number | null>(null);
   const [reply, setReply] = useState("");
   const [error, setError] = useState("");
@@ -109,6 +115,8 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin, onLogout
       });
   }
 
+  // Bumped to reload the list after writing, even when the board and page stay the same.
+  const [reloadKey, setReloadKey] = useState(0);
   const loadList = useCallback(async () => {
     const query = new URLSearchParams({ page: String(page) });
     if (board) query.set("board", board);
@@ -116,17 +124,26 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin, onLogout
     if (asset) query.set("asset", asset);
     if (term) query.set("search", term);
     setList(await api<Page>(`/api/board/posts?${query}`));
-  }, [board, category, asset, term, page]);
+  }, [board, category, asset, term, page, reloadKey]);
   useEffect(() => { loadList().catch((cause) => setError(errorText(cause))); }, [loadList]);
-  useEffect(() => {
-    if (asPage) return;  // a page has no dialog to dismiss
-    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose, asPage]);
+  // The open post or draft sits above the list, as on gallery boards: bring it into view.
+  const mainRef = useRef<HTMLDivElement>(null);
+  const shown = draft ? `draft:${draft.postId ?? "new"}` : post ? `post:${post.post_id}` : "";
+  useEffect(() => { if (shown) mainRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }); }, [shown]);
+
+  // Clicking the open post again closes it, as on gallery boards.
+  function toggle(postId: number) {
+    if (post?.post_id === postId && !draft) setPost(null); else void open(postId);
+  }
+  // A post belongs to the list it was opened from: another board or 말머리 closes it.
+  useEffect(() => { setPost(null); }, [board, category, adminPostsBoard]);
+  // A post just written opens once its board's list has loaded (after the switch above closed the old one).
+  const [pendingOpen, setPendingOpen] = useState<number | null>(null);
+  useEffect(() => { if (pendingOpen !== null && list) { setPendingOpen(null); void open(pendingOpen); } }, [list]);
 
   async function open(postId: number) {
     setError("");
+    setAccountOpen(false);
     try { setPost((await api<{ post: Post }>(`/api/board/posts/${postId}`)).post); setDraft(null); }
     catch (cause) { setError(errorText(cause)); }
   }
@@ -150,24 +167,28 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin, onLogout
       anonymous: draft.poll.anonymous, multiple: draft.poll.multiple,
       closesEpoch: draft.poll.closes } : undefined;
     const body = { board: draft.board, categoryId: draft.categoryId, title: draft.title, body: draft.body,
-      assetCode: boardInfo(draft.board)?.allow_asset ? draft.assetCode.trim() : "", anonymous: draft.anonymous, pinned: draft.pinned, notice: draft.notice,
+      assetCode: boardInfo(draft.board)?.allow_asset ? draft.assetCode.trim() : "", anonymous: draft.anonymous, secret: draft.secret, pinned: draft.pinned, notice: draft.notice,
       attachments: draft.uploads.map((item) => item.attachmentId), links: draft.links.filter((link) => link.url.trim()), removeAttachments: draft.remove, ...(poll ? { poll } : {}),
       ...(draft.news && !draft.postId ? { news: { eventType: draft.news.eventType, severity: Math.round(Number(draft.news.severity)), durationSeconds: Math.round(Number(draft.news.minutes) * 60),
         targetPrice: draft.news.targetPrice.trim() ? Math.round(Number(draft.news.targetPrice)) : null, publishEpoch: draft.news.publish } } : {}) };
-    if (draft.postId) void write(`/api/board/posts/${draft.postId}/edit`, body, async () => { await open(draft.postId!); await loadList(); });
-    else void write<{ postId: number }>("/api/board/posts", body, async (result) => { setPage(1); await loadList(); await open(result.postId); });
+    if (draft.postId) void write(`/api/board/posts/${draft.postId}/edit`, body, async () => { await open(draft.postId!); setReloadKey((key) => key + 1); });
+    // A new post shows at the top of the board it went to (which may not be the one on screen).
+    else void write<{ postId: number }>("/api/board/posts", body, async (result) => {
+      setDraft(null); setBoard(draft.board); setCategory(null); setAsset(""); setSearch(""); setTerm(""); setAdminPostsBoard(""); setPage(1);
+      setPendingOpen(result.postId); setReloadKey((key) => key + 1);
+    });
   }
 
   function submitComment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!post) return;
-    void write(`/api/board/posts/${post.post_id}/comments`, { body: comment, anonymous: commentAnonymous }, async () => { setComment(""); await open(post.post_id); await loadList(); });
+    void write(`/api/board/posts/${post.post_id}/comments`, { body: comment, anonymous: commentAnonymous, secret: commentSecret }, async () => { setComment(""); await open(post.post_id); await loadList(); });
   }
 
   function submitReply(event: FormEvent<HTMLFormElement>, parentId: number) {
     event.preventDefault();
     if (!post) return;
-    void write(`/api/board/posts/${post.post_id}/comments`, { body: reply, anonymous: commentAnonymous, parentId }, async () => { setReply(""); setReplyTo(null); await open(post.post_id); await loadList(); });
+    void write(`/api/board/posts/${post.post_id}/comments`, { body: reply, anonymous: commentAnonymous, secret: commentSecret, parentId }, async () => { setReply(""); setReplyTo(null); await open(post.post_id); await loadList(); });
   }
 
   // 좋아요/싫어요: the same button again cancels, the other one switches.
@@ -193,12 +214,13 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin, onLogout
   function startDraft(existing?: Post) {
     if (!user) { onLogin(); return; }
     setPost(null);
+    setAccountOpen(false);
     const first = writable[0]?.board_id ?? "";
     const target = board && writable.some((item) => item.board_id === board) ? board : first;
     const empty = { uploads: [], links: [], existing: [], remove: [], poll: null, news: null };
     setDraft(existing
-      ? { ...empty, postId: existing.post_id, board: existing.board, categoryId: existing.category_id, title: existing.title, body: existing.body, assetCode: existing.asset_code ?? "", anonymous: existing.anonymous === 1, pinned: existing.pinned === 1, notice: existing.notice === 1, existing: existing.attachments }
-      : { ...empty, postId: null, board: target, categoryId: target === board ? category : null, title: "", body: "", assetCode: asset, anonymous: false, pinned: false, notice: false });
+      ? { ...empty, postId: existing.post_id, board: existing.board, categoryId: existing.category_id, title: existing.title, body: existing.body, assetCode: existing.asset_code ?? "", anonymous: existing.anonymous === 1, secret: existing.secret === 1, pinned: existing.pinned === 1, notice: existing.notice === 1, existing: existing.attachments }
+      : { ...empty, postId: null, board: target, categoryId: target === board ? category : null, title: "", body: "", assetCode: asset, anonymous: defaults.anonymous, secret: defaults.secret, pinned: false, notice: false });
   }
 
   // Each file goes up on its own (10MB at most); the post then refers to the returned ids.
@@ -242,7 +264,7 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin, onLogout
         {item.mine
           ? <button type="button" className="danger" onClick={() => { if (window.confirm("댓글을 삭제할까요?")) void write(`/api/board/comments/${item.comment_id}/delete`, {}, async () => { await open(post!.post_id); await loadList(); }); }}>삭제</button>
           : <button type="button" disabled={closed} onClick={() => reportTarget({ commentId: item.comment_id })}>신고</button>}</p>
-      <p className="board-comment-body">{item.body}</p>
+      <p className={item.locked ? "board-comment-body board-locked" : "board-comment-body"}>{item.locked ? `🔒 ${item.body}` : item.body}</p>
       <div className="board-comment-actions">
         {reactions(item.like_count, item.dislike_count, item.my_reaction, `/api/board/comments/${item.comment_id}/react`, true)}
         <button type="button" className="board-reply-button" disabled={closed} title={closed ? `${opensText}부터 쓸 수 있습니다` : undefined} onClick={() => { if (!user) { onLogin(); return; } setReplyTo(thread); setReply(""); }}>답글</button>
@@ -251,25 +273,30 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin, onLogout
   }
 
   const pages = list ? Math.max(1, Math.ceil(list.total / list.pageSize)) : 1;
+  const rankPosts = [...(list?.posts ?? [])].filter((item) => item.like_count > 0).sort((a, b) => b.like_count - a.like_count || b.view_count - a.view_count).slice(0, 8);
+  const popularPosts = rankPosts.slice(0, 3);
   // Posts, comments and reports record the writer's IP, announced to start on this date.
   const opens = list?.writeOpensEpoch ?? 0;
   const closed = Date.now() / 1000 < opens;
   const opensText = opens ? new Intl.DateTimeFormat("ko-KR", { dateStyle: "long" }).format(opens * 1000) : "";
   const writable = boards.filter((item) => admin || (!item.admin_only && !item.suspension));
 
-  const Shell = asPage ? "main" : "div";
-  return <Shell className={asPage ? "board-page" : "modal-backdrop"} onMouseDown={asPage ? undefined : (event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className="board-modal" {...(asPage ? { "aria-labelledby": "board-title" } : { role: "dialog", "aria-modal": true, "aria-labelledby": "board-title" })}>
-      <div className="board-head">
-        <div><p className="eyebrow">BOARD{user ? "" : " · 읽기 전용"}</p><h2 id="board-title">{adminPostsBoard ? `게시물 관리 · ${boardInfo(adminPostsBoard)?.name ?? adminPostsBoard}` : "게시판"}</h2></div>
-        <div className="board-head-actions">
-          {adminPostsBoard && <button type="button" onClick={() => { setAdminPostsBoard(""); setBoard(""); setCategory(null); setPage(1); setPost(null); }}>게시판 목록</button>}
-          {admin && <button type="button" disabled={busy} aria-expanded={manageBoards} onClick={() => { setManageBoards((value) => !value); setBoardDraft(null); setEditingBoardId(null); }}>{manageBoards ? "게시판 관리 닫기" : "게시판 관리"}</button>}
-          <button type="button" className="board-primary" disabled={closed} title={closed ? `${opensText}부터 쓸 수 있습니다` : undefined} onClick={() => startDraft()}>{closed ? `${opensText}부터 글쓰기` : user ? "글쓰기" : "로그인하고 글쓰기"}</button>
+  const writeButton = <button type="button" className="board-primary plaza-write" disabled={closed} title={closed ? `${opensText}부터 쓸 수 있습니다` : undefined} onClick={() => startDraft()}>{closed ? `${opensText}부터 글쓰기` : user ? "글쓰기" : "로그인하고 글쓰기"}</button>;
+
+  return <main className="board-page">
+    <section className="board-modal" aria-labelledby="board-title">
+      <header className="plaza-top">
+        <a className="plaza-logo" href="/board" aria-label="광장 · INAZINA 커뮤니티 첫 화면" onClick={(event) => { event.preventDefault(); setBoard(""); setCategory(null); setAsset(""); setSearch(""); setTerm(""); setPage(1); setAdminPostsBoard(""); setDraft(null); setPost(null); history.replaceState(null, "", "/board"); }}><PlazaLogo /><b id="board-title">광장</b><small>INAZINA 커뮤니티</small></a>
+          <form className="board-search plaza-search" onSubmit={(event) => { event.preventDefault(); setTerm(search.trim()); setPage(1); }}>
+            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="제목·내용 검색" aria-label="게시글 검색" />
+            <button type="submit">검색</button>
+          </form>
+        <nav className="plaza-util" aria-label="계정">
+          {user ? <><span className="plaza-user">{user.nickname}</span><button type="button" aria-expanded={accountOpen} onClick={() => { setAccountOpen((open) => !open); setPost(null); setDraft(null); }}>계정설정</button></> : <button type="button" onClick={onLogin}>로그인</button>}
           {user && <button type="button" onClick={onLogout}>로그아웃</button>}
-          {asPage ? <a className="board-back" href="/">← HTS로</a> : <button type="button" onClick={onClose}>닫기</button>}
-        </div>
-      </div>
+          <a href="/">HTS</a>
+        </nav>
+      </header>
       {closed && <p className="board-notice">게시판은 지금 읽기만 할 수 있습니다. 글쓰기·댓글·신고는 개인정보 처리방침 개정에 따라 <b>{opensText}</b>부터 열립니다. 작성·신고 시 접속 IP가 1년간 보관됩니다.</p>}
       {error && <p className="board-error" role="alert">{error}</p>}
       {admin && manageBoards && <section className="board-manager" aria-label="게시판 종류 관리">
@@ -297,27 +324,13 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin, onLogout
           </div>
         </li>)}</ul>
       </section>}
-      <div className="board-body">
-        <aside className="board-list">
+      <nav className="plaza-boards plaza-gnb" aria-label="게시판 목록">
           <div className="board-tabs" role="tablist" aria-label="게시판">{[{ board_id: "", name: "전체" }, ...boards].map((item) => <button key={item.board_id || "all"} type="button" role="tab" aria-selected={board === item.board_id} className={board === item.board_id ? "active" : ""} onClick={() => { setBoard(item.board_id); setAdminPostsBoard(""); setCategory(null); setPage(1); if (!boardInfo(item.board_id)?.allow_asset) setAsset(""); }}>{boardInfo(item.board_id)?.secret ? "🔒 " : ""}{item.name}</button>)}</div>
-          {current?.description && <p className="board-description">{current.description}</p>}
-          {current?.secret ? <p className="board-description">🔒 허용된 사람만 보는 비밀게시판입니다.</p> : null}
-          {current?.suspension && <p className="board-notice">⛔ {current.suspension} 지금은 읽기만 할 수 있습니다.</p>}
-          {current && current.categories.length > 0 && <div className="board-categories" aria-label="카테고리">{[{ category_id: 0, name: "전체" }, ...current.categories].map((item) => <button key={item.category_id} type="button" aria-pressed={(category ?? 0) === item.category_id} className={(category ?? 0) === item.category_id ? "active" : ""} onClick={() => { setCategory(item.category_id || null); setPage(1); }}>{item.name}</button>)}</div>}
-          <form className="board-search" onSubmit={(event) => { event.preventDefault(); setTerm(search.trim()); setPage(1); }}>
-            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="제목·내용 검색" aria-label="게시글 검색" />
-            <button type="submit">검색</button>
-          </form>
-          {asset && <p className="board-filter">종목 <b>{asset}</b> 토론만 보는 중 <button type="button" onClick={() => { setAsset(""); setPage(1); }}>해제</button></p>}
-          <ul>{list?.posts.map((item) => <li key={item.post_id}><button type="button" className={post?.post_id === item.post_id ? "board-item active" : "board-item"} onClick={() => void open(item.post_id)}>
-            <span className="board-item-title">{item.notice ? <em className="board-notice-label">[공지]</em> : item.pinned && item.board === board ? <em className="board-pin">고정</em> : null}{(!board || item.board !== board) && <em className="board-kind">{item.board_name}</em>}{item.category_name && <em className="board-kind">{item.category_name}</em>}{item.asset_code && <em className="board-kind">{item.asset_code}</em>}{item.news_status ? <em className="board-news-label">📰{item.news_status === "scheduled" && item.news_publish_epoch ? ` 예약 ${when(item.news_publish_epoch)}` : item.news_status === "failed" ? " 게시 실패" : ""}</em> : null}{item.title}{item.has_attachments ? <span className="board-icon" title="첨부 있음"> 📎</span> : null}{item.has_poll ? <span className="board-icon" title="설문 있음"> 📊</span> : null}{item.comment_count > 0 && <small> [{item.comment_count}]</small>}</span>
-            <span className="board-item-meta">{authorView(item.author, item.author_admin)} · {when(item.created_epoch)} · 조회 {count(item.view_count)} · 👍 {count(item.like_count)} · 👎 {count(item.dislike_count)}</span>
-          </button></li>)}</ul>
-          {list && !list.posts.length && <p className="board-empty">{term ? "검색 결과가 없습니다." : "아직 글이 없습니다."}</p>}
-          {pages > 1 && <div className="board-pages"><button type="button" disabled={page <= 1} onClick={() => setPage(page - 1)}>이전</button><span>{page} / {pages}</span><button type="button" disabled={page >= pages} onClick={() => setPage(page + 1)}>다음</button></div>}
-        </aside>
-
-        <div className="board-main">
+      </nav>
+      <div className="board-body plaza-body">
+        <div className="plaza-center">
+          {user && accountOpen && <BoardAccount user={user} onClose={() => setAccountOpen(false)} onChange={(next) => { setDefaults(next); setCommentAnonymous(next.commentAnonymous); setCommentSecret(next.commentSecret); }} />}
+          {(draft || post) && <div className="board-main" ref={mainRef}>
           {draft && <form className="board-form" onSubmit={submitDraft}>
             <h3>{draft.postId ? "글 수정" : "새 글"}</h3>
             <div className="board-form-row">
@@ -328,6 +341,7 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin, onLogout
             <label>제목<input value={draft.title} maxLength={100} required onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></label>
             <label>내용<textarea value={draft.body} maxLength={10000} required rows={12} onChange={(event) => setDraft({ ...draft, body: event.target.value })} /></label>
             <label className="board-check"><input type="checkbox" checked={draft.anonymous} onChange={(event) => setDraft({ ...draft, anonymous: event.target.checked })} />익명으로 표시 <small>작성자 정보와 접속 IP는 관리 목적으로 기록됩니다.{admin ? " 관리자가 쓴 글에는 익명이어도 관리자 표시가 붙습니다." : ""}</small></label>
+            <label className="board-check"><input type="checkbox" checked={draft.secret} onChange={(event) => setDraft({ ...draft, secret: event.target.checked })} />🔒 비밀글 <small>본문은 나와 관리자만 볼 수 있고, 제목은 목록에 보입니다.</small></label>
             <fieldset className="board-extras">
               <legend>첨부 · 설문</legend>
               {draft.existing.length > 0 && <ul className="board-attach-list">{draft.existing.map((item) => <li key={item.attachment_id}><label className="board-check"><input type="checkbox" checked={draft.remove.includes(item.attachment_id)} onChange={(event) => setDraft({ ...draft, remove: event.target.checked ? [...draft.remove, item.attachment_id] : draft.remove.filter((id) => id !== item.attachment_id) })} />지우기</label><span>{item.kind === "file" ? "📎" : "🔗"} {item.name}</span></li>)}</ul>}
@@ -369,6 +383,7 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin, onLogout
           </form>}
 
           {!draft && post && <article className="board-post">
+            <button type="button" className="board-post-close" aria-label="글 닫기" onClick={() => setPost(null)}>닫기 ✕</button>
             <p className="board-post-kind">{post.notice ? <b className="board-notice-label">[공지] </b> : null}{post.news ? <b className="board-news-label">📰 뉴스 </b> : null}{post.board_name}{post.category_name ? ` · ${post.category_name}` : ""}{post.asset_code ? ` · ${post.asset_code}` : ""}{post.pinned ? " · 고정" : ""}</p>
             <h3>{post.title}</h3>
             <p className="board-post-meta">{authorView(post.author, post.author_admin)} · {when(post.created_epoch)}{post.updated_epoch > post.created_epoch ? ` (수정 ${when(post.updated_epoch)})` : ""} · 조회 {count(post.view_count)}</p>
@@ -376,7 +391,7 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin, onLogout
               시장 영향 · {post.news.event_type === "good" ? "호재" : "악재"} {post.news.severity}% · {post.news.asset_code || "시장 전체"} · {Math.round((post.news.duration_seconds ?? 0) / 60)}분{post.news.target_price ? ` · 목표가 ${count(post.news.target_price)}` : ""}
               {" · "}{NEWS_STATUS[post.news.status]}{post.news.status === "scheduled" ? ` (${when(post.news.publish_epoch)} 게시)` : ""}{post.news.error ? ` — ${post.news.error}` : ""}
               <small>뉴스를 지우거나 숨기면 이후 영향이 멈춥니다(이미 움직인 가격은 그대로).</small></p>}
-            <div className="board-post-body">{post.body}</div>
+            <div className={post.locked ? "board-post-body board-locked" : "board-post-body"}>{post.locked ? <>🔒 {post.body}</> : post.body}</div>
             {post.attachments.length > 0 && <ul className="board-attachments" aria-label="첨부">{post.attachments.map((item) => <li key={item.attachment_id}>{item.kind === "file"
               ? <a href={`/api/board/files/${item.attachment_id}`} download>📎 {item.name} <small>{bytes(item.size)}</small></a>
               : <a href={item.url ?? "#"} target="_blank" rel="noopener noreferrer nofollow">🔗 {item.name}</a>}</li>)}</ul>}
@@ -430,20 +445,59 @@ export function BoardPanel({ user, initialAsset = "", onClose, onLogin, onLogout
                   {post.comments.filter((child) => child.parent_id === item.comment_id).map((child) => <li key={child.comment_id}>{commentView(child)}</li>)}
                   {replyTo === item.comment_id && <li><form className="board-comment-form" onSubmit={(event) => submitReply(event, item.comment_id)}>
                     <textarea value={reply} maxLength={1000} required rows={2} autoFocus placeholder="답글을 입력하세요" onChange={(event) => setReply(event.target.value)} />
-                    <div><label className="board-check"><input type="checkbox" checked={commentAnonymous} onChange={(event) => setCommentAnonymous(event.target.checked)} />익명</label><span><button type="button" onClick={() => { setReplyTo(null); setReply(""); }}>취소</button> <button className="board-primary" disabled={busy || !reply.trim()}>답글 등록</button></span></div>
+                    <div><label className="board-check"><input type="checkbox" checked={commentAnonymous} onChange={(event) => setCommentAnonymous(event.target.checked)} />익명</label><label className="board-check"><input type="checkbox" checked={commentSecret} onChange={(event) => setCommentSecret(event.target.checked)} />🔒 비밀</label><span><button type="button" onClick={() => { setReplyTo(null); setReply(""); }}>취소</button> <button className="board-primary" disabled={busy || !reply.trim()}>답글 등록</button></span></div>
                   </form></li>}
                 </ul>}
               </li>)}</ul>
               {closed ? <p className="board-empty">댓글은 {opensText}부터 쓸 수 있습니다.</p> : user ? <form className="board-comment-form" onSubmit={submitComment}>
                 <textarea value={comment} maxLength={1000} required rows={3} placeholder="댓글을 입력하세요" onChange={(event) => setComment(event.target.value)} />
-                <div><label className="board-check"><input type="checkbox" checked={commentAnonymous} onChange={(event) => setCommentAnonymous(event.target.checked)} />익명</label><button className="board-primary" disabled={busy || !comment.trim()}>댓글 등록</button></div>
+                <div><label className="board-check"><input type="checkbox" checked={commentAnonymous} onChange={(event) => setCommentAnonymous(event.target.checked)} />익명</label><label className="board-check"><input type="checkbox" checked={commentSecret} onChange={(event) => setCommentSecret(event.target.checked)} />🔒 비밀</label><button className="board-primary" disabled={busy || !comment.trim()}>댓글 등록</button></div>
               </form> : <button type="button" className="board-login" onClick={onLogin}>로그인하고 댓글 쓰기</button>}
             </section>
           </article>}
 
-          {!draft && !post && <p className="board-empty board-placeholder">왼쪽 목록에서 글을 고르세요.</p>}
+          </div>}
+          <section className="board-list plaza-gallery" aria-label="글 목록">
+            <div className="plaza-gall-head">
+              <div><h2>{adminPostsBoard ? `게시물 관리 · ${boardInfo(adminPostsBoard)?.name ?? adminPostsBoard}` : `${current?.name ?? "전체"} 갤러리`}</h2>{current?.description && <p>{current.description}</p>}</div>
+              <div className="board-head-actions">
+          {adminPostsBoard && <button type="button" onClick={() => { setAdminPostsBoard(""); setBoard(""); setCategory(null); setPage(1); setPost(null); }}>게시판 목록</button>}
+          {admin && <button type="button" disabled={busy} aria-expanded={manageBoards} onClick={() => { setManageBoards((value) => !value); setBoardDraft(null); setEditingBoardId(null); }}>{manageBoards ? "게시판 관리 닫기" : "게시판 관리"}</button>}
+                {writeButton}
+              </div>
+            </div>
+          
+          {current?.secret ? <p className="board-description">🔒 허용된 사람만 보는 비밀게시판입니다.</p> : null}
+          {current?.suspension && <p className="board-notice">⛔ {current.suspension} 지금은 읽기만 할 수 있습니다.</p>}
+          {current && current.categories.length > 0 && <div className="board-categories" aria-label="카테고리">{[{ category_id: 0, name: "전체" }, ...current.categories].map((item) => <button key={item.category_id} type="button" aria-pressed={(category ?? 0) === item.category_id} className={(category ?? 0) === item.category_id ? "active" : ""} onClick={() => { setCategory(item.category_id || null); setPage(1); }}>{item.name}</button>)}</div>}
+          {asset && <p className="board-filter">종목 <b>{asset}</b> 토론만 보는 중 <button type="button" onClick={() => { setAsset(""); setPage(1); }}>해제</button></p>}
+          <div className="board-table-scroll"><table className="board-post-table"><thead><tr><th>번호</th><th>말머리</th><th>제목</th><th>글쓴이</th><th>작성일</th><th>조회</th><th>추천</th></tr></thead><tbody>{list?.posts.map((item) => <tr key={item.post_id} className={post?.post_id === item.post_id ? "selected" : ""} onClick={() => toggle(item.post_id)}>
+            <td className="board-number">{item.notice ? "공지" : item.post_id}</td>
+            <td className="board-category-cell">{item.category_name ?? item.asset_code ?? (item.news_status ? "뉴스" : "일반")}</td>
+            <td><button type="button" className="board-title-button" onClick={(event) => { event.stopPropagation(); toggle(item.post_id); }}>
+              {item.notice ? <em className="board-notice-label">[공지]</em> : item.pinned && item.board === board ? <em className="board-pin">고정</em> : null}{popularPosts.some((popular) => popular.post_id === item.post_id) && <em className="board-popular-label">개념글</em>}{(!board || item.board !== board) && <em className="board-kind">{item.board_name}</em>}{item.asset_code && <em className="board-kind">{item.asset_code}</em>}{item.news_status ? <em className="board-news-label">뉴스{item.news_status === "scheduled" && item.news_publish_epoch ? ` · 예약 ${when(item.news_publish_epoch)}` : item.news_status === "failed" ? " · 게시 실패" : ""}</em> : null}{item.secret ? <span className="board-lock" title="비밀글">🔒 </span> : null}<span className="board-title-text">{item.title}</span>{item.comment_count > 0 && <small className="board-comment-count">[{item.comment_count}]</small>}{item.has_attachments ? <span className="board-icon" title="첨부 있음"> 📎</span> : null}{item.has_poll ? <span className="board-icon" title="설문 있음"> 📊</span> : null}
+            </button></td>
+            <td className="board-author-cell">{authorView(item.author, item.author_admin)}</td><td className="board-date-cell">{when(item.created_epoch)}</td><td>{count(item.view_count)}</td><td>{count(item.like_count)}</td>
+          </tr>)}</tbody></table></div>
+          {list && !list.posts.length && <p className="board-empty">{term ? "검색 결과가 없습니다." : "아직 글이 없습니다."}</p>}
+            <div className="plaza-gall-foot">
+          {pages > 1 && <nav className="board-pages" aria-label="페이지">{(() => {
+            const first = Math.floor((page - 1) / 10) * 10 + 1, last = Math.min(pages, first + 9);
+            return <>{first > 1 && <button type="button" onClick={() => setPage(first - 1)}>이전</button>}
+              {Array.from({ length: last - first + 1 }, (_, index) => first + index).map((number) => <button key={number} type="button" aria-current={number === page ? "page" : undefined} onClick={() => setPage(number)}>{number}</button>)}
+              {last < pages && <button type="button" onClick={() => setPage(last + 1)}>다음</button>}</>;
+          })()}</nav>}
+              {writeButton}
+            </div>
+          </section>
         </div>
+        <aside className="plaza-side" aria-label="실시간 인기글">
+          <section className="plaza-me">{user ? <><b>{user.nickname}</b><small>글쓰기와 댓글을 쓸 수 있어요</small><button type="button" onClick={() => { setAccountOpen(true); setPost(null); setDraft(null); window.scrollTo({ top: 0, behavior: "smooth" }); }}>계정설정</button></> : <><b>광장에 오신 것을 환영해요</b><small>로그인하면 글과 댓글을 쓸 수 있어요.</small><button type="button" className="board-primary" onClick={onLogin}>로그인</button></>}</section>
+          <section className="plaza-rank plaza-trend"><h3>실시간 검색어</h3>{list?.trending?.length ? <ol>{list.trending.map((item) => <li key={item.term}><button type="button" onClick={() => { setSearch(item.term); setTerm(item.term); setPage(1); setPost(null); }}><i>{item.rank}</i><span>{item.term}</span><small className={item.change === null ? "new" : item.change > 0 ? "up" : item.change < 0 ? "down" : ""}>{item.change === null ? "NEW" : item.change > 0 ? `▲${item.change}` : item.change < 0 ? `▼${-item.change}` : "–"}</small></button></li>)}</ol> : <p className="board-empty">아직 검색 기록이 없습니다.</p>}</section>
+          <section className="plaza-rank"><h3>실시간 인기글</h3>{rankPosts.length ? <ol>{rankPosts.map((item, index) => <li key={item.post_id}><button type="button" onClick={() => void open(item.post_id)}><i>{index + 1}</i><span>{item.title}</span>{item.comment_count > 0 && <small>[{item.comment_count}]</small>}</button></li>)}</ol> : <p className="board-empty">아직 추천받은 글이 없습니다.</p>}</section>
+        </aside>
       </div>
     </section>
-  </Shell>;
+    <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
+  </main>;
 }
