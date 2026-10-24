@@ -64,6 +64,44 @@ class CurrencyDefaultConfigTests(unittest.TestCase):
             "SELECT 1 FROM sqlite_master WHERE type='index' AND name='currency_migration_probe_amount'"
         ).fetchone())
 
+    def test_legacy_default_is_removed_from_a_table_other_triggers_name(self):
+        conn = self.db.currency.conn
+        conn.execute("CREATE TABLE currency_migration_probe (id INTEGER PRIMARY KEY, "
+                     "quote_currency TEXT NOT NULL DEFAULT 'NWX', amount INTEGER NOT NULL)")
+        conn.execute("CREATE TABLE currency_migration_watcher (id INTEGER PRIMARY KEY, probe_id INTEGER)")
+        conn.execute("CREATE TRIGGER currency_migration_watch AFTER INSERT ON currency_migration_watcher "
+                     "BEGIN SELECT amount FROM currency_migration_probe WHERE id=NEW.probe_id; END")
+        conn.execute("INSERT INTO currency_migration_probe(amount) VALUES (7)")
+        conn.commit()
+        self.db.currency._remove_legacy_currency_defaults(
+            {"currency_migration_probe": {"quote_currency"}}
+        )
+        self.assertEqual(conn.execute("SELECT amount FROM currency_migration_probe").fetchone()[0], 7)
+        self.assertIsNone(conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='__currency_migrate_currency_migration_probe'"
+        ).fetchone())
+
+    def test_copy_left_by_an_interrupted_rebuild_is_restored(self):
+        conn = self.db.currency.conn
+        # The original was dropped and recreated empty; the rows survived only in the copy.
+        conn.execute("CREATE TABLE currency_migration_probe (id INTEGER PRIMARY KEY, "
+                     "quote_currency TEXT, amount INTEGER NOT NULL)")
+        conn.execute("CREATE INDEX currency_migration_probe_amount ON currency_migration_probe(amount)")
+        conn.execute('CREATE TABLE "__currency_migrate_currency_migration_probe" (id INTEGER PRIMARY KEY, '
+                     "quote_currency TEXT, amount INTEGER NOT NULL)")
+        conn.execute('INSERT INTO "__currency_migrate_currency_migration_probe"(amount) VALUES (7)')
+        conn.commit()
+        self.db.currency._remove_legacy_currency_defaults(
+            {"currency_migration_probe": {"quote_currency"}}
+        )
+        self.assertEqual(conn.execute("SELECT amount FROM currency_migration_probe").fetchone()[0], 7)
+        self.assertIsNone(conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name='__currency_migrate_currency_migration_probe'"
+        ).fetchone())
+        self.assertIsNotNone(conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index' AND name='currency_migration_probe_amount'"
+        ).fetchone())
+
     def test_initial_currency_catalog_can_be_configured(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "initial_currency_catalog.json"
