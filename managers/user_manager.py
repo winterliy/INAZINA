@@ -145,7 +145,7 @@ class UserManager:
         return cursor.rowcount == 1
 
     @staticmethod
-    def _debit_source(conn, user_id, account_number, amount):
+    def _debit_source(conn, user_id, account_number, amount, currency=None):
         from database.fund_accounting import account, change_cash
         fund = account(conn, user_id)
         if fund:
@@ -153,42 +153,64 @@ class UserManager:
                 return False
             change_cash(conn, user_id, -amount, 'order_reserve')
             return True
+        from functions.money import currency_precision, to_minor_units
+        from managers.currency_manager import CurrencyManager, SCALE
         if account_number is None:
+            currency = currency or CurrencyManager.home(conn, user_id)
+            minor = to_minor_units(amount, currency_precision(conn, currency))
             cursor = conn.execute(
-                "UPDATE users.users SET cash = cash - ? "
-                f"WHERE user_id = ? AND {ACTIVE_OR_TREASURY} AND (cash >= ? OR {IS_TREASURY})",
-                (amount, user_id, amount),
+                "UPDATE users.users SET cash_minor = cash_minor - ? "
+                f"WHERE user_id = ? AND {ACTIVE_OR_TREASURY} AND (cash_minor >= ? OR {IS_TREASURY})",
+                (minor, user_id, minor),
             )
         else:
+            row = conn.execute("SELECT quote_currency,account_type FROM accounts.accounts "
+                               "WHERE account_number=? AND user_id=?", (account_number,user_id)).fetchone()
+            currency = currency or (row['quote_currency'] if row else None) or CurrencyManager.home(conn,user_id)
+            places = currency_precision(conn, currency)
+            minor = to_minor_units(amount, places)
+            quantum = SCALE // (10 ** places)
             now = time.time()
             stamp = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
             cursor = conn.execute(
-                "UPDATE accounts.accounts SET balance_units = balance_units - CAST(ROUND(? * 1000000) AS INTEGER), "
-                "principal = MAX(0, COALESCE(principal, 0) - ?), "
+                "UPDATE accounts.accounts SET balance_minor_units=balance_minor_units-?, "
+                "balance_units=balance_units-?, principal = MAX(0, COALESCE(principal, 0) - ?), "
                 "last_payment_epoch = ?, last_payment = ? "
-                "WHERE account_number = ? AND user_id = ? AND balance >= ?",
-                (amount, amount, now, stamp, account_number, user_id, amount),
+                "WHERE account_number = ? AND user_id = ? AND balance_minor_units >= ?",
+                (minor, minor*quantum, float(amount), now, stamp, account_number, user_id, minor),
             )
         return cursor.rowcount == 1
 
     @staticmethod
-    def _credit_source(conn, user_id, account_number, amount, *, event='settlement', reference=None):
+    def _credit_source(conn, user_id, account_number, amount, *, event='settlement', reference=None,
+                       currency=None):
         if amount <= 0:
             return
         from database.fund_accounting import account, change_cash
         if account(conn, user_id):
             change_cash(conn, user_id, amount, event, reference)
             return
+        from functions.money import currency_precision, to_minor_units
+        from managers.currency_manager import CurrencyManager, SCALE
         if account_number is None:
-            conn.execute("UPDATE users.users SET cash = cash + ? WHERE user_id = ?", (amount, user_id))
+            currency = currency or CurrencyManager.home(conn, user_id)
+            minor = to_minor_units(amount, currency_precision(conn, currency))
+            conn.execute("UPDATE users.users SET cash_minor = cash_minor + ? WHERE user_id = ?", (minor, user_id))
         else:
+            row = conn.execute("SELECT quote_currency FROM accounts.accounts "
+                               "WHERE account_number=? AND user_id=?", (account_number,user_id)).fetchone()
+            currency = currency or (row['quote_currency'] if row else None) or CurrencyManager.home(conn,user_id)
+            places = currency_precision(conn, currency)
+            minor = to_minor_units(amount, places)
+            quantum = SCALE // (10 ** places)
             now = time.time()
             stamp = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
             conn.execute(
-                "UPDATE accounts.accounts SET balance_units = balance_units + CAST(ROUND(? * 1000000) AS INTEGER), "
+                "UPDATE accounts.accounts SET balance_minor_units=balance_minor_units+?, "
+                "balance_units=balance_units+?, "
                 "principal = COALESCE(principal, 0) + ?, last_payment_epoch = ?, "
                 "last_payment = ? WHERE account_number = ? AND user_id = ?",
-                (amount, amount, now, stamp, account_number, user_id),
+                (minor, minor*quantum, float(amount), now, stamp, account_number, user_id),
             )
 
     @staticmethod

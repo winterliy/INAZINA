@@ -3,11 +3,9 @@ from functions.money import base_currency_code
 
 import time
 from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY
-from functions.money import (round_money, parse_money, round_currency,
-                             parse_currency_money, currency_precision,
+from functions.money import (parse_currency_money, currency_precision,
                              to_minor_units, from_minor_units)
 from managers.market_session_manager import MarketSessionManager
-from managers.order_validation import validate_limit_order
 from managers.rate_manager import RateManager
 
 
@@ -92,14 +90,17 @@ class OrderBookManager:
             return self.option_manager.place_limit_order(
                 user_id, asset_code, side, quantity, limit_price
             )
-        validated, error = validate_limit_order(
-            side, quantity, limit_price,
-            max_quantity=self.MAX_QUANTITY, max_price=self.MAX_LIMIT_PRICE,
-            quantity_label="주문 수량", price_label="지정가 기준 통화",
-        )
-        if error:
-            return False, error
-        side, quantity, limit_price = validated
+        try:
+            with self.db.readonly() as conn:
+                order_asset, _ = self.user_manager._asset_row(conn, asset_code)
+                if not order_asset:
+                    return False, "❌ 존재하지 않는 자산 코드입니다."
+                currency = str(order_asset.get("quote_currency") or base_currency_code(conn))
+                limit_price = parse_currency_money(conn, limit_price, currency, minimum=0)
+                if limit_price <= 0 or limit_price > self.MAX_LIMIT_PRICE:
+                    return False, "❌ 지정가는 0보다 크고 허용 한도 이하여야 합니다."
+        except ValueError as exc:
+            return False, f"❌ {exc}"
 
         interest_error = self.user_manager._settle_user_interest(user_id)
         if interest_error:
@@ -130,6 +131,9 @@ class OrderBookManager:
                     return False, "❌ 자산 가격이 올바르지 않습니다."
                 # This path settles in the user's own currency, which is the instrument's.
                 currency = str(asset.get("quote_currency") or base_currency_code(conn))
+                places = currency_precision(conn, currency)
+                limit_price_minor_units = to_minor_units(limit_price, places)
+                limit_price = from_minor_units(limit_price_minor_units, places)
 
                 wrap_account = funding_account
                 funding_account = None
@@ -177,10 +181,8 @@ class OrderBookManager:
                                 f"{reserved_quantity:,}개, 추가 주문 가능 "
                                 f"{additional_capacity:,}개입니다."
                             )
-                    reserved_cash = limit_price * quantity
-                    reserved_cash_minor_units = to_minor_units(
-                        reserved_cash, currency_precision(conn, currency)
-                    )
+                    reserved_cash_minor_units = limit_price_minor_units * quantity
+                    reserved_cash = from_minor_units(reserved_cash_minor_units, places)
                     if wrap_account is not None:
                         row = conn.execute("SELECT balance FROM accounts.accounts WHERE account_number=? AND user_id=?",
                                            (wrap_account, user_id)).fetchone()
@@ -193,8 +195,8 @@ class OrderBookManager:
                     wallet_watermark = int(conn.execute(
                         "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
                     ).fetchone()[0])
-                    if balance < reserved_cash or not self.user_manager._debit_source(
-                        conn, user_id, funding_account, reserved_cash
+                    if balance < float(reserved_cash) or not self.user_manager._debit_source(
+                        conn, user_id, funding_account, reserved_cash, currency=currency
                     ):
                         return False, (
                             f"❌ 잔액이 부족합니다. 지정가 기준 예치 필요액: "
@@ -246,8 +248,8 @@ class OrderBookManager:
                     "(user_id, asset_code, side, limit_price, quantity, remaining_quantity, "
                     "reserved_cash, funding_account, order_kind, status, created_epoch, updated_epoch, activation_epoch, scheduled_reason, quote_currency, reserved_cash_minor_units) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'asset', ?, ?, ?, ?, ?, ?, ?)",
-                    (user_id, asset_code, side, limit_price, quantity, quantity,
-                     reserved_cash, funding_account, 'scheduled' if deferred else 'open', now, now,
+                    (user_id, asset_code, side, float(limit_price), quantity, quantity,
+                    float(reserved_cash), funding_account, 'scheduled' if deferred else 'open', now, now,
                      state.get('resume_epoch') if deferred else now,
                      state.get('reason') if deferred else None, currency,
                      reserved_cash_minor_units),
@@ -311,13 +313,16 @@ class OrderBookManager:
             opposite_side = "sell" if incoming["side"] == "buy" else "buy"
             comparison = "<=" if incoming["side"] == "buy" else ">="
             sort_order = "ASC" if incoming["side"] == "buy" else "DESC"
+            currency = str(incoming["quote_currency"] or base_currency_code(conn))
+            places = currency_precision(conn, currency)
+            incoming_limit_minor = int(incoming["limit_price_minor_units"])
             maker = conn.execute(
                 "SELECT * FROM assets.market_orders "
                 "WHERE order_kind = 'asset' AND asset_code = ? AND side = ? "
                 "AND status IN ('open', 'partial') "
-                f"AND limit_price {comparison} ? AND user_id <> ? "
-                f"ORDER BY limit_price {sort_order}, created_epoch ASC, order_id ASC LIMIT 1",
-                (incoming["asset_code"], opposite_side, incoming["limit_price"], incoming["user_id"]),
+                f"AND limit_price_minor_units {comparison} ? AND user_id <> ? "
+                f"ORDER BY limit_price_minor_units {sort_order}, created_epoch ASC, order_id ASC LIMIT 1",
+                (incoming["asset_code"], opposite_side, incoming_limit_minor, incoming["user_id"]),
             ).fetchone()
 
             # Finite unissued company/ETF supply is offered by the treasury at
@@ -327,7 +332,8 @@ class OrderBookManager:
                 asset, source = self.user_manager._asset_row(conn, incoming["asset_code"])
                 supply = asset.get("supply") if asset else None
                 primary_remaining = 0
-                reference_price = int(float(asset["price"] or 0)) if asset else 0
+                reference_price_minor = (to_minor_units(asset["price"] or 0, places)
+                                         if asset else 0)
                 if source == "treasury_bond":
                     face_value = int(asset["face_value"])
                     primary_remaining = max(
@@ -337,8 +343,8 @@ class OrderBookManager:
                     )
                     # The issuer's remaining primary offer stays at par. The last
                     # market trade only sets the secondary-market reference price.
-                    reference_price = face_value
-                elif supply is not None and reference_price > 0:
+                    reference_price_minor = to_minor_units(face_value, places)
+                elif supply is not None and reference_price_minor > 0:
                     issued = conn.execute(
                         "SELECT (SELECT COALESCE(SUM(quantity), 0) FROM assets.user_assets "
                         "WHERE asset_code = ?) + (SELECT COALESCE(SUM(quantity), 0) "
@@ -348,9 +354,10 @@ class OrderBookManager:
                     primary_remaining = max(0, int(supply) - int(issued["quantity"] or 0))
                 if (
                     primary_remaining > 0
-                    and reference_price <= int(incoming["limit_price"])
-                    and (not maker or reference_price < int(maker["limit_price"]))
+                    and reference_price_minor <= incoming_limit_minor
+                    and (not maker or reference_price_minor < int(maker["limit_price_minor_units"]))
                 ):
+                    reference_price = from_minor_units(reference_price_minor, places)
                     quantity = min(int(incoming["remaining_quantity"]), primary_remaining)
                     wallet_watermark = int(conn.execute(
                         "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
@@ -371,13 +378,13 @@ class OrderBookManager:
                         ),
                     )
                     self._apply_execution_price(
-                        conn, incoming["asset_code"], reference_price, now
+                        conn, incoming["asset_code"], float(reference_price), now
                     )
                     conn.execute(
                         "INSERT INTO assets.market_trade_history "
                         "(asset_code, side, quantity, price, recorded_epoch) "
                         "VALUES (?, 'buy', ?, ?, ?)",
-                        (incoming["asset_code"], quantity, reference_price, now),
+                        (incoming["asset_code"], quantity, float(reference_price), now),
                     )
                     fill_count += 1
                     filled_quantity += quantity
@@ -392,7 +399,7 @@ class OrderBookManager:
                 int(incoming["remaining_quantity"]), int(maker["remaining_quantity"])
             )
             # Price-time priority: an incoming order executes at the resting maker's price.
-            execution_price = int(maker["limit_price"])
+            execution_price = from_minor_units(int(maker["limit_price_minor_units"]), places)
             wallet_watermark = int(conn.execute(
                 "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
             ).fetchone()[0])
@@ -420,12 +427,12 @@ class OrderBookManager:
                 ),
             )
             self._apply_execution_price(
-                conn, incoming["asset_code"], execution_price, now
+                conn, incoming["asset_code"], float(execution_price), now
             )
             conn.execute(
                 "INSERT INTO assets.market_trade_history "
                 "(asset_code, side, quantity, price, recorded_epoch) VALUES (?, ?, ?, ?, ?)",
-                (incoming["asset_code"], incoming["side"], quantity, execution_price, now),
+                (incoming["asset_code"], incoming["side"], quantity, float(execution_price), now),
             )
             fill_count += 1
             filled_quantity += quantity
@@ -538,6 +545,9 @@ class OrderBookManager:
     def _settle_primary_fill(self, conn, buy_order, asset, source, quantity, price, now):
         buyer_id = str(buy_order["user_id"])
         buyer_account = buy_order["funding_account"]
+        currency = str(buy_order["quote_currency"] or base_currency_code(conn))
+        places = currency_precision(conn, currency)
+        price_minor = to_minor_units(price, places)
         bond_product = conn.execute("SELECT product_type,issuer_code,face_value,quote_currency "
                                     "FROM product.investment WHERE product_code=?",
                                     (buy_order["asset_code"],)).fetchone()
@@ -553,12 +563,14 @@ class OrderBookManager:
                 issue_currency = str(bond_product["quote_currency"] or base_currency_code(conn)).upper()
                 if str(entity["currency"]).upper() == issue_currency:
                     bond_finance = (FinancialManager, issuer, int(bond_product["face_value"]))
-        improvement = (int(buy_order["limit_price"]) - price) * quantity
-        if improvement < 0:
+        improvement_minor = int(buy_order["limit_price_minor_units"]) - price_minor
+        if improvement_minor < 0:
             raise RuntimeError("기준가가 매수 지정가를 초과했습니다.")
-        if improvement:
-            self._credit_reserved_source(conn, buyer_id, buyer_account, improvement, now,
-                                        order_id=buy_order["order_id"])
+        if improvement_minor:
+            self._credit_reserved_source(
+                conn, buyer_id, buyer_account,
+                from_minor_units(improvement_minor * quantity, places), now,
+                currency, order_id=buy_order["order_id"])
         if source == "treasury_bond":
             face_value = int(asset["face_value"])
             principal = face_value * int(quantity)
@@ -594,19 +606,20 @@ class OrderBookManager:
                    average_cost = ((quantity * average_cost) +
                        (excluded.quantity * excluded.average_cost)) / (quantity + excluded.quantity),
                    quantity = quantity + excluded.quantity""",
-            (buyer_id, buy_order["asset_code"], buyer_account, quantity, price),
+            (buyer_id, buy_order["asset_code"], buyer_account, quantity, float(price)),
         )
-        proceeds = int(price * quantity)
+        proceeds_minor = price_minor * quantity
+        proceeds = from_minor_units(proceeds_minor, places)
         product = bond_product
         if source=='company' and conn.execute("SELECT 1 FROM company WHERE company_code=? AND dividend_funding='issuer'",(buy_order['asset_code'],)).fetchone():
             owner=conn.execute('SELECT COALESCE(parent_company_code,company_code) FROM company WHERE company_code=?',(buy_order['asset_code'],)).fetchone()[0]
             conn.execute('INSERT OR IGNORE INTO issuer_cash_accounts(company_code) VALUES (?)',(owner,))
-            cursor=conn.execute('UPDATE issuer_cash_accounts SET balance=balance+? WHERE company_code=? AND balance<=?',(proceeds,owner,self.MAX_LIMIT_PRICE-proceeds))
+            cursor=conn.execute('UPDATE issuer_cash_accounts SET balance=balance+? WHERE company_code=? AND balance<=?',(float(proceeds),owner,self.MAX_LIMIT_PRICE-float(proceeds)))
         elif product and product["product_type"] == "corporate_bond":
             cursor = conn.execute("UPDATE company.company SET capital = capital + ? WHERE company_code = ?",
-                                  (proceeds, product["issuer_code"]))
+                                  (float(proceeds), product["issuer_code"]))
             if conn.execute('SELECT 1 FROM issuer_cash_accounts WHERE company_code=?',(product['issuer_code'],)).fetchone():
-                cash_credit=conn.execute('UPDATE issuer_cash_accounts SET balance=balance+? WHERE company_code=? AND balance<=?',(proceeds,product['issuer_code'],self.MAX_LIMIT_PRICE-proceeds))
+                cash_credit=conn.execute('UPDATE issuer_cash_accounts SET balance=balance+? WHERE company_code=? AND balance<=?',(float(proceeds),product['issuer_code'],self.MAX_LIMIT_PRICE-float(proceeds)))
                 if cash_credit.rowcount!=1:raise ValueError('법인 현금 한도를 초과합니다.')
             if bond_finance:
                 finance, issuer, face_value = bond_finance
@@ -628,9 +641,10 @@ class OrderBookManager:
                 "SELECT quote_currency FROM market_assets WHERE code=? UNION ALL SELECT quote_currency FROM company "
                 "WHERE company_code=? UNION ALL SELECT quote_currency FROM investment WHERE product_code=? LIMIT 1",
                 (buy_order["asset_code"],) * 3).fetchone()
+            proceeds_units = proceeds_minor * (SCALE // (10 ** places))
             CurrencyManager.treasury_receive(
                 conn, CurrencyManager.exchange_treasury(conn, buy_order["asset_code"]),
-                (asset_currency[0] if asset_currency else None) or base_currency_code(conn), proceeds * SCALE)
+                (asset_currency[0] if asset_currency else None) or base_currency_code(conn), proceeds_units)
             cursor = None
         if cursor is not None and cursor.rowcount != 1:
             raise RuntimeError("국고 계정을 찾을 수 없어 발행주식 매수를 취소했습니다.")
@@ -697,26 +711,32 @@ class OrderBookManager:
     def _settle_fill(self, conn, buy_order, sell_order, quantity, execution_price, now):
         buyer_id = str(buy_order["user_id"])
         seller_id = str(sell_order["user_id"])
-        buy_limit = int(buy_order["limit_price"])
+        currency = str(buy_order["quote_currency"] or base_currency_code(conn))
+        places = currency_precision(conn, currency)
+        execution_minor = to_minor_units(execution_price, places)
+        buy_limit_minor = int(buy_order["limit_price_minor_units"])
         buyer_account = buy_order["funding_account"]
 
         # The buyer's full limit amount was reserved at placement. Refund the
         # price improvement when an ask executes below that limit.
-        price_improvement = (buy_limit - execution_price) * quantity
-        if price_improvement < 0:
+        improvement_minor = (buy_limit_minor - execution_minor) * quantity
+        if improvement_minor < 0:
             raise RuntimeError("체결 가격이 매수 지정가를 초과했습니다.")
-        if price_improvement:
-            self._credit_reserved_source(conn, buyer_id, buyer_account, price_improvement, now,
-                                        order_id=buy_order["order_id"])
+        if improvement_minor:
+            self._credit_reserved_source(
+                conn, buyer_id, buyer_account,
+                from_minor_units(improvement_minor, places), now, currency,
+                order_id=buy_order["order_id"])
 
         asset, source = self.user_manager._asset_row(conn, buy_order["asset_code"])
         if source == "treasury_bond":
             basis = self.user_manager.bond_manager.transfer_units(
                 conn, seller_id, buyer_id, buy_order["asset_code"], quantity,
-                execution_price, now,
+                float(execution_price), now,
             )
             taxable_gain = max(0, int(execution_price) * int(quantity) - int(basis))
-            tax = self.user_manager._tax(conn, seller_id, "bond_sale_gain", taxable_gain)
+            tax = self.user_manager._tax(conn, seller_id, "bond_sale_gain", taxable_gain,
+                                         currency=currency)
             proceeds = max(0, int(execution_price) * int(quantity) - tax)
             self.user_manager._credit_source(conn, seller_id, None, proceeds,
                                              event='asset_sale', reference=str(sell_order['order_id']))
@@ -731,7 +751,7 @@ class OrderBookManager:
                    average_cost = ((quantity * average_cost) +
                        (excluded.quantity * excluded.average_cost)) / (quantity + excluded.quantity),
                    quantity = quantity + excluded.quantity""",
-            (buyer_id, buy_order["asset_code"], buyer_account, quantity, execution_price),
+            (buyer_id, buy_order["asset_code"], buyer_account, quantity, float(execution_price)),
         )
 
         positions = conn.execute(
@@ -742,13 +762,13 @@ class OrderBookManager:
         ).fetchall()
         left = quantity
         sold = []
-        taxable_gain = 0
+        taxable_gain_minor = 0
         for position in positions:
             take = min(left, int(position["quantity"]))
             if take <= 0:
                 continue
-            average_cost = int(round(position["average_cost"] or 0))
-            taxable_gain += max(0, execution_price - average_cost) * take
+            average_cost_minor = to_minor_units(position["average_cost"] or 0, places)
+            taxable_gain_minor += max(0, execution_minor - average_cost_minor) * take
             sold.append((position, take))
             left -= take
             if left == 0:
@@ -757,12 +777,14 @@ class OrderBookManager:
             raise RuntimeError("매도 주문의 예약 수량과 실제 보유량이 달라 체결을 취소했습니다.")
 
         total_tax = self.user_manager._tax(
-            conn, seller_id, "stock_sale_gain", taxable_gain
+            conn, seller_id, "stock_sale_gain",
+            from_minor_units(taxable_gain_minor, places), currency=currency
         )
-        tax_left = total_tax
+        total_tax_minor = to_minor_units(total_tax, places)
+        tax_left_minor = total_tax_minor
         quantity_left = quantity
         for position, take in sold:
-            tax_share = tax_left if take == quantity_left else round_money(total_tax * take / quantity)
+            tax_share_minor = tax_left_minor if take == quantity_left else total_tax_minor * take // quantity
             old_quantity = int(position["quantity"])
             if take == old_quantity:
                 cursor = conn.execute(
@@ -777,33 +799,47 @@ class OrderBookManager:
                 )
             if cursor.rowcount != 1:
                 raise RuntimeError("보유 수량이 변경되어 체결을 취소했습니다.")
-            net_proceeds = max(0, execution_price * take - tax_share)
-            from managers.currency_manager import CurrencyManager, SCALE
+            net_proceeds_minor = max(0, execution_minor * take - tax_share_minor)
+            net_proceeds = from_minor_units(net_proceeds_minor, places)
+            from managers.currency_manager import CurrencyManager
             sale_currency = str(sell_order["quote_currency"] or base_currency_code(conn))
             if sale_currency != CurrencyManager.home(conn, seller_id):
                 # The seller lives in another currency (e.g. an order placed from an FX account).
                 from managers.foreign_securities_manager import ForeignSecuritiesManager
-                ForeignSecuritiesManager.credit_units(conn, seller_id, sale_currency, int(round(net_proceeds * SCALE)))
+                ForeignSecuritiesManager.credit_units(
+                    conn, seller_id, sale_currency,
+                    net_proceeds_minor * (1_000_000 // (10 ** places)))
             else:
                 self.user_manager._credit_source(
                     conn, seller_id, position["account_number"], net_proceeds,
-                    event='asset_sale', reference=str(sell_order['order_id'])
+                    event='asset_sale', reference=str(sell_order['order_id']),
+                    currency=sale_currency,
                 )
-            tax_left -= tax_share
+            tax_left_minor -= tax_share_minor
             quantity_left -= take
 
         if self.user_manager._asset_row(conn, sell_order["asset_code"])[1] == "company":
             from managers.corporate_actions_manager import CorporateActionsManager
-            CorporateActionsManager.record_issue_fill(conn, sell_order["order_id"], quantity, execution_price)
+            CorporateActionsManager.record_issue_fill(conn, sell_order["order_id"], quantity, float(execution_price))
             self.user_manager._refresh_max_shareholder(conn, sell_order["asset_code"])
+        seller_proceeds_minor = max(0, execution_minor * quantity - total_tax_minor)
         return {"tax_amount": total_tax,
-                "seller_proceeds": max(0, int(execution_price)*int(quantity)-total_tax)}
+                "seller_proceeds": from_minor_units(seller_proceeds_minor, places)}
 
     @staticmethod
     def _credit_reserved_source(conn, user_id, account_number, amount, now,
                                 currency=None, order_id=None):
-        currency = currency or base_currency_code(conn)
+        if not currency:
+            account_currency = conn.execute(
+                "SELECT quote_currency FROM accounts.accounts WHERE account_number=? AND user_id=?",
+                (account_number, str(user_id)),
+            ).fetchone() if account_number else None
+            from managers.currency_manager import CurrencyManager
+            currency = (account_currency[0] if account_currency else None) or CurrencyManager.home(conn,user_id)
         amount = parse_currency_money(conn, amount, currency, minimum=0)
+        places = currency_precision(conn, currency)
+        amount_minor = to_minor_units(amount, places)
+        amount_units = amount_minor * (1_000_000 // (10 ** places))
         if amount <= 0:
             return
         wallet_watermark = int(conn.execute(
@@ -817,25 +853,24 @@ class OrderBookManager:
             return
         if account_number is None:
             cursor = conn.execute(
-                f"UPDATE users.users SET cash = cash + ? WHERE user_id = ? AND {ACTIVE_OR_TREASURY}",
-                (amount, user_id),
+                f"UPDATE users.users SET cash_minor = cash_minor + ? WHERE user_id = ? AND {ACTIVE_OR_TREASURY}",
+                (amount_minor, user_id),
             )
         else:
             foreign = conn.execute("SELECT quote_currency AS currency_code FROM accounts WHERE account_number=? AND user_id=? AND account_type='currency_saving'",(account_number,str(user_id))).fetchone()
             if foreign:
                 from managers.foreign_securities_manager import ForeignSecuritiesManager
-                from managers.currency_exchange_manager import SCALE
                 ForeignSecuritiesManager.credit_units(
-                    conn,user_id,foreign['currency_code'],int(round(amount*SCALE))
+                    conn,user_id,foreign['currency_code'],amount_units
                 )
                 if order_id is not None:
                     OrderBookManager._link_order_wallet_entries(conn, order_id, wallet_watermark)
                 return
             cursor = conn.execute(
-                "UPDATE accounts.accounts SET balance_units = balance_units + CAST(ROUND(? * 1000000) AS INTEGER), "
+                "UPDATE accounts.accounts SET balance_units = balance_units + ?, "
                 "principal = COALESCE(principal, 0) + ?, last_payment_epoch = ?, "
                 "last_payment = CURRENT_TIMESTAMP WHERE account_number = ? AND user_id = ?",
-                (amount, amount, now, account_number, user_id),
+                (amount_units, float(amount), now, account_number, user_id),
             )
         if cursor.rowcount != 1:
             raise RuntimeError("매수 주문 예치금을 환불할 계좌를 찾지 못했습니다.")
@@ -944,12 +979,16 @@ class OrderBookManager:
             # The user's own (nationality) currency sits in cash/home accounts; others in FX accounts.
             if currency == CurrencyManager.home(conn, order['user_id']):
                 self._credit_reserved_source(conn, order['user_id'], order['funding_account'],
-                                             refund, now, order_id=order["order_id"])
+                                             refund, now, currency,
+                                             order_id=order["order_id"])
             else:
                 from managers.foreign_securities_manager import ForeignSecuritiesManager
+                from functions.money import currency_precision, to_minor_units
+                places = currency_precision(conn, currency)
+                refund_units = to_minor_units(refund, places) * (1_000_000 // (10 ** places))
                 ForeignSecuritiesManager.credit_units(
                     conn, order['user_id'], currency,
-                    int(round(refund * 1_000_000)), order['funding_account']
+                    refund_units, order['funding_account']
                 )
             self._link_order_wallet_entries(conn, order["order_id"], wallet_watermark)
         conn.execute("UPDATE market_orders SET status='rejected', reserved_cash=0, updated_epoch=? WHERE order_id=?",

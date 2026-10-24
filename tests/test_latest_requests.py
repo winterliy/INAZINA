@@ -187,6 +187,76 @@ class LatestRequestsTests(unittest.TestCase):
         )[0]
         self.assertGreater(links,0)
 
+    def test_standard_home_currency_order_uses_minor_units_from_reservation_through_fill(self):
+        self.seed()
+        CatalogManager(self.db).seed_foreign()
+        self.db.currency.execute("UPDATE currencies SET decimal_places=2 WHERE code='USD'")
+        self.db.currency.execute(
+            "INSERT INTO country_currencies(nationality,currency_code) VALUES ('낙원','USD') "
+            "ON CONFLICT(nationality) DO UPDATE SET currency_code='USD'"
+        )
+        with self.db.atomic() as conn:
+            conn.execute("UPDATE users SET nationality='낙원' WHERE user_id='alice'")
+        from managers.order_book_manager import OrderBookManager
+        book=OrderBookManager(self.db,self.bot.user_mgr)
+        success,message=book.place_limit_order('alice','INZUSDST001','buy',1,80.25)
+        self.assertTrue(success,message)
+        resting=self.db.assets.execute_one(
+            "SELECT limit_price_minor_units,reserved_cash_minor_units,status FROM market_orders "
+            "WHERE user_id='alice' AND asset_code='INZUSDST001' ORDER BY order_id DESC LIMIT 1"
+        )
+        self.assertEqual(tuple(resting),(8025,8025,'open'))
+        self.assertTrue(book.cancel_order('alice',int(self.db.assets.execute_one(
+            "SELECT order_id FROM market_orders WHERE user_id='alice' AND asset_code='INZUSDST001' "
+            "ORDER BY order_id DESC LIMIT 1"
+        )[0]))[0])
+
+        success,message=book.place_limit_order('alice','INZUSDST001','buy',1,120.25)
+        self.assertTrue(success,message)
+        fill=self.db.assets.execute_one(
+            "SELECT price_minor_units,gross_minor_units FROM market_execution_events "
+            "WHERE asset_code='INZUSDST001' AND buyer_id='alice' ORDER BY recorded_epoch DESC LIMIT 1"
+        )
+        self.assertGreater(fill['price_minor_units'],0)
+        self.assertEqual(fill['gross_minor_units'],fill['price_minor_units'])
+
+    def test_standard_secondary_fill_splits_decimal_tax_and_seller_proceeds_exactly(self):
+        self.seed()
+        self.db.currency.execute("UPDATE currencies SET decimal_places=2 WHERE code='USD'")
+        self.db.currency.execute(
+            "INSERT INTO country_currencies(nationality,currency_code) VALUES ('낙원','USD') "
+            "ON CONFLICT(nationality) DO UPDATE SET currency_code='USD'"
+        )
+        with self.db.atomic() as conn:
+            conn.execute("UPDATE users SET nationality='낙원' WHERE user_id IN ('alice','bob')")
+            conn.execute(
+                "INSERT INTO assets.market_assets(code,name,exchange_id,price,type,total_supply,quote_currency) "
+                "VALUES ('FXSECOND','FX secondary','FX',100,'stock',NULL,'USD')"
+            )
+            conn.execute(
+                "INSERT INTO assets.user_assets(user_id,asset_code,quantity,average_cost) "
+                "VALUES ('alice','FXSECOND',1,100)"
+            )
+        from managers.order_book_manager import OrderBookManager
+        book=OrderBookManager(self.db,self.bot.user_mgr)
+        success,message=book.place_limit_order('alice','FXSECOND','sell',1,120.25)
+        self.assertTrue(success,message)
+        success,message=book.place_limit_order('bob','FXSECOND','buy',1,130.50)
+        self.assertTrue(success,message)
+        fill=self.db.assets.execute_one(
+            "SELECT execution_type,price_minor_units,gross_minor_units,tax_minor_units,"
+            "seller_proceeds_minor_units,currency_code FROM market_execution_events "
+            "WHERE asset_code='FXSECOND' ORDER BY recorded_epoch DESC LIMIT 1"
+        )
+        self.assertEqual(fill['execution_type'],'secondary')
+        self.assertEqual(fill['price_minor_units'],12025)
+        self.assertEqual(fill['gross_minor_units'],12025)
+        self.assertEqual(fill['currency_code'],'USD')
+        self.assertEqual(fill['tax_minor_units']+fill['seller_proceeds_minor_units'],12025)
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT COUNT(*) FROM assets.user_assets WHERE asset_code='FXSECOND' AND user_id='bob'"
+        )[0],1)
+
     def test_foreign_security_missing_account_and_insufficient_currency_do_not_use_nwx_cash(self):
         self.seed()
         CatalogManager(self.db).seed_foreign()
