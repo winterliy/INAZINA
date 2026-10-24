@@ -3116,7 +3116,14 @@ def admin_company_detail(code):
     with connect_db(timeout=2) as connection:
         ensure_auth_table(connection)
         login = connection.execute("SELECT updated_epoch FROM web_auth_credentials WHERE user_id=?", (account,)).fetchone()
-    return {"account": account, "webLogin": bool(login), "loginId": code, "assets": json.loads(json.dumps(info, default=lambda value: dict(value) if hasattr(value, "keys") else str(value)))}
+        holders = connection.execute(
+            "SELECT a.user_id,COALESCE(u.nickname,a.user_id) AS name,SUM(a.quantity) AS quantity FROM user_assets a "
+            "LEFT JOIN users u ON u.user_id=a.user_id WHERE a.asset_code=? GROUP BY a.user_id "
+            "HAVING SUM(a.quantity)>0 ORDER BY quantity DESC", (code,)).fetchall()
+        total = connection.execute("SELECT total_shares FROM company WHERE company_code=?", (code,)).fetchone()
+    shareholders = {"totalShares": float(total[0] or 0) if total else 0,
+                    "holders": [{"userId": row[0], "name": row[1], "quantity": float(row[2])} for row in holders]}
+    return {"account": account, "webLogin": bool(login), "loginId": code, "shareholders": shareholders, "assets": json.loads(json.dumps(info, default=lambda value: dict(value) if hasattr(value, "keys") else str(value)))}
 
 
 def admin_identity(actor):

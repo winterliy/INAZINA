@@ -10,7 +10,33 @@ type Command = { name: string; group: string; description: string; guide: string
 type Stock = { name: string; code: string; qty: number; value: number; price: number };
 type Account = { number: string; product_name: string; balance: number };
 type Assets = { cash: number; grand_total: number; loan_total: number; net_worth: number; stocks: Stock[]; accounts: Account[] };
-type Detail = { account: string; webLogin: boolean; loginId: string; assets: Assets };
+type Shareholders = { totalShares: number; holders: { userId: string; name: string; quantity: number }[] };
+type Detail = { account: string; webLogin: boolean; loginId: string; assets: Assets; shareholders: Shareholders };
+
+const SLICE_COLORS = ["#0066cc", "#ff9500", "#30b0c7", "#af52de", "#ff2d55", "#34c759", "#a2845e"];
+
+/** Ownership as a pie: the six largest holders, the rest together, and shares no one holds. */
+function ShareholderPie({ data }: { data: Shareholders }) {
+  const total = Math.max(data.totalShares, data.holders.reduce((sum, item) => sum + item.quantity, 0));
+  if (!total) return null;
+  const top = data.holders.slice(0, 6).map((item, index) => ({ label: item.name, quantity: item.quantity, color: SLICE_COLORS[index] }));
+  const others = data.holders.slice(6).reduce((sum, item) => sum + item.quantity, 0);
+  const held = data.holders.reduce((sum, item) => sum + item.quantity, 0);
+  const slices = [...top, ...(others ? [{ label: "기타 주주", quantity: others, color: SLICE_COLORS[6] }] : []),
+    ...(total - held > 0 ? [{ label: "미보유(유통 전)", quantity: total - held, color: "var(--chip)" }] : [])];
+  let angle = -Math.PI / 2;
+  const arcs = slices.map((slice) => {
+    const sweep = (slice.quantity / total) * Math.PI * 2;
+    const start = angle; angle += sweep;
+    const [x1, y1, x2, y2] = [Math.cos(start), Math.sin(start), Math.cos(angle), Math.sin(angle)].map((value) => 100 + value * 90);
+    const path = sweep >= Math.PI * 2 - 1e-9 ? "M100 10 A90 90 0 1 1 99.99 10 Z" : `M100 100 L${x1} ${y1} A90 90 0 ${sweep > Math.PI ? 1 : 0} 1 ${x2} ${y2} Z`;
+    return { ...slice, path };
+  });
+  return <figure className="holders">
+    <svg viewBox="0 0 200 200" role="img" aria-label="주주 구성 원그래프">{arcs.map((arc) => <path key={arc.label} d={arc.path} fill={arc.color} stroke="var(--canvas)" strokeWidth="1.5" />)}</svg>
+    <figcaption><ul>{arcs.map((arc) => <li key={arc.label}><i style={{ background: arc.color }} /><span>{arc.label}</span><b>{(arc.quantity / total * 100).toFixed(2)}%</b><small>{number(arc.quantity)}주</small></li>)}</ul></figcaption>
+  </figure>;
+}
 type Member = { code: string; name: string; parent: string; ownership: number; currency: string; goodwill: number; nci: number; depth?: number };
 type Consolidated = { subsidiaries: Member[]; summary: { assets: number; liabilities: number; equity: number; parent_equity: number; noncontrolling_interest: number; goodwill: number }; income: Record<string, number>; profit_attributable: { parent: number; noncontrolling: number }; eliminations: { dividends: number; transfers: number; cross_holdings: number }; notes: string[] } | null;
 type Report = { period: string; currency: string; places: number; summary: { assets: number; liabilities: number; equity: number }; income: Record<string, number>; changes: Record<string, number>; checks: { balance_sheet: boolean; live_cash: boolean | null }; consolidated: Consolidated };
@@ -78,6 +104,7 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
         <div><small>대출</small><b>{number(company.loans)}</b></div>
         <div><small>순자산</small><b>{detail ? number(Math.round(detail.assets.net_worth)) : "…"}</b></div>
       </div>
+      {detail?.shareholders && <ShareholderPie data={detail.shareholders} />}
       {company.parents.length > 0 && <p className="hint">모회사(지분 보유 법인): {company.parents.map((parent) => `${parent.code} ${parent.percent.toFixed(1)}%`).join(", ")}</p>}
       <h3 className="sub-head">보유 자산</h3>
       <div className="scroll-x"><table><thead><tr><th>종목</th><th>이름</th><th className="r">수량</th><th className="r">평가액</th><th /></tr></thead><tbody>

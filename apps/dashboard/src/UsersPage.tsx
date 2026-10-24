@@ -355,9 +355,9 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
     </>}
 
     <Card title="국가" caption="행을 누르면 금리·세율·국고·국가 계정을 설정합니다. 통화 연결 변경은 DB 편집의 country_currencies에서 합니다.">
-      <div className="scroll-x tall"><table><thead><tr><th>국가</th><th>통화</th><th className="r">기준금리</th><th className="r">최고이자</th><th className="r">세율</th><th className="r">국고</th><th className="r">시민</th><th>거래소</th><th>국가 계정</th></tr></thead><tbody>
+      <div className="scroll-x tall"><table><thead><tr><th>국가 ID</th><th>국가</th><th>통화</th><th className="r">기준금리</th><th className="r">최고이자</th><th className="r">세율</th><th className="r">국고</th><th className="r">시민</th><th>거래소</th><th>국가 계정</th></tr></thead><tbody>
         {countries.map((item) => <tr key={item.nationality} className={item.nationality === selected ? "clickable selected" : "clickable"} tabIndex={0} onClick={() => setSelected(item.nationality)} onKeyDown={(event) => { if (event.key === "Enter") setSelected(item.nationality); }}>
-          <td>{item.nationality}</td><td className="mono">{item.currency_code}</td><td className="r">{item.base_rate}%</td><td className="r">{item.legal_max_rate}%</td><td className="r">{item.tax_percent}%</td><td className="r mono">{item.treasuryCash === null ? "—" : number(item.treasuryCash)}</td><td className="r">{number(item.citizens)}</td><td>{item.exchanges.join(", ") || "—"}</td><td>{item.account ? <span className="tag ok">있음</span> : <span className="tag">없음</span>}</td>
+          <td className="mono">{item.treasuryId ?? "—"}</td><td>{item.nationality}</td><td className="mono">{item.currency_code}</td><td className="r">{item.base_rate}%</td><td className="r">{item.legal_max_rate}%</td><td className="r">{item.tax_percent}%</td><td className="r mono">{item.treasuryCash === null ? "—" : number(item.treasuryCash)}</td><td className="r">{number(item.citizens)}</td><td>{item.exchanges.join(", ") || "—"}</td><td>{item.account ? <span className="tag ok">있음</span> : <span className="tag">없음</span>}</td>
         </tr>)}
       </tbody></table>{!countries.length && <p className="empty">국가가 없습니다.</p>}</div>
     </Card>

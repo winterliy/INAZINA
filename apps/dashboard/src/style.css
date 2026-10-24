@@ -682,3 +682,14 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
   .glass.card:has(> .card-head):not(.db-insert) > .card-head { position: static; grid-row: auto; margin-bottom: 20px; }
   .glass.card:has(> .card-head):not(.db-insert) > :not(.card-head) { grid-column: 1; }
 }
+
+/* 법인 자본: ownership pie with its legend. */
+.holders { display: flex; flex-wrap: wrap; align-items: center; gap: 24px 40px; margin: 8px 0 20px; }
+.holders svg { flex: none; width: 200px; height: 200px; }
+.holders figcaption { flex: 1 1 260px; min-width: 0; }
+.holders ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.holders li { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto auto; align-items: center; gap: 10px; font-size: 14px; }
+.holders li i { width: 12px; height: 12px; border-radius: 3px; }
+.holders li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.holders li b { font-variant-numeric: tabular-nums; }
+.holders li small { color: var(--ink2); font-size: 12px; font-variant-numeric: tabular-nums; }
