@@ -1,6 +1,8 @@
 """Idempotent game listings, each backed by its actual product/contract schema."""
+import re
 import time
 from database.user_db import TREASURY_USER_ID
+from functions.currency_config import load_initial_currency_config
 
 SECTORS = ('반도체','바이오','에너지','자동차','항공','물류','금융','소프트웨어','통신','식품')
 BRANDS = ('오로라','루미나','아스트라','베리타','노바')
@@ -16,6 +18,29 @@ class CatalogManager:
     FOREIGN_PER_CURRENCY = 5
     def __init__(self, db):
         self.db = db
+
+    @staticmethod
+    def _initial_currencies(path=None):
+        config = load_initial_currency_config(path)
+        values = config["currencies"]
+        base_code = str(config["baseCurrency"]["code"]).strip().upper()
+        seen = set()
+        for item in values:
+            if not isinstance(item, dict):
+                raise ValueError("초기 통화 항목은 객체여야 합니다.")
+            code = str(item.get("code") or "").strip().upper()
+            if not re.fullmatch(r"[A-Z0-9]{2,12}", code) or code in seen:
+                raise ValueError(f"초기 통화 코드가 잘못되었거나 중복되었습니다: {code or '(empty)'}")
+            if not str(item.get("name") or "").strip() or not str(item.get("nationality") or "").strip():
+                raise ValueError(f"통화명과 국가명을 입력해주세요: {code}")
+            if float(item.get("reference_rate", 0)) <= 0:
+                raise ValueError(f"기준 환율은 양수여야 합니다: {code}")
+            if int(item.get("decimal_places", -1)) not in (0, 1, 2):
+                raise ValueError(f"소수 자릿수는 0~2여야 합니다: {code}")
+            if code == base_code and int(item["decimal_places"]) != 0:
+                raise ValueError("초기 기준통화는 소수 자릿수 0으로 설정해주세요.")
+            seen.add(code)
+        return values
 
     def seed_preferred(self):
         """Add one voting-free, monthly-dividend preferred listing per base company."""
@@ -42,11 +67,15 @@ class CatalogManager:
 
     def seed_foreign(self):
         import uuid
-        currencies=(('USD','달러',100),('EUR','유로',90),('JPY','엔',15000),('GBP','파운드',80),('KRW','원',150000))
+        base = self.db.base_currency_code()
+        currencies = [item for item in self._initial_currencies()
+                      if item.get("foreign_product_anchor") is not None
+                      and item["code"].upper() != base]
         with self.db.atomic() as conn:
             if conn.execute("SELECT 1 FROM settings WHERE key='inazina_foreign_catalog_v1'").fetchone():
                 return False
-            for currency,_,_ in currencies:
+            for item in currencies:
+                currency = item["code"].upper()
                 if not conn.execute("SELECT 1 FROM currencies WHERE code=? AND status='active'",(currency,)).fetchone():
                     raise ValueError('기본 외환 상품을 먼저 등록해주세요.')
                 product=conn.execute("SELECT product_code FROM saving WHERE quote_currency=? AND product_kind='currency_saving' AND status='active' ORDER BY product_code LIMIT 1",(currency,)).fetchone()
@@ -59,7 +88,8 @@ class CatalogManager:
                     for code in (stock,spot):
                         if self.db.code_locations(conn,code):
                             raise ValueError(f'외화 기본 종목 코드 충돌: {code}')
-            for currency,label,base in currencies:
+            for item in currencies:
+                currency, label, base = item["code"].upper(), item["name"], int(item["foreign_product_anchor"])
                 for i in range(1, self.FOREIGN_PER_CURRENCY + 1):
                     price=base+base*i//10
                     conn.execute('INSERT INTO company(company_code,name,industry,capital,total_shares,share_price,max_shareholder_id,exchange_id,quote_currency) VALUES (?,?,?,?,?,?,?,?,?)',
@@ -133,17 +163,23 @@ class CatalogManager:
                              (f'INZSV{i:03d}',f'{brand} {sector} 저축 {i:02d}호',2+(i%10)*.2,1000,30+i*7,86400,i%2,'Inazina 은행'))
                 conn.execute("INSERT INTO liability(product_code,name,interest_rate,loan_limit,maturity_days,interest_cycle,min_credit_score,issuer) VALUES (?,?,?,?,?,?,?,?)",
                              (f'INZLN{i:03d}',f'{brand} {sector} 대출 {i:02d}호',5+(i%10)*.3,1_000_000,30+i*7,86400,500+i,'Inazina 은행'))
-            initial = [('USD','달러','미국',1500),('KRW','원','대한민국',1),('EUR','유로','유럽연합',1650),
-                       ('JPY','엔','일본',10),('GBP','파운드','영국',1900)]
-            initial += [(f'IZC{i:02d}',f'이자니아 {i:02d} 통화',f'이자니아 연방 {i:02d}',100+i*25) for i in range(1,21)]
-            for i,(currency,name,country,price) in enumerate(initial,1):
+            initial = self._initial_currencies()
+            base_currency = self.db.base_currency_code()
+            for i,item in enumerate(initial,1):
+                currency, name, country = item["code"].upper(), item["name"], item["nationality"]
+                price, decimal_places = item["reference_rate"], int(item["decimal_places"])
+                if currency == base_currency:
+                    conn.execute("INSERT OR IGNORE INTO country_currencies(nationality,currency_code) VALUES (?,?)",
+                                 (country, currency))
+                    continue
                 code = f'CUR_{currency}'
                 if conn.execute("SELECT 1 FROM currencies WHERE code=?",(currency,)).fetchone():
                     raise ValueError(f"기본 통화 코드 중복: {currency}")
                 if self.db.code_locations(conn,code):
                     raise ValueError(f"외환 종목 코드 중복: {code}")
                 conn.execute("INSERT INTO market_assets(code,name,exchange_id,price,type,market_volatility) VALUES (?,?, 'CURRENCY',?,'forex',.05)", (code,f'{name}/{self.db.base_currency_code()}',price))
-                conn.execute("INSERT INTO currencies(code,name,asset_code) VALUES (?,?,?)", (currency,name,code))
+                conn.execute("INSERT INTO currencies(code,name,asset_code,decimal_places) VALUES (?,?,?,?)",
+                             (currency,name,code,decimal_places))
                 conn.execute("INSERT OR IGNORE INTO country_currencies(nationality,currency_code) VALUES (?,?)", (country,currency))
                 conn.execute("INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,interest_cycle,compound_type,issuer,status,quote_currency,product_kind) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (f'INZCU{i:03d}',f'{name} 외환통장',1+(i%5)*.25,0,0,0,1,'currency','active',currency,'currency_saving'))
             conn.execute("INSERT INTO settings(key,value) VALUES (?, '1')", (self.VERSION,))

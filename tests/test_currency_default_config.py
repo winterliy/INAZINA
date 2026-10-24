@@ -1,7 +1,11 @@
 import unittest
+import json
+import tempfile
+from pathlib import Path
 
 import test_inazina as fixtures
 from functions.money import base_currency_code
+from managers.catalog_manager import CatalogManager
 
 
 class CurrencyDefaultConfigTests(unittest.TestCase):
@@ -59,3 +63,17 @@ class CurrencyDefaultConfigTests(unittest.TestCase):
         self.assertIsNotNone(conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='index' AND name='currency_migration_probe_amount'"
         ).fetchone())
+
+    def test_initial_currency_catalog_can_be_configured(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "initial_currency_catalog.json"
+            path.write_text(json.dumps({"baseCurrency": {
+                "code": "NWX", "name": "낙원자화", "nationality": "낙원"
+            }, "currencies": [
+                {"code": "AAA", "name": "알파", "nationality": "A국",
+                 "reference_rate": 12, "decimal_places": 2,
+                 "foreign_product_anchor": 20}
+            ]}), encoding="utf-8")
+            currencies = CatalogManager._initial_currencies(path)
+        self.assertEqual(currencies[0]["code"], "AAA")
+        self.assertEqual(currencies[0]["foreign_product_anchor"], 20)

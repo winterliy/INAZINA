@@ -1,0 +1,30 @@
+{
+  "baseCurrency": {"code": "NWX", "name": "낙원자화", "nationality": "낙원"},
+  "currencies": [
+    {"code": "USD", "name": "달러", "nationality": "미국", "reference_rate": 1500, "decimal_places": 2, "foreign_product_anchor": 100},
+    {"code": "KRW", "name": "원", "nationality": "대한민국", "reference_rate": 1, "decimal_places": 0, "foreign_product_anchor": 150000},
+    {"code": "EUR", "name": "유로", "nationality": "유럽연합", "reference_rate": 1650, "decimal_places": 2, "foreign_product_anchor": 90},
+    {"code": "JPY", "name": "엔", "nationality": "일본", "reference_rate": 10, "decimal_places": 0, "foreign_product_anchor": 15000},
+    {"code": "GBP", "name": "파운드", "nationality": "영국", "reference_rate": 1900, "decimal_places": 2, "foreign_product_anchor": 80},
+    {"code": "IZC01", "name": "이자니아 01 통화", "nationality": "이자니아 연방 01", "reference_rate": 125, "decimal_places": 2},
+    {"code": "IZC02", "name": "이자니아 02 통화", "nationality": "이자니아 연방 02", "reference_rate": 150, "decimal_places": 2},
+    {"code": "IZC03", "name": "이자니아 03 통화", "nationality": "이자니아 연방 03", "reference_rate": 175, "decimal_places": 2},
+    {"code": "IZC04", "name": "이자니아 04 통화", "nationality": "이자니아 연방 04", "reference_rate": 200, "decimal_places": 2},
+    {"code": "IZC05", "name": "이자니아 05 통화", "nationality": "이자니아 연방 05", "reference_rate": 225, "decimal_places": 2},
+    {"code": "IZC06", "name": "이자니아 06 통화", "nationality": "이자니아 연방 06", "reference_rate": 250, "decimal_places": 2},
+    {"code": "IZC07", "name": "이자니아 07 통화", "nationality": "이자니아 연방 07", "reference_rate": 275, "decimal_places": 2},
+    {"code": "IZC08", "name": "이자니아 08 통화", "nationality": "이자니아 연방 08", "reference_rate": 300, "decimal_places": 2},
+    {"code": "IZC09", "name": "이자니아 09 통화", "nationality": "이자니아 연방 09", "reference_rate": 325, "decimal_places": 2},
+    {"code": "IZC10", "name": "이자니아 10 통화", "nationality": "이자니아 연방 10", "reference_rate": 350, "decimal_places": 2},
+    {"code": "IZC11", "name": "이자니아 11 통화", "nationality": "이자니아 연방 11", "reference_rate": 375, "decimal_places": 2},
+    {"code": "IZC12", "name": "이자니아 12 통화", "nationality": "이자니아 연방 12", "reference_rate": 400, "decimal_places": 2},
+    {"code": "IZC13", "name": "이자니아 13 통화", "nationality": "이자니아 연방 13", "reference_rate": 425, "decimal_places": 2},
+    {"code": "IZC14", "name": "이자니아 14 통화", "nationality": "이자니아 연방 14", "reference_rate": 450, "decimal_places": 2},
+    {"code": "IZC15", "name": "이자니아 15 통화", "nationality": "이자니아 연방 15", "reference_rate": 475, "decimal_places": 2},
+    {"code": "IZC16", "name": "이자니아 16 통화", "nationality": "이자니아 연방 16", "reference_rate": 500, "decimal_places": 2},
+    {"code": "IZC17", "name": "이자니아 17 통화", "nationality": "이자니아 연방 17", "reference_rate": 525, "decimal_places": 2},
+    {"code": "IZC18", "name": "이자니아 18 통화", "nationality": "이자니아 연방 18", "reference_rate": 550, "decimal_places": 2},
+    {"code": "IZC19", "name": "이자니아 19 통화", "nationality": "이자니아 연방 19", "reference_rate": 575, "decimal_places": 2},
+    {"code": "IZC20", "name": "이자니아 20 통화", "nationality": "이자니아 연방 20", "reference_rate": 600, "decimal_places": 2}
+  ]
+}

@@ -1,4 +1,5 @@
 from functions.money import base_currency_code
+from functions.currency_config import load_initial_currency_config
 import re
 import time
 import uuid
@@ -10,6 +11,9 @@ SCALE = 1_000_000
 class CurrencyDB(DBManager):
     def __init__(self):
         super().__init__("forex")
+        initial_config = load_initial_currency_config()
+        initial_base = initial_config["baseCurrency"]
+        initial_base_code = str(initial_base["code"]).strip().upper()
         self.execute("""CREATE TABLE IF NOT EXISTS currencies (
             code TEXT PRIMARY KEY, name TEXT NOT NULL, asset_code TEXT UNIQUE,
             status TEXT NOT NULL DEFAULT 'active')""")
@@ -21,7 +25,8 @@ class CurrencyDB(DBManager):
         ):
             if column not in currency_columns:
                 self.execute(f"ALTER TABLE currencies ADD COLUMN {column} {definition}")
-        self.execute("INSERT OR IGNORE INTO currencies(code,name) VALUES ('NWX','낙원자화')")
+        self.execute("INSERT OR IGNORE INTO currencies(code,name,decimal_places) VALUES (?,?,0)",
+                     (initial_base_code, str(initial_base["name"]).strip()))
         # Currencies have at most two decimal places (cents). The column's legacy
         # default is 6, so new rows are clamped and explicit larger values refused.
         self.execute("UPDATE currencies SET decimal_places=2 WHERE decimal_places>2")
@@ -88,14 +93,16 @@ class CurrencyDB(DBManager):
         if 'statutory_rate' in country_columns:
             self.execute("ALTER TABLE country_currencies DROP COLUMN statutory_rate")
         self._ensure_negative_policy_rates()
-        self.execute("INSERT OR IGNORE INTO country_currencies(nationality,currency_code) VALUES ('낙원','NWX')")
+        self.execute("INSERT OR IGNORE INTO country_currencies(nationality,currency_code) VALUES (?,?)",
+                     (str(initial_base["nationality"]).strip(), initial_base_code))
         self.execute("""CREATE TABLE IF NOT EXISTS currency_system_settings (
             singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),
             base_currency_code TEXT NOT NULL REFERENCES currencies(code),
             updated_epoch INTEGER NOT NULL DEFAULT 0
         )""")
         self.execute("""INSERT OR IGNORE INTO currency_system_settings(singleton_id,base_currency_code)
-            SELECT 1,currency_code FROM country_currencies WHERE nationality=?""", ('낙원',))
+            SELECT 1,currency_code FROM country_currencies WHERE nationality=?""",
+                     (str(initial_base["nationality"]).strip(),))
         self.execute("""CREATE TRIGGER IF NOT EXISTS currency_system_settings_base_precision
             BEFORE UPDATE OF base_currency_code ON currency_system_settings
             WHEN COALESCE((SELECT decimal_places FROM currencies
