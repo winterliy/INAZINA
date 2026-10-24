@@ -1,5 +1,5 @@
 """European, physically settled options backed by segregated collateral."""
-from functions.money import base_currency_code
+from functions.money import base_currency_code, currency_precision
 from functions.quantities import quantity_number
 
 import math
@@ -282,9 +282,11 @@ class OptionManager:
                     "INSERT INTO assets.market_orders "
                     "(user_id, asset_code, side, limit_price, quantity, remaining_quantity, "
                     "reserved_cash, funding_account, order_kind, option_order_type, status, "
-                    "created_epoch, updated_epoch) "
-                    "VALUES (?, ?, 'sell', ?, ?, ?, 0, NULL, 'option', 'write', 'open', ?, ?)",
-                    (writer_id, contract_code, limit_price, quantity, quantity, now, now),
+                    "created_epoch, updated_epoch, quote_currency, limit_price_minor_units, "
+                    "limit_price_decimal_places, reserved_cash_minor_units) "
+                    "VALUES (?, ?, 'sell', ?, ?, ?, 0, NULL, 'option', 'write', 'open', ?, ?, ?, ?, 0, 0)",
+                    (writer_id, contract_code, limit_price, quantity, quantity, now, now,
+                     base_currency_code(conn), limit_price),
                 )
                 order_id = int(order_cursor.lastrowid)
             security = "주식 담보" if option_type == "call" else f"현금 담보 {strike_price * quantity:,} 기준 통화"
@@ -395,6 +397,9 @@ class OptionManager:
 
                 funding_account = None
                 reserved_cash = 0
+                base_currency = base_currency_code(conn)
+                if currency_precision(conn, base_currency) != 0:
+                    raise ValueError("옵션은 기준 통화 최소단위가 정수인 통화에서만 거래할 수 있습니다.")
                 if side == "buy":
                     owned = conn.execute(
                         "SELECT COALESCE(SUM(quantity), 0) AS quantity FROM assets.option_positions "
@@ -448,10 +453,11 @@ class OptionManager:
                     "INSERT INTO assets.market_orders "
                     "(user_id, asset_code, side, limit_price, quantity, remaining_quantity, "
                     "reserved_cash, funding_account, order_kind, option_order_type, status, "
-                    "created_epoch, updated_epoch) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'option', 'resale', 'open', ?, ?)",
+                    "created_epoch, updated_epoch, quote_currency, limit_price_minor_units, "
+                    "limit_price_decimal_places, reserved_cash_minor_units) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'option', 'resale', 'open', ?, ?, ?, ?, 0, ?)",
                     (user_id, contract_code, side, limit_price, quantity, quantity,
-                     reserved_cash, funding_account, now, now),
+                     reserved_cash, funding_account, now, now, base_currency, limit_price, reserved_cash),
                 )
                 order_id = int(cursor.lastrowid)
                 filled, filled_quantity, traded_value = self._match_incoming_order(
@@ -495,16 +501,16 @@ class OptionManager:
             maker = conn.execute(
                 "SELECT * FROM assets.market_orders WHERE order_kind = 'option' "
                 "AND asset_code = ? AND side = ? AND status IN ('open', 'partial') "
-                f"AND limit_price {comparison} ? AND user_id <> ? "
-                f"ORDER BY limit_price {sort_order}, created_epoch, order_id LIMIT 1",
-                (incoming["asset_code"], opposite, incoming["limit_price"], incoming["user_id"]),
+                f"AND limit_price_minor_units {comparison} ? AND user_id <> ? "
+                f"ORDER BY limit_price_minor_units {sort_order}, created_epoch, order_id LIMIT 1",
+                (incoming["asset_code"], opposite, incoming["limit_price_minor_units"], incoming["user_id"]),
             ).fetchone()
             if not maker:
                 break
             buy_order = incoming if incoming["side"] == "buy" else maker
             sell_order = incoming if incoming["side"] == "sell" else maker
             quantity = min(int(incoming["remaining_quantity"]), int(maker["remaining_quantity"]))
-            price = int(maker["limit_price"])
+            price = int(maker["limit_price_minor_units"])
             self._settle_option_fill(conn, buy_order, sell_order, quantity, price, now)
             self._reduce_order(conn, buy_order, quantity, now)
             self._reduce_order(conn, sell_order, quantity, now)
@@ -520,7 +526,7 @@ class OptionManager:
         return fill_count, filled_quantity, traded_value
 
     def _settle_option_fill(self, conn, buy_order, sell_order, quantity, price, now):
-        improvement = (int(buy_order["limit_price"]) - price) * quantity
+        improvement = (int(buy_order["limit_price_minor_units"]) - price) * quantity
         if improvement < 0:
             raise RuntimeError("체결 가격이 매수 프리미엄 지정가를 초과했습니다.")
         if improvement:
@@ -566,11 +572,11 @@ class OptionManager:
             if seller_position.rowcount != 1:
                 raise RuntimeError("매도 예약 옵션 수량이 변경되어 체결을 취소했습니다.")
             self._add_option_position(conn, contract["contract_id"], buyer_id, quantity, price)
-        conn.execute(
-            f"UPDATE users.users SET cash = cash + ? WHERE user_id = ? AND {ACTIVE_OR_TREASURY}",
-            (price * quantity, seller_id),
-        )
-        if conn.execute("SELECT changes()").fetchone()[0] != 1:
+        currency = base_currency_code(conn)
+        try:
+            self.user_manager._credit_source(conn, seller_id, None, price * quantity,
+                                             event="option_premium", currency=currency)
+        except Exception:
             raise RuntimeError("프리미엄을 받을 사용자 계정을 찾지 못했습니다.")
 
     @staticmethod
@@ -588,12 +594,12 @@ class OptionManager:
         remaining = int(order["remaining_quantity"]) - int(quantity)
         if remaining < 0:
             raise RuntimeError("옵션 주문 잔량보다 많은 수량이 체결되었습니다.")
-        reserved_cash = int(round(order["reserved_cash"] or 0))
+        reserved_cash = int(order["reserved_cash_minor_units"] or 0)
         if order["side"] == "buy":
-            reserved_cash = max(0, reserved_cash - int(order["limit_price"]) * int(quantity))
+            reserved_cash = max(0, reserved_cash - int(order["limit_price_minor_units"]) * int(quantity))
         conn.execute(
             "UPDATE assets.market_orders SET remaining_quantity = ?, "
-            "filled_quantity = filled_quantity + ?, reserved_cash = ?, "
+            "filled_quantity = filled_quantity + ?, reserved_cash_minor_units = ?, "
             "status = ?, updated_epoch = ? WHERE order_id = ?",
             (remaining, quantity, reserved_cash, "filled" if remaining == 0 else "partial",
              now, order["order_id"]),
@@ -632,7 +638,7 @@ class OptionManager:
                     return False, "❌ 본인의 옵션 주문을 찾을 수 없습니다."
                 if order["status"] not in {"open", "partial"}:
                     return False, f"❌ 이미 {order['status']} 상태라 취소할 수 없습니다."
-                refund = int(round(order["reserved_cash"] or 0)) if order["side"] == "buy" else 0
+                refund = int(order["reserved_cash_minor_units"] or 0) if order["side"] == "buy" else 0
                 if refund:
                     self._credit_reserved_source(conn, user_id, order["funding_account"], refund, now)
                 if order["side"] == "sell" and order["option_order_type"] == "write":

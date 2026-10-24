@@ -724,9 +724,9 @@ class AccountingJournal:
                        "issuer_count": len(financial_entities),
                        "gaps": company_bond_gaps,
                        "status": "matched" if not company_bond_gaps else "mismatch"})
-        # A standard limit-buy's locked cash is an asset subledger balance,
-        # distinct from customer spendable cash. Validate it against remaining
-        # quantity and the order's quote-currency limit price.
+        # Standard asset and option limit-buy locks are subledger balances,
+        # distinct from customer spendable cash. Validate against the
+        # remaining quantity and the quote-currency limit price.
         from functions.money import currency_precision, to_minor_units
         active = {"scheduled", "open", "partial"}
         reservation_gaps = []
@@ -734,7 +734,7 @@ class AccountingJournal:
             "SELECT order_id,side,status,limit_price,limit_price_minor_units,"
             "limit_price_decimal_places,remaining_quantity,quote_currency,"
             "reserved_cash_minor_units,fractional_order,order_kind FROM market_orders "
-            "WHERE order_kind='asset' AND COALESCE(fractional_order,0)=0"
+            "WHERE order_kind IN ('asset','option') AND COALESCE(fractional_order,0)=0"
         ).fetchall()
         for order in orders:
             currency = str(order["quote_currency"] or base_currency_code(conn))

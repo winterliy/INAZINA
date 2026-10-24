@@ -80,6 +80,37 @@ class MarketFeatureTests(unittest.TestCase):
         self.assertEqual(self.options.get_user_written("alice")[0]["collateral_quantity"], 2)
         self.assertGreater(self.users.get_total_assets("bob")["stock_total"], 0)
 
+    def test_open_option_order_uses_canonical_market_price_and_reservation_units(self):
+        from managers.accounting_journal import AccountingJournal
+        from functions.money import base_currency_code
+
+        self.db.assets.add_user_asset("alice", "CO", 5, unit_cost=100)
+        self.assertTrue(self.options.create_and_write("alice", "CO", "call", 100, 1, 2, 10)[0])
+        code = self.options.get_active_contracts()[0]["contract_code"]
+        self.assertTrue(self.options.place_limit_order("bob", code, "buy", 1, 5)[0])
+        order = self.db.assets.execute_one(
+            "SELECT quote_currency,limit_price_minor_units,limit_price_decimal_places,"
+            "reserved_cash_minor_units FROM market_orders WHERE order_kind='option' AND side='buy'"
+        )
+        with self.db.atomic(("users", "accounts", "assets", "product", "company", "tax")) as conn:
+            self.assertEqual(order["quote_currency"], base_currency_code(conn))
+        self.assertEqual(order["limit_price_minor_units"], 5)
+        self.assertEqual(order["limit_price_decimal_places"], 0)
+        self.assertEqual(order["reserved_cash_minor_units"], 5)
+        with self.db.atomic(("users", "accounts", "assets", "product", "company", "tax")) as conn:
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item["ledger_scope"] == "market_order_reservations")
+        self.assertEqual(check["status"], "matched")
+        self.assertEqual(check["order_count"], 2)
+        order_id = self.db.assets.execute_one(
+            "SELECT order_id FROM market_orders WHERE order_kind='option' AND side='buy'"
+        )[0]
+        self.assertTrue(self.options.cancel_order("bob", order_id)[0])
+        self.assertEqual(self.db.assets.execute_one(
+            "SELECT reserved_cash_minor_units FROM market_orders WHERE order_id=?", (order_id,)
+        )[0], 0)
+        self.assertEqual(self.db.users.get_user("bob")["cash"], 10000)
+
     def test_covered_call_expiry_delivers_shares_and_never_repeats(self):
         self.db.assets.add_user_asset("alice", "CO", 5, unit_cost=100)
         self.assertTrue(self.options.create_and_write("alice", "CO", "call", 100, 1, 2, 10)[0])
