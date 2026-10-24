@@ -297,6 +297,7 @@ class CurrencyDB(DBManager):
         self.execute("PRAGMA foreign_keys=OFF")
         try:
             for table, currency_columns in targets.items():
+                self._recover_currency_rebuild(table)
                 row = self.execute_one(
                     "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
                 )
@@ -329,18 +330,65 @@ class CurrencyDB(DBManager):
                     rf'(?i)^(CREATE\s+TABLE(?:\s+IF\s+NOT\s+EXISTS)?\s+)["`\[]?{re.escape(table)}["`\]]?',
                     rf'\1"{temp}"', ddl.strip(), count=1,
                 )
-                self.execute(ddl)
                 names = ",".join(f'"{name.replace(chr(34), chr(34)*2)}"' for name in columns)
-                self.execute(f'INSERT INTO "{temp}" ({names}) SELECT {names} FROM "{escaped}"')
-                self.execute(f'DROP TABLE "{escaped}"')
-                self.execute(f'ALTER TABLE "{temp}" RENAME TO "{escaped}"')
-                if sequence is not None:
-                    self.execute("DELETE FROM sqlite_sequence WHERE name IN (?,?)", (table, temp))
-                    self.execute("INSERT INTO sqlite_sequence(name,seq) VALUES (?,?)", (table, sequence))
-                for (statement,) in indexes_triggers:
-                    self.execute(statement)
+                with self.lock:
+                    # Other tables' triggers name this table, and it is briefly gone between
+                    # DROP and RENAME; legacy_alter_table stops the rename re-checking them.
+                    # One transaction per table: a failure leaves the original untouched.
+                    self.conn.execute("PRAGMA legacy_alter_table=ON")
+                    try:
+                        with self.conn:
+                            self.conn.execute("BEGIN")
+                            self.conn.execute(ddl)
+                            self.conn.execute(f'INSERT INTO "{temp}" ({names}) SELECT {names} FROM "{escaped}"')
+                            self.conn.execute(f'DROP TABLE "{escaped}"')
+                            self.conn.execute(f'ALTER TABLE "{temp}" RENAME TO "{escaped}"')
+                            if sequence is not None:
+                                self.conn.execute("DELETE FROM sqlite_sequence WHERE name IN (?,?)", (table, temp))
+                                self.conn.execute("INSERT INTO sqlite_sequence(name,seq) VALUES (?,?)", (table, sequence))
+                            for (statement,) in indexes_triggers:
+                                self.conn.execute(statement)
+                    finally:
+                        self.conn.execute("PRAGMA legacy_alter_table=OFF")
         finally:
             self.execute("PRAGMA foreign_keys=ON")
+
+    def _recover_currency_rebuild(self, table):
+        """Settle a copy left by an interrupted rebuild of ``table``.
+
+        Rebuilds before the transaction above ran step by step, so a failed
+        rename could leave the rows only in the copy, or the original dropped
+        and later recreated empty by its own table set-up.
+        """
+        temp = f"__currency_migrate_{table}"
+        if not self.execute_one("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (temp,)):
+            return
+        escaped = table.replace('"', '""')
+        original = self.execute_one("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,))
+        copied = self.execute_one(f'SELECT COUNT(*) FROM "{temp}"')[0]
+        restore = not original or (copied and not self.execute_one(f'SELECT COUNT(*) FROM "{escaped}"')[0])
+        indexes_triggers = self.execute(
+            "SELECT sql FROM sqlite_master WHERE tbl_name=? "
+            "AND type IN ('index','trigger') AND sql IS NOT NULL ORDER BY type,name",
+            (table,),
+        ) if restore and original else []
+        with self.lock:
+            self.conn.execute("PRAGMA legacy_alter_table=ON")
+            try:
+                with self.conn:
+                    self.conn.execute("BEGIN")
+                    if restore:
+                        # The copy holds the rows; the original is gone or an empty re-creation.
+                        if original:
+                            self.conn.execute(f'DROP TABLE "{escaped}"')
+                        self.conn.execute(f'ALTER TABLE "{temp}" RENAME TO "{escaped}"')
+                        for (statement,) in indexes_triggers:
+                            self.conn.execute(statement)
+                    else:
+                        # The original still holds the rows; the copy is a stale partial one.
+                        self.conn.execute(f'DROP TABLE "{temp}"')
+            finally:
+                self.conn.execute("PRAGMA legacy_alter_table=OFF")
 
     def _init_currency_precision_triggers(self):
         """Replace legacy whole-NWX rounding with denomination-aware rounding."""
