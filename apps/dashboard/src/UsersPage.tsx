@@ -340,7 +340,7 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
           <button className="btn primary" disabled={busy}>국고 저장</button>
         </form>
       </Card>
-      <Card title="국가 계정 (HTS 로그인)" caption={country.account ? `국가 ID ${country.nationality}로 로그인하면 국고로 거래합니다. 상태 ${country.account.status} · 권한 ${country.account.role}` : "아직 국가 계정이 없습니다. 비밀번호를 정하면 국가 ID로 HTS에 로그인할 수 있습니다."}>
+      <Card title="국가 계정 (HTS 로그인)" caption={country.account ? `국가 ID ${country.treasuryId}로 로그인하면 국고로 거래합니다. 상태 ${country.account.status} · 권한 ${country.account.role}` : "아직 국가 계정이 없습니다. 비밀번호를 정하면 국가 ID로 HTS에 로그인할 수 있습니다."}>
         <div className="form-grid">
           <Field label={country.account ? "새 비밀번호" : "비밀번호"} hint="영문+숫자 12자 이상"><input type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} /></Field>
           {country.account ? <>

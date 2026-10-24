@@ -39,6 +39,9 @@ class CountryAccountTests(unittest.TestCase):
                 INSERT INTO users(user_id,nickname,nationality,cash) VALUES ('discord-1','Discord user','Testland',2500);
                 INSERT INTO currencies(code,name,status) VALUES ('TST','Test currency','active');
                 INSERT INTO country_currencies(nationality,currency_code) VALUES ('Testland','TST');
+                CREATE TABLE country_treasuries (nationality TEXT PRIMARY KEY, user_id TEXT NOT NULL UNIQUE);
+                INSERT INTO users(user_id,nickname,nationality,cash,role) VALUES ('5001','Testland 국고','Testland',123456,'nation');
+                INSERT INTO country_treasuries(nationality,user_id) VALUES ('Testland','5001');
             """)
 
     def tearDown(self):
@@ -47,37 +50,26 @@ class CountryAccountTests(unittest.TestCase):
         server.BROWSER_PASSWORD_SHA256 = self.old_browser_password_hash
         self.tempdir.cleanup()
 
-    def test_country_id_is_the_user_id_and_country_password_login_works(self):
+    def test_country_id_is_the_treasury_id_and_country_password_login_works(self):
         account = server.create_country_account("admin-1", "Testland", "CountryPass123")
 
-        user = server.authenticate_country_password("Testland", "CountryPass123")
-        self.assertEqual(account["userId"], "Testland")
-        self.assertEqual(user["nationality"], "Testland")
-        self.assertEqual(user["cash"], 0)
-        self.assertEqual(user["role"], "nation")
-        with closing(server.sqlite3.connect(server.DATABASE)) as connection:
-            discord_cash = connection.execute(
-                "SELECT cash FROM users WHERE user_id='discord-1'"
-            ).fetchone()[0]
-        self.assertEqual(discord_cash, 2500)
-        self.assertIsNone(server.authenticate_country_password("Testland", "WrongPass123"))
-        country_user = next(row for row in server.admin_users("") if row["userId"] == "Testland")
+        user = server.authenticate_country_password("5001", "CountryPass123")
+        self.assertEqual(account["userId"], "5001")
+        self.assertEqual((user["nationality"], user["cash"], user["role"]), ("Testland", 123456, "nation"))
+        self.assertIsNone(server.authenticate_country_password("Testland", "CountryPass123"))
+        self.assertIsNone(server.authenticate_country_password("5001", "WrongPass123"))
+        user, found = server.authenticate_login_identifier("5001", "CountryPass123")
+        self.assertTrue(found)
+        self.assertEqual(user["userId"], "5001")
+        country_user = next(row for row in server.admin_users("") if row["userId"] == "5001")
         self.assertEqual(country_user["accountType"], "country")
         with closing(server.sqlite3.connect(server.DATABASE)) as connection:
-            table = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='country_accounts'"
-            ).fetchone()
-        self.assertIsNone(table)
+            discord_cash = connection.execute("SELECT cash FROM users WHERE user_id='discord-1'").fetchone()[0]
+        self.assertEqual(discord_cash, 2500)
 
-    def test_existing_country_user_gets_password_without_resetting_balance(self):
-        with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
-            connection.execute(
-                "INSERT INTO users(user_id,nickname,nationality,cash,role) VALUES ('Testland','Existing','Testland',4200,'user')"
-            )
-        account = server.create_country_account("admin-1", "Testland", "CountryPass123")
-        user = server.authenticate_country_password("Testland", "CountryPass123")
-        self.assertEqual(account["cash"], 0)
-        self.assertEqual(user["cash"], 0)
+    def test_the_country_id_also_opens_the_account(self):
+        account = server.create_country_account("admin-1", "5001", "CountryPass123")
+        self.assertEqual((account["userId"], account["cash"]), ("5001", 123456))
 
     def test_country_account_is_unique_per_country(self):
         server.create_country_account("admin-1", "Testland", "CountryPass123")
@@ -87,18 +79,14 @@ class CountryAccountTests(unittest.TestCase):
     def test_web_credentials_reference_and_follow_user_lifecycle(self):
         server.create_country_account("admin-1", "Testland", "CountryPass123")
         with server.connect_db() as connection:
-            foreign_keys = connection.execute(
-                "PRAGMA foreign_key_list(web_auth_credentials)"
-            ).fetchall()
+            foreign_keys = connection.execute("PRAGMA foreign_key_list(web_auth_credentials)").fetchall()
             self.assertTrue(any(
                 row[2] == "users" and row[3] == "user_id"
                 and row[4] == "user_id" and row[6] == "CASCADE"
                 for row in foreign_keys
             ))
-            connection.execute("DELETE FROM users WHERE user_id='Testland'")
-            remaining = connection.execute(
-                "SELECT 1 FROM web_auth_credentials WHERE user_id='Testland'"
-            ).fetchone()
+            connection.execute("DELETE FROM users WHERE user_id='5001'")
+            remaining = connection.execute("SELECT 1 FROM web_auth_credentials WHERE user_id='5001'").fetchone()
         self.assertIsNone(remaining)
 
     def test_identity_rejects_active_user_without_web_credentials(self):
@@ -114,17 +102,18 @@ class CountryAccountTests(unittest.TestCase):
         with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
             connection.execute("INSERT INTO web_auth_credentials(user_id,salt,password_hash,created_epoch,updated_epoch) "
                                "VALUES ('admin-1','s','h',0,0)")
-            connection.execute("DELETE FROM web_auth_credentials WHERE user_id='Testland'")
-        self.assertIsNone(server.identity("Testland"))
-        self.assertEqual(server.admin_login_as("admin-1", {"target": "Testland"})["userId"], "Testland")
+            connection.execute("DELETE FROM web_auth_credentials WHERE user_id='5001'")
+        self.assertIsNone(server.identity("5001"))
+        self.assertEqual(server.admin_login_as("admin-1", {"target": "Testland"})["userId"], "5001")
+        self.assertEqual(server.admin_login_as("admin-1", {"target": "5001"})["userId"], "5001")
         try:
             server._DELEGATION.by = "admin-1"
-            acting = server.identity("Testland")
+            acting = server.identity("5001")
             self.assertEqual((acting["role"], acting["delegatedBy"]), ("nation", "admin-1"))
             self.assertEqual(acting["authVersion"], server.identity_for("admin-1")["authVersion"])
             # Only administrators delegate, and only into country or company accounts.
             server._DELEGATION.by = "discord-1"
-            self.assertIsNone(server.identity("Testland"))
+            self.assertIsNone(server.identity("5001"))
             server._DELEGATION.by = "admin-1"
             self.assertIsNone(server.identity("discord-1"))
         finally:
@@ -153,24 +142,18 @@ class CountryAccountTests(unittest.TestCase):
 
     def test_hts_login_id_is_separate_and_password_confirmed(self):
         server.create_country_account("admin-1", "Testland", "CountryPass123")
-        self.assertEqual(server.set_hts_login_id("Testland", "Test.User_1", "CountryPass123"), "test.user_1")
-        self.assertEqual(server.get_hts_login_id("Testland"), "test.user_1")
+        self.assertEqual(server.set_hts_login_id("5001", "Test.User_1", "CountryPass123"), "test.user_1")
+        self.assertEqual(server.get_hts_login_id("5001"), "test.user_1")
         user, found = server.authenticate_login_identifier("TEST.USER_1", "CountryPass123")
         self.assertTrue(found)
-        self.assertEqual(user["userId"], "Testland")
+        self.assertEqual(user["userId"], "5001")
         with self.assertRaisesRegex(ValueError, "invalid_credentials"):
-            server.set_hts_login_id("Testland", "another_id", "WrongPass123")
+            server.set_hts_login_id("5001", "another_id", "WrongPass123")
 
-    def test_country_hts_identity_uses_national_treasury_balance(self):
+    def test_country_account_trades_as_its_treasury(self):
         server.create_country_account("admin-1", "Testland", "CountryPass123")
-        with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
-            connection.execute(
-                "INSERT INTO users(user_id,nickname,nationality,cash,status,role) "
-                "VALUES (?,'Treasury','Testland',123456,'system','nation')",
-                (TREASURY_USER_ID,),
-            )
-        self.assertEqual(server.trading_user_id("Testland"), TREASURY_USER_ID)
-        self.assertEqual(server.identity("Testland")["cash"], 123456)
+        self.assertEqual(server.trading_user_id("5001"), "5001")
+        self.assertEqual(server.identity("5001")["cash"], 123456)
 
     def test_non_admin_cannot_create_country_account(self):
         with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:

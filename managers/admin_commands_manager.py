@@ -46,7 +46,7 @@ USAGE = {
  '복권당첨번호보기':'', '복권당첨번호변경':'[서로 다른 1~45 번호 6개] [보너스 번호(선택)]',
  '세율':'[국적] [0~100]', '환율수정':'[외화A] [외화B] [1 A당 B 비율]',
  '소득세율':'[국적] [소득원 코드] [0~100|기본] · 기본은 소득원 예외를 지우고 국가 세율 사용',
- '국가생성':'[국가명] [통화코드] [기준금리%(선택)] [법정최고이자%(선택)] [세율%(선택)]',
+ '국가생성':'[국가ID(숫자)] [국가명] [통화코드] [기준금리%(선택)] [법정최고이자%(선택)] [세율%(선택)]',
  '국가삭제':'[국가명]',
  '복권가격설정':'[가격]', '금리수정':'[국적] [add/del/modify] [수치]',
  '시장금리수정':'[국적] [funding/bank_bond/treasury] [만기일수] [금리%]',
@@ -60,6 +60,9 @@ USAGE = {
  '액면분할병합':'[분할/병합] [종목id] [비율]',
  '휴장':'[거래소ID(선택)]', '개장':'[거래소ID(선택)]', '장일시정지':'[거래소ID(선택)]', '장재개':'[거래소ID(선택)]',
  '서킷브레이커':'[거래소ID(선택)] [1/2/3단계]', '사이드카':'[거래소ID(선택)]'}
+# Commands whose country argument may be the numeric country id: position of that argument.
+COUNTRY_ARGUMENT = {'기본소득': 0, '세율': 0, '소득세율': 0, '금리수정': 0, '시장금리수정': 0,
+                    '법정최고이자수정': 0, '국가삭제': 0, '서버설치': 1}
 USAGE.update({'법인잔고수정':'[보통주 법인id] [add/del/modify] [금액]',
               '법인청산':'[보통주 법인id]', 'ELS취소':'[ELS id]',
               '거래경고':'[종목id] [주의/경고/위험/해제] [사유(선택)] [기간 일수(선택)]',
@@ -198,6 +201,8 @@ class AdminCommandsManager:
         return matches[0]
 
     def country_create(self, actor, args):
+        country_id = str(args[0]).strip()
+        args = args[1:]
         nationality, currency = str(args[0]).strip(), str(args[1]).strip().upper()
         if not nationality or len(nationality) > 80:
             raise ValueError('국가명은 1~80자로 입력해주세요.')
@@ -217,12 +222,12 @@ class AdminCommandsManager:
                     raise ValueError('같은 이름의 국가가 이미 있습니다.') from None
                 raise
             from managers.currency_manager import CurrencyManager
-            CurrencyManager.treasury_id(conn, nationality)
+            CurrencyManager.treasury_id(conn, nationality, country_id)
             self.control._audit(conn, actor, 'country.create', {
-                'nationality': nationality, 'currency_code': currency,
+                'country_id': country_id, 'nationality': nationality, 'currency_code': currency,
                 'base_rate': base_rate, 'legal_max_rate': legal_max_rate, 'tax_percent': tax_percent,
             })
-        return f'✅ 연방국가 {nationality} 생성 · 기본화폐 {currency} · 기준금리 {base_rate:g}% · 법정최고이자 {legal_max_rate:g}% · 세율 {tax_percent:g}%'
+        return f'✅ 연방국가 {nationality} (ID {country_id}) 생성 · 기본화폐 {currency} · 기준금리 {base_rate:g}% · 법정최고이자 {legal_max_rate:g}% · 세율 {tax_percent:g}%'
 
     def country_delete(self, actor, nationality):
         nationality = str(nationality).strip()
@@ -282,7 +287,7 @@ class AdminCommandsManager:
             count.update({'법인잔고수정':3,'법인청산':1,'ELS취소':1,'소수점거래관리':2,'상품이율수정':3})
             flexible = ((command=='자본변경' and len(args) in {4,5})
                         or (command=='증자' and len(args) in {3,4})
-                        or (command=='국가생성' and len(args) in {2,3,4,5})
+                        or (command=='국가생성' and len(args) in {3,4,5,6})
                         or (command=='세율' and len(args) in {1,2})
                         or (command=='합병' and len(args) in {2,3})
                         or (command=='분할' and len(args) in {5,6})
@@ -292,6 +297,11 @@ class AdminCommandsManager:
                         or (command=='귀화심사' and (args[:1]==['목록'] and len(args)==1 or args[:1] in (['승인'],['거절']) and len(args) in {2,3})))
             if not flexible and command not in {'복권당첨번호변경'} and len(args)!=count.get(command,-1):
                 raise ValueError(f'사용법: ${command} {USAGE.get(command,"")}')
+            if command in COUNTRY_ARGUMENT and len(args) > COUNTRY_ARGUMENT[command]:
+                from managers.currency_manager import CurrencyManager
+                index = COUNTRY_ARGUMENT[command]
+                with self.db.readonly() as conn:
+                    args[index] = CurrencyManager.nationality_of(conn, args[index])
             if command=='소수점거래관리':
                 if args[1] not in {'0','1'}:
                     raise ValueError('0은 켜기, 1은 끄기입니다.')

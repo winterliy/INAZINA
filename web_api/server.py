@@ -181,13 +181,6 @@ def identity_for(user_id, require_credential=True):
         credential = connection.execute(
             "SELECT auth_version FROM web_auth_credentials WHERE user_id=?", (user_id,),
         ).fetchone() if auth_table else None
-        country_account = connection.execute(
-            "SELECT 1 FROM country_currencies WHERE nationality=?", (user_id,),
-        ).fetchone() if row and row["user_id"] == row["nationality"] else None
-        treasury_id = _country_treasury(connection, row["nationality"]) if country_account else None
-        treasury = connection.execute(
-            "SELECT cash FROM users WHERE user_id=?", (treasury_id,),
-        ).fetchone() if treasury_id else None
         currency = connection.execute(
             "SELECT currency_code FROM country_currencies WHERE nationality=?", (row["nationality"],),
         ).fetchone() if row else None
@@ -203,7 +196,7 @@ def identity_for(user_id, require_credential=True):
         "nickname": str(row["nickname"] or row["user_id"]),
         "nationality": str(row["nationality"] or ""),
         "currency": str(currency[0]) if currency else str(base_currency or ""),
-        "cash": int((treasury["cash"] if treasury else row["cash"]) or 0),
+        "cash": int(row["cash"] or 0),
         "creditScore": int(row["credit_score"] or 0),
         "role": role,
         "authVersion": int(credential[0]) if credential else 0,
@@ -628,47 +621,31 @@ def create_country_account(actor_id, country_id, password):
     if not country_id or len(country_id) > 80:
         raise ValueError("country_not_found")
     validate_password(password)
-    user_id = country_id
     now = int(time.time())
     salt = secrets.token_bytes(16).hex()
     digest = password_hash(password, salt)
     from database.db_manager import DBManager
+    from managers.currency_manager import CurrencyManager
     with DBManager.admin_scope(actor_id):
         with DBManager.atomic(("users", "currency", "system")) as connection:
             ensure_auth_table(connection)
+            nationality = CurrencyManager.nationality_of(connection, country_id)
             country = connection.execute(
                 "SELECT 1 FROM country_currencies n JOIN currencies c ON c.code=n.currency_code "
-                "WHERE n.nationality=? AND c.status='active'", (country_id,),
+                "WHERE n.nationality=? AND c.status='active'", (nationality,),
             ).fetchone()
             if not country:
                 raise ValueError("country_not_found")
-            existing_user = connection.execute(
-                "SELECT nationality,status,cash,role FROM users WHERE user_id=?", (user_id,),
-            ).fetchone()
-            if existing_user:
-                if existing_user["nationality"] != country_id:
-                    raise ValueError("country_account_conflict")
-                if existing_user["status"] != "active":
-                    raise ValueError("active_user_required")
-                if existing_user["role"] not in {"user", "nation"}:
-                    raise ValueError("country_account_conflict")
-                if connection.execute(
-                    "SELECT 1 FROM web_auth_credentials WHERE user_id=?", (user_id,),
-                ).fetchone():
-                    raise ValueError("country_account_exists")
-                connection.execute("UPDATE users SET cash=0,role='nation' WHERE user_id=?", (user_id,))
-                cash = 0
-            else:
-                connection.execute(
-                    "INSERT INTO users(user_id,nickname,nationality,cash,role) VALUES(?,?,?,?, 'nation')",
-                    (user_id, f"{country_id} 국가 계정", country_id, 0),
-                )
-                cash = 0
+            # The country's account is its treasury; its numeric id is the login ID.
+            user_id = CurrencyManager.treasury_id(connection, nationality)
+            if connection.execute("SELECT 1 FROM web_auth_credentials WHERE user_id=?", (user_id,)).fetchone():
+                raise ValueError("country_account_exists")
             connection.execute(
                 "INSERT INTO web_auth_credentials(user_id,salt,password_hash,created_epoch,updated_epoch) "
                 "VALUES(?,?,?,?,?)", (user_id, salt, digest, now, now),
             )
-    return {"countryId": country_id, "userId": user_id, "cash": cash, "status": "active"}
+            cash = connection.execute("SELECT cash FROM users WHERE user_id=?", (user_id,)).fetchone()[0]
+    return {"countryId": user_id, "userId": user_id, "cash": int(cash or 0), "status": "active"}
 
 
 def save_password(user_id, password, *, create=False, nickname="", country_id=""):
@@ -745,9 +722,8 @@ def authenticate_country_password(country_id, password):
         return None
     with connect_readonly() as connection:
         account = connection.execute(
-            "SELECT 1 FROM users u JOIN country_currencies c ON c.nationality=u.user_id "
-            "WHERE u.user_id=? AND u.nationality=? AND u.status='active'",
-            (country_id, country_id),
+            "SELECT 1 FROM users u JOIN country_treasuries t ON t.user_id=u.user_id "
+            "WHERE u.user_id=? AND u.status='active'", (country_id,),
         ).fetchone()
     if not account:
         return None
@@ -780,11 +756,10 @@ def authenticate_login_identifier(identifier, password):
         ensure_auth_table(connection)
         connection.row_factory = sqlite3.Row
         country_account = connection.execute(
-            "SELECT 1 FROM users u JOIN country_currencies c ON c.nationality=u.user_id "
+            "SELECT 1 FROM users u JOIN country_treasuries t ON t.user_id=u.user_id "
             "JOIN web_auth_credentials w ON w.user_id=u.user_id "
-            "WHERE u.user_id=? AND u.nationality=? AND u.status='active'",
-            (identifier, identifier),
-        ).fetchone()
+            "WHERE u.user_id=? AND u.status='active'", (identifier,),
+        ).fetchone() if _table_exists(connection, "country_treasuries") else None
         hts_account = connection.execute(
             "SELECT user_id FROM web_auth_credentials WHERE hts_id=?", (identifier.lower(),),
         ).fetchone()
@@ -1574,18 +1549,14 @@ def admin_users(search, kind="people"):
         company = "EXISTS(SELECT 1 FROM company_accounts a WHERE a.user_id=users.user_id)" if has_companies else "0"
         rows = connection.execute(
             "SELECT user_id,nickname,nationality,"
-            "CASE WHEN user_id=nationality AND EXISTS(SELECT 1 FROM country_currencies c "
-            "WHERE c.nationality=users.user_id) THEN COALESCE((SELECT t.cash FROM users t "
-            "WHERE t.user_id=? AND t.nationality=users.nationality),cash) "
-            "ELSE cash END AS cash,credit_score,status,role, "
+            "cash,credit_score,status,role, "
             f"CASE WHEN {company} THEN 'company' "
-            "WHEN user_id=nationality AND EXISTS(SELECT 1 FROM country_currencies c "
-            "WHERE c.nationality=users.user_id) THEN 'country' ELSE 'discord' END AS account_type, "
+            "WHEN EXISTS(SELECT 1 FROM country_treasuries t WHERE t.user_id=users.user_id) THEN 'country' ELSE 'discord' END AS account_type, "
             + ("(SELECT a.company_code FROM company_accounts a WHERE a.user_id=users.user_id)" if has_companies else "NULL")
             + " AS company_code FROM users WHERE user_id<>? AND (user_id LIKE ? OR nickname LIKE ?) "
             f"AND {'' if kind == 'company' else 'NOT '}{company} "
             "ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END,nickname LIMIT 100",
-            (TREASURY_USER_ID, TREASURY_USER_ID, term, term),
+            (TREASURY_USER_ID, term, term),
         ).fetchall()
     return [{"userId": row["user_id"], "nickname": row["nickname"],
              "nationality": row["nationality"], "cash": int(row["cash"] or 0),
@@ -2811,8 +2782,8 @@ def admin_countries():
                 "WHERE nationality=? ORDER BY income_source", (nationality,))] \
                 if _table_exists(connection, "country_tax_rules") else []
             account = connection.execute(
-                "SELECT u.status,u.role,w.hts_id FROM users u LEFT JOIN web_auth_credentials w ON w.user_id=u.user_id "
-                "WHERE u.user_id=? AND u.nationality=?", (nationality, nationality)).fetchone() if _table_exists(connection, "web_auth_credentials") else None
+                "SELECT u.status,u.role,w.hts_id FROM users u JOIN web_auth_credentials w ON w.user_id=u.user_id "
+                "WHERE u.user_id=?", (treasury["user_id"] if treasury else None,)).fetchone() if _table_exists(connection, "web_auth_credentials") else None
             result.append({**{key: row[key] for key in row.keys()},
                            "treasuryId": treasury["user_id"] if treasury else None,
                            "treasuryCash": treasury["cash"] if treasury else None,
@@ -3167,8 +3138,10 @@ def admin_login_as(actor, payload):
     from managers.company_account_manager import CompanyAccounts
     target = str(payload.get("target") or "").strip()
     with connect_db(timeout=5) as connection:
-        if connection.execute("SELECT 1 FROM country_currencies WHERE nationality=?", (target,)).fetchone():
-            account = target
+        from managers.currency_manager import CurrencyManager
+        nationality = CurrencyManager.nationality_of(connection, target)
+        if connection.execute("SELECT 1 FROM country_currencies WHERE nationality=?", (nationality,)).fetchone():
+            account = CurrencyManager.treasury_id(connection, nationality)
         elif connection.execute("SELECT 1 FROM company WHERE company_code=? AND status='active'", (target,)).fetchone():
             account = CompanyAccounts.account_id(connection, target)
         else:

@@ -7,7 +7,7 @@ from database.user_db import TREASURY_USER_ID, citizen_filter
 from functions import user_actions
 
 # Discord-only server/onboarding commands and views the HTS already has (search, chart, wallet).
-DISCORD_ONLY = {"설치", "등록", "서버등록", "서버탈퇴", "도움말", "검색", "그래프", "내지갑"}
+DISCORD_ONLY = {"설치", "등록", "서버등록", "서버탈퇴", "도움말", "검색", "그래프", "내지갑", "귀화신청"}
 # Offered in the HTS through its own DR issue/redeem panel, not the command list.
 HTS_PANEL = {"dr전환"}
 

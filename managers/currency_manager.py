@@ -29,8 +29,12 @@ class CurrencyManager:
         return currency
 
     @staticmethod
-    def treasury_id(conn, nationality):
-        """Return the dedicated treasury account for one federation country."""
+    def treasury_id(conn, nationality, user_id=None):
+        """Return the dedicated treasury account for one federation country.
+
+        The treasury is also the country's own account: its id is numeric (given by
+        $국가생성, else the next free 9xxxxxxx) and it is the country's HTS login ID.
+        """
         nationality = str(nationality or '낙원')
         row = conn.execute('SELECT user_id FROM country_treasuries WHERE nationality=?',
                            (nationality,)).fetchone()
@@ -40,15 +44,29 @@ class CurrencyManager:
                                (nationality,)).fetchone()
         if not country:
             raise ValueError('국고를 찾을 국가가 등록되어 있지 않습니다.')
-        # Discord IDs are decimal strings; this reserved non-decimal namespace
-        # cannot collide with a real Discord account.
-        user_id = f'country_treasury:{nationality}'
+        if user_id is None:
+            user_id = 90000000
+            while conn.execute('SELECT 1 FROM users WHERE user_id=?', (str(user_id),)).fetchone():
+                user_id += 1
+        user_id = str(user_id)
+        if not user_id.isdecimal() or len(user_id) > 19:
+            raise ValueError('국가 ID는 19자리 이하 숫자로 입력해주세요.')
+        if conn.execute('SELECT 1 FROM users WHERE user_id=?', (user_id,)).fetchone():
+            raise ValueError('이미 사용 중인 ID입니다. 다른 국가 ID를 입력해주세요.')
         conn.execute("INSERT OR IGNORE INTO users(user_id,nickname,nationality,cash,status,role) "
                      "VALUES (?,?,?,0,'active','nation')",
                      (user_id, f'{nationality} 국고', nationality))
         conn.execute('INSERT INTO country_treasuries(nationality,user_id) VALUES (?,?)',
                      (nationality, user_id))
         return user_id
+
+    @staticmethod
+    def nationality_of(conn, key):
+        """A country's name from its name or its numeric id (the treasury id)."""
+        key = str(key).strip()
+        row = conn.execute('SELECT nationality FROM country_treasuries WHERE user_id=?', (key,)).fetchone() \
+            if key.isdecimal() else None
+        return str(row['nationality']) if row else key
 
     @classmethod
     def user_treasury_id(cls, conn, user_id):
