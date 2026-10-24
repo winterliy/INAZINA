@@ -116,7 +116,6 @@ input::placeholder { color: var(--ink2); opacity: .75; }
 .form-grid input:focus, .form-grid select:focus, .command-form input:focus, .command-form select:focus { box-shadow: inset 0 0 0 2px var(--accent); }
 .span-wide { grid-column: span 2; }
 .hint { margin-top: 12px; color: var(--ink2); font-size: 12px; }
-.new-row { margin-top: 4px; padding-top: 18px; border-top: 1px solid var(--line); }
 .command-form { display: grid; grid-template-columns: minmax(180px, 240px) minmax(0, 1fr) auto; gap: 14px; align-items: end; }
 .command-form .span-wide { grid-column: auto; }
 .usage { margin-top: 12px; color: var(--ink2); font-size: 13px; }
@@ -191,15 +190,6 @@ td { padding: 12px; vertical-align: middle; }
 .tag.up { color: var(--up-ink); background: var(--up-bg); box-shadow: none; }
 .tag.down { color: var(--down-ink); background: var(--down-bg); box-shadow: none; }
 .tag.inline { margin-left: 8px; }
-.grid td { padding: 6px; }
-/* Cell inputs pad their text by 8px; indent the header to the same column of text. */
-.grid th { padding-left: 14px; }
-.grid th:first-child, .grid td:first-child { padding-left: 12px; }
-.grid td.cell input { width: 100%; min-width: 90px; max-width: 280px; min-height: 32px; padding: 0 8px; border: 0; border-radius: 8px; background: transparent; font-size: 12px; outline: none; }
-.grid td.cell input:hover { background: var(--field); }
-.grid td.cell input:focus { background: var(--field); box-shadow: inset 0 0 0 2px var(--accent); }
-.grid td.cell input.null { color: var(--ink2); font-style: italic; }
-.grid td.edited input { background: var(--warn-bg); color: var(--warn-ink); }
 
 /* Login and access states share the wallpaper. */
 .center-shell { position: relative; z-index: 1; display: grid; place-items: center; min-height: 100vh; padding: 24px 16px; }
@@ -343,7 +333,6 @@ td { padding: 14px 12px; }
 tbody tr:hover { background: transparent; }
 tbody tr:hover td { background: var(--hover); }
 tr.selected td { background: var(--select); }
-.grid td.cell input:hover, .grid td.cell input:focus { background: var(--field); }
 
 /* Sign-in and access screens: one parchment tile on the white page. */
 .stage .auth-shell { background: var(--canvas); }
@@ -549,3 +538,90 @@ a.btn.primary { color: #fff; background: var(--accent); }
 .jump li button:hover, .jump li:first-child button { background: var(--select); }
 .jump li small { overflow: hidden; color: var(--ink2); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); background: none; box-shadow: none; font: inherit; cursor: pointer; text-align: left; }
+
+/* ---- DB 편집: a two-pane data studio (table rail | sheet) ---- */
+.db-studio { display: grid; grid-template-columns: 248px minmax(0, 1fr); align-items: start; gap: 24px; }
+.db-rail { position: sticky; top: 68px; display: flex; flex-direction: column; gap: 10px; max-height: calc(100vh - 92px); padding: 12px; border-radius: 24px; background: var(--surface); }
+.db-filter { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 12px; border-radius: 12px; color: var(--ink2); background: var(--field); }
+.db-filter:focus-within { box-shadow: 0 0 0 2px var(--accent-focus); }
+.db-filter input { width: 100%; min-width: 0; border: 0; outline: 0; color: var(--ink); background: transparent; font-size: 14px; }
+.db-table-list { display: grid; gap: 2px; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.db-table { display: grid; gap: 2px; width: 100%; min-height: 44px; padding: 7px 12px; border: 0; border-radius: 12px; color: var(--ink); background: transparent; text-align: left; }
+.db-table span { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.db-table small { display: inline-flex; align-items: center; gap: 4px; color: var(--ink2); font-size: 11px; }
+.db-table:hover:not([aria-current]) { background: var(--hover); }
+.db-table[aria-current] { color: var(--canvas); background: var(--ink); }
+.db-table[aria-current] small { color: inherit; opacity: .7; }
+.db-table:active:not(:disabled) { transform: none; }
+
+.db-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.db-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px 24px; }
+.db-title { min-width: 0; }
+.db-eyebrow { color: var(--ink2); font-size: 12px; font-weight: 600; letter-spacing: .08em; }
+.db-title h2 { margin-top: 6px; font-size: 34px; line-height: 1.1; font-weight: 600; letter-spacing: -.02em; overflow-wrap: anywhere; }
+.db-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.db-meta span { padding: 4px 10px; border-radius: 999px; color: var(--ink2); background: var(--surface); font-size: 12px; font-weight: 600; }
+.db-meta .db-mode.ok { color: var(--ok-ink); background: var(--ok-bg); }
+.db-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.db-pager { display: inline-flex; align-items: center; gap: 2px; min-height: 44px; padding: 4px; border-radius: 999px; background: var(--surface); }
+.db-pager button { width: 36px; height: 36px; padding: 0; border: 0; border-radius: 50%; color: var(--ink); background: transparent; font-size: 20px; line-height: 1; }
+.db-pager button:hover:not(:disabled) { background: var(--pearl); }
+.db-pager span { min-width: 92px; color: var(--ink2); font-size: 13px; text-align: center; }
+.db-hint { max-width: 760px; color: var(--ink2); font-size: 13px; line-height: 1.55; }
+.db-hint code { padding: 1px 6px; border-radius: 6px; background: var(--surface); font-family: var(--font-mono); font-size: 12px; }
+
+.db-insert { display: flex; flex-direction: column; gap: 16px; padding: 24px; border-radius: 24px; background: var(--surface); }
+.db-insert-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.db-insert-head h3 { font-size: 21px; font-weight: 600; }
+.db-insert-head p { color: var(--ink2); font-size: 13px; }
+.db-insert-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+.db-field { display: grid; gap: 6px; padding: 12px; border-radius: 14px; background: var(--pearl); }
+.db-field-name { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.db-field-name em { padding: 1px 6px; border-radius: 999px; color: var(--accent); background: var(--select); font-family: var(--font-system); font-size: 10px; font-style: normal; }
+.db-field input { width: 100%; min-height: 38px; padding: 0 10px; border: 0; border-radius: 10px; color: var(--ink); background: var(--surface); font-family: var(--font-mono); font-size: 13px; outline: none; }
+.db-field input:focus { box-shadow: 0 0 0 2px var(--accent-focus); }
+.db-field small { color: var(--ink2); font-family: var(--font-mono); font-size: 11px; }
+.db-insert-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* The sheet: header row and rowid column stay put while the grid scrolls both ways. */
+.db-sheet { overflow: auto; max-height: calc(100vh - 300px); min-height: 240px; border-radius: 20px; background: var(--surface); overscroll-behavior: contain; }
+.db-grid { width: max-content; min-width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; white-space: nowrap; }
+.db-grid th { position: sticky; top: 0; z-index: 2; padding: 12px 10px 10px; color: var(--ink); background: var(--surface); box-shadow: inset 0 -1px 0 var(--line); text-align: left; vertical-align: bottom; }
+.db-grid th span { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; }
+.db-grid th svg { color: var(--accent); }
+.db-grid th small { display: block; margin-top: 2px; color: var(--ink2); font-family: var(--font-mono); font-size: 10px; font-weight: 400; }
+.db-grid td { padding: 3px 4px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.db-grid tbody tr:last-child td { border-bottom: 0; }
+.db-grid tbody tr:hover td { background: var(--hover); }
+.db-grid .db-rowid { position: sticky; left: 0; z-index: 1; min-width: 56px; padding: 0 12px; color: var(--ink2); background: var(--surface); font-size: 12px; text-align: right; }
+.db-grid th.db-rowid { z-index: 3; }
+.db-grid tr.dirty .db-rowid { color: var(--warn-ink); box-shadow: inset 3px 0 0 var(--warn-ink); }
+.db-grid td input { width: 100%; min-width: 96px; max-width: 280px; min-height: 32px; padding: 0 8px; border: 0; border-radius: 8px; color: var(--ink); background: transparent; font-size: 12px; outline: none; }
+.db-grid td input:hover { background: var(--pearl); }
+.db-grid td input:focus { background: var(--field); box-shadow: inset 0 0 0 2px var(--accent-focus); }
+.db-grid td > span { display: inline-block; max-width: 320px; overflow: hidden; padding: 0 8px; text-overflow: ellipsis; vertical-align: middle; }
+.db-grid td.null input, .db-grid td.null > span { color: var(--ink2); font-style: italic; }
+.db-grid td.edited input { color: var(--warn-ink); background: var(--warn-bg); }
+.db-grid .db-row-actions { position: sticky; right: 0; z-index: 1; padding: 0 8px; background: var(--surface); text-align: right; }
+.db-grid th.db-row-actions { z-index: 3; }
+.db-icon { display: inline-grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; color: var(--ink2); background: transparent; }
+.db-icon:hover:not(:disabled) { color: var(--ink); background: var(--pearl); }
+.db-icon.save:not(:disabled) { color: #fff; background: var(--accent); }
+.db-icon.danger:hover:not(:disabled) { color: var(--danger); }
+.db-icon:disabled { opacity: .3; }
+.db-sheet .empty { padding: 48px 16px; }
+
+.db-pending { position: sticky; bottom: 16px; z-index: 4; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; padding: 10px 10px 10px 20px; border-radius: 999px; color: var(--canvas); background: var(--ink); font-size: 14px; }
+.db-pending .outline { min-height: 36px; border-color: transparent; color: var(--ink); background: var(--canvas); font-size: 14px; }
+
+@media (max-width: 900px) {
+  .db-studio { grid-template-columns: minmax(0, 1fr); }
+  .db-rail { position: static; max-height: none; }
+  .db-table-list { display: flex; overflow-x: auto; overflow-y: hidden; padding-bottom: 2px; }
+  .db-table { flex: none; width: auto; min-width: 140px; }
+  .db-sheet { max-height: 70vh; }
+}
+@media (max-width: 600px) {
+  .db-title h2 { font-size: 26px; }
+  .db-pending { border-radius: 18px; }
+}
