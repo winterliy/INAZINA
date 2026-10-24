@@ -620,3 +620,30 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
   .db-title h2 { font-size: 26px; }
   .db-pending { border-radius: 18px; }
 }
+
+/* ---- 귀화심사: one card per pending request, history underneath ---- */
+.nat { display: grid; gap: 40px; }
+.nat-queue { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr)); gap: 20px; }
+.nat-card { display: grid; gap: 20px; min-width: 0; padding: 32px; border-radius: 28px; background: var(--surface); }
+.nat-card-head { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.nat-card-head h2 { margin-top: 6px; font-size: 28px; font-weight: 600; letter-spacing: -.015em; overflow-wrap: anywhere; }
+.nat-id { margin-top: 4px; color: var(--ink2); font-size: 12px; }
+.nat-route { display: inline-flex; align-items: center; gap: 10px; padding: 10px 16px; border-radius: 999px; background: var(--pearl); font-size: 15px; }
+.nat-route span { color: var(--ink2); }
+.nat-route svg { color: var(--ink2); }
+.nat-reason { color: var(--ink); font-size: 15px; line-height: 1.5; }
+.nat-preview { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 12px; margin: 0; }
+.nat-preview div { padding: 14px; border-radius: 16px; background: var(--pearl); }
+.nat-preview dt { color: var(--ink2); font-size: 12px; font-weight: 600; }
+.nat-preview dd { margin: 6px 0 0; font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.nat-warning { padding: 12px 16px; border-radius: 14px; color: var(--warn-ink); background: var(--warn-bg); font-size: 13px; line-height: 1.5; }
+.nat-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.nat-actions input { flex: 1 1 200px; min-width: 0; min-height: 44px; padding: 0 14px; border: 0; border-radius: 12px; color: var(--ink); background: var(--field); outline: none; font-size: 14px; }
+.nat-actions input:focus { box-shadow: 0 0 0 2px var(--accent-focus); }
+.nat-empty { grid-column: 1 / -1; padding: 56px 32px; border-radius: 28px; background: var(--surface); text-align: center; }
+.nat-empty h2 { font-size: 24px; font-weight: 600; }
+.nat-empty p { margin-top: 8px; color: var(--ink2); font-size: 15px; }
+.nat-history h2 { margin-bottom: 12px; font-size: 21px; font-weight: 600; }
+.nat-history ul { display: grid; margin: 0; padding: 0; list-style: none; }
+.nat-history li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 14px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.nat-history-who { font-weight: 600; }

@@ -126,6 +126,23 @@ class CorporateDB(DBManager):
                 WHERE user_id=(SELECT user_id FROM company_accounts WHERE company_code=NEW.company_code)
                 AND cash<>NEW.balance;
             END''')
+        # The account's nickname is the company's name, kept equal the same way.
+        self.execute('''CREATE TRIGGER IF NOT EXISTS company_name_to_account
+            AFTER UPDATE OF name ON company
+            WHEN NEW.name IS NOT OLD.name
+            BEGIN
+                UPDATE users SET nickname=NEW.name
+                WHERE user_id=(SELECT user_id FROM company_accounts WHERE company_code=NEW.company_code)
+                AND nickname IS NOT NEW.name;
+            END''')
+        self.execute('''CREATE TRIGGER IF NOT EXISTS account_name_to_company
+            AFTER UPDATE OF nickname ON users
+            WHEN NEW.nickname IS NOT OLD.nickname AND EXISTS (SELECT 1 FROM company_accounts WHERE user_id=NEW.user_id)
+            BEGIN
+                UPDATE company SET name=NEW.nickname
+                WHERE company_code=(SELECT company_code FROM company_accounts WHERE user_id=NEW.user_id)
+                AND name IS NOT NEW.nickname;
+            END''')
         # Income a company account received that its books must classify: dividends
         # (영업외수익) and intra-group transfers, kept for consolidation eliminations.
         legacy = self.execute("SELECT sql FROM sqlite_master WHERE name='company_income_log'")

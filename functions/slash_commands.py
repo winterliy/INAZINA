@@ -142,6 +142,57 @@ async def convene_shareholder_meeting(bot, user_id, role, 주식코드, 장소):
     return f"✅ 주주총회 DM 전달: {sent}명 성공 · {failed}명 실패"
 
 
+class NaturalizationConfirmView(discord.ui.View):
+    """The request is only filed when the citizen confirms the irreversible terms."""
+
+    def __init__(self, bot, user_id, display_name, nationality, reason):
+        super().__init__(timeout=180)
+        self.bot, self.user_id, self.display_name = bot, user_id, display_name
+        self.nationality, self.reason = nationality, reason
+
+    async def interaction_check(self, interaction):
+        return str(interaction.user.id) == self.user_id
+
+    @discord.ui.button(label="귀화 신청 확정", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction, _button):
+        from managers.naturalization_manager import NaturalizationManager
+        self.stop()
+        try:
+            request_id = await asyncio.to_thread(NaturalizationManager(self.bot).request, self.user_id, self.nationality, self.reason)
+        except ValueError as exc:
+            return await interaction.response.edit_message(content=f"❌ {exc}", embed=None, view=None)
+        await interaction.response.edit_message(
+            content=f"✅ 귀화 신청 #{request_id}을 접수했습니다. 관리자가 심사합니다. 신청은 취소할 수 없습니다.", embed=None, view=None)
+        embed = discord.Embed(title=f"🛂 귀화 신청 #{request_id}", color=discord.Color.orange())
+        embed.add_field(name="신청자", value=f"{discord.utils.escape_markdown(self.display_name)[:100]} · `{self.user_id}`", inline=False)
+        embed.add_field(name="귀화할 나라", value=discord.utils.escape_markdown(self.nationality)[:100], inline=True)
+        if self.reason:
+            embed.add_field(name="사유", value=discord.utils.escape_markdown(self.reason)[:300], inline=False)
+        embed.add_field(name="심사", value=f"대시보드 귀화심사 탭 또는 ```$귀화심사 승인 {request_id}``` ```$귀화심사 거절 {request_id} [사유]```", inline=False)
+        await notify_admins(self.bot, embed=embed)
+
+    @discord.ui.button(label="그만두기", style=discord.ButtonStyle.secondary)
+    async def dismiss(self, interaction, _button):
+        self.stop()
+        await interaction.response.edit_message(content="귀화 신청을 하지 않았습니다.", embed=None, view=None)
+
+
+async def notify_admins(bot, *, embed):
+    """DM every administrator; returns how many received it."""
+    rows = await asyncio.to_thread(bot.db.users.execute, "SELECT user_id, role FROM users")
+    admin_ids = {str(row["user_id"]) for row in rows if str(row["user_id"]).isdecimal() and resolve_user_role(row["user_id"], row) == "admin"}
+    admin_ids.update(BOOTSTRAP_ADMIN_IDS)
+    sent = 0
+    for admin_id in sorted(admin_ids):
+        try:
+            recipient = bot.get_user(int(admin_id)) or await bot.fetch_user(int(admin_id))
+            await recipient.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+            sent += 1
+        except (discord.HTTPException, ValueError, TypeError):
+            pass
+    return sent
+
+
 class SlashCommandRegistry:
     """Registers the bot's user and administrator commands as Discord slash commands."""
 
@@ -158,6 +209,7 @@ class SlashCommandRegistry:
             ("도움말", "Inazina 명령어 도움말", self.help),
             ("내지갑", "내 국적·현금·일반/외환통장·투자자산·대출을 확인합니다", self.assets),
             ("파산", "현재 자산 현황과 함께 관리자에게 파산을 신청합니다", self.apply_bankruptcy),
+            ("귀화신청", "다른 나라로 귀화를 신청합니다 (승인되면 자산을 정리하고 되돌릴 수 없습니다)", self.request_naturalization),
             ("송금", "송금하거나 내 외환통장으로 보내 환전합니다", self.transfer),
             ("도박", "기준 통화를 걸고 도박합니다", self.gamble),
             ("복권구매", "주간 6/45 복권을 구매합니다", self.lottery_buy),
@@ -199,6 +251,7 @@ class SlashCommandRegistry:
         self.commands["주총소집"].autocomplete("주식코드")(self.company_autocomplete)
         self.commands['법정최고이자'].autocomplete('국가')(self.nationality_autocomplete)
         self.commands['서버등록'].autocomplete('국가')(self.nationality_autocomplete)
+        self.commands['귀화신청'].autocomplete('국가')(self.nationality_autocomplete)
         self.commands["설치"].autocomplete("화폐")(self.currency_autocomplete)
 
     @app_commands.guild_only()
@@ -781,6 +834,29 @@ class SlashCommandRegistry:
 
     async def apply_rehabilitation(self, interaction: discord.Interaction):
         await self._submit_financial_relief_request(interaction, "회생")
+
+    @app_commands.describe(국가="귀화할 나라", 사유="신청 사유 (선택)")
+    async def request_naturalization(self, interaction: discord.Interaction, 국가: str, 사유: str = ""):
+        from managers.naturalization_manager import NaturalizationManager
+        user_id, _user_data, _role = await self._prepare(interaction)
+        manager = NaturalizationManager(self.bot)
+        try:
+            user, blockers = await asyncio.to_thread(manager.check, user_id, 국가)
+            preview = await asyncio.to_thread(manager.preview, user_id)
+        except ValueError as exc:
+            return await self._reply(interaction, content=f"❌ {exc}")
+        embed = discord.Embed(title=f"🛂 {user['nationality']} → {국가.strip()} 귀화 신청", color=discord.Color.orange(),
+                              description="**신청하면 취소할 수 없고, 승인되면 아래 자산 정리와 국적 이전은 되돌릴 수 없습니다.**")
+        embed.add_field(name="승인 시 정리되는 것", inline=False, value=(
+            f"보유 종목 {preview['holdings']}개·국채 {preview['bonds']}건은 현재가로 매각\n"
+            f"통장 {preview['accounts']}개 해지 · 대출 {preview['loans']:,} {preview['currency']} 상환\n"
+            "남은 현금은 새 나라 통화로 환전 (환전 수수료 차감)"))
+        if blockers:
+            embed.add_field(name="승인 전에 정리해야 할 것", value=", ".join(blockers), inline=False)
+        embed.set_footer(text="신청은 관리자에게 전달되며, 신청만으로는 아무것도 바뀌지 않습니다.")
+        display_name = getattr(interaction.user, "display_name", None) or str(user_id)
+        await self._reply(interaction, embed=embed,
+                          view=NaturalizationConfirmView(self.bot, str(user_id), display_name, 국가.strip(), 사유.strip()))
 
     async def apply_bankruptcy(self, interaction: discord.Interaction):
         await self._submit_financial_relief_request(interaction, "파산")

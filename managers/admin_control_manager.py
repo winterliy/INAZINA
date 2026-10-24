@@ -716,6 +716,11 @@ class AdminControlManager:
                 if 'dividend_is_active' in values and values['dividend_is_active'] != existing['dividend_is_active']:
                     # The trigger also protects direct DB edits; restore the explicit admin schedule.
                     conn.execute(f'UPDATE "{table}" SET dividend_next_epoch=? WHERE "{key}"=?', (values['dividend_next_epoch'],code))
+            if category=='stock' and operation=='create' and share_class=='common':
+                # Open the capital account with the listing, so the company shows on every
+                # account screen from the start instead of after its first trade.
+                from managers.company_account_manager import CompanyAccounts
+                CompanyAccounts.account_id(conn, code)
             if category=='stock' and values.get('dividend_funding',merged.get('dividend_funding'))=='issuer':
                 owner=values.get('parent_company_code',merged.get('parent_company_code')) if share_class=='preferred' else code
                 conn.execute('INSERT OR IGNORE INTO issuer_cash_accounts(company_code) VALUES (?)',(owner,))

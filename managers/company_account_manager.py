@@ -47,7 +47,7 @@ class CompanyAccounts:
         cash = conn.execute("SELECT balance FROM issuer_cash_accounts WHERE company_code=?", (code,)).fetchone()[0]
         user_id = PREFIX + code  # non-decimal: can never be a Discord or web login
         conn.execute("INSERT INTO users(user_id,nickname,nationality,cash,status,role) VALUES (?,?,?,?,'active','company')",
-                     (user_id, f"{company['name']} 법인", nationality, int(cash)))
+                     (user_id, company['name'], nationality, int(cash)))
         conn.execute("INSERT INTO company_accounts(company_code,user_id) VALUES (?,?)", (code, user_id))
         from managers.financial_manager import FinancialManager
         FinancialManager.ensure(conn, code)

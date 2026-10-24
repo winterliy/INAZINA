@@ -17,10 +17,11 @@ import { DocumentsPage } from "./DocumentsPage";
 import { CompliancePage } from "./CompliancePage";
 import { BankJournalPage } from "./BankJournalPage";
 import { DatabasePage } from "./DatabasePage";
+import { NaturalizationPage } from "./NaturalizationPage";
 import { COMMAND_FORMS, CommandForm } from "./CommandForm";
 import { AccountPage } from "./AccountPage";
 
-type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "users" | "feedback" | "board" | "documents" | "compliance" | "accounting" | "events" | "commands" | "database" | "audit";
+type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "users" | "naturalization" | "feedback" | "board" | "documents" | "compliance" | "accounting" | "events" | "commands" | "database" | "audit";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
 type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
 type Exchange = { exchange_id: string; status: string; reason: string | null; trading_halted: number; updated_epoch: number | null; resume_epoch: number | null; circuit_stage: number | null };
@@ -43,6 +44,7 @@ const pages: { id: Page; label: string }[] = [
   { id: "exchanges", label: "거래소" },
   { id: "companies", label: "법인 자본" },
   { id: "users", label: "사용자 · 국가" },
+  { id: "naturalization", label: "귀화심사" },
   { id: "feedback", label: "문의·신고" },
   { id: "board", label: "게시판 관리" },
   { id: "compliance", label: "KYC · AML" },
@@ -60,6 +62,7 @@ const subtitles: Record<Page, string> = {
   finance: "저축·대출·통화·외환통장 상품을 생성·수정·중지합니다.",
   exchanges: "거래소별 개장·휴장·서킷브레이커와 소속 국가·지수를 관리합니다.",
   companies: "법인 현금·보유자산·통장·대출을 보고 법인 계정으로 매수·매도·송금·대출을 실행합니다.",
+  naturalization: "Discord /귀화신청으로 들어온 신청을 심사합니다. 승인하면 신청자의 자산을 정리하고 국적을 옮깁니다.",
   feedback: "공식 사이트의 Contact·Report로 들어온 문의와 신고를 확인하고 처리합니다.",
   documents: "약관·처리방침·규칙·도움말과 Discord 등록 안내문을 고치고 확정합니다.",
   board: "HTS 게시판의 신고를 처리하고 글을 숨기거나 고정합니다. 익명 글의 실제 작성자와 IP를 확인할 수 있습니다.",
@@ -96,6 +99,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [unreadFeedback, setUnreadFeedback] = useState(0);
+  const [pendingNaturalization, setPendingNaturalization] = useState(0);
   const unreadSeen = useRef(0);
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [audit, setAudit] = useState<Audit[]>([]);
@@ -194,6 +198,7 @@ export default function App() {
       if (result.unread > unreadSeen.current) setNotice({ text: `🔔 공식 사이트에서 새 문의·신고가 ${result.unread - unreadSeen.current}건 왔습니다.`, error: false });
       unreadSeen.current = result.unread;
       setUnreadFeedback(result.unread);
+      setPendingNaturalization((await api<{ pending: number }>("/api/admin/naturalization")).pending);
     } catch { /* the badge is best effort */ }
   }, []);
   useEffect(() => {
@@ -379,6 +384,7 @@ export default function App() {
           {pages.filter((item) => item.id !== "account").map((item) => <button key={item.id} type="button" className="subnav-item" aria-current={page === item.id ? "page" : undefined} onClick={() => setPage(item.id)}>
             {item.label}
             {item.id === "feedback" && unreadFeedback > 0 && <span className="nav-badge" aria-label={`새 알림 ${unreadFeedback}건`}>{unreadFeedback}</span>}
+            {item.id === "naturalization" && pendingNaturalization > 0 && <span className="nav-badge" aria-label={`심사 대기 ${pendingNaturalization}건`}>{pendingNaturalization}</span>}
           </button>)}
         </div>
       </nav>
@@ -432,6 +438,7 @@ export default function App() {
         {page === "compliance" && <CompliancePage ctx={ctx} />}
         {page === "accounting" && <BankJournalPage ctx={ctx} />}
         {page === "feedback" && <FeedbackPage ctx={ctx} onChange={() => void loadUnread()} />}
+        {page === "naturalization" && <NaturalizationPage ctx={ctx} onChange={() => void loadUnread()} />}
         {page === "users" && <UsersPage ctx={ctx} currentUserId={user.userId} />}
         {page === "events" && <>
           <section className="glass card mb rise"><div className="card-head"><div><h2>시장 사건 등록</h2><p className="cap">기존 시장 사건 검증과 감사 기록을 적용합니다.</p></div></div><form className="form-grid" onSubmit={createEvent}>

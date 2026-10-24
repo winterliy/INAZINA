@@ -486,6 +486,25 @@ def admin_feedback(status=None):
     return {"items": [dict(row) for row in rows], "unread": int(unread)}
 
 
+def admin_naturalization():
+    """Naturalization requests for the 귀화심사 tab, each with what approval would liquidate."""
+    from managers.naturalization_manager import NaturalizationManager
+    manager = NaturalizationManager(domain().bot)
+    requests = manager.requests()
+    for item in requests:
+        if item["status"] == "pending":
+            item["preview"] = manager.preview(item["user_id"])
+    return {"requests": requests, "pending": sum(item["status"] == "pending" for item in requests)}
+
+
+def admin_naturalization_decide(actor, request_id, payload):
+    from managers.naturalization_manager import NaturalizationManager
+    action = str(payload.get("action") or "")
+    if action not in {"approve", "reject"}:
+        raise ValueError("승인 또는 거절을 선택해주세요.")
+    return NaturalizationManager(domain().bot).decide(actor, request_id, action == "approve", payload.get("note") or "")
+
+
 def admin_feedback_delete(actor, payload):
     """Delete read submissions: the given ids, or every read one with all=true. New ones stay."""
     with connect_db(timeout=5) as connection:
@@ -3818,6 +3837,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, admin_warnings())
                 elif parts == ["feedback"]:
                     self.send_json(200, admin_feedback(query.get("status", [None])[0]))
+                elif parts == ["naturalization"]:
+                    self.send_json(200, admin_naturalization())
                 elif len(parts) == 2 and parts[0] == "companies":
                     self.send_json(200, admin_company_detail(parts[1]))
                 else:
@@ -4455,6 +4476,8 @@ class Handler(BaseHTTPRequestHandler):
                     message = admin_log_delete(actor, parts[1], payload)
                 elif parts == ["feedback", "delete"]:
                     message = admin_feedback_delete(actor, payload)
+                elif len(parts) == 2 and parts[0] == "naturalization":
+                    message = admin_naturalization_decide(actor, parts[1], payload)
                 elif len(parts) == 2 and parts[0] == "feedback":
                     message = admin_feedback_action(actor, parts[1], payload)
                 elif len(parts) == 2 and parts[0] == "user":

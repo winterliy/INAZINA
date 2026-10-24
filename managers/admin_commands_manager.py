@@ -17,7 +17,7 @@ COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','�
             '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','소득세율','환율수정',
             '국가생성','국가삭제',
             '복권가격설정','금리수정','시장금리수정','법정최고이자수정','자본변경','증자','정기배당수정','정기배당활성','특별배당실시','합병','분할','액면분할병합',
-            '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소','거래경고'}
+            '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소','거래경고','귀화심사'}
 TAX_SOURCES = {
     'bond_sale_gain', 'corporate_bond_interest', 'els_profit', 'foreign_security_sale_gain',
     'fractional_sale_gain', 'futures_realized_gain', 'gambling_winnings', 'liquidation',
@@ -62,7 +62,8 @@ USAGE = {
  '서킷브레이커':'[거래소ID(선택)] [1/2/3단계]', '사이드카':'[거래소ID(선택)]'}
 USAGE.update({'법인잔고수정':'[보통주 법인id] [add/del/modify] [금액]',
               '법인청산':'[보통주 법인id]', 'ELS취소':'[ELS id]',
-              '거래경고':'[종목id] [주의/경고/위험/해제] [사유(선택)] [기간 일수(선택)]'})
+              '거래경고':'[종목id] [주의/경고/위험/해제] [사유(선택)] [기간 일수(선택)]',
+              '귀화심사':'[목록|승인|거절] [신청번호] [사유(선택)]'})
 
 # Core positional arguments vary by product type; extra JSON is always optional.
 CREATE_ARGS = {
@@ -287,7 +288,8 @@ class AdminCommandsManager:
                         or (command=='분할' and len(args) in {5,6})
                         or (command in {'휴장','개장','장일시정지','장재개','사이드카'} and len(args) in {0,1})
                         or (command=='서킷브레이커' and len(args) in {1,2})
-                        or (command=='거래경고' and len(args) in {2,3,4}))
+                        or (command=='거래경고' and len(args) in {2,3,4})
+                        or (command=='귀화심사' and (args[:1]==['목록'] and len(args)==1 or args[:1] in (['승인'],['거절']) and len(args) in {2,3})))
             if not flexible and command not in {'복권당첨번호변경'} and len(args)!=count.get(command,-1):
                 raise ValueError(f'사용법: ${command} {USAGE.get(command,"")}')
             if command=='소수점거래관리':
@@ -317,6 +319,14 @@ class AdminCommandsManager:
             if command=='거래경고':
                 from managers.trading_warning_manager import TradingWarnings
                 return TradingWarnings(self.db).set(actor,args[0],args[1],args[2] if len(args)>2 else '',args[3] if len(args)>3 else None)
+            if command=='귀화심사':
+                from managers.naturalization_manager import NaturalizationManager
+                manager=NaturalizationManager(self.bot)
+                if args[0]=='목록':
+                    pending=[r for r in manager.requests() if r['status']=='pending']
+                    return '\n'.join(f"#{r['request_id']} {r['nickname'] or r['user_id']} · {r['from_nationality']} → {r['to_nationality']}"
+                                     f"{' · '+r['reason'] if r['reason'] else ''}" for r in pending) or '심사 대기 중인 귀화 신청이 없습니다.'
+                return manager.decide(actor,args[1],args[0]=='승인',args[2] if len(args)==3 else '')
             if command=='ELS취소':
                 from managers.els_manager import ELSManager
                 return self.result_text(ELSManager(self.db,self.bot.user_mgr).cancel(actor,args[0]))
