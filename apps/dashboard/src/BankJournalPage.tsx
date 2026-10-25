@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../shared/api";
-import { Card, Field, type Ctx } from "./common";
+import { Card, Field, number, type Ctx } from "./common";
 
 type Trial = { currency_code: string; account_code: string; debit_units: number; credit_units: number; balance_units: number; debit_amount: string; credit_amount: string; balance_amount: string; decimal_places: number; entry_count?: number };
 type Unbalanced = { entry_id: number; issuer: string; event_type: string; reference_key: string; currency_code: string; line_count: number; debit_units: number; credit_units: number; debit_amount: string; credit_amount: string };
@@ -25,6 +25,33 @@ type CommonJournalReconciliation = { ledger_scope: string; native_entries?: numb
 type AmountSnapshotAudit = { status: string; findingCount: number; findings: { source_table?: string; source_key?: string; amount_field?: string; currency_code?: string; status: string }[] };
 type FinancialCloseControl = { status: string; coverage: string[]; institution_count: number; findings: Record<string, unknown>[]; amount_field_coverage: { status: string; registered_count: number; exempt_count: number; unclassified: { source_table?: string; amount_field?: string; status: string }[] } };
 type Report = { issuer: string; currency: string | null; trialBalance: Trial[]; commonTrialBalance: Trial[]; unbalancedEntries: Unbalanced[]; resultReconciliation: Reconciliation[]; depositReconciliation: DepositReconciliation[]; loanReconciliation: LoanReconciliation[]; loanScheduleReconciliation: LoanScheduleFinding[]; eclAllowanceReconciliation: LoanReconciliation[]; chargeoffMemoReconciliation: ChargeoffMemoReconciliation[]; depositInsuranceReconciliation: DepositInsuranceReconciliation[]; depositInsuranceClaims: DepositInsuranceClaim[]; commonJournalReconciliation: CommonJournalReconciliation[]; financialCloseControl: FinancialCloseControl; commonJournalUnbalancedEntries: { entry_id: number; ledger_scope: string; entity_type: string; entity_id: string; currency_code: string }[]; amountSnapshotAudit: AmountSnapshotAudit; maturityGap: MaturityGap; liquidityStress: LiquidityStress; rateStress: RateStress; fixedRateEveStress: FixedRateEveStress; fxStress: FxStress; prudential: Prudential; creditStress: CreditStress; correlatedCreditStress: CorrelatedCreditStress; borrowerConcentrationStress: BorrowerConcentrationStress };
+
+/** One balance per currency: the beam tips toward the heavier side of the trial balance. */
+function BalanceScales({ rows, unbalanced }: { rows: Trial[]; unbalanced: number }) {
+  const currencies = [...new Set(rows.map((row) => row.currency_code))].map((code) => {
+    const lines = rows.filter((row) => row.currency_code === code);
+    const scale = 10 ** (lines[0]?.decimal_places ?? 0);
+    const debit = lines.reduce((sum, row) => sum + row.debit_units, 0);
+    const credit = lines.reduce((sum, row) => sum + row.credit_units, 0);
+    return { code, debit: debit / scale, credit: credit / scale, tilt: debit === credit ? 0 : Math.max(-12, Math.min(12, (debit - credit) / Math.max(debit, credit) * 12)) };
+  });
+  if (!currencies.length) return null;
+  return <div className="tile-row scale-tiles">
+    {currencies.map((item) => <section key={item.code} className="tile scale-tile" aria-label={`${item.code} 대차 ${item.tilt ? "불일치" : "일치"}`}>
+      <p className="tile-label">대차 저울 · {item.code}</p>
+      <svg viewBox="0 0 240 120" aria-hidden="true">
+        <path className="scale-post" d="M120 30 L120 104 M96 108 L144 108" />
+        <g transform={`rotate(${-item.tilt} 120 30)`}>
+          <path className="scale-beam" d="M30 30 L210 30" />
+          <path className="scale-pan" d="M30 30 L14 74 L46 74 Z M210 30 L194 74 L226 74 Z" />
+        </g>
+        <circle className="scale-pivot" cx="120" cy="30" r="5" />
+      </svg>
+      <dl className="scale-sides"><div><dt>차변</dt><dd>{number(item.debit)}</dd></div><div><dt>대변</dt><dd>{number(item.credit)}</dd></div></dl>
+      <p className={item.tilt ? "scale-verdict off" : "scale-verdict"}>{item.tilt ? `차이 ${number(item.debit - item.credit)}` : "대차 일치"}{unbalanced > 0 && ` · 불균형 분개 ${unbalanced}건`}</p>
+    </section>)}
+  </div>;
+}
 
 export function BankJournalPage({ ctx }: { ctx: Ctx }) {
   const { busy, run, say } = ctx;
@@ -74,6 +101,7 @@ export function BankJournalPage({ ctx }: { ctx: Ctx }) {
     </form>
     <p className="hint">불변 스냅샷으로 기록됩니다. 같은 기간 재요청은 멱등이며, 마감 이후 소급 전기는 거부됩니다. 오류 정정은 다음 열린 기간의 조정분개로 기록하세요.</p>
     {report && <>
+      <BalanceScales rows={report.trialBalance} unbalanced={report.unbalancedEntries.length} />
       <h3 className="sub-head">통합 금융원장 검사 요약</h3>
       <p className="hint">등록된 금액 필드·스키마 후보·공통원장·각 금융기관의 구현된 보조원장 검사를 함께 실행합니다. 상태 {report.financialCloseControl.status} · 발견 {report.financialCloseControl.findings.length}건 · 금액 필드 {report.financialCloseControl.amount_field_coverage.registered_count}개 · 명시 제외 {report.financialCloseControl.amount_field_coverage.exempt_count}개 · 미분류 스키마 {report.financialCloseControl.amount_field_coverage.unclassified.length}개 · 기관 {report.financialCloseControl.institution_count}곳 · 범위 {report.financialCloseControl.coverage.join(", ")}. 미연결 특수 매처와 과거 거래 재생 제한은 금액 인벤토리에 남습니다.</p>
       {report.financialCloseControl.findings.length > 0 && <div className="scroll-x"><pre className="mono">{JSON.stringify(report.financialCloseControl.findings.slice(0, 100), null, 2)}</pre></div>}

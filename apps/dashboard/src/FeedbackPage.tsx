@@ -17,10 +17,13 @@ export function FeedbackPage({ ctx, onChange }: { ctx: Ctx; onChange: () => void
   const [filter, setFilter] = useState<Filter>("new");
   const [open, setOpen] = useState<number | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [everything, setEverything] = useState<Feedback[]>([]);
 
   const load = useCallback(async () => {
-    const result = await api<{ items: Feedback[] }>(`/api/admin/feedback${filter === "all" ? "" : `?status=${filter}`}`);
-    setItems(result.items);
+    // The tiles count every status; each list is capped at 200, so a status tab needs its own request.
+    const all = await api<{ items: Feedback[] }>("/api/admin/feedback");
+    setItems(filter === "all" ? all.items : (await api<{ items: Feedback[] }>(`/api/admin/feedback?status=${filter}`)).items);
+    setEverything(all.items);
     setSelected(new Set());
   }, [filter]);
   useEffect(() => { load().catch((cause) => say(cause instanceof Error ? cause.message : "문의·신고를 불러오지 못했습니다.", true)); }, [load]);
@@ -54,7 +57,28 @@ export function FeedbackPage({ ctx, onChange }: { ctx: Ctx; onChange: () => void
   const deletable = visible.filter((item) => item.status !== "new");
   const allChecked = deletable.length > 0 && deletable.every((item) => selected.has(item.feedback_id));
 
-  return <Card title="공식 사이트 문의·신고" caption="공식 사이트(127.0.0.1:4314)의 Contact·Report 양식으로 들어온 내용입니다. 새 알림은 왼쪽 메뉴에 숫자로 표시되고 1분마다 갱신됩니다. 행을 열면 '확인함'으로 바뀌고, 확인한 내용만 삭제할 수 있습니다."
+  const fresh = everything.filter((item) => item.status === "new");
+  const count = (test: (item: Feedback) => boolean) => everything.filter(test).length;
+  function openNew(item: Feedback) {
+    setFilter("all");
+    setOpen(item.feedback_id);
+    mark(item, "read");
+  }
+
+  return <>
+  <div className="tile-row inbox-tiles">
+    <section className="tile tile-dark inbox-tile" aria-label="새 문의·신고">
+      <p className="tile-label">받은편지함 · 새 알림</p>
+      <p className="tile-value">{fresh.length}</p>
+      <ul>{fresh.slice(0, 3).map((item) => <li key={item.feedback_id}><button type="button" disabled={busy} onClick={() => openNew(item)}>
+        <span>{KIND[item.kind]}</span><b>{item.title}</b><small>{date(item.created_epoch)}</small></button></li>)}</ul>
+      {!fresh.length && <p className="inbox-empty">모두 확인했습니다.</p>}
+    </section>
+    <section className="tile"><p className="tile-label">문의</p><p className="tile-value">{count((item) => item.kind === "contact")}</p></section>
+    <section className="tile"><p className="tile-label">신고</p><p className="tile-value">{count((item) => item.kind === "report")}</p></section>
+    <section className="tile"><p className="tile-label">처리 완료</p><p className="tile-value">{count((item) => item.status === "done")}</p></section>
+  </div>
+  <Card title="공식 사이트 문의·신고" caption="공식 사이트(127.0.0.1:4314)의 Contact·Report 양식으로 들어온 내용입니다. 새 알림은 왼쪽 메뉴에 숫자로 표시되고 1분마다 갱신됩니다. 행을 열면 '확인함'으로 바뀌고, 확인한 내용만 삭제할 수 있습니다."
     actions={<>
       <button className="soft small danger" type="button" disabled={busy || !selected.size}
         onClick={() => remove({ ids: [...selected] }, `선택한 ${selected.size}건을 삭제할까요? 되돌릴 수 없습니다.`)}>선택 삭제 ({selected.size})</button>
@@ -87,5 +111,5 @@ export function FeedbackPage({ ctx, onChange }: { ctx: Ctx; onChange: () => void
           {item.handled_by && <p className="hint">마지막 처리: {item.handled_by} · {item.handled_epoch ? date(item.handled_epoch) : ""}</p>}</td></tr>}
       </Fragment>)}
     </tbody></table>{!visible.length && <p className="empty">{filter === "new" ? "새 문의·신고가 없습니다." : "내역이 없습니다."}</p>}</div>
-  </Card>;
+  </Card></>;
 }

@@ -18,6 +18,8 @@ import { CompliancePage } from "./CompliancePage";
 import { BankJournalPage } from "./BankJournalPage";
 import { DatabasePage } from "./DatabasePage";
 import { GambleTile } from "./GambleTile";
+import { TransferTile } from "./TransferTile";
+import { AuditHeatmap, EventTimeline } from "./ActivityTiles";
 import { NaturalizationPage } from "./NaturalizationPage";
 import { COMMAND_FORMS, CommandForm } from "./CommandForm";
 import { AccountPage } from "./AccountPage";
@@ -442,6 +444,7 @@ export default function App() {
         {page === "naturalization" && <NaturalizationPage ctx={ctx} onChange={() => void loadUnread()} />}
         {page === "users" && <UsersPage ctx={ctx} currentUserId={user.userId} />}
         {page === "events" && <>
+          <EventTimeline events={events} />
           <section className="glass card mb rise"><div className="card-head"><div><h2>시장 사건 등록</h2><p className="cap">기존 시장 사건 검증과 감사 기록을 적용합니다.</p></div></div><form className="form-grid" onSubmit={createEvent}>
             <label>종류<select value={eventType} onChange={(event) => setEventType(event.target.value)}><option value="good">호재</option><option value="bad">악재</option></select></label>
             <label>{eventTarget.trim() ? "변동성 (%)" : "목표 변동률 (%)"}<input type="number" min="0" max="100" step="0.1" value={eventSeverity} onChange={(event) => setEventSeverity(event.target.value)} required /></label>
@@ -470,7 +473,7 @@ export default function App() {
             <button type="button" aria-current={commandSection === HELP ? "page" : undefined} onClick={() => openCategory(HELP)}>도움말 ($도움말)</button>
           </nav>
           <div className="command-content">
-          {commandScope === "admin" && <GambleTile ctx={ctx} />}
+          {commandScope === "admin" && <div className="feature-pair"><GambleTile ctx={ctx} /><TransferTile ctx={ctx} /></div>}
           {commandScope === "admin" && <section className="command-category-head rise"><p className="eyebrow">관리자 명령어</p><h2>{activeCategory || "불러오는 중…"}</h2><p className="cap">{visibleCommands.length}개 명령어 · 고르면 아래에 입력 칸이 열립니다. 시장 사건($사건)은 시장 사건 화면에서 등록합니다.</p>
             <div className="command-list">{visibleCommands.map((item) => <button key={item.name} type="button" className={item.name === command ? "command-chip active" : "command-chip"} aria-pressed={item.name === command} onClick={() => { setCommand(item.name); setCommandArgs(""); }}><b>${item.name}</b><small>{item.usage || "인자 없음"}</small></button>)}</div>
           </section>}
@@ -505,6 +508,7 @@ export default function App() {
 
         {page === "database" && <DatabasePage ctx={ctx} />}
 
+        {page === "audit" && <AuditHeatmap entries={audit} />}
         {page === "audit" && <Card title="최근 관리자 작업" caption="최근 50건 · 작업 기록은 append-only이며 수정·삭제할 수 없습니다.">
           <div className="scroll-x tall"><table><thead><tr><th>시각</th><th>관리자 ID</th><th>작업</th><th>세부 내용</th></tr></thead><tbody>{audit.map((entry) => <tr key={entry.auditId}>
             <td>{date(entry.time)}</td><td className="mono">{entry.actorId}</td><td><span className="tag">{entry.action}</span></td><td className="audit-payload mono" title={JSON.stringify(entry.payload)}>{JSON.stringify(entry.payload)}</td>

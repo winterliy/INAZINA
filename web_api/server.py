@@ -2430,6 +2430,17 @@ def _locate_product(connection, code, kind=None):
     raise ValueError("상품 코드를 찾을 수 없습니다.")
 
 
+def _shareholders(connection, code):
+    """Who holds an asset, largest first, and the company's issued shares when it is one."""
+    holders = connection.execute(
+        "SELECT a.user_id,COALESCE(u.nickname,a.user_id) AS name,SUM(a.quantity) AS quantity FROM user_assets a "
+        "LEFT JOIN users u ON u.user_id=a.user_id WHERE a.asset_code=? GROUP BY a.user_id "
+        "HAVING SUM(a.quantity)>0 ORDER BY quantity DESC", (code,)).fetchall()
+    total = connection.execute("SELECT total_shares FROM company WHERE company_code=?", (code,)).fetchone()
+    return {"totalShares": float(total[0] or 0) if total else 0,
+            "holders": [{"userId": row[0], "name": row[1], "quantity": float(row[2])} for row in holders]}
+
+
 def product_detail(code):
     with connect_readonly() as connection:
         kind, row = _locate_product(connection, code)
@@ -2458,7 +2469,8 @@ def product_detail(code):
                 for field in ("underlying_code", "underlying_per_receipt", "receipt_type",
                               "depositary_bank", "custodian", "home_exchange_id", "quote_currency"):
                     values[field] = program[field]
-    return {"code": code, "kind": kind, "status": row.get("status") or "active",
+        shareholders = _shareholders(connection, code)
+    return {"code": code, "kind": kind, "status": row.get("status") or "active", "shareholders": shareholders,
             "values": {key: _cell(value) for key, value in values.items()},
             "row": _masked(row)}
 
@@ -3116,13 +3128,7 @@ def admin_company_detail(code):
     with connect_db(timeout=2) as connection:
         ensure_auth_table(connection)
         login = connection.execute("SELECT updated_epoch FROM web_auth_credentials WHERE user_id=?", (account,)).fetchone()
-        holders = connection.execute(
-            "SELECT a.user_id,COALESCE(u.nickname,a.user_id) AS name,SUM(a.quantity) AS quantity FROM user_assets a "
-            "LEFT JOIN users u ON u.user_id=a.user_id WHERE a.asset_code=? GROUP BY a.user_id "
-            "HAVING SUM(a.quantity)>0 ORDER BY quantity DESC", (code,)).fetchall()
-        total = connection.execute("SELECT total_shares FROM company WHERE company_code=?", (code,)).fetchone()
-    shareholders = {"totalShares": float(total[0] or 0) if total else 0,
-                    "holders": [{"userId": row[0], "name": row[1], "quantity": float(row[2])} for row in holders]}
+        shareholders = _shareholders(connection, code)
     return {"account": account, "webLogin": bool(login), "loginId": code, "shareholders": shareholders, "assets": json.loads(json.dumps(info, default=lambda value: dict(value) if hasattr(value, "keys") else str(value)))}
 
 

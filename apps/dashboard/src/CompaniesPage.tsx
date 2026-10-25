@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
-import { Donut, topSlices } from "./Donut";
+import { Donut, ShareholderPie, topSlices, type Shareholders } from "./Donut";
 import { Card, Field, number, plain, show, type Ctx } from "./common";
 import { CompanyLedger } from "./CompanyLedger";
 
@@ -11,17 +11,7 @@ type Command = { name: string; group: string; description: string; guide: string
 type Stock = { name: string; code: string; qty: number; value: number; price: number };
 type Account = { number: string; product_name: string; balance: number };
 type Assets = { cash: number; grand_total: number; loan_total: number; net_worth: number; stocks: Stock[]; accounts: Account[] };
-type Shareholders = { totalShares: number; holders: { userId: string; name: string; quantity: number }[] };
 type Detail = { account: string; webLogin: boolean; loginId: string; assets: Assets; shareholders: Shareholders };
-
-/** Who owns the company: the six largest holders, the rest together, and shares no one holds. */
-function ShareholderPie({ data }: { data: Shareholders }) {
-  const held = data.holders.reduce((sum, item) => sum + item.quantity, 0);
-  const total = Math.max(data.totalShares, held);
-  const slices = topSlices(data.holders.map((item) => ({ label: item.name, value: item.quantity })), "기타 주주",
-    { label: "미보유(유통 전)", value: total - held, color: "var(--chip)" });
-  return <Donut slices={slices} total={total} center={number(total)} unit="발행 주식" label="주주 구성 원그래프" suffix="주" />;
-}
 
 /** What the company owns: its holdings by value. */
 function HoldingsPie({ stocks }: { stocks: Stock[] }) {

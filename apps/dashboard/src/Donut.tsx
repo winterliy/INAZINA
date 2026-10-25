@@ -26,6 +26,16 @@ export function Donut({ slices, total, center, unit, label, suffix = "" }: { sli
   </figure>;
 }
 
+/** A ring gauge filled clockwise from the top by `ratio` (0–1), with a centre figure. */
+export function Gauge({ ratio, center, label }: { ratio: number; center: string; label?: string }) {
+  const fill = Math.max(0, Math.min(1, ratio)) * 314;
+  return <svg className="gauge" viewBox="0 0 120 120" role={label ? "img" : undefined} aria-label={label} aria-hidden={label ? undefined : true}>
+    <circle cx="60" cy="60" r="50" className="gauge-track" />
+    <circle cx="60" cy="60" r="50" className="gauge-fill" strokeDasharray={`${fill} 314`} transform="rotate(-90 60 60)" />
+    <text x="60" y="66" textAnchor="middle">{center}</text>
+  </svg>;
+}
+
 /** The largest six as slices, the rest as one, plus an optional remainder slice. */
 export function topSlices(items: { label: string; value: number }[], rest: string, remainder?: Slice): Slice[] {
   const others = items.slice(6).reduce((sum, item) => sum + item.value, 0);
@@ -33,3 +43,14 @@ export function topSlices(items: { label: string; value: number }[], rest: strin
     ...(others ? [{ label: rest, value: others, color: SLICE_COLORS[6] }] : []), ...(remainder && remainder.value > 0 ? [remainder] : [])];
 }
 
+
+export type Shareholders = { totalShares: number; holders: { userId: string; name: string; quantity: number }[] };
+
+/** Who owns a company or stock: the six largest holders, the rest together, and shares no one holds. */
+export function ShareholderPie({ data }: { data: Shareholders }) {
+  const held = data.holders.reduce((sum, item) => sum + item.quantity, 0);
+  const total = Math.max(data.totalShares, held);
+  const slices = topSlices(data.holders.map((item) => ({ label: item.name, value: item.quantity })), "기타 주주",
+    { label: "미보유(유통 전)", value: total - held, color: "var(--chip)" });
+  return <Donut slices={slices} total={total} center={number(total)} unit="발행 주식" label="주주 구성 원그래프" suffix="주" />;
+}
