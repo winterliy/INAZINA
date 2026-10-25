@@ -17,6 +17,7 @@ import { DocumentsPage } from "./DocumentsPage";
 import { CompliancePage } from "./CompliancePage";
 import { BankJournalPage } from "./BankJournalPage";
 import { DatabasePage } from "./DatabasePage";
+import { GambleTile } from "./GambleTile";
 import { NaturalizationPage } from "./NaturalizationPage";
 import { COMMAND_FORMS, CommandForm } from "./CommandForm";
 import { AccountPage } from "./AccountPage";
@@ -469,6 +470,7 @@ export default function App() {
             <button type="button" aria-current={commandSection === HELP ? "page" : undefined} onClick={() => openCategory(HELP)}>도움말 ($도움말)</button>
           </nav>
           <div className="command-content">
+          {commandScope === "admin" && <GambleTile ctx={ctx} />}
           {commandScope === "admin" && <section className="command-category-head rise"><p className="eyebrow">관리자 명령어</p><h2>{activeCategory || "불러오는 중…"}</h2><p className="cap">{visibleCommands.length}개 명령어 · 고르면 아래에 입력 칸이 열립니다. 시장 사건($사건)은 시장 사건 화면에서 등록합니다.</p>
             <div className="command-list">{visibleCommands.map((item) => <button key={item.name} type="button" className={item.name === command ? "command-chip active" : "command-chip"} aria-pressed={item.name === command} onClick={() => { setCommand(item.name); setCommandArgs(""); }}><b>${item.name}</b><small>{item.usage || "인자 없음"}</small></button>)}</div>
           </section>}
