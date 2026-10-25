@@ -648,41 +648,6 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
 .nat-history li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 14px 0; border-top: 1px solid var(--line); font-size: 14px; }
 .nat-history-who { font-weight: 600; }
 
-/* ---- Page sections: every titled panel drops its box. The heading (title, caption, actions)
-   stays in a left column while the content runs to its right; hairlines separate sections. ---- */
-.glass.card:has(> .card-head):not(.db-insert) {
-  --field: var(--surface); --pearl: var(--surface);
-  display: grid; grid-template-columns: minmax(200px, 280px) minmax(0, 1fr); column-gap: 56px; row-gap: 0; align-items: start;
-  margin: 0; padding: 44px 0; border-radius: 0; background: transparent; box-shadow: inset 0 1px 0 var(--line);
-}
-.glass.card:has(> .card-head):not(.db-insert) > .card-head {
-  position: sticky; top: 76px; grid-column: 1; grid-row: span 30; flex-direction: column; align-items: stretch; gap: 16px; margin: 0;
-}
-.glass.card:has(> .card-head):not(.db-insert) > .card-head > div:first-child { flex: none; }
-.glass.card:has(> .card-head):not(.db-insert) > .card-head h2 { font-size: 24px; line-height: 1.17; }
-.glass.card:has(> .card-head):not(.db-insert) > .card-head .cap { margin-top: 10px; }
-.glass.card:has(> .card-head):not(.db-insert) > .card-head .actions { justify-content: flex-start; }
-.glass.card:has(> .card-head):not(.db-insert) > :not(.card-head) { grid-column: 2; min-width: 0; }
-.glass.card:has(> .card-head):not(.db-insert) > :not(.card-head) ~ :not(.card-head) { margin-top: 20px; }
-/* Tables become sheets: a parchment surface with a sticky caption row. */
-.glass.card:has(> .card-head) .scroll-x { margin: 0; padding: 0; border-radius: 20px; background: var(--surface); }
-.glass.card:has(> .card-head) .scroll-x th { padding-top: 14px; background: var(--surface); }
-.glass.card:has(> .card-head) .scroll-x th:first-child, .glass.card:has(> .card-head) .scroll-x td:first-child { padding-left: 20px; }
-.glass.card:has(> .card-head) .scroll-x th:last-child, .glass.card:has(> .card-head) .scroll-x td:last-child { padding-right: 20px; }
-.glass.card:has(> .card-head) .scroll-x .empty { padding: 40px 16px; }
-/* Forms: each field is its own small card. */
-.glass.card:has(> .card-head) .form-grid { gap: 10px; }
-.glass.card:has(> .card-head) .form-grid > label { padding: 12px; border-radius: 16px; background: var(--surface); color: var(--ink2); font-weight: 600; }
-.glass.card:has(> .card-head) .form-grid > label input, .glass.card:has(> .card-head) .form-grid > label select { background: var(--canvas); }
-.glass.card:has(> .card-head) .form-grid > button { align-self: center; }
-.segment-tabs.mb { margin-bottom: 8px; }
-
-@media (max-width: 900px) {
-  .glass.card:has(> .card-head):not(.db-insert) { grid-template-columns: minmax(0, 1fr); padding: 32px 0; }
-  .glass.card:has(> .card-head):not(.db-insert) > .card-head { position: static; grid-row: auto; margin-bottom: 20px; }
-  .glass.card:has(> .card-head):not(.db-insert) > :not(.card-head) { grid-column: 1; }
-}
-
 /* 법인 자본: ownership pie with its legend. */
 .holders { display: flex; flex-wrap: wrap; align-items: center; gap: 24px 40px; margin: 8px 0 20px; }
 .holders svg { flex: none; width: 200px; height: 200px; }
@@ -693,3 +658,18 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
 .holders li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .holders li b { font-variant-numeric: tabular-nums; }
 .holders li small { color: var(--ink2); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+/* ---- Bento: titled cards tile the page two across like 운영 현황; wide content takes the row. ---- */
+.content { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 16px; align-items: start; }
+.content > * { grid-column: 1 / -1; min-width: 0; }
+.content > .glass.card { grid-column: auto; margin-bottom: 16px; padding: 28px 32px; border-radius: 28px; }
+.content > .glass.card:has(.scroll-x.tall, .form-grid, .command-form, .command-list, .doc-editor, .help-page, .holders, .stats) { grid-column: 1 / -1; }
+.content > .glass.card .card-head h2 { font-size: 24px; letter-spacing: -.015em; }
+@media (max-width: 900px) { .content { grid-template-columns: minmax(0, 1fr); } }
+
+/* The ownership pie is a donut: slices with hairline gaps around the share count. */
+.holders svg path { stroke: var(--surface); stroke-width: 3; }
+.holders .holders-hole { fill: var(--surface); }
+.holders .holders-total { fill: var(--ink); font-size: 22px; font-weight: 600; font-family: var(--font-system); }
+.holders .holders-unit { fill: var(--ink2); font-size: 11px; font-family: var(--font-system); }
+.holders li { padding: 8px 12px; border-radius: 12px; background: var(--pearl); }

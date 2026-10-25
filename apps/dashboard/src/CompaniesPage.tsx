@@ -33,7 +33,12 @@ function ShareholderPie({ data }: { data: Shareholders }) {
     return { ...slice, path };
   });
   return <figure className="holders">
-    <svg viewBox="0 0 200 200" role="img" aria-label="주주 구성 원그래프">{arcs.map((arc) => <path key={arc.label} d={arc.path} fill={arc.color} stroke="var(--canvas)" strokeWidth="1.5" />)}</svg>
+    <svg viewBox="0 0 200 200" role="img" aria-label="주주 구성 원그래프">
+      {arcs.map((arc) => <path key={arc.label} d={arc.path} fill={arc.color} />)}
+      <circle className="holders-hole" cx="100" cy="100" r="58" />
+      <text className="holders-total" x="100" y="102" textAnchor="middle">{number(total)}</text>
+      <text className="holders-unit" x="100" y="120" textAnchor="middle">발행 주식</text>
+    </svg>
     <figcaption><ul>{arcs.map((arc) => <li key={arc.label}><i style={{ background: arc.color }} /><span>{arc.label}</span><b>{(arc.quantity / total * 100).toFixed(2)}%</b><small>{number(arc.quantity)}주</small></li>)}</ul></figcaption>
   </figure>;
 }

@@ -43,7 +43,7 @@ const pages: { id: Page; label: string }[] = [
   { id: "finance", label: "금융 상품" },
   { id: "exchanges", label: "거래소" },
   { id: "companies", label: "법인 자본" },
-  { id: "users", label: "사용자 · 국가" },
+  { id: "users", label: "계정관리" },
   { id: "naturalization", label: "귀화심사" },
   { id: "feedback", label: "문의·신고" },
   { id: "board", label: "게시판 관리" },
