@@ -1,5 +1,5 @@
 import { createHash, createHmac, timingSafeEqual, randomBytes } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createReadStream, existsSync } from "node:fs";
@@ -40,12 +40,28 @@ const failedLogins = new Map<string, { count: number; resetAt: number }>();
 const python = existsSync(join(projectRoot, ".venv", "bin", "python"))
   ? join(projectRoot, ".venv", "bin", "python")
   : process.env.PYTHON ?? "python3";
-const pythonProcess = spawn(python, [join(projectRoot, "web_api", "server.py")], {
-  cwd: projectRoot,
-  env: { ...process.env, INAZINA_INTERNAL_TOKEN: internalToken,
-    INAZINA_BROWSER_PASSWORD_SHA256: browserPasswordHash, INAZINA_PYTHON_PORT: String(pythonPort) },
-  stdio: ["ignore", "inherit", "inherit"],
-});
+let stopping = false;
+let lastPythonFailureLog = 0;
+let pythonRestarts = 0;
+// The data service is restarted when it exits on its own (a startup failure, a crash),
+// so one bad start does not leave every request failing until the whole stack is restarted.
+function startPython(): ChildProcess {
+  const child = spawn(python, [join(projectRoot, "web_api", "server.py")], {
+    cwd: projectRoot,
+    env: { ...process.env, INAZINA_INTERNAL_TOKEN: internalToken,
+      INAZINA_BROWSER_PASSWORD_SHA256: browserPasswordHash, INAZINA_PYTHON_PORT: String(pythonPort) },
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+  child.once("exit", (code, signal) => {
+    if (stopping) return;
+    const delay = Math.min(30, 2 ** Math.min(pythonRestarts, 5));
+    pythonRestarts += 1;
+    console.error(`INAZINA Python data service exited (code ${code ?? "-"}${signal ? `, ${signal}` : ""}); the error above is the cause. Restarting in ${delay}s.`);
+    setTimeout(() => { if (!stopping) pythonProcess = startPython(); }, delay * 1000);
+  });
+  return child;
+}
+let pythonProcess = startPython();
 
 function findProjectRoot(): string {
   let current = dirname(fileURLToPath(import.meta.url));
@@ -265,7 +281,11 @@ async function internalRequest(
       return { status: 503, body: { error: "python_service_unavailable" } };
     }
   } catch (error) {
-    console.error(`Python service request failed for ${method} ${path}:`, error);
+    // While the data service is down every request fails the same way; say so once a minute.
+    if (Date.now() - lastPythonFailureLog > 60_000) {
+      lastPythonFailureLog = Date.now();
+      console.error(`Python service request failed for ${method} ${path} (further failures muted for 60s):`, error instanceof Error ? error.cause ?? error.message : error);
+    }
     return { status: 503, body: { error: "python_service_unavailable" } };
   }
 }
@@ -1211,6 +1231,7 @@ server.listen(port, host, () => {
 });
 
 function shutdown(): void {
+  stopping = true;
   server.close();
   pythonProcess.kill("SIGTERM");
 }
@@ -1218,4 +1239,4 @@ function shutdown(): void {
 process.once("SIGINT", shutdown);
 process.once("SIGTERM", shutdown);
 // Any other way out (a crash, process.exit) must not leave the data service holding its port.
-process.once("exit", () => { if (pythonProcess.exitCode === null) pythonProcess.kill("SIGTERM"); });
+process.once("exit", () => { stopping = true; if (pythonProcess.exitCode === null) pythonProcess.kill("SIGTERM"); });

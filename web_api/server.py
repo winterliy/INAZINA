@@ -4765,11 +4765,22 @@ def main():
     import signal
     if not INTERNAL_TOKEN:
         raise SystemExit("INAZINA_INTERNAL_TOKEN is required")
-    try:
-        domain()
-    except KeyboardInterrupt:
-        print("INAZINA Python data service stopped during startup.", flush=True)
-        return
+    # The Discord bot migrates and backs up the same database at the same moment on start_all;
+    # a busy or locked database at startup is retried instead of ending the service.
+    for attempt in range(1, 7):
+        try:
+            domain()
+            break
+        except KeyboardInterrupt:
+            print("INAZINA Python data service stopped during startup.", flush=True)
+            return
+        except Exception:
+            import traceback
+            print(f"INAZINA Python data service: database startup failed (attempt {attempt}/6)", flush=True)
+            traceback.print_exc()
+            if attempt == 6:
+                raise
+            time.sleep(5)
     server = BoundedThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     stopping = threading.Event()
 
