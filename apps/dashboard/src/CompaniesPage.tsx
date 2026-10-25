@@ -20,21 +20,6 @@ function HoldingsPie({ stocks }: { stocks: Stock[] }) {
   return <Donut slices={topSlices(items, "기타 종목")} total={total} center={number(total)} unit="평가액" label="보유 자산 구성 원그래프" />;
 }
 
-/** Parent companies and the subsidiaries they hold, with the stake in each. */
-function Governance({ companies }: { companies: Company[] }) {
-  const groups = new Map<string, { code: string; percent: number }[]>();
-  for (const item of companies) for (const parent of item.parents) groups.set(parent.code, [...(groups.get(parent.code) ?? []), { code: item.company_code, percent: parent.percent }]);
-  if (!groups.size) return null;
-  const name = (code: string) => companies.find((item) => item.company_code === code)?.name ?? code;
-  return <section className="tile tile-dark governance" aria-label="지배구조">
-    <p className="tile-label">지배구조</p>
-    {[...groups].map(([parent, children]) => <div key={parent} className="governance-group">
-      <div className="governance-parent"><b>{parent}</b> {name(parent)}<span>자회사 {number(children.length)}곳</span></div>
-      <div className="governance-children">{children.map((child) => <span key={child.code} title={name(child.code)}>{child.code}<em>{child.percent.toFixed(1)}%</em></span>)}</div>
-    </div>)}
-  </section>;
-}
-
 type Member = { code: string; name: string; parent: string; ownership: number; currency: string; goodwill: number; nci: number; depth?: number };
 type Consolidated = { subsidiaries: Member[]; summary: { assets: number; liabilities: number; equity: number; parent_equity: number; noncontrolling_interest: number; goodwill: number }; income: Record<string, number>; profit_attributable: { parent: number; noncontrolling: number }; eliminations: { dividends: number; transfers: number; cross_holdings: number }; notes: string[] } | null;
 type Report = { period: string; currency: string; places: number; summary: { assets: number; liabilities: number; equity: number }; income: Record<string, number>; changes: Record<string, number>; checks: { balance_sheet: boolean; live_cash: boolean | null }; consolidated: Consolidated };
@@ -173,7 +158,6 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
       <section className="tile"><p className="tile-label">상장 법인</p><p className="tile-value">{number(companies.length)}</p></section>
       <section className="tile"><p className="tile-label">법인 현금 합계</p><p className="tile-value">{number(companies.reduce((sum, item) => sum + item.cash, 0))}</p></section>
     </div>
-    <Governance companies={companies} />
     <Card title="법인 자본" caption="법인은 사람이 아니라 로그인하지 않지만, 자본은 다른 계정과 똑같이 주식·상품 매수매도, 통장, 대출, 송금을 할 수 있습니다. 자기 회사 주식을 사면 자기주식(배당 없음), 다른 회사 지분을 과반 사면 자회사가 됩니다. Discord에서는 $법인 또는 $login [법인ID]를 씁니다.">
       <div className="scroll-x tall"><table><thead><tr><th>법인</th><th>이름</th><th>거래소</th><th className="r">현금</th><th className="r">보유 종목</th><th className="r">통장</th><th className="r">대출</th><th>모회사</th></tr></thead><tbody>
         {visible.map((item) => <tr key={item.company_code} className={item.company_code === selected ? "clickable selected" : "clickable"} tabIndex={0} onClick={() => void open(item.company_code).catch((cause) => say(cause instanceof Error ? cause.message : "법인을 열지 못했습니다.", true))} onKeyDown={(event) => { if (event.key === "Enter") void open(item.company_code); }}>
