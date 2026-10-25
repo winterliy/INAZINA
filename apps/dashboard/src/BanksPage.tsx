@@ -75,12 +75,12 @@ export function BanksPage({ ctx }: { ctx: Ctx }) {
           <button className="btn primary" disabled={busy}>저장</button>
         </form>
       </Card>
-      <Card title="발행 상품" caption={`${number(detail.productsList.length)}개 · 저축·대출 상품의 발행자(issuer)가 이 은행입니다. 상품 생성·수정은 금융 상품 탭에서 합니다.`}>
+      <Card title="발행 상품" caption={`${number(detail.productsList.length)}개 · 저축·대출 상품의 발행 은행 ID가 이 은행입니다. 상품 생성·수정은 금융 상품 탭에서 합니다.`}>
         <div className="scroll-x"><table><thead><tr><th>코드</th><th>이름</th><th>종류</th><th className="r">금리</th><th>상태</th></tr></thead><tbody>
           {detail.productsList.map((item) => <tr key={`${item.kind}-${item.code}`}><td className="mono">{item.code}</td><td>{item.name}</td><td>{item.kind === "loan" ? "대출" : "저축"}</td><td className="r mono">{item.interest_rate}%</td><td><span className={item.status === "active" ? "tag ok" : "tag warn"}>{item.status}</span></td></tr>)}
         </tbody></table>{!detail.productsList.length && <p className="empty">이 은행이 발행한 상품이 없습니다.</p>}</div>
       </Card>
-      <BankJournalPage key={detail.issuer} ctx={ctx} bank={detail.issuer} />
+      <BankJournalPage key={detail.id} ctx={ctx} bank={detail.id} />
     </>}
   </>;
 
@@ -103,7 +103,7 @@ export function BanksPage({ ctx }: { ctx: Ctx }) {
         </tr>)}
       </tbody></table>{!visible.length && <p className="empty">은행이 없습니다.</p>}</div>
     </Card>
-    <Card title="은행 만들기" caption="은행 ID를 직접 정하거나, 비워 두면 무작위로 붙입니다(BNK + 6자리). 저축·대출 상품의 발행자(issuer)에 이 은행 이름을 쓰면 그 은행 상품이 됩니다.">
+    <Card title="은행 만들기" caption="은행 ID를 직접 정하거나, 비워 두면 무작위로 붙입니다(BNK + 6자리). 저축·대출 상품과 원장 조회 등 은행이 필요한 곳에는 모두 이 은행 ID를 씁니다.">
       <form className="form-grid" onSubmit={create}>
         <Field label="은행 ID" hint="선택 · 비우면 BNK + 6자리 무작위"><input className="mono" maxLength={20} value={draft.id} onChange={(event) => setDraft({ ...draft, id: event.target.value.toUpperCase() })} /></Field>
         <Field label="은행 이름"><input required maxLength={60} value={draft.issuer} onChange={(event) => setDraft({ ...draft, issuer: event.target.value })} /></Field>

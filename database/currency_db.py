@@ -2539,7 +2539,17 @@ class CurrencyDB(DBManager):
                     f"ALTER TABLE financial_institutions ADD COLUMN {column} {declaration}"
                 )
         # Every bank has a stable unique ID, chosen when it is created or filled at random (BNK + six digits).
+        # The default issuer, Inazina, is the bank INAZINA so commands and forms can name it by ID.
         import random
+        from functions.banks import DEFAULT_BANK
+        default_issuer, default_id = DEFAULT_BANK
+        if not self.execute("SELECT 1 FROM financial_institutions WHERE institution_id=?", (default_id,)):
+            if self.execute("SELECT 1 FROM financial_institutions WHERE issuer=?", (default_issuer,)):
+                self.execute("UPDATE financial_institutions SET institution_id=? WHERE issuer=? AND institution_id IS NULL",
+                             (default_id, default_issuer))
+            elif self.execute("SELECT 1 FROM country_currencies WHERE nationality='낙원'"):
+                self.execute("INSERT INTO financial_institutions(issuer,nationality,institution_id) VALUES (?,'낙원',?)",
+                             (default_issuer, default_id))
         taken = {row[0] for row in self.execute(
             "SELECT institution_id FROM financial_institutions WHERE institution_id IS NOT NULL")}
         for (issuer,) in self.execute(

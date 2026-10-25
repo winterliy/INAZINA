@@ -53,7 +53,7 @@ function BalanceScales({ rows, unbalanced }: { rows: Trial[]; unbalanced: number
   </div>;
 }
 
-/** `bank` fixes the issuer (a bank's own page) and loads its books right away. */
+/** `bank` fixes the bank ID (a bank's own page) and loads its books right away. */
 export function BankJournalPage({ ctx, bank }: { ctx: Ctx; bank?: string }) {
   const { busy, run, say } = ctx;
   const [issuer, setIssuer] = useState(bank ?? "");
@@ -71,7 +71,7 @@ export function BankJournalPage({ ctx, bank }: { ctx: Ctx; bank?: string }) {
     fetchReport();
   }
   function fetchReport() {
-    if (!issuer.trim()) { say("금융기관 issuer를 입력해주세요.", true); return; }
+    if (!issuer.trim()) { say("은행 ID를 입력해주세요.", true); return; }
     const query = new URLSearchParams({ issuer: issuer.trim(), ...(currency.trim() ? { currency: currency.trim().toUpperCase() } : {}),
       ...(since ? { since: String(Math.floor(new Date(since).getTime() / 1000)) } : {}) });
     void run(() => api<Report>(`/api/admin/bank-journal?${query}`), "은행 원장 대사 정보를 불러오지 못했습니다.", setReport);
@@ -90,7 +90,7 @@ export function BankJournalPage({ ctx, bank }: { ctx: Ctx; bank?: string }) {
   }
   return <Card title="은행 이중분개 원장 대사" caption="조회 전용 · 시산 잔액과 불균형은 전체 이력, 손익 원장 대사는 지정 기간입니다. 금액은 각 통화 정밀도를 따르며 법정 감사의견이 아닙니다.">
     <form className="form-grid" onSubmit={load}>
-      <Field label="금융기관 issuer"><input className="mono" required maxLength={100} readOnly={Boolean(bank)} value={issuer} onChange={(event) => setIssuer(event.target.value)} /></Field>
+      <Field label="은행 ID"><input className="mono" required maxLength={100} readOnly={Boolean(bank)} value={issuer} onChange={(event) => setIssuer(event.target.value.toUpperCase())} /></Field>
       <Field label="통화 필터" hint="선택"><input className="mono" maxLength={12} value={currency} onChange={(event) => setCurrency(event.target.value)} /></Field>
       <Field label="손익 원장 대사 시작" hint="선택 · 기본 최근 30일, 비우면 전체"><input type="datetime-local" value={since} onChange={(event) => setSince(event.target.value)} /></Field>
       <button className="btn primary" disabled={busy || !issuer.trim()}>원장 조회</button>
@@ -98,7 +98,7 @@ export function BankJournalPage({ ctx, bank }: { ctx: Ctx; bank?: string }) {
     <h3 className="sub-head">공통원장 기간 마감</h3>
     <form className="form-grid" onSubmit={closePeriod}>
       <Field label="원장 범위"><select value={closing.scope} onChange={(event) => setClosing({ ...closing, scope: event.target.value })}><option value="customer">고객</option><option value="company">회사</option><option value="institution">금융기관</option></select></Field>
-      <Field label="대상 ID"><input required maxLength={100} value={closing.entity} onChange={(event) => setClosing({ ...closing, entity: event.target.value })} /></Field>
+      <Field label="대상 ID" hint={closing.scope === "institution" ? "은행 ID" : undefined}><input required maxLength={100} value={closing.entity} onChange={(event) => setClosing({ ...closing, entity: event.target.value })} /></Field>
       <Field label="통화"><input required className="mono" maxLength={12} value={closing.currency} onChange={(event) => setClosing({ ...closing, currency: event.target.value })} /></Field>
       <Field label="기간 시작 (포함)"><input required type="datetime-local" value={closing.start} onChange={(event) => setClosing({ ...closing, start: event.target.value })} /></Field>
       <Field label="기간 종료 (미포함)"><input required type="datetime-local" value={closing.end} onChange={(event) => setClosing({ ...closing, end: event.target.value })} /></Field>

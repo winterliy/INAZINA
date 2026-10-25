@@ -58,7 +58,7 @@ ARG_LABELS = {
     'share_price':'주가', 'exchange_id':'거래소ID', 'type':'자산유형', 'price':'가격',
     'total_supply':'발행수량', 'interest_rate':'연이율%', 'deposit_amount':'최소예치금',
     'maturity_days':'만기일수', 'interest_cycle':'이자주기(초)', 'compound_type':'단리0/복리1',
-    'issuer':'발행기관', 'loan_limit':'대출한도', 'min_credit_score':'최소신용점수',
+    'issuer':'발행은행ID', 'loan_limit':'대출한도', 'min_credit_score':'최소신용점수',
     'unit_price':'단위가격', 'underlying_exchange_id':'기초거래소ID',
     'leverage_multiplier':'배율', 'rebalance_cycle_seconds':'재조정주기(초)',
     'underlying_code':'기초종목ID', 'contract_size':'계약당수량',

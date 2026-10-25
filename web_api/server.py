@@ -1687,10 +1687,10 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
         amount = Decimal(str(value or 0))
         return f"{amount:.{places}f}"
 
+    from functions.banks import bank_issuer
     with connect_readonly() as connection:
-        if not connection.execute(
-                "SELECT 1 FROM financial_institutions WHERE issuer=?", (str(issuer),)).fetchone():
-            raise ValueError("financial_institution_not_found")
+        # Banks are named by their ID; the books are keyed by the issuer name.
+        issuer = bank_issuer(connection, issuer)
         trial_balance = BankJournal.trial_balance(connection, issuer, currency)
         common_currencies = [str(row[0]) for row in connection.execute(
             "SELECT DISTINCT currency_code FROM accounting_entries "
@@ -2305,17 +2305,24 @@ def product_catalog():
     from managers.admin_commands_manager import OPTIONAL_ARGS, TEXT_ARGS
     from managers.admin_control_manager import EXAMPLES
     from functions.admin_embeds import ARG_LABELS
+    from functions.banks import bank_ids
     kinds = []
     with connect_readonly() as connection:
+        banks = bank_ids(connection)
         for profile, (label, group, token) in PRODUCT_KINDS.items():
             table, key = _profile_table(profile)
             columns = {row["name"]: row["type"] or "" for row in connection.execute(f'PRAGMA table_info("{table}")')}
             fields = [{"key": field,
                        "label": "발행총액" if profile == "bond" and field == "total_supply"
-                                else ("결제 통화" if profile == "dr" else "통장 화폐") if field == "quote_currency" else ARG_LABELS.get(field, field),
+                                else ("결제 통화" if profile == "dr" else "통장 화폐") if field == "quote_currency"
+                                else "발행 은행 ID" if field == "issuer" else ARG_LABELS.get(field, field),
                        "optional": field in OPTIONAL_ARGS.get(profile, ()),
                        "text": field in TEXT_ARGS or field == "quote_currency"} for field in _form_fields(profile)]
             listed = {field["key"] for field in fields} | {key}
+            example = dict(EXAMPLES.get(_profile_category(profile), {}))
+            if "issuer" in example:
+                # The default bank is offered by its ID; blank when it has none yet.
+                example["issuer"] = banks.get(example["issuer"], "")
             advanced = [{"key": name, "label": ARG_LABELS.get(name, name), "type": kind}
                         for name, kind in columns.items() if name not in listed and name not in PRODUCT_PROTECTED
                         and (name not in {"settlement_delay_seconds", "issue_fee_bps", "redeem_fee_bps"}
@@ -2323,7 +2330,7 @@ def product_catalog():
             kinds.append({"kind": profile, "token": token, "label": label, "group": group,
                           "family": "saving" if profile in SAVING_FAMILY else profile,
                           "fields": fields, "advanced": advanced,
-                          "example": EXAMPLES.get(_profile_category(profile), {}),
+                          "example": example,
                           "editable": profile not in {"els"}})
     return {"kinds": kinds}
 
@@ -2357,8 +2364,10 @@ PRODUCT_SOURCES = (
 def product_list(group):
     if group not in {"market", "finance"}:
         raise ValueError("invalid_group")
+    from functions.banks import bank_ids
     rows = []
     with connect_readonly() as connection:
+        banks = bank_ids(connection)
         for table, key, headline in PRODUCT_SOURCES:
             if not _table_exists(connection, table):
                 continue
@@ -2372,7 +2381,8 @@ def product_list(group):
                              "exchangeId": item.get("exchange_id"), "currency": item.get("quote_currency"),
                              "value": item.get(headline),
                              # The kind's own form columns, so each kind's bento lists what matters for it.
-                             "fields": {field: _cell(item[field]) for field in _form_fields(kind) if field in item}}
+                             "fields": {field: _cell(banks.get(item[field], item[field]) if field == "issuer" else item[field])
+                                        for field in _form_fields(kind) if field in item}}
                 if table == "market_assets" and item.get("type") == "depositary_receipt":
                     program = connection.execute(
                         "SELECT * FROM depositary_receipts WHERE dr_code=?", (str(item[key]),)
@@ -2463,6 +2473,9 @@ def product_detail(code):
                 values[field] = row.get("quote_currency")
             elif field == "annual_rate" and kind == "currencyproduct":
                 values[field] = row.get("interest_rate")
+            elif field == "issuer":
+                from functions.banks import bank_ids
+                values[field] = bank_ids(connection).get(row.get(field), row.get(field))
             else:
                 values[field] = row.get(field)
         if kind == "dr":
@@ -4282,9 +4295,13 @@ class Handler(BaseHTTPRequestHandler):
                 start = BankJournal.validate_epoch(payload["periodStartEpoch"])
                 end = BankJournal.validate_epoch(payload["periodEndEpoch"])
                 with domain().db.atomic() as connection:
+                    entity_id = str(payload["entityId"]).strip()
+                    if scope == "institution":
+                        from functions.banks import bank_issuer
+                        entity_id = bank_issuer(connection, entity_id)
                     closing_id = AccountingJournal.close_period(
                         connection, ledger_scope=scope,
-                        entity_id=str(payload["entityId"]).strip(),
+                        entity_id=entity_id,
                         currency_code=str(payload["currencyCode"]).strip().upper(),
                         period_start_epoch=start, period_end_epoch=end,
                         actor_id=user["userId"], closed_epoch=int(time.time()),
