@@ -194,6 +194,7 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
   const [marketRate, setMarketRate] = useState({ benchmarkKey: "funding", tenorDays: "30", annualRate: "" });
   const [macro, setMacro] = useState({ inflationPercent: "2", realGdpGrowthPercent: "2", unemploymentPercent: "5", fiscalDebtPercent: "60", creditStressShockBps: "200", fxStressShockPercent: "10" });
   const country = countries.find((item) => item.nationality === selected);
+  useEffect(() => { window.scrollTo({ top: 0 }); }, [selected]);
 
   useEffect(() => {
     if (!country) return;
@@ -269,19 +270,7 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
     void run(() => request, "국가 계정을 변경하지 못했습니다.", async (result) => { say(result?.message ? plain(result.message) : `${country.nationality} 국가 계정을 만들었습니다.`); setPassword(""); await reload(); });
   }
 
-  return <>
-    <Card title="국가 만들기" caption="$국가생성과 같습니다. 통화는 먼저 금융 상품 탭에서 통화(currency)로 만들어야 합니다.">
-      <form className="form-grid" onSubmit={(event) => { event.preventDefault(); act(draft.nationality.trim(), { action: "create", ...draft }, `${draft.nationality} 국가를 만들까요?`); }}>
-        <Field label="국가명"><input value={draft.nationality} required onChange={(event) => setDraft({ ...draft, nationality: event.target.value })} /></Field>
-        <Field label="통화 코드"><input className="mono" value={draft.currencyCode} required onChange={(event) => setDraft({ ...draft, currencyCode: event.target.value.toUpperCase() })} /></Field>
-        <Field label="기준금리 %" hint="선택 · 기본 3"><input className="mono" value={draft.baseRate} onChange={(event) => setDraft({ ...draft, baseRate: event.target.value })} /></Field>
-        <Field label="법정최고이자 %" hint="선택 · 기본 20"><input className="mono" value={draft.legalMaxRate} onChange={(event) => setDraft({ ...draft, legalMaxRate: event.target.value })} /></Field>
-        <Field label="세율 %" hint="선택 · 기본 3"><input className="mono" value={draft.taxPercent} onChange={(event) => setDraft({ ...draft, taxPercent: event.target.value })} /></Field>
-        <button className="btn primary" disabled={busy || !draft.nationality.trim()}>국가 생성</button>
-      </form>
-    </Card>
-
-    {country && <>
+  const countryPanel = country && <>
       <Card title={`${country.nationality} 설정`} caption={`통화 ${country.currency_code}${country.currency_name ? ` (${country.currency_name})` : ""} · 시민 ${number(country.citizens)}명 · 거래소 ${country.exchanges.join(", ") || "없음"} · 연결 서버 ${country.guilds.length}개`}
         actions={<><button className="soft danger" type="button" disabled={busy} onClick={() => act(country.nationality, { action: "delete" }, `${country.nationality} 국가를 삭제할까요? 서버·시민·거래소·금리상품이 연결되어 있으면 거부됩니다.`)}>국가 삭제</button><button className="soft" type="button" onClick={() => setSelected("")}>닫기</button></>}>
         <form className="form-grid" onSubmit={saveRates}>
@@ -363,20 +352,33 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
           </> : <button className="btn primary" type="button" disabled={busy || !password} onClick={() => countryLogin("create")}>국가 계정 만들기</button>}
         </div>
       </Card>
-    </>}
+  </>;
 
-    <div className="country-cards">{countries.map((item) => <button key={item.nationality} type="button" className={item.nationality === selected ? "tile tile-dark country-card active" : "tile tile-dark country-card"} onClick={() => setSelected(item.nationality)}>
-      <span className="country-card-head"><b>{item.nationality}</b><span className="mono">ID {item.treasuryId ?? "—"}</span></span>
-      <span className="country-card-facts">
-        <span><small>통화</small>{item.currency_code}</span><span><small>기준금리</small>{item.base_rate}%</span>
-        <span><small>세율</small>{item.tax_percent}%</span><span><small>시민</small>{number(item.citizens)}</span>
-      </span>
-      <span className="country-card-foot">국고 {item.treasuryCash === null ? "—" : number(item.treasuryCash)} · 국가 계정 {item.account ? item.account.hts_id ?? "로그인 가능" : "없음"}</span>
-    </button>)}</div>
-    <Card title="국가" caption="행을 누르면 금리·세율·국고·국가 계정을 설정합니다. 통화 연결 변경은 DB 편집의 country_currencies에서 합니다.">
-      <div className="scroll-x tall"><table><thead><tr><th>국가 ID</th><th>국가</th><th>통화</th><th className="r">기준금리</th><th className="r">최고이자</th><th className="r">세율</th><th className="r">국고</th><th className="r">시민</th><th>거래소</th><th>국가 계정</th></tr></thead><tbody>
+  if (country) return <>
+    <div className="subpage-bar">
+      <button className="soft" type="button" onClick={() => setSelected("")}>← 국가 목록으로 돌아가기</button>
+      <p><b>{country.nationality}</b> <span className="mono">국가 ID {country.treasuryId ?? "—"} · 국가 계정 ID {country.account?.hts_id ?? "—"}</span></p>
+    </div>
+    {countryPanel}
+  </>;
+
+  return <>
+    <Card title="국가 만들기" caption="$국가생성과 같습니다. 통화는 먼저 금융 상품 탭에서 통화(currency)로 만들어야 합니다.">
+      <form className="form-grid" onSubmit={(event) => { event.preventDefault(); act(draft.nationality.trim(), { action: "create", ...draft }, `${draft.nationality} 국가를 만들까요?`); }}>
+        <Field label="국가명"><input value={draft.nationality} required onChange={(event) => setDraft({ ...draft, nationality: event.target.value })} /></Field>
+        <Field label="통화 코드"><input className="mono" value={draft.currencyCode} required onChange={(event) => setDraft({ ...draft, currencyCode: event.target.value.toUpperCase() })} /></Field>
+        <Field label="기준금리 %" hint="선택 · 기본 3"><input className="mono" value={draft.baseRate} onChange={(event) => setDraft({ ...draft, baseRate: event.target.value })} /></Field>
+        <Field label="법정최고이자 %" hint="선택 · 기본 20"><input className="mono" value={draft.legalMaxRate} onChange={(event) => setDraft({ ...draft, legalMaxRate: event.target.value })} /></Field>
+        <Field label="세율 %" hint="선택 · 기본 3"><input className="mono" value={draft.taxPercent} onChange={(event) => setDraft({ ...draft, taxPercent: event.target.value })} /></Field>
+        <button className="btn primary" disabled={busy || !draft.nationality.trim()}>국가 생성</button>
+      </form>
+    </Card>
+
+
+    <Card title="국가" caption="행을 누르면 그 국가의 관리 페이지가 열려 금리·세율·국고·국가 계정을 설정합니다. 통화 연결 변경은 DB 편집의 country_currencies에서 합니다.">
+      <div className="scroll-x tall"><table><thead><tr><th>국가 ID</th><th>국가</th><th>통화</th><th className="r">기준금리</th><th className="r">최고이자</th><th className="r">세율</th><th className="r">국고</th><th className="r">시민</th><th>거래소</th><th>국가 계정</th><th>국가 계정 ID</th></tr></thead><tbody>
         {countries.map((item) => <tr key={item.nationality} className={item.nationality === selected ? "clickable selected" : "clickable"} tabIndex={0} onClick={() => setSelected(item.nationality)} onKeyDown={(event) => { if (event.key === "Enter") setSelected(item.nationality); }}>
-          <td className="mono">{item.treasuryId ?? "—"}</td><td>{item.nationality}</td><td className="mono">{item.currency_code}</td><td className="r">{item.base_rate}%</td><td className="r">{item.legal_max_rate}%</td><td className="r">{item.tax_percent}%</td><td className="r mono">{item.treasuryCash === null ? "—" : number(item.treasuryCash)}</td><td className="r">{number(item.citizens)}</td><td>{item.exchanges.join(", ") || "—"}</td><td>{item.account ? <span className="tag ok">있음</span> : <span className="tag">없음</span>}</td>
+          <td className="mono">{item.treasuryId ?? "—"}</td><td>{item.nationality}</td><td className="mono">{item.currency_code}</td><td className="r">{item.base_rate}%</td><td className="r">{item.legal_max_rate}%</td><td className="r">{item.tax_percent}%</td><td className="r mono">{item.treasuryCash === null ? "—" : number(item.treasuryCash)}</td><td className="r">{number(item.citizens)}</td><td>{item.exchanges.join(", ") || "—"}</td><td>{item.account ? <span className="tag ok">있음</span> : <span className="tag">없음</span>}</td><td className="mono">{item.account?.hts_id ?? "—"}</td>
         </tr>)}
       </tbody></table>{!countries.length && <p className="empty">국가가 없습니다.</p>}</div>
     </Card>
