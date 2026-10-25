@@ -354,6 +354,14 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
       </Card>
     </>}
 
+    <div className="country-cards">{countries.map((item) => <button key={item.nationality} type="button" className={item.nationality === selected ? "tile tile-dark country-card active" : "tile tile-dark country-card"} onClick={() => setSelected(item.nationality)}>
+      <span className="country-card-head"><b>{item.nationality}</b><span className="mono">ID {item.treasuryId ?? "—"}</span></span>
+      <span className="country-card-facts">
+        <span><small>통화</small>{item.currency_code}</span><span><small>기준금리</small>{item.base_rate}%</span>
+        <span><small>세율</small>{item.tax_percent}%</span><span><small>시민</small>{number(item.citizens)}</span>
+      </span>
+      <span className="country-card-foot">국고 {item.treasuryCash === null ? "—" : number(item.treasuryCash)} · 국가 계정 {item.account ? item.account.hts_id ?? "로그인 가능" : "없음"}</span>
+    </button>)}</div>
     <Card title="국가" caption="행을 누르면 금리·세율·국고·국가 계정을 설정합니다. 통화 연결 변경은 DB 편집의 country_currencies에서 합니다.">
       <div className="scroll-x tall"><table><thead><tr><th>국가 ID</th><th>국가</th><th>통화</th><th className="r">기준금리</th><th className="r">최고이자</th><th className="r">세율</th><th className="r">국고</th><th className="r">시민</th><th>거래소</th><th>국가 계정</th></tr></thead><tbody>
         {countries.map((item) => <tr key={item.nationality} className={item.nationality === selected ? "clickable selected" : "clickable"} tabIndex={0} onClick={() => setSelected(item.nationality)} onKeyDown={(event) => { if (event.key === "Enter") setSelected(item.nationality); }}>
