@@ -707,3 +707,9 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
 .warning-lights .light-danger { color: #b3261e; background: #fde4e2; }
 .warning-lights .tile-label { color: inherit; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .warning-lights .tile { background: var(--surface); } }
+
+/* 계정관리: the credit score gauge. */
+.credit-tile svg { display: block; width: 160px; height: 160px; margin: 12px auto 0; }
+.credit-tile .gauge-track { fill: none; stroke: var(--chip); stroke-width: 12; }
+.credit-tile .gauge-fill { fill: none; stroke: #34c759; stroke-width: 12; stroke-linecap: round; }
+.credit-tile text { fill: var(--ink); font-size: 24px; font-weight: 600; font-family: var(--font-system); }

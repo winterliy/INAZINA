@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../shared/api";
 import { Card, Field, Tabs, changed, date, number, plain, show, text, type Ctx } from "./common";
+import { Donut, topSlices } from "./Donut";
 
 type Citizen = { userId: string; nickname: string; nationality: string; cash: number; creditScore: number; status: string; role: string; accountType: "discord" | "country" | "company"; companyCode: string | null };
 type WebLogin = { hts_id: string | null; created_epoch: number; updated_epoch: number; auth_version: number };
@@ -146,6 +147,16 @@ function UserTab({ ctx, countries, currentUserId, companies }: { ctx: Ctx; count
           </>}
         </div>
       </Card></>}
+      <div className="tile-row user-tiles">
+        {detail.credit && <section className="tile credit-tile" aria-label={`신용점수 ${detail.credit.score}점`}>
+          <p className="tile-label">신용점수</p>
+          <svg viewBox="0 0 120 120" aria-hidden="true"><circle cx="60" cy="60" r="50" className="gauge-track" /><circle cx="60" cy="60" r="50" className="gauge-fill" strokeDasharray={`${Math.max(0, Math.min(1, detail.credit.score / 1000)) * 314} 314`} transform="rotate(-90 60 60)" /><text x="60" y="66" textAnchor="middle">{number(detail.credit.score)}</text></svg>
+        </section>}
+        {detail.holdings.length > 0 && <section className="tile"><p className="tile-label">보유 지분 (주식 수 기준)</p>
+          <Donut slices={topSlices([...detail.holdings].sort((a, b) => b.quantity - a.quantity).map((item) => ({ label: item.asset_code, value: item.quantity })), "기타 종목")}
+            total={detail.holdings.reduce((sum, item) => sum + item.quantity, 0)} center={number(detail.holdings.length)} unit="종목" label="보유 지분 원그래프" suffix="주" />
+        </section>}
+      </div>
       {detail.credit && <Card title={`신용점수 ${number(detail.credit.score)}점`} caption={`기준점수 ${number(detail.credit.anchor)}점에서 아래 요인을 더합니다. 연체 영향은 시간이 지나면 감쇠하고, 정상 납부·완납은 점수를 회복시킵니다. 정정은 위 설정에서 사유와 함께 저장합니다.`}>
         <div className="chips">{detail.credit.factors.map((factor) => <span key={factor.key} className="tag">{factor.label} {signed(factor.points)}</span>)}{!detail.credit.factors.length && <span className="hint">반영된 요인이 없습니다.</span>}</div>
         <div className="scroll-x"><table><thead><tr><th>발생</th><th>이벤트</th><th>대출</th><th className="r">조정</th><th>사유 · 처리자</th></tr></thead><tbody>{detail.credit.events.map((event) => <tr key={`${event.type}:${event.reference}`}>
