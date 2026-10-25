@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
 import type { Ctx } from "./common";
+import { Gauge } from "./Donut";
 
 type Row = { key: string; value: string };
 
@@ -39,7 +40,7 @@ export function GambleTile({ ctx }: { ctx: Ctx }) {
   return <section className="tile gamble-tile" aria-label="도박 설정">
     <p className="tile-label">도박 · 승률과 배당</p>
     <div className="gamble-body">
-      <svg viewBox="0 0 120 120" role="img" aria-label={`당첨 확률 ${odds}%`}><circle cx="60" cy="60" r="50" className="gauge-track" /><circle cx="60" cy="60" r="50" className="gauge-fill" strokeDasharray={`${odds / 100 * 314} 314`} transform="rotate(-90 60 60)" /><text x="60" y="66" textAnchor="middle">{odds}%</text></svg>
+      <Gauge ratio={odds / 100} center={`${odds}%`} label={`당첨 확률 ${odds}%`} />
       <div className="gamble-fields">
         <label>당첨 확률 %<input inputMode="decimal" value={chance} onChange={(event) => setChance(event.target.value)} /></label>
         <label>당첨 시 리턴 %<input inputMode="decimal" value={payout} onChange={(event) => setPayout(event.target.value)} /></label>

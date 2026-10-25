@@ -708,18 +708,17 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
 .warning-lights .tile-label { color: inherit; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .warning-lights .tile { background: var(--surface); } }
 
+/* Ring gauges: tiles set the size and --gauge colour. */
+.gauge .gauge-track { fill: none; stroke: var(--chip); stroke-width: 12; }
+.gauge .gauge-fill { fill: none; stroke: var(--gauge, var(--accent)); stroke-width: 12; stroke-linecap: round; }
+.gauge text { fill: var(--ink); font-size: 23px; font-weight: 600; font-family: var(--font-system); }
+
 /* 계정관리: the credit score gauge. */
-.credit-tile svg { display: block; width: 160px; height: 160px; margin: 12px auto 0; }
-.credit-tile .gauge-track { fill: none; stroke: var(--chip); stroke-width: 12; }
-.credit-tile .gauge-fill { fill: none; stroke: #34c759; stroke-width: 12; stroke-linecap: round; }
-.credit-tile text { fill: var(--ink); font-size: 24px; font-weight: 600; font-family: var(--font-system); }
+.credit-tile .gauge { display: block; width: 160px; height: 160px; margin: 12px auto 0; --gauge: #34c759; }
 
 /* 관리자 명령어: the gamble tile. */
 .gamble-body { display: flex; flex-wrap: wrap; align-items: center; gap: 24px 40px; margin-top: 12px; }
-.gamble-body svg { flex: none; width: 150px; height: 150px; }
-.gamble-body .gauge-track { fill: none; stroke: var(--chip); stroke-width: 14; }
-.gamble-body .gauge-fill { fill: none; stroke: var(--accent); stroke-width: 14; stroke-linecap: round; }
-.gamble-body text { fill: var(--ink); font-size: 22px; font-weight: 600; font-family: var(--font-system); }
+.gamble-body .gauge { flex: none; width: 150px; height: 150px; }
 .gamble-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 160px)) auto; align-items: end; gap: 10px 12px; }
 .gamble-fields label { display: grid; gap: 6px; color: var(--ink2); font-size: 12px; font-weight: 600; }
 .gamble-fields input { min-height: 44px; padding: 0 12px; border: 0; border-radius: 12px; color: var(--ink); background: var(--field); font-size: 17px; outline: none; }
