@@ -17,6 +17,9 @@ def bank_issuer(conn, bank_id):
         row = conn.execute("SELECT issuer FROM financial_institutions WHERE institution_id=?", (value,)).fetchone()
     except sqlite3.OperationalError:
         row = None
+    if not row and value == DEFAULT_BANK[1]:
+        # The default bank is created with its first product and always answers to INAZINA.
+        return DEFAULT_BANK[0]
     if not row:
         raise ValueError(f"등록되지 않은 은행 ID입니다: {bank_id} (은행 · 원장 탭에서 은행 ID를 확인하세요)")
     return row[0]
