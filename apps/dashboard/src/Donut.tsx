@@ -43,3 +43,14 @@ export function topSlices(items: { label: string; value: number }[], rest: strin
     ...(others ? [{ label: rest, value: others, color: SLICE_COLORS[6] }] : []), ...(remainder && remainder.value > 0 ? [remainder] : [])];
 }
 
+
+export type Shareholders = { totalShares: number; holders: { userId: string; name: string; quantity: number }[] };
+
+/** Who owns a company or stock: the six largest holders, the rest together, and shares no one holds. */
+export function ShareholderPie({ data }: { data: Shareholders }) {
+  const held = data.holders.reduce((sum, item) => sum + item.quantity, 0);
+  const total = Math.max(data.totalShares, held);
+  const slices = topSlices(data.holders.map((item) => ({ label: item.name, value: item.quantity })), "기타 주주",
+    { label: "미보유(유통 전)", value: total - held, color: "var(--chip)" });
+  return <Donut slices={slices} total={total} center={number(total)} unit="발행 주식" label="주주 구성 원그래프" suffix="주" />;
+}
