@@ -32,7 +32,7 @@ PORT = int(os.environ.get("INAZINA_PYTHON_PORT", "4313"))
 MAX_HTTP_THREADS = max(1, min(int(os.environ.get("INAZINA_MAX_HTTP_THREADS", "16")), 64))
 BOOTSTRAP_ADMIN_IDS = {"1076861147560542278"}
 sys.path.insert(0, str(ROOT))
-from database.unified import UnifiedConnection
+from database.unified import sql as unified_sql
 from database.user_db import TREASURY_USER_ID, citizen_filter
 from functions.dr_pricing import (
     DEVIATION_ALERT_THRESHOLD_PERCENT as DR_REFERENCE_DEVIATION_ALERT_PERCENT,
@@ -113,8 +113,7 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 @contextmanager
 def connect_readonly():
     uri = DATABASE.as_uri() + "?mode=ro"
-    # UnifiedConnection drops the legacy product./assets. qualifiers the shared managers still write.
-    connection = sqlite3.connect(uri, uri=True, timeout=2, factory=UnifiedConnection)
+    connection = sqlite3.connect(uri, uri=True, timeout=2)
     try:
         connection.row_factory = sqlite3.Row
         connection.create_function("base_currency_code", 0, lambda: _configured_base_currency(connection))
@@ -124,9 +123,27 @@ def connect_readonly():
         connection.close()
 
 
+class LegacyNames:
+    """A connection view for the shared managers: their SQL still writes product./assets./users.
+    schema prefixes, which this drops as their own UnifiedConnection does. The server's own queries
+    keep plain connections, where ``users.user_id`` is a real table-qualified column."""
+
+    def __init__(self, connection):
+        self._connection = connection
+
+    def execute(self, statement, parameters=()):
+        return self._connection.execute(unified_sql(statement), parameters)
+
+    def executemany(self, statement, parameters):
+        return self._connection.executemany(unified_sql(statement), parameters)
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+
 @contextmanager
 def connect_db(timeout=2):
-    connection = sqlite3.connect(DATABASE, timeout=timeout, factory=UnifiedConnection)
+    connection = sqlite3.connect(DATABASE, timeout=timeout)
     try:
         connection.row_factory = sqlite3.Row
         connection.create_function("base_currency_code", 0, lambda: _configured_base_currency(connection))
@@ -1687,10 +1704,12 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
         amount = Decimal(str(value or 0))
         return f"{amount:.{places}f}"
 
-    with connect_readonly() as connection:
-        if not connection.execute(
-                "SELECT 1 FROM financial_institutions WHERE issuer=?", (str(issuer),)).fetchone():
-            raise ValueError("financial_institution_not_found")
+    from functions.banks import bank_issuer
+    with connect_readonly() as plain:
+        # The shared ledger managers still write legacy product./assets. prefixes.
+        connection = LegacyNames(plain)
+        # Banks are named by their ID; the books are keyed by the issuer name.
+        issuer = bank_issuer(connection, issuer)
         trial_balance = BankJournal.trial_balance(connection, issuer, currency)
         common_currencies = [str(row[0]) for row in connection.execute(
             "SELECT DISTINCT currency_code FROM accounting_entries "
@@ -2305,17 +2324,24 @@ def product_catalog():
     from managers.admin_commands_manager import OPTIONAL_ARGS, TEXT_ARGS
     from managers.admin_control_manager import EXAMPLES
     from functions.admin_embeds import ARG_LABELS
+    from functions.banks import bank_ids
     kinds = []
     with connect_readonly() as connection:
+        banks = bank_ids(connection)
         for profile, (label, group, token) in PRODUCT_KINDS.items():
             table, key = _profile_table(profile)
             columns = {row["name"]: row["type"] or "" for row in connection.execute(f'PRAGMA table_info("{table}")')}
             fields = [{"key": field,
                        "label": "발행총액" if profile == "bond" and field == "total_supply"
-                                else ("결제 통화" if profile == "dr" else "통장 화폐") if field == "quote_currency" else ARG_LABELS.get(field, field),
+                                else ("결제 통화" if profile == "dr" else "통장 화폐") if field == "quote_currency"
+                                else "발행 은행 ID" if field == "issuer" else ARG_LABELS.get(field, field),
                        "optional": field in OPTIONAL_ARGS.get(profile, ()),
                        "text": field in TEXT_ARGS or field == "quote_currency"} for field in _form_fields(profile)]
             listed = {field["key"] for field in fields} | {key}
+            example = dict(EXAMPLES.get(_profile_category(profile), {}))
+            if "issuer" in example:
+                # The default bank is offered by its ID; blank when it has none yet.
+                example["issuer"] = banks.get(example["issuer"], "")
             advanced = [{"key": name, "label": ARG_LABELS.get(name, name), "type": kind}
                         for name, kind in columns.items() if name not in listed and name not in PRODUCT_PROTECTED
                         and (name not in {"settlement_delay_seconds", "issue_fee_bps", "redeem_fee_bps"}
@@ -2323,7 +2349,7 @@ def product_catalog():
             kinds.append({"kind": profile, "token": token, "label": label, "group": group,
                           "family": "saving" if profile in SAVING_FAMILY else profile,
                           "fields": fields, "advanced": advanced,
-                          "example": EXAMPLES.get(_profile_category(profile), {}),
+                          "example": example,
                           "editable": profile not in {"els"}})
     return {"kinds": kinds}
 
@@ -2357,8 +2383,10 @@ PRODUCT_SOURCES = (
 def product_list(group):
     if group not in {"market", "finance"}:
         raise ValueError("invalid_group")
+    from functions.banks import bank_ids
     rows = []
     with connect_readonly() as connection:
+        banks = bank_ids(connection)
         for table, key, headline in PRODUCT_SOURCES:
             if not _table_exists(connection, table):
                 continue
@@ -2372,7 +2400,8 @@ def product_list(group):
                              "exchangeId": item.get("exchange_id"), "currency": item.get("quote_currency"),
                              "value": item.get(headline),
                              # The kind's own form columns, so each kind's bento lists what matters for it.
-                             "fields": {field: _cell(item[field]) for field in _form_fields(kind) if field in item}}
+                             "fields": {field: _cell(banks.get(item[field], item[field]) if field == "issuer" else item[field])
+                                        for field in _form_fields(kind) if field in item}}
                 if table == "market_assets" and item.get("type") == "depositary_receipt":
                     program = connection.execute(
                         "SELECT * FROM depositary_receipts WHERE dr_code=?", (str(item[key]),)
@@ -2463,6 +2492,9 @@ def product_detail(code):
                 values[field] = row.get("quote_currency")
             elif field == "annual_rate" and kind == "currencyproduct":
                 values[field] = row.get("interest_rate")
+            elif field == "issuer":
+                from functions.banks import bank_ids
+                values[field] = bank_ids(connection).get(row.get(field), row.get(field))
             else:
                 values[field] = row.get(field)
         if kind == "dr":
@@ -4009,8 +4041,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(404, {"error": "not_found"})
         except ValueError as exc:
             self.send_json(400, {"error": str(exc)})
-        except (sqlite3.Error, RuntimeError):
-            self.send_json(503, {"error": "database_unavailable"})
+        except (sqlite3.Error, RuntimeError) as exc:
+            # Keep the real cause in the console and the response, so a broken query is not mistaken for a down DB.
+            logging.getLogger("inazina.web").exception("GET %s failed", self.path)
+            self.send_json(503, {"error": "database_unavailable", "message": f"데이터베이스를 읽지 못했습니다: {exc}"})
 
     def do_POST(self):
         _DELEGATION.by = unquote(self.headers.get("x-inazina-delegated-by", ""))
@@ -4282,9 +4316,13 @@ class Handler(BaseHTTPRequestHandler):
                 start = BankJournal.validate_epoch(payload["periodStartEpoch"])
                 end = BankJournal.validate_epoch(payload["periodEndEpoch"])
                 with domain().db.atomic() as connection:
+                    entity_id = str(payload["entityId"]).strip()
+                    if scope == "institution":
+                        from functions.banks import bank_issuer
+                        entity_id = bank_issuer(connection, entity_id)
                     closing_id = AccountingJournal.close_period(
                         connection, ledger_scope=scope,
-                        entity_id=str(payload["entityId"]).strip(),
+                        entity_id=entity_id,
                         currency_code=str(payload["currencyCode"]).strip().upper(),
                         period_start_epoch=start, period_end_epoch=end,
                         actor_id=user["userId"], closed_epoch=int(time.time()),
@@ -4639,8 +4677,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(503, {"error": "database_unavailable"})
             else:
                 self.send_json(400, {"error": "database_rejected", "message": str(exc)})
-        except sqlite3.Error:
-            self.send_json(503, {"error": "database_unavailable"})
+        except sqlite3.Error as exc:
+            logging.getLogger("inazina.web").exception("POST %s failed", self.path)
+            self.send_json(503, {"error": "database_unavailable", "message": f"데이터베이스 작업에 실패했습니다: {exc}"})
 
     def redirect_browser_to_main(self):
         self.send_response(303)
@@ -4745,11 +4784,22 @@ def main():
     import signal
     if not INTERNAL_TOKEN:
         raise SystemExit("INAZINA_INTERNAL_TOKEN is required")
-    try:
-        domain()
-    except KeyboardInterrupt:
-        print("INAZINA Python data service stopped during startup.", flush=True)
-        return
+    # The Discord bot migrates and backs up the same database at the same moment on start_all;
+    # a busy or locked database at startup is retried instead of ending the service.
+    for attempt in range(1, 7):
+        try:
+            domain()
+            break
+        except KeyboardInterrupt:
+            print("INAZINA Python data service stopped during startup.", flush=True)
+            return
+        except Exception:
+            import traceback
+            print(f"INAZINA Python data service: database startup failed (attempt {attempt}/6)", flush=True)
+            traceback.print_exc()
+            if attempt == 6:
+                raise
+            time.sleep(5)
     server = BoundedThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     stopping = threading.Event()
 

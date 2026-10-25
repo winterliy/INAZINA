@@ -33,7 +33,7 @@ class AdminRevisionTests(unittest.TestCase):
         self.assertIsNone(self.db.companies.get_company('INVALID'))
 
     def test_typed_creation_uses_json_and_protects_existing_claims(self):
-        self.run_command('상품생성','SV saving '+json.dumps({'name':'새 적금','interest_rate':4,'deposit_amount':100,'maturity_days':30,'interest_cycle':86400,'compound_type':1,'issuer':'국가'}))
+        self.run_command('상품생성','SV saving '+json.dumps({'name':'새 적금','interest_rate':4,'deposit_amount':100,'maturity_days':30,'interest_cycle':86400,'compound_type':1,'issuer':'INAZINA'}))
         self.assertEqual(float(self.db.products.get_saving('SV')['interest_rate']),4)
         with self.assertRaises(ValueError):self.run_command('상품가격수정','SV modify 10')
         self.run_command('상품생성','ST stock name=기초 price=1000 supply=10000 exchange_id=TEST capital=10000000')

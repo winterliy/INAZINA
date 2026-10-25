@@ -52,7 +52,8 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
       python_service_unavailable: "Python 데이터 서비스에 연결할 수 없습니다.",
       database_unavailable: "데이터베이스를 읽지 못했습니다.",
     };
-    throw Object.assign(new Error(messages[body.error] ?? body.message ?? body.error ?? `HTTP ${response.status}`), { status: response.status });
+    const text = body.error === "database_unavailable" && body.message ? body.message : messages[body.error] ?? body.message ?? body.error ?? `HTTP ${response.status}`;
+    throw Object.assign(new Error(text), { status: response.status });
   }
   return body as T;
 }

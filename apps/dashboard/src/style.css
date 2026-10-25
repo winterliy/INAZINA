@@ -679,13 +679,6 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
 .tile-value { margin-top: 14px; font-size: 40px; line-height: 1; font-weight: 600; letter-spacing: -.02em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .tile-dark { color: #f5f5f7; background: var(--tile); }
 .tile-dark .tile-label { color: #a1a1a6; }
-.governance { display: grid; gap: 16px; }
-.governance-group { display: grid; gap: 10px; }
-.governance-parent { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 17px; }
-.governance-parent span { color: #a1a1a6; font-size: 13px; }
-.governance-children { display: flex; flex-wrap: wrap; gap: 6px; }
-.governance-children span { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: 999px; background: rgba(255, 255, 255, .1); font-family: var(--font-mono); font-size: 12px; }
-.governance-children em { color: #2997ff; font-style: normal; }
 /* 계정관리: a country opens as its own page with a way back to the list. */
 .subpage-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; margin-bottom: 16px; padding: 16px 20px; border-radius: 20px; background: var(--surface); }
 .subpage-bar p { margin: 0; font-size: 17px; }

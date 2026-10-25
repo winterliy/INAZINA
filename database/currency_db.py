@@ -2539,7 +2539,13 @@ class CurrencyDB(DBManager):
                     f"ALTER TABLE financial_institutions ADD COLUMN {column} {declaration}"
                 )
         # Every bank has a stable unique ID, chosen when it is created or filled at random (BNK + six digits).
+        # The default issuer, Inazina, is the bank INAZINA so commands and forms can name it by ID.
         import random
+        from functions.banks import DEFAULT_BANK
+        default_issuer, default_id = DEFAULT_BANK
+        if not self.execute("SELECT 1 FROM financial_institutions WHERE institution_id=?", (default_id,)):
+            self.execute("UPDATE financial_institutions SET institution_id=? WHERE issuer=? AND institution_id IS NULL",
+                         (default_id, default_issuer))
         taken = {row[0] for row in self.execute(
             "SELECT institution_id FROM financial_institutions WHERE institution_id IS NOT NULL")}
         for (issuer,) in self.execute(
@@ -2554,7 +2560,9 @@ class CurrencyDB(DBManager):
         self.execute("DROP TRIGGER IF EXISTS trg_financial_institution_id")
         self.execute("""CREATE TRIGGER trg_financial_institution_id
             AFTER INSERT ON financial_institutions WHEN NEW.institution_id IS NULL BEGIN
-                UPDATE financial_institutions SET institution_id=printf('BNK%06d', abs(random()) % 1000000)
+                UPDATE financial_institutions SET institution_id=CASE
+                    WHEN NEW.issuer='Inazina' AND NOT EXISTS(SELECT 1 FROM financial_institutions WHERE institution_id='INAZINA')
+                    THEN 'INAZINA' ELSE printf('BNK%06d', abs(random()) % 1000000) END
                 WHERE issuer=NEW.issuer;
             END""")
         from functions.money import currency_precision, to_minor_units

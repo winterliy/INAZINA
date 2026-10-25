@@ -954,7 +954,7 @@ th:last-child, td:last-child { padding-right: 20px; }
 .svc-chips button { min-height: 32px; padding: 0 12px; border-radius: 999px; background: var(--pearl); font-size: 12px; }
 .svc-chips button.active { color: var(--accent); box-shadow: inset 0 0 0 1.5px var(--accent); }
 .svc-outcome { padding: 14px 16px; border-radius: 14px; background: var(--pearl); box-shadow: inset 0 0 0 1px var(--line); font-size: 14px; line-height: 1.55; white-space: pre-wrap; }
-.svc-outcome.ok { box-shadow: inset 3px 0 0 #1e8e3e, inset 0 0 0 1px var(--line); }
+.svc-outcome.ok { box-shadow: inset 0 0 0 1px var(--line); }
 .svc-outcome.failed { color: var(--up); box-shadow: inset 3px 0 0 var(--up), inset 0 0 0 1px var(--line); }
 .svc-empty { display: grid; gap: 10px; justify-items: center; padding: 32px 16px; border-radius: 24px; color: var(--ink2); background: var(--surface); text-align: center; }
 .svc-empty b { color: var(--ink); }
@@ -1270,3 +1270,50 @@ th:last-child, td:last-child { padding-right: 20px; }
 .plaza-me button { justify-self: start; min-height: 30px; padding: 0 12px; border: 1px solid var(--plaza-line); background: var(--plaza-panel); font-size: 12px; }
 /* The comment count sits right after the title, as on gallery boards (not on its own line like other cell notes). */
 .board-post-table td .board-comment-count { display: inline; margin: 0 0 0 3px; }
+
+
+/* 정보 · 고객센터: the financials link card and the Contact/Report form. */
+.svc-link-card { display: block; color: inherit; text-decoration: none; }
+.svc-link-card:hover h3 { text-decoration: underline; }
+.svc-feedback { display: grid; gap: 12px; }
+.svc-feedback label { display: grid; gap: 6px; font-size: 13px; font-weight: 600; }
+.svc-feedback input:not([type=checkbox]), .svc-feedback textarea { min-height: 40px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; font: inherit; font-weight: 400; background: transparent; color: inherit; }
+.svc-feedback-kind { display: inline-flex; gap: 4px; justify-self: start; padding: 4px; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--line); }
+.svc-feedback-kind button { min-height: 32px; padding: 0 16px; border: 0; border-radius: 999px; background: transparent; color: inherit; font: inherit; }
+.svc-feedback-kind button[aria-checked="true"] { color: #fff; background: var(--ink); }
+.svc-feedback-consent { margin: 0; color: var(--ink2); font-size: 12px; }
+.svc-check { display: flex !important; align-items: center; gap: 8px; font-weight: 400 !important; }
+
+/* 기업 재무: statements laid out as tables, figures first. */
+.fin-page { display: grid; gap: 16px; }
+.fin-search { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 12px; }
+.fin-report { display: grid; gap: 20px; }
+.fin-head { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.fin-head h2 { margin: 0; font-size: 26px; }
+.fin-head h2 span { color: var(--ink2); font-size: 15px; font-weight: 500; }
+.fin-head p { margin: 4px 0 0; color: var(--ink2); }
+.fin-checks { display: flex; flex-wrap: wrap; gap: 6px; }
+.fin-checks span { padding: 4px 10px; border-radius: 999px; font-size: 12px; box-shadow: inset 0 0 0 1px var(--line); }
+.fin-checks .bad { color: var(--up); }
+.fin-figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1px; overflow: hidden; border-radius: 14px; background: var(--line); }
+.fin-figures div { display: grid; gap: 4px; padding: 14px 16px; background: var(--pearl); }
+.fin-figures small { color: var(--ink2); }
+.fin-figures b { font-size: 20px; font-variant-numeric: tabular-nums; }
+.fin-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; align-items: start; }
+.fin-side { display: grid; gap: 16px; }
+.fin-table h3, .fin-ratios h3 { margin: 0 0 8px; font-size: 15px; }
+.fin-table table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.fin-table th, .fin-table td { padding: 7px 10px; border-bottom: 1px solid var(--line); }
+.fin-table th { font-weight: 500; text-align: left; }
+.fin-table thead th { color: var(--ink2); font-size: 12px; }
+.fin-table td { text-align: right; font-variant-numeric: tabular-nums; }
+.fin-table thead th:not(:first-child) { text-align: right; }
+.fin-table .fin-total th, .fin-table .fin-total td { font-weight: 700; }
+.fin-table td.up { color: var(--up); }
+.fin-table td.down { color: var(--down); }
+.fin-ratios dl { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; margin: 0; }
+.fin-ratios dl div { padding: 10px 12px; border-radius: 10px; box-shadow: inset 0 0 0 1px var(--line); }
+.fin-ratios dt { color: var(--ink2); font-size: 12px; }
+.fin-ratios dd { margin: 2px 0 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.fin-notes { margin: 0; padding-left: 18px; color: var(--ink2); font-size: 12px; }
+@media (max-width: 800px) { .fin-grid, .fin-search { grid-template-columns: minmax(0, 1fr); } }

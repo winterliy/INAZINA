@@ -1462,8 +1462,10 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(balances.get("deposit_insurance_payable", 0), -600)
         self.assertEqual(balances.get("uninsured_deposit_claim", 0), -900)
         from web_api.server import admin_bank_journal_report
+        with self.db.atomic() as conn:
+            bank_id = conn.execute("SELECT institution_id FROM financial_institutions WHERE issuer='Bank'").fetchone()[0]
         with patch("web_api.server.connect_readonly", self.db.readonly):
-            report = admin_bank_journal_report("Bank")
+            report = admin_bank_journal_report(bank_id)
         self.assertEqual(
             {row["ledger_scope"] for row in report["commonJournalReconciliation"]},
             {"customer", "company", "institution", "market_order_reservations",
@@ -1485,7 +1487,7 @@ class RealisticRateSystemTests(unittest.TestCase):
                             and row["debit_units"] - row["credit_units"] == row["balance_units"]
                             for row in report["commonTrialBalance"]))
         with patch("web_api.server.connect_readonly", self.db.readonly):
-            filtered_report = admin_bank_journal_report("Bank", currency="NWX")
+            filtered_report = admin_bank_journal_report(bank_id, currency="NWX")
         self.assertEqual(filtered_report["commonTrialBalance"], report["commonTrialBalance"])
         self.assertIn(report["amountSnapshotAudit"]["status"], {"clean", "attention_required"})
         self.assertLessEqual(len(report["amountSnapshotAudit"]["findings"]), 100)
@@ -2101,8 +2103,10 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(largest["existingAllowanceApplied"], 20)
         self.assertEqual(largest["incrementalProvision"], 110)
         from web_api.server import admin_bank_journal_report
+        with self.db.atomic() as conn:
+            bank_id = conn.execute("SELECT institution_id FROM financial_institutions WHERE issuer='Bank'").fetchone()[0]
         with patch("web_api.server.connect_readonly", self.db.readonly):
-            web_report = admin_bank_journal_report("Bank")
+            web_report = admin_bank_journal_report(bank_id)
         self.assertEqual(
             web_report["borrowerConcentrationStress"]["borrowers"][0]["borrowerId"],
             "other-borrower",

@@ -295,6 +295,10 @@ class AdminControlManager:
                     raise ValueError("양의 가격을 입력해주세요.")
             if supply and supply_key:
                 values[supply_key] = self._number(supply,1,integer=True)
+            if values.get('issuer') not in (None, '') and 'issuer' in columns:
+                # A bank is chosen by its ID; the row keeps the issuer name it links by.
+                from functions.banks import bank_issuer
+                values['issuer'] = bank_issuer(conn, values['issuer'])
             if operation=='create':
                 values[key] = code
                 values.update({k:v for k,v in EXAMPLES[category].items() if k in columns and k not in values})
