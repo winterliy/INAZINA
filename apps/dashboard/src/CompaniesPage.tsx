@@ -15,33 +15,68 @@ type Detail = { account: string; webLogin: boolean; loginId: string; assets: Ass
 
 const SLICE_COLORS = ["#0066cc", "#ff9500", "#30b0c7", "#af52de", "#ff2d55", "#34c759", "#a2845e"];
 
-/** Ownership as a pie: the six largest holders, the rest together, and shares no one holds. */
-function ShareholderPie({ data }: { data: Shareholders }) {
-  const total = Math.max(data.totalShares, data.holders.reduce((sum, item) => sum + item.quantity, 0));
+type Slice = { label: string; value: number; color: string };
+
+/** A donut: slices with hairline gaps around a centre figure, and a legend of percentages. */
+function Donut({ slices, total, center, unit, label, suffix = "" }: { slices: Slice[]; total: number; center: string; unit: string; label: string; suffix?: string }) {
   if (!total) return null;
-  const top = data.holders.slice(0, 6).map((item, index) => ({ label: item.name, quantity: item.quantity, color: SLICE_COLORS[index] }));
-  const others = data.holders.slice(6).reduce((sum, item) => sum + item.quantity, 0);
-  const held = data.holders.reduce((sum, item) => sum + item.quantity, 0);
-  const slices = [...top, ...(others ? [{ label: "기타 주주", quantity: others, color: SLICE_COLORS[6] }] : []),
-    ...(total - held > 0 ? [{ label: "미보유(유통 전)", quantity: total - held, color: "var(--chip)" }] : [])];
   let angle = -Math.PI / 2;
   const arcs = slices.map((slice) => {
-    const sweep = (slice.quantity / total) * Math.PI * 2;
+    const sweep = (slice.value / total) * Math.PI * 2;
     const start = angle; angle += sweep;
     const [x1, y1, x2, y2] = [Math.cos(start), Math.sin(start), Math.cos(angle), Math.sin(angle)].map((value) => 100 + value * 90);
     const path = sweep >= Math.PI * 2 - 1e-9 ? "M100 10 A90 90 0 1 1 99.99 10 Z" : `M100 100 L${x1} ${y1} A90 90 0 ${sweep > Math.PI ? 1 : 0} 1 ${x2} ${y2} Z`;
     return { ...slice, path };
   });
   return <figure className="holders">
-    <svg viewBox="0 0 200 200" role="img" aria-label="주주 구성 원그래프">
+    <svg viewBox="0 0 200 200" role="img" aria-label={label}>
       {arcs.map((arc) => <path key={arc.label} d={arc.path} fill={arc.color} />)}
       <circle className="holders-hole" cx="100" cy="100" r="58" />
-      <text className="holders-total" x="100" y="102" textAnchor="middle">{number(total)}</text>
-      <text className="holders-unit" x="100" y="120" textAnchor="middle">발행 주식</text>
+      <text className="holders-total" x="100" y="102" textAnchor="middle">{center}</text>
+      <text className="holders-unit" x="100" y="120" textAnchor="middle">{unit}</text>
     </svg>
-    <figcaption><ul>{arcs.map((arc) => <li key={arc.label}><i style={{ background: arc.color }} /><span>{arc.label}</span><b>{(arc.quantity / total * 100).toFixed(2)}%</b><small>{number(arc.quantity)}주</small></li>)}</ul></figcaption>
+    <figcaption><ul>{arcs.map((arc) => <li key={arc.label}><i style={{ background: arc.color }} /><span>{arc.label}</span><b>{(arc.value / total * 100).toFixed(2)}%</b><small>{number(arc.value)}{suffix}</small></li>)}</ul></figcaption>
   </figure>;
 }
+
+/** The largest six as slices, the rest as one, plus an optional remainder slice. */
+function topSlices(items: { label: string; value: number }[], rest: string, remainder?: Slice): Slice[] {
+  const others = items.slice(6).reduce((sum, item) => sum + item.value, 0);
+  return [...items.slice(0, 6).map((item, index) => ({ ...item, color: SLICE_COLORS[index] })),
+    ...(others ? [{ label: rest, value: others, color: SLICE_COLORS[6] }] : []), ...(remainder && remainder.value > 0 ? [remainder] : [])];
+}
+
+/** Who owns the company: the six largest holders, the rest together, and shares no one holds. */
+function ShareholderPie({ data }: { data: Shareholders }) {
+  const held = data.holders.reduce((sum, item) => sum + item.quantity, 0);
+  const total = Math.max(data.totalShares, held);
+  const slices = topSlices(data.holders.map((item) => ({ label: item.name, value: item.quantity })), "기타 주주",
+    { label: "미보유(유통 전)", value: total - held, color: "var(--chip)" });
+  return <Donut slices={slices} total={total} center={number(total)} unit="발행 주식" label="주주 구성 원그래프" suffix="주" />;
+}
+
+/** What the company owns: its holdings by value. */
+function HoldingsPie({ stocks }: { stocks: Stock[] }) {
+  const items = [...stocks].sort((a, b) => b.value - a.value).map((stock) => ({ label: `${stock.code} ${stock.name}`, value: Math.round(stock.value) }));
+  const total = items.reduce((sum, item) => sum + item.value, 0);
+  return <Donut slices={topSlices(items, "기타 종목")} total={total} center={number(total)} unit="평가액" label="보유 자산 구성 원그래프" />;
+}
+
+/** Parent companies and the subsidiaries they hold, with the stake in each. */
+function Governance({ companies }: { companies: Company[] }) {
+  const groups = new Map<string, { code: string; percent: number }[]>();
+  for (const item of companies) for (const parent of item.parents) groups.set(parent.code, [...(groups.get(parent.code) ?? []), { code: item.company_code, percent: parent.percent }]);
+  if (!groups.size) return null;
+  const name = (code: string) => companies.find((item) => item.company_code === code)?.name ?? code;
+  return <section className="tile tile-dark governance" aria-label="지배구조">
+    <p className="tile-label">지배구조</p>
+    {[...groups].map(([parent, children]) => <div key={parent} className="governance-group">
+      <div className="governance-parent"><b>{parent}</b> {name(parent)}<span>자회사 {number(children.length)}곳</span></div>
+      <div className="governance-children">{children.map((child) => <span key={child.code} title={name(child.code)}>{child.code}<em>{child.percent.toFixed(1)}%</em></span>)}</div>
+    </div>)}
+  </section>;
+}
+
 type Member = { code: string; name: string; parent: string; ownership: number; currency: string; goodwill: number; nci: number; depth?: number };
 type Consolidated = { subsidiaries: Member[]; summary: { assets: number; liabilities: number; equity: number; parent_equity: number; noncontrolling_interest: number; goodwill: number }; income: Record<string, number>; profit_attributable: { parent: number; noncontrolling: number }; eliminations: { dividends: number; transfers: number; cross_holdings: number }; notes: string[] } | null;
 type Report = { period: string; currency: string; places: number; summary: { assets: number; liabilities: number; equity: number }; income: Record<string, number>; changes: Record<string, number>; checks: { balance_sheet: boolean; live_cash: boolean | null }; consolidated: Consolidated };
@@ -112,6 +147,7 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
       {detail?.shareholders && <ShareholderPie data={detail.shareholders} />}
       {company.parents.length > 0 && <p className="hint">모회사(지분 보유 법인): {company.parents.map((parent) => `${parent.code} ${parent.percent.toFixed(1)}%`).join(", ")}</p>}
       <h3 className="sub-head">보유 자산</h3>
+      {!!detail?.assets.stocks.length && <HoldingsPie stocks={detail.assets.stocks} />}
       <div className="scroll-x"><table><thead><tr><th>종목</th><th>이름</th><th className="r">수량</th><th className="r">평가액</th><th /></tr></thead><tbody>
         {(detail?.assets.stocks ?? []).map((stock) => <tr key={stock.code}><td className="mono">{stock.code}</td><td>{stock.name}</td><td className="r mono">{number(stock.qty)}</td><td className="r mono">{number(Math.round(stock.value))}</td><td>{stock.code === company.company_code ? <span className="tag">자기주식</span> : companies.some((item) => item.company_code === stock.code && item.parents.some((parent) => parent.code === company.company_code && parent.percent > 50)) ? <span className="tag ok">자회사</span> : null}</td></tr>)}
       </tbody></table>{detail && !detail.assets.stocks.length && <p className="empty">보유 자산이 없습니다.</p>}</div>
@@ -175,6 +211,11 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
       </form>}
     </Card>}
 
+    <div className="tile-row">
+      <section className="tile"><p className="tile-label">상장 법인</p><p className="tile-value">{number(companies.length)}</p></section>
+      <section className="tile"><p className="tile-label">법인 현금 합계</p><p className="tile-value">{number(companies.reduce((sum, item) => sum + item.cash, 0))}</p></section>
+    </div>
+    <Governance companies={companies} />
     <Card title="법인 자본" caption="법인은 사람이 아니라 로그인하지 않지만, 자본은 다른 계정과 똑같이 주식·상품 매수매도, 통장, 대출, 송금을 할 수 있습니다. 자기 회사 주식을 사면 자기주식(배당 없음), 다른 회사 지분을 과반 사면 자회사가 됩니다. Discord에서는 $법인 또는 $login [법인ID]를 씁니다.">
       <div className="scroll-x tall"><table><thead><tr><th>법인</th><th>이름</th><th>거래소</th><th className="r">현금</th><th className="r">보유 종목</th><th className="r">통장</th><th className="r">대출</th><th>모회사</th></tr></thead><tbody>
         {visible.map((item) => <tr key={item.company_code} className={item.company_code === selected ? "clickable selected" : "clickable"} tabIndex={0} onClick={() => void open(item.company_code).catch((cause) => say(cause instanceof Error ? cause.message : "법인을 열지 못했습니다.", true))} onKeyDown={(event) => { if (event.key === "Enter") void open(item.company_code); }}>
