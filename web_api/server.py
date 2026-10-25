@@ -4022,8 +4022,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(404, {"error": "not_found"})
         except ValueError as exc:
             self.send_json(400, {"error": str(exc)})
-        except (sqlite3.Error, RuntimeError):
-            self.send_json(503, {"error": "database_unavailable"})
+        except (sqlite3.Error, RuntimeError) as exc:
+            # Keep the real cause in the console and the response, so a broken query is not mistaken for a down DB.
+            logging.getLogger("inazina.web").exception("GET %s failed", self.path)
+            self.send_json(503, {"error": "database_unavailable", "message": f"데이터베이스를 읽지 못했습니다: {exc}"})
 
     def do_POST(self):
         _DELEGATION.by = unquote(self.headers.get("x-inazina-delegated-by", ""))
@@ -4656,8 +4658,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(503, {"error": "database_unavailable"})
             else:
                 self.send_json(400, {"error": "database_rejected", "message": str(exc)})
-        except sqlite3.Error:
-            self.send_json(503, {"error": "database_unavailable"})
+        except sqlite3.Error as exc:
+            logging.getLogger("inazina.web").exception("POST %s failed", self.path)
+            self.send_json(503, {"error": "database_unavailable", "message": f"데이터베이스 작업에 실패했습니다: {exc}"})
 
     def redirect_browser_to_main(self):
         self.send_response(303)
