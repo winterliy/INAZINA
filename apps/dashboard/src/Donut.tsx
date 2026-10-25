@@ -26,6 +26,16 @@ export function Donut({ slices, total, center, unit, label, suffix = "" }: { sli
   </figure>;
 }
 
+/** A ring gauge filled clockwise from the top by `ratio` (0–1), with a centre figure. */
+export function Gauge({ ratio, center, label }: { ratio: number; center: string; label?: string }) {
+  const fill = Math.max(0, Math.min(1, ratio)) * 314;
+  return <svg className="gauge" viewBox="0 0 120 120" role={label ? "img" : undefined} aria-label={label} aria-hidden={label ? undefined : true}>
+    <circle cx="60" cy="60" r="50" className="gauge-track" />
+    <circle cx="60" cy="60" r="50" className="gauge-fill" strokeDasharray={`${fill} 314`} transform="rotate(-90 60 60)" />
+    <text x="60" y="66" textAnchor="middle">{center}</text>
+  </svg>;
+}
+
 /** The largest six as slices, the rest as one, plus an optional remainder slice. */
 export function topSlices(items: { label: string; value: number }[], rest: string, remainder?: Slice): Slice[] {
   const others = items.slice(6).reduce((sum, item) => sum + item.value, 0);
