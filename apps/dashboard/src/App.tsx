@@ -15,7 +15,7 @@ import { LogCard } from "./LogCard";
 import { BoardAdminPage } from "./BoardAdminPage";
 import { DocumentsPage } from "./DocumentsPage";
 import { CompliancePage } from "./CompliancePage";
-import { BankJournalPage } from "./BankJournalPage";
+import { BanksPage } from "./BanksPage";
 import { DatabasePage } from "./DatabasePage";
 import { GambleTile } from "./GambleTile";
 import { TransferTile } from "./TransferTile";
@@ -51,7 +51,7 @@ const pages: { id: Page; label: string }[] = [
   { id: "feedback", label: "문의·신고" },
   { id: "board", label: "게시판 관리" },
   { id: "compliance", label: "KYC · AML" },
-  { id: "accounting", label: "은행 원장" },
+  { id: "accounting", label: "은행 · 원장" },
   { id: "documents", label: "문서 · 약관" },
   { id: "events", label: "시장 사건" },
   { id: "commands", label: "관리자 명령어" },
@@ -70,7 +70,7 @@ const subtitles: Record<Page, string> = {
   documents: "약관·처리방침·규칙·도움말과 Discord 등록 안내문을 고치고 확정합니다.",
   board: "HTS 게시판의 신고를 처리하고 글을 숨기거나 고정합니다. 익명 글의 실제 작성자와 IP를 확인할 수 있습니다.",
   compliance: "국적별 KYC 검토 상태와 AML 시뮬레이터 경보·규칙을 관리합니다.",
-  accounting: "금융기관의 이중분개 시산 잔액·불균형·결과 원장 대사를 조회합니다.",
+  accounting: "은행을 고유 ID로 만들고 관리하며, 은행별 이중분개 시산 잔액·불균형·결과 원장 대사를 조회합니다.",
   users: "사용자와 국가, 국가 계정의 모든 설정을 관리합니다.",
   events: "호재·악재 사건을 등록하고 최근 사건을 확인합니다.",
   commands: "Discord의 모든 $ 명령어와 도움말을 같은 검증과 기록으로 실행합니다.",
@@ -365,7 +365,7 @@ export default function App() {
   }
 
   const current = pages.find((item) => item.id === page)!;
-  const searchable = page === "instruments" || page === "finance" || page === "exchanges" || page === "companies" || page === "users" || page === "feedback" || page === "board" || page === "database";
+  const searchable = page === "instruments" || page === "finance" || page === "exchanges" || page === "companies" || page === "users" || page === "feedback" || page === "board" || page === "database" || page === "accounting";
   const openExchanges = overview ? overview.market.filter((item) => item.status === "open" && !item.trading_halted).length : 0;
 
   return <Stage>
@@ -439,7 +439,7 @@ export default function App() {
         {page === "board" && <BoardAdminPage ctx={ctx} />}
         {page === "documents" && <DocumentsPage ctx={ctx} />}
         {page === "compliance" && <CompliancePage ctx={ctx} />}
-        {page === "accounting" && <BankJournalPage ctx={ctx} />}
+        {page === "accounting" && <BanksPage ctx={ctx} />}
         {page === "feedback" && <FeedbackPage ctx={ctx} onChange={() => void loadUnread()} />}
         {page === "naturalization" && <NaturalizationPage ctx={ctx} onChange={() => void loadUnread()} />}
         {page === "users" && <UsersPage ctx={ctx} currentUserId={user.userId} />}

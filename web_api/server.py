@@ -32,6 +32,7 @@ PORT = int(os.environ.get("INAZINA_PYTHON_PORT", "4313"))
 MAX_HTTP_THREADS = max(1, min(int(os.environ.get("INAZINA_MAX_HTTP_THREADS", "16")), 64))
 BOOTSTRAP_ADMIN_IDS = {"1076861147560542278"}
 sys.path.insert(0, str(ROOT))
+from database.unified import UnifiedConnection
 from database.user_db import TREASURY_USER_ID, citizen_filter
 from functions.dr_pricing import (
     DEVIATION_ALERT_THRESHOLD_PERCENT as DR_REFERENCE_DEVIATION_ALERT_PERCENT,
@@ -112,7 +113,8 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 @contextmanager
 def connect_readonly():
     uri = DATABASE.as_uri() + "?mode=ro"
-    connection = sqlite3.connect(uri, uri=True, timeout=2)
+    # UnifiedConnection drops the legacy product./assets. qualifiers the shared managers still write.
+    connection = sqlite3.connect(uri, uri=True, timeout=2, factory=UnifiedConnection)
     try:
         connection.row_factory = sqlite3.Row
         connection.create_function("base_currency_code", 0, lambda: _configured_base_currency(connection))
@@ -124,7 +126,7 @@ def connect_readonly():
 
 @contextmanager
 def connect_db(timeout=2):
-    connection = sqlite3.connect(DATABASE, timeout=timeout)
+    connection = sqlite3.connect(DATABASE, timeout=timeout, factory=UnifiedConnection)
     try:
         connection.row_factory = sqlite3.Row
         connection.create_function("base_currency_code", 0, lambda: _configured_base_currency(connection))
@@ -2368,7 +2370,9 @@ def product_list(group):
                 product = {"code": str(item[key]), "name": str(item.get("name") or item.get("underlying_code") or item[key]),
                              "kind": kind, "status": item.get("status") or "active",
                              "exchangeId": item.get("exchange_id"), "currency": item.get("quote_currency"),
-                             "value": item.get(headline)}
+                             "value": item.get(headline),
+                             # The kind's own form columns, so each kind's bento lists what matters for it.
+                             "fields": {field: _cell(item[field]) for field in _form_fields(kind) if field in item}}
                 if table == "market_assets" and item.get("type") == "depositary_receipt":
                     program = connection.execute(
                         "SELECT * FROM depositary_receipts WHERE dr_code=?", (str(item[key]),)
@@ -2520,6 +2524,20 @@ def _convert_product_fields(profile, fields, advanced, columns):
     return result
 
 
+def _random_product_code(profile):
+    """A free code for a new product left without one: the kind's letters and six random digits, like bank IDs."""
+    import random
+    prefix = re.sub(r"[^A-Z]", "", str(PRODUCT_KINDS[profile][2]).upper())[:4] or "PRD"
+    with connect_readonly() as connection:
+        for _ in range(50):
+            code = f"{prefix}{random.randrange(10**6):06d}"
+            try:
+                _locate_product(connection, code)
+            except ValueError:
+                return code
+    raise ValueError("빈 상품 코드를 찾지 못했습니다. 코드를 직접 입력해주세요.")
+
+
 def product_save(actor, payload):
     from managers.admin_commands_manager import AdminCommandsManager
     from managers.admin_control_manager import ENTITIES
@@ -2528,6 +2546,8 @@ def product_save(actor, payload):
     code = str(payload.get("code", "")).strip()
     if operation not in {"create", "edit"} or profile not in PRODUCT_KINDS:
         raise ValueError("상품 종류와 작업을 확인해주세요.")
+    if operation == "create" and not code and profile != "option":
+        code = _random_product_code(profile)
     if (not code and profile != "option") or len(code) > 80 or re.search(r"\s", code):
         raise ValueError("상품 코드는 공백 없이 1~80자로 입력해주세요.")
     table, _key = _profile_table(profile)
@@ -3109,6 +3129,104 @@ def admin_warning_action(actor, code, payload):
     from managers.trading_warning_manager import TradingWarnings
     return TradingWarnings(domain().db).set(actor, code, payload.get("level", ""), payload.get("reason", ""),
                                             payload.get("days") or None)
+
+
+BANK_SETTINGS = ("funding_spread", "operating_cost_spread", "liquidity_spread", "target_margin", "competition_adjustment",
+                 "target_capital_ratio", "target_loan_deposit_ratio", "reserve_ratio", "deposit_insurance_limit", "status")
+
+
+def _bank_summary(connection, row):
+    issuer = row["issuer"]
+    products = connection.execute(
+        "SELECT (SELECT COUNT(*) FROM saving WHERE issuer=?)+(SELECT COUNT(*) FROM liability WHERE issuer=?)",
+        (issuer, issuer)).fetchone()[0]
+    deposits = connection.execute(
+        "SELECT COUNT(*),COALESCE(SUM(a.balance),0) FROM accounts a JOIN saving p ON p.product_code=a.product_code "
+        "WHERE p.issuer=?", (issuer,)).fetchone()
+    loans = connection.execute(
+        "SELECT COUNT(*),COALESCE(SUM(l.outstanding_balance),0) FROM loans l JOIN liability p ON p.product_code=l.product_code "
+        "WHERE p.issuer=? AND l.status='active'", (issuer,)).fetchone()
+    account = connection.execute(
+        "SELECT b.user_id,u.cash FROM bank_accounts b LEFT JOIN users u ON u.user_id=b.user_id WHERE b.issuer=?",
+        (issuer,)).fetchone()
+    return {"id": row["institution_id"], "issuer": issuer, "nationality": row["nationality"], "status": row["status"],
+            "equityCapital": row["equity_capital"], "retainedEarnings": row["retained_earnings"], "products": products,
+            "depositAccounts": deposits[0], "deposits": deposits[1], "loans": loans[0], "loanBalance": loans[1],
+            "account": account["user_id"] if account else None, "cash": account["cash"] if account else None}
+
+
+def _bank_row(connection, bank_id):
+    row = connection.execute("SELECT * FROM financial_institutions WHERE institution_id=?", (str(bank_id),)).fetchone()
+    if not row:
+        raise ValueError("financial_institution_not_found")
+    return row
+
+
+def admin_banks():
+    """Banks (financial institutions) by their unique ID, with what each holds, like the company list."""
+    with connect_readonly() as connection:
+        rows = connection.execute("SELECT * FROM financial_institutions ORDER BY institution_id").fetchall()
+        return {"banks": [_bank_summary(connection, row) for row in rows]}
+
+
+def admin_bank_detail(bank_id):
+    with connect_readonly() as connection:
+        row = _bank_row(connection, bank_id)
+        products = [dict(item) for item in connection.execute(
+            "SELECT product_code AS code,name,'saving' AS kind,interest_rate,status FROM saving WHERE issuer=? "
+            "UNION ALL SELECT product_code,name,'loan',interest_rate,status FROM liability WHERE issuer=? ORDER BY 3,1",
+            (row["issuer"], row["issuer"]))]
+        return {**_bank_summary(connection, row), "settings": {key: row[key] for key in BANK_SETTINGS},
+                "productsList": products}
+
+
+def admin_bank_create(actor, payload):
+    issuer = str(payload.get("issuer", "")).strip()
+    nationality = str(payload.get("nationality", "")).strip()
+    if not issuer or len(issuer) > 60 or not nationality:
+        raise ValueError("은행 이름과 국가를 입력해주세요.")
+    with connect_db(timeout=5) as connection:
+        if not connection.execute("SELECT 1 FROM country_currencies WHERE nationality=?", (nationality,)).fetchone():
+            raise ValueError("등록되지 않은 국가입니다.")
+        if connection.execute("SELECT 1 FROM financial_institutions WHERE issuer=?", (issuer,)).fetchone():
+            raise ValueError("같은 이름의 은행이 이미 있습니다.")
+        capital = float(payload.get("equityCapital") or 1_000_000)
+        if not capital > 0:
+            raise ValueError("자본금은 0보다 커야 합니다.")
+        bank_id = str(payload.get("id") or "").strip().upper()
+        if bank_id and not re.fullmatch(r"[A-Z0-9_-]{2,20}", bank_id):
+            raise ValueError("은행 ID는 영문 대문자·숫자·-·_ 2~20자로 입력해주세요.")
+        if bank_id and connection.execute(
+                "SELECT 1 FROM financial_institutions WHERE institution_id=?", (bank_id,)).fetchone():
+            raise ValueError("이미 쓰는 은행 ID입니다.")
+        # Left blank, the insert trigger fills a random BNK + six-digit ID.
+        connection.execute("INSERT INTO financial_institutions(issuer,nationality,equity_capital,institution_id) VALUES (?,?,?,?)",
+                           (issuer, nationality, capital, bank_id or None))
+        bank_id = connection.execute("SELECT institution_id FROM financial_institutions WHERE issuer=?", (issuer,)).fetchone()[0]
+        _audit_db(connection, actor, "bank.create", {"id": bank_id, "issuer": issuer, "nationality": nationality, "equityCapital": capital})
+    return f"{issuer} 은행을 만들었습니다. 고유 ID {bank_id}"
+
+
+def admin_bank_update(actor, bank_id, payload):
+    changes = {key: payload[key] for key in BANK_SETTINGS if key in payload and payload[key] not in (None, "")}
+    if not changes:
+        raise ValueError("변경된 설정이 없습니다.")
+    for key, value in changes.items():
+        if key != "status":
+            try:
+                changes[key] = float(value)
+            except (TypeError, ValueError):
+                raise ValueError(f"{key} 값은 숫자여야 합니다.") from None
+    with connect_db(timeout=5) as connection:
+        row = _bank_row(connection, bank_id)
+        try:
+            connection.execute(
+                f"UPDATE financial_institutions SET {','.join(f'{key}=?' for key in changes)} WHERE institution_id=?",
+                (*changes.values(), str(bank_id)))
+        except sqlite3.IntegrityError:
+            raise ValueError("허용 범위를 벗어난 값이 있습니다.") from None
+        _audit_db(connection, actor, "bank.update", {"id": bank_id, "issuer": row["issuer"], "before": {key: row[key] for key in changes}, "after": changes})
+    return f"{row['issuer']} 은행 설정을 저장했습니다."
 
 
 def admin_companies():
@@ -3784,7 +3902,8 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.send_json(200, admin_command_catalog())
             elif path.startswith("/internal/admin/") and path.split("/")[3] in {
-                    "products", "countries", "exchanges", "help", "bot-jobs", "user", "companies", "warnings", "feedback"}:
+                    "products", "countries", "exchanges", "help", "bot-jobs", "user", "companies", "warnings", "feedback",
+                    "naturalization", "banks"}:
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
@@ -3825,6 +3944,10 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, admin_feedback(query.get("status", [None])[0]))
                 elif parts == ["naturalization"]:
                     self.send_json(200, admin_naturalization())
+                elif parts == ["banks"]:
+                    self.send_json(200, admin_banks())
+                elif len(parts) == 2 and parts[0] == "banks":
+                    self.send_json(200, admin_bank_detail(parts[1]))
                 elif len(parts) == 2 and parts[0] == "companies":
                     self.send_json(200, admin_company_detail(parts[1]))
                 else:
@@ -4433,7 +4556,8 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.send_json(200, admin_login_as(user["userId"], payload))
             elif path.startswith("/internal/admin/") and path.split("/")[3] in {
-                    "products", "countries", "exchanges", "user", "companies", "warnings", "feedback", "logs"}:
+                    "products", "countries", "exchanges", "user", "companies", "warnings", "feedback", "logs",
+                    "naturalization", "banks"}:
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
                     return
@@ -4464,6 +4588,10 @@ class Handler(BaseHTTPRequestHandler):
                     message = admin_feedback_delete(actor, payload)
                 elif len(parts) == 2 and parts[0] == "naturalization":
                     message = admin_naturalization_decide(actor, parts[1], payload)
+                elif parts == ["banks"]:
+                    message = admin_bank_create(actor, payload)
+                elif len(parts) == 2 and parts[0] == "banks":
+                    message = admin_bank_update(actor, parts[1], payload)
                 elif len(parts) == 2 and parts[0] == "feedback":
                     message = admin_feedback_action(actor, parts[1], payload)
                 elif len(parts) == 2 and parts[0] == "user":

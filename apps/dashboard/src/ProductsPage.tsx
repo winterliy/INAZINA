@@ -8,7 +8,7 @@ import { Card, Field, changed, date, number, plain, show, text, type Ctx } from 
 type KindField = { key: string; label: string; optional: boolean; text: boolean };
 type AdvancedField = { key: string; label: string; type: string };
 type Kind = { kind: string; token: string; label: string; group: "market" | "finance"; family: string; fields: KindField[]; advanced: AdvancedField[]; example: Record<string, unknown>; editable: boolean };
-type Product = { code: string; name: string; kind: string; status: string; exchangeId: string | null; currency: string | null; value: number | null; drProgram?: { underlyingCode: string; receiptType: string; depositaryBank: string; custodian: string; underlyingPerReceipt: number; receiptSupply: number; depositedUnderlyingQuantity: number; custodiedUnderlyingQuantity: number; outstandingReceiptQuantity: number; programStatus: string; underlyingPrice?: number; underlyingCurrency?: string; referenceValue?: number; referencePremiumPercent?: number; referenceDeviationAlert?: boolean } };
+type Product = { code: string; name: string; kind: string; status: string; exchangeId: string | null; currency: string | null; value: number | null; fields?: Record<string, unknown>; drProgram?: { underlyingCode: string; receiptType: string; depositaryBank: string; custodian: string; underlyingPerReceipt: number; receiptSupply: number; depositedUnderlyingQuantity: number; custodiedUnderlyingQuantity: number; outstandingReceiptQuantity: number; programStatus: string; underlyingPrice?: number; underlyingCurrency?: string; referenceValue?: number; referencePremiumPercent?: number; referenceDeviationAlert?: boolean } };
 type DrMovement = { movement_id: number; user_id: string; dr_code: string; underlying_code: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; underlying_average_cost_text: string; underlying_currency: string; holder_underlying_average_cost_text: string; holder_underlying_currency: string; recorded_epoch: number };
 type DrCustodyEvent = { event_id: number; reference_key: string; event_sequence: number; event_type: "instruction_received" | "custody_verified" | "settled"; instruction_status: "requested" | "verified" | "settled" | "rejected" | "cancelled" | null; dr_code: string; underlying_code: string; user_id: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; recorded_epoch: number };
 type DrCustodyInstruction = { reference_key: string; dr_code: string; underlying_code: string; user_id: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; status: "requested" | "verified" | "settled" | "rejected" | "cancelled"; requested_epoch: number; updated_epoch: number; settled_epoch: number | null; settle_after_epoch: number | null; released_epoch: number | null; settlement_attempt_count: number; last_settlement_outcome: "settled" | "failed" | null; last_settlement_detail: string | null; last_status_reason: string | null };
@@ -116,7 +116,6 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
   const [drVotingChoices, setDrVotingChoices] = useState("찬성,반대,기권");
   const drMonitorInitialized = useRef(false);
   const lastDrAlertEventId = useRef(0);
-  const [filter, setFilter] = useState("all");
   const [editor, setEditor] = useState<Editor | null>(null);
   const [showInactive, setShowInactive] = useState(true);
   const [fundCode, setFundCode] = useState<string | null>(null);
@@ -250,7 +249,6 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
 
   useEffect(() => {
     setEditor(null);
-    setFilter("all");
     load().catch((cause) => say(cause instanceof Error ? cause.message : "상품을 불러오지 못했습니다.", true));
   }, [load]);
 
@@ -272,9 +270,9 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
   const families = useMemo(() => kinds.filter((kind, index) => kinds.findIndex((other) => other.family === kind.family) === index), [kinds]);
   const visible = useMemo(() => {
     const term = query.trim().toLocaleLowerCase();
-    return products.filter((item) => (filter === "all" || kindOf(item.kind)?.family === filter) && (showInactive || item.status === "active") &&
+    return products.filter((item) => (showInactive || item.status === "active") &&
       (!term || `${item.code} ${item.name} ${familyLabel(item.kind)} ${item.currency ?? ""} ${item.exchangeId ?? ""}`.toLocaleLowerCase().includes(term)));
-  }, [products, filter, query, showInactive, kinds]);
+  }, [products, query, showInactive, kinds]);
 
   function startCreate(kind: string, keep?: Record<string, string>) {
     const spec = kindOf(kind);
@@ -360,7 +358,7 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
         <p className="hint">{editor.kind === "saving" ? "통장 화폐가 국적 통화인 시민이 비밀번호·예치금을 넣고 여는 저축입니다." : "통장 화폐가 국적 통화가 아닌 시민이 여는 저축입니다. 통화마다 한 사람당 하나만 열 수 있어요."} 입력 항목은 같고 통장 화폐만 다릅니다.</p>
       </div>}
       <form className="form-grid" onSubmit={save}>
-        <Field label="상품 코드" hint={editor.mode === "edit" ? "변경 불가" : "공백 없이"}><input className="mono" value={editor.code} readOnly={editor.mode === "edit"} required={editor.kind !== "option"} onChange={(event) => setEditor({ ...editor, code: event.target.value })} /></Field>
+        <Field label="상품 코드" hint={editor.mode === "edit" ? "변경 불가" : "선택 · 비우면 무작위로 붙입니다"}><input className="mono" value={editor.code} readOnly={editor.mode === "edit"} onChange={(event) => setEditor({ ...editor, code: event.target.value })} /></Field>
         {spec.fields.map((field) => {
           const drFixed = editor.kind === "dr" && ["total_supply", "exchange_id", "underlying_code", "underlying_per_receipt", "receipt_type", "depositary_bank", "custodian", "home_exchange_id", "quote_currency"].includes(field.key);
           return <Field key={field.key} label={field.label} hint={`${field.key}${field.optional ? " · 선택" : ""}${editor.mode === "edit" && drFixed ? " · 발행조건 고정" : ""}`} wide={field.key === "components" || field.key === "underlyings"}>
@@ -474,14 +472,21 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
     </Card>}
 
 
-    <Card title={group === "market" ? "종목 · 상품" : "금융 상품"} caption={`${number(visible.length)}개 표시 · 중지는 거래만 멈추고, 중지된 상품은 아무도 보유·이용하지 않으면 삭제로 완전히 지울 수 있습니다.`}
-      actions={<><select aria-label="종류" value={filter} onChange={(event) => setFilter(event.target.value)}><option value="all">전체 종류</option>{families.map((kind) => <option key={kind.family} value={kind.family}>{familyLabel(kind.kind)} ({counts[kind.family] ?? 0})</option>)}</select>
-        <label className="check"><input type="checkbox" checked={showInactive} onChange={(event) => setShowInactive(event.target.checked)} />중지 포함</label></>}>
-      <div className="scroll-x tall"><table><thead><tr><th>코드</th><th>이름</th><th>종류</th><th>거래소</th><th>통화</th><th className="r">{group === "market" ? "가격" : "이율·환율"}</th><th>상태</th><th /></tr></thead><tbody>
-        {visible.map((item) => <tr key={`${item.kind}-${item.code}`}>
-          <td className="mono">{item.code}</td><td>{item.name}{item.drProgram && <small className="block hint">원주 {item.drProgram.underlyingCode} · 1증서 = {number(item.drProgram.underlyingPerReceipt)}주 · 시뮬레이터 보관 {number(item.drProgram.custodiedUnderlyingQuantity)}주 / 발행 DR 기준 필요 {number(item.drProgram.outstandingReceiptQuantity * item.drProgram.underlyingPerReceipt)}주 · {drBackingShortfall(item.drProgram) > 0 ? <span className="tag warn">보관 부족 {number(drBackingShortfall(item.drProgram))}주</span> : <span className="tag ok">시뮬레이터 수량 충족</span>}{item.drProgram.referenceValue !== undefined && <><br />단순 참고가 {number(item.drProgram.referenceValue)} {item.currency} · 현재가 괴리 {number(item.drProgram.referencePremiumPercent ?? 0)}% (±10% 이상 참고 경보 · 환율·비용·유동성 미반영) {item.drProgram.referenceDeviationAlert && <span className="tag warn">괴리 주의</span>}</>}</small>}</td><td>{familyLabel(item.kind)}{item.kind === "currencyproduct" && <span className="tag inline">외환</span>}</td><td>{show(item.exchangeId)}</td><td>{show(item.currency)}</td>
-          <td className="r mono">{item.value === null ? "—" : number(item.value)}</td>
-          <td><span className={item.status === "active" ? "tag ok" : "tag warn"}>{item.status}</span></td>
+    <section className="kind-toolbar" aria-label="상품 표시">
+      <p>{number(visible.length)}개 · 종류마다 따로 묶어 그 종류에 필요한 칸만 보여 줍니다. 중지는 거래만 멈추고, 중지된 상품은 아무도 보유·이용하지 않으면 삭제로 완전히 지울 수 있습니다.</p>
+      <label className="check"><input type="checkbox" checked={showInactive} onChange={(event) => setShowInactive(event.target.checked)} />중지 포함</label>
+    </section>
+    {families.map((family) => {
+      const rows = visible.filter((item) => kindOf(item.kind)?.family === family.family);
+      if (!rows.length) return null;
+      const columns = family.fields.filter((field) => field.key !== "name").slice(0, 6);
+      return <Card key={family.family} className={`kind-card kind-${family.family}`} title={familyLabel(family.kind)} caption={`${family.kind === "saving" ? "saving · 국적 통화/외환" : family.token} · ${number(rows.length)}개`}
+        actions={<button className="soft small" type="button" onClick={() => startCreate(family.kind)}>새 {familyLabel(family.kind)}</button>}>
+        <div className="scroll-x"><table><thead><tr><th>코드</th><th>이름</th>{columns.map((field) => <th key={field.key} className={field.text ? undefined : "r"}>{field.label}</th>)}<th>상태</th><th /></tr></thead><tbody>
+          {rows.map((item) => <tr key={`${item.kind}-${item.code}`}>
+            <td className="mono">{item.code}{item.kind === "currencyproduct" && <span className="tag inline">외환</span>}</td><td>{item.name}{item.drProgram && <small className="block hint">원주 {item.drProgram.underlyingCode} · 1증서 = {number(item.drProgram.underlyingPerReceipt)}주 · 시뮬레이터 보관 {number(item.drProgram.custodiedUnderlyingQuantity)}주 / 발행 DR 기준 필요 {number(item.drProgram.outstandingReceiptQuantity * item.drProgram.underlyingPerReceipt)}주 · {drBackingShortfall(item.drProgram) > 0 ? <span className="tag warn">보관 부족 {number(drBackingShortfall(item.drProgram))}주</span> : <span className="tag ok">시뮬레이터 수량 충족</span>}{item.drProgram.referenceValue !== undefined && <><br />단순 참고가 {number(item.drProgram.referenceValue)} {item.currency} · 현재가 괴리 {number(item.drProgram.referencePremiumPercent ?? 0)}% (±10% 이상 참고 경보 · 환율·비용·유동성 미반영) {item.drProgram.referenceDeviationAlert && <span className="tag warn">괴리 주의</span>}</>}</small>}</td>
+            {columns.map((field) => <td key={field.key} className={field.text ? undefined : "r mono"}>{fieldValue(item.fields?.[field.key])}</td>)}
+            <td><span className={item.status === "active" ? "tag ok" : "tag warn"}>{item.status}</span></td>
           <td className="row-actions">
             {["fund", "indexfund"].includes(item.kind) && <button className="soft small" disabled={busy} onClick={() => { setFundCode(item.code); window.scrollTo({ top: 0, behavior: "smooth" }); }}>펀드 운용</button>}
             {(RELATED[item.kind] ?? []).length > 0 && <select className="mini-select" aria-label="관련 명령어" value="" onChange={(event) => { if (event.target.value) openCommand(event.target.value, item.code); }}><option value="">명령어…</option>{RELATED[item.kind].map(([command, label]) => <option key={command} value={command}>{label} (${command})</option>)}</select>}
@@ -490,10 +495,17 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
             {item.kind === "dr" && item.drProgram && item.drProgram.programStatus !== "terminated" && <button className="soft small danger" disabled={busy} onClick={() => terminateDr(item)}>DR 종료</button>}
             {item.status !== "active" && !item.drProgram && <button className="soft small danger" disabled={busy} title="중지된 상품을 완전히 삭제" onClick={() => purge(item)}>삭제</button>}
           </td>
-        </tr>)}
-      </tbody></table>{!visible.length && <p className="empty">표시할 상품이 없습니다.</p>}</div>
-    </Card>
+          </tr>)}
+        </tbody></table></div>
+      </Card>;
+    })}
+    {!visible.length && <p className="empty">표시할 상품이 없습니다.</p>}
   </>;
+}
+
+function fieldValue(value: unknown) {
+  if (value === null || value === undefined || value === "") return "—";
+  return typeof value === "number" ? number(value) : String(value);
 }
 
 function groupAmount(value: string) {

@@ -2532,11 +2532,31 @@ class CurrencyDB(DBManager):
             "status": "TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','restricted','failed'))",
             "failed_epoch": "REAL",
             "last_capital_update_epoch": "REAL",
+            "institution_id": "TEXT",
         }.items():
             if column not in institution_columns:
                 self.execute(
                     f"ALTER TABLE financial_institutions ADD COLUMN {column} {declaration}"
                 )
+        # Every bank has a stable unique ID, chosen when it is created or filled at random (BNK + six digits).
+        import random
+        taken = {row[0] for row in self.execute(
+            "SELECT institution_id FROM financial_institutions WHERE institution_id IS NOT NULL")}
+        for (issuer,) in self.execute(
+                "SELECT issuer FROM financial_institutions WHERE institution_id IS NULL ORDER BY rowid"):
+            bank_id = next(candidate for candidate in iter(lambda: f"BNK{random.randrange(10**6):06d}", None)
+                           if candidate not in taken)
+            taken.add(bank_id)
+            self.execute("UPDATE financial_institutions SET institution_id=? WHERE issuer=?", (bank_id, issuer))
+        self.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_financial_institutions_id "
+                     "ON financial_institutions(institution_id)")
+        # Banks that appear through a product's issuer get a random ID the same way.
+        self.execute("DROP TRIGGER IF EXISTS trg_financial_institution_id")
+        self.execute("""CREATE TRIGGER trg_financial_institution_id
+            AFTER INSERT ON financial_institutions WHEN NEW.institution_id IS NULL BEGIN
+                UPDATE financial_institutions SET institution_id=printf('BNK%06d', abs(random()) % 1000000)
+                WHERE issuer=NEW.issuer;
+            END""")
         from functions.money import currency_precision, to_minor_units
         for row in self.execute(
             "SELECT issuer,nationality,equity_capital FROM financial_institutions "
