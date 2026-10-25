@@ -32,6 +32,7 @@ PORT = int(os.environ.get("INAZINA_PYTHON_PORT", "4313"))
 MAX_HTTP_THREADS = max(1, min(int(os.environ.get("INAZINA_MAX_HTTP_THREADS", "16")), 64))
 BOOTSTRAP_ADMIN_IDS = {"1076861147560542278"}
 sys.path.insert(0, str(ROOT))
+from database.unified import UnifiedConnection
 from database.user_db import TREASURY_USER_ID, citizen_filter
 from functions.dr_pricing import (
     DEVIATION_ALERT_THRESHOLD_PERCENT as DR_REFERENCE_DEVIATION_ALERT_PERCENT,
@@ -112,7 +113,8 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 @contextmanager
 def connect_readonly():
     uri = DATABASE.as_uri() + "?mode=ro"
-    connection = sqlite3.connect(uri, uri=True, timeout=2)
+    # UnifiedConnection drops the legacy product./assets. qualifiers the shared managers still write.
+    connection = sqlite3.connect(uri, uri=True, timeout=2, factory=UnifiedConnection)
     try:
         connection.row_factory = sqlite3.Row
         connection.create_function("base_currency_code", 0, lambda: _configured_base_currency(connection))
@@ -124,7 +126,7 @@ def connect_readonly():
 
 @contextmanager
 def connect_db(timeout=2):
-    connection = sqlite3.connect(DATABASE, timeout=timeout)
+    connection = sqlite3.connect(DATABASE, timeout=timeout, factory=UnifiedConnection)
     try:
         connection.row_factory = sqlite3.Row
         connection.create_function("base_currency_code", 0, lambda: _configured_base_currency(connection))
@@ -3784,7 +3786,8 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.send_json(200, admin_command_catalog())
             elif path.startswith("/internal/admin/") and path.split("/")[3] in {
-                    "products", "countries", "exchanges", "help", "bot-jobs", "user", "companies", "warnings", "feedback"}:
+                    "products", "countries", "exchanges", "help", "bot-jobs", "user", "companies", "warnings", "feedback",
+                    "naturalization"}:
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
@@ -4433,7 +4436,8 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self.send_json(200, admin_login_as(user["userId"], payload))
             elif path.startswith("/internal/admin/") and path.split("/")[3] in {
-                    "products", "countries", "exchanges", "user", "companies", "warnings", "feedback", "logs"}:
+                    "products", "countries", "exchanges", "user", "companies", "warnings", "feedback", "logs",
+                    "naturalization"}:
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
                     return
