@@ -13,6 +13,40 @@ type Account = { number: string; product_name: string; balance: number };
 type Assets = { cash: number; grand_total: number; loan_total: number; net_worth: number; stocks: Stock[]; accounts: Account[] };
 type Detail = { account: string; webLogin: boolean; loginId: string; assets: Assets; shareholders: Shareholders };
 
+const UNLISTED = "UNLISTED";
+
+/** Where the company's shares trade: any exchange, or 비상장 (no exchange, no market trading). */
+function ListingControl({ ctx, company, onDone }: { ctx: Ctx; company: Company; onDone: () => void }) {
+  const { busy, run, say } = ctx;
+  const [exchanges, setExchanges] = useState<string[]>([]);
+  const [target, setTarget] = useState(company.exchange_id || UNLISTED);
+  useEffect(() => {
+    api<{ exchanges: { exchange_id: string }[] }>("/api/admin/exchanges")
+      .then((result) => setExchanges(result.exchanges.map((item) => item.exchange_id).filter((id) => id !== "CURRENCY" && id !== UNLISTED))).catch(() => undefined);
+  }, []);
+  useEffect(() => setTarget(company.exchange_id || UNLISTED), [company.company_code, company.exchange_id]);
+  const label = (id: string) => id === UNLISTED ? "비상장" : id;
+
+  function apply() {
+    if (target === (company.exchange_id || UNLISTED)) { say("바뀐 거래소가 없습니다.", true); return; }
+    if (!window.confirm(`${company.name} (${company.company_code})의 상장 거래소를 ${label(company.exchange_id || UNLISTED)} → ${label(target)}(으)로 바꿀까요?${target === UNLISTED ? "\n비상장이 되면 거래소에서 매매할 수 없고 시세도 멈춥니다." : ""}`)) return;
+    void run(async () => {
+      const detail = await api<{ kind: string }>(`/api/admin/products/${encodeURIComponent(company.company_code)}`);
+      return api<{ message: string; success: boolean }>("/api/admin/products", { method: "POST", body: JSON.stringify({ operation: "edit", kind: detail.kind, code: company.company_code, fields: { exchange_id: target }, advanced: {} }) });
+    }, "상장 거래소를 바꾸지 못했습니다.", (result) => { say(plain(result.message), !result.success); if (result.success) onDone(); });
+  }
+
+  return <div className="listing-control">
+    <Field label="상장 거래소" hint={target === UNLISTED ? "비상장: 거래소 매매 불가" : "이 거래소에서 매매·시세 반영"}>
+      <select value={target} onChange={(event) => setTarget(event.target.value)}>
+        {[...new Set([...(company.exchange_id && company.exchange_id !== UNLISTED ? [company.exchange_id] : []), ...exchanges])].map((id) => <option key={id} value={id}>{id}</option>)}
+        <option value={UNLISTED}>비상장</option>
+      </select>
+    </Field>
+    <button className="btn" type="button" disabled={busy || target === (company.exchange_id || UNLISTED)} onClick={apply}>거래소 변경</button>
+  </div>;
+}
+
 /** What the company owns: its holdings by value. */
 function HoldingsPie({ stocks }: { stocks: Stock[] }) {
   const items = [...stocks].sort((a, b) => b.value - a.value).map((stock) => ({ label: `${stock.code} ${stock.name}`, value: Math.round(stock.value) }));
@@ -87,6 +121,7 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
         <div><small>대출</small><b>{number(company.loans)}</b></div>
         <div><small>순자산</small><b>{detail ? number(Math.round(detail.assets.net_worth)) : "…"}</b></div>
       </div>
+      <ListingControl ctx={ctx} company={company} onDone={() => void load()} />
       {detail?.shareholders && <ShareholderPie data={detail.shareholders} />}
       {company.parents.length > 0 && <p className="hint">모회사(지분 보유 법인): {company.parents.map((parent) => `${parent.code} ${parent.percent.toFixed(1)}%`).join(", ")}</p>}
       <h3 className="sub-head">보유 자산</h3>

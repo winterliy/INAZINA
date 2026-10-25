@@ -8,6 +8,9 @@ from functions.time_utils import validate_epoch
 
 
 class MarketSessionManager:
+    # A company listed on no exchange: its shares cannot be bought or sold on any market.
+    UNLISTED = "UNLISTED"
+
     SIDE_CAR_SECONDS = 300
     CIRCUIT_SECONDS = {1: 1200, 2: 1200}
     KST = ZoneInfo("Asia/Seoul")
@@ -43,7 +46,7 @@ class MarketSessionManager:
             "SELECT exchange_id FROM market_exchanges UNION SELECT exchange_id FROM company "
             "UNION SELECT exchange_id FROM market_assets UNION SELECT exchange_id FROM investment "
             "UNION SELECT exchange_id FROM treasury_bond_products ORDER BY exchange_id"
-        ) if row['exchange_id']]
+        ) if row['exchange_id'] and row['exchange_id'] != cls.UNLISTED]
 
     @classmethod
     def exchange_for_asset(cls, conn, asset_code):
@@ -167,6 +170,8 @@ class MarketSessionManager:
         exchange_id = exchange_id or self.exchange_for_asset(conn, asset_code)
         if exchange_id is None:
             return None
+        if exchange_id == self.UNLISTED:
+            return "❌ 비상장 법인 주식은 거래소에서 매매할 수 없습니다. 지분은 송금·지분 이전으로 옮겨 주세요."
         if conn is None:
             with self.db.atomic(("system",)) as transaction:
                 state = self.process_conn(transaction, now, exchange_id)

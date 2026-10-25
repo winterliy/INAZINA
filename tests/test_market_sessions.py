@@ -52,6 +52,15 @@ class MarketSessionTests(unittest.TestCase):
             now=start, target_price=goal, target_percent=percent)
         self.assertTrue(ok, message)
 
+    def test_unlisted_company_cannot_trade_and_is_no_exchange(self):
+        self.db.companies.create_company("PRIV", "Private", "Industry", 100000,
+                                         10000, 10000, "admin", MarketSessionManager.UNLISTED)
+        self.assertIn("비상장", self.session.trading_error(now=1000, asset_code="PRIV"))
+        self.assertIsNone(self.session.trading_error(now=1000, asset_code="CO"))
+        with self.db.atomic(("system",)) as conn:
+            self.assertNotIn(MarketSessionManager.UNLISTED, MarketSessionManager.exchange_ids(conn))
+            self.assertIsNone(conn.execute("SELECT 1 FROM market_exchanges WHERE exchange_id='UNLISTED'").fetchone())
+
     def test_role_check_and_validation_preserve_state(self):
         before = self.session.get_state(now=1000)
         self.assertFalse(self.session.control("alice", "close", now=1000)[0])

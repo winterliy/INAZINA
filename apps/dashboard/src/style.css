@@ -780,3 +780,7 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
 /* 종목 · 상품 / 금융 상품: one card per kind under a shared toolbar. */
 .kind-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 24px; margin-bottom: 16px; padding: 14px 20px; border-radius: 20px; background: var(--surface); }
 .kind-toolbar p { margin: 0; color: var(--ink2); font-size: 14px; }
+
+/* 법인 자본: the listing exchange picker in a company's card. */
+.listing-control { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin: 4px 0 16px; }
+.listing-control label { display: grid; gap: 6px; min-width: 220px; color: var(--ink2); font-size: 12px; font-weight: 600; }
