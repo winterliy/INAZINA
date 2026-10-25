@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../shared/api";
 import { FundPanel } from "./FundPanel";
+import { ShareholderPie, type Shareholders } from "./Donut";
 import { Card, Field, changed, date, number, plain, show, text, type Ctx } from "./common";
 
 type KindField = { key: string; label: string; optional: boolean; text: boolean };
@@ -17,7 +18,7 @@ type DrDeviationEvent = { event_id: number; dr_code: string; from_state: string;
 type DrVotingMeeting = { meetingId: number; underlyingCode: string; title: string; recordEpoch: number; createdEpoch: number; opensEpoch: number | null; closesEpoch: number | null; quorumPercent: number; agendaCount: number };
 type DrVotingResult = { agendaItemId: number; title: string; choices: Record<string, { votingPower: number; ballots: number }>; eligibleVotingPower: number; turnoutVotingPower: number; turnoutPercent: number; votingOpensEpoch: number | null; votingClosesEpoch: number | null; closed: boolean; quorumPercent: number; quorumMet: boolean | null };
 type DrTaxReport = { rules: { rule_id: number; rule_name: string; issuer_nationality: string; underlying_nationality: string; recipient_nationality: string; recipient_residency: string; product_type: string; treaty_code: string | null; tax_rate_percent: string; exempt: number; effective_from: number; effective_until: number | null }[]; currencies: { currency_code: string; payment_count: number; gross_minor_units: number; tax_minor_units: number; net_minor_units: number; difference_minor_units: number; status: string }[]; journal: { currency_code: string; entry_count: number; debit_minor_units: number; credit_minor_units: number; difference_minor_units: number }[]; eventGaps: { event_id: number; currency_code: string; status: string }[]; journalGaps: { event_id: number; reference_key: string; entry_count?: number; expected_lines?: Record<string, number[]>; actual_lines?: Record<string, number[]>; status: string }[]; settlements: { payment_count: number; status: string; gaps: { payment_id?: number; status: string }[] }; payments: { event_id: number; payment_id: number; dr_code: string; rule_id: number | null; user_id: string; currency_code: string; issuer_nationality: string; underlying_nationality: string; recipient_nationality: string; recipient_residency: string; treaty_code: string | null; tax_rate_percent: string; gross_amount: number; tax_amount: number; net_amount_units: number; recorded_epoch: number }[]; unloggedPaymentCount: number };
-type Detail = { code: string; kind: string; status: string; values: Record<string, unknown>; row: Record<string, unknown> };
+type Detail = { code: string; kind: string; status: string; shareholders?: Shareholders; values: Record<string, unknown>; row: Record<string, unknown> };
 type Editor = { mode: "create" | "edit"; kind: string; code: string; values: Record<string, string>; advanced: Record<string, string>; original: Detail | null };
 
 // Ratios an administrator tunes on a live product (saved through the same 상품수정 path).
@@ -340,11 +341,19 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
 
   return <>
     {fundCode && <FundPanel key={fundCode} code={fundCode} ctx={ctx} close={() => setFundCode(null)} />}
-    <Card title="새 상품" caption={`${families.map((kind) => familyLabel(kind.kind)).join(" · ")} — 종류를 고르면 $상품생성과 같은 입력 칸이 나옵니다.`}>
-      <div className="kind-grid">{families.map((kind) => <button key={kind.family} type="button" className={editor?.mode === "create" && kindOf(editor.kind)?.family === kind.family ? "command-chip active" : "command-chip"} onClick={() => startCreate(kind.kind)}><b>{familyLabel(kind.kind)}</b><small>{kind.family === "saving" ? "saving · 국적 통화/외환" : kind.token} · {counts[kind.family] ?? 0}개</small></button>)}</div>
-    </Card>
+    <section className="tile tile-dark wizard-tile" aria-label="새 상품">
+      <p className="tile-label">상품 생성 마법사</p>
+      <div className="wizard-kinds">{families.map((kind) => <button key={kind.family} type="button" aria-pressed={editor?.mode === "create" && kindOf(editor.kind)?.family === kind.family} onClick={() => startCreate(kind.kind)}>{familyLabel(kind.kind)}<small>{counts[kind.family] ?? 0}</small></button>)}</div>
+      <p className="wizard-note">종류를 고르면 그 종류에 필요한 칸만 나옵니다 ($상품생성과 같은 검증).</p>
+    </section>
 
-    {editor && spec && <div ref={editorRef} className="editor-anchor"><Card title={editor.mode === "create" ? `${spec.label} 생성` : `${editor.code} 수정`} caption={editor.kind === "dr" ? editor.mode === "create" ? "기초 코드는 활성 보통주여야 하고 결제 통화·상장 거래소도 이미 등록되어야 합니다. 발행량 × DR당 원주 수는 원주 발행량 한도 안에 있어야 합니다." : "기초주식·비율·통화·거래소 등 발행조건은 변경할 수 없습니다. 가격과 표시 이름만 수정할 수 있습니다." : editor.mode === "create" ? "선택 항목은 비워 둘 수 있습니다. 배당주기는 초 또는 1일·1주·1달, 배당은 5 또는 5%처럼 입력합니다." : "바꾼 값만 저장합니다. 결제 통화와 발행된 계약 조건처럼 바꿀 수 없는 값은 서버가 거부합니다."}
+    {editor && spec && <div ref={editorRef} className="editor-anchor">
+      {editor.mode === "edit" && !!editor.original?.shareholders?.holders.length && <section className="tile" aria-label={`${editor.code} 지분 구성`}>
+        <p className="tile-label">선택한 종목 · 지분 구성</p>
+        <h2 className="tile-title">{text(editor.original.values.name) || editor.code} <small>{editor.code}</small></h2>
+        <ShareholderPie data={editor.original.shareholders} />
+      </section>}
+      <Card title={editor.mode === "create" ? `${spec.label} 생성` : `${editor.code} 수정`} caption={editor.kind === "dr" ? editor.mode === "create" ? "기초 코드는 활성 보통주여야 하고 결제 통화·상장 거래소도 이미 등록되어야 합니다. 발행량 × DR당 원주 수는 원주 발행량 한도 안에 있어야 합니다." : "기초주식·비율·통화·거래소 등 발행조건은 변경할 수 없습니다. 가격과 표시 이름만 수정할 수 있습니다." : editor.mode === "create" ? "선택 항목은 비워 둘 수 있습니다. 배당주기는 초 또는 1일·1주·1달, 배당은 5 또는 5%처럼 입력합니다." : "바꾼 값만 저장합니다. 결제 통화와 발행된 계약 조건처럼 바꿀 수 없는 값은 서버가 거부합니다."}
       actions={<button className="soft" type="button" onClick={() => setEditor(null)}>닫기</button>}>
       {spec.family === "saving" && <div className="saving-mode">
         <div className="segment-tabs" role="radiogroup" aria-label="통장 방식">{kinds.filter((kind) => kind.family === "saving").map((kind) => <button key={kind.kind} type="button" role="radio" aria-checked={editor.kind === kind.kind} className={editor.kind === kind.kind ? "active" : ""} disabled={editor.mode === "edit"} onClick={() => startCreate(kind.kind, editor.values)}>{kind.kind === "saving" ? "국적 통화 저축" : "외환통장"}</button>)}</div>

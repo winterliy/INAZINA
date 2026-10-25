@@ -725,3 +725,71 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
 .gamble-fields input:focus { box-shadow: 0 0 0 2px var(--accent-focus); }
 .gamble-ev { grid-column: 1 / -1; color: var(--danger); font-size: 15px; font-weight: 600; }
 .gamble-ev.up { color: var(--ok-ink); }
+
+/* 관리자 명령어: the gamble and transfer tiles side by side. */
+.feature-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; margin-bottom: 16px; }
+.feature-pair .tile { margin-bottom: 0; }
+.transfer-tile { display: grid; gap: 16px; align-content: start; }
+.transfer-route { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 12px; }
+.transfer-route > div, .transfer-route > label { display: grid; gap: 4px; min-width: 0; padding: 16px; border-radius: 18px; background: rgba(255, 255, 255, .08); }
+.transfer-route small { color: #a1a1a6; font-size: 12px; }
+.transfer-route b { overflow: hidden; font-size: 17px; text-overflow: ellipsis; white-space: nowrap; }
+.transfer-route svg { color: #2997ff; }
+.transfer-tile input { min-width: 0; min-height: 40px; padding: 0 12px; border: 0; border-radius: 12px; color: #f5f5f7; background: rgba(255, 255, 255, .12); font-size: 15px; outline: none; }
+.transfer-tile input::placeholder { color: #8e8e93; }
+.transfer-tile input:focus { box-shadow: 0 0 0 2px #2997ff; }
+.transfer-amount { display: flex; align-items: center; gap: 10px; }
+.transfer-amount input { flex: 1; min-height: 52px; font-size: 28px; font-weight: 600; }
+
+/* 종목 · 상품: the product wizard as a dark tile of kind pills; the selected stock's holders. */
+.wizard-tile { display: grid; gap: 12px; }
+.wizard-kinds { display: flex; flex-wrap: wrap; gap: 6px; }
+.wizard-kinds button { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 16px; border: 0; border-radius: 999px; color: #f5f5f7; background: rgba(255, 255, 255, .1); font-size: 14px; font-weight: 600; }
+.wizard-kinds button small { color: #a1a1a6; font-weight: 400; }
+.wizard-kinds button:hover { background: rgba(255, 255, 255, .18); }
+.wizard-kinds button[aria-pressed="true"] { color: #000; background: #f5f5f7; }
+.wizard-kinds button[aria-pressed="true"] small { color: #6e6e73; }
+.wizard-note { color: #a1a1a6; font-size: 13px; }
+.tile-title { margin: 6px 0 4px; font-size: 28px; font-weight: 600; letter-spacing: -.015em; }
+.tile-title small { color: var(--ink2); font-size: 17px; font-weight: 400; }
+
+/* 문의·신고: the inbox tile lists the newest unread submissions. */
+.inbox-tile { grid-column: span 2; display: grid; gap: 10px; align-content: start; }
+.inbox-tile .tile-value { margin-top: 4px; }
+.inbox-tile ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.inbox-tile li button { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; width: 100%; min-height: 44px; padding: 0 14px; border: 0; border-radius: 14px; color: #f5f5f7; background: rgba(255, 255, 255, .08); text-align: left; font-size: 14px; }
+.inbox-tile li button:hover { background: rgba(255, 255, 255, .16); }
+.inbox-tile li b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.inbox-tile li small, .inbox-tile li span, .inbox-empty { color: #a1a1a6; font-size: 12px; }
+@media (max-width: 600px) { .inbox-tile { grid-column: auto; } }
+
+/* 은행 원장: one balance scale per currency. */
+.scale-tile svg { display: block; width: 100%; max-width: 260px; margin: 8px auto 0; }
+.scale-post, .scale-beam { fill: none; stroke: var(--ink); stroke-width: 4; stroke-linecap: round; }
+.scale-pan { fill: var(--chip); stroke: var(--ink2); stroke-width: 2; stroke-linejoin: round; }
+.scale-pivot { fill: var(--accent); }
+.scale-tile g { transition: transform .6s cubic-bezier(.2, .8, .2, 1); }
+.scale-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 8px 0 0; }
+.scale-sides div { padding: 10px 12px; border-radius: 12px; background: var(--pearl); }
+.scale-sides dt { color: var(--ink2); font-size: 12px; }
+.scale-sides dd { margin: 2px 0 0; font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.scale-verdict { margin-top: 10px; color: var(--ok-ink); font-size: 14px; font-weight: 600; }
+.scale-verdict.off { color: var(--danger); }
+
+/* 작업 기록: a 7 × 24 activity heatmap. */
+.heatmap { display: grid; gap: 4px; margin-top: 14px; overflow-x: auto; }
+.heatmap-row { display: grid; grid-template-columns: 24px repeat(24, minmax(12px, 1fr)); gap: 4px; align-items: center; min-width: 380px; }
+.heatmap-row span { color: var(--ink2); font-size: 12px; }
+.heatmap-row i { aspect-ratio: 1; border-radius: 4px; background: var(--chip); }
+.heatmap-row i.on { background: var(--accent); }
+.heatmap-hours small { color: var(--ink2); font-size: 11px; }
+
+/* 시장 사건: counts and the event timeline. */
+.tile-value.up { color: var(--up-ink); }
+.tile-value.down { color: var(--down-ink); }
+.timeline-tile { grid-column: 1 / -1; }
+.timeline-tile svg { display: block; width: 100%; height: auto; margin-top: 12px; }
+.timeline-tile .bar.up { fill: var(--up-ink); }
+.timeline-tile .bar.down { fill: var(--down-ink); }
+.timeline-tile .now { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 4 4; }
+@media (prefers-reduced-motion: reduce) { .scale-tile g { transition: none; } }
