@@ -13,7 +13,8 @@ export const SERVICES = [
   { path: "/casino", label: "복권 · 게임", description: "로또 6/45 · 럭키 베팅" },
   { path: "/market", label: "시장정보", description: "실시간차트 · 자산 순위 · 거래소 지수 · 금리 · 전체 상품 목록 (/검색)" },
   { path: "/history", label: "거래내역", description: "입출금 · 송금 · 기본소득 · 환전 · 주문 내역" },
-  { path: "/info", label: "정보 · 고객센터", description: "법정 최고이자 · 기업 재무 · 파산 신청 · 주주총회" },
+  { path: "/financials", label: "기업 재무", description: "회사·우선주의 재무상태표 · 손익 · 현금흐름 · 주요 비율" },
+  { path: "/info", label: "정보 · 고객센터", description: "법정 최고이자 · 문의 · 신고 · 파산 신청 · 주주총회" },
 ] as const;
 
 export const won = (value: number, digits = 0) => number(value, digits);
