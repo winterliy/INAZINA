@@ -32,7 +32,7 @@ PORT = int(os.environ.get("INAZINA_PYTHON_PORT", "4313"))
 MAX_HTTP_THREADS = max(1, min(int(os.environ.get("INAZINA_MAX_HTTP_THREADS", "16")), 64))
 BOOTSTRAP_ADMIN_IDS = {"1076861147560542278"}
 sys.path.insert(0, str(ROOT))
-from database.unified import UnifiedConnection
+from database.unified import sql as unified_sql
 from database.user_db import TREASURY_USER_ID, citizen_filter
 from functions.dr_pricing import (
     DEVIATION_ALERT_THRESHOLD_PERCENT as DR_REFERENCE_DEVIATION_ALERT_PERCENT,
@@ -113,8 +113,7 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 @contextmanager
 def connect_readonly():
     uri = DATABASE.as_uri() + "?mode=ro"
-    # UnifiedConnection drops the legacy product./assets. qualifiers the shared managers still write.
-    connection = sqlite3.connect(uri, uri=True, timeout=2, factory=UnifiedConnection)
+    connection = sqlite3.connect(uri, uri=True, timeout=2)
     try:
         connection.row_factory = sqlite3.Row
         connection.create_function("base_currency_code", 0, lambda: _configured_base_currency(connection))
@@ -124,9 +123,27 @@ def connect_readonly():
         connection.close()
 
 
+class LegacyNames:
+    """A connection view for the shared managers: their SQL still writes product./assets./users.
+    schema prefixes, which this drops as their own UnifiedConnection does. The server's own queries
+    keep plain connections, where ``users.user_id`` is a real table-qualified column."""
+
+    def __init__(self, connection):
+        self._connection = connection
+
+    def execute(self, statement, parameters=()):
+        return self._connection.execute(unified_sql(statement), parameters)
+
+    def executemany(self, statement, parameters):
+        return self._connection.executemany(unified_sql(statement), parameters)
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+
 @contextmanager
 def connect_db(timeout=2):
-    connection = sqlite3.connect(DATABASE, timeout=timeout, factory=UnifiedConnection)
+    connection = sqlite3.connect(DATABASE, timeout=timeout)
     try:
         connection.row_factory = sqlite3.Row
         connection.create_function("base_currency_code", 0, lambda: _configured_base_currency(connection))
@@ -1688,7 +1705,9 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
         return f"{amount:.{places}f}"
 
     from functions.banks import bank_issuer
-    with connect_readonly() as connection:
+    with connect_readonly() as plain:
+        # The shared ledger managers still write legacy product./assets. prefixes.
+        connection = LegacyNames(plain)
         # Banks are named by their ID; the books are keyed by the issuer name.
         issuer = bank_issuer(connection, issuer)
         trial_balance = BankJournal.trial_balance(connection, issuer, currency)

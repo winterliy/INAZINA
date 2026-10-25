@@ -711,6 +711,21 @@ class WebApiTests(unittest.TestCase):
             "reference_key": "reject-me", "reason_code": "compliance_review",
         })
 
+    def test_admin_users_separates_people_from_company_accounts(self):
+        with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
+            connection.executescript("""
+                CREATE TABLE company_accounts (company_code TEXT PRIMARY KEY, user_id TEXT NOT NULL UNIQUE);
+                CREATE TABLE country_treasuries (nationality TEXT PRIMARY KEY, user_id TEXT NOT NULL);
+                INSERT INTO users(user_id,nickname,nationality) VALUES ('person-1','시민','낙원'),
+                    ('company:SELO','셀로','낙원'),('30010001','새나라국고','새나라');
+                INSERT INTO company_accounts VALUES ('SELO','company:SELO');
+                INSERT INTO country_treasuries VALUES ('새나라','30010001');
+            """)
+        people = {user["userId"]: user["accountType"] for user in server.admin_users("")}
+        companies = {user["userId"]: user["companyCode"] for user in server.admin_users("", "company")}
+        self.assertEqual(people, {"admin-1": "discord", "person-1": "discord", "30010001": "country"})
+        self.assertEqual(companies, {"company:SELO": "SELO"})
+
     def test_admin_accounting_period_close_is_authorized_and_audited(self):
         from contextlib import nullcontext
         response = {}
