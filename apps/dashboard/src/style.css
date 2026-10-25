@@ -700,3 +700,10 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
 .country-card-facts > span { display: grid; gap: 2px; padding: 8px 10px; border-radius: 12px; background: rgba(255, 255, 255, .08); font-size: 14px; font-weight: 600; }
 .country-card-facts small { color: #a1a1a6; font-size: 11px; font-weight: 400; }
 .country-card-foot { color: #a1a1a6; font-size: 12px; }
+
+/* 종목 · 상품: the trading-warning traffic light. */
+.warning-lights .light-caution { color: #8a4b00; background: #fff3d6; }
+.warning-lights .light-warning { color: #a24400; background: #ffe4cc; }
+.warning-lights .light-danger { color: #b3261e; background: #fde4e2; }
+.warning-lights .tile-label { color: inherit; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .warning-lights .tile { background: var(--surface); } }
