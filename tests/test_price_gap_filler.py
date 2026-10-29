@@ -1,21 +1,40 @@
 import random
 import sqlite3
 import unittest
+from datetime import datetime
 
+from functions import trading_hours
 from managers.price_gap_filler import MAX_POINTS_PER_GAP, VIEWABLE_SECONDS, fill_price_gaps
 
 
 class PriceGapFillerTests(unittest.TestCase):
     def setUp(self):
         self.conn = sqlite3.connect(":memory:")
-        self.conn.execute("CREATE TABLE market_price_history (asset_code TEXT, price REAL, recorded_epoch INTEGER, "
-                          "UNIQUE(asset_code, recorded_epoch))")
+        self.conn.row_factory = sqlite3.Row
+        self.conn.executescript("""
+            CREATE TABLE market_price_history (asset_code TEXT, price REAL, recorded_epoch INTEGER,
+                UNIQUE(asset_code, recorded_epoch));
+            CREATE TABLE market_price_gap_fills (asset_code TEXT, start_epoch INTEGER, end_epoch INTEGER,
+                points INTEGER, filled_epoch INTEGER);
+            CREATE TABLE market_exchanges (exchange_id TEXT PRIMARY KEY, status TEXT, reason TEXT DEFAULT '',
+                open_time TEXT DEFAULT '', close_time TEXT DEFAULT '', trading_days TEXT DEFAULT '1,2,3,4,5',
+                holidays TEXT DEFAULT '[]');
+            CREATE TABLE company (company_code TEXT, exchange_id TEXT, status TEXT);
+            CREATE TABLE market_assets (code TEXT, exchange_id TEXT, status TEXT);
+            CREATE TABLE investment (product_code TEXT, exchange_id TEXT, status TEXT);
+            CREATE TABLE treasury_bond_products (product_code TEXT, exchange_id TEXT, status TEXT);
+            INSERT INTO market_exchanges(exchange_id, status) VALUES ('EX', 'open');
+            INSERT INTO company VALUES ('CO', 'EX', 'active');
+        """)
         rng = random.Random(1)
         price = 1000.0
         for epoch in range(10_000, 10_600):
             price *= 1 + rng.gauss(0, 0.001)
             self.conn.execute("INSERT INTO market_price_history VALUES ('CO', ?, ?)", (price, epoch))
         self.last = price
+
+    def tearDown(self):
+        self.conn.close()
 
     def rows(self, start):
         return self.conn.execute("SELECT recorded_epoch, price FROM market_price_history WHERE asset_code='CO' "
@@ -61,6 +80,42 @@ class PriceGapFillerTests(unittest.TestCase):
     def test_second_run_adds_nothing(self):
         fill_price_gaps(self.conn, now=20_000, rng=random.Random(2))
         self.assertEqual(fill_price_gaps(self.conn, now=20_000, rng=random.Random(2)), {})
+
+    def test_long_gap_coarse_steps_are_not_refilled_on_restart(self):
+        now = 10_599 + 10 * 86400
+        first = fill_price_gaps(self.conn, now=now, rng=random.Random(4))
+        self.assertGreater(first["CO"], 0)
+        self.assertEqual(fill_price_gaps(self.conn, now=now + 5, rng=random.Random(4)), {})
+
+    def test_prices_are_whole_minor_units(self):
+        fill_price_gaps(self.conn, now=10_599 + 300, rng=random.Random(7))
+        self.assertTrue(all(float(price).is_integer() for _, price in self.rows(10_599)))
+
+    def test_only_trading_hours_are_filled(self):
+        def kst(text):
+            return int(datetime.fromisoformat(text).replace(tzinfo=trading_hours.KST).timestamp())
+        self.conn.execute("DELETE FROM market_price_history")
+        self.conn.execute("UPDATE market_exchanges SET open_time='09:00', close_time='15:30', status='closed', reason='장 마감'")
+        last = kst("2026-11-02 15:00")   # Monday afternoon; bot back on Wednesday 10:00
+        self.conn.execute("INSERT INTO market_price_history VALUES ('CO', 1000, ?)", (last,))
+        fill_price_gaps(self.conn, now=kst("2026-11-04 10:00"), rng=random.Random(9))
+        for epoch, _ in self.rows(last):
+            self.assertTrue(trading_hours.is_open(trading_hours.from_row({"open_time": "09:00", "close_time": "15:30",
+                                                                          "trading_days": "1,2,3,4,5"}), epoch))
+        self.assertTrue(self.rows(last))
+
+    def test_closed_paused_unlisted_and_inactive_assets_are_skipped(self):
+        now = 10_599 + 300
+        for setup in ("UPDATE market_exchanges SET status='closed', reason='휴장'",
+                      "UPDATE market_exchanges SET status='paused', reason='사이드카'",
+                      "UPDATE company SET exchange_id='UNLISTED'",
+                      "UPDATE company SET status='delisted'"):
+            with self.subTest(setup=setup):
+                self.conn.execute("SAVEPOINT s")
+                self.conn.execute(setup)
+                self.assertEqual(fill_price_gaps(self.conn, now=now, rng=random.Random(1)), {})
+                self.conn.execute("ROLLBACK TO s")
+                self.conn.execute("RELEASE s")
 
 
 if __name__ == "__main__":
