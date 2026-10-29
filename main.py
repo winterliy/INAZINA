@@ -171,6 +171,8 @@ class InazinaBot(discord.Client):
             )
         if not self._background_loops_started:
             self._background_loops_started = True
+            # Charts should not show a hole for the time the bot was off.
+            await asyncio.to_thread(self._fill_price_gaps)
             print(
                 "Market Price Auto-Update Loop Started "
                 f"(Every {self.MARKET_UPDATE_INTERVAL_SECONDS}s)."
@@ -188,6 +190,17 @@ class InazinaBot(discord.Client):
 
     async def on_message(self, message):
         await self.prefix_registry.handle(message)
+
+    def _fill_price_gaps(self):
+        from managers.price_gap_filler import fill_price_gaps
+        try:
+            with self.db.atomic(("assets",)) as conn:
+                added = fill_price_gaps(conn)
+        except Exception as exc:  # a failed fill must never keep the market from starting
+            print(f"[Price Gap Fill Error] {exc}")
+            return
+        if added:
+            print(f"Filled price history gaps for {len(added)} assets ({sum(added.values())} points).")
 
     async def market_update_loop(self):
         """Update prices off the Discord event loop; busy DB ticks are skipped."""
