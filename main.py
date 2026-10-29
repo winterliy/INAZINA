@@ -171,6 +171,7 @@ class InazinaBot(discord.Client):
             )
         if not self._background_loops_started:
             self._background_loops_started = True
+            await asyncio.to_thread(self._ensure_bank_companies)
             # Charts should not show a hole for the time the bot was off.
             await asyncio.to_thread(self._fill_price_gaps)
             print(
@@ -190,6 +191,18 @@ class InazinaBot(discord.Client):
 
     async def on_message(self, message):
         await self.prefix_registry.handle(message)
+
+    def _ensure_bank_companies(self):
+        """Every bank is also a 법인 with a 법인 계정; banks made while the bot was off get theirs now."""
+        from managers.bank_companies import ensure_all
+        try:
+            with self.db.atomic() as conn:
+                created = ensure_all(conn)
+        except Exception as exc:
+            print(f"[Bank Company Error] {exc}")
+            return
+        if created:
+            print(f"Created 법인 and 법인 계정 for {len(created)} banks: {', '.join(created)}.")
 
     def _fill_price_gaps(self):
         from managers.gap_order_settler import settle_gap_orders
