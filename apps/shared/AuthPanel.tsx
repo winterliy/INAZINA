@@ -127,7 +127,7 @@ export function AuthPanel({ app, onAuthenticated }: { app: "dashboard" | "hts"; 
 
   return <main className="auth-shell">
     <section className="auth-panel" aria-labelledby="auth-title">
-      <a className="auth-wordmark" href="/" aria-label="INAZINA 홈">INAZINA <span>{app === "dashboard" ? "DASHBOARD" : "HTS"}</span></a>
+      <a className="auth-wordmark" href="/" aria-label="INAZINA 홈">INAZINA <span>{app === "dashboard" ? "DASHBOARD" : "나루"}</span></a>
       <div className="auth-heading">
         <p className="auth-eyebrow">INAZINA ACCOUNT</p>
         <h1 id="auth-title">{titles[mode]}</h1>
@@ -176,7 +176,7 @@ export function AuthPanel({ app, onAuthenticated }: { app: "dashboard" | "hts"; 
         {mode !== "find-id" && <button onClick={() => switchMode("find-id")}>아이디 찾기</button>}
         {mode !== "reset-password" && <button onClick={() => switchMode("reset-password")}>비밀번호 찾기</button>}
       </nav>
-      <p className="auth-footnote">계정은 Dashboard와 HTS에서 함께 사용됩니다.</p>
+      <p className="auth-footnote">계정은 Dashboard와 나루에서 함께 사용됩니다.</p>
     </section>
   </main>;
 }

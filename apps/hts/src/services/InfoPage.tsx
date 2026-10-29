@@ -8,7 +8,7 @@ const ERRORS: Record<string, string> = {
   invalid_email: "이메일 주소를 확인해 주세요.", invalid_title: "제목을 확인해 주세요.", invalid_body: "내용을 확인해 주세요.", invalid_discordId: "디스코드 아이디를 확인해 주세요.",
 };
 
-/** Contact/Report from the HTS: the same form as the official site, delivered to the dashboard's 문의·신고. */
+/** Contact/Report from the 나루: the same form as the official site, delivered to the dashboard's 문의·신고. */
 function FeedbackCard() {
   const [kind, setKind] = useState<keyof typeof FORMS>("contact");
   const [status, setStatus] = useState<{ text: string; ok: boolean } | null>(null);
@@ -59,7 +59,7 @@ export function InfoPage({ kit }: ServiceProps) {
       <ActionCard kit={kit} name="법정최고이자" title="법정 최고이자율" description="대출 이율은 국가별 상한을 넘을 수 없습니다." submit="조회" />
     </div>
     <h3 className="svc-section-title">고객센터</h3>
-    <a className="svc-help-link" href="https://dramatic-bread-b4a.notion.site/NAKWON-BOTS-3ea27b50c7bf80e0904ef783e0e5dfc4" target="_blank" rel="noreferrer"><b>📚 도움말 (/도움말)</b><small>봇·HTS 이용 안내와 정책 문서</small></a>
+    <a className="svc-help-link" href="https://dramatic-bread-b4a.notion.site/NAKWON-BOTS-3ea27b50c7bf80e0904ef783e0e5dfc4" target="_blank" rel="noreferrer"><b>📚 도움말 (/도움말)</b><small>봇·나루 이용 안내와 정책 문서</small></a>
     <FeedbackCard />
     <div className="svc-two">
       <ActionCard kit={kit} name="주총소집" title="주주총회 소집" description="최대주주만 소집할 수 있습니다. 주주들에게 Discord로 참석 여부를 묻습니다." submit="소집 요청" />

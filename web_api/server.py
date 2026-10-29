@@ -853,7 +853,7 @@ def instruments(include_inactive=False):
         has_warnings = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='trading_warnings'").fetchone()
         warnings = TradingWarnings.active(connection) if has_warnings else {}
-        # 24-hour activity for the HTS "실시간 추천" list: price change and traded value.
+        # 24-hour activity for the 나루 "실시간 추천" list: price change and traded value.
         since = int(time.time()) - 86400
         opening = {code: price for code, price, _ in connection.execute(
             "SELECT asset_code,price,MIN(recorded_epoch) FROM market_price_history "
@@ -2334,7 +2334,9 @@ def product_catalog():
             fields = [{"key": field,
                        "label": "발행총액" if profile == "bond" and field == "total_supply"
                                 else ("결제 통화" if profile == "dr" else "통장 화폐") if field == "quote_currency"
-                                else "발행 은행 ID" if field == "issuer" else ARG_LABELS.get(field, field),
+                                else "발행 은행 ID" if field == "issuer"
+                                else "상장 거래소 ID (비상장이면 UNLISTED)" if field == "exchange_id" and profile in {"stock", "preferred"}
+                                else ARG_LABELS.get(field, field),
                        "optional": field in OPTIONAL_ARGS.get(profile, ()),
                        "text": field in TEXT_ARGS or field == "quote_currency"} for field in _form_fields(profile)]
             listed = {field["key"] for field in fields} | {key}

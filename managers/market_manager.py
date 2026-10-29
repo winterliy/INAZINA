@@ -1474,7 +1474,7 @@ class MarketManager:
         indices = {str(row["exchange_id"]): dict(row) for row in rows}
         active_exchanges = self.db.companies.execute(
             "SELECT DISTINCT exchange_id FROM company WHERE status = 'active' "
-            "AND exchange_id IS NOT NULL AND TRIM(exchange_id) <> ''"
+            "AND exchange_id IS NOT NULL AND TRIM(exchange_id) <> '' AND exchange_id <> 'UNLISTED'"
         )
         for row in active_exchanges:
             exchange_id = str(row["exchange_id"]).strip()

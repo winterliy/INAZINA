@@ -3,9 +3,19 @@ import type { FormEvent } from "react";
 import { api, appUrl, type ApiUser } from "../../shared/api";
 import { Card, Field, date, errorText, number, type Ctx } from "./common";
 import { IdentityCard } from "./IdentityCard";
+import { AuditHeatmap } from "./ActivityTiles";
 import { LoginHistoryCard, type LoginEvent } from "./LoginHistoryCard";
 
 type Financial = { company: string; periods: string[]; report: { period: string; currency: string; places: number; summary: { assets: number; liabilities: number; equity: number }; income: Record<string, number>; checks: { balance_sheet: boolean } } };
+
+/** The administrator's own work over the last week, from the audit log. */
+function OwnHeatmap({ userId }: { userId: string }) {
+  const [entries, setEntries] = useState<{ time: number }[]>([]);
+  useEffect(() => {
+    api<{ entries: { actorId: string; time: number }[] }>("/api/admin/audit").then((result) => setEntries(result.entries.filter((entry) => entry.actorId === userId))).catch(() => undefined);
+  }, [userId]);
+  return <AuditHeatmap entries={entries} />;
+}
 
 /** A company account's own statements, read-only. */
 function OwnFinancial({ say }: { say: Ctx["say"] }) {
@@ -73,7 +83,7 @@ export function AccountPage({ ctx, user, onLogout }: { ctx: Ctx; user: ApiUser; 
       <button className="account-logout" type="button" onClick={onLogout}>{user.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button>
     </section>
     <div className="account-grid">
-      <Card title="로그인 아이디" caption="대시보드와 HTS 로그인에 쓰는 아이디입니다. 바꾸려면 현재 비밀번호를 입력하세요.">
+      <Card title="로그인 아이디" caption="대시보드와 나루 로그인에 쓰는 아이디입니다. 바꾸려면 현재 비밀번호를 입력하세요.">
         <form className="form-grid" onSubmit={save}>
           <Field label="아이디"><input autoComplete="username" minLength={3} maxLength={32} pattern="[A-Za-z0-9_.\-]{3,32}" required value={input} onChange={(event) => setInput(event.target.value)} placeholder="예: inazina_admin" /></Field>
           <Field label="현재 비밀번호"><input type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} /></Field>
@@ -81,11 +91,12 @@ export function AccountPage({ ctx, user, onLogout }: { ctx: Ctx; user: ApiUser; 
         </form>
         <p className="hint">영문, 숫자, 점, 밑줄, 하이픈으로 3~32자</p>
       </Card>
-      {admin ? <IdentityCard ctx={ctx} /> : <Card title="HTS" caption="주식 거래, 송금, 은행, 투자상품, 복권 · 게임을 HTS에서 이용합니다.">
-        <div className="actions"><a className="btn primary" href={appUrl("hts")}>HTS 열기</a><a className="soft" href={appUrl("hts", "/transfer")}>송금</a><a className="soft" href={appUrl("hts", "/bank")}>은행</a><a className="soft" href={appUrl("hts", "/board")}>게시판</a></div>
+      {admin ? <IdentityCard ctx={ctx} /> : <Card title="나루" caption="주식 거래, 송금, 은행, 투자상품, 복권 · 게임을 나루에서 이용합니다.">
+        <div className="actions"><a className="btn primary" href={appUrl("hts")}>나루 열기</a><a className="soft" href={appUrl("hts", "/transfer")}>송금</a><a className="soft" href={appUrl("hts", "/bank")}>은행</a><a className="soft" href={appUrl("hts", "/board")}>게시판</a></div>
       </Card>}
     </div>
     {user.role === "company" && <OwnFinancial say={say} />}
+    {admin && <OwnHeatmap userId={user.userId} />}
     {admin && <LoginHistoryCard ctx={ctx} userId={user.userId} onLoaded={setLogins} />}
   </>;
 }

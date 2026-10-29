@@ -212,7 +212,7 @@ class AccountOpenModal(discord.ui.Modal):
                         f"{msg}\n\n🔐 비밀번호는 보안을 위해 원문 대신 일방향 해시로 저장됩니다. "
                         "입력한 문자와 공백을 그대로 기억해주세요."
                     ),
-                    color=discord.Color.green(),
+                    color=discord.Color.default(),
                 ),
                 ephemeral=True,
             )
@@ -326,7 +326,7 @@ class AccountCloseModal(discord.ui.Modal):
             self.account_number,
             password=self.password_input.value,
         )
-        color = discord.Color.green() if success else discord.Color.red()
+        color = discord.Color.default() if success else discord.Color.red()
         await interaction.response.send_message(
             embed=discord.Embed(description=message, color=color), ephemeral=True
         )
@@ -398,7 +398,7 @@ class LoanRepaymentModal(discord.ui.Modal):
             int(amount_text),
             loan_id=self.loan_id,
         )
-        color = discord.Color.green() if success else discord.Color.red()
+        color = discord.Color.default() if success else discord.Color.red()
         await interaction.response.send_message(
             embed=discord.Embed(description=message, color=color), ephemeral=True
         )
@@ -477,7 +477,7 @@ class ShareholderMeetingResponseView(discord.ui.View):
             status = "참석 수락" if accepted else "참석 거절"
             response_embed = discord.Embed(
                 title=f"📣 {self.company_name} 주주총회 응답",
-                color=discord.Color.green() if accepted else discord.Color.red(),
+                color=discord.Color.default() if accepted else discord.Color.red(),
             )
             response_embed.add_field(name="응답자", value=f"{interaction.user} (<@{interaction.user.id}>)", inline=False)
             response_embed.add_field(name="응답", value=status, inline=True)
@@ -593,7 +593,7 @@ class LoanAmountModal(discord.ui.Modal):
         success, message = await asyncio.to_thread(
             self.bot.bank_mgr.apply_loan, self.user_id, self.product_code,
             int(amount_text), int(collateral_text), asset_code or None, asset_quantity)
-        color = discord.Color.green() if success else discord.Color.red()
+        color = discord.Color.default() if success else discord.Color.red()
         await interaction.followup.send(embed=discord.Embed(description=message, color=color), ephemeral=True)
 
 
@@ -1299,7 +1299,7 @@ class InfoPanelView(discord.ui.View):
         embed = discord.Embed(
             title="🏦 계좌 개설",
             description="상품을 선택한 다음 계좌 비밀번호와 초기 예치금을 입력하세요.",
-            color=discord.Color.green(),
+            color=discord.Color.default(),
         )
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
@@ -1639,7 +1639,7 @@ class PriceMovementView(discord.ui.View):
                 f"{history_note}{risk_warning}"
             ),
             color=(discord.Color.red() if not is_exchange_index and current_price <= 100
-                   else discord.Color.green() if change >= 0 else discord.Color.red()),
+                   else discord.Color.default() if change >= 0 else discord.Color.red()),
         )
         embed.set_image(url="attachment://movement.png")
         if self.els_code:

@@ -19,7 +19,7 @@ import { BanksPage } from "./BanksPage";
 import { DatabasePage } from "./DatabasePage";
 import { GambleTile } from "./GambleTile";
 import { TransferTile } from "./TransferTile";
-import { AuditHeatmap, EventTimeline } from "./ActivityTiles";
+import { EventTimeline } from "./ActivityTiles";
 import { NaturalizationPage } from "./NaturalizationPage";
 import { COMMAND_FORMS, CommandForm } from "./CommandForm";
 import { AccountPage } from "./AccountPage";
@@ -68,7 +68,7 @@ const subtitles: Record<Page, string> = {
   naturalization: "Discord /귀화신청으로 들어온 신청을 심사합니다. 승인하면 신청자의 자산을 정리하고 국적을 옮깁니다.",
   feedback: "공식 사이트의 Contact·Report로 들어온 문의와 신고를 확인하고 처리합니다.",
   documents: "약관·처리방침·규칙·도움말과 Discord 등록 안내문을 고치고 확정합니다.",
-  board: "HTS 게시판의 신고를 처리하고 글을 숨기거나 고정합니다. 익명 글의 실제 작성자와 IP를 확인할 수 있습니다.",
+  board: "나루 게시판의 신고를 처리하고 글을 숨기거나 고정합니다. 익명 글의 실제 작성자와 IP를 확인할 수 있습니다.",
   compliance: "국적별 KYC 검토 상태와 AML 시뮬레이터 경보·규칙을 관리합니다.",
   accounting: "은행을 고유 ID로 만들고 관리하며, 은행별 이중분개 시산 잔액·불균형·결과 원장 대사를 조회합니다.",
   users: "사용자와 국가, 국가 계정의 모든 설정을 관리합니다.",
@@ -89,6 +89,12 @@ function readRoute(): { page: Page; sub: string } {
   return { page: pages.some((item) => item.id === head) ? head as Page : "overview", sub: rest.join("/") };
 }
 const NATIONAL = "국가 명의", HELP = "도움말";
+// The sidebar index: numbered sections like a guideline document.
+const NAV_GROUPS: [string, Page[]][] = [
+  ["시장", ["overview", "instruments", "finance", "exchanges", "events"]],
+  ["기관", ["companies", "accounting", "users", "naturalization"]],
+  ["운영", ["feedback", "board", "compliance", "documents", "commands", "database", "audit"]],
+];
 const scopeOf = (section: string) => section === NATIONAL ? "national" : section === HELP ? "help" : "admin";
 const initialRoute = readRoute();
 
@@ -353,7 +359,7 @@ export default function App() {
     return <Stage><div className="shell">
       <header className="gnav"><div className="gnav-in">
         <div className="brand"><span className="brand-mark">I</span><strong>INAZINA</strong><small>내 Dashboard</small></div>
-        <div className="gnav-meta"><a className="gnav-link" href={appUrl("hts")}>HTS 열기</a><button type="button" onClick={logout}>{user.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button></div>
+        <div className="gnav-meta"><a className="gnav-link" href={appUrl("hts")}>나루 열기</a><button type="button" onClick={logout}>{user.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button></div>
       </div></header>
       <main className="content">
         {user.delegatedBy && <div className="notice" role="status"><span>관리자 {user.delegatedByName ?? user.delegatedBy}님이 {user.nickname} 계정으로 로그인 중입니다.</span></div>}
@@ -382,13 +388,17 @@ export default function App() {
           </div>
         </div>
       </header>
+      <div className="frame">
       <nav className="subnav" aria-label="관리 메뉴">
         <div className="subnav-in">
-          {pages.filter((item) => item.id !== "account").map((item) => <button key={item.id} type="button" className="subnav-item" aria-current={page === item.id ? "page" : undefined} onClick={() => setPage(item.id)}>
-            {item.label}
-            {item.id === "feedback" && unreadFeedback > 0 && <span className="nav-badge" aria-label={`새 알림 ${unreadFeedback}건`}>{unreadFeedback}</span>}
-            {item.id === "naturalization" && pendingNaturalization > 0 && <span className="nav-badge" aria-label={`심사 대기 ${pendingNaturalization}건`}>{pendingNaturalization}</span>}
-          </button>)}
+          {NAV_GROUPS.map(([title, ids], index) => <div key={title} className="subnav-group">
+            <p className="subnav-title">{String(index + 1).padStart(2, "0")} — {title}</p>
+            {ids.map((id) => pages.find((item) => item.id === id)!).map((item) => <button key={item.id} type="button" className="subnav-item" aria-current={page === item.id ? "page" : undefined} onClick={() => setPage(item.id)}>
+              {item.label}
+              {item.id === "feedback" && unreadFeedback > 0 && <span className="nav-badge" aria-label={`새 알림 ${unreadFeedback}건`}>{unreadFeedback}</span>}
+              {item.id === "naturalization" && pendingNaturalization > 0 && <span className="nav-badge" aria-label={`심사 대기 ${pendingNaturalization}건`}>{pendingNaturalization}</span>}
+            </button>)}
+          </div>)}
         </div>
       </nav>
       <main className="content">
@@ -508,7 +518,6 @@ export default function App() {
 
         {page === "database" && <DatabasePage ctx={ctx} />}
 
-        {page === "audit" && <AuditHeatmap entries={audit} />}
         {page === "audit" && <Card title="최근 관리자 작업" caption="최근 50건 · 작업 기록은 append-only이며 수정·삭제할 수 없습니다.">
           <div className="scroll-x tall"><table><thead><tr><th>시각</th><th>관리자 ID</th><th>작업</th><th>세부 내용</th></tr></thead><tbody>{audit.map((entry) => <tr key={entry.auditId}>
             <td>{date(entry.time)}</td><td className="mono">{entry.actorId}</td><td><span className="tag">{entry.action}</span></td><td className="audit-payload mono" title={JSON.stringify(entry.payload)}>{JSON.stringify(entry.payload)}</td>
@@ -518,6 +527,7 @@ export default function App() {
         {page === "account" && <AccountPage ctx={ctx} user={user} onLogout={logout} />}
         <p className="foot">© INAZINA. All rights reserved.</p>
       </main>
+      </div>
     </div>
     {jumpOpen && (() => {
       const term = jumpTerm.trim().toLocaleLowerCase();

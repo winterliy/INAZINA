@@ -74,7 +74,7 @@ export function TransferPage({ kit, cash, homeCurrency, homeDigits, accounts }: 
       <h3>{result.success ? "이체가 완료되었습니다" : "이체하지 못했습니다"}</h3>
       <p>{result.message}</p>
       <dl><div><dt>받는 분</dt><dd>{recipient}</dd></div><div><dt>금액</dt><dd>{won(value, digits)} {currency}</dd></div><div><dt>처리 시각</dt><dd>{new Date(result.time).toLocaleString("ko-KR")}</dd></div></dl>
-      <div className="svc-actions"><button type="button" onClick={reset}>추가 이체</button><a className="svc-link" href="/">HTS로</a></div>
+      <div className="svc-actions"><button type="button" onClick={reset}>추가 이체</button><a className="svc-link" href="/">나루로</a></div>
     </section>}
   </div>;
 }

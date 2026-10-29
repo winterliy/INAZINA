@@ -1,4 +1,4 @@
-"""HTS board: boards (공지·자유·시장 토론 and any an administrator adds), each
+"""나루 board: boards (공지·자유·시장 토론 and any an administrator adds), each
 with optional categories (말머리).
 
 Anyone may read; writing, commenting, liking and reporting need a login. A

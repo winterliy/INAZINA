@@ -286,7 +286,7 @@ export default function App() {
     if (!user) return;
     void api<{ htsId: string | null }>("/api/hts/account")
       .then(({ htsId: current }) => { setHtsId(current ?? ""); setHtsIdInput(current ?? ""); })
-      .catch((cause) => setNotice(errorText(cause, "HTS 계정 정보를 불러오지 못했습니다.")));
+      .catch((cause) => setNotice(errorText(cause, "나루 계정 정보를 불러오지 못했습니다.")));
   }, [user]);
 
   // The search drops down under the top-bar field, like a portal's: Escape or a click elsewhere closes it.
@@ -564,7 +564,7 @@ export default function App() {
     if (location.pathname !== "/") navigate("/");
   };
   const topbar = (here: "home" | "account" | "services") => <header className="hts-topbar">
-    <a className="brand" href="/">INAZINA <span>HTS</span></a>
+    <a className="brand" href="/" aria-label="NARU 나루 홈"><b className="brand-mark" aria-hidden="true">N</b>NARU <span>나루 · INAZINA</span></a>
     <div className="top-search" ref={searchBoxRef}>
       <label className="top-search-field"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M20 20l-4-4" /></svg>
         <input ref={searchInputRef} value={search} aria-label="종목 검색" aria-expanded={searchOpen} aria-controls="top-search-pop" placeholder="종목명 또는 코드 검색" onFocus={() => setSearchOpen(true)} onChange={(event) => { setSearch(event.target.value); setSearchOpen(true); }} onKeyDown={(event) => { if (event.key === "Enter" && filtered[0]) chooseInstrument(filtered[0].code); }} />
@@ -612,7 +612,7 @@ export default function App() {
       </aside>
       <div className="account-sections">
         <section className="account-section">
-          <header><h2>로그인 아이디</h2><p>HTS와 대시보드 로그인에 쓰는 아이디입니다. 영문, 숫자, 점, 밑줄, 하이픈으로 3~32자.</p></header>
+          <header><h2>로그인 아이디</h2><p>나루와 대시보드 로그인에 쓰는 아이디입니다. 영문, 숫자, 점, 밑줄, 하이픈으로 3~32자.</p></header>
           <form className="account-form" onSubmit={saveHtsId}>
             <label>아이디<input autoComplete="username" minLength={3} maxLength={32} pattern="[A-Za-z0-9_.-]{3,32}" value={htsIdInput} onChange={(event) => setHtsIdInput(event.target.value)} placeholder="예: inazina_user" required /></label>
             <label>현재 비밀번호<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label>

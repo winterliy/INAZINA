@@ -13,6 +13,40 @@ type Account = { number: string; product_name: string; balance: number };
 type Assets = { cash: number; grand_total: number; loan_total: number; net_worth: number; stocks: Stock[]; accounts: Account[] };
 type Detail = { account: string; webLogin: boolean; loginId: string; assets: Assets; shareholders: Shareholders };
 
+const UNLISTED = "UNLISTED";
+
+/** Where the company's shares trade: any exchange, or 비상장 (no exchange, no market trading). */
+function ListingControl({ ctx, company, onDone }: { ctx: Ctx; company: Company; onDone: () => void }) {
+  const { busy, run, say } = ctx;
+  const [exchanges, setExchanges] = useState<string[]>([]);
+  const [target, setTarget] = useState(company.exchange_id || UNLISTED);
+  useEffect(() => {
+    api<{ exchanges: { exchange_id: string }[] }>("/api/admin/exchanges")
+      .then((result) => setExchanges(result.exchanges.map((item) => item.exchange_id).filter((id) => id !== "CURRENCY" && id !== UNLISTED))).catch(() => undefined);
+  }, []);
+  useEffect(() => setTarget(company.exchange_id || UNLISTED), [company.company_code, company.exchange_id]);
+  const label = (id: string) => id === UNLISTED ? "비상장" : id;
+
+  function apply() {
+    if (target === (company.exchange_id || UNLISTED)) { say("바뀐 거래소가 없습니다.", true); return; }
+    if (!window.confirm(`${company.name} (${company.company_code})의 상장 거래소를 ${label(company.exchange_id || UNLISTED)} → ${label(target)}(으)로 바꿀까요?${target === UNLISTED ? "\n비상장이 되면 거래소에서 매매할 수 없고 시세도 멈춥니다." : ""}`)) return;
+    void run(async () => {
+      const detail = await api<{ kind: string }>(`/api/admin/products/${encodeURIComponent(company.company_code)}`);
+      return api<{ message: string; success: boolean }>("/api/admin/products", { method: "POST", body: JSON.stringify({ operation: "edit", kind: detail.kind, code: company.company_code, fields: { exchange_id: target }, advanced: {} }) });
+    }, "상장 거래소를 바꾸지 못했습니다.", (result) => { say(plain(result.message), !result.success); if (result.success) onDone(); });
+  }
+
+  return <div className="listing-control">
+    <Field label="상장 거래소" hint={target === UNLISTED ? "비상장: 거래소 매매 불가" : "이 거래소에서 매매·시세 반영"}>
+      <select value={target} onChange={(event) => setTarget(event.target.value)}>
+        {[...new Set([...(company.exchange_id && company.exchange_id !== UNLISTED ? [company.exchange_id] : []), ...exchanges])].map((id) => <option key={id} value={id}>{id}</option>)}
+        <option value={UNLISTED}>비상장</option>
+      </select>
+    </Field>
+    <button className="soft" type="button" disabled={busy || target === (company.exchange_id || UNLISTED)} onClick={apply}>거래소 변경</button>
+  </div>;
+}
+
 /** What the company owns: its holdings by value. */
 function HoldingsPie({ stocks }: { stocks: Stock[] }) {
   const items = [...stocks].sort((a, b) => b.value - a.value).map((stock) => ({ label: `${stock.code} ${stock.name}`, value: Math.round(stock.value) }));
@@ -36,6 +70,7 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
   const [password, setPassword] = useState("");
   const [report, setReport] = useState<{ report: Report; periods: string[] } | null>(null);
   const [period, setPeriod] = useState("");
+  useEffect(() => { window.scrollTo({ top: 0 }); }, [selected]);
 
   const load = useCallback(async () => {
     const result = await api<{ companies: Company[]; commands: Command[] }>("/api/admin/companies");
@@ -64,7 +99,7 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
 
   function saveLogin() {
     if (!company) return;
-    if (!window.confirm(`${company.name} 법인 계정의 웹·HTS 비밀번호를 설정할까요?\n로그인 ID는 ${company.company_code}입니다.`)) return;
+    if (!window.confirm(`${company.name} 법인 계정의 웹·나루 비밀번호를 설정할까요?\n로그인 ID는 ${company.company_code}입니다.`)) return;
     void run(() => api<{ account: { message: string } }>("/api/admin/companies/login", { method: "POST", body: JSON.stringify({ companyId: company.company_code, password }) }),
       "법인 로그인을 설정하지 못했습니다.", async (result) => { say(plain(result.account.message)); setPassword(""); await open(company.company_code); });
   }
@@ -78,8 +113,13 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
   const money = (value: number) => report ? `${number(value / 10 ** report.report.places)} ${report.report.currency}` : "—";
 
   return <>
-    {company && <Card title={`${company.name} (${company.company_code}) 법인 자본`} caption={<>계정 <span className="mono">{detail?.account ?? company.account ?? "첫 실행 때 개설"}</span> · 현금은 법인 현금 장부와 같은 돈입니다 · 거래는 재무제표에 자동 기록됩니다</>}
-      actions={<button className="soft" type="button" onClick={() => { setSelected(""); setDetail(null); }}>닫기</button>}>
+    {company && <>
+      <div className="subpage-bar">
+        <button className="soft" type="button" onClick={() => { setSelected(""); setDetail(null); }}>← 법인 목록으로 돌아가기</button>
+        <p><b>{company.name}</b> <span className="mono">{company.company_code} · {company.exchange_id === UNLISTED ? "비상장" : company.exchange_id}</span></p>
+      </div>
+      <Card title="개요 · 지분" caption={<>계정 <span className="mono">{detail?.account ?? company.account ?? "첫 실행 때 개설"}</span> · 현금은 법인 현금 장부와 같은 돈입니다 · 거래는 재무제표에 자동 기록됩니다</>}
+        actions={<button className="soft" type="button" onClick={() => { setSelected(""); setDetail(null); }}>닫기</button>}>
       <div className="stats">
         <div><small>현금</small><b>{number(company.cash)} 기준 통화</b></div>
         <div><small>잠금 예치금</small><b>{number(company.locked)}</b></div>
@@ -87,10 +127,14 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
         <div><small>대출</small><b>{number(company.loans)}</b></div>
         <div><small>순자산</small><b>{detail ? number(Math.round(detail.assets.net_worth)) : "…"}</b></div>
       </div>
-      {detail?.shareholders && <ShareholderPie data={detail.shareholders} />}
+      <ListingControl ctx={ctx} company={company} onDone={() => void load()} />
       {company.parents.length > 0 && <p className="hint">모회사(지분 보유 법인): {company.parents.map((parent) => `${parent.code} ${parent.percent.toFixed(1)}%`).join(", ")}</p>}
-      <h3 className="sub-head">보유 자산</h3>
-      {!!detail?.assets.stocks.length && <HoldingsPie stocks={detail.assets.stocks} />}
+      <div className="pie-pair">
+        <section><h3 className="sub-head">주주 구성</h3>{detail?.shareholders ? <ShareholderPie data={detail.shareholders} /> : <p className="empty">불러오는 중…</p>}</section>
+        <section><h3 className="sub-head">보유 자산 구성</h3>{detail?.assets.stocks.length ? <HoldingsPie stocks={detail.assets.stocks} /> : <p className="empty">{detail ? "보유 자산이 없습니다." : "불러오는 중…"}</p>}</section>
+      </div>
+      </Card>
+      <Card title="보유 자산 · 통장" caption="법인 자본 계정이 가진 종목과 통장입니다.">
       <div className="scroll-x"><table><thead><tr><th>종목</th><th>이름</th><th className="r">수량</th><th className="r">평가액</th><th /></tr></thead><tbody>
         {(detail?.assets.stocks ?? []).map((stock) => <tr key={stock.code}><td className="mono">{stock.code}</td><td>{stock.name}</td><td className="r mono">{number(stock.qty)}</td><td className="r mono">{number(Math.round(stock.value))}</td><td>{stock.code === company.company_code ? <span className="tag">자기주식</span> : companies.some((item) => item.company_code === stock.code && item.parents.some((parent) => parent.code === company.company_code && parent.percent > 50)) ? <span className="tag ok">자회사</span> : null}</td></tr>)}
       </tbody></table>{detail && !detail.assets.stocks.length && <p className="empty">보유 자산이 없습니다.</p>}</div>
@@ -98,14 +142,8 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
       <div className="scroll-x"><table><thead><tr><th>계좌</th><th>상품</th><th className="r">잔액</th></tr></thead><tbody>
         {(detail?.assets.accounts ?? []).map((account) => <tr key={account.number}><td className="mono">{account.number}</td><td>{account.product_name}</td><td className="r mono">{number(account.balance)}</td></tr>)}
       </tbody></table>{detail && !detail.assets.accounts.length && <p className="empty">통장이 없습니다.</p>}</div>
-      <h3 className="sub-head">웹·HTS 로그인</h3>
-      <p className="hint">{detail?.webLogin ? <>로그인 ID <span className="mono">{detail.loginId}</span>로 HTS에 로그인할 수 있습니다. 비밀번호를 다시 설정하면 기존 로그인은 만료됩니다.</> : "아직 로그인이 없습니다. 비밀번호를 정하면 법인 코드를 ID로 HTS에 로그인해 이 계정으로 거래합니다."}</p>
-      <form className="form-grid" onSubmit={(event) => { event.preventDefault(); saveLogin(); }}>
-        <Field label="비밀번호" hint="12자 이상 · 영문과 숫자 포함"><input type="password" value={password} minLength={12} required onChange={(event) => setPassword(event.target.value)} /></Field>
-        <button className="btn primary" disabled={busy || !password}>{detail?.webLogin ? "비밀번호 재설정" : "로그인 만들기"}</button>
-      </form>
-
-      <h3 className="sub-head">재무제표 · 연결재무제표</h3>
+      </Card>
+      <Card title="재무제표 · 연결재무제표" caption="원장에서 계산한 월별 재무제표입니다. 과반 지분 자회사가 있으면 연결재무제표도 보여 줍니다.">
       <div className="actions">
         <button className="btn primary small" type="button" disabled={busy} onClick={() => loadReport()}>{report ? "새로고침" : "불러오기"}</button>
         {report && <select value={period} onChange={(event) => { setPeriod(event.target.value); loadReport(event.target.value); }}>{Array.from(new Set([report.report.period, ...report.periods])).map((item) => <option key={item} value={item}>{item}</option>)}</select>}
@@ -139,9 +177,10 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
         </> : <p className="hint">과반 지분을 가진 자회사가 없어 연결재무제표가 없습니다.</p>}
       </>}
 
+      </Card>
       <CompanyLedger key={company.company_code} code={company.company_code} ctx={ctx} onChanged={() => { if (report) loadReport(); }} />
 
-      <h3 className="sub-head">법인 계정으로 실행</h3>
+      <Card title="법인 계정으로 실행" caption="법인 명의로 매수·매도·송금·대출을 실행합니다. Discord의 $법인 또는 $login과 같은 검증을 거칩니다.">
       <div className="kind-grid">{commands.map((item) => <button key={item.name} type="button" className={item.name === command ? "command-chip active" : "command-chip"} onClick={() => { setCommand(item.name); setValues({}); }}><b>{item.name}</b><small>{item.group}</small></button>)}</div>
       {spec && <form className="form-grid" onSubmit={(event) => { event.preventDefault(); submit(); }}>
         <p className="hint span-wide">{spec.description} {spec.guide}</p>
@@ -152,20 +191,30 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
         </Field>)}
         <button className="btn primary" disabled={busy}>{command} 실행</button>
       </form>}
-    </Card>}
+      </Card>
+      <Card title="웹·나루 로그인" caption="법인 계정으로 나루에 로그인할 비밀번호를 정합니다.">
+      <p className="hint">{detail?.webLogin ? <>로그인 ID <span className="mono">{detail.loginId}</span>로 나루에 로그인할 수 있습니다. 비밀번호를 다시 설정하면 기존 로그인은 만료됩니다.</> : "아직 로그인이 없습니다. 비밀번호를 정하면 법인 코드를 ID로 나루에 로그인해 이 계정으로 거래합니다."}</p>
+      <form className="form-grid" onSubmit={(event) => { event.preventDefault(); saveLogin(); }}>
+        <Field label="비밀번호" hint="12자 이상 · 영문과 숫자 포함"><input type="password" value={password} minLength={12} required onChange={(event) => setPassword(event.target.value)} /></Field>
+        <button className="btn primary" disabled={busy || !password}>{detail?.webLogin ? "비밀번호 재설정" : "로그인 만들기"}</button>
+      </form>
 
-    <div className="tile-row">
-      <section className="tile"><p className="tile-label">상장 법인</p><p className="tile-value">{number(companies.length)}</p></section>
+      </Card>
+    </>}
+
+    {!company && <><div className="tile-row">
+      <section className="tile"><p className="tile-label">법인</p><p className="tile-value">{number(companies.length)}</p></section>
+      <section className="tile"><p className="tile-label">비상장</p><p className="tile-value">{number(companies.filter((item) => item.exchange_id === UNLISTED).length)}</p></section>
       <section className="tile"><p className="tile-label">법인 현금 합계</p><p className="tile-value">{number(companies.reduce((sum, item) => sum + item.cash, 0))}</p></section>
     </div>
     <Card title="법인 자본" caption="법인은 사람이 아니라 로그인하지 않지만, 자본은 다른 계정과 똑같이 주식·상품 매수매도, 통장, 대출, 송금을 할 수 있습니다. 자기 회사 주식을 사면 자기주식(배당 없음), 다른 회사 지분을 과반 사면 자회사가 됩니다. Discord에서는 $법인 또는 $login [법인ID]를 씁니다.">
       <div className="scroll-x tall"><table><thead><tr><th>법인</th><th>이름</th><th>거래소</th><th className="r">현금</th><th className="r">보유 종목</th><th className="r">통장</th><th className="r">대출</th><th>모회사</th></tr></thead><tbody>
         {visible.map((item) => <tr key={item.company_code} className={item.company_code === selected ? "clickable selected" : "clickable"} tabIndex={0} onClick={() => void open(item.company_code).catch((cause) => say(cause instanceof Error ? cause.message : "법인을 열지 못했습니다.", true))} onKeyDown={(event) => { if (event.key === "Enter") void open(item.company_code); }}>
-          <td className="mono">{item.company_code}</td><td>{item.name}</td><td>{show(item.exchange_id)}</td>
+          <td className="mono">{item.company_code}</td><td>{item.name}</td><td>{item.exchange_id === UNLISTED ? <span className="tag">비상장</span> : show(item.exchange_id)}</td>
           <td className="r mono">{number(item.cash)}</td><td className="r">{number(item.holdings.length)}</td><td className="r">{number(item.accounts)}</td><td className="r mono">{number(item.loans)}</td>
           <td>{item.parents.length ? item.parents.map((parent) => `${parent.code} ${parent.percent.toFixed(1)}%`).join(", ") : "—"}</td>
         </tr>)}
       </tbody></table>{!visible.length && <p className="empty">거래 중인 법인이 없습니다.</p>}</div>
-    </Card>
+    </Card></>}
   </>;
 }

@@ -5,7 +5,7 @@ const SECTIONS = [
   ["options", "옵션"], ["futures", "선물"], ["swap", "금리스왑"], ["mezzanine", "메자닌 채권"], ["wrap", "랩어카운트"],
 ] as const;
 
-/** 투자상품: derivatives, convertible bonds and wrap accounts as product sections. Trading itself stays on the HTS. */
+/** 투자상품: derivatives, convertible bonds and wrap accounts as product sections. Trading itself stays on the 나루. */
 export function InvestPage({ kit }: ServiceProps) {
   const [section, setSection] = useState<(typeof SECTIONS)[number][0]>("options");
   return <div className="svc-invest">

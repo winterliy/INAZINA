@@ -63,6 +63,6 @@ export function BoardAccount({ user, onClose, onChange }: { user: ApiUser; onClo
       <button type="submit" className="board-primary" disabled={busy || !input || input === loginId}>{busy ? "저장 중…" : loginId ? "아이디 변경" : "아이디 설정"}</button>
       {message && <p className={message.error ? "board-error" : "board-notice"} role={message.error ? "alert" : "status"}>{message.text}</p>}
     </form>
-    <p className="board-account-more">닉네임·지갑·본인확인 등 전체 계정 정보는 <a href="/account">HTS 계정 페이지</a>에서 봅니다.</p>
+    <p className="board-account-more">닉네임·지갑·본인확인 등 전체 계정 정보는 <a href="/account">나루 계정 페이지</a>에서 봅니다.</p>
   </section>;
 }

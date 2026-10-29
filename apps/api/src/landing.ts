@@ -3,7 +3,7 @@ export type LandingReason = "home" | "not_found" | "login_required";
 
 const reasons: Record<LandingReason, { title: string; text: string }> = {
   home: { title: "여기는 API 서버예요", text: "이 주소는 앱이 데이터를 주고받는 통로라서 화면이 없어요. 아래에서 가려던 곳을 골라 주세요." },
-  not_found: { title: "찾는 페이지가 없어요", text: "API 서버에는 이 주소가 없어요. 대시보드나 HTS로 이동해 주세요." },
+  not_found: { title: "찾는 페이지가 없어요", text: "API 서버에는 이 주소가 없어요. 대시보드나 나루로 이동해 주세요." },
   login_required: { title: "앱에서 로그인해 주세요", text: "이 주소는 로그인한 앱이 호출하는 API예요. 브라우저로 직접 열 수는 없어요." },
 };
 
@@ -58,7 +58,7 @@ footer a{color:var(--accent);text-decoration:none}footer a:hover{text-decoration
   <p>${text}</p>
   ${reason === "home" ? "" : `<span class="path">${escape(path)}</span>`}
   <nav aria-label="이동할 곳">
-    <a class="card" href="http://127.0.0.1:4311/"><span class="icon i2" aria-hidden="true">📈</span><span><b>HTS</b><span>시세 보기 · 주문 · 내 지갑</span></span><span class="arrow" aria-hidden="true">›</span></a>
+    <a class="card" href="http://127.0.0.1:4311/"><span class="icon i2" aria-hidden="true">📈</span><span><b>나루</b><span>시세 보기 · 주문 · 내 지갑</span></span><span class="arrow" aria-hidden="true">›</span></a>
     <a class="card" href="http://127.0.0.1:4310/"><span class="icon i1" aria-hidden="true">🛠</span><span><b>관리자 대시보드</b><span>운영 · 상품 · 사용자 관리</span></span><span class="arrow" aria-hidden="true">›</span></a>
   </nav>
   <footer><span class="status"><span class="dot"></span>${pythonConnected ? "서비스 정상" : "서비스 점검 필요"}</span><a href="/api/health">상태 확인 (JSON)</a></footer>

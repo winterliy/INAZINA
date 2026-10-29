@@ -37,7 +37,7 @@ MAX_DISCORD_INTEGER = 2**53 - 1
 async def submit_relief_request(bot, user_id, display_name, request_type):
     """DM every administrator a bankruptcy/relief request with the asset summary.
 
-    Shared by /파산 and HTS requests that the bot processes from web_bot_jobs.
+    Shared by /파산 and 나루 requests that the bot processes from web_bot_jobs.
     """
     try:
         assets = await asyncio.to_thread(
@@ -98,7 +98,7 @@ async def submit_relief_request(bot, user_id, display_name, request_type):
 
 
 async def convene_shareholder_meeting(bot, user_id, role, 주식코드, 장소):
-    """Largest shareholders or admins invite every holder by DM (/주총소집 and HTS)."""
+    """Largest shareholders or admins invite every holder by DM (/주총소집 and 나루)."""
     company = bot.db.companies.get_company(주식코드)
     if not company:
         return "❌ 회사 주식 코드를 찾을 수 없습니다."
@@ -581,7 +581,7 @@ class SlashCommandRegistry:
         return discord.Embed(
             title=title,
             description=message,
-            color=discord.Color.green() if success else discord.Color.red(),
+            color=discord.Color.default() if success else discord.Color.red(),
         )
 
     async def self_register(self, interaction: discord.Interaction):
