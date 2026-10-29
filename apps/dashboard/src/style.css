@@ -791,3 +791,7 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
 /* 법인 자본: the listing exchange picker in a company's card. */
 .listing-control { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin: 4px 0 16px; }
 .listing-control label { display: grid; gap: 6px; min-width: 220px; color: var(--ink2); font-size: 12px; font-weight: 600; }
+
+/* 법인 자본: shareholders and holdings donuts side by side in a company's page. */
+.pie-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px 32px; margin-top: 8px; }
+.pie-pair .holders { margin-bottom: 0; }
