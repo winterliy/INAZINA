@@ -189,6 +189,11 @@ class SystemDB(DBManager):
         exchange_columns = {row[1] for row in self.execute("PRAGMA table_info(market_exchanges)")}
         if 'nationality' not in exchange_columns:
             self.execute("ALTER TABLE market_exchanges ADD COLUMN nationality TEXT NOT NULL DEFAULT '낙원'")
+        # Regular trading hours (functions/trading_hours.py); empty open and close times mean 24 hours.
+        for column, ddl in (("open_time", "TEXT NOT NULL DEFAULT ''"), ("close_time", "TEXT NOT NULL DEFAULT ''"),
+                            ("trading_days", "TEXT NOT NULL DEFAULT '1,2,3,4,5'"), ("holidays", "TEXT NOT NULL DEFAULT '[]'")):
+            if column not in exchange_columns:
+                self.execute(f"ALTER TABLE market_exchanges ADD COLUMN {column} {ddl}")
         # Migrate both former exchange tables before removing them.  This also
         # covers installations that predate per-exchange market sessions.
         if self.execute_one("SELECT 1 FROM sqlite_master WHERE type='view' AND name='market_exchange_indices'"):

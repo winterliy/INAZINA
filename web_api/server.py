@@ -3050,6 +3050,15 @@ def admin_exchange_action(actor, exchange_id, payload):
                 connection.execute("UPDATE market_exchanges SET nationality=? WHERE exchange_id=?", (nationality, exchange_id))
                 message = f"✅ {exchange_id} 거래소 국가를 {nationality}(으)로 변경했습니다."
             _audit_db(connection, actor, f"exchange.{action}", {"exchange_id": exchange_id, "nationality": nationality})
+        elif action == "hours":
+            if not exists:
+                raise ValueError("거래소를 찾을 수 없습니다.")
+            from functions import trading_hours
+            from managers.market_session_manager import MarketSessionManager
+            schedule = trading_hours.normalize(payload.get("hours"))
+            MarketSessionManager.set_hours_conn(connection, exchange_id, schedule, int(time.time()))
+            _audit_db(connection, actor, "exchange.hours", {"exchange_id": exchange_id, **schedule})
+            message = f"✅ {exchange_id} 거래 시간을 {trading_hours.describe(schedule)}(으)로 저장했습니다."
         elif action == "delete":
             if not exists:
                 raise ValueError("거래소를 찾을 수 없습니다.")
