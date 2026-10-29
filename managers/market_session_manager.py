@@ -4,6 +4,7 @@ import time  # Kept as a patch point for legacy worker-clock tests.
 import json
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
+from functions import trading_hours
 from functions.time_utils import validate_epoch
 
 
@@ -11,6 +12,8 @@ class MarketSessionManager:
     # A company listed on no exchange: its shares cannot be bought or sold on any market.
     UNLISTED = "UNLISTED"
 
+    # Reason written when regular trading hours end; such a close reopens itself at the next session.
+    HOURS_REASON = "장 마감"
     SIDE_CAR_SECONDS = 300
     CIRCUIT_SECONDS = {1: 1200, 2: 1200}
     KST = ZoneInfo("Asia/Seoul")
@@ -119,7 +122,41 @@ class MarketSessionManager:
             conn.execute('INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)',
                 ('system','market_auto_resume',json.dumps({'exchange_id':exchange_id}),state['resume_epoch']))
             state = cls._row(conn, exchange_id)
+        if cls._hours_close_due(state, now):
+            cls._close_for_hours(conn, exchange_id, state, now)
+            state = cls._row(conn, exchange_id)
         return state
+
+    @classmethod
+    def _hours_close_due(cls, state, now):
+        schedule = trading_hours.from_row(state)
+        return state["status"] == "open" and schedule["enabled"] and not trading_hours.is_open(schedule, now)
+
+    @classmethod
+    def _close_for_hours(cls, conn, exchange_id, state, now):
+        schedule = trading_hours.from_row(state)
+        # Prices stop from the moment the session ended, even if nobody was polling then.
+        closed_at = min(now, max(trading_hours.last_close(schedule, now) or now, int(state["updated_epoch"] or 0)))
+        conn.execute("""UPDATE market_exchanges SET status='closed', reason=?, halt_started_epoch=?,
+            resume_epoch=?, circuit_stage=NULL, updated_epoch=?, trading_halted=1 WHERE exchange_id=?""",
+            (cls.HOURS_REASON, closed_at, trading_hours.next_open(schedule, now), now, exchange_id))
+
+    @classmethod
+    def set_hours_conn(cls, conn, exchange_id, schedule, now=None):
+        """Store regular hours and apply them right away (close now, or reopen early)."""
+        now = cls._epoch(now, "invalid_market_session_processing_epoch")
+        schedule = trading_hours.normalize(schedule)
+        state = cls._row(conn, exchange_id)
+        columns = trading_hours.to_columns(schedule)
+        conn.execute(f"UPDATE market_exchanges SET {', '.join(f'{key}=?' for key in columns)} WHERE exchange_id=?",
+                     (*columns.values(), state["exchange_id"]))
+        if state["status"] == "closed" and state["reason"] == cls.HOURS_REASON:
+            if trading_hours.is_open(schedule, now):
+                cls._resume(conn, state["exchange_id"], state, now)
+            else:
+                conn.execute("UPDATE market_exchanges SET resume_epoch=? WHERE exchange_id=?",
+                             (trading_hours.next_open(schedule, now), state["exchange_id"]))
+        return cls.process_conn(conn, now, state["exchange_id"])
 
     @classmethod
     def process_all_conn(cls, conn, now=None):
@@ -138,9 +175,10 @@ class MarketSessionManager:
             ).fetchall()
             states = {str(row["exchange_id"]): dict(row) for row in rows}
             due = any(
-                row["status"] != "open"
-                and row["resume_epoch"] is not None
-                and int(row["resume_epoch"]) <= now
+                (row["status"] != "open"
+                 and row["resume_epoch"] is not None
+                 and int(row["resume_epoch"]) <= now)
+                or self._hours_close_due(dict(row), now)
                 for row in rows
             )
         if not due:
@@ -194,9 +232,15 @@ class MarketSessionManager:
             exchanges = self.exchange_ids(conn) if requested.casefold() == "all" else [self.normalize_exchange(requested)]
             if not exchanges:
                 return False, "❌ 관리할 거래소가 없습니다."
+            outside_hours = []
             for current_exchange in exchanges:
                 state = self.process_conn(conn, now, current_exchange)
                 if action in {"open", "resume"}:
+                    schedule = trading_hours.from_row(state)
+                    if not trading_hours.is_open(schedule, now):
+                        # It would close again on the next poll; it opens itself at the next session.
+                        outside_hours.append((current_exchange, trading_hours.next_open(schedule, now)))
+                        continue
                     if state["status"] != "open":
                         self._resume(conn, current_exchange, state, now)
                     continue
@@ -221,6 +265,12 @@ class MarketSessionManager:
                      stage if action == "circuit" else None, now, current_exchange))
         target = "전체 거래소" if requested.casefold() == "all" else f"`{requested}` 거래소"
         if action in {"open", "resume"}:
-            return True, f"✅ {target} {self.LABELS[action]}: 거래와 가격 변동을 재개했습니다."
+            skipped = "".join(
+                f"\n`{exchange}`는 정규 거래 시간이 아니라 그대로 두었습니다."
+                + (f" 다음 개장: <t:{int(reopen)}:F>" if reopen else "")
+                for exchange, reopen in outside_hours)
+            if len(outside_hours) == len(exchanges):
+                return False, "❌ " + skipped.removeprefix("\n") + " 지금 열려면 거래 시간을 24시간으로 바꿔 주세요."
+            return True, f"✅ {target} {self.LABELS[action]}: 거래와 가격 변동을 재개했습니다.{skipped}"
         deadline = f"\n자동 재개: <t:{int(resume)}:F>" if resume is not None else ""
         return True, f"✅ {target} {reason}: 신규 거래와 가격 변동을 정지했습니다.{deadline}"
