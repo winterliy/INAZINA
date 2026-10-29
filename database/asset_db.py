@@ -552,6 +552,20 @@ class AssetDB(DBManager):
             "ON market_price_history(recorded_epoch)"
         )
         self.enforce_integer_money("market_price_history", ("price",), "history_id")
+        # History ranges managers/price_gap_filler.py already filled, so a restart does not refill them.
+        self.execute(
+            """CREATE TABLE IF NOT EXISTS market_price_gap_fills (
+                asset_code TEXT NOT NULL,
+                start_epoch INTEGER NOT NULL,
+                end_epoch INTEGER NOT NULL,
+                points INTEGER NOT NULL,
+                filled_epoch INTEGER NOT NULL
+            )"""
+        )
+        self.execute(
+            "CREATE INDEX IF NOT EXISTS idx_market_price_gap_fills_asset "
+            "ON market_price_gap_fills(asset_code, end_epoch)"
+        )
         self.execute(
             """CREATE TABLE IF NOT EXISTS market_trade_history (
                 trade_id INTEGER PRIMARY KEY AUTOINCREMENT,
