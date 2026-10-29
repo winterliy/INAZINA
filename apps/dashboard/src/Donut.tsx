@@ -1,6 +1,6 @@
 import { number } from "./common";
 
-export const SLICE_COLORS = ["#0066cc", "#ff9500", "#30b0c7", "#af52de", "#ff2d55", "#34c759", "#a2845e"];
+export const SLICE_COLORS = ["#ff4f00", "#0a0a0a", "#8a8a8a", "#ffb08a", "#454545", "#c8c8c8", "#9c4a1e"];
 
 export type Slice = { label: string; value: number; color: string };
 

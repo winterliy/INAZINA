@@ -795,3 +795,117 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
 /* 법인 자본: shareholders and holdings donuts side by side in a company's page. */
 .pie-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px 32px; margin-top: 8px; }
 .pie-pair .holders { margin-bottom: 0; }
+
+/* ==== Redesign D · grid guideline (approved 2026-10-29) ====================================
+   A brand-guideline document rather than a product page: a numbered index on the left, display
+   type in Archivo, Korean in IBM Plex Sans KR, numbers in IBM Plex Mono, black rules instead of
+   rounded tiles, white ground and one orange-red signal colour. This block overrides the earlier
+   Apple bento styles above. */
+:root {
+  --font-system: "IBM Plex Sans KR", system-ui, sans-serif;
+  --font-display: "Archivo", "IBM Plex Sans KR", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  --accent: #0a0a0a; --accent-focus: #ff4f00; --accent-ink: #ffffff;
+  --signal: #ff4f00; --signal-soft: #fff3ec;
+  --ink: #0a0a0a; --ink2: #5c5c5c; --line: #e3e3e3; --rule: #0a0a0a;
+  --canvas: #ffffff; --surface: #ffffff; --pearl: #ffffff; --chip: #f1f1f1; --tile: #0a0a0a;
+  --field: #ffffff; --hover: #f7f7f7; --select: #fff3ec;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --accent: #f5f5f5; --accent-ink: #0a0a0a; --ink: #f5f5f5; --ink2: #a3a3a3; --line: #2a2a2a; --rule: #f5f5f5;
+    --canvas: #0a0a0a; --surface: #0a0a0a; --pearl: #141414; --chip: #1d1d1d; --tile: #161616; --field: #141414; --hover: #141414; --select: #2a1a12;
+  }
+}
+body { font-family: var(--font-system); font-size: 15px; letter-spacing: 0; }
+.mono, code, td.r, .tile-value, .holders-total { font-family: var(--font-mono); }
+.tile-value { font-family: var(--font-display); }
+
+/* Top bar: a thin rule-separated strip instead of the black global nav. */
+.gnav { color: var(--ink); background: var(--canvas); border-bottom: 2px solid var(--rule); }
+.gnav-in { max-width: none; min-height: 56px; padding: 0 28px; }
+.brand strong { font-family: var(--font-display); font-size: 22px; font-weight: 800; letter-spacing: -.02em; }
+.brand small, .gnav-meta, .gnav-meta .dim { color: var(--ink2); }
+.brand-mark { border-radius: 0; color: var(--canvas); background: var(--ink); }
+.gnav-meta button { color: var(--ink); }
+.gnav-account span { border-radius: 0; }
+
+/* The index: a left column of numbered sections. */
+.frame { display: grid; grid-template-columns: 232px minmax(0, 1fr); align-items: start; }
+.subnav { position: sticky; top: 0; height: 100vh; overflow-y: auto; background: var(--canvas); border-right: 2px solid var(--rule); box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+.subnav-in { display: grid; gap: 18px; max-width: none; padding: 24px 22px 40px; white-space: normal; overflow: visible; }
+.subnav-group { display: grid; gap: 1px; }
+.subnav-title { margin-bottom: 6px; color: var(--ink2); font-family: var(--font-mono); font-size: 11px; letter-spacing: .08em; }
+.subnav-item { justify-content: space-between; min-height: 34px; padding: 0; color: var(--ink); font-size: 14px; text-align: left; }
+.subnav-item:hover { color: var(--signal); }
+.subnav-item[aria-current="page"] { font-weight: 700; box-shadow: none; }
+.subnav-item[aria-current="page"]::after { content: "●"; color: var(--signal); font-size: 10px; }
+.nav-badge { border-radius: 0; background: var(--signal); }
+@media (max-width: 900px) {
+  .frame { grid-template-columns: minmax(0, 1fr); }
+  .subnav { position: static; height: auto; border-right: 0; border-bottom: 2px solid var(--rule); }
+  .subnav-in { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); padding: 16px; }
+}
+
+/* Page head: a mono breadcrumb, a display headline, a heavy rule. */
+.content { max-width: 1240px; margin: 0; padding: 32px 48px 80px; }
+.hero, .page-head { padding: 8px 0 22px; margin-bottom: 28px; border-bottom: 2px solid var(--rule); }
+.title { font-family: var(--font-display); font-size: clamp(44px, 6vw, 72px); line-height: .95; font-weight: 800; letter-spacing: -.035em; }
+.sub { max-width: 720px; margin-top: 14px; color: var(--ink2); font-size: 16px; line-height: 1.5; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; font-weight: 400; letter-spacing: .06em; }
+.hero-number { font-family: var(--font-display); }
+.search { border-radius: 0; background: var(--canvas); box-shadow: inset 0 0 0 1px var(--rule); }
+@media (max-width: 900px) { .content { padding: 24px 16px 64px; } }
+
+/* Sections: no rounded parchment, a black rule on top and air below. */
+.glass, .content > .glass.card, .tile, .exchange-tile, .service-tile, .account-hero, .subpage-bar, .kind-toolbar, .scale-sides div, .holders li,
+.transfer-route > div, .transfer-route > label, .inbox-tile li button, .fin-figures, .wizard-kinds button { border-radius: 0; }
+.content > .glass.card { padding: 20px 0 8px; margin-bottom: 36px; background: transparent; border-top: 2px solid var(--rule); }
+.content > .glass.card .card-head h2 { font-family: var(--font-display); font-size: 26px; font-weight: 700; letter-spacing: -.02em; }
+.cap, .hint { color: var(--ink2); }
+.tile { padding: 14px 0 0; background: transparent; border-top: 1px solid var(--rule); }
+.tile-label { font-family: var(--font-mono); font-size: 11px; font-weight: 400; letter-spacing: .06em; color: var(--ink2); }
+.tile-value { margin-top: 6px; font-size: 44px; font-weight: 700; letter-spacing: -.03em; }
+.tile-dark { padding: 16px; color: #fff; background: var(--tile); border-top: 0; }
+.tile-dark .tile-label { color: #bdbdbd; }
+.tile-row { gap: 24px; margin-bottom: 32px; }
+.subpage-bar, .kind-toolbar { padding: 12px 0; background: transparent; border-bottom: 1px solid var(--line); }
+.exchange-tile { padding: 24px 0; background: transparent; border-top: 1px solid var(--rule); }
+.service-tile { border-radius: 0; }
+
+/* Tables: hairlines, a heavy header rule, mono numbers. */
+table { border-collapse: collapse; }
+thead th { color: var(--ink2); font-family: var(--font-mono); font-size: 11px; font-weight: 400; letter-spacing: .04em; border-bottom: 2px solid var(--rule); }
+tbody tr { border-bottom: 1px solid var(--line); }
+tr.clickable:hover, tr.selected { background: var(--select); }
+
+/* Controls: square, outlined; primary is solid ink, the signal colour marks state. */
+.btn, .btn.primary, .soft, .tile-btn, .tile-select, .segment-tabs button, .command-chip, .doc-tab, .tag, .chip, input, select, textarea { border-radius: 0 !important; }
+.btn.primary { color: var(--accent-ink); background: var(--accent); box-shadow: none; }
+.btn.primary:hover:not(:disabled) { background: var(--signal); }
+.soft { color: var(--ink); background: transparent; box-shadow: inset 0 0 0 1px var(--rule); font-weight: 500; }
+.soft:hover:not(:disabled) { text-decoration: none; background: var(--hover); }
+.form-grid input, .form-grid select, .form-grid textarea, .gamble-fields input, .listing-control select { border: 1px solid var(--rule); background: var(--field); }
+.segment-tabs button { box-shadow: inset 0 0 0 1px var(--rule); background: transparent; }
+.segment-tabs button.active { color: var(--accent-ink); background: var(--accent); }
+.command-chip { background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+.command-chip.active { box-shadow: inset 0 0 0 2px var(--signal); }
+.tag.warn { color: var(--signal); background: var(--signal-soft); }
+
+/* Charts follow the system: signal for the lead slice and gauge, ink rings. */
+.gauge .gauge-fill { stroke: var(--gauge, var(--signal)); }
+.holders svg path { stroke: var(--canvas); }
+.holders .holders-hole { fill: var(--canvas); }
+.holders li { background: transparent; border-bottom: 1px solid var(--line); }
+.heatmap-row i { border-radius: 0; }
+.heatmap-row i.on { background: var(--signal); }
+.timeline-track, .timeline-track i { border-radius: 0; }
+.timeline-now { background: var(--signal); }
+.transfer-tile { padding: 20px; }
+.transfer-route { grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); }
+.transfer-tile input { width: 100%; min-width: 0; border-radius: 0; }
+.transfer-amount { min-width: 0; }
+.transfer-amount input { flex: 1 1 0; }
+.transfer-amount .btn { flex: none; color: #0a0a0a; background: #ffffff; }
+.command-rail button { border-radius: 0 !important; }
+.command-rail button[aria-current="page"] { color: var(--accent-ink); background: var(--accent); }
