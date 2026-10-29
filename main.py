@@ -192,15 +192,26 @@ class InazinaBot(discord.Client):
         await self.prefix_registry.handle(message)
 
     def _fill_price_gaps(self):
+        from managers.gap_order_settler import settle_gap_orders
         from managers.price_gap_filler import fill_price_gaps
+        now = int(time.time())
         try:
             with self.db.atomic(("assets",)) as conn:
-                added = fill_price_gaps(conn)
+                added = fill_price_gaps(conn, now=now)
         except Exception as exc:  # a failed fill must never keep the market from starting
             print(f"[Price Gap Fill Error] {exc}")
             return
-        if added:
-            print(f"Filled price history gaps for {len(added)} assets ({sum(added.values())} points).")
+        if not added:
+            return
+        print(f"Filled price history gaps for {len(added)} assets ({sum(added.values())} points).")
+        # Resting orders those drawn prices reached execute now, against the listing treasury.
+        try:
+            filled = settle_gap_orders(self.order_book, now=now)
+        except Exception as exc:
+            print(f"[Gap Order Fill Error] {exc}")
+            return
+        if filled:
+            print(f"Filled {len(filled)} resting orders reached during the gap ({sum(q for _, q in filled)} units).")
 
     async def market_update_loop(self):
         """Update prices off the Discord event loop; busy DB ticks are skipped."""
