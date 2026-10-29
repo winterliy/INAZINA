@@ -89,12 +89,8 @@ function readRoute(): { page: Page; sub: string } {
   return { page: pages.some((item) => item.id === head) ? head as Page : "overview", sub: rest.join("/") };
 }
 const NATIONAL = "국가 명의", HELP = "도움말";
-// The sidebar index: numbered sections like a guideline document.
-const NAV_GROUPS: [string, Page[]][] = [
-  ["시장", ["overview", "instruments", "finance", "exchanges", "events"]],
-  ["기관", ["companies", "accounting", "users", "naturalization"]],
-  ["운영", ["feedback", "board", "compliance", "documents", "commands", "database", "audit"]],
-];
+// Redesign D (grid guideline) was approved for these tabs only; the rest keep the bento look.
+const THEME_D_PAGES = new Set<Page>(["instruments", "finance", "exchanges", "board", "compliance", "documents"]);
 const scopeOf = (section: string) => section === NATIONAL ? "national" : section === HELP ? "help" : "admin";
 const initialRoute = readRoute();
 
@@ -388,20 +384,16 @@ export default function App() {
           </div>
         </div>
       </header>
-      <div className="frame">
       <nav className="subnav" aria-label="관리 메뉴">
         <div className="subnav-in">
-          {NAV_GROUPS.map(([title, ids], index) => <div key={title} className="subnav-group">
-            <p className="subnav-title">{String(index + 1).padStart(2, "0")} — {title}</p>
-            {ids.map((id) => pages.find((item) => item.id === id)!).map((item) => <button key={item.id} type="button" className="subnav-item" aria-current={page === item.id ? "page" : undefined} onClick={() => setPage(item.id)}>
-              {item.label}
-              {item.id === "feedback" && unreadFeedback > 0 && <span className="nav-badge" aria-label={`새 알림 ${unreadFeedback}건`}>{unreadFeedback}</span>}
-              {item.id === "naturalization" && pendingNaturalization > 0 && <span className="nav-badge" aria-label={`심사 대기 ${pendingNaturalization}건`}>{pendingNaturalization}</span>}
-            </button>)}
-          </div>)}
+          {pages.filter((item) => item.id !== "account").map((item) => <button key={item.id} type="button" className="subnav-item" aria-current={page === item.id ? "page" : undefined} onClick={() => setPage(item.id)}>
+            {item.label}
+            {item.id === "feedback" && unreadFeedback > 0 && <span className="nav-badge" aria-label={`새 알림 ${unreadFeedback}건`}>{unreadFeedback}</span>}
+            {item.id === "naturalization" && pendingNaturalization > 0 && <span className="nav-badge" aria-label={`심사 대기 ${pendingNaturalization}건`}>{pendingNaturalization}</span>}
+          </button>)}
         </div>
       </nav>
-      <main className="content">
+      <main className={THEME_D_PAGES.has(page) ? "content theme-d" : "content"}>
         {page === "overview"
           ? <section className="hero">
             <div className="hero-copy"><p className="eyebrow">INAZINA 로컬 관리 콘솔</p><h1 className="title">{current.label}</h1><p className="sub">{subtitles[page]}</p></div>
@@ -527,7 +519,6 @@ export default function App() {
         {page === "account" && <AccountPage ctx={ctx} user={user} onLogout={logout} />}
         <p className="foot">© INAZINA. All rights reserved.</p>
       </main>
-      </div>
     </div>
     {jumpOpen && (() => {
       const term = jumpTerm.trim().toLocaleLowerCase();
