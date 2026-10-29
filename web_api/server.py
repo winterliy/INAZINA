@@ -853,7 +853,7 @@ def instruments(include_inactive=False):
         has_warnings = connection.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='trading_warnings'").fetchone()
         warnings = TradingWarnings.active(connection) if has_warnings else {}
-        # 24-hour activity for the HTS "실시간 추천" list: price change and traded value.
+        # 24-hour activity for the 나루 "실시간 추천" list: price change and traded value.
         since = int(time.time()) - 86400
         opening = {code: price for code, price, _ in connection.execute(
             "SELECT asset_code,price,MIN(recorded_epoch) FROM market_price_history "

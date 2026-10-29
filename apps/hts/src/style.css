@@ -1317,3 +1317,8 @@ th:last-child, td:last-child { padding-right: 20px; }
 .fin-ratios dd { margin: 2px 0 0; font-weight: 600; font-variant-numeric: tabular-nums; }
 .fin-notes { margin: 0; padding-left: 18px; color: var(--ink2); font-size: 12px; }
 @media (max-width: 800px) { .fin-grid, .fin-search { grid-template-columns: minmax(0, 1fr); } }
+
+/* NARU 나루: the 4311 trading app's wordmark — a square N, the name, then the house brand. */
+.brand { display: inline-flex; align-items: center; gap: 8px; font-weight: 800; letter-spacing: -.01em; }
+.brand .brand-mark { display: inline-grid; place-items: center; width: 24px; height: 24px; color: var(--canvas, #fff); background: var(--ink, #111); font-size: 13px; font-weight: 800; }
+.brand span { color: var(--ink2); font-weight: 500; }

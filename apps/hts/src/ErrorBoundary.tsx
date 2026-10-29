@@ -1,6 +1,6 @@
 import { Component, type ReactNode } from "react";
 
-/** Keeps one broken panel (e.g. the chart) from blanking the whole HTS; "다시 시도" re-renders it. */
+/** Keeps one broken panel (e.g. the chart) from blanking the whole 나루; "다시 시도" re-renders it. */
 export class ErrorBoundary extends Component<{ label: string; resetKey?: string; children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null };
   static getDerivedStateFromError(error: Error) { return { error }; }

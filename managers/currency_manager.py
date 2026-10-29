@@ -33,7 +33,7 @@ class CurrencyManager:
         """Return the dedicated treasury account for one federation country.
 
         The treasury is also the country's own account: its id is numeric (given by
-        $국가생성, else the next free 9xxxxxxx) and it is the country's HTS login ID.
+        $국가생성, else the next free 9xxxxxxx) and it is the country's 나루 login ID.
         """
         nationality = str(nationality or '낙원')
         row = conn.execute('SELECT user_id FROM country_treasuries WHERE nationality=?',

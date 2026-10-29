@@ -8,7 +8,7 @@ type Result = { message: string; success: boolean };
 const LEVELS: [Warning["level"], string][] = [["caution", "투자주의"], ["warning", "투자경고"], ["danger", "투자위험"]];
 const NAME = Object.fromEntries(LEVELS) as Record<Warning["level"], string>;
 
-/** 거래경고: designate instruments as 투자주의·경고·위험; shown in Discord, the HTS and order confirmations. */
+/** 거래경고: designate instruments as 투자주의·경고·위험; shown in Discord, the 나루 and order confirmations. */
 export function WarningsCard({ ctx }: { ctx: Ctx }) {
   const { busy, run, say } = ctx;
   const [warnings, setWarnings] = useState<Warning[]>([]);
@@ -26,7 +26,7 @@ export function WarningsCard({ ctx }: { ctx: Ctx }) {
   return <><div className="tile-row warning-lights" aria-label="거래경고 신호등">
     {LEVELS.map(([id, name]) => <section key={id} className={`tile light-${id}`}><p className="tile-label">{name}</p><p className="tile-value">{warnings.filter((item) => item.level === id).length}</p></section>)}
   </div>
-  <Card title="거래경고" caption="종목을 투자주의·투자경고·투자위험으로 지정하면 Discord 시세, HTS, 주문 확인에 표시됩니다. 거래를 멈추지는 않습니다 ($거래경고와 같음).">
+  <Card title="거래경고" caption="종목을 투자주의·투자경고·투자위험으로 지정하면 Discord 시세, 나루, 주문 확인에 표시됩니다. 거래를 멈추지는 않습니다 ($거래경고와 같음).">
     <form className="form-grid" onSubmit={(event) => { event.preventDefault(); save(draft.code.trim(), { level: draft.level, reason: draft.reason, days: draft.days }, `${draft.code}을(를) ${NAME[draft.level as Warning["level"]]} 종목으로 지정할까요?`); }}>
       <Field label="종목 코드"><input className="mono" value={draft.code} required onChange={(event) => setDraft({ ...draft, code: event.target.value.trim() })} /></Field>
       <Field label="단계"><select value={draft.level} onChange={(event) => setDraft({ ...draft, level: event.target.value })}>{LEVELS.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></Field>

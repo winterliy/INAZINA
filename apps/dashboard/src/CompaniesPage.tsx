@@ -99,7 +99,7 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
 
   function saveLogin() {
     if (!company) return;
-    if (!window.confirm(`${company.name} 법인 계정의 웹·HTS 비밀번호를 설정할까요?\n로그인 ID는 ${company.company_code}입니다.`)) return;
+    if (!window.confirm(`${company.name} 법인 계정의 웹·나루 비밀번호를 설정할까요?\n로그인 ID는 ${company.company_code}입니다.`)) return;
     void run(() => api<{ account: { message: string } }>("/api/admin/companies/login", { method: "POST", body: JSON.stringify({ companyId: company.company_code, password }) }),
       "법인 로그인을 설정하지 못했습니다.", async (result) => { say(plain(result.account.message)); setPassword(""); await open(company.company_code); });
   }
@@ -192,8 +192,8 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
         <button className="btn primary" disabled={busy}>{command} 실행</button>
       </form>}
       </Card>
-      <Card title="웹·HTS 로그인" caption="법인 계정으로 HTS에 로그인할 비밀번호를 정합니다.">
-      <p className="hint">{detail?.webLogin ? <>로그인 ID <span className="mono">{detail.loginId}</span>로 HTS에 로그인할 수 있습니다. 비밀번호를 다시 설정하면 기존 로그인은 만료됩니다.</> : "아직 로그인이 없습니다. 비밀번호를 정하면 법인 코드를 ID로 HTS에 로그인해 이 계정으로 거래합니다."}</p>
+      <Card title="웹·나루 로그인" caption="법인 계정으로 나루에 로그인할 비밀번호를 정합니다.">
+      <p className="hint">{detail?.webLogin ? <>로그인 ID <span className="mono">{detail.loginId}</span>로 나루에 로그인할 수 있습니다. 비밀번호를 다시 설정하면 기존 로그인은 만료됩니다.</> : "아직 로그인이 없습니다. 비밀번호를 정하면 법인 코드를 ID로 나루에 로그인해 이 계정으로 거래합니다."}</p>
       <form className="form-grid" onSubmit={(event) => { event.preventDefault(); saveLogin(); }}>
         <Field label="비밀번호" hint="12자 이상 · 영문과 숫자 포함"><input type="password" value={password} minLength={12} required onChange={(event) => setPassword(event.target.value)} /></Field>
         <button className="btn primary" disabled={busy || !password}>{detail?.webLogin ? "비밀번호 재설정" : "로그인 만들기"}</button>

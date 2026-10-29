@@ -98,7 +98,7 @@ function UserTab({ ctx, countries, currentUserId, companies }: { ctx: Ctx; count
   function web(action: "password" | "hts_id" | "logout" | "remove") {
     if (!detail) return;
     const id = String(detail.user.user_id);
-    const labels = { password: "웹 비밀번호를 설정", hts_id: htsId ? `HTS ID를 ${htsId}(으)로 변경` : "HTS ID를 삭제", logout: "모든 웹 로그인을 만료", remove: "웹 로그인을 삭제" };
+    const labels = { password: "웹 비밀번호를 설정", hts_id: htsId ? `나루 ID를 ${htsId}(으)로 변경` : "나루 ID를 삭제", logout: "모든 웹 로그인을 만료", remove: "웹 로그인을 삭제" };
     if (action === "password" && (password.length < 12 || !/[A-Za-z]/.test(password) || !/\d/.test(password))) { say("비밀번호는 영문과 숫자를 포함해 12~128자로 입력해주세요.", true); return; }
     if (!window.confirm(`${detail.user.nickname} (${id})의 ${labels[action]}할까요?`)) return;
     void run(() => api<Result>(`/api/admin/user/${encodeURIComponent(id)}/web`, { method: "POST", body: JSON.stringify({ action, password, htsId }) }),
@@ -135,13 +135,13 @@ function UserTab({ ctx, countries, currentUserId, companies }: { ctx: Ctx; count
         </ol>
         <p className="hint">선물 포지션·작성한 옵션·ELS가 남아 있으면 변경할 수 없습니다.{detail.accountType === "country" ? " 국가 계정은 국적을 바꿀 수 없습니다." : ""}</p>
       </Card>
-      <Card title="웹 로그인 · HTS" caption={detail.webLogin ? `가입 ${date(detail.webLogin.created_epoch)} · 최근 변경 ${date(detail.webLogin.updated_epoch)}` : "웹 계정이 없습니다. 비밀번호를 설정하면 이 ID로 로그인할 수 있습니다."}>
+      <Card title="웹 로그인 · 나루" caption={detail.webLogin ? `가입 ${date(detail.webLogin.created_epoch)} · 최근 변경 ${date(detail.webLogin.updated_epoch)}` : "웹 계정이 없습니다. 비밀번호를 설정하면 이 ID로 로그인할 수 있습니다."}>
         <div className="form-grid">
           <Field label={detail.webLogin ? "새 비밀번호" : "비밀번호 설정"} hint="영문+숫자 12자 이상"><input type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} /></Field>
           <button className="btn primary" type="button" disabled={busy || !password} onClick={() => web("password")}>비밀번호 설정</button>
           {detail.webLogin && <>
-            <Field label="HTS ID" hint="비우면 삭제"><input className="mono" value={htsId} onChange={(event) => setHtsId(event.target.value)} /></Field>
-            <button className="soft" type="button" disabled={busy} onClick={() => web("hts_id")}>HTS ID 저장</button>
+            <Field label="나루 ID" hint="비우면 삭제"><input className="mono" value={htsId} onChange={(event) => setHtsId(event.target.value)} /></Field>
+            <button className="soft" type="button" disabled={busy} onClick={() => web("hts_id")}>나루 ID 저장</button>
             <button className="soft" type="button" disabled={busy} onClick={() => web("logout")}>모든 로그인 만료</button>
             <button className="soft danger" type="button" disabled={busy || id === currentUserId} onClick={() => web("remove")}>웹 로그인 삭제</button>
           </>}
@@ -262,7 +262,7 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
   function countryLogin(action: "create" | "password" | "hts_id" | "logout" | "remove") {
     if (!country) return;
     if ((action === "create" || action === "password") && (password.length < 12 || !/[A-Za-z]/.test(password) || !/\d/.test(password))) { say("비밀번호는 영문과 숫자를 포함해 12~128자로 입력해주세요.", true); return; }
-    const labels = { create: "국가 계정을 만들", password: "국가 계정 비밀번호를 바꿀", hts_id: "HTS ID를 저장할", logout: "모든 로그인을 만료할", remove: "국가 계정 웹 로그인을 삭제할" };
+    const labels = { create: "국가 계정을 만들", password: "국가 계정 비밀번호를 바꿀", hts_id: "나루 ID를 저장할", logout: "모든 로그인을 만료할", remove: "국가 계정 웹 로그인을 삭제할" };
     if (!window.confirm(`${country.nationality} ${labels[action]}까요?`)) return;
     const request = action === "create"
       ? api<Result>("/api/admin/users/country-account", { method: "POST", body: JSON.stringify({ countryId: country.nationality, password }) })
@@ -340,13 +340,13 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
           <button className="btn primary" disabled={busy}>국고 저장</button>
         </form>
       </Card>
-      <Card title="국가 계정 (HTS 로그인)" caption={country.account ? `국가 ID ${country.treasuryId}로 로그인하면 국고로 거래합니다. 상태 ${country.account.status} · 권한 ${country.account.role}` : "아직 국가 계정이 없습니다. 비밀번호를 정하면 국가 ID로 HTS에 로그인할 수 있습니다."}>
+      <Card title="국가 계정 (나루 로그인)" caption={country.account ? `국가 ID ${country.treasuryId}로 로그인하면 국고로 거래합니다. 상태 ${country.account.status} · 권한 ${country.account.role}` : "아직 국가 계정이 없습니다. 비밀번호를 정하면 국가 ID로 나루에 로그인할 수 있습니다."}>
         <div className="form-grid">
           <Field label={country.account ? "새 비밀번호" : "비밀번호"} hint="영문+숫자 12자 이상"><input type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} /></Field>
           {country.account ? <>
             <button className="btn primary" type="button" disabled={busy || !password} onClick={() => countryLogin("password")}>비밀번호 변경</button>
-            <Field label="HTS ID" hint="비우면 삭제"><input className="mono" value={htsId} onChange={(event) => setHtsId(event.target.value)} /></Field>
-            <button className="soft" type="button" disabled={busy} onClick={() => countryLogin("hts_id")}>HTS ID 저장</button>
+            <Field label="나루 ID" hint="비우면 삭제"><input className="mono" value={htsId} onChange={(event) => setHtsId(event.target.value)} /></Field>
+            <button className="soft" type="button" disabled={busy} onClick={() => countryLogin("hts_id")}>나루 ID 저장</button>
             <button className="soft" type="button" disabled={busy} onClick={() => countryLogin("logout")}>모든 로그인 만료</button>
             <button className="soft danger" type="button" disabled={busy} onClick={() => countryLogin("remove")}>웹 로그인 삭제</button>
           </> : <button className="btn primary" type="button" disabled={busy || !password} onClick={() => countryLogin("create")}>국가 계정 만들기</button>}

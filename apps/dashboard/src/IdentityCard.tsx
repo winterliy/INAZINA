@@ -19,7 +19,7 @@ export function IdentityCard({ ctx }: { ctx: Ctx }) {
 
   // $login on the web: sign in as that country or company account itself, with the user HTS.
   function signIn(next: string) {
-    if (!window.confirm(`${next} 계정으로 로그인할까요?\n일반 사용자와 같은 HTS 화면으로 이 계정을 사용합니다. 로그아웃하면 관리자 계정으로 돌아옵니다.`)) return;
+    if (!window.confirm(`${next} 계정으로 로그인할까요?\n일반 사용자와 같은 나루 화면으로 이 계정을 사용합니다. 로그아웃하면 관리자 계정으로 돌아옵니다.`)) return;
     void run(() => api<{ userId: string }>("/api/admin/login-as", { method: "POST", body: JSON.stringify({ target: next }) }),
       "계정으로 로그인하지 못했습니다.", () => location.assign(appUrl("hts")));
   }
@@ -33,7 +33,7 @@ export function IdentityCard({ ctx }: { ctx: Ctx }) {
       </select></Field>
       <button className="btn primary" disabled={busy || !target}>로그인</button>
       <button className="soft" type="button" disabled={busy} onClick={() => apply("")}>로그아웃 (낙원 국고)</button>
-      <button className="soft" type="button" disabled={busy || !target} onClick={() => signIn(target)}>이 계정으로 HTS 로그인</button>
+      <button className="soft" type="button" disabled={busy || !target} onClick={() => signIn(target)}>이 계정으로 나루 로그인</button>
     </form>
   </Card>;
 }

@@ -68,7 +68,7 @@ const subtitles: Record<Page, string> = {
   naturalization: "Discord /귀화신청으로 들어온 신청을 심사합니다. 승인하면 신청자의 자산을 정리하고 국적을 옮깁니다.",
   feedback: "공식 사이트의 Contact·Report로 들어온 문의와 신고를 확인하고 처리합니다.",
   documents: "약관·처리방침·규칙·도움말과 Discord 등록 안내문을 고치고 확정합니다.",
-  board: "HTS 게시판의 신고를 처리하고 글을 숨기거나 고정합니다. 익명 글의 실제 작성자와 IP를 확인할 수 있습니다.",
+  board: "나루 게시판의 신고를 처리하고 글을 숨기거나 고정합니다. 익명 글의 실제 작성자와 IP를 확인할 수 있습니다.",
   compliance: "국적별 KYC 검토 상태와 AML 시뮬레이터 경보·규칙을 관리합니다.",
   accounting: "은행을 고유 ID로 만들고 관리하며, 은행별 이중분개 시산 잔액·불균형·결과 원장 대사를 조회합니다.",
   users: "사용자와 국가, 국가 계정의 모든 설정을 관리합니다.",
@@ -359,7 +359,7 @@ export default function App() {
     return <Stage><div className="shell">
       <header className="gnav"><div className="gnav-in">
         <div className="brand"><span className="brand-mark">I</span><strong>INAZINA</strong><small>내 Dashboard</small></div>
-        <div className="gnav-meta"><a className="gnav-link" href={appUrl("hts")}>HTS 열기</a><button type="button" onClick={logout}>{user.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button></div>
+        <div className="gnav-meta"><a className="gnav-link" href={appUrl("hts")}>나루 열기</a><button type="button" onClick={logout}>{user.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button></div>
       </div></header>
       <main className="content">
         {user.delegatedBy && <div className="notice" role="status"><span>관리자 {user.delegatedByName ?? user.delegatedBy}님이 {user.nickname} 계정으로 로그인 중입니다.</span></div>}

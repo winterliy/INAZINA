@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 RETENTION_SECONDS = 365 * 86400
-APPS = {"dashboard": "대시보드", "hts": "HTS"}
+APPS = {"dashboard": "대시보드", "hts": "나루"}
 # DB-IP City Lite (CC BY 4.0), installed by tools/update_geoip.py. Without it, public
 # addresses are only labelled "외부 인터넷".
 GEOIP_PATH = Path(os.environ.get("INAZINA_GEOIP_PATH",
