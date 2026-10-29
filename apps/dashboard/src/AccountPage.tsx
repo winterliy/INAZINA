@@ -3,9 +3,19 @@ import type { FormEvent } from "react";
 import { api, appUrl, type ApiUser } from "../../shared/api";
 import { Card, Field, date, errorText, number, type Ctx } from "./common";
 import { IdentityCard } from "./IdentityCard";
+import { AuditHeatmap } from "./ActivityTiles";
 import { LoginHistoryCard, type LoginEvent } from "./LoginHistoryCard";
 
 type Financial = { company: string; periods: string[]; report: { period: string; currency: string; places: number; summary: { assets: number; liabilities: number; equity: number }; income: Record<string, number>; checks: { balance_sheet: boolean } } };
+
+/** The administrator's own work over the last week, from the audit log. */
+function OwnHeatmap({ userId }: { userId: string }) {
+  const [entries, setEntries] = useState<{ time: number }[]>([]);
+  useEffect(() => {
+    api<{ entries: { actorId: string; time: number }[] }>("/api/admin/audit").then((result) => setEntries(result.entries.filter((entry) => entry.actorId === userId))).catch(() => undefined);
+  }, [userId]);
+  return <AuditHeatmap entries={entries} />;
+}
 
 /** A company account's own statements, read-only. */
 function OwnFinancial({ say }: { say: Ctx["say"] }) {
@@ -86,6 +96,7 @@ export function AccountPage({ ctx, user, onLogout }: { ctx: Ctx; user: ApiUser; 
       </Card>}
     </div>
     {user.role === "company" && <OwnFinancial say={say} />}
+    {admin && <OwnHeatmap userId={user.userId} />}
     {admin && <LoginHistoryCard ctx={ctx} userId={user.userId} onLoaded={setLogins} />}
   </>;
 }

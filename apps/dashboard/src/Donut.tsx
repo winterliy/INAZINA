@@ -19,7 +19,7 @@ export function Donut({ slices, total, center, unit, label, suffix = "" }: { sli
     <svg viewBox="0 0 200 200" role="img" aria-label={label}>
       {arcs.map((arc) => <path key={arc.label} d={arc.path} fill={arc.color} />)}
       <circle className="holders-hole" cx="100" cy="100" r="58" />
-      <text className="holders-total" x="100" y="102" textAnchor="middle">{center}</text>
+      <text className="holders-total" x="100" y="102" textAnchor="middle" style={{ fontSize: `${Math.min(22, 150 / Math.max(1, center.length))}px` }}>{center}</text>
       <text className="holders-unit" x="100" y="120" textAnchor="middle">{unit}</text>
     </svg>
     <figcaption><ul>{arcs.map((arc) => <li key={arc.label}><i style={{ background: arc.color }} /><span>{arc.label}</span><b>{(arc.value / total * 100).toFixed(2)}%</b><small>{number(arc.value)}{suffix}</small></li>)}</ul></figcaption>
@@ -32,7 +32,7 @@ export function Gauge({ ratio, center, label }: { ratio: number; center: string;
   return <svg className="gauge" viewBox="0 0 120 120" role={label ? "img" : undefined} aria-label={label} aria-hidden={label ? undefined : true}>
     <circle cx="60" cy="60" r="50" className="gauge-track" />
     <circle cx="60" cy="60" r="50" className="gauge-fill" strokeDasharray={`${fill} 314`} transform="rotate(-90 60 60)" />
-    <text x="60" y="66" textAnchor="middle">{center}</text>
+    <text x="60" y="66" textAnchor="middle" style={{ fontSize: `${Math.min(23, 80 / Math.max(1, center.length))}px` }}>{center}</text>
   </svg>;
 }
 

@@ -33,7 +33,7 @@ export function IdentityCard({ ctx }: { ctx: Ctx }) {
       </select></Field>
       <button className="btn primary" disabled={busy || !target}>로그인</button>
       <button className="soft" type="button" disabled={busy} onClick={() => apply("")}>로그아웃 (낙원 국고)</button>
-      <button className="btn" type="button" disabled={busy || !target} onClick={() => signIn(target)}>이 계정으로 HTS 로그인</button>
+      <button className="soft" type="button" disabled={busy || !target} onClick={() => signIn(target)}>이 계정으로 HTS 로그인</button>
     </form>
   </Card>;
 }

@@ -143,7 +143,8 @@ input::placeholder { color: var(--ink2); opacity: .75; }
 .check input { width: 16px; height: 16px; accent-color: var(--accent); }
 .mini-select { min-height: 32px; max-width: 150px; padding: 0 10px; border: 0; border-radius: 999px; background: rgba(var(--glass-rgb), .7); font-size: 12px; box-shadow: inset 0 0 0 1px var(--line); }
 .sub-head { margin: 18px 0 10px; font-size: 15px; font-weight: 650; }
-.sub-head:first-of-type { margin-top: 4px; }
+.card-head + .sub-head { margin-top: 4px; }
+.form-grid + .sub-head, .hint + .sub-head { margin-top: 28px; }
 .actions .divider { width: 1px; height: 24px; margin: 0 4px; background: var(--line); }
 .section-gap { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--line); }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
@@ -704,13 +705,13 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
 .gamble-body .gauge { flex: none; width: 150px; height: 150px; }
 .gamble-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 160px)) auto; align-items: end; gap: 10px 12px; }
 .gamble-fields label { display: grid; gap: 6px; color: var(--ink2); font-size: 12px; font-weight: 600; }
-.gamble-fields input { min-height: 44px; padding: 0 12px; border: 0; border-radius: 12px; color: var(--ink); background: var(--field); font-size: 17px; outline: none; }
+.gamble-fields input { min-width: 0; min-height: 44px; padding: 0 12px; border: 1px solid var(--line); border-radius: 12px; color: var(--ink); background: var(--field); font-size: 17px; outline: none; }
 .gamble-fields input:focus { box-shadow: 0 0 0 2px var(--accent-focus); }
 .gamble-ev { grid-column: 1 / -1; color: var(--danger); font-size: 15px; font-weight: 600; }
 .gamble-ev.up { color: var(--ok-ink); }
 
 /* 관리자 명령어: the gamble and transfer tiles side by side. */
-.feature-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px; margin-bottom: 16px; }
+.feature-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); align-items: start; gap: 16px; margin-bottom: 16px; }
 .feature-pair .tile { margin-bottom: 0; }
 .transfer-tile { display: grid; gap: 16px; align-content: start; }
 .transfer-route { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 12px; }
@@ -761,7 +762,7 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
 
 /* 작업 기록: a 7 × 24 activity heatmap. */
 .heatmap { display: grid; gap: 4px; margin-top: 14px; overflow-x: auto; }
-.heatmap-row { display: grid; grid-template-columns: 24px repeat(24, minmax(12px, 1fr)); gap: 4px; align-items: center; min-width: 380px; }
+.heatmap-row { display: grid; grid-template-columns: 24px repeat(24, minmax(12px, 28px)); gap: 4px; align-items: center; min-width: 380px; }
 .heatmap-row span { color: var(--ink2); font-size: 12px; }
 .heatmap-row i { aspect-ratio: 1; border-radius: 4px; background: var(--chip); }
 .heatmap-row i.on { background: var(--accent); }
@@ -771,10 +772,16 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
 .tile-value.up { color: var(--up-ink); }
 .tile-value.down { color: var(--down-ink); }
 .timeline-tile { grid-column: 1 / -1; }
-.timeline-tile svg { display: block; width: 100%; height: auto; margin-top: 12px; }
-.timeline-tile .bar.up { fill: var(--up-ink); }
-.timeline-tile .bar.down { fill: var(--down-ink); }
-.timeline-tile .now { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 4 4; }
+.timeline { position: relative; display: grid; gap: 6px; margin-top: 14px; }
+.timeline-row { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: center; gap: 12px; font-size: 12px; }
+.timeline-row > span { overflow: hidden; color: var(--ink2); font-family: var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.timeline-track { position: relative; height: 10px; border-radius: 999px; background: var(--chip); }
+.timeline-track i { position: absolute; top: 0; bottom: 0; min-width: 6px; border-radius: 999px; }
+.timeline-track i.up { background: var(--up-ink); }
+.timeline-track i.down { background: var(--down-ink); }
+.timeline-now { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--accent); }
+.event-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 600px) { .event-tiles { grid-template-columns: minmax(0, 1fr); } }
 @media (prefers-reduced-motion: reduce) { .scale-tile g { transition: none; } }
 
 /* 종목 · 상품 / 금융 상품: one card per kind under a shared toolbar. */

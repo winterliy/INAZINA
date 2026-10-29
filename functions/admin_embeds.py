@@ -18,7 +18,7 @@ def admin_embed(text, title='Inazina · 관리자', *, pending=False):
     text=str(text or '조회 결과가 없습니다.')[:3900]
     error=text.lstrip().startswith('❌')
     success=text.lstrip().startswith('✅')
-    icon,status,color=('❌','오류',discord.Color.red()) if error else ('⏳','처리 중',discord.Color.gold()) if pending else ('✅','완료',discord.Color.green()) if success else ('📋','안내',discord.Color.blue())
+    icon,status,color=('❌','오류',discord.Color.red()) if error else ('⏳','처리 중',discord.Color.gold()) if pending else ('✅','완료',discord.Color.default()) if success else ('📋','안내',discord.Color.blue())
     first,_,rest=text.partition('\n')
     if text.lstrip().startswith(('{','[')) or len(first)>300:
         summary='조회 결과를 확인해주세요.'

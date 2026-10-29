@@ -41,7 +41,7 @@ class LotteryPurchaseView(discord.ui.View):
             return
         for item in self.children:
             item.disabled = True
-        embed = discord.Embed(title=f"✅ 복권 구매 · {result['round_id']}회",description=f"{len(result['tickets'])}장 · 합계 **{result['price']*len(result['tickets']):,} NWX**\n/내복권에서 번호와 지급 결과를 확인하세요.",color=discord.Color.green())
+        embed = discord.Embed(title=f"✅ 복권 구매 · {result['round_id']}회",description=f"{len(result['tickets'])}장 · 합계 **{result['price']*len(result['tickets']):,} NWX**\n/내복권에서 번호와 지급 결과를 확인하세요.",color=discord.Color.default())
         lines = [f"#{t['ticket_id']} · {' '.join(map(str,t['numbers']))}" for t in result['tickets']]
         if len(lines)<=10:
             embed.add_field(name='발권 번호',value='\n'.join(lines),inline=False)

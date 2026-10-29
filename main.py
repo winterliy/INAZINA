@@ -311,7 +311,7 @@ class InazinaBot(discord.Client):
                                 f"{option_name} · 만기 주가 {result['spot_price']:,} {self.db.base_currency_code()} · "
                                 f"행사가 {result['strike_price']:,} {self.db.base_currency_code()}"
                             ),
-                            color=(discord.Color.green() if result["exercised"] else discord.Color.orange()),
+                            color=(discord.Color.default() if result["exercised"] else discord.Color.orange()),
                         )
                         notice.add_field(
                             name="행사 수량",
@@ -368,7 +368,7 @@ class InazinaBot(discord.Client):
                         notice = discord.Embed(
                             title="💳 대출 정기납부 결과",
                             description=f"상품: **{result['product_name']}**",
-                            color=(discord.Color.green() if not result["missed_count"] else discord.Color.orange()),
+                            color=(discord.Color.default() if not result["missed_count"] else discord.Color.orange()),
                         )
                         if result["paid_count"]:
                             notice.add_field(

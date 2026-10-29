@@ -19,7 +19,7 @@ import { BanksPage } from "./BanksPage";
 import { DatabasePage } from "./DatabasePage";
 import { GambleTile } from "./GambleTile";
 import { TransferTile } from "./TransferTile";
-import { AuditHeatmap, EventTimeline } from "./ActivityTiles";
+import { EventTimeline } from "./ActivityTiles";
 import { NaturalizationPage } from "./NaturalizationPage";
 import { COMMAND_FORMS, CommandForm } from "./CommandForm";
 import { AccountPage } from "./AccountPage";
@@ -508,7 +508,6 @@ export default function App() {
 
         {page === "database" && <DatabasePage ctx={ctx} />}
 
-        {page === "audit" && <AuditHeatmap entries={audit} />}
         {page === "audit" && <Card title="최근 관리자 작업" caption="최근 50건 · 작업 기록은 append-only이며 수정·삭제할 수 없습니다.">
           <div className="scroll-x tall"><table><thead><tr><th>시각</th><th>관리자 ID</th><th>작업</th><th>세부 내용</th></tr></thead><tbody>{audit.map((entry) => <tr key={entry.auditId}>
             <td>{date(entry.time)}</td><td className="mono">{entry.actorId}</td><td><span className="tag">{entry.action}</span></td><td className="audit-payload mono" title={JSON.stringify(entry.payload)}>{JSON.stringify(entry.payload)}</td>

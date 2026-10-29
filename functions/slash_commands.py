@@ -581,7 +581,7 @@ class SlashCommandRegistry:
         return discord.Embed(
             title=title,
             description=message,
-            color=discord.Color.green() if success else discord.Color.red(),
+            color=discord.Color.default() if success else discord.Color.red(),
         )
 
     async def self_register(self, interaction: discord.Interaction):

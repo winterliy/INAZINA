@@ -34,19 +34,20 @@ export function EventTimeline({ events }: { events: MarketEvent[] }) {
   const now = Date.now() / 1000;
   const start = Math.min(now, ...recent.map((item) => item.starts_epoch));
   const end = Math.max(now, ...recent.map((item) => item.ends_epoch));
-  const x = (epoch: number) => 8 + (epoch - start) / Math.max(1, end - start) * 584;
+  const at = (epoch: number) => (epoch - start) / Math.max(1, end - start) * 100;
   return <div className="tile-row event-tiles">
     <section className="tile tile-dark"><p className="tile-label">진행 중 사건</p><p className="tile-value">{events.filter((item) => item.active).length}</p></section>
     <section className="tile"><p className="tile-label">호재</p><p className="tile-value up">{events.filter((item) => item.event_type === "good").length}</p></section>
     <section className="tile"><p className="tile-label">악재</p><p className="tile-value down">{events.filter((item) => item.event_type !== "good").length}</p></section>
     {recent.length > 0 && <section className="tile timeline-tile" aria-label="최근 사건 타임라인">
       <p className="tile-label">최근 사건 타임라인 · {date(start)} ~ {date(end)}</p>
-      <svg viewBox={`0 0 600 ${recent.length * 16 + 8}`} role="img" aria-label={`최근 사건 ${recent.length}건의 기간`}>
-        {recent.map((item, index) => <rect key={item.event_id} className={item.event_type === "good" ? "bar up" : "bar down"} x={x(item.starts_epoch)} y={index * 16 + 4} width={Math.max(3, x(item.ends_epoch) - x(item.starts_epoch))} height="10" rx="5">
-          <title>#{item.event_id} {item.asset_code || "시장 전체"} · {date(item.starts_epoch)} ~ {date(item.ends_epoch)}</title>
-        </rect>)}
-        <line className="now" x1={x(now)} x2={x(now)} y1="0" y2={recent.length * 16 + 8} />
-      </svg>
+      <div className="timeline">
+        {recent.map((item) => <div key={item.event_id} className="timeline-row" title={`#${item.event_id} ${item.asset_code || "시장 전체"} · ${date(item.starts_epoch)} ~ ${date(item.ends_epoch)}`}>
+          <span>#{item.event_id} {item.asset_code || "시장 전체"}</span>
+          <div className="timeline-track"><i className={item.event_type === "good" ? "up" : "down"} style={{ left: `${at(item.starts_epoch)}%`, width: `${Math.max(0.5, at(item.ends_epoch) - at(item.starts_epoch))}%` }} /></div>
+        </div>)}
+        <b className="timeline-now" style={{ left: `calc(108px + (100% - 108px) * ${at(now) / 100})` }} aria-label="지금" />
+      </div>
     </section>}
   </div>;
 }
