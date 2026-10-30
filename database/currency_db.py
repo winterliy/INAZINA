@@ -788,13 +788,13 @@ class CurrencyDB(DBManager):
         for holding in self.execute(
             "SELECT holding_id,asset_code,average_cost,average_cost_minor_units FROM user_assets"
         ):
-            currency_row = self.execute(
+            currency_row = self.execute_one(
                 "SELECT COALESCE((SELECT quote_currency FROM market_assets WHERE code=? "
                 "UNION ALL SELECT quote_currency FROM company WHERE company_code=? "
                 "UNION ALL SELECT quote_currency FROM investment WHERE product_code=? LIMIT 1),"
                 "base_currency_code())",
                 (holding["asset_code"], holding["asset_code"], holding["asset_code"]),
-            ).fetchone()
+            )
             currency = currency_row[0] if currency_row else base_currency_code(self.conn)
             places = currency_precision(self.conn, currency)
             expected = to_minor_units(holding["average_cost"] or 0, places)
