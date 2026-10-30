@@ -2600,7 +2600,6 @@ def product_save(actor, payload):
     if operation == "create" and profile == "stock":
         # A new 법인 starts unlisted; 법인 자본 lists it, with the share of it offered.
         fields["exchange_id"] = "UNLISTED"
-        fields.pop("listed_shares", None)
     if operation == "create":
         token = PRODUCT_KINDS[profile][2]
         raw = f"{code} {token} {json.dumps(fields, ensure_ascii=False)}"
