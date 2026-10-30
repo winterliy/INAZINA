@@ -135,7 +135,7 @@ class InazinaTests(unittest.TestCase):
         control=self.bot.admin_control
         with self.assertRaises(ValueError): control.entity('citizen','stock','create','BAD','Bad',100,100,{})
         control.entity('admin','stock','create','NEW','새주식','100','1000',EXAMPLES['stock'])
-        control.entity('admin','stock','edit','NEW',price='200',extra={'market_volatility':.5})
+        control.entity('admin','stock','edit','NEW',price='200',extra={'market_volatility':.5,'exchange_id':'INZ'})
         self.assertEqual(self.db.companies.get_company('NEW')['share_price'],200)
         self.assertTrue(self.bot.user_mgr.buy_asset('citizen','NEW',5)[0])
         with self.assertRaises(ValueError): control.entity('admin','stock','edit','NEW',supply='1')
