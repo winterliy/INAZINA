@@ -15,43 +15,58 @@ type Detail = { account: string; webLogin: boolean; loginId: string; assets: Ass
 
 const UNLISTED = "UNLISTED";
 
-/** Where the company's shares trade (any exchange, or 비상장) and what share of them is listed. */
+/**
+ * 상장하기 / 비상장 전환하기: list the company on an exchange with the share of it offered
+ * (listing again, after a delisting, is the same step), or take it off the market.
+ * Keyed by the company's listing so a saved change starts from the new terms.
+ */
 function ListingControl({ ctx, company, onDone }: { ctx: Ctx; company: Company; onDone: () => void }) {
   const { busy, run, say } = ctx;
-  const [exchanges, setExchanges] = useState<string[]>([]);
-  const [target, setTarget] = useState(company.exchange_id || UNLISTED);
+  const current = company.exchange_id || UNLISTED;
+  const listedNow = current !== UNLISTED;
   const currentPercent = company.listed_shares == null ? 100 : Math.round(company.listed_shares / company.total_shares * 10000) / 100;
+  const [mode, setMode] = useState<"list" | "unlist">("list");
+  const [exchanges, setExchanges] = useState<string[]>([]);
+  const [target, setTarget] = useState(listedNow ? current : "");
   const [percent, setPercent] = useState(String(currentPercent));
   useEffect(() => {
-    api<{ exchanges: { exchange_id: string }[] }>("/api/admin/exchanges")
-      .then((result) => setExchanges(result.exchanges.map((item) => item.exchange_id).filter((id) => id !== "CURRENCY" && id !== UNLISTED))).catch(() => undefined);
+    api<{ exchanges: { exchange_id: string }[] }>("/api/admin/exchanges").then((result) => {
+      const ids = result.exchanges.map((item) => item.exchange_id).filter((id) => id !== "CURRENCY" && id !== UNLISTED);
+      setExchanges(ids);
+      setTarget((value) => value || ids[0] || "");
+    }).catch(() => undefined);
   }, []);
-  useEffect(() => { setTarget(company.exchange_id || UNLISTED); setPercent(String(currentPercent)); }, [company.company_code, company.exchange_id, currentPercent]);
   const ratio = Number(percent);
   const listed = Math.floor(company.total_shares * ratio / 100);
-  const ratioValid = target === UNLISTED || (ratio > 0 && ratio <= 100 && listed >= 1);
-  const changed = target !== (company.exchange_id || UNLISTED) || (target !== UNLISTED && ratio !== currentPercent);
+  const ratioValid = ratio <= 100 && listed >= 1;
+  const changed = !listedNow || target !== current || ratio !== currentPercent;
 
-  function apply() {
-    if (!changed) { say("바뀐 상장 조건이 없습니다.", true); return; }
-    if (!ratioValid) { say("상장 비율은 0%보다 크고 100% 이하로, 1주 이상이 되게 입력해주세요.", true); return; }
-    const terms = target === UNLISTED ? "비상장" : `${target} · 전체 ${number(company.total_shares)}주 중 ${ratio}% (${number(listed)}주) 상장`;
-    if (!window.confirm(`${company.name} (${company.company_code})를 ${terms}(으)로 바꿀까요?${target === UNLISTED ? "\n비상장이 되면 거래소에서 매매할 수 없고 시세도 멈춥니다." : "\n시장에 풀리는 주식은 상장 주식 수까지입니다(이미 보유 중인 주식 포함)."}`)) return;
+  function save(exchange: string, listedShares: number | null, question: string) {
+    if (!window.confirm(question)) return;
     void run(async () => {
       const detail = await api<{ kind: string }>(`/api/admin/products/${encodeURIComponent(company.company_code)}`);
-      return api<{ message: string; success: boolean }>("/api/admin/products", { method: "POST", body: JSON.stringify({ operation: "edit", kind: detail.kind, code: company.company_code, fields: { exchange_id: target }, advanced: { listed_shares: target === UNLISTED || ratio === 100 ? null : listed } }) });
-    }, "상장 거래소를 바꾸지 못했습니다.", (result) => { say(plain(result.message), !result.success); if (result.success) onDone(); });
+      return api<{ message: string; success: boolean }>("/api/admin/products", { method: "POST", body: JSON.stringify({ operation: "edit", kind: detail.kind, code: company.company_code, fields: { exchange_id: exchange }, advanced: { listed_shares: listedShares } }) });
+    }, "상장 상태를 바꾸지 못했습니다.", (result) => { say(plain(result.message), !result.success); if (result.success) onDone(); });
   }
+  const list = () => save(target, ratio === 100 ? null : listed,
+    `${company.name} (${company.company_code})를 ${target}에 전체 ${number(company.total_shares)}주 중 ${ratio}% (${number(listed)}주) 상장할까요?\n시장에 풀리는 주식은 상장 주식 수까지입니다(이미 보유 중인 주식 포함).`);
+  const unlist = () => save(UNLISTED, null,
+    `${company.name} (${company.company_code})를 비상장으로 전환할까요?\n거래소에서 매매할 수 없고 시세도 멈춥니다. 주주의 보유 주식은 그대로 남습니다.`);
 
   return <div className="listing-control">
-    <Field label="상장 거래소" hint={target === UNLISTED ? "비상장: 거래소 매매 불가" : "이 거래소에서 매매·시세 반영"}>
-      <select value={target} onChange={(event) => setTarget(event.target.value)}>
-        {[...new Set([...(company.exchange_id && company.exchange_id !== UNLISTED ? [company.exchange_id] : []), ...exchanges])].map((id) => <option key={id} value={id}>{id}</option>)}
-        <option value={UNLISTED}>비상장</option>
-      </select>
-    </Field>
-    {target !== UNLISTED && <Field label="상장 비율 (%)" hint={ratioValid ? `${number(listed)}주 / ${number(company.total_shares)}주` : "0 초과 100 이하"}><input type="number" min="0.01" max="100" step="0.01" value={percent} onChange={(event) => setPercent(event.target.value)} /></Field>}
-    <button className="soft" type="button" disabled={busy || !changed || !ratioValid} onClick={apply}>{(company.exchange_id || UNLISTED) === UNLISTED && target !== UNLISTED ? "상장" : "상장 조건 변경"}</button>
+    <div className="segment-tabs" role="radiogroup" aria-label="상장 상태">
+      {([["list", "상장하기"], ["unlist", "비상장 전환하기"]] as const).map(([key, label]) => <button key={key} type="button" role="radio" aria-checked={mode === key} className={mode === key ? "active" : ""} onClick={() => setMode(key)}>{label}</button>)}
+    </div>
+    {mode === "list" ? <>
+      <Field label="상장 거래소" hint={listedNow ? `지금 ${current} · ${currentPercent}% 상장` : "지금 비상장"}>
+        <select value={target} onChange={(event) => setTarget(event.target.value)}>{exchanges.map((id) => <option key={id} value={id}>{id}</option>)}</select>
+      </Field>
+      <Field label="상장 비율 (%)" hint={ratioValid ? `${number(listed)}주 / ${number(company.total_shares)}주` : "0 초과 100 이하"}><input type="number" min="0.01" max="100" step="0.01" value={percent} onChange={(event) => setPercent(event.target.value)} /></Field>
+      <button className="btn primary" type="button" disabled={busy || !target || !ratioValid || !changed} onClick={list}>{listedNow ? "상장 조건 저장" : "상장하기"}</button>
+    </> : <>
+      <p className="hint">{listedNow ? `${current}에서 거래를 멈추고 비상장 법인으로 둡니다. 다시 상장하려면 상장하기를 고르세요.` : "이미 비상장입니다."}</p>
+      <button className="soft danger" type="button" disabled={busy || !listedNow} onClick={unlist}>비상장 전환</button>
+    </>}
   </div>;
 }
 
@@ -135,7 +150,7 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
         <div><small>대출</small><b>{number(company.loans)}</b></div>
         <div><small>순자산</small><b>{detail ? number(Math.round(detail.assets.net_worth)) : "…"}</b></div>
       </div>
-      <ListingControl ctx={ctx} company={company} onDone={() => void load()} />
+      <ListingControl key={`${company.company_code}:${company.exchange_id}:${company.listed_shares}`} ctx={ctx} company={company} onDone={() => void load()} />
       {company.parents.length > 0 && <p className="hint">모회사(지분 보유 법인): {company.parents.map((parent) => `${parent.code} ${parent.percent.toFixed(1)}%`).join(", ")}</p>}
       <div className="pie-pair">
         <section><h3 className="sub-head">주주 구성</h3>{detail?.shareholders ? <ShareholderPie data={detail.shareholders} /> : <p className="empty">불러오는 중…</p>}</section>

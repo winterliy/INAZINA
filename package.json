@@ -14,7 +14,7 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "dev:wl": "npm run dev --workspace @inazina/wl",
     "test:wl": "node --import tsx --test apps/wl/src/wlmd.test.ts apps/wl/src/settings.test.ts",
-    "test:hts": "cd apps/hts && TSX_TSCONFIG_PATH=tsconfig.app.json node --import tsx --test src/PriceChart.test.tsx",
+    "test:hts": "cd apps/hts && TSX_TSCONFIG_PATH=tsconfig.app.json node --import tsx --test src/PriceChart.test.tsx src/chartScale.test.ts",
     "geoip:update": ".venv/bin/python tools/update_geoip.py"
   },
   "engines": {

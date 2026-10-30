@@ -1734,7 +1734,6 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
         financial_close_control = AccountingJournal.reconcile_all_financial_ledgers(connection)
         common_journal_reconciliation = financial_close_control["common_journal_checks"]
         common_journal_unbalanced = AccountingJournal.audit_unbalanced(connection)
-        from functions.money import audit_amount_snapshots
         amount_snapshot_findings = financial_close_control["amount_snapshot_findings"]
         unbalanced = BankJournal.audit_unbalanced(connection, issuer)
         deposit_reconciliation = BankJournal.reconcile_customer_deposits(connection, issuer)
@@ -2597,11 +2596,11 @@ def product_save(actor, payload):
         columns = {row["name"]: row["type"] or "" for row in connection.execute(f'PRAGMA table_info("{table}")')}
     fields = _convert_product_fields(profile, payload.get("fields") or {}, payload.get("advanced") or {}, columns)
     bot = domain().bot
-    if operation == "create" and profile == "stock":
-        # A new 법인 starts unlisted; 법인 자본 lists it, with the share of it offered.
-        fields["exchange_id"] = "UNLISTED"
-        fields.pop("listed_shares", None)
     if operation == "create":
+        if profile == "stock":
+            # A new 법인 starts unlisted; 법인 자본 lists it, with the share of it offered.
+            from managers.market_session_manager import MarketSessionManager
+            fields["exchange_id"] = MarketSessionManager.UNLISTED
         token = PRODUCT_KINDS[profile][2]
         raw = f"{code} {token} {json.dumps(fields, ensure_ascii=False)}"
         result = AdminCommandsManager(bot).execute(actor, "상품생성", raw)
