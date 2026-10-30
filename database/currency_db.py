@@ -9,6 +9,9 @@ from .db_manager import DBManager
 SCALE = 1_000_000
 
 class CurrencyDB(DBManager):
+    # Money snapshots that follow their source row out when it is deleted (see the trigger loop).
+    SNAPSHOTS_DELETED_WITH_SOURCE = frozenset({"market_price_history", "market_exchange_index_components"})
+
     def __init__(self):
         super().__init__("forex")
         initial_config = load_initial_currency_config()
@@ -1560,6 +1563,20 @@ class CurrencyDB(DBManager):
                             currency_code=excluded.currency_code,decimal_places=excluded.decimal_places,
                             amount_minor_units=excluded.amount_minor_units,
                             source_key_field=excluded.source_key_field; END""")
+            if table in self.SNAPSHOTS_DELETED_WITH_SOURCE:
+                # Rows of these tables are pruned or rebuilt routinely; their snapshots go with them.
+                # Elsewhere a vanished source row stays an audit finding.
+                name = f"trg_amount_snapshot_{table}_delete"
+                first = not self.execute_one("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?", (name,))
+                self.execute(f'DROP TRIGGER IF EXISTS "{name}"')
+                self.execute(f"""CREATE TRIGGER "{name}" AFTER DELETE ON "{table}"
+                    BEGIN DELETE FROM financial_amount_snapshots WHERE source_table='{table}'
+                    AND source_key_field='{key_col}' AND source_key=CAST(OLD."{key_col}" AS TEXT); END""")
+                if first:
+                    # Snapshots of rows deleted before the trigger existed.
+                    self.execute(f"""DELETE FROM financial_amount_snapshots WHERE source_table='{table}'
+                        AND source_key_field='{key_col}' AND NOT EXISTS
+                        (SELECT 1 FROM "{table}" src WHERE src."{key_col}"=financial_amount_snapshots.source_key)""")
             if "quote_currency" in available:
                 name = f"trg_amount_snapshot_{table}_currency_update_{spec_index}"
                 updates = []
