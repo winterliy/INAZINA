@@ -1134,8 +1134,8 @@ class CorporateActionsManager:
                         raise ValueError('유상증자 모집 금액이 한도를 초과합니다.')
                     # The listing country's treasury holds and sells the new shares.
                     seller = CurrencyManager.exchange_treasury(conn, code)
-                    conn.execute("INSERT INTO user_assets(user_id,asset_code,quantity,average_cost) VALUES (?,?,?,?) ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET average_cost=(quantity*average_cost+excluded.quantity*excluded.average_cost)/(quantity+excluded.quantity),quantity=quantity+excluded.quantity",
-                                 (seller, code, quantity, issue))
+                    from managers.asset_cost_manager import AssetCostManager
+                    AssetCostManager.upsert(conn, seller, code, None, quantity, issue)
                     order = conn.execute("INSERT INTO market_orders(user_id,asset_code,side,limit_price,quantity,remaining_quantity,order_kind,status,created_epoch,updated_epoch,quote_currency) VALUES (?,?,'sell',?,?,?,'asset','open',?,?,?)",
                                          (seller, code, issue, quantity, quantity, now, now, currency)).lastrowid
                     conn.execute('INSERT INTO corporate_equity_offerings(asset_code,order_id,quantity,issue_price,recorded_epoch) VALUES (?,?,?,?,?)', (code, order, quantity, issue, now))
@@ -1158,13 +1158,24 @@ class CorporateActionsManager:
                     weights = [float(lot['quantity']) for lot in lots] + [supply - owned]
                     scale = 1000 if listing.get('Fractal') else 1
                     allocations = [value / scale for value in self._allocate(quantity*scale, weights)]
+                    from managers.asset_cost_manager import AssetCostManager
+                    from functions.money import currency_precision
                     for lot, new in zip(lots, allocations):
                         if new:
-                            conn.execute('UPDATE user_assets SET quantity=quantity+?,average_cost=? WHERE holding_id=?',
-                                         (new, round(float(lot['quantity']) * float(lot['average_cost']) / (float(lot['quantity']) + new)), lot['holding_id']))
+                            old_quantity = Fraction(str(lot['quantity']))
+                            new_quantity = old_quantity + Fraction(str(new))
+                            old_quantity_decimal = Decimal(old_quantity.numerator) / Decimal(old_quantity.denominator)
+                            new_quantity_decimal = Decimal(new_quantity.numerator) / Decimal(new_quantity.denominator)
+                            cost = Decimal(int(lot['average_cost_minor_units'] or 0)) / (10 ** currency_precision(conn, currency))
+                            AssetCostManager.reprice(
+                                conn, lot['holding_id'], code, float(new_quantity),
+                                cost * old_quantity_decimal / new_quantity_decimal,
+                            )
                     if allocations[-1]:
-                        conn.execute("INSERT INTO user_assets(user_id,asset_code,quantity,average_cost) VALUES (?,?,?,0) ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET average_cost=quantity*average_cost/(quantity+excluded.quantity),quantity=quantity+excluded.quantity",
-                                     (CurrencyManager.exchange_treasury(conn, code), code, allocations[-1]))
+                        AssetCostManager.upsert(
+                            conn, CurrencyManager.exchange_treasury(conn, code),
+                            code, None, allocations[-1], 0,
+                        )
                     new_price = max(1, round(Fraction(price * supply, supply + quantity)))
                     conn.execute('UPDATE company SET total_shares=total_shares+?,share_price=? WHERE company_code=?', (quantity, new_price, code))
                     conn.execute('UPDATE fund_components SET base_price=base_price*?/ ? WHERE asset_code=?', (new_price, price, code))
@@ -1214,18 +1225,24 @@ class CorporateActionsManager:
                 price, shares = int(listing['share_price']), int(listing['total_shares'])
                 if action == '분할':
                     new_price, new_shares = max(1, price // ratio), shares * ratio
-                    for lot in conn.execute('SELECT holding_id,quantity,average_cost FROM user_assets WHERE asset_code=?', (code,)):
-                        conn.execute('UPDATE user_assets SET quantity=?,average_cost=? WHERE holding_id=?',
-                                     (int(lot['quantity']) * ratio, max(1, round(int(lot['average_cost']) / ratio)), lot['holding_id']))
+                    from managers.asset_cost_manager import AssetCostManager
+                    for lot in conn.execute('SELECT holding_id,quantity,average_cost_minor_units FROM user_assets WHERE asset_code=?', (code,)):
+                        unit_cost = Decimal(int(lot['average_cost_minor_units'] or 0)) / (10 ** currency_precision(conn, listing.get('quote_currency') or base_currency_code(conn)))
+                        AssetCostManager.reprice(conn, lot['holding_id'], code,
+                                                 int(lot['quantity']) * ratio,
+                                                 max(Decimal(0), unit_cost / ratio))
                     conn.execute("UPDATE market_orders SET quantity=quantity*?,remaining_quantity=remaining_quantity*?,filled_quantity=filled_quantity*?,limit_price=MAX(1,limit_price/?),reserved_cash=remaining_quantity*MAX(1,limit_price/?) WHERE asset_code=? AND status IN ('scheduled','open','partial')",
                                  (ratio, ratio, ratio, ratio, ratio, code))
                 else:
                     if shares % ratio or any(int(row['quantity']) % ratio for row in conn.execute('SELECT quantity FROM user_assets WHERE asset_code=?', (code,))):
                         raise ValueError('병합 비율로 나누어떨어지는 발행·보유 수량만 지원합니다.')
                     new_price, new_shares = price * ratio, shares // ratio
-                    for lot in conn.execute('SELECT holding_id,quantity,average_cost FROM user_assets WHERE asset_code=?', (code,)):
-                        conn.execute('UPDATE user_assets SET quantity=?,average_cost=? WHERE holding_id=?',
-                                     (int(lot['quantity']) // ratio, int(lot['average_cost']) * ratio, lot['holding_id']))
+                    from managers.asset_cost_manager import AssetCostManager
+                    for lot in conn.execute('SELECT holding_id,quantity,average_cost_minor_units FROM user_assets WHERE asset_code=?', (code,)):
+                        unit_cost = Decimal(int(lot['average_cost_minor_units'] or 0)) / (10 ** currency_precision(conn, listing.get('quote_currency') or base_currency_code(conn)))
+                        AssetCostManager.reprice(conn, lot['holding_id'], code,
+                                                 int(lot['quantity']) // ratio,
+                                                 unit_cost * ratio)
                     conn.execute("UPDATE market_orders SET quantity=quantity/?,remaining_quantity=remaining_quantity/?,filled_quantity=filled_quantity/?,limit_price=limit_price*?,reserved_cash=remaining_quantity*limit_price WHERE asset_code=? AND status IN ('scheduled','open','partial')",
                                  (ratio, ratio, ratio, ratio, code))
                 conn.execute('UPDATE company SET share_price=?,total_shares=? WHERE company_code=?', (new_price, new_shares, code))
@@ -1308,9 +1325,16 @@ class CorporateActionsManager:
                 for user, user_lots, allocation, residual in conversions:
                     for lot, units in zip(user_lots, allocation):
                         if units:
-                            cost = max(1, round(Fraction(int(lot['average_cost']), ratio)))
-                            conn.execute("INSERT INTO user_assets(user_id,asset_code,account_number,quantity,average_cost) VALUES (?,?,?,?,?) ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET average_cost=(quantity*average_cost+excluded.quantity*excluded.average_cost)/(quantity+excluded.quantity),quantity=quantity+excluded.quantity",
-                                         (user, surviving_code, lot['account_number'], units, cost))
+                            from functions.money import currency_precision, from_minor_units
+                            from managers.asset_cost_manager import AssetCostManager
+                            currency = AssetCostManager.currency(conn, surviving_code)
+                            places = currency_precision(conn, currency)
+                            old_cost = from_minor_units(lot['average_cost_minor_units'] or 0, places)
+                            ratio_decimal = Decimal(ratio.numerator) / Decimal(ratio.denominator)
+                            cost = max(Decimal(0), old_cost / ratio_decimal)
+                            AssetCostManager.upsert(
+                                conn, user, surviving_code, lot['account_number'], units, cost
+                            )
                     if residual and not CurrencyManager.is_treasury(conn, user):
                         if currency == CurrencyManager.home(conn, user):
                             CurrencyManager.change(conn, user, currency, residual * SCALE)
@@ -1406,11 +1430,16 @@ class CorporateActionsManager:
                              (int(left) if left.denominator == 1 else float(left), lot['holding_id']))
             else:
                 conn.execute('DELETE FROM user_assets WHERE holding_id=?', (lot['holding_id'],))
-            conn.execute("INSERT INTO user_assets(user_id,asset_code,quantity,average_cost) VALUES (?,?,?,?) "
-                         "ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET "
-                         "average_cost=(quantity*average_cost+excluded.quantity*excluded.average_cost)/(quantity+excluded.quantity),"
-                         "quantity=quantity+excluded.quantity",
-                         (target, lot['asset_code'], int(part) if part.denominator == 1 else float(part), lot['average_cost']))
+            from functions.money import currency_precision, from_minor_units
+            from managers.asset_cost_manager import AssetCostManager
+            currency = AssetCostManager.currency(conn, lot['asset_code'])
+            cost = from_minor_units(
+                lot['average_cost_minor_units'] or 0, currency_precision(conn, currency)
+            )
+            AssetCostManager.upsert(
+                conn, target, lot['asset_code'], lot['account_number'],
+                int(part) if part.denominator == 1 else float(part), cost,
+            )
             moved['securities'] += 1
         # Deposits: pay the interest earned so far, then open a sibling account on the same terms.
         quantum = {0: 1_000_000, 1: 100_000}
@@ -1557,25 +1586,34 @@ class CorporateActionsManager:
                     weights = [lot['quantity'] for lot in lots] + [supply - owned]
                     allocated = [Fraction(value, scale) for value in self._allocate(shares * scale, weights)]
                     for lot, units in zip(lots, allocated):
-                        quantity, cost = Fraction(str(lot['quantity'])), int(lot['average_cost'])
-                        conn.execute('UPDATE user_assets SET average_cost=? WHERE holding_id=?',
-                                     (round(cost * (1 - ratio)), lot['holding_id']))
+                        quantity = Fraction(str(lot['quantity']))
+                        from functions.money import currency_precision, from_minor_units
+                        from managers.asset_cost_manager import AssetCostManager
+                        old_currency = AssetCostManager.currency(conn, code)
+                        old_places = currency_precision(conn, old_currency)
+                        cost = from_minor_units(lot['average_cost_minor_units'] or 0, old_places)
+                        parent_cost = cost * (
+                            Decimal(1) - Decimal(ratio.numerator) / Decimal(ratio.denominator)
+                        )
+                        AssetCostManager.reprice(
+                            conn, lot['holding_id'], code, quantity, parent_cost
+                        )
                         if units:
-                            conn.execute("INSERT INTO user_assets(user_id,asset_code,account_number,quantity,average_cost) VALUES (?,?,?,?,?) "
-                                         "ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET "
-                                         "average_cost=(quantity*average_cost+excluded.quantity*excluded.average_cost)/(quantity+excluded.quantity),"
-                                         "quantity=quantity+excluded.quantity",
-                                         (lot['user_id'], new_code, lot['account_number'], float(units) if scale > 1 else int(units),
-                                          round(cost * quantity * ratio / units)))
+                            new_cost = cost * Decimal(ratio.numerator) / Decimal(ratio.denominator)
+                            new_cost = new_cost * Decimal(quantity.numerator) / Decimal(quantity.denominator)
+                            new_cost /= Decimal(units.numerator) / Decimal(units.denominator)
+                            AssetCostManager.upsert(
+                                conn, lot['user_id'], new_code, lot['account_number'],
+                                float(units) if scale > 1 else int(units), new_cost,
+                            )
                         allocations.append({'user_id': lot['user_id'], 'account_number': lot['account_number'],
                                             'parent_quantity': float(quantity), 'new_shares': float(units)})
                     if allocated[-1]:
                         # Unissued parent shares sit with the listing treasury, as in a bonus issue.
-                        conn.execute("INSERT INTO user_assets(user_id,asset_code,quantity,average_cost) VALUES (?,?,?,0) "
-                                     "ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET "
-                                     "average_cost=quantity*average_cost/(quantity+excluded.quantity),quantity=quantity+excluded.quantity",
-                                     (CurrencyManager.exchange_treasury(conn, code), new_code,
-                                      float(allocated[-1]) if scale > 1 else int(allocated[-1])))
+                        AssetCostManager.upsert(
+                            conn, CurrencyManager.exchange_treasury(conn, code), new_code,
+                            None, float(allocated[-1]) if scale > 1 else int(allocated[-1]), 0,
+                        )
                     parent_price = max(1, round(price * (1 - ratio)))
                     conn.execute('UPDATE company SET share_price=? WHERE company_code=?', (parent_price, code))
                     conn.execute('UPDATE fund_components SET base_price=base_price*?/ ? WHERE asset_code=?', (parent_price, price, code))
@@ -1585,8 +1623,11 @@ class CorporateActionsManager:
                     owner_text = f'주주 {len({lot["user_id"] for lot in lots}):,}명에게 비례 배정'
                 else:
                     # The parent holds every new share at the book value it handed over.
-                    conn.execute('INSERT INTO user_assets(user_id,asset_code,quantity,average_cost) VALUES (?,?,?,?)',
-                                 (parent_account, new_code, shares, max(0, round(Fraction(str(net_moved)) / shares)) if live_books else new_price))
+                    from managers.asset_cost_manager import AssetCostManager
+                    parent_cost = max(0, round(Fraction(str(net_moved)) / shares)) if live_books else new_price
+                    AssetCostManager.upsert(
+                        conn, parent_account, new_code, None, shares, parent_cost,
+                    )
                     parent_price = price
                     owner_text = f'`{code}` 법인이 100% 보유 (자회사)'
 

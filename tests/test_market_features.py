@@ -883,6 +883,26 @@ class MarketFeatureTests(unittest.TestCase):
         self.assertTrue(self.book.place_limit_order("alice", "FUT", "buy", 1, 80)[0])
         self.assertEqual(self.db.users.get_user("alice")["cash"], 10019)
 
+    def test_future_margin_rounds_decimal_rate_without_float_overcharge(self):
+        product = {"contract_size": 100, "initial_margin": 0.07}
+        self.assertEqual(FuturesManager._margin(product, 1, 1), 7)
+
+    def test_future_realized_pnl_allocation_avoids_float_precision_loss(self):
+        amount = 9_007_199_254_740_993
+        self.assertEqual(FuturesManager._allocate_proportional_amount(amount, 3, 4),
+                         6_755_399_441_055_744)
+        self.assertEqual(FuturesManager._allocate_proportional_amount(-amount, 3, 4),
+                         -6_755_399_441_055_744)
+
+    def test_corporate_bond_coupon_rounds_in_currency_minor_units(self):
+        year_seconds = 365 * 86400
+        self.assertEqual(InvestmentManager._coupon_minor_units(
+            100, "0.5", year_seconds, "ACT/365", 0
+        ), 1)
+        self.assertEqual(InvestmentManager._coupon_minor_units(
+            10_000, "0.5", year_seconds, "ACT/365", 2
+        ), 50)
+
     def test_future_limit_orders_match_citizens_at_maker_price(self):
         self.issue_future()
         self.assertTrue(self.book.place_limit_order("alice", "FUT", "buy", 2, 90)[0])

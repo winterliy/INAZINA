@@ -1,7 +1,7 @@
 """Stock futures with cash margin, signed positions and a game treasury clearing dealer."""
 
-import math
 import time
+from decimal import Decimal, InvalidOperation, ROUND_CEILING
 from managers.market_session_manager import MarketSessionManager
 
 from database.user_db import TREASURY_USER_ID
@@ -23,7 +23,29 @@ class FuturesManager:
 
     @staticmethod
     def _margin(product, quantity, price):
-        return math.ceil(abs(quantity) * int(product["contract_size"]) * int(price) * float(product["initial_margin"]))
+        return FuturesManager._round_margin(
+            product, quantity, price, product["initial_margin"]
+        )
+
+    @staticmethod
+    def _round_margin(product, quantity, price, margin_rate):
+        try:
+            amount = (Decimal(abs(int(quantity))) * Decimal(int(product["contract_size"]))
+                      * Decimal(int(price)) * Decimal(str(margin_rate)))
+        except (InvalidOperation, TypeError, ValueError, OverflowError):
+            raise ValueError("선물 증거금 계산값이 올바르지 않습니다.") from None
+        if not amount.is_finite() or amount < 0 or amount > Decimal(2**63 - 1):
+            raise ValueError("선물 증거금 계산값이 올바르지 않습니다.")
+        return int(amount.to_integral_value(rounding=ROUND_CEILING))
+
+    @staticmethod
+    def _allocate_proportional_amount(amount, numerator, denominator):
+        """Allocate integer money proportionally, truncating toward zero exactly."""
+        amount, numerator, denominator = int(amount), int(numerator), int(denominator)
+        if numerator < 0 or denominator <= 0:
+            raise ValueError("선물 손익 배분 비율이 올바르지 않습니다.")
+        sign = -1 if amount < 0 else 1
+        return sign * (abs(amount) * numerator // denominator)
 
     def _quote(self, conn, product, now):
         if int(product["is_fixed"] or 0) and now < int(product["maturity_epoch"]):
@@ -137,7 +159,8 @@ class FuturesManager:
             collateral, net_pnl = self._mark(conn, old, product, price, now)
         closing = min(abs(old_qty), quantity) if old_qty * delta < 0 else 0
         returned = collateral * closing // abs(old_qty) if closing else 0
-        realized_pnl = int(net_pnl * closing / abs(old_qty)) if closing else 0
+        realized_pnl = (self._allocate_proportional_amount(net_pnl, closing, abs(old_qty))
+                        if closing else 0)
         tax = self.users._tax(conn, order["user_id"], "futures_realized_gain", max(0, realized_pnl)) if closing else 0
         collateral -= returned
         net_pnl -= realized_pnl
@@ -200,7 +223,9 @@ class FuturesManager:
                 positions = conn.execute("SELECT * FROM assets.futures_positions WHERE product_code = ?", (product["product_code"],)).fetchall()
                 for position in positions:
                     collateral, net_pnl = self._mark(conn, position, product, quote, now)
-                    maintenance = math.ceil(abs(int(position["quantity"])) * int(product["contract_size"]) * quote * float(product["maintenance_margin"]))
+                    maintenance = self._round_margin(
+                        product, position["quantity"], quote, product["maintenance_margin"]
+                    )
                     if not expired and collateral >= maintenance:
                         continue
                     tax = self.users._tax(conn, position["user_id"], "futures_realized_gain", max(0, net_pnl))

@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 from database.user_db import TREASURY_USER_ID
 from functions.admin_access import resolve_user_role
 from functions.money import round_money
-from functions.interest_calc import year_fraction
+from functions.interest_calc import year_fraction_decimal
 from managers.rate_manager import RateManager
 
 FUND_TYPES = {"mutual_fund", "index_fund"}
@@ -24,6 +24,23 @@ PRODUCT_NAMES = {"stock_future": "주식 선물", "corporate_bond": "회사채",
 class InvestmentManager:
     def __init__(self, db, user_manager):
         self.db, self.users = db, user_manager
+
+    @staticmethod
+    def _coupon_minor_units(principal_minor_units, annual_rate, elapsed_seconds,
+                            day_count_convention, decimal_places, start_epoch=None):
+        """Calculate bond coupon in the denomination's canonical minor units."""
+        from functions.money import from_minor_units, to_minor_units
+
+        try:
+            rate = Decimal(str(annual_rate))
+            principal = from_minor_units(principal_minor_units, decimal_places)
+        except (InvalidOperation, TypeError, ValueError, OverflowError):
+            raise ValueError("회사채 쿠폰 계산값이 올바르지 않습니다.") from None
+        if not rate.is_finite():
+            raise ValueError("회사채 쿠폰 계산값이 올바르지 않습니다.")
+        interest = (principal * rate / Decimal(100)
+                    * year_fraction_decimal(elapsed_seconds, day_count_convention, start_epoch))
+        return to_minor_units(interest, decimal_places)
 
     @staticmethod
     def normalize_fund_category(value):
@@ -359,12 +376,19 @@ class InvestmentManager:
                                  (now, order["order_id"]))
                 holders = conn.execute("SELECT user_id, SUM(quantity) AS quantity FROM assets.user_assets "
                     "WHERE asset_code = ? GROUP BY user_id", (product["product_code"],)).fetchall()
+                from functions.money import currency_precision, from_minor_units, to_minor_units
+                bond_currency = str(product["quote_currency"] or base_currency_code(conn)).upper()
+                places = currency_precision(conn, bond_currency)
                 payments = []
                 for holder in holders:
                     principal = int(holder["quantity"]) * int(product["face_value"])
-                    coupon = (0 if int(product["coupon_frequency_days"] or 0) > 0 else
-                              round_money(principal * float(product["annual_rate"]) / 100
-                                          * int(product["maturity_days"]) / 365))
+                    principal_units = to_minor_units(principal, places)
+                    coupon_units = (0 if int(product["coupon_frequency_days"] or 0) > 0 else
+                        self._coupon_minor_units(
+                            principal_units, product["annual_rate"],
+                            int(product["maturity_days"]) * 86400, "ACT/365", places
+                        ))
+                    coupon = round_money(from_minor_units(coupon_units, places), places)
                     payments.append((holder["user_id"], int(holder["quantity"]), principal, coupon))
                 due = sum(p + c for _, _, p, c in payments)
                 cash_account=conn.execute('SELECT 1 FROM issuer_cash_accounts WHERE company_code=?',(product['issuer_code'],)).fetchone()
@@ -436,15 +460,17 @@ class InvestmentManager:
                 ).fetchall()
                 due_total = 0
                 payments = []
+                from functions.money import currency_precision, from_minor_units, to_minor_units
+                bond_currency = str(product["quote_currency"] or base_currency_code(conn)).upper()
+                places = currency_precision(conn, bond_currency)
                 for holder in holders:
                     principal = int(holder["quantity"])*int(product["face_value"])
-                    coupon = round_money(
-                        principal*float(product["annual_rate"])/100
-                        * year_fraction(
-                            periods*frequency*86400,
-                            product["day_count_convention"], created,
-                        )
+                    principal_units = to_minor_units(principal, places)
+                    coupon_units = self._coupon_minor_units(
+                        principal_units, product["annual_rate"], periods*frequency*86400,
+                        product["day_count_convention"], places, created,
                     )
+                    coupon = round_money(from_minor_units(coupon_units, places), places)
                     payments.append((holder["user_id"], coupon))
                     due_total += coupon
                 cash_account = conn.execute(

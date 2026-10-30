@@ -661,8 +661,11 @@ class InterestManager:
             "SELECT outstanding_balance,outstanding_balance_minor_units,status,"
             "overdue_last_epoch,overdue_interest_remainder,"
             "overdue_interest_remainder_subminor_units,"
-            "collection_status,collateral_amount,collateral_released,collateral_seized,"
-            "provisioned_loss,ecl_allowance "
+            "collection_status,collateral_amount,collateral_amount_minor_units,"
+            "collateral_released,collateral_released_minor_units,"
+            "collateral_seized,collateral_seized_minor_units,"
+            "provisioned_loss,provisioned_loss_minor_units,"
+            "ecl_allowance,ecl_allowance_minor_units "
             "FROM accounts.loans WHERE loan_id=?", (loan["loan_id"],)
         ).fetchone()
         if not fresh:
@@ -674,7 +677,7 @@ class InterestManager:
                          else to_minor_units(fresh["outstanding_balance"] or 0, places))
         if balance_minor <= 0:
             return
-        balance = float(from_minor_units(balance_minor, places))
+        balance = from_minor_units(balance_minor, places)
         cursor = max(maturity, cls._number(fresh["overdue_last_epoch"], maturity))
         legal = RateManager.from_connection(
             conn, "legal_max_rate", loan["rate_nationality"],
@@ -692,12 +695,12 @@ class InterestManager:
         ) + Decimal(str(fractional))
         interest_minor = to_minor_units(raw_interest, places)
         whole_interest_decimal = from_minor_units(interest_minor, places)
-        whole_interest = float(whole_interest_decimal)
+        whole_interest = whole_interest_decimal
         remainder = raw_interest-whole_interest_decimal
         remainder_subunits = to_subminor_units(remainder, places)
         if whole_interest:
             balance_minor += interest_minor
-            balance = float(from_minor_units(balance_minor, places))
+            balance = from_minor_units(balance_minor, places)
             cls._log_company_interest(conn, loan["user_id"], "overdue_interest", whole_interest, 0,
                                       loan["quote_currency"], product["issuer"])
             RateManager.record_institution_result(
@@ -731,10 +734,15 @@ class InterestManager:
                     occurred_epoch=maturity+acceleration*86400, now=now,
                     loan_id=loan["loan_id"], refresh=False,
                 )
-        released = float(fresh["collateral_released"] or 0)
-        seized = float(fresh["collateral_seized"] or 0)
-        provisioned = float(fresh["provisioned_loss"] or 0)
-        ecl_allowance = float(fresh["ecl_allowance"] or 0)
+        def stored_units(legacy_field, minor_field):
+            value = fresh[minor_field]
+            return (int(value or 0) if value is not None else
+                    to_minor_units(fresh[legacy_field] or 0, places))
+
+        released_units = stored_units("collateral_released", "collateral_released_minor_units")
+        seized_units = stored_units("collateral_seized", "collateral_seized_minor_units")
+        provisioned_units = stored_units("provisioned_loss", "provisioned_loss_minor_units")
+        ecl_allowance_units = stored_units("ecl_allowance", "ecl_allowance_minor_units")
         if default > 0 and age_days >= default:
             state, status = "defaulted", "defaulted"
             if defaulted_epoch is None:
@@ -744,30 +752,46 @@ class InterestManager:
                     occurred_epoch=maturity+default*86400, now=now,
                     loan_id=loan["loan_id"], refresh=False,
                 )
-                available = max(0.0, float(fresh["collateral_amount"] or 0)-released-seized)
-                take = min(available, balance)
-                balance -= take
-                seized += take
-                collateral_recovery = take
-                surplus = available-take
-                if surplus:
-                    conn.execute(
-                        "UPDATE users.users SET cash=cash+? WHERE user_id=?",
-                        (surplus, loan["user_id"]),
+                collateral_units = (int(fresh["collateral_amount_minor_units"] or 0)
+                                    if fresh["collateral_amount_minor_units"] is not None
+                                    else to_minor_units(fresh["collateral_amount"] or 0, places))
+                available_units = max(0, collateral_units-released_units-seized_units)
+                take_units = min(available_units, balance_minor)
+                balance_minor -= take_units
+                seized_units += take_units
+                collateral_recovery_units = take_units
+                surplus_units = available_units-take_units
+                if surplus_units:
+                    from managers.bank_manager import UserFunds
+                    refund = from_minor_units(surplus_units, places)
+                    from managers.currency_manager import CurrencyManager
+                    account_number = None
+                    if CurrencyManager.home(conn, loan["user_id"]) != loan["quote_currency"]:
+                        source = UserFunds.choose(conn, loan["user_id"], loan["quote_currency"])
+                        account_number = source[1] if source else None
+                    UserFunds.credit(
+                        conn, loan["user_id"], float(refund), account_number,
+                        currency=loan["quote_currency"],
                     )
-                    released += surplus
-                if balance <= 0:
-                    balance, status, state = 0, "paid", "paid"
+                    released_units += surplus_units
+                if balance_minor <= 0:
+                    balance_minor, status, state = 0, "paid", "paid"
                 else:
-                    before_asset_recovery = balance
+                    before_asset_units = balance_minor
                     balance, _ltv, _liquidated = BankManager.revalue_asset_collateral(
-                        conn, loan["loan_id"], balance, product, force=True
+                        conn, loan["loan_id"], from_minor_units(balance_minor, places),
+                        product, force=True
                     )
-                    collateral_recovery += max(0.0, before_asset_recovery-balance)
-                    if balance <= 0:
-                        balance, status, state = 0, "paid", "paid"
-                loss_adjustment = balance-provisioned-ecl_allowance
-                if loss_adjustment:
+                    balance_minor = max(0, to_minor_units(balance, places))
+                    collateral_recovery_units += max(0, before_asset_units-balance_minor)
+                    if balance_minor <= 0:
+                        balance_minor, status, state = 0, "paid", "paid"
+                loss_adjustment_units = balance_minor-provisioned_units-ecl_allowance_units
+                loss_adjustment = from_minor_units(loss_adjustment_units, places)
+                collateral_recovery = from_minor_units(collateral_recovery_units, places)
+                provisioned = from_minor_units(provisioned_units, places)
+                ecl_allowance = from_minor_units(ecl_allowance_units, places)
+                if loss_adjustment_units:
                     RateManager.record_institution_result(
                         conn, product["issuer"], -loss_adjustment, "credit_loss",
                         f"loan:{loan['loan_id']}:default", now=now,
@@ -780,17 +804,17 @@ class InterestManager:
                         ("collateral_recovery_asset", "debit", collateral_recovery),
                         ("loans_receivable", "credit", collateral_recovery),
                     ])
-                if ecl_allowance > 0:
+                if ecl_allowance_units > 0:
                     default_lines.append(("ecl_allowance", "debit", ecl_allowance))
-                if balance > provisioned:
+                if balance_minor > provisioned_units:
                     default_lines.append(("default_loss_allowance", "credit",
-                                         balance-provisioned))
-                elif provisioned > balance:
+                                         from_minor_units(balance_minor-provisioned_units, places)))
+                elif provisioned_units > balance_minor:
                     default_lines.append(("default_loss_allowance", "debit",
-                                         provisioned-balance))
-                if loss_adjustment > 0:
+                                         from_minor_units(provisioned_units-balance_minor, places)))
+                if loss_adjustment_units > 0:
                     default_lines.append(("credit_loss_expense", "debit", loss_adjustment))
-                elif loss_adjustment < 0:
+                elif loss_adjustment_units < 0:
                     default_lines.append(("impairment_reversal", "credit", -loss_adjustment))
                 if default_lines:
                     BankJournal.post(
@@ -800,20 +824,22 @@ class InterestManager:
                         description=f"Default and collateral recovery for loan {loan['loan_id']}",
                         now=now,
                     )
-                provisioned = balance
-                ecl_allowance = 0.0
+                provisioned_units = balance_minor
+                ecl_allowance_units = 0
         conn.execute(
             "UPDATE accounts.loans SET outstanding_balance_minor_units=?,"
             "overdue_since_epoch=COALESCE("
             "overdue_since_epoch,?),overdue_last_epoch=?,overdue_interest_remainder=?,"
             "overdue_interest_remainder_subminor_units=?,"
             "collection_status=?,accelerated_epoch=?,defaulted_epoch=?,status=?,"
-            "collateral_released=?,collateral_seized=?,provisioned_loss=?,ecl_allowance=? "
+            "collateral_released_minor_units=?,collateral_seized_minor_units=?,"
+            "provisioned_loss_minor_units=?,ecl_allowance_minor_units=? "
             "WHERE loan_id=?",
-            (to_minor_units(balance, places), maturity, now,
+            (balance_minor, maturity, now,
              float(from_subminor_units(remainder_subunits, places)),
              remainder_subunits, state, accelerated_epoch, defaulted_epoch,
-             status, released, seized, provisioned, ecl_allowance, loan["loan_id"]),
+             status, released_units, seized_units, provisioned_units,
+             ecl_allowance_units, loan["loan_id"]),
         )
         if state != fresh["collection_status"] or status != fresh["status"]:
             CreditScoreManager.refresh(conn, loan["user_id"], now, trigger=f"collection_{state}")

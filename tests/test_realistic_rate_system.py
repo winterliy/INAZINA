@@ -6,6 +6,7 @@ import math
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
+from decimal import Decimal
 
 from database import DatabaseManager
 from database.db_manager import DBManager
@@ -787,8 +788,46 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual((row["status"], row["collection_status"]),
                          ("defaulted", "defaulted"))
         self.assertEqual(row["collateral_seized"], 10_000)
+        self.assertEqual(row["collateral_seized_minor_units"], 10_000)
+        self.assertEqual(row["provisioned_loss_minor_units"],
+                         row["outstanding_balance_minor_units"])
         self.assertIsNotNone(row["accelerated_epoch"])
         self.assertIsNotNone(row["defaulted_epoch"])
+
+    def test_loan_default_money_fields_follow_foreign_currency_minor_units(self):
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+            "VALUES ('USD','US Dollar','2',2)"
+        )
+        self.add_loan(code="USD-MINOR-LOAN", collateral_ratio=0, origination_fee=0)
+        self.db.products.execute(
+            "UPDATE liability SET quote_currency='USD',rate_type='fixed',rate_nationality=NULL "
+            "WHERE product_code='USD-MINOR-LOAN'"
+        )
+        self.db.accounts.execute(
+            "INSERT INTO loans(user_id,product_code,principal,outstanding_balance,"
+            "collateral_amount,collateral_released,collateral_seized,provisioned_loss,"
+            "ecl_allowance,status,quote_currency) VALUES "
+            "('borrower','USD-MINOR-LOAN',100.01,100.01,12.34,1.23,2.34,3.45,4.56,"
+            "'active','USD')"
+        )
+        row = self.db.accounts.execute_one(
+            "SELECT * FROM loans WHERE product_code='USD-MINOR-LOAN'"
+        )
+        self.assertEqual((row["collateral_amount_minor_units"],
+                          row["collateral_released_minor_units"],
+                          row["collateral_seized_minor_units"],
+                          row["provisioned_loss_minor_units"]),
+                         (1234, 123, 234, 345))
+        self.db.accounts.execute(
+            "UPDATE loans SET provisioned_loss_minor_units=789 WHERE loan_id=?",
+            (row["loan_id"],),
+        )
+        updated = self.db.accounts.execute_one(
+            "SELECT provisioned_loss,provisioned_loss_minor_units FROM loans WHERE loan_id=?",
+            (row["loan_id"],),
+        )
+        self.assertEqual((updated[0], updated[1]), (7.89, 789))
 
     def test_nominal_effective_and_apr_are_distinct(self):
         effective = RateManager.effective_annual_rate(12, 30*86400)
@@ -871,6 +910,17 @@ class RealisticRateSystemTests(unittest.TestCase):
                     10_000, 10, 180, 180, "bullet", start_epoch=start,
                     due_epochs=[epoch],
                 )
+
+    def test_loan_cashflows_keep_fractional_currency_exact_until_storage_boundary(self):
+        principal_minor = 9_007_199_254_740_993
+        principal = Decimal(principal_minor).scaleb(-2)
+        cashflows = BankManager._loan_cashflows(
+            principal, 0, 30, 30, "bullet", start_epoch=1_800_000_000,
+            decimal_places=2,
+        )
+        self.assertIsInstance(cashflows[0][1], Decimal)
+        self.assertEqual(to_minor_units(cashflows[0][1], 2), principal_minor)
+        self.assertEqual(to_minor_units(cashflows[0][2], 2), 0)
 
     def test_business_day_calendar_rolls_weekends_and_holidays(self):
         saturday = datetime(2026, 1, 3, 12, tzinfo=timezone.utc).timestamp()

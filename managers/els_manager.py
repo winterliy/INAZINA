@@ -262,13 +262,10 @@ class ELSManager:
                 conn.execute("INSERT INTO els_subscriptions(product_code,user_id,account_number,quantity,principal,"
                     "coupon_reserved,created_epoch) VALUES (?,?,?,?,?,?,?)",
                     (code, user_id, account_number, quantity, principal, coupon, now))
-                holding = conn.execute("SELECT holding_id,quantity FROM user_assets WHERE user_id=? "
-                    "AND asset_code=? AND account_number IS ?", (user_id, code, account_number)).fetchone()
-                if holding:
-                    conn.execute("UPDATE user_assets SET quantity=quantity+? WHERE holding_id=?", (quantity, holding["holding_id"]))
-                else:
-                    conn.execute("INSERT INTO user_assets(user_id,asset_code,account_number,quantity,average_cost) VALUES (?,?,?,?,?)",
-                        (user_id, code, account_number, quantity, terms["face_value"]))
+                from managers.asset_cost_manager import AssetCostManager
+                AssetCostManager.upsert(
+                    conn, user_id, code, account_number, quantity, terms["face_value"]
+                )
             return True, f"✅ ELS `{code}` {quantity:,}좌 청약 · 원금 {principal:,} {terms['quote_currency']}. 모집 종료 후 기준가가 확정됩니다."
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f"❌ ELS 청약 실패: {exc}"

@@ -12,7 +12,7 @@ from database import DatabaseManager
 from database.user_db import TREASURY_USER_ID, ACTIVE_OR_TREASURY, IS_TREASURY
 from functions.money import (round_money, round_currency, parse_currency_money,
                              currency_precision, to_minor_units)
-from functions.interest_calc import year_fraction
+from functions.interest_calc import year_fraction, year_fraction_decimal
 from managers.bank_journal import BankJournal
 from managers.credit_score_manager import CreditScoreManager
 from managers.rate_manager import RateManager
@@ -33,11 +33,11 @@ class BankManager:
         from functions.money import from_minor_units, to_minor_units
 
         principal_units = max(0, to_minor_units(principal, decimal_places))
-        principal = float(from_minor_units(principal_units, decimal_places))
+        principal = from_minor_units(principal_units, decimal_places)
 
         def amount_value(units):
             exact = from_minor_units(units, decimal_places)
-            return int(exact) if int(decimal_places) == 0 else float(exact)
+            return int(exact) if int(decimal_places) == 0 else exact
 
         def amount_units(value):
             return max(0, to_minor_units(value, decimal_places))
@@ -64,17 +64,19 @@ class BankManager:
         if not due_times:
             return []
         count = len(due_days)
-        rate = float(annual_rate or 0) / 100.0
+        rate = Decimal(str(annual_rate or 0)) / Decimal(100)
+        if not rate.is_finite():
+            raise ValueError("invalid_loan_cashflow_rate")
         fractions = []
         previous = start
         for due in due_times:
-            fractions.append(year_fraction(
+            fractions.append(year_fraction_decimal(
                 max(0.0, due-previous), day_count_convention, previous
             ))
             previous = due
         rows = []
         if mode == "bullet":
-            interest_units = amount_units(principal*rate*sum(fractions))
+            interest_units = amount_units(principal*rate*sum(fractions, Decimal(0)))
             return [(due_days[-1], amount_value(principal_units),
                      amount_value(interest_units))]
         if mode == "equal_principal":
@@ -85,7 +87,7 @@ class BankManager:
                                         else principal_units//count)
                 principal_due_units = max(0, min(remaining_units, principal_due_units))
                 interest_units = amount_units(
-                    float(from_minor_units(remaining_units, decimal_places))*rate*fraction
+                    from_minor_units(remaining_units, decimal_places)*rate*fraction
                 )
                 rows.append((due_day, amount_value(principal_due_units),
                              amount_value(interest_units)))
@@ -94,21 +96,21 @@ class BankManager:
             return rows
         # Annuity: discount each potentially irregular period separately so
         # holidays and the selected day-count convention affect the payment.
-        discount = 1.0
+        discount = Decimal(1)
         discounts = []
         period_rates = []
         for fraction in fractions:
-            periodic_rate = max(-0.999999, rate*fraction)
+            periodic_rate = max(Decimal("-0.999999"), rate*fraction)
             period_rates.append(periodic_rate)
-            discount /= 1.0+periodic_rate
+            discount /= Decimal(1)+periodic_rate
             discounts.append(discount)
-        payment = principal/max(1e-12, sum(discounts))
+        payment = principal/max(Decimal("1e-12"), sum(discounts, Decimal(0)))
         remaining_units = principal_units
         allocated_units = 0
         for index, (due_day, periodic_rate) in enumerate(
             zip(due_days, period_rates), 1
         ):
-            remaining = float(from_minor_units(remaining_units, decimal_places))
+            remaining = from_minor_units(remaining_units, decimal_places)
             interest_units = amount_units(remaining*periodic_rate)
             payment_units = amount_units(payment)
             principal_due_units = (principal_units-allocated_units if index == count else
@@ -177,18 +179,19 @@ class BankManager:
     @staticmethod
     def _release_ecl_allowance(conn, loan_id, issuer, currency, *, now=None, reason="settled"):
         """Reverse a loan's remaining allowance when its exposure is fully closed."""
-        from functions.money import currency_precision, round_currency
+        from functions.money import (currency_precision, from_minor_units,
+                                     round_currency, to_minor_units)
 
         row = conn.execute(
-            "SELECT ecl_allowance FROM accounts.loans WHERE loan_id=?",
+            "SELECT ecl_allowance,ecl_allowance_minor_units FROM accounts.loans WHERE loan_id=?",
             (int(loan_id),),
         ).fetchone()
         if not row:
             return 0
-        allowance = round_currency(
-            conn, max(0, row["ecl_allowance"] or 0), currency
-        )
         places = currency_precision(conn, currency)
+        allowance_units = (max(0, int(row["ecl_allowance_minor_units"] or 0))
+                           if "ecl_allowance_minor_units" in row.keys()
+                           else max(0, to_minor_units(row["ecl_allowance"] or 0, places)))
         booked_units = conn.execute(
             "SELECT COALESCE(SUM(l.credit_units-l.debit_units),0) "
             "FROM accounts.bank_journal_entries e "
@@ -197,11 +200,11 @@ class BankManager:
             "AND l.account_code='ecl_allowance'",
             (str(issuer), str(currency).upper()),
         ).fetchone()[0]
-        booked_allowance = max(0, Decimal(int(booked_units or 0)) / (10 ** places))
-        allowance = min(allowance, round_currency(conn, booked_allowance, currency))
-        if allowance <= 0:
+        allowance_units = min(allowance_units, max(0, int(booked_units or 0)))
+        allowance = from_minor_units(allowance_units, places)
+        if allowance_units <= 0:
             conn.execute(
-                "UPDATE accounts.loans SET ecl_allowance=0 WHERE loan_id=?",
+                "UPDATE accounts.loans SET ecl_allowance_minor_units=0 WHERE loan_id=?",
                 (int(loan_id),),
             )
             return 0
@@ -219,7 +222,7 @@ class BankManager:
             now=now,
         )
         conn.execute(
-            "UPDATE accounts.loans SET ecl_allowance=0 WHERE loan_id=?",
+            "UPDATE accounts.loans SET ecl_allowance_minor_units=0 WHERE loan_id=?",
             (int(loan_id),),
         )
         return allowance
@@ -555,36 +558,22 @@ class BankManager:
                                                        _Currency.home(conn, user_id)))
 
                 positions = conn.execute(
-                    "SELECT asset_code, quantity, average_cost FROM assets.user_assets "
+                    "SELECT asset_code, quantity, average_cost,average_cost_minor_units FROM assets.user_assets "
                     "WHERE user_id = ? AND account_number = ?",
                     (str(user_id), str(account_number)),
                 ).fetchall()
                 for position in positions:
-                    if destination_number:
-                        conn.execute(
-                            """INSERT INTO assets.user_assets
-                               (user_id, asset_code, account_number, quantity, average_cost)
-                               VALUES (?, ?, ?, ?, ?)
-                               ON CONFLICT(user_id, asset_code, IFNULL(account_number, '')) DO UPDATE SET
-                                   average_cost = ((quantity * average_cost) +
-                                       (excluded.quantity * excluded.average_cost)) /
-                                       (quantity + excluded.quantity),
-                                   quantity = quantity + excluded.quantity""",
-                            (str(user_id), position["asset_code"], destination_number,
-                             position["quantity"], position["average_cost"]),
-                        )
-                    else:
-                        conn.execute(
-                            """INSERT INTO assets.user_assets
-                               (user_id, asset_code, account_number, quantity, average_cost)
-                               VALUES (?, ?, NULL, ?, ?)
-                               ON CONFLICT(user_id, asset_code, IFNULL(account_number, '')) DO UPDATE SET
-                                   average_cost = ((quantity * average_cost) +
-                                       (excluded.quantity * excluded.average_cost)) /
-                                       (quantity + excluded.quantity),
-                                   quantity = quantity + excluded.quantity""",
-                            (str(user_id), position["asset_code"], position["quantity"], position["average_cost"]),
-                        )
+                    from functions.money import currency_precision, from_minor_units
+                    from managers.asset_cost_manager import AssetCostManager
+                    currency = AssetCostManager.currency(conn, position["asset_code"])
+                    cost = from_minor_units(
+                        position["average_cost_minor_units"] or 0,
+                        currency_precision(conn, currency),
+                    )
+                    AssetCostManager.upsert(
+                        conn, user_id, position["asset_code"], destination_number,
+                        position["quantity"], cost, schema="assets",
+                    )
                 conn.execute(
                     "DELETE FROM assets.user_assets WHERE user_id = ? AND account_number = ?",
                     (str(user_id), str(account_number)),
@@ -626,7 +615,8 @@ class BankManager:
         if str(asset["quote_currency"] or base_currency_code(conn)) != str(currency_code):
             raise ValueError("대출과 같은 결제통화의 자산만 담보로 사용할 수 있습니다.")
         lots = conn.execute(
-            "SELECT holding_id,account_number,quantity,average_cost FROM assets.user_assets "
+            "SELECT holding_id,account_number,quantity,average_cost,"
+            "average_cost_minor_units FROM assets.user_assets "
             "WHERE user_id=? AND asset_code=? ORDER BY holding_id",
             (str(user_id), code),
         ).fetchall()
@@ -641,6 +631,8 @@ class BankManager:
         if available+1e-9 < quantity:
             raise ValueError(f"담보 자산 `{code}` 보유 수량이 부족합니다.")
         plan, left = [], quantity
+        from functions.money import currency_precision, from_minor_units
+        places = currency_precision(conn, currency_code)
         for row in lots:
             take = min(left, float(row["quantity"] or 0))
             if take > 0:
@@ -649,7 +641,9 @@ class BankManager:
                     "source_account": row["account_number"],
                     "quantity": take,
                     "old_quantity": float(row["quantity"]),
-                    "average_cost": float(row["average_cost"] or 0),
+                    "average_cost": float(from_minor_units(
+                        row["average_cost_minor_units"] or 0, places
+                    )),
                 })
                 left -= take
             if left <= 1e-9:
@@ -928,6 +922,14 @@ class BankManager:
                 )
                 if amount <= 0:
                     return False, "❌ 대출 금액은 0보다 커야 합니다."
+                from functions.money import from_minor_units
+                places = currency_precision(conn, product["quote_currency"])
+                amount_units = to_minor_units(amount, places)
+                collateral_units = to_minor_units(collateral_amount, places)
+                amount_decimal = from_minor_units(amount_units, places)
+                collateral_decimal = from_minor_units(collateral_units, places)
+                amount = float(amount_decimal)
+                collateral_amount = float(collateral_decimal)
                 from managers.currency_manager import CurrencyManager
                 home = CurrencyManager.home(conn,user_id)
                 if product['quote_currency'] != home:
@@ -1131,14 +1133,25 @@ class BankManager:
                     credit_score/10.0-underwriting['history_index']*25.0
                     - min(1.0, affordability_utilization)*20.0
                 ))
-                fee = round_currency(
-                    conn, amount*float(product['origination_fee_percent'] or 0)/100, home
+                fee_units = to_minor_units(
+                    amount_decimal*Decimal(str(product['origination_fee_percent'] or 0))
+                    / Decimal(100), places
                 )
-                mandatory_fee = round_currency(
-                    conn, amount*float(product['mandatory_cost_percent'] or 0)/100, home
+                mandatory_fee_units = to_minor_units(
+                    amount_decimal*Decimal(str(product['mandatory_cost_percent'] or 0))
+                    / Decimal(100), places
                 )
-                total_finance_fee = fee+mandatory_fee
-                net_payout = max(0, amount-total_finance_fee)
+                total_fee_units = fee_units+mandatory_fee_units
+                fee_decimal = from_minor_units(fee_units, places)
+                mandatory_fee_decimal = from_minor_units(mandatory_fee_units, places)
+                total_fee_decimal = from_minor_units(total_fee_units, places)
+                net_payout_decimal = from_minor_units(
+                    max(0, amount_units-total_fee_units), places
+                )
+                fee = float(fee_decimal)
+                mandatory_fee = float(mandatory_fee_decimal)
+                total_finance_fee = float(total_fee_decimal)
+                net_payout = float(net_payout_decimal)
                 effective = RateManager.effective_annual_rate(
                     contract_rate, float(product['interest_cycle'] or 31536000)
                 )
@@ -1226,9 +1239,9 @@ class BankManager:
                 from managers.bank_journal import BankJournal
                 BankJournal.post(
                     conn, product["issuer"], "loan_origination", f"loan:{loan_id}", home,
-                    [("loans_receivable", "debit", amount),
-                     ("customer_funds_payable", "credit", net_payout),
-                     ("fee_income", "credit", total_finance_fee)],
+                    [("loans_receivable", "debit", amount_decimal),
+                     ("customer_funds_payable", "credit", net_payout_decimal),
+                     ("fee_income", "credit", total_fee_decimal)],
                     description=f"Loan {loan_id} originated", now=opened_epoch,
                 )
                 self._pledge_asset_collateral(
@@ -1241,7 +1254,7 @@ class BankManager:
                     ):
                         _days, principal_due, interest_due = schedule_row
                         scheduled_rows.append(
-                            (loan_id, index, due_epoch, principal_due, interest_due,
+                            (loan_id, index, due_epoch, float(principal_due), float(interest_due),
                              contract_rate, product['day_count_convention'], opened_epoch)
                         )
                     conn.executemany(
@@ -1370,7 +1383,7 @@ class BankManager:
                 if loan_id is None:
                     loan = conn.execute(
                         "SELECT l.loan_id,l.outstanding_balance,l.outstanding_balance_minor_units,"
-                        "l.status,l.provisioned_loss,l.quote_currency,"
+                        "l.status,l.provisioned_loss,l.provisioned_loss_minor_units,l.quote_currency,"
                         "l.created_at,l.maturity_epoch,l.prepayment_fee_percent,"
                         "l.prepayment_fee_decline_days,"
                         "p.issuer FROM accounts.loans l JOIN product.liability p "
@@ -1381,7 +1394,7 @@ class BankManager:
                 else:
                     loan = conn.execute(
                         "SELECT l.loan_id,l.outstanding_balance,l.outstanding_balance_minor_units,"
-                        "l.status,l.provisioned_loss,l.quote_currency,"
+                        "l.status,l.provisioned_loss,l.provisioned_loss_minor_units,l.quote_currency,"
                         "l.created_at,l.maturity_epoch,l.prepayment_fee_percent,"
                         "l.prepayment_fee_decline_days,"
                         "p.issuer FROM accounts.loans l JOIN product.liability p "
@@ -1440,7 +1453,9 @@ class BankManager:
                 remaining = amount_value(remaining_units)
                 recovery_units = min(
                     payment_units,
-                    max(0, to_minor_units(loan["provisioned_loss"] or 0, places)),
+                    max(0, int(loan["provisioned_loss_minor_units"] or 0))
+                    if "provisioned_loss_minor_units" in loan.keys()
+                    else max(0, to_minor_units(loan["provisioned_loss"] or 0, places)),
                 )
                 recovery = amount_value(recovery_units)
                 released = 0
@@ -1450,11 +1465,11 @@ class BankManager:
                     "UPDATE accounts.loans SET outstanding_balance = ?, "
                     "status = CASE WHEN ? <= 0 THEN 'paid' ELSE status END, "
                     "collection_status=CASE WHEN ? <= 0 THEN 'paid' ELSE collection_status END,"
-                    "provisioned_loss=MAX(0,provisioned_loss-?),"
+                    "provisioned_loss_minor_units=MAX(0,provisioned_loss_minor_units-?),"
                     "prepayment_fees_paid=prepayment_fees_paid+? "
                     "WHERE loan_id = ?",
                     (remaining, remaining_units, remaining_units,
-                     recovery, prepayment_fee, loan["loan_id"]),
+                     recovery_units, prepayment_fee, loan["loan_id"]),
                 )
                 if prepayment_fee:
                     repayment_ref = f"loan:{loan['loan_id']}:payment:{time.time_ns()}"
@@ -1967,23 +1982,41 @@ class BankManager:
 
     @staticmethod
     def _release_collateral(conn, loan_id, user_id):
+        from functions.money import currency_precision, from_minor_units, to_minor_units
+
         row = conn.execute(
-            "SELECT collateral_amount,collateral_released,collateral_seized FROM accounts.loans "
+            "SELECT collateral_amount,collateral_amount_minor_units,"
+            "collateral_released,collateral_released_minor_units,"
+            "collateral_seized,collateral_seized_minor_units,quote_currency "
+            "FROM accounts.loans "
             "WHERE loan_id=?", (loan_id,)
         ).fetchone()
         if not row:
             return 0
-        currency = conn.execute(
-            "SELECT quote_currency FROM accounts.loans WHERE loan_id=?", (loan_id,)
-        ).fetchone()[0]
-        remaining = max(0.0, float(row['collateral_amount'] or 0)
-                        - float(row['collateral_released'] or 0)
-                        - float(row['collateral_seized'] or 0))
-        if remaining:
-            UserFunds.credit(conn, user_id, remaining, currency=currency)
+        currency = str(row["quote_currency"] or base_currency_code(conn)).upper()
+        places = currency_precision(conn, currency)
+        def units(legacy, canonical):
+            value = row[canonical]
+            return (int(value or 0) if value is not None
+                    else to_minor_units(row[legacy] or 0, places))
+        remaining_units = max(
+            0, units("collateral_amount", "collateral_amount_minor_units")
+            - units("collateral_released", "collateral_released_minor_units")
+            - units("collateral_seized", "collateral_seized_minor_units")
+        )
+        if remaining_units:
+            remaining = from_minor_units(remaining_units, places)
+            from managers.currency_manager import CurrencyManager
+            account_number = None
+            if CurrencyManager.home(conn, user_id) != currency:
+                source = UserFunds.choose(conn, user_id, currency)
+                account_number = source[1] if source else None
+            UserFunds.credit(conn, user_id, float(remaining), account_number,
+                             currency=currency)
             conn.execute(
-                "UPDATE accounts.loans SET collateral_released=collateral_released+? WHERE loan_id=?",
-                (remaining, loan_id),
+                "UPDATE accounts.loans SET collateral_released_minor_units=? WHERE loan_id=?",
+                (units("collateral_released", "collateral_released_minor_units")
+                 + remaining_units, loan_id),
             )
         asset_rows = conn.execute(
             "SELECT * FROM accounts.loan_collateral_assets "
@@ -1991,37 +2024,21 @@ class BankManager:
             (loan_id,),
         ).fetchall()
         for asset in asset_rows:
-            existing = conn.execute(
-                "SELECT holding_id,quantity,average_cost FROM assets.user_assets "
-                "WHERE user_id=? AND asset_code=? AND account_number IS ?",
-                (str(user_id), asset["asset_code"], asset["source_account"]),
-            ).fetchone()
-            if existing:
-                old_quantity = float(existing["quantity"])
-                added = float(asset["quantity"])
-                average = round_currency(conn,
-                    (old_quantity*float(existing["average_cost"] or 0)
-                     + added*float(asset["average_cost"] or 0))/(old_quantity+added),
-                    currency
-                )
-                conn.execute(
-                    "UPDATE assets.user_assets SET quantity=quantity+?,average_cost=? "
-                    "WHERE holding_id=?",
-                    (added, average, existing["holding_id"]),
-                )
-            else:
-                conn.execute(
-                    "INSERT INTO assets.user_assets "
-                    "(user_id,asset_code,account_number,quantity,average_cost) "
-                    "VALUES (?,?,?,?,?)",
-                    (str(user_id), asset["asset_code"], asset["source_account"],
-                     asset["quantity"], asset["average_cost"]),
-                )
+            from functions.money import currency_precision, from_minor_units
+            from managers.asset_cost_manager import AssetCostManager
+            cost = from_minor_units(
+                asset["average_cost_minor_units"] or 0,
+                currency_precision(conn, currency),
+            )
+            AssetCostManager.upsert(
+                conn, user_id, asset["asset_code"], asset["source_account"],
+                asset["quantity"], cost, schema="assets",
+            )
             conn.execute(
                 "UPDATE accounts.loan_collateral_assets SET status='released' "
                 "WHERE collateral_id=?", (asset["collateral_id"],),
             )
-        return remaining
+        return float(from_minor_units(remaining_units, places))
 
     @staticmethod
     def resolve_failed_institution(conn, issuer, *, now=None):
@@ -2188,9 +2205,12 @@ class BankManager:
     def _liquidate_collateral_lot(conn, loan_id, row, mark_price, product, now,
                                   currency):
         """Sell whole units into resting bids, then use a depth-adjusted backstop."""
+        from functions.money import from_minor_units, to_minor_units
+
+        places = currency_precision(conn, currency)
         total_quantity = float(row["quantity"] or 0)
         remaining = total_quantity
-        gross = 0
+        gross_units = 0
         book_quantity = 0.0
         last_execution = None
         # Resting buyers already deposited limit_price * remaining_quantity.
@@ -2203,33 +2223,33 @@ class BankManager:
             (row["asset_code"], str(row["user_id"])),
         ).fetchall()
         for bid in bids:
-            affordable = math.floor(
-                float(bid["reserved_cash"] or 0)
-                / max(1e-12, float(bid["limit_price"]))
-            )
+            price_units = int(bid["limit_price_minor_units"] or 0)
+            reserved_units = int(bid["reserved_cash_minor_units"] or 0)
+            if price_units <= 0:
+                price_units = to_minor_units(bid["limit_price"] or 0, places)
+            if reserved_units <= 0 and float(bid["reserved_cash"] or 0) > 0:
+                reserved_units = to_minor_units(bid["reserved_cash"], places)
+            affordable = reserved_units // max(1, price_units)
             fill = min(int(math.floor(remaining+1e-9)),
                        int(bid["remaining_quantity"] or 0), affordable)
             if fill <= 0:
                 continue
-            price = max(10**(-currency_precision(conn, currency)),
-                        float(bid["limit_price"]))
-            conn.execute(
-                "INSERT INTO assets.user_assets "
-                "(user_id,asset_code,account_number,quantity,average_cost) VALUES (?,?,?,?,?) "
-                "ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET "
-                "average_cost=((quantity*average_cost)+(excluded.quantity*excluded.average_cost))"
-                "/(quantity+excluded.quantity),quantity=quantity+excluded.quantity",
-                (str(bid["user_id"]), row["asset_code"], bid["funding_account"], fill, price),
+            price_units = max(1, price_units)
+            price = float(from_minor_units(price_units, places))
+            from managers.asset_cost_manager import AssetCostManager
+            AssetCostManager.upsert(
+                conn, bid["user_id"], row["asset_code"], bid["funding_account"],
+                fill, price, schema="assets",
             )
             new_remaining = int(bid["remaining_quantity"])-fill
             conn.execute(
                 "UPDATE assets.market_orders SET remaining_quantity=?,"
-                "filled_quantity=filled_quantity+?,reserved_cash=MAX(0,reserved_cash-?),"
+                "filled_quantity=filled_quantity+?,reserved_cash_minor_units=MAX(0,reserved_cash_minor_units-?),"
                 "status=?,updated_epoch=? WHERE order_id=?",
-                (new_remaining, fill, round_currency(conn, price*fill, currency),
+                (new_remaining, fill, price_units*fill,
                  "filled" if new_remaining == 0 else "partial", int(now), bid["order_id"]),
             )
-            gross += round_currency(conn, price*fill, currency)
+            gross_units += price_units*fill
             remaining -= fill
             book_quantity += fill
             last_execution = price
@@ -2254,57 +2274,52 @@ class BankManager:
             liquidity = max(.01, float(depth["liquidity"] or .2)) if depth else .2
             supply = max(1.0, float(depth["supply"] or 1000)) if depth else 1000.0
             market_impact = min(.50, .25*backstop_quantity/max(1.0, liquidity*supply))
-            backstop_price = max(0.0, float(mark_price) * (
-                1.0-float(row["haircut"] or 0)-market_impact
+            backstop_price_units = max(0, to_minor_units(
+                Decimal(str(mark_price)) * (Decimal(1)-Decimal(str(row["haircut"] or 0))
+                    - Decimal(str(market_impact))), places
             ))
-            backstop_cost = round_currency(conn, backstop_price*backstop_quantity, currency)
-            gross += backstop_cost
+            backstop_price = from_minor_units(backstop_price_units, places)
+            backstop_cost_units = max(0, to_minor_units(
+                backstop_price*Decimal(str(backstop_quantity)), places
+            ))
+            backstop_cost = from_minor_units(backstop_cost_units, places)
+            gross_units += backstop_cost_units
             # The lending bank's head office buys the unsold rest and pays for it (deficits allowed).
             from managers.currency_manager import CurrencyManager, SCALE
             bank = CurrencyManager.bank_account_id(conn, product["issuer"])
             bank_home = CurrencyManager.home(conn, bank)
-            cost_units = int(round(backstop_cost*SCALE))
+            cost_units = int(backstop_cost*Decimal(SCALE))
             if currency != bank_home:
                 cost_units = CurrencyManager.convert(conn, cost_units, currency, bank_home)
             if cost_units:
                 CurrencyManager.change(conn, bank, bank_home, -cost_units, allow_deficit=True)
             existing = conn.execute(
-                "SELECT holding_id,quantity,average_cost FROM assets.user_assets "
+                "SELECT holding_id,quantity,average_cost,average_cost_minor_units FROM assets.user_assets "
                 "WHERE user_id=? AND asset_code=? AND account_number IS NULL",
                 (bank, row["asset_code"]),
             ).fetchone()
-            if existing:
-                old_quantity = float(existing["quantity"])
-                average = round_currency(conn,
-                    (old_quantity*float(existing["average_cost"] or 0)
-                     + backstop_quantity*backstop_price)/(old_quantity+backstop_quantity),
-                    currency
-                )
-                conn.execute(
-                    "UPDATE assets.user_assets SET quantity=quantity+?,average_cost=? "
-                    "WHERE holding_id=?",
-                    (backstop_quantity, average, existing["holding_id"]),
-                )
-            else:
-                conn.execute(
-                    "INSERT INTO assets.user_assets "
-                    "(user_id,asset_code,account_number,quantity,average_cost) "
-                    "VALUES (?,?,NULL,?,?)",
-                    (bank, row["asset_code"], backstop_quantity,
-                     round_currency(conn, backstop_price, currency)),
-                )
+            from managers.asset_cost_manager import AssetCostManager
+            AssetCostManager.upsert(
+                conn, bank, row["asset_code"], None, backstop_quantity,
+                backstop_price, schema="assets",
+            )
 
-        liquidation_cost = round_currency(
-            conn, gross*float(product["liquidation_cost_percent"] or 0)/100,
-            currency
-        )
-        net = max(0, gross-liquidation_cost)
-        weighted_price = gross/total_quantity if total_quantity > 0 else 0.0
+        liquidation_cost_units = max(0, to_minor_units(
+            from_minor_units(gross_units, places)
+            *Decimal(str(product["liquidation_cost_percent"] or 0))/Decimal(100), places
+        ))
+        net_units = max(0, gross_units-liquidation_cost_units)
+        gross = from_minor_units(gross_units, places)
+        liquidation_cost = from_minor_units(liquidation_cost_units, places)
+        net = from_minor_units(net_units, places)
+        weighted_price = (from_minor_units(to_minor_units(
+            gross/Decimal(str(total_quantity)), places), places)
+            if total_quantity > 0 else Decimal(0))
         conn.execute(
             "UPDATE accounts.loan_collateral_assets SET status='liquidated',"
             "liquidation_price=?,liquidation_cost=?,liquidation_proceeds=? "
             "WHERE collateral_id=?",
-            (round_currency(conn, weighted_price, currency), liquidation_cost, net,
+            (float(weighted_price), float(liquidation_cost), float(net),
              row["collateral_id"]),
         )
         conn.execute(
@@ -2316,15 +2331,13 @@ class BankManager:
             "liquidation_cost_minor_units,net_proceeds_minor_units) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (loan_id, row["collateral_id"], row["asset_code"], total_quantity,
-             mark_price, weighted_price, gross, liquidation_cost, net,
+             mark_price, float(weighted_price), float(gross), float(liquidation_cost), float(net),
              book_quantity, backstop_quantity, float(now),
-             to_minor_units(mark_price, currency_precision(conn, currency)),
-             to_minor_units(weighted_price, currency_precision(conn, currency)),
-             to_minor_units(gross, currency_precision(conn, currency)),
-             to_minor_units(liquidation_cost, currency_precision(conn, currency)),
-             to_minor_units(net, currency_precision(conn, currency))),
+             to_minor_units(mark_price, places),
+             to_minor_units(weighted_price, places),
+             gross_units, liquidation_cost_units, net_units),
         )
-        return net
+        return float(net)
 
     @staticmethod
     def revalue_asset_collateral(conn, loan_id, outstanding_balance, product,

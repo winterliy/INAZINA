@@ -2,7 +2,7 @@ from functions.money import base_currency_code
 import math
 import re
 import time
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from contextlib import nullcontext
 
 from database import DatabaseManager
@@ -558,32 +558,42 @@ class TreasuryBondManager:
         """Move existing claims with their coupon and maturity terms to a buyer."""
         now = TreasuryBondManager._epoch(now, "invalid_bond_transfer_epoch")
         rows = conn.execute(
-            "SELECT holding_id, product_name, annual_rate, maturity_days, principal, "
-            "face_value, acquisition_cost, purchased_epoch, maturity_epoch,"
-            "coupon_frequency_days,day_count_convention,last_coupon_epoch "
-            "FROM accounts.treasury_bond_holdings WHERE user_id = ? AND product_code = ? "
-            "AND status = 'active' AND maturity_epoch > ? "
-            "ORDER BY maturity_epoch, holding_id",
+            "SELECT h.holding_id, h.product_name, h.annual_rate, h.maturity_days, h.principal, "
+            "h.face_value, h.acquisition_cost, h.principal_minor_units,"
+            "h.face_value_minor_units,h.acquisition_cost_minor_units,p.quote_currency,"
+            "h.purchased_epoch,h.maturity_epoch,h.coupon_frequency_days,"
+            "h.day_count_convention,h.last_coupon_epoch "
+            "FROM accounts.treasury_bond_holdings h JOIN product.treasury_bond_products p "
+            "USING(product_code) WHERE h.user_id = ? AND h.product_code = ? "
+            "AND h.status = 'active' AND h.maturity_epoch > ? "
+            "ORDER BY h.maturity_epoch, h.holding_id",
             (str(seller_id), str(product_code), int(now)),
         ).fetchall()
         units_left = int(quantity)
-        transferred_basis = 0
+        transferred_basis_units = 0
+        from functions.money import currency_precision, from_minor_units, to_minor_units
         for row in rows:
-            face_value = max(1, int(row["face_value"] or 1))
-            principal = int(row["principal"])
-            if principal % face_value:
+            currency = str(row["quote_currency"] or base_currency_code(conn))
+            places = currency_precision(conn, currency)
+            face_units = max(1, int(row["face_value_minor_units"] or
+                                     to_minor_units(row["face_value"] or 1, places)))
+            principal_units = int(row["principal_minor_units"] or
+                                  to_minor_units(row["principal"], places))
+            if principal_units % face_units:
                 raise RuntimeError("국채 액면 잔액이 매수 단위와 일치하지 않습니다.")
-            old_units = principal // face_value
+            old_units = principal_units // face_units
             take_units = min(units_left, old_units)
             if take_units <= 0:
                 continue
-            moved_principal = take_units * face_value
-            old_basis = int(row["acquisition_cost"] or principal)
-            moved_basis = (
-                old_basis if take_units == old_units
-                else round_money(old_basis * take_units / old_units)
+            moved_principal_units = take_units * face_units
+            old_basis_units = int(row["acquisition_cost_minor_units"] or
+                                  to_minor_units(row["acquisition_cost"] or row["principal"], places))
+            moved_basis_units = (
+                old_basis_units if take_units == old_units
+                else int((Decimal(old_basis_units) * take_units / old_units)
+                         .quantize(Decimal("1"), rounding=ROUND_HALF_UP))
             )
-            transferred_basis += moved_basis
+            transferred_basis_units += moved_basis_units
             if take_units == old_units:
                 cursor = conn.execute(
                     "DELETE FROM accounts.treasury_bond_holdings "
@@ -593,9 +603,10 @@ class TreasuryBondManager:
             else:
                 cursor = conn.execute(
                     "UPDATE accounts.treasury_bond_holdings "
-                    "SET principal = principal - ?, acquisition_cost = acquisition_cost - ? "
+                    "SET principal_minor_units = principal_minor_units - ?, "
+                    "acquisition_cost_minor_units = acquisition_cost_minor_units - ? "
                     "WHERE holding_id = ? AND status = 'active' AND principal = ?",
-                    (moved_principal, moved_basis, row["holding_id"], principal),
+                    (moved_principal_units, moved_basis_units, row["holding_id"], row["principal"]),
                 )
             if cursor.rowcount != 1:
                 raise RuntimeError("국채 보유량이 바뀌어 거래를 취소했습니다.")
@@ -603,17 +614,22 @@ class TreasuryBondManager:
                 "INSERT INTO accounts.treasury_bond_holdings "
                 "(user_id, product_code, product_name, annual_rate, maturity_days, "
                 "principal, face_value, acquisition_cost, purchased_epoch, maturity_epoch,"
-                "coupon_frequency_days,day_count_convention,last_coupon_epoch) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "coupon_frequency_days,day_count_convention,last_coupon_epoch,"
+                "principal_minor_units,face_value_minor_units,acquisition_cost_minor_units) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (str(buyer_id), str(product_code), row["product_name"],
-                 float(row["annual_rate"]), int(row["maturity_days"]), moved_principal,
-                 face_value, int(price) * take_units, int(row["purchased_epoch"]),
+                 float(row["annual_rate"]), int(row["maturity_days"]),
+                 float(from_minor_units(moved_principal_units, places)),
+                 float(from_minor_units(face_units, places)),
+                 float(from_minor_units(to_minor_units(price, places) * take_units, places)),
+                 int(row["purchased_epoch"]),
                  int(row["maturity_epoch"]), int(row["coupon_frequency_days"] or 0),
-                 row["day_count_convention"], row["last_coupon_epoch"]),
+                 row["day_count_convention"], row["last_coupon_epoch"],
+                 moved_principal_units, face_units, to_minor_units(price, places) * take_units),
             )
             units_left -= take_units
             if units_left == 0:
                 break
         if units_left:
             raise RuntimeError("매도 주문의 예약 수량과 실제 국채 보유량이 달라 체결을 취소했습니다.")
-        return transferred_basis
+        return transferred_basis_units

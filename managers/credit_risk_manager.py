@@ -6,7 +6,8 @@ import hashlib
 import json
 import math
 
-from functions.money import currency_precision, round_currency, to_minor_units
+from functions.money import (currency_precision, from_minor_units, round_currency,
+                             to_minor_units)
 from managers.rate_manager import RateManager
 
 
@@ -1560,15 +1561,12 @@ class CreditRiskManager:
                                          "effectiveRatePercent": eir_percent,
                                          "expectedLossTimeYears": expected_loss_time,
                                          "eadMethod": ead_method})
-            expected_loss = round_currency(
-                conn, raw_expected_loss, loan["quote_currency"]
-            )
-            expected_loss_units = to_minor_units(expected_loss,
-                                                  currency_precision(conn, loan["quote_currency"]))
+            places = currency_precision(conn, loan["quote_currency"])
+            expected_loss_units = to_minor_units(raw_expected_loss, places)
+            expected_loss = float(from_minor_units(expected_loss_units, places))
             previous_allowance_units = int(loan["ecl_allowance_minor_units"] or 0)
             allowance_change_units = expected_loss_units-previous_allowance_units
-            places = currency_precision(conn, loan["quote_currency"])
-            allowance_change = allowance_change_units/(10**places)
+            allowance_change = from_minor_units(allowance_change_units, places)
             cursor = conn.execute(
                 "INSERT OR IGNORE INTO accounts.loan_ecl_assessments "
                 "(loan_id,as_of_day,stage,pd_12m,lifetime_pd,lgd,ead,expected_loss,"
