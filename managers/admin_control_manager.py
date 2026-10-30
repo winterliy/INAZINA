@@ -509,14 +509,13 @@ class AdminControlManager:
                         raise ValueError('미상환 ELS의 기초지수를 구성하는 마지막 주식은 거래소를 변경할 수 없습니다.')
                 if 'listed_shares' in columns:
                     # Listed shares: how many of total_shares the market may ever hold (NULL: all).
-                    exchange=values.get('exchange_id',existing['exchange_id'] if existing else None)
-                    if exchange=='UNLISTED':
+                    from managers.market_session_manager import MarketSessionManager
+                    raw=values.get('listed_shares')
+                    if merged.get('exchange_id')==MarketSessionManager.UNLISTED:
                         values['listed_shares']=None
-                    elif values.get('listed_shares') not in (None,''):
-                        total=int(values.get('total_shares',existing['total_shares'] if existing else 0) or 0)
-                        values['listed_shares']=self._number(values['listed_shares'],1,total,integer=True)
                     elif 'listed_shares' in values:
-                        values['listed_shares']=None
+                        values['listed_shares']=None if raw in (None,'') else self._number(
+                            raw,1,int(merged.get('total_shares') or 0),integer=True)
                 share_class=merged.get('share_class','common')
                 if share_class not in {'common','preferred'}:
                     raise ValueError('share_class는 common 또는 preferred입니다.')
