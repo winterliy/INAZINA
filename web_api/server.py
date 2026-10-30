@@ -1883,7 +1883,14 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
             "depositInsuranceReconciliation": deposit_insurance_reconciliation,
             "depositInsuranceClaims": insurance_claims,
             "commonJournalReconciliation": common_journal_reconciliation,
-            "financialCloseControl": financial_close_control,
+            # Hundreds of thousands of snapshot findings once made this response 130 MB; the page
+            # shows the first 100 and the count (all snapshot findings are in amountSnapshotAudit).
+            "financialCloseControl": {
+                **{key: value for key, value in financial_close_control.items()
+                   if key not in ("findings", "amount_snapshot_findings")},
+                "findingCount": len(financial_close_control["findings"]),
+                "findings": financial_close_control["findings"][:100],
+            },
             "commonTrialBalance": common_trial_balance,
             "commonJournalUnbalancedEntries": common_journal_unbalanced,
             "amountSnapshotAudit": {
