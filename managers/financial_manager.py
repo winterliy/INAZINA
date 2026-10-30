@@ -279,43 +279,63 @@ class FinancialManager:
         if not account:
             return []
         positions = {}
+        from functions.money import currency_precision, from_minor_units, round_currency
         for row in conn.execute(
-                "SELECT c.company_code,c.name,c.total_shares,SUM(u.quantity) held,SUM(u.quantity*u.average_cost) cost "
+                "SELECT c.company_code,c.name,c.total_shares,c.quote_currency,"
+                "u.quantity,u.average_cost_minor_units "
                 "FROM user_assets u JOIN company c ON c.company_code=u.asset_code "
-                "WHERE u.user_id=? AND COALESCE(c.share_class,'common')='common' AND c.company_code<>? "
-                "GROUP BY c.company_code", (account[0], code)).fetchall():
-            positions[row["company_code"]] = {
-                "code": row["company_code"], "name": row["name"],
-                "total_shares": row["total_shares"], "held": float(row["held"] or 0),
-                "cost": Decimal(str(row["cost"] or 0)),
-            }
+                "WHERE u.user_id=? AND COALESCE(c.share_class,'common')='common' "
+                "AND c.company_code<>? ORDER BY c.company_code,u.holding_id",
+                (account[0], code)).fetchall():
+            company_code = row["company_code"]
+            currency = str(row["quote_currency"] or base_currency_code(conn))
+            places = currency_precision(conn, currency)
+            position = positions.setdefault(company_code, {
+                "code": company_code, "name": row["name"],
+                "total_shares": row["total_shares"], "held": 0.0, "cost": Decimal(0),
+            })
+            position["held"] += float(row["quantity"] or 0)
+            position["cost"] += (
+                from_minor_units(row["average_cost_minor_units"] or 0, places)
+                * Decimal(str(row["quantity"] or 0))
+            )
         dr_positions = conn.execute(
             "SELECT d.underlying_code,c.name,c.total_shares,d.quote_currency dr_currency,"
             "c.quote_currency underlying_currency,"
-            "SUM(u.quantity*d.underlying_per_receipt) held,"
-            "SUM(u.quantity*u.average_cost) dr_cost "
+            "u.quantity,d.underlying_per_receipt,u.average_cost_minor_units "
             "FROM assets.user_assets u JOIN assets.depositary_receipts d ON d.dr_code=u.asset_code "
             "JOIN company c ON c.company_code=d.underlying_code "
             "WHERE u.user_id=? AND COALESCE(c.share_class,'common')='common' "
-            "AND c.company_code<>? GROUP BY d.underlying_code,d.quote_currency,c.quote_currency",
+            "AND c.company_code<>? ORDER BY d.underlying_code,d.dr_code,u.holding_id",
             (str(account[0]), str(code)),
         ).fetchall()
         from managers.currency_manager import CurrencyManager
-        from functions.money import round_currency
+        dr_costs = {}
+        dr_cost_currencies = {}
         for row in dr_positions:
             underlying_code = row["underlying_code"]
             underlying_currency = str(row["underlying_currency"] or base_currency_code(conn))
             dr_currency = str(row["dr_currency"] or base_currency_code(conn))
             quote = CurrencyManager.quote(conn, dr_currency, underlying_currency)
-            dr_cost = (Decimal(str(row["dr_cost"] or 0)) * Decimal(quote.numerator)
+            dr_places = currency_precision(conn, dr_currency)
+            dr_cost = (from_minor_units(row["average_cost_minor_units"] or 0, dr_places)
+                       * Decimal(str(row["quantity"] or 0))
+                       * Decimal(quote.numerator)
                        / Decimal(quote.denominator))
-            native_cost = Decimal(str(round_currency(conn, dr_cost, underlying_currency)))
             position = positions.setdefault(underlying_code, {
                 "code": underlying_code, "name": row["name"],
                 "total_shares": row["total_shares"], "held": 0.0, "cost": Decimal(0),
             })
-            position["held"] += float(row["held"] or 0)
-            position["cost"] += native_cost
+            position["held"] += float(row["quantity"] or 0) * float(row["underlying_per_receipt"] or 0)
+            dr_costs[underlying_code] = (
+                dr_costs.get(underlying_code, Decimal(0))+dr_cost
+            )
+            dr_cost_currencies[underlying_code] = underlying_currency
+        for underlying_code, dr_cost in dr_costs.items():
+            currency = dr_cost_currencies[underlying_code]
+            positions[underlying_code]["cost"] += Decimal(str(
+                round_currency(conn, dr_cost, currency)
+            ))
 
         result = []
         for row in positions.values():
@@ -462,14 +482,30 @@ class FinancialManager:
             "SELECT 1 FROM sqlite_master WHERE name='company_income_log'").fetchone() else []
         flows = {row['kind']: int(round(row['amount'] * factor)) for row in rows}
         cross = 0
+        from fractions import Fraction
+        from managers.currency_manager import CurrencyManager
+        from functions.money import currency_precision
         for row in conn.execute(
-                f"SELECT a.company_code holder,u.asset_code,u.quantity*u.average_cost cost FROM user_assets u "
-                f"JOIN company_accounts a ON a.user_id=u.user_id WHERE a.company_code IN ({marks}) "
-                f"AND u.asset_code IN ({marks}) AND u.asset_code<>a.company_code", (*group, *group)).fetchall():
+                f"SELECT a.company_code holder,u.asset_code,u.quantity,"
+                f"u.average_cost_minor_units,c.quote_currency "
+                f"FROM user_assets u JOIN company_accounts a ON a.user_id=u.user_id "
+                f"JOIN company c ON c.company_code=u.asset_code "
+                f"WHERE a.company_code IN ({marks}) AND u.asset_code IN ({marks}) "
+                f"AND u.asset_code<>a.company_code", (*group, *group)).fetchall():
             # Shares of a group member that are not the parent's consolidated investment
             # (e.g. a subsidiary holding its parent) are treasury stock of the group.
             if not any(sub['code'] == row['asset_code'] for sub in cls.subsidiaries(conn, row['holder'])):
-                cross += int(round(float(row['cost']) * float(factor)))
+                source_currency = str(row["quote_currency"] or base_currency_code(conn))
+                source_places = currency_precision(conn, source_currency)
+                rate = (Fraction(1) if source_currency == currency else
+                        CurrencyManager.quote(conn, source_currency, currency))
+                unit_factor = rate * Fraction(10 ** places, 10 ** source_places)
+                target_minor = (
+                    Decimal(int(row["average_cost_minor_units"] or 0))
+                    * Decimal(str(row["quantity"] or 0))
+                    * Decimal(unit_factor.numerator) / Decimal(unit_factor.denominator)
+                )
+                cross += int(target_minor.to_integral_value(rounding=ROUND_HALF_UP))
         return {'dividends': flows.get('dividend', 0), 'transfers': flows.get('transfer_in', 0), 'cross_holdings': cross}
 
     def report(self, code, period=None):

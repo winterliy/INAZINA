@@ -676,13 +676,10 @@ class OptionManager:
     def _add_asset_position(conn, user_id, code, quantity, unit_cost, account_number=None):
         if quantity <= 0:
             return
-        conn.execute(
-            "INSERT INTO assets.user_assets "
-            "(user_id, asset_code, account_number, quantity, average_cost) VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(user_id, asset_code, IFNULL(account_number, '')) DO UPDATE SET "
-            "average_cost = ((quantity * average_cost) + (excluded.quantity * excluded.average_cost)) "
-            "/ (quantity + excluded.quantity), quantity = quantity + excluded.quantity",
-            (str(user_id), code, account_number, quantity_number(quantity), int(unit_cost)),
+        from managers.asset_cost_manager import AssetCostManager
+        AssetCostManager.upsert(
+            conn, user_id, code, account_number, quantity_number(quantity), unit_cost,
+            schema="assets",
         )
 
     def _take_share_collateral(self, conn, contract_id, quantity):

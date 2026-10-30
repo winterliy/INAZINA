@@ -399,6 +399,24 @@ class CurrencyDB(DBManager):
                               ("charged_off_balance", "charged_off_balance_minor_units")):
             if minor not in loan_columns:
                 self.execute(f"ALTER TABLE loans ADD COLUMN {minor} INTEGER NOT NULL DEFAULT 0")
+        # Remaining loan money accounts also need canonical denomination units;
+        # snapshots alone cannot serve as the live accounting value.
+        loan_money_columns = {row[1] for row in self.execute("PRAGMA table_info(loans)")}
+        loan_money_fields = (
+            ("origination_fee", "origination_fee_minor_units"),
+            ("mandatory_cost_fee", "mandatory_cost_fee_minor_units"),
+            ("collateral_amount", "collateral_amount_minor_units"),
+            ("collateral_released", "collateral_released_minor_units"),
+            ("collateral_seized", "collateral_seized_minor_units"),
+            ("collateral_asset_value", "collateral_asset_value_minor_units"),
+            ("collateral_liquidated_value", "collateral_liquidated_value_minor_units"),
+            ("provisioned_loss", "provisioned_loss_minor_units"),
+            ("underwriting_income", "underwriting_income_minor_units"),
+            ("prepayment_fees_paid", "prepayment_fees_paid_minor_units"),
+        )
+        for _legacy, minor in loan_money_fields:
+            if minor not in loan_money_columns:
+                self.execute(f"ALTER TABLE loans ADD COLUMN {minor} INTEGER NOT NULL DEFAULT 0")
         ecl_columns = {row[1] for row in self.execute(
             "PRAGMA table_info(loan_ecl_assessments)"
         )}
@@ -544,6 +562,33 @@ class CurrencyDB(DBManager):
                 AFTER UPDATE OF {minor} ON loans BEGIN
                     UPDATE loans SET {legacy}=CAST(NEW.{minor} AS REAL)/({loan_scale})
                     WHERE loan_id=NEW.loan_id;
+                END""")
+        for legacy, minor in loan_money_fields:
+            for suffix in ("from_legacy", "from_legacy_update", "to_legacy"):
+                self.execute(f"DROP TRIGGER IF EXISTS trg_loan_{minor}_{suffix}")
+            for loan in self.execute(
+                f"SELECT loan_id,quote_currency,{legacy},{minor} FROM loans"
+            ):
+                places = currency_precision(
+                    self.conn, loan["quote_currency"] or base_currency_code(self.conn)
+                )
+                if int(loan[minor] or 0) == 0 and float(loan[legacy] or 0) != 0:
+                    self.execute(f"UPDATE loans SET {minor}=? WHERE loan_id=?",
+                                 (to_minor_units(loan[legacy], places), loan["loan_id"]))
+            self.execute(f"""CREATE TRIGGER trg_loan_{minor}_from_legacy
+                AFTER INSERT ON loans BEGIN
+                  UPDATE loans SET {minor}=CAST(ROUND(COALESCE(NEW.{legacy},0)*({loan_scale})) AS INTEGER)
+                  WHERE loan_id=NEW.loan_id;
+                END""")
+            self.execute(f"""CREATE TRIGGER trg_loan_{minor}_from_legacy_update
+                AFTER UPDATE OF {legacy},quote_currency ON loans BEGIN
+                  UPDATE loans SET {minor}=CAST(ROUND(COALESCE(NEW.{legacy},0)*({loan_scale})) AS INTEGER)
+                  WHERE loan_id=NEW.loan_id;
+                END""")
+            self.execute(f"""CREATE TRIGGER trg_loan_{minor}_to_legacy
+                AFTER UPDATE OF {minor} ON loans BEGIN
+                  UPDATE loans SET {legacy}=CAST(NEW.{minor} AS REAL)/({loan_scale})
+                  WHERE loan_id=NEW.loan_id;
                 END""")
         remainder_fields = (
             ("interest_remainder", "interest_remainder_subminor_units"),
@@ -718,6 +763,66 @@ class CurrencyDB(DBManager):
             available = tuple(column for column in columns if column in existing)
             if available:
                 self.enforce_currency_money(table, available, key, currency)
+        holding_columns = {
+            row[1] for row in self.execute("PRAGMA table_info(user_assets)")
+        }
+        if "average_cost_minor_units" not in holding_columns:
+            self.execute(
+                "ALTER TABLE user_assets ADD COLUMN average_cost_minor_units "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
+        holding_currency = (
+            "COALESCE((SELECT quote_currency FROM market_assets WHERE code=NEW.asset_code "
+            "UNION ALL SELECT quote_currency FROM company WHERE company_code=NEW.asset_code "
+            "UNION ALL SELECT quote_currency FROM investment WHERE product_code=NEW.asset_code "
+            "LIMIT 1),base_currency_code())"
+        )
+        holding_scale = (
+            "CASE COALESCE((SELECT decimal_places FROM currencies WHERE code="
+            f"({holding_currency})),0) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END"
+        )
+        from functions.money import to_minor_units
+        for holding in self.execute(
+            "SELECT holding_id,asset_code,average_cost,average_cost_minor_units FROM user_assets"
+        ):
+            currency_row = self.execute(
+                "SELECT COALESCE((SELECT quote_currency FROM market_assets WHERE code=? "
+                "UNION ALL SELECT quote_currency FROM company WHERE company_code=? "
+                "UNION ALL SELECT quote_currency FROM investment WHERE product_code=? LIMIT 1),"
+                "base_currency_code())",
+                (holding["asset_code"], holding["asset_code"], holding["asset_code"]),
+            ).fetchone()
+            currency = currency_row[0] if currency_row else base_currency_code(self.conn)
+            places = currency_precision(self.conn, currency)
+            expected = to_minor_units(holding["average_cost"] or 0, places)
+            if int(holding["average_cost_minor_units"] or 0) != expected:
+                self.execute(
+                    "UPDATE user_assets SET average_cost_minor_units=? WHERE holding_id=?",
+                    (expected, holding["holding_id"]),
+                )
+        self.execute("DROP TRIGGER IF EXISTS trg_user_assets_average_cost_minor_from_legacy")
+        self.execute("DROP TRIGGER IF EXISTS trg_user_assets_average_cost_minor_from_legacy_update")
+        self.execute("DROP TRIGGER IF EXISTS trg_user_assets_average_cost_minor_to_legacy")
+        self.execute(f"""CREATE TRIGGER trg_user_assets_average_cost_minor_from_legacy
+            AFTER INSERT ON user_assets
+            WHEN NEW.average_cost_minor_units<>CAST(ROUND(
+              COALESCE(NEW.average_cost,0)*({holding_scale})) AS INTEGER)
+            BEGIN UPDATE user_assets SET average_cost_minor_units=CAST(ROUND(
+              COALESCE(NEW.average_cost,0)*({holding_scale})) AS INTEGER)
+              WHERE holding_id=NEW.holding_id; END""")
+        self.execute(f"""CREATE TRIGGER trg_user_assets_average_cost_minor_from_legacy_update
+            AFTER UPDATE OF average_cost,asset_code ON user_assets
+            WHEN NEW.average_cost_minor_units<>CAST(ROUND(
+              COALESCE(NEW.average_cost,0)*({holding_scale})) AS INTEGER)
+            BEGIN UPDATE user_assets SET average_cost_minor_units=CAST(ROUND(
+              COALESCE(NEW.average_cost,0)*({holding_scale})) AS INTEGER)
+              WHERE holding_id=NEW.holding_id; END""")
+        self.execute(f"""CREATE TRIGGER trg_user_assets_average_cost_minor_to_legacy
+            AFTER UPDATE OF average_cost_minor_units ON user_assets
+            WHEN NEW.average_cost IS NOT CAST(NEW.average_cost_minor_units AS REAL)/({holding_scale})
+            BEGIN UPDATE user_assets SET average_cost=CAST(
+              NEW.average_cost_minor_units AS REAL)/({holding_scale})
+              WHERE holding_id=NEW.holding_id; END""")
         schedule_amounts = (
             ("principal_due", "principal_due_minor_units"),
             ("interest_due", "interest_due_minor_units"),

@@ -420,9 +420,11 @@ class FundManager:
                     if Decimal(str(qty)) == issued and (state['positions'] or state['reservedCash'] or state['receivables']):
                         raise ValueError('최종 좌수 환매 전에는 구성자산을 모두 매도하고 매수 주문을 취소해주세요.')
                     left, gain = Decimal(str(qty)), Decimal(0)
-                    for lot in conn.execute('SELECT quantity,average_cost FROM user_assets WHERE user_id=? AND asset_code=? ORDER BY holding_id', (str(user), code)):
+                    for lot in conn.execute('SELECT quantity,average_cost_minor_units FROM user_assets WHERE user_id=? AND asset_code=? ORDER BY holding_id', (str(user), code)):
                         take = min(left, Decimal(str(lot['quantity'])))
-                        gain += max(Decimal(0), nav-Decimal(str(lot['average_cost']))) * take
+                        gain += max(
+                            Decimal(0), nav-Decimal(int(lot['average_cost_minor_units'] or 0))
+                        ) * take
                         left -= take
                         if left <= 0:
                             break

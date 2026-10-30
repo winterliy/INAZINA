@@ -335,15 +335,19 @@ class OrderBookManager:
                 reference_price_minor = (to_minor_units(asset["price"] or 0, places)
                                          if asset else 0)
                 if source == "treasury_bond":
-                    face_value = int(asset["face_value"])
+                    face_value = int(asset.get("face_value_minor_units") or
+                                      to_minor_units(asset["face_value"], places))
                     primary_remaining = max(
                         0,
-                        (int(asset["total_supply"]) - int(asset["sold_amount"] or 0))
+                        (int(asset.get("total_supply_minor_units") or
+                             to_minor_units(asset["total_supply"], places))
+                         - int(asset.get("sold_amount_minor_units") or
+                               to_minor_units(asset["sold_amount"] or 0, places)))
                         // face_value,
                     )
                     # The issuer's remaining primary offer stays at par. The last
                     # market trade only sets the secondary-market reference price.
-                    reference_price_minor = to_minor_units(face_value, places)
+                    reference_price_minor = face_value
                 elif supply is not None and reference_price_minor > 0:
                     issued = conn.execute(
                         "SELECT (SELECT COALESCE(SUM(quantity), 0) FROM assets.user_assets "
@@ -572,13 +576,22 @@ class OrderBookManager:
                 from_minor_units(improvement_minor * quantity, places), now,
                 currency, order_id=buy_order["order_id"])
         if source == "treasury_bond":
-            face_value = int(asset["face_value"])
-            principal = face_value * int(quantity)
+            denomination = conn.execute(
+                "SELECT face_value,face_value_minor_units FROM product.treasury_bond_products "
+                "WHERE product_code=?", (asset["code"],),
+            ).fetchone()
+            face_units = int(denomination["face_value_minor_units"] or
+                             to_minor_units(denomination["face_value"], places))
+            principal_units = face_units * int(quantity)
+            face_value = from_minor_units(face_units, places)
+            principal = from_minor_units(principal_units, places)
+            acquisition_units = price_minor * int(quantity)
+            acquisition_cost = from_minor_units(acquisition_units, places)
             sold = conn.execute(
-                "UPDATE product.treasury_bond_products SET sold_amount = sold_amount + ? "
+                "UPDATE product.treasury_bond_products SET sold_amount_minor_units = sold_amount_minor_units + ? "
                 "WHERE product_code = ? AND status = 'active' "
-                "AND sold_amount + ? <= total_supply",
-                (principal, asset["code"], principal),
+                "AND sold_amount_minor_units + ? <= total_supply_minor_units",
+                (principal_units, asset["code"], principal_units),
             )
             if sold.rowcount != 1:
                 raise RuntimeError("국채 잔여 발행한도가 변경되어 체결을 취소했습니다.")
@@ -586,27 +599,25 @@ class OrderBookManager:
             conn.execute(
                 "INSERT INTO accounts.treasury_bond_holdings "
                 "(user_id, product_code, product_name, annual_rate, maturity_days, "
-                "principal, face_value, acquisition_cost, purchased_epoch, maturity_epoch) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "principal, face_value, acquisition_cost, purchased_epoch, maturity_epoch,"
+                "principal_minor_units,face_value_minor_units,acquisition_cost_minor_units) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (buyer_id, asset["code"], asset["name"], float(asset["annual_rate"]),
-                 int(asset["maturity_days"]), principal, face_value,
-                 int(price) * int(quantity), int(now), maturity),
+                 int(asset["maturity_days"]), float(principal), float(face_value),
+                 float(acquisition_cost), int(now), maturity,
+                 principal_units, face_units, acquisition_units),
             )
             from managers.currency_manager import CurrencyManager, SCALE
             # The listing country's treasury issues the bond and receives the principal.
             CurrencyManager.treasury_receive(
                 conn, CurrencyManager.exchange_treasury(conn, asset["code"]),
-                asset.get("quote_currency") or base_currency_code(conn), int(round(principal * SCALE)))
+                asset.get("quote_currency") or base_currency_code(conn),
+                principal_units * (SCALE // (10 ** places)))
             return
-        conn.execute(
-            """INSERT INTO assets.user_assets
-               (user_id, asset_code, account_number, quantity, average_cost)
-               VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT(user_id, asset_code, IFNULL(account_number, '')) DO UPDATE SET
-                   average_cost = ((quantity * average_cost) +
-                       (excluded.quantity * excluded.average_cost)) / (quantity + excluded.quantity),
-                   quantity = quantity + excluded.quantity""",
-            (buyer_id, buy_order["asset_code"], buyer_account, quantity, float(price)),
+        from managers.asset_cost_manager import AssetCostManager
+        AssetCostManager.upsert(
+            conn, buyer_id, buy_order["asset_code"], buyer_account, quantity,
+            from_minor_units(price_minor, places), schema="assets",
         )
         proceeds_minor = price_minor * quantity
         proceeds = from_minor_units(proceeds_minor, places)
@@ -730,32 +741,45 @@ class OrderBookManager:
 
         asset, source = self.user_manager._asset_row(conn, buy_order["asset_code"])
         if source == "treasury_bond":
-            basis = self.user_manager.bond_manager.transfer_units(
+            basis_minor = self.user_manager.bond_manager.transfer_units(
                 conn, seller_id, buyer_id, buy_order["asset_code"], quantity,
                 float(execution_price), now,
             )
-            taxable_gain = max(0, int(execution_price) * int(quantity) - int(basis))
-            tax = self.user_manager._tax(conn, seller_id, "bond_sale_gain", taxable_gain,
-                                         currency=currency)
-            proceeds = max(0, int(execution_price) * int(quantity) - tax)
-            self.user_manager._credit_source(conn, seller_id, None, proceeds,
-                                             event='asset_sale', reference=str(sell_order['order_id']))
-            return {"tax_amount": tax,
-                    "seller_proceeds": max(0, int(execution_price)*int(quantity)-tax)}
+            gross_minor = execution_minor * int(quantity)
+            taxable_gain_minor = max(0, gross_minor - basis_minor)
+            tax = self.user_manager._tax(
+                conn, seller_id, "bond_sale_gain",
+                from_minor_units(taxable_gain_minor, places), currency=currency,
+            )
+            tax_minor = to_minor_units(tax, places)
+            proceeds_minor = max(0, gross_minor - tax_minor)
+            from managers.currency_manager import CurrencyManager, SCALE
+            sale_currency = str(sell_order["quote_currency"] or base_currency_code(conn))
+            if sale_currency != CurrencyManager.home(conn, seller_id):
+                from managers.foreign_securities_manager import ForeignSecuritiesManager
+                ForeignSecuritiesManager.credit_units(
+                    conn, seller_id, sale_currency,
+                    proceeds_minor * (SCALE // (10 ** places)),
+                    sell_order["funding_account"],
+                )
+            else:
+                self.user_manager._credit_source(
+                    conn, seller_id, sell_order["funding_account"],
+                    from_minor_units(proceeds_minor, places), event='asset_sale',
+                    reference=str(sell_order['order_id']), currency=sale_currency,
+                )
+            return {"tax_amount": from_minor_units(tax_minor, places),
+                    "seller_proceeds": from_minor_units(proceeds_minor, places)}
 
-        conn.execute(
-            """INSERT INTO assets.user_assets
-               (user_id, asset_code, account_number, quantity, average_cost)
-               VALUES (?, ?, ?, ?, ?)
-               ON CONFLICT(user_id, asset_code, IFNULL(account_number, '')) DO UPDATE SET
-                   average_cost = ((quantity * average_cost) +
-                       (excluded.quantity * excluded.average_cost)) / (quantity + excluded.quantity),
-                   quantity = quantity + excluded.quantity""",
-            (buyer_id, buy_order["asset_code"], buyer_account, quantity, float(execution_price)),
+        from managers.asset_cost_manager import AssetCostManager
+        AssetCostManager.upsert(
+            conn, buyer_id, buy_order["asset_code"], buyer_account, quantity,
+            from_minor_units(execution_minor, places), schema="assets",
         )
 
         positions = conn.execute(
-            "SELECT holding_id, account_number, quantity, average_cost "
+            "SELECT holding_id, account_number, quantity, average_cost,"
+            "average_cost_minor_units "
             "FROM assets.user_assets WHERE user_id = ? AND asset_code = ? AND "
             + self.LOT_SCOPE + " ORDER BY holding_id",
             (seller_id, sell_order["asset_code"], sell_order["funding_account"], sell_order["funding_account"]),
@@ -767,7 +791,9 @@ class OrderBookManager:
             take = min(left, int(position["quantity"]))
             if take <= 0:
                 continue
-            average_cost_minor = to_minor_units(position["average_cost"] or 0, places)
+            average_cost_minor = (int(position["average_cost_minor_units"] or 0)
+                                  if "average_cost_minor_units" in position.keys()
+                                  else to_minor_units(position["average_cost"] or 0, places))
             taxable_gain_minor += max(0, execution_minor - average_cost_minor) * take
             sold.append((position, take))
             left -= take

@@ -122,7 +122,8 @@ class ForeignSecuritiesManager:
 
     @staticmethod
     def add_position(conn,user,code,account,quantity,price):
-        conn.execute("INSERT INTO user_assets(user_id,asset_code,account_number,quantity,average_cost) VALUES (?,?,?,?,?) ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET average_cost=(quantity*average_cost+excluded.quantity*excluded.average_cost)/(quantity+excluded.quantity),quantity=quantity+excluded.quantity",(user,code,account,quantity,price))
+        from managers.asset_cost_manager import AssetCostManager
+        AssetCostManager.upsert(conn, user, code, account, quantity, price)
 
     def match(self,conn,order_id,now):
         incoming = conn.execute('SELECT asset_code FROM market_orders WHERE order_id=?',(order_id,)).fetchone()
@@ -176,7 +177,7 @@ class ForeignSecuritiesManager:
                     take=min(left,position['quantity'])
                     if not take:
                         continue
-                    cost_minor = to_minor_units(position['average_cost'] or 0, places)
+                    cost_minor = int(position['average_cost_minor_units'] or 0)
                     gain_minor += max(0, price_minor-cost_minor)*take
                     if take==position['quantity']:
                         conn.execute('DELETE FROM user_assets WHERE holding_id=?',(position['holding_id'],))

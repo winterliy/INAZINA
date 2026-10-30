@@ -15,6 +15,7 @@ from managers.user_manager import UserManager
 from managers.compliance_manager import ComplianceManager
 from managers.accounting_journal import AccountingJournal
 from managers.treasury_bond_manager import TreasuryBondManager
+from managers.order_book_manager import OrderBookManager
 from functions.money import audit_amount_field_coverage, audit_amount_snapshots
 
 
@@ -356,6 +357,68 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         with self.db.readonly() as conn:
             findings = audit_amount_snapshots(conn)
         self.assertTrue(any(item["status"] == "missing_snapshot" for item in findings), findings)
+
+    def test_user_asset_average_cost_has_a_live_currency_minor_unit_value(self):
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places,status) "
+            "VALUES ('TST','Test Currency','1',2,'active')"
+        )
+        self.db.assets.execute(
+            "INSERT INTO market_assets(code,name,price,type,quote_currency) "
+            "VALUES ('COST-TST','Cost test',1,'stock','TST')"
+        )
+        self.db.assets.execute(
+            "INSERT INTO user_assets(user_id,asset_code,quantity,average_cost) "
+            "VALUES ('us-user','COST-TST',2,1.23)"
+        )
+        row = self.db.assets.execute_one(
+            "SELECT average_cost,average_cost_minor_units FROM user_assets "
+            "WHERE user_id='us-user' AND asset_code='COST-TST'"
+        )
+        self.assertEqual((row[0], row[1]), (1.23, 123))
+        self.db.assets.execute(
+            "UPDATE user_assets SET average_cost_minor_units=456 "
+            "WHERE user_id='us-user' AND asset_code='COST-TST'"
+        )
+        self.assertEqual(
+            self.db.assets.execute_one(
+                "SELECT average_cost FROM user_assets "
+                "WHERE user_id='us-user' AND asset_code='COST-TST'"
+            )[0],
+            4.56,
+        )
+
+    def test_direct_security_buy_and_sell_preserve_fractional_home_currency_units(self):
+        self.db.assets.execute(
+            "INSERT INTO market_assets(code,name,price,type,quote_currency,total_supply) "
+            "VALUES ('TRADE-USD','Fractional quote',1.23,'stock','USD',100)"
+        )
+        manager = UserManager(self.db)
+        before = self.db.users.execute_one(
+            "SELECT cash_minor FROM users WHERE user_id='us-user'"
+        )[0]
+        bought = manager.buy_asset("us-user", "TRADE-USD", 2)
+        self.assertTrue(bought[0], bought[1])
+        self.assertEqual(
+            self.db.users.execute_one(
+                "SELECT cash_minor FROM users WHERE user_id='us-user'"
+            )[0],
+            before-246,
+        )
+        holding = self.db.assets.execute_one(
+            "SELECT average_cost_minor_units FROM user_assets "
+            "WHERE user_id='us-user' AND asset_code='TRADE-USD'"
+        )
+        self.assertEqual(holding[0], 123)
+        self.db.assets.execute(
+            "UPDATE market_assets SET price=1.50 WHERE code='TRADE-USD'"
+        )
+        sold = manager.sell_asset("us-user", "TRADE-USD", 1)
+        self.assertTrue(sold[0], sold[1])
+        after = self.db.users.execute_one(
+            "SELECT cash_minor FROM users WHERE user_id='us-user'"
+        )[0]
+        self.assertEqual(after, before-246+149)
 
     def test_late_initialized_financial_schemas_are_included_in_amount_registry(self):
         with self.db.readonly() as conn:
@@ -846,6 +909,54 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertEqual(self.db.accounts.execute_one(
             "SELECT principal FROM treasury_bond_holdings WHERE product_code='USD-BOND'"
         )[0], 20.10)
+
+    def test_treasury_bond_primary_purchase_uses_quote_currency_minor_units(self):
+        self.db.products.execute(
+            "INSERT INTO treasury_bond_products "
+            "(product_code,name,annual_rate,maturity_days,face_value,exchange_id,"
+            "market_price,total_supply,quote_currency) "
+            "VALUES ('USD-TRADE','USD trade bond',3,365,10.25,'EX',10.50,1025,'USD')"
+        )
+        book = OrderBookManager(self.db, UserManager(self.db))
+        ok, message = book.place_limit_order('us-user', 'USD-TRADE', 'buy', 2, 10.50)
+        self.assertTrue(ok, message)
+        holding = self.db.accounts.execute_one(
+            "SELECT principal_minor_units,face_value_minor_units,"
+            "acquisition_cost_minor_units FROM treasury_bond_holdings "
+            "WHERE user_id='us-user' AND product_code='USD-TRADE'"
+        )
+        self.assertEqual(tuple(holding), (2050, 1025, 2050))
+        offer = self.db.products.execute_one(
+            "SELECT sold_amount_minor_units FROM treasury_bond_products "
+            "WHERE product_code='USD-TRADE'"
+        )
+        self.assertEqual(offer[0], 2050)
+
+    def test_treasury_bond_secondary_transfer_uses_minor_unit_basis_and_price(self):
+        self.db.products.execute(
+            "INSERT INTO treasury_bond_products "
+            "(product_code,name,annual_rate,maturity_days,face_value,exchange_id,"
+            "market_price,total_supply,quote_currency) "
+            "VALUES ('USD-SECONDARY','USD secondary bond',3,365,10.25,'EX',10.50,10.25,'USD')"
+        )
+        self.db.users.create_user('buyer','미국 매수자','미국',1000)
+        book = OrderBookManager(self.db, UserManager(self.db))
+        ok, message = book.place_limit_order('us-user', 'USD-SECONDARY', 'buy', 1, 10.50)
+        self.assertTrue(ok, message)
+        ok, message = book.place_limit_order('us-user', 'USD-SECONDARY', 'sell', 1, 10.50)
+        self.assertTrue(ok, message)
+        ok, message = book.place_limit_order('buyer', 'USD-SECONDARY', 'buy', 1, 10.50)
+        self.assertTrue(ok, message)
+        buyer_holding = self.db.accounts.execute_one(
+            "SELECT principal_minor_units,face_value_minor_units,"
+            "acquisition_cost_minor_units FROM treasury_bond_holdings "
+            "WHERE user_id='buyer' AND product_code='USD-SECONDARY'"
+        )
+        self.assertEqual(tuple(buyer_holding), (1025, 1025, 1050))
+        self.assertIsNone(self.db.accounts.execute_one(
+            "SELECT 1 FROM treasury_bond_holdings "
+            "WHERE user_id='us-user' AND product_code='USD-SECONDARY'"
+        ))
 
     def test_usd_bond_maturity_posts_currency_minor_unit_interest_tax_and_credit(self):
         self.db.currency.execute(

@@ -11,6 +11,8 @@ offerings and these trades all move the same money. Changes that bypass the
 corporate-action journal are booked to the company's financial statements by
 :meth:`CompanyAccounts.reconcile`.
 """
+from decimal import Decimal
+
 from functions.money import base_currency_code
 from functions.time_utils import MAX_SUPPORTED_EPOCH
 
@@ -65,6 +67,21 @@ class CompanyAccounts:
         return sign * CurrencyManager.convert(conn, abs(units), currency, base_currency_code(conn)) / SCALE
 
     @staticmethod
+    def _nwx_decimal(conn, amount, currency):
+        """Convert a Decimal native-currency amount to 기준 통화 without float."""
+        from managers.currency_manager import CurrencyManager, SCALE
+        native = Decimal(str(amount or 0))
+        currency = str(currency or base_currency_code(conn)).upper()
+        units = int(native * SCALE)
+        sign = -1 if units < 0 else 1
+        if currency == base_currency_code(conn):
+            return Decimal(units) / SCALE
+        converted = CurrencyManager.convert(
+            conn, abs(units), currency, base_currency_code(conn)
+        )
+        return Decimal(sign * converted) / SCALE
+
+    @staticmethod
     def _currency_of(conn, code):
         row = conn.execute(
             "SELECT quote_currency FROM company WHERE company_code=? UNION ALL "
@@ -81,26 +98,38 @@ class CompanyAccounts:
         investments: securities at cost, deposits at balance, cash locked in orders
         and collateral; treasury: the company's own shares at cost; debt: loans.
         """
-        investments = treasury = 0.0
-        for lot in conn.execute("SELECT asset_code,quantity,average_cost FROM user_assets WHERE user_id=?", (account,)):
-            value = cls._nwx(conn, float(lot["quantity"]) * float(lot["average_cost"] or 0), cls._currency_of(conn, lot["asset_code"]))
+        investments = treasury = Decimal(0)
+        from functions.money import currency_precision, from_minor_units
+        for lot in conn.execute("SELECT asset_code,quantity,average_cost_minor_units FROM user_assets WHERE user_id=?", (account,)):
+            currency = cls._currency_of(conn, lot["asset_code"])
+            places = currency_precision(conn, currency)
+            cost = from_minor_units(lot["average_cost_minor_units"] or 0, places)
+            value = cls._nwx_decimal(
+                conn, cost * Decimal(str(lot["quantity"] or 0)), currency
+            )
             if cls.own_shares(conn, account, lot["asset_code"]):
                 treasury += value
             else:
                 investments += value
         from managers.currency_manager import SCALE
         for row in conn.execute("SELECT balance_units,quote_currency FROM accounts WHERE user_id=?", (account,)):
-            investments += cls._nwx(conn, int(row["balance_units"] or 0) / SCALE, row["quote_currency"])
+            investments += Decimal(str(cls._nwx(
+                conn, int(row["balance_units"] or 0) / SCALE, row["quote_currency"]
+            )))
         for row in conn.execute("SELECT reserved_cash,quote_currency FROM market_orders WHERE user_id=? "
                                 "AND status IN ('scheduled','open','partial') AND reserved_cash>0", (account,)):
-            investments += cls._nwx(conn, row["reserved_cash"], row["quote_currency"])
+            investments += Decimal(str(cls._nwx(
+                conn, row["reserved_cash"], row["quote_currency"]
+            )))
         for query in ("SELECT COALESCE(SUM(acquisition_cost),0) FROM treasury_bond_holdings WHERE user_id=? AND status='active'",
                       "SELECT COALESCE(SUM(collateral),0) FROM futures_positions WHERE user_id=?",
                       "SELECT COALESCE(SUM(amount),0) FROM option_collateral_cash_lots WHERE writer_id=?",
                       "SELECT COALESCE(SUM(principal),0) FROM els_subscriptions WHERE user_id=? AND status IN ('subscribed','issued')"):
-            investments += float(conn.execute(query, (account,)).fetchone()[0] or 0)
-        debt = sum(cls._nwx(conn, row["outstanding_balance"], row["quote_currency"]) for row in conn.execute(
-            "SELECT outstanding_balance,quote_currency FROM loans WHERE user_id=? AND status IN ('active','defaulted')", (account,)))
+            investments += Decimal(str(conn.execute(query, (account,)).fetchone()[0] or 0))
+        debt = sum((Decimal(str(cls._nwx(
+            conn, row["outstanding_balance"], row["quote_currency"]
+        ))) for row in conn.execute(
+            "SELECT outstanding_balance,quote_currency FROM loans WHERE user_id=? AND status IN ('active','defaulted')", (account,))), Decimal(0))
         return {"investments": investments, "treasury": treasury, "debt": debt}
 
     @classmethod
