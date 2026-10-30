@@ -356,7 +356,6 @@ tr.selected td { background: var(--select); }
 .gnav-in, .subnav-in, .content { max-width: 1280px; margin: 0 auto; padding-left: 24px; padding-right: 24px; }
 .gnav-in { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 24px; min-height: 44px; }
 .brand { display: flex; align-items: center; gap: 10px; }
-.brand-mark { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; color: #000; background: #f5f5f7; font-size: 12px; font-weight: 600; }
 .brand strong { font-size: 13px; font-weight: 600; }
 .brand small { color: #a1a1a6; font-size: 12px; }
 .gnav-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0 20px; color: #d2d2d7; font-size: 12px; }

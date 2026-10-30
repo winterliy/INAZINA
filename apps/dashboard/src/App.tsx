@@ -354,7 +354,7 @@ export default function App() {
   if (user.role !== "admin") {
     return <Stage><div className="shell">
       <header className="gnav"><div className="gnav-in">
-        <div className="brand"><span className="brand-mark">I</span><strong>INAZINA</strong><small>내 Dashboard</small></div>
+        <div className="brand"><strong>INAZINA</strong><small>내 Dashboard</small></div>
         <div className="gnav-meta"><a className="gnav-link" href={appUrl("hts")}>나루 열기</a><button type="button" onClick={logout}>{user.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button></div>
       </div></header>
       <main className="content">
@@ -374,7 +374,7 @@ export default function App() {
     <div className="shell">
       <header className="gnav">
         <div className="gnav-in">
-          <div className="brand"><span className="brand-mark">I</span><strong>INAZINA</strong><small>운영 Dashboard</small></div>
+          <div className="brand"><strong>INAZINA</strong><small>운영 Dashboard</small></div>
           <div className="gnav-meta">
             <span className="status"><span className={connected ? "dot ok" : "dot"} />{health}</span>
             <span className="mono dim">127.0.0.1</span>
