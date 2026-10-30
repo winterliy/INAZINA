@@ -85,20 +85,25 @@ class FractionalTradingManager:
     @staticmethod
     def _add_lot(conn, user, code, account, units, price):
         qty = quantity_number(Fraction(units, QUANTITY_SCALE))
-        conn.execute("""INSERT INTO user_assets(user_id,asset_code,account_number,quantity,average_cost)
-            VALUES (?,?,?,?,?) ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET
-            average_cost=(quantity*average_cost+excluded.quantity*excluded.average_cost)/(quantity+excluded.quantity),
-            quantity=ROUND(quantity+excluded.quantity,3)""", (str(user), code, account, qty, price))
+        from managers.asset_cost_manager import AssetCostManager
+        AssetCostManager.upsert(conn, user, code, account, qty, price)
 
     @staticmethod
     def _remove_lots(conn, user, code, units, price):
         left, gain, sold = units, 0, []
+        from managers.asset_cost_manager import AssetCostManager
+        currency = AssetCostManager.currency(conn, code)
+        places = CurrencyManager.precision(conn, currency)
         for row in conn.execute('SELECT * FROM user_assets WHERE user_id=? AND asset_code=? ORDER BY holding_id', (str(user), code)).fetchall():
             held = quantity_units(row['quantity'])
             take = min(left, held)
             if take <= 0:
                 continue
-            gain += max(0, price-int(row['average_cost'])) * take * (SCALE//QUANTITY_SCALE)
+            cost_units = int(row['average_cost_minor_units'] or 0)
+            price_units = int(price)
+            gain += max(0, price_units-cost_units) * take * (
+                SCALE // QUANTITY_SCALE // (10 ** places)
+            )
             if take == held:
                 conn.execute('DELETE FROM user_assets WHERE holding_id=?', (row['holding_id'],))
             else:
@@ -132,8 +137,8 @@ class FractionalTradingManager:
     def order(self, user, code, side, quantity, price):
         user, code = str(user), str(code)
         try:
-            if side not in {'buy', 'sell'} or isinstance(price, bool) or not isinstance(price, int) or not 1 <= price <= self.book.MAX_LIMIT_PRICE:
-                raise ValueError('주문 방향과 양의 정수 지정가를 확인해주세요.')
+            if side not in {'buy', 'sell'}:
+                raise ValueError('주문 방향을 확인해주세요.')
             qty = parse_quantity(quantity, fractional=True)
             units = quantity_units(qty)
             error = self.users._settle_user_interest(user)
@@ -152,6 +157,14 @@ class FractionalTradingManager:
                 if asset['type'] in {'mutual_fund', 'index_fund'}:
                     raise ValueError('일반·인덱스 펀드는 /매수·/매도에서 지정가 없이 NAV로 거래해주세요.')
                 currency = asset.get('quote_currency') or base_currency_code(conn)
+                from functions.money import parse_currency_money, to_minor_units, from_minor_units
+                places = CurrencyManager.precision(conn, currency)
+                limit_minor = to_minor_units(
+                    parse_currency_money(conn, price, currency, minimum=0), places
+                )
+                if limit_minor <= 0 or limit_minor > self.book.MAX_LIMIT_PRICE:
+                    raise ValueError('지정가는 0보다 크고 허용 한도 이하여야 합니다.')
+                price = from_minor_units(limit_minor, places)
                 reserve, account = 0, None
                 if side == 'buy':
                     supply = asset.get('supply')
@@ -159,7 +172,10 @@ class FractionalTradingManager:
                         'SELECT quantity FROM option_collateral_lots WHERE underlying_code=? AND writer_id=?', (code, user)))
                     if supply is not None and self._held(conn, code, user)+collateral+self._reserved(conn, code, user, side)+units > int(supply)*QUANTITY_SCALE:
                         raise ValueError('총 발행량 한도를 초과하는 주문입니다.')
-                    reserve = self._ceil(price*units*(SCALE//QUANTITY_SCALE), self._quantum(conn, currency))
+                    reserve = self._ceil(
+                        limit_minor * units * (SCALE // (10 ** places) // QUANTITY_SCALE),
+                        self._quantum(conn, currency),
+                    )
                     if reserve > MAX_UNITS:
                         raise ValueError('주문 예치금 한도를 초과했습니다.')
                     account = self._funds(conn, user, currency, reserve, now)
@@ -168,9 +184,11 @@ class FractionalTradingManager:
                     raise ValueError('매도 가능 수량이 부족합니다.')
                 cursor = conn.execute("""INSERT INTO market_orders
                     (user_id,asset_code,side,limit_price,quantity,remaining_quantity,reserved_cash,funding_account,
-                     order_kind,status,created_epoch,updated_epoch,quote_currency,fractional_order,reserved_cash_units)
-                    VALUES (?,?,?,?,?,?,?,?, 'asset','open',?,?,?,1,?)""",
-                    (user,code,side,price,qty,qty,self._native(reserve),account,now,now,currency,reserve))
+                     order_kind,status,created_epoch,updated_epoch,quote_currency,fractional_order,reserved_cash_units,
+                     limit_price_minor_units)
+                    VALUES (?,?,?,?,?,?,?,?, 'asset','open',?,?,?,1,?,?)""",
+                    (user,code,side,float(price),qty,qty,self._native(reserve),account,now,now,
+                     currency,reserve,limit_minor))
                 order_id = cursor.lastrowid
                 _, filled, _ = self.match(conn, order_id, now)
                 remaining = conn.execute('SELECT remaining_quantity FROM market_orders WHERE order_id=?', (order_id,)).fetchone()[0]
@@ -178,10 +196,13 @@ class FractionalTradingManager:
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f'❌ {exc}'
 
-    def _consume_buyer(self, conn, buyer, units, price, currency):
+    def _consume_buyer(self, conn, buyer, units, price_minor, currency):
         quantum = self._quantum(conn, currency)
+        places = CurrencyManager.precision(conn, currency)
         before = int(buyer['executed_value_units'])
-        after = before + price*units*(SCALE//QUANTITY_SCALE)
+        after = before + price_minor * units * (
+            SCALE // (10 ** places) // QUANTITY_SCALE
+        )
         cost = self._ceil(after, quantum)-self._ceil(before, quantum)
         reserved = int(buyer['reserved_cash_units']) if buyer['fractional_order'] else int(round(float(buyer['reserved_cash'])*SCALE))
         if cost > reserved:
@@ -203,6 +224,7 @@ class FractionalTradingManager:
             conn.execute('UPDATE market_orders SET reserved_cash=0,reserved_cash_units=0 WHERE order_id=?', (order['order_id'],))
 
     def match(self, conn, order_id, now):
+        from functions.money import from_minor_units, to_minor_units
         count, filled, value = 0, 0, 0
         order = conn.execute('SELECT asset_code FROM market_orders WHERE order_id=?', (order_id,)).fetchone()
         error = MarketSessionManager(self.db).trading_error(
@@ -218,31 +240,34 @@ class FractionalTradingManager:
             if not fractional_enabled(asset) or asset['status'] != 'active':
                 break
             currency = asset.get('quote_currency') or base_currency_code(conn)
+            places = CurrencyManager.precision(conn, currency)
+            reference_minor = to_minor_units(asset['price'] or 0, places)
             buy = incoming['side'] == 'buy'
             comparison, direction = ('<=','ASC') if buy else ('>=','DESC')
             maker = conn.execute("SELECT * FROM market_orders WHERE asset_code=? AND order_kind='asset' AND side=? AND user_id<>? "
                 "AND status IN ('open','partial') AND remaining_quantity>0 "
-                f'AND limit_price{comparison}? ORDER BY limit_price {direction},created_epoch,order_id LIMIT 1',
-                (asset['code'], 'sell' if buy else 'buy',incoming['user_id'],incoming['limit_price'])).fetchone()
+                f'AND limit_price_minor_units{comparison}? ORDER BY limit_price_minor_units {direction},created_epoch,order_id LIMIT 1',
+                (asset['code'], 'sell' if buy else 'buy',incoming['user_id'],incoming['limit_price_minor_units'])).fetchone()
             if maker:
                 units = min(quantity_units(incoming['remaining_quantity']), quantity_units(maker['remaining_quantity']))
-                price = int(maker['limit_price'])
+                price_minor = int(maker['limit_price_minor_units'])
                 buyer, seller = (incoming,maker) if buy else (maker,incoming)
-            elif buy and int(incoming['limit_price']) >= asset['price'] and asset.get('supply') is not None:
+            elif buy and int(incoming['limit_price_minor_units']) >= reference_minor and asset.get('supply') is not None:
                 issued = self._held(conn, asset['code']) + sum(quantity_units(r[0]) for r in conn.execute('SELECT quantity FROM option_collateral_lots WHERE underlying_code=?', (asset['code'],)))
                 units = min(quantity_units(incoming['remaining_quantity']), max(0,int(asset['supply'])*QUANTITY_SCALE-issued))
                 if not units:
                     break
-                buyer, seller, price = incoming, None, int(asset['price'])
+                buyer, seller, price_minor = incoming, None, reference_minor
             else:
                 break
+            price = float(from_minor_units(price_minor, places))
             from managers.financial_manager import FinancialManager as Finance
             if not seller and source=='company':Finance.ensure(conn,asset['code'],now)
-            spent = self._consume_buyer(conn, buyer, units, price, currency)
-            gross = price*units*(SCALE//QUANTITY_SCALE)
+            spent = self._consume_buyer(conn, buyer, units, price_minor, currency)
+            gross = price_minor*units*(SCALE//(10**places)//QUANTITY_SCALE)
             gross = gross//self._quantum(conn,currency)*self._quantum(conn,currency)
             if seller:
-                sold, gain = self._remove_lots(conn,seller['user_id'],asset['code'],units,price)
+                sold, gain = self._remove_lots(conn,seller['user_id'],asset['code'],units,price_minor)
                 self._pay_seller(conn,seller['user_id'],asset['code'],currency,gross,sold,gain,now)
                 CurrencyManager.treasury_receive(conn, CurrencyManager.exchange_treasury(conn, asset['code']), currency, spent-gross)
                 if source == 'company':

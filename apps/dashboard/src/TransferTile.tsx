@@ -42,7 +42,7 @@ export function TransferTile({ ctx }: { ctx: Ctx }) {
     <div className="transfer-route">
       <div><small>보내는 곳</small><b>{from?.name ?? "…"}</b><small className="mono">{from?.account ?? ""}</small></div>
       <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
-      <label><small>받는 곳</small><b>{found?.nickname ?? "받는 사람"}</b><input placeholder="ID 또는 계좌번호" value={recipient} onChange={(event) => setRecipient(event.target.value)} /></label>
+      <label><small>받는 곳</small><b>{found?.nickname ?? "받는 사람"}</b><input className="mono" placeholder="사용자 ID 또는 계좌" value={recipient} onChange={(event) => setRecipient(event.target.value)} /></label>
     </div>
     <div className="transfer-amount">
       <input inputMode="decimal" aria-label="금액" placeholder="금액" value={amount} onChange={(event) => setAmount(event.target.value)} />

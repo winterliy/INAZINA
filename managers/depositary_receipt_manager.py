@@ -553,32 +553,10 @@ class DepositaryReceiptManager:
     @staticmethod
     def _add_holding(conn, user_id, asset_code, quantity, unit_cost, currency_code):
         """Add a holding while keeping its weighted cost in native currency precision."""
-        from functions.money import round_currency
-        row = conn.execute(
-            "SELECT holding_id,quantity,average_cost FROM assets.user_assets "
-            "WHERE user_id=? AND asset_code=? AND IFNULL(account_number,'')='' "
-            "ORDER BY holding_id LIMIT 1", (str(user_id), str(asset_code)),
-        ).fetchone()
-        if row:
-            old_quantity = Decimal(str(row["quantity"] or 0))
-            added_quantity = Decimal(str(quantity))
-            total_quantity = old_quantity + added_quantity
-            average_cost = round_currency(
-                conn,
-                (old_quantity * Decimal(str(row["average_cost"] or 0))
-                 + added_quantity * Decimal(str(unit_cost))) / total_quantity,
-                currency_code,
-            )
-            conn.execute(
-                "UPDATE assets.user_assets SET quantity=?,average_cost=? WHERE holding_id=?",
-                (float(total_quantity), average_cost, row["holding_id"]),
-            )
-        else:
-            conn.execute(
-                "INSERT INTO assets.user_assets(user_id,asset_code,account_number,quantity,average_cost) "
-                "VALUES (?,?,NULL,?,?)",
-                (str(user_id), str(asset_code), float(quantity), unit_cost),
-            )
+        from managers.asset_cost_manager import AssetCostManager
+        AssetCostManager.upsert(
+            conn, user_id, asset_code, None, quantity, unit_cost, schema="assets",
+        )
 
     @staticmethod
     def _reserved_quantity(conn, asset_code, user_id=None, exclude_reference=None):
@@ -1242,7 +1220,7 @@ class DepositaryReceiptManager:
                         raise ValueError(f"DR 프로그램 발행 한도({supply:,})를 초과합니다.")
 
                     lots = conn.execute(
-                        "SELECT holding_id,account_number,quantity,average_cost FROM assets.user_assets "
+                        "SELECT holding_id,account_number,quantity,average_cost_minor_units FROM assets.user_assets "
                         "WHERE user_id=? AND asset_code=? ORDER BY holding_id",
                         (user, underlying_code),
                     ).fetchall()
@@ -1284,7 +1262,10 @@ class DepositaryReceiptManager:
                                    int(math.floor(old_quantity + 1e-9)))
                         if take <= 0:
                             continue
-                        total_cost += Decimal(str(lot["average_cost"] or 0)) * take
+                        total_cost += from_minor_units(
+                            int(lot["average_cost_minor_units"] or 0),
+                            currency_precision(conn, underlying["quote_currency"]),
+                        ) * take
                         changed = (conn.execute(
                             "DELETE FROM assets.user_assets WHERE holding_id=? AND quantity=?",
                             (lot["holding_id"], lot["quantity"]),
@@ -1354,7 +1335,7 @@ class DepositaryReceiptManager:
                         action, quantity, shares, when,
                     )
                     dr_lots = conn.execute(
-                        "SELECT holding_id,quantity,average_cost FROM assets.user_assets "
+                        "SELECT holding_id,quantity,average_cost_minor_units FROM assets.user_assets "
                         "WHERE user_id=? AND asset_code=? ORDER BY holding_id", (user, code),
                     ).fetchall()
                     remaining = quantity
@@ -1363,7 +1344,10 @@ class DepositaryReceiptManager:
                         take = min(remaining, int(lot["quantity"] or 0))
                         if take <= 0:
                             continue
-                        total_dr_cost += Decimal(str(lot["average_cost"] or 0))*take
+                        total_dr_cost += from_minor_units(
+                            int(lot["average_cost_minor_units"] or 0),
+                            currency_precision(conn, program["dr_currency"]),
+                        ) * take
                         changed = (conn.execute(
                             "DELETE FROM assets.user_assets WHERE holding_id=? AND quantity=?",
                             (lot["holding_id"], lot["quantity"]),

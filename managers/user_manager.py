@@ -69,7 +69,8 @@ class UserManager:
         row = conn.execute(
             "SELECT product_code AS code, name, exchange_id, market_price AS price, "
             "'bond' AS type, status, 1 AS is_fixed, NULL AS supply, face_value, "
-            "annual_rate, maturity_days, total_supply, sold_amount "
+            "annual_rate, maturity_days, total_supply, sold_amount, quote_currency,"
+            "face_value_minor_units,total_supply_minor_units,sold_amount_minor_units "
             "FROM product.treasury_bond_products WHERE product_code = ?",
             (code,),
         ).fetchone()
@@ -79,8 +80,12 @@ class UserManager:
             raise ValueError(f"자산 코드 `{code}`가 여러 테이블에 중복 등록되어 있습니다.")
         if matches:
             asset = matches[0][0]
+            from functions.money import currency_precision
+            currency = str(asset.get("quote_currency") or base_currency_code(conn))
+            places = currency_precision(conn, currency)
             price = float(asset["price"] or 0)
-            asset["price"] = max(1, round_money(price)) if price > 0 else 0
+            minimum = 1 / (10 ** places)
+            asset["price"] = max(minimum, round_money(price, places)) if price > 0 else 0
         if matches and matches[0][1] == "investment":
             asset = matches[0][0]
             try:
@@ -340,9 +345,12 @@ class UserManager:
                     return False, "❌ 주식 선물은 거래소의 지정가 매수·매도로 거래해주세요."
                 if asset["status"] != "active":
                     return False, "❌ 현재 거래가 중지된 자산입니다."
-                price = int(round(asset["price"] or 0))
-                if price <= 0:
+                from functions.money import currency_precision, from_minor_units, to_minor_units
+                places = currency_precision(conn, currency)
+                price_units = to_minor_units(asset["price"] or 0, places)
+                if price_units <= 0:
                     return False, "❌ 자산 가격이 올바르게 등록되지 않았습니다."
+                price = from_minor_units(price_units, places)
                 supply = asset["supply"]
                 if supply is not None:
                     if int(supply) < 0:
@@ -355,38 +363,36 @@ class UserManager:
                     ).fetchone()["quantity"]
                     if int(issued) + quantity > int(supply):
                         return False, f"❌ 매수 가능 수량을 초과했습니다. (잔여 {max(0, int(supply)-int(issued)):,}주)"
-                total_cost = price * quantity
+                total_cost_units = price_units * quantity
+                total_cost = from_minor_units(total_cost_units, places)
                 funds = self._choose_funds(conn, user_id)
                 if funds is None:
                     return False, "❌ 등록된 사용자만 거래할 수 있습니다."
                 balance, account_number = funds
-                if balance < total_cost or not self._debit_source(conn, user_id, account_number, total_cost):
+                if balance < float(total_cost) or not self._debit_source(
+                    conn, user_id, account_number, float(total_cost), currency=currency
+                ):
                     return False, f"❌ 잔액이 부족합니다. (필요 금액: {total_cost:,} {currency})"
-                conn.execute(
-                    """INSERT INTO assets.user_assets
-                       (user_id, asset_code, account_number, quantity, average_cost)
-                       VALUES (?, ?, ?, ?, ?)
-                       ON CONFLICT(user_id, asset_code, IFNULL(account_number, '')) DO UPDATE SET
-                           average_cost = ((quantity * average_cost) +
-                               (excluded.quantity * excluded.average_cost)) /
-                               (quantity + excluded.quantity),
-                           quantity = quantity + excluded.quantity""",
-                    (user_id, asset_code, account_number, quantity, price),
+                from managers.asset_cost_manager import AssetCostManager
+                AssetCostManager.upsert(
+                    conn, user_id, asset_code, account_number, quantity,
+                    from_minor_units(price_units, places), schema="assets",
                 )
                 conn.execute(
                     "INSERT INTO assets.market_trade_history "
                     "(asset_code, side, quantity, price, recorded_epoch) "
                     "VALUES (?, 'buy', ?, ?, ?)",
-                    (asset_code, quantity, price, int(time.time())),
+                    (asset_code, quantity, float(price), int(time.time())),
                 )
                 if asset["type"] in {"mutual_fund", "index_fund", "corporate_bond"}:
                     product = conn.execute("SELECT issuer_code FROM product.investment WHERE product_code = ?", (asset_code,)).fetchone()
                     if asset["type"] == "corporate_bond":
-                        conn.execute("UPDATE company.company SET capital = capital + ? WHERE company_code = ?", (total_cost, product["issuer_code"]))
+                        conn.execute("UPDATE company.company SET capital = capital + ? WHERE company_code = ?", (float(total_cost), product["issuer_code"]))
                     else:
                         # The listing country's treasury is the counterparty.
                         CurrencyManager.treasury_receive(
-                            conn, CurrencyManager.exchange_treasury(conn, asset_code), currency, total_cost * SCALE)
+                        conn, CurrencyManager.exchange_treasury(conn, asset_code), currency,
+                        total_cost_units * SCALE // (10 ** places))
                 if source == "company":
                     self._refresh_max_shareholder(conn, asset_code)
                 unit = "주" if str(asset["type"]).lower() in {"stock", "주식"} else "좌" if asset["type"] in {"mutual_fund", "index_fund"} else "개"
@@ -425,9 +431,13 @@ class UserManager:
                     return False, "❌ 현재 거래가 중지된 자산입니다."
                 if asset["type"] in {"stock_future", "corporate_bond"}:
                     return False, "❌ 선물·회사채는 거래소 지정가 매수·매도로 거래해주세요."
-                price = int(round(asset["price"] or 0))
+                from functions.money import currency_precision, from_minor_units, to_minor_units
+                places = currency_precision(conn, currency)
+                price_minor = to_minor_units(asset["price"] or 0, places)
+                price = from_minor_units(price_minor, places)
                 positions = conn.execute(
-                    "SELECT holding_id, account_number, quantity, average_cost "
+                    "SELECT holding_id, account_number, quantity, average_cost,"
+                    "average_cost_minor_units "
                     "FROM assets.user_assets WHERE user_id = ? AND asset_code = ? "
                     "ORDER BY holding_id", (user_id, asset_code)
                 ).fetchall()
@@ -466,22 +476,32 @@ class UserManager:
                     take = min(left, int(row["quantity"]))
                     if take <= 0:
                         continue
-                    taxable_gain += max(0, price - int(round(row["average_cost"] or 0))) * take
+                    basis_minor = (int(row["average_cost_minor_units"] or 0)
+                                   if "average_cost_minor_units" in row.keys()
+                                   else to_minor_units(row["average_cost"] or 0, places))
+                    taxable_gain += max(0, price_minor-basis_minor) * take
                     sold.append((row["holding_id"], row["account_number"], take, int(row["quantity"])))
                     left -= take
                     if left == 0:
                         break
 
-                gross_proceeds = price * quantity
+                gross_proceeds_minor = price_minor * quantity
+                gross_proceeds = from_minor_units(gross_proceeds_minor, places)
                 if asset["type"] in {"mutual_fund", "index_fund"}:
                     CurrencyManager.treasury_pay(
-                        conn, CurrencyManager.exchange_treasury(conn, asset_code), currency, gross_proceeds * SCALE)
-                total_tax = self._tax(conn, user_id, "stock_sale_gain", taxable_gain)
-                tax_left = total_tax
+                        conn, CurrencyManager.exchange_treasury(conn, asset_code), currency,
+                        gross_proceeds_minor * SCALE // (10 ** places))
+                total_tax = self._tax(
+                    conn, user_id, "stock_sale_gain",
+                    from_minor_units(taxable_gain, places), currency=currency,
+                )
+                total_tax_units = to_minor_units(total_tax, places)
+                tax_left_units = total_tax_units
                 qty_left = quantity
                 for holding_id, account_number, take, old_quantity in sold:
-                    share_tax = tax_left if take == qty_left else round_money(total_tax * take / quantity)
-                    net_proceeds = max(0, price * take - share_tax)
+                    share_tax_units = (tax_left_units if take == qty_left else
+                                       total_tax_units * take // quantity)
+                    net_proceeds_units = max(0, price_minor*take-share_tax_units)
                     if take == old_quantity:
                         cursor = conn.execute(
                             "DELETE FROM assets.user_assets WHERE holding_id = ? AND quantity = ?",
@@ -495,8 +515,11 @@ class UserManager:
                         )
                     if cursor.rowcount != 1:
                         raise RuntimeError("보유 수량이 변경되어 매도를 취소했습니다.")
-                    self._credit_source(conn, user_id, account_number, net_proceeds)
-                    tax_left -= share_tax
+                    self._credit_source(
+                        conn, user_id, account_number,
+                        float(from_minor_units(net_proceeds_units, places)), currency=currency,
+                    )
+                    tax_left_units -= share_tax_units
                     qty_left -= take
                 if source == "company":
                     self._refresh_max_shareholder(conn, asset_code)
@@ -504,13 +527,15 @@ class UserManager:
                     "INSERT INTO assets.market_trade_history "
                     "(asset_code, side, quantity, price, recorded_epoch) "
                     "VALUES (?, 'sell', ?, ?, ?)",
-                    (asset_code, quantity, price, int(time.time())),
+                    (asset_code, quantity, float(price), int(time.time())),
                 )
-            net_proceeds = max(0, gross_proceeds - total_tax)
+            net_proceeds = from_minor_units(
+                max(0, gross_proceeds_minor-total_tax_units), places
+            )
             unit = "주" if str(asset["type"]).lower() in {"stock", "주식"} else "좌" if asset["type"] in {"mutual_fund", "index_fund"} else "개"
             return True, (
-                f"✅ {asset['name']} {quantity:,}{unit}를 {gross_proceeds:,} 기준 통화에 매도했습니다.\n"
-                f"실현이익 과세: {total_tax:,} 기준 통화 · 계좌 입금: {net_proceeds:,} 기준 통화"
+                f"✅ {asset['name']} {quantity:,}{unit}를 {gross_proceeds:,} {currency}에 매도했습니다.\n"
+                f"실현이익 과세: {total_tax:,} {currency} · 계좌 입금: {net_proceeds:,} {currency}"
             )
         except ValueError as exc:
             return False, f"❌ {exc}"
@@ -1138,12 +1163,26 @@ class UserManager:
         bond_face_total = sum(item["principal"] for item in bond_details)
         bond_total = sum(item["market_value"]*currency_rates.get(item["quote_currency"],1) for item in bond_details)
 
-        loan_row = conn.execute(
-            "SELECT COALESCE(SUM(outstanding_balance), 0) AS total FROM loans "
-            "WHERE user_id = ? AND status = 'active'",
-            (user_id,),
-        ).fetchone()
-        loan_total = int(round(loan_row["total"] or 0)) if loan_row else 0
+        loan_rows = conn.execute(
+            "SELECT COALESCE(quote_currency,base_currency_code()) currency_code,"
+            "SUM(outstanding_balance_minor_units) balance_minor_units "
+            "FROM loans WHERE user_id=? AND status IN ('active','defaulted') "
+            "GROUP BY COALESCE(quote_currency,base_currency_code())",
+            (str(user_id),),
+        ).fetchall()
+        loan_home_units = 0
+        for loan in loan_rows:
+            currency = str(loan["currency_code"] or base_currency_code(conn))
+            places = currency_snapshot.precision(currency)
+            minor_units = max(0, int(loan["balance_minor_units"] or 0))
+            currency_micro_units = minor_units * SCALE // (10 ** places)
+            loan_home_units += currency_snapshot.convert(
+                currency_micro_units, currency, national_currency
+            )
+        loan_total = float(Decimal(loan_home_units) / Decimal(SCALE))
+        loan_total_base = currency_snapshot.convert(
+            loan_home_units, national_currency, base_currency_code(conn)
+        ) // SCALE
         currency_total = 0
         currency_accounts = []
         currency_rows = conn.execute("SELECT quote_currency AS currency_code,balance_units FROM accounts WHERE user_id=? AND account_type='currency_saving' AND quote_currency<>?",(str(user_id),national_currency)).fetchall()
@@ -1212,7 +1251,7 @@ class UserManager:
             "grand_total": grand_total,
             "loan_total": loan_total,
             # Loans are owed in the home currency; totals are valued in 기준 통화.
-            "net_worth": grand_total - int(Decimal(loan_total)*Decimal(str(home_rate_nwx))),
+            "net_worth": grand_total - loan_total_base,
         }
 
     def _asset_from_tables(self, code):

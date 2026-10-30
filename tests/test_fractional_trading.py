@@ -163,6 +163,35 @@ class FractionalTradingTests(unittest.TestCase):
         self.assertEqual(self.holding('admin', 'LOT'), 1)
         self.assertEqual(self.holding('citizen', 'LOT'), 0)
 
+    def test_fractional_foreign_order_accepts_decimal_quote_price(self):
+        self.stock()
+        with self.db.atomic() as conn:
+            conn.execute("INSERT INTO currencies(code,name,reference_rate,decimal_places) "
+                         "VALUES ('USD','달러','1500',2)")
+            conn.execute("INSERT INTO country_currencies(nationality,currency_code) "
+                         "VALUES ('미국','USD')")
+            conn.execute("UPDATE users SET nationality='낙원' WHERE user_id='citizen'")
+            conn.execute("INSERT INTO accounts(account_number,user_id,product_code,account_type,"
+                         "quote_currency,balance_units) VALUES ('USD_ACCOUNT','citizen','USD_SAVE',"
+                         "'currency_saving','USD',0)")
+            CurrencyManager.change(conn, 'citizen', 'USD', 10*SCALE)
+        self.command('상품생성', 'US company 미국주식 게임 100000 10 1 EX 1 {"quote_currency":"USD"}')
+        self.db.companies.execute(
+            "UPDATE company SET share_price=1.25 WHERE company_code='US'"
+        )
+        ok, message = self.bot.order_book.place_limit_order(
+            'citizen', 'US', 'buy', '.008', '1.25'
+        )
+        self.assertTrue(ok, message)
+        holding = self.db.assets.execute_one(
+            "SELECT quantity,average_cost_minor_units FROM user_assets "
+            "WHERE user_id='citizen' AND asset_code='US'"
+        )
+        self.assertEqual(tuple(holding), (.008, 125))
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT balance_units FROM accounts WHERE account_number='USD_ACCOUNT'"
+        )[0], 9_990_000)
+
     def test_fractional_preferred_claim_and_merger_cash(self):
         self.stock()
         self.command('상품생성', 'PR preferred 우선주 ST 100000 10 100 EX 1 {"dividend_funding":"issuer","liquidation_value_per_share":1}')

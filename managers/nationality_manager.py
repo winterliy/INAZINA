@@ -95,12 +95,16 @@ class NationalityManager:
                 proceeds = CurrencyManager.convert(conn, int(unit * Decimal(str(row["quantity"])) * SCALE), base_currency_code(conn), old)
                 CurrencyManager.change(conn, user_id, old, proceeds)
                 CurrencyManager.change(conn, treasury, old, -proceeds, allow_deficit=True)
-                conn.execute(
-                    "INSERT INTO user_assets(user_id,asset_code,account_number,quantity,average_cost) VALUES (?,?,NULL,?,?) "
-                    "ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET "
-                    "average_cost=(quantity*average_cost+excluded.quantity*excluded.average_cost)/(quantity+excluded.quantity),"
-                    "quantity=quantity+excluded.quantity",
-                    (treasury, row["asset_code"], row["quantity"], row["average_cost"]))
+                from functions.money import currency_precision, from_minor_units
+                from managers.asset_cost_manager import AssetCostManager
+                currency = AssetCostManager.currency(conn, row["asset_code"])
+                cost = from_minor_units(
+                    row["average_cost_minor_units"] or 0,
+                    currency_precision(conn, currency),
+                )
+                AssetCostManager.upsert(
+                    conn, treasury, row["asset_code"], None, row["quantity"], cost
+                )
                 conn.execute("DELETE FROM user_assets WHERE holding_id=?", (row["holding_id"],))
                 sold += proceeds
             for holding in conn.execute(

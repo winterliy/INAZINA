@@ -50,12 +50,10 @@ def _take_units(conn, user_id, code, quantity):
 
 
 def _issue_shares(conn, user_id, company, shares, unit_cost, capital):
-    conn.execute(
-        "INSERT INTO user_assets(user_id,asset_code,account_number,quantity,average_cost) VALUES (?,?,NULL,?,?) "
-        "ON CONFLICT(user_id,asset_code,IFNULL(account_number,'')) DO UPDATE SET "
-        "average_cost=(quantity*average_cost+excluded.quantity*excluded.average_cost)/(quantity+excluded.quantity),"
-        "quantity=quantity+excluded.quantity",
-        (user_id, company["company_code"], shares, unit_cost))
+    from managers.asset_cost_manager import AssetCostManager
+    AssetCostManager.upsert(
+        conn, user_id, company["company_code"], None, shares, unit_cost
+    )
     changed = conn.execute(
         "UPDATE company SET total_shares=total_shares+?,capital=COALESCE(capital,0)+? "
         "WHERE company_code=? AND COALESCE(capital,0)<=?",
