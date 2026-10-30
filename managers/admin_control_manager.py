@@ -50,7 +50,7 @@ BOND_FEATURES = {'corporatebond':'plain','convertiblebond':'convertible','warran
 SAVING_KINDS = {'saving':'saving','currencyproduct':'currency_saving','cma':'cma','ima':'ima','wrap':'wrap'}
 DEPOSIT_CATEGORIES = set(SAVING_KINDS)
 EXAMPLES = {
-    'stock': {'industry':'소프트웨어','exchange_id':'INZ','capital':1000000},
+    'stock': {'industry':'소프트웨어','exchange_id':'UNLISTED','capital':1000000},
     'asset': {'exchange_id':'INZ','type':'stock'},
     'dr': {'exchange_id':'LSE','type':'depositary_receipt',
            'underlying_per_receipt':1,'receipt_type':'DR','depositary_bank':'Inazina Depositary',
@@ -507,6 +507,16 @@ class AdminControlManager:
                     from managers.els_manager import ELSManager
                     if ELSManager.index_removal_blocked(conn,[code]):
                         raise ValueError('미상환 ELS의 기초지수를 구성하는 마지막 주식은 거래소를 변경할 수 없습니다.')
+                if 'listed_shares' in columns:
+                    # Listed shares: how many of total_shares the market may ever hold (NULL: all).
+                    exchange=values.get('exchange_id',existing['exchange_id'] if existing else None)
+                    if exchange=='UNLISTED':
+                        values['listed_shares']=None
+                    elif values.get('listed_shares') not in (None,''):
+                        total=int(values.get('total_shares',existing['total_shares'] if existing else 0) or 0)
+                        values['listed_shares']=self._number(values['listed_shares'],1,total,integer=True)
+                    elif 'listed_shares' in values:
+                        values['listed_shares']=None
                 share_class=merged.get('share_class','common')
                 if share_class not in {'common','preferred'}:
                     raise ValueError('share_class는 common 또는 preferred입니다.')

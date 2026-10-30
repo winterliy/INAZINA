@@ -49,6 +49,8 @@ class CompanyDB(DBManager):
             "sector_sensitivity": "REAL DEFAULT NULL CHECK(sector_sensitivity IS NULL OR sector_sensitivity >= 0)",
             "jump_intensity": "REAL DEFAULT NULL CHECK(jump_intensity IS NULL OR jump_intensity >= 0)",
             "mean_reversion": "REAL DEFAULT NULL CHECK(mean_reversion IS NULL OR mean_reversion >= 0)",
+            # Shares offered to the market when listed (a partial listing); NULL means all of them.
+            "listed_shares": "INTEGER DEFAULT NULL CHECK(listed_shares IS NULL OR listed_shares >= 0)",
         }.items():
             if column not in columns:
                 self.execute(f"ALTER TABLE company ADD COLUMN {column} {declaration}")

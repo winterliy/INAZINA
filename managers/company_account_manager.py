@@ -206,7 +206,7 @@ class CompanyAccounts:
     @staticmethod
     def summary(conn):
         rows = conn.execute(
-            "SELECT c.company_code,c.name,c.exchange_id,c.total_shares,c.share_price,"
+            "SELECT c.company_code,c.name,c.exchange_id,c.total_shares,c.listed_shares,c.share_price,"
             "COALESCE(i.balance,0) cash,COALESCE(i.locked_amount,0) locked,a.user_id account "
             "FROM company c LEFT JOIN issuer_cash_accounts i ON i.company_code=c.company_code "
             "LEFT JOIN company_accounts a ON a.company_code=c.company_code "

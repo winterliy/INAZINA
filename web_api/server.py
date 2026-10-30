@@ -1883,7 +1883,14 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
             "depositInsuranceReconciliation": deposit_insurance_reconciliation,
             "depositInsuranceClaims": insurance_claims,
             "commonJournalReconciliation": common_journal_reconciliation,
-            "financialCloseControl": financial_close_control,
+            # Hundreds of thousands of snapshot findings once made this response 130 MB; the page
+            # shows the first 100 and the count (all snapshot findings are in amountSnapshotAudit).
+            "financialCloseControl": {
+                **{key: value for key, value in financial_close_control.items()
+                   if key not in ("findings", "amount_snapshot_findings")},
+                "findingCount": len(financial_close_control["findings"]),
+                "findings": financial_close_control["findings"][:100],
+            },
             "commonTrialBalance": common_trial_balance,
             "commonJournalUnbalancedEntries": common_journal_unbalanced,
             "amountSnapshotAudit": {
@@ -2335,7 +2342,8 @@ def product_catalog():
                        "label": "발행총액" if profile == "bond" and field == "total_supply"
                                 else ("결제 통화" if profile == "dr" else "통장 화폐") if field == "quote_currency"
                                 else "발행 은행 ID" if field == "issuer"
-                                else "상장 거래소 ID (비상장이면 UNLISTED)" if field == "exchange_id" and profile in {"stock", "preferred"}
+                                else "상장 거래소 (새 법인은 비상장 · 법인 자본에서 상장)" if field == "exchange_id" and profile == "stock"
+                                else "상장 거래소 ID (비상장이면 UNLISTED)" if field == "exchange_id" and profile == "preferred"
                                 else ARG_LABELS.get(field, field),
                        "optional": field in OPTIONAL_ARGS.get(profile, ()),
                        "text": field in TEXT_ARGS or field == "quote_currency"} for field in _form_fields(profile)]
@@ -2589,6 +2597,10 @@ def product_save(actor, payload):
         columns = {row["name"]: row["type"] or "" for row in connection.execute(f'PRAGMA table_info("{table}")')}
     fields = _convert_product_fields(profile, payload.get("fields") or {}, payload.get("advanced") or {}, columns)
     bot = domain().bot
+    if operation == "create" and profile == "stock":
+        # A new 법인 starts unlisted; 법인 자본 lists it, with the share of it offered.
+        fields["exchange_id"] = "UNLISTED"
+        fields.pop("listed_shares", None)
     if operation == "create":
         token = PRODUCT_KINDS[profile][2]
         raw = f"{code} {token} {json.dumps(fields, ensure_ascii=False)}"

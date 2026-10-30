@@ -53,7 +53,9 @@ class UserManager:
             matches.append((dict(row), "market_assets"))
         row = conn.execute(
             "SELECT company_code AS code, name, exchange_id, share_price AS price, 'stock' AS type, "
-            "status, is_fixed, total_shares AS supply, quote_currency, Fractal FROM company.company WHERE company_code = ?", (code,)
+            # A partial listing caps what the market can ever hold at listed_shares.
+            "status, is_fixed, COALESCE(listed_shares, total_shares) AS supply, quote_currency, Fractal "
+            "FROM company.company WHERE company_code = ?", (code,)
         ).fetchone()
         if row:
             matches.append((dict(row), "company"))

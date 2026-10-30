@@ -176,37 +176,49 @@ def audit_amount_snapshots(conn):
         findings.extend({"source_table": table, "source_key": str(row[0]),
                          "amount_field": field, "status": "missing_snapshot"}
                         for row in missing)
-    rows = conn.execute("SELECT * FROM financial_amount_snapshots ORDER BY source_table,source_key,amount_field")
-    for row in rows:
-        table, key_field, key, field = (str(row[name]) for name in
-                                        ("source_table", "source_key_field", "source_key", "amount_field"))
-        if not all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in (table,key_field,field)):
-            findings.append({"source_table": table, "source_key": key,
-                             "amount_field": field, "status": "invalid_inventory_identifier"})
-            continue
-        columns = {item[1] for item in conn.execute(f'PRAGMA table_info("{table}")')}
+    # Compare every snapshot with its source in one join per (table, key, field) instead of
+    # two queries per snapshot row; findings keep the (table, key, field) order.
+    checked = []
+    for spec in conn.execute("SELECT DISTINCT source_table,source_key_field,amount_field "
+                             "FROM financial_amount_snapshots").fetchall():
+        table, key_field, field = (str(spec[name]) for name in
+                                   ("source_table", "source_key_field", "amount_field"))
+        valid = all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in (table, key_field, field))
+        columns = {item[1] for item in conn.execute(f'PRAGMA table_info("{table}")')} if valid else set()
         if key_field == "rowid" and table in rowid_tables:
             columns.add("rowid")
-        if key_field not in columns or field not in columns:
-            findings.append({"source_table": table, "source_key": key,
-                             "amount_field": field, "status": "missing_source_field"})
+        if not valid or key_field not in columns or field not in columns:
+            status = "missing_source_field" if valid else "invalid_inventory_identifier"
+            checked.extend({"source_table": table, "source_key": str(row[0]), "amount_field": field,
+                            "status": status} for row in conn.execute(
+                "SELECT source_key FROM financial_amount_snapshots WHERE source_table=? "
+                "AND source_key_field=? AND amount_field=?", (table, key_field, field)))
             continue
-        source = conn.execute(
-            f'SELECT "{field}" FROM "{table}" WHERE "{key_field}"=?', (key,)
-        ).fetchone()
-        if source is None:
-            findings.append({"source_table": table, "source_key": key,
-                             "amount_field": field, "status": "missing_source_row"})
-            continue
-        if source[0] is None:
-            continue
-        expected = to_minor_units(source[0], int(row["decimal_places"]))
-        actual = int(row["amount_minor_units"])
-        if expected != actual:
-            findings.append({"source_table": table, "source_key": key,
-                             "amount_field": field, "currency_code": row["currency_code"],
-                             "expected_minor_units": expected, "snapshot_minor_units": actual,
-                             "status": "mismatch"})
+        # The source key compares with the TEXT snapshot key under the column's own affinity,
+        # so integer keys still use their index.
+        for row in conn.execute(
+                f'''SELECT snap.source_key, snap.decimal_places, snap.amount_minor_units, snap.currency_code,
+                           src."{field}" AS amount, src."{key_field}" IS NULL AS absent
+                    FROM financial_amount_snapshots snap LEFT JOIN "{table}" src
+                      ON src."{key_field}"=snap.source_key
+                    WHERE snap.source_table=? AND snap.source_key_field=? AND snap.amount_field=?''',
+                (table, key_field, field)):
+            key = str(row["source_key"])
+            if row["absent"]:
+                checked.append({"source_table": table, "source_key": key,
+                                "amount_field": field, "status": "missing_source_row"})
+                continue
+            if row["amount"] is None:
+                continue
+            expected = to_minor_units(row["amount"], int(row["decimal_places"]))
+            actual = int(row["amount_minor_units"])
+            if expected != actual:
+                checked.append({"source_table": table, "source_key": key,
+                                "amount_field": field, "currency_code": row["currency_code"],
+                                "expected_minor_units": expected, "snapshot_minor_units": actual,
+                                "status": "mismatch"})
+    checked.sort(key=lambda item: (item["source_table"], item["source_key"], item["amount_field"]))
+    findings.extend(checked)
     return findings
 
 
