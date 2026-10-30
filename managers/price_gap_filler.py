@@ -48,8 +48,6 @@ def bridge(start_price, end_price, intervals, sigma, rng):
     The walk runs on trading time only, so a closed night is a jump, not a flat line.
     """
     span = sum(b - a for a, b in intervals)
-    if span <= 1:
-        return []
     step = max(1, math.ceil(span / MAX_POINTS_PER_GAP))
     offsets = list(range(step, span, step))
     if not offsets:
@@ -60,7 +58,7 @@ def bridge(start_price, end_price, intervals, sigma, rng):
         walk.append(level)
     # Pin the walk's end to the log distance between the two real prices.
     total = walk[-1] - math.log(end_price / start_price)
-    count = len(walk)
+    count = len(walk)  # len(offsets) + 1
     points, passed, index = [], 0, 0
     for a, b in intervals:
         while index < len(offsets) and offsets[index] < passed + (b - a):
@@ -81,7 +79,7 @@ def _markets(conn):
         if status != "active" or exchange_id == MarketSessionManager.UNLISTED or exchange is None:
             continue
         # A schedule close reopens by itself; an admin's 휴장 or 정지 means the market really stopped.
-        if exchange["status"] != "open" and exchange["reason"] != MarketSessionManager.HOURS_REASON:
+        if exchange["status"] != "open" and not exchange.get("scheduled_close"):
             continue
         markets[str(code)] = trading_hours.from_row(exchange)
     return markets
@@ -117,7 +115,7 @@ def fill_price_gaps(conn, now=None, rng=None):
     for code, start, end in conn.execute(
             "SELECT asset_code, start_epoch, end_epoch FROM market_price_gap_fills WHERE end_epoch >= ?", (floor,)):
         fills.setdefault(code, []).append((int(start), int(end)))
-    added = {}
+    added, sigmas = {}, {}
     for code, epoch, price, next_epoch, next_price in gaps:
         schedule = markets.get(code)
         if schedule is None:
@@ -132,11 +130,14 @@ def fill_price_gaps(conn, now=None, rng=None):
         start = max([start] + [b for a, b in fills.get(code, ()) if a <= start < b])
         if end - start < MIN_GAP_SECONDS:
             continue
-        recent = [float(r[0]) for r in conn.execute(
-            "SELECT price FROM market_price_history WHERE asset_code=? AND recorded_epoch<=? "
-            "ORDER BY recorded_epoch DESC LIMIT ?", (code, epoch, VOLATILITY_SAMPLE + 1))][::-1]
+        if code not in sigmas:
+            # One volatility per asset: its real ticks before its first gap in this run.
+            recent = [float(r[0]) for r in conn.execute(
+                "SELECT price FROM market_price_history WHERE asset_code=? AND recorded_epoch<=? "
+                "ORDER BY recorded_epoch DESC LIMIT ?", (code, epoch, VOLATILITY_SAMPLE + 1))][::-1]
+            sigmas[code] = _volatility(recent)
         intervals = trading_hours.open_intervals(schedule, start, end)
-        points = bridge(price, end_price, intervals, _volatility(recent), rng)
+        points = bridge(price, end_price, intervals, sigmas[code], rng)
         conn.executemany(
             "INSERT INTO market_price_history(asset_code, price, recorded_epoch) VALUES (?, ?, ?) "
             "ON CONFLICT(asset_code, recorded_epoch) DO NOTHING",

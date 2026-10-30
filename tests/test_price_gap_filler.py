@@ -18,7 +18,7 @@ class PriceGapFillerTests(unittest.TestCase):
                 points INTEGER, filled_epoch INTEGER);
             CREATE TABLE market_exchanges (exchange_id TEXT PRIMARY KEY, status TEXT, reason TEXT DEFAULT '',
                 open_time TEXT DEFAULT '', close_time TEXT DEFAULT '', trading_days TEXT DEFAULT '1,2,3,4,5',
-                holidays TEXT DEFAULT '[]');
+                holidays TEXT DEFAULT '[]', scheduled_close INTEGER DEFAULT 0);
             CREATE TABLE company (company_code TEXT, exchange_id TEXT, status TEXT);
             CREATE TABLE market_assets (code TEXT, exchange_id TEXT, status TEXT);
             CREATE TABLE investment (product_code TEXT, exchange_id TEXT, status TEXT);
@@ -95,7 +95,7 @@ class PriceGapFillerTests(unittest.TestCase):
         def kst(text):
             return int(datetime.fromisoformat(text).replace(tzinfo=trading_hours.KST).timestamp())
         self.conn.execute("DELETE FROM market_price_history")
-        self.conn.execute("UPDATE market_exchanges SET open_time='09:00', close_time='15:30', status='closed', reason='장 마감'")
+        self.conn.execute("UPDATE market_exchanges SET open_time='09:00', close_time='15:30', status='closed', reason='장 마감', scheduled_close=1")
         last = kst("2026-11-02 15:00")   # Monday afternoon; bot back on Wednesday 10:00
         self.conn.execute("INSERT INTO market_price_history VALUES ('CO', 1000, ?)", (last,))
         fill_price_gaps(self.conn, now=kst("2026-11-04 10:00"), rng=random.Random(9))

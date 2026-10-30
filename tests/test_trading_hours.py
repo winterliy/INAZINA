@@ -81,7 +81,8 @@ class SessionHoursTests(unittest.TestCase):
         state = self.set_hours(kst("2026-11-02 10:00"), open="09:00", close="15:30", days=[1, 2, 3, 4, 5])
         self.assertEqual(state["status"], "open")
         state = self.session.process_due(now=kst("2026-11-02 15:31"))["EX"]
-        self.assertEqual((state["status"], state["reason"]), ("closed", MarketSessionManager.HOURS_REASON))
+        self.assertEqual((state["status"], state["reason"], state["scheduled_close"]),
+                         ("closed", MarketSessionManager.HOURS_REASON, 1))
         self.assertEqual(state["halt_started_epoch"], kst("2026-11-02 15:30"))
         self.assertEqual(state["resume_epoch"], kst("2026-11-03 09:00"))
         self.assertIn("장 마감", self.session.trading_error(now=kst("2026-11-02 18:00"), asset_code="CO"))

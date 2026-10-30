@@ -3002,10 +3002,13 @@ EXCHANGE_PRODUCT_TABLES = (("company", "company_code"), ("market_assets", "code"
 
 
 def admin_exchanges():
+    from functions import trading_hours
     with connect_readonly() as connection:
         rows = [dict(row) for row in connection.execute("SELECT * FROM market_exchanges ORDER BY exchange_id")]
         for row in rows:
             exchange = row["exchange_id"]
+            row["hours"] = trading_hours.from_row(row)
+            row["hours_label"] = trading_hours.describe(row["hours"])
             row["products"] = sum(connection.execute(
                 f"SELECT COUNT(*) FROM {table} WHERE exchange_id=? AND status='active'", (exchange,)).fetchone()[0]
                 for table, _key in EXCHANGE_PRODUCT_TABLES if _table_exists(connection, table))
@@ -3055,8 +3058,8 @@ def admin_exchange_action(actor, exchange_id, payload):
                 raise ValueError("거래소를 찾을 수 없습니다.")
             from functions import trading_hours
             from managers.market_session_manager import MarketSessionManager
-            schedule = trading_hours.normalize(payload.get("hours"))
-            MarketSessionManager.set_hours_conn(connection, exchange_id, schedule, int(time.time()))
+            state = MarketSessionManager.set_hours_conn(connection, exchange_id, payload.get("hours"), int(time.time()))
+            schedule = trading_hours.from_row(state)
             _audit_db(connection, actor, "exchange.hours", {"exchange_id": exchange_id, **schedule})
             message = f"✅ {exchange_id} 거래 시간을 {trading_hours.describe(schedule)}(으)로 저장했습니다."
         elif action == "delete":
@@ -3205,18 +3208,25 @@ def _bank_row(connection, bank_id):
     return row
 
 
+# Banks whose ID another product already uses: they can never get a 법인, so reads stop retrying them.
+_BANKS_WITHOUT_COMPANY = set()
+
+
 def _ensure_bank_companies():
     """Every bank is also a 법인 with a 법인 계정 (managers/bank_companies.py); banks made by a
     product naming a new issuer get theirs the next time the bank list is read."""
+    from managers.bank_companies import ensure, missing
     with connect_readonly() as connection:
-        if not _table_exists(connection, "company_accounts") or not connection.execute(
-                "SELECT 1 FROM financial_institutions f WHERE f.institution_id IS NOT NULL AND NOT EXISTS "
-                "(SELECT 1 FROM company_accounts a WHERE a.company_code=f.institution_id) LIMIT 1").fetchone():
+        if not _table_exists(connection, "company_accounts"):
             return
-    from managers.bank_companies import ensure_all
+        pending = [issuer for issuer in missing(connection) if issuer not in _BANKS_WITHOUT_COMPANY]
+    if not pending:
+        return
     with connect_db(timeout=5) as connection:
-        ensure_all(LegacyNames(connection))
-    _read_cache.invalidate()
+        created = [issuer for issuer in pending if ensure(LegacyNames(connection), issuer)]
+    _BANKS_WITHOUT_COMPANY.update(set(pending) - set(created))
+    if created:
+        _read_cache.invalidate()
 
 
 def admin_banks():
