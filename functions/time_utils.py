@@ -2,8 +2,10 @@
 
 import math
 import time
+from zoneinfo import ZoneInfo
 
 
+KST = ZoneInfo("Asia/Seoul")  # the federation's clock: sessions, day boundaries, statements
 MAX_SUPPORTED_EPOCH = 253402300799.0  # 9999-12-31 23:59:59 UTC
 
 

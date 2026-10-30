@@ -182,5 +182,8 @@ class CatalogManager:
                              (currency,name,code,decimal_places))
                 conn.execute("INSERT OR IGNORE INTO country_currencies(nationality,currency_code) VALUES (?,?)", (country,currency))
                 conn.execute("INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,interest_cycle,compound_type,issuer,status,quote_currency,product_kind) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (f'INZCU{i:03d}',f'{name} 외환통장',1+(i%5)*.25,0,0,0,1,'currency','active',currency,'currency_saving'))
+            # The catalog's savings and loans create their banks; each bank is also a 법인.
+            from managers.bank_companies import ensure_all
+            ensure_all(conn)
             conn.execute("INSERT INTO settings(key,value) VALUES (?, '1')", (self.VERSION,))
             return True

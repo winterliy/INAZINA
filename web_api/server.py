@@ -3002,10 +3002,13 @@ EXCHANGE_PRODUCT_TABLES = (("company", "company_code"), ("market_assets", "code"
 
 
 def admin_exchanges():
+    from functions import trading_hours
     with connect_readonly() as connection:
         rows = [dict(row) for row in connection.execute("SELECT * FROM market_exchanges ORDER BY exchange_id")]
         for row in rows:
             exchange = row["exchange_id"]
+            row["hours"] = trading_hours.from_row(row)
+            row["hours_label"] = trading_hours.describe(row["hours"])
             row["products"] = sum(connection.execute(
                 f"SELECT COUNT(*) FROM {table} WHERE exchange_id=? AND status='active'", (exchange,)).fetchone()[0]
                 for table, _key in EXCHANGE_PRODUCT_TABLES if _table_exists(connection, table))
@@ -3050,6 +3053,15 @@ def admin_exchange_action(actor, exchange_id, payload):
                 connection.execute("UPDATE market_exchanges SET nationality=? WHERE exchange_id=?", (nationality, exchange_id))
                 message = f"✅ {exchange_id} 거래소 국가를 {nationality}(으)로 변경했습니다."
             _audit_db(connection, actor, f"exchange.{action}", {"exchange_id": exchange_id, "nationality": nationality})
+        elif action == "hours":
+            if not exists:
+                raise ValueError("거래소를 찾을 수 없습니다.")
+            from functions import trading_hours
+            from managers.market_session_manager import MarketSessionManager
+            state = MarketSessionManager.set_hours_conn(connection, exchange_id, payload.get("hours"), int(time.time()))
+            schedule = trading_hours.from_row(state)
+            _audit_db(connection, actor, "exchange.hours", {"exchange_id": exchange_id, **schedule})
+            message = f"✅ {exchange_id} 거래 시간을 {trading_hours.describe(schedule)}(으)로 저장했습니다."
         elif action == "delete":
             if not exists:
                 raise ValueError("거래소를 찾을 수 없습니다.")
@@ -3196,8 +3208,30 @@ def _bank_row(connection, bank_id):
     return row
 
 
+# Banks whose ID another product already uses: they can never get a 법인, so reads stop retrying them.
+_BANKS_WITHOUT_COMPANY = set()
+
+
+def _ensure_bank_companies():
+    """Every bank is also a 법인 with a 법인 계정 (managers/bank_companies.py); banks made by a
+    product naming a new issuer get theirs the next time the bank list is read."""
+    from managers.bank_companies import ensure, missing
+    with connect_readonly() as connection:
+        if not _table_exists(connection, "company_accounts"):
+            return
+        pending = [issuer for issuer in missing(connection) if issuer not in _BANKS_WITHOUT_COMPANY]
+    if not pending:
+        return
+    with connect_db(timeout=5) as connection:
+        created = [issuer for issuer in pending if ensure(LegacyNames(connection), issuer)]
+    _BANKS_WITHOUT_COMPANY.update(set(pending) - set(created))
+    if created:
+        _read_cache.invalidate()
+
+
 def admin_banks():
     """Banks (financial institutions) by their unique ID, with what each holds, like the company list."""
+    _ensure_bank_companies()
     with connect_readonly() as connection:
         rows = connection.execute("SELECT * FROM financial_institutions ORDER BY institution_id").fetchall()
         return {"banks": [_bank_summary(connection, row) for row in rows]}
@@ -3237,8 +3271,13 @@ def admin_bank_create(actor, payload):
         connection.execute("INSERT INTO financial_institutions(issuer,nationality,equity_capital,institution_id) VALUES (?,?,?,?)",
                            (issuer, nationality, capital, bank_id or None))
         bank_id = connection.execute("SELECT institution_id FROM financial_institutions WHERE issuer=?", (issuer,)).fetchone()[0]
-        _audit_db(connection, actor, "bank.create", {"id": bank_id, "issuer": issuer, "nationality": nationality, "equityCapital": capital})
-    return f"{issuer} 은행을 만들었습니다. 고유 ID {bank_id}"
+        from managers.bank_companies import ensure
+        company_code = ensure(LegacyNames(connection), issuer)
+        _audit_db(connection, actor, "bank.create", {"id": bank_id, "issuer": issuer, "nationality": nationality,
+                                                     "equityCapital": capital, "companyCode": company_code})
+    _read_cache.invalidate()
+    company = f" · 법인 {company_code}와 법인 계정도 함께 만들었습니다" if company_code else ""
+    return f"{issuer} 은행을 만들었습니다. 고유 ID {bank_id}{company}"
 
 
 def admin_bank_update(actor, bank_id, payload):

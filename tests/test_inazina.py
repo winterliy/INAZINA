@@ -77,8 +77,12 @@ class InazinaTests(unittest.TestCase):
         self.assertFalse(self.seed())
         counts={r['product_type']:r['n'] for r in self.db.products.execute('SELECT product_type,COUNT(*) n FROM investment GROUP BY product_type')}
         self.assertEqual(counts,{k:25 for k in ('etf','stock_future','corporate_bond','mutual_fund','index_fund','commodity_spot')})
-        for table in ('company','treasury_bond_products','liability','option_contracts'):
+        for table in ('treasury_bond_products','liability','option_contracts'):
             self.assertEqual(self.db.system.execute_one(f'SELECT COUNT(*) FROM {table}')[0],25)
+        # Listed companies; the catalog's banks are 법인 too (managers/bank_companies.py).
+        self.assertEqual(self.db.system.execute_one("SELECT COUNT(*) FROM company WHERE industry<>'은행'")[0],25)
+        self.assertEqual(self.db.system.execute_one("SELECT COUNT(*) FROM company WHERE industry='은행'")[0],
+                         self.db.system.execute_one("SELECT COUNT(*) FROM financial_institutions")[0])
         self.assertEqual(self.db.products.execute_one("SELECT COUNT(*) FROM saving WHERE product_kind='saving'")[0],25)
         self.assertEqual(self.db.products.execute_one("SELECT COUNT(*) FROM saving WHERE product_kind='currency_saving'")[0],25)
         self.assertEqual(self.db.currency.execute_one("SELECT COUNT(*) FROM currencies WHERE code<>'NWX'")[0],25)
