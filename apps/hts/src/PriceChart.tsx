@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode, WheelEvent as ReactWheelEvent } from "react";
+import { axisWidth, panelHeight, PRICE_LABEL_PX, priceTicks, TIME_LABEL_PX, timeTicks } from "./chartScale";
 
 export type Point = { time: number; price: number };
 export type Candle = { time: number; open: number; high: number; low: number; close: number; ticks: number; volume?: number };
@@ -11,7 +12,8 @@ type Gesture =
   | { kind: "draw"; start: Point }
   | { kind: "move"; start: Point; drawing: Drawing; anchor: number | null };
 
-const AXIS = 72, BOTTOM = 26, TOP = 12, LEFT = 8;
+// The price axis (its width) and the lower panels (their height) are sized per render from chartScale.
+const BOTTOM = 26, TOP = 12, LEFT = 8;
 // Pixels per candle in the live view, like an HTS: a wider window shows more history instead of fatter candles.
 const BAR_SPACING = 9;
 const money = (value: number) => new Intl.NumberFormat("ko-KR", { maximumFractionDigits: value < 10 ? 2 : 0 }).format(value || 0);
@@ -41,6 +43,8 @@ type Value = { time: number; value: number };
  * Any interaction (drawing, moving, panning, zooming) freezes the axes, so new
  * quotes arriving every few seconds no longer rescale the chart under the lines.
  * "실시간" returns to the auto-fitted, live-following view.
+ * Like an HTS, the scales re-plan for the space: price steps for the height, calendar
+ * steps for the width, an axis as wide as its labels, and panels sized to the chart.
  */
 export function PriceChart({ points, candles, candleInterval, mode, fallbackPrice, drawings, onDrawingsChange, tool, onToolChange, resetKey, controls, label, indicators, data, catalog, onIndicatorsChange }: {
   points: Point[]; candles: Candle[]; candleInterval: number; mode: "candle" | "line"; fallbackPrice: number;
@@ -89,7 +93,7 @@ export function PriceChart({ points, candles, candleInterval, mode, fallbackPric
     if (before === size.w) return;
     setView((current) => {
       if (!current) return current;
-      const span = (current.maxTime - current.minTime) * (size.w - AXIS - LEFT) / (before - AXIS - LEFT);
+      const span = (current.maxTime - current.minTime) * (size.w - axis - LEFT) / (before - axis - LEFT);
       return { ...current, minTime: current.maxTime - span, ...fit(current.maxTime - span, current.maxTime) };
     });
     // fit reads the latest series; only width changes should trigger this.
@@ -99,6 +103,8 @@ export function PriceChart({ points, candles, candleInterval, mode, fallbackPric
   const showCandles = mode === "candle" && candles.length > 0;
   const series = useMemo(() => showCandles ? candles.map((item) => ({ time: item.time, price: item.close }))
     : points.length ? points : [{ time: Date.now() / 1000, price: fallbackPrice || 1 }], [showCandles, candles, points, fallbackPrice]);
+  // Wide enough for the largest price this series can show.
+  const axis = useMemo(() => axisWidth([money(Math.max(...series.map((item) => item.price)) * 1.1)]), [series]);
 
   // Price range fitted to the data inside [minTime, maxTime].
   function fit(minTime: number, maxTime: number) {
@@ -119,19 +125,19 @@ export function PriceChart({ points, candles, candleInterval, mode, fallbackPric
     let minTime = start === end ? start - 1800 : start;
     const maxTime = start === end ? end + 1800 : end;
     if (showCandles) {
-      const capacity = Math.max(10, Math.floor((size.w - AXIS - LEFT) / BAR_SPACING));
+      const capacity = Math.max(10, Math.floor((size.w - axis - LEFT) / BAR_SPACING));
       minTime = end - capacity * candleInterval;
     }
     return { minTime, maxTime, ...fit(minTime, maxTime) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [series, showCandles, candles, candleInterval, size.w]);
+  }, [series, showCandles, candles, candleInterval, size.w, axis]);
   const v = view ?? auto;
 
   // Lower panels stack under the price plot in catalog order, sharing its time axis; the canvas grows per panel.
   // A chosen panel shows even before its series arrive (it says so), so the choice is visible at once.
   const lowers = catalog.lower.map((item) => item.key).filter((key) => indicators.lower.includes(key));
-  const PANEL_GAP = 10, PANEL_H = 64;
-  const R = size.w - AXIS, B = size.h - BOTTOM - (PANEL_GAP + PANEL_H) * lowers.length;
+  const PANEL_GAP = 10, PANEL_H = panelHeight(size.h - BOTTOM - TOP, lowers.length);
+  const R = size.w - axis, B = size.h - BOTTOM - (PANEL_GAP + PANEL_H) * lowers.length;
   const panelTop = (index: number) => B + PANEL_GAP + (PANEL_GAP + PANEL_H) * index;
   const plotBottom = size.h - BOTTOM;
   const X = (time: number) => LEFT + ((time - v.minTime) / (v.maxTime - v.minTime)) * (R - LEFT);
@@ -194,9 +200,10 @@ export function PriceChart({ points, candles, candleInterval, mode, fallbackPric
     const active = gesture.current;
     if (!active) return;
     if (active.kind === "pan") {
+      // The price range refits to what the drag brings into view, as an HTS does.
       const dt = ((at.x - active.start.x) / (R - LEFT)) * (active.view.maxTime - active.view.minTime);
-      const dp = ((at.y - active.start.y) / (B - TOP)) * (active.view.maxPrice - active.view.minPrice);
-      setView({ minTime: active.view.minTime - dt, maxTime: active.view.maxTime - dt, minPrice: active.view.minPrice + dp, maxPrice: active.view.maxPrice + dp });
+      const minTime = active.view.minTime - dt, maxTime = active.view.maxTime - dt;
+      setView({ minTime, maxTime, ...fit(minTime, maxTime) });
     } else if (active.kind === "draw") {
       setDraft([active.start, toPoint(at.x, at.y)]);
     } else {
@@ -255,6 +262,10 @@ export function PriceChart({ points, candles, candleInterval, mode, fallbackPric
   }, []);
 
   const span = v.maxTime - v.minTime;
+  const yTicks = priceTicks(v.minPrice, v.maxPrice, Math.max(2, Math.floor((B - TOP) / PRICE_LABEL_PX)));
+  const tickText = new Intl.NumberFormat("ko-KR", { minimumFractionDigits: yTicks.decimals, maximumFractionDigits: yTicks.decimals });
+  const xTicks = timeTicks(v.minTime, v.maxTime, Math.max(2, Math.floor((R - LEFT) / TIME_LABEL_PX))).ticks
+    .filter((tick) => X(tick.time) >= LEFT + 24 && X(tick.time) <= R - 24);
   const timeText = (time: number) => new Date(time * 1000).toLocaleString("ko-KR", span > 2 * 86400 ? { month: "numeric", day: "numeric" } : span > 6 * 3600 ? { day: "numeric", hour: "2-digit", minute: "2-digit" } : { hour: "2-digit", minute: "2-digit" });
   const visibleCandles = showCandles ? candles.filter((item) => item.time + candleInterval >= v.minTime && item.time <= v.maxTime) : [];
   const visibleVolumeCandles = showCandles ? visibleCandles : candles.filter((item) => item.time + candleInterval >= v.minTime && item.time <= v.maxTime);
@@ -363,8 +374,8 @@ export function PriceChart({ points, candles, candleInterval, mode, fallbackPric
         className={`chart-svg ${tool !== "select" ? "drawing-mode" : gesture.current?.kind === "pan" ? "panning" : ""}`}
         onPointerDown={down} onMouseDown={(event) => event.preventDefault()} onDragStart={(event) => event.preventDefault()} onPointerMove={move} onPointerUp={up} onPointerCancel={() => { gesture.current = null; setDraft(null); }} onPointerLeave={() => setHover(null)} onWheel={wheel} onDoubleClick={() => setView(null)}>
         <defs><clipPath id="plot"><rect x={LEFT} y={TOP} width={R - LEFT} height={B - TOP} /></clipPath>{lowers.map((key, index) => <clipPath key={key} id={`${key}-plot`}><rect x={LEFT} y={panelTop(index)} width={R - LEFT} height={PANEL_H} /></clipPath>)}</defs>
-        {Array.from({ length: 5 }, (_, index) => { const y = TOP + ((B - TOP) / 4) * index; return <g key={`y${index}`}><line x1={LEFT} x2={R} y1={y} y2={y} className="grid-line" /><text x={R + 8} y={y + 4} className="axis-label">{money(v.maxPrice - ((v.maxPrice - v.minPrice) / 4) * index)}</text></g>; })}
-        {Array.from({ length: 5 }, (_, index) => { const x = LEFT + ((R - LEFT) / 4) * index; return <g key={`x${index}`}><line x1={x} x2={x} y1={TOP} y2={lowers.length ? plotBottom : B} className="grid-line vertical" /><text x={x} y={size.h - 8} textAnchor={index === 0 ? "start" : index === 4 ? "end" : "middle"} className="axis-label">{timeText(v.minTime + (span / 4) * index)}</text></g>; })}
+        {yTicks.ticks.map((tick) => { const y = Y(tick); return <g key={`y${tick}`}><line x1={LEFT} x2={R} y1={y} y2={y} className="grid-line" /><text x={R + 8} y={y + 4} className="axis-label">{tickText.format(tick)}</text></g>; })}
+        {xTicks.map((tick) => { const x = X(tick.time); return <g key={`x${tick.time}`}><line x1={x} x2={x} y1={TOP} y2={lowers.length ? plotBottom : B} className="grid-line vertical" /><text x={x} y={size.h - 8} textAnchor="middle" className="axis-label">{tick.label}</text></g>; })}
         <g clipPath="url(#plot)">
           {showCandles ? visibleCandles.map((item) => {
             const x = X(item.time + candleInterval / 2), top = Y(Math.max(item.open, item.close)), bottom = Y(Math.min(item.open, item.close));
@@ -388,8 +399,8 @@ export function PriceChart({ points, candles, candleInterval, mode, fallbackPric
         </g>
         {lowerLayer}
         {upperSeries.length > 0 && <text x={LEFT + 6} y={TOP + 14} className="overlay-legend">{upperSeries.filter((item) => item.entry.kind !== "profile").map(({ key, entry }) => <tspan key={`${key}-${entry.label}`} dx={6} style={{ fill: entry.color }}>● {entry.label}</tspan>)}</text>}
-        <g className="price-tag"><rect x={R + 2} y={Y(last.price) - 10} width={AXIS - 4} height={20} rx={6} /><text x={R + 8} y={Y(last.price) + 4}>{money(last.price)}</text></g>
-        {hoverPoint && !gesture.current && <g className="hover-tag"><rect x={R + 2} y={hover!.y - 10} width={AXIS - 4} height={20} rx={6} /><text x={R + 8} y={hover!.y + 4}>{money(hoverPoint.price)}</text></g>}
+        <g className="price-tag"><rect x={R + 2} y={Y(last.price) - 10} width={axis - 4} height={20} rx={6} /><text x={R + 8} y={Y(last.price) + 4}>{money(last.price)}</text></g>
+        {hoverPoint && !gesture.current && <g className="hover-tag"><rect x={R + 2} y={hover!.y - 10} width={axis - 4} height={20} rx={6} /><text x={R + 8} y={hover!.y + 4}>{money(hoverPoint.price)}</text></g>}
       </svg>
       {!points.length && !candles.length && <span className="chart-empty">이 구간에 저장된 가격 기록이 없습니다.</span>}
     </div>
