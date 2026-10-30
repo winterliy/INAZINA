@@ -43,9 +43,13 @@ def ensure(conn, issuer):
     return code
 
 
-def ensure_all(conn):
-    """Give every bank still without one its 법인 and 법인 계정. Returns the codes created."""
-    missing = [row["issuer"] for row in conn.execute(
+def missing(conn):
+    """Issuers of banks that have an ID but no 법인 계정 yet."""
+    return [row[0] for row in conn.execute(
         "SELECT f.issuer FROM financial_institutions f WHERE f.institution_id IS NOT NULL AND NOT EXISTS "
         "(SELECT 1 FROM company_accounts a WHERE a.company_code=f.institution_id) ORDER BY f.rowid")]
-    return [code for code in (ensure(conn, issuer) for issuer in missing) if code]
+
+
+def ensure_all(conn):
+    """Give every bank still without one its 법인 and 법인 계정. Returns the codes created."""
+    return [code for code in (ensure(conn, issuer) for issuer in missing(conn)) if code]

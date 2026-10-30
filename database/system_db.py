@@ -191,7 +191,9 @@ class SystemDB(DBManager):
             self.execute("ALTER TABLE market_exchanges ADD COLUMN nationality TEXT NOT NULL DEFAULT '낙원'")
         # Regular trading hours (functions/trading_hours.py); empty open and close times mean 24 hours.
         for column, ddl in (("open_time", "TEXT NOT NULL DEFAULT ''"), ("close_time", "TEXT NOT NULL DEFAULT ''"),
-                            ("trading_days", "TEXT NOT NULL DEFAULT '1,2,3,4,5'"), ("holidays", "TEXT NOT NULL DEFAULT '[]'")):
+                            ("trading_days", "TEXT NOT NULL DEFAULT '1,2,3,4,5'"), ("holidays", "TEXT NOT NULL DEFAULT '[]'"),
+                            # 1 while closed because the session ended (it reopens itself), not by an admin.
+                            ("scheduled_close", "INTEGER NOT NULL DEFAULT 0 CHECK(scheduled_close IN (0, 1))")):
             if column not in exchange_columns:
                 self.execute(f"ALTER TABLE market_exchanges ADD COLUMN {column} {ddl}")
         # Migrate both former exchange tables before removing them.  This also

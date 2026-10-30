@@ -3,22 +3,15 @@ import { api } from "../../shared/api";
 import { Card, Field, date, number, plain, show, type Ctx } from "./common";
 
 type Component = { company_code: string; name: string | null; previous_price: number; total_shares: number };
-type Exchange = { exchange_id: string; nationality: string; status: "open" | "closed" | "paused"; reason: string; trading_halted: number; circuit_stage: number | null; halt_started_epoch: number | null; resume_epoch: number | null; updated_epoch: number; open_time: string; close_time: string; trading_days: string; holidays: string; index_value: number; index_updated_epoch: number; products: number; components: Component[] };
+type Exchange = { exchange_id: string; nationality: string; status: "open" | "closed" | "paused"; reason: string; trading_halted: number; circuit_stage: number | null; halt_started_epoch: number | null; resume_epoch: number | null; updated_epoch: number; hours: Schedule; hours_label: string; index_value: number; index_updated_epoch: number; products: number; components: Component[] };
 type Result = { message: string; success: boolean };
 
 const STATUS: Record<string, string> = { open: "개장", closed: "휴장", paused: "정지" };
 const WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"];
+// The server parses and labels the stored hours (functions/trading_hours.py); empty times mean 24 hours.
+type Schedule = { enabled: boolean; open: string; close: string; days: number[]; holidays: string[] };
 type Hours = { open: string; close: string; days: number[]; holidays: string };
-
-// Empty open and close times mean a 24-hour market (functions/trading_hours.py).
-function hoursOf(item: Exchange): Hours {
-  let holidays: string[] = [];
-  try { holidays = JSON.parse(item.holidays || "[]"); } catch { holidays = []; }
-  return { open: item.open_time ?? "", close: item.close_time ?? "", days: (item.trading_days || "1,2,3,4,5").split(",").filter(Boolean).map(Number), holidays: holidays.join("\n") };
-}
-const describeHours = (item: Exchange) => item.open_time && item.close_time
-  ? `${(item.trading_days || "").split(",").filter(Boolean).map((day) => WEEKDAYS[Number(day) - 1]).join("")} ${item.open_time}~${item.close_time}`
-  : "24시간";
+const hoursOf = ({ hours }: Exchange): Hours => ({ open: hours.open, close: hours.close, days: hours.days, holidays: hours.holidays.join("\n") });
 
 export function ExchangesPage({ ctx }: { ctx: Ctx }) {
   const { busy, run, say, query } = ctx;
@@ -101,7 +94,7 @@ export function ExchangesPage({ ctx }: { ctx: Ctx }) {
         {visible.map((item) => <tr key={item.exchange_id} className={item.exchange_id === selected ? "clickable selected" : "clickable"} tabIndex={0} onClick={() => setSelected(item.exchange_id)} onKeyDown={(event) => { if (event.key === "Enter") setSelected(item.exchange_id); }}>
           <td className="mono">{item.exchange_id}{item.exchange_id === "CURRENCY" && <span className="tag inline" title="환전과 통화쌍 시세(CUR_…)가 속한 시스템 거래소입니다. 휴장·정지하면 환전이 멈춥니다.">외환시장</span>}</td><td>{item.nationality}</td>
           <td><span className={item.status === "open" && !item.trading_halted ? "tag ok" : "tag warn"}>{item.circuit_stage ? `서킷 ${item.circuit_stage}단계` : STATUS[item.status] ?? item.status}</span></td>
-          <td className="mono">{describeHours(item)}</td><td>{item.reason || "—"}</td><td>{item.resume_epoch ? date(item.resume_epoch) : "—"}</td>
+          <td className="mono">{item.hours_label}</td><td>{item.reason || "—"}</td><td>{item.resume_epoch ? date(item.resume_epoch) : "—"}</td>
           <td className="r mono">{number(item.index_value)}</td><td className="r">{number(item.products)}</td><td className="r">{number(item.components.length)}</td>
           <td className="row-actions"><button className="soft small danger" disabled={busy || item.exchange_id === "CURRENCY"} title={item.products ? "상장 상품이 있으면 서버가 이유와 함께 거부합니다" : "거래소 삭제"} onClick={(event) => { event.stopPropagation(); act(item.exchange_id, { action: "delete" }, `${item.exchange_id} 거래소를 삭제할까요? 상장·연동된 상품이 있으면 거부됩니다.`); }}>삭제</button></td>
         </tr>)}
