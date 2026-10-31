@@ -189,12 +189,14 @@ export default function App() {
   const selected = instruments.find((item) => item.code === selectedCode) ?? null;
   const filtered = useMemo(() => {
     const term = search.trim().toLocaleLowerCase();
-    if (!term) return searchTabValue === "recommended" ? recommended(instruments, recommendSort) : instruments.filter((item) => searchTab(item) === searchTabValue);
-    return instruments.filter((item) => `${item.code} ${item.name} ${item.type} ${instrumentType(item)}`.toLocaleLowerCase().includes(term));
+    // Exchange rates show as rate cards only; they never open the live chart.
+    const tradable = instruments.filter((item) => item.type !== "forex");
+    if (!term) return searchTabValue === "recommended" ? recommended(tradable, recommendSort) : tradable.filter((item) => searchTab(item) === searchTabValue);
+    return tradable.filter((item) => `${item.code} ${item.name} ${item.type} ${instrumentType(item)}`.toLocaleLowerCase().includes(term));
   }, [instruments, search, searchTabValue, recommendSort]);
   const tabCounts = useMemo(() => {
     const counts: Partial<Record<SearchTab, number>> = { recommended: Math.min(20, instruments.length) };
-    for (const item of instruments) counts[searchTab(item)] = (counts[searchTab(item)] ?? 0) + 1;
+    for (const item of instruments) if (item.type !== "forex") counts[searchTab(item)] = (counts[searchTab(item)] ?? 0) + 1;
     return counts;
   }, [instruments]);
 

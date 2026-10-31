@@ -1,4 +1,4 @@
-import { moneyAdd, moneyCompare, minorMoney, type Money } from "../../shared/money";
+import { moneyAdd, moneyCompare, minorMoney, moneyMultiply, moneyDivideFloor, type Money } from "../../shared/money";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
 import { Donut, ShareholderPie, topSlices, type Shareholders } from "./Donut";
@@ -6,7 +6,7 @@ import { Card, Field, number, plain, show, type Ctx } from "./common";
 import { CompanyLedger } from "./CompanyLedger";
 
 type Holding = { asset_code: string; quantity: number };
-type Company = { company_code: string; name: string; exchange_id: string; total_shares: number; listed_shares: number | null; share_price: Money; cash: Money; locked: Money; account: string | null; holdings: Holding[]; accounts: number; loans: Money; parents: { code: string; percent: number }[] };
+type Company = { company_code: string; name: string; exchange_id: string; total_shares: number; listed_shares: number | null; share_price: Money; capital: Money; par_value_minor_units: string | null; quote_currency: string; share_decimal_places: number; currency: string; cash: Money; locked: Money; account: string | null; holdings: Holding[]; accounts: number; loans: Money; parents: { code: string; percent: number }[] };
 type CommandField = { key: string; label: string; kind: string; optional: boolean; hint: string };
 type Command = { name: string; group: string; description: string; guide: string; fields: CommandField[] };
 type Stock = { name: string; code: string; qty: number; value: Money; price: Money };
@@ -71,30 +71,82 @@ function ListingControl({ ctx, company, onDone }: { ctx: Ctx; company: Company; 
   </div>;
 }
 
-function ShareRatioControl({ ctx, company, onDone }: { ctx: Ctx; company: Company; onDone: () => void }) {
-  const [oldShares, setOldShares] = useState("1");
-  const [newShares, setNewShares] = useState("2");
-  const old = Number(oldShares), next = Number(newShares);
-  const ratioValid = [old, next].every((value) => Number.isSafeInteger(value) && value > 0) && old !== next;
-  const numerator = ratioValid ? BigInt(company.total_shares) * BigInt(next) : 0n;
-  const shares = ratioValid && numerator % BigInt(old) === 0n ? Number(numerator / BigInt(old)) : NaN;
-  const valid = ratioValid && Number.isSafeInteger(shares) && shares > 0;
-  return <Card title="일반비율분할 (기존주:신주)" caption="관리자가 별도로 집행합니다. 자본금과 보유 주식의 총 취득원가는 유지합니다.">
+type ShareResolution = { resolution_id: number; ratio: number; decision: "approved" | "rejected"; meeting_reference: string; articles_reference: string; par_value_minor_units: string; recorded_by: string; executed: boolean };
+
+function ShareSplitControl({ ctx, company, onDone }: { ctx: Ctx; company: Company; onDone: () => Promise<void> }) {
+  const [mode, setMode] = useState(company.par_value_minor_units === null ? "stock_split" : "par_split");
+  const [ratio, setRatio] = useState(String(Math.max(2, Math.round(Number(company.share_price) / 100000))));
+  const [oldRatio, setOldRatio] = useState("1");
+  const [newRatio, setNewRatio] = useState("2");
+  const [resolutions, setResolutions] = useState<ShareResolution[]>([]);
+  const [resolutionId, setResolutionId] = useState("");
+  const [error, setError] = useState("");
+  const [proposalRatio, setProposalRatio] = useState("10");
+  const [decision, setDecision] = useState("approved");
+  const [meeting, setMeeting] = useState("");
+  const [articles, setArticles] = useState("");
+  const [parValue, setParValue] = useState("");
+  const path = `/api/admin/companies/${encodeURIComponent(company.company_code)}/share-actions`;
+  const load = useCallback(async () => {
+    const result = await api<{ resolutions: ShareResolution[] }>(path);
+    setResolutions(result.resolutions);
+    setError("");
+  }, [path]);
+  useEffect(() => { load().catch((cause) => setError(cause instanceof Error ? cause.message : "의결 기록을 불러오지 못했습니다.")); }, [load]);
+  const selected = resolutions.find((item) => String(item.resolution_id) === resolutionId);
+  const value = Number(mode === "par_split" ? selected?.ratio ?? "" : ratio);
+  const ordinary = mode === "ratio_split";
+  const oldUnits = ordinary ? Number(oldRatio) : mode === "reverse_split" ? value : 1;
+  const newUnits = ordinary ? Number(newRatio) : mode === "reverse_split" ? 1 : value;
+  const scale = 10 ** company.share_decimal_places;
+  const currency = company.quote_currency || company.currency;
+  const ratioValid = [oldUnits, newUnits].every((n) => Number.isSafeInteger(n) && n >= 1) && oldUnits !== newUnits;
+  const shareNumerator = ratioValid ? BigInt(company.total_shares) * BigInt(newUnits) : 0n;
+  const shares = ratioValid && shareNumerator % BigInt(oldUnits) === 0n ? Number(shareNumerator / BigInt(oldUnits)) : NaN;
+  const valid = ratioValid && Number.isSafeInteger(shares) && shares > 0 && moneyCompare(moneyMultiply(company.share_price, scale * oldUnits), newUnits) >= 0 && (mode !== "par_split" || Boolean(selected && !selected.executed && selected.decision === "approved")) && (!ordinary || company.par_value_minor_units === null);
+  const price = ratioValid ? moneyDivideFloor(moneyMultiply(company.share_price, oldUnits), newUnits, company.share_decimal_places) : "0";
+  const labels: Record<string, string> = { par_split: "정식 액면분할", stock_split: "주식분할", reverse_split: "액면병합", ratio_split: "일반비율분할" };
+
+  return <Card title="정식 액면분할 · 주식분할 · 액면병합 · 일반비율분할" caption="주총은 의결 결과를 남기고, 관리자가 별도로 집행합니다. 의결 등록만으로 주식 수가 바뀌지는 않습니다.">
+    <p className="hint">자본금 {number(company.capital)} {currency} · 현재 액면가 {company.par_value_minor_units === null ? "미등록" : `${number(minorMoney(company.par_value_minor_units, Math.log10(scale)))} ${currency}`} · 미체결·예약 주문과 연결된 파생상품은 먼저 정리해주세요.</p>
+    {error && <p role="alert">{error}</p>}
     <form className="form-grid" onSubmit={(event) => {
       event.preventDefault();
-      if (!valid || !window.confirm(`${company.name} (${company.company_code}) 관리자 집행\n기존 ${old}주 → 변경 ${next}주\n발행주식 ${number(company.total_shares)}주 → ${number(shares)}주\n모든 보유분이 정수 주식으로 변환될 때만 집행합니다.`)) return;
-      void ctx.run(() => api<Result>(`/api/admin/companies/${encodeURIComponent(company.company_code)}/share-actions`, {
-        method: "POST", body: JSON.stringify({ action: "execute", mode: "ratio_split", oldShares, newShares }) }),
-        "주식 수를 조정하지 못했습니다.", (result) => { ctx.say(plain(result.message), !result.success); if (result.success) onDone(); });
+      if (!valid || !window.confirm(`${company.name} (${company.company_code}) ${labels[mode]} 관리자 집행\n${oldUnits}주 → ${newUnits}주\n주가 ${number(company.share_price)} → ${number(price)} ${currency}\n발행주식 ${number(company.total_shares)} → ${number(shares)}주\n자본금은 유지합니다.${mode === "par_split" ? `\n가결 의결 #${resolutionId}를 집행하고 액면가도 조정합니다.` : ""}`)) return;
+      void ctx.run(() => api<Result>(path, { method: "POST", body: JSON.stringify({ action: "execute", mode, ratio: String(value), ...(ordinary ? { oldShares: oldRatio, newShares: newRatio } : {}), ...(mode === "par_split" ? { resolutionId } : {}) }) }),
+        "주식 수를 조정하지 못했습니다.", async (result) => { ctx.say(plain(result.message), !result.success); if (result.success) await onDone(); });
     }}>
-      <Field label="기존 주식 수" hint="기존주:신주 비율. 3:2는 기존 3주 → 변경 2주입니다."><input required type="number" min="1" step="1" value={oldShares} onChange={(event) => setOldShares(event.target.value)} /></Field>
-      <Field label="변경 주식 수"><input required type="number" min="1" step="1" value={newShares} onChange={(event) => setNewShares(event.target.value)} /></Field>
-      <p className="hint span-wide">1:n 분할 · n:1 병합 · 일반 정수 비율. 발행·상장·개별 보유 수량에 단주가 생기면 집행하지 않습니다. 미체결·예약 주문과 연결 파생상품은 먼저 정리해주세요.</p>
-      <p className="hint span-wide" aria-live="polite">{valid ? `기존 ${old}주 → 변경 ${next}주 · 발행주식 ${number(shares)}주 · 자본금 유지` : "서로 다른 양의 정수 비율과 정수 발행주식 수가 필요합니다."}</p>
-      <button className="btn primary" disabled={ctx.busy || !valid}>일반비율분할 관리자 집행</button>
+      <Field label="집행 방식"><select value={mode} onChange={(event) => setMode(event.target.value)}><option value="par_split">정식 액면분할</option><option value="stock_split">주식분할</option><option value="reverse_split">액면병합</option><option value="ratio_split">일반비율분할 (기존주:신주)</option></select></Field>
+      {mode === "par_split" ? <Field label="집행할 가결 의결" hint="법인·비율·자본금이 의결 당시 조건과 같아야 합니다."><select required value={resolutionId} onChange={(event) => setResolutionId(event.target.value)}><option value="">가결 의결 선택</option>{resolutions.filter((item) => item.decision === "approved" && !item.executed).map((item) => <option key={item.resolution_id} value={item.resolution_id}>#{item.resolution_id} · 1주 → {item.ratio}주 · {item.meeting_reference}</option>)}</select></Field>
+        : ordinary ? <>
+          <Field label="기존 주식 수" hint="기존주:신주 비율입니다. 예: 3:2는 기존 3주 → 신주 2주입니다."><input required type="number" min="1" step="1" value={oldRatio} onChange={(event) => setOldRatio(event.target.value)} /></Field>
+          <Field label="변경 주식 수"><input required type="number" min="1" step="1" value={newRatio} onChange={(event) => setNewRatio(event.target.value)} /></Field>
+          <p className="hint span-wide">n:1 병합과 1:n 분할, 일반 정수 비율을 지원합니다. 모든 발행·상장·보유 수량이 정수 주식으로 변환되어야 하며 단주를 버리지 않습니다. 액면가 등록 법인은 정식 액면분할을 사용해주세요.</p>
+        </> : <Field label="비율" hint={mode !== "reverse_split" ? "1주를 몇 주로 나눌지 입력합니다." : "몇 주를 1주로 합칠지 입력합니다. 단주가 생기는 병합은 실행하지 않습니다."}><input required type="number" min="2" step="1" value={ratio} onChange={(event) => setRatio(event.target.value)} /></Field>}
+      <p className="hint span-wide" aria-live="polite">{valid ? `예상 주가 ${number(price)} ${currency} · 발행주식 ${number(shares)}주 · 자본금 유지` : mode === "par_split" ? "아래에서 의결 결과를 등록한 뒤 가결 의결을 선택해주세요." : "서로 다른 양의 정수 비율을 입력해주세요. 변경 후 주가는 최소단위 이상, 발행주식은 정수여야 합니다. 액면가 등록 법인은 정식 액면분할을 사용해주세요."}</p>
+      <button className="btn primary" disabled={ctx.busy || !valid}>{labels[mode]} 관리자 집행</button>
     </form>
+    {mode === "par_split" && <details className="help"><summary>주총 의결 결과 등록</summary>
+      <p className="hint">주총에서 이미 의결한 결과를 관리자가 의사록·정관 변경 문서와 함께 등록합니다. 이 화면은 주주 투표나 주식분할 집행을 대신하지 않습니다.</p>
+      <form className="form-grid" onSubmit={(event) => {
+        event.preventDefault();
+        void ctx.run(() => api<Result>(path, { method: "POST", body: JSON.stringify({ action: "record_resolution", ratio: proposalRatio, decision, meetingReference: meeting, articlesReference: articles, parValue }) }),
+          "의결 결과를 등록하지 못했습니다.", async (result) => { ctx.say(plain(result.message), !result.success); if (result.success) { setMeeting(""); setArticles(""); await load(); } });
+      }}>
+        <Field label="의결 결과"><select value={decision} onChange={(event) => setDecision(event.target.value)}><option value="approved">가결</option><option value="rejected">부결</option></select></Field>
+        <Field label="의결한 분할 비율" hint="1주 → N주"><input required type="number" min="2" step="1" value={proposalRatio} onChange={(event) => setProposalRatio(event.target.value)} /></Field>
+        <Field label={`현재 액면가 (${currency})`} hint="현재 발행주식 수 × 액면가 = 자본금"><input required inputMode="decimal" value={parValue} onChange={(event) => setParValue(event.target.value)} /></Field>
+        <Field label="특별결의 의사록 참조"><input required maxLength={1000} value={meeting} onChange={(event) => setMeeting(event.target.value)} placeholder="문서 번호 또는 의사록 링크" /></Field>
+        <Field label="정관 변경 문서 참조"><input required maxLength={1000} value={articles} onChange={(event) => setArticles(event.target.value)} placeholder="문서 번호 또는 정관 링크" /></Field>
+        <button className="btn primary" disabled={ctx.busy}>의결 결과만 등록</button>
+      </form>
+    </details>}
+    <h3 className="sub-head">주총 의결 · 집행 기록</h3>
+    <div className="scroll-x"><table><thead><tr><th>의결</th><th>결과</th><th>비율</th><th>의사록</th><th>집행</th></tr></thead><tbody>{resolutions.map((item) => <tr key={item.resolution_id}><td>#{item.resolution_id}</td><td>{item.decision === "approved" ? "가결" : "부결"}</td><td>1주 → {item.ratio}주</td><td>{item.meeting_reference}</td><td>{item.executed ? "관리자 집행 완료" : item.decision === "approved" ? "집행 대기" : "집행 불가"}</td></tr>)}</tbody></table>{!resolutions.length && !error && <p className="empty">등록된 의결이 없습니다.</p>}</div>
   </Card>;
 }
+
+/** What the company owns: its holdings by value. */
 
 /** What the company owns: its holdings by value. */
 function HoldingsPie({ stocks }: { stocks: Stock[] }) {
@@ -227,7 +279,7 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
       </>}
 
       </Card>
-      <ShareRatioControl key={`ratio:${company.company_code}:${company.total_shares}`} ctx={ctx} company={company} onDone={() => void load()} />
+      <ShareSplitControl key={`${company.company_code}:${company.share_price}:${company.total_shares}`} ctx={ctx} company={company} onDone={async () => { await load(); await open(company.company_code); }} />
       <CompanyLedger key={company.company_code} code={company.company_code} ctx={ctx} onChanged={() => { if (report) loadReport(); }} />
 
       <Card title="법인 계정으로 실행" caption="법인 명의로 매수·매도·송금·대출을 실행합니다. Discord의 $법인 또는 $login과 같은 검증을 거칩니다.">
