@@ -10,6 +10,8 @@ These products reuse existing engines:
 - IMA accounts are principal-protected savings accounts that share a reference
   product's gain; the issuing bank's head office pays the excess.
 """
+from functions.amount_limits import MAX_NATIVE
+from functions.exact_money import ExactDecimal
 from functions.money import base_currency_code
 import time
 from decimal import Decimal, ROUND_FLOOR, ROUND_HALF_UP
@@ -20,7 +22,7 @@ from managers.user_manager import UserManager
 
 YEAR = 365 * 86400
 SWAP_MARGIN_PERCENT = Decimal(5)
-MAX_MONEY = 2**53 - 1
+MAX_MONEY = MAX_NATIVE
 
 
 def _available_units(conn, user_id, code):
@@ -371,7 +373,7 @@ class CapitalMarketsManager:
             return balance, 0
         from managers.investment_manager import InvestmentManager
         quote = InvestmentManager.component_quote(conn, product["reference_code"], active_only=False)
-        if not quote or float(quote["price"] or 0) <= 0:
+        if not quote or ExactDecimal(quote["price"] or 0) <= 0:
             return balance, 0
         from functions.money import currency_precision, to_minor_units
         currency = str(product["quote_currency"] or base_currency_code(conn)).upper()
@@ -398,7 +400,7 @@ class CapitalMarketsManager:
         with self.db.atomic() as conn:
             for row in conn.execute("SELECT b.issuer,b.user_id,u.cash,u.nationality FROM bank_accounts b "
                                     "JOIN users u ON u.user_id=b.user_id").fetchall():
-                if float(row["cash"] or 0) >= 0:
+                if ExactDecimal(row["cash"] or 0) >= 0:
                     conn.execute("DELETE FROM bank_deficit_alerts WHERE issuer=?", (row["issuer"],))
                     continue
                 if conn.execute("SELECT 1 FROM bank_deficit_alerts WHERE issuer=?", (row["issuer"],)).fetchone():
@@ -410,8 +412,8 @@ class CapitalMarketsManager:
                 cash = from_minor_units(cash_units, places)
                 conn.execute("INSERT INTO bank_deficit_alerts(issuer,cash,cash_minor_units,"
                              "cash_decimal_places,cash_currency_code,alerted_epoch) VALUES (?,?,?,?,?,?)",
-                             (row["issuer"], float(cash), cash_units, places, currency, now))
-                alerts.append({"issuer": row["issuer"], "account": row["user_id"], "cash": float(cash),
+                             (row["issuer"], ExactDecimal(cash), cash_units, places, currency, now))
+                alerts.append({"issuer": row["issuer"], "account": row["user_id"], "cash": ExactDecimal(cash),
                                "cash_minor_units": cash_units, "decimal_places": places,
                                "currency": currency})
         return alerts

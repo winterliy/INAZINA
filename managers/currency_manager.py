@@ -1,4 +1,5 @@
 """Nationality-relative cash and account-backed foreign currency balances."""
+from functions.amount_limits import MAX_NATIVE, MAX_MINOR
 from functions.money import base_currency_code
 from fractions import Fraction
 from contextlib import nullcontext
@@ -8,7 +9,7 @@ import time
 from database.user_db import TREASURY_USER_ID
 
 SCALE = 1_000_000
-MAX_UNITS = 2**63 - 1
+MAX_UNITS = MAX_MINOR
 
 class CurrencyManager:
     @staticmethod
@@ -107,21 +108,20 @@ class CurrencyManager:
         """Create a neutral baseline when a newly issued currency first gains supply."""
         code = str(code).upper()
         issued, circulating = cls._liquidity_totals(conn, code)
-        issued = min(issued, 2**63 - 1)  # SQLite INTEGER range
         # Treasury deficits can leave circulation above issuance; keep the ratio in range.
         ratio = min(1, max(0, circulating / issued)) if issued > 0 else 0
         conn.execute(
             'INSERT OR IGNORE INTO currency_liquidity_state '
             '(currency_code,baseline_supply_units,baseline_circulation_ratio,updated_epoch) '
             'VALUES (?,?,?,?)',
-            (code, issued, ratio, time.time()),
+            (code, str(issued), ratio, time.time()),
         )
         if refresh_empty and issued:
             conn.execute(
                 'UPDATE currency_liquidity_state SET baseline_supply_units=?, '
                 'baseline_circulation_ratio=?, updated_epoch=? '
                 'WHERE currency_code=? AND baseline_supply_units=0',
-                (issued, ratio, time.time(), code),
+                (str(issued), ratio, time.time(), code),
             )
 
     @classmethod
@@ -203,7 +203,7 @@ class CurrencyManager:
         row=conn.execute("SELECT decimal_places FROM currencies WHERE code=? AND status='active'",(code,)).fetchone()
         if not row:raise ValueError(f'활성 통화를 확인해주세요: {code}')
         places=int(row[0])
-        if not 0<=places<=2:raise ValueError('통화 소수 자릿수는 0~2로 설정해주세요.')
+        if not 0<=places<=6:raise ValueError('통화 소수 자릿수는 0~6으로 설정해주세요.')
         if code==base_currency_code(conn) and places!=0:raise ValueError('기존 기준 통화 현금은 정수 단위로 설정해주세요.')
         return places
 
@@ -231,7 +231,7 @@ class CurrencyManager:
         output=cls.exchange_amount(conn,units,source,target)
         if target == base_currency_code(conn):  # Legacy cash has whole-unit precision.
             output = output // SCALE * SCALE
-        limit=(2**53-1)*SCALE if target==base_currency_code(conn) else MAX_UNITS
+        limit=MAX_NATIVE*SCALE if target==base_currency_code(conn) else MAX_UNITS
         if not 0 <= output <= limit:
             raise ValueError('환산 금액이 저장 한도를 초과했습니다.')
         return output
@@ -242,9 +242,9 @@ class CurrencyManager:
         if currency == CurrencyManager.home(conn, user_id):
             row = conn.execute('SELECT cash_minor FROM users WHERE user_id=?', (str(user_id),)).fetchone()
             return int(row[0] or 0) * 10 ** (6 - CurrencyManager.precision(conn, currency)) if row else 0
-        row = conn.execute("SELECT balance_units FROM accounts WHERE user_id=? AND quote_currency=? "
-                           "AND account_type='currency_saving'", (str(user_id), currency)).fetchone()
-        return int(row[0]) if row else 0
+        from managers.deposit_accounts import account
+        row = account(conn, user_id, currency)
+        return int(row['balance_units']) if row else 0
 
     @staticmethod
     def is_treasury(conn, user_id):
@@ -302,9 +302,8 @@ class CurrencyManager:
         currency = str(currency).upper()
         if currency == cls.home(conn, treasury):
             return 'cash'
-        account = conn.execute("SELECT 1 FROM accounts WHERE user_id=? AND quote_currency=? "
-                               "AND account_type='currency_saving'", (str(treasury), currency)).fetchone()
-        return 'fx' if account else None
+        from managers.deposit_accounts import account
+        return 'fx' if account(conn, treasury, currency) else None
 
     @classmethod
     def treasury_receive(cls, conn, treasury, currency, units):
@@ -360,7 +359,7 @@ class CurrencyManager:
         home = cls.home(conn, user_id)
         cls.validate_units(conn, int(delta), currency)
         value = cls.balance(conn, user_id, currency) + int(delta)
-        limit=(2**53-1)*SCALE if currency == home else MAX_UNITS
+        limit=MAX_NATIVE*SCALE if currency == home else MAX_UNITS
         if abs(value) > limit or (value < 0 and not (cls.is_treasury(conn, user_id) or (allow_deficit and cls.is_bank(conn, user_id)))):
             raise ValueError(f'{currency} 잔액이 부족하거나 저장 한도를 초과했습니다.')
         if currency == home:
@@ -368,8 +367,9 @@ class CurrencyManager:
             minor = int(delta) // 10 ** (6 - cls.precision(conn, home))
             conn.execute('UPDATE users SET cash_minor=cash_minor+? WHERE user_id=?', (minor, user_id))
         else:
-            changed = conn.execute("UPDATE accounts SET balance_units=? WHERE user_id=? AND quote_currency=? "
-                                   "AND account_type='currency_saving'", (value,user_id,currency))
+            from managers.deposit_accounts import PRIMARY_NUMBER, PRINCIPAL_DELTA
+            changed = conn.execute(f"UPDATE accounts SET balance_units=?,{PRINCIPAL_DELTA} WHERE account_number={PRIMARY_NUMBER}",
+                                   (value,int(delta),str(user_id),currency))
             if changed.rowcount != 1:
                 raise ValueError(f'{currency} 외환통장을 먼저 개설해주세요.')
         # This is deliberately after the balance change: a brand new currency's
@@ -384,8 +384,10 @@ class CurrencyManager:
             home = self.home(conn,user_id)
             rows = [{'currency_code':home,'balance_units':self.balance(conn,user_id,home)}]
             rows += [dict(r) for r in conn.execute(
-                "SELECT quote_currency AS currency_code,balance_units FROM accounts "
-                "WHERE user_id=? AND account_type='currency_saving' AND quote_currency<>? "
+                "SELECT quote_currency AS currency_code,balance_units FROM accounts a "
+                "WHERE user_id=? AND account_type='saving' AND quote_currency<>? "
+                "AND rowid=(SELECT rowid FROM accounts b WHERE b.user_id=a.user_id AND b.quote_currency=a.quote_currency "
+                "AND b.account_type='saving' ORDER BY b.created_at,b.rowid LIMIT 1) "
                 "ORDER BY quote_currency", (str(user_id),home))]
             for row in rows:
                 row['decimal_places']=snapshot.precision(row['currency_code'])
@@ -516,7 +518,7 @@ class CurrencyReadSnapshot:
         value = units * self.rate_fraction(source) / self.rate_fraction(target)
         quantum = 10 ** (6 - self.precision(target))
         output = (value.numerator // value.denominator) // quantum * quantum
-        limit = (2**53 - 1) * SCALE if target == self.base_currency else MAX_UNITS
+        limit = MAX_NATIVE * SCALE if target == self.base_currency else MAX_UNITS
         if not 0 <= output <= limit:
             raise ValueError('환산 금액이 저장 한도를 초과했습니다.')
         return output

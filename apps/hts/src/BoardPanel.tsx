@@ -1,3 +1,4 @@
+import { exactMoney, formatMoney, type Money } from "../../shared/money";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api, type ApiUser } from "../../shared/api";
@@ -10,7 +11,7 @@ type Category = { category_id: number; name: string };
 type BoardInfo = { board_id: string; name: string; description: string; admin_only: number; allow_asset: number; secret: number; news: number; sort_order: number; post_count?: number; suspension: string | null; categories: Category[] };
 type BoardDraft = { boardId: string; name: string; description: string; adminOnly: boolean; allowAsset: boolean; secret: boolean; news: boolean; sortOrder: string };
 // News moves the market from publication: administrators see its impact, readers only that it is news.
-type News = { status: "scheduled" | "live" | "ended" | "failed"; publish_epoch: number; event_type?: "good" | "bad"; severity?: number; asset_code?: string | null; duration_seconds?: number; target_price?: number | null; error?: string | null };
+type News = { status: "scheduled" | "live" | "ended" | "failed"; publish_epoch: number; event_type?: "good" | "bad"; severity?: number; asset_code?: string | null; duration_seconds?: number; target_price?: Money | null; error?: string | null };
 type NewsDraft = { eventType: "good" | "bad"; severity: string; minutes: string; targetPrice: string; publish: number | null };
 type Summary = { post_id: number; board: string; board_name: string; category_id: number | null; category_name: string | null; notice: number; author_admin: number; title: string; asset_code: string | null; pinned: number; anonymous: number; secret: number; view_count: number; created_epoch: number; updated_epoch: number; author: string; comment_count: number; like_count: number; dislike_count: number; mine: boolean; has_attachments: number; has_poll: number; news_status: News["status"] | null; news_publish_epoch: number | null };
 type Reaction = 1 | -1 | 0;
@@ -170,7 +171,7 @@ export function BoardPanel({ user, initialAsset = "", onLogin, onLogout }: { use
       assetCode: boardInfo(draft.board)?.allow_asset ? draft.assetCode.trim() : "", anonymous: draft.anonymous, secret: draft.secret, pinned: draft.pinned, notice: draft.notice,
       attachments: draft.uploads.map((item) => item.attachmentId), links: draft.links.filter((link) => link.url.trim()), removeAttachments: draft.remove, ...(poll ? { poll } : {}),
       ...(draft.news && !draft.postId ? { news: { eventType: draft.news.eventType, severity: Math.round(Number(draft.news.severity)), durationSeconds: Math.round(Number(draft.news.minutes) * 60),
-        targetPrice: draft.news.targetPrice.trim() ? Math.round(Number(draft.news.targetPrice)) : null, publishEpoch: draft.news.publish } } : {}) };
+        targetPrice: draft.news.targetPrice.trim() ? exactMoney(draft.news.targetPrice) : null, publishEpoch: draft.news.publish } } : {}) };
     if (draft.postId) void write(`/api/board/posts/${draft.postId}/edit`, body, async () => { await open(draft.postId!); setReloadKey((key) => key + 1); });
     // A new post shows at the top of the board it went to (which may not be the one on screen).
     else void write<{ postId: number }>("/api/board/posts", body, async (result) => {
@@ -388,7 +389,7 @@ export function BoardPanel({ user, initialAsset = "", onLogin, onLogout }: { use
             <h3>{post.title}</h3>
             <p className="board-post-meta">{authorView(post.author, post.author_admin)} · {when(post.created_epoch)}{post.updated_epoch > post.created_epoch ? ` (수정 ${when(post.updated_epoch)})` : ""} · 조회 {count(post.view_count)}</p>
             {admin && post.news?.event_type && <p className="board-news-impact">
-              시장 영향 · {post.news.event_type === "good" ? "호재" : "악재"} {post.news.severity}% · {post.news.asset_code || "시장 전체"} · {Math.round((post.news.duration_seconds ?? 0) / 60)}분{post.news.target_price ? ` · 목표가 ${count(post.news.target_price)}` : ""}
+              시장 영향 · {post.news.event_type === "good" ? "호재" : "악재"} {post.news.severity}% · {post.news.asset_code || "시장 전체"} · {Math.round((post.news.duration_seconds ?? 0) / 60)}분{post.news.target_price ? ` · 목표가 ${formatMoney(post.news.target_price)}` : ""}
               {" · "}{NEWS_STATUS[post.news.status]}{post.news.status === "scheduled" ? ` (${when(post.news.publish_epoch)} 게시)` : ""}{post.news.error ? ` — ${post.news.error}` : ""}
               <small>뉴스를 지우거나 숨기면 이후 영향이 멈춥니다(이미 움직인 가격은 그대로).</small></p>}
             <div className={post.locked ? "board-post-body board-locked" : "board-post-body"}>{post.locked ? <>🔒 {post.body}</> : post.body}</div>

@@ -11,6 +11,116 @@ class CompanySplitTests(unittest.TestCase):
     setUp = fixtures.InazinaTests.setUp
     tearDown = fixtures.InazinaTests.tearDown
 
+    def test_face_split_updates_fractional_holdings_and_listed_shares(self):
+        self.db.companies.create_company('FACE', '분할회사', '게임', 100000000, 100, 1000000, 'admin', 'INZ')
+        self.db.companies.execute("UPDATE company SET listed_shares=40,dividend_per_share=20,liquidation_value_per_share=1000000 WHERE company_code='FACE'")
+        self.db.assets.add_user_asset('citizen', 'FACE', 2.5, unit_cost=600000)
+        actions = CorporateActionsManager(self.bot)
+        ok, message = actions.adjust_face_value('admin', '분할', 'FACE', 10)
+        self.assertTrue(ok, message)
+        row = self.db.companies.execute_one("SELECT share_price,total_shares,listed_shares,dividend_per_share,liquidation_value_per_share FROM company WHERE company_code='FACE'")
+        self.assertEqual(tuple(row), (100000, 1000, 400, 2, 100000))
+        self.assertEqual(self.holding('citizen', 'FACE'), (25, 60000))
+
+    def test_face_reverse_split_restores_share_terms(self):
+        self.db.companies.create_company('FACE', '분할회사', '게임', 100000000, 1000, 100000, 'admin', 'INZ')
+        self.db.companies.execute("UPDATE company SET listed_shares=400,dividend_per_share=2,liquidation_value_per_share=100000 WHERE company_code='FACE'")
+        self.db.assets.add_user_asset('citizen', 'FACE', 25, unit_cost=60000)
+        ok, message = CorporateActionsManager(self.bot).adjust_face_value('admin', '병합', 'FACE', 5)
+        self.assertTrue(ok, message)
+        row = self.db.companies.execute_one("SELECT share_price,total_shares,listed_shares,dividend_per_share,liquidation_value_per_share FROM company WHERE company_code='FACE'")
+        self.assertEqual(tuple(row), (500000, 200, 80, 10, 500000))
+        self.assertEqual(self.holding('citizen', 'FACE'), (5, 300000))
+
+    def test_face_split_preserves_small_total_cost_basis(self):
+        from managers.asset_cost_manager import AssetCostManager
+        self.db.companies.create_company('LOW', '저원가', '게임', 10000, 100, 1000000, 'admin', 'INZ')
+        self.db.assets.add_user_asset('citizen', 'LOW', 20, unit_cost=24)
+        ok, message = CorporateActionsManager(self.bot).adjust_face_value('admin', '분할', 'LOW', 100)
+        self.assertTrue(ok, message)
+        row = self.db.assets.execute_one("SELECT * FROM user_assets WHERE asset_code='LOW'")
+        self.assertEqual(row['quantity'], 2000)
+        with self.db.atomic() as conn:
+            self.assertEqual(AssetCostManager.total_cost_minor(conn, row['holding_id']), 480)
+            self.assertEqual(AssetCostManager.sale_cost_minor(conn, row['holding_id'], 1000), 240)
+            conn.execute('UPDATE user_assets SET quantity=quantity-1000 WHERE holding_id=?', (row['holding_id'],))
+            self.assertEqual(AssetCostManager.total_cost_minor(conn, row['holding_id']), 240)
+            AssetCostManager.upsert(conn, 'citizen', 'LOW', None, 10, 10000)
+            self.assertEqual(AssetCostManager.total_cost_minor(conn, row['holding_id']), 100240)
+
+
+    def test_face_split_uses_quote_currency_minor_units(self):
+        self.db.currency.execute("INSERT INTO currencies(code,name,reference_rate,decimal_places) VALUES ('USD','달러','1400',2)")
+        self.db.companies.create_company('USDCO', '달러주식', '게임', 10000, 100, 100, 'admin', 'INZ')
+        self.db.companies.execute("UPDATE company SET quote_currency='USD',share_price=100.50 WHERE company_code='USDCO'")
+        ok, message = CorporateActionsManager(self.bot).adjust_face_value('admin', '분할', 'USDCO', 10)
+        self.assertTrue(ok, message)
+        self.assertEqual(self.db.companies.get_company('USDCO')['share_price'], 10.05)
+        ok, message = CorporateActionsManager(self.bot).adjust_face_value('admin', '병합', 'USDCO', 10)
+        self.assertTrue(ok, message)
+        self.assertEqual(self.db.companies.get_company('USDCO')['share_price'], 100.5)
+
+    def test_partial_position_transfer_keeps_allocated_total_basis(self):
+        from managers.asset_cost_manager import AssetCostManager
+        self.db.companies.create_company('LOW', '저원가', '게임', 10000, 100, 1000000, 'admin', 'INZ')
+        self.db.assets.add_user_asset('citizen', 'LOW', 20, unit_cost=24)
+        self.assertTrue(CorporateActionsManager(self.bot).adjust_face_value('admin', '분할', 'LOW', 100)[0])
+        with self.db.atomic() as conn:
+            source = conn.execute("SELECT holding_id FROM user_assets WHERE user_id='citizen' AND asset_code='LOW'").fetchone()[0]
+            basis = AssetCostManager.sale_cost_minor(conn, source, 1000)
+            AssetCostManager.upsert(conn, 'admin', 'LOW', None, 1000, 0, incoming_total_minor=basis)
+            conn.execute('UPDATE user_assets SET quantity=1000 WHERE holding_id=?', (source,))
+            target = conn.execute("SELECT holding_id FROM user_assets WHERE user_id='admin' AND asset_code='LOW'").fetchone()[0]
+            self.assertEqual(AssetCostManager.total_cost_minor(conn, source), 240)
+            self.assertEqual(AssetCostManager.total_cost_minor(conn, target), 240)
+
+    def test_pledged_collateral_blocks_split_without_changes(self):
+        self.db.companies.create_company('PLEDGED', '담보주식', '게임', 10000, 100, 1000000, 'admin', 'INZ')
+        self.db.accounts.execute("INSERT INTO loans(user_id,product_code,principal,outstanding_balance,status,quote_currency) VALUES ('citizen','X',1,1,'active','NWX')")
+        loan = self.db.accounts.execute_one('SELECT MAX(loan_id) FROM loans')[0]
+        self.db.accounts.execute("INSERT INTO loan_collateral_assets(loan_id,user_id,asset_code,quantity,pledged_epoch,last_price,last_value) VALUES (?,'citizen','PLEDGED',1,0,1000000,1000000)", (loan,))
+        ok, message = CorporateActionsManager(self.bot).adjust_face_value('admin', '분할', 'PLEDGED', 10)
+        self.assertFalse(ok)
+        self.assertIn('담보', message)
+        self.assertEqual(self.db.companies.get_company('PLEDGED')['share_price'], 1000000)
+
+    def test_bonus_after_split_keeps_exact_total_cost(self):
+        from managers.asset_cost_manager import AssetCostManager
+        self.db.companies.create_company('LOW', '저원가', '게임', 10000, 100, 1000000, 'admin', 'INZ')
+        self.db.assets.add_user_asset('citizen', 'LOW', 20, unit_cost=24)
+        actions = CorporateActionsManager(self.bot)
+        self.assertTrue(actions.adjust_face_value('admin', '분할', 'LOW', 100)[0])
+        ok, message = actions.increase_capital('admin', '무상', 'LOW', 1000)
+        self.assertTrue(ok, message)
+        with self.db.atomic() as conn:
+            holding = conn.execute("SELECT holding_id FROM user_assets WHERE user_id='citizen' AND asset_code='LOW'").fetchone()[0]
+            self.assertEqual(AssetCostManager.total_cost_minor(conn, holding), 480)
+
+    def test_fractional_lot_basis_remains_fractional_after_split_and_transfer(self):
+        from fractions import Fraction
+        from managers.asset_cost_manager import AssetCostManager
+        self.db.companies.create_company('FRAC', '소수주식', '게임', 10000, 100, 1000000, 'admin', 'INZ')
+        self.db.assets.add_user_asset('citizen', 'FRAC', 0.5, unit_cost=1)
+        actions = CorporateActionsManager(self.bot)
+        self.assertTrue(actions.adjust_face_value('admin', '분할', 'FRAC', 10)[0])
+        with self.db.atomic() as conn:
+            lot = conn.execute("SELECT holding_id FROM user_assets WHERE user_id='citizen' AND asset_code='FRAC'").fetchone()[0]
+            self.assertEqual(AssetCostManager.total_cost_minor(conn, lot), Fraction(1, 2))
+            moved = AssetCostManager.sale_cost_minor(conn, lot, 1)
+            self.assertEqual(moved, Fraction(1, 10))
+            AssetCostManager.upsert(conn, 'admin', 'FRAC', None, 1, 0, incoming_total_minor=moved)
+            conn.execute('UPDATE user_assets SET quantity=4 WHERE holding_id=?', (lot,))
+            self.assertEqual(AssetCostManager.total_cost_minor(conn, lot), Fraction(2, 5))
+            target = conn.execute("SELECT holding_id FROM user_assets WHERE user_id='admin' AND asset_code='FRAC'").fetchone()[0]
+            self.assertEqual(AssetCostManager.total_cost_minor(conn, target), Fraction(1, 10))
+
+    def test_split_cannot_inflate_value_below_minimum_quote_unit(self):
+        self.db.companies.create_company('PENNY', '최소가격', '게임', 100, 100, 1, 'admin', 'INZ')
+        ok, message = CorporateActionsManager(self.bot).adjust_face_value('admin', '분할', 'PENNY', 10)
+        self.assertFalse(ok)
+        self.assertIn('최소단위', message)
+        self.assertEqual(self.db.companies.get_company('PENNY')['total_shares'], 100)
+
     def setup_company(self):
         # 100 shares at 100 NWX, capital 10,000; 70 held by the citizen, 20 by the admin, 10 unissued.
         self.db.companies.create_company('CO', '회사', '게임', 10000, 100, 100, 'admin', 'INZ')

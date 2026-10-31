@@ -1,4 +1,5 @@
 """Opt-in spot/fund trading with exact minor-unit cash and bounded decimal units."""
+from functions.exact_money import ExactDecimal
 from functions.money import base_currency_code
 import time
 from fractions import Fraction
@@ -24,7 +25,7 @@ class FractionalTradingManager:
 
     @staticmethod
     def _native(units):
-        return units // SCALE if units % SCALE == 0 else float(Fraction(units, SCALE))
+        return units // SCALE if units % SCALE == 0 else ExactDecimal(units) / SCALE
 
     @staticmethod
     def _held(conn, code, user=None):
@@ -48,8 +49,9 @@ class FractionalTradingManager:
             if not self.users._debit_source(conn, str(user), account, self._native(units)):
                 raise ValueError('결제 잔액이 부족합니다.')
         else:
-            changed = conn.execute("UPDATE accounts SET balance_units=balance_units-? WHERE account_number=? AND user_id=? AND quote_currency=? AND account_type='currency_saving' AND balance_units>=?",
-                                   (units, account, str(user), currency, units))
+            from managers.deposit_accounts import PRINCIPAL_DELTA
+            changed = conn.execute(f"UPDATE accounts SET balance_units=balance_units-?,{PRINCIPAL_DELTA} WHERE account_number=? AND user_id=? AND quote_currency=? AND account_type='saving' AND balance_units>=?",
+                                   (units, -units, account, str(user), currency, units))
             if changed.rowcount != 1:
                 raise ValueError('외환통장 잔액이 부족합니다.')
 
@@ -77,7 +79,8 @@ class FractionalTradingManager:
         from managers.currency_exchange_manager import CurrencyExchangeManager
         CurrencyExchangeManager._user(conn, str(user))
         CurrencyExchangeManager(self.db)._settle(conn, str(user), now)
-        account = conn.execute("SELECT account_number,balance_units FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'", (str(user), currency)).fetchone()
+        from managers.deposit_accounts import account as deposit_account
+        account = deposit_account(conn, user, currency)
         if account and account['balance_units'] >= units:
             return account['account_number']
         raise ValueError(f'{currency} 외환통장을 개설하고 예치금을 확인해주세요.')
@@ -99,11 +102,15 @@ class FractionalTradingManager:
             take = min(left, held)
             if take <= 0:
                 continue
-            cost_units = int(row['average_cost_minor_units'] or 0)
             price_units = int(price)
-            gain += max(0, price_units-cost_units) * take * (
-                SCALE // QUANTITY_SCALE // (10 ** places)
-            )
+            exact = conn.execute('SELECT 1 FROM asset_cost_basis WHERE holding_id=?', (row['holding_id'],)).fetchone()
+            if exact:
+                quantity = Fraction(take, QUANTITY_SCALE)
+                cost_units = AssetCostManager.sale_cost_minor(conn, row['holding_id'], AssetCostManager.decimal_minor(quantity))
+                gain += max(Fraction(0), price_units * quantity - cost_units) * (SCALE // (10 ** places))
+            else:
+                cost_units = int(row['average_cost_minor_units'] or 0)
+                gain += max(0, price_units-cost_units) * take * (SCALE // QUANTITY_SCALE // (10 ** places))
             if take == held:
                 conn.execute('DELETE FROM user_assets WHERE holding_id=?', (row['holding_id'],))
             else:
@@ -187,7 +194,7 @@ class FractionalTradingManager:
                      order_kind,status,created_epoch,updated_epoch,quote_currency,fractional_order,reserved_cash_units,
                      limit_price_minor_units)
                     VALUES (?,?,?,?,?,?,?,?, 'asset','open',?,?,?,1,?,?)""",
-                    (user,code,side,float(price),qty,qty,self._native(reserve),account,now,now,
+                    (user,code,side,ExactDecimal(price),qty,qty,self._native(reserve),account,now,now,
                      currency,reserve,limit_minor))
                 order_id = cursor.lastrowid
                 _, filled, _ = self.match(conn, order_id, now)
@@ -204,7 +211,7 @@ class FractionalTradingManager:
             SCALE // (10 ** places) // QUANTITY_SCALE
         )
         cost = self._ceil(after, quantum)-self._ceil(before, quantum)
-        reserved = int(buyer['reserved_cash_units']) if buyer['fractional_order'] else int(round(float(buyer['reserved_cash'])*SCALE))
+        reserved = int(buyer['reserved_cash_units']) if buyer['fractional_order'] else int(round(ExactDecimal(buyer['reserved_cash'])*SCALE))
         if cost > reserved:
             raise ValueError('매수 예치금이 부족해 체결을 취소했습니다.')
         reserved -= cost
@@ -260,7 +267,7 @@ class FractionalTradingManager:
                 buyer, seller, price_minor = incoming, None, reference_minor
             else:
                 break
-            price = float(from_minor_units(price_minor, places))
+            price = ExactDecimal(from_minor_units(price_minor, places))
             from managers.financial_manager import FinancialManager as Finance
             if not seller and source=='company':Finance.ensure(conn,asset['code'],now)
             spent = self._consume_buyer(conn, buyer, units, price_minor, currency)

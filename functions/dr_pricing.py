@@ -1,6 +1,7 @@
 """Indicative depositary-receipt reference pricing helpers."""
 
 import math
+from functions.exact_money import ExactDecimal, native_value
 
 
 DEVIATION_ALERT_THRESHOLD_PERCENT = 10.0
@@ -9,7 +10,7 @@ DEVIATION_ALERT_THRESHOLD_PERCENT = 10.0
 def reference_metrics(dr_price, underlying_price, underlying_per_receipt, fx_rate):
     """Return an indicative DR value and deviation warning for web clients."""
     try:
-        values = tuple(float(value) for value in
+        values = tuple(ExactDecimal(value) for value in
                        (dr_price, underlying_price, underlying_per_receipt, fx_rate))
     except (TypeError, ValueError, OverflowError):
         return {}
@@ -21,8 +22,8 @@ def reference_metrics(dr_price, underlying_price, underlying_per_receipt, fx_rat
     if not math.isfinite(reference) or not math.isfinite(premium):
         return {}
     return {
-        "referenceValue": reference,
-        "referencePremiumPercent": premium,
+        "referenceValue": native_value(reference),
+        "referencePremiumPercent": float(premium),
         "referenceDeviationAlert": (
             abs(premium) + 1e-9 >= DEVIATION_ALERT_THRESHOLD_PERCENT
         ),

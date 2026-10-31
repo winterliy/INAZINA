@@ -1,3 +1,4 @@
+import { validMoney } from "../../shared/money";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
 import { number, plain, type Ctx } from "./common";
@@ -30,8 +31,8 @@ export function TransferTile({ ctx }: { ctx: Ctx }) {
 
   function send() {
     const to = recipient.trim();
-    const value = Number(amount);
-    if (!to || !(value > 0)) { say("받는 사람과 0보다 큰 금액을 입력해주세요.", true); return; }
+    const value = amount;
+    if (!to || !validMoney(value, true)) { say("받는 사람과 0보다 큰 금액을 입력해주세요.", true); return; }
     if (!window.confirm(`${from?.name ?? "국고"} 명의로 ${found?.nickname ?? to}에게 ${number(value)}을(를) 보낼까요?\n\n$송금 ${to} ${amount}`)) return;
     void run(() => api<{ message: string; success: boolean }>("/api/admin/commands", { method: "POST", body: JSON.stringify({ national: true, command: "송금", values: [to, amount, ""] }) }),
       "송금하지 못했습니다.", (result) => { say(plain(result.message), !result.success); if (result.success) setAmount(""); });

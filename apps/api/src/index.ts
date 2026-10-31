@@ -888,6 +888,18 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/search-indicators") {
+    const query = new URLSearchParams({ search: url.searchParams.get("search") ?? "" });
+    const result = await internalGet(`/internal/search-indicators?${query}`, principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+  if (request.method === "POST" && /^\/api\/admin\/companies\/[^/]+\/share-actions$/.test(url.pathname)) {
+    if (user.role !== "admin") { send(response, 403, { error: "admin_required" }); return; }
+    const result = await internalRequest("POST", url.pathname.replace(/^\/api\//, "/internal/"), principal.userId, await requestJson(request));
+    send(response, result.status, result.body);
+    return;
+  }
   const infoMatch = url.pathname.match(/^\/api\/info\/(panel)$/);
   if (request.method === "GET" && infoMatch) {
     const query = new URLSearchParams();

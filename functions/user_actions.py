@@ -30,8 +30,8 @@ USER_ACTIONS = {
     "송금": ("돈", "다른 사람이나 계좌로 돈을 보냅니다.",
            "받는 사람의 아이디 또는 계좌번호를 넣으세요. 내 외환통장 번호를 넣으면 그 통화로 환전돼요. 금액은 출금하는 통화 기준입니다.",
            [("recipient", "받는 사람 ID 또는 계좌", "text", False, "내 외환통장이면 환전", "accounts"), ("amount", "금액", "number", False, "출금 통화 기준", None), ("source", "출금 계좌", "text", True, "비우면 지갑에서", "accounts")]),
-    "도박": ("돈", "금액을 걸고 도박합니다.", "관리자가 정한 확률로 당첨되면 리턴 비율만큼 받고, 지면 건 금액은 국고로 갑니다.",
-           [("amount", "건 금액", "number", False, "", None)]),
+    "도박": ("돈", "금액을 걸고 도박합니다.", "",
+           [("amount", "건 금액", "number", False, "", None), ("source", "출금 계좌", "text", True, "비우면 자동 · 현금은 __wallet__", "accounts")]),
     "계좌개설": ("은행", "저축 상품이나 외환통장으로 계좌를 엽니다.",
              "저축과 외환통장 모두 비밀번호와 상품의 최소 예치금이 필요해요. 예치금은 상품 통화 기준이고, 외환통장은 현재 환율로 내 현금에서 빠져나가요.",
              [("product", "상품", "text", False, "", "saving_products"), ("password", "계좌 비밀번호", "password", False, "4~16자", None), ("deposit", "예치금", "number", True, "상품 통화 기준 · 비우면 0", None)]),
@@ -66,7 +66,7 @@ USER_ACTIONS = {
             [("account", "랩 계좌번호", "text", False, "", None), ("asset", "종목", "text", False, "", "instruments"), ("side", "방향", "select:buy,sell", False, "buy = 매수 · sell = 매도", None), ("quantity", "수량", "number", False, "", None), ("price", "지정가", "number", False, "", None)]),
     "운용계좌": ("운용", "내가 운용하는 랩어카운트 목록을 봅니다.", "", []),
     "복권구매": ("복권", "주간 6/45 복권을 삽니다.", "번호를 비우면 자동으로 뽑아요. 직접 고를 때는 1~45 중 서로 다른 6개를 쉼표로 적으세요.",
-             [("quantity", "장 수", "number", False, "1~1000", None), ("numbers", "번호", "text", True, "비우면 자동 · 예: 3,11,19,27,35,42", None)]),
+             [("quantity", "장 수", "number", False, "1~1000", None), ("numbers", "번호", "text", True, "비우면 자동 · 예: 3,11,19,27,35,42", None), ("source", "출금 계좌", "text", True, "비우면 자동 · 현금은 __wallet__", "accounts")]),
     "내복권": ("복권", "내 복권 번호와 당첨 결과를 봅니다.", "회차를 비우면 현재 회차를 보여 줍니다.",
             [("round", "회차", "number", True, "비우면 현재", None)]),
     "복권결과": ("복권", "회차별 당첨번호와 상금을 봅니다.", "회차를 비우면 가장 최근 추첨 결과를 보여 줍니다.",
@@ -167,7 +167,7 @@ def execute(bot, user_id, command, values):
     if command == "송금":
         return _text(execute_shared_action(bot, user_id, "transfer", v["recipient"], v["amount"], v["source"]))
     if command == "도박":
-        return _text(bot.user_mgr.gamble(user_id, _integer(v["amount"], "금액")))
+        return _text(bot.user_mgr.gamble(user_id, _integer(v["amount"], "금액"), source=v.get("source") or None))
     if command == "계좌개설":
         return _text(bot.bank_mgr.open_account(user_id, v["product"], v["password"], v["deposit"] or "0"))
     if command == "계좌해지":
@@ -212,7 +212,7 @@ def execute(bot, user_id, command, values):
         numbers = v["numbers"] or "자동"
         bot.lottery_mgr.numbers(numbers)
         return _text(bot.lottery_mgr.purchase(user_id, _integer(v["quantity"], "장 수"), numbers,
-                                              uuid.uuid4().hex, expected_round=current["round_id"]))
+                                              uuid.uuid4().hex, expected_round=current["round_id"], source=v.get("source") or None))
     if command == "내복권":
         return _text([dict(row) for row in bot.lottery_mgr.tickets(user_id, _integer(v["round"], "회차") if v["round"] else None)])
     if command == "복권결과":
@@ -223,6 +223,6 @@ def execute(bot, user_id, command, values):
         rate = bot.rate_mgr.get_rate('legal_max_rate', v['country'])
         return True, f"{v['country']} 법정최고이자: 연 {rate:g}%", {"국가": v["country"], "법정최고이자": f"연 {rate:g}%"}
     if command == "재무":
-        from managers.financial_manager import FinancialManager
-        return _text(FinancialManager(bot.db).report(v["product"]))
+        from managers.company_account_manager import CompanyAccounts
+        return _text(CompanyAccounts.financial_report(bot.db, v["product"]))
     raise ValueError("이 명령어는 Discord 봇이 처리합니다.")

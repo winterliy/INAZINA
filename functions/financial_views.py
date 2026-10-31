@@ -37,7 +37,8 @@ class FinancialReportView(discord.ui.View):
     async def change_period(self, interaction):
         await interaction.response.defer()
         try:
-            self.report=await asyncio.to_thread(FinancialManager(self.db).report,self.report['code'],self.period_select.values[0])
+            from managers.company_account_manager import CompanyAccounts
+            self.report=await asyncio.to_thread(CompanyAccounts.financial_report,self.db,self.report['code'],self.period_select.values[0])
         except ValueError as exc:
             await interaction.followup.send(str(exc),ephemeral=True)
             return

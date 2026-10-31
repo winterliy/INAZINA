@@ -108,7 +108,7 @@ class PriceGapFillerTests(unittest.TestCase):
         now = 10_599 + 300
         for setup in ("UPDATE market_exchanges SET status='closed', reason='휴장'",
                       "UPDATE market_exchanges SET status='paused', reason='사이드카'",
-                      "UPDATE company SET exchange_id='UNLISTED'",
+                      "UPDATE company SET exchange_id='3DSG'",
                       "UPDATE company SET status='delisted'"):
             with self.subTest(setup=setup):
                 self.conn.execute("SAVEPOINT s")

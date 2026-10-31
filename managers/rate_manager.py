@@ -1,4 +1,5 @@
 """Game policy rates and nationality-specific legal interest-rate caps."""
+from functions.exact_money import ExactDecimal, native_value
 from functions.money import base_currency_code
 
 import math
@@ -159,10 +160,10 @@ class RateManager:
                 rate = float(row["rate"])
             else:
                 fallback = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
-                rate = float(fallback["value"] if fallback else 0)
+                rate = ExactDecimal(fallback["value"] if fallback else 0)
         else:
             row = conn.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
-            rate = float(row["value"] if row else 0)
+            rate = ExactDecimal(row["value"] if row else 0)
         low = -100 if key == "base_rate" else 0
         if not math.isfinite(rate) or not low <= rate <= 100:
             raise ValueError(f"{RATE_NAMES[key]}는 {low}~100%의 유한한 숫자여야 합니다.")
@@ -466,15 +467,15 @@ class RateManager:
         capital_units = sum(max(0, int(row["equity_capital_minor_units"] or 0)
                                 +int(row["retained_earnings_minor_units"] or 0))
                             for row in capital_rows)
-        capital_amount = float(from_minor_units(capital_units, capital_places))
+        capital_amount = ExactDecimal(from_minor_units(capital_units, capital_places))
         treasury = conn.execute(
             "SELECT COALESCE(SUM(p.sold_amount),0) sold,COALESCE(SUM(p.total_supply),0) total "
             "FROM treasury_bond_products p JOIN market_exchanges e "
             "ON e.exchange_id=p.exchange_id WHERE e.nationality=? AND p.status='active'",
             (country,),
         ).fetchone()
-        deposits_value = max(0.0, float(deposits["amount"] or 0))
-        loans = max(0.0, float(loan_row["amount"] or 0))
+        deposits_value = max(0.0, ExactDecimal(deposits["amount"] or 0))
+        loans = max(0.0, ExactDecimal(loan_row["amount"] or 0))
         equity = max(1.0, capital_amount)
         funding_ratio = loans/max(1.0, deposits_value+equity)
         funding_target = max(-2.0, min(10.0, (funding_ratio-.90)*.75))
@@ -517,15 +518,15 @@ class RateManager:
             (country,),
         ):
             sheet = RateManager.institution_balance_sheet(conn, institution["issuer"])
-            bank_loans = float(sheet["loans"])
+            bank_loans = ExactDecimal(sheet["loans"])
             if bank_loans <= 0:
                 continue
             terms = RateManager.institution_components(conn, institution["issuer"])
-            ldr = bank_loans/max(1.0, float(sheet["deposits"]))
+            ldr = bank_loans/max(1.0, ExactDecimal(sheet["deposits"]))
             ldr_target = max(.01, float(institution["target_loan_deposit_ratio"] or .9))
             ldr_gap = max(-1.0, min(5.0, (ldr-ldr_target)/ldr_target))
-            capital_ratio = (float(terms["effective_equity"])
-                             / max(1.0, float(sheet["risk_weighted_assets"])))
+            capital_ratio = (ExactDecimal(terms["effective_equity"])
+                             / max(1.0, ExactDecimal(sheet["risk_weighted_assets"])))
             capital_target = max(.001, float(institution["target_capital_ratio"] or .1))
             capital_gap = max(-1.0, min(5.0,
                 (capital_target-capital_ratio)/capital_target
@@ -620,7 +621,7 @@ class RateManager:
         treasury zero curve.  A zero coupon frequency keeps legacy bullet-interest
         bonds compatible; a positive frequency creates periodic coupon cash flows.
         """
-        face = float(face_value)
+        face = ExactDecimal(face_value)
         remaining = max(0, int(math.ceil(float(remaining_days or 0))))
         original = max(1, int(original_maturity_days or remaining or 1))
         frequency = max(0, int(coupon_frequency_days or 0))
@@ -651,9 +652,9 @@ class RateManager:
             dv01 = max(0.0, (down-up)/2.0)
             decimal_bump = 0.0001
             return dirty, {
-                "macaulay_duration": macaulay_numerator/dirty,
-                "modified_duration": dv01/(dirty*decimal_bump),
-                "convexity": max(0.0, (up+down-2*dirty)/(dirty*decimal_bump**2)),
+                "macaulay_duration": float(macaulay_numerator/dirty),
+                "modified_duration": float(dv01/(dirty*decimal_bump)),
+                "convexity": float(max(0.0, (up+down-2*dirty)/(dirty*decimal_bump**2))),
                 "dv01": dv01,
             }
 
@@ -734,16 +735,16 @@ class RateManager:
             "retained_earnings": 0.0,
         }
         result = {
-            key: float(row[key] if row and row[key] is not None else default)
+            key: (ExactDecimal(row[key] if row and row[key] is not None else default) if key in {"equity_capital", "retained_earnings", "deposit_insurance_limit"} else float(row[key] if row and row[key] is not None else default))
             for key, default in defaults.items()
         }
         from functions.money import from_minor_units
         if row and row["equity_capital_minor_units"] is not None:
-            result["equity_capital"] = float(from_minor_units(
+            result["equity_capital"] = ExactDecimal(from_minor_units(
                 row["equity_capital_minor_units"], row["equity_capital_decimal_places"]
             ))
         if row and row["retained_earnings_minor_units"] is not None:
-            result["retained_earnings"] = float(from_minor_units(
+            result["retained_earnings"] = ExactDecimal(from_minor_units(
                 row["retained_earnings_minor_units"], row["retained_earnings_decimal_places"]
             ))
         result["status"] = str(row["status"] if row and row["status"] else "active")
@@ -805,15 +806,15 @@ class RateManager:
         def translated(rows):
             total = 0.0
             for row in rows:
-                native = max(0.0, float(row["amount"] or 0))
+                native = max(0.0, ExactDecimal(row["amount"] or 0))
                 currency = str(row["quote_currency"] or base_currency_code(conn))
                 if currency == base_currency:
                     total += native
                 else:
                     units = int(round(native*SCALE))
-                    total += CurrencyManager.convert(
+                    total += ExactDecimal(CurrencyManager.convert(
                         conn, units, currency, base_currency
-                    )/SCALE
+                    ))/SCALE
             return total
 
         risk_report = RateManager.institution_risk_weighted_assets(
@@ -862,19 +863,19 @@ class RateManager:
         for loan in loans:
             currency = str(loan["quote_currency"] or base_currency_code(conn))
             ead = round_currency(
-                conn, max(0.0, float(loan["outstanding_balance"] or 0)), currency
+                conn, max(0.0, ExactDecimal(loan["outstanding_balance"] or 0)), currency
             )
             cash = round_currency(
-                conn, max(0.0, float(loan["collateral_amount"] or 0)
-                          - float(loan["collateral_released"] or 0)
-                          - float(loan["collateral_seized"] or 0)), currency
+                conn, max(0.0, ExactDecimal(loan["collateral_amount"] or 0)
+                          - ExactDecimal(loan["collateral_released"] or 0)
+                          - ExactDecimal(loan["collateral_seized"] or 0)), currency
             )
             asset_row = conn.execute(
                 "SELECT COALESCE(SUM(last_value),0) value FROM loan_collateral_assets "
                 "WHERE loan_id=? AND status='pledged'", (loan["loan_id"],),
             ).fetchone()
             asset = round_currency(
-                conn, max(0.0, float(asset_row["value"] or 0))*0.80, currency
+                conn, max(0.0, ExactDecimal(asset_row["value"] or 0))*0.80, currency
             )
             cash_covered = min(ead, cash)
             asset_covered = min(max(0.0, ead-cash_covered), asset)
@@ -906,9 +907,9 @@ class RateManager:
                 if currency == base_currency:
                     translated += native_amount
                 else:
-                    translated += CurrencyManager.convert(
+                    translated += ExactDecimal(CurrencyManager.convert(
                         conn, int(round(native_amount*SCALE)), currency, base_currency
-                    )/SCALE
+                    ))/SCALE
             return translated
 
         by_weight = {
@@ -956,7 +957,7 @@ class RateManager:
         ).fetchall():
             currency = str(item["currency"] or base_currency_code(conn))
             exposure.setdefault(currency, {"assets": 0.0, "liabilities": 0.0})
-            exposure[currency]["assets" if item["side"] == "asset" else "liabilities"] = float(item["amount"] or 0)
+            exposure[currency]["assets" if item["side"] == "asset" else "liabilities"] = ExactDecimal(item["amount"] or 0)
 
         from managers.currency_manager import CurrencyManager, SCALE
         from functions.money import currency_precision, round_currency
@@ -966,12 +967,12 @@ class RateManager:
             if currency == base:
                 continue
             fx = CurrencyManager.quote(conn, currency, base)
-            asset_base = CurrencyManager.convert(
+            asset_base = ExactDecimal(CurrencyManager.convert(
                 conn, int(round(values["assets"]*SCALE)), currency, base
-            ) / SCALE
-            liability_base = CurrencyManager.convert(
+            )) / SCALE
+            liability_base = ExactDecimal(CurrencyManager.convert(
                 conn, int(round(values["liabilities"]*SCALE)), currency, base
-            ) / SCALE
+            )) / SCALE
             net = round_currency(conn, asset_base-liability_base, base)
             positions.append({
                 "currency": currency,
@@ -1021,8 +1022,8 @@ class RateManager:
             (issuer, issuer),
         ).fetchall()
         for row in deposits:
-            amount = (float(row["balance_units"] or 0) / 1_000_000
-                      if row["account_type"] == "currency_saving" else float(row["balance"] or 0))
+            amount = (ExactDecimal(row["balance_units"] or 0) / 1_000_000
+                      if row["account_type"] == "currency_saving" else ExactDecimal(row["balance"] or 0))
             if amount <= 0:
                 continue
             opened = conn.execute("SELECT CAST(strftime('%s',?) AS REAL)",
@@ -1052,23 +1053,23 @@ class RateManager:
         ):
             schedules_by_loan.setdefault(payment["loan_id"], []).append(payment)
         for row in loans:
-            amount = float(row["outstanding_balance"] or 0)
+            amount = ExactDecimal(row["outstanding_balance"] or 0)
             currency = str(row["quote_currency"] or base_currency_code(conn))
             result.setdefault(currency, {name: {"inflows": 0.0, "outflows": 0.0} for name in bucket_names})
             schedule = schedules_by_loan.get(row["loan_id"], [])
             scheduled_principal = 0.0
             for payment in schedule:
                 principal = max(
-                    0.0, float(payment["principal_due"] or 0)
-                    - float(payment["principal_paid"] or 0)
+                    0.0, ExactDecimal(payment["principal_due"] or 0)
+                    - ExactDecimal(payment["principal_paid"] or 0)
                 )
                 scheduled_principal += principal
                 scheduled_total = (
-                    float(payment["principal_due"] or 0)
-                    + float(payment["interest_due"] or 0)
-                    + float(payment["fee_due"] or 0)
+                    ExactDecimal(payment["principal_due"] or 0)
+                    + ExactDecimal(payment["interest_due"] or 0)
+                    + ExactDecimal(payment["fee_due"] or 0)
                 )
-                due = max(0.0, scheduled_total-float(payment["amount_paid"] or 0))
+                due = max(0.0, scheduled_total-ExactDecimal(payment["amount_paid"] or 0))
                 result[currency][bucket_for(payment["due_epoch"])]["inflows"] += due
             # Schedules may omit a balloon; legacy loans may have no schedule.
             residual = max(0.0, amount-scheduled_principal)
@@ -1134,16 +1135,16 @@ class RateManager:
             "AND s.status IN ('scheduled','partial') AND s.due_epoch>=? AND s.due_epoch<=? "
             "GROUP BY l.quote_currency", (issuer, epoch, horizon),
         ).fetchall():
-            amount = max(0.0, float(row["amount"] or 0))*.50
+            amount = max(0.0, ExactDecimal(row["amount"] or 0))*.50
             currency = str(row["quote_currency"] or base)
             if currency != base:
-                amount = CurrencyManager.convert(
+                amount = ExactDecimal(CurrencyManager.convert(
                     conn, int(round(amount*SCALE)), currency, base
-                )/SCALE
+                ))/SCALE
             inflows += amount
         terms = RateManager.institution_components(conn, issuer)
         hqla_proxy = max(
-            0.0, float(sheet["deposits"])+float(terms["effective_equity"])-float(sheet["loans"])
+            0.0, ExactDecimal(sheet["deposits"])+ExactDecimal(terms["effective_equity"])-ExactDecimal(sheet["loans"])
         )
         depositor_balances = {}
         insured_deposits_by_user = {}
@@ -1158,15 +1159,15 @@ class RateManager:
             "AND a.resolution_status='active' "
             "GROUP BY a.user_id,a.quote_currency,a.deposit_insured", (issuer,),
         ):
-            amount = max(0.0, float(row["amount"] or 0))
+            amount = max(0.0, ExactDecimal(row["amount"] or 0))
             currency = str(row["quote_currency"] or base)
             deposit_totals_by_currency[currency] = (
                 deposit_totals_by_currency.get(currency, 0.0)+amount
             )
             if currency != base:
-                amount = CurrencyManager.convert(
+                amount = ExactDecimal(CurrencyManager.convert(
                     conn, int(round(amount*SCALE)), currency, base
-                )/SCALE
+                ))/SCALE
             insurance_map = (insured_deposits_by_user if int(row["deposit_insured"] or 0)
                              else uninsured_deposits_by_user)
             insurance_map[row["user_id"]] = insurance_map.get(row["user_id"], 0.0)+amount
@@ -1178,14 +1179,14 @@ class RateManager:
         for currency, native_amount in deposit_totals_by_currency.items():
             concentration_deposit_total += (
                 native_amount if currency == base else
-                CurrencyManager.convert(
+                ExactDecimal(CurrencyManager.convert(
                     conn, int(round(native_amount*SCALE)), currency, base
-                )/SCALE
+                ))/SCALE
             )
         largest_depositor = max(depositor_balances.values(), default=0.0)
         top_five_depositors = sum(sorted(depositor_balances.values(), reverse=True)[:5])
         deposit_total = max(0.0, concentration_deposit_total)
-        insurance_limit = max(0.0, float(terms["deposit_insurance_limit"] or 0))
+        insurance_limit = max(0.0, ExactDecimal(terms["deposit_insurance_limit"] or 0))
         uninsured_exposure = 0.0
         for user_id in set(insured_deposits_by_user) | set(uninsured_deposits_by_user):
             insured_balance = insured_deposits_by_user.get(user_id, 0.0)
@@ -1225,7 +1226,7 @@ class RateManager:
             })
         scenarios = []
         for runoff_percent in (5, 10, 20, 40):
-            outflow = max(0.0, float(sheet["deposits"]))*runoff_percent/100.0
+            outflow = max(0.0, ExactDecimal(sheet["deposits"]))*runoff_percent/100.0
             net_outflow = max(0.0, outflow-inflows)
             scenarios.append({
                 "runoffPercent": runoff_percent,
@@ -1264,7 +1265,7 @@ class RateManager:
                                                    "liabilityBalanceYears": 0.0,
                                                    "assetShocks": {bp: 0.0 for bp in shock_bps},
                                                    "liabilityShocks": {bp: 0.0 for bp in shock_bps}})
-            balance_years = max(0.0, float(amount or 0)) * days / 365
+            balance_years = max(0, ExactDecimal(amount or 0)) * days / 365
             row["assetBalanceYears" if side == "asset" else "liabilityBalanceYears"] += balance_years
             base_rate = float(current_rate or 0)
             lower = max(0.0, float(floor or 0))
@@ -1296,8 +1297,8 @@ class RateManager:
             "OR (l.issuer=? AND a.account_type='loan_payout')) AND a.resolution_status='active' "
             "AND a.rate_type='floating'", (issuer, issuer),
         ).fetchall():
-            amount = (float(row["balance_units"] or 0) / 1_000_000
-                      if row["account_type"] == "currency_saving" else float(row["balance"] or 0))
+            amount = (ExactDecimal(row["balance_units"] or 0) / 1_000_000
+                      if row["account_type"] == "currency_saving" else ExactDecimal(row["balance"] or 0))
             opened = conn.execute("SELECT CAST(strftime('%s',?) AS REAL)",
                                   (row["created_at"],)).fetchone()[0]
             maturity = (float(opened or epoch) + int(row["maturity_days"] or 0) * 86400
@@ -1358,7 +1359,7 @@ class RateManager:
             (issuer,),
         ):
             currency, values, count = bucket(loan["quote_currency"])
-            balance = max(0.0, float(loan["outstanding_balance"] or 0))
+            balance = max(0.0, ExactDecimal(loan["outstanding_balance"] or 0))
             maturity = (float(loan["maturity_epoch"])
                         if loan["maturity_epoch"] is not None else None)
             if maturity is None:
@@ -1376,8 +1377,8 @@ class RateManager:
             amount_years = 0.0
             amount_years_squared = 0.0
             for row in cashflows:
-                principal = max(0.0, float(row["principal_due"] or 0)
-                                - float(row["principal_paid"] or 0))
+                principal = max(0.0, ExactDecimal(row["principal_due"] or 0)
+                                - ExactDecimal(row["principal_paid"] or 0))
                 due_years = max(0.0, (float(row["due_epoch"])-epoch)/year_seconds)
                 principal_total += principal
                 amount_years += principal*due_years
@@ -1401,9 +1402,9 @@ class RateManager:
             "AND a.resolution_status='active' AND a.rate_type='fixed'",
             (issuer,),
         ):
-            balance = (max(0.0, float(account["balance_units"] or 0)/1_000_000)
+            balance = (max(0.0, ExactDecimal(account["balance_units"] or 0)/1_000_000)
                        if account["account_type"] == "currency_saving"
-                       else max(0.0, float(account["balance"] or 0)))
+                       else max(0.0, ExactDecimal(account["balance"] or 0)))
             if balance <= 0:
                 continue
             currency, values, count = bucket(account["quote_currency"])
@@ -1455,19 +1456,19 @@ class RateManager:
         RateManager.refresh_institution_status(conn, issuer)
         terms = RateManager.institution_components(conn, issuer)
         sheet = RateManager.institution_balance_sheet(conn, issuer)
-        proposed = max(0.0, float(proposed_loan or 0))
+        proposed = max(0.0, ExactDecimal(proposed_loan or 0))
         risk_weight = float(proposed_risk_weight)
         if not math.isfinite(risk_weight) or not 0 <= risk_weight <= 1.5:
             raise ValueError("invalid_proposed_risk_weight")
         if proposed and currency_code and str(currency_code) != sheet["base_currency"]:
             from managers.currency_manager import CurrencyManager, SCALE
-            proposed = CurrencyManager.convert(
+            proposed = ExactDecimal(CurrencyManager.convert(
                 conn, int(round(proposed*SCALE)), str(currency_code),
                 sheet["base_currency"]
-            )/SCALE
-        equity = max(0.0, float(terms["effective_equity"]))
-        deposits = float(sheet["deposits"])
-        loans = float(sheet["loans"])
+            ))/SCALE
+        equity = max(0.0, ExactDecimal(terms["effective_equity"]))
+        deposits = ExactDecimal(sheet["deposits"])
+        loans = ExactDecimal(sheet["loans"])
         leverage_exposure = max(0.0, deposits+equity)
         leverage_ratio = equity/leverage_exposure if leverage_exposure > 0 else float("inf")
         leverage_headroom = max(
@@ -1481,7 +1482,7 @@ class RateManager:
         funding_headroom = (float("inf") if reserve_ratio <= 0 and liquid_buffer >= 0
                             else max(0.0, liquid_buffer/max(1e-12, reserve_ratio)))
         target_capital = float(terms["target_capital_ratio"])
-        current_rwa = float(sheet["risk_weighted_assets"])
+        current_rwa = ExactDecimal(sheet["risk_weighted_assets"])
         capital_headroom = (
             float("inf") if target_capital <= 0 or risk_weight == 0 else
             max(0.0, (equity/target_capital-current_rwa)/risk_weight)
@@ -1518,10 +1519,10 @@ class RateManager:
         if terms["status"] == "failed":
             return "failed"
         sheet = RateManager.institution_balance_sheet(conn, issuer)
-        equity = float(terms["effective_equity"])
-        risk_weighted_assets = float(sheet["risk_weighted_assets"])
+        equity = ExactDecimal(terms["effective_equity"])
+        risk_weighted_assets = ExactDecimal(sheet["risk_weighted_assets"])
         ratio = equity/risk_weighted_assets if risk_weighted_assets > 0 else float("inf")
-        leverage_exposure = max(0.0, float(sheet["deposits"])+equity)
+        leverage_exposure = max(0.0, ExactDecimal(sheet["deposits"])+equity)
         leverage_ratio = equity/leverage_exposure if leverage_exposure > 0 else float("inf")
         if equity <= 0:
             status = "failed"
@@ -1593,8 +1594,8 @@ class RateManager:
             "(issuer,event_type,amount,reference_key,created_epoch,currency_code,"
             "base_currency_code,base_amount,amount_minor_units,base_amount_minor_units,"
             "amount_decimal_places,base_decimal_places) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (issuer, str(event_type), float(event_amount), str(reference_key), when,
-             event_currency, base_currency, float(base_amount), event_units, base_units,
+            (issuer, str(event_type), ExactDecimal(event_amount), str(reference_key), when,
+             event_currency, base_currency, ExactDecimal(base_amount), event_units, base_units,
              event_places, base_places),
         )
         if cursor.rowcount != 1:
@@ -1615,12 +1616,12 @@ class RateManager:
         deposits, loans = sheet["deposits"], sheet["loans"]
         # Equity/wholesale capacity prevents a newly configured institution
         # with no retail deposits from looking infinitely illiquid.
-        loan_deposit = loans / max(1.0, deposits, float(terms["equity_capital"]))
+        loan_deposit = loans / max(1.0, deposits, ExactDecimal(terms["equity_capital"]))
         funding_pressure = max(
             0.0, loan_deposit-float(terms["target_loan_deposit_ratio"])
         ) * float(terms["funding_pressure_sensitivity"])
-        risk_weighted_assets = float(sheet["risk_weighted_assets"])
-        capital_ratio = (max(0.0, float(terms["effective_equity"]))/risk_weighted_assets
+        risk_weighted_assets = ExactDecimal(sheet["risk_weighted_assets"])
+        capital_ratio = (max(0.0, ExactDecimal(terms["effective_equity"]))/risk_weighted_assets
                          if risk_weighted_assets > 0 else 1.0)
         capital_pressure = max(
             0.0, float(terms["target_capital_ratio"])-capital_ratio
@@ -1686,24 +1687,24 @@ class RateManager:
         When omitted, a bullet repayment is inferred for backward compatibility.
         """
         nominal = float(nominal_percent)
-        fee = float(fee_amount or 0)
-        net = float(proceeds or 0)
+        fee = ExactDecimal(fee_amount or 0)
+        net = ExactDecimal(proceeds or 0)
         days = float(maturity_days or 365)
         if net <= 0 or days <= 0:
             return nominal
         if cashflows is None:
-            gross = float(principal if principal is not None else net+fee)
+            gross = ExactDecimal(principal if principal is not None else net+fee)
             payment = gross*(1.0+nominal/100.0*days/365.0)
             cashflows = ((days, payment),)
-        flows = [(float(day), float(payment)) for day, payment in cashflows
-                 if float(day) > 0 and float(payment) > 0]
+        flows = [(float(day), float(ExactDecimal(payment) / net)) for day, payment in cashflows
+                 if float(day) > 0 and ExactDecimal(payment) > 0]
         if not flows:
             return nominal
 
         def present_value(rate):
             log_base = math.log1p(rate)
             return sum(payment*math.exp(-log_base*day/365.0)
-                       for day, payment in flows)-net
+                       for day, payment in flows)-1.0
 
         low, high = -0.999999, 1.0
         try:
@@ -1832,4 +1833,4 @@ class RateManager:
         if end <= start or principal <= 0:
             return 0.0
         rate = RateManager.from_connection(conn, key, nationality)
-        return float(principal) * (rate + spread) / 100 * (end - start) / YEAR_SECONDS
+        return ExactDecimal(principal) * (rate + spread) / 100 * (end - start) / YEAR_SECONDS

@@ -1,3 +1,4 @@
+from decimal import Decimal
 import tempfile
 import unittest
 from pathlib import Path
@@ -85,8 +86,8 @@ class InstitutionMaturityGapTests(unittest.TestCase):
         nwx_up = next(row for row in stress_by_currency["NWX"]["shocks"] if row["basisPoints"] == 200)
         usd_up = next(row for row in stress_by_currency["USD"]["shocks"] if row["basisPoints"] == 200)
         self.assertEqual(nwx_up["liabilityInterestChange"], 1)
-        self.assertEqual(usd_up["assetInterestChange"], 0.74)
-        self.assertEqual(usd_up["netInterestIncomeChange"], 0.74)
+        self.assertEqual(Decimal(str(usd_up["assetInterestChange"])), Decimal('0.74'))
+        self.assertEqual(Decimal(str(usd_up["netInterestIncomeChange"])), Decimal('0.74'))
         self.assertEqual(liquidity["eligibleInflows"], 50)
         self.assertEqual(liquidity["depositorConcentration"]["largestDepositorExposure"], 500)
         self.assertEqual(liquidity["depositorConcentration"]["largestDepositorSharePercent"], 100)

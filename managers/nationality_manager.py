@@ -103,7 +103,8 @@ class NationalityManager:
                     currency_precision(conn, currency),
                 )
                 AssetCostManager.upsert(
-                    conn, treasury, row["asset_code"], None, row["quantity"], cost
+                    conn, treasury, row["asset_code"], None, row["quantity"], cost,
+                    incoming_total_minor=AssetCostManager.total_cost_minor(conn, row['holding_id'])
                 )
                 conn.execute("DELETE FROM user_assets WHERE holding_id=?", (row["holding_id"],))
                 sold += proceeds

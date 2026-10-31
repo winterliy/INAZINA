@@ -412,7 +412,7 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
         )[0], 0)
         self.db.accounts.execute(
             "INSERT INTO accounts(account_number,user_id,product_code,account_type,quote_currency,balance_units) "
-            "VALUES ('DR_FEE_ACCOUNT','citizen','DR_FEE_PRODUCT','currency_saving','NWX',0)"
+            "VALUES ('DR_FEE_ACCOUNT','citizen','DR_FEE_PRODUCT','saving','NWX',0)"
         )
         self.db.accounts.execute(
             "UPDATE accounts SET balance_units=10000000 WHERE account_number='DR_FEE_ACCOUNT'"
@@ -460,7 +460,7 @@ class DepositaryReceiptManagerTests(unittest.TestCase):
         )
         self.db.accounts.execute(
             "INSERT INTO accounts(account_number,user_id,product_code,account_type,quote_currency,balance_units) "
-            "VALUES ('DR_LOCKED_FEE','citizen','DR_FEE_PRODUCT','currency_saving','NWX',0)"
+            "VALUES ('DR_LOCKED_FEE','citizen','DR_FEE_PRODUCT','saving','NWX',0)"
         )
         self.db.accounts.execute(
             "UPDATE accounts SET balance_units=10000000 WHERE account_number='DR_LOCKED_FEE'"

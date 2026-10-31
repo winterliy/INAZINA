@@ -1,6 +1,7 @@
 import discord
 import asyncio
 import time
+import traceback
 from discord import app_commands
 from database import DatabaseManager
 from managers.user_manager import UserManager
@@ -229,6 +230,7 @@ class InazinaBot(discord.Client):
                 if now - self._last_market_error_log >= self.BACKGROUND_ERROR_LOG_INTERVAL_SECONDS:
                     self._last_market_error_log = now
                     print(f"[Market Worker] {type(e).__name__}: {e}")
+                    traceback.print_exception(e, limit=-8)
             next_tick += self.MARKET_UPDATE_INTERVAL_SECONDS
             delay = next_tick - loop.time()
             if delay <= 0:
@@ -421,6 +423,7 @@ class InazinaBot(discord.Client):
                 if now - self._last_loan_error_log >= self.BACKGROUND_ERROR_LOG_INTERVAL_SECONDS:
                     self._last_loan_error_log = now
                     print(f"[Loan Worker] {type(e).__name__}: {e}")
+                    traceback.print_exception(e, limit=-8)
             try:
                 # Overdue states and credit decay advance without waiting for
                 # the borrower to open their account.

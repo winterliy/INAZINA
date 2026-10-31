@@ -83,8 +83,9 @@ class InazinaTests(unittest.TestCase):
         self.assertEqual(self.db.system.execute_one("SELECT COUNT(*) FROM company WHERE industry<>'은행'")[0],25)
         self.assertEqual(self.db.system.execute_one("SELECT COUNT(*) FROM company WHERE industry='은행'")[0],
                          self.db.system.execute_one("SELECT COUNT(*) FROM financial_institutions")[0])
-        self.assertEqual(self.db.products.execute_one("SELECT COUNT(*) FROM saving WHERE product_kind='saving'")[0],25)
-        self.assertEqual(self.db.products.execute_one("SELECT COUNT(*) FROM saving WHERE product_kind='currency_saving'")[0],25)
+        # Home and foreign-currency savings are one product kind; only the currency differs.
+        self.assertEqual(self.db.products.execute_one("SELECT COUNT(*) FROM saving WHERE product_kind='saving' AND quote_currency='NWX'")[0],25)
+        self.assertEqual(self.db.products.execute_one("SELECT COUNT(*) FROM saving WHERE product_kind='saving' AND quote_currency<>'NWX'")[0],25)
         self.assertEqual(self.db.currency.execute_one("SELECT COUNT(*) FROM currencies WHERE code<>'NWX'")[0],25)
         self.assertEqual(self.db.assets.execute_one('SELECT SUM(quantity) FROM option_collateral_lots')[0],2500)
         self.assertEqual(self.db.assets.execute_one("SELECT COUNT(*) FROM market_orders WHERE option_order_type='write'")[0],25)
@@ -101,7 +102,7 @@ class InazinaTests(unittest.TestCase):
         result=self.bot.currency_mgr.exchange('citizen','NWX','USD','15000')
         self.assertIn('수수료 15',result)
         self.assertEqual(self.db.users.get_user('citizen')['cash'],985000)
-        self.assertEqual(self.db.accounts.execute_one("SELECT balance_units FROM accounts WHERE user_id='citizen' AND account_type='currency_saving'")[0],9_990_000)
+        self.assertEqual(self.db.accounts.execute_one("SELECT balance_units FROM accounts WHERE user_id='citizen' AND account_type='saving'")[0],9_990_000)
         self.assertEqual(self.db.users.get_treasury_balance(),10000015)
         self.assertEqual(self.bot.currency_mgr.national_currency('citizen'),('낙원','NWX'))
         self.db.assets.update_price('CUR_USD',1600)
@@ -126,9 +127,9 @@ class InazinaTests(unittest.TestCase):
         result=self.bot.currency_mgr.exchange('citizen','USD','EUR','1')
         self.assertIn('EUR',result)
         with self.db.atomic() as conn:
-            row=conn.execute("SELECT *,quote_currency AS currency_code,last_payment_epoch AS last_interest_epoch FROM accounts WHERE user_id='citizen' AND account_type='currency_saving' AND quote_currency='USD'").fetchone()
+            row=conn.execute("SELECT *,quote_currency AS currency_code,last_payment_epoch AS last_interest_epoch FROM accounts WHERE user_id='citizen' AND account_type='saving' AND quote_currency='USD'").fetchone()
             self.bot.currency_mgr._settle(conn,'citizen',row['last_interest_epoch']+365*86400)
-            updated=conn.execute("SELECT * FROM accounts WHERE account_number=? AND account_type='currency_saving'",(row['account_number'],)).fetchone()
+            updated=conn.execute("SELECT * FROM accounts WHERE account_number=? AND account_type='saving'",(row['account_number'],)).fetchone()
             self.assertGreater(updated['balance_units'],row['balance_units'])
 
     def test_admin_reauthorization_crud_audit_and_settings_validation(self):

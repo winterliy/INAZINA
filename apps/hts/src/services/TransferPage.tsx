@@ -1,3 +1,4 @@
+import { validMoney, exactMoney, moneyAdd, moneyCompare } from "../../../shared/money";
 import { useState } from "react";
 import type { FormEvent } from "react";
 import type { Result } from "../commandKit";
@@ -19,12 +20,14 @@ export function TransferPage({ kit, cash, homeCurrency, homeDigits, accounts }: 
   const balance = from ? from.balance : cash;
   const currency = from?.currency_code ?? homeCurrency;
   const digits = from?.decimal_places ?? homeDigits;
-  const value = Number(amount) || 0;
+  const value = validMoney(amount) ? exactMoney(amount) : "0";
+  const positive = moneyCompare(value, 0) > 0;
+  const exceeds = moneyCompare(value, balance) > 0;
   const own = active.find((account) => account.number === recipient.trim());
 
   function next(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (value <= 0) return;
+    if (!positive || exceeds) return;
     setStep("confirm");
   }
   async function send() {
@@ -52,11 +55,11 @@ export function TransferPage({ kit, cash, homeCurrency, homeDigits, accounts }: 
         {active.length > 0 && <div className="svc-chips" aria-label="내 계좌로 보내기"><small>내 계좌</small>{active.filter((account) => account.number !== source).map((account) => <button type="button" key={account.number} className={recipient === account.number ? "active" : ""} onClick={() => setRecipient(account.number)}>{account.product_name} · {account.currency_code}</button>)}</div>}
         {own && own.currency_code !== currency && <p className="svc-hint">외환통장으로 보내면 현재 환율로 {own.currency_code} 환전되어 입금됩니다.</p>}
         <label className="svc-field">이체 금액<div className="svc-amount"><input required inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^\d.]/g, ""))} placeholder="0" /><span>{currency}</span></div></label>
-        <div className="svc-chips">{QUICK.map((step) => <button type="button" key={step} onClick={() => setAmount(String(value + step))}>+{won(step)}</button>)}<button type="button" onClick={() => setAmount(String(balance))}>전액</button><button type="button" onClick={() => setAmount("")}>정정</button></div>
-        {value > balance && <p className="svc-hint warn">출금 가능 금액보다 많습니다.</p>}
+        <div className="svc-chips">{QUICK.map((step) => <button type="button" key={step} onClick={() => setAmount(moneyAdd(value, step))}>+{won(step)}</button>)}<button type="button" onClick={() => setAmount(String(balance))}>전액</button><button type="button" onClick={() => setAmount("")}>정정</button></div>
+        {exceeds && <p className="svc-hint warn">출금 가능 금액보다 많습니다.</p>}
         <label className="svc-field">받는 분 통장 표시 (선택)<input maxLength={20} value={memo} onChange={(event) => setMemo(event.target.value)} placeholder="화면 기록용 메모" /></label>
       </section>
-      <div className="svc-actions"><button className="svc-submit" disabled={!recipient.trim() || value <= 0}>다음</button></div>
+      <div className="svc-actions"><button className="svc-submit" disabled={!recipient.trim() || !positive || exceeds}>다음</button></div>
     </form>}
     {step === "confirm" && <section className="svc-card svc-confirm">
       <header><h3>이체 내용을 확인하세요</h3><p>이체 후에는 취소할 수 없습니다.</p></header>
@@ -65,7 +68,7 @@ export function TransferPage({ kit, cash, homeCurrency, homeDigits, accounts }: 
         <div><dt>받는 분</dt><dd>{own ? `내 ${own.product_name} ${own.number}` : recipient}</dd></div>
         <div><dt>이체 금액</dt><dd className="svc-big">{won(value, digits)} {currency}</dd></div>
         {memo && <div><dt>메모</dt><dd>{memo}</dd></div>}
-        <div><dt>이체 후 잔액</dt><dd>{won(balance - value, digits)} {currency}</dd></div>
+        <div><dt>이체 후 잔액</dt><dd>{won(moneyAdd(balance, value, true), digits)} {currency}</dd></div>
       </dl>
       <div className="svc-actions"><button type="button" onClick={() => setStep("input")}>수정</button><button type="button" className="svc-submit" disabled={kit.busy} onClick={() => void send()}>{kit.busy ? "이체 중…" : "이체하기"}</button></div>
     </section>}

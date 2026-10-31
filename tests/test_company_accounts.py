@@ -30,6 +30,14 @@ class CompanyAccountTests(unittest.TestCase):
     def cash(self, code='CO'):
         return self.db.corporate.execute_one("SELECT balance FROM issuer_cash_accounts WHERE company_code=?", (code,))[0]
 
+    def test_summary_identifies_cash_currency(self):
+        self.prepare()
+        self.account()
+        with self.db.atomic() as conn:
+            company = next(row for row in CompanyAccounts.summary(conn) if row['company_code'] == 'CO')
+        self.assertEqual(company['currency'], 'NWX')
+        self.assertEqual(company['cash'], 100000)
+
     def test_account_shares_the_issuer_cash_in_both_directions(self):
         self.prepare()
         account = self.account()

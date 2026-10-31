@@ -96,7 +96,7 @@ class LatestRequestsTests(unittest.TestCase):
         ok,message=BankManager(self.db).open_account('alice','INZCU001','pass1234','0')
         self.assertTrue(ok,message)
         self.assertIn('외환통장',message)
-        self.assertEqual(self.db.accounts.execute_one("SELECT COUNT(*) FROM accounts WHERE user_id='alice' AND account_type='currency_saving' AND password IS NOT NULL")[0],1)
+        self.assertEqual(self.db.accounts.execute_one("SELECT COUNT(*) FROM accounts WHERE user_id='alice' AND account_type='saving' AND password IS NOT NULL")[0],1)
 
     def test_foreign_catalog_and_primary_fill_use_native_currency_and_nwx_valuation(self):
         self.seed()
@@ -111,8 +111,8 @@ class LatestRequestsTests(unittest.TestCase):
         success,message=book.place_limit_order('alice','INZUSDST001','buy',2,120)
         self.assertTrue(success,message)
         self.assertEqual(self.db.assets.execute_one("SELECT quote_currency FROM market_orders WHERE user_id='alice'")[0],'USD')
-        self.assertEqual(self.db.accounts.execute_one("SELECT balance_units FROM accounts WHERE user_id='alice' AND account_type='currency_saving' AND quote_currency='USD'")[0],46400000)
-        self.assertEqual(self.db.accounts.execute_one("SELECT balance_units FROM accounts WHERE user_id=? AND account_type='currency_saving' AND quote_currency='USD'",(TREASURY_USER_ID,))[0],220000000)
+        self.assertEqual(self.db.accounts.execute_one("SELECT balance_units FROM accounts WHERE user_id='alice' AND account_type='saving' AND quote_currency='USD'")[0],46400000)
+        self.assertEqual(self.db.accounts.execute_one("SELECT balance_units FROM accounts WHERE user_id=? AND account_type='saving' AND quote_currency='USD'",(TREASURY_USER_ID,))[0],220000000)
         info=self.bot.user_mgr.get_total_assets('alice')
         self.assertEqual(info['stock_total'],330000)
         self.assertEqual(info['grand_total'],999600)
@@ -147,7 +147,7 @@ class LatestRequestsTests(unittest.TestCase):
         self.assertEqual(self.db.assets.execute_one("SELECT quantity FROM user_assets WHERE user_id='bob' AND asset_code='INZUSDST001'")[0],1)
         tax=self.db.tax.execute_one("SELECT * FROM tax_transactions WHERE source='foreign_security_sale_gain'")
         self.assertEqual((tax['gross_amount'],tax['tax_amount'],tax['currency_code']),(10,0.3,'USD'))
-        self.assertEqual(self.db.accounts.execute_one("SELECT balance_units FROM accounts WHERE user_id='alice' AND account_type='currency_saving' AND quote_currency='USD'")[0],276100000)
+        self.assertEqual(self.db.accounts.execute_one("SELECT balance_units FROM accounts WHERE user_id='alice' AND account_type='saving' AND quote_currency='USD'")[0],276100000)
 
     def test_foreign_orders_match_and_reserve_in_currency_minor_units(self):
         self.seed()
@@ -331,10 +331,10 @@ class LatestRequestsTests(unittest.TestCase):
         self.assertEqual((info['nationality'],info['national_currency']),('낙원','NWX'))
         self.assertEqual(len(info['currency_accounts']),6)
         self.assertEqual(info['currency_total'],14985)
-        before = self.db.accounts.execute_one("SELECT last_payment_epoch FROM accounts WHERE user_id='alice' AND account_type='currency_saving' AND quote_currency='USD'")[0]
+        before = self.db.accounts.execute_one("SELECT last_payment_epoch FROM accounts WHERE user_id='alice' AND account_type='saving' AND quote_currency='USD'")[0]
         snapshot=self.bot.user_mgr.get_total_assets('alice',settle=False)
         self.assertEqual(len(snapshot['currency_accounts']),6)
-        self.assertEqual(self.db.accounts.execute_one("SELECT last_payment_epoch FROM accounts WHERE user_id='alice' AND account_type='currency_saving' AND quote_currency='USD'")[0],before)
+        self.assertEqual(self.db.accounts.execute_one("SELECT last_payment_epoch FROM accounts WHERE user_id='alice' AND account_type='saving' AND quote_currency='USD'")[0],before)
         registry = SlashCommandRegistry(self.bot)
         registry._prepare=AsyncMock(return_value=('alice',self.db.users.get_user('alice'),'user'))
         registry._reply=AsyncMock()
@@ -357,7 +357,7 @@ class LatestRequestsTests(unittest.TestCase):
         bob=self.bot.currency_mgr.open_account('bob','INZCU001')
         success,message=self.bot.user_mgr.transfer('alice',alice,'9.99','__wallet__')
         self.assertTrue(success,message)
-        self.assertEqual(self.db.accounts.execute_one("SELECT balance_units FROM accounts WHERE account_number=? AND account_type='currency_saving'",(alice,))[0],9990000)
+        self.assertEqual(self.db.accounts.execute_one("SELECT balance_units FROM accounts WHERE account_number=? AND account_type='saving'",(alice,))[0],9990000)
         success,message=self.bot.user_mgr.transfer('alice',bob,'1.5',alice)
         self.assertTrue(success,message)
         row=self.db.currency.execute_one('SELECT * FROM currency_transfer_transactions ORDER BY transaction_id DESC LIMIT 1')
@@ -529,7 +529,7 @@ class LatestRequestsTests(unittest.TestCase):
         self.assertEqual(len(set(winning+[bonus])),7)
         self.assertEqual(hashlib.sha256(bytes.fromhex(secret)).hexdigest(),round['commitment'])
         lottery.purchase('alice',1,' '.join(map(str,winning)),'winner',now=1000001)
-        self.db.users.execute('UPDATE users SET cash=? WHERE user_id=?',(2**53-1,'alice'))
+        self.db.users.execute('UPDATE users SET cash=? WHERE user_id=?',(10**24,'alice'))
         with patch('managers.lottery_manager.secrets.token_hex',return_value=entropy):
             with self.assertRaises(ValueError):lottery.process_due(now=round['draw_epoch'])
         pending=lottery.result(round['round_id'])

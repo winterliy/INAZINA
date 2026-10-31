@@ -32,6 +32,7 @@ class CompanyDB(DBManager):
         if "market_volatility" not in columns:
             self.execute("ALTER TABLE company ADD COLUMN market_volatility REAL DEFAULT NULL")
         for column, declaration in {
+            "par_value_minor_units": "TEXT DEFAULT NULL",
             "share_class": "TEXT NOT NULL DEFAULT 'common' CHECK(share_class IN ('common','preferred'))",
             "parent_company_code": "TEXT",
             "dividend_priority": "INTEGER NOT NULL DEFAULT 0 CHECK(dividend_priority >= 0)",
@@ -56,8 +57,16 @@ class CompanyDB(DBManager):
                 self.execute(f"ALTER TABLE company ADD COLUMN {column} {declaration}")
         if "dividend_priority" not in columns:
             self.execute("UPDATE company SET dividend_priority=1 WHERE share_class='preferred'")
+        self._rename_unlisted_exchange()
         self.initialize_dividend_activation("company", "company_code")
         self.enforce_integer_money("company", ("capital", "share_price"), "company_code")
+
+    def _rename_unlisted_exchange(self):
+        """Unlisted companies moved from the UNLISTED marker to the 3DSG over-the-counter market."""
+        tables = {row[0] for row in self.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        for table in ("company", "market_assets", "investment", "treasury_bond_products"):
+            if table in tables:
+                self.execute(f"UPDATE {table} SET exchange_id='3DSG' WHERE exchange_id='UNLISTED'")
 
     def create_company(self, code, name, industry, capital, total_shares, share_price, max_shareholder_id, exchange_id):
         self.execute("INSERT INTO company "

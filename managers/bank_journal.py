@@ -1,4 +1,5 @@
 """Append-only, currency-minor-unit journal for financial institutions."""
+from functions.exact_money import ExactDecimal, native_value
 from functions.money import base_currency_code
 
 from decimal import Decimal
@@ -61,7 +62,7 @@ class BankJournal:
                 results.append({
                     "reference_key": ledger["reference_key"],
                     "currency_code": ledger["currency_code"],
-                    "ledger_amount": float(ledger_amount),
+                    "ledger_amount": ExactDecimal(ledger_amount),
                     "journal_amount": None,
                     "difference": None,
                     "status": "missing_journal",
@@ -74,8 +75,8 @@ class BankJournal:
             results.append({
                 "reference_key": ledger["reference_key"],
                 "currency_code": ledger["currency_code"],
-                "ledger_amount": float(ledger_amount),
-                "journal_amount": float(journal_amount),
+                "ledger_amount": ExactDecimal(ledger_amount),
+                "journal_amount": ExactDecimal(journal_amount),
                 "difference": difference,
                 "status": "matched" if difference == 0 else "mismatch",
             })

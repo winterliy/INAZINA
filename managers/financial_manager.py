@@ -1,6 +1,9 @@
 """Company journals and reports. No share-price-derived fictional operating income."""
+from functions.exact_money import ExactDecimal, native_value
+from functions.amount_limits import MAX_NATIVE, MAX_MINOR
 from functions.money import base_currency_code
 import json
+import hashlib
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -11,7 +14,7 @@ from database.financial_db import ACCOUNTS
 from functions.time_utils import validate_epoch
 
 KST = ZoneInfo('Asia/Seoul')
-MAX_UNITS = 2**52  # Exact SQLite TOTAL validation and bounded report aggregation.
+MAX_UNITS = MAX_MINOR  # Exact currency smallest-unit boundary.
 # Cash and tracked issuance accounts must remain reconciled with actual game settlement.
 PROTECTED_ACCOUNTS = frozenset({'restricted_cash','common_capital','preferred_capital','bonds','els_liability','dividend_payable','opening_adjustment','treasury_receivable'})
 
@@ -36,7 +39,7 @@ def period_bounds(period):
 
 
 def cls_money(units, places):
-    return f'{units / 10 ** places:,.{places}f}'
+    return f'{ExactDecimal(units) / 10 ** places:,.{places}f}'
 
 
 class FinancialManager:
@@ -91,7 +94,7 @@ class FinancialManager:
         combined = {k:v for k,v in combined.items() if v}
         if not combined:
             return None
-        if len(combined)<2 or sum(combined.values()) or sum(abs(v) for v in combined.values())>MAX_UNITS:
+        if len(combined)<2 or sum(combined.values()) or any(abs(v)>MAX_UNITS for v in combined.values()):
             raise ValueError('차변·대변 합계가 다르거나 분개 금액 한도를 초과했습니다.')
         period = month(now)
         last = conn.execute('SELECT MAX(period) FROM financial_periods WHERE company_code=?', (code,)).fetchone()[0]
@@ -181,6 +184,56 @@ class FinancialManager:
         row = conn.execute('SELECT balance,locked_amount FROM issuer_cash_accounts WHERE company_code=?',(issuer,)).fetchone()
         return (int(row[0]),int(row[1])) if row else (0,0)
 
+    @classmethod
+    def reconcile_sources(cls, conn, code, positions=None, now=None):
+        """Append current source differences; unidentified changes are equity, not income."""
+        now = int(validate_epoch(now))
+        issuer = cls.ensure(conn, code, now)
+        if conn.execute('SELECT 1 FROM financial_periods WHERE company_code=? AND period>=?',
+                        (issuer, month(now))).fetchone():
+            return None
+        ent = cls.entity(conn, issuer)
+        currency, places = ent['currency'], int(ent['decimal_places'])
+        base = base_currency_code(conn)
+        def source_units(value, source_currency):
+            if source_currency == currency:
+                value = Decimal(str(value)).quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+            return cls.converted(conn, value, source_currency, currency, places)
+        native = lambda value: source_units(value, base)
+        books = cls.balances(conn, issuer, now + 1)
+        cash = cls.cash_state(conn, issuer)
+        targets = {'cash': native(cash[0]), 'restricted_cash': native(cash[1])}
+        for account, share_class in (('common_capital', 'common'), ('preferred_capital', 'preferred')):
+            targets[account] = -sum(source_units(r['capital'] or 0, r['quote_currency'] or base) for r in conn.execute(
+                'SELECT capital,quote_currency FROM company WHERE (company_code=? OR parent_company_code=?) AND share_class=?',
+                (issuer, issuer, share_class)))
+        targets['bonds'] = -sum(source_units(Decimal(str(r['quantity'])) * Decimal(str(r['face_value'])),
+            r['quote_currency'] or base) for r in conn.execute(
+            "SELECT a.quantity,p.face_value,p.quote_currency FROM investment p JOIN user_assets a ON a.asset_code=p.product_code "
+            "WHERE p.product_type='corporate_bond' AND p.status IN ('active','defaulted') "
+            "AND p.issuer_code IN (SELECT company_code FROM company WHERE company_code=? OR parent_company_code=?)", (issuer, issuer)))
+        targets['dividend_payable'] = -sum(source_units(Decimal(str(r['gross_amount'])) - Decimal(str(r['paid_amount'])),
+            r['quote_currency'] or base) for r in conn.execute(
+            "SELECT gross_amount,paid_amount,quote_currency FROM preferred_dividend_claims WHERE issuer_code=? "
+            "AND funding_source='issuer' AND status IN ('unpaid','partial')", (issuer,)))
+        targets['els_liability'] = -sum(native(r[0]) for r in conn.execute(
+            'SELECT principal_amount FROM els_products WHERE issuer_code=?', (issuer,)))
+        if positions is not None:
+            for account, key, sign in (('short_investments', 'investments', 1), ('treasury_stock', 'treasury', 1), ('short_debt', 'debt', -1)):
+                manual = sum(int(r[0]) for r in conn.execute(
+                    "SELECT l.amount FROM financial_lines l JOIN financial_entries e USING(entry_id) "
+                    "WHERE e.company_code=? AND e.status='posted' AND e.source_key LIKE 'manual:%' AND l.account=?", (issuer, account)))
+                targets[account] = sign * native(positions[key]) + manual
+        lines = [(k, v - books.get(k, 0)) for k, v in targets.items() if v != books.get(k, 0)]
+        if not lines:
+            return None
+        difference = -sum(v for _, v in lines)
+        if difference:
+            lines.append(('adjustment', difference))
+        cursor = conn.execute('SELECT COALESCE(MAX(entry_id),0) FROM financial_entries WHERE company_code=?', (issuer,)).fetchone()[0]
+        digest = hashlib.sha256(json.dumps([cursor, sorted(targets.items())]).encode()).hexdigest()
+        return cls.post(conn, issuer, 'sources:' + digest, '실제 잔액 자동 대사 · 미확인 차이는 자본조정', lines, 'adjustment', now)
+
     def initialize(self):
         with self.db.atomic() as conn:
             for row in conn.execute("SELECT company_code FROM company WHERE share_class='common' AND status='active'").fetchall():
@@ -262,6 +315,7 @@ class FinancialManager:
             checks=dict(balance_sheet=s['assets']==s['liabilities']+s['equity'],cash_flow=cash_difference==0,
                         live_cash=cash_matches),closed=False,
             notes=['회계 기준 · 월간 비율(연율화하지 않음)',
+                   '현재 월은 실제 현금·발행채무를 자동 대사합니다. 원본으로 확인되지 않는 차이는 손익 대신 기타 자본조정에 표시합니다.',
                    '도입 전 미확인 잔액은 자산이나 과거 이익으로 추정하지 않습니다.',
                    '총자본은 총자산과 동일하게 정의합니다. 평균 잔액이 없는 최초 월의 회전율·ROA·ROE는 미산출입니다.',
                    'EPS는 우선주 확정배당 차감 후 보통주 시간가중 유통주식수로 계산합니다. 국고 보유분 제외, 담보주식 포함. 완전한 기간 이력 없으면 미산출. FFO/AFFO는 부동산 모델 미지원',
@@ -352,7 +406,7 @@ class FinancialManager:
             if outstanding > 0 and float(row['held']) / outstanding > 0.5:
                 result.append({'code': row['code'], 'name': row['name'],
                                'ownership': float(row['held']) / outstanding,
-                               'cost': float(row['cost'] or 0)})
+                               'cost': ExactDecimal(row['cost'] or 0)})
         return result
 
     @staticmethod
@@ -416,8 +470,8 @@ class FinancialManager:
             convert = lambda value: int(round(value * factor))
             if entity['currency'] != currency:
                 notes.append(f"{sub['code']}: {entity['currency']} 재무제표를 현재 환율로 {currency} 환산했습니다 (환산차이는 자본에 포함).")
-            ownership = sub['ownership']
-            cost = int(round(sub['cost'] * cost_factor))
+            ownership = ExactDecimal(sub['ownership'])
+            cost = int((Decimal(str(sub['cost'])) * Decimal(cost_factor.numerator) / Decimal(cost_factor.denominator)).to_integral_value(rounding=ROUND_HALF_UP))
             parent_equity = convert(figures['parent_equity'])
             share = int(round(parent_equity * ownership))
             member_goodwill = max(0, cost - share)
@@ -517,6 +571,8 @@ class FinancialManager:
             exists=self.entity(conn,issuer)
         if not exists:
             with self.db.atomic() as conn:self.ensure(conn,code)
+        if period == month():
+            with self.db.atomic() as conn:self.reconcile_sources(conn, issuer)
         with self.db.readonly() as conn:
             ent=self.entity(conn,issuer)
             if end<=ent['opened_epoch']:raise ValueError('원장 도입 전 기간에는 재무자료가 없습니다.')
@@ -574,7 +630,7 @@ class FinancialManager:
             report=self.build(conn,issuer,period)
             if not all(report['checks'][k] for k in ('balance_sheet','cash_flow')):raise ValueError('재무제표 검증에 실패했습니다.')
             report['closed']=True
-            conn.execute('INSERT INTO financial_periods VALUES (?,?,?,?)',(issuer,period,int(time.time()),json.dumps(report,ensure_ascii=False)))
+            conn.execute('INSERT INTO financial_periods VALUES (?,?,?,?)',(issuer,period,int(time.time()),json.dumps(report,ensure_ascii=False,default=str)))
         return f'✅ {issuer} {period} 결산 완료'
 
     def manual(self, actor, code, description, lines, flow='none', reversal=None):
@@ -598,7 +654,7 @@ class FinancialManager:
                 if self.entity(conn,issuer)['currency']!=base_currency_code(conn):raise ValueError('외화 법인현금 직접 입력은 아직 지원하지 않습니다. 외상거래 계정을 이용해주세요.')
                 if flow not in {'operating','investing','financing'}:raise ValueError('현금 분개는 현금흐름 구분 operating/investing/financing이 필요합니다.')
                 before=self.cash_state(conn,issuer)[0]
-                if not 0<=before+cash_delta<=2**53-1:raise ValueError('법인 현금 잔액 또는 한도를 확인해주세요.')
+                if not 0<=before+cash_delta<=MAX_NATIVE:raise ValueError('법인 현금 잔액 또는 한도를 확인해주세요.')
                 conn.execute('INSERT OR IGNORE INTO issuer_cash_accounts(company_code) VALUES (?)',(issuer,))
                 conn.execute('UPDATE issuer_cash_accounts SET balance=balance+? WHERE company_code=?',(cash_delta,issuer))
             ident=self.post(conn,issuer,'manual:'+uuid.uuid4().hex,description,entries,flow,reversal=reversal)

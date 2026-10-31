@@ -1,5 +1,7 @@
 """Atomic dividends, equity issuance and value-preserving product combinations."""
-from functions.money import base_currency_code
+from functions.exact_money import ExactDecimal
+from functions.amount_limits import MAX_NATIVE
+from functions.money import base_currency_code, currency_precision, round_money, to_minor_units, from_minor_units
 import json
 import time
 import uuid
@@ -17,7 +19,7 @@ from managers.rate_manager import RateManager
 
 
 class CorporateActionsManager:
-    MAX_MONEY = 2**53 - 1
+    MAX_MONEY = MAX_NATIVE
     RECORD_LEAD = 600  # the shareholder register closes 10 minutes before payment
     # DR holders receive same-currency underlying dividends through the underlying
     # shareholder register; a second independent DR schedule would double-pay.
@@ -49,7 +51,7 @@ class CorporateActionsManager:
                 raise ValueError('비율배당은 0~100%로 입력해주세요. 예: 5%') from None
             return {'dividend_mode':'percent','dividend_percent':float(percent),'dividend_per_share':0}
         return {'dividend_mode':'fixed','dividend_percent':0,
-                'dividend_per_share':cls._integer(value, '주당 배당금')}
+                'dividend_per_share':cls._integer(value, '주당 배당금', maximum=MAX_NATIVE)}
 
     @staticmethod
     def _dividend_configured(listing):
@@ -79,7 +81,7 @@ class CorporateActionsManager:
             '(operation_key,action_kind,source_code,target_code,payload_json,created_epoch) '
             'VALUES (?,?,?,?,?,?)',
             (str(key),str(kind),str(source),None if target is None else str(target),
-             json.dumps(payload,ensure_ascii=False,sort_keys=True),int(now)),
+             json.dumps(payload,ensure_ascii=False,sort_keys=True,default=str),int(now)),
         )
         return cursor.lastrowid if cursor.rowcount else None
 
@@ -143,7 +145,8 @@ class CorporateActionsManager:
 
     @staticmethod
     def _currency_account(conn, user, currency, now):
-        row = conn.execute("SELECT * FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'", (user, currency)).fetchone()
+        from managers.deposit_accounts import account
+        row = account(conn, user, currency)
         if row:
             return row['account_number']
         raise ValueError(f'{currency} 외환통장을 먼저 개설해주세요.')
@@ -243,7 +246,7 @@ class CorporateActionsManager:
         places = currency_precision(conn, currency)
         tax_major = (amount_decimal * tax_rate / Decimal(100)).quantize(
             Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
-        tax = float(tax_major) if places else int(tax_major)
+        tax = ExactDecimal(tax_major) if places else int(tax_major)
         tax_units = int((tax_major * SCALE).quantize(Decimal('1'), rounding=ROUND_HALF_UP))
         net_units = max(0, amount_units-tax_units)
         remittance = None
@@ -268,7 +271,7 @@ class CorporateActionsManager:
                           "settlement_units": settlement_units}
             tax_transaction = conn.execute('INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount,currency_code) VALUES (?,?,?,?,?,?)',
                          (str(user), f'{"dr_cross_border_" if dr_context else ""}{kind}_dividend:{code}',
-                          amount, tax, float(Decimal(net_units)/Decimal(SCALE)), currency))
+                          amount, tax, ExactDecimal(net_units)/SCALE, currency))
             from managers.accounting_journal import AccountingJournal
             AccountingJournal.link_tax_transaction_wallet_entries(
                 conn, tax_transaction.lastrowid, remittance_wallet_watermark, treasury
@@ -287,8 +290,9 @@ class CorporateActionsManager:
             recipient_wallet_watermark = int(conn.execute(
                 "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
             ).fetchone()[0])
-            changed = conn.execute("UPDATE accounts SET balance_units=balance_units+? WHERE account_number=? AND account_type='currency_saving' AND balance_units<=?",
-                                   (net_units, account, MAX_UNITS-net_units))
+            from managers.deposit_accounts import PRINCIPAL_DELTA
+            changed = conn.execute(f"UPDATE accounts SET balance_units=balance_units+?,{PRINCIPAL_DELTA} WHERE account_number=? AND account_type='saving' AND balance_units<=?",
+                                   (net_units, net_units, account, MAX_UNITS-net_units))
         if changed.rowcount != 1:
             raise ValueError('배당 수령자의 계정 또는 잔액 한도를 확인해주세요.')
         from functions.money import to_minor_units
@@ -517,7 +521,7 @@ class CorporateActionsManager:
                                                              str(components[index][0] or 'stock')))
         for index in order[:residual]:
             units[index] += 1
-        return [float(Decimal(value)/scale) if places else value for value in units]
+        return [ExactDecimal(value)/scale if places else value for value in units]
 
     def _distribute(self, conn, listing, per_share, kind, due, key, now, *, percent=None, reference_price=None):
         existing = conn.execute(
@@ -721,7 +725,7 @@ class CorporateActionsManager:
         """
         delay = self.RECORD_LEAD if delay is None else int(delay)
         try:
-            amount = self._integer(per_share, '주당 특별배당금', 1)
+            amount = self._integer(per_share, '주당 특별배당금', 1, MAX_NATIVE)
             now, key = int(time.time()), operation_key or 'special:' + uuid.uuid4().hex
             if delay > 0:
                 with DBManager.admin_scope(actor), self.db.atomic() as conn:
@@ -847,7 +851,7 @@ class CorporateActionsManager:
     def fund_issuer(self, actor, code, operation, value):
         """Move spendable 기준 통화 between the treasury and a legal issuer's cash ledger."""
         try:
-            value = self._integer(value,'법인 현금')
+            value = self._integer(value,'법인 현금', maximum=MAX_NATIVE)
             if operation not in {'add','del','modify'}:
                 raise ValueError('연산은 add / del / modify로 입력해주세요.')
             now = int(time.time())
@@ -1066,6 +1070,10 @@ class CorporateActionsManager:
         if CorporateActionsManager._els_encumbered(conn, codes):
             raise ValueError('발행하거나 기초자산으로 연결된 ELS를 먼저 정산·취소해주세요.')
         for code in codes:
+            if conn.execute("SELECT 1 FROM loan_collateral_assets WHERE asset_code=? AND status='pledged' LIMIT 1", (code,)).fetchone():
+                raise ValueError(f'`{code}`의 대출 담보 주식을 먼저 해제해주세요.')
+            if conn.execute("SELECT 1 FROM dr_custody_reservations WHERE reserved_asset_code=? AND released_epoch IS NULL LIMIT 1", (code,)).fetchone():
+                raise ValueError(f'`{code}`의 예탁·상환 예약을 먼저 정리해주세요.')
             if not allow_orders and conn.execute("SELECT 1 FROM market_orders WHERE asset_code=? AND status IN ('open','partial') LIMIT 1", (code,)).fetchone():
                 raise ValueError(f'`{code}`의 미체결 주문을 먼저 취소해주세요.')
             if conn.execute("SELECT 1 FROM option_contracts WHERE (underlying_code=? OR contract_code=?) AND status='active' LIMIT 1", (code, code)).fetchone():
@@ -1116,7 +1124,7 @@ class CorporateActionsManager:
                 if listing['table'] != 'company' or listing['status'] != 'active':
                     raise ValueError('증자는 거래 중인 회사 주식·우선주에 사용할 수 있습니다.')
                 supply = int(listing['total_shares'] or 0)
-                if not 0 < supply <= self.MAX_MONEY - quantity:
+                if not 0 < supply <= (2**53 - 1) - quantity:
                     raise ValueError('기존 발행량 또는 신규 발행량 한도를 확인해주세요.')
                 if mode == '무상':
                     self._unencumbered(conn, [code])
@@ -1129,7 +1137,7 @@ class CorporateActionsManager:
                     error = MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=code)
                     if error:
                         raise ValueError(error)
-                    issue = self._integer(price if issue_price is None else issue_price, '유상 발행가', 1)
+                    issue = self._integer(price if issue_price is None else issue_price, '유상 발행가', 1, MAX_NATIVE)
                     if quantity * issue > self.MAX_MONEY:
                         raise ValueError('유상증자 모집 금액이 한도를 초과합니다.')
                     # The listing country's treasury holds and sells the new shares.
@@ -1169,7 +1177,7 @@ class CorporateActionsManager:
                             cost = Decimal(int(lot['average_cost_minor_units'] or 0)) / (10 ** currency_precision(conn, currency))
                             AssetCostManager.reprice(
                                 conn, lot['holding_id'], code, float(new_quantity),
-                                cost * old_quantity_decimal / new_quantity_decimal,
+                                cost * old_quantity_decimal / new_quantity_decimal, preserve_total=True,
                             )
                     if allocations[-1]:
                         AssetCostManager.upsert(
@@ -1203,11 +1211,19 @@ class CorporateActionsManager:
             return False, '❌ 감자는 현재 액면 병합 방식이며 가격 인자를 받지 않습니다.'
         return self.adjust_face_value(actor, '병합', code, quantity)
 
-    def adjust_face_value(self, actor, action, code, ratio):
+    def adjust_face_value(self, actor, action, code, ratio, *, mode=None, resolution_id=None, old_shares=None, new_shares=None):
         """Apply an exact stock split or consolidation to every unit-based state."""
         try:
             action = str(action).strip()
-            if action not in {'분할', '병합'} or int(ratio) < 2:
+            if mode == 'ratio_split':
+                from fractions import Fraction
+                old_units = self._integer(old_shares, '기존 주식 수', 1, maximum=2**53 - 1)
+                new_units = self._integer(new_shares, '변경 주식 수', 1, maximum=2**53 - 1)
+                conversion = Fraction(new_units, old_units)
+                if conversion == 1:
+                    raise ValueError('기존 주식과 변경 주식의 비율은 달라야 합니다.')
+                action, ratio = ('분할' if conversion > 1 else '병합'), 2
+            if action not in {'분할', '병합'} or isinstance(ratio, bool) or str(int(ratio)) != str(ratio).strip() or int(ratio) < 2:
                 raise ValueError('분할/병합과 2 이상의 정수 비율을 입력해주세요.')
             now, ratio = int(time.time()), int(ratio)
             with DBManager.admin_scope(actor), self.db.atomic() as conn:
@@ -1221,36 +1237,133 @@ class CorporateActionsManager:
                 ).fetchone()
                 if dr_program:
                     raise ValueError('기초주식에 미종료 DR 프로그램이 있습니다. 먼저 DR을 상환하고 프로그램을 종료해주세요.')
-                self._unencumbered(conn, [code], allow_orders=True)
-                price, shares = int(listing['share_price']), int(listing['total_shares'])
-                if action == '분할':
-                    new_price, new_shares = max(1, price // ratio), shares * ratio
-                    from managers.asset_cost_manager import AssetCostManager
-                    for lot in conn.execute('SELECT holding_id,quantity,average_cost_minor_units FROM user_assets WHERE asset_code=?', (code,)):
-                        unit_cost = Decimal(int(lot['average_cost_minor_units'] or 0)) / (10 ** currency_precision(conn, listing.get('quote_currency') or base_currency_code(conn)))
-                        AssetCostManager.reprice(conn, lot['holding_id'], code,
-                                                 int(lot['quantity']) * ratio,
-                                                 max(Decimal(0), unit_cost / ratio))
-                    conn.execute("UPDATE market_orders SET quantity=quantity*?,remaining_quantity=remaining_quantity*?,filled_quantity=filled_quantity*?,limit_price=MAX(1,limit_price/?),reserved_cash=remaining_quantity*MAX(1,limit_price/?) WHERE asset_code=? AND status IN ('scheduled','open','partial')",
-                                 (ratio, ratio, ratio, ratio, ratio, code))
-                else:
-                    if shares % ratio or any(int(row['quantity']) % ratio for row in conn.execute('SELECT quantity FROM user_assets WHERE asset_code=?', (code,))):
-                        raise ValueError('병합 비율로 나누어떨어지는 발행·보유 수량만 지원합니다.')
-                    new_price, new_shares = price * ratio, shares // ratio
-                    from managers.asset_cost_manager import AssetCostManager
-                    for lot in conn.execute('SELECT holding_id,quantity,average_cost_minor_units FROM user_assets WHERE asset_code=?', (code,)):
-                        unit_cost = Decimal(int(lot['average_cost_minor_units'] or 0)) / (10 ** currency_precision(conn, listing.get('quote_currency') or base_currency_code(conn)))
-                        AssetCostManager.reprice(conn, lot['holding_id'], code,
-                                                 int(lot['quantity']) // ratio,
-                                                 unit_cost * ratio)
-                    conn.execute("UPDATE market_orders SET quantity=quantity/?,remaining_quantity=remaining_quantity/?,filled_quantity=filled_quantity/?,limit_price=limit_price*?,reserved_cash=remaining_quantity*limit_price WHERE asset_code=? AND status IN ('scheduled','open','partial')",
-                                 (ratio, ratio, ratio, ratio, code))
-                conn.execute('UPDATE company SET share_price=?,total_shares=? WHERE company_code=?', (new_price, new_shares, code))
-                conn.execute('UPDATE fund_components SET base_price=? WHERE asset_code=?', (new_price, code))
+                from managers.share_restructuring_manager import ShareRestructuringManager
+                mode = ('stock_split' if action == '분할' else 'reverse_split') if mode is None else mode
+                if mode != 'ratio_split' and (action == '병합') != (mode == 'reverse_split'):
+                    raise ValueError('집행 방식과 분할·병합 방향이 다릅니다.')
+                resolution = ShareRestructuringManager.prepare(conn, listing, mode, ratio, resolution_id)
+                self._unencumbered(conn, [code], allow_orders=False)
+                if conn.execute("SELECT 1 FROM market_orders WHERE asset_code=? AND status='scheduled' LIMIT 1", (code,)).fetchone():
+                    raise ValueError('예약 주문을 먼저 취소해주세요.')
+                places = currency_precision(conn, listing.get('quote_currency') or base_currency_code(conn))
+                price, shares = round_money(listing['share_price'], places), int(listing['total_shares'])
+                price_minor = to_minor_units(price, places)
+                from fractions import Fraction
+                from managers.asset_cost_manager import AssetCostManager
+                conversion = conversion if mode == 'ratio_split' else (Fraction(ratio) if action == '분할' else Fraction(1, ratio))
+
+                def converted_quantity(quantity, *, whole=True):
+                    result = Fraction(str(quantity)) * conversion
+                    if whole and result.denominator != 1:
+                        raise ValueError('변경 비율로 발행·상장·보유 수량이 정수 주식으로 나누어떨어져야 합니다. 단주는 버리지 않습니다.')
+                    if result > 2**53 - 1:
+                        raise ValueError('변경 후 주식 수가 현재 수량 한도를 초과합니다.')
+                    return result.numerator if result.denominator == 1 else Decimal(str(quantity)) * Decimal(conversion.numerator) / Decimal(conversion.denominator)
+
+                new_shares = converted_quantity(shares)
+                listed = listing.get('listed_shares')
+                new_listed = None if listed is None else converted_quantity(listed)
+                new_price_minor = price_minor * conversion.denominator // conversion.numerator
+                if new_price_minor < 1:
+                    raise ValueError('분할 후 주가가 통화 최소단위 미만입니다. 더 작은 분할 비율을 입력해주세요.')
+                new_price = round_money(from_minor_units(new_price_minor, places), places)
+                if new_price > MAX_NATIVE:
+                    raise ValueError('변경 후 주가가 현재 금액 한도를 초과합니다.')
+                factor = Decimal(conversion.denominator) / Decimal(conversion.numerator)
+                for lot in conn.execute('SELECT holding_id,quantity,average_cost_minor_units FROM user_assets WHERE asset_code=?', (code,)):
+                    quantity = converted_quantity(lot['quantity'], whole=mode == 'ratio_split' or action == '병합')
+                    unit_cost = Decimal(int(lot['average_cost_minor_units'] or 0)) / (10 ** places)
+                    AssetCostManager.reprice(conn, lot['holding_id'], code, quantity,
+                                             unit_cost * factor, preserve_total=True)
+                dividend = round_money(Decimal(str(listing.get('dividend_per_share') or 0)) * factor, places)
+                liquidation = round_money(Decimal(str(listing.get('liquidation_value_per_share') or 0)) * factor, places)
+                conn.execute('UPDATE company SET share_price=?,total_shares=?,listed_shares=?,dividend_per_share=?,liquidation_value_per_share=? WHERE company_code=?',
+                             (new_price, new_shares, new_listed, dividend, liquidation, code))
+                conn.execute('UPDATE fund_components SET base_price=base_price*? WHERE asset_code=?', (float(factor), code))
                 self._reset_market_state(conn, code, new_price, new_shares)
+                # Split-adjust earlier history so charts and 24h change stay continuous.
+                conn.execute('UPDATE market_price_history SET price=ROUND(price*?,?) WHERE asset_code=? AND recorded_epoch<?',
+                             (float(factor), places, code, now))
+                conn.execute('INSERT INTO market_price_history(asset_code,price,recorded_epoch) VALUES (?,?,?) ON CONFLICT(asset_code,recorded_epoch) DO UPDATE SET price=excluded.price', (code, new_price, now))
+                UserManager._refresh_max_shareholder(conn, code)
+                record_id = self._record(conn, f'face:{uuid.uuid4().hex}', 'face_value_adjustment', code, None,
+                             {'action': action, 'mode': mode, 'ratio': f'{conversion.denominator}:{conversion.numerator}' if mode == 'ratio_split' else ratio, 'old_shares_per_ratio': conversion.denominator, 'new_shares_per_ratio': conversion.numerator, 'resolution_id': resolution_id,
+                              'old_price': price, 'new_price': new_price, 'old_shares': shares, 'new_shares': new_shares}, now)
+                ShareRestructuringManager.finish(conn, actor, listing, mode, ratio, resolution, record_id, now)
+            label = {'par_split': '정식 액면분할', 'stock_split': '주식분할', 'reverse_split': '액면병합', 'ratio_split': '일반비율분할'}[mode]
+            direction = f'{conversion.denominator:,}주 → {conversion.numerator:,}주'
+            return True, f'✅ `{code}` {label} 완료 · {direction} · 가격 {price:,} → {new_price:,} · 발행주식수 {shares:,} → {new_shares:,} · 자본금 유지'
+        except (ValueError, TypeError, OverflowError) as exc:
+            return False, f'❌ {exc}'
+
+    def _adjust_share_ratio(self, actor, code, old_shares, new_shares):
+        """Convert an explicit old:new ratio without discarding shares or cost basis."""
+        from functions.money import currency_precision, to_minor_units, from_minor_units
+        from managers.asset_cost_manager import AssetCostManager
+        try:
+            old = self._integer(old_shares, '기존 주식 수', 1)
+            new = self._integer(new_shares, '변경 주식 수', 1)
+            conversion = Fraction(new, old)
+            if conversion == 1:
+                raise ValueError('기존 주식과 변경 주식의 비율은 달라야 합니다.')
+            now = int(time.time())
+            with DBManager.admin_scope(actor), self.db.atomic() as conn:
+                self._require(conn, actor)
+                listing = self._listing(conn, code)
+                if listing['table'] != 'company' or listing['status'] != 'active':
+                    raise ValueError('활성 주식 종목만 주식 수를 조정할 수 있습니다.')
+                if listing.get('par_value_minor_units') is not None:
+                    raise ValueError('액면가 등록 법인은 정식 액면분할 승인을 사용해주세요.')
+                if conn.execute("SELECT 1 FROM depositary_receipts WHERE underlying_code=? AND program_status<>'terminated' LIMIT 1", (code,)).fetchone():
+                    raise ValueError('기초주식의 미종료 DR 프로그램을 먼저 상환·종료해주세요.')
+                self._unencumbered(conn, [code], allow_orders=False)
+                if conn.execute("SELECT 1 FROM market_orders WHERE asset_code=? AND status='scheduled' LIMIT 1", (code,)).fetchone():
+                    raise ValueError('예약 주문을 먼저 취소해주세요.')
+
+                def quantity(value):
+                    result = Fraction(str(value)) * conversion
+                    if result.denominator != 1:
+                        raise ValueError('변경 후 발행·상장·보유 수량은 정수 주식이어야 합니다. 단주는 버리지 않습니다.')
+                    if result > 2**53 - 1:
+                        raise ValueError('변경 후 주식 수가 수량 한도를 초과합니다.')
+                    return result.numerator
+
+                shares = quantity(listing['total_shares'])
+                listed = None if listing.get('listed_shares') is None else quantity(listing['listed_shares'])
+                places = currency_precision(conn, listing.get('quote_currency') or base_currency_code(conn))
+                price_minor = to_minor_units(listing['share_price'], places) * conversion.denominator // conversion.numerator
+                if price_minor < 1:
+                    raise ValueError('변경 후 주가가 통화 최소단위 미만입니다.')
+                price = from_minor_units(price_minor, places)
+                if price > self.MAX_MONEY:
+                    raise ValueError('변경 후 주가가 금액 한도를 초과합니다.')
+                factor = Decimal(conversion.denominator) / Decimal(conversion.numerator)
+                exact_basis = bool(conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='asset_cost_basis'").fetchone())
+                for lot in conn.execute('SELECT holding_id,quantity,average_cost_minor_units FROM user_assets WHERE asset_code=?', (code,)):
+                    count = quantity(lot['quantity'])
+                    if count == 0:
+                        continue
+                    cost = from_minor_units(int(lot['average_cost_minor_units'] or 0), places)
+                    if exact_basis:
+                        AssetCostManager.reprice(conn, lot['holding_id'], code, count, cost * factor, preserve_total=True)
+                    else:
+                        unit_basis = Fraction(str(lot['quantity'])) * int(lot['average_cost_minor_units'] or 0) / count
+                        if unit_basis.denominator != 1:
+                            raise ValueError('총 취득원가를 정확히 보존할 수 없습니다. 정밀 원가 장부를 먼저 적용해주세요.')
+                        conn.execute('UPDATE user_assets SET quantity=?,average_cost_minor_units=? WHERE holding_id=?',
+                                     (count, unit_basis.numerator, lot['holding_id']))
+                dividend = from_minor_units(to_minor_units(Decimal(str(listing.get('dividend_per_share') or 0)) * factor, places), places)
+                liquidation = from_minor_units(to_minor_units(Decimal(str(listing.get('liquidation_value_per_share') or 0)) * factor, places), places)
+                conn.execute('UPDATE company SET share_price=?,total_shares=?,listed_shares=?,dividend_per_share=?,liquidation_value_per_share=? WHERE company_code=?',
+                             (ExactDecimal(price), shares, listed, ExactDecimal(dividend), ExactDecimal(liquidation), code))
+                conn.execute('UPDATE fund_components SET base_price=base_price*? WHERE asset_code=?', (ExactDecimal(factor), code))
+                self._reset_market_state(conn, code, ExactDecimal(price), shares)
+                conn.execute('UPDATE market_price_history SET price=ROUND(price*?,?) WHERE asset_code=? AND recorded_epoch<?', (ExactDecimal(factor), places, code, now))
+                UserManager._refresh_max_shareholder(conn, code)
                 self._record(conn, f'face:{uuid.uuid4().hex}', 'face_value_adjustment', code, None,
-                             {'action': action, 'ratio': ratio, 'old_price': price, 'new_price': new_price}, now)
-            return True, f'✅ `{code}` {ratio}:1 액면{action} 완료 · 가격 {price:,} → {new_price:,} · 발행주식수 {shares:,} → {new_shares:,}'
+                             {'mode': 'ratio_split', 'old_ratio': conversion.denominator, 'new_ratio': conversion.numerator,
+                              'old_shares': listing['total_shares'], 'new_shares': shares, 'old_price': listing['share_price'], 'new_price': ExactDecimal(price)}, now)
+            return True, f'✅ `{code}` 일반비율분할 완료 · {old}주 → {new}주 · 발행주식 {shares:,}주 · 자본금 유지'
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f'❌ {exc}'
 
@@ -1267,6 +1380,9 @@ class CorporateActionsManager:
                     a, b = self._listing(conn, surviving_code), self._listing(conn, absorbed_code)
                 except ValueError:
                     return self._merge_nonmarket(conn, actor, surviving_code, absorbed_code, now)
+                from managers.asset_cost_manager import AssetCostManager
+                for asset_code in (surviving_code, absorbed_code):
+                    AssetCostManager.require_unit_cost_support(conn, asset_code=asset_code)
                 if a['table'] != b['table'] or a['type'] != b['type'] or a['status'] != 'active' or b['status'] != 'active':
                     raise ValueError('거래 중인 같은 종류의 상품끼리 통합할 수 있습니다.')
                 if a['type'] == 'depositary_receipt' or b['type'] == 'depositary_receipt':
@@ -1318,7 +1434,7 @@ class CorporateActionsManager:
                     conversions.append((user, user_lots, allocation, residual))
                 unissued = max(0, supply_b - sum(Fraction(str(lot['quantity'])) for lot in lots))
                 new_supply = supply_a + total_new + int(unissued * ratio)
-                if new_supply > self.MAX_MONEY or cash > self.MAX_MONEY:
+                if new_supply > 2**53 - 1 or cash > self.MAX_MONEY:
                     raise ValueError('통합 후 발행량 또는 단주 정산금이 한도를 초과합니다.')
                 # The listing country's treasury pays odd-lot cash in the instrument currency.
                 CurrencyManager.treasury_pay(conn, CurrencyManager.exchange_treasury(conn, surviving_code), currency, cash * SCALE)
@@ -1341,7 +1457,8 @@ class CorporateActionsManager:
                         else:
                             CurrencyExchangeManager._settle(conn, user, now)
                             account = self._currency_account(conn, user, currency, now)
-                            changed = conn.execute("UPDATE accounts SET balance_units=balance_units+? WHERE account_number=? AND account_type='currency_saving' AND balance_units<=?", (residual * SCALE, account, MAX_UNITS - residual * SCALE))
+                            from managers.deposit_accounts import PRINCIPAL_DELTA
+                            changed = conn.execute(f"UPDATE accounts SET balance_units=balance_units+?,{PRINCIPAL_DELTA} WHERE account_number=? AND account_type='saving' AND balance_units<=?", (residual * SCALE, residual * SCALE, account, MAX_UNITS - residual * SCALE))
                         if currency != CurrencyManager.home(conn, user) and changed.rowcount != 1:
                             raise ValueError('단주 정산 수령자의 잔액 한도를 확인해주세요.')
                 conn.execute('DELETE FROM user_assets WHERE asset_code=?', (absorbed_code,))
@@ -1407,7 +1524,7 @@ class CorporateActionsManager:
     def _part(value, ratio, places=0):
         """The split ratio's share of an amount, rounded to the currency's minor unit."""
         scale = 10 ** int(places)
-        return float(round(Fraction(str(value or 0)) * scale * ratio)) / scale if places else int(round(Fraction(str(value or 0)) * ratio))
+        return ExactDecimal(round(Fraction(str(value or 0)) * scale * ratio)) / scale if places else int(round(Fraction(str(value or 0)) * ratio))
 
     def _split_account(self, conn, source, target, ratio, now):
         """Move the split ratio of a company account's securities, deposits and loans to ``target``."""
@@ -1424,6 +1541,8 @@ class CorporateActionsManager:
             part = Fraction(round(part)) if quantity.denominator == 1 else Fraction(round(part * 1000), 1000)
             if not part:
                 continue
+            from managers.asset_cost_manager import AssetCostManager
+            moved_basis = AssetCostManager.sale_cost_minor(conn, lot['holding_id'], Decimal(part.numerator) / Decimal(part.denominator))
             left = quantity - part
             if left:
                 conn.execute('UPDATE user_assets SET quantity=? WHERE holding_id=?',
@@ -1438,7 +1557,7 @@ class CorporateActionsManager:
             )
             AssetCostManager.upsert(
                 conn, target, lot['asset_code'], lot['account_number'],
-                int(part) if part.denominator == 1 else float(part), cost,
+                int(part) if part.denominator == 1 else float(part), cost, incoming_total_minor=moved_basis,
             )
             moved['securities'] += 1
         # Deposits: pay the interest earned so far, then open a sibling account on the same terms.
@@ -1456,7 +1575,7 @@ class CorporateActionsManager:
             if units <= 0 and not principal:
                 continue
             sibling = dict(account, account_number=BankManager._generate_account_number(conn), user_id=target,
-                           balance_units=int(units), balance=int(units) / SCALE, principal=principal, interest_remainder='0')
+                           balance_units=int(units), balance=ExactDecimal(units) / SCALE, principal=principal, interest_remainder='0')
             for derived in ('balance_minor_units', 'created_at'):
                 sibling.pop(derived, None)
             columns = ','.join(sibling)
@@ -1473,7 +1592,7 @@ class CorporateActionsManager:
             linked = [table for table in ('loan_credit_support', 'loan_future_commitments', 'loan_chargeoff_events')
                       if self._has_table(conn, table) and conn.execute(f'SELECT 1 FROM {table} WHERE loan_id=? LIMIT 1', (loan['loan_id'],)).fetchone()]
             if (loan['status'] != 'active' or loan['collection_status'] != 'current' or loan['overdue_since_epoch']
-                    or int(loan['collateral_amount'] or 0) or float(loan['charged_off_balance'] or 0) or linked):
+                    or int(loan['collateral_amount'] or 0) or ExactDecimal(loan['charged_off_balance'] or 0) or linked):
                 raise ValueError(f'대출 #{loan["loan_id"]}이 연체·담보·상각·보증 상태라 분할할 수 없습니다. 먼저 정리해주세요.')
             places = int((conn.execute('SELECT decimal_places FROM currencies WHERE code=?', (loan['quote_currency'] or base_currency_code(conn),)).fetchone() or [0])[0])
             parts = {column: self._part(loan[column], ratio, places) for column in loan_money if column in loan}
@@ -1524,6 +1643,8 @@ class CorporateActionsManager:
                 if conn.execute("SELECT 1 FROM depositary_receipts WHERE underlying_code=? "
                                 "AND program_status<>'terminated' LIMIT 1", (code,)).fetchone():
                     raise ValueError('기초주식에 미종료 DR 프로그램이 있습니다. 먼저 DR을 상환하고 프로그램을 종료해주세요.')
+                from managers.asset_cost_manager import AssetCostManager
+                AssetCostManager.require_unit_cost_support(conn, asset_code=code)
                 self._unencumbered(conn, [code])
                 price, supply = int(listing['share_price']), int(listing['total_shares'] or 0)
                 shares = supply if new_shares is None else self._integer(new_shares, '신설회사 발행주식수', 1)
@@ -1675,11 +1796,11 @@ class CorporateActionsManager:
     def _merge_components(conn, a, b, price_a, price_b):
         for row in conn.execute('SELECT * FROM fund_components WHERE asset_code=?', (b,)).fetchall():
             existing = conn.execute('SELECT * FROM fund_components WHERE product_code=? AND asset_code=?', (row['product_code'], a)).fetchone()
-            converted_base = float(row['base_price']) * price_a / price_b
+            converted_base = ExactDecimal(row['base_price']) * price_a / price_b
             if existing:
                 weight = float(existing['weight']) + float(row['weight'])
                 # Harmonic basis keeps both pre-merger index contributions equal.
-                basis = weight / (float(existing['weight']) / float(existing['base_price']) + float(row['weight']) / converted_base)
+                basis = weight / (float(existing['weight']) / ExactDecimal(existing['base_price']) + float(row['weight']) / converted_base)
                 conn.execute('UPDATE fund_components SET weight=?,base_price=? WHERE product_code=? AND asset_code=?', (weight, basis, row['product_code'], a))
                 conn.execute('DELETE FROM fund_components WHERE product_code=? AND asset_code=?', (row['product_code'], b))
             else:
@@ -1696,17 +1817,7 @@ class CorporateActionsManager:
                 raise ValueError('활성 상품 두 개를 입력해주세요.')
             self._unencumbered(conn, [a, b])
             if table == 'saving':
-                first_is_currency = first['product_kind'] == 'currency_saving'
-                second_is_currency = second['product_kind'] == 'currency_saving'
-                if first_is_currency != second_is_currency:
-                    continue
-                if first_is_currency:
-                    if first['quote_currency'] != second['quote_currency']:
-                        raise ValueError('같은 통화의 외환통장 상품끼리 통합할 수 있습니다.')
-                    for user in conn.execute("SELECT user_id FROM accounts WHERE account_type='currency_saving' AND product_code=?", (b,)).fetchall():
-                        CurrencyExchangeManager._settle(conn, user['user_id'], now)
-                    conn.execute("UPDATE accounts SET product_code=? WHERE account_type='currency_saving' AND product_code=?", (a, b))
-                elif conn.execute('SELECT 1 FROM accounts WHERE product_code=? LIMIT 1', (b,)).fetchone():
+                if conn.execute('SELECT 1 FROM accounts WHERE product_code=? LIMIT 1', (b,)).fetchone():
                     raise ValueError('흡수할 저축상품의 계좌를 먼저 해지해주세요. 가입 계약은 자동 변경하지 않습니다.')
             if table == 'liability' and conn.execute("SELECT 1 FROM loans WHERE product_code=? AND status IN ('active','overdue') LIMIT 1", (b,)).fetchone():
                 raise ValueError('흡수할 대출상품의 채무를 먼저 상환해주세요.')

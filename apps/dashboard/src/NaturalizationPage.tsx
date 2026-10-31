@@ -1,8 +1,9 @@
+import type { Money } from "../../shared/money";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
 import { date, number, type Ctx } from "./common";
 
-type Preview = { holdings: number; bonds: number; accounts: number; loans: number; netWorth: number; currency: string };
+type Preview = { holdings: number; bonds: number; accounts: number; loans: Money; netWorth: number; currency: string };
 type Request = {
   request_id: number; user_id: string; nickname: string | null; from_nationality: string; to_nationality: string; reason: string;
   status: "pending" | "approved" | "rejected"; requested_epoch: number; decided_by: string | null; decided_epoch: number | null; note: string | null; preview?: Preview;

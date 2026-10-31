@@ -1,3 +1,4 @@
+import { formatMoney, minorMoney, type Money } from "../../shared/money";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "../../shared/api";
@@ -6,23 +7,24 @@ export type Field = { key: string; label: string; kind: string; optional: boolea
 export type Command = { name: string; group: string; description: string; guide: string; fields: Field[]; job: boolean };
 export type Option = { value: string; label: string; detail?: string };
 export type Lookups = {
-  savingProducts: { code: string; name: string; interest_rate: number; deposit_amount: number; maturity_days: number; quote_currency: string; product_kind: string }[];
-  loanProducts: { code: string; name: string; interest_rate: number; loan_limit: number; maturity_days: number; min_credit_score: number }[];
-  accounts: { account_number: string; product_code: string; account_type: string; quote_currency: string; balance: number | null; balance_units: number | null }[];
-  loans: { loan_id: number; product_code: string; outstanding_balance: number; quote_currency: string }[];
+  savingProducts: { code: string; name: string; interest_rate: number; deposit_amount: Money; maturity_days: number; quote_currency: string; product_kind: string }[];
+  loanProducts: { code: string; name: string; interest_rate: number; loan_limit: Money; maturity_days: number; min_credit_score: number }[];
+  accounts: { account_number: string; product_code: string; account_type: string; quote_currency: string; balance: Money | null; balance_units: Money | null }[];
+  loans: { loan_id: number; product_code: string; outstanding_balance: Money; quote_currency: string }[];
   futures: { code: string; name: string }[];
   countries: string[];
 };
 export type Result = { id: number; command: string; message: string; data: unknown; success: boolean; time: number };
-export type Instrument = { code: string; name: string; type: string; price: number; quote_currency?: string };
+export type Instrument = { code: string; name: string; type: string; price: Money; quote_currency?: string };
 export type Portfolio = { stocks: { code: string; name: string; qty: number }[] };
-export type Order = { order_id: number; asset_code: string; side: string; limit_price: number; remaining_quantity: number; status: string };
+export type Order = { order_id: number; asset_code: string; side: string; limit_price: Money; remaining_quantity: number; status: string };
 
 export const READ_ONLY = new Set(["내주문", "호가", "옵션체인", "내복권", "복권결과", "복권규칙", "법정최고이자", "재무"]);
 export const OPEN = new Set(["open", "partial", "scheduled"]);
 
 // Korean names for the columns that come back from the game's managers.
 const LABELS: Record<string, string> = {
+  user_id: "사용자 ID", sender_id: "보낸 사용자 ID", recipient_id: "받는 사용자 ID",
   order_id: "주문", asset_code: "종목", side: "구분", limit_price: "지정가", quantity: "수량", remaining_quantity: "잔량", filled_quantity: "체결",
   status: "상태", created_epoch: "시각", updated_epoch: "변경", quote_currency: "통화", reserved_cash: "예치금", bids: "매수 호가", asks: "매도 호가",
   order_count: "주문 수", round_id: "회차", close_epoch: "판매 마감", draw_epoch: "추첨", ticket_price: "가격", max_tickets: "1인 최대", prize_percent: "상금 비율 %",
@@ -33,9 +35,11 @@ const LABELS: Record<string, string> = {
   opened_epoch: "시작", price: "가격", total: "합계", commitment: "추첨 검증값", carryover: "이월금", pool: "상금 풀",
 };
 export const VALUES: Record<string, string> = { buy: "매수", sell: "매도", open: "미체결", partial: "부분 체결", scheduled: "예약", filled: "체결", cancelled: "취소", expired: "만료", selling: "판매 중", settled: "추첨 완료", drawn: "추첨됨", call: "콜", put: "풋", active: "진행 중" };
-export const number = (value: number, digits = 6) => new Intl.NumberFormat("ko-KR", { maximumFractionDigits: digits }).format(value || 0);
+export const number = formatMoney;
 /** A bank account's balance; foreign-currency savings are kept in millionths. */
-export const accountBalance = (account: Lookups["accounts"][number]) => account.account_type === "currency_saving" ? (account.balance_units ?? 0) / 1_000_000 : account.balance ?? 0;
+export const accountBalance = (account: Lookups["accounts"][number]) => account.account_type === "currency_saving" ? minorMoney(account.balance_units ?? 0, 6) : account.balance ?? 0;
+/** Every account is a savings account; it reads as "외환통장" only to an owner whose currency differs. */
+export const accountLabel = (currency: string | null | undefined, homeCurrency: string, home = "통장") => currency && currency !== homeCurrency ? "외환통장" : home;
 export const plain = (text: string) => text.replace(/<t:(\d+)(?::[a-zA-Z])?>/g, (_m, epoch: string) => new Date(Number(epoch) * 1000).toLocaleString("ko-KR")).replace(/\*\*/g, "").replace(/`/g, "");
 
 function cell(key: string, value: unknown): ReactNode {
@@ -44,6 +48,7 @@ function cell(key: string, value: unknown): ReactNode {
   if (typeof value === "number") return key.endsWith("_epoch") && value > 1e9 ? new Date(value * 1000).toLocaleString("ko-KR") : number(value);
   if (Array.isArray(value) && value.every((item) => typeof item !== "object")) return <span className="chips">{value.map((item, index) => <span key={index} className="chip">{String(item)}</span>)}</span>;
   if (typeof value === "string") {
+    if (/(?:amount|cash|balance|price|premium|notional|value|total|principal|fee|tax|profit|capital|revenue|limit|cost|reserve)(?:_|$)/i.test(key) && /^[+-]?\d+(?:\.\d+)?$/.test(value)) return number(value);
     if (value.startsWith("[") && value.endsWith("]")) { try { return cell(key, JSON.parse(value)); } catch { /* plain text */ } }
     return VALUES[value] ?? value;
   }
@@ -55,7 +60,7 @@ export function DataView({ data }: { data: unknown }) {
   if (Array.isArray(data)) {
     if (!data.length) return <p className="result-empty">결과가 없습니다.</p>;
     if (data.every((row) => row && typeof row === "object" && !Array.isArray(row))) {
-      const columns = Array.from(new Set(data.flatMap((row) => Object.keys(row as object)))).filter((key) => !["user_id", "password"].includes(key)).slice(0, 9);
+      const columns = Array.from(new Set(data.flatMap((row) => Object.keys(row as object)))).filter((key) => !["password"].includes(key)).slice(0, 9);
       return <div className="result-table"><table><thead><tr>{columns.map((key) => <th key={key}>{LABELS[key] ?? key}</th>)}</tr></thead>
         <tbody>{data.map((row, index) => <tr key={index}>{columns.map((key) => <td key={key} className={key === "side" ? ((row as Record<string, unknown>)[key] === "buy" ? "buy-text" : "sell-text") : undefined}>{cell(key, (row as Record<string, unknown>)[key])}</td>)}</tr>)}</tbody></table></div>;
     }

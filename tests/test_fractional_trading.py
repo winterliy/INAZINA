@@ -126,7 +126,7 @@ class FractionalTradingTests(unittest.TestCase):
             conn.execute("INSERT INTO currencies(code,name,reference_rate,decimal_places) VALUES ('USD','달러','1500',2)")
             conn.execute("INSERT INTO country_currencies(nationality,currency_code) VALUES ('미국','USD')")
             conn.execute("UPDATE users SET nationality='낙원' WHERE user_id='citizen'")
-            conn.execute("INSERT INTO accounts(account_number,user_id,product_code,account_type,quote_currency,balance_units) VALUES ('USD_ACCOUNT','citizen','USD_SAVE','currency_saving','USD',0)")
+            conn.execute("INSERT INTO accounts(account_number,user_id,product_code,account_type,quote_currency,balance_units) VALUES ('USD_ACCOUNT','citizen','USD_SAVE','saving','USD',0)")
             CurrencyManager.change(conn, 'citizen', 'USD', 10*SCALE)
         self.stock(price=1)
         self.command('상품생성', 'US company 미국주식 게임 100000 10 1 EX 1 {"quote_currency":"USD"}')
@@ -173,7 +173,7 @@ class FractionalTradingTests(unittest.TestCase):
             conn.execute("UPDATE users SET nationality='낙원' WHERE user_id='citizen'")
             conn.execute("INSERT INTO accounts(account_number,user_id,product_code,account_type,"
                          "quote_currency,balance_units) VALUES ('USD_ACCOUNT','citizen','USD_SAVE',"
-                         "'currency_saving','USD',0)")
+                         "'saving','USD',0)")
             CurrencyManager.change(conn, 'citizen', 'USD', 10*SCALE)
         self.command('상품생성', 'US company 미국주식 게임 100000 10 1 EX 1 {"quote_currency":"USD"}')
         self.db.companies.execute(

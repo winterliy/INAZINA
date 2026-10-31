@@ -11,6 +11,7 @@ offerings and these trades all move the same money. Changes that bypass the
 corporate-action journal are booked to the company's financial statements by
 :meth:`CompanyAccounts.reconcile`.
 """
+from functions.exact_money import ExactDecimal
 from decimal import Decimal
 
 from functions.money import base_currency_code
@@ -61,10 +62,10 @@ class CompanyAccounts:
         from managers.currency_manager import CurrencyManager, SCALE
         currency = str(currency or base_currency_code(conn)).upper()
         if currency == base_currency_code(conn) or not amount:
-            return float(amount or 0)
-        units = int(round(float(amount) * SCALE))
+            return ExactDecimal(amount or 0)
+        units = int(round(ExactDecimal(amount) * SCALE))
         sign = -1 if units < 0 else 1
-        return sign * CurrencyManager.convert(conn, abs(units), currency, base_currency_code(conn)) / SCALE
+        return ExactDecimal(sign * CurrencyManager.convert(conn, abs(units), currency, base_currency_code(conn))) / SCALE
 
     @staticmethod
     def _nwx_decimal(conn, amount, currency):
@@ -100,13 +101,12 @@ class CompanyAccounts:
         """
         investments = treasury = Decimal(0)
         from functions.money import currency_precision, from_minor_units
-        for lot in conn.execute("SELECT asset_code,quantity,average_cost_minor_units FROM user_assets WHERE user_id=?", (account,)):
+        for lot in conn.execute("SELECT holding_id,asset_code,quantity,average_cost_minor_units FROM user_assets WHERE user_id=?", (account,)):
             currency = cls._currency_of(conn, lot["asset_code"])
             places = currency_precision(conn, currency)
-            cost = from_minor_units(lot["average_cost_minor_units"] or 0, places)
-            value = cls._nwx_decimal(
-                conn, cost * Decimal(str(lot["quantity"] or 0)), currency
-            )
+            from managers.asset_cost_manager import AssetCostManager
+            cost = AssetCostManager.decimal_minor(AssetCostManager.total_cost_minor(conn, lot['holding_id'])) / (10 ** places)
+            value = cls._nwx_decimal(conn, cost, currency)
             if cls.own_shares(conn, account, lot["asset_code"]):
                 treasury += value
             else:
@@ -114,21 +114,21 @@ class CompanyAccounts:
         from managers.currency_manager import SCALE
         for row in conn.execute("SELECT balance_units,quote_currency FROM accounts WHERE user_id=?", (account,)):
             investments += Decimal(str(cls._nwx(
-                conn, int(row["balance_units"] or 0) / SCALE, row["quote_currency"]
+                conn, ExactDecimal(row["balance_units"] or 0) / SCALE, row["quote_currency"]
             )))
         for row in conn.execute("SELECT reserved_cash,quote_currency FROM market_orders WHERE user_id=? "
                                 "AND status IN ('scheduled','open','partial') AND reserved_cash>0", (account,)):
-            investments += Decimal(str(cls._nwx(
+            investments += cls._nwx_decimal(
                 conn, row["reserved_cash"], row["quote_currency"]
-            )))
+            )
         for query in ("SELECT COALESCE(SUM(acquisition_cost),0) FROM treasury_bond_holdings WHERE user_id=? AND status='active'",
                       "SELECT COALESCE(SUM(collateral),0) FROM futures_positions WHERE user_id=?",
                       "SELECT COALESCE(SUM(amount),0) FROM option_collateral_cash_lots WHERE writer_id=?",
                       "SELECT COALESCE(SUM(principal),0) FROM els_subscriptions WHERE user_id=? AND status IN ('subscribed','issued')"):
             investments += Decimal(str(conn.execute(query, (account,)).fetchone()[0] or 0))
-        debt = sum((Decimal(str(cls._nwx(
+        debt = sum((cls._nwx_decimal(
             conn, row["outstanding_balance"], row["quote_currency"]
-        ))) for row in conn.execute(
+        ) for row in conn.execute(
             "SELECT outstanding_balance,quote_currency FROM loans WHERE user_id=? AND status IN ('active','defaulted')", (account,))), Decimal(0))
         return {"investments": investments, "treasury": treasury, "debt": debt}
 
@@ -184,6 +184,39 @@ class CompanyAccounts:
         conn.execute("UPDATE company_income_log SET booked=1 WHERE company_code=? AND booked=0", (issuer,))
         return posted
 
+    @classmethod
+    def refresh_statements(cls, db, code):
+        """Reconcile source positions and explicit income without guessed profit."""
+        from managers.financial_manager import FinancialManager, month
+        with db.atomic() as conn:
+            issuer = FinancialManager.ensure(conn, code)
+            if conn.execute('SELECT 1 FROM financial_periods WHERE company_code=? AND period>=?',
+                            (issuer, month())).fetchone():
+                return None
+            ent = FinancialManager.entity(conn, issuer)
+            for row in conn.execute('SELECT * FROM company_income_log WHERE company_code=? AND booked=0 ORDER BY entry_id', (issuer,)).fetchall():
+                gross, tax = int(row['gross_nwx']), int(row['tax_nwx'])
+                kind = row['kind']
+                if kind in ('dividend', 'transfer_in', 'interest_income'):
+                    income = 'interest_income' if kind == 'interest_income' else 'other_income'
+                    lines = [('cash', gross-tax), (income, -gross), ('income_tax', tax)]
+                else:
+                    expense = {'transfer_out': 'other_expense', 'interest_expense': 'interest_expense', 'overdue_interest': 'overdue_interest'}[kind]
+                    lines = [('cash', -gross), (expense, gross)]
+                FinancialManager.event(conn, issuer, '원본 수익·비용 기록 자동 반영', lines, 'operating',
+                    key='income-log:' + str(row['entry_id']), currency=base_currency_code(conn))
+                conn.execute('UPDATE company_income_log SET booked=1 WHERE entry_id=?', (row['entry_id'],))
+            account = conn.execute('SELECT user_id FROM company_accounts WHERE company_code=?', (issuer,)).fetchone()
+            positions = cls.positions(conn, account[0], issuer) if account else None
+            return FinancialManager.reconcile_sources(conn, issuer, positions)
+
+    @classmethod
+    def financial_report(cls, db, code, period=None):
+        from managers.financial_manager import FinancialManager, month
+        if period is None or period == month():
+            cls.refresh_statements(db, code)
+        return FinancialManager(db).report(code, period)
+
     @staticmethod
     def log_income(conn, account, kind, gross_nwx, tax_nwx=0, counterparty=None):
         """Remember a dividend or intra-group transfer for classification and consolidation."""
@@ -206,7 +239,7 @@ class CompanyAccounts:
     @staticmethod
     def summary(conn):
         rows = conn.execute(
-            "SELECT c.company_code,c.name,c.exchange_id,c.total_shares,c.listed_shares,c.share_price,"
+            "SELECT c.company_code,c.name,c.exchange_id,c.total_shares,c.listed_shares,c.share_price,c.capital,c.par_value_minor_units,c.quote_currency,"
             "COALESCE(i.balance,0) cash,COALESCE(i.locked_amount,0) locked,a.user_id account "
             "FROM company c LEFT JOIN issuer_cash_accounts i ON i.company_code=c.company_code "
             "LEFT JOIN company_accounts a ON a.company_code=c.company_code "
@@ -214,6 +247,10 @@ class CompanyAccounts:
         result = []
         for row in rows:
             item = dict(row)
+            # Issuer cash ledgers are denominated in the configured settlement currency.
+            item["currency"] = base_currency_code(conn)
+            from functions.money import currency_precision
+            item["share_decimal_places"] = currency_precision(conn, item["quote_currency"] or item["currency"])
             holder = item["account"]
             item["holdings"] = [dict(h) for h in conn.execute(
                 "SELECT asset_code,SUM(quantity) quantity FROM user_assets WHERE user_id=? GROUP BY asset_code "

@@ -1,3 +1,4 @@
+from functions.exact_money import ExactDecimal
 from functions.money import base_currency_code
 import math
 import re
@@ -347,7 +348,7 @@ class TreasuryBondManager:
                     elif currency == base_currency_code(conn) or currency == CurrencyManager.home(conn, holding['user_id']):
                         credit = conn.execute(
                             "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
-                            (float(net_payment), holding["user_id"]),
+                            (ExactDecimal(net_payment), holding["user_id"]),
                         )
                         if credit.rowcount != 1:
                             raise RuntimeError("국채 보유자가 활성 사용자가 아니어서 상환을 취소했습니다.")
@@ -377,10 +378,10 @@ class TreasuryBondManager:
                     redeemed.append({
                         "user_id": str(holding["user_id"]),
                         "name": str(holding["name"]),
-                        "principal": float(principal),
-                        "interest": float(gross_interest),
-                        "tax": float(from_minor_units(tax_units, places)),
-                        "net": float(net_payment),
+                        "principal": ExactDecimal(principal),
+                        "interest": ExactDecimal(gross_interest),
+                        "tax": ExactDecimal(from_minor_units(tax_units, places)),
+                        "net": ExactDecimal(net_payment),
                     })
                     matured_codes.add((str(holding["user_id"]), str(holding["product_code"])))
                 for matured_user_id, product_code in matured_codes:
@@ -454,12 +455,12 @@ class TreasuryBondManager:
                 ).fetchone()[0])
                 if fund:
                     change_cash(conn, holding['user_id'],
-                                float(from_minor_units(coupon_units-tax_units, places)),
+                                ExactDecimal(from_minor_units(coupon_units-tax_units, places)),
                                 'bond_coupon', holding['product_code'])
                 elif currency == base_currency_code(conn) or currency == CurrencyManager.home(conn, holding['user_id']):
                     conn.execute(
                         "UPDATE users.users SET cash=cash+? WHERE user_id=?",
-                        (float(from_minor_units(coupon_units-tax_units, places)),
+                        (ExactDecimal(from_minor_units(coupon_units-tax_units, places)),
                          holding["user_id"]),
                     )
                 else:
@@ -485,8 +486,8 @@ class TreasuryBondManager:
                     )
                 paid.append({"user_id": str(holding["user_id"]),
                              "product_code": holding["product_code"],
-                             "coupon": float(coupon),
-                             "tax": float(from_minor_units(tax_units, places))})
+                             "coupon": ExactDecimal(coupon),
+                             "tax": ExactDecimal(from_minor_units(tax_units, places))})
         return paid
 
     def get_user_holdings(self, user_id, now=None, *, conn=None):
@@ -510,7 +511,7 @@ class TreasuryBondManager:
         for row in rows:
             days = int(row["maturity_days"])
             projected_interest = round_money(
-                int(row["principal"]) * float(row["annual_rate"]) * days
+                ExactDecimal(row["principal"]) * ExactDecimal(row["annual_rate"]) * days
                 / (100 * self.YEAR_DAYS)
             )
             face_value = int(row["face_value"] or 1)
@@ -619,9 +620,9 @@ class TreasuryBondManager:
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (str(buyer_id), str(product_code), row["product_name"],
                  float(row["annual_rate"]), int(row["maturity_days"]),
-                 float(from_minor_units(moved_principal_units, places)),
-                 float(from_minor_units(face_units, places)),
-                 float(from_minor_units(to_minor_units(price, places) * take_units, places)),
+                 ExactDecimal(from_minor_units(moved_principal_units, places)),
+                 ExactDecimal(from_minor_units(face_units, places)),
+                 ExactDecimal(from_minor_units(to_minor_units(price, places) * take_units, places)),
                  int(row["purchased_epoch"]),
                  int(row["maturity_epoch"]), int(row["coupon_frequency_days"] or 0),
                  row["day_count_convention"], row["last_coupon_epoch"],

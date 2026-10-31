@@ -1,13 +1,15 @@
 """Fully funded step-down ELS for the Inazina game economy.
 
 A treasury-issued ELS is denominated in that treasury's currency; a company-issued one in 기준 통화."""
+from functions.exact_money import ExactDecimal
+from functions.amount_limits import MAX_NATIVE
 from functions.money import base_currency_code
 
 import json
 import math
 import time
 from contextlib import nullcontext
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 
 from functions.admin_access import resolve_user_role
 from functions.money import parse_money, round_money
@@ -18,7 +20,7 @@ from managers.market_session_manager import MarketSessionManager
 from managers.rate_manager import RateManager
 
 DAY = 86400
-MAX_MONEY = 2**53 - 1
+MAX_MONEY = MAX_NATIVE
 INDEX_PREFIX = "__exchange_index__:"
 OPEN_STATES = ("subscription", "active", "observation_pending", "redemption_pending")
 
@@ -96,9 +98,11 @@ class ELSManager:
 
     @staticmethod
     def _valid_price(value):
+        if value is None or isinstance(value, bool):
+            return None
         try:
-            number = float(value)
-        except (TypeError, ValueError, OverflowError):
+            number = ExactDecimal(value)
+        except (InvalidOperation, TypeError, ValueError, OverflowError):
             return None
         return number if math.isfinite(number) and number > 0 else None
 
@@ -117,7 +121,7 @@ class ELSManager:
         if not name or not exchange:
             raise ValueError("상품명과 거래소 ID를 입력해주세요.")
         face = self._integer(fields.get("face_value"), "액면가")
-        supply = self._integer(fields.get("total_supply"), "발행좌수")
+        supply = self._integer(fields.get("total_supply"), "발행좌수", high=2**53-1)
         maturity = self._integer(fields.get("maturity_days"), "만기일수", high=3650)
         subscription = self._integer(fields.get("subscription_days"), "모집일수", high=3650)
         coupon = self._percent(fields.get("annual_coupon"), "연 쿠폰")
@@ -209,7 +213,7 @@ class ELSManager:
     def subscribe(self, user_id, code, quantity, account_number=None, now=None):
         user_id, code = str(user_id), str(code).strip()
         try:
-            quantity = self._integer(quantity, "청약좌수")
+            quantity = self._integer(quantity, "청약좌수", high=2**53-1)
             now = int(RateManager._validated_epoch(now, "invalid_els_subscription_epoch"))
             self._settle_interest(user_id)
             with self.db.atomic() as conn:
@@ -235,7 +239,7 @@ class ELSManager:
                 if currency != CurrencyManager.home(conn, user_id):
                     # Foreign citizens subscribe from their foreign-currency account.
                     account = conn.execute("SELECT account_number FROM accounts WHERE user_id=? AND quote_currency=? "
-                        "AND account_type='currency_saving' AND (? IS NULL OR account_number=?)",
+                        "AND account_type='saving' AND (? IS NULL OR account_number=?) ORDER BY created_at,rowid",
                         (user_id, currency, account_number, account_number)).fetchone()
                     if not account:
                         return False, f"❌ {currency} 외환통장이 있어야 이 ELS를 청약할 수 있습니다."
@@ -303,7 +307,7 @@ class ELSManager:
         if currency and currency != CurrencyManager.home(conn, user_id):
             from managers.foreign_securities_manager import ForeignSecuritiesManager
             fx = conn.execute("SELECT 1 FROM accounts WHERE account_number=? AND user_id=? AND quote_currency=? "
-                "AND account_type='currency_saving'", (account, user_id, currency)).fetchone() if account else None
+                "AND account_type='saving'", (account, user_id, currency)).fetchone() if account else None
             ForeignSecuritiesManager.credit_units(conn, user_id, currency, amount * SCALE, account if fx else None)
             return
         row = conn.execute("SELECT balance FROM accounts WHERE account_number=? AND user_id=?", (account, user_id)).fetchone() if account else None
@@ -362,7 +366,7 @@ class ELSManager:
             for row, value, ratio in zip(underlying_rows, values, ratios):
                 if ratio is None:
                     continue
-                hit = ratio <= terms["knock_in_level"]
+                hit = ratio <= ExactDecimal(str(terms["knock_in_level"]))
                 knocked = knocked or hit
                 conn.execute("UPDATE els_underlyings SET last_price=?,last_epoch=?,min_ratio=MIN(COALESCE(min_ratio,?),?),"
                     "knocked_in=MAX(knocked_in,?),knock_in_epoch=CASE WHEN ?=1 THEN COALESCE(knock_in_epoch,?) ELSE knock_in_epoch END "
@@ -382,11 +386,11 @@ class ELSManager:
             for skipped in due[:-1]:
                 conn.execute("UPDATE els_observations SET outcome='skipped' WHERE product_code=? AND sequence=?", (code, skipped["sequence"]))
             ratio = min(ratios)
-            redeem = ratio >= observation["redemption_level"] or (observation["is_maturity"] and not knocked)
+            redeem = ratio >= ExactDecimal(str(observation["redemption_level"])) or (observation["is_maturity"] and not knocked)
             outcome = "redeem" if redeem else "loss" if observation["is_maturity"] else "continue"
             snapshot = {row["underlying_code"]: value for row, value in zip(underlying_rows, values)}
             conn.execute("UPDATE els_observations SET observed_epoch=?,prices_json=?,assessment_ratio=?,outcome=? "
-                "WHERE product_code=? AND sequence=?", (now, json.dumps(snapshot, ensure_ascii=False), ratio, outcome, code, observation["sequence"]))
+                "WHERE product_code=? AND sequence=?", (now, json.dumps(snapshot, ensure_ascii=False, default=str), ratio, outcome, code, observation["sequence"]))
             recorded.append(dict(product_code=code, kind=outcome, sequence=observation["sequence"], ratio=ratio))
             if outcome in {"redeem", "loss"}:
                 conn.execute("UPDATE els_products SET state='redemption_pending',final_ratio=?,final_sequence=?,settlement_kind=? WHERE product_code=?",

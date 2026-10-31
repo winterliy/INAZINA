@@ -1,3 +1,4 @@
+import { minorMoney, type Money } from "../../shared/money";
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { api, appUrl, type ApiUser } from "../../shared/api";
@@ -6,7 +7,7 @@ import { IdentityCard } from "./IdentityCard";
 import { AuditHeatmap } from "./ActivityTiles";
 import { LoginHistoryCard, type LoginEvent } from "./LoginHistoryCard";
 
-type Financial = { company: string; periods: string[]; report: { period: string; currency: string; places: number; summary: { assets: number; liabilities: number; equity: number }; income: Record<string, number>; checks: { balance_sheet: boolean } } };
+type Financial = { company: string; periods: string[]; report: { period: string; currency: string; places: number; summary: { assets: Money; liabilities: Money; equity: Money }; income: Record<string, Money>; checks: { balance_sheet: boolean } } };
 
 /** The administrator's own work over the last week, from the audit log. */
 function OwnHeatmap({ userId }: { userId: string }) {
@@ -27,7 +28,7 @@ function OwnFinancial({ say }: { say: Ctx["say"] }) {
   }, [period]);
   if (!financial) return null;
   const { report } = financial;
-  const money = (units: number) => `${number(units / 10 ** report.places)} ${report.currency}`;
+  const money = (units: Money) => `${number(minorMoney(units, report.places))} ${report.currency}`;
   return <Card title={`${financial.company} 재무제표`} caption="원장에서 계산한 이 법인의 재무 상태입니다. 수정은 관리자가 합니다."
     actions={<select aria-label="기간" value={report.period} onChange={(event) => setPeriod(event.target.value)}>{Array.from(new Set([report.period, ...financial.periods])).map((item) => <option key={item}>{item}</option>)}</select>}>
     <div className="stats">

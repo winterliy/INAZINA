@@ -1,3 +1,4 @@
+import { moneyAdd, moneyCompare, minorMoney, type Money } from "../../shared/money";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
 import { Donut, ShareholderPie, topSlices, type Shareholders } from "./Donut";
@@ -5,15 +6,15 @@ import { Card, Field, number, plain, show, type Ctx } from "./common";
 import { CompanyLedger } from "./CompanyLedger";
 
 type Holding = { asset_code: string; quantity: number };
-type Company = { company_code: string; name: string; exchange_id: string; total_shares: number; listed_shares: number | null; share_price: number; cash: number; locked: number; account: string | null; holdings: Holding[]; accounts: number; loans: number; parents: { code: string; percent: number }[] };
+type Company = { company_code: string; name: string; exchange_id: string; total_shares: number; listed_shares: number | null; share_price: Money; cash: Money; locked: Money; account: string | null; holdings: Holding[]; accounts: number; loans: Money; parents: { code: string; percent: number }[] };
 type CommandField = { key: string; label: string; kind: string; optional: boolean; hint: string };
 type Command = { name: string; group: string; description: string; guide: string; fields: CommandField[] };
-type Stock = { name: string; code: string; qty: number; value: number; price: number };
-type Account = { number: string; product_name: string; balance: number };
-type Assets = { cash: number; grand_total: number; loan_total: number; net_worth: number; stocks: Stock[]; accounts: Account[] };
+type Stock = { name: string; code: string; qty: number; value: Money; price: Money };
+type Account = { number: string; product_name: string; balance: Money };
+type Assets = { cash: Money; grand_total: Money; loan_total: Money; net_worth: Money; stocks: Stock[]; accounts: Account[] };
 type Detail = { account: string; webLogin: boolean; loginId: string; assets: Assets; shareholders: Shareholders };
 
-const UNLISTED = "UNLISTED";
+const UNLISTED = "3DSG";
 
 /**
  * 상장하기 / 비상장 전환하기: list the company on an exchange with the share of it offered
@@ -51,35 +52,60 @@ function ListingControl({ ctx, company, onDone }: { ctx: Ctx; company: Company; 
   const list = () => save(target, ratio === 100 ? null : listed,
     `${company.name} (${company.company_code})를 ${target}에 전체 ${number(company.total_shares)}주 중 ${ratio}% (${number(listed)}주) 상장할까요?\n시장에 풀리는 주식은 상장 주식 수까지입니다(이미 보유 중인 주식 포함).`);
   const unlist = () => save(UNLISTED, null,
-    `${company.name} (${company.company_code})를 비상장으로 전환할까요?\n거래소에서 매매할 수 없고 시세도 멈춥니다. 주주의 보유 주식은 그대로 남습니다.`);
+    `${company.name} (${company.company_code})를 비상장으로 전환할까요?\n장외시장 3DSG로 옮겨 계속 매매됩니다. 주주의 보유 주식은 그대로 남습니다.`);
 
   return <div className="listing-control">
     <div className="segment-tabs" role="radiogroup" aria-label="상장 상태">
       {([["list", "상장하기"], ["unlist", "비상장 전환하기"]] as const).map(([key, label]) => <button key={key} type="button" role="radio" aria-checked={mode === key} className={mode === key ? "active" : ""} onClick={() => setMode(key)}>{label}</button>)}
     </div>
     {mode === "list" ? <>
-      <Field label="상장 거래소" hint={listedNow ? `지금 ${current} · ${currentPercent}% 상장` : "지금 비상장"}>
+      <Field label="상장 거래소" hint={listedNow ? `지금 ${current} · ${currentPercent}% 상장` : "지금 비상장 · 장외시장 3DSG"}>
         <select value={target} onChange={(event) => setTarget(event.target.value)}>{exchanges.map((id) => <option key={id} value={id}>{id}</option>)}</select>
       </Field>
       <Field label="상장 비율 (%)" hint={ratioValid ? `${number(listed)}주 / ${number(company.total_shares)}주` : "0 초과 100 이하"}><input type="number" min="0.01" max="100" step="0.01" value={percent} onChange={(event) => setPercent(event.target.value)} /></Field>
       <button className="btn primary" type="button" disabled={busy || !target || !ratioValid || !changed} onClick={list}>{listedNow ? "상장 조건 저장" : "상장하기"}</button>
     </> : <>
-      <p className="hint">{listedNow ? `${current}에서 거래를 멈추고 비상장 법인으로 둡니다. 다시 상장하려면 상장하기를 고르세요.` : "이미 비상장입니다."}</p>
+      <p className="hint">{listedNow ? `${current}에서 상장을 폐지하고 장외시장 3DSG로 옮깁니다. 다시 상장하려면 상장하기를 고르세요.` : "이미 비상장입니다."}</p>
       <button className="soft danger" type="button" disabled={busy || !listedNow} onClick={unlist}>비상장 전환</button>
     </>}
   </div>;
 }
 
+function ShareRatioControl({ ctx, company, onDone }: { ctx: Ctx; company: Company; onDone: () => void }) {
+  const [oldShares, setOldShares] = useState("1");
+  const [newShares, setNewShares] = useState("2");
+  const old = Number(oldShares), next = Number(newShares);
+  const ratioValid = [old, next].every((value) => Number.isSafeInteger(value) && value > 0) && old !== next;
+  const numerator = ratioValid ? BigInt(company.total_shares) * BigInt(next) : 0n;
+  const shares = ratioValid && numerator % BigInt(old) === 0n ? Number(numerator / BigInt(old)) : NaN;
+  const valid = ratioValid && Number.isSafeInteger(shares) && shares > 0;
+  return <Card title="일반비율분할 (기존주:신주)" caption="관리자가 별도로 집행합니다. 자본금과 보유 주식의 총 취득원가는 유지합니다.">
+    <form className="form-grid" onSubmit={(event) => {
+      event.preventDefault();
+      if (!valid || !window.confirm(`${company.name} (${company.company_code}) 관리자 집행\n기존 ${old}주 → 변경 ${next}주\n발행주식 ${number(company.total_shares)}주 → ${number(shares)}주\n모든 보유분이 정수 주식으로 변환될 때만 집행합니다.`)) return;
+      void ctx.run(() => api<Result>(`/api/admin/companies/${encodeURIComponent(company.company_code)}/share-actions`, {
+        method: "POST", body: JSON.stringify({ action: "execute", mode: "ratio_split", oldShares, newShares }) }),
+        "주식 수를 조정하지 못했습니다.", (result) => { ctx.say(plain(result.message), !result.success); if (result.success) onDone(); });
+    }}>
+      <Field label="기존 주식 수" hint="기존주:신주 비율. 3:2는 기존 3주 → 변경 2주입니다."><input required type="number" min="1" step="1" value={oldShares} onChange={(event) => setOldShares(event.target.value)} /></Field>
+      <Field label="변경 주식 수"><input required type="number" min="1" step="1" value={newShares} onChange={(event) => setNewShares(event.target.value)} /></Field>
+      <p className="hint span-wide">1:n 분할 · n:1 병합 · 일반 정수 비율. 발행·상장·개별 보유 수량에 단주가 생기면 집행하지 않습니다. 미체결·예약 주문과 연결 파생상품은 먼저 정리해주세요.</p>
+      <p className="hint span-wide" aria-live="polite">{valid ? `기존 ${old}주 → 변경 ${next}주 · 발행주식 ${number(shares)}주 · 자본금 유지` : "서로 다른 양의 정수 비율과 정수 발행주식 수가 필요합니다."}</p>
+      <button className="btn primary" disabled={ctx.busy || !valid}>일반비율분할 관리자 집행</button>
+    </form>
+  </Card>;
+}
+
 /** What the company owns: its holdings by value. */
 function HoldingsPie({ stocks }: { stocks: Stock[] }) {
-  const items = [...stocks].sort((a, b) => b.value - a.value).map((stock) => ({ label: `${stock.code} ${stock.name}`, value: Math.round(stock.value) }));
-  const total = items.reduce((sum, item) => sum + item.value, 0);
+  const items = [...stocks].sort((a, b) => moneyCompare(b.value, a.value)).map((stock) => ({ label: `${stock.code} ${stock.name}`, value: stock.value }));
+  const total = items.reduce<Money>((sum, item) => moneyAdd(sum, item.value), "0");
   return <Donut slices={topSlices(items, "기타 종목")} total={total} center={number(total)} unit="평가액" label="보유 자산 구성 원그래프" />;
 }
 
-type Member = { code: string; name: string; parent: string; ownership: number; currency: string; goodwill: number; nci: number; depth?: number };
-type Consolidated = { subsidiaries: Member[]; summary: { assets: number; liabilities: number; equity: number; parent_equity: number; noncontrolling_interest: number; goodwill: number }; income: Record<string, number>; profit_attributable: { parent: number; noncontrolling: number }; eliminations: { dividends: number; transfers: number; cross_holdings: number }; notes: string[] } | null;
-type Report = { period: string; currency: string; places: number; summary: { assets: number; liabilities: number; equity: number }; income: Record<string, number>; changes: Record<string, number>; checks: { balance_sheet: boolean; live_cash: boolean | null }; consolidated: Consolidated };
+type Member = { code: string; name: string; parent: string; ownership: number; currency: string; goodwill: Money; nci: number; depth?: number };
+type Consolidated = { subsidiaries: Member[]; summary: { assets: Money; liabilities: Money; equity: Money; parent_equity: Money; noncontrolling_interest: Money; goodwill: Money }; income: Record<string, Money>; profit_attributable: { parent: Money; noncontrolling: Money }; eliminations: { dividends: Money; transfers: Money; cross_holdings: Money }; notes: string[] } | null;
+type Report = { period: string; currency: string; places: number; summary: { assets: Money; liabilities: Money; equity: Money }; income: Record<string, Money>; changes: Record<string, Money>; checks: { balance_sheet: boolean; live_cash: boolean | null }; consolidated: Consolidated };
 type Result = { message: string; success: boolean };
 
 export function CompaniesPage({ ctx }: { ctx: Ctx }) {
@@ -133,22 +159,22 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
       "재무제표를 불러오지 못했습니다.", (result) => { setReport(result); setPeriod(result.report.period); });
   }
 
-  const money = (value: number) => report ? `${number(value / 10 ** report.report.places)} ${report.report.currency}` : "—";
+  const money = (value: Money) => report ? `${number(minorMoney(value, report.report.places))} ${report.report.currency}` : "—";
 
   return <>
     {company && <>
       <div className="subpage-bar">
         <button className="soft" type="button" onClick={() => { setSelected(""); setDetail(null); }}>← 법인 목록으로 돌아가기</button>
-        <p><b>{company.name}</b> <span className="mono">{company.company_code} · {company.exchange_id === UNLISTED ? "비상장" : company.exchange_id}</span></p>
+        <p><b>{company.name}</b> <span className="mono">{company.company_code} · {company.exchange_id === UNLISTED ? "3DSG (장외)" : company.exchange_id}</span></p>
       </div>
       <Card title="개요 · 지분" caption={<>계정 <span className="mono">{detail?.account ?? company.account ?? "첫 실행 때 개설"}</span> · 현금은 법인 현금 장부와 같은 돈입니다 · 거래는 재무제표에 자동 기록됩니다</>}
         actions={<button className="soft" type="button" onClick={() => { setSelected(""); setDetail(null); }}>닫기</button>}>
       <div className="stats">
         <div><small>현금</small><b>{number(company.cash)} 기준 통화</b></div>
         <div><small>잠금 예치금</small><b>{number(company.locked)}</b></div>
-        <div><small>총자산</small><b>{detail ? number(Math.round(detail.assets.grand_total)) : "…"}</b></div>
+        <div><small>총자산</small><b>{detail ? number(detail.assets.grand_total) : "…"}</b></div>
         <div><small>대출</small><b>{number(company.loans)}</b></div>
-        <div><small>순자산</small><b>{detail ? number(Math.round(detail.assets.net_worth)) : "…"}</b></div>
+        <div><small>순자산</small><b>{detail ? number(detail.assets.net_worth) : "…"}</b></div>
       </div>
       <ListingControl key={`${company.company_code}:${company.exchange_id}:${company.listed_shares}`} ctx={ctx} company={company} onDone={() => void load()} />
       {company.parents.length > 0 && <p className="hint">모회사(지분 보유 법인): {company.parents.map((parent) => `${parent.code} ${parent.percent.toFixed(1)}%`).join(", ")}</p>}
@@ -159,7 +185,7 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
       </Card>
       <Card title="보유 자산 · 통장" caption="법인 자본 계정이 가진 종목과 통장입니다.">
       <div className="scroll-x"><table><thead><tr><th>종목</th><th>이름</th><th className="r">수량</th><th className="r">평가액</th><th /></tr></thead><tbody>
-        {(detail?.assets.stocks ?? []).map((stock) => <tr key={stock.code}><td className="mono">{stock.code}</td><td>{stock.name}</td><td className="r mono">{number(stock.qty)}</td><td className="r mono">{number(Math.round(stock.value))}</td><td>{stock.code === company.company_code ? <span className="tag">자기주식</span> : companies.some((item) => item.company_code === stock.code && item.parents.some((parent) => parent.code === company.company_code && parent.percent > 50)) ? <span className="tag ok">자회사</span> : null}</td></tr>)}
+        {(detail?.assets.stocks ?? []).map((stock) => <tr key={stock.code}><td className="mono">{stock.code}</td><td>{stock.name}</td><td className="r mono">{number(stock.qty)}</td><td className="r mono">{number(stock.value)}</td><td>{stock.code === company.company_code ? <span className="tag">자기주식</span> : companies.some((item) => item.company_code === stock.code && item.parents.some((parent) => parent.code === company.company_code && parent.percent > 50)) ? <span className="tag ok">자회사</span> : null}</td></tr>)}
       </tbody></table>{detail && !detail.assets.stocks.length && <p className="empty">보유 자산이 없습니다.</p>}</div>
       <h3 className="sub-head">통장</h3>
       <div className="scroll-x"><table><thead><tr><th>계좌</th><th>상품</th><th className="r">잔액</th></tr></thead><tbody>
@@ -201,6 +227,7 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
       </>}
 
       </Card>
+      <ShareRatioControl key={`ratio:${company.company_code}:${company.total_shares}`} ctx={ctx} company={company} onDone={() => void load()} />
       <CompanyLedger key={company.company_code} code={company.company_code} ctx={ctx} onChanged={() => { if (report) loadReport(); }} />
 
       <Card title="법인 계정으로 실행" caption="법인 명의로 매수·매도·송금·대출을 실행합니다. Discord의 $법인 또는 $login과 같은 검증을 거칩니다.">
@@ -227,13 +254,13 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
 
     {!company && <><div className="tile-row">
       <section className="tile"><p className="tile-label">법인</p><p className="tile-value">{number(companies.length)}</p></section>
-      <section className="tile"><p className="tile-label">비상장</p><p className="tile-value">{number(companies.filter((item) => item.exchange_id === UNLISTED).length)}</p></section>
-      <section className="tile"><p className="tile-label">법인 현금 합계</p><p className="tile-value">{number(companies.reduce((sum, item) => sum + item.cash, 0))}</p></section>
+      <section className="tile"><p className="tile-label">장외 3DSG</p><p className="tile-value">{number(companies.filter((item) => item.exchange_id === UNLISTED).length)}</p></section>
+      <section className="tile"><p className="tile-label">법인 현금 합계</p><p className="tile-value">{number(companies.reduce<Money>((sum, item) => moneyAdd(sum, item.cash), "0"))}</p></section>
     </div>
     <Card title="법인 자본" caption="법인은 사람이 아니라 로그인하지 않지만, 자본은 다른 계정과 똑같이 주식·상품 매수매도, 통장, 대출, 송금을 할 수 있습니다. 자기 회사 주식을 사면 자기주식(배당 없음), 다른 회사 지분을 과반 사면 자회사가 됩니다. Discord에서는 $법인 또는 $login [법인ID]를 씁니다.">
       <div className="scroll-x tall"><table><thead><tr><th>법인</th><th>이름</th><th>거래소</th><th className="r">현금</th><th className="r">보유 종목</th><th className="r">통장</th><th className="r">대출</th><th>모회사</th></tr></thead><tbody>
         {visible.map((item) => <tr key={item.company_code} className={item.company_code === selected ? "clickable selected" : "clickable"} tabIndex={0} onClick={() => void open(item.company_code).catch((cause) => say(cause instanceof Error ? cause.message : "법인을 열지 못했습니다.", true))} onKeyDown={(event) => { if (event.key === "Enter") void open(item.company_code); }}>
-          <td className="mono">{item.company_code}</td><td>{item.name}</td><td>{item.exchange_id === UNLISTED ? <span className="tag">비상장</span> : show(item.exchange_id)}</td>
+          <td className="mono">{item.company_code}</td><td>{item.name}</td><td>{item.exchange_id === UNLISTED ? <span className="tag">3DSG 장외</span> : show(item.exchange_id)}</td>
           <td className="r mono">{number(item.cash)}</td><td className="r">{number(item.holdings.length)}</td><td className="r">{number(item.accounts)}</td><td className="r mono">{number(item.loans)}</td>
           <td>{item.parents.length ? item.parents.map((parent) => `${parent.code} ${parent.percent.toFixed(1)}%`).join(", ") : "—"}</td>
         </tr>)}

@@ -12,7 +12,10 @@ from .price_backend import kernels
 
 
 TRADING_MINUTES_PER_YEAR = 252 * 390
-MAX_PRICE = 2**53 - 1
+from functions.amount_limits import MAX_NATIVE
+from functions.exact_money import ExactDecimal
+from decimal import Decimal
+MAX_PRICE = MAX_NATIVE
 MIN_LOG_RETURN = math.log(0.8)
 MAX_LOG_RETURN = math.log(1.2)
 
@@ -148,7 +151,7 @@ def simulate_step(price, previous_variance, previous_innovation, config, *,
     jumps, so a news shock also raises the following GARCH variance.
     """
     inputs = (price, market_shock, directional_bias, jump)
-    if any(isinstance(value, bool) or not isinstance(value, (int, float))
+    if any(isinstance(value, bool) or not isinstance(value, (int, float, Decimal))
            or not math.isfinite(value) for value in inputs):
         raise ValueError("가격과 가격 충격은 유한한 숫자여야 합니다.")
     if not 0 < price <= MAX_PRICE:
@@ -157,6 +160,7 @@ def simulate_step(price, previous_variance, previous_innovation, config, *,
     if not variance:
         # A zero legacy volatility remains a freeze switch for ordinary
         # price updates. Explicit events are applied by the caller afterwards.
-        return PriceStep(float(price), 0.0, 0.0, 0.0, 0.0)
-    return PriceStep(*kernels.price_value(float(price), variance, config.market_correlation,
+        return PriceStep(ExactDecimal(price), 0.0, 0.0, 0.0, 0.0)
+    from . import _price_math
+    return PriceStep(*_price_math.price_value(ExactDecimal(price), variance, config.market_correlation,
         market_shock, standardized_shock(rng, config.student_df), directional_bias, jump))

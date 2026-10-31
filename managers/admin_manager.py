@@ -1,3 +1,4 @@
+from functions.amount_limits import MAX_NATIVE
 from database import DatabaseManager
 from database.user_db import TREASURY_USER_ID
 from functions.money import parse_money
@@ -48,7 +49,7 @@ class AdminManager:
         if target_price is not None:
             if not asset_code:
                 return False, "❌ 목표 가격을 지정하려면 개별 자산을 선택해주세요."
-            if isinstance(target_price, bool) or not isinstance(target_price, int) or not 1 <= target_price <= 2**53 - 1:
+            if isinstance(target_price, bool) or not isinstance(target_price, int) or not 1 <= target_price <= MAX_NATIVE:
                 return False, "❌ 목표 가격은 1~9,007,199,254,740,991 기준 통화 사이의 정수여야 합니다."
             mode, value = "price", target_price
         else:
@@ -109,7 +110,7 @@ class AdminManager:
                         target = int(value)
                     else:
                         sign = 1 if event_type == "good" else -1
-                        target = min(2**53-1,max(1, int((Decimal(price) * (1 + sign * Decimal(str(value)) / 100))
+                        target = min(MAX_NATIVE,max(1, int((Decimal(price) * (1 + sign * Decimal(str(value)) / 100))
                                            .quantize(Decimal("1"), rounding=ROUND_HALF_UP))))
                     if mode == "price" or value > 0:
                         plans[code] = (price, target)
@@ -120,7 +121,7 @@ class AdminManager:
                 price = int(quote['price'] if quote else asset['price'])
                 if mode == 'price' and ((event_type == 'good' and value < price) or (event_type == 'bad' and value > price)):
                     return False, "❌ 호재는 현재가 이상, 악재는 현재가 이하의 목표를 지정해주세요."
-                target = int(value) if mode == 'price' else min(2**53-1,max(1, int((Decimal(price)*(1+(1 if event_type=='good' else -1)*Decimal(str(value))/100)).quantize(Decimal('1'),rounding=ROUND_HALF_UP))))
+                target = int(value) if mode == 'price' else min(MAX_NATIVE,max(1, int((Decimal(price)*(1+(1 if event_type=='good' else -1)*Decimal(str(value))/100)).quantize(Decimal('1'),rounding=ROUND_HALF_UP))))
                 if mode == 'price' or value > 0:
                     plans[asset_code] = (price,target)
             if not plans and (mode == "price" or value > 0):

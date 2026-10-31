@@ -1,3 +1,4 @@
+import { moneyAdd, type Money } from "../../shared/money";
 import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../shared/api";
@@ -5,7 +6,7 @@ import { BankJournalPage } from "./BankJournalPage";
 import { Card, Field, number, plain, show, type Ctx } from "./common";
 
 type Bank = { id: string; issuer: string; nationality: string; status: string; equityCapital: number; retainedEarnings: number; products: number;
-  depositAccounts: number; deposits: number; loans: number; loanBalance: number; account: string | null; cash: number | null };
+  depositAccounts: number; deposits: Money; loans: Money; loanBalance: number; account: string | null; cash: Money | null };
 type Detail = Bank & { settings: Record<string, number | string>; productsList: { code: string; name: string; kind: string; interest_rate: number; status: string }[] };
 type Result = { message: string; success: boolean };
 
@@ -89,8 +90,8 @@ export function BanksPage({ ctx }: { ctx: Ctx }) {
   return <>
     <div className="tile-row">
       <section className="tile tile-dark"><p className="tile-label">은행</p><p className="tile-value">{number(banks.length)}</p></section>
-      <section className="tile"><p className="tile-label">총 예금</p><p className="tile-value">{number(banks.reduce((sum, bank) => sum + bank.deposits, 0))}</p></section>
-      <section className="tile"><p className="tile-label">총 대출 잔액</p><p className="tile-value">{number(banks.reduce((sum, bank) => sum + bank.loanBalance, 0))}</p></section>
+      <section className="tile"><p className="tile-label">총 예금</p><p className="tile-value">{number(banks.reduce<Money>((sum, bank) => moneyAdd(sum, bank.deposits), "0"))}</p></section>
+      <section className="tile"><p className="tile-label">총 대출 잔액</p><p className="tile-value">{number(banks.reduce<Money>((sum, bank) => moneyAdd(sum, bank.loanBalance), "0"))}</p></section>
       <section className="tile"><p className="tile-label">영업 제한 · 파산</p><p className="tile-value">{number(banks.filter((bank) => bank.status !== "active").length)}</p></section>
     </div>
     <Card title="은행" caption="행을 누르면 그 은행의 관리 페이지가 열려 설정·발행 상품·원장 대사를 봅니다. 은행 ID는 만들 때 정해지고 바뀌지 않습니다.">

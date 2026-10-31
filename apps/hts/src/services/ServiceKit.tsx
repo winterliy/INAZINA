@@ -1,10 +1,11 @@
+import type { Money } from "../../../shared/money";
 import { useEffect, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { ActionFields, DataView, READ_ONLY, initialValues, number, type Order, type Result, type useCommands } from "../commandKit";
 
 export type Kit = ReturnType<typeof useCommands>;
-export type Account = { number: string; product_name: string; balance: number; currency_code: string; decimal_places: number; resolution_status: string };
-export type ServiceProps = { kit: Kit; cash: number; homeCurrency: string; homeDigits: number; creditScore: number; accounts: Account[]; orders: Order[] };
+export type Account = { account_type?: string; managed_by?: string | null; number: string; product_name: string; balance: Money; currency_code: string; decimal_places: number; resolution_status: string };
+export type ServiceProps = { kit: Kit; cash: Money; homeCurrency: string; homeDigits: number; creditScore: number; accounts: Account[]; orders: Order[] };
 
 export const SERVICES = [
   { path: "/transfer", label: "송금", description: "계좌이체 · 내 계좌 간 이체 · 외화 환전 이체" },
@@ -14,10 +15,10 @@ export const SERVICES = [
   { path: "/market", label: "시장정보", description: "실시간차트 · 자산 순위 · 거래소 지수 · 금리 · 전체 상품 목록 (/검색)" },
   { path: "/history", label: "거래내역", description: "입출금 · 송금 · 기본소득 · 환전 · 주문 내역" },
   { path: "/financials", label: "기업 재무", description: "회사·우선주의 재무상태표 · 손익 · 현금흐름 · 주요 비율" },
-  { path: "/info", label: "정보 · 고객센터", description: "법정 최고이자 · 문의 · 신고 · 파산 신청 · 주주총회" },
+  { path: "/info", label: "정보 · 고객센터", description: "문의 · 신고 · 파산 신청 · 주주총회" },
 ] as const;
 
-export const won = (value: number, digits = 0) => number(value, digits);
+export const won = (value: Money, digits = 0) => number(value, digits);
 
 /** A result banner: the server's message, or its data as a table. */
 export function Outcome({ result }: { result: Result | null }) {

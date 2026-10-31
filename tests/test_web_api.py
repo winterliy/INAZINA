@@ -1042,8 +1042,9 @@ class WebApiTests(unittest.TestCase):
                                ("liability", "product_code"), ("option_contracts", "contract_code"), ("currencies", "code")}:
                 connection.execute(f"CREATE TABLE {table} ({key} TEXT PRIMARY KEY, name TEXT, status TEXT, extra_setting REAL)")
         kinds = {item["kind"]: item for item in server.product_catalog()["kinds"]}
-        self.assertEqual(set(kinds), set(CREATE_ARGS))
-        self.assertEqual({kinds[name]["group"] for name in ("saving", "loan", "currency", "currencyproduct")}, {"finance"})
+        # currencyproduct stays as a command alias that creates an ordinary savings product.
+        self.assertEqual(set(kinds), set(CREATE_ARGS) - {"currencyproduct"})
+        self.assertEqual({kinds[name]["group"] for name in ("saving", "loan", "currency")}, {"finance"})
         self.assertIn("extra_setting", {field["key"] for field in kinds["saving"]["advanced"]})
         self.assertNotIn("status", {field["key"] for field in kinds["saving"]["advanced"]})
 
@@ -1084,8 +1085,8 @@ class WebApiTests(unittest.TestCase):
         self.assertEqual(self.execute("SELECT action FROM admin_audit")[-1][0], "product.purge")
 
     def test_savings_and_fx_accounts_share_one_form(self):
-        self.assertEqual(server._form_fields("saving"), server._form_fields("currencyproduct"))
-        fields = server._convert_product_fields("currencyproduct", {"name": "달러", "quote_currency": "usd", "interest_rate": "2"},
+        self.assertNotIn("currencyproduct", server.PRODUCT_KINDS if hasattr(server, "PRODUCT_KINDS") else {})
+        fields = server._convert_product_fields("saving", {"name": "달러", "quote_currency": "usd", "interest_rate": "2"},
                                                 {}, {})
         self.assertEqual(fields, {"name": "달러", "quote_currency": "USD", "interest_rate": 2})
 

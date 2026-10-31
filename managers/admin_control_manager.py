@@ -1,4 +1,6 @@
 """Validated administrator forms; no arbitrary SQL execution surface."""
+from functions.exact_money import ExactDecimal
+from functions.amount_limits import MAX_NATIVE
 from functions.money import base_currency_code
 import json
 import math
@@ -47,10 +49,10 @@ KINDS = {'etf':'etf','future':'stock_future','corporatebond':'corporate_bond',
 BOND_FEATURES = {'corporatebond':'plain','convertiblebond':'convertible','warrantbond':'warrant',
                  'abs':'abs','mbs':'mbs','abcp':'abcp'}
 # Savings-table products told apart by product_kind.
-SAVING_KINDS = {'saving':'saving','currencyproduct':'currency_saving','cma':'cma','ima':'ima','wrap':'wrap'}
+SAVING_KINDS = {'saving':'saving','currencyproduct':'saving','cma':'cma','ima':'ima','wrap':'wrap'}
 DEPOSIT_CATEGORIES = set(SAVING_KINDS)
 EXAMPLES = {
-    'stock': {'industry':'소프트웨어','exchange_id':'UNLISTED','capital':1000000},
+    'stock': {'industry':'소프트웨어','exchange_id':'3DSG','capital':1000000},
     'asset': {'exchange_id':'INZ','type':'stock'},
     'dr': {'exchange_id':'LSE','type':'depositary_receipt',
            'underlying_per_receipt':1,'receipt_type':'DR','depositary_bank':'Inazina Depositary',
@@ -67,7 +69,7 @@ EXAMPLES = {
     'loan': {'interest_rate':5,'loan_limit':1000000,'maturity_days':30,'interest_cycle':86400,'min_credit_score':500,'issuer':'Inazina','repayment_cycle_seconds':0,'repayment_amount':0,'rate_type':'fixed'},
     'option': {'underlying_code':'INZST001','option_type':'call','strike_price':1120,'maturity_days':30,'quantity':1,'limit_price':100,'volatility_percent':60},
     'currency': {'asset_code':'CUR_NEW','nationality':'새 국가'},
-    'currencyproduct': {'interest_rate':1,'deposit_amount':0,'maturity_days':0,'interest_cycle':86400,'compound_type':0,'issuer':'Inazina','product_kind':'currency_saving','rate_type':'fixed'},
+    'currencyproduct': {'interest_rate':1,'deposit_amount':0,'maturity_days':0,'interest_cycle':86400,'compound_type':0,'issuer':'Inazina','product_kind':'saving','rate_type':'fixed'},
     'etn': {'exchange_id':'INZ','issuer_code':'INZST001','underlying_exchange_id':'INZ','leverage_multiplier':1},
     'convertiblebond': {'exchange_id':'BOND','issuer_code':'INZST001','face_value':1000,'annual_rate':1,'maturity_days':365},
     'warrantbond': {'exchange_id':'BOND','issuer_code':'INZST001','face_value':1000,'annual_rate':1.5,'maturity_days':365},
@@ -103,10 +105,10 @@ class AdminControlManager:
     def _number(value, low=0, high=2**53-1, integer=False):
         if isinstance(value,bool):
             raise ValueError("숫자 입력값을 확인해주세요.")
-        number = float(value)
+        number = ExactDecimal(value)
         if not math.isfinite(number) or not low <= number <= high or (integer and number != int(number)):
             raise ValueError(f"숫자는 {low}~{high} {'정수' if integer else '유한한 값'}여야 합니다.")
-        return int(number) if integer else number
+        return int(number) if integer else float(number)
 
     def entity(self,actor,category,operation,code,name='',price='',supply='',extra=None,conn=None):
         with DBManager.admin_scope(actor):
@@ -122,12 +124,15 @@ class AdminControlManager:
         if (not code and not (category=='option' and operation=='create')) or len(code)>80:
             raise ValueError("코드는 1~80자로 입력해주세요.")
         extra = dict(extra or {})
+        defaults = EXAMPLES.get(category)
         if category == 'currencyproduct':
             # Keep the administrator command's older field names at the boundary.
             if 'currency_code' in extra:
                 extra['quote_currency'] = extra.pop('currency_code')
             if 'annual_rate' in extra:
                 extra['interest_rate'] = extra.pop('annual_rate')
+            # Foreign-currency savings are ordinary savings in another currency.
+            category = 'saving'
         if category=='els':
             from managers.els_manager import ELSManager
             manager=ELSManager(self.db,self.bot.user_mgr)
@@ -187,7 +192,7 @@ class AdminControlManager:
                     "ELSE -underlying_quantity END),0) FROM depositary_receipt_movements WHERE dr_code=?)",
                     (code, code, code, code, code),
                 ).fetchone()[0]
-                if float(outstanding or 0) > 0:
+                if ExactDecimal(outstanding or 0) > 0:
                     raise ValueError('보유·담보·주문 또는 시뮬레이터 보관 원주가 남아 있어 DR 프로그램을 종료할 수 없습니다.')
                 conn.execute("UPDATE depositary_receipts SET program_status='terminated' WHERE dr_code=?", (code,))
                 conn.execute("UPDATE market_assets SET status='inactive' WHERE code=?", (code,))
@@ -217,12 +222,12 @@ class AdminControlManager:
                         conn.execute("SELECT 1 FROM user_assets WHERE asset_code=? LIMIT 1",(code,)).fetchone()
                         or conn.execute("SELECT 1 FROM futures_positions WHERE product_code=? LIMIT 1",(code,)).fetchone()):
                         raise ValueError("미상환 채권·선물 포지션을 먼저 정산해주세요.")
-                    if category=='currency' and conn.execute("SELECT 1 FROM accounts WHERE account_type='currency_saving' AND quote_currency=? AND balance_units>0",(code,)).fetchone():
+                    if category=='currency' and conn.execute("SELECT 1 FROM accounts WHERE account_type='saving' AND quote_currency=? AND balance_units>0",(code,)).fetchone():
                         raise ValueError("보유 잔액이 있는 통화는 삭제할 수 없습니다.")
                     currency = code if category=='currency' else (conn.execute('SELECT code FROM currencies WHERE asset_code=?',(code,)).fetchone() or [None])[0] if category=='asset' else None
                     if currency and currency!=base_currency_code(conn) and any(conn.execute(f'SELECT 1 FROM {table} WHERE quote_currency=? LIMIT 1',(currency,)).fetchone() for table in ('company','investment','market_assets')):
                         raise ValueError('이 통화로 결제하는 종목이 있어 통화·환율을 삭제할 수 없습니다.')
-                    if category=='asset' and conn.execute("SELECT 1 FROM currencies c JOIN accounts a ON a.quote_currency=c.code WHERE c.asset_code=? AND a.account_type='currency_saving' AND a.balance_units>0",(code,)).fetchone():
+                    if category=='asset' and conn.execute("SELECT 1 FROM currencies c JOIN accounts a ON a.quote_currency=c.code WHERE c.asset_code=? AND a.account_type='saving' AND a.balance_units>0",(code,)).fetchone():
                         raise ValueError("외환통장 잔액이 있는 환율 종목은 삭제할 수 없습니다.")
                     if category=='currency' and code==base_currency_code(conn):
                         raise ValueError("기준 통화 기준 통화는 삭제할 수 없습니다.")
@@ -301,9 +306,7 @@ class AdminControlManager:
                 values['issuer'] = bank_issuer(conn, values['issuer'])
             if operation=='create':
                 values[key] = code
-                values.update({k:v for k,v in EXAMPLES[category].items() if k in columns and k not in values})
-                if category == 'currencyproduct':
-                    values.setdefault('quote_currency', base_currency_code(conn))
+                values.update({k:v for k,v in defaults.items() if k in columns and k not in values})
                 if category == 'dr':
                     values['type'] = 'depositary_receipt'
                 if category in DEPOSIT_CATEGORIES:
@@ -564,7 +567,7 @@ class AdminControlManager:
                 if dividend_type not in CorporateActionsManager.DIVIDEND_TYPES:
                     raise ValueError('정기배당은 주식·우선주·ETF·펀드·현물 상품만 지원합니다.')
                 cycle=int(values.get('dividend_cycle_seconds',merged.get('dividend_cycle_seconds',0)))
-                amount=float(values.get('dividend_per_share',merged.get('dividend_per_share',0)))
+                amount=ExactDecimal(values.get('dividend_per_share',merged.get('dividend_per_share',0)))
                 mode=values.get('dividend_mode')
                 if mode is None:
                     mode='percent' if 'dividend_percent' in values else 'fixed' if 'dividend_per_share' in values else merged.get('dividend_mode','fixed')
@@ -621,7 +624,8 @@ class AdminControlManager:
                 )
             for field in ('face_value','loan_limit','capital','contract_size','deposit_amount','maturity_days','repayment_cycle_seconds','repayment_amount'):
                 if field in merged and merged[field] is not None:
-                    values[field] = self._number(merged[field],0,integer=True)
+                    values[field] = self._number(merged[field],0,
+                        MAX_NATIVE if field in {'face_value','loan_limit','capital','deposit_amount','repayment_amount'} else 2**53-1, integer=True)
             for field in ('market_volatility','implied_volatility','initial_margin','maintenance_margin',
                           'liquidity','trend_sensitivity','sector_sensitivity','jump_intensity','mean_reversion'):
                 if field in values and values[field] is not None:
@@ -661,12 +665,12 @@ class AdminControlManager:
                 elif any(k in extra for k in ('underlying_code','issuer_code','maturity_days','face_value','contract_size','maturity_epoch',
                                               'conversion_price','warrant_exercise_price')):
                     raise ValueError("발행된 파생·채권 계약 조건은 변경할 수 없습니다. 새 상품을 생성해주세요.")
-            if category=='currencyproduct' and not conn.execute("SELECT 1 FROM currencies WHERE code=? AND status='active'",(merged.get('quote_currency'),)).fetchone():
+            if category=='saving' and merged.get('quote_currency') and not conn.execute("SELECT 1 FROM currencies WHERE code=? AND status='active'",(merged.get('quote_currency'),)).fetchone():
                 raise ValueError("활성 통화 코드를 입력해주세요.")
-            if category=='currencyproduct' and existing and 'quote_currency' in extra and extra['quote_currency']!=existing['quote_currency']:
-                raise ValueError("외환통장의 통화는 변경할 수 없습니다. 새 상품을 생성해주세요.")
-            if category=='currencyproduct' and existing and 'interest_rate' in extra:
-                for account in conn.execute("SELECT DISTINCT user_id FROM accounts WHERE account_type='currency_saving' AND product_code=?",(code,)).fetchall():
+            if category=='saving' and existing and 'quote_currency' in extra and extra['quote_currency']!=existing['quote_currency']:
+                raise ValueError("저축 상품의 통화는 변경할 수 없습니다. 새 상품을 생성해주세요.")
+            if category=='saving' and existing and 'interest_rate' in extra:
+                for account in conn.execute("SELECT DISTINCT user_id FROM accounts WHERE account_type='saving' AND product_code=?",(code,)).fetchall():
                     self.bot.currency_mgr._settle(conn,account['user_id'],time.time())
             if category=='currency':
                 if code==base_currency_code(conn) and any(k!='name' for k in values):
@@ -865,11 +869,8 @@ class AdminControlManager:
                 old = conn.execute('SELECT currency_code FROM country_currencies WHERE nationality=?',(user['nationality'],)).fetchone()
                 new = conn.execute('SELECT currency_code FROM country_currencies WHERE nationality=?',(changes['nationality'],)).fetchone()
                 if old and new and old[0] != new[0]:
-                    if float(user['cash'] or 0):
+                    if ExactDecimal(user['cash'] or 0):
                         raise ValueError('국적 통화를 변경하려면 기존 cash 잔고를 먼저 0으로 정산해주세요.')
-                    account = conn.execute("SELECT balance_units FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'",(user_id,new[0])).fetchone()
-                    if account and int(account[0] or 0):
-                        raise ValueError('새 국적 통화의 외환통장 잔액을 먼저 0으로 정산해주세요.')
             credit_reason = changes.pop('credit_score_reason', None)
             credit_target = None
             if 'credit_score' in changes:

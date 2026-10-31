@@ -71,7 +71,7 @@ class CurrencyDB(DBManager):
         # adjustment at settlement/read time.  Units are millionths of a currency.
         self.execute("""CREATE TABLE IF NOT EXISTS currency_liquidity_state (
             currency_code TEXT PRIMARY KEY REFERENCES currencies(code),
-            baseline_supply_units INTEGER NOT NULL DEFAULT 0 CHECK(baseline_supply_units >= 0),
+            baseline_supply_units TEXT NOT NULL DEFAULT '0' CHECK(length(baseline_supply_units)>0 AND baseline_supply_units NOT GLOB '*[^0-9]*'),
             baseline_circulation_ratio REAL NOT NULL DEFAULT 0 CHECK(baseline_circulation_ratio BETWEEN 0 AND 1),
             issuance_elasticity REAL NOT NULL DEFAULT 0.50 CHECK(issuance_elasticity BETWEEN 0 AND 3),
             circulation_elasticity REAL NOT NULL DEFAULT 0.20 CHECK(circulation_elasticity BETWEEN 0 AND 3),
@@ -79,6 +79,7 @@ class CurrencyDB(DBManager):
             max_multiplier REAL NOT NULL DEFAULT 4.00 CHECK(max_multiplier >= min_multiplier),
             updated_epoch REAL NOT NULL DEFAULT 0
         )""")
+        self._upgrade_liquidity_baseline_storage()
         self.execute("""CREATE TABLE IF NOT EXISTS country_currencies (
             nationality TEXT PRIMARY KEY, currency_code TEXT NOT NULL REFERENCES currencies(code))""")
         country_columns = {row[1] for row in self.execute("PRAGMA table_info(country_currencies)")}
@@ -266,6 +267,7 @@ class CurrencyDB(DBManager):
         self._init_credit_risk_scenarios()
         self._migrate_currency_wallets()
         self._normalize_home_currency_accounts()
+        self._unify_deposit_accounts()
         self.execute("INSERT OR IGNORE INTO settings(key,value) VALUES ('currency_exchange_fee_percent','0.1')")
         self._migrate_currency_identifiers()
         for table in ('company','investment','market_assets','market_orders'):
@@ -444,7 +446,7 @@ class CurrencyDB(DBManager):
                     self.execute(
                         f"ALTER TABLE {table} ADD COLUMN {minor} INTEGER NOT NULL DEFAULT 0"
                     )
-        from functions.money import to_minor_units
+        from functions.money import currency_precision, to_minor_units
         for event in self.execute(
             "SELECT e.event_id,e.mark_price,e.execution_price,e.mark_price_minor_units,"
             "e.execution_price_minor_units,l.quote_currency "
@@ -607,7 +609,7 @@ class CurrencyDB(DBManager):
                     self.execute(
                         f"UPDATE loans SET {subminor}=CAST(ROUND(?*?) AS INTEGER) "
                         "WHERE loan_id=?",
-                        (float(loan[legacy]), (10 ** places)*1_000_000, loan["loan_id"]),
+                        (loan[legacy], (10 ** places)*1_000_000, loan["loan_id"]),
                     )
         remainder_scale = "CASE COALESCE((SELECT decimal_places FROM currencies WHERE code=NEW.quote_currency),0) " \
                           "WHEN 0 THEN 1000000 WHEN 1 THEN 10000000 ELSE 100000000 END"
@@ -1617,7 +1619,18 @@ class CurrencyDB(DBManager):
                     VALUES (?,?,?,?) ON CONFLICT(source_table,source_key_field,amount_field)
                     DO UPDATE SET currency_expression=excluded.currency_expression""",
                     (table, key_col, amount_col, currency_expr))
-            rows = self.execute(f'SELECT "{key_col}",{",".join(chr(34)+c+chr(34) for c in amount_cols)} FROM "{table}"')
+            # Exact snapshots are maintained by the source triggers. On restart,
+            # backfill missing rows rather than rewriting the entire price history.
+            missing = " OR ".join(
+                f'(src."{column}" IS NOT NULL AND NOT EXISTS ('
+                'SELECT 1 FROM financial_amount_snapshots snapshot '
+                'WHERE snapshot.source_table=? AND snapshot.source_key=CAST('
+                f'src."{key_col}" AS TEXT) AND snapshot.amount_field=? '
+                'AND snapshot.source_key_field=?))'
+                for column in amount_cols)
+            parameters = tuple(value for column in amount_cols for value in (table, column, key_col))
+            rows = self.execute(f'SELECT src."{key_col}",{",".join("src."+chr(34)+c+chr(34) for c in amount_cols)} '
+                                f'FROM "{table}" src WHERE {missing}', parameters)
             for row in rows:
                 # Existing-row currency lookup uses the row context; handle the
                 # direct and derived forms without interpolating data values.
@@ -3245,7 +3258,8 @@ class CurrencyDB(DBManager):
                     (user_id, currency_code),
                 ).fetchone()
                 if account:
-                    if int(account['balance_units']) + units > 2**63 - 1:
+                    from functions.amount_limits import MAX_MINOR
+                    if int(account['balance_units']) + units > MAX_MINOR:
                         raise RuntimeError('외환통장 이관 잔액이 저장 한도를 초과합니다.')
                     self.conn.execute(
                         "UPDATE accounts SET balance_units=balance_units+? WHERE account_number=?",
@@ -3307,6 +3321,24 @@ class CurrencyDB(DBManager):
                 foreign_account(row['user_id'], row['currency_code'], units)
             self.conn.execute("DROP TABLE currency_wallets")
 
+    def _unify_deposit_accounts(self):
+        """Foreign-currency savings become ordinary savings in another currency.
+
+        Their old simple interest ran on the whole balance, so that balance is
+        the principal the savings rules accrue on from now on.
+        """
+        with self.lock, self.conn:
+            self.conn.execute("UPDATE accounts SET principal=balance_units/1000000.0,account_type='saving' "
+                              "WHERE account_type='currency_saving'")
+            # Old FX products left these empty and relied on daily simple interest.
+            self.conn.execute("UPDATE saving SET interest_cycle=86400 WHERE product_kind='currency_saving' "
+                              "AND (interest_cycle IS NULL OR interest_cycle<=0)")
+            self.conn.execute("UPDATE saving SET compound_type=0 WHERE product_kind='currency_saving' "
+                              "AND (compound_type IS NULL OR compound_type NOT IN (0,1))")
+            self.conn.execute("UPDATE saving SET maturity_days=0 WHERE product_kind='currency_saving' AND maturity_days IS NULL")
+            self.conn.execute("UPDATE saving SET product_kind='saving' WHERE product_kind='currency_saving'")
+            self.conn.execute("DROP INDEX IF EXISTS idx_accounts_user_currency_saving_unique")
+
     def _normalize_home_currency_accounts(self):
         """Move obsolete home-currency FX accounts into nationality cash."""
         with self.lock, self.conn:
@@ -3351,11 +3383,29 @@ class CurrencyDB(DBManager):
         for old, new in pairs:
             self.execute('UPDATE market_assets SET code=? WHERE code=?', (new, old))
 
+    def _upgrade_liquidity_baseline_storage(self):
+        """Keep arbitrary-size micro-unit baselines as exact decimal text."""
+        columns = {row[1]: row[2] for row in self.execute("PRAGMA table_info(currency_liquidity_state)")}
+        if columns.get('baseline_supply_units') == 'TEXT' or str(columns.get('baseline_supply_units','')).startswith('MONEY'):
+            return
+        with self.lock, self.conn:
+            schema = self.conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='currency_liquidity_state'").fetchone()[0]
+            schema = schema.replace('currency_liquidity_state', 'currency_liquidity_state_wide', 1)
+            schema = re.sub(r'baseline_supply_units INTEGER NOT NULL DEFAULT 0 CHECK\(baseline_supply_units\s*>=\s*0\)',
+                            "baseline_supply_units TEXT NOT NULL DEFAULT '0' CHECK(length(baseline_supply_units)>0 AND baseline_supply_units NOT GLOB '*[^0-9]*')", schema)
+            self.conn.execute(schema)
+            self.conn.execute("INSERT INTO currency_liquidity_state_wide SELECT currency_code,CAST(baseline_supply_units AS TEXT),"
+                              "baseline_circulation_ratio,issuance_elasticity,circulation_elasticity,min_multiplier,max_multiplier,updated_epoch "
+                              "FROM currency_liquidity_state")
+            self.conn.execute("DROP TABLE currency_liquidity_state")
+            self.conn.execute("ALTER TABLE currency_liquidity_state_wide RENAME TO currency_liquidity_state")
+
     def _seed_liquidity_states(self):
         """Take one neutral supply snapshot for currencies without a baseline."""
         from database.user_db import TREASURY_USER_ID
 
-        for row in self.execute("SELECT code FROM currencies"):
+        for row in self.execute("SELECT code FROM currencies c WHERE NOT EXISTS "
+                                "(SELECT 1 FROM currency_liquidity_state s WHERE s.currency_code=c.code)"):
             code = str(row[0])
             home_cash = """SELECT COALESCE(SUM(u.cash),0) FROM users u
                 JOIN country_currencies n ON n.nationality=u.nationality
@@ -3368,9 +3418,9 @@ class CurrencyDB(DBManager):
                 WHERE u.user_id=? AND n.currency_code=?""", (TREASURY_USER_ID, code))
             treasury = int(Decimal(str(treasury_rows[0][0] if treasury_rows else 0)) * SCALE)
             treasury += int(self.execute("SELECT COALESCE(SUM(balance_units),0) FROM accounts WHERE quote_currency=? AND user_id=?", (code, TREASURY_USER_ID))[0][0])
-            ratio = max(0, total - treasury) / total if total > 0 else 0
+            ratio = min(1, max(0, total - treasury) / total) if total > 0 else 0
             self.execute(
                 "INSERT OR IGNORE INTO currency_liquidity_state "
                 "(currency_code,baseline_supply_units,baseline_circulation_ratio) VALUES (?,?,?)",
-                (code, total, ratio),
+                (code, str(max(0, total)), ratio),
             )

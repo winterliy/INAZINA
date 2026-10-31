@@ -1,15 +1,16 @@
+import { formatMoney, moneyAdd, moneyCompare, moneyDivide, moneyMultiply, minorMoney, type Money } from "../../shared/money";
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../shared/api";
 import { Card, Field, number, type Ctx } from "./common";
 
-type Trial = { currency_code: string; account_code: string; debit_units: number; credit_units: number; balance_units: number; debit_amount: string; credit_amount: string; balance_amount: string; decimal_places: number; entry_count?: number };
-type Unbalanced = { entry_id: number; issuer: string; event_type: string; reference_key: string; currency_code: string; line_count: number; debit_units: number; credit_units: number; debit_amount: string; credit_amount: string };
+type Trial = { currency_code: string; account_code: string; debit_units: Money; credit_units: Money; balance_units: Money; debit_amount: string; credit_amount: string; balance_amount: string; decimal_places: number; entry_count?: number };
+type Unbalanced = { entry_id: number; issuer: string; event_type: string; reference_key: string; currency_code: string; line_count: number; debit_units: Money; credit_units: Money; debit_amount: string; credit_amount: string };
 type Reconciliation = { reference_key: string; currency_code: string; ledger_amount: number; journal_amount: number | null; difference: number | null; ledger_amount_text: string; journal_amount_text: string | null; difference_text: string | null; status: string };
 type DepositReconciliation = { currency_code: string; account_balance: string; journal_balance: string; difference: string; status: string };
 type LoanReconciliation = DepositReconciliation;
 type LoanScheduleFinding = { schedule_id: number; loan_id: number; currency_code: string; amount_paid_minor_units: number; allocated_minor_units: number; due_minor_units: number; status: string };
-type ChargeoffMemoReconciliation = { currency_code: string; subledger_units: number; event_units: number; difference_units: number; decimal_places: number; status: string };
+type ChargeoffMemoReconciliation = { currency_code: string; subledger_units: number; event_units: number; difference_units: Money; decimal_places: number; status: string };
 type DepositInsuranceClaim = { user_id: string; account_number: string; currency_code: string; covered_amount_text: string; uninsured_amount_text: string; payout_currency: string | null; payout_amount_text?: string; resolved_epoch: number; decimal_places: number; payout_decimal_places?: number };
 type DepositInsuranceReconciliation = { currency_code: string; account_code: string; claim_amount: string; journal_amount: string; difference: string; status: string };
 type MaturityGap = { issuer: string; asOfEpoch: number; method: string; ladders: { currency: string; decimalPlaces: number; buckets: { bucket: string; inflows: number; outflows: number; net_gap: number; cumulative_gap: number }[]; depositRunoffStress: { runoffPercent: number; assumedRunoff: number; stressedOneDayOutflow: number; oneDayLoanInflows: number; oneDayGap: number }[] }[] };
@@ -30,10 +31,10 @@ type Report = { issuer: string; currency: string | null; trialBalance: Trial[]; 
 function BalanceScales({ rows, unbalanced }: { rows: Trial[]; unbalanced: number }) {
   const currencies = [...new Set(rows.map((row) => row.currency_code))].map((code) => {
     const lines = rows.filter((row) => row.currency_code === code);
-    const scale = 10 ** (lines[0]?.decimal_places ?? 0);
-    const debit = lines.reduce((sum, row) => sum + row.debit_units, 0);
-    const credit = lines.reduce((sum, row) => sum + row.credit_units, 0);
-    return { code, debit: debit / scale, credit: credit / scale, tilt: debit === credit ? 0 : Math.max(-12, Math.min(12, (debit - credit) / Math.max(debit, credit) * 12)) };
+    const places = lines[0]?.decimal_places ?? 0;
+    const debit = lines.reduce<Money>((sum, row) => moneyAdd(sum, row.debit_units), "0");
+    const credit = lines.reduce<Money>((sum, row) => moneyAdd(sum, row.credit_units), "0");
+    return { code, debit: minorMoney(debit, places), credit: minorMoney(credit, places), tilt: moneyCompare(debit, credit) === 0 ? 0 : Math.max(-12, Math.min(12, Number(moneyDivide(moneyMultiply(moneyAdd(debit, credit, true), 12), moneyCompare(debit, credit) > 0 ? debit : credit, 6)))) };
   });
   if (!currencies.length) return null;
   return <div className="tile-row scale-tiles">
@@ -48,7 +49,7 @@ function BalanceScales({ rows, unbalanced }: { rows: Trial[]; unbalanced: number
         <circle className="scale-pivot" cx="120" cy="30" r="5" />
       </svg>
       <dl className="scale-sides"><div><dt>차변</dt><dd>{number(item.debit)}</dd></div><div><dt>대변</dt><dd>{number(item.credit)}</dd></div></dl>
-      <p className={item.tilt ? "scale-verdict off" : "scale-verdict"}>{item.tilt ? `차이 ${number(item.debit - item.credit)}` : "대차 일치"}{unbalanced > 0 && ` · 불균형 분개 ${unbalanced}건`}</p>
+      <p className={item.tilt ? "scale-verdict off" : "scale-verdict"}>{item.tilt ? `차이 ${number(moneyAdd(item.debit, item.credit, true))}` : "대차 일치"}{unbalanced > 0 && ` · 불균형 분개 ${unbalanced}건`}</p>
     </section>)}
   </div>;
 }
@@ -243,12 +244,7 @@ function groupAmount(value: string) {
   return fraction === undefined ? grouped : `${grouped}.${fraction}`;
 }
 
-function money(value: number, decimalPlaces: number) {
-  return new Intl.NumberFormat("ko-KR", {
-    minimumFractionDigits: decimalPlaces,
-    maximumFractionDigits: decimalPlaces,
-  }).format(value);
-}
+const money = formatMoney;
 
 function riskWeightLabel(key: string) {
   return ({ secured_asset: "자산담보 환산(35%)", performing_unsecured: "정상 무담보(75%)", higher_risk_unsecured: "고위험 무담보(100%)", defaulted_unsecured: "부도 무담보(150%)" } as Record<string, string>)[key] ?? key;

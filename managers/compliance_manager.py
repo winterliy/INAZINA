@@ -3,6 +3,8 @@
 This module stores review metadata only. It deliberately accepts no names,
 government identifiers, document images, or free-text evidence.
 """
+from functions.amount_limits import MAX_NATIVE
+from functions.exact_money import ExactDecimal, native_value
 
 from decimal import Decimal, InvalidOperation
 import json
@@ -35,7 +37,7 @@ class ComplianceManager:
         conn.execute(
             "INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) "
             "VALUES (?,?,?,?)",
-            (str(actor_id), str(action), json.dumps(payload, sort_keys=True), float(now)),
+            (str(actor_id), str(action), json.dumps(payload, sort_keys=True, default=str), float(now)),
         )
 
     @staticmethod
@@ -245,7 +247,9 @@ class ComplianceManager:
                 raise ValueError(f"{label} 기준을 확인해주세요.") from None
             if not parsed.is_finite() or parsed < 0:
                 raise ValueError(f"{label} 기준은 0 이상이어야 합니다.")
-            converted = float(parsed)
+            if parsed > MAX_NATIVE or (parsed > 0 and parsed < Decimal('0.000001')):
+                raise ValueError(f"{label} 기준은 저장 가능한 유한 금액이어야 합니다.")
+            converted = ExactDecimal(parsed)
             if not math.isfinite(converted) or (parsed > 0 and converted == 0):
                 raise ValueError(f"{label} 기준은 저장 가능한 유한 금액이어야 합니다.")
             return converted
@@ -325,10 +329,10 @@ class ComplianceManager:
             rolling_units += units
         rolling_amount = Decimal(rolling_units)/Decimal(SCALE)
         flags = []
-        if (float(rule["large_transaction_limit"] or 0) > 0
+        if (ExactDecimal(rule["large_transaction_limit"] or 0) > 0
                 and current_amount >= Decimal(str(rule["large_transaction_limit"]))):
             flags.append("large_transaction")
-        if (float(rule["rolling_24h_amount_limit"] or 0) > 0
+        if (ExactDecimal(rule["rolling_24h_amount_limit"] or 0) > 0
                 and rolling_amount >= Decimal(str(rule["rolling_24h_amount_limit"]))):
             flags.append("rolling_24h_amount")
         if (int(rule["rolling_24h_count_limit"] or 0) > 0
@@ -345,7 +349,7 @@ class ComplianceManager:
                 "amount_decimal_places,opened_epoch) VALUES (?,?,?,?,?,?,?,?,?)",
                 (str(user_id), str(nationality), rule_code,
                  f"transfer:{int(transaction_id)}", home_currency,
-                 float(alert_amount), to_minor_units(alert_amount, alert_places),
+                 ExactDecimal(alert_amount), to_minor_units(alert_amount, alert_places),
                  alert_places, when),
             )
             if cursor.rowcount != 1:

@@ -105,6 +105,31 @@ class CorporateDB(DBManager):
             target_code TEXT,
             payload_json TEXT NOT NULL,
             created_epoch INTEGER NOT NULL)''')
+        self.execute("""CREATE TABLE IF NOT EXISTS shareholder_resolutions (
+            resolution_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_code TEXT NOT NULL REFERENCES company(company_code),
+            ratio INTEGER NOT NULL CHECK(ratio>=2),
+            decision TEXT NOT NULL CHECK(decision IN ('approved','rejected')),
+            meeting_reference TEXT NOT NULL,
+            articles_reference TEXT NOT NULL,
+            par_value_minor_units TEXT NOT NULL,
+            capital_snapshot TEXT NOT NULL,
+            shares_snapshot INTEGER NOT NULL,
+            currency_code TEXT NOT NULL,
+            recorded_by TEXT NOT NULL,
+            recorded_epoch INTEGER NOT NULL
+        )""")
+        self.execute("""CREATE TABLE IF NOT EXISTS share_resolution_executions (
+            resolution_id INTEGER PRIMARY KEY REFERENCES shareholder_resolutions(resolution_id),
+            action_record_id INTEGER NOT NULL UNIQUE REFERENCES corporate_action_records(record_id),
+            executed_by TEXT NOT NULL,
+            executed_epoch INTEGER NOT NULL
+        )""")
+        for table in ('shareholder_resolutions', 'share_resolution_executions'):
+            for operation in ('UPDATE', 'DELETE'):
+                self.execute(f"""CREATE TRIGGER IF NOT EXISTS {table}_{operation.lower()}_immutable
+                    BEFORE {operation} ON {table} BEGIN
+                    SELECT RAISE(ABORT,'share resolution records are immutable'); END""")
         # A company's capital account (company:<code>) shares one cash balance with
         # its issuer cash ledger; each side mirrors the other's changes.
         self.execute('''CREATE TABLE IF NOT EXISTS company_accounts (

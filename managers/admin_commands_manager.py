@@ -1,4 +1,5 @@
 """Validated inline administrator commands; treasury trades retain their own forms."""
+from functions.exact_money import ExactDecimal
 from functions.money import base_currency_code
 import json
 import re
@@ -177,7 +178,8 @@ class AdminCommandsManager:
     def locate(self,conn,code):
         matches=[]
         for category,(table,key,price,supply) in ENTITIES.items():
-            if category in KINDS:
+            # currencyproduct is only a creation alias for an ordinary savings product.
+            if category in KINDS or category=='currencyproduct':
                 continue
             row=conn.execute(f'SELECT * FROM "{table}" WHERE "{key}"=?',(code,)).fetchone()
             # Savings, FX, CMA, IMA and wrap accounts share the saving table.
@@ -493,7 +495,7 @@ class AdminCommandsManager:
                     raise ValueError('가격이 없는 상품입니다. 상품 이율은 $상품수정으로 변경해주세요.')
                 currency_code=str(row.get('quote_currency') or base_currency_code(conn))
                 entered=parse_currency_money(conn,args[2],currency_code,minimum=0)
-                value=self.adjust(float(current),args[1],entered)
+                value=self.adjust(ExactDecimal(current),args[1],entered)
                 value=parse_currency_money(conn,value,currency_code,minimum=0)
                 if value <= 0:
                     raise ValueError('가격은 0보다 커야 합니다.')
@@ -628,16 +630,16 @@ class AdminCommandsManager:
             InterestManager(self.db).process_user_interests(row[0])
         with self.db.atomic() as conn:
             self.control.require(actor,conn)
-            currency_account=conn.execute("SELECT *,quote_currency AS currency_code FROM accounts WHERE account_number=? AND account_type='currency_saving'",(identity,)).fetchone()
-            bank=conn.execute("SELECT * FROM accounts WHERE account_number=? AND account_type<>'currency_saving'",(identity,)).fetchone()
+            account=conn.execute("SELECT *,quote_currency AS currency_code FROM accounts WHERE account_number=?",(identity,)).fetchone()
+            # A savings account in a currency other than its owner's is kept in exact units.
+            currency_account=account if account and account['account_type']=='saving' and account['currency_code'] and account['currency_code']!=CurrencyManager.home(conn,account['user_id']) else None
+            bank=account if account and not currency_account else None
             user=conn.execute('SELECT * FROM users WHERE user_id=?',(identity,)).fetchone()
             if sum(bool(x) for x in (currency_account,bank,user))!=1:
                 raise ValueError('사용자 ID 또는 계좌번호를 확인해주세요.')
             if currency_account:
-                if currency_account['currency_code'] == CurrencyManager.home(conn,currency_account['user_id']):
-                    raise ValueError('국적 통화는 사용자 cash 잔고를 수정해주세요.')
                 self.bot.currency_mgr._settle(conn,currency_account['user_id'],time.time())
-                current=conn.execute("SELECT balance_units FROM accounts WHERE account_number=? AND account_type='currency_saving'",(identity,)).fetchone()[0]
+                current=conn.execute("SELECT balance_units FROM accounts WHERE account_number=?",(identity,)).fetchone()[0]
                 amount=Decimal(raw_amount)
                 units=amount*SCALE
                 if not amount.is_finite() or amount<0 or units!=units.to_integral_value():
@@ -647,14 +649,14 @@ class AdminCommandsManager:
                 )
                 value=self.adjust(current,operation,int(units))
                 if not 0<=value<=MAX_UNITS:raise ValueError('외화 잔고는 0 이상이며 저장 한도 이하여야 합니다.')
-                conn.execute("UPDATE accounts SET balance_units=? WHERE account_number=? AND account_type='currency_saving'",(value,identity))
+                conn.execute("UPDATE accounts SET balance_units=? WHERE account_number=?",(value,identity))
                 unit=currency_account['currency_code']; before=display_units(current); after=display_units(value)
             else:
                 table,key='accounts','account_number' if bank else 'user_id'
                 if not bank:table='users'
                 currency = (str(bank['quote_currency']) if bank
                             else CurrencyManager.home(conn, identity))
-                current=float((bank or user)['balance' if bank else 'cash'] or 0)
+                current=ExactDecimal((bank or user)['balance' if bank else 'cash'] or 0)
                 entered=parse_currency_money(conn,raw_amount,currency,minimum=0)
                 value=self.adjust(current,operation,entered)
                 value=parse_currency_money(conn,value,currency,minimum=0)

@@ -123,9 +123,8 @@ class AccountDB(DBManager):
             ON accounts (user_id, product_code)
         ''')
         self.execute('''
-            CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_user_currency_saving_unique
-            ON accounts (user_id, quote_currency)
-            WHERE account_type = 'currency_saving'
+            CREATE INDEX IF NOT EXISTS idx_accounts_user_currency
+            ON accounts (user_id, quote_currency, account_type, created_at)
         ''')
 
         self.execute('''

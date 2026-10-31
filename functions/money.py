@@ -6,6 +6,8 @@ amounts are rounded half-up to that currency's configured smallest unit.
 
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 import re
+from functions.exact_money import native_value
+from functions.amount_limits import MAX_NATIVE
 
 
 _WHOLE = Decimal("1")
@@ -35,7 +37,7 @@ def round_money(value, decimal_places=0):
         amount = Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         raise ValueError("금액은 유한한 숫자여야 합니다.") from None
-    if not amount.is_finite():
+    if not amount.is_finite() or abs(amount) > MAX_NATIVE:
         raise ValueError("금액은 유한한 숫자여야 합니다.")
     try:
         places = int(decimal_places)
@@ -44,7 +46,7 @@ def round_money(value, decimal_places=0):
     if not 0 <= places <= 6:
         raise ValueError("통화 소수 자릿수는 0~6이어야 합니다.")
     rounded = amount.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
-    return int(rounded) if places == 0 else float(rounded)
+    return native_value(rounded)
 
 
 def currency_precision(conn, currency_code):
@@ -55,8 +57,8 @@ def currency_precision(conn, currency_code):
     if not row:
         raise ValueError(f"통화를 확인해주세요: {currency_code}")
     places = int(row[0])
-    if not 0 <= places <= 2:
-        raise ValueError("통화 소수 자릿수는 0~2여야 합니다.")
+    if not 0 <= places <= 6:
+        raise ValueError("통화 소수 자릿수는 0~6이어야 합니다.")
     return places
 
 
@@ -72,7 +74,7 @@ def to_minor_units(value, decimal_places, *, rounding=ROUND_HALF_UP):
         places = int(decimal_places)
     except (InvalidOperation, TypeError, ValueError, OverflowError):
         raise ValueError("금액 또는 통화 소수 자릿수가 올바르지 않습니다.") from None
-    if not amount.is_finite():
+    if not amount.is_finite() or abs(amount) > MAX_NATIVE:
         raise ValueError("금액은 유한한 숫자여야 합니다.")
     if not 0 <= places <= 6:
         raise ValueError("통화 소수 자릿수는 0~6이어야 합니다.")
@@ -101,7 +103,7 @@ def to_subminor_units(value, decimal_places):
         places = int(decimal_places)
     except (InvalidOperation, TypeError, ValueError, OverflowError):
         raise ValueError("금액 또는 통화 소수 자릿수가 올바르지 않습니다.") from None
-    if not amount.is_finite() or not 0 <= places <= 6:
+    if not amount.is_finite() or abs(amount) > MAX_NATIVE or not 0 <= places <= 6:
         raise ValueError("금액 또는 통화 소수 자릿수가 올바르지 않습니다.")
     scaled = amount * (10 ** places) * SUBMINOR_SCALE
     return int(scaled.quantize(Decimal("1"), rounding=ROUND_HALF_UP))
@@ -305,12 +307,12 @@ def parse_currency_money(conn, value, currency_code, *, minimum=0):
         raise ValueError(f"{currency_code} 금액을 확인해주세요.") from None
     places = currency_precision(conn, currency_code)
     quantum = Decimal(1).scaleb(-places)
-    if (not amount.is_finite() or amount < Decimal(str(minimum))
+    if (not amount.is_finite() or amount > MAX_NATIVE or amount < Decimal(str(minimum))
             or amount != amount.quantize(quantum)):
         raise ValueError(
             f"{currency_code} 금액은 0 이상, 소수점 {places}자리까지 입력해주세요."
         )
-    return int(amount) if places == 0 else float(amount)
+    return native_value(amount)
 
 
 def parse_money(value, *, minimum=0):
@@ -323,6 +325,8 @@ def parse_money(value, *, minimum=0):
         raise ValueError("금액은 정수로 입력해주세요.") from None
     if not amount.is_finite() or amount != amount.to_integral_value():
         raise ValueError("금액은 소수점 없는 정수로 입력해주세요.")
+    if abs(amount) > MAX_NATIVE:
+        raise ValueError("금액 한도를 초과했습니다.")
     result = int(amount)
     if result < minimum:
         raise ValueError(f"금액은 {minimum:,} 이상이어야 합니다.")

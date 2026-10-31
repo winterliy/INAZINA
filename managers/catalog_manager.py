@@ -35,8 +35,8 @@ class CatalogManager:
                 raise ValueError(f"통화명과 국가명을 입력해주세요: {code}")
             if float(item.get("reference_rate", 0)) <= 0:
                 raise ValueError(f"기준 환율은 양수여야 합니다: {code}")
-            if int(item.get("decimal_places", -1)) not in (0, 1, 2):
-                raise ValueError(f"소수 자릿수는 0~2여야 합니다: {code}")
+            if int(item.get("decimal_places", -1)) not in range(7):
+                raise ValueError(f"소수 자릿수는 0~6이어야 합니다: {code}")
             if code == base_code and int(item["decimal_places"]) != 0:
                 raise ValueError("초기 기준통화는 소수 자릿수 0으로 설정해주세요.")
             seen.add(code)
@@ -78,11 +78,11 @@ class CatalogManager:
                 currency = item["code"].upper()
                 if not conn.execute("SELECT 1 FROM currencies WHERE code=? AND status='active'",(currency,)).fetchone():
                     raise ValueError('기본 외환 상품을 먼저 등록해주세요.')
-                product=conn.execute("SELECT product_code FROM saving WHERE quote_currency=? AND product_kind='currency_saving' AND status='active' ORDER BY product_code LIMIT 1",(currency,)).fetchone()
+                product=conn.execute("SELECT product_code FROM saving WHERE quote_currency=? AND product_kind='saving' AND status='active' ORDER BY product_code LIMIT 1",(currency,)).fetchone()
                 if not product:
-                    raise ValueError('외화 발행 대금을 받을 외환통장 상품이 필요합니다.')
-                if not conn.execute("SELECT 1 FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'",(TREASURY_USER_ID,currency)).fetchone():
-                    conn.execute("INSERT INTO accounts(account_number,user_id,product_code,balance,password,last_payment_epoch,principal,account_type,quote_currency) VALUES (?,?,?,?,?,?,?,?,?)",('FXA'+uuid.uuid4().hex[:20].upper(),TREASURY_USER_ID,product[0],0,None,time.time(),0,'currency_saving',currency))
+                    raise ValueError('외화 발행 대금을 받을 저축 상품이 필요합니다.')
+                if not conn.execute("SELECT 1 FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='saving'",(TREASURY_USER_ID,currency)).fetchone():
+                    conn.execute("INSERT INTO accounts(account_number,user_id,product_code,balance,password,last_payment_epoch,principal,account_type,quote_currency) VALUES (?,?,?,?,?,?,?,?,?)",('FXA'+uuid.uuid4().hex[:20].upper(),TREASURY_USER_ID,product[0],0,None,time.time(),0,'saving',currency))
                 for i in range(1, self.FOREIGN_PER_CURRENCY + 1):
                     stock,spot=f'INZ{currency}ST{i:03d}',f'INZ{currency}CM{i:03d}'
                     for code in (stock,spot):
@@ -181,7 +181,7 @@ class CatalogManager:
                 conn.execute("INSERT INTO currencies(code,name,asset_code,decimal_places) VALUES (?,?,?,?)",
                              (currency,name,code,decimal_places))
                 conn.execute("INSERT OR IGNORE INTO country_currencies(nationality,currency_code) VALUES (?,?)", (country,currency))
-                conn.execute("INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,interest_cycle,compound_type,issuer,status,quote_currency,product_kind) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (f'INZCU{i:03d}',f'{name} 외환통장',1+(i%5)*.25,0,0,0,1,'currency','active',currency,'currency_saving'))
+                conn.execute("INSERT INTO saving(product_code,name,interest_rate,deposit_amount,maturity_days,interest_cycle,compound_type,issuer,status,quote_currency,product_kind) VALUES (?,?,?,?,?,?,?,?,?,?,?)", (f'INZCU{i:03d}',f'{name} 외환통장',1+(i%5)*.25,0,0,86400,0,'currency','active',currency,'saving'))
             # The catalog's savings and loans create their banks; each bank is also a 법인.
             from managers.bank_companies import ensure_all
             ensure_all(conn)

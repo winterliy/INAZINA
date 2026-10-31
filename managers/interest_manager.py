@@ -1,3 +1,4 @@
+from functions.exact_money import ExactDecimal
 from datetime import datetime, timezone
 from contextlib import nullcontext
 from decimal import Decimal, DecimalException
@@ -84,7 +85,7 @@ class InterestManager:
                if user_id is not None else None)
         fallback = conn.execute("SELECT value FROM settings WHERE key='tax_percent'").fetchone()
         try:
-            rate = float(row["tax_percent"] if row and row["tax_percent"] is not None
+            rate = ExactDecimal(row["tax_percent"] if row and row["tax_percent"] is not None
                          else fallback["value"] if fallback else 3.0)
         except (TypeError, ValueError):
             rate = 3.0
@@ -201,14 +202,14 @@ class InterestManager:
             elapsed_periods = Decimal(str(elapsed)) / Decimal(str(cycle))
             accrued += principal * ((Decimal(1) + periodic_rate) ** elapsed_periods - 1)
         whole_minor = to_minor_units(accrued, places)
-        whole = float(from_minor_units(whole_minor, places))
+        whole = ExactDecimal(from_minor_units(whole_minor, places))
         remainder = accrued-from_minor_units(whole_minor, places)
         remainder_subunits = to_subminor_units(remainder, places)
         conn.execute('UPDATE loans SET outstanding_balance_minor_units='
                      'outstanding_balance_minor_units+?,'
                      'interest_remainder=?,interest_remainder_subminor_units=?,last_payment_epoch=? '
                      'WHERE loan_id=?',
-            (whole_minor, float(from_subminor_units(remainder_subunits, places)), remainder_subunits,
+            (whole_minor, ExactDecimal(from_subminor_units(remainder_subunits, places)), remainder_subunits,
              max(last, now), loan['loan_id']))
         cls._log_company_interest(conn, loan['user_id'], 'interest_expense', whole, 0, loan['quote_currency'], product['issuer'])
         if whole_minor > 0:
@@ -235,34 +236,6 @@ class InterestManager:
             CompanyAccounts.log_income(conn, user_id, kind, CompanyAccounts._nwx(conn, gross, currency),
                                        CompanyAccounts._nwx(conn, tax, currency), counterparty=issuer)
 
-    FX_INTEREST_MIGRATION = "fx_interest_unified_v1"
-
-    @classmethod
-    def migrate_currency_accounts(cls, conn, now):
-        """One-time switch of foreign-currency accounts to savings interest rules.
-
-        Interest accrued so far is settled with the old continuous method, then
-        empty product settings get defaults (daily cycle, simple, no maturity).
-        """
-        done = conn.execute("SELECT 1 FROM settings WHERE key=?", (cls.FX_INTEREST_MIGRATION,)).fetchone()
-        if done:
-            return False
-        from managers.currency_exchange_manager import CurrencyExchangeManager
-        rows = conn.execute("SELECT a.*,COALESCE(a.contract_rate,p.interest_rate) AS annual_rate "
-                            "FROM accounts a JOIN saving p USING(product_code) "
-                            "LEFT JOIN financial_institutions f ON f.issuer=p.issuer "
-                            "WHERE a.account_type='currency_saving' AND a.resolution_status='active' "
-                            "AND COALESCE(f.status,'active')<>'failed'").fetchall()
-        CurrencyExchangeManager._legacy_continuous_interest(conn, rows, now)
-        conn.execute("UPDATE accounts SET interest_remainder='0' WHERE account_type='currency_saving'")
-        conn.execute("UPDATE saving SET interest_cycle=86400 WHERE product_kind='currency_saving' "
-                     "AND (interest_cycle IS NULL OR interest_cycle<=0)")
-        conn.execute("UPDATE saving SET compound_type=0 WHERE product_kind='currency_saving' "
-                     "AND (compound_type IS NULL OR compound_type NOT IN (0,1))")
-        conn.execute("UPDATE saving SET maturity_days=0 WHERE product_kind='currency_saving' AND maturity_days IS NULL")
-        conn.execute("INSERT INTO settings(key,value) VALUES (?,?)", (cls.FX_INTEREST_MIGRATION, str(int(now))))
-        return True
-
     @classmethod
     def _settle_saving_account(cls, conn, account, now):
         """Pay every complete interest cycle of one savings or foreign-currency account.
@@ -284,9 +257,8 @@ class InterestManager:
         rate = cls._number(account["contract_rate"], cls._number(product["interest_rate"]))
         cycle = cls._number(product["interest_cycle"])
         # Every account keeps its exact balance in balance_units (1/1,000,000).
-        fx = account["account_type"] == "currency_saving"
-        balance = (account["balance_units"] or 0) / SCALE
-        principal = balance if fx else cls._number(account["principal"], balance)
+        balance = ExactDecimal(account["balance_units"] or 0) / SCALE
+        principal = ExactDecimal(account["principal"] if account["principal"] is not None else balance)
         last = cls._number(account["last_payment_epoch"])
         if last is None:
             last = cls._utc_epoch(account["last_payment"])
@@ -336,7 +308,7 @@ class InterestManager:
                 conn, gross*cls._tax_rate(conn, account['user_id'], 'saving_interest')/100.0,
                 account["quote_currency"]
             ) if gross > 0 else 0)
-            net = max(-float(balance), gross-tax)
+            net = max(-ExactDecimal(balance), gross-tax)
             # A negative-rate charge cannot reduce an account below zero. Book
             # the amount actually applied to the balance, not the uncapped accrual.
             accounting_gross = gross if gross >= 0 else net
@@ -381,7 +353,7 @@ class InterestManager:
             )
             if tax > 0:
                 from managers.currency_manager import CurrencyManager, SCALE
-                tax_units = int(round(float(tax)*SCALE))
+                tax_units = int(round(ExactDecimal(tax)*SCALE))
                 treasury_id = CurrencyManager.user_treasury_id(conn, account['user_id'])
                 home_currency = CurrencyManager.home(conn, account['user_id'])
                 treasury_units = CurrencyManager.convert(
@@ -450,7 +422,6 @@ class InterestManager:
         loan_count = 0
         try:
             with (self.db.atomic(("users", "accounts", "product", "tax", "system")) if conn is None else nullcontext(conn)) as conn:
-                self.migrate_currency_accounts(conn, now)
                 accounts = conn.execute(
                     "SELECT account_number, user_id, product_code, balance, principal, "
                     "created_at, last_payment, last_payment_epoch,contract_rate,rate_type,"
@@ -513,7 +484,7 @@ class InterestManager:
                     balance_minor = (int(loan["outstanding_balance_minor_units"] or 0)
                                      if "outstanding_balance_minor_units" in loan.keys()
                                      else to_minor_units(loan["outstanding_balance"] or 0, places))
-                    balance = float(from_minor_units(balance_minor, places))
+                    balance = ExactDecimal(from_minor_units(balance_minor, places))
                     last = self._number(loan["last_payment_epoch"])
                     created = self._utc_epoch(loan["created_at"])
                     if rate is None or cycle is None or cycle <= 0 or balance is None or last is None or rate < 0:
@@ -527,7 +498,7 @@ class InterestManager:
                         conn, loan["loan_id"], balance, product
                     )
                     balance_minor = to_minor_units(balance, places)
-                    balance = float(from_minor_units(balance_minor, places))
+                    balance = ExactDecimal(from_minor_units(balance_minor, places))
                     if balance <= 0:
                         BankManager._release_collateral(
                             conn, loan["loan_id"], str(loan["user_id"])
@@ -563,7 +534,7 @@ class InterestManager:
                             )
                             break
                         interest_minor = to_minor_units(interest, places)
-                        whole_interest = float(from_minor_units(interest_minor, places))
+                        whole_interest = ExactDecimal(from_minor_units(interest_minor, places))
                         if whole_interest <= 0:
                             if loan["rate_type"] == "floating":
                                 conn.execute(
@@ -572,7 +543,7 @@ class InterestManager:
                                 )
                             continue
                         balance_minor += interest_minor
-                        balance = float(from_minor_units(balance_minor, places))
+                        balance = ExactDecimal(from_minor_units(balance_minor, places))
                         conn.execute(
                             "UPDATE accounts.loans SET outstanding_balance_minor_units=?,"
                             "last_payment_epoch=? WHERE loan_id=? AND status='active'",
@@ -617,25 +588,25 @@ class InterestManager:
                              RateManager.effective_annual_rate(final_rate, cycle),
                              RateManager.annual_percentage_rate(
                                  final_rate,
-                                 float(loan['origination_fee'] or 0)
-                                 + float(loan['mandatory_cost_fee'] or 0),
+                                 ExactDecimal(loan['origination_fee'] or 0)
+                                 + ExactDecimal(loan['mandatory_cost_fee'] or 0),
                                  max(10**(-currency_precision(conn, loan['quote_currency'])),
-                                     float(loan['principal'] or 0)
-                                     - float(loan['origination_fee'] or 0)
-                                     - float(loan['mandatory_cost_fee'] or 0)),
+                                     ExactDecimal(loan['principal'] or 0)
+                                     - ExactDecimal(loan['origination_fee'] or 0)
+                                     - ExactDecimal(loan['mandatory_cost_fee'] or 0)),
                                  int(product['maturity_days'] or 365),
                                  cashflows=[
                                      ((float(row['due_epoch'])-float(
                                          self._utc_epoch(loan['created_at']) or row['due_epoch']
                                       ))/86400,
-                                      float(row['principal_due'])+float(row['interest_due'])+float(row['fee_due']))
+                                      ExactDecimal(row['principal_due'])+ExactDecimal(row['interest_due'])+ExactDecimal(row['fee_due']))
                                      for row in conn.execute(
                                          "SELECT principal_due,interest_due,fee_due,due_epoch "
                                          "FROM accounts.loan_payment_schedule WHERE loan_id=? "
                                          "ORDER BY installment_number", (loan['loan_id'],)
                                      )
                                  ] or None,
-                                 principal=float(loan['principal'] or 0),
+                                 principal=ExactDecimal(loan['principal'] or 0),
                              ), loan["loan_id"]),
                         )
                     loan_count += int(charged)
@@ -770,7 +741,7 @@ class InterestManager:
                         source = UserFunds.choose(conn, loan["user_id"], loan["quote_currency"])
                         account_number = source[1] if source else None
                     UserFunds.credit(
-                        conn, loan["user_id"], float(refund), account_number,
+                        conn, loan["user_id"], ExactDecimal(refund), account_number,
                         currency=loan["quote_currency"],
                     )
                     released_units += surplus_units
@@ -836,7 +807,7 @@ class InterestManager:
             "provisioned_loss_minor_units=?,ecl_allowance_minor_units=? "
             "WHERE loan_id=?",
             (balance_minor, maturity, now,
-             float(from_subminor_units(remainder_subunits, places)),
+             ExactDecimal(from_subminor_units(remainder_subunits, places)),
              remainder_subunits, state, accelerated_epoch, defaulted_epoch,
              status, released_units, seized_units, provisioned_units,
              ecl_allowance_units, loan["loan_id"]),

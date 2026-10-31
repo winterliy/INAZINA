@@ -1,10 +1,12 @@
+import { exactMoney, validMoney, moneyCompare, minorMoney, formatMoney } from "../../shared/money";
+import type { Money } from "../../shared/money";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../shared/api";
 import { Card, Field, date, plain, type Ctx } from "./common";
 
 type Kyc = { user_id: string; status: string; risk_tier: string; reviewed_by: string | null; reviewed_epoch: number | null; expires_epoch: number | null; updated_epoch: number };
-type Alert = { alert_id: number; user_id: string; nationality: string; rule_code: string; reference_key: string; currency_code: string; amount: number; amount_text: string; status: string; outcome_code: string | null; opened_epoch: number; reviewed_by: string | null; reviewed_epoch: number | null };
+type Alert = { alert_id: number; user_id: string; nationality: string; rule_code: string; reference_key: string; currency_code: string; amount: Money; amount_text: string; status: string; outcome_code: string | null; opened_epoch: number; reviewed_by: string | null; reviewed_epoch: number | null };
 type Rule = { nationality: string; currency_code: string; large_transaction_limit: number; rolling_24h_amount_limit: number; rolling_24h_count_limit: number; enabled: number; updated_epoch: number };
 type KycEvent = { event_id: number; user_id: string; actor_id: string; event_type: string; prior_status: string; new_status: string; prior_risk_tier: string; new_risk_tier: string; reason_code: string; recorded_epoch: number };
 type AmlEvent = { event_id: number; alert_id: number; actor_id: string; event_type: string; prior_status: string | null; new_status: string; outcome_code: string | null; recorded_epoch: number; nationality: string; user_id: string };
@@ -85,9 +87,9 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
   function saveRule(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!nationality) { say("AML 규칙을 설정할 국적을 선택해주세요.", true); return; }
-    if (rule.enabled && ![rule.large, rule.rollingAmount, rule.rollingCount].some((value) => Number(value) > 0)) { say("감시를 켜려면 하나 이상의 양수 임계치가 필요합니다.", true); return; }
+    if (rule.enabled && !([rule.large, rule.rollingAmount].some((value) => validMoney(value, true)) || Number(rule.rollingCount) > 0)) { say("감시를 켜려면 하나 이상의 양수 임계치가 필요합니다.", true); return; }
     if (!window.confirm(`${nationality}의 AML 시뮬레이터 감시 규칙을 저장할까요? 법정 신고 기준이 아닙니다.`)) return;
-    void run(() => api<Result>("/api/admin/compliance", { method: "POST", body: JSON.stringify({ action: "aml_rule", nationality, largeTransactionLimit: Number(rule.large || 0), rolling24hAmountLimit: Number(rule.rollingAmount || 0), rolling24hCountLimit: Number(rule.rollingCount || 0), enabled: rule.enabled }) }),
+    void run(() => api<Result>("/api/admin/compliance", { method: "POST", body: JSON.stringify({ action: "aml_rule", nationality, largeTransactionLimit: exactMoney(rule.large || 0), rolling24hAmountLimit: exactMoney(rule.rollingAmount || 0), rolling24hCountLimit: Number(rule.rollingCount || 0), enabled: rule.enabled }) }),
       "AML 규칙을 저장하지 못했습니다.", async (result) => { say(plain(JSON.stringify(result.result)), !result.success); await load(); });
   }
 
@@ -129,12 +131,12 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
     event.preventDefault();
     const isGuarantor = creditSupport.supportType === "guarantor";
     const payload = { action: "loan_credit_support", loanId: Number(creditSupport.loanId), partyUserId: creditSupport.partyUserId.trim(), supportType: creditSupport.supportType,
-      exposureShareBps: Number(creditSupport.supportType === "co_borrower" ? creditSupport.exposureShareBps : 0), guaranteeLimit: Number(isGuarantor ? creditSupport.guaranteeLimit : 0),
+      exposureShareBps: Number(creditSupport.supportType === "co_borrower" ? creditSupport.exposureShareBps : 0), guaranteeLimit: isGuarantor ? creditSupport.guaranteeLimit : "0",
       guaranteeRecoveryBps: Number(creditSupport.guaranteeRecoveryBps), recoveryDays: Number(creditSupport.recoveryDays),
       recoveryCostBps: Number(creditSupport.recoveryCostBps), seniorityRank: Number(creditSupport.seniorityRank), active: true };
     if (!Number.isSafeInteger(payload.loanId) || payload.loanId <= 0 || !payload.partyUserId ||
       ![payload.exposureShareBps, payload.guaranteeRecoveryBps, payload.recoveryDays, payload.recoveryCostBps, payload.seniorityRank].every(Number.isSafeInteger) ||
-      (isGuarantor && (!Number.isFinite(payload.guaranteeLimit) || payload.guaranteeLimit <= 0))) {
+      (isGuarantor && (!validMoney(payload.guaranteeLimit, true)))) {
       say("대출·당사자와 신용지원 조건을 확인해주세요.", true); return;
     }
     if (!window.confirm(`대출 #${payload.loanId}의 ${payload.supportType} 신용지원을 등록할까요? 평가에 반영되며 변경 이력을 남깁니다.`)) return;
@@ -166,8 +168,8 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
   function saveFutureCommitment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const expiresEpoch = commitmentDraft.expires ? Math.floor(new Date(commitmentDraft.expires).getTime()/1000) : undefined;
-    const loanId = Number(commitmentDraft.loanId), limit = Number(commitmentDraft.limit), ccf = Number(commitmentDraft.conversionBps);
-    if (!Number.isSafeInteger(loanId) || loanId <= 0 || !Number.isFinite(limit) || limit < 0 ||
+    const loanId = Number(commitmentDraft.loanId), limit = commitmentDraft.limit, ccf = Number(commitmentDraft.conversionBps);
+    if (!Number.isSafeInteger(loanId) || loanId <= 0 || !validMoney(limit) || moneyCompare(limit, 0) < 0 ||
       !Number.isSafeInteger(ccf) || ccf < 0 || ccf > 10000 || (expiresEpoch !== undefined && !Number.isFinite(expiresEpoch))) {
       say("약정 대출 ID·한도·신용환산율을 확인해주세요.", true); return;
     }
@@ -190,9 +192,9 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
 
   function recordChargeoff(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const loanId = Number(chargeoffDraft.loanId), amount = Number(chargeoffDraft.amount);
+    const loanId = Number(chargeoffDraft.loanId), amount = chargeoffDraft.amount;
     if (!Number.isSafeInteger(loanId) || loanId <= 0 || !chargeoffDraft.eventKey.trim() ||
-      (chargeoffDraft.action === "recovery" && (!Number.isFinite(amount) || amount <= 0))) {
+      (chargeoffDraft.action === "recovery" && (!validMoney(amount, true)))) {
       say("대출 ID, 고유 참조 키와 회수액을 확인해주세요.", true); return;
     }
     const chargeoff = chargeoffDraft.action === "charge_off";
@@ -288,7 +290,7 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
         <button className="btn primary" disabled={busy}>상각·회수 기록</button>
       </form>
       <div className="scroll-x"><table><thead><tr><th>대출</th><th>이벤트</th><th>키</th><th>금액</th><th>통화</th><th>처리자</th><th>시각</th></tr></thead><tbody>
-        {data.chargeoffEvents.map((item) => <tr key={item.event_id}><td>#{item.loan_id}</td><td>{item.event_type === "charge_off" ? "상각" : "회수"}</td><td className="mono">{item.event_key}</td><td>{(item.amount_minor_units / 10 ** item.decimal_places).toFixed(item.decimal_places)}</td><td>{item.currency_code}</td><td>{item.actor_id}</td><td>{date(item.created_epoch)}</td></tr>)}
+        {data.chargeoffEvents.map((item) => <tr key={item.event_id}><td>#{item.loan_id}</td><td>{item.event_type === "charge_off" ? "상각" : "회수"}</td><td className="mono">{item.event_key}</td><td>{formatMoney(minorMoney(item.amount_minor_units, item.decimal_places))}</td><td>{item.currency_code}</td><td>{item.actor_id}</td><td>{date(item.created_epoch)}</td></tr>)}
       </tbody></table>{!data.chargeoffEvents.length && <p className="empty">상각·회수 기록이 없습니다.</p>}</div>
     </Card>
 

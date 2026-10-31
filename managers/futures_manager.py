@@ -1,4 +1,5 @@
 """Stock futures with cash margin, signed positions and a game treasury clearing dealer."""
+from functions.amount_limits import MAX_NATIVE
 
 import time
 from decimal import Decimal, InvalidOperation, ROUND_CEILING
@@ -34,7 +35,7 @@ class FuturesManager:
                       * Decimal(int(price)) * Decimal(str(margin_rate)))
         except (InvalidOperation, TypeError, ValueError, OverflowError):
             raise ValueError("선물 증거금 계산값이 올바르지 않습니다.") from None
-        if not amount.is_finite() or amount < 0 or amount > Decimal(2**63 - 1):
+        if not amount.is_finite() or amount < 0 or amount > Decimal(MAX_NATIVE):
             raise ValueError("선물 증거금 계산값이 올바르지 않습니다.")
         return int(amount.to_integral_value(rounding=ROUND_CEILING))
 
@@ -57,7 +58,7 @@ class FuturesManager:
         return quote
 
     def place_limit_order(self, user_id, code, side, quantity, limit_price):
-        if side not in {"buy", "sell"} or any(isinstance(x, bool) or not isinstance(x, int) or not 1 <= x <= 2**53 - 1 for x in (quantity, limit_price)):
+        if isinstance(limit_price, bool) or not isinstance(limit_price, int) or not 1 <= limit_price <= MAX_NATIVE or side not in {"buy", "sell"} or any(isinstance(x, bool) or not isinstance(x, int) or not 1 <= x <= 2**53 - 1 for x in (quantity,)):
             return False, "❌ 선물 주문 수량·지정가는 양의 정수여야 합니다."
         error = self.users._settle_user_interest(str(user_id))
         if error:
@@ -77,7 +78,7 @@ class FuturesManager:
                 quote = self._quote(conn, product, now)
                 unit_margin = self._margin(product, 1, max(quote, limit_price))
                 reserved = unit_margin * quantity
-                if reserved > 2**63 - 1:
+                if reserved > MAX_NATIVE:
                     return False, "❌ 증거금 금액이 너무 큽니다."
                 funds = self.users._choose_funds(conn, user_id)
                 if not funds or funds[0] < reserved or not self.users._debit_source(conn, user_id, funds[1], reserved):
@@ -259,7 +260,7 @@ class FuturesManager:
         return results
 
     def add_margin(self, user_id, code, amount):
-        if isinstance(amount, bool) or not isinstance(amount, int) or not 1 <= amount <= 2**53 - 1:
+        if isinstance(amount, bool) or not isinstance(amount, int) or not 1 <= amount <= MAX_NATIVE:
             return False, "❌ 추가 증거금은 양의 정수 기준 통화여야 합니다."
         with self.db.atomic(("users", "accounts", "assets")) as conn:
             position = conn.execute("SELECT 1 FROM assets.futures_positions WHERE user_id = ? AND product_code = ?", (str(user_id), code)).fetchone()

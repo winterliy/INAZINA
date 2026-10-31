@@ -1,3 +1,4 @@
+import type { Money } from "../../../shared/money";
 import { useCommands, type Instrument, type Order, type Portfolio } from "../commandKit";
 import { BankPage } from "./BankPage";
 import { CasinoPage } from "./CasinoPage";
@@ -20,7 +21,7 @@ export const legacyCommandPath = (name: string) => LEGACY[name] ?? (["매수", "
 /** The HTS's banking, product and game pages, one URL each, sharing one command session. */
 export function ServicesApp({ path, instruments, portfolio, orders, homeCurrency, homeDigits, cash, creditScore, accounts, onDone }: {
   path: keyof typeof PAGES; instruments: Instrument[]; portfolio: Portfolio | null; orders: Order[]; homeCurrency: string; homeDigits: number;
-  cash: number; creditScore: number; accounts: Account[]; onDone: () => void;
+  cash: Money; creditScore: number; accounts: Account[]; onDone: () => void;
 }) {
   const kit = useCommands({ instruments, portfolio, orders, homeCurrency, onDone });
   const Page = PAGES[path];

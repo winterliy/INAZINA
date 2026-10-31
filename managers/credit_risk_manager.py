@@ -1,4 +1,5 @@
 """Lightweight forward-looking loan loss estimates for the bank simulation."""
+from functions.exact_money import ExactDecimal, native_value
 from functions.money import base_currency_code
 
 from datetime import datetime, timezone
@@ -23,10 +24,9 @@ class CreditRiskManager:
     def _outstanding_balance(conn, loan):
         """Read loan exposure from its denomination-specific minor-unit field."""
         if "outstanding_balance_minor_units" not in loan.keys():
-            return max(0.0, float(loan["outstanding_balance"] or 0))
+            return max(0.0, ExactDecimal(loan["outstanding_balance"] or 0))
         places = currency_precision(conn, loan["quote_currency"] or base_currency_code(conn))
-        return max(0.0, int(loan["outstanding_balance_minor_units"] or 0)
-                   / (10 ** places))
+        return max(0, ExactDecimal(loan["outstanding_balance_minor_units"] or 0) / (10 ** places))
 
     @classmethod
     def charge_off_loan(cls, conn, *, loan_id, event_key, actor_id, now=None, memo=""):
@@ -91,19 +91,19 @@ class CreditRiskManager:
         reference = f"loan:{loan_id}:charge-off:{key}"
         lines = []
         if allowance:
-            lines.append(("ecl_allowance", "debit", allowance / (10 ** places)))
+            lines.append(("ecl_allowance", "debit", ExactDecimal(allowance) / (10 ** places)))
         if loss:
-            lines.append(("credit_loss_expense", "debit", loss / (10 ** places)))
-        lines.append(("loans_receivable", "credit", gross / (10 ** places)))
+            lines.append(("credit_loss_expense", "debit", ExactDecimal(loss) / (10 ** places)))
+        lines.append(("loans_receivable", "credit", ExactDecimal(gross) / (10 ** places)))
         BankJournal.post(conn, loan["issuer"], "loan_charge_off", reference, currency,
                          lines, description=f"Loan {loan_id} charge-off", now=epoch)
         if loss:
             RateManager.record_institution_result(
-                conn, loan["issuer"], -(loss / (10 ** places)), "credit_loss_expense",
+                conn, loan["issuer"], -(ExactDecimal(loss) / (10 ** places)), "credit_loss_expense",
                 reference, now=epoch, currency_code=currency,
             )
         if excess_allowance:
-            excess = excess_allowance / (10 ** places)
+            excess = ExactDecimal(excess_allowance) / (10 ** places)
             excess_ref = f"{reference}:excess-allowance"
             BankJournal.post(conn, loan["issuer"], "ecl_allowance_release", excess_ref,
                              currency, [("ecl_allowance", "debit", excess),
@@ -172,7 +172,7 @@ class CreditRiskManager:
         conn.execute("UPDATE accounts.loans SET charged_off_balance_minor_units="
                      "charged_off_balance_minor_units-? WHERE loan_id=?",
                      (amount_units, loan_id))
-        value = amount_units / (10 ** places)
+        value = ExactDecimal(amount_units) / (10 ** places)
         reference = f"loan:{loan_id}:recovery:{key}"
         BankJournal.post(conn, loan["issuer"], "loan_chargeoff_recovery", reference,
                          currency, [("settlement_asset", "debit", value),
@@ -241,7 +241,7 @@ class CreditRiskManager:
             if isinstance(value, bool):
                 raise ValueError(f"{name} 값이 올바르지 않습니다.")
             try:
-                parsed = float(value)
+                parsed = ExactDecimal(value)
             except (TypeError, ValueError, OverflowError):
                 raise ValueError(f"{name} 값이 올바르지 않습니다.") from None
             if not math.isfinite(parsed) or not 0 <= parsed <= 200:
@@ -252,11 +252,11 @@ class CreditRiskManager:
         if not isinstance(active, bool):
             raise ValueError("지원 상태는 boolean이어야 합니다.")
         currency = str(quote_currency or loan["quote_currency"] or base_currency_code(conn)).strip().upper()
-        if kind == "co_borrower" and (share <= 0 or float(guarantee_limit or 0) != 0):
+        if kind == "co_borrower" and (share <= 0 or ExactDecimal(guarantee_limit or 0) != 0):
             raise ValueError("공동차주는 양수의 익스포저 비율만 설정할 수 있습니다.")
         if kind == "guarantor" and share != 0:
             raise ValueError("보증인은 공동차주 익스포저 비율을 설정할 수 없습니다.")
-        if kind == "connected_party" and (share != 0 or float(guarantee_limit or 0) != 0):
+        if kind == "connected_party" and (share != 0 or ExactDecimal(guarantee_limit or 0) != 0):
             raise ValueError("연결차주는 집중도 식별용으로만 등록할 수 있습니다.")
         if kind == "guarantor" and currency != str(loan["quote_currency"]).upper():
             raise ValueError("보증통화는 대출 계약통화와 같아야 합니다.")
@@ -302,11 +302,11 @@ class CreditRiskManager:
             (support_id,loan_id,party_user_id,actor_id,event_type,snapshot,recorded_epoch)
             VALUES (?,?,?,?,?,?,?)""",
             (support_id, loan_id, party, str(actor_id), event_type,
-             json.dumps(snapshot, sort_keys=True, separators=(",", ":")), epoch))
+             json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str), epoch))
         conn.execute(
             "INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
             (str(actor_id), "credit_risk.support.configure",
-             json.dumps(snapshot, sort_keys=True, separators=(",", ":")), epoch),
+             json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str), epoch),
         )
         return snapshot
 
@@ -358,14 +358,14 @@ class CreditRiskManager:
                      (str(actor_id), "credit_risk.policy.configure",
                       json.dumps({"nationality": country, "productCode": product,
                                   "pdMultiplier": multiplier, "gradeThresholds": dict(zip(keys, thresholds))},
-                                 sort_keys=True, separators=(",", ":")), epoch))
+                                 sort_keys=True, separators=(",", ":"), default=str), epoch))
         snapshot = {"nationality": country, "productCode": product,
                     "pdMultiplier": multiplier,
                     "gradeThresholds": dict(zip(keys, thresholds))}
         conn.execute("""INSERT INTO accounts.credit_risk_policy_events
             (nationality,product_code,actor_id,snapshot,recorded_epoch) VALUES (?,?,?,?,?)""",
             (country, product, str(actor_id),
-             json.dumps(snapshot, sort_keys=True, separators=(",", ":")), epoch))
+             json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str), epoch))
         return {"nationality": country, "productCode": product,
                 "pdMultiplier": multiplier, "gradeThresholds": dict(zip(keys, thresholds))}
 
@@ -422,10 +422,10 @@ class CreditRiskManager:
             (loan_id, limit_units, ccf, expiry, int(active), epoch, str(actor_id)))
         conn.execute("""INSERT INTO accounts.loan_future_commitment_events
             (loan_id,actor_id,snapshot,recorded_epoch) VALUES (?,?,?,?)""",
-            (loan_id, str(actor_id), json.dumps(snapshot, sort_keys=True, separators=(",", ":")), epoch))
+            (loan_id, str(actor_id), json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str), epoch))
         conn.execute("INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
                      (str(actor_id), "credit_risk.commitment.configure",
-                      json.dumps(snapshot, sort_keys=True, separators=(",", ":")), epoch))
+                      json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str), epoch))
         return snapshot
 
     @staticmethod
@@ -468,12 +468,12 @@ class CreditRiskManager:
         conn.execute("""INSERT INTO accounts.loan_collateral_recovery_events
             (collateral_id,loan_id,actor_id,prior_snapshot,new_snapshot,recorded_epoch)
             VALUES (?,?,?,?,?,?)""", (collateral_id, int(row["loan_id"]), str(actor_id),
-            json.dumps(prior, sort_keys=True, separators=(",", ":")),
-            json.dumps(current, sort_keys=True, separators=(",", ":")), epoch))
+            json.dumps(prior, sort_keys=True, separators=(",", ":"), default=str),
+            json.dumps(current, sort_keys=True, separators=(",", ":"), default=str), epoch))
         conn.execute("INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
                      (str(actor_id), "credit_risk.collateral_recovery.configure",
                       json.dumps({"collateralId": collateral_id, **current}, sort_keys=True,
-                                 separators=(",", ":")), epoch))
+                                 separators=(",", ":"), default=str), epoch))
         return {"collateralId": collateral_id, "loanId": int(row["loan_id"]), **current}
 
     @classmethod
@@ -813,7 +813,7 @@ class CreditRiskManager:
         conn.execute(
             "INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
             (str(actor_id), "credit_risk.scenarios.configure",
-             json.dumps({"nationality": country, "scenarios": normalized}, separators=(",", ":")), epoch),
+             json.dumps({"nationality": country, "scenarios": normalized}, separators=(",", ":"), default=str), epoch),
         )
         return {"nationality": country, "updated": len(normalized)}
 
@@ -1004,9 +1004,9 @@ class CreditRiskManager:
         currency = str(loan["quote_currency"] or base_currency_code(conn)).upper()
         cash_collateral = max(
             0.0,
-            float(loan["collateral_amount"] or 0)
-            - float(loan["collateral_released"] or 0)
-            - float(loan["collateral_seized"] or 0),
+            ExactDecimal(loan["collateral_amount"] or 0)
+            - ExactDecimal(loan["collateral_released"] or 0)
+            - ExactDecimal(loan["collateral_seized"] or 0),
         )
         eir = 0.0
         for key in ("contract_effective_rate", "contract_rate"):
@@ -1027,7 +1027,7 @@ class CreditRiskManager:
         ).fetchall()
         recoveries.extend((
             int(row["seniority_rank"]),
-            max(0.0, int(row["last_value_minor_units"] or 0)/(10**places))
+            max(0.0, ExactDecimal(row["last_value_minor_units"] or 0)/(10**places))
                 *(1-cls._bounded(row["haircut"],0,1)),
             int(row["recovery_days"]), int(row["recovery_cost_bps"]),
         ) for row in asset_rows)
@@ -1039,7 +1039,7 @@ class CreditRiskManager:
         ).fetchall()
         for row in guarantees:
             recoveries.append((int(row["seniority_rank"]),
-                float(from_minor_units(row["guarantee_limit_minor_units"], places))
+                ExactDecimal(from_minor_units(row["guarantee_limit_minor_units"], places))
                     *int(row["guarantee_recovery_bps"])/10000,
                 int(row["recovery_days"]), int(row["recovery_cost_bps"])))
         remaining, expected_recovery = ead, 0.0
@@ -1065,11 +1065,11 @@ class CreditRiskManager:
         from managers.currency_manager import CurrencyManager, SCALE
 
         def to_base(amount, currency):
-            amount = round_currency(conn, max(0.0, float(amount or 0)), currency)
+            amount = round_currency(conn, max(0.0, ExactDecimal(amount or 0)), currency)
             if currency == base:
                 return amount
-            units = int(round(float(amount)*SCALE))
-            return CurrencyManager.convert(conn, units, currency, base)/SCALE
+            units = int(round(ExactDecimal(amount)*SCALE))
+            return ExactDecimal(CurrencyManager.convert(conn, units, currency, base))/SCALE
 
         loans = conn.execute(
             "SELECT l.loan_id,l.outstanding_balance,l.quote_currency,l.collateral_amount,"
@@ -1082,7 +1082,7 @@ class CreditRiskManager:
         for loan in loans:
             currency = str(loan["quote_currency"] or base_currency_code(conn))
             ead = round_currency(
-                conn, max(0.0, float(loan["outstanding_balance"] or 0)), currency
+                conn, max(0.0, ExactDecimal(loan["outstanding_balance"] or 0)), currency
             )
             loss = round_currency(conn, ead*cls._lgd(conn, loan), currency)
             amounts = totals_by_currency.setdefault(
@@ -1091,7 +1091,7 @@ class CreditRiskManager:
             amounts["ead"] += ead
             amounts["loss"] += loss
             amounts["allowance"] += round_currency(
-                conn, max(0.0, float(loan["ecl_allowance"] or 0)), currency
+                conn, max(0.0, ExactDecimal(loan["ecl_allowance"] or 0)), currency
             )
         performing_ead = sum(
             to_base(values["ead"], currency)
@@ -1112,7 +1112,7 @@ class CreditRiskManager:
             allowance_applied = min(gross_loss, round_currency(conn, allowance*percent/100, base))
             incremental = round_currency(conn, max(0.0, gross_loss-allowance_applied), base)
             equity_after = round_currency(
-                conn, float(terms["effective_equity"])-incremental, base
+                conn, ExactDecimal(terms["effective_equity"])-incremental, base
             )
             scenarios.append({
                 "defaultSharePercent": percent,
@@ -1122,7 +1122,7 @@ class CreditRiskManager:
                 "incrementalProvision": incremental,
                 "equityAfterProvision": equity_after,
                 "capitalConsumedPercent": (
-                    incremental/float(terms["effective_equity"])*100
+                    incremental/ExactDecimal(terms["effective_equity"])*100
                     if terms["effective_equity"] > 0 else None
                 ),
             })
@@ -1201,9 +1201,9 @@ class CreditRiskManager:
         connected_borrowers_with_exposure = set()
         for loan in rows:
             currency = str(loan["quote_currency"] or base)
-            ead = round_currency(conn, max(0.0, float(loan["outstanding_balance"] or 0)), currency)
+            ead = round_currency(conn, max(0.0, ExactDecimal(loan["outstanding_balance"] or 0)), currency)
             if currency != base:
-                ead = CurrencyManager.convert(conn, int(round(float(ead)*SCALE)), currency, base)/SCALE
+                ead = ExactDecimal(CurrencyManager.convert(conn, int(round(ExactDecimal(ead)*SCALE)), currency, base))/SCALE
             pd = (float(loan["pd_12m"]) if loan["pd_12m"] is not None else cls._pd_12m(
                 loan["credit_score"], loan["underwriting_dti"], loan["underwriting_dsr"],
                 loan["missed_payment_count"], loan["current_ltv"],
@@ -1254,12 +1254,12 @@ class CreditRiskManager:
         from managers.currency_manager import CurrencyManager, SCALE
 
         def to_base(amount, currency):
-            amount = round_currency(conn, max(0.0, float(amount or 0)), currency)
+            amount = round_currency(conn, max(0.0, ExactDecimal(amount or 0)), currency)
             if currency == base:
                 return amount
-            return CurrencyManager.convert(
-                conn, int(round(float(amount)*SCALE)), currency, base
-            )/SCALE
+            return ExactDecimal(CurrencyManager.convert(
+                conn, int(round(ExactDecimal(amount)*SCALE)), currency, base
+            ))/SCALE
 
         parent = {}
 
@@ -1297,7 +1297,7 @@ class CreditRiskManager:
             })
             currency = str(loan["quote_currency"] or base)
             ead = round_currency(
-                conn, max(0.0, float(loan["outstanding_balance"] or 0)), currency
+                conn, max(0.0, ExactDecimal(loan["outstanding_balance"] or 0)), currency
             )
             loss = round_currency(conn, ead*cls._lgd(conn, loan), currency)
             row["exposureByCurrency"][currency] = (
@@ -1309,7 +1309,7 @@ class CreditRiskManager:
             row["allowanceByCurrency"][currency] = (
                 row["allowanceByCurrency"].get(currency, 0.0)
                 +round_currency(
-                    conn, max(0.0, float(loan["ecl_allowance"] or 0)), currency
+                    conn, max(0.0, ExactDecimal(loan["ecl_allowance"] or 0)), currency
                 )
             )
             row["loanCount"] += 1
@@ -1329,7 +1329,7 @@ class CreditRiskManager:
             )
 
         total = sum(row["exposure"] for row in borrowers.values())
-        equity = float(terms["effective_equity"])
+        equity = ExactDecimal(terms["effective_equity"])
         ranked = sorted(borrowers.items(), key=lambda item: (-item[1]["exposure"], item[0]))
         result = []
         for user_id, row in ranked[:5]:
@@ -1366,7 +1366,7 @@ class CreditRiskManager:
         places = currency_precision(conn, currency)
         current_units = max(0, to_minor_units(balance or 0, places))
         if stage == 3:
-            return float(from_minor_units(current_units, places)), "defaulted_current_balance"
+            return ExactDecimal(from_minor_units(current_units, places)), "defaulted_current_balance"
         horizon = float(as_of_epoch)+max(0.0, float(loss_time_years))*365*86400
         rows = conn.execute(
             "SELECT * FROM accounts.loan_payment_schedule "
@@ -1384,7 +1384,7 @@ class CreditRiskManager:
                           to_minor_units(row["principal_paid"] or 0, places))
             scheduled_principal_units += max(0, due_units-paid_units)
         projected_units = max(0, current_units-scheduled_principal_units) if rows else current_units
-        projected = float(from_minor_units(projected_units, places))
+        projected = ExactDecimal(from_minor_units(projected_units, places))
         commitment = conn.execute(
             "SELECT committed_limit_minor_units,credit_conversion_factor_bps "
             "FROM accounts.loan_future_commitments WHERE loan_id=? AND active=1 "
@@ -1400,7 +1400,7 @@ class CreditRiskManager:
         ccf_units = to_minor_units(
             from_minor_units(undrawn_units, places)*ccf/10000, places
         )
-        ead = float(from_minor_units(projected_units+ccf_units, places))
+        ead = ExactDecimal(from_minor_units(projected_units+ccf_units, places))
         prefix = "midpoint_after_scheduled_principal" if rows else "current_balance_no_future_schedule"
         return ead, prefix+"_plus_undrawn_commitment"
 
@@ -1563,7 +1563,7 @@ class CreditRiskManager:
                                          "eadMethod": ead_method})
             places = currency_precision(conn, loan["quote_currency"])
             expected_loss_units = to_minor_units(raw_expected_loss, places)
-            expected_loss = float(from_minor_units(expected_loss_units, places))
+            expected_loss = ExactDecimal(from_minor_units(expected_loss_units, places))
             previous_allowance_units = int(loan["ecl_allowance_minor_units"] or 0)
             allowance_change_units = expected_loss_units-previous_allowance_units
             allowance_change = from_minor_units(allowance_change_units, places)
@@ -1577,7 +1577,7 @@ class CreditRiskManager:
                 (loan["loan_id"], as_of_day, stage, pd_12m, lifetime_pd, lgd,
                  ead, expected_loss, to_minor_units(ead, places), expected_loss_units,
                  loan["quote_currency"],
-                 json.dumps(scenario_details, separators=(",", ":")),
+                 json.dumps(scenario_details, separators=(",", ":"), default=str),
                  discount_factor, eir_percent, expected_loss_time,
                  macro_pd_multiplier, epoch, cls.risk_grade(pd_12m, grade_thresholds)),
             )
