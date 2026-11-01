@@ -24,8 +24,9 @@ import { EventTimeline } from "./ActivityTiles";
 import { NaturalizationPage } from "./NaturalizationPage";
 import { COMMAND_FORMS, CommandForm } from "./CommandForm";
 import { AccountPage } from "./AccountPage";
+import { OrganizationPage } from "./OrganizationPage";
 
-type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "users" | "naturalization" | "feedback" | "board" | "documents" | "compliance" | "accounting" | "events" | "commands" | "database" | "audit";
+type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "feedback" | "board" | "documents" | "compliance" | "accounting" | "events" | "commands" | "database" | "audit";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
 type Instrument = { code: string; name: string; type: string; price: Money; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
 type Exchange = { exchange_id: string; status: string; reason: string | null; trading_halted: number; updated_epoch: number | null; resume_epoch: number | null; circuit_stage: number | null };
@@ -47,6 +48,7 @@ const pages: { id: Page; label: string }[] = [
   { id: "finance", label: "금융 상품" },
   { id: "exchanges", label: "거래소" },
   { id: "companies", label: "법인 자본" },
+  { id: "organizations", label: "기업 구조" },
   { id: "users", label: "계정관리" },
   { id: "naturalization", label: "귀화심사" },
   { id: "feedback", label: "문의·신고" },
@@ -66,6 +68,7 @@ const subtitles: Record<Page, string> = {
   finance: "저축·대출·통화·외환통장 상품을 생성·수정·중지합니다.",
   exchanges: "거래소별 개장·휴장·서킷브레이커와 소속 국가·지수를 관리합니다.",
   companies: "법인 현금·보유자산·통장·대출을 보고 법인 계정으로 매수·매도·송금·대출을 실행합니다.",
+  organizations: "기업 규모와 공공 분류, 주식 종류별 권리, 기업집단 및 지분·의결권 구조를 관리합니다.",
   naturalization: "Discord /귀화신청으로 들어온 신청을 심사합니다. 승인하면 신청자의 자산을 정리하고 국적을 옮깁니다.",
   feedback: "공식 사이트의 Contact·Report로 들어온 문의와 신고를 확인하고 처리합니다.",
   documents: "약관·처리방침·규칙·도움말과 Discord 등록 안내문을 고치고 확정합니다.",
@@ -439,6 +442,7 @@ export default function App() {
         {page === "finance" && <ProductsPage group="finance" ctx={ctx} />}
         {page === "exchanges" && <ExchangesPage ctx={ctx} />}
         {page === "companies" && <CompaniesPage ctx={ctx} />}
+        {page === "organizations" && <OrganizationPage ctx={ctx} />}
         {page === "board" && <BoardAdminPage ctx={ctx} />}
         {page === "documents" && <DocumentsPage ctx={ctx} />}
         {page === "compliance" && <CompliancePage ctx={ctx} />}

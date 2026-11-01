@@ -46,7 +46,7 @@ def _metrics(conn, code):
     return {"revenue": base_revenue, "assets": base_assets, "employees": None}
 
 
-def directory(conn, organization_code=None, now=None):
+def directory(conn, organization_code=None, now=None, min_percent=1):
     from managers.organization_manager import OrganizationManager
     now = int(time.time() if now is None else now)
     due_changes = OrganizationManager.apply_due_size_changes(conn, now)
@@ -103,7 +103,7 @@ def directory(conn, organization_code=None, now=None):
               "sizeSettings": {"announcement_seconds": int(settings[0]) if settings else 0,
                                "rules": json.loads(settings[1] or "{}") if settings else {}}}
     if organization_code:
-        result["graph"] = OrganizationManager.ownership_graph(conn, organization_code)
+        result["graph"] = OrganizationManager.ownership_graph(conn, organization_code, min_percent=min_percent)
     return result
 
 
