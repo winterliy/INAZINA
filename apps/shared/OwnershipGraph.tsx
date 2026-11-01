@@ -80,6 +80,8 @@ export function OwnershipGraph({ graph, fullScreen = false }: { graph?: Ownershi
             const from = positions.get(edge.from);
             const to = positions.get(edge.to);
             if (!from || !to) return null;
+            const sameLevel = from.y === to.y;
+            const forward = from.x < to.x;
             const x1 = from.x + CARD_WIDTH / 2;
             const y1 = from.y + CARD_HEIGHT;
             const x2 = to.x + CARD_WIDTH / 2;
@@ -87,11 +89,17 @@ export function OwnershipGraph({ graph, fullScreen = false }: { graph?: Ownershi
             const midY = (y1 + y2) / 2;
             const peers = incomingByTarget.get(edge.to) ?? [edge];
             const peerIndex = peers.indexOf(edge);
-            const labelX = x1 + (x2 - x1) * 0.72;
-            const labelY = midY - 4 + (peerIndex - (peers.length - 1) / 2) * 14;
+            const startX = sameLevel ? (forward ? from.x + CARD_WIDTH : from.x) : x1;
+            const endX = sameLevel ? (forward ? to.x : to.x + CARD_WIDTH) : x2;
+            const sameRowY = from.y + CARD_HEIGHT / 2;
+            const path = sameLevel
+              ? `M ${startX} ${sameRowY} C ${startX + (endX - startX) * .25} ${sameRowY - 42}, ${startX + (endX - startX) * .75} ${sameRowY - 42}, ${endX} ${sameRowY}`
+              : `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`;
+            const labelX = sameLevel ? (startX + endX) / 2 : x1 + (x2 - x1) * 0.72;
+            const labelY = sameLevel ? from.y - 12 : midY - 4 + (peerIndex - (peers.length - 1) / 2) * 14;
             const label = `${percent(edge.equity_percent)} 경제 · ${percent(edge.voting_percent)} 의결`;
             return <g key={`${edge.from}-${edge.to}-${edge.depth}-${index}`} className={edge.cycle ? "ownership-edge cycle" : "ownership-edge"}>
-              <path d={`M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`} markerEnd={`url(#${markerId})`} />
+              <path d={path} markerEnd={`url(#${markerId})`} />
               <text x={labelX} y={labelY}>{edge.cycle ? "순환 보유 · " : ""}{label}</text>
             </g>;
           })}
