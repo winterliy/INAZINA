@@ -14,6 +14,8 @@ const CARD_WIDTH = 280;
 const CARD_HEIGHT = 144;
 const LEVEL_GAP = 360;
 const NODE_GAP = 200;
+const RADIAL_LAYOUT_MIN_NODES = 7;
+const RADIAL_LAYOUT_MIN_EDGES = 8;
 
 function percent(value: string | undefined) {
   const number = Number(value);
@@ -121,7 +123,8 @@ export function OwnershipGraph({ graph, fullScreen = false, focusedNodeId, focus
   const visibleNodeIds = new Set<string>(root ? [root.id] : []);
   for (const edge of edgesToRender) { visibleNodeIds.add(edge.from); visibleNodeIds.add(edge.to); }
   const nodesToRender = simplified ? nodes.filter((node) => visibleNodeIds.has(node.id)) : nodes;
-  const radial = Boolean(root && complex);
+  const radial = Boolean(root && nodesToRender.length >= RADIAL_LAYOUT_MIN_NODES
+    && edgesToRender.length >= RADIAL_LAYOUT_MIN_EDGES);
   const forceHierarchy = Boolean(!radial && !userRoot && root && complex);
   const bundled = Boolean(!radial && !userRoot && root && complex);
   const layerGap = forceHierarchy ? 88 : NODE_GAP;
