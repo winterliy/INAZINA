@@ -6,7 +6,7 @@ import { Card, Field, number, plain, show, type Ctx, BigValue } from "./common";
 import { CompanyLedger } from "./CompanyLedger";
 
 type Holding = { asset_code: string; quantity: number };
-type Company = { company_code: string; name: string; exchange_id: string; total_shares: number; listed_shares: number | null; share_price: Money; capital: Money; par_value_minor_units: string | null; quote_currency: string; share_decimal_places: number; currency: string; base_currency: string; cash: Money; cash_base: Money; locked: Money; account: string | null; holdings: Holding[]; accounts: number; loans: Money; parents: { code: string; percent: number }[] };
+type Company = { company_code: string; name: string; exchange_id: string; total_shares: number; listed_shares: number | null; share_price: Money; capital: Money; par_value_minor_units: string | null; quote_currency: string; share_decimal_places: number; currency: string; base_currency?: string; cash: Money; cash_base?: Money; locked: Money; account: string | null; holdings: Holding[]; accounts: number; loans: Money; parents: { code: string; percent: number }[]; largest_shareholder?: { id: string; name: string; shares: Money } | null; max_voting_holder?: { id: string; name: string; percent: string } | null; ultimate_controller?: { id: string; kind: "user" | "company"; name: string; shares: string; percent: string } | null };
 type CommandField = { key: string; label: string; kind: string; optional: boolean; hint: string };
 type Command = { name: string; group: string; description: string; guide: string; fields: CommandField[] };
 type Stock = { name: string; code: string; qty: number; value: Money; price: Money };
@@ -307,14 +307,17 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
     {!company && <><div className="tile-row">
       <section className="tile"><p className="tile-label">법인</p><p className="tile-value">{number(companies.length)}</p></section>
       <section className="tile"><p className="tile-label">장외 3DSG</p><p className="tile-value">{number(companies.filter((item) => item.exchange_id === UNLISTED).length)}</p></section>
-      <section className="tile"><p className="tile-label">법인 현금 합계 · {companies[0]?.base_currency ?? ""}</p><BigValue value={number(companies.reduce<Money>((sum, item) => moneyAdd(sum, item.cash_base), "0"))} /></section>
+      <section className="tile"><p className="tile-label">법인 현금 합계 · {companies[0]?.base_currency ?? ""}</p><BigValue value={number(companies.reduce<Money>((sum, item) => moneyAdd(sum, item.cash_base ?? item.cash), "0"))} /></section>
     </div>
     <Card title="법인 자본" caption="법인은 사람이 아니라 로그인하지 않지만, 자본은 다른 계정과 똑같이 주식·상품 매수매도, 통장, 대출, 송금을 할 수 있습니다. 자기 회사 주식을 사면 자기주식(배당 없음), 다른 회사 지분을 과반 사면 자회사가 됩니다. Discord에서는 $법인 또는 $login [법인ID]를 씁니다.">
-      <div className="scroll-x tall"><table><thead><tr><th>법인</th><th>이름</th><th>거래소</th><th className="r">현금</th><th className="r">보유 종목</th><th className="r">통장</th><th className="r">대출</th><th>모회사</th></tr></thead><tbody>
+      <div className="scroll-x tall"><table><thead><tr><th>법인</th><th>이름</th><th>거래소</th><th className="r">현금</th><th className="r">보유 종목</th><th className="r">통장</th><th className="r">대출</th><th>모회사</th><th>최대주주</th><th>최대 의결권 보유자</th><th>실질 지배자</th></tr></thead><tbody>
         {visible.map((item) => <tr key={item.company_code} className={item.company_code === selected ? "clickable selected" : "clickable"} tabIndex={0} onClick={() => void open(item.company_code).catch((cause) => say(cause instanceof Error ? cause.message : "법인을 열지 못했습니다.", true))} onKeyDown={(event) => { if (event.key === "Enter") void open(item.company_code); }}>
           <td className="mono">{item.company_code}</td><td>{item.name}</td><td>{item.exchange_id === UNLISTED ? <span className="tag">3DSG 장외</span> : show(item.exchange_id)}</td>
           <td className="r mono">{number(item.cash)} {item.currency}</td><td className="r">{number(item.holdings.length)}</td><td className="r">{number(item.accounts)}</td><td className="r mono">{number(item.loans)}</td>
           <td>{item.parents.length ? item.parents.map((parent) => `${parent.code} 의결 ${Number(parent.percent).toFixed(1)}%`).join(", ") : "—"}</td>
+          <td>{item.largest_shareholder ? <>{item.largest_shareholder.name}<br /><span className="mono">{number(item.largest_shareholder.shares)}주</span></> : "—"}</td>
+          <td>{item.max_voting_holder ? <>{item.max_voting_holder.name}<br /><span className="mono">{Number(item.max_voting_holder.percent).toFixed(1)}% 의결권</span></> : "—"}</td>
+          <td>{item.ultimate_controller ? <>{item.ultimate_controller.name}<br /><span className="mono">{number(item.ultimate_controller.shares)}주 · {Number(item.ultimate_controller.percent).toFixed(1)}% 지배력</span></> : "—"}</td>
         </tr>)}
       </tbody></table>{!visible.length && <p className="empty">거래 중인 법인이 없습니다.</p>}</div>
     </Card></>}

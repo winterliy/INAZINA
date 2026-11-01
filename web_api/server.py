@@ -5135,6 +5135,16 @@ def main():
 
     threading.Thread(target=follow_parent, name="parent-watch", daemon=True).start()
 
+    def warm_company_summary():
+        # The ownership trace is slow on a cold cache; compute it once now so the first
+        # admin request after a (re)start is not the one that pays for it.
+        try:
+            admin_companies()
+        except Exception:
+            logging.getLogger("inazina").debug("company summary warm-up failed", exc_info=True)
+
+    threading.Thread(target=warm_company_summary, name="company-summary-warm", daemon=True).start()
+
     def stop(_signum, _frame):
         if not stopping.is_set():
             stopping.set()
