@@ -143,6 +143,7 @@ class OrganizationDB(DBManager):
 
     def _install_company_sync_triggers(self):
         """Keep new legacy catalog rows discoverable until trading is migrated."""
+        self.execute("DROP TRIGGER IF EXISTS organization_company_after_update")
         self.execute("""
             CREATE TRIGGER IF NOT EXISTS organization_company_after_insert
             AFTER INSERT ON company BEGIN
@@ -170,9 +171,7 @@ class OrganizationDB(DBManager):
                 country_code=(SELECT nationality FROM market_exchanges WHERE exchange_id=NEW.exchange_id),
                 status=COALESCE(NEW.status,'active'),updated_epoch=unixepoch()
               WHERE organization_code=NEW.company_code AND COALESCE(NEW.share_class,'common')='common';
-              UPDATE organization_share_issuances SET class_name=COALESCE(NEW.name,NEW.company_code)||
-                CASE WHEN share_class='preferred' THEN ' 우선주' ELSE ' 보통주' END,
-                rights_json=json_object('dividend_priority',NEW.dividend_priority,
+              UPDATE organization_share_issuances SET rights_json=json_object('dividend_priority',NEW.dividend_priority,
                   'cumulative_dividend',NEW.cumulative_dividend,'dividend_mode',NEW.dividend_mode,
                   'dividend_per_share',CAST(NEW.dividend_per_share AS TEXT),
                   'dividend_percent',CAST(NEW.dividend_percent AS TEXT),
