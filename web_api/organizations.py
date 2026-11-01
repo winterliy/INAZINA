@@ -1,6 +1,7 @@
 """Read and administer organization, share-class and enterprise-group data."""
 from decimal import Decimal, InvalidOperation
 import json
+import re
 import time
 
 
@@ -75,12 +76,12 @@ def directory(conn, organization_code=None, now=None, min_percent=1):
         item["display_size"] = OrganizationManager.displayed_size(row)
         item["metrics"] = metrics
         issues = conn.execute(
-            "SELECT s.legacy_product_code,s.class_name,s.share_class,s.voting_rights_per_share,"
+            "SELECT s.issuance_id,s.legacy_product_code,s.class_name,s.share_class,s.voting_rights_per_share,"
             "s.economic_interest_per_share,s.rights_json,c.total_shares,c.share_price,c.status,"
             "c.dividend_mode,c.dividend_per_share,c.dividend_percent,c.dividend_priority,"
             "c.dividend_cycle_seconds,c.dividend_is_active,c.cumulative_dividend,"
             "c.liquidation_value_per_share,c.dividend_funding "
-            "FROM organization_share_issuances s JOIN company c ON c.company_code=s.legacy_product_code "
+            "FROM share_issuances s JOIN company c ON c.share_issuance_id=s.issuance_id "
             "WHERE s.organization_code=? ORDER BY s.legacy_product_code", (row["organization_code"],)
         ).fetchall()
         item["issuances"] = [dict(issue) for issue in issues]
@@ -172,22 +173,111 @@ def action(conn, payload, actor, now=None):
             (seconds, encoded, now),
         )
         return {"action": kind, "announcement_seconds": seconds}
+    if kind == "issuance_create":
+        code = str(payload.get("legacy_product_code") or "").strip().upper()
+        class_name = str(payload.get("class_name") or "").strip()
+        organization_code = str(payload.get("organization_code") or "").strip()
+        if not re.fullmatch(r"[A-Z0-9][A-Z0-9._-]{0,31}", code):
+            raise ValueError("종목 코드는 영문·숫자와 . _ - 조합으로 1~32자 입력해주세요.")
+        if not class_name or len(class_name) > 120:
+            raise ValueError("주식 종류 이름은 1~120자로 입력해주세요.")
+        try:
+            shares = int(payload.get("total_shares"))
+            price = int(payload.get("share_price"))
+            votes = Decimal(str(payload.get("voting_rights_per_share", "0")))
+            equity = Decimal(str(payload.get("economic_interest_per_share", "1")))
+        except (InvalidOperation, TypeError, ValueError, OverflowError):
+            raise ValueError("주식 수량, 초기 가격과 주당 권리 수치를 확인해주세요.") from None
+        if (shares <= 0 or shares > 9_007_199_254_740_991 or price <= 0
+                or not votes.is_finite()
+                or not equity.is_finite() or votes < 0 or votes > Decimal("1e12")
+                or equity <= 0 or equity > Decimal("1e12")
+                or isinstance(payload.get("total_shares"), bool)
+                or isinstance(payload.get("share_price"), bool)
+                or str(shares) != str(payload.get("total_shares")).strip()
+                or str(price) != str(payload.get("share_price")).strip()):
+            raise ValueError("주식 수량은 양의 정수, 가격은 양수여야 하며 주당 의결권은 0 이상·경제 지분은 0보다 커야 합니다.")
+        from functions.amount_limits import MAX_NATIVE
+        if price > MAX_NATIVE:
+            raise ValueError("초기 가격이 통화 금액 한도를 초과했습니다.")
+        parent = conn.execute(
+            "SELECT name,industry,exchange_id,quote_currency FROM company "
+            "WHERE company_code=? AND share_class='common' AND status='active'", (organization_code,)
+        ).fetchone()
+        if not parent:
+            raise ValueError("활성 기업을 찾을 수 없습니다.")
+        from database import DatabaseManager
+        if DatabaseManager.code_locations(conn, code):
+            raise ValueError("이미 사용 중인 종목 코드입니다.")
+        from database.user_db import TREASURY_USER_ID
+        from managers.asset_cost_manager import AssetCostManager
+        from managers.currency_manager import CurrencyManager
+        conn.execute("SAVEPOINT organization_share_issuance_create")
+        try:
+            conn.execute(
+                "INSERT INTO company(company_code,name,industry,capital,total_shares,share_price,"
+                "max_shareholder_id,exchange_id,quote_currency,share_class,parent_company_code) "
+                "VALUES (?,?,?,0,?,?,?,?,?,'preferred',?)",
+                (code, f"{parent[0] or organization_code} · {class_name}", parent[1], shares, price,
+                 str(TREASURY_USER_ID), parent[2], parent[3], organization_code),
+            )
+            conn.execute(
+                "INSERT INTO share_issuances "
+                "(legacy_product_code,organization_code,class_name,share_class,voting_rights_per_share,"
+                "economic_interest_per_share,updated_epoch) VALUES (?,?,?,'preferred',?,?,?) "
+                "ON CONFLICT(legacy_product_code) DO UPDATE SET class_name=excluded.class_name,"
+                "voting_rights_per_share=excluded.voting_rights_per_share,"
+                "economic_interest_per_share=excluded.economic_interest_per_share,updated_epoch=excluded.updated_epoch",
+                (code, organization_code, class_name, str(votes), str(equity), now),
+            )
+            seller = CurrencyManager.exchange_treasury(conn, code)
+            conn.execute("UPDATE company SET max_shareholder_id=? WHERE company_code=?", (seller, code))
+            AssetCostManager.upsert(conn, seller, code, None, shares, price)
+            order_id = conn.execute(
+                "INSERT INTO market_orders(user_id,asset_code,side,limit_price,quantity,remaining_quantity,"
+                "order_kind,status,created_epoch,updated_epoch,quote_currency) "
+                "VALUES (?,?,'sell',?,?,?,'asset','open',?,?,?)",
+                (seller, code, price, shares, shares, now, now, parent[3]),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO corporate_equity_offerings(asset_code,order_id,quantity,issue_price,recorded_epoch) "
+                "VALUES (?,?,?,?,?)", (code, order_id, shares, price, now),
+            )
+            conn.execute("RELEASE SAVEPOINT organization_share_issuance_create")
+        except Exception:
+            conn.execute("ROLLBACK TO SAVEPOINT organization_share_issuance_create")
+            conn.execute("RELEASE SAVEPOINT organization_share_issuance_create")
+            raise
+        return {"action": kind, "organization_code": organization_code, "legacy_product_code": code,
+                "class_name": class_name, "total_shares": shares, "share_price": price,
+                "initial_offering_order": order_id}
     if kind == "issuance_rights":
         code = str(payload.get("legacy_product_code") or "")
+        class_name = payload.get("class_name")
+        if class_name is not None:
+            class_name = str(class_name).strip()
+            if not class_name or len(class_name) > 120:
+                raise ValueError("주식 종류 이름은 1~120자로 입력해주세요.")
         try:
             votes = Decimal(str(payload.get("voting_rights_per_share")))
             equity = Decimal(str(payload.get("economic_interest_per_share")))
         except (InvalidOperation, TypeError, ValueError):
             raise ValueError("주당 권리 수치를 확인해주세요.") from None
-        if not votes.is_finite() or not equity.is_finite() or votes < 0 or equity <= 0:
-            raise ValueError("의결권은 0 이상, 경제적 지분계수는 0보다 커야 합니다.")
+        if (not votes.is_finite() or not equity.is_finite() or votes < 0
+                or votes > Decimal("1e12") or equity <= 0 or equity > Decimal("1e12")):
+            raise ValueError("의결권은 0~1조, 경제적 지분계수는 0 초과~1조 범위여야 합니다.")
         cur = conn.execute(
-            "UPDATE organization_share_issuances SET voting_rights_per_share=?,economic_interest_per_share=?,"
-            "updated_epoch=? WHERE legacy_product_code=?",
-            (str(votes), str(equity), now, code),
+            "UPDATE share_issuances SET voting_rights_per_share=?,economic_interest_per_share=?,"
+            "updated_epoch=? WHERE issuance_id=COALESCE(?,(SELECT issuance_id FROM share_issuances WHERE legacy_product_code=?))",
+            (str(votes), str(equity), now, payload.get("issuance_id"), code),
         )
         if cur.rowcount != 1:
             raise ValueError("주식 발행 종류를 찾을 수 없습니다.")
+        if class_name is not None:
+            conn.execute(
+                "UPDATE share_issuances SET class_name=?,updated_epoch=? WHERE issuance_id=COALESCE(?,(SELECT issuance_id FROM share_issuances WHERE legacy_product_code=?))",
+                (class_name, now, payload.get("issuance_id"), code),
+            )
         company = conn.execute(
             "SELECT share_class,dividend_priority,dividend_mode,dividend_per_share,dividend_percent,"
             "dividend_cycle_seconds,dividend_is_active,cumulative_dividend,liquidation_value_per_share,"

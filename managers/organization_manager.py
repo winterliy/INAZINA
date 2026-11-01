@@ -31,6 +31,7 @@ class OrganizationManager:
             "SELECT company_code,user_id FROM company_accounts"
         )}
         company_accounts = {company: account for account, company in accounts.items()}
+        treasury_ids = {str(TREASURY_USER_ID)} | {str(row[0]) for row in conn.execute("SELECT user_id FROM country_treasuries")}
         nodes = {}
         edges = {}
         owner_cache = {}
@@ -42,12 +43,12 @@ class OrganizationManager:
         def ownership(code):
             if code in owner_cache:
                 return owner_cache[code]
-            treasury_ids = {str(TREASURY_USER_ID), company_accounts.get(code)}
-            treasury_ids.discard(None)
+            issuer_treasuries = treasury_ids | {company_accounts.get(code)}
+            issuer_treasuries.discard(None)
             issues = conn.execute(
                 "SELECT s.legacy_product_code,c.total_shares,s.voting_rights_per_share,"
-                "s.economic_interest_per_share FROM organization_share_issuances s "
-                "JOIN company c ON c.company_code=s.legacy_product_code "
+                "s.economic_interest_per_share FROM share_issuances s "
+                "JOIN company c ON c.share_issuance_id=s.issuance_id "
                 "WHERE s.organization_code=?", (code,),
             ).fetchall()
             totals = [Decimal(0), Decimal(0)]
@@ -69,12 +70,12 @@ class OrganizationManager:
                         continue
                     if amount.is_finite() and amount > 0:
                         holdings[str(holder)] += amount
-                own = sum((holdings.get(holder, Decimal(0)) for holder in treasury_ids), Decimal(0))
+                own = sum((quantity for holder, quantity in holdings.items() if holder in issuer_treasuries), Decimal(0))
                 outstanding = max(Decimal(0), supply - own)
                 totals[0] += outstanding * equity
                 totals[1] += outstanding * votes
                 for holder, quantity in holdings.items():
-                    if holder in treasury_ids:
+                    if holder in issuer_treasuries:
                         continue
                     owners[holder][0] += quantity * equity
                     owners[holder][1] += quantity * votes
@@ -90,7 +91,7 @@ class OrganizationManager:
         direct_orgs = set()
         for (code,) in conn.execute(
             "SELECT DISTINCT s.organization_code FROM user_assets a "
-            "JOIN organization_share_issuances s ON s.legacy_product_code=a.asset_code "
+            "JOIN share_issuances s ON s.legacy_product_code=a.asset_code "
             "WHERE a.user_id=?", (user_id,),
         ):
             direct_orgs.add(str(code))
@@ -132,7 +133,7 @@ class OrganizationManager:
                 held_codes = set()
                 for (code,) in conn.execute(
                     "SELECT DISTINCT s.organization_code FROM user_assets a "
-                    "JOIN organization_share_issuances s ON s.legacy_product_code=a.asset_code "
+                    "JOIN share_issuances s ON s.legacy_product_code=a.asset_code "
                     "WHERE a.user_id=?", (parent_account,),
                 ):
                     held_codes.add(str(code))
@@ -195,6 +196,7 @@ class OrganizationManager:
         accounts = {str(row[1]): str(row[0]) for row in conn.execute(
             "SELECT company_code,user_id FROM company_accounts"
         )}
+        treasury_user_ids = {str(TREASURY_USER_ID)} | {str(row[0]) for row in conn.execute("SELECT user_id FROM country_treasuries")}
         companies = {str(row[0]): str(row[1]) for row in conn.execute(
             "SELECT company_code,name FROM company WHERE share_class='common'"
         )}
@@ -221,7 +223,7 @@ class OrganizationManager:
             issues = conn.execute(
                 "SELECT c.company_code,c.name,c.total_shares,c.share_class,"
                 "COALESCE(s.voting_rights_per_share,'1'),COALESCE(s.economic_interest_per_share,'1') "
-                "FROM company c LEFT JOIN organization_share_issuances s ON s.legacy_product_code=c.company_code "
+                "FROM company c LEFT JOIN share_issuances s ON s.issuance_id=c.share_issuance_id "
                 "WHERE (c.company_code=? AND COALESCE(c.share_class,'common')='common') "
                 "OR (c.parent_company_code=? AND c.share_class='preferred') ORDER BY c.company_code",
                 (code, code),
@@ -245,7 +247,7 @@ class OrganizationManager:
                     (str(issue_code),),
                 ):
                     holdings[str(holder)] += Decimal(str(quantity or 0))
-                treasury_ids = {str(TREASURY_USER_ID)} | {user_id for user_id, issuer in accounts.items() if issuer == code}
+                treasury_ids = treasury_user_ids | {user_id for user_id, issuer in accounts.items() if issuer == code}
                 own_treasury = sum((quantity for holder, quantity in holdings.items() if holder in treasury_ids), Decimal(0))
                 outstanding = max(Decimal(0), supply - own_treasury)
                 equity_total += outstanding * equity_per_share
