@@ -1,6 +1,7 @@
 """Private, read-only HTTP adapter for the existing SQLite database."""
 
 import hmac
+import functools
 import hashlib
 import json
 import logging
@@ -5029,6 +5030,28 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format_string, *args):
         return
+
+
+SLOW_REQUEST_SECONDS = float(os.environ.get("INAZINA_SLOW_REQUEST_SECONDS", "1.0"))
+
+
+def _log_slow(method):
+    """Warn about handlers slower than SLOW_REQUEST_SECONDS (path only, never the query string)."""
+    @functools.wraps(method)
+    def wrapper(self):
+        started = time.monotonic()
+        try:
+            return method(self)
+        finally:
+            elapsed = time.monotonic() - started
+            if elapsed >= SLOW_REQUEST_SECONDS:
+                logging.getLogger("inazina").warning(
+                    "slow request: %s %s took %.2fs", method.__name__[3:], urlsplit(self.path).path, elapsed)
+    return wrapper
+
+
+Handler.do_GET = _log_slow(Handler.do_GET)
+Handler.do_POST = _log_slow(Handler.do_POST)
 
 
 def main():

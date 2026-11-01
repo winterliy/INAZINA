@@ -316,6 +316,24 @@ class CompanyAccounts:
                 holder, ratio = max(controlling, key=lambda pair: pair[1])
                 parents_by_org[organization] = {"code": holder, "percent": float(ratio * 100)}
 
+        # One grouped query per table instead of three per company.
+        holders = sorted({row["account"] for row in rows if row["account"]})
+        holdings_by_holder, account_counts, loan_totals = {}, {}, {}
+        for start in range(0, len(holders), 500):
+            chunk = holders[start:start + 500]
+            marks = ",".join("?" * len(chunk))
+            for h in conn.execute(
+                    f"SELECT user_id,asset_code,SUM(quantity) quantity FROM user_assets WHERE user_id IN ({marks}) "
+                    "GROUP BY user_id,asset_code ORDER BY user_id,asset_code", chunk):
+                holdings_by_holder.setdefault(h[0], []).append({"asset_code": h[1], "quantity": h[2]})
+            for h in conn.execute(
+                    f"SELECT user_id,COUNT(*) FROM accounts WHERE user_id IN ({marks}) GROUP BY user_id", chunk):
+                account_counts[h[0]] = h[1]
+            for h in conn.execute(
+                    f"SELECT user_id,COALESCE(SUM(outstanding_balance),0) FROM loans WHERE user_id IN ({marks}) "
+                    "AND status='active' GROUP BY user_id", chunk):
+                loan_totals[h[0]] = h[1]
+
         result = []
         for row in rows:
             item = dict(row)
@@ -334,12 +352,9 @@ class CompanyAccounts:
             item["currency"] = currency
             item["share_decimal_places"] = currency_precision(conn, item["quote_currency"] or item["currency"])
             holder = item["account"]
-            item["holdings"] = [dict(h) for h in conn.execute(
-                "SELECT asset_code,SUM(quantity) quantity FROM user_assets WHERE user_id=? GROUP BY asset_code "
-                "ORDER BY asset_code", (holder,))] if holder else []
-            item["accounts"] = conn.execute("SELECT COUNT(*) FROM accounts WHERE user_id=?", (holder,)).fetchone()[0] if holder else 0
-            item["loans"] = conn.execute("SELECT COALESCE(SUM(outstanding_balance),0) FROM loans WHERE user_id=? "
-                                         "AND status='active'", (holder,)).fetchone()[0] if holder else 0
+            item["holdings"] = holdings_by_holder.get(holder, []) if holder else []
+            item["accounts"] = account_counts.get(holder, 0) if holder else 0
+            item["loans"] = loan_totals.get(holder, 0) if holder else 0
             parent = parents_by_org.get(str(item["company_code"]))
             item["parents"] = [parent] if parent else []
             result.append(item)
