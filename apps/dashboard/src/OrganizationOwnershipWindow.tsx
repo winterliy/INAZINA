@@ -118,7 +118,7 @@ export function OrganizationOwnershipWindow({ route }: { route: string }) {
         .finally(() => { if (active && id === requestId.current) setLoading(false); });
       return () => { active = false; requestId.current += 1; };
     }
-    void api<{ organizations: OrganizationOption[] }>("/api/admin/organizations")
+    void api<{ organizations: OrganizationOption[] }>("/api/admin/organizations?options=1")
       .then((result) => {
         if (!active) return;
         const available = result.organizations ?? [];

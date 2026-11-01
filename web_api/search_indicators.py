@@ -27,6 +27,17 @@ def search_indicators(connection, search=""):
         )
 
     countries = []
+    products = []
+    for table, product_type in (("saving", "저축상품"), ("liability", "대출상품")):
+        for row in connection.execute(
+            f"SELECT product_code,name,issuer,interest_rate,quote_currency FROM {table} "
+            "WHERE status='active' ORDER BY product_code"
+        ):
+            code, name, issuer, rate, currency = row
+            if matches((code, name or "", issuer or "", currency or "")):
+                products.append({"code": str(code), "name": str(name or code), "issuer": str(issuer or ""),
+                                 "productType": product_type, "interestRate": _finite(rate),
+                                 "currencyCode": str(currency or "")})
     for row in connection.execute(
         "SELECT nationality,currency_code,base_rate,legal_max_rate "
         "FROM country_currencies ORDER BY nationality,currency_code"
@@ -46,4 +57,4 @@ def search_indicators(connection, search=""):
         if matches((name, country)):
             exchanges.append({"exchangeId": exchange, "name": name, "country": country,
                               "indexValue": _finite(value), "updatedEpoch": _finite(updated)})
-    return {"countries": countries, "exchanges": exchanges}
+    return {"countries": countries, "exchanges": exchanges, "products": products}

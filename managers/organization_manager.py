@@ -319,6 +319,7 @@ class OrganizationManager:
         nodes = {}
         edge_map = {}
         attributions = {}
+        owner_snapshot_cache = {}
         expansion_count = 0
         truncated = False
 
@@ -333,52 +334,54 @@ class OrganizationManager:
             if code not in company_rows:
                 return
             nodes["company:" + code] = {"id": "company:" + code, "kind": "company", "code": code, "name": company_rows[code] or code}
-            issues = issues_by_org.get(code, ())
-            load_holdings(issues)
-            equity_total = Decimal(0)
-            votes_total = Decimal(0)
-            owner_amounts = defaultdict(lambda: [Decimal(0), Decimal(0)])
-            for issue in issues:
-                _, issue_code, _, supply, _, vote_text, equity_text = issue
-                try:
-                    supply = Decimal(str(supply or 0))
-                    vote_per_share = Decimal(str(vote_text))
-                    equity_per_share = Decimal(str(equity_text))
-                except (InvalidOperation, TypeError, ValueError):
-                    continue
-                if not supply.is_finite() or supply <= 0 or not vote_per_share.is_finite() or vote_per_share < 0 or not equity_per_share.is_finite() or equity_per_share < 0:
-                    continue
-                holdings = defaultdict(Decimal)
-                for holder, quantity in holdings_by_issue.get(str(issue_code), ()):
-                    holdings[holder] += quantity
-                treasury_ids = treasury_user_ids | {user_id for user_id, issuer in accounts.items() if issuer == code}
-                own_treasury = sum((quantity for holder, quantity in holdings.items() if holder in treasury_ids), Decimal(0))
-                outstanding = max(Decimal(0), supply - own_treasury)
-                equity_total += outstanding * equity_per_share
-                votes_total += outstanding * vote_per_share
-                for holder, quantity in holdings.items():
-                    if holder in treasury_ids:
+            display_candidates = owner_snapshot_cache.get(code)
+            if display_candidates is None:
+                issues = issues_by_org.get(code, ())
+                load_holdings(issues)
+                equity_total = Decimal(0)
+                votes_total = Decimal(0)
+                owner_amounts = defaultdict(lambda: [Decimal(0), Decimal(0)])
+                own_treasury_ids = treasury_user_ids | {user_id for user_id, issuer in accounts.items() if issuer == code}
+                for issue in issues:
+                    _, issue_code, _, supply, _, vote_text, equity_text = issue
+                    try:
+                        supply = Decimal(str(supply or 0))
+                        vote_per_share = Decimal(str(vote_text))
+                        equity_per_share = Decimal(str(equity_text))
+                    except (InvalidOperation, TypeError, ValueError):
                         continue
-                    owner_amounts[holder][0] += quantity * equity_per_share
-                    owner_amounts[holder][1] += quantity * vote_per_share
+                    if not supply.is_finite() or supply <= 0 or not vote_per_share.is_finite() or vote_per_share < 0 or not equity_per_share.is_finite() or equity_per_share < 0:
+                        continue
+                    holdings = defaultdict(Decimal)
+                    for holder, quantity in holdings_by_issue.get(str(issue_code), ()):
+                        holdings[holder] += quantity
+                    own_treasury = sum((quantity for holder, quantity in holdings.items() if holder in own_treasury_ids), Decimal(0))
+                    outstanding = max(Decimal(0), supply - own_treasury)
+                    equity_total += outstanding * equity_per_share
+                    votes_total += outstanding * vote_per_share
+                    for holder, quantity in holdings.items():
+                        if holder not in own_treasury_ids:
+                            owner_amounts[holder][0] += quantity * equity_per_share
+                            owner_amounts[holder][1] += quantity * vote_per_share
 
-            display_candidates = []
-            for holder, (equity, votes) in owner_amounts.items():
-                equity_ratio = equity / equity_total if equity_total else Decimal(0)
-                votes_ratio = votes / votes_total if votes_total else Decimal(0)
-                if max(equity_ratio, votes_ratio) * 100 < min_percent:
-                    continue
-                parent_code = accounts.get(holder)
-                if parent_code:
-                    node_id = "company:" + parent_code
-                    nodes[node_id] = {"id": node_id, "kind": "company", "code": parent_code,
-                                      "name": company_rows.get(parent_code, parent_code)}
-                else:
-                    node_id = "user:" + holder
-                    nodes[node_id] = {"id": node_id, "kind": "user", "code": holder,
-                                      "name": user_names.get(holder, holder)}
-                display_candidates.append((node_id, holder, equity_ratio, votes_ratio, parent_code))
-            display_candidates.sort(key=lambda item: (item[0].startswith("user:"), -max(item[2], item[3]), item[0]))
+                display_candidates = []
+                for holder, (equity, votes) in owner_amounts.items():
+                    equity_ratio = equity / equity_total if equity_total else Decimal(0)
+                    votes_ratio = votes / votes_total if votes_total else Decimal(0)
+                    if max(equity_ratio, votes_ratio) * 100 < min_percent:
+                        continue
+                    parent_code = accounts.get(holder)
+                    if parent_code:
+                        node_id = "company:" + parent_code
+                        nodes[node_id] = {"id": node_id, "kind": "company", "code": parent_code,
+                                          "name": company_rows.get(parent_code, parent_code)}
+                    else:
+                        node_id = "user:" + holder
+                        nodes[node_id] = {"id": node_id, "kind": "user", "code": holder,
+                                          "name": user_names.get(holder, holder)}
+                    display_candidates.append((node_id, holder, equity_ratio, votes_ratio, parent_code))
+                display_candidates.sort(key=lambda item: (item[0].startswith("user:"), -max(item[2], item[3]), item[0]))
+                owner_snapshot_cache[code] = display_candidates
             if len(display_candidates) > max_children:
                 truncated = True
             for node_id, holder, equity_ratio, votes_ratio, parent_code in display_candidates[:max_children]:

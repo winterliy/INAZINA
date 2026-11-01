@@ -130,6 +130,18 @@ def directory(conn, organization_code=None, now=None, min_percent=1):
     return result
 
 
+def organization_options(conn):
+    """Small selector payload for the ownership window; avoids finance and size work."""
+    return {"organizations": [
+        {"organization_code": str(row[0]), "name": str(row[1] or row[0]), "industry": str(row[2] or "")}
+        for row in conn.execute(
+            "SELECT o.organization_code,o.name,o.industry FROM organizations o "
+            "JOIN company c ON c.company_code=o.organization_code "
+            "WHERE c.share_class='common' ORDER BY o.name,o.organization_code"
+        )
+    ]}
+
+
 def ownership_graph(conn, organization_code, min_percent=1):
     """Return only the requested graph; do not rebuild the full admin directory."""
     from managers.organization_manager import OrganizationManager

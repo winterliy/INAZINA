@@ -88,6 +88,7 @@ class SingleFlightTTL:
 
 
 _read_cache = SingleFlightTTL(float(os.environ.get("INAZINA_READ_CACHE_SECONDS", "0.25")))
+_organization_graph_cache = SingleFlightTTL(1.5)
 
 
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):
@@ -3490,6 +3491,12 @@ def user_history(user_id, limit=150):
     return events[:limit]
 
 
+def _load_organization_graph(code, min_percent):
+    from web_api.organizations import ownership_graph
+    with connect_db(timeout=5) as connection:
+        return ownership_graph(connection, code, min_percent=min_percent)
+
+
 def admin_company_journal(code, period=None):
     from managers.financial_manager import FinancialManager
     return FinancialManager(domain().db).journal(code, period or None)
@@ -3540,6 +3547,7 @@ def admin_company_share_action(actor, code, payload):
             "legacy_product_code": str(code), "success": bool(success),
         })
         _read_cache.invalidate()
+        _organization_graph_cache.invalidate()
         return str(message) if success or str(message).startswith("❌") else "❌ " + str(message)
     if payload.get("action") == "issue_shares":
         if set(payload) - {"action", "mode", "quantity", "issuePrice"} or not {"mode", "quantity"} <= set(payload):
@@ -3554,6 +3562,7 @@ def admin_company_share_action(actor, code, payload):
             "quantity": payload["quantity"], "success": bool(success),
         })
         _read_cache.invalidate()
+        _organization_graph_cache.invalidate()
         return str(message) if success or str(message).startswith("❌") else "❌ " + str(message)
     if payload.get("action") == "record_resolution":
         if set(payload) != {"action", "ratio", "decision", "meetingReference", "articlesReference", "parValue"}:
@@ -4169,7 +4178,12 @@ class Handler(BaseHTTPRequestHandler):
                 elif parts == ["companies"]:
                     self.send_json(200, admin_companies())
                 elif parts == ["organizations"]:
-                    from web_api.organizations import directory
+                    from web_api.organizations import directory, organization_options
+                    if query.get("options", ["0"])[0] == "1":
+                        with connect_db(timeout=5) as connection:
+                            result = organization_options(connection)
+                        self.send_json(200, result)
+                        return
                     with connect_db(timeout=5) as connection:
                         result = directory(connection)
                     for change in result.get("sizeChanges", []):
@@ -4179,8 +4193,8 @@ class Handler(BaseHTTPRequestHandler):
                     from web_api.organizations import ownership_graph
                     query = parse_qs(parsed.query)
                     min_percent = 0 if query.get("includeMinor", ["0"])[0] == "1" else 1
-                    with connect_db(timeout=5) as connection:
-                        result = ownership_graph(connection, parts[1], min_percent=min_percent)
+                    cache_key = ("organization_graph", parts[1], min_percent)
+                    result = _organization_graph_cache.get(cache_key, lambda: _load_organization_graph(parts[1], min_percent))
                     self.send_json(200, result)
                 elif parts == ["companies", "identity"]:
                     self.send_json(200, admin_identity(user["userId"]))
@@ -4826,6 +4840,7 @@ class Handler(BaseHTTPRequestHandler):
                     with connect_db(timeout=5) as connection:
                         result = organization_action(connection, payload, actor)
                     audit_admin_access(actor, "organization.configuration", result)
+                    _organization_graph_cache.invalidate()
                     message = f"조직 설정을 저장했습니다: {result.get('action')}"
                 elif parts == ["products"]:
                     message = product_save(actor, payload)
