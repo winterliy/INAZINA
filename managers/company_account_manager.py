@@ -246,6 +246,24 @@ class CompanyAccounts:
             "WHERE c.status='active' AND COALESCE(c.share_class,'common')='common' ORDER BY c.company_code").fetchall()
         from database.user_db import TREASURY_USER_ID
         from decimal import Decimal, InvalidOperation
+        from functions.money import base_currency_code, currency_precision, round_money
+        from managers.currency_manager import CurrencyManager
+
+        base_currency = base_currency_code(conn)
+        legal_currencies = {
+            str(row[0]): str(row[1]) for row in conn.execute(
+                "SELECT o.organization_code,n.currency_code FROM organizations o "
+                "JOIN country_currencies n ON n.nationality=o.country_code "
+                "JOIN currencies c ON c.code=n.currency_code AND c.status='active'"
+            )
+        }
+
+        def convert_cash(amount, target_currency):
+            if target_currency == base_currency:
+                return amount
+            quote = CurrencyManager.quote(conn, base_currency, target_currency)
+            converted = Decimal(str(amount or 0)) * Decimal(quote.numerator) / Decimal(quote.denominator)
+            return round_money(converted, currency_precision(conn, target_currency))
 
         issuer_accounts = {str(row[0]): str(row[1]) for row in conn.execute(
             "SELECT company_code,user_id FROM company_accounts")}
@@ -301,9 +319,19 @@ class CompanyAccounts:
         result = []
         for row in rows:
             item = dict(row)
-            # Issuer cash ledgers are denominated in the configured settlement currency.
-            item["currency"] = base_currency_code(conn)
-            from functions.money import currency_precision
+            item["cash_base"] = item["cash"]
+            item["base_currency"] = base_currency
+            currency = legal_currencies.get(str(item["company_code"]), base_currency)
+            try:
+                cash = convert_cash(item["cash"], currency)
+                locked = convert_cash(item["locked"], currency)
+            except (ArithmeticError, InvalidOperation, TypeError, ValueError):
+                # Keep the ledger currency visible if a live FX quote is unavailable.
+                currency = base_currency
+            else:
+                item["cash"] = cash
+                item["locked"] = locked
+            item["currency"] = currency
             item["share_decimal_places"] = currency_precision(conn, item["quote_currency"] or item["currency"])
             holder = item["account"]
             item["holdings"] = [dict(h) for h in conn.execute(

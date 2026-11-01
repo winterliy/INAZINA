@@ -6,7 +6,7 @@ import { Card, Field, number, plain, show, type Ctx } from "./common";
 import { CompanyLedger } from "./CompanyLedger";
 
 type Holding = { asset_code: string; quantity: number };
-type Company = { company_code: string; name: string; exchange_id: string; total_shares: number; listed_shares: number | null; share_price: Money; capital: Money; par_value_minor_units: string | null; quote_currency: string; share_decimal_places: number; currency: string; cash: Money; locked: Money; account: string | null; holdings: Holding[]; accounts: number; loans: Money; parents: { code: string; percent: number }[] };
+type Company = { company_code: string; name: string; exchange_id: string; total_shares: number; listed_shares: number | null; share_price: Money; capital: Money; par_value_minor_units: string | null; quote_currency: string; share_decimal_places: number; currency: string; base_currency: string; cash: Money; cash_base: Money; locked: Money; account: string | null; holdings: Holding[]; accounts: number; loans: Money; parents: { code: string; percent: number }[] };
 type CommandField = { key: string; label: string; kind: string; optional: boolean; hint: string };
 type Command = { name: string; group: string; description: string; guide: string; fields: CommandField[] };
 type Stock = { name: string; code: string; qty: number; value: Money; price: Money };
@@ -219,11 +219,11 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
         <button className="soft" type="button" onClick={() => { setSelected(""); setDetail(null); }}>← 법인 목록으로 돌아가기</button>
         <p><b>{company.name}</b> <span className="mono">{company.company_code} · {company.exchange_id === UNLISTED ? "3DSG (장외)" : company.exchange_id}</span></p>
       </div>
-      <Card title="개요 · 지분" caption={<>계정 <span className="mono">{detail?.account ?? company.account ?? "첫 실행 때 개설"}</span> · 현금은 법인 현금 장부와 같은 돈입니다 · 거래는 재무제표에 자동 기록됩니다</>}
+      <Card title="개요 · 지분" caption={<>계정 <span className="mono">{detail?.account ?? company.account ?? "첫 실행 때 개설"}</span> · 현금·잠금 예치금은 법인 국적 통화로 실시간 환산됩니다 · 거래는 재무제표에 자동 기록됩니다</>}
         actions={<button className="soft" type="button" onClick={() => { setSelected(""); setDetail(null); }}>닫기</button>}>
       <div className="stats">
-        <div><small>현금</small><b>{number(company.cash)} 기준 통화</b></div>
-        <div><small>잠금 예치금</small><b>{number(company.locked)}</b></div>
+        <div><small>현금</small><b>{number(company.cash)} {company.currency}</b></div>
+        <div><small>잠금 예치금</small><b>{number(company.locked)} {company.currency}</b></div>
         <div><small>총자산</small><b>{detail ? number(detail.assets.grand_total) : "…"}</b></div>
         <div><small>대출</small><b>{number(company.loans)}</b></div>
         <div><small>순자산</small><b>{detail ? number(detail.assets.net_worth) : "…"}</b></div>
@@ -307,13 +307,13 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
     {!company && <><div className="tile-row">
       <section className="tile"><p className="tile-label">법인</p><p className="tile-value">{number(companies.length)}</p></section>
       <section className="tile"><p className="tile-label">장외 3DSG</p><p className="tile-value">{number(companies.filter((item) => item.exchange_id === UNLISTED).length)}</p></section>
-      <section className="tile"><p className="tile-label">법인 현금 합계</p><p className="tile-value">{number(companies.reduce<Money>((sum, item) => moneyAdd(sum, item.cash), "0"))}</p></section>
+      <section className="tile"><p className="tile-label">법인 현금 합계 · {companies[0]?.base_currency ?? ""}</p><p className="tile-value">{number(companies.reduce<Money>((sum, item) => moneyAdd(sum, item.cash_base), "0"))}</p></section>
     </div>
     <Card title="법인 자본" caption="법인은 사람이 아니라 로그인하지 않지만, 자본은 다른 계정과 똑같이 주식·상품 매수매도, 통장, 대출, 송금을 할 수 있습니다. 자기 회사 주식을 사면 자기주식(배당 없음), 다른 회사 지분을 과반 사면 자회사가 됩니다. Discord에서는 $법인 또는 $login [법인ID]를 씁니다.">
       <div className="scroll-x tall"><table><thead><tr><th>법인</th><th>이름</th><th>거래소</th><th className="r">현금</th><th className="r">보유 종목</th><th className="r">통장</th><th className="r">대출</th><th>모회사</th></tr></thead><tbody>
         {visible.map((item) => <tr key={item.company_code} className={item.company_code === selected ? "clickable selected" : "clickable"} tabIndex={0} onClick={() => void open(item.company_code).catch((cause) => say(cause instanceof Error ? cause.message : "법인을 열지 못했습니다.", true))} onKeyDown={(event) => { if (event.key === "Enter") void open(item.company_code); }}>
           <td className="mono">{item.company_code}</td><td>{item.name}</td><td>{item.exchange_id === UNLISTED ? <span className="tag">3DSG 장외</span> : show(item.exchange_id)}</td>
-          <td className="r mono">{number(item.cash)}</td><td className="r">{number(item.holdings.length)}</td><td className="r">{number(item.accounts)}</td><td className="r mono">{number(item.loans)}</td>
+          <td className="r mono">{number(item.cash)} {item.currency}</td><td className="r">{number(item.holdings.length)}</td><td className="r">{number(item.accounts)}</td><td className="r mono">{number(item.loans)}</td>
           <td>{item.parents.length ? item.parents.map((parent) => `${parent.code} 의결 ${Number(parent.percent).toFixed(1)}%`).join(", ") : "—"}</td>
         </tr>)}
       </tbody></table>{!visible.length && <p className="empty">거래 중인 법인이 없습니다.</p>}</div>
