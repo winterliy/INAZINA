@@ -538,10 +538,8 @@ class AdminControlManager:
                     if operation=='create':
                         values.setdefault('dividend_priority',1)
                         values.setdefault('liquidation_value_per_share',values.get('share_price',merged.get('share_price',0)))
-                if merged.get('dividend_funding','treasury') not in {'treasury','issuer'}:
-                    raise ValueError('dividend_funding은 treasury(국고) 또는 issuer(법인현금)입니다.')
-                if merged.get('dividend_funding')=='issuer' and merged.get('quote_currency',base_currency_code(conn))!=base_currency_code(conn):
-                    raise ValueError('법인현금 재원 배당은 기준 통화 결제 회사만 지원합니다.')
+                if merged.get('dividend_funding','issuer') != 'issuer':
+                    raise ValueError('법인 주식 배당은 발행 법인의 현금으로만 지급할 수 있습니다.')
                 for field,maximum in (('dividend_priority',1000),('cumulative_dividend',1)):
                     if field in values:values[field]=self._number(values[field],0,maximum,integer=True)
                 if 'liquidation_value_per_share' in values:
@@ -576,6 +574,10 @@ class AdminControlManager:
                 percent=self._number(values.get('dividend_percent',merged.get('dividend_percent',0)),0,100)
                 if (mode=='fixed' and 'dividend_percent' in values and percent>0) or (mode=='percent' and 'dividend_per_share' in values and amount>0):
                     raise ValueError('주당 고정금액과 비율배당 중 한 방식만 설정해주세요.')
+                if (category=='stock' and merged.get('quote_currency',base_currency_code(conn))!=base_currency_code(conn)
+                        and int(values.get('dividend_is_active',merged.get('dividend_is_active',1)))
+                        and cycle>0 and (amount>0 if mode=='fixed' else percent>0)):
+                    raise ValueError('외화 표시 법인의 배당은 현지 통화 현금 계정 지원 후 설정할 수 있습니다.')
                 values.update(dividend_mode=mode,dividend_per_share=amount if mode=='fixed' else 0,
                               dividend_percent=percent if mode=='percent' else 0)
                 active=int(values.get('dividend_is_active',merged.get('dividend_is_active',1)))
@@ -738,7 +740,7 @@ class AdminControlManager:
                 # account screen from the start instead of after its first trade.
                 from managers.company_account_manager import CompanyAccounts
                 CompanyAccounts.account_id(conn, code)
-            if category=='stock' and values.get('dividend_funding',merged.get('dividend_funding'))=='issuer':
+            if category=='stock':
                 owner=values.get('parent_company_code',merged.get('parent_company_code')) if share_class=='preferred' else code
                 conn.execute('INSERT OR IGNORE INTO issuer_cash_accounts(company_code) VALUES (?)',(owner,))
             if category=='currency' and extra.get('nationality'):

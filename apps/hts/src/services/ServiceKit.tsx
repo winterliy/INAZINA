@@ -5,7 +5,7 @@ import { ActionFields, DataView, READ_ONLY, initialValues, number, type Order, t
 
 export type Kit = ReturnType<typeof useCommands>;
 export type Account = { account_type?: string; managed_by?: string | null; number: string; product_name: string; balance: Money; currency_code: string; decimal_places: number; resolution_status: string };
-export type ServiceProps = { kit: Kit; cash: Money; homeCurrency: string; homeDigits: number; creditScore: number; accounts: Account[]; orders: Order[] };
+export type ServiceProps = { kit: Kit; cash: Money; userId: string; homeCurrency: string; homeDigits: number; creditScore: number; accounts: Account[]; orders: Order[] };
 
 export const SERVICES = [
   { path: "/transfer", label: "송금", description: "계좌이체 · 내 계좌 간 이체 · 외화 환전 이체" },

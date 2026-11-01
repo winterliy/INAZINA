@@ -1,4 +1,4 @@
-import { moneyAdd, moneyCompare, moneyDivide, moneyMultiply, type Money } from "../../shared/money";
+import { formatQuantity, moneyAdd, moneyCompare, moneyDivide, moneyMultiply, type Money } from "../../shared/money";
 import { number } from "./common";
 
 export const SLICE_COLORS = ["#0066cc", "#ff9500", "#30b0c7", "#af52de", "#ff2d55", "#34c759", "#a2845e"];
@@ -6,7 +6,7 @@ export const SLICE_COLORS = ["#0066cc", "#ff9500", "#30b0c7", "#af52de", "#ff2d5
 export type Slice = { label: string; value: Money; color: string };
 
 /** A donut: slices with hairline gaps around a centre figure, and a legend of percentages. */
-export function Donut({ slices, total, center, unit, label, suffix = "" }: { slices: Slice[]; total: Money; center: string; unit: string; label: string; suffix?: string }) {
+export function Donut({ slices, total, center, unit, label, suffix = "", quantityDigits = 0 }: { slices: Slice[]; total: Money; center: string; unit: string; label: string; suffix?: string; quantityDigits?: number }) {
   if (moneyCompare(total, 0) <= 0) return null;
   let angle = -Math.PI / 2;
   const arcs = slices.map((slice) => {
@@ -23,7 +23,7 @@ export function Donut({ slices, total, center, unit, label, suffix = "" }: { sli
       <text className="holders-total" x="100" y="102" textAnchor="middle" style={{ fontSize: `${Math.min(22, 150 / Math.max(1, center.length))}px` }}>{center}</text>
       <text className="holders-unit" x="100" y="120" textAnchor="middle">{unit}</text>
     </svg>
-    <figcaption><ul>{arcs.map((arc) => <li key={arc.label}><i style={{ background: arc.color }} /><span>{arc.label}</span><b>{moneyDivide(moneyMultiply(arc.value, 100), total, 2)}%</b><small>{number(arc.value)}{suffix}</small></li>)}</ul></figcaption>
+    <figcaption><ul>{arcs.map((arc) => <li key={arc.label}><i style={{ background: arc.color }} /><span>{arc.label}</span><b>{moneyDivide(moneyMultiply(arc.value, 100), total, 2)}%</b><small>{formatQuantity(arc.value, suffix === "표" ? 2 : quantityDigits)}{suffix}</small></li>)}</ul></figcaption>
   </figure>;
 }
 
@@ -45,7 +45,9 @@ export function topSlices(items: { label: string; value: Money }[], rest: string
 }
 
 
-export type Shareholders = { totalShares: number; holders: { userId: string; name: string; quantity: number }[] };
+export type VotingDistribution = { totalVotingRights: Money; votingHolders: { userId: string; name: string; votingRights: Money }[] };
+export type EffectiveVotingDistribution = { totalVotingRights: Money; effectiveVotingHolders: { userId: string; name: string; votingRights: Money }[] };
+export type Shareholders = { totalShares: number; holders: { userId: string; name: string; quantity: number }[]; totalVotingRights?: Money; votingHolders?: VotingDistribution["votingHolders"]; effectiveVotingHolders?: EffectiveVotingDistribution["effectiveVotingHolders"] };
 
 /** Who owns a company or stock: the six largest holders, the rest together, and shares no one holds. */
 export function ShareholderPie({ data }: { data: Shareholders }) {
@@ -54,4 +56,13 @@ export function ShareholderPie({ data }: { data: Shareholders }) {
   const slices = topSlices(data.holders.map((item) => ({ label: item.name, value: item.quantity })), "기타 주주",
     { label: "미보유(유통 전)", value: total - held, color: "var(--chip)" });
   return <Donut slices={slices} total={total} center={number(total)} unit="발행 주식" label="주주 구성 원그래프" suffix="주" />;
+}
+
+export function VotingRightsPie({ data, effective = false }: { data: Shareholders; effective?: boolean }) {
+  const holders = effective ? data.effectiveVotingHolders : data.votingHolders;
+  const total = data.totalVotingRights ?? "0";
+  if (data.totalVotingRights === undefined || holders === undefined) return <p className="empty">의결권 자료를 불러오지 못했습니다. 화면을 새로고침해 주세요.</p>;
+  if (!holders.length || moneyCompare(total, 0) <= 0) return <p className="empty">표시할 의결권이 없습니다.</p>;
+  const slices = topSlices(holders.map((holder) => ({ label: holder.name, value: holder.votingRights })), "기타 의결권");
+  return <Donut slices={slices} total={total} center={number(total)} unit="의결권" label={effective ? "실질 의결권 원그래프" : "의결권 원그래프"} suffix="표" />;
 }

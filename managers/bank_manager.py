@@ -22,6 +22,8 @@ from managers.rate_manager import RateManager
 class BankManager:
     """예금 계좌 및 대출 업무를 담당합니다."""
 
+    COMPANY_ONLY_LOAN_ISSUERS = frozenset({"국립정책금융공사"})
+
     PASSWORD_ITERATIONS = 240_000
     MAX_SUPPORTED_EPOCH = BankJournal.MAX_SUPPORTED_EPOCH
     OVERDUE_SWEEP_INTERVAL_SECONDS = 600
@@ -917,6 +919,14 @@ class BankManager:
                 ).fetchone()
                 if not product:
                     return False, "❌ 존재하지 않는 대출 상품입니다."
+                if product["issuer"] in self.COMPANY_ONLY_LOAN_ISSUERS:
+                    company_borrower = conn.execute(
+                        "SELECT 1 FROM company.company WHERE 'company:'||company_code=? "
+                        "AND status='active' LIMIT 1",
+                        (str(user_id),),
+                    ).fetchone()
+                    if not company_borrower:
+                        return False, "❌ 이 정책금융 상품은 법인 계정만 신청할 수 있습니다."
                 locations = DatabaseManager.code_locations(conn, product_code)
                 if len(locations) != 1 or locations[0] != "대출 상품":
                     return False, f"❌ 상품 코드 `{product_code}`가 다른 상품·자산 코드와 중복 등록되어 있습니다. SQL Browser에서 정리해주세요."
@@ -1272,14 +1282,19 @@ class BankManager:
                         "VALUES (?,?,?,?,?,?,?,?)",
                         scheduled_rows,
                     )
-                payout = conn.execute(
+                # A company's cash wallet is its issuer cash account, mirrored
+                # through company_accounts. Pay corporate loans there directly;
+                # do not route a loan into (or create) a bank payout account.
+                from managers.company_account_manager import CompanyAccounts
+                payout = None if CompanyAccounts.is_company(conn, str(user_id)) else conn.execute(
                     "SELECT a.account_number FROM accounts.accounts a "
                     "JOIN product.saving s ON s.product_code = a.product_code "
-                    "WHERE a.user_id = ? AND s.issuer IS ? AND a.account_type = 'saving' "
+                    "WHERE a.user_id = ? AND a.account_type = 'saving' "
                     "AND a.quote_currency=? "
-                    "ORDER BY a.created_at LIMIT 1",
-                    (str(user_id), product["issuer"],home),
+                    "ORDER BY CASE WHEN s.issuer IS ? THEN 0 ELSE 1 END, a.created_at LIMIT 1",
+                    (str(user_id), home, product["issuer"]),
                 ).fetchone()
+                payout_number = None
                 if payout:
                     payout_number = payout["account_number"]
                     conn.execute(
@@ -1290,13 +1305,8 @@ class BankManager:
                         (net_payout, net_payout, time.time(), payout_number, str(user_id)),
                     )
                 else:
-                    payout_number = self._generate_account_number(conn)
-                    conn.execute(
-                        "INSERT INTO accounts.accounts "
-                        "(account_number, user_id, product_code, balance, password, principal, "
-                        "last_payment_epoch,account_type,quote_currency) "
-                        "VALUES (?, ?, ?, ?, NULL, 0, unixepoch('now'), 'loan_payout',?)",
-                        (payout_number, str(user_id), product_code, net_payout,home),
+                    UserFunds.credit(
+                        conn, str(user_id), net_payout_decimal, currency=home
                     )
                 if total_finance_fee:
                     RateManager.record_institution_result(
@@ -1314,7 +1324,8 @@ class BankManager:
                 + (f" · 현금담보 {collateral_amount:,}" if collateral_amount else "")
                 + (f" · 자산담보 {asset['code']} {float(collateral_asset_quantity):g}개"
                    if asset else "")
-                + f"\n입금 계좌번호: `{payout_number}`"
+                + (f"\n입금 계좌번호: `{payout_number}`" if payout_number
+                   else "\n입금처: 현금 잔액")
             )
         except Exception as exc:
             return False, f"❌ 대출 처리 중 오류가 발생했습니다: {exc}"

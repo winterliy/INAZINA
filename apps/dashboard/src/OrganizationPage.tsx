@@ -205,14 +205,13 @@ function IssuanceEditor({ issue, saving, canRetire, onSave, onIssue, onRetire, o
   const [active, setActive] = useState(Boolean(issue.dividend_is_active));
   const [cumulative, setCumulative] = useState(Boolean(issue.cumulative_dividend));
   const [liquidation, setLiquidation] = useState(issue.liquidation_value_per_share);
-  const [funding, setFunding] = useState(issue.dividend_funding);
   return <>
   <form className="organization-inset" onSubmit={(event) => {
     event.preventDefault();
     onSave({ class_name: className, voting_rights_per_share: votes, economic_interest_per_share: equity,
       dividend: { dividend_mode: dividendMode, dividend_per_share: dividend, dividend_percent: percent,
         dividend_priority: Number(priority), dividend_cycle_seconds: Number(cycle), dividend_is_active: active,
-        cumulative_dividend: cumulative, liquidation_value_per_share: liquidation, dividend_funding: funding } });
+        cumulative_dividend: cumulative, liquidation_value_per_share: liquidation } });
   }}>
     <strong>{issue.class_name} · {issue.company_code}</strong>
     <small>발행 {num(issue.total_shares)}주 · 종목코드와 기존 보유·거래 기록은 유지됩니다.</small>
@@ -226,7 +225,7 @@ function IssuanceEditor({ issue, saving, canRetire, onSave, onIssue, onRetire, o
       <Field label="배당 순위"><input inputMode="numeric" value={priority} onChange={(event) => setPriority(event.target.value)} /></Field>
       <Field label="배당 주기 (초)"><input inputMode="numeric" value={cycle} onChange={(event) => setCycle(event.target.value)} /></Field>
       <Field label="청산 우선 금액/주"><input inputMode="decimal" value={liquidation} onChange={(event) => setLiquidation(event.target.value)} /></Field>
-      <Field label="배당 재원"><select value={funding} onChange={(event) => setFunding(event.target.value)}><option value="treasury">국고</option><option value="issuer">법인 현금</option></select></Field>
+      <Field label="배당 재원">발행 법인 현금</Field>
       <Field label="배당 상태"><select value={active ? "1" : "0"} onChange={(event) => setActive(event.target.value === "1")}><option value="1">활성</option><option value="0">중지</option></select></Field>
       <label className="check"><input type="checkbox" checked={cumulative} onChange={(event) => setCumulative(event.target.checked)} />누적 배당</label>
     </div>

@@ -54,7 +54,7 @@ CREDIT_POLICY_DEFAULTS = (
     ("debt_no_income_penalty", 0, "유효소득 미등록 상태에서 부채가 있을 때 감점(기본 0: 판단 보류)"),
     ("history_max_points", 40, "신용거래기간 최대 가점"),
     ("history_full_days", 180, "최대 가점에 도달하는 거래기간"),
-    ("new_credit_window_days", 14, "신규 대출 집계 기간"),
+    ("new_credit_window_days", 5, "신규 대출 집계 기간"),
     ("new_credit_points", 10, "기간 내 두 번째 이후 신규 대출 1건 감점"),
     ("new_credit_cap", 30, "신규 대출 감점 상한"),
     ("legacy_half_life_days", 30, "도입 전 점수가 모델보다 낮은 차이의 반감기(높은 차이는 유지)"),
@@ -116,5 +116,10 @@ class CreditDB(DBManager):
         self.conn.executemany(
             "UPDATE credit_score_policy SET value=?,description=? WHERE key=? AND value=?",
             [(*defaults[key], key, old) for key, old in LEGACY_POLICY_DEFAULTS.items()],
+        )
+        self.conn.execute(
+            "UPDATE credit_score_policy SET value=?,description=? "
+            "WHERE key='new_credit_window_days' AND value IN (14,90)",
+            defaults["new_credit_window_days"],
         )
         self.conn.commit()

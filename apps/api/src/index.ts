@@ -899,6 +899,15 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     send(response, result.status, result.body);
     return;
   }
+  if (request.method === "GET" && url.pathname === "/api/search-indicator-chart") {
+    const query = new URLSearchParams({
+      kind: url.searchParams.get("kind") ?? "",
+      key: url.searchParams.get("key") ?? "",
+    });
+    const result = await internalGet(`/internal/search-indicator-chart?${query}`, principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
   if (request.method === "POST" && /^\/api\/admin\/companies\/[^/]+\/share-actions$/.test(url.pathname)) {
     if (user.role !== "admin") { send(response, 403, { error: "admin_required" }); return; }
     const result = await internalRequest("POST", url.pathname.replace(/^\/api\//, "/internal/"), principal.userId, await requestJson(request));
@@ -921,6 +930,15 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
   }
   if (request.method === "GET" && url.pathname === "/api/me/history") {
     const result = await internalGet("/internal/me/history", principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/me/wallet-history") {
+    const query = new URLSearchParams({
+      sourceType: url.searchParams.get("sourceType") ?? "",
+      sourceAccount: url.searchParams.get("sourceAccount") ?? "",
+    });
+    const result = await internalGet(`/internal/me/wallet-history?${query}`, principal.userId);
     send(response, result.status, result.body);
     return;
   }

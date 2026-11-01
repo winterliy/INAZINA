@@ -38,7 +38,7 @@ class CompanyDB(DBManager):
             "dividend_priority": "INTEGER NOT NULL DEFAULT 0 CHECK(dividend_priority >= 0)",
             "cumulative_dividend": "INTEGER NOT NULL DEFAULT 0 CHECK(cumulative_dividend IN (0,1))",
             "liquidation_value_per_share": "INTEGER NOT NULL DEFAULT 0 CHECK(liquidation_value_per_share >= 0)",
-            "dividend_funding": "TEXT NOT NULL DEFAULT 'treasury' CHECK(dividend_funding IN ('treasury','issuer'))",
+            "dividend_funding": "TEXT NOT NULL DEFAULT 'issuer' CHECK(dividend_funding IN ('treasury','issuer'))",
             "dividend_cycle_seconds": "INTEGER NOT NULL DEFAULT 0 CHECK(dividend_cycle_seconds >= 0)",
             "dividend_per_share": "INTEGER NOT NULL DEFAULT 0 CHECK(dividend_per_share >= 0)",
             "dividend_mode": "TEXT NOT NULL DEFAULT 'fixed' CHECK(dividend_mode IN ('fixed','percent'))",
@@ -57,6 +57,20 @@ class CompanyDB(DBManager):
         }.items():
             if column not in columns:
                 self.execute(f"ALTER TABLE company ADD COLUMN {column} {declaration}")
+        # Company stock dividends always come from the issuing company's cash.
+        self.execute("UPDATE company SET dividend_funding='issuer' WHERE dividend_funding<>'issuer'")
+        self.execute("""
+            CREATE TRIGGER IF NOT EXISTS company_dividend_funding_issuer_insert
+            AFTER INSERT ON company WHEN NEW.dividend_funding<>'issuer' BEGIN
+              UPDATE company SET dividend_funding='issuer' WHERE company_code=NEW.company_code;
+            END
+        """)
+        self.execute("""
+            CREATE TRIGGER IF NOT EXISTS company_dividend_funding_issuer_update
+            AFTER UPDATE OF dividend_funding ON company WHEN NEW.dividend_funding<>'issuer' BEGIN
+              UPDATE company SET dividend_funding='issuer' WHERE company_code=NEW.company_code;
+            END
+        """)
         if "dividend_priority" not in columns:
             self.execute("UPDATE company SET dividend_priority=1 WHERE share_class='preferred'")
         self._rename_unlisted_exchange()

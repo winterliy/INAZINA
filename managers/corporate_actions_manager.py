@@ -157,7 +157,7 @@ class CorporateActionsManager:
 
     @classmethod
     def _funding(cls, listing):
-        return listing.get('dividend_funding', 'treasury') if listing['table'] == 'company' else 'treasury'
+        return 'issuer' if listing['table'] == 'company' else 'treasury'
 
     def _source_balance(self, conn, issuer, funding, currency):
         if funding == 'issuer':
@@ -690,6 +690,10 @@ class CorporateActionsManager:
                 self._require(conn, actor)
                 listing = self._dividend_listing(conn, code)
                 listing.update(terms,dividend_cycle_seconds=cycle)
+                if (listing['table']=='company'
+                        and str(listing.get('quote_currency') or '').upper()!=base_currency_code(conn)
+                        and listing['dividend_is_active'] and self._dividend_configured(listing)):
+                    raise ValueError('외화 표시 법인의 배당은 현지 통화 현금 계정 지원 후 설정할 수 있습니다.')
                 next_epoch = now + cycle if listing['dividend_is_active'] and self._dividend_configured(listing) else None
                 conn.execute(f'UPDATE {listing["table"]} SET dividend_cycle_seconds=?,dividend_mode=?,dividend_percent=?,dividend_per_share=?,dividend_next_epoch=? WHERE {listing["key"]}=?',
                              (cycle,terms['dividend_mode'],terms['dividend_percent'],terms['dividend_per_share'],next_epoch,str(code)))
@@ -731,6 +735,9 @@ class CorporateActionsManager:
                 with DBManager.admin_scope(actor), self.db.atomic() as conn:
                     self._require(conn, actor)
                     listing = self._dividend_listing(conn, code)
+                    if (listing['table']=='company'
+                            and str(listing.get('quote_currency') or '').upper()!=base_currency_code(conn)):
+                        raise ValueError('외화 표시 법인의 배당은 현지 통화 현금 계정 지원 후 지급할 수 있습니다.')
                     existing = conn.execute('SELECT pay_epoch FROM shareholder_registers WHERE operation_key=?', (key,)).fetchone()
                     pay_epoch = int(existing['pay_epoch']) if existing else now + delay
                     self._close_register(conn, listing, 'special', key, pay_epoch, now, amount, actor)
@@ -743,6 +750,9 @@ class CorporateActionsManager:
             with DBManager.admin_scope(actor), self.db.atomic() as conn:
                 self._require(conn, actor)
                 listing = self._dividend_listing(conn, code)
+                if (listing['table']=='company'
+                        and str(listing.get('quote_currency') or '').upper()!=base_currency_code(conn)):
+                    raise ValueError('외화 표시 법인의 배당은 현지 통화 현금 계정 지원 후 지급할 수 있습니다.')
                 if listing['table'] == 'company':
                     issuer = self._issuer_code(listing)
                     self._settle_claims(conn, issuer, now)

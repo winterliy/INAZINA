@@ -176,7 +176,7 @@ class OrganizationDB(DBManager):
             rights = {"dividend_priority": int(row[5] or 0), "cumulative_dividend": bool(row[6]),
                 "dividend_mode": str(row[7] or "fixed"), "dividend_per_share": str(row[8] or 0),
                 "dividend_percent": str(row[9] or 0), "liquidation_value_per_share": str(row[10] or 0),
-                "dividend_funding": str(row[11] or "treasury"), "dividend_cycle_seconds": int(row[12] or 0),
+                "dividend_funding": str(row[11] or "issuer"), "dividend_cycle_seconds": int(row[12] or 0),
                 "dividend_is_active": bool(row[13])}
             self.execute(
                 "INSERT INTO share_issuances(organization_code,class_name,share_class,rights_json) VALUES (?,?,?,?)",

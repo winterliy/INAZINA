@@ -58,3 +58,53 @@ def search_indicators(connection, search=""):
             exchanges.append({"exchangeId": exchange, "name": name, "country": country,
                               "indexValue": _finite(value), "updatedEpoch": _finite(updated)})
     return {"countries": countries, "exchanges": exchanges, "products": products}
+
+
+def search_indicator_chart(connection, kind, key):
+    """Return historical points for a country-rate pair or exchange index."""
+    kind, key = str(kind or ""), str(key or "").strip()
+    series = []
+    if kind == "exchange":
+        exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='market_exchange_index_history'"
+        ).fetchone()
+        if not exists:
+            raise ValueError("exchange_index_history_unavailable")
+        rows = connection.execute(
+            "SELECT recorded_epoch,index_value FROM market_exchange_index_history "
+            "WHERE exchange_id=? ORDER BY recorded_epoch", (key,),
+        ).fetchall()
+        current = connection.execute(
+            "SELECT index_value,index_updated_epoch FROM market_exchanges WHERE exchange_id=? "
+            "AND UPPER(exchange_id)!='CURRENCY'", (key,),
+        ).fetchone()
+        points = [{"time": int(row[0]), "value": _finite(row[1])} for row in rows]
+        if current and current[1] and (not points or points[-1]["value"] != _finite(current[0])):
+            points.append({"time": int(current[1]), "value": _finite(current[0])})
+        points.sort(key=lambda point: point["time"])
+        if len(points) > 600:
+            stride = math.ceil(len(points) / 600)
+            points = points[::stride] + ([points[-1]] if points[-1] != points[::stride][-1] else [])
+        if points:
+            series.append({"name": "거래소 지수", "color": "#2563eb", "points": points})
+        title = f"{key} 거래소 지수"
+    elif kind == "country":
+        country = connection.execute(
+            "SELECT 1 FROM country_currencies WHERE nationality=?", (key,),
+        ).fetchone()
+        if not country:
+            raise ValueError("country_not_found")
+        labels = {"base_rate": ("기준금리", "#2563eb"),
+                  "legal_max_rate": ("법정최대이자", "#dc2626")}
+        for rate_key, (name, color) in labels.items():
+            rows = connection.execute(
+                "SELECT effective_epoch,annual_percent FROM country_rate_history "
+                "WHERE nationality=? AND rate_key=? ORDER BY effective_epoch", (key, rate_key),
+            ).fetchall()
+            points = [{"time": int(float(row[0])), "value": _finite(row[1])} for row in rows]
+            if points:
+                series.append({"name": name, "color": color, "points": points})
+        title = f"{key} 금리"
+    else:
+        raise ValueError("unsupported_indicator_chart")
+    return {"title": title, "series": series}
