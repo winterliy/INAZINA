@@ -19,7 +19,7 @@ function percent(value: string | undefined) {
   return Number.isFinite(number) ? `${new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 2 }).format(number)}%` : "—";
 }
 
-export function OwnershipGraph({ graph, fullScreen = false }: { graph?: OwnershipGraphData; fullScreen?: boolean }) {
+export function OwnershipGraph({ graph, fullScreen = false, focusedNodeId, focusRequest = 0 }: { graph?: OwnershipGraphData; fullScreen?: boolean; focusedNodeId?: string; focusRequest?: number }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
   useEffect(() => {
@@ -30,6 +30,18 @@ export function OwnershipGraph({ graph, fullScreen = false }: { graph?: Ownershi
     setViewportWidth(element.clientWidth);
     return () => observer.disconnect();
   }, [graph?.nodes.length, fullScreen]);
+  useEffect(() => {
+    if (!focusedNodeId) return;
+    const container = scrollRef.current;
+    const node = container ? [...container.querySelectorAll<HTMLElement>("[data-node-id]")].find((item) => item.dataset.nodeId === focusedNodeId) : undefined;
+    if (!container || !node) return;
+    const left = node.offsetLeft - (container.clientWidth - node.offsetWidth) / 2;
+    const top = node.offsetTop - (container.clientHeight - node.offsetHeight) / 2;
+    container.scrollTo({ left: Math.max(0, left), top: Math.max(0, top), behavior: "smooth" });
+    node.classList.add("ownership-node-focused");
+    const timeout = window.setTimeout(() => node.classList.remove("ownership-node-focused"), 1500);
+    return () => window.clearTimeout(timeout);
+  }, [focusedNodeId, focusRequest, graph?.nodes.length, viewportWidth]);
   if (!graph?.nodes.length) return <p className="empty">지분 자료가 없거나 표시할 주주가 없습니다.</p>;
 
   // Every edge is a direct holding between its two companies. The root
@@ -103,7 +115,7 @@ export function OwnershipGraph({ graph, fullScreen = false }: { graph?: Ownershi
           const point = positions.get(id)!;
           const connections = edges.filter((edge) => edge.from === id);
           const ownerships = incomingByTarget.get(id) ?? [];
-          return <article className={`ownership-node ${node.kind === "user" ? "person" : "company"}`} key={id} style={{ left: point.x, top: point.y }}>
+          return <article data-node-id={id} className={`ownership-node ${node.kind === "user" ? "person" : "company"}`} key={id} style={{ left: point.x, top: point.y }}>
             <span className="ownership-node-kind">{node.kind === "company" ? "법인" : "개인"} · {level + 1}단계</span>
             <strong>{node.name}</strong>
             {ownerships.length ? <div className="ownership-node-ownerships">{ownerships.map((edge) => <small key={`${edge.from}-${edge.to}`}>

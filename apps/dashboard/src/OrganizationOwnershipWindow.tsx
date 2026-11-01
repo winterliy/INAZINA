@@ -55,11 +55,13 @@ function LoadingGraph() {
 }
 
 export function OrganizationOwnershipWindow({ route }: { route: string }) {
-  const [routeType = "", initialCode = "", initialDetail = ""] = route.split("/");
+  const [routeType = "", initialCode = "", initialDetail = ""] = route.split("/").filter(Boolean);
   const personal = routeType === "personal";
   const [graph, setGraph] = useState<OwnershipGraphData>();
   const [organizations, setOrganizations] = useState<OrganizationOption[]>([]);
   const [selected, setSelected] = useState(initialCode);
+  const [focusedNodeId, setFocusedNodeId] = useState(initialCode ? `company:${initialCode}` : "");
+  const [focusRequest, setFocusRequest] = useState(0);
   const [includeMinor, setIncludeMinor] = useState(initialDetail === "minor");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [organizationSearch, setOrganizationSearch] = useState("");
@@ -83,6 +85,8 @@ export function OrganizationOwnershipWindow({ route }: { route: string }) {
   const loadOrganization = useCallback(async (code: string, showMinor: boolean, updateAddress = true) => {
     const id = ++requestId.current;
     setSelected(code);
+    setFocusedNodeId(`company:${code}`);
+    setFocusRequest((value) => value + 1);
     setIncludeMinor(showMinor);
     setLoading(true);
     setError("");
@@ -156,7 +160,7 @@ export function OrganizationOwnershipWindow({ route }: { route: string }) {
           <details className="ownership-tree-section" open>
             <summary>현재 지분 관계 경로</summary>
             {loading && !tree.length ? <div className="ownership-tree-loading"><i /><i /><i /></div> : tree.length
-              ? <ul className="ownership-tree">{tree.map((node) => <TreeItem key={node.id} node={node} selected={selected} onSelect={(code) => void loadOrganization(code, includeMinor)} />)}</ul>
+              ? <ul className="ownership-tree">{tree.map((node) => <TreeItem key={node.id} node={node} selected={focusedNodeId.replace(/^company:/, "")} onSelect={(code) => { setFocusedNodeId(`company:${code}`); setFocusRequest((value) => value + 1); }} />)}</ul>
               : <p className="empty">표시할 주주 관계가 없습니다.</p>}
           </details>
           <details className="ownership-tree-section">
@@ -171,7 +175,7 @@ export function OrganizationOwnershipWindow({ route }: { route: string }) {
         </>}
       </aside>}
       <section className="ownership-graph-panel" aria-label={personal ? "내 보유 기업 지배구조" : "선택한 법인의 지분 조직도"}>
-        {loading ? <LoadingGraph /> : error ? <div className="ownership-load-error" role="alert"><p>{error}</p><button className="soft" type="button" onClick={() => personal ? window.location.reload() : selected && void loadOrganization(selected, includeMinor, false)}>다시 불러오기</button></div> : <OwnershipGraph graph={graph} fullScreen />}
+        {loading ? <LoadingGraph /> : error ? <div className="ownership-load-error" role="alert"><p>{error}</p><button className="soft" type="button" onClick={() => personal ? window.location.reload() : selected && void loadOrganization(selected, includeMinor, false)}>다시 불러오기</button></div> : <OwnershipGraph graph={graph} fullScreen focusedNodeId={focusedNodeId} focusRequest={focusRequest} />}
       </section>
     </div>
   </main>;

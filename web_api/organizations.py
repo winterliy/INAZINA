@@ -18,33 +18,40 @@ def _base_amount(conn, amount_minor, currency):
     return Decimal(str(units)).scaleb(-6)
 
 
-def _metrics(conn, code):
-    entity = conn.execute(
-        "SELECT currency,decimal_places FROM financial_entities WHERE company_code=?", (code,)
-    ).fetchone()
-    if not entity:
-        return {"revenue": None, "assets": None, "employees": None}
-    currency = str(entity[0] or "")
+def _metrics_batch(conn, codes):
+    """Read current-year sales and latest posted assets for a directory in two grouped scans."""
+    codes = [str(code) for code in codes]
+    if not codes:
+        return {}
+    placeholders = ",".join("?" for _ in codes)
     year = time.strftime("%Y", time.gmtime())
-    revenue = conn.execute(
-        "SELECT COALESCE(-SUM(l.amount),0) FROM financial_entries e "
-        "JOIN financial_lines l USING(entry_id) JOIN financial_accounts a ON a.code=l.account "
-        "WHERE e.company_code=? AND e.status='posted' AND e.period>=? AND a.category='revenue'",
-        (code, year),
-    ).fetchone()[0]
-    assets = conn.execute(
-        "SELECT COALESCE(SUM(l.amount),0) FROM financial_entries e "
-        "JOIN financial_lines l USING(entry_id) JOIN financial_accounts a ON a.code=l.account "
-        "WHERE e.company_code=? AND e.status='posted' AND e.period<=? "
-        "AND a.category IN ('current_asset','noncurrent_asset')",
-        (code, time.strftime("%Y-%m", time.gmtime())),
-    ).fetchone()[0]
-    try:
-        base_revenue = _base_amount(conn, revenue, currency)
-        base_assets = _base_amount(conn, assets, currency)
-    except (ValueError, ArithmeticError):
-        base_revenue = base_assets = None
-    return {"revenue": base_revenue, "assets": base_assets, "employees": None}
+    current_month = time.strftime("%Y-%m", time.gmtime())
+    totals = {code: {"revenue": 0, "assets": 0} for code in codes}
+    rows = conn.execute(
+        f"SELECT e.company_code,a.category,SUM(CASE WHEN a.category='revenue' THEN -l.amount ELSE l.amount END) amount "
+        f"FROM financial_entries e JOIN financial_lines l USING(entry_id) "
+        f"JOIN financial_accounts a ON a.code=l.account WHERE e.company_code IN ({placeholders}) "
+        "AND e.status='posted' AND ((a.category='revenue' AND e.period>=?) OR "
+        "(a.category IN ('current_asset','noncurrent_asset') AND e.period<=?)) "
+        "GROUP BY e.company_code,a.category", (*codes, year, current_month),
+    ).fetchall()
+    for row in rows:
+        key = "revenue" if row[1] == "revenue" else "assets"
+        totals[str(row[0])][key] += int(row[2] or 0)
+    entities = {str(row[0]): str(row[1] or "") for row in conn.execute(
+        f"SELECT company_code,currency FROM financial_entities WHERE company_code IN ({placeholders})", codes)}
+    result = {}
+    for code in codes:
+        if code not in entities:
+            result[code] = {"revenue": None, "assets": None, "employees": None}
+            continue
+        try:
+            revenue = _base_amount(conn, totals[code]["revenue"], entities[code])
+            assets = _base_amount(conn, totals[code]["assets"], entities[code])
+        except (ValueError, ArithmeticError):
+            revenue = assets = None
+        result[code] = {"revenue": revenue, "assets": assets, "employees": None}
+    return result
 
 
 def directory(conn, organization_code=None, now=None, min_percent=1):
@@ -54,37 +61,51 @@ def directory(conn, organization_code=None, now=None, min_percent=1):
     settings = conn.execute(
         "SELECT announcement_seconds,rule_json FROM organization_size_settings WHERE singleton=1"
     ).fetchone()
+    announcement_seconds = int(settings[0]) if settings else 604800
+    try:
+        rules = json.loads(settings[1] or "{}") if settings else {}
+    except (TypeError, ValueError):
+        raise ValueError("기업 규모 판정 설정을 읽을 수 없습니다.") from None
     rows = conn.execute(
         "SELECT o.*,c.exchange_id,c.quote_currency,c.total_shares,c.share_price "
         "FROM organizations o JOIN company c ON c.company_code=o.organization_code "
         "WHERE c.share_class='common' ORDER BY o.name,o.organization_code"
     ).fetchall()
+    metrics_by_code = _metrics_batch(conn, [row["organization_code"] for row in rows])
+    org_codes = [str(row["organization_code"]) for row in rows]
+    issues_by_org = {}
+    if org_codes:
+        placeholders = ",".join("?" for _ in org_codes)
+        for issue in conn.execute(
+            "SELECT s.organization_code,s.issuance_id,c.company_code AS company_code,s.class_name,s.share_class,"
+            "s.voting_rights_per_share,s.economic_interest_per_share,s.rights_json,c.total_shares,c.share_price,c.status,"
+            "c.dividend_mode,c.dividend_per_share,c.dividend_percent,c.dividend_priority,"
+            "c.dividend_cycle_seconds,c.dividend_is_active,c.cumulative_dividend,"
+            "c.liquidation_value_per_share,c.dividend_funding "
+            f"FROM share_issuances s JOIN company c ON c.share_issuance_id=s.issuance_id "
+            f"WHERE s.organization_code IN ({placeholders}) AND c.status='active' ORDER BY s.organization_code,c.company_code",
+            org_codes,
+        ):
+            issues_by_org.setdefault(str(issue[0]), []).append(dict(issue))
     organizations = []
     size_changes = [{"organization_code": code, "status": "applied", "size": size,
                      "effective_epoch": now} for code, size in due_changes]
     for row in rows:
-        metrics = _metrics(conn, row["organization_code"])
-        transition = OrganizationManager.refresh_auto_size(conn, row["organization_code"], metrics, now)
+        metrics = metrics_by_code.get(str(row["organization_code"]), {"revenue": None, "assets": None, "employees": None})
+        transition = OrganizationManager.refresh_auto_size(
+            conn, row["organization_code"], metrics, now, rules, announcement_seconds)
         if transition["status"] in {"announced", "applied"}:
             size_changes.append({"organization_code": row["organization_code"], **transition})
-        row = conn.execute(
-            "SELECT o.*,c.exchange_id,c.quote_currency,c.total_shares,c.share_price "
-            "FROM organizations o JOIN company c ON c.company_code=o.organization_code "
-            "WHERE o.organization_code=?", (row["organization_code"],)
-        ).fetchone()
         item = dict(row)
-        item["display_size"] = OrganizationManager.displayed_size(row)
+        if transition["status"] == "applied":
+            item["auto_size"], item["pending_size"], item["size_effective_epoch"] = transition["size"], None, None
+        elif transition["status"] == "announced":
+            item["pending_size"], item["size_effective_epoch"] = transition["size"], transition["effective_epoch"]
+        elif transition["status"] == "unchanged":
+            item["pending_size"], item["size_effective_epoch"] = None, None
+        item["display_size"] = item["size_override"] or item["auto_size"]
         item["metrics"] = metrics
-        issues = conn.execute(
-            "SELECT s.issuance_id,c.company_code AS company_code,s.class_name,s.share_class,s.voting_rights_per_share,"
-            "s.economic_interest_per_share,s.rights_json,c.total_shares,c.share_price,c.status,"
-            "c.dividend_mode,c.dividend_per_share,c.dividend_percent,c.dividend_priority,"
-            "c.dividend_cycle_seconds,c.dividend_is_active,c.cumulative_dividend,"
-            "c.liquidation_value_per_share,c.dividend_funding "
-            "FROM share_issuances s JOIN company c ON c.share_issuance_id=s.issuance_id "
-            "WHERE s.organization_code=? AND c.status='active' ORDER BY c.company_code", (row["organization_code"],)
-        ).fetchall()
-        item["issuances"] = [dict(issue) for issue in issues]
+        item["issuances"] = issues_by_org.get(str(row["organization_code"]), [])
         organizations.append(item)
     groups = conn.execute(
         "SELECT g.group_id,g.name,g.representative_organization_code,g.description,g.status,"
@@ -101,8 +122,7 @@ def directory(conn, organization_code=None, now=None, min_percent=1):
         if row[5]:
             group["members"].append(str(row[5]))
     result = {"organizations": organizations, "groups": list(group_map.values()), "sizeChanges": size_changes,
-              "sizeSettings": {"announcement_seconds": int(settings[0]) if settings else 0,
-                               "rules": json.loads(settings[1] or "{}") if settings else {}}}
+              "sizeSettings": {"announcement_seconds": announcement_seconds, "rules": rules}}
     if organization_code:
         result["graph"] = OrganizationManager.ownership_graph(conn, organization_code, min_percent=min_percent)
     return result
@@ -123,6 +143,11 @@ def action(conn, payload, actor, now=None):
             payload.get("active") is not False, now,
         )
         return {"action": kind, "organization_code": str(payload.get("organization_code"))}
+    if kind == "group_representative":
+        OrganizationManager.set_group_representative(
+            conn, payload.get("group_id"), payload.get("organization_code"), now,
+        )
+        return {"action": kind, "organization_code": payload.get("organization_code")}
     if kind == "size_override":
         code, size = str(payload.get("organization_code") or ""), payload.get("size")
         exists = conn.execute("SELECT 1 FROM organizations WHERE organization_code=?", (code,)).fetchone()

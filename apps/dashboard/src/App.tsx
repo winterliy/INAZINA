@@ -92,7 +92,7 @@ const message = (cause: unknown, fallback: string) => cause instanceof Error ? c
 
 // Each page (and each command category) has its own address: #instruments, #commands/거래소.
 function readRoute(): { page: Page; sub: string } {
-  const [head, ...rest] = decodeURIComponent(location.hash.replace(/^#\/?/, "")).split("/");
+  const [head, ...rest] = decodeURIComponent(location.hash.replace(/^#\/?/, "")).replace(/\/+$/, "").split("/");
   return { page: pages.some((item) => item.id === head) ? head as Page : "overview", sub: rest.join("/") };
 }
 const NATIONAL = "국가 명의", HELP = "도움말";

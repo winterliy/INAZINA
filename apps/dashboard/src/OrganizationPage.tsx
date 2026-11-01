@@ -21,15 +21,22 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
   const [data, setData] = useState<Directory | null>(null);
   const [selected, setSelected] = useState("");
   const [groupName, setGroupName] = useState("");
-  const [announcementSeconds, setAnnouncementSeconds] = useState("0");
-  const [thresholds, setThresholds] = useState<Record<string, [string, string]>>({});
+  const [announcementSeconds, setAnnouncementSeconds] = useState("604800");
+  const [thresholds, setThresholds] = useState<Record<string, [string, string]>>({
+    revenue: ["10000000000", "100000000000"], assets: ["10000000000", "100000000000"], employees: ["300", "1000"],
+  });
   const [ruleMode, setRuleMode] = useState("any");
   const [saving, setSaving] = useState(false);
   const load = useCallback(async (code: string) => {
     const next = await api<Directory>(`/api/admin/organizations${code ? `/${encodeURIComponent(code)}` : ""}`);
     setData(next);
-    setAnnouncementSeconds(String(next.sizeSettings.announcement_seconds));
-    setThresholds(Object.fromEntries(Object.entries(next.sizeSettings.rules.thresholds ?? {}).map(([key, limits]) => [key, [String(limits[0]), String(limits[1])] as [string, string]])));
+    const defaultThresholds: Record<string, [string, string]> = {
+      revenue: ["10000000000", "100000000000"], assets: ["10000000000", "100000000000"], employees: ["300", "1000"],
+    };
+    setAnnouncementSeconds(String(next.sizeSettings.announcement_seconds ?? 604800));
+    setThresholds(Object.keys(next.sizeSettings.rules.thresholds ?? {}).length
+      ? Object.fromEntries(Object.entries(next.sizeSettings.rules.thresholds ?? {}).map(([key, limits]) => [key, [String(limits[0]), String(limits[1])] as [string, string]]))
+      : defaultThresholds);
     setRuleMode(next.sizeSettings.rules.mode ?? "any");
   }, []);
   useEffect(() => { void load("").catch((error) => say(error instanceof Error ? error.message : "기업 정보를 불러오지 못했습니다.", true)); }, [load, say]);
@@ -115,22 +122,25 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
         <div className="organization-form-row"><Field label="새 기업집단"><input value={groupName} onChange={(event) => setGroupName(event.target.value)} maxLength={120} /></Field>
           <button type="button" disabled={saving || !groupName.trim()} onClick={() => void saveAction({ action: "group_create", name: groupName, representative: selected || null }, "기업집단을 만들었습니다.").then((ok) => { if (ok) setGroupName(""); })}>집단 만들기</button></div>
         <div>{data?.groups.map((group) => <section className="organization-inset" key={group.group_id}>
-          <strong>{group.name}</strong><small>대표 기업: {group.representative_organization_code || "미지정"}</small>
+          <strong>{group.name}</strong>
+          <Field label="대표기업"><select disabled={saving} value={group.representative_organization_code ?? ""} onChange={(event) => void saveAction({ action: "group_representative", group_id: group.group_id, organization_code: event.target.value || null }, "대표기업을 변경했습니다.")}>
+            <option value="">미지정</option>{group.members.map((code) => <option key={code} value={code}>{data?.organizations.find((org) => org.organization_code === code)?.name ?? code} ({code})</option>)}
+          </select></Field>
           <div className="chips">{group.members.map((code) => <button className="chip" type="button" key={code} onClick={() => { setSelected(code); void load(code); }}>{code} ×</button>)}</div>
           {selected && !group.members.includes(selected) && <button className="soft" type="button" disabled={saving} onClick={() => void saveAction({ action: "group_member", group_id: group.group_id, organization_code: selected, active: true }, `${selected} 기업을 집단에 추가했습니다.`)}>선택 기업 추가</button>}
           {selected && group.members.includes(selected) && <button className="soft" type="button" disabled={saving} onClick={() => void saveAction({ action: "group_member", group_id: group.group_id, organization_code: selected, active: false }, `${selected} 기업을 집단에서 제외했습니다.`)}>선택 기업 제외</button>}
         </section>)}</div>
       </Card>
-      <Card title="규모 분류 공시" caption="자동 판정에는 기준 통화 환산액을 저장하지 않고 요청 시점 환율로 계산합니다. 공시기간 0초는 즉시 적용입니다.">
+      <Card title="규모 분류 공시" caption="기본 공시기간 7일. 기준 통화 환산액은 저장하지 않고 요청 시점 환율로 계산합니다.">
         <div className="form-grid">
-          <Field label="변경 공시기간 (초)" hint="0은 즉시 적용"><input type="number" min="0" step="1" value={announcementSeconds} onChange={(event) => setAnnouncementSeconds(event.target.value)} /></Field>
+          <Field label="변경 공시기간 (초)" hint="기본값 604800초"><input type="number" min="0" step="1" value={announcementSeconds} onChange={(event) => setAnnouncementSeconds(event.target.value)} /></Field>
           <Field label="복수 기준 결합"><select value={ruleMode} onChange={(event) => setRuleMode(event.target.value)}><option value="any">기준 하나라도 초과하면 큰 구간</option><option value="all">모든 기준이 초과해야 큰 구간</option></select></Field>
           {(["revenue", "assets", "employees"] as const).map((key) => <div className="span-wide" key={key}><p className="sub-head">{key === "revenue" ? "연간 매출 (기준 통화)" : key === "assets" ? "자산 (기준 통화)" : "종업원 수"}</p><div className="organization-form-row">
             <Field label="중소기업 상한"><input inputMode="decimal" value={thresholds[key]?.[0] ?? ""} onChange={(event) => setThresholds((current) => ({ ...current, [key]: [event.target.value, current[key]?.[1] ?? ""] }))} /></Field>
             <Field label="중견기업 상한"><input inputMode="decimal" value={thresholds[key]?.[1] ?? ""} onChange={(event) => setThresholds((current) => ({ ...current, [key]: [current[key]?.[0] ?? "", event.target.value] }))} /></Field>
           </div></div>)}
         </div>
-        <p className="hint">기준은 제품 내 자동 분류 규칙이며 법정 기준이라고 표시하지 않습니다. 빈 지표는 판정에서 제외됩니다.</p>
+        <p className="hint">기본 기준은 매출·자산 중소 100억/중견 1,000억 NWX, 종업원 300/1,000명입니다. 종업원 수는 자료원이 연결되기 전까지 판정에서 제외됩니다. 제품 내 규칙이며 법정 기준이 아닙니다.</p>
         <button type="button" disabled={saving || !/^\d+$/.test(announcementSeconds)} onClick={() => {
           const configured = Object.fromEntries(Object.entries(thresholds).filter(([, limits]) => limits[0].trim() && limits[1].trim()));
           void saveAction({ action: "size_settings", announcement_seconds: Number(announcementSeconds), rules: { mode: ruleMode, thresholds: configured } }, "기업 규모 분류 설정을 저장했습니다.");

@@ -285,9 +285,27 @@ class OrganizationManager:
             "SELECT company_code,user_id FROM company_accounts"
         )}
         treasury_user_ids = {str(TREASURY_USER_ID)} | {str(row[0]) for row in conn.execute("SELECT user_id FROM country_treasuries")}
-        companies = {str(row[0]): str(row[1]) for row in conn.execute(
+        company_rows = {str(row[0]): str(row[1]) for row in conn.execute(
             "SELECT organization_code,name FROM organizations"
         )}
+        issue_rows = conn.execute(
+            "SELECT s.organization_code,c.company_code,c.name,c.total_shares,s.share_class,"
+            "s.voting_rights_per_share,s.economic_interest_per_share FROM share_issuances s "
+            "JOIN company c ON c.share_issuance_id=s.issuance_id WHERE c.status='active' "
+            "ORDER BY s.organization_code,c.company_code"
+        ).fetchall()
+        issues_by_org = defaultdict(list)
+        for row in issue_rows:
+            issues_by_org[str(row[0])].append(row)
+        holdings_by_issue = defaultdict(list)
+        for row in conn.execute(
+            "SELECT u.asset_code,u.user_id,u.quantity FROM user_assets u "
+            "JOIN company c ON c.company_code=u.asset_code "
+            "JOIN share_issuances s ON s.issuance_id=c.share_issuance_id WHERE c.status='active'"
+        ):
+            holdings_by_issue[str(row[0])].append((str(row[1]), Decimal(str(row[2] or 0))))
+        user_names = {str(row[0]): str(row[1] or row[0]) for row in conn.execute(
+            "SELECT user_id,nickname FROM users")}
         nodes = {}
         edge_map = {}
         attributions = {}
@@ -302,24 +320,15 @@ class OrganizationManager:
                 truncated = True
                 return
             expansion_count += 1
-            org = conn.execute(
-                "SELECT name FROM organizations WHERE organization_code=?", (code,)
-            ).fetchone()
-            if not org:
+            if code not in company_rows:
                 return
-            nodes["company:" + code] = {"id": "company:" + code, "kind": "company", "code": code, "name": str(org[0] or code)}
-            issues = conn.execute(
-                "SELECT c.company_code,c.name,c.total_shares,s.share_class,"
-                "s.voting_rights_per_share,s.economic_interest_per_share "
-                "FROM share_issuances s JOIN company c ON c.share_issuance_id=s.issuance_id "
-                ""
-                "WHERE s.organization_code=? ORDER BY c.company_code", (code,),
-            ).fetchall()
+            nodes["company:" + code] = {"id": "company:" + code, "kind": "company", "code": code, "name": company_rows[code] or code}
+            issues = issues_by_org.get(code, ())
             equity_total = Decimal(0)
             votes_total = Decimal(0)
             owner_amounts = defaultdict(lambda: [Decimal(0), Decimal(0)])
             for issue in issues:
-                issue_code, _, supply, _, vote_text, equity_text = issue
+                _, issue_code, _, supply, _, vote_text, equity_text = issue
                 supply = Decimal(str(supply or 0))
                 try:
                     vote_per_share = Decimal(str(vote_text))
@@ -329,11 +338,8 @@ class OrganizationManager:
                 if not supply.is_finite() or supply <= 0 or not vote_per_share.is_finite() or vote_per_share < 0 or not equity_per_share.is_finite() or equity_per_share < 0:
                     continue
                 holdings = defaultdict(Decimal)
-                for holder, quantity in conn.execute(
-                    "SELECT user_id,quantity FROM user_assets WHERE asset_code=?",
-                    (str(issue_code),),
-                ):
-                    holdings[str(holder)] += Decimal(str(quantity or 0))
+                for holder, quantity in holdings_by_issue.get(str(issue_code), ()):
+                    holdings[holder] += quantity
                 treasury_ids = treasury_user_ids | {user_id for user_id, issuer in accounts.items() if issuer == code}
                 own_treasury = sum((quantity for holder, quantity in holdings.items() if holder in treasury_ids), Decimal(0))
                 outstanding = max(Decimal(0), supply - own_treasury)
@@ -355,12 +361,11 @@ class OrganizationManager:
                 if parent_code:
                     node_id = "company:" + parent_code
                     nodes[node_id] = {"id": node_id, "kind": "company", "code": parent_code,
-                                      "name": companies.get(parent_code, parent_code)}
+                                      "name": company_rows.get(parent_code, parent_code)}
                 else:
                     node_id = "user:" + holder
-                    user = conn.execute("SELECT nickname FROM users WHERE user_id=?", (holder,)).fetchone()
                     nodes[node_id] = {"id": node_id, "kind": "user", "code": holder,
-                                      "name": str(user[0] or holder) if user else holder}
+                                      "name": user_names.get(holder, holder)}
                 display_candidates.append((node_id, holder, equity_ratio, votes_ratio, parent_code))
             display_candidates.sort(key=lambda item: (item[0].startswith("user:"), -max(item[2], item[3]), item[0]))
             if len(display_candidates) > max_children:
@@ -444,24 +449,27 @@ class OrganizationManager:
         return row["size_override"] or row["auto_size"]
 
     @classmethod
-    def refresh_auto_size(cls, conn, organization_code, metrics, now=None):
-        settings = conn.execute(
-            "SELECT rule_json FROM organization_size_settings WHERE singleton=1"
-        ).fetchone()
-        if not settings:
-            return {"status": "unconfigured", "size": None}
-        try:
-            rules = json.loads(settings[0] or "{}")
-        except (TypeError, ValueError):
-            raise ValueError("기업 규모 판정 설정을 읽을 수 없습니다.") from None
+    def refresh_auto_size(cls, conn, organization_code, metrics, now=None, rules=None, announcement_seconds=None):
+        if rules is None or announcement_seconds is None:
+            settings = conn.execute(
+                "SELECT announcement_seconds,rule_json FROM organization_size_settings WHERE singleton=1"
+            ).fetchone()
+            if not settings:
+                return {"status": "unconfigured", "size": None}
+            try:
+                loaded_rules = json.loads(settings[1] or "{}")
+            except (TypeError, ValueError):
+                raise ValueError("기업 규모 판정 설정을 읽을 수 없습니다.") from None
+            rules = loaded_rules if rules is None else rules
+            announcement_seconds = int(settings[0]) if announcement_seconds is None else announcement_seconds
         size = cls.classify_size(metrics, rules.get("thresholds", {}), rules.get("mode", "any"))
         if size is None:
             return {"status": "insufficient_data", "size": None}
-        result = cls.update_size_candidate(conn, organization_code, size, now)
+        result = cls.update_size_candidate(conn, organization_code, size, now, announcement_seconds)
         return {**result, "size": size}
 
     @staticmethod
-    def update_size_candidate(conn, organization_code, size, now=None):
+    def update_size_candidate(conn, organization_code, size, now=None, announcement_seconds=None):
         """Apply immediately or stage an auto-size change for its notice period."""
         if size not in {None, "sme", "mid_market", "large"}:
             raise ValueError("기업 규모를 확인해주세요.")
@@ -476,10 +484,13 @@ class OrganizationManager:
             previous = row[0]
             if size is not None and size == row[1]:
                 return {"status": "already_announced", "effective_epoch": row[2]}
-            settings = conn.execute(
-                "SELECT announcement_seconds FROM organization_size_settings WHERE singleton=1"
-            ).fetchone()
-            delay = int(settings[0]) if settings else 0
+            if announcement_seconds is None:
+                settings = conn.execute(
+                    "SELECT announcement_seconds FROM organization_size_settings WHERE singleton=1"
+                ).fetchone()
+                delay = int(settings[0]) if settings else 0
+            else:
+                delay = max(0, int(announcement_seconds))
             if size == previous:
                 conn.execute(
                     "UPDATE organizations SET pending_size=NULL,size_effective_epoch=NULL,updated_epoch=? "
@@ -521,12 +532,48 @@ class OrganizationManager:
         name = str(name).strip()
         if not name or len(name) > 120:
             raise ValueError("기업집단 이름은 1~120자로 입력해주세요.")
+        representative = str(representative).strip() if representative else None
         with conn:
+            if representative and not conn.execute(
+                "SELECT 1 FROM organizations WHERE organization_code=?", (representative,)
+            ).fetchone():
+                raise ValueError("대표 기업을 찾을 수 없습니다.")
+            if representative and conn.execute(
+                "SELECT 1 FROM organization_group_members WHERE organization_code=? AND left_epoch IS NULL",
+                (representative,),
+            ).fetchone():
+                raise ValueError("대표 기업이 이미 다른 기업집단에 소속되어 있습니다.")
             cursor = conn.execute(
                 "INSERT INTO organization_groups(name,representative_organization_code,description) "
                 "VALUES (?,?,?)", (name, representative, str(description)[:1000])
             )
-            return int(cursor.lastrowid)
+            group_id = int(cursor.lastrowid)
+            if representative:
+                conn.execute(
+                    "INSERT INTO organization_group_members(group_id,organization_code) VALUES (?,?)",
+                    (group_id, representative),
+                )
+            return group_id
+
+    @staticmethod
+    def set_group_representative(conn, group_id, organization_code, now=None):
+        group_id = int(group_id)
+        code = str(organization_code).strip() if organization_code else None
+        with conn:
+            group = conn.execute(
+                "SELECT 1 FROM organization_groups WHERE group_id=? AND status='active'", (group_id,)
+            ).fetchone()
+            if not group:
+                raise ValueError("활성 기업집단을 찾을 수 없습니다.")
+            if code and not conn.execute(
+                "SELECT 1 FROM organization_group_members WHERE group_id=? AND organization_code=? AND left_epoch IS NULL",
+                (group_id, code),
+            ).fetchone():
+                raise ValueError("대표 기업은 현재 집단 구성원 중에서 선택해주세요.")
+            conn.execute(
+                "UPDATE organization_groups SET representative_organization_code=?,updated_epoch=? WHERE group_id=?",
+                (code, int(time.time() if now is None else now), group_id),
+            )
 
     @staticmethod
     def set_group_member(conn, group_id, organization_code, active=True, now=None):
@@ -557,4 +604,9 @@ class OrganizationManager:
                     "UPDATE organization_group_members SET left_epoch=? "
                     "WHERE organization_code=? AND group_id=? AND left_epoch IS NULL",
                     (now, organization_code, group_id),
+                )
+                conn.execute(
+                    "UPDATE organization_groups SET representative_organization_code=NULL,updated_epoch=? "
+                    "WHERE group_id=? AND representative_organization_code=?",
+                    (now, group_id, organization_code),
                 )

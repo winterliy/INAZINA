@@ -229,7 +229,7 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
         <div><small>순자산</small><b>{detail ? number(detail.assets.net_worth) : "…"}</b></div>
       </div>
       <ListingControl key={`${company.company_code}:${company.exchange_id}:${company.listed_shares}`} ctx={ctx} company={company} onDone={() => void load()} />
-      {company.parents.length > 0 && <p className="hint">모회사(지분 보유 법인): {company.parents.map((parent) => `${parent.code} ${Number(parent.percent).toFixed(1)}%`).join(", ")}</p>}
+      {company.parents.length > 0 && <p className="hint">모회사(직접 의결권 과반): {company.parents.map((parent) => `${parent.code} ${Number(parent.percent).toFixed(1)}%`).join(", ")}</p>}
       <div className="pie-pair">
         <section><h3 className="sub-head">주주 구성</h3>{detail?.shareholders ? <ShareholderPie data={detail.shareholders} /> : <p className="empty">불러오는 중…</p>}</section>
         <section><h3 className="sub-head">보유 자산 구성</h3>{detail?.assets.stocks.length ? <HoldingsPie stocks={detail.assets.stocks} /> : <p className="empty">{detail ? "보유 자산이 없습니다." : "불러오는 중…"}</p>}</section>
@@ -314,7 +314,7 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
         {visible.map((item) => <tr key={item.company_code} className={item.company_code === selected ? "clickable selected" : "clickable"} tabIndex={0} onClick={() => void open(item.company_code).catch((cause) => say(cause instanceof Error ? cause.message : "법인을 열지 못했습니다.", true))} onKeyDown={(event) => { if (event.key === "Enter") void open(item.company_code); }}>
           <td className="mono">{item.company_code}</td><td>{item.name}</td><td>{item.exchange_id === UNLISTED ? <span className="tag">3DSG 장외</span> : show(item.exchange_id)}</td>
           <td className="r mono">{number(item.cash)}</td><td className="r">{number(item.holdings.length)}</td><td className="r">{number(item.accounts)}</td><td className="r mono">{number(item.loans)}</td>
-          <td>{item.parents.length ? item.parents.map((parent) => `${parent.code} ${Number(parent.percent).toFixed(1)}%`).join(", ") : "—"}</td>
+          <td>{item.parents.length ? item.parents.map((parent) => `${parent.code} 의결 ${Number(parent.percent).toFixed(1)}%`).join(", ") : "—"}</td>
         </tr>)}
       </tbody></table>{!visible.length && <p className="empty">거래 중인 법인이 없습니다.</p>}</div>
     </Card></>}

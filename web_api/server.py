@@ -3511,6 +3511,8 @@ def admin_company_journal_action(actor, code, payload):
         message = manager.manual(actor, code, note, [], reversal=int(payload.get("entryId")))
     elif action == "configure":
         message = manager.configure(actor, code, payload.get("config"))
+    elif action == "estimate":
+        message = manager.estimate_current_month(actor, code)
     elif action == "close":
         message = manager.close_period(actor, code, str(payload.get("period") or ""))
     else:
