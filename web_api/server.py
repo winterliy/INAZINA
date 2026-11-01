@@ -3097,6 +3097,10 @@ def admin_exchanges():
                 "SELECT i.company_code,i.previous_price,i.total_shares,c.name FROM market_exchange_index_components i "
                 "LEFT JOIN company c ON c.company_code=i.company_code WHERE i.exchange_id=? ORDER BY i.company_code",
                 (exchange,))] if _table_exists(connection, "market_exchange_index_components") else []
+            row["currency_pairs"] = [dict(item) for item in connection.execute(
+                "SELECT code,name,price,quote_currency,status FROM market_assets "
+                "WHERE exchange_id='CURRENCY' AND type='forex' AND status='active' ORDER BY code"
+            )] if exchange == "CURRENCY" else []
         countries = [row[0] for row in connection.execute("SELECT nationality FROM country_currencies ORDER BY nationality")]
     return {"exchanges": rows, "countries": countries}
 
@@ -3106,6 +3110,8 @@ def admin_exchange_action(actor, exchange_id, payload):
     exchange_id = str(exchange_id or "").strip()
     if not exchange_id or len(exchange_id) > 100 or re.search(r"\s", exchange_id):
         raise ValueError("거래소 ID는 공백 없이 1~100자로 입력해주세요.")
+    if exchange_id.upper() == "CURRENCY" and action in {"create", "nationality", "hours", "delete"}:
+        raise ValueError("CURRENCY는 환전 시스템 전용 거래소라 설정을 변경할 수 없습니다.")
     if action in {"open", "close", "pause", "resume", "circuit", "sidecar"}:
         stage = payload.get("stage")
         success, message = domain().market_session.control(actor, action, stage=stage, exchange_id=exchange_id)
