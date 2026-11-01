@@ -1200,6 +1200,47 @@ class CorporateActionsManager:
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f'❌ {exc}'
 
+    def retire_share_class(self, actor, code):
+        """Retire a preferred/custom class only after all holders and encumbrances clear."""
+        code = str(code)
+        now = int(time.time())
+        try:
+            with DBManager.admin_scope(actor), self.db.atomic() as conn:
+                self._require(conn, actor)
+                listing = self._listing(conn, code)
+                if listing['table'] != 'company' or listing['share_class'] != 'preferred':
+                    raise ValueError('보통주는 이 기능으로 폐지할 수 없습니다. 별도 기업 청산 절차를 사용해주세요.')
+                if listing['status'] != 'active':
+                    raise ValueError('이미 거래가 중지된 주식 종류입니다.')
+                if conn.execute("SELECT 1 FROM depositary_receipts WHERE underlying_code=? AND program_status<>'terminated' LIMIT 1", (code,)).fetchone():
+                    raise ValueError('미종료 DR 프로그램을 먼저 상환하고 종료해주세요.')
+                if conn.execute('SELECT 1 FROM user_assets WHERE asset_code=? LIMIT 1', (code,)).fetchone():
+                    raise ValueError('보유자가 남아 있어 주식 종류를 폐지할 수 없습니다. 먼저 보유 수량을 정산해주세요.')
+                self._unencumbered(conn, [code], allow_orders=False)
+                if conn.execute("SELECT 1 FROM market_orders WHERE asset_code=? AND status='scheduled' LIMIT 1", (code,)).fetchone():
+                    raise ValueError('예약 주문을 먼저 취소해주세요.')
+                if conn.execute("SELECT 1 FROM shareholder_registers WHERE asset_code=? AND status='closed' LIMIT 1", (code,)).fetchone():
+                    raise ValueError('지급 대기 중인 주주명부가 있어 배당 지급을 먼저 완료해주세요.')
+                if conn.execute("SELECT 1 FROM preferred_dividend_claims WHERE asset_code=? AND status IN ('unpaid','partial') LIMIT 1", (code,)).fetchone():
+                    raise ValueError('미지급 누적 배당이 있어 청구를 먼저 정산해주세요.')
+                if conn.execute('SELECT 1 FROM dividend_distributions WHERE asset_code=? AND deferred_amount>0 LIMIT 1', (code,)).fetchone():
+                    raise ValueError('이연 배당금이 남아 있어 먼저 정산해주세요.')
+                if conn.execute('SELECT 1 FROM fund_components WHERE asset_code=? LIMIT 1', (code,)).fetchone():
+                    raise ValueError('펀드 구성 종목에서 제거한 뒤 폐지해주세요.')
+                if conn.execute('SELECT 1 FROM market_exchange_index_components WHERE company_code=? LIMIT 1', (code,)).fetchone():
+                    raise ValueError('거래소 지수 구성 종목에서 제거한 뒤 폐지해주세요.')
+                conn.execute(
+                    "UPDATE company SET status='inactive',total_shares=0,listed_shares=0,"
+                    "max_shareholder_id=NULL,dividend_next_epoch=NULL WHERE company_code=?", (code,)
+                )
+                self._reset_market_state(conn, code)
+                self._record(conn, 'retire-class:' + uuid.uuid4().hex, 'share_class_retirement',
+                             code, listing.get('parent_company_code'),
+                             {'class_name': listing.get('name'), 'cancelled_shares': int(listing.get('total_shares') or 0)}, now)
+            return True, f'✅ `{code}` 주식 종류를 폐지했습니다. 보유·주문·계약이 없어 기존 보통주에는 영향이 없습니다.'
+        except (ValueError, TypeError, OverflowError) as exc:
+            return False, f'❌ {exc}'
+
     def change_capital(self, actor, direction, mode, code, quantity, issue_price=None):
         """Unified capital-change entry point; reductions use a reverse split."""
         direction, mode = str(direction).strip(), str(mode).strip()
