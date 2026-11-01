@@ -19,6 +19,29 @@ function decimal({ units, scale }: Decimal): string {
   return sign + (scale ? raw.slice(0, -scale) + "." + raw.slice(-scale) : raw);
 }
 export const exactMoney = (value: Money): string => decimal(parseMoney(value));
+/** Format share counts without exposing long repeating precision from path estimates. */
+export function formatQuantity(value: Money, maxFractionDigits = 2): string {
+  try {
+    if (!Number.isInteger(maxFractionDigits) || maxFractionDigits < 0 || maxFractionDigits > 100) {
+      throw new Error("유효하지 않은 소수 자릿수입니다.");
+    }
+    let { units, scale } = parseMoney(value);
+    if (scale > maxFractionDigits) {
+      const divisor = 10n ** BigInt(scale - maxFractionDigits);
+      const negative = units < 0n;
+      const absolute = negative ? -units : units;
+      const rounded = (absolute + divisor / 2n) / divisor;
+      units = negative ? -rounded : rounded;
+      scale = maxFractionDigits;
+    }
+    const [whole, fraction] = decimal({ units, scale }).split(".");
+    const trimmedFraction = fraction?.replace(/0+$/, "");
+    const groupedWhole = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    return groupedWhole + (trimmedFraction ? `.${trimmedFraction}` : "");
+  } catch {
+    return String(value ?? "—");
+  }
+}
 export function minorMoney(value: Money, places: number): string {
   const parsed = parseMoney(value);
   return decimal({ units: parsed.units, scale: parsed.scale + places });
@@ -55,6 +78,28 @@ export function formatMoney(value: Money, _digits = 6): string {
     const magnitude = exactMoney(minorMoney(whole, 16).replace(/(\.\d{4})\d+$/, '$1'));
     return `${magnitude}경 (${grouped})`;
   } catch { return String(value ?? '—'); }
+}
+
+/** Format a native currency amount at its declared minor-unit precision. */
+export function formatMoneyFixed(value: Money, digits = 0): string {
+  try {
+    if (!Number.isInteger(digits) || digits < 0 || digits > 6) throw new Error("유효하지 않은 통화 정밀도입니다.");
+    const parsed = parseMoney(value);
+    const targetScale = Math.max(parsed.scale, digits);
+    let units = parsed.units * 10n ** BigInt(targetScale - parsed.scale);
+    if (targetScale > digits) {
+      const divisor = 10n ** BigInt(targetScale - digits);
+      const absolute = units < 0n ? -units : units;
+      const rounded = (absolute + divisor / 2n) / divisor;
+      units = units < 0n ? -rounded : rounded;
+    }
+    const fixed = decimal({ units, scale: digits });
+    const [whole, fraction] = fixed.split(".");
+    const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    return digits ? `${grouped}.${fraction}` : grouped;
+  } catch {
+    return String(value ?? "—");
+  }
 }
 
 /** Decimal division rounded once to the requested currency precision. */

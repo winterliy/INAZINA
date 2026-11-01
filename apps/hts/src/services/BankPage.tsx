@@ -1,13 +1,48 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import { api } from "../../../shared/api";
+import { formatMoneyFixed, moneyCompare, type Money } from "../../../shared/money";
 import { accountBalance, accountLabel, type Result } from "../commandKit";
 import { Outcome, won, type ServiceProps } from "./ServiceKit";
 
 type Tab = "accounts" | "savings" | "loans";
 type Open = { kind: "join" | "close" | "borrow" | "repay"; key: string } | null;
+type WalletEvent = { entryId: number; epoch: number; currency: string; decimalPlaces: number; amount: Money; balance: Money; label: string; detail: string; counterpart: string | null; counterpartUserId: string | null };
+
+function WalletStatement({ sourceType, sourceAccount }: { sourceType: "cash" | "account"; sourceAccount: string }) {
+  const [open, setOpen] = useState(false);
+  const [events, setEvents] = useState<WalletEvent[] | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!open || events) return;
+    let cancelled = false;
+    const query = new URLSearchParams({ sourceType, sourceAccount });
+    api<{ events: WalletEvent[] }>(`/api/me/wallet-history?${query}`)
+      .then((result) => { if (!cancelled) setEvents(result.events); })
+      .catch((cause) => { if (!cancelled) setError(cause instanceof Error ? cause.message : "거래 이력을 불러오지 못했습니다."); });
+    return () => { cancelled = true; };
+  }, [open, sourceType, sourceAccount, events]);
+  const date = (epoch: number) => new Date(epoch * 1000).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" });
+  return <div className="wallet-statement">
+    <button type="button" className="wallet-statement-toggle" aria-expanded={open} onClick={() => setOpen((value) => !value)}>{open ? "거래 이력 닫기" : "거래 이력 보기"}</button>
+    {open && <div className="wallet-statement-list">
+      {error && <p className="account-error" role="alert">{error}</p>}
+      {!events && !error && <p className="svc-hint">불러오는 중…</p>}
+      {events?.map((event) => <div className="wallet-statement-row" key={event.entryId}>
+        <time>{date(event.epoch)}</time>
+        <span><b>{event.label}</b><small>{event.detail}{event.counterpart ? ` · ${event.counterpart}` : ""}{event.counterpartUserId ? ` · 사용자 ID ${event.counterpartUserId}` : ""}</small></span>
+        <strong className={moneyCompare(event.amount, 0) >= 0 ? "plus" : "minus"}>
+          <span className="wallet-statement-amount">{moneyCompare(event.amount, 0) > 0 ? "+" : ""}{formatMoneyFixed(event.amount, event.decimalPlaces)} <small>{event.currency}</small></span>
+          <small>잔액 {formatMoneyFixed(event.balance, event.decimalPlaces)} {event.currency}</small>
+        </strong>
+      </div>)}
+      {events && !events.length && <p className="svc-empty">이 지갑에 기록된 거래가 없습니다.</p>}
+    </div>}
+  </div>;
+}
 
 /** 은행: 내 통장, 예금·적금 가입, 대출 — product cards instead of command forms. */
-export function BankPage({ kit, homeCurrency, creditScore }: ServiceProps) {
+export function BankPage({ kit, userId, cash, homeCurrency, homeDigits, creditScore }: ServiceProps) {
   const [tab, setTab] = useState<Tab>("accounts");
   const [open, setOpen] = useState<Open>(null);
   const [form, setForm] = useState<Record<string, string>>({});
@@ -33,10 +68,17 @@ export function BankPage({ kit, homeCurrency, creditScore }: ServiceProps) {
     </div>
 
     {tab === "accounts" && <section className="svc-list">
+      <article className="svc-row-card">
+        <div><small>현금 지갑 · 기본 계정</small><b className="mono">{userId}</b></div>
+        <strong>{won(cash, homeDigits)} <small>{homeCurrency}</small></strong>
+        <span className="svc-wallet-kind">유저 ID 지갑</span>
+        <WalletStatement sourceType="cash" sourceAccount={userId} />
+      </article>
       {accounts.map((account) => <article key={account.account_number} className="svc-row-card">
         <div><small>{accountLabel(account.quote_currency, homeCurrency, "저축")} · {account.product_code}</small><b className="mono">{account.account_number}</b></div>
         <strong>{won(accountBalance(account), 2)} <small>{account.quote_currency}</small></strong>
         <div className="svc-row-actions"><a href={`/transfer`}>이체</a><button type="button" onClick={() => toggle({ kind: "close", key: account.account_number })}>해지</button></div>
+        <WalletStatement sourceType="account" sourceAccount={account.account_number} />
         {open?.kind === "close" && open.key === account.account_number && <form className="svc-inline" onSubmit={(event) => submit(event, "계좌해지", { account: account.account_number, password: form.password ?? "", destination: form.destination ?? "" })}>
           {field("password", "계좌 비밀번호", { type: "password", required: true, autoComplete: "off" })}
           <label className="svc-field">잔액 받을 곳<select value={form.destination ?? ""} onChange={(event) => setForm({ ...form, destination: event.target.value })}><option value="">내 지갑</option>{accounts.filter((other) => other.account_number !== account.account_number).map((other) => <option key={other.account_number} value={other.account_number}>{other.product_code} {other.account_number}</option>)}</select></label>

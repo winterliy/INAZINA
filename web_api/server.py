@@ -2547,14 +2547,148 @@ def _locate_product(connection, code, kind=None):
 
 
 def _shareholders(connection, code):
-    """Who holds an asset, largest first, and the company's issued shares when it is one."""
+    """Aggregate holders across every share class issued by this organization."""
+    company = connection.execute(
+        "SELECT c.share_issuance_id,s.organization_code FROM company c "
+        "LEFT JOIN share_issuances s ON s.issuance_id=c.share_issuance_id "
+        "WHERE c.company_code=?", (code,),
+    ).fetchone()
+    asset_codes = [str(code)]
+    total_shares = 0
+    if company and company[1]:
+        issues = connection.execute(
+            "SELECT c.company_code,c.total_shares FROM share_issuances s "
+            "JOIN company c ON c.share_issuance_id=s.issuance_id "
+            "WHERE s.organization_code=? ORDER BY c.company_code", (company[1],),
+        ).fetchall()
+        if issues:
+            asset_codes = [str(row[0]) for row in issues]
+            total_shares = sum(float(row[1] or 0) for row in issues)
+    if not total_shares:
+        total = connection.execute("SELECT total_shares FROM company WHERE company_code=?", (code,)).fetchone()
+        total_shares = float(total[0] or 0) if total else 0
+    placeholders = ",".join("?" for _ in asset_codes)
     holders = connection.execute(
-        "SELECT a.user_id,COALESCE(u.nickname,a.user_id) AS name,SUM(a.quantity) AS quantity FROM user_assets a "
-        "LEFT JOIN users u ON u.user_id=a.user_id WHERE a.asset_code=? GROUP BY a.user_id "
-        "HAVING SUM(a.quantity)>0 ORDER BY quantity DESC", (code,)).fetchall()
-    total = connection.execute("SELECT total_shares FROM company WHERE company_code=?", (code,)).fetchone()
-    return {"totalShares": float(total[0] or 0) if total else 0,
-            "holders": [{"userId": row[0], "name": row[1], "quantity": float(row[2])} for row in holders]}
+        "SELECT a.user_id,COALESCE(NULLIF(u.nickname,''),a.user_id) AS name,SUM(a.quantity) AS quantity "
+        "FROM user_assets a LEFT JOIN users u ON u.user_id=a.user_id "
+        f"WHERE a.asset_code IN ({placeholders}) GROUP BY a.user_id "
+        "HAVING SUM(a.quantity)>0 ORDER BY quantity DESC", asset_codes,
+    ).fetchall()
+    result = {"totalShares": total_shares,
+              "holders": [{"userId": row[0], "name": row[1], "quantity": float(row[2])} for row in holders]}
+    if company and company[1]:
+        result.update(_company_voting_distributions(connection, str(company[1])))
+    return result
+
+
+def _company_voting_distributions(connection, root_code):
+    """Build direct and ultimate voting-right distributions across share classes."""
+    from collections import defaultdict
+
+    organization_for_account = {}
+    issuer_account_for_org = {}
+    org_names = {str(row[0]): str(row[1] or row[0]) for row in connection.execute(
+        "SELECT organization_code,name FROM organizations")}
+    for row in connection.execute(
+        "SELECT ca.user_id,s.organization_code FROM company_accounts ca "
+        "JOIN company c ON c.company_code=ca.company_code "
+        "JOIN share_issuances s ON s.issuance_id=c.share_issuance_id"):
+        organization_for_account[str(row[0])] = str(row[1])
+        issuer_account_for_org.setdefault(str(row[1]), str(row[0]))
+    treasury_ids = {str(TREASURY_USER_ID)} | {str(row[0]) for row in connection.execute(
+        "SELECT user_id FROM country_treasuries")}
+    names = {str(row[0]): str(row[1] or row[0]) for row in connection.execute(
+        "SELECT user_id,nickname FROM users")}
+    cache = {}
+
+    def organization_votes(org_code):
+        if org_code in cache:
+            return cache[org_code]
+        totals = Decimal(0)
+        holders = defaultdict(Decimal)
+        names_for_holders = {}
+        for row in connection.execute(
+            "SELECT c.company_code,c.total_shares,s.voting_rights_per_share "
+            "FROM share_issuances s JOIN company c ON c.share_issuance_id=s.issuance_id "
+            "WHERE s.organization_code=?", (org_code,)):
+            asset_code, supply_raw, votes_raw = row
+            try:
+                supply, votes_per_share = Decimal(str(supply_raw or 0)), Decimal(str(votes_raw or 0))
+            except Exception:
+                continue
+            if not supply.is_finite() or not votes_per_share.is_finite() or supply <= 0 or votes_per_share <= 0:
+                continue
+            issue_holders = defaultdict(Decimal)
+            for lot in connection.execute(
+                "SELECT a.user_id,SUM(a.quantity),COALESCE(NULLIF(u.nickname,''),a.user_id) "
+                "FROM user_assets a LEFT JOIN users u ON u.user_id=a.user_id "
+                "WHERE a.asset_code=? GROUP BY a.user_id", (str(asset_code),)):
+                try:
+                    quantity = Decimal(str(lot[1] or 0))
+                except Exception:
+                    continue
+                if quantity.is_finite() and quantity > 0:
+                    issue_holders[str(lot[0])] += quantity
+                    names_for_holders[str(lot[0])] = str(lot[2] or lot[0])
+            excluded = sum((qty for holder, qty in issue_holders.items()
+                            if holder in treasury_ids or holder == issuer_account_for_org.get(org_code)), Decimal(0))
+            totals += max(Decimal(0), supply - excluded) * votes_per_share
+            for holder, quantity in issue_holders.items():
+                if holder not in treasury_ids and holder != issuer_account_for_org.get(org_code):
+                    holders[holder] += quantity * votes_per_share
+        cache[org_code] = (totals, dict(holders), names_for_holders)
+        return cache[org_code]
+
+    total_votes, direct_holders, direct_names = organization_votes(root_code)
+    direct_held = sum(direct_holders.values(), Decimal(0))
+    direct_unissued = max(Decimal(0), total_votes - direct_held)
+    direct = [{"userId": holder, "name": direct_names.get(holder, names.get(holder, holder)),
+               "votingRights": str(amount)}
+              for holder, amount in sorted(direct_holders.items(), key=lambda pair: (-pair[1], pair[0]))]
+    if direct_unissued:
+        direct.append({"userId": "__unissued__", "name": "미보유(유통 전)",
+                       "votingRights": str(direct_unissued)})
+
+    effective = defaultdict(Decimal)
+    effective_names = {}
+    residue = Decimal(0)
+    trace_count = 0
+
+    def trace(org_code, path, weight):
+        nonlocal residue, trace_count
+        trace_count += 1
+        if trace_count > 50000:
+            residue += weight
+            return
+        denominator, owners, owner_names = organization_votes(org_code)
+        if denominator <= 0:
+            residue += weight
+            return
+        held = sum(owners.values(), Decimal(0))
+        residue += weight * max(Decimal(0), denominator - held) / denominator
+        for holder, votes in owners.items():
+            portion = weight * votes / denominator
+            next_org = organization_for_account.get(holder)
+            if not next_org:
+                effective[holder] += portion
+                effective_names[holder] = owner_names.get(holder, names.get(holder, holder))
+            elif next_org in path or len(path) >= 8:
+                label = org_names.get(next_org, next_org)
+                effective[f"__loop__:{next_org}"] += portion
+                effective_names[f"__loop__:{next_org}"] = "순환·하위 법인 보유 · " + label
+            else:
+                trace(next_org, path | {next_org}, portion)
+
+    if total_votes > 0:
+        trace(root_code, {root_code}, total_votes)
+    effective_rows = [{"userId": holder, "name": effective_names.get(holder, holder),
+                       "votingRights": str(amount)}
+                      for holder, amount in sorted(effective.items(), key=lambda pair: (-pair[1], pair[0]))]
+    if residue:
+        effective_rows.append({"userId": "__unattributed__", "name": "미보유·간접 의결권 미귀속",
+                               "votingRights": str(residue)})
+    return {"totalVotingRights": str(total_votes), "votingHolders": direct,
+            "effectiveVotingHolders": effective_rows}
 
 
 def product_detail(code):
@@ -3498,6 +3632,106 @@ def user_history(user_id, limit=150):
     return events[:limit]
 
 
+def user_wallet_history(user_id, source_type, source_account, limit=150):
+    """Statement for one account or the user's ID-backed cash wallet."""
+    owner = trading_user_id(user_id)
+    source_type = str(source_type or "")
+    source_account = str(source_account or "")
+    if source_type not in {"cash", "account"} or not source_account:
+        raise ValueError("invalid_wallet")
+    with connect_readonly() as connection:
+        if source_type == "cash":
+            if source_account != owner:
+                raise ValueError("wallet_not_found")
+        elif not connection.execute(
+            "SELECT 1 FROM accounts WHERE account_number=? AND user_id=?",
+            (source_account, owner),
+        ).fetchone():
+            raise ValueError("wallet_not_found")
+        rows = connection.execute(
+            "SELECT entry_id,recorded_epoch,currency_code,decimal_places,delta_minor_units,"
+            "balance_minor_units FROM customer_wallet_ledger "
+            "WHERE user_id=? AND source_type=? AND source_account=? "
+            "ORDER BY recorded_epoch DESC,entry_id DESC LIMIT ?",
+            (owner, source_type, source_account, max(1, min(500, int(limit)))),
+        ).fetchall()
+        tables = {row[0] for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        from decimal import Decimal
+        from functions.exact_money import native_value
+
+        events = []
+        for row in rows:
+            entry_id = int(row["entry_id"])
+            epoch = int(row["recorded_epoch"])
+            delta = int(row["delta_minor_units"])
+            currency = str(row["currency_code"])
+            label = "입금" if delta > 0 else "출금"
+            detail = "현금 지갑 잔액 변동" if source_type == "cash" else "통장 잔액 변동"
+            counterpart = None
+            counterpart_id = None
+            if "dividend_payment_wallet_links" in tables:
+                dividend = connection.execute(
+                    "SELECT d.asset_code,d.dividend_kind FROM dividend_payment_wallet_links l "
+                    "JOIN dividend_payments p USING(payment_id) "
+                    "JOIN dividend_distributions d USING(distribution_id) "
+                    "WHERE l.wallet_entry_id=?", (entry_id,),
+                ).fetchone()
+                if dividend:
+                    label = "배당"
+                    detail = f"{dividend['asset_code']} · {'특별배당' if dividend['dividend_kind']=='special' else '정기배당'}"
+            if "market_execution_wallet_links" in tables:
+                trade = connection.execute(
+                    "SELECT e.asset_code,e.quantity,e.buyer_id,e.seller_id FROM market_execution_wallet_links l "
+                    "JOIN market_execution_events e USING(execution_key) WHERE l.wallet_entry_id=?",
+                    (entry_id,),
+                ).fetchone()
+                if trade:
+                    bought = str(trade["buyer_id"]) == owner
+                    label = "매수" if bought else "매도"
+                    detail = f"{trade['asset_code']} · {native_value(trade['quantity'])}주"
+                    counterpart_id = str(trade["seller_id"] if bought else trade["buyer_id"] or "") or None
+            if "currency_transfer_transactions" in tables:
+                transfer = connection.execute(
+                    "SELECT t.sender_id,t.recipient_id,t.source_currency,t.target_currency "
+                    "FROM currency_transfer_transactions t WHERE "
+                    "((t.sender_id=? AND COALESCE(t.source_account,t.sender_id)=? AND -t.source_units=?) OR "
+                    "(t.recipient_id=? AND COALESCE(t.target_account,t.recipient_id)=? AND t.target_units=?)) "
+                    "AND ABS(t.recorded_epoch-?)<=2 "
+                    "ORDER BY ABS(t.recorded_epoch-?) LIMIT 1",
+                    (owner, source_account, delta, owner, source_account, delta, epoch, epoch),
+                ).fetchone()
+                if transfer and label not in {"배당", "매수", "매도"}:
+                    outgoing = str(transfer["sender_id"]) == owner
+                    label = "송금" if outgoing else "송금 수령"
+                    counterpart_id = str(transfer["recipient_id"] if outgoing else transfer["sender_id"])
+                    counterpart = connection.execute(
+                        "SELECT COALESCE(NULLIF(nickname,''),user_id) FROM users WHERE user_id=?",
+                        (counterpart_id,),
+                    ).fetchone()
+                    counterpart = counterpart[0] if counterpart else counterpart_id
+                    detail = f"{transfer['source_currency']} → {transfer['target_currency']}"
+            if "basic_income_payments" in tables and label in {"입금", "출금"}:
+                income = connection.execute(
+                    "SELECT 1 FROM basic_income_payments WHERE user_id=? AND target_currency=? "
+                    "AND target_units=? AND ABS(recorded_epoch-?)<=2 LIMIT 1",
+                    (owner, currency, delta, epoch),
+                ).fetchone()
+                if income and delta > 0:
+                    label, detail, counterpart = "기본소득", "국고 지급", "국고"
+            events.append({
+                "entryId": entry_id, "epoch": epoch, "sourceType": source_type,
+                "sourceAccount": source_account, "currency": currency,
+                "decimalPlaces": int(row["decimal_places"]),
+                "amount": str(Decimal(delta) / Decimal(1_000_000)),
+                "balance": str(Decimal(int(row["balance_minor_units"])) / Decimal(1_000_000)),
+                "label": label, "detail": detail, "counterpart": counterpart,
+                "counterpartUserId": counterpart_id,
+            })
+    return {"userId": owner, "sourceType": source_type, "sourceAccount": source_account,
+            "events": events}
+
+
 def _load_organization_graph(code, min_percent):
     from web_api.organizations import ownership_graph
     with connect_db(timeout=5) as connection:
@@ -3644,7 +3878,7 @@ def user_lookups(user):
             return [dict(row) for row in connection.execute(sql, params)] if _table_exists(connection, sql.split(" FROM ")[1].split()[0]) else []
         return {
             "savingProducts": rows("SELECT product_code AS code,name,interest_rate,deposit_amount,maturity_days,quote_currency,product_kind FROM saving WHERE status='active' ORDER BY product_kind,name"),
-            "loanProducts": rows("SELECT product_code AS code,name,interest_rate,loan_limit,maturity_days,min_credit_score,quote_currency FROM liability WHERE status='active' ORDER BY name"),
+            "loanProducts": rows("SELECT product_code AS code,name,interest_rate,loan_limit,maturity_days,min_credit_score,quote_currency FROM liability WHERE status='active' AND issuer<>'국립정책금융공사' ORDER BY name"),
             "accounts": [_masked(row) for row in rows("SELECT account_number,product_code,account_type,quote_currency,balance,balance_units FROM accounts WHERE user_id=? ORDER BY account_number", (trader,))],
             "loans": rows("SELECT loan_id,product_code,outstanding_balance,quote_currency,maturity_epoch,status FROM loans WHERE user_id=? AND outstanding_balance>0 ORDER BY loan_id", (trader,)),
             "futures": rows("SELECT product_code AS code,name FROM investment WHERE product_type='stock_future' AND status='active' ORDER BY name"),
@@ -3766,6 +4000,12 @@ class Handler(BaseHTTPRequestHandler):
                 from web_api.search_indicators import search_indicators
                 with connect_readonly() as connection:
                     self.send_json(200, search_indicators(connection, parse_qs(parsed.query).get("search", [""])[0]))
+            elif path == "/internal/search-indicator-chart":
+                from web_api.search_indicators import search_indicator_chart
+                query = parse_qs(parsed.query)
+                with connect_readonly() as connection:
+                    self.send_json(200, search_indicator_chart(
+                        connection, query.get("kind", [""])[0], query.get("key", [""])[0]))
             elif path == "/internal/me":
                 user_id = internal_user_id(self)
                 user = identity(user_id)
@@ -3893,6 +4133,16 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     self.send_json(200, {"events": user_history(user["userId"])})
+            elif path == "/internal/me/wallet-history":
+                user = identity(internal_user_id(self))
+                if not user:
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    query = parse_qs(parsed.query)
+                    self.send_json(200, user_wallet_history(
+                        user["userId"], query.get("sourceType", [""])[0],
+                        query.get("sourceAccount", [""])[0],
+                    ))
             elif path == "/internal/me/dividend-payments":
                 user = identity(internal_user_id(self))
                 if not user:

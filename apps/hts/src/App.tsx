@@ -36,7 +36,6 @@ type LoanSchedule = { schedule_id: number; installment_number: number; due_epoch
 type LoanRateReset = { old_rate: number; new_rate: number; scheduled_epoch: number; applied_epoch: number; benchmark_key: string; benchmark_tenor_days: number };
 const RATE_BENCHMARK_LABELS: Record<string, string> = { policy: "정책금리", funding: "조달금리", bank_bond: "은행채 수익률", treasury: "국채 수익률" };
 type LoanScheduleView = { loan_id: number; product_code: string; quote_currency: string; decimal_places: number; outstanding_balance: Money; status: string; rate_type: string; contract_rate: number | null; next_repricing_epoch: number | null; benchmark_key: string | null; benchmark_tenor_days: number; repricing_lag_seconds: number; collection_status: string; maturity_epoch: number | null; stage_cure_since_epoch: number | null; underwriting_dsr: number | null; underwriting_stress_dsr: number | null; underwriting_stress_shock_bps: number; underwriting_fx_stress_shock_percent: number; origination_pd_12m: number | null; current_ecl_stage: number | null; current_ecl_pd_12m: number | null; installments: LoanSchedule[]; rate_resets: LoanRateReset[] };
-type DividendPayment = { payment_id: number; asset_code: string; dividend_kind: "regular" | "special"; quantity: number; gross_amount: Money; tax_amount: Money; net_amount_units: Money; quote_currency: string; decimal_places: number; created_epoch: number; allocation_key?: string; dr_code?: string | null; rule_id?: number | null; treaty_code?: string | null; tax_rate_percent?: string | null };
 type TaxResidency = { nationality: string | null; taxResidency: string | null; countries: string[] };
 type Holding = { code: string; name: string; qty: number; price: Money; value: Money; type: string | null; quote_currency?: string; sell_reserved_qty?: number; is_collateral?: boolean };
 type CreditFactor = { key: string; label: string; points: number };
@@ -63,7 +62,7 @@ const CREDIT_TIPS: Record<string, string> = {
   acceleration: "기한이익상실 기록은 시간이 지나며 줄어듭니다. 정상 납부 실적이 회복을 돕습니다.",
   default: "부도 기록은 시간이 지나며 줄어듭니다. 남은 잔액 상환과 정상 납부가 회복을 돕습니다.",
   debt_burden: "대출 잔액을 줄이거나 연소득 정보를 갱신하면 부채수준 요인이 개선됩니다.",
-  new_credit: "짧은 기간에 대출을 여러 건 받지 않으면 2주 뒤 회복됩니다.",
+  new_credit: "짧은 기간에 대출을 여러 건 받지 않으면 5일 뒤 회복됩니다.",
   legacy: "도입 전 감점은 시간이 지나며 줄어듭니다.",
 };
 const signedPoints = (value: number) => `${value > 0 ? "+" : ""}${Math.round(value * 10) / 10}`;
@@ -175,7 +174,6 @@ export default function App() {
   const [drVotingAgenda, setDrVotingAgenda] = useState<DrVotingAgenda[]>([]);
   const [loanSchedules, setLoanSchedules] = useState<LoanScheduleView[]>([]);
   const [credit, setCredit] = useState<CreditReport | null>(null);
-  const [dividendPayments, setDividendPayments] = useState<DividendPayment[]>([]);
   const [orderFilter, setOrderFilter] = useState<"open" | "all">("open");
   const [book, setBook] = useState<Book>({ bids: [], asks: [] });
   const [side, setSide] = useState<"buy" | "sell">("buy");
@@ -221,11 +219,10 @@ export default function App() {
 
   const userRole = user?.role;
   const refreshAccount = useCallback(async () => {
-    const [wallet, orderData, loanData, dividendData, custodyData] = await Promise.all([
+    const [wallet, orderData, loanData, custodyData] = await Promise.all([
       api<{ portfolio: Portfolio }>("/api/me/portfolio"),
       api<{ orders: Order[] }>("/api/market/orders"),
       api<{ loans: LoanScheduleView[] }>("/api/me/loan-schedules"),
-      api<{ payments: DividendPayment[] }>("/api/me/dividend-payments"),
       api<{ instructions: DrCustodyInstruction[] }>("/api/me/dr/conversions"),
     ]);
     // Tax residency exists only for ordinary user accounts (the server refuses admin, nation and
@@ -242,7 +239,6 @@ export default function App() {
     setPortfolio(wallet.portfolio);
     setOrders(orderData.orders);
     setLoanSchedules(loanData.loans);
-    setDividendPayments(dividendData.payments);
     setDrCustodyInstructions(custodyData.instructions);
   }, [userRole]);
 
@@ -625,7 +621,7 @@ export default function App() {
     <Backdrop />
     {topbar("services")}
     <Suspense fallback={<p className="svc-empty">불러오는 중…</p>}>
-      <ServicesApp path={service} instruments={instruments} portfolio={portfolio} orders={orders} homeCurrency={homeCurrency} homeDigits={homeDigits} cash={portfolio?.cash ?? user.cash} creditScore={credit?.score ?? user.creditScore} accounts={portfolio?.accounts ?? []} onDone={() => void refreshAccount().catch(() => undefined)} />
+      <ServicesApp path={service} instruments={instruments} portfolio={portfolio} orders={orders} userId={user.userId} homeCurrency={homeCurrency} homeDigits={homeDigits} cash={portfolio?.cash ?? user.cash} creditScore={credit?.score ?? user.creditScore} accounts={portfolio?.accounts ?? []} onDone={() => void refreshAccount().catch(() => undefined)} />
     </Suspense>
     <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
   </div>;
@@ -825,13 +821,6 @@ export default function App() {
             </span>
           </div>)}</div>
           <p className="orders-hint">회차별 계약상 배분 내역입니다. 회차 잔액을 넘는 초과상환 및 경과·연체이자 별도 원장은 표시하지 않습니다.</p>
-        </section>}
-        {dividendPayments.length > 0 && <section className="data-panel holdings-panel"><div className="panel-title"><h2>최근 배당 수령</h2><span>최근 {dividendPayments.length}건</span></div>
-          <div className="holdings">{dividendPayments.slice(0, 12).map((payment) => <div className="holding" key={payment.payment_id}>
-            <span><b>{payment.asset_code} · {payment.dr_code ? `DR ${payment.dr_code}` : payment.allocation_key === "stock" ? "원주" : "배당"} · {payment.dividend_kind === "special" ? "특별배당" : "정기배당"}</b><small>{date(payment.created_epoch)} · {money(payment.quantity, 3)}주 · 세전 {money(payment.gross_amount, payment.decimal_places)} · 세금 {money(payment.tax_amount, payment.decimal_places)} {payment.quote_currency}{payment.rule_id ? ` · ${payment.tax_rate_percent}% (${payment.treaty_code ?? `규칙 #${payment.rule_id}`})` : ""}</small></span>
-            <strong>{money(minorMoney(payment.net_amount_units, 6), payment.decimal_places)} <em>{payment.quote_currency}</em></strong>
-          </div>)}</div>
-          <p className="orders-hint">통화별 지급액 기준 최근 100건입니다. DR 교차통화 배당은 실제 배당통화로 환산된 지급을 표시합니다.</p>
         </section>}
         {drMovements.length > 0 && <section className="data-panel holdings-panel"><div className="panel-title"><h2>DR 전환 이력</h2><span>최근 {drMovements.length}건</span></div>
           <div className="holdings">{drMovements.map((item) => <div className="holding" key={item.movement_id}>

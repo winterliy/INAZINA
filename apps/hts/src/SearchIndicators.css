@@ -10,7 +10,8 @@
 .search-indicator-row dd { margin: 3px 0 0; font-size: 12px; font-variant-numeric: tabular-nums; }
 @media (max-width: 480px) { .search-indicator-row { flex-wrap: wrap; } .search-indicator-row dl { margin-left: auto; } }
 
-.search-indicator { cursor: default; }
+.search-indicator { cursor: pointer; width: 100%; text-align: left; }
+.search-indicator:hover, .search-indicator[aria-expanded="true"] { background: var(--surface2, #f4f6f9); }
 .search-indicator-rates { display: flex !important; flex: none; align-items: center; gap: 16px; }
 .search-indicator-rates > span { display: grid; justify-items: end; gap: 3px; }
 .search-indicator-rates small { color: var(--ink2); font-size: 11px; white-space: nowrap; }
@@ -19,3 +20,12 @@
   .search-indicator { flex-wrap: wrap; }
   .search-indicator-rates { width: 100%; justify-content: flex-end; }
 }
+.indicator-chart-panel { padding: 8px 12px 14px; border-top: 1px solid var(--line, #d9dee7); background: var(--surface, #fff); }
+.indicator-chart { width: min(100%, 760px); margin: 0 auto; }
+.indicator-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.indicator-chart-grid { stroke: var(--line, #d9dee7); stroke-width: 1; stroke-dasharray: 3 4; }
+.indicator-chart-legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 4px 0 8px; }
+.indicator-chart-legend span { display: inline-flex; align-items: center; gap: 6px; color: var(--muted, #697386); font-size: 11px; }
+.indicator-chart-legend i { width: 8px; height: 8px; border-radius: 50%; }
+.indicator-chart > small { display: block; margin-top: 4px; color: var(--muted, #697386); font-size: 10px; text-align: right; }
+.indicator-chart-empty { padding: 18px 4px; color: var(--muted, #697386); font-size: 12px; text-align: center; }

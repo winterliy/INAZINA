@@ -350,8 +350,8 @@ def action(conn, payload, actor, now=None):
         current.update(rights)
         if current["dividend_mode"] not in {"fixed", "percent"}:
             raise ValueError("배당 방식은 fixed 또는 percent입니다.")
-        if current["dividend_funding"] not in {"treasury", "issuer"}:
-            raise ValueError("배당 재원은 treasury 또는 issuer입니다.")
+        if current["dividend_funding"] != "issuer":
+            raise ValueError("법인 주식 배당은 발행 법인의 현금으로만 지급할 수 있습니다.")
         try:
             dividend = Decimal(str(current["dividend_per_share"]))
             dividend_percent = Decimal(str(current["dividend_percent"]))
@@ -367,10 +367,6 @@ def action(conn, payload, actor, now=None):
                 or isinstance(current["dividend_priority"], bool) or str(priority) != str(current["dividend_priority"]).strip()
                 or isinstance(current["dividend_cycle_seconds"], bool) or str(cycle) != str(current["dividend_cycle_seconds"]).strip()):
             raise ValueError("배당·청산 조건의 범위를 확인해주세요.")
-        if current["dividend_funding"] == "issuer":
-            from functions.money import base_currency_code
-            if str(company[10] or "").upper() != base_currency_code(conn):
-                raise ValueError("법인 현금 재원 배당은 기준 통화 주식만 지원합니다.")
         if priority != int(company[1] or 0):
             unpaid = conn.execute(
                 "SELECT 1 FROM preferred_dividend_claims WHERE asset_code=? AND status IN ('unpaid','partial') LIMIT 1",
@@ -386,6 +382,12 @@ def action(conn, payload, actor, now=None):
                 raise ValueError("배당 활성·누적 설정은 참 또는 거짓이어야 합니다.")
             else:
                 current[key] = int(value)
+        from functions.money import base_currency_code
+        if (str(company[10] or "").upper() != base_currency_code(conn)
+                and current["dividend_is_active"] and cycle > 0
+                and ((current["dividend_mode"] == "fixed" and dividend > 0)
+                     or (current["dividend_mode"] == "percent" and dividend_percent > 0))):
+            raise ValueError("외화 표시 법인의 배당은 현지 통화 현금 계정 지원 후 설정할 수 있습니다.")
         conn.execute(
             "UPDATE company SET dividend_mode=?,dividend_per_share=?,dividend_percent=?,"
             "dividend_priority=?,dividend_cycle_seconds=?,dividend_is_active=?,cumulative_dividend=?,"

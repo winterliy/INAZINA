@@ -788,6 +788,10 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
 /* 법인 자본: shareholders and holdings donuts side by side in a company's page. */
 .pie-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px 32px; margin-top: 8px; }
 .pie-pair .holders { margin-bottom: 0; }
+.voting-distribution { min-width: 0; padding-top: 12px; border-top: 1px solid var(--line); }
+.voting-distribution .holders { gap: 16px; }
+.voting-distribution .holders svg { width: min(160px, 34%); height: auto; }
+.voting-distribution .holders figcaption { flex-basis: 200px; }
 
 /* ==== Redesign D · grid guideline (approved 2026-10-29) ====================================
    A brand-guideline document rather than a product page: display

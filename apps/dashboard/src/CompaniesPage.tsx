@@ -1,7 +1,7 @@
-import { moneyAdd, moneyCompare, minorMoney, moneyMultiply, moneyDivideFloor, type Money } from "../../shared/money";
+import { formatQuantity, moneyAdd, moneyCompare, minorMoney, moneyMultiply, moneyDivideFloor, type Money } from "../../shared/money";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
-import { Donut, ShareholderPie, topSlices, type Shareholders } from "./Donut";
+import { Donut, ShareholderPie, VotingRightsPie, topSlices, type Shareholders } from "./Donut";
 import { Card, Field, number, plain, show, type Ctx, BigValue } from "./common";
 import { CompanyLedger } from "./CompanyLedger";
 
@@ -233,6 +233,8 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
       <div className="pie-pair">
         <section><h3 className="sub-head">주주 구성</h3>{detail?.shareholders ? <ShareholderPie data={detail.shareholders} /> : <p className="empty">불러오는 중…</p>}</section>
         <section><h3 className="sub-head">보유 자산 구성</h3>{detail?.assets.stocks.length ? <HoldingsPie stocks={detail.assets.stocks} /> : <p className="empty">{detail ? "보유 자산이 없습니다." : "불러오는 중…"}</p>}</section>
+        <section className="voting-distribution"><h3 className="sub-head">의결권 구성</h3>{detail?.shareholders ? <VotingRightsPie data={detail.shareholders} /> : <p className="empty">불러오는 중…</p>}</section>
+        <section className="voting-distribution"><h3 className="sub-head">실질 의결권 구성</h3>{detail?.shareholders ? <VotingRightsPie data={detail.shareholders} effective /> : <p className="empty">불러오는 중…</p>}</section>
       </div>
       </Card>
       <Card title="보유 자산 · 통장" caption="법인 자본 계정이 가진 종목과 통장입니다.">
@@ -315,9 +317,9 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
           <td className="mono">{item.company_code}</td><td>{item.name}</td><td>{item.exchange_id === UNLISTED ? <span className="tag">3DSG 장외</span> : show(item.exchange_id)}</td>
           <td className="r mono">{number(item.cash)} {item.currency}</td><td className="r">{number(item.holdings.length)}</td><td className="r">{number(item.accounts)}</td><td className="r mono">{number(item.loans)}</td>
           <td>{item.parents.length ? item.parents.map((parent) => `${parent.code} 의결 ${Number(parent.percent).toFixed(1)}%`).join(", ") : "—"}</td>
-          <td>{item.largest_shareholder ? <>{item.largest_shareholder.name}<br /><span className="mono">{number(item.largest_shareholder.shares)}주</span></> : "—"}</td>
+          <td>{item.largest_shareholder ? <>{item.largest_shareholder.name}<br /><span className="mono">{formatQuantity(item.largest_shareholder.shares)}주</span></> : "—"}</td>
           <td>{item.max_voting_holder ? <>{item.max_voting_holder.name}<br /><span className="mono">{Number(item.max_voting_holder.percent).toFixed(1)}% 의결권</span></> : "—"}</td>
-          <td>{item.ultimate_controller ? <>{item.ultimate_controller.name}<br /><span className="mono">{number(item.ultimate_controller.shares)}주 · {Number(item.ultimate_controller.percent).toFixed(1)}% 지배력</span></> : "—"}</td>
+          <td>{item.ultimate_controller ? <>{item.ultimate_controller.name}<br /><span className="mono">{formatQuantity(item.ultimate_controller.shares)}주 · {Number(item.ultimate_controller.percent).toFixed(1)}% 지배력</span></> : "—"}</td>
         </tr>)}
       </tbody></table>{!visible.length && <p className="empty">거래 중인 법인이 없습니다.</p>}</div>
     </Card></>}
