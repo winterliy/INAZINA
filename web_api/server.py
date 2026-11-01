@@ -4019,7 +4019,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     from managers.organization_manager import OrganizationManager
-                    with connect_db(timeout=5) as connection:
+                    with connect_readonly() as connection:
                         graph = OrganizationManager.user_ownership_graph(connection, user_id)
                     self.send_json(200, {"graph": graph})
             elif path in {"/internal/board/posts", "/internal/board/boards"} or path.startswith(("/internal/board/posts/", "/internal/board/files/")):

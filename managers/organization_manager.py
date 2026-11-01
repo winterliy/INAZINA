@@ -31,11 +31,30 @@ class OrganizationManager:
             "SELECT company_code,user_id FROM company_accounts"
         )}
         company_accounts = {company: account for account, company in accounts.items()}
+        organization_names = {str(row[0]): str(row[1] or row[0]) for row in conn.execute(
+            "SELECT organization_code,name FROM organizations")}
+        user_name_cache = {}
+        held_issuers_cache = {}
         treasury_ids = {str(TREASURY_USER_ID)} | {str(row[0]) for row in conn.execute("SELECT user_id FROM country_treasuries")}
         nodes = {}
         edges = {}
         owner_cache = {}
         truncated = False
+
+        def display_user_name(holder):
+            if holder not in user_name_cache:
+                row = conn.execute("SELECT nickname FROM users WHERE user_id=?", (holder,)).fetchone()
+                user_name_cache[holder] = str(row[0] or holder) if row else holder
+            return user_name_cache[holder]
+
+        def held_issuers(holder):
+            if holder not in held_issuers_cache:
+                held_issuers_cache[holder] = {str(row[0]) for row in conn.execute(
+                    "SELECT DISTINCT s.organization_code FROM user_assets a "
+                    "JOIN company c ON c.company_code=a.asset_code "
+                    "JOIN share_issuances s ON s.issuance_id=c.share_issuance_id "
+                    "WHERE a.user_id=?", (holder,))}
+            return held_issuers_cache[holder]
 
         def add_node(node_id, kind, code, name):
             nodes[node_id] = {"id": node_id, "kind": kind, "code": code, "name": str(name or code)}
@@ -53,6 +72,8 @@ class OrganizationManager:
             ).fetchall()
             totals = [Decimal(0), Decimal(0)]
             owners = defaultdict(lambda: [Decimal(0), Decimal(0)])
+            parsed_issues = []
+            issue_codes = []
             for issue_code, supply_text, vote_text, equity_text in issues:
                 try:
                     supply, votes, equity = map(Decimal, (str(supply_text or 0), str(vote_text or 0), str(equity_text or 0)))
@@ -60,16 +81,23 @@ class OrganizationManager:
                     continue
                 if not all(value.is_finite() for value in (supply, votes, equity)) or supply <= 0 or votes < 0 or equity < 0:
                     continue
-                holdings = defaultdict(Decimal)
-                for holder, quantity in conn.execute(
-                    "SELECT user_id,quantity FROM user_assets WHERE asset_code=?", (str(issue_code),)
-                ):
+                issue_codes.append(str(issue_code))
+                parsed_issues.append((str(issue_code), supply, votes, equity))
+            holdings_by_issue = defaultdict(lambda: defaultdict(Decimal))
+            for offset in range(0, len(issue_codes), 400):
+                batch = issue_codes[offset:offset + 400]
+                placeholders = ",".join("?" for _ in batch)
+                for holder, asset_code, quantity in conn.execute(
+                    f"SELECT user_id,asset_code,quantity FROM user_assets WHERE asset_code IN ({placeholders})",
+                    batch):
                     try:
                         amount = Decimal(str(quantity or 0))
                     except InvalidOperation:
                         continue
                     if amount.is_finite() and amount > 0:
-                        holdings[str(holder)] += amount
+                        holdings_by_issue[str(asset_code)][str(holder)] += amount
+            for issue_code, supply, votes, equity in parsed_issues:
+                holdings = holdings_by_issue.get(issue_code, {})
                 own = sum((quantity for holder, quantity in holdings.items() if holder in issuer_treasuries), Decimal(0))
                 outstanding = max(Decimal(0), supply - own)
                 totals[0] += outstanding * equity
@@ -85,9 +113,8 @@ class OrganizationManager:
             owner_cache[code] = ratios
             return ratios
 
-        user = conn.execute("SELECT nickname FROM users WHERE user_id=?", (user_id,)).fetchone()
         root_id = "user:" + user_id
-        add_node(root_id, "user", user_id, user[0] if user else user_id)
+        add_node(root_id, "user", user_id, display_user_name(user_id))
         direct_orgs = set()
         for (code,) in conn.execute(
             "SELECT DISTINCT s.organization_code FROM user_assets a "
@@ -110,9 +137,8 @@ class OrganizationManager:
         if len(root_candidates) > max_children:
             truncated = True
         for code, equity_ratio, voting_ratio in root_candidates[:max_children]:
-            org = conn.execute("SELECT name FROM organizations WHERE organization_code=?", (code,)).fetchone()
             node_id = "company:" + code
-            add_node(node_id, "company", code, org[0] if org else code)
+            add_node(node_id, "company", code, organization_names.get(code, code))
             edges[(root_id, node_id)] = {
                 "from": root_id, "to": node_id,
                 "equity_percent": str(equity_ratio * 100), "voting_percent": str(voting_ratio * 100),
@@ -143,15 +169,7 @@ class OrganizationManager:
             if depth > max_depth:
                 truncated = True
                 return
-            held_codes = set()
-            for holder in controlled_paths:
-                for (issuer,) in conn.execute(
-                    "SELECT DISTINCT s.organization_code FROM user_assets a "
-                    "JOIN company c ON c.company_code=a.asset_code "
-                    "JOIN share_issuances s ON s.issuance_id=c.share_issuance_id "
-                    "WHERE a.user_id=?", (holder,),
-                ):
-                    held_codes.add(str(issuer))
+            held_codes = set().union(*(held_issuers(holder) for holder in controlled_paths)) if controlled_paths else set()
             candidates = []
             for issuer in held_codes - set(ancestry):
                 if company_accounts.get(issuer) in controlled_paths:
@@ -173,9 +191,8 @@ class OrganizationManager:
                     truncated = True
                     return
                 controlled_codes.add(issuer)
-                org = conn.execute("SELECT name FROM organizations WHERE organization_code=?", (issuer,)).fetchone()
                 node_id = "company:" + issuer
-                add_node(node_id, "company", issuer, org[0] if org else issuer)
+                add_node(node_id, "company", issuer, organization_names.get(issuer, issuer))
                 child_paths = {}
                 for holder, (path_equity, path_votes) in controlled_paths.items():
                     equity_ratio, voting_ratio = ratios.get(holder, (Decimal(0), Decimal(0)))
@@ -185,12 +202,10 @@ class OrganizationManager:
                     parent_code = accounts.get(holder)
                     if parent_code:
                         parent_id = "company:" + parent_code
-                        parent = conn.execute("SELECT name FROM organizations WHERE organization_code=?", (parent_code,)).fetchone()
-                        add_node(parent_id, "company", parent_code, parent[0] if parent else parent_code)
+                        add_node(parent_id, "company", parent_code, organization_names.get(parent_code, parent_code))
                     else:
                         parent_id = "user:" + holder
-                        user = conn.execute("SELECT nickname FROM users WHERE user_id=?", (holder,)).fetchone()
-                        add_node(parent_id, "user", holder, user[0] if user else holder)
+                        add_node(parent_id, "user", holder, display_user_name(holder))
                     edge = edges.setdefault((parent_id, node_id), {
                         "from": parent_id, "to": node_id,
                         "equity_percent": str(equity_ratio * 100), "voting_percent": str(voting_ratio * 100),
@@ -234,13 +249,7 @@ class OrganizationManager:
         controlled_accounts = {company_accounts[code]: code for code in controlled_codes
                                if code in company_accounts}
         for holder, holder_code in controlled_accounts.items():
-            for (issuer,) in conn.execute(
-                "SELECT DISTINCT s.organization_code FROM user_assets a "
-                "JOIN company c ON c.company_code=a.asset_code "
-                "JOIN share_issuances s ON s.issuance_id=c.share_issuance_id "
-                "WHERE a.user_id=?", (holder,),
-            ):
-                issuer = str(issuer)
+            for issuer in held_issuers(holder):
                 if issuer not in controlled_codes or issuer == holder_code:
                     continue
                 ratio = ownership(issuer).get(holder)
@@ -250,10 +259,8 @@ class OrganizationManager:
                 if len(edges) >= 1000 and (source_id, target_id) not in edges:
                     truncated = True
                     break
-                org = conn.execute("SELECT name FROM organizations WHERE organization_code=?", (holder_code,)).fetchone()
-                add_node(source_id, "company", holder_code, org[0] if org else holder_code)
-                org = conn.execute("SELECT name FROM organizations WHERE organization_code=?", (issuer,)).fetchone()
-                add_node(target_id, "company", issuer, org[0] if org else issuer)
+                add_node(source_id, "company", holder_code, organization_names.get(holder_code, holder_code))
+                add_node(target_id, "company", issuer, organization_names.get(issuer, issuer))
                 key = (source_id, target_id)
                 cycle = reaches(target_id, source_id)
                 edge = edges.setdefault(key, {
@@ -266,7 +273,7 @@ class OrganizationManager:
                 adjacency[source_id].add(target_id)
 
         return {"nodes": list(nodes.values()), "edges": sorted(edges.values(), key=lambda edge: (edge["depth"], edge["to"], edge["from"])),
-                "max_depth": max_depth, "truncated": truncated, "root_kind": "user"}
+                "max_depth": max_depth, "truncated": truncated, "root_kind": "user", "root_id": root_id}
 
     @staticmethod
     def ownership_graph(conn, organization_code, max_depth=8, max_children=100, min_percent=0):
@@ -415,7 +422,7 @@ class OrganizationManager:
         expand(root, 0, set())
         edges = sorted(edge_map.values(), key=lambda edge: (edge["to"], edge["from"]))
         return {"nodes": list(nodes.values()), "edges": edges, "max_depth": max_depth,
-                "truncated": truncated, "root_kind": "organization",
+                "truncated": truncated, "root_kind": "organization", "root_id": "company:" + root,
                 "beneficial_owners": sorted(attributions.values(),
                     key=lambda owner: (-max(Decimal(owner["root_equity_percent"]), Decimal(owner["root_voting_percent"])), owner["id"]))}
 

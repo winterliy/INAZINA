@@ -45,6 +45,10 @@
 .ownership-window-admin .ownership-graph-panel .ownership-diagram { display: flex; flex-direction: column; height: 100%; margin: 0; }
 .ownership-window-admin .ownership-graph-panel .ownership-diagram-scroll { flex: 1; width: 100%; height: auto; min-height: 0; max-height: none; }
 .ownership-window-admin .ownership-graph-panel .ownership-beneficial { flex: none; max-height: 120px; overflow: auto; }
+.ownership-layout-hint { flex: none; margin: 0 0 4px; color: var(--ink2); font-size: 11px; }
+.ownership-layout-controls { display: flex; justify-content: flex-end; gap: 6px; flex: none; margin: 0 4px 6px; }
+.ownership-layout-controls button { min-height: 30px; padding: 0 11px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--ink2); font: inherit; font-size: 11px; }
+.ownership-layout-controls button[aria-pressed="true"] { border-color: var(--accent); background: var(--select); color: var(--accent); font-weight: 650; }
 .ownership-loading, .ownership-load-error { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; width: 100%; height: 100%; min-height: 240px; color: var(--ink2); text-align: center; }
 .ownership-loading strong { color: var(--ink); font-size: 14px; }
 .ownership-spinner { width: 28px; height: 28px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: ownership-spin .8s linear infinite; }
@@ -54,13 +58,28 @@
 @keyframes ownership-spin { to { transform: rotate(360deg); } }
 @keyframes ownership-shimmer { to { background-position: -200% 0; } }
 .ownership-diagram-scroll { overflow: auto; max-width: 100%; padding: 8px 4px 16px; overscroll-behavior-inline: contain; }
+.ownership-zoom-controls { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; justify-content: flex-end; gap: 6px; min-height: 38px; padding: 2px 4px 8px; background: var(--canvas); }
+.ownership-zoom-controls button { min-width: 36px; height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: var(--ink); font: inherit; font-size: 16px; line-height: 1; }
+.ownership-zoom-controls button:disabled { opacity: .4; cursor: default; }
+.ownership-zoom-controls output { min-width: 46px; color: var(--ink2); font-size: 12px; font-variant-numeric: tabular-nums; text-align: center; }
+.ownership-zoom-controls .ownership-zoom-reset { font-size: 12px; }
+.ownership-diagram-zoom-layer { position: relative; }
+.ownership-diagram-zoom-layer > .ownership-diagram-canvas { margin: 0; transform-origin: top left; }
 .ownership-diagram-canvas { position: relative; margin: 0 auto; }
 .ownership-diagram-edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
 .ownership-edge path { fill: none; stroke: var(--ink2); stroke-width: 1.5; opacity: .72; }
+.ownership-edge.cross path { stroke-dasharray: 4 4; opacity: .22; }
+.ownership-diagram-radial .ownership-edge path { stroke-width: 1.2; opacity: .22; }
+.ownership-edge-bundle path { fill: none; stroke: var(--ink2); stroke-width: 1.2; opacity: .24; }
+.ownership-edge-bundle .ownership-edge-bundle-trunk { stroke-width: 2.4; opacity: .52; }
 .ownership-diagram-edges marker path { fill: var(--ink2); stroke: none; }
 .ownership-edge.cycle path { stroke-dasharray: 5 4; stroke: var(--warn-ink, #a15c00); }
+.ownership-diagram-radial .ownership-edge.cycle path { opacity: .42; }
 .ownership-node { position: absolute; display: grid; align-content: center; gap: 4px; box-sizing: border-box; width: 260px; min-height: 144px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); box-shadow: 0 4px 14px rgba(0, 0, 0, .08); }
 .ownership-node.company { border-color: var(--accent); }
+.ownership-node.root { border-width: 2px; background: color-mix(in srgb, var(--accent) 5%, var(--surface)); box-shadow: 0 8px 24px rgba(0, 0, 0, .12); }
+.ownership-node.root .ownership-node-kind { font-size: 11px; }
+.ownership-node.root strong { font-size: 16px; }
 .ownership-node-focused { z-index: 2; box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 30%, transparent), 0 8px 26px rgba(0, 0, 0, .16); transition: box-shadow .2s ease; }
 .ownership-node strong { overflow-wrap: anywhere; font-size: 14px; line-height: 1.35; }
 .ownership-node small { color: var(--ink2); font-size: 11px; overflow-wrap: anywhere; }
