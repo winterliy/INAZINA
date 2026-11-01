@@ -27,8 +27,11 @@ export function SearchIndicators({ query }: { query: string }) {
   if (failed || !data) return null;
   return <div className="search-results search-indicator-results" aria-label="금리·지수 검색 결과">
     {data.countries.map((country) => <div key={country.country} className="search-result search-indicator" aria-disabled="true">
-      <span className="search-name"><b>{country.country} 기준금리</b><small>{country.currencyCode} · 금리 · 법정 최고 {display(country.legalMaxRate, "%")}</small></span>
-      <span className="search-price"><strong>{display(country.baseRate, "%")}</strong></span>
+      <span className="search-name"><b>{country.country} 금리 정보</b><small>{country.currencyCode} · 국가 금리</small></span>
+      <span className="search-indicator-rates">
+        <span><small>기준금리</small><strong>{display(country.baseRate, "%")}</strong></span>
+        <span><small>법정최대이자</small><strong>{display(country.legalMaxRate, "%")}</strong></span>
+      </span>
     </div>)}
     {data.exchanges.map((exchange) => <div key={exchange.exchangeId} className="search-result search-indicator" aria-disabled="true">
       <span className="search-name"><b>{exchange.name}</b><small>{exchange.exchangeId} · 지수 · {exchange.country}</small></span>
