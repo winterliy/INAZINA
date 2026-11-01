@@ -11,6 +11,8 @@ from functions.time_utils import validate_epoch
 class MarketSessionManager:
     # 3DSG is the over-the-counter market: unlisted companies sit there and still trade.
     UNLISTED = "3DSG"
+    # CURRENCY is the always-on system exchange used by FX conversion and currency pairs.
+    SYSTEM_EXCHANGE = "CURRENCY"
 
     # Reason shown when regular trading hours end. Such a close is flagged scheduled_close=1 and
     # reopens itself at the next session; the reason is display text only.
@@ -37,11 +39,13 @@ class MarketSessionManager:
         current = datetime.fromtimestamp(now, cls.KST)
         return int((current + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
 
-    @staticmethod
-    def normalize_exchange(exchange_id):
+    @classmethod
+    def normalize_exchange(cls, exchange_id):
         value = str(exchange_id or "").strip()
         if not value or len(value) > 100:
             raise ValueError("거래소 ID를 입력해주세요.")
+        if value.casefold() == cls.SYSTEM_EXCHANGE.casefold():
+            return cls.SYSTEM_EXCHANGE
         return value
 
     @classmethod
@@ -119,6 +123,18 @@ class MarketSessionManager:
             return cls.process_all_conn(conn, now)
         exchange_id = cls.normalize_exchange(exchange_id)
         state = cls._row(conn, exchange_id)
+        if exchange_id == cls.SYSTEM_EXCHANGE:
+            if state["status"] != "open":
+                cls._resume(conn, exchange_id, state, now)
+            if (state.get("trading_halted") or state.get("open_time") or state.get("close_time") or state.get("trading_days") != "1,2,3,4,5,6,7"
+                    or state.get("holidays") not in (None, "", "[]") or state.get("scheduled_close")):
+                conn.execute(
+                    "UPDATE market_exchanges SET open_time='',close_time='',trading_days='1,2,3,4,5,6,7',"
+                    "holidays='[]',scheduled_close=0,status='open',reason='',halt_started_epoch=NULL,"
+                    "resume_epoch=NULL,circuit_stage=NULL,trading_halted=0,updated_epoch=? WHERE exchange_id=?",
+                    (now, exchange_id),
+                )
+            return cls._row(conn, exchange_id)
         if state["status"] != "open" and state["resume_epoch"] is not None and int(state["resume_epoch"]) <= now:
             cls._resume(conn, exchange_id, state, int(state["resume_epoch"]))
             conn.execute('INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)',
@@ -147,6 +163,8 @@ class MarketSessionManager:
     def set_hours_conn(cls, conn, exchange_id, schedule, now=None):
         """Validate and store regular hours, then apply them right away (close now, or reopen early)."""
         now = cls._epoch(now, "invalid_market_session_processing_epoch")
+        if cls.normalize_exchange(exchange_id) == cls.SYSTEM_EXCHANGE:
+            raise ValueError("CURRENCY 시스템 거래소의 운영시간은 변경할 수 없습니다.")
         schedule = trading_hours.normalize(schedule)
         state = cls._row(conn, exchange_id)
         exchange_id = state["exchange_id"]
@@ -230,9 +248,16 @@ class MarketSessionManager:
             role = conn.execute("SELECT role FROM users WHERE user_id=?", (str(actor_id),)).fetchone()
             if not role or str(role["role"]).strip().casefold() != "admin":
                 return False, "❌ 관리자 전용 기능입니다."
-            exchanges = self.exchange_ids(conn) if requested.casefold() == "all" else [self.normalize_exchange(requested)]
+            if requested.casefold() == "all":
+                all_exchanges = self.exchange_ids(conn)
+                exchanges = [item for item in all_exchanges if item.casefold() != self.SYSTEM_EXCHANGE.casefold()]
+            else:
+                normalized = self.normalize_exchange(requested)
+                if normalized == self.SYSTEM_EXCHANGE:
+                    return False, "❌ CURRENCY는 환전 시스템 전용 거래소라 상태를 변경할 수 없습니다."
+                exchanges = [normalized]
             if not exchanges:
-                return False, "❌ 관리할 거래소가 없습니다."
+                return False, "❌ 관리할 일반 거래소가 없습니다."
             outside_hours = []
             for current_exchange in exchanges:
                 state = self.process_conn(conn, now, current_exchange)
@@ -265,7 +290,7 @@ class MarketSessionManager:
                     WHERE exchange_id=?""",
                     ("closed" if action == "close" else "paused", reason, halt_started, resume,
                      stage if action == "circuit" else None, now, current_exchange))
-        target = "전체 거래소" if requested.casefold() == "all" else f"`{requested}` 거래소"
+        target = "전체 일반 거래소 (CURRENCY 제외)" if requested.casefold() == "all" else f"`{requested}` 거래소"
         if action in {"open", "resume"}:
             skipped = "".join(
                 f"\n`{exchange}`는 정규 거래 시간이 아니라 그대로 두었습니다."

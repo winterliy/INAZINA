@@ -14,7 +14,7 @@ import time
 
 class OrganizationManager:
     @staticmethod
-    def user_ownership_graph(conn, user_id, max_depth=3, max_children=20, min_percent=0):
+    def user_ownership_graph(conn, user_id, max_depth=8, max_children=100, min_percent=0):
         """Show a user's direct shareholdings and subsidiaries of companies they control.
 
         Direct positions include every company share class. Descendant expansion is
@@ -24,7 +24,7 @@ class OrganizationManager:
         from database.user_db import TREASURY_USER_ID
 
         user_id = str(user_id)
-        max_depth = max(0, min(int(max_depth), 5))
+        max_depth = max(0, min(int(max_depth), 8))
         max_children = max(1, min(int(max_children), 100))
         min_percent = Decimal(str(min_percent))
         accounts = {str(row[1]): str(row[0]) for row in conn.execute(
@@ -105,7 +105,8 @@ class OrganizationManager:
                 continue
             root_candidates.append((code, equity_ratio, voting_ratio))
         root_candidates.sort(key=lambda item: (-max(item[1], item[2]), -item[2], item[0]))
-        roots = []
+        controlled_paths = {user_id: (Decimal(1), Decimal(1))}
+        controlled_codes = set()
         if len(root_candidates) > max_children:
             truncated = True
         for code, equity_ratio, voting_ratio in root_candidates[:max_children]:
@@ -119,69 +120,156 @@ class OrganizationManager:
                 "depth": 0, "direct": True,
             }
             if voting_ratio > Decimal("0.5"):
-                roots.append((code, equity_ratio, voting_ratio, frozenset({code})))
+                account = company_accounts.get(code)
+                if account:
+                    controlled_paths[account] = (equity_ratio, voting_ratio)
+                controlled_codes.add(code)
+        expanded_codes = set(controlled_codes)
 
-        # Expand only majority-controlled companies. Resolve all share classes via
-        # the issuance map, while keeping each path separate until its contribution
-        # is added to the corresponding visual edge.
-        for depth in range(1, max_depth + 1):
-            next_roots = []
-            for parent_code, root_equity, root_votes, ancestry in roots:
-                parent_account = company_accounts.get(parent_code)
-                if not parent_account:
-                    continue
-                held_codes = set()
-                for (code,) in conn.execute(
+        # A controlled group can hold a majority through several of its members.
+        # Keep each direct block visible, then expand the issuer when the group's
+        # combined voting rights exceed half of the outstanding vote.
+        visited_states = set()
+
+        def expand_group(controlled_code, controlled_paths, ancestry, depth):
+            nonlocal truncated
+            state = (controlled_code, tuple(sorted(controlled_paths)))
+            if state in visited_states:
+                return
+            if len(edges) >= 1000:
+                truncated = True
+                return
+            visited_states.add(state)
+            if depth > max_depth:
+                truncated = True
+                return
+            held_codes = set()
+            for holder in controlled_paths:
+                for (issuer,) in conn.execute(
                     "SELECT DISTINCT s.organization_code FROM user_assets a "
-                    "JOIN company c ON c.company_code=a.asset_code JOIN share_issuances s ON s.issuance_id=c.share_issuance_id "
-                    "WHERE a.user_id=?", (parent_account,),
+                    "JOIN company c ON c.company_code=a.asset_code "
+                    "JOIN share_issuances s ON s.issuance_id=c.share_issuance_id "
+                    "WHERE a.user_id=?", (holder,),
                 ):
-                    held_codes.add(str(code))
-                candidates = []
-                for code in held_codes:
-                    if code in ancestry:
-                        continue
-                    ratio = ownership(code).get(parent_account)
-                    if not ratio:
-                        continue
-                    equity_ratio, voting_ratio = ratio
-                    if voting_ratio <= Decimal("0.5") or max(equity_ratio, voting_ratio) * 100 < min_percent:
-                        continue
-                    candidates.append((code, equity_ratio, voting_ratio))
-                candidates.sort(key=lambda item: (-item[2], -item[1], item[0]))
-                if len(candidates) > max_children:
+                    held_codes.add(str(issuer))
+            candidates = []
+            for issuer in held_codes - set(ancestry):
+                if company_accounts.get(issuer) in controlled_paths:
+                    continue
+                ratios = ownership(issuer)
+                group_equity = sum((ratios.get(holder, (Decimal(0), Decimal(0)))[0]
+                                    for holder in controlled_paths), Decimal(0))
+                group_votes = sum((ratios.get(holder, (Decimal(0), Decimal(0)))[1]
+                                   for holder in controlled_paths), Decimal(0))
+                if group_votes > Decimal("0.5"):
+                    candidates.append((issuer, ratios, group_equity, group_votes))
+            candidates.sort(key=lambda item: (-item[3], -item[2], item[0]))
+            if len(candidates) > max_children:
+                truncated = True
+            scheduled = {issuer for issuer, _, _, _ in candidates if issuer not in expanded_codes}
+            expanded_codes.update(scheduled)
+            for issuer, ratios, group_equity, group_votes in candidates[:max_children]:
+                if len(edges) >= 1000:
                     truncated = True
-                for code, equity_ratio, voting_ratio in candidates[:max_children]:
-                    if len(edges) >= 1000:
-                        truncated = True
-                        break
-                    org = conn.execute("SELECT name FROM organizations WHERE organization_code=?", (code,)).fetchone()
-                    parent_id, node_id = "company:" + parent_code, "company:" + code
-                    add_node(parent_id, "company", parent_code,
-                             conn.execute("SELECT name FROM organizations WHERE organization_code=?", (parent_code,)).fetchone()[0] or parent_code)
-                    add_node(node_id, "company", code, org[0] if org else code)
+                    return
+                controlled_codes.add(issuer)
+                org = conn.execute("SELECT name FROM organizations WHERE organization_code=?", (issuer,)).fetchone()
+                node_id = "company:" + issuer
+                add_node(node_id, "company", issuer, org[0] if org else issuer)
+                child_paths = {}
+                for holder, (path_equity, path_votes) in controlled_paths.items():
+                    equity_ratio, voting_ratio = ratios.get(holder, (Decimal(0), Decimal(0)))
+                    child_paths[holder] = (path_equity, path_votes)
+                    if max(equity_ratio, voting_ratio) * 100 < min_percent or not (equity_ratio or voting_ratio):
+                        continue
+                    parent_code = accounts.get(holder)
+                    if parent_code:
+                        parent_id = "company:" + parent_code
+                        parent = conn.execute("SELECT name FROM organizations WHERE organization_code=?", (parent_code,)).fetchone()
+                        add_node(parent_id, "company", parent_code, parent[0] if parent else parent_code)
+                    else:
+                        parent_id = "user:" + holder
+                        user = conn.execute("SELECT nickname FROM users WHERE user_id=?", (holder,)).fetchone()
+                        add_node(parent_id, "user", holder, user[0] if user else holder)
                     edge = edges.setdefault((parent_id, node_id), {
                         "from": parent_id, "to": node_id,
                         "equity_percent": str(equity_ratio * 100), "voting_percent": str(voting_ratio * 100),
                         "root_equity_percent": "0", "root_voting_percent": "0",
                         "depth": depth, "direct": False,
                     })
-                    edge["root_equity_percent"] = str(Decimal(edge["root_equity_percent"]) + root_equity * equity_ratio * 100)
-                    edge["root_voting_percent"] = str(Decimal(edge["root_voting_percent"]) + root_votes * voting_ratio * 100)
-                    next_roots.append((code, root_equity * equity_ratio, root_votes * voting_ratio, ancestry | {code}))
-                if len(edges) >= 1000:
+                    edge["root_equity_percent"] = str(Decimal(edge["root_equity_percent"]) + path_equity * equity_ratio * 100)
+                    edge["root_voting_percent"] = str(Decimal(edge["root_voting_percent"]) + path_votes * voting_ratio * 100)
+                child_account = company_accounts.get(issuer)
+                if child_account:
+                    child_paths[child_account] = (
+                        sum((path[0] * ratios.get(holder, (Decimal(0), Decimal(0)))[0]
+                             for holder, path in controlled_paths.items()), Decimal(0)),
+                        sum((path[1] * ratios.get(holder, (Decimal(0), Decimal(0)))[1]
+                             for holder, path in controlled_paths.items()), Decimal(0)),
+                    )
+                if issuer in scheduled:
+                    expand_group(issuer, child_paths, ancestry | {issuer}, depth + 1)
+
+        if len(controlled_paths) > 1:
+            expand_group("__user_controlled_group__", controlled_paths, frozenset(), 1)
+
+        # Show cross-holdings between companies already reached by the user's
+        # controlled group, including upward stakes that close a cycle.
+        adjacency = defaultdict(set)
+        for edge in edges.values():
+            adjacency[edge["from"]].add(edge["to"])
+
+        def reaches(start, target):
+            pending, seen = [start], set()
+            while pending:
+                current = pending.pop()
+                if current == target:
+                    return True
+                if current in seen:
+                    continue
+                seen.add(current)
+                pending.extend(adjacency.get(current, ()))
+            return False
+
+        controlled_accounts = {company_accounts[code]: code for code in controlled_codes
+                               if code in company_accounts}
+        for holder, holder_code in controlled_accounts.items():
+            for (issuer,) in conn.execute(
+                "SELECT DISTINCT s.organization_code FROM user_assets a "
+                "JOIN company c ON c.company_code=a.asset_code "
+                "JOIN share_issuances s ON s.issuance_id=c.share_issuance_id "
+                "WHERE a.user_id=?", (holder,),
+            ):
+                issuer = str(issuer)
+                if issuer not in controlled_codes or issuer == holder_code:
+                    continue
+                ratio = ownership(issuer).get(holder)
+                if not ratio or max(ratio) * 100 < min_percent:
+                    continue
+                source_id, target_id = "company:" + holder_code, "company:" + issuer
+                if len(edges) >= 1000 and (source_id, target_id) not in edges:
+                    truncated = True
                     break
-            roots = next_roots
-            if len(edges) >= 1000:
-                break
-            if not roots:
-                break
+                org = conn.execute("SELECT name FROM organizations WHERE organization_code=?", (holder_code,)).fetchone()
+                add_node(source_id, "company", holder_code, org[0] if org else holder_code)
+                org = conn.execute("SELECT name FROM organizations WHERE organization_code=?", (issuer,)).fetchone()
+                add_node(target_id, "company", issuer, org[0] if org else issuer)
+                key = (source_id, target_id)
+                cycle = reaches(target_id, source_id)
+                edge = edges.setdefault(key, {
+                    "from": source_id, "to": target_id,
+                    "equity_percent": str(ratio[0] * 100), "voting_percent": str(ratio[1] * 100),
+                    "root_equity_percent": "0", "root_voting_percent": "0",
+                    "depth": max_depth, "direct": False, "cycle": cycle,
+                })
+                edge["cycle"] = bool(edge.get("cycle") or cycle)
+                adjacency[source_id].add(target_id)
 
         return {"nodes": list(nodes.values()), "edges": sorted(edges.values(), key=lambda edge: (edge["depth"], edge["to"], edge["from"])),
                 "max_depth": max_depth, "truncated": truncated, "root_kind": "user"}
 
     @staticmethod
-    def ownership_graph(conn, organization_code, max_depth=3, max_children=20, min_percent=0):
+    def ownership_graph(conn, organization_code, max_depth=8, max_children=100, min_percent=0):
         """Build a bounded, read-only direct/indirect ownership graph.
 
         Percentages use exact decimal strings. The direct equity and vote ratios
@@ -190,19 +278,48 @@ class OrganizationManager:
         from database.user_db import TREASURY_USER_ID
 
         root = str(organization_code)
-        max_depth = max(0, min(int(max_depth), 5))
+        max_depth = max(0, min(int(max_depth), 8))
         max_children = max(1, min(int(max_children), 100))
         min_percent = Decimal(str(min_percent))
         accounts = {str(row[1]): str(row[0]) for row in conn.execute(
             "SELECT company_code,user_id FROM company_accounts"
         )}
         treasury_user_ids = {str(TREASURY_USER_ID)} | {str(row[0]) for row in conn.execute("SELECT user_id FROM country_treasuries")}
-        companies = {str(row[0]): str(row[1]) for row in conn.execute(
+        company_rows = {str(row[0]): str(row[1]) for row in conn.execute(
             "SELECT organization_code,name FROM organizations"
         )}
+        issue_rows = conn.execute(
+            "SELECT s.organization_code,c.company_code,c.name,c.total_shares,s.share_class,"
+            "s.voting_rights_per_share,s.economic_interest_per_share FROM share_issuances s "
+            "JOIN company c ON c.share_issuance_id=s.issuance_id WHERE c.status='active' "
+            "ORDER BY s.organization_code,c.company_code"
+        ).fetchall()
+        issues_by_org = defaultdict(list)
+        for row in issue_rows:
+            issues_by_org[str(row[0])].append(row)
+        holdings_by_issue = {}
+
+        def load_holdings(issues):
+            missing = list(dict.fromkeys(str(issue[1]) for issue in issues if str(issue[1]) not in holdings_by_issue))
+            for offset in range(0, len(missing), 500):
+                batch = missing[offset:offset + 500]
+                placeholders = ",".join("?" for _ in batch)
+                for code in batch:
+                    holdings_by_issue[code] = []
+                for row in conn.execute(
+                    f"SELECT asset_code,user_id,quantity FROM user_assets WHERE asset_code IN ({placeholders})", batch):
+                    try:
+                        quantity = Decimal(str(row[2] or 0))
+                    except (InvalidOperation, TypeError, ValueError):
+                        continue
+                    if quantity.is_finite() and quantity > 0:
+                        holdings_by_issue[str(row[0])].append((str(row[1]), quantity))
+        user_names = {str(row[0]): str(row[1] or row[0]) for row in conn.execute(
+            "SELECT user_id,nickname FROM users")}
         nodes = {}
         edge_map = {}
         attributions = {}
+        owner_snapshot_cache = {}
         expansion_count = 0
         truncated = False
 
@@ -214,67 +331,57 @@ class OrganizationManager:
                 truncated = True
                 return
             expansion_count += 1
-            org = conn.execute(
-                "SELECT name FROM organizations WHERE organization_code=?", (code,)
-            ).fetchone()
-            if not org:
+            if code not in company_rows:
                 return
-            nodes["company:" + code] = {"id": "company:" + code, "kind": "company", "code": code, "name": str(org[0] or code)}
-            issues = conn.execute(
-                "SELECT c.company_code,c.name,c.total_shares,s.share_class,"
-                "s.voting_rights_per_share,s.economic_interest_per_share "
-                "FROM share_issuances s JOIN company c ON c.share_issuance_id=s.issuance_id "
-                ""
-                "WHERE s.organization_code=? ORDER BY c.company_code", (code,),
-            ).fetchall()
-            equity_total = Decimal(0)
-            votes_total = Decimal(0)
-            owner_amounts = defaultdict(lambda: [Decimal(0), Decimal(0)])
-            for issue in issues:
-                issue_code, _, supply, _, vote_text, equity_text = issue
-                supply = Decimal(str(supply or 0))
-                try:
-                    vote_per_share = Decimal(str(vote_text))
-                    equity_per_share = Decimal(str(equity_text))
-                except InvalidOperation:
-                    continue
-                if not supply.is_finite() or supply <= 0 or not vote_per_share.is_finite() or vote_per_share < 0 or not equity_per_share.is_finite() or equity_per_share < 0:
-                    continue
-                holdings = defaultdict(Decimal)
-                for holder, quantity in conn.execute(
-                    "SELECT user_id,quantity FROM user_assets WHERE asset_code=?",
-                    (str(issue_code),),
-                ):
-                    holdings[str(holder)] += Decimal(str(quantity or 0))
-                treasury_ids = treasury_user_ids | {user_id for user_id, issuer in accounts.items() if issuer == code}
-                own_treasury = sum((quantity for holder, quantity in holdings.items() if holder in treasury_ids), Decimal(0))
-                outstanding = max(Decimal(0), supply - own_treasury)
-                equity_total += outstanding * equity_per_share
-                votes_total += outstanding * vote_per_share
-                for holder, quantity in holdings.items():
-                    if holder in treasury_ids:
+            nodes["company:" + code] = {"id": "company:" + code, "kind": "company", "code": code, "name": company_rows[code] or code}
+            display_candidates = owner_snapshot_cache.get(code)
+            if display_candidates is None:
+                issues = issues_by_org.get(code, ())
+                load_holdings(issues)
+                equity_total = Decimal(0)
+                votes_total = Decimal(0)
+                owner_amounts = defaultdict(lambda: [Decimal(0), Decimal(0)])
+                own_treasury_ids = treasury_user_ids | {user_id for user_id, issuer in accounts.items() if issuer == code}
+                for issue in issues:
+                    _, issue_code, _, supply, _, vote_text, equity_text = issue
+                    try:
+                        supply = Decimal(str(supply or 0))
+                        vote_per_share = Decimal(str(vote_text))
+                        equity_per_share = Decimal(str(equity_text))
+                    except (InvalidOperation, TypeError, ValueError):
                         continue
-                    owner_amounts[holder][0] += quantity * equity_per_share
-                    owner_amounts[holder][1] += quantity * vote_per_share
+                    if not supply.is_finite() or supply <= 0 or not vote_per_share.is_finite() or vote_per_share < 0 or not equity_per_share.is_finite() or equity_per_share < 0:
+                        continue
+                    holdings = defaultdict(Decimal)
+                    for holder, quantity in holdings_by_issue.get(str(issue_code), ()):
+                        holdings[holder] += quantity
+                    own_treasury = sum((quantity for holder, quantity in holdings.items() if holder in own_treasury_ids), Decimal(0))
+                    outstanding = max(Decimal(0), supply - own_treasury)
+                    equity_total += outstanding * equity_per_share
+                    votes_total += outstanding * vote_per_share
+                    for holder, quantity in holdings.items():
+                        if holder not in own_treasury_ids:
+                            owner_amounts[holder][0] += quantity * equity_per_share
+                            owner_amounts[holder][1] += quantity * vote_per_share
 
-            display_candidates = []
-            for holder, (equity, votes) in owner_amounts.items():
-                equity_ratio = equity / equity_total if equity_total else Decimal(0)
-                votes_ratio = votes / votes_total if votes_total else Decimal(0)
-                if max(equity_ratio, votes_ratio) * 100 < min_percent:
-                    continue
-                parent_code = accounts.get(holder)
-                if parent_code:
-                    node_id = "company:" + parent_code
-                    nodes[node_id] = {"id": node_id, "kind": "company", "code": parent_code,
-                                      "name": companies.get(parent_code, parent_code)}
-                else:
-                    node_id = "user:" + holder
-                    user = conn.execute("SELECT nickname FROM users WHERE user_id=?", (holder,)).fetchone()
-                    nodes[node_id] = {"id": node_id, "kind": "user", "code": holder,
-                                      "name": str(user[0] or holder) if user else holder}
-                display_candidates.append((node_id, holder, equity_ratio, votes_ratio, parent_code))
-            display_candidates.sort(key=lambda item: (item[0].startswith("user:"), -max(item[2], item[3]), item[0]))
+                display_candidates = []
+                for holder, (equity, votes) in owner_amounts.items():
+                    equity_ratio = equity / equity_total if equity_total else Decimal(0)
+                    votes_ratio = votes / votes_total if votes_total else Decimal(0)
+                    if max(equity_ratio, votes_ratio) * 100 < min_percent:
+                        continue
+                    parent_code = accounts.get(holder)
+                    if parent_code:
+                        node_id = "company:" + parent_code
+                        nodes[node_id] = {"id": node_id, "kind": "company", "code": parent_code,
+                                          "name": company_rows.get(parent_code, parent_code)}
+                    else:
+                        node_id = "user:" + holder
+                        nodes[node_id] = {"id": node_id, "kind": "user", "code": holder,
+                                          "name": user_names.get(holder, holder)}
+                    display_candidates.append((node_id, holder, equity_ratio, votes_ratio, parent_code))
+                display_candidates.sort(key=lambda item: (item[0].startswith("user:"), -max(item[2], item[3]), item[0]))
+                owner_snapshot_cache[code] = display_candidates
             if len(display_candidates) > max_children:
                 truncated = True
             for node_id, holder, equity_ratio, votes_ratio, parent_code in display_candidates[:max_children]:
@@ -356,24 +463,27 @@ class OrganizationManager:
         return row["size_override"] or row["auto_size"]
 
     @classmethod
-    def refresh_auto_size(cls, conn, organization_code, metrics, now=None):
-        settings = conn.execute(
-            "SELECT rule_json FROM organization_size_settings WHERE singleton=1"
-        ).fetchone()
-        if not settings:
-            return {"status": "unconfigured", "size": None}
-        try:
-            rules = json.loads(settings[0] or "{}")
-        except (TypeError, ValueError):
-            raise ValueError("기업 규모 판정 설정을 읽을 수 없습니다.") from None
+    def refresh_auto_size(cls, conn, organization_code, metrics, now=None, rules=None, announcement_seconds=None):
+        if rules is None or announcement_seconds is None:
+            settings = conn.execute(
+                "SELECT announcement_seconds,rule_json FROM organization_size_settings WHERE singleton=1"
+            ).fetchone()
+            if not settings:
+                return {"status": "unconfigured", "size": None}
+            try:
+                loaded_rules = json.loads(settings[1] or "{}")
+            except (TypeError, ValueError):
+                raise ValueError("기업 규모 판정 설정을 읽을 수 없습니다.") from None
+            rules = loaded_rules if rules is None else rules
+            announcement_seconds = int(settings[0]) if announcement_seconds is None else announcement_seconds
         size = cls.classify_size(metrics, rules.get("thresholds", {}), rules.get("mode", "any"))
         if size is None:
             return {"status": "insufficient_data", "size": None}
-        result = cls.update_size_candidate(conn, organization_code, size, now)
+        result = cls.update_size_candidate(conn, organization_code, size, now, announcement_seconds)
         return {**result, "size": size}
 
     @staticmethod
-    def update_size_candidate(conn, organization_code, size, now=None):
+    def update_size_candidate(conn, organization_code, size, now=None, announcement_seconds=None):
         """Apply immediately or stage an auto-size change for its notice period."""
         if size not in {None, "sme", "mid_market", "large"}:
             raise ValueError("기업 규모를 확인해주세요.")
@@ -388,10 +498,13 @@ class OrganizationManager:
             previous = row[0]
             if size is not None and size == row[1]:
                 return {"status": "already_announced", "effective_epoch": row[2]}
-            settings = conn.execute(
-                "SELECT announcement_seconds FROM organization_size_settings WHERE singleton=1"
-            ).fetchone()
-            delay = int(settings[0]) if settings else 0
+            if announcement_seconds is None:
+                settings = conn.execute(
+                    "SELECT announcement_seconds FROM organization_size_settings WHERE singleton=1"
+                ).fetchone()
+                delay = int(settings[0]) if settings else 0
+            else:
+                delay = max(0, int(announcement_seconds))
             if size == previous:
                 conn.execute(
                     "UPDATE organizations SET pending_size=NULL,size_effective_epoch=NULL,updated_epoch=? "
@@ -433,12 +546,48 @@ class OrganizationManager:
         name = str(name).strip()
         if not name or len(name) > 120:
             raise ValueError("기업집단 이름은 1~120자로 입력해주세요.")
+        representative = str(representative).strip() if representative else None
         with conn:
+            if representative and not conn.execute(
+                "SELECT 1 FROM organizations WHERE organization_code=?", (representative,)
+            ).fetchone():
+                raise ValueError("대표 기업을 찾을 수 없습니다.")
+            if representative and conn.execute(
+                "SELECT 1 FROM organization_group_members WHERE organization_code=? AND left_epoch IS NULL",
+                (representative,),
+            ).fetchone():
+                raise ValueError("대표 기업이 이미 다른 기업집단에 소속되어 있습니다.")
             cursor = conn.execute(
                 "INSERT INTO organization_groups(name,representative_organization_code,description) "
                 "VALUES (?,?,?)", (name, representative, str(description)[:1000])
             )
-            return int(cursor.lastrowid)
+            group_id = int(cursor.lastrowid)
+            if representative:
+                conn.execute(
+                    "INSERT INTO organization_group_members(group_id,organization_code) VALUES (?,?)",
+                    (group_id, representative),
+                )
+            return group_id
+
+    @staticmethod
+    def set_group_representative(conn, group_id, organization_code, now=None):
+        group_id = int(group_id)
+        code = str(organization_code).strip() if organization_code else None
+        with conn:
+            group = conn.execute(
+                "SELECT 1 FROM organization_groups WHERE group_id=? AND status='active'", (group_id,)
+            ).fetchone()
+            if not group:
+                raise ValueError("활성 기업집단을 찾을 수 없습니다.")
+            if code and not conn.execute(
+                "SELECT 1 FROM organization_group_members WHERE group_id=? AND organization_code=? AND left_epoch IS NULL",
+                (group_id, code),
+            ).fetchone():
+                raise ValueError("대표 기업은 현재 집단 구성원 중에서 선택해주세요.")
+            conn.execute(
+                "UPDATE organization_groups SET representative_organization_code=?,updated_epoch=? WHERE group_id=?",
+                (code, int(time.time() if now is None else now), group_id),
+            )
 
     @staticmethod
     def set_group_member(conn, group_id, organization_code, active=True, now=None):
@@ -469,4 +618,9 @@ class OrganizationManager:
                     "UPDATE organization_group_members SET left_epoch=? "
                     "WHERE organization_code=? AND group_id=? AND left_epoch IS NULL",
                     (now, organization_code, group_id),
+                )
+                conn.execute(
+                    "UPDATE organization_groups SET representative_organization_code=NULL,updated_epoch=? "
+                    "WHERE group_id=? AND representative_organization_code=?",
+                    (now, group_id, organization_code),
                 )

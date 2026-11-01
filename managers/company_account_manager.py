@@ -244,12 +244,94 @@ class CompanyAccounts:
             "FROM company c LEFT JOIN issuer_cash_accounts i ON i.company_code=c.company_code "
             "LEFT JOIN company_accounts a ON a.company_code=c.company_code "
             "WHERE c.status='active' AND COALESCE(c.share_class,'common')='common' ORDER BY c.company_code").fetchall()
+        from database.user_db import TREASURY_USER_ID
+        from decimal import Decimal, InvalidOperation
+        from functions.money import base_currency_code, currency_precision, round_money
+        from managers.currency_manager import CurrencyManager
+
+        base_currency = base_currency_code(conn)
+        legal_currencies = {
+            str(row[0]): str(row[1]) for row in conn.execute(
+                "SELECT o.organization_code,n.currency_code FROM organizations o "
+                "JOIN country_currencies n ON n.nationality=o.country_code "
+                "JOIN currencies c ON c.code=n.currency_code AND c.status='active'"
+            )
+        }
+
+        def convert_cash(amount, target_currency):
+            if target_currency == base_currency:
+                return amount
+            quote = CurrencyManager.quote(conn, base_currency, target_currency)
+            converted = Decimal(str(amount or 0)) * Decimal(quote.numerator) / Decimal(quote.denominator)
+            return round_money(converted, currency_precision(conn, target_currency))
+
+        issuer_accounts = {str(row[0]): str(row[1]) for row in conn.execute(
+            "SELECT company_code,user_id FROM company_accounts")}
+        account_issuers = {user_id: code for code, user_id in issuer_accounts.items()}
+        treasury_ids = {str(TREASURY_USER_ID)} | {str(row[0]) for row in conn.execute(
+            "SELECT user_id FROM country_treasuries")}
+        issues = conn.execute(
+            "SELECT s.organization_code,c.company_code,c.total_shares,s.voting_rights_per_share "
+            "FROM share_issuances s JOIN company c ON c.share_issuance_id=s.issuance_id "
+            "WHERE c.status='active' ORDER BY s.organization_code,c.company_code").fetchall()
+        holdings_by_issue = {}
+        for holding in conn.execute(
+            "SELECT u.asset_code,u.user_id,SUM(u.quantity) quantity FROM user_assets u "
+            "JOIN company c ON c.company_code=u.asset_code "
+            "JOIN share_issuances s ON s.issuance_id=c.share_issuance_id "
+            "WHERE c.status='active' GROUP BY u.asset_code,u.user_id"):
+            holdings_by_issue.setdefault(str(holding[0]), []).append((str(holding[1]), Decimal(str(holding[2] or 0))))
+        parents_by_org = {}
+        votes_total_by_org = {}
+        votes_by_org = {}
+        for issue in issues:
+            organization, issue_code = str(issue[0]), str(issue[1])
+            try:
+                supply = Decimal(str(issue[2] or 0))
+                votes_per_share = Decimal(str(issue[3] or 0))
+            except InvalidOperation:
+                continue
+            if not supply.is_finite() or supply <= 0 or not votes_per_share.is_finite() or votes_per_share <= 0:
+                continue
+            issuer_user = issuer_accounts.get(organization)
+            amounts = holdings_by_issue.get(issue_code, ())
+            excluded = treasury_ids | ({issuer_user} if issuer_user else set())
+            excluded_amount = sum((quantity for holder, quantity in amounts if holder in excluded), Decimal(0))
+            votes_total = max(Decimal(0), supply - excluded_amount) * votes_per_share
+            if votes_total <= 0:
+                continue
+            votes_total_by_org[organization] = votes_total_by_org.get(organization, Decimal(0)) + votes_total
+            votes_by_company = votes_by_org.setdefault(organization, {})
+            for holder, quantity in amounts:
+                if holder in excluded:
+                    continue
+                shareholder = account_issuers.get(holder)
+                if shareholder and shareholder != organization:
+                    votes_by_company[shareholder] = votes_by_company.get(shareholder, Decimal(0)) + quantity * votes_per_share
+        for organization, votes_by_company in votes_by_org.items():
+            votes_total = votes_total_by_org.get(organization, Decimal(0))
+            controlling = [(holder, votes / votes_total) for holder, votes in votes_by_company.items()
+                           if votes_total and votes / votes_total > Decimal("0.5")]
+            if controlling:
+                holder, ratio = max(controlling, key=lambda pair: pair[1])
+                parents_by_org[organization] = {"code": holder, "percent": float(ratio * 100)}
+
         result = []
         for row in rows:
             item = dict(row)
-            # Issuer cash ledgers are denominated in the configured settlement currency.
-            item["currency"] = base_currency_code(conn)
-            from functions.money import currency_precision
+            item["cash_base"] = item["cash"]
+            item["base_currency"] = base_currency
+            currency = legal_currencies.get(str(item["company_code"]), base_currency)
+            try:
+                cash = convert_cash(item["cash"], currency)
+                locked = convert_cash(item["locked"], currency)
+            except (ArithmeticError, InvalidOperation, TypeError, ValueError):
+                # Keep the ledger currency visible if a live FX quote is unavailable.
+                currency = base_currency
+            else:
+                item["cash"] = cash
+                item["locked"] = locked
+            item["currency"] = currency
             item["share_decimal_places"] = currency_precision(conn, item["quote_currency"] or item["currency"])
             holder = item["account"]
             item["holdings"] = [dict(h) for h in conn.execute(
@@ -258,10 +340,7 @@ class CompanyAccounts:
             item["accounts"] = conn.execute("SELECT COUNT(*) FROM accounts WHERE user_id=?", (holder,)).fetchone()[0] if holder else 0
             item["loans"] = conn.execute("SELECT COALESCE(SUM(outstanding_balance),0) FROM loans WHERE user_id=? "
                                          "AND status='active'", (holder,)).fetchone()[0] if holder else 0
-            controlling = conn.execute(
-                "SELECT a.company_code,SUM(u.quantity) quantity FROM user_assets u JOIN company_accounts a "
-                "ON a.user_id=u.user_id WHERE u.asset_code=? GROUP BY a.company_code", (item["company_code"],)).fetchall()
-            item["parents"] = [{"code": r["company_code"], "percent": float(r["quantity"]) / float(item["total_shares"]) * 100}
-                               for r in controlling if item["total_shares"]]
+            parent = parents_by_org.get(str(item["company_code"]))
+            item["parents"] = [parent] if parent else []
             result.append(item)
         return result

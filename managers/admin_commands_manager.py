@@ -52,7 +52,7 @@ USAGE = {
  '복권가격설정':'[가격]', '금리수정':'[국적] [add/del/modify] [수치]',
  '시장금리수정':'[국적] [funding/bank_bond/treasury] [만기일수] [금리%]',
  '법정최고이자수정':'[국적] [add/del/modify] [수치]',
- '자본변경':'[증자/감자] [유상/무상] [종목id] [수량] [유상 가격(선택)]',
+ '자본변경':'[증자/감자] [유상/무상] [종목id] [수량] [유상 주당 지급액(감자) 또는 발행가(증자)]',
  '증자':'[유상/무상] [종목id] [수량] [유상 가격(선택)]',
  '정기배당수정':'[id] [주기: 초 또는 1일/1주/1달] [주당 금액 또는 비율%]',
  '정기배당활성':'[id] [on/off 또는 1/0]',
@@ -95,12 +95,11 @@ CREATE_ARGS = {
  'option':('underlying_code','option_type','strike_price','maturity_days','quantity','limit_price','volatility_percent'),
  'currency':('name','asset_code','nationality'),
  'currencyproduct':('name','currency_code','annual_rate'),
- 'preferred':('name','parent_company_code','capital','total_shares','share_price','exchange_id'),
  'els':('name','face_value','total_supply','underlyings','annual_coupon','maturity_days',
         'observation_days','redemption_levels','maturity_level','knock_in_level','subscription_days','exchange_id'),
 }
 OPTIONAL_ARGS = {kind:('dividend_cycle_seconds','dividend_per_share')
-                 for kind in ('stock','preferred','asset','etf','fund','indexfund','commodity')}
+                 for kind in ('stock','asset','etf','fund','indexfund','commodity')}
 for _kind in tuple(OPTIONAL_ARGS):
     OPTIONAL_ARGS[_kind] += ('Fractal',)
 OPTIONAL_ARGS['loan']=('extension_min_credit_score','extension_days','extension_interest_rate')
@@ -118,7 +117,7 @@ TEXT_ARGS = {'name','industry','exchange_id','underlying_exchange_id','underlyin
 
 
 def product_profile(kind):
-    return 'preferred' if kind.lower() in {'preferred','preferredstock','우선주'} else TYPES.get(kind,TYPES.get(kind.lower()))
+    return TYPES.get(kind,TYPES.get(kind.lower()))
 
 
 def duration_seconds(value):
@@ -345,7 +344,7 @@ class AdminCommandsManager:
             if command in {'자본변경','증자','정기배당수정','정기배당활성','특별배당실시','합병','분할','액면분할병합','법인잔고수정','법인청산'}:
                 from managers.corporate_actions_manager import CorporateActionsManager
                 manager=CorporateActionsManager(self.bot)
-                if command=='자본변경':result=manager.change_capital(actor,args[0],args[1],args[2],self.control._number(args[3],1,integer=True),self.control._number(args[4],1,integer=True) if len(args)==5 else None)
+                if command=='자본변경':result=manager.change_capital(actor,args[0],args[1],args[2],self.control._number(args[3],1,integer=True),Decimal(args[4]) if len(args)==5 and args[0]=='감자' and args[1]=='유상' else self.control._number(args[4],1,integer=True) if len(args)==5 and args[0]=='증자' and args[1]=='유상' else None)
                 elif command=='증자':result=manager.change_capital(actor,'증자',args[0],args[1],self.control._number(args[2],1,integer=True),self.control._number(args[3],1,integer=True) if len(args)==4 else None)
                 elif command=='정기배당수정':result=manager.configure_dividend(actor,args[0],duration_seconds(args[1]),args[2])
                 elif command=='정기배당활성':
@@ -521,12 +520,12 @@ class AdminCommandsManager:
     def create(self,actor,raw,operation='create'):
         parts=raw.split(maxsplit=2)
         if len(parts)<2:
-            raise ValueError('$상품생성 '+USAGE['상품생성']+' · 상품종류: company, preferred, saving, cma, ima, wrap, loan, asset, etf, etn, future, corporatebond, convertiblebond, warrantbond, abs, mbs, abcp, fund, indexfund, commodity, bond, option, currency, currencyproduct, els')
+            raise ValueError('$상품생성 '+USAGE['상품생성']+' · 상품종류: stock, saving, cma, ima, wrap, loan, asset, etf, etn, future, corporatebond, convertiblebond, warrantbond, abs, mbs, abcp, fund, indexfund, commodity, bond, option, currency, currencyproduct, els')
         code,kind=parts[:2]
         category=TYPES.get(kind,TYPES.get(kind.lower()))
         profile=product_profile(kind)
         if category is None:
-            raise ValueError('상품종류: company, preferred, saving, cma, ima, wrap, loan, asset, etf, etn, future, corporatebond, convertiblebond, warrantbond, abs, mbs, abcp, fund, indexfund, commodity, bond, option, currency, currencyproduct, els')
+            raise ValueError('상품종류: stock, saving, cma, ima, wrap, loan, asset, etf, etn, future, corporatebond, convertiblebond, warrantbond, abs, mbs, abcp, fund, indexfund, commodity, bond, option, currency, currencyproduct, els')
         if len(parts)!=3:raise ValueError('사용법: '+creation_usage(kind,'상품수정' if operation=='edit' else '상품생성'))
         tail=parts[2]
         # Existing structured invocations remain compatible; the documented interface is positional.
@@ -576,13 +575,10 @@ class AdminCommandsManager:
             if operation!='create':raise ValueError('ELS 발행조건은 변경할 수 없습니다. 모집 중 취소 후 새 상품을 생성해주세요.')
             from managers.els_manager import ELSManager
             return ELSManager(self.db,self.bot.user_mgr).create(actor,code,fields)
-        if profile=='preferred':
-            if fields.get('share_class','preferred')!='preferred':raise ValueError('우선주는 share_class=preferred여야 합니다.')
-            fields['share_class']='preferred'
         if operation=='edit':
             with self.db.atomic() as conn:
                 found,row=self.locate(conn,code)
-                if found!=category or (category=='stock' and (row.get('share_class')=='preferred')!=(profile=='preferred')):
+                if found!=category:
                     raise ValueError('상품 코드와 상품종류가 일치하지 않습니다.')
                 # Unchanged contract conditions may be repeated in a full positional
                 # form. Actual changes continue to be validated by entity().

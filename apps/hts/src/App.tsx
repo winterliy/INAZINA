@@ -11,6 +11,7 @@ import { ServicesApp, legacyCommandPath, servicePath } from "./services/Services
 import { SERVICES } from "./services/ServiceKit";
 import { Backdrop } from "./Backdrop";
 import { SearchIndicators } from "./SearchIndicators";
+import { OwnershipGraph, type OwnershipGraphData } from "../../shared/OwnershipGraph";
 
 type Warning = { level: "caution" | "warning" | "danger"; label: string; reason: string; expiresEpoch: number | null };
 type DrMovement = { movement_id: number; dr_code: string; underlying_code: string; underlying_currency: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; underlying_average_cost: number; underlying_average_cost_text: string; decimal_places: number; recorded_epoch: number };
@@ -128,6 +129,8 @@ export default function App() {
   const [settingsError, setSettingsError] = useState("");
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [taxResidency, setTaxResidency] = useState<TaxResidency | null>(null);
+  const [ownershipGraph, setOwnershipGraph] = useState<OwnershipGraphData>();
+  const [ownershipLoading, setOwnershipLoading] = useState(() => ["/ownership", "/ownership/"].includes(location.pathname));
   const [taxResidencyOpen, setTaxResidencyOpen] = useState(false);
   const [taxResidencyValue, setTaxResidencyValue] = useState("");
   const [range, setRange] = useState<string>("1d");
@@ -192,7 +195,8 @@ export default function App() {
     // Exchange rates show as rate cards only; they never open the live chart.
     const tradable = instruments.filter((item) => item.type !== "forex");
     if (!term) return searchTabValue === "recommended" ? recommended(tradable, recommendSort) : tradable.filter((item) => searchTab(item) === searchTabValue);
-    return tradable.filter((item) => `${item.code} ${item.name} ${item.type} ${instrumentType(item)}`.toLocaleLowerCase().includes(term));
+    return tradable.filter((item) => `${item.code} ${item.name} ${item.type} ${instrumentType(item)}`.toLocaleLowerCase().includes(term))
+      .sort((a, b) => Number(b.code.toLocaleLowerCase() === term) - Number(a.code.toLocaleLowerCase() === term));
   }, [instruments, search, searchTabValue, recommendSort]);
   const tabCounts = useMemo(() => {
     const counts: Partial<Record<SearchTab, number>> = { recommended: Math.min(20, instruments.length) };
@@ -291,6 +295,17 @@ export default function App() {
     void api<{ htsId: string | null }>("/api/hts/account")
       .then(({ htsId: current }) => { setHtsId(current ?? ""); setHtsIdInput(current ?? ""); })
       .catch((cause) => setNotice(errorText(cause, "나루 계정 정보를 불러오지 못했습니다.")));
+  }, [user]);
+
+  useEffect(() => {
+    if (!user || !["/account", "/account/", "/ownership", "/ownership/"].includes(location.pathname)) return;
+    let active = true;
+    setOwnershipLoading(true);
+    void api<{ graph: OwnershipGraphData }>("/api/me/ownership-graph")
+      .then(({ graph }) => { if (active) setOwnershipGraph(graph); })
+      .catch(() => { if (active) setOwnershipGraph(undefined); })
+      .finally(() => { if (active) setOwnershipLoading(false); });
+    return () => { active = false; };
   }, [user]);
 
   // The search drops down under the top-bar field, like a portal's: Escape or a click elsewhere closes it.
@@ -582,10 +597,10 @@ export default function App() {
     <a className="brand" href="/" aria-label="NARU 나루 홈"><b className="brand-mark" aria-hidden="true">N</b>NARU <span>나루 · INAZINA</span></a>
     <div className="top-search" ref={searchBoxRef}>
       <label className="top-search-field"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M20 20l-4-4" /></svg>
-        <input ref={searchInputRef} value={search} aria-label="종목·금리·지수 검색" aria-expanded={searchOpen} aria-controls="top-search-pop" placeholder="종목·국가·거래소 검색" onFocus={() => setSearchOpen(true)} onChange={(event) => { setSearch(event.target.value); setSearchOpen(true); }} onKeyDown={(event) => { if (event.key === "Enter" && filtered[0]) chooseInstrument(filtered[0].code); }} />
+        <input ref={searchInputRef} value={search} aria-label="종목·상품코드·금리·지수 검색" aria-expanded={searchOpen} aria-controls="top-search-pop" placeholder="종목명·상품코드·국가·거래소 검색" onFocus={() => setSearchOpen(true)} onChange={(event) => { setSearch(event.target.value); setSearchOpen(true); }} onKeyDown={(event) => { if (event.key === "Enter" && filtered[0]) chooseInstrument(filtered[0].code); }} />
         {search && <button type="button" className="top-search-clear" aria-label="검색어 지우기" onClick={() => { setSearch(""); searchInputRef.current?.focus(); }}>×</button>}
       </label>
-      {searchOpen && <section id="top-search-pop" className="search-pop" aria-label="종목 검색 결과">{!search.trim() && <div className="search-tabs" role="tablist" aria-label="상품 종류">{SEARCH_TABS.filter(([id]) => id === "recommended" || tabCounts[id]).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={searchTabValue === id} className={searchTabValue === id ? "active" : ""} onClick={() => setSearchTabValue(id)}>{label}<span>{tabCounts[id] ?? 0}</span></button>)}</div>}{!search.trim() && searchTabValue === "recommended" && <><div className="recommend-sorts" role="group" aria-label="추천 기준">{RECOMMEND_SORTS.map(([id, label]) => <button key={id} type="button" aria-pressed={recommendSort === id} className={recommendSort === id ? "active" : ""} onClick={() => setRecommendSort(id)}>{label}</button>)}</div><p className="search-caption">{RECOMMEND_SORTS.find(([id]) => id === recommendSort)![2]}</p></>}<div className="search-results">{fxRates.map((fx) => <div key={`fx-${fx.code}`} className="search-result fx-rate" aria-label={`${homeCurrency}:${fx.code} 환율`}><span><span className="search-name"><b>{homeCurrency}:{fx.code}</b><small>{fx.name} · 환율</small></span></span><span className="search-price"><strong>1 : {money(fx.rate, 6)}</strong><small>1 {fx.code} = {money(fx.inverse, 4)} {homeCurrency}</small></span></div>)}{filtered.slice(0, 200).map((item, index) => <button type="button" key={item.code} className={selectedCode === item.code ? "search-result active" : "search-result"} onClick={() => chooseInstrument(item.code)}><span>{!search.trim() && searchTabValue === "recommended" && <em className="search-rank">{index + 1}</em>}<span className="search-name"><b>{item.name} <WarningBadge warning={item.warning} /></b><small>{item.code} · {instrumentType(item)}{!search.trim() && searchTabValue === "recommended" && recommendSort === "volume" ? (item.volume24h ? ` · 24시간 ${money(item.volume24h, 2)}주` : "") : item.trades24h ? ` · 24시간 ${money(item.trades24h)}건` : ""}</small></span></span><span className="search-price"><strong>{money(item.price, 2)} {item.quote_currency || homeCurrency}</strong>{item.change24h !== null && item.change24h !== undefined && <small className={item.change24h > 0 ? "up" : item.change24h < 0 ? "down" : undefined}>{item.change24h > 0 ? "+" : ""}{Number(item.change24h).toFixed(2)}%</small>}</span></button>)}{!filtered.length && !fxRates.length && <p className="empty">{search.trim() ? "검색 결과가 없습니다." : searchTabValue === "recommended" ? "최근 24시간 동안 해당하는 종목이 없습니다." : "이 종류의 상품이 없습니다."}</p>}</div>{search.trim() && <SearchIndicators query={search} />}</section>}
+      {searchOpen && <section id="top-search-pop" className="search-pop" aria-label="종목 검색 결과">{!search.trim() && <div className="search-tabs" role="tablist" aria-label="상품 종류">{SEARCH_TABS.filter(([id]) => id === "recommended" || tabCounts[id]).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={searchTabValue === id} className={searchTabValue === id ? "active" : ""} onClick={() => setSearchTabValue(id)}>{label}<span>{tabCounts[id] ?? 0}</span></button>)}</div>}{!search.trim() && searchTabValue === "recommended" && <><div className="recommend-sorts" role="group" aria-label="추천 기준">{RECOMMEND_SORTS.map(([id, label]) => <button key={id} type="button" aria-pressed={recommendSort === id} className={recommendSort === id ? "active" : ""} onClick={() => setRecommendSort(id)}>{label}</button>)}</div><p className="search-caption">{RECOMMEND_SORTS.find(([id]) => id === recommendSort)![2]}</p></>}<div className="search-results">{fxRates.map((fx) => <div key={`fx-${fx.code}`} className="search-result fx-rate" aria-label={`${homeCurrency}:${fx.code} 환율`}><span><span className="search-name"><b>{homeCurrency}:{fx.code}</b><small>{fx.name} · 환율</small></span></span><span className="search-price"><strong>1 : {money(fx.rate, 6)}</strong><small>1 {fx.code} = {money(fx.inverse, 4)} {homeCurrency}</small></span></div>)}{filtered.slice(0, 200).map((item, index) => <button type="button" key={item.code} className={selectedCode === item.code ? "search-result active" : "search-result"} onClick={() => chooseInstrument(item.code)}><span>{!search.trim() && searchTabValue === "recommended" && <em className="search-rank">{index + 1}</em>}<span className="search-name"><b>{item.name} <WarningBadge warning={item.warning} /></b><small>{item.code} · {instrumentType(item)}{!search.trim() && searchTabValue === "recommended" && recommendSort === "volume" ? (item.volume24h ? ` · 24시간 ${money(item.volume24h, 2)}주` : "") : item.trades24h ? ` · 24시간 ${money(item.trades24h)}건` : ""}</small></span></span><span className="search-price"><strong>{money(item.price, 2)} {item.quote_currency || homeCurrency}</strong>{item.change24h !== null && item.change24h !== undefined && <small className={item.change24h > 0 ? "up" : item.change24h < 0 ? "down" : undefined}>{item.change24h > 0 ? "+" : ""}{Number(item.change24h).toFixed(2)}%</small>}</span></button>)}{!filtered.length && !fxRates.length && <p className="empty">{search.trim() ? "거래 종목 결과가 없습니다. 상품 코드·금리·지수는 아래 관련 결과를 확인하세요." : searchTabValue === "recommended" ? "최근 24시간 동안 해당하는 종목이 없습니다." : "이 종류의 상품이 없습니다."}</p>}</div>{search.trim() && <SearchIndicators query={search} />}</section>}
     </div>
     <nav className="top-nav" aria-label="서비스">{SERVICES.slice(0, 4).map((item) => <a key={item.path} href={item.path} aria-current={here === "services" && location.pathname.startsWith(item.path) ? "page" : undefined}>{item.label}</a>)}<a href={boardUrl()}>게시판</a></nav>
     <div className="top-actions">
@@ -606,6 +621,15 @@ export default function App() {
     <Backdrop />
     {topbar("services")}
     <ServicesApp path={service} instruments={instruments} portfolio={portfolio} orders={orders} homeCurrency={homeCurrency} homeDigits={homeDigits} cash={portfolio?.cash ?? user.cash} creditScore={credit?.score ?? user.creditScore} accounts={portfolio?.accounts ?? []} onDone={() => void refreshAccount().catch(() => undefined)} />
+    <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
+  </div>;
+
+  if (location.pathname === "/ownership" || location.pathname === "/ownership/") return <div className="hts-shell stage ownership-window-shell">
+    <Backdrop />
+    <main className="ownership-window">
+      <header><div><p className="eyebrow">NARU · 나루</p><h1>보유 기업 지배구조</h1><p className="sub">보유 주식의 의결권과 지배하는 자회사 관계입니다.</p></div><a className="soft" href="/account">계정 페이지로</a></header>
+      {ownershipLoading ? <div className="ownership-loading" role="status"><span className="ownership-spinner" aria-hidden="true" /><strong>보유 기업 지배구조를 불러오는 중…</strong></div> : <OwnershipGraph graph={ownershipGraph} fullScreen />}
+    </main>
     <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
   </div>;
 
@@ -639,6 +663,10 @@ export default function App() {
           <header><h2>본인 확인 (KYC)</h2><p>국적별 확인 상태입니다.</p></header>
           <dl className="account-facts"><div><dt>상태</dt><dd>{KYC_STATUS[portfolio.kyc_profile.status]}</dd></div><div><dt>위험 등급</dt><dd>{KYC_RISK[portfolio.kyc_profile.risk_tier]}</dd></div><div><dt>만료</dt><dd>{portfolio.kyc_profile.expires_epoch ? date(portfolio.kyc_profile.expires_epoch) : "—"}</dd></div></dl>
         </section>}
+        <section className="account-section">
+          <header><h2>보유 기업 지배구조</h2><p>보유 주식의 의결권과 지배하는 자회사 관계를 넓은 화면에서 확인합니다.</p></header>
+          <a className="account-save ownership-open" href="/ownership" target="_blank" rel="noreferrer">조직도 새 창에서 보기 ↗</a>
+        </section>
         <section className="account-section">
           <header><h2>바로가기</h2></header>
           <nav className="account-links">{SERVICES.map((item) => <a key={item.path} href={item.path}><b>{item.label}</b><small>{item.description}</small></a>)}</nav>

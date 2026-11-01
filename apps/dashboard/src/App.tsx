@@ -1,32 +1,33 @@
 import type { Money } from "../../shared/money";
 import { validMoney, moneyCompare, formatMoney } from "../../shared/money";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api, appUrl, clearToken, signedOut, type ApiUser } from "../../shared/api";
 import { AuthPanel } from "../../shared/AuthPanel";
 import { Card, plain, type Ctx } from "./common";
-import { ProductsPage } from "./ProductsPage";
-import { UsersPage } from "./UsersPage";
-import { ExchangesPage } from "./ExchangesPage";
-import { CompaniesPage } from "./CompaniesPage";
-import { WarningsCard } from "./WarningsCard";
-import { IdentityCard } from "./IdentityCard";
-import { FeedbackPage } from "./FeedbackPage";
-import { LoginHistoryCard } from "./LoginHistoryCard";
-import { LogCard } from "./LogCard";
-import { BoardAdminPage } from "./BoardAdminPage";
-import { DocumentsPage } from "./DocumentsPage";
-import { CompliancePage } from "./CompliancePage";
-import { BanksPage } from "./BanksPage";
-import { DatabasePage } from "./DatabasePage";
-import { GambleTile } from "./GambleTile";
-import { EventTimeline } from "./ActivityTiles";
-import { NaturalizationPage } from "./NaturalizationPage";
+const ProductsPage = lazy(() => import("./ProductsPage").then((module) => ({ default: module.ProductsPage })));
+const UsersPage = lazy(() => import("./UsersPage").then((module) => ({ default: module.UsersPage })));
+const ExchangesPage = lazy(() => import("./ExchangesPage").then((module) => ({ default: module.ExchangesPage })));
+const CompaniesPage = lazy(() => import("./CompaniesPage").then((module) => ({ default: module.CompaniesPage })));
+const WarningsCard = lazy(() => import("./WarningsCard").then((module) => ({ default: module.WarningsCard })));
+const IdentityCard = lazy(() => import("./IdentityCard").then((module) => ({ default: module.IdentityCard })));
+const FeedbackPage = lazy(() => import("./FeedbackPage").then((module) => ({ default: module.FeedbackPage })));
+const LoginHistoryCard = lazy(() => import("./LoginHistoryCard").then((module) => ({ default: module.LoginHistoryCard })));
+const LogCard = lazy(() => import("./LogCard").then((module) => ({ default: module.LogCard })));
+const BoardAdminPage = lazy(() => import("./BoardAdminPage").then((module) => ({ default: module.BoardAdminPage })));
+const DocumentsPage = lazy(() => import("./DocumentsPage").then((module) => ({ default: module.DocumentsPage })));
+const CompliancePage = lazy(() => import("./CompliancePage").then((module) => ({ default: module.CompliancePage })));
+const BanksPage = lazy(() => import("./BanksPage").then((module) => ({ default: module.BanksPage })));
+const DatabasePage = lazy(() => import("./DatabasePage").then((module) => ({ default: module.DatabasePage })));
+const GambleTile = lazy(() => import("./GambleTile").then((module) => ({ default: module.GambleTile })));
+const EventTimeline = lazy(() => import("./ActivityTiles").then((module) => ({ default: module.EventTimeline })));
+const NaturalizationPage = lazy(() => import("./NaturalizationPage").then((module) => ({ default: module.NaturalizationPage })));
 import { COMMAND_FORMS, CommandForm } from "./CommandForm";
-import { AccountPage } from "./AccountPage";
-import { OrganizationPage } from "./OrganizationPage";
+const AccountPage = lazy(() => import("./AccountPage").then((module) => ({ default: module.AccountPage })));
+const OrganizationPage = lazy(() => import("./OrganizationPage").then((module) => ({ default: module.OrganizationPage })));
+const OrganizationOwnershipWindow = lazy(() => import("./OrganizationOwnershipWindow").then((module) => ({ default: module.OrganizationOwnershipWindow })));
 
-type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "feedback" | "board" | "documents" | "compliance" | "accounting" | "events" | "commands" | "database" | "audit";
+type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "feedback" | "board" | "documents" | "compliance" | "accounting" | "events" | "commands" | "database" | "audit" | "ownership";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
 type Instrument = { code: string; name: string; type: string; price: Money; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
 type Exchange = { exchange_id: string; status: string; reason: string | null; trading_halted: number; updated_epoch: number | null; resume_epoch: number | null; circuit_stage: number | null };
@@ -60,6 +61,7 @@ const pages: { id: Page; label: string }[] = [
   { id: "commands", label: "관리자 명령어" },
   { id: "database", label: "DB 편집" },
   { id: "audit", label: "작업 기록" },
+  { id: "ownership", label: "조직도" },
 ];
 const subtitles: Record<Page, string> = {
   account: "관리자 계정의 로그인 정보, 실행 명의와 최근 로그인을 관리합니다.",
@@ -80,6 +82,7 @@ const subtitles: Record<Page, string> = {
   commands: "Discord의 모든 $ 명령어와 도움말을 같은 검증과 기록으로 실행합니다.",
   database: "DB Browser에서 하던 설정 편집을 감사 기록과 함께 처리합니다.",
   audit: "모든 관리자 작업과 관리자 계정 로그인의 최근 기록입니다.",
+  ownership: "기업 지분과 의결권 관계를 넓은 화면에서 확인합니다.",
 };
 const number = formatMoney;
 const date = (value: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "medium" }).format(value * 1000);
@@ -89,7 +92,7 @@ const message = (cause: unknown, fallback: string) => cause instanceof Error ? c
 
 // Each page (and each command category) has its own address: #instruments, #commands/거래소.
 function readRoute(): { page: Page; sub: string } {
-  const [head, ...rest] = decodeURIComponent(location.hash.replace(/^#\/?/, "")).split("/");
+  const [head, ...rest] = decodeURIComponent(location.hash.replace(/^#\/?/, "")).replace(/\/+$/, "").split("/");
   return { page: pages.some((item) => item.id === head) ? head as Page : "overview", sub: rest.join("/") };
 }
 const NATIONAL = "국가 명의", HELP = "도움말";
@@ -199,7 +202,7 @@ export default function App() {
   }, [page, user, query, commands.length, commandScope, helpPages.length]);
 
   useEffect(() => { void loadSession(); }, [loadSession]);
-  useEffect(() => { if (user) void refresh(); }, [user, refresh]);
+  useEffect(() => { if (user && page !== "ownership") void refresh(); }, [user, page, refresh]);
   // Official-site Contact/Report alerts: refresh the unread count every minute.
   const loadUnread = useCallback(async () => {
     try {
@@ -211,11 +214,11 @@ export default function App() {
     } catch { /* the badge is best effort */ }
   }, []);
   useEffect(() => {
-    if (!user) return;
+    if (!user || user.role !== "admin" || page === "ownership") return;
     void loadUnread();
     const timer = window.setInterval(() => void loadUnread(), 60_000);
     return () => window.clearInterval(timer);
-  }, [user, loadUnread]);
+  }, [user, page, loadUnread]);
   useEffect(() => { setQuery(""); setNotice(null); }, [page]);
 
   const selectedCommand = commands.find((item) => item.name === command);
@@ -228,6 +231,7 @@ export default function App() {
   // Keep the address in step with the page; back/forward restore it.
   useEffect(() => {
     const hash = `#${page}${page === "commands" && commandSection ? `/${encodeURIComponent(commandSection)}` : ""}`;
+    if (page === "ownership") return;
     if (decodeURIComponent(location.hash) !== decodeURIComponent(hash)) history.pushState(null, "", hash);
   }, [page, commandSection]);
   useEffect(() => {
@@ -354,6 +358,7 @@ export default function App() {
 
   if (!checked) return <Stage><main className="center-shell"><p className="loading">불러오는 중…</p></main></Stage>;
   if (!user) return <Stage><AuthPanel app="dashboard" onAuthenticated={setUser} /></Stage>;
+  if (page === "ownership") return <Stage><Suspense fallback={<main className="center-shell"><p className="loading">조직도를 여는 중…</p></main>}><OrganizationOwnershipWindow route={initialRoute.sub} /></Suspense></Stage>;
   // Users, country and company accounts get their own account dashboard, like the HTS.
   if (user.role !== "admin") {
     return <Stage><div className="shell">
@@ -364,7 +369,7 @@ export default function App() {
       <main className="content">
         {user.delegatedBy && <div className="notice" role="status"><span>관리자 {user.delegatedByName ?? user.delegatedBy}님이 {user.nickname} 계정으로 로그인 중입니다.</span></div>}
         {notice && <div className={notice.error ? "notice error" : "notice"} role={notice.error ? "alert" : "status"}><span>{notice.text}</span><button type="button" className="ghost" aria-label="알림 닫기" onClick={() => setNotice(null)}>×</button></div>}
-        <AccountPage ctx={ctx} user={user} onLogout={logout} />
+        <Suspense fallback={<p className="loading">계정 화면을 불러오는 중…</p>}><AccountPage ctx={ctx} user={user} onLogout={logout} /></Suspense>
         <p className="foot">© INAZINA. All rights reserved.</p>
       </main>
     </div></Stage>;
@@ -390,7 +395,7 @@ export default function App() {
       </header>
       <nav className="subnav" aria-label="관리 메뉴">
         <div className="subnav-in">
-          {pages.filter((item) => item.id !== "account").map((item) => <button key={item.id} type="button" className="subnav-item" aria-current={page === item.id ? "page" : undefined} onClick={() => setPage(item.id)}>
+          {pages.filter((item) => item.id !== "account" && item.id !== "ownership").map((item) => <button key={item.id} type="button" className="subnav-item" aria-current={page === item.id ? "page" : undefined} onClick={() => setPage(item.id)}>
             {item.label}
             {item.id === "feedback" && unreadFeedback > 0 && <span className="nav-badge" aria-label={`새 알림 ${unreadFeedback}건`}>{unreadFeedback}</span>}
             {item.id === "naturalization" && pendingNaturalization > 0 && <span className="nav-badge" aria-label={`심사 대기 ${pendingNaturalization}건`}>{pendingNaturalization}</span>}
@@ -412,6 +417,7 @@ export default function App() {
           </section>}
         {notice && <div className={notice.error ? "notice error" : "notice"} role={notice.error ? "alert" : "status"}><span>{notice.text}</span><button type="button" className="ghost" aria-label="알림 닫기" onClick={() => setNotice(null)}>×</button></div>}
 
+        <Suspense fallback={<p className="loading">화면을 불러오는 중…</p>}>
         {page === "overview" && <>
           <section className="spec-strip" aria-label="주요 지표">
             <Metric label="활성 사용자" value={overview ? number(overview.activeUsers) : "—"} />
@@ -522,6 +528,7 @@ export default function App() {
         </Card>}
         {page === "audit" && <LoginHistoryCard ctx={ctx} />}
         {page === "account" && <AccountPage ctx={ctx} user={user} onLogout={logout} />}
+        </Suspense>
         <p className="foot">© INAZINA. All rights reserved.</p>
       </main>
     </div>

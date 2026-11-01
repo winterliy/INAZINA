@@ -1131,7 +1131,9 @@ class CorporateActionsManager:
                 elif conn.execute("SELECT 1 FROM corporate_equity_offerings e JOIN market_orders o USING(order_id) WHERE e.asset_code=? AND o.status IN ('open','partial') LIMIT 1", (code,)).fetchone():
                     raise ValueError('진행 중인 유상증자 신주 판매를 먼저 완료하거나 취소해주세요.')
                 price = int(listing['share_price'])
-                currency = listing.get('quote_currency') or base_currency_code(conn)
+                # Legal capital and issuer cash accounts are denominated in the
+                # base currency. Market quote currency does not change that ledger.
+                currency = base_currency_code(conn)
                 if mode == '유상':
                     from managers.market_session_manager import MarketSessionManager
                     error = MarketSessionManager(self.db).trading_error(conn=conn, now=now, asset_code=code)
@@ -1201,17 +1203,23 @@ class CorporateActionsManager:
             return False, f'❌ {exc}'
 
     def retire_share_class(self, actor, code):
-        """Retire a preferred/custom class only after all holders and encumbrances clear."""
+        """Retire a non-primary share issuance only after holders and encumbrances clear."""
         code = str(code)
         now = int(time.time())
         try:
             with DBManager.admin_scope(actor), self.db.atomic() as conn:
                 self._require(conn, actor)
                 listing = self._listing(conn, code)
-                if listing['table'] != 'company' or listing['share_class'] != 'preferred':
-                    raise ValueError('보통주는 이 기능으로 폐지할 수 없습니다. 별도 기업 청산 절차를 사용해주세요.')
+                if listing['table'] != 'company':
+                    raise ValueError('회사 주식 종류만 폐지할 수 있습니다.')
                 if listing['status'] != 'active':
                     raise ValueError('이미 거래가 중지된 주식 종류입니다.')
+                issuance = conn.execute(
+                    "SELECT organization_code FROM share_issuances WHERE issuance_id=?",
+                    (listing.get('share_issuance_id'),),
+                ).fetchone()
+                if not issuance or str(issuance[0]) == code:
+                    raise ValueError('기업의 기본 주식은 종류 폐지 대신 법인 청산 절차를 사용해주세요.')
                 if conn.execute("SELECT 1 FROM depositary_receipts WHERE underlying_code=? AND program_status<>'terminated' LIMIT 1", (code,)).fetchone():
                     raise ValueError('미종료 DR 프로그램을 먼저 상환하고 종료해주세요.')
                 from managers.company_account_manager import CompanyAccounts
@@ -1245,20 +1253,153 @@ class CorporateActionsManager:
                 self._record(conn, 'retire-class:' + uuid.uuid4().hex, 'share_class_retirement',
                              code, listing.get('parent_company_code'),
                              {'class_name': listing.get('name'), 'cancelled_shares': int(listing.get('total_shares') or 0)}, now)
-            return True, f'✅ `{code}` 주식 종류를 폐지했습니다. 보유·주문·계약이 없어 기존 보통주에는 영향이 없습니다.'
+            return True, f'✅ `{code}` 주식 종류를 소각·폐지했습니다. 보유·주문·계약이 없어 다른 주식 종류에는 영향이 없습니다.'
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f'❌ {exc}'
 
     def change_capital(self, actor, direction, mode, code, quantity, issue_price=None):
-        """Unified capital-change entry point; reductions use a reverse split."""
+        """Increase capital or reduce issued shares and capital with a matching cash payout."""
         direction, mode = str(direction).strip(), str(mode).strip()
         if direction == '증자':
             return self.increase_capital(actor, mode, code, quantity, issue_price)
         if direction != '감자' or mode not in {'유상', '무상'}:
             return False, '❌ 자본변경은 증자/감자와 유상/무상으로 입력해주세요.'
-        if issue_price is not None:
-            return False, '❌ 감자는 현재 액면 병합 방식이며 가격 인자를 받지 않습니다.'
-        return self.adjust_face_value(actor, '병합', code, quantity)
+        return self.reduce_capital(actor, mode, code, quantity, issue_price)
+
+    def reduce_capital(self, actor, mode, code, quantity, payout_per_share=None):
+        """Cancel a specified share count and reduce capital; paid reductions compensate holders."""
+        from fractions import Fraction
+        now = int(time.time())
+        try:
+            if mode not in {'유상', '무상'}:
+                raise ValueError('감자 방식은 유상 또는 무상으로 입력해주세요.')
+            cancelled = self._integer(quantity, '감자 주식 수', 1)
+            try:
+                payout_value = Decimal(str(payout_per_share)) if payout_per_share is not None else None
+            except (InvalidOperation, TypeError, ValueError):
+                raise ValueError('지급액은 숫자로 입력해주세요.') from None
+            if mode == '유상' and payout_value is None:
+                raise ValueError('유상감자는 취소 주식 1주당 지급액을 입력해주세요.')
+            if payout_value is not None and (not payout_value.is_finite() or payout_value <= 0):
+                raise ValueError('지급액은 유한한 양수여야 합니다.')
+            if mode == '무상' and payout_per_share is not None:
+                raise ValueError('무상감자는 지급액을 받지 않습니다.')
+            with DBManager.admin_scope(actor), self.db.atomic() as conn:
+                self._require(conn, actor)
+                listing = self._listing(conn, code)
+                if listing['table'] != 'company' or listing['status'] != 'active':
+                    raise ValueError('활성 법인 주식만 감자할 수 있습니다.')
+                issuer = listing['parent_company_code'] or code
+                if listing['share_class'] == 'preferred' and listing['parent_company_code']:
+                    raise ValueError('연결 주식 종류의 감자는 권리·자본 배분 기능이 준비될 때까지 지원하지 않습니다.')
+                supply = int(listing['total_shares'] or 0)
+                if cancelled >= supply:
+                    raise ValueError('전체 발행주식을 취소할 수 없습니다. 법인 청산을 사용해주세요.')
+                if listing.get('par_value_minor_units') is not None:
+                    raise ValueError('액면가 등록 법인의 정식 자본감자 절차는 별도 정관·액면가 처리와 함께 사용해야 합니다.')
+                treasury_user = conn.execute('SELECT user_id FROM company_accounts WHERE company_code=?', (issuer,)).fetchone()
+                lots = conn.execute('SELECT holding_id,user_id,quantity,average_cost_minor_units FROM user_assets WHERE asset_code=?', (code,)).fetchall()
+                total_held = sum((Fraction(str(row['quantity'])) for row in lots), Fraction(0))
+                if total_held < cancelled:
+                    raise ValueError('현재 보유 주식 수가 감자 수량보다 적습니다.')
+                if total_held != supply:
+                    raise ValueError('현재 보유량과 발행주식 수가 일치하지 않습니다. 미발행분 처리 후 다시 감자해주세요.')
+                # Allocate proportionally across outstanding holdings; treasury shares carry no vote.
+                eligible = [row for row in lots if not treasury_user or row['user_id'] != treasury_user['user_id']]
+                if sum((Fraction(str(row['quantity'])) for row in eligible), Fraction(0)) < cancelled:
+                    raise ValueError('실제 주주 보유 수량보다 많은 주식을 감자할 수 없습니다.')
+                from managers.asset_cost_manager import AssetCostManager
+                ratio = Fraction(cancelled, 1) / sum((Fraction(str(row['quantity'])) for row in eligible), Fraction(0))
+                removals = []
+                allocated = 0
+                for index, row in enumerate(eligible):
+                    holder_quantity = Fraction(str(row['quantity']))
+                    amount = Fraction(cancelled - allocated, 1) if index == len(eligible) - 1 else holder_quantity * ratio
+                    if amount.denominator != 1 or amount > Fraction(str(row['quantity'])):
+                        raise ValueError('비례 감자 후 각 주주의 수량이 정수 주식이어야 합니다. 감자 수량을 조정해주세요.')
+                    removals.append((row, int(amount)))
+                    allocated += int(amount)
+                if allocated != cancelled:
+                    raise ValueError('주주별 정수 배정으로 감자 수량을 정확히 나눌 수 없습니다. 감자 수량을 조정해주세요.')
+                # Legal capital and issuer cash accounts are denominated in the
+                # base currency. Market quote currency does not change that ledger.
+                currency = base_currency_code(conn)
+                places = currency_precision(conn, currency)
+                capital = Decimal(str(listing.get('capital') or 0))
+                capital_reduction = (capital * Decimal(cancelled) / Decimal(supply)).quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+                if capital_reduction <= 0 or capital_reduction > capital:
+                    raise ValueError('감자 자본금 감소액이 유효하지 않습니다.')
+                payout = payout_value if mode == '유상' else Decimal(0)
+                payout_total = payout * cancelled
+                if mode == '유상' and capital_reduction != payout_total:
+                    raise ValueError('유상감자의 총 지급액은 비례 자본금 감소액과 같아야 합니다. 지급액을 조정해주세요.')
+                payout_units = to_minor_units(payout_total, places)
+                if mode == '유상' and (payout_units <= 0 or from_minor_units(payout_units, places) != payout_total):
+                    raise ValueError(f'주당 지급액은 {places}자리 통화 단위까지만 입력할 수 있습니다.')
+                cash_account = None
+                if mode == '유상':
+                    cash_account = conn.execute('SELECT balance,locked_amount FROM issuer_cash_accounts WHERE company_code=?', (issuer,)).fetchone()
+                    available_cash = (Decimal(str(cash_account['balance'] or 0)) - Decimal(str(cash_account['locked_amount'] or 0))) if cash_account else Decimal(0)
+                    if not cash_account or available_cash < payout_total:
+                        raise ValueError('유상감자 지급에 필요한 법인 현금이 부족하거나 잠겨 있습니다.')
+                self._unencumbered(conn, [code], allow_orders=False)
+                if conn.execute("SELECT 1 FROM market_orders WHERE asset_code=? AND status='scheduled' LIMIT 1", (code,)).fetchone():
+                    raise ValueError('예약 주문을 먼저 취소해주세요.')
+                if conn.execute('SELECT 1 FROM market_exchange_index_components WHERE company_code=? LIMIT 1', (code,)).fetchone():
+                    raise ValueError('거래소 지수 산출 종목은 지수에서 제외한 뒤 감자해주세요.')
+                # A reduction changes per-share ownership; keep price unchanged and retain remaining cost basis.
+                for row, amount in removals:
+                    current_quantity = Fraction(str(row['quantity']))
+                    quantity_left = current_quantity - amount
+                    if quantity_left:
+                        AssetCostManager.reprice(conn, row['holding_id'], code, quantity_left,
+                                                 Decimal(int(row['average_cost_minor_units'] or 0)) / (10 ** places),
+                                                 preserve_total=True)
+                    if not quantity_left:
+                        conn.execute('DELETE FROM user_assets WHERE holding_id=?', (row['holding_id'],))
+                    if mode == '유상' and amount:
+                        payout_units = to_minor_units(payout * amount, places) * (SCALE // (10 ** places))
+                        if currency != CurrencyManager.home(conn, row['user_id']):
+                            CurrencyExchangeManager._settle(conn, row['user_id'], now)
+                            self._currency_account(conn, row['user_id'], currency, now)
+                        CurrencyManager.change(conn, row['user_id'], currency, payout_units)
+                new_supply = supply - cancelled
+                new_listed = None if listing['listed_shares'] is None else max(0, int(listing['listed_shares']) - cancelled)
+                conn.execute('UPDATE company SET total_shares=?,listed_shares=?,capital=capital-? WHERE company_code=?',
+                             (new_supply, new_listed, ExactDecimal(capital_reduction), code))
+                if mode == '유상':
+                    changed = conn.execute('UPDATE issuer_cash_accounts SET balance=balance-? WHERE company_code=? AND balance>=?',
+                                           (ExactDecimal(payout_total), issuer, ExactDecimal(payout_total)))
+                    if changed.rowcount != 1:
+                        raise ValueError('유상감자 지급에 필요한 법인 현금이 부족합니다.')
+                self._reset_market_state(conn, code, listing['share_price'], new_supply)
+                conn.execute('UPDATE market_exchange_index_components SET total_shares=? WHERE company_code=?', (new_supply, code))
+                UserManager._refresh_max_shareholder(conn, code)
+                Finance.ensure(conn, issuer, now)
+                if Finance.entity(conn, issuer):
+                    capital_units = Finance.converted(conn, capital_reduction, currency, Finance.entity(conn, issuer)['currency'], Finance.entity(conn, issuer)['decimal_places'])
+                    if mode == '유상':
+                        cash_book = Finance.converted(conn, payout_total, currency, Finance.entity(conn, issuer)['currency'], Finance.entity(conn, issuer)['decimal_places'])
+                        if capital_units:
+                            capital_account = 'preferred_capital' if listing['share_class'] == 'preferred' else 'common_capital'
+                            lines = [(capital_account, capital_units), ('cash', -cash_book), ('capital_surplus', cash_book - capital_units)]
+                        else:
+                            lines = []
+                    else:
+                        capital_account = 'preferred_capital' if listing['share_class'] == 'preferred' else 'common_capital'
+                        lines = [(capital_account, capital_units), ('capital_surplus', -capital_units)] if capital_units else []
+                    if lines:
+                        Finance.event(conn, issuer, f'{mode}감자 {cancelled:,}주', lines, 'financing', now=now,
+                                      key=f'capital-reduction:{code}:{now}', currency=currency)
+                self._record(conn, f'capital-reduction:{uuid.uuid4().hex}', 'capital_reduction', code, None,
+                             {'mode': mode, 'cancelled_shares': cancelled, 'old_supply': supply, 'new_supply': new_supply,
+                              'capital_reduction': str(capital_reduction), 'payout_per_share': str(payout),
+                              'payout_total': str(payout_total), 'currency': currency}, now)
+                self._audit(conn, actor, 'capital_reduction', code, {'mode': mode, 'cancelled_shares': cancelled,
+                             'capital_reduction': str(capital_reduction), 'payout_total': str(payout_total)}, now)
+            return True, f'✅ `{code}` {mode}감자 완료 · {cancelled:,}주 취소 · 자본금 {capital_reduction:,} {currency} 감소' + (f' · 주당 {payout:,} {currency} 지급' if mode == '유상' else '')
+        except (ValueError, TypeError, OverflowError) as exc:
+            return False, f'❌ {exc}'
 
     def adjust_face_value(self, actor, action, code, ratio, *, mode=None, resolution_id=None, old_shares=None, new_shares=None):
         """Apply an exact stock split or consolidation to every unit-based state."""
@@ -1444,7 +1585,7 @@ class CorporateActionsManager:
                 if a['type'] == 'forex' or conn.execute('SELECT 1 FROM currencies WHERE asset_code IN (?,?) LIMIT 1', (surviving_code, absorbed_code)).fetchone():
                     raise ValueError('환율 종목은 통합할 수 없습니다. 환율수정·환전으로 통화를 관리해주세요.')
                 if a['table'] == 'company' and a['share_class'] != b['share_class']:
-                    raise ValueError('보통주와 우선주는 같은 종류끼리 합병해주세요.')
+                    raise ValueError('주식의 권리 분류가 같은 종목끼리 합병해주세요.')
                 if a['table'] == 'company' and a['share_class'] == 'preferred' and a['parent_company_code'] != b['parent_company_code']:
                     raise ValueError('같은 발행 법인의 우선주끼리 합병해주세요.')
                 if a['table'] == 'company' and a['share_class'] == 'preferred' and any(a[field] != b[field] for field in ('dividend_priority','cumulative_dividend','liquidation_value_per_share','dividend_funding')):

@@ -11,3 +11,11 @@
 @media (max-width: 480px) { .search-indicator-row { flex-wrap: wrap; } .search-indicator-row dl { margin-left: auto; } }
 
 .search-indicator { cursor: default; }
+.search-indicator-rates { display: flex !important; flex: none; align-items: center; gap: 16px; }
+.search-indicator-rates > span { display: grid; justify-items: end; gap: 3px; }
+.search-indicator-rates small { color: var(--ink2); font-size: 11px; white-space: nowrap; }
+.search-indicator-rates strong { font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+@media (max-width: 520px) {
+  .search-indicator { flex-wrap: wrap; }
+  .search-indicator-rates { width: 100%; justify-content: flex-end; }
+}

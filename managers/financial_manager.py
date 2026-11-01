@@ -608,7 +608,8 @@ class FinancialManager:
             'company':issuer,'period':period,'currency':ent['currency'],'places':int(ent['decimal_places']),
             'accounts':[{'code':k,'name':v[0],'category':v[1],'protected':k in PROTECTED_ACCOUNTS} for k,v in ACCOUNTS.items()],
             'entries':[{'id':r['entry_id'],'epoch':r['recorded_epoch'],'description':r['description'],'flow':r['cash_flow'],
-                        'manual':str(r['source_key']).startswith('manual:'),'reversalOf':r['reversal_of'],'reversedBy':r['reversed_by'],
+                        'manual':str(r['source_key']).startswith('manual:'),'estimated':str(r['source_key']).startswith('estimate:'),
+                        'reversalOf':r['reversal_of'],'reversedBy':r['reversed_by'],
                         'lines':lines.get(r['entry_id'],[])} for r in rows],
             'profile':({**json.loads(profile['config_json']),'enabled':bool(profile['enabled']),'start_period':profile['start_period']} if profile else None),
             'closed':closed,
@@ -639,8 +640,8 @@ class FinancialManager:
             self.require(conn,actor)
             issuer=self.ensure(conn,code)
             if reversal is not None:
-                old=conn.execute("SELECT * FROM financial_entries WHERE entry_id=? AND company_code=? AND source_key LIKE 'manual:%'",(int(reversal),issuer)).fetchone()
-                if not old:raise ValueError('이 회사의 관리자 분개만 정정할 수 있습니다. 자동 거래는 원본 기능에서 처리해주세요.')
+                old=conn.execute("SELECT * FROM financial_entries WHERE entry_id=? AND company_code=? AND (source_key LIKE 'manual:%' OR source_key LIKE 'estimate:%')",(int(reversal),issuer)).fetchone()
+                if not old:raise ValueError('이 회사의 관리자·추정 분개만 정정할 수 있습니다. 자동 거래는 원본 기능에서 처리해주세요.')
                 if conn.execute('SELECT 1 FROM financial_entries WHERE reversal_of=?',(int(reversal),)).fetchone():raise ValueError('이미 정정한 분개입니다.')
                 entries=[(r['account'],-int(r['amount'])) for r in conn.execute('SELECT * FROM financial_lines WHERE entry_id=?',(int(reversal),))]
                 flow=old['cash_flow']
@@ -660,6 +661,112 @@ class FinancialManager:
             ident=self.post(conn,issuer,'manual:'+uuid.uuid4().hex,description,entries,flow,reversal=reversal)
             if ident is None:raise ValueError('서로 상쇄되는 빈 분개입니다.')
         return f'✅ {issuer} 분개 #{ident} 기록 완료'
+
+    def estimate_current_month(self, actor, code, now=None):
+        """Post a conservative, non-cash current-month estimate without replacing recorded accounts."""
+        now = int(validate_epoch(time.time() if now is None else now))
+        period = month(now)
+        _, end = period_bounds(period)
+        industry_profiles = {
+            "manufacturing": (Decimal("1.5"), Decimal("0.62"), Decimal("0.23")),
+            "technology": (Decimal("1.8"), Decimal("0.28"), Decimal("0.50")),
+            "telecom": (Decimal("0.35"), Decimal("0.38"), Decimal("0.40")),
+            "finance": (Decimal("0.4"), Decimal("0.10"), Decimal("0.55")),
+            "retail": (Decimal("2.4"), Decimal("0.70"), Decimal("0.22")),
+            "general": (Decimal("1.2"), Decimal("0.45"), Decimal("0.35")),
+        }
+        with self.db.atomic() as conn:
+            self.require(conn, actor)
+            issuer = self.ensure(conn, code)
+            if conn.execute("SELECT 1 FROM financial_periods WHERE company_code=? AND period=?", (issuer, period)).fetchone():
+                raise ValueError("결산된 기간에는 추정치를 채울 수 없습니다.")
+            profile = conn.execute("SELECT enabled FROM financial_operating_profiles WHERE company_code=?", (issuer,)).fetchone()
+            if profile and profile[0]:
+                raise ValueError("월간 영업 프로필이 활성화되어 있습니다. 해당 프로필을 먼저 중지해주세요.")
+            key = "estimate:auto:" + period
+            existing = conn.execute("SELECT entry_id FROM financial_entries WHERE company_code=? AND source_key=?", (issuer, key)).fetchone()
+            if existing:
+                return f"이미 {period} 추정 분개 #{existing[0]}가 있습니다. 기존 분개를 정정한 뒤 다시 실행해주세요."
+            actual_accounts = {str(row[0]) for row in conn.execute(
+                "SELECT DISTINCT l.account FROM financial_entries e JOIN financial_lines l USING(entry_id) "
+                "WHERE e.company_code=? AND e.period=? AND e.status='posted' AND e.source_key NOT LIKE 'estimate:%'", (issuer, period))}
+            industry_row = conn.execute("SELECT industry FROM organizations WHERE organization_code=?", (issuer,)).fetchone()
+            industry = str(industry_row[0] if industry_row else "").lower()
+            if any(word in industry for word in ("통신", "telecom", "network")):
+                industry_key = "telecom"
+            elif any(word in industry for word in ("제조", "manufact", "semicon", "생산")):
+                industry_key = "manufacturing"
+            elif any(word in industry for word in ("금융", "은행", "finance", "payment")):
+                industry_key = "finance"
+            elif any(word in industry for word in ("유통", "retail", "commerce", "판매")):
+                industry_key = "retail"
+            elif any(word in industry for word in ("기술", "software", "소프트웨어", "플랫폼", "tech")):
+                industry_key = "technology"
+            else:
+                industry_key = "general"
+            turnover, default_cogs, default_sga = industry_profiles[industry_key]
+
+            # Prefer the latest three completed months of actual posted sales.
+            revenue_history = conn.execute(
+                "SELECT e.period,-SUM(l.amount) AS amount FROM financial_entries e "
+                "JOIN financial_lines l USING(entry_id) WHERE e.company_code=? AND e.status='posted' "
+                "AND e.period<? AND e.period>=strftime('%Y-%m',date(?,'-3 months')) "
+                "AND l.account='revenue' AND e.source_key NOT LIKE 'estimate:%' AND e.source_key NOT LIKE 'operating:%' "
+                "GROUP BY e.period ORDER BY e.period DESC", (issuer, period, period + "-01")).fetchall()
+            balances = self.balances(conn, issuer, end)
+            latest_revenue = int(sum(int(row['amount'] or 0) for row in revenue_history) / len(revenue_history)) if revenue_history else 0
+            if latest_revenue > 0:
+                revenue = latest_revenue
+                revenue_basis = "최근 완료월 실제 매출 평균"
+            else:
+                capital = max(0, -sum(balances.get(account, 0) for account in ("common_capital", "preferred_capital")))
+                assets = max(0, sum(balances.get(account, 0) for account in (
+                    "cash", "restricted_cash", "receivables", "inventory", "short_investments", "investments", "ppe", "depreciation_accumulated", "intangibles", "amortization_accumulated")))
+                basis = max(capital, assets)
+                revenue = int((Decimal(basis) * turnover / 12).quantize(Decimal(1), rounding=ROUND_HALF_UP)) if basis else 0
+                revenue_basis = f"max(납입자본, 최근 자산) {basis} × 연회전율 {turnover} ÷ 12"
+            if revenue <= 0:
+                raise ValueError("실제 매출이나 자본·자산 자료가 없어 매출 추정치를 만들 수 없습니다.")
+
+            actual_amounts = {"revenue": 0, "cogs": 0, "sga": 0}
+            for row in conn.execute(
+                "SELECT l.account,SUM(CASE WHEN l.account='revenue' THEN -l.amount ELSE l.amount END) amount "
+                "FROM financial_entries e JOIN financial_lines l USING(entry_id) WHERE e.company_code=? "
+                "AND e.status='posted' AND e.period<? AND e.period>=strftime('%Y-%m',date(?,'-12 months')) "
+                "AND e.source_key NOT LIKE 'estimate:%' AND e.source_key NOT LIKE 'operating:%' "
+                "AND l.account IN ('revenue','cogs','sga') GROUP BY l.account", (issuer, period, period + "-01")):
+                actual_amounts[str(row['account'])] = int(row['amount'] or 0)
+            cogs_ratio = Decimal(actual_amounts["cogs"]) / actual_amounts["revenue"] if actual_amounts["revenue"] > 0 else default_cogs
+            sga_ratio = Decimal(actual_amounts["sga"]) / actual_amounts["revenue"] if actual_amounts["revenue"] > 0 else default_sga
+            if cogs_ratio < 0 or sga_ratio < 0 or cogs_ratio + sga_ratio >= 1:
+                raise ValueError("실제 비용 비율 또는 업종 기본 비용률 합계가 100% 이상이라 추정을 중단했습니다.")
+            cogs = int((Decimal(revenue) * cogs_ratio).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+            sga = int((Decimal(revenue) * sga_ratio).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+            ppe_net = max(0, balances.get("ppe", 0) + balances.get("depreciation_accumulated", 0))
+            depreciation = min(ppe_net, max(0, int((Decimal(max(0, balances.get("ppe", 0))) / 120).quantize(Decimal(1), rounding=ROUND_HALF_UP))))
+            pretax = revenue - cogs - sga - depreciation
+            tax = int((Decimal(max(0, pretax)) * Decimal("0.20")).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+            lines = []
+            if not ({"revenue", "receivables"} & actual_accounts):
+                lines.extend((("receivables", revenue), ("revenue", -revenue)))
+            payable = 0
+            if "payables" not in actual_accounts:
+                if "cogs" not in actual_accounts and cogs:
+                    lines.append(("cogs", cogs)); payable -= cogs
+                if "sga" not in actual_accounts and sga:
+                    lines.append(("sga", sga)); payable -= sga
+                if payable:
+                    lines.append(("payables", payable))
+            if not ({"depreciation", "depreciation_accumulated"} & actual_accounts) and depreciation:
+                lines.extend((("depreciation", depreciation), ("depreciation_accumulated", -depreciation)))
+            if not ({"income_tax", "accrued_expenses"} & actual_accounts) and tax:
+                lines.extend((("income_tax", tax), ("accrued_expenses", -tax)))
+            description = (f"{period} 업종 기반 재무제표 추정 · {industry_key} · 매출 근거: {revenue_basis} · "
+                           f"원가율 {cogs_ratio} · 판관비율 {sga_ratio} · 양의 세전이익에 추정세율 20% 적용")
+            ident = self.post(conn, issuer, key, description, lines, "none", now)
+            if ident is None:
+                raise ValueError("추정할 빈 계정이 없습니다. 기존 월간 분개를 확인해주세요.")
+        return f"✅ {issuer} {period} 추정 분개 #{ident} 기록 완료 · 현금 잔액 변화 없음"
 
     @classmethod
     def merge(cls, conn, surviving, absorbed, now):
