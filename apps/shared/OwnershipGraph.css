@@ -1,8 +1,9 @@
 .ownership-diagram { min-width: 0; margin: 14px 0 0; }
-.ownership-window { box-sizing: border-box; width: min(100% - 48px, 1800px); min-height: 100vh; margin: 0 auto; padding: clamp(20px, 4vw, 56px) 0; }
+.ownership-diagram-full { width: 100%; }
+.ownership-window { box-sizing: border-box; width: 100%; min-height: 100vh; margin: 0; padding: clamp(20px, 3vw, 44px) clamp(16px, 3vw, 48px); }
 .ownership-window > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 28px; }
 .ownership-window h1 { margin: 0; font-size: clamp(1.7rem, 3vw, 2.6rem); }
-.ownership-window .ownership-diagram-scroll { max-height: calc(100vh - 220px); min-height: 420px; }
+.ownership-window .ownership-diagram-scroll { width: 100%; height: calc(100vh - 210px); min-height: 420px; max-height: none; }
 .ownership-window .ownership-diagram-canvas { margin-left: 0; }
 .ownership-diagram-scroll { overflow: auto; max-width: 100%; padding: 8px 4px 16px; overscroll-behavior-inline: contain; }
 .ownership-diagram-canvas { position: relative; margin: 0 auto; }

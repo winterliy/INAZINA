@@ -624,7 +624,7 @@ export default function App() {
     <Backdrop />
     <main className="ownership-window">
       <header><div><p className="eyebrow">NARU · 나루</p><h1>보유 기업 지배구조</h1><p className="sub">보유 주식의 의결권과 지배하는 자회사 관계입니다.</p></div><a className="soft" href="/account">계정 페이지로</a></header>
-      <OwnershipGraph graph={ownershipGraph} />
+      <OwnershipGraph graph={ownershipGraph} fullScreen />
     </main>
     <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
   </div>;

@@ -370,7 +370,7 @@ export default function App() {
 
   if (!checked) return <Stage><main className="center-shell"><p className="loading">불러오는 중…</p></main></Stage>;
   if (!user) return <Stage><AuthPanel app="dashboard" onAuthenticated={setUser} /></Stage>;
-  if (page === "ownership") return <Stage><main className="ownership-window"><header><div><p className="eyebrow">INAZINA · 지배구조</p><h1>기업 지분·의결권 조직도</h1><p className="sub">화면을 넓게 사용해 소유 관계와 의결권 경로를 확인합니다.</p></div><button className="soft" type="button" onClick={() => window.close()}>창 닫기</button></header>{ownershipError ? <p className="notice error" role="alert">{ownershipError}</p> : <OwnershipGraph graph={ownershipGraph} />}</main></Stage>;
+  if (page === "ownership") return <Stage><main className="ownership-window"><header><div><p className="eyebrow">INAZINA · 지배구조</p><h1>기업 지분·의결권 조직도</h1><p className="sub">화면을 넓게 사용해 소유 관계와 의결권 경로를 확인합니다.</p></div><button className="soft" type="button" onClick={() => window.close()}>창 닫기</button></header>{ownershipError ? <p className="notice error" role="alert">{ownershipError}</p> : <OwnershipGraph graph={ownershipGraph} fullScreen />}</main></Stage>;
   // Users, country and company accounts get their own account dashboard, like the HTS.
   if (user.role !== "admin") {
     return <Stage><div className="shell">
