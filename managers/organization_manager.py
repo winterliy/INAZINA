@@ -46,9 +46,9 @@ class OrganizationManager:
             issuer_treasuries = treasury_ids | {company_accounts.get(code)}
             issuer_treasuries.discard(None)
             issues = conn.execute(
-                "SELECT s.legacy_product_code,c.total_shares,s.voting_rights_per_share,"
-                "s.economic_interest_per_share FROM share_issuances s "
-                "JOIN company c ON c.share_issuance_id=s.issuance_id "
+                "SELECT c.company_code,c.total_shares,s.voting_rights_per_share,"
+                "s.economic_interest_per_share FROM share_issuances s JOIN company c ON c.share_issuance_id=s.issuance_id "
+                ""
                 "WHERE s.organization_code=?", (code,),
             ).fetchall()
             totals = [Decimal(0), Decimal(0)]
@@ -91,7 +91,7 @@ class OrganizationManager:
         direct_orgs = set()
         for (code,) in conn.execute(
             "SELECT DISTINCT s.organization_code FROM user_assets a "
-            "JOIN share_issuances s ON s.legacy_product_code=a.asset_code "
+            "JOIN company c ON c.company_code=a.asset_code JOIN share_issuances s ON s.issuance_id=c.share_issuance_id "
             "WHERE a.user_id=?", (user_id,),
         ):
             direct_orgs.add(str(code))
@@ -133,7 +133,7 @@ class OrganizationManager:
                 held_codes = set()
                 for (code,) in conn.execute(
                     "SELECT DISTINCT s.organization_code FROM user_assets a "
-                    "JOIN share_issuances s ON s.legacy_product_code=a.asset_code "
+                    "JOIN company c ON c.company_code=a.asset_code JOIN share_issuances s ON s.issuance_id=c.share_issuance_id "
                     "WHERE a.user_id=?", (parent_account,),
                 ):
                     held_codes.add(str(code))
@@ -198,7 +198,7 @@ class OrganizationManager:
         )}
         treasury_user_ids = {str(TREASURY_USER_ID)} | {str(row[0]) for row in conn.execute("SELECT user_id FROM country_treasuries")}
         companies = {str(row[0]): str(row[1]) for row in conn.execute(
-            "SELECT company_code,name FROM company WHERE share_class='common'"
+            "SELECT organization_code,name FROM organizations"
         )}
         nodes = {}
         edge_map = {}
@@ -215,18 +215,17 @@ class OrganizationManager:
                 return
             expansion_count += 1
             org = conn.execute(
-                "SELECT name FROM company WHERE company_code=? AND share_class='common'", (code,)
+                "SELECT name FROM organizations WHERE organization_code=?", (code,)
             ).fetchone()
             if not org:
                 return
             nodes["company:" + code] = {"id": "company:" + code, "kind": "company", "code": code, "name": str(org[0] or code)}
             issues = conn.execute(
-                "SELECT c.company_code,c.name,c.total_shares,c.share_class,"
-                "COALESCE(s.voting_rights_per_share,'1'),COALESCE(s.economic_interest_per_share,'1') "
-                "FROM company c LEFT JOIN share_issuances s ON s.issuance_id=c.share_issuance_id "
-                "WHERE (c.company_code=? AND COALESCE(c.share_class,'common')='common') "
-                "OR (c.parent_company_code=? AND c.share_class='preferred') ORDER BY c.company_code",
-                (code, code),
+                "SELECT c.company_code,c.name,c.total_shares,s.share_class,"
+                "s.voting_rights_per_share,s.economic_interest_per_share "
+                "FROM share_issuances s JOIN company c ON c.share_issuance_id=s.issuance_id "
+                ""
+                "WHERE s.organization_code=? ORDER BY c.company_code", (code,),
             ).fetchall()
             equity_total = Decimal(0)
             votes_total = Decimal(0)

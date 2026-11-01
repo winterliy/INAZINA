@@ -5,7 +5,7 @@ import { Card, Field, type Ctx } from "./common";
 import "./OrganizationPage.css";
 
 type Size = "sme" | "mid_market" | "large" | null;
-type Issuance = { issuance_id: number; legacy_product_code: string; class_name: string; share_class: string; voting_rights_per_share: string; economic_interest_per_share: string; total_shares: string; share_price: string; status: string; dividend_mode: string; dividend_per_share: string; dividend_percent: string; dividend_priority: number; dividend_cycle_seconds: number; dividend_is_active: number; cumulative_dividend: number; liquidation_value_per_share: string; dividend_funding: string };
+type Issuance = { issuance_id: number; company_code: string; class_name: string; share_class: string; voting_rights_per_share: string; economic_interest_per_share: string; total_shares: string; share_price: string; status: string; dividend_mode: string; dividend_per_share: string; dividend_percent: string; dividend_priority: number; dividend_cycle_seconds: number; dividend_is_active: number; cumulative_dividend: number; liquidation_value_per_share: string; dividend_funding: string };
 type Org = { organization_code: string; name: string; industry: string; share_price: string | number; purpose: string; ownership_type: string; public_enterprise_type: string; size_override: Size; auto_size: Size; pending_size: Size; size_effective_epoch: number | null; display_size: Size; metrics: { revenue: string | null; assets: string | null; employees: number | null }; issuances: Issuance[] };
 type Group = { group_id: number; name: string; representative_organization_code: string | null; description: string; members: string[] };
 export type OwnershipGraphData = { nodes: { id: string; kind: string; code: string; name: string }[]; edges: { from: string; to: string; equity_percent: string; voting_percent: string; root_equity_percent: string; root_voting_percent: string; depth: number; direct?: boolean; cycle?: boolean }[]; beneficial_owners?: { id: string; name: string; root_equity_percent: string; root_voting_percent: string }[]; truncated?: boolean; root_kind?: "user" | "organization" };
@@ -52,10 +52,10 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
     } finally { setSaving(false); }
   };
   const retireIssuance = async (issue: Issuance) => {
-    if (!window.confirm(`${issue.class_name} (${issue.legacy_product_code}) 주식 종류를 폐지할까요? 보유자·미체결 주문·계약·미지급 배당이 없어야 하며, 폐지 후 이 거래 코드는 다시 사용할 수 없습니다.`)) return;
+    if (!window.confirm(`${issue.class_name} (${issue.company_code}) 주식 종류를 폐지할까요? 보유자·미체결 주문·계약·미지급 배당이 없어야 하며, 폐지 후 이 거래 코드는 다시 사용할 수 없습니다.`)) return;
     setSaving(true);
     try {
-      const result = await api<string>(`/api/admin/companies/${encodeURIComponent(issue.legacy_product_code)}/share-actions`, {
+      const result = await api<string>(`/api/admin/companies/${encodeURIComponent(issue.company_code)}/share-actions`, {
         method: "POST", body: JSON.stringify({ action: "retire_issuance" }),
       });
       say(result, result.startsWith("❌"));
@@ -66,10 +66,10 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
   };
   const issueShares = async (issue: Issuance, payload: { mode: "paid" | "bonus"; quantity: string; issuePrice?: string }) => {
     const modeLabel = payload.mode === "paid" ? "유상증자" : "무상증자";
-    if (!window.confirm(`${issue.class_name} (${issue.legacy_product_code}) ${modeLabel} ${payload.quantity}주를 진행할까요? 다른 주식 종류의 수량과 가격은 변경하지 않습니다.`)) return;
+    if (!window.confirm(`${issue.class_name} (${issue.company_code}) ${modeLabel} ${payload.quantity}주를 진행할까요? 다른 주식 종류의 수량과 가격은 변경하지 않습니다.`)) return;
     setSaving(true);
     try {
-      const result = await api<string>(`/api/admin/companies/${encodeURIComponent(issue.legacy_product_code)}/share-actions`, {
+      const result = await api<string>(`/api/admin/companies/${encodeURIComponent(issue.company_code)}/share-actions`, {
         method: "POST", body: JSON.stringify({ action: "issue_shares", ...payload }),
       });
       say(result, result.startsWith("❌"));
@@ -131,7 +131,7 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
             <button type="button" disabled={saving} onClick={() => { const size = (document.getElementById("organization-size-override") as HTMLSelectElement).value || null; void saveAction({ action: "size_override", organization_code: organization.organization_code, size, reason: "관리자 대시보드 지정" }, "기업 규모 지정을 저장했습니다."); }}>규모 적용</button></div>
         </Card>
         <Card title="주식 발행 종류" caption="새 종류는 별도 거래 코드로 추가되며 기존 보통주 가격·수량은 변경하지 않습니다. 분배·매입 절차는 별도 기업행동으로 처리해야 합니다.">
-          {organization.issuances.map((issue) => <IssuanceEditor key={issue.legacy_product_code} issue={issue} saving={saving} onIssue={(payload) => void issueShares(issue, payload)} onRetire={() => void retireIssuance(issue)} onSave={(rights) => saveAction({ action: "issuance_rights", issuance_id: issue.issuance_id, legacy_product_code: issue.legacy_product_code, class_name: rights.class_name, voting_rights_per_share: rights.voting_rights_per_share, economic_interest_per_share: rights.economic_interest_per_share, rights: rights.dividend }, `${rights.class_name} 권리를 저장했습니다.`)} />)}
+          {organization.issuances.map((issue) => <IssuanceEditor key={issue.company_code} issue={issue} saving={saving} onIssue={(payload) => void issueShares(issue, payload)} onRetire={() => void retireIssuance(issue)} onSave={(rights) => saveAction({ action: "issuance_rights", issuance_id: issue.issuance_id, company_code: issue.company_code, class_name: rights.class_name, voting_rights_per_share: rights.voting_rights_per_share, economic_interest_per_share: rights.economic_interest_per_share, rights: rights.dividend }, `${rights.class_name} 권리를 저장했습니다.`)} />)}
           <NewIssuanceForm key={organization.organization_code} organization={organization} saving={saving} onCreate={(payload) => void saveAction({ action: "issuance_create", ...payload }, `${payload.class_name} 주식 종류를 추가했습니다.`)} />
         </Card>
       </div>
@@ -179,7 +179,7 @@ function IssuanceEditor({ issue, saving, onSave, onIssue, onRetire }: { issue: I
         dividend_priority: Number(priority), dividend_cycle_seconds: Number(cycle), dividend_is_active: active,
         cumulative_dividend: cumulative, liquidation_value_per_share: liquidation, dividend_funding: funding } });
   }}>
-    <strong>{issue.class_name} · {issue.legacy_product_code}</strong>
+    <strong>{issue.class_name} · {issue.company_code}</strong>
     <small>발행 {num(issue.total_shares)}주 · 종목코드와 기존 보유·거래 기록은 유지됩니다.</small>
     <div className="form-grid section-gap">
       <Field label="주식 종류 이름"><input value={className} maxLength={120} onChange={(event) => setClassName(event.target.value)} /></Field>
@@ -231,7 +231,7 @@ function NewIssuanceForm({ organization, saving, onCreate }: { organization: Org
   const [equity, setEquity] = useState("1");
   return <form className="organization-inset" onSubmit={(event) => {
     event.preventDefault();
-    onCreate({ organization_code: organization.organization_code, legacy_product_code: code.trim().toUpperCase(),
+    onCreate({ organization_code: organization.organization_code, company_code: code.trim().toUpperCase(),
       class_name: className.trim(), total_shares: shares, share_price: price,
       voting_rights_per_share: votes, economic_interest_per_share: equity });
   }}>
