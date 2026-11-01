@@ -2357,7 +2357,7 @@ def db_delete(actor, table, rowid):
 # ---------------------------------------------------------------------------
 PRODUCT_KINDS = {
     # profile: (Korean label, dashboard group, $상품생성 kind token)
-    "stock": ("회사 주식", "market", "company"), "preferred": ("우선주", "market", "preferred"),
+    "stock": ("주식", "market", "company"),
     "asset": ("시장 자산", "market", "asset"), "etf": ("ETF", "market", "etf"),
     "dr": ("주식예탁증서(DR)", "market", "dr"),
     "future": ("주식선물", "market", "future"), "corporatebond": ("회사채", "market", "corporatebond"),
@@ -2415,7 +2415,6 @@ def product_catalog():
                                 else ("결제 통화" if profile == "dr" else "통장 화폐") if field == "quote_currency"
                                 else "발행 은행 ID" if field == "issuer"
                                 else "상장 거래소 (새 법인은 비상장 · 법인 자본에서 상장)" if field == "exchange_id" and profile == "stock"
-                                else "상장 거래소 ID (비상장이면 3DSG)" if field == "exchange_id" and profile == "preferred"
                                 else ARG_LABELS.get(field, field),
                        "optional": field in OPTIONAL_ARGS.get(profile, ()),
                        "text": field in TEXT_ARGS or field == "quote_currency"} for field in _form_fields(profile)]
@@ -2439,7 +2438,7 @@ def product_catalog():
 def _product_kind(source, row):
     from managers.admin_control_manager import KINDS, BOND_FEATURES, SAVING_KINDS
     if source == "company":
-        return "preferred" if row.get("share_class") == "preferred" else "stock"
+        return "stock"
     if source == "investment":
         if row.get("product_type") == "corporate_bond":
             feature = row.get("bond_feature") or "plain"
@@ -2741,7 +2740,7 @@ PRODUCT_RUNTIME = (
     ("web_chart_drawings", "asset_code"), ("fund_components", "product_code"),
     ("leveraged_etf_state", "product_code"), ("market_exchange_index_components", "company_code"),
 )
-PRODUCT_TABLE = {"stock": ("company", "company_code"), "preferred": ("company", "company_code"),
+PRODUCT_TABLE = {"stock": ("company", "company_code"),
                  "asset": ("market_assets", "code"), "bond": ("treasury_bond_products", "product_code"),
                  "option": ("option_contracts", "contract_code"), "saving": ("saving", "product_code"),
                  "currencyproduct": ("saving", "product_code"), "loan": ("liability", "product_code"),

@@ -82,7 +82,7 @@ def directory(conn, organization_code=None, now=None, min_percent=1):
             "c.dividend_cycle_seconds,c.dividend_is_active,c.cumulative_dividend,"
             "c.liquidation_value_per_share,c.dividend_funding "
             "FROM share_issuances s JOIN company c ON c.share_issuance_id=s.issuance_id "
-            "WHERE s.organization_code=? ORDER BY c.company_code", (row["organization_code"],)
+            "WHERE s.organization_code=? AND c.status='active' ORDER BY c.company_code", (row["organization_code"],)
         ).fetchall()
         item["issuances"] = [dict(issue) for issue in issues]
         organizations.append(item)

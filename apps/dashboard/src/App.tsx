@@ -25,8 +25,9 @@ import { NaturalizationPage } from "./NaturalizationPage";
 import { COMMAND_FORMS, CommandForm } from "./CommandForm";
 import { AccountPage } from "./AccountPage";
 import { OrganizationPage } from "./OrganizationPage";
+import { OwnershipGraph, type OwnershipGraphData } from "../../shared/OwnershipGraph";
 
-type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "feedback" | "board" | "documents" | "compliance" | "accounting" | "events" | "commands" | "database" | "audit";
+type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "feedback" | "board" | "documents" | "compliance" | "accounting" | "events" | "commands" | "database" | "audit" | "ownership";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
 type Instrument = { code: string; name: string; type: string; price: Money; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
 type Exchange = { exchange_id: string; status: string; reason: string | null; trading_halted: number; updated_epoch: number | null; resume_epoch: number | null; circuit_stage: number | null };
@@ -60,6 +61,7 @@ const pages: { id: Page; label: string }[] = [
   { id: "commands", label: "관리자 명령어" },
   { id: "database", label: "DB 편집" },
   { id: "audit", label: "작업 기록" },
+  { id: "ownership", label: "조직도" },
 ];
 const subtitles: Record<Page, string> = {
   account: "관리자 계정의 로그인 정보, 실행 명의와 최근 로그인을 관리합니다.",
@@ -80,6 +82,7 @@ const subtitles: Record<Page, string> = {
   commands: "Discord의 모든 $ 명령어와 도움말을 같은 검증과 기록으로 실행합니다.",
   database: "DB Browser에서 하던 설정 편집을 감사 기록과 함께 처리합니다.",
   audit: "모든 관리자 작업과 관리자 계정 로그인의 최근 기록입니다.",
+  ownership: "기업 지분과 의결권 관계를 넓은 화면에서 확인합니다.",
 };
 const number = formatMoney;
 const date = (value: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "medium" }).format(value * 1000);
@@ -102,6 +105,8 @@ export default function App() {
   const [user, setUser] = useState<ApiUser | null>(null);
   const [checked, setChecked] = useState(false);
   const [page, setPage] = useState<Page>(initialRoute.page);
+  const [ownershipGraph, setOwnershipGraph] = useState<OwnershipGraphData>();
+  const [ownershipError, setOwnershipError] = useState("");
   const [health, setHealth] = useState("확인 중");
   const [connected, setConnected] = useState(false);
   const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
@@ -225,9 +230,20 @@ export default function App() {
   const visibleCommands = commands.filter((item) => categoryOf(item.name) === activeCategory);
   const commandSection = commandScope === "national" ? NATIONAL : commandScope === "help" ? HELP : activeCategory;
 
+  useEffect(() => {
+    if (page !== "ownership") return;
+    const [type, code, detail] = initialRoute.sub.split("/");
+    const request = type === "personal"
+      ? api<{ graph: OwnershipGraphData }>("/api/me/ownership-graph").then(({ graph }) => graph)
+      : type === "organization" && code
+        ? api<{ graph?: OwnershipGraphData }>(`/api/admin/organizations/${encodeURIComponent(code)}${detail === "minor" ? "?includeMinor=1" : ""}`).then((result) => result.graph)
+        : Promise.reject(new Error("조직도 주소가 올바르지 않습니다."));
+    void request.then((graph) => setOwnershipGraph(graph)).catch((cause) => setOwnershipError(message(cause, "조직도를 불러오지 못했습니다.")));
+  }, [page]);
   // Keep the address in step with the page; back/forward restore it.
   useEffect(() => {
     const hash = `#${page}${page === "commands" && commandSection ? `/${encodeURIComponent(commandSection)}` : ""}`;
+    if (page === "ownership") return;
     if (decodeURIComponent(location.hash) !== decodeURIComponent(hash)) history.pushState(null, "", hash);
   }, [page, commandSection]);
   useEffect(() => {
@@ -354,6 +370,7 @@ export default function App() {
 
   if (!checked) return <Stage><main className="center-shell"><p className="loading">불러오는 중…</p></main></Stage>;
   if (!user) return <Stage><AuthPanel app="dashboard" onAuthenticated={setUser} /></Stage>;
+  if (page === "ownership") return <Stage><main className="ownership-window"><header><div><p className="eyebrow">INAZINA · 지배구조</p><h1>기업 지분·의결권 조직도</h1><p className="sub">화면을 넓게 사용해 소유 관계와 의결권 경로를 확인합니다.</p></div><button className="soft" type="button" onClick={() => window.close()}>창 닫기</button></header>{ownershipError ? <p className="notice error" role="alert">{ownershipError}</p> : <OwnershipGraph graph={ownershipGraph} />}</main></Stage>;
   // Users, country and company accounts get their own account dashboard, like the HTS.
   if (user.role !== "admin") {
     return <Stage><div className="shell">
@@ -390,7 +407,7 @@ export default function App() {
       </header>
       <nav className="subnav" aria-label="관리 메뉴">
         <div className="subnav-in">
-          {pages.filter((item) => item.id !== "account").map((item) => <button key={item.id} type="button" className="subnav-item" aria-current={page === item.id ? "page" : undefined} onClick={() => setPage(item.id)}>
+          {pages.filter((item) => item.id !== "account" && item.id !== "ownership").map((item) => <button key={item.id} type="button" className="subnav-item" aria-current={page === item.id ? "page" : undefined} onClick={() => setPage(item.id)}>
             {item.label}
             {item.id === "feedback" && unreadFeedback > 0 && <span className="nav-badge" aria-label={`새 알림 ${unreadFeedback}건`}>{unreadFeedback}</span>}
             {item.id === "naturalization" && pendingNaturalization > 0 && <span className="nav-badge" aria-label={`심사 대기 ${pendingNaturalization}건`}>{pendingNaturalization}</span>}

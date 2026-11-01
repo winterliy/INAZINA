@@ -11,6 +11,7 @@ import { ServicesApp, legacyCommandPath, servicePath } from "./services/Services
 import { SERVICES } from "./services/ServiceKit";
 import { Backdrop } from "./Backdrop";
 import { SearchIndicators } from "./SearchIndicators";
+import { OwnershipGraph, type OwnershipGraphData } from "../../shared/OwnershipGraph";
 
 type Warning = { level: "caution" | "warning" | "danger"; label: string; reason: string; expiresEpoch: number | null };
 type DrMovement = { movement_id: number; dr_code: string; underlying_code: string; underlying_currency: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; underlying_average_cost: number; underlying_average_cost_text: string; decimal_places: number; recorded_epoch: number };
@@ -128,6 +129,7 @@ export default function App() {
   const [settingsError, setSettingsError] = useState("");
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [taxResidency, setTaxResidency] = useState<TaxResidency | null>(null);
+  const [ownershipGraph, setOwnershipGraph] = useState<OwnershipGraphData>();
   const [taxResidencyOpen, setTaxResidencyOpen] = useState(false);
   const [taxResidencyValue, setTaxResidencyValue] = useState("");
   const [range, setRange] = useState<string>("1d");
@@ -291,6 +293,15 @@ export default function App() {
     void api<{ htsId: string | null }>("/api/hts/account")
       .then(({ htsId: current }) => { setHtsId(current ?? ""); setHtsIdInput(current ?? ""); })
       .catch((cause) => setNotice(errorText(cause, "나루 계정 정보를 불러오지 못했습니다.")));
+  }, [user]);
+
+  useEffect(() => {
+    if (!user || !["/account", "/account/", "/ownership", "/ownership/"].includes(location.pathname)) return;
+    let active = true;
+    void api<{ graph: OwnershipGraphData }>("/api/me/ownership-graph")
+      .then(({ graph }) => { if (active) setOwnershipGraph(graph); })
+      .catch(() => { if (active) setOwnershipGraph(undefined); });
+    return () => { active = false; };
   }, [user]);
 
   // The search drops down under the top-bar field, like a portal's: Escape or a click elsewhere closes it.
@@ -609,6 +620,15 @@ export default function App() {
     <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
   </div>;
 
+  if (location.pathname === "/ownership" || location.pathname === "/ownership/") return <div className="hts-shell stage ownership-window-shell">
+    <Backdrop />
+    <main className="ownership-window">
+      <header><div><p className="eyebrow">NARU · 나루</p><h1>보유 기업 지배구조</h1><p className="sub">보유 주식의 의결권과 지배하는 자회사 관계입니다.</p></div><a className="soft" href="/account">계정 페이지로</a></header>
+      <OwnershipGraph graph={ownershipGraph} />
+    </main>
+    <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
+  </div>;
+
   if (location.pathname === "/account" || location.pathname === "/account/") return <div className="hts-shell stage account-page-shell">
     <Backdrop />
     {topbar("account")}
@@ -639,6 +659,10 @@ export default function App() {
           <header><h2>본인 확인 (KYC)</h2><p>국적별 확인 상태입니다.</p></header>
           <dl className="account-facts"><div><dt>상태</dt><dd>{KYC_STATUS[portfolio.kyc_profile.status]}</dd></div><div><dt>위험 등급</dt><dd>{KYC_RISK[portfolio.kyc_profile.risk_tier]}</dd></div><div><dt>만료</dt><dd>{portfolio.kyc_profile.expires_epoch ? date(portfolio.kyc_profile.expires_epoch) : "—"}</dd></div></dl>
         </section>}
+        <section className="account-section">
+          <header><h2>보유 기업 지배구조</h2><p>보유 주식의 의결권과 지배하는 자회사 관계를 넓은 화면에서 확인합니다.</p></header>
+          <a className="account-save ownership-open" href="/ownership" target="_blank" rel="noreferrer">조직도 새 창에서 보기 ↗</a>
+        </section>
         <section className="account-section">
           <header><h2>바로가기</h2></header>
           <nav className="account-links">{SERVICES.map((item) => <a key={item.path} href={item.path}><b>{item.label}</b><small>{item.description}</small></a>)}</nav>
