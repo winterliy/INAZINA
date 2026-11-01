@@ -56,7 +56,7 @@ function TreeItem({ node, selected, onSelect, ancestors = new Set<string>() }: {
   if (!node.children.length || cycle) return <li className="ownership-tree-leaf-row">
     {node.kind === "company"
       ? <button type="button" className={selected === node.code ? "ownership-tree-company active" : "ownership-tree-company"} onClick={select} title={`${title} (${node.code})`}><span aria-hidden="true">▣</span>{title}</button>
-      : <span className="ownership-tree-person"><span aria-hidden="true">♙</span>{title}</span>}
+      : <span className="ownership-tree-person"><svg className="ownership-tree-person-icon" aria-hidden="true" viewBox="0 0 16 16"><circle cx="8" cy="5" r="2.5" /><path d="M3 14c.4-3 2.1-4.5 5-4.5s4.6 1.5 5 4.5" /></svg>{title}</span>}
   </li>;
   return <li>
     <details className="ownership-tree-folder" open={node.kind === "user"}>

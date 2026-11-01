@@ -30,6 +30,8 @@
 .ownership-tree-folder[open] > summary::before { content: "▾"; }
 .ownership-tree-icon { flex: none; color: var(--accent); font-size: 13px; }
 .ownership-tree-company, .ownership-tree-person { min-width: 0; overflow: hidden; padding: 3px 5px; border: 0; border-radius: 6px; background: transparent; color: var(--ink); font: inherit; font-size: 12px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.ownership-tree-person { display: inline-flex; align-items: center; gap: 5px; }
+.ownership-tree-person-icon { flex: none; width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.5; }
 .ownership-tree-company { cursor: pointer; }
 .ownership-tree-company:hover, .ownership-tree-company.active { background: var(--select); color: var(--accent); }
 .ownership-tree-leaf-row { padding: 2px 0 2px 18px; }
