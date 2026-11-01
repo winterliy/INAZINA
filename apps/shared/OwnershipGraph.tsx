@@ -35,6 +35,8 @@ export function OwnershipGraph({ graph, fullScreen = false }: { graph?: Ownershi
   // Every edge is a direct holding between its two companies. The root
   // percentages are path aggregates and belong in the detail list, not labels.
   const edges = graph.edges;
+  const incomingByTarget = new Map<string, typeof edges>();
+  for (const edge of edges) incomingByTarget.set(edge.to, [...(incomingByTarget.get(edge.to) ?? []), edge]);
   const usedNodeIds = new Set(edges.flatMap((edge) => [edge.from, edge.to]));
   const nodes = graph.nodes.filter((node) => usedNodeIds.has(node.id));
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
@@ -83,10 +85,14 @@ export function OwnershipGraph({ graph, fullScreen = false }: { graph?: Ownershi
             const x2 = to.x + CARD_WIDTH / 2;
             const y2 = to.y;
             const midY = (y1 + y2) / 2;
+            const peers = incomingByTarget.get(edge.to) ?? [edge];
+            const peerIndex = peers.indexOf(edge);
+            const labelX = x1 + (x2 - x1) * 0.72;
+            const labelY = midY - 4 + (peerIndex - (peers.length - 1) / 2) * 14;
             const label = `${percent(edge.equity_percent)} 경제 · ${percent(edge.voting_percent)} 의결`;
             return <g key={`${edge.from}-${edge.to}-${edge.depth}-${index}`} className={edge.cycle ? "ownership-edge cycle" : "ownership-edge"}>
               <path d={`M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`} markerEnd={`url(#${markerId})`} />
-              <text x={(x1 + x2) / 2} y={midY - 4}>{edge.cycle ? "순환 보유 · " : ""}{label}</text>
+              <text x={labelX} y={labelY}>{edge.cycle ? "순환 보유 · " : ""}{label}</text>
             </g>;
           })}
         </svg>
