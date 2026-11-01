@@ -10,15 +10,40 @@ function ownershipTree(graph?: OwnershipGraphData) {
   if (!graph) return [] as TreeNode[];
   const nodes = new Map<string, TreeNode>(graph.nodes.map((node) => [node.id, { ...node, children: [] as TreeNode[] }] as const));
   const children = new Set<string>();
+  const outgoing = new Map<string, { node: TreeNode; voting: number; equity: number }[]>();
   for (const edge of graph.edges) {
     const parent = nodes.get(edge.from);
     const child = nodes.get(edge.to);
     if (!parent || !child || parent.id === child.id) continue;
-    if (!parent.children.some((item) => item.id === child.id)) parent.children.push(child);
+    const relations = outgoing.get(parent.id) ?? [];
+    if (!relations.some((item) => item.node.id === child.id)) {
+      relations.push({ node: child, voting: Number(edge.voting_percent) || 0, equity: Number(edge.equity_percent) || 0 });
+      outgoing.set(parent.id, relations);
+    }
     children.add(child.id);
   }
-  for (const node of nodes.values()) node.children.sort((a, b) => a.name.localeCompare(b.name, "ko"));
-  return [...nodes.values()].filter((node) => !children.has(node.id)).sort((a, b) => a.name.localeCompare(b.name, "ko"));
+  for (const relations of outgoing.values()) relations.sort((a, b) =>
+    b.voting - a.voting || b.equity - a.equity || a.node.name.localeCompare(b.node.name, "ko"));
+
+  // Cross-holdings make the graph a network, not a tree. Rendering every simple
+  // path duplicates shared companies exponentially. Build a spanning forest so
+  // each company appears once in the sidebar while the diagram keeps every edge.
+  const visited = new Set<string>();
+  const append = (node: TreeNode) => {
+    if (visited.has(node.id)) return;
+    visited.add(node.id);
+    for (const relation of outgoing.get(node.id) ?? []) {
+      if (visited.has(relation.node.id)) continue;
+      node.children.push(relation.node);
+      append(relation.node);
+    }
+  };
+  const roots = [...nodes.values()].filter((node) => !children.has(node.id)).sort((a, b) => a.name.localeCompare(b.name, "ko"));
+  for (const node of roots) append(node);
+  for (const node of [...nodes.values()].sort((a, b) => a.name.localeCompare(b.name, "ko"))) {
+    if (!visited.has(node.id)) { roots.push(node); append(node); }
+  }
+  return roots;
 }
 
 function TreeItem({ node, selected, onSelect, ancestors = new Set<string>() }: {
