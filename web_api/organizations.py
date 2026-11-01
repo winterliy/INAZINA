@@ -76,13 +76,13 @@ def directory(conn, organization_code=None, now=None, min_percent=1):
         item["display_size"] = OrganizationManager.displayed_size(row)
         item["metrics"] = metrics
         issues = conn.execute(
-            "SELECT s.issuance_id,s.legacy_product_code,s.class_name,s.share_class,s.voting_rights_per_share,"
+            "SELECT s.issuance_id,c.company_code AS company_code,s.class_name,s.share_class,s.voting_rights_per_share,"
             "s.economic_interest_per_share,s.rights_json,c.total_shares,c.share_price,c.status,"
             "c.dividend_mode,c.dividend_per_share,c.dividend_percent,c.dividend_priority,"
             "c.dividend_cycle_seconds,c.dividend_is_active,c.cumulative_dividend,"
             "c.liquidation_value_per_share,c.dividend_funding "
             "FROM share_issuances s JOIN company c ON c.share_issuance_id=s.issuance_id "
-            "WHERE s.organization_code=? ORDER BY s.legacy_product_code", (row["organization_code"],)
+            "WHERE s.organization_code=? ORDER BY c.company_code", (row["organization_code"],)
         ).fetchall()
         item["issuances"] = [dict(issue) for issue in issues]
         organizations.append(item)
@@ -174,7 +174,7 @@ def action(conn, payload, actor, now=None):
         )
         return {"action": kind, "announcement_seconds": seconds}
     if kind == "issuance_create":
-        code = str(payload.get("legacy_product_code") or "").strip().upper()
+        code = str(payload.get("company_code") or "").strip().upper()
         class_name = str(payload.get("class_name") or "").strip()
         organization_code = str(payload.get("organization_code") or "").strip()
         if not re.fullmatch(r"[A-Z0-9][A-Z0-9._-]{0,31}", code):
@@ -214,21 +214,18 @@ def action(conn, payload, actor, now=None):
         from managers.currency_manager import CurrencyManager
         conn.execute("SAVEPOINT organization_share_issuance_create")
         try:
+            issuance_id = conn.execute(
+                "INSERT INTO share_issuances(organization_code,class_name,share_class,"
+                "voting_rights_per_share,economic_interest_per_share,updated_epoch) "
+                "VALUES (?,?,'preferred',?,?,?)",
+                (organization_code, class_name, str(votes), str(equity), now),
+            ).lastrowid
             conn.execute(
                 "INSERT INTO company(company_code,name,industry,capital,total_shares,share_price,"
-                "max_shareholder_id,exchange_id,quote_currency,share_class,parent_company_code) "
-                "VALUES (?,?,?,0,?,?,?,?,?,'preferred',?)",
+                "max_shareholder_id,exchange_id,quote_currency,share_class,parent_company_code,share_issuance_id) "
+                "VALUES (?,?,?,0,?,?,?,?,?,'preferred',?,?)",
                 (code, f"{parent[0] or organization_code} · {class_name}", parent[1], shares, price,
-                 str(TREASURY_USER_ID), parent[2], parent[3], organization_code),
-            )
-            conn.execute(
-                "INSERT INTO share_issuances "
-                "(legacy_product_code,organization_code,class_name,share_class,voting_rights_per_share,"
-                "economic_interest_per_share,updated_epoch) VALUES (?,?,?,'preferred',?,?,?) "
-                "ON CONFLICT(legacy_product_code) DO UPDATE SET class_name=excluded.class_name,"
-                "voting_rights_per_share=excluded.voting_rights_per_share,"
-                "economic_interest_per_share=excluded.economic_interest_per_share,updated_epoch=excluded.updated_epoch",
-                (code, organization_code, class_name, str(votes), str(equity), now),
+                 str(TREASURY_USER_ID), parent[2], parent[3], organization_code, issuance_id),
             )
             seller = CurrencyManager.exchange_treasury(conn, code)
             conn.execute("UPDATE company SET max_shareholder_id=? WHERE company_code=?", (seller, code))
@@ -248,11 +245,11 @@ def action(conn, payload, actor, now=None):
             conn.execute("ROLLBACK TO SAVEPOINT organization_share_issuance_create")
             conn.execute("RELEASE SAVEPOINT organization_share_issuance_create")
             raise
-        return {"action": kind, "organization_code": organization_code, "legacy_product_code": code,
+        return {"action": kind, "organization_code": organization_code, "company_code": code,
                 "class_name": class_name, "total_shares": shares, "share_price": price,
                 "initial_offering_order": order_id}
     if kind == "issuance_rights":
-        code = str(payload.get("legacy_product_code") or "")
+        code = str(payload.get("company_code") or "")
         class_name = payload.get("class_name")
         if class_name is not None:
             class_name = str(class_name).strip()
@@ -268,14 +265,14 @@ def action(conn, payload, actor, now=None):
             raise ValueError("의결권은 0~1조, 경제적 지분계수는 0 초과~1조 범위여야 합니다.")
         cur = conn.execute(
             "UPDATE share_issuances SET voting_rights_per_share=?,economic_interest_per_share=?,"
-            "updated_epoch=? WHERE issuance_id=COALESCE(?,(SELECT issuance_id FROM share_issuances WHERE legacy_product_code=?))",
+            "updated_epoch=? WHERE issuance_id=COALESCE(?,(SELECT share_issuance_id FROM company WHERE company_code=?))",
             (str(votes), str(equity), now, payload.get("issuance_id"), code),
         )
         if cur.rowcount != 1:
             raise ValueError("주식 발행 종류를 찾을 수 없습니다.")
         if class_name is not None:
             conn.execute(
-                "UPDATE share_issuances SET class_name=?,updated_epoch=? WHERE issuance_id=COALESCE(?,(SELECT issuance_id FROM share_issuances WHERE legacy_product_code=?))",
+                "UPDATE share_issuances SET class_name=?,updated_epoch=? WHERE issuance_id=COALESCE(?,(SELECT share_issuance_id FROM company WHERE company_code=?))",
                 (class_name, now, payload.get("issuance_id"), code),
             )
         company = conn.execute(
@@ -350,7 +347,7 @@ def action(conn, payload, actor, now=None):
                   or (current["dividend_mode"] == "percent" and dividend_percent > 0)) else None,
              code),
         )
-        return {"action": kind, "legacy_product_code": code,
+        return {"action": kind, "company_code": code,
                 "voting_rights_per_share": str(votes), "economic_interest_per_share": str(equity),
                 "rights": {key: str(value) for key, value in current.items()}}
     raise ValueError("조직 관리 작업을 확인해주세요.")

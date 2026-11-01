@@ -41,7 +41,6 @@ class OrganizationDB(DBManager):
             CREATE TABLE IF NOT EXISTS share_issuances (
                 issuance_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 organization_code TEXT NOT NULL REFERENCES organizations(organization_code),
-                legacy_product_code TEXT UNIQUE,
                 class_name TEXT NOT NULL,
                 share_class TEXT NOT NULL CHECK(share_class IN ('common','preferred')),
                 voting_rights_per_share TEXT NOT NULL DEFAULT '1',
@@ -51,20 +50,6 @@ class OrganizationDB(DBManager):
                 updated_epoch INTEGER NOT NULL DEFAULT (unixepoch())
             )
         """)
-        self.execute("""
-            CREATE TABLE IF NOT EXISTS organization_share_issuances (
-                legacy_product_code TEXT PRIMARY KEY,
-                organization_code TEXT NOT NULL REFERENCES organizations(organization_code),
-                class_name TEXT NOT NULL,
-                share_class TEXT NOT NULL CHECK(share_class IN ('common','preferred')),
-                voting_rights_per_share TEXT NOT NULL DEFAULT '1',
-                economic_interest_per_share TEXT NOT NULL DEFAULT '1',
-                rights_json TEXT NOT NULL DEFAULT '{}',
-                created_epoch INTEGER NOT NULL DEFAULT (unixepoch()),
-                updated_epoch INTEGER NOT NULL DEFAULT (unixepoch())
-            )
-        """)
-        self.execute("CREATE INDEX IF NOT EXISTS idx_org_share_issuance_org ON organization_share_issuances(organization_code,legacy_product_code)")
         self.execute("""
             CREATE TABLE IF NOT EXISTS organization_groups (
                 group_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,21 +88,48 @@ class OrganizationDB(DBManager):
         self._install_company_sync_triggers()
 
     def _migrate_share_issuance_identity(self):
-        """Give every existing ticker-backed issuance a stable independent ID."""
-        self.execute(
-            "INSERT OR IGNORE INTO share_issuances(organization_code,legacy_product_code,class_name,share_class,"
-            "voting_rights_per_share,economic_interest_per_share,rights_json,created_epoch,updated_epoch) "
-            "SELECT organization_code,legacy_product_code,class_name,share_class,voting_rights_per_share,"
-            "economic_interest_per_share,rights_json,created_epoch,updated_epoch FROM organization_share_issuances"
-        )
-        self.execute(
-            "UPDATE company SET share_issuance_id=(SELECT issuance_id FROM share_issuances s "
-            "WHERE s.legacy_product_code=company.company_code) WHERE share_issuance_id IS NULL "
-            "AND EXISTS(SELECT 1 FROM share_issuances s WHERE s.legacy_product_code=company.company_code)"
-        )
+        """Move ticker-keyed issuance metadata onto stable IDs and link market rows."""
+        columns = {row[1] for row in self.execute("PRAGMA table_info(share_issuances)")}
+        if "legacy_product_code" in columns:
+            self.execute("ALTER TABLE share_issuances RENAME TO share_issuances_ticker_keyed")
+            self.execute("""CREATE TABLE share_issuances (
+                issuance_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_code TEXT NOT NULL REFERENCES organizations(organization_code),
+                class_name TEXT NOT NULL,
+                share_class TEXT NOT NULL CHECK(share_class IN ('common','preferred')),
+                voting_rights_per_share TEXT NOT NULL DEFAULT '1',
+                economic_interest_per_share TEXT NOT NULL DEFAULT '1',
+                rights_json TEXT NOT NULL DEFAULT '{}',
+                created_epoch INTEGER NOT NULL DEFAULT (unixepoch()),
+                updated_epoch INTEGER NOT NULL DEFAULT (unixepoch()))""")
+            self.execute("""INSERT INTO share_issuances(issuance_id,organization_code,class_name,share_class,
+                voting_rights_per_share,economic_interest_per_share,rights_json,created_epoch,updated_epoch)
+                SELECT issuance_id,organization_code,class_name,share_class,voting_rights_per_share,
+                economic_interest_per_share,rights_json,created_epoch,updated_epoch FROM share_issuances_ticker_keyed""")
+            self.execute("""UPDATE company SET share_issuance_id=(SELECT s.issuance_id
+                FROM share_issuances_ticker_keyed old JOIN share_issuances s USING(issuance_id)
+                WHERE old.legacy_product_code=company.company_code)
+                WHERE EXISTS(SELECT 1 FROM share_issuances_ticker_keyed old
+                  WHERE old.legacy_product_code=company.company_code)""")
+            self.execute("DROP TABLE share_issuances_ticker_keyed")
+
+        legacy_tables = {row[0] for row in self.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "organization_share_issuances" in legacy_tables:
+            for legacy in self.execute("SELECT * FROM organization_share_issuances"):
+                code = str(legacy[0])
+                if self.execute_one("SELECT 1 FROM company WHERE company_code=? AND share_issuance_id IS NOT NULL", (code,)):
+                    continue
+                self.execute(
+                    "INSERT INTO share_issuances(organization_code,class_name,share_class,"
+                    "voting_rights_per_share,economic_interest_per_share,rights_json,created_epoch,updated_epoch) "
+                    "VALUES (?,?,?,?,?,?,?,?)", tuple(legacy[1:]))
+                issuance_id = self.execute_one("SELECT last_insert_rowid()")[0]
+                self.execute("UPDATE company SET share_issuance_id=? WHERE company_code=?", (issuance_id, code))
+            self.execute("DROP TABLE organization_share_issuances")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_company_share_issuance ON company(share_issuance_id)")
 
     def _import_legacy_companies(self):
-        """Create profile/class links idempotently; never rewrite legacy share data."""
+        """Import organization identities; issuance records are migrated separately."""
         rows = self.execute(
             "SELECT company_code,name,industry,share_class,parent_company_code,"
             "dividend_priority,cumulative_dividend,dividend_mode,dividend_per_share,"
@@ -135,66 +147,56 @@ class OrganizationDB(DBManager):
                 "VALUES (?,?,?,?,?)",
                 (code, str(row[1] or ""), str(row[2] or ""), row[15], str(row[14] or "active")),
             )
+        columns = {row[1] for row in self.execute("PRAGMA table_info(share_issuances)")}
+        legacy_tables = {row[0] for row in self.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "legacy_product_code" in columns or "organization_share_issuances" in legacy_tables:
+            return
         for row in rows:
             code = str(row[0])
             share_class = str(row[3] or "common")
             organization_code = str(row[4] or "") if share_class == "preferred" else code
-            if not organization_code:
+            if not organization_code or not self.execute_one(
+                "SELECT 1 FROM organizations WHERE organization_code=?", (organization_code,)
+            ) or self.execute_one("SELECT 1 FROM company WHERE company_code=? AND share_issuance_id IS NOT NULL", (code,)):
                 continue
-            exists = self.execute_one(
-                "SELECT 1 FROM company WHERE company_code=? AND share_class='common'",
-                (organization_code,),
-            )
-            if not exists:
-                continue
-            exists = self.execute_one("SELECT 1 FROM organizations WHERE organization_code=?", (organization_code,))
-            if not exists:
-                continue
-            rights = {
-                "dividend_priority": int(row[5] or 0),
-                "cumulative_dividend": bool(row[6]),
-                "dividend_mode": str(row[7] or "fixed"),
-                "dividend_per_share": str(row[8] or 0),
-                "dividend_percent": str(row[9] or 0),
-                "liquidation_value_per_share": str(row[10] or 0),
-                "dividend_funding": str(row[11] or "treasury"),
-                "dividend_cycle_seconds": int(row[12] or 0),
-                "dividend_is_active": bool(row[13]),
-            }
+            rights = {"dividend_priority": int(row[5] or 0), "cumulative_dividend": bool(row[6]),
+                "dividend_mode": str(row[7] or "fixed"), "dividend_per_share": str(row[8] or 0),
+                "dividend_percent": str(row[9] or 0), "liquidation_value_per_share": str(row[10] or 0),
+                "dividend_funding": str(row[11] or "treasury"), "dividend_cycle_seconds": int(row[12] or 0),
+                "dividend_is_active": bool(row[13])}
             self.execute(
-                "INSERT OR IGNORE INTO organization_share_issuances "
-                "(legacy_product_code,organization_code,class_name,share_class,"
-                "voting_rights_per_share,rights_json) VALUES (?,?,?,?,?,?)",
-                (code, organization_code,
-                 "보통주" if share_class == "common" else f"{row[1] or code} 우선주",
-                 share_class, "1", json.dumps(rights, ensure_ascii=False, sort_keys=True)),
-            )
-
+                "INSERT INTO share_issuances(organization_code,class_name,share_class,rights_json) VALUES (?,?,?,?)",
+                (organization_code, "보통주" if share_class == "common" else f"{row[1] or code} 우선주",
+                 share_class, json.dumps(rights, ensure_ascii=False, sort_keys=True)))
+            self.execute("UPDATE company SET share_issuance_id=? WHERE company_code=?",
+                         (self.execute_one("SELECT last_insert_rowid()")[0], code))
     def _install_company_sync_triggers(self):
-        """Keep new legacy catalog rows discoverable until trading is migrated."""
+        """Maintain the organization and issuance links for market catalog rows."""
+        self.execute("DROP TRIGGER IF EXISTS organization_company_after_insert")
         self.execute("DROP TRIGGER IF EXISTS organization_company_after_update")
         self.execute("""
-            CREATE TRIGGER IF NOT EXISTS organization_company_after_insert
+            CREATE TRIGGER organization_company_after_insert
             AFTER INSERT ON company BEGIN
               INSERT OR IGNORE INTO organizations(organization_code,name,industry,country_code,status)
               SELECT NEW.company_code,COALESCE(NEW.name,''),COALESCE(NEW.industry,''),
                 (SELECT nationality FROM market_exchanges WHERE exchange_id=NEW.exchange_id),COALESCE(NEW.status,'active')
               WHERE COALESCE(NEW.share_class,'common')='common';
-              INSERT OR IGNORE INTO share_issuances
-                (legacy_product_code,organization_code,class_name,share_class,voting_rights_per_share)
-              SELECT NEW.company_code,NEW.company_code,COALESCE(NEW.name,NEW.company_code)||' 보통주','common','1'
-              WHERE COALESCE(NEW.share_class,'common')='common';
-              INSERT OR IGNORE INTO share_issuances
-                (legacy_product_code,organization_code,class_name,share_class,voting_rights_per_share)
-              SELECT NEW.company_code,NEW.parent_company_code,COALESCE(NEW.name,NEW.company_code)||' 우선주','preferred','1'
-              WHERE NEW.share_class='preferred' AND NEW.parent_company_code IS NOT NULL
+              INSERT INTO share_issuances
+                (organization_code,class_name,share_class,voting_rights_per_share)
+              SELECT NEW.company_code,COALESCE(NEW.name,NEW.company_code)||' 보통주','common','1'
+              WHERE COALESCE(NEW.share_class,'common')='common' AND NEW.share_issuance_id IS NULL;
+              UPDATE company SET share_issuance_id=last_insert_rowid()
+                WHERE company_code=NEW.company_code AND COALESCE(NEW.share_class,'common')='common' AND NEW.share_issuance_id IS NULL;
+              INSERT INTO share_issuances
+                (organization_code,class_name,share_class,voting_rights_per_share)
+              SELECT NEW.parent_company_code,COALESCE(NEW.name,NEW.company_code)||' 우선주','preferred','1'
+              WHERE NEW.share_class='preferred' AND NEW.share_issuance_id IS NULL AND NEW.parent_company_code IS NOT NULL
                 AND EXISTS(SELECT 1 FROM organizations WHERE organization_code=NEW.parent_company_code);
-              UPDATE company SET share_issuance_id=(SELECT issuance_id FROM share_issuances WHERE legacy_product_code=NEW.company_code)
-                WHERE company_code=NEW.company_code AND NEW.share_issuance_id IS NULL;
-              INSERT OR IGNORE INTO organization_share_issuances
-                (legacy_product_code,organization_code,class_name,share_class,voting_rights_per_share)
-              SELECT legacy_product_code,organization_code,class_name,share_class,voting_rights_per_share
-                FROM share_issuances WHERE legacy_product_code=NEW.company_code;
+              UPDATE company SET share_issuance_id=last_insert_rowid()
+                WHERE company_code=NEW.company_code AND NEW.share_class='preferred' AND NEW.share_issuance_id IS NULL
+                  AND NEW.parent_company_code IS NOT NULL
+                  AND EXISTS(SELECT 1 FROM organizations WHERE organization_code=NEW.parent_company_code);
+
             END
         """)
         self.execute("""
