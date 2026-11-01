@@ -297,13 +297,23 @@ class OrganizationManager:
         issues_by_org = defaultdict(list)
         for row in issue_rows:
             issues_by_org[str(row[0])].append(row)
-        holdings_by_issue = defaultdict(list)
-        for row in conn.execute(
-            "SELECT u.asset_code,u.user_id,u.quantity FROM user_assets u "
-            "JOIN company c ON c.company_code=u.asset_code "
-            "JOIN share_issuances s ON s.issuance_id=c.share_issuance_id WHERE c.status='active'"
-        ):
-            holdings_by_issue[str(row[0])].append((str(row[1]), Decimal(str(row[2] or 0))))
+        holdings_by_issue = {}
+
+        def load_holdings(issues):
+            missing = list(dict.fromkeys(str(issue[1]) for issue in issues if str(issue[1]) not in holdings_by_issue))
+            for offset in range(0, len(missing), 500):
+                batch = missing[offset:offset + 500]
+                placeholders = ",".join("?" for _ in batch)
+                for code in batch:
+                    holdings_by_issue[code] = []
+                for row in conn.execute(
+                    f"SELECT asset_code,user_id,quantity FROM user_assets WHERE asset_code IN ({placeholders})", batch):
+                    try:
+                        quantity = Decimal(str(row[2] or 0))
+                    except (InvalidOperation, TypeError, ValueError):
+                        continue
+                    if quantity.is_finite() and quantity > 0:
+                        holdings_by_issue[str(row[0])].append((str(row[1]), quantity))
         user_names = {str(row[0]): str(row[1] or row[0]) for row in conn.execute(
             "SELECT user_id,nickname FROM users")}
         nodes = {}
@@ -324,16 +334,17 @@ class OrganizationManager:
                 return
             nodes["company:" + code] = {"id": "company:" + code, "kind": "company", "code": code, "name": company_rows[code] or code}
             issues = issues_by_org.get(code, ())
+            load_holdings(issues)
             equity_total = Decimal(0)
             votes_total = Decimal(0)
             owner_amounts = defaultdict(lambda: [Decimal(0), Decimal(0)])
             for issue in issues:
                 _, issue_code, _, supply, _, vote_text, equity_text = issue
-                supply = Decimal(str(supply or 0))
                 try:
+                    supply = Decimal(str(supply or 0))
                     vote_per_share = Decimal(str(vote_text))
                     equity_per_share = Decimal(str(equity_text))
-                except InvalidOperation:
+                except (InvalidOperation, TypeError, ValueError):
                     continue
                 if not supply.is_finite() or supply <= 0 or not vote_per_share.is_finite() or vote_per_share < 0 or not equity_per_share.is_finite() or equity_per_share < 0:
                     continue

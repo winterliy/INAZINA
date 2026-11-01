@@ -4176,13 +4176,11 @@ class Handler(BaseHTTPRequestHandler):
                         audit_admin_access(user["userId"], "organization.size_auto_change", change)
                     self.send_json(200, result)
                 elif len(parts) == 2 and parts[0] == "organizations":
-                    from web_api.organizations import directory
+                    from web_api.organizations import ownership_graph
                     query = parse_qs(parsed.query)
                     min_percent = 0 if query.get("includeMinor", ["0"])[0] == "1" else 1
                     with connect_db(timeout=5) as connection:
-                        result = directory(connection, parts[1], min_percent=min_percent)
-                    for change in result.get("sizeChanges", []):
-                        audit_admin_access(user["userId"], "organization.size_auto_change", change)
+                        result = ownership_graph(connection, parts[1], min_percent=min_percent)
                     self.send_json(200, result)
                 elif parts == ["companies", "identity"]:
                     self.send_json(200, admin_identity(user["userId"]))

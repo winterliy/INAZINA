@@ -23,23 +23,26 @@ def _metrics_batch(conn, codes):
     codes = [str(code) for code in codes]
     if not codes:
         return {}
-    placeholders = ",".join("?" for _ in codes)
     year = time.strftime("%Y", time.gmtime())
     current_month = time.strftime("%Y-%m", time.gmtime())
     totals = {code: {"revenue": 0, "assets": 0} for code in codes}
-    rows = conn.execute(
-        f"SELECT e.company_code,a.category,SUM(CASE WHEN a.category='revenue' THEN -l.amount ELSE l.amount END) amount "
-        f"FROM financial_entries e JOIN financial_lines l USING(entry_id) "
-        f"JOIN financial_accounts a ON a.code=l.account WHERE e.company_code IN ({placeholders}) "
-        "AND e.status='posted' AND ((a.category='revenue' AND e.period>=?) OR "
-        "(a.category IN ('current_asset','noncurrent_asset') AND e.period<=?)) "
-        "GROUP BY e.company_code,a.category", (*codes, year, current_month),
-    ).fetchall()
-    for row in rows:
-        key = "revenue" if row[1] == "revenue" else "assets"
-        totals[str(row[0])][key] += int(row[2] or 0)
-    entities = {str(row[0]): str(row[1] or "") for row in conn.execute(
-        f"SELECT company_code,currency FROM financial_entities WHERE company_code IN ({placeholders})", codes)}
+    entities = {}
+    for offset in range(0, len(codes), 500):
+        batch = codes[offset:offset + 500]
+        placeholders = ",".join("?" for _ in batch)
+        rows = conn.execute(
+            f"SELECT e.company_code,a.category,SUM(CASE WHEN a.category='revenue' THEN -l.amount ELSE l.amount END) amount "
+            f"FROM financial_entries e JOIN financial_lines l USING(entry_id) "
+            f"JOIN financial_accounts a ON a.code=l.account WHERE e.company_code IN ({placeholders}) "
+            "AND e.status='posted' AND ((a.category='revenue' AND e.period>=?) OR "
+            "(a.category IN ('current_asset','noncurrent_asset') AND e.period<=?)) "
+            "GROUP BY e.company_code,a.category", (*batch, year, current_month),
+        ).fetchall()
+        for row in rows:
+            key = "revenue" if row[1] == "revenue" else "assets"
+            totals[str(row[0])][key] += int(row[2] or 0)
+        entities.update({str(row[0]): str(row[1] or "") for row in conn.execute(
+            f"SELECT company_code,currency FROM financial_entities WHERE company_code IN ({placeholders})", batch)})
     result = {}
     for code in codes:
         if code not in entities:
@@ -74,8 +77,9 @@ def directory(conn, organization_code=None, now=None, min_percent=1):
     metrics_by_code = _metrics_batch(conn, [row["organization_code"] for row in rows])
     org_codes = [str(row["organization_code"]) for row in rows]
     issues_by_org = {}
-    if org_codes:
-        placeholders = ",".join("?" for _ in org_codes)
+    for offset in range(0, len(org_codes), 500):
+        batch = org_codes[offset:offset + 500]
+        placeholders = ",".join("?" for _ in batch)
         for issue in conn.execute(
             "SELECT s.organization_code,s.issuance_id,c.company_code AS company_code,s.class_name,s.share_class,"
             "s.voting_rights_per_share,s.economic_interest_per_share,s.rights_json,c.total_shares,c.share_price,c.status,"
@@ -84,7 +88,7 @@ def directory(conn, organization_code=None, now=None, min_percent=1):
             "c.liquidation_value_per_share,c.dividend_funding "
             f"FROM share_issuances s JOIN company c ON c.share_issuance_id=s.issuance_id "
             f"WHERE s.organization_code IN ({placeholders}) AND c.status='active' ORDER BY s.organization_code,c.company_code",
-            org_codes,
+            batch,
         ):
             issues_by_org.setdefault(str(issue[0]), []).append(dict(issue))
     organizations = []
@@ -123,9 +127,18 @@ def directory(conn, organization_code=None, now=None, min_percent=1):
             group["members"].append(str(row[5]))
     result = {"organizations": organizations, "groups": list(group_map.values()), "sizeChanges": size_changes,
               "sizeSettings": {"announcement_seconds": announcement_seconds, "rules": rules}}
-    if organization_code:
-        result["graph"] = OrganizationManager.ownership_graph(conn, organization_code, min_percent=min_percent)
     return result
+
+
+def ownership_graph(conn, organization_code, min_percent=1):
+    """Return only the requested graph; do not rebuild the full admin directory."""
+    from managers.organization_manager import OrganizationManager
+    code = str(organization_code or "").strip()
+    if not code or not conn.execute(
+        "SELECT 1 FROM organizations WHERE organization_code=?", (code,)
+    ).fetchone():
+        raise ValueError("조직도를 표시할 법인을 찾을 수 없습니다.")
+    return {"graph": OrganizationManager.ownership_graph(conn, code, min_percent=min_percent)}
 
 
 def action(conn, payload, actor, now=None):
