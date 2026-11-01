@@ -4185,7 +4185,7 @@ class Handler(BaseHTTPRequestHandler):
                         self.send_json(200, result)
                         return
                     with connect_db(timeout=5) as connection:
-                        result = directory(connection)
+                        result = directory(connection, organization_code=query.get("organization", [None])[0])
                     for change in result.get("sizeChanges", []):
                         audit_admin_access(user["userId"], "organization.size_auto_change", change)
                     self.send_json(200, result)

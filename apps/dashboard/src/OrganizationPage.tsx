@@ -28,8 +28,15 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
   const [ruleMode, setRuleMode] = useState("any");
   const [saving, setSaving] = useState(false);
   const load = useCallback(async (code: string) => {
-    const next = await api<Directory>(`/api/admin/organizations${code ? `/${encodeURIComponent(code)}` : ""}`);
-    setData(next);
+    const query = code ? `?organization=${encodeURIComponent(code)}` : "";
+    const next = await api<Directory>(`/api/admin/organizations${query}`);
+    setData((current) => code && current ? {
+      ...next,
+      organizations: current.organizations.map((item) =>
+        item.organization_code === code
+          ? next.organizations.find((updated) => updated.organization_code === code) ?? item
+          : item),
+    } : next);
     const defaultThresholds: Record<string, [string, string]> = {
       revenue: ["10000000000", "100000000000"], assets: ["10000000000", "100000000000"], employees: ["300", "1000"],
     };

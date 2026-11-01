@@ -72,7 +72,8 @@ def directory(conn, organization_code=None, now=None, min_percent=1):
     rows = conn.execute(
         "SELECT o.*,c.exchange_id,c.quote_currency,c.total_shares,c.share_price "
         "FROM organizations o JOIN company c ON c.company_code=o.organization_code "
-        "WHERE c.share_class='common' ORDER BY o.name,o.organization_code"
+        "WHERE c.share_class='common' AND (? IS NULL OR o.organization_code=?) "
+        "ORDER BY o.name,o.organization_code", (organization_code, organization_code)
     ).fetchall()
     metrics_by_code = _metrics_batch(conn, [row["organization_code"] for row in rows])
     org_codes = [str(row["organization_code"]) for row in rows]
