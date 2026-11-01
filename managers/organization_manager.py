@@ -14,7 +14,7 @@ import time
 
 class OrganizationManager:
     @staticmethod
-    def user_ownership_graph(conn, user_id, max_depth=3, max_children=20, min_percent=0):
+    def user_ownership_graph(conn, user_id, max_depth=8, max_children=100, min_percent=0):
         """Show a user's direct shareholdings and subsidiaries of companies they control.
 
         Direct positions include every company share class. Descendant expansion is
@@ -24,7 +24,7 @@ class OrganizationManager:
         from database.user_db import TREASURY_USER_ID
 
         user_id = str(user_id)
-        max_depth = max(0, min(int(max_depth), 5))
+        max_depth = max(0, min(int(max_depth), 8))
         max_children = max(1, min(int(max_children), 100))
         min_percent = Decimal(str(min_percent))
         accounts = {str(row[1]): str(row[0]) for row in conn.execute(
@@ -181,7 +181,7 @@ class OrganizationManager:
                 "max_depth": max_depth, "truncated": truncated, "root_kind": "user"}
 
     @staticmethod
-    def ownership_graph(conn, organization_code, max_depth=3, max_children=20, min_percent=0):
+    def ownership_graph(conn, organization_code, max_depth=8, max_children=100, min_percent=0):
         """Build a bounded, read-only direct/indirect ownership graph.
 
         Percentages use exact decimal strings. The direct equity and vote ratios
@@ -190,7 +190,7 @@ class OrganizationManager:
         from database.user_db import TREASURY_USER_ID
 
         root = str(organization_code)
-        max_depth = max(0, min(int(max_depth), 5))
+        max_depth = max(0, min(int(max_depth), 8))
         max_children = max(1, min(int(max_children), 100))
         min_percent = Decimal(str(min_percent))
         accounts = {str(row[1]): str(row[0]) for row in conn.execute(
