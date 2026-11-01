@@ -105,7 +105,8 @@ class OrganizationManager:
                 continue
             root_candidates.append((code, equity_ratio, voting_ratio))
         root_candidates.sort(key=lambda item: (-max(item[1], item[2]), -item[2], item[0]))
-        roots = []
+        controlled_paths = {user_id: (Decimal(1), Decimal(1))}
+        controlled_codes = set()
         if len(root_candidates) > max_children:
             truncated = True
         for code, equity_ratio, voting_ratio in root_candidates[:max_children]:
@@ -119,10 +120,11 @@ class OrganizationManager:
                 "depth": 0, "direct": True,
             }
             if voting_ratio > Decimal("0.5"):
-                controlled_paths = {user_id: (Decimal(1), Decimal(1)),
-                                    company_accounts.get(code): (equity_ratio, voting_ratio)}
-                controlled_paths.pop(None, None)
-                roots.append((code, controlled_paths, frozenset({code})))
+                account = company_accounts.get(code)
+                if account:
+                    controlled_paths[account] = (equity_ratio, voting_ratio)
+                controlled_codes.add(code)
+        expanded_codes = set(controlled_codes)
 
         # A controlled group can hold a majority through several of its members.
         # Keep each direct block visible, then expand the issuer when the group's
@@ -152,6 +154,8 @@ class OrganizationManager:
                     held_codes.add(str(issuer))
             candidates = []
             for issuer in held_codes - set(ancestry):
+                if company_accounts.get(issuer) in controlled_paths:
+                    continue
                 ratios = ownership(issuer)
                 group_equity = sum((ratios.get(holder, (Decimal(0), Decimal(0)))[0]
                                     for holder in controlled_paths), Decimal(0))
@@ -162,10 +166,13 @@ class OrganizationManager:
             candidates.sort(key=lambda item: (-item[3], -item[2], item[0]))
             if len(candidates) > max_children:
                 truncated = True
+            scheduled = {issuer for issuer, _, _, _ in candidates if issuer not in expanded_codes}
+            expanded_codes.update(scheduled)
             for issuer, ratios, group_equity, group_votes in candidates[:max_children]:
                 if len(edges) >= 1000:
                     truncated = True
                     return
+                controlled_codes.add(issuer)
                 org = conn.execute("SELECT name FROM organizations WHERE organization_code=?", (issuer,)).fetchone()
                 node_id = "company:" + issuer
                 add_node(node_id, "company", issuer, org[0] if org else issuer)
@@ -175,7 +182,7 @@ class OrganizationManager:
                     child_paths[holder] = (path_equity, path_votes)
                     if max(equity_ratio, voting_ratio) * 100 < min_percent or not (equity_ratio or voting_ratio):
                         continue
-                    parent_code = company_accounts.get(holder)
+                    parent_code = accounts.get(holder)
                     if parent_code:
                         parent_id = "company:" + parent_code
                         parent = conn.execute("SELECT name FROM organizations WHERE organization_code=?", (parent_code,)).fetchone()
@@ -200,10 +207,63 @@ class OrganizationManager:
                         sum((path[1] * ratios.get(holder, (Decimal(0), Decimal(0)))[1]
                              for holder, path in controlled_paths.items()), Decimal(0)),
                     )
-                expand_group(issuer, child_paths, ancestry | {issuer}, depth + 1)
+                if issuer in scheduled:
+                    expand_group(issuer, child_paths, ancestry | {issuer}, depth + 1)
 
-        for code, controlled_paths, ancestry in roots:
-            expand_group(code, controlled_paths, ancestry, 1)
+        if len(controlled_paths) > 1:
+            expand_group("__user_controlled_group__", controlled_paths, frozenset(), 1)
+
+        # Show cross-holdings between companies already reached by the user's
+        # controlled group, including upward stakes that close a cycle.
+        adjacency = defaultdict(set)
+        for edge in edges.values():
+            adjacency[edge["from"]].add(edge["to"])
+
+        def reaches(start, target):
+            pending, seen = [start], set()
+            while pending:
+                current = pending.pop()
+                if current == target:
+                    return True
+                if current in seen:
+                    continue
+                seen.add(current)
+                pending.extend(adjacency.get(current, ()))
+            return False
+
+        controlled_accounts = {company_accounts[code]: code for code in controlled_codes
+                               if code in company_accounts}
+        for holder, holder_code in controlled_accounts.items():
+            for (issuer,) in conn.execute(
+                "SELECT DISTINCT s.organization_code FROM user_assets a "
+                "JOIN company c ON c.company_code=a.asset_code "
+                "JOIN share_issuances s ON s.issuance_id=c.share_issuance_id "
+                "WHERE a.user_id=?", (holder,),
+            ):
+                issuer = str(issuer)
+                if issuer not in controlled_codes or issuer == holder_code:
+                    continue
+                ratio = ownership(issuer).get(holder)
+                if not ratio or max(ratio) * 100 < min_percent:
+                    continue
+                source_id, target_id = "company:" + holder_code, "company:" + issuer
+                if len(edges) >= 1000 and (source_id, target_id) not in edges:
+                    truncated = True
+                    break
+                org = conn.execute("SELECT name FROM organizations WHERE organization_code=?", (holder_code,)).fetchone()
+                add_node(source_id, "company", holder_code, org[0] if org else holder_code)
+                org = conn.execute("SELECT name FROM organizations WHERE organization_code=?", (issuer,)).fetchone()
+                add_node(target_id, "company", issuer, org[0] if org else issuer)
+                key = (source_id, target_id)
+                cycle = reaches(target_id, source_id)
+                edge = edges.setdefault(key, {
+                    "from": source_id, "to": target_id,
+                    "equity_percent": str(ratio[0] * 100), "voting_percent": str(ratio[1] * 100),
+                    "root_equity_percent": "0", "root_voting_percent": "0",
+                    "depth": max_depth, "direct": False, "cycle": cycle,
+                })
+                edge["cycle"] = bool(edge.get("cycle") or cycle)
+                adjacency[source_id].add(target_id)
 
         return {"nodes": list(nodes.values()), "edges": sorted(edges.values(), key=lambda edge: (edge["depth"], edge["to"], edge["from"])),
                 "max_depth": max_depth, "truncated": truncated, "root_kind": "user"}
