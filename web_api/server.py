@@ -1444,16 +1444,21 @@ def save_drawings(user_id, code, drawings):
 def execute_order(user_id, payload):
     from decimal import Decimal
     if not isinstance(payload, dict):
-        raise ValueError("invalid_order")
+        raise ValueError("주문 정보를 확인해주세요.")
     code, side = str(payload.get("assetCode", "")).strip(), payload.get("side")
     quantity, price = payload.get("quantity"), payload.get("limitPrice")
-    if (not code or len(code) > 80 or side not in {"buy", "sell"} or
-            isinstance(quantity, bool) or not isinstance(quantity, int) or
-            isinstance(price, bool) or not isinstance(price, (int,float,str,Decimal))):
-        raise ValueError("invalid_order")
-    price = native_value(price)
+    if not code or len(code) > 80 or side not in {"buy", "sell"}:
+        raise ValueError("종목과 매수·매도 방향을 확인해주세요.")
+    if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 1:
+        raise ValueError("주문 수량은 1 이상의 정수여야 합니다.")
+    if isinstance(price, bool) or not isinstance(price, (int, float, str, Decimal)):
+        raise ValueError("지정가는 숫자로 입력해주세요.")
+    try:
+        price = native_value(price)
+    except (ArithmeticError, TypeError, ValueError):
+        raise ValueError("지정가는 유한한 숫자로 입력해주세요.") from None
     if price <= 0 or price > 10**24:
-        raise ValueError("invalid_order")
+        raise ValueError("지정가는 0보다 크고 허용 한도 이하여야 합니다.")
     if price == int(price):
         price = int(price)
     success, message = domain().order_book.place_limit_order(user_id, code, side, quantity, price)
