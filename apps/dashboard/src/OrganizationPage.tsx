@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatMoney } from "../../shared/money";
-import { api } from "../../shared/api";
+import { api, appUrl } from "../../shared/api";
 import { Card, Field, type Ctx } from "./common";
 import "./OrganizationPage.css";
 
@@ -172,7 +172,7 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
         </Card>
       </div>
       <Card title="지분·의결권 구조" caption="위쪽으로 직접 주주와 법인 주주의 보유 관계를 펼칩니다. 선에는 경제적 지분과 의결권 비율을 각각 표시합니다.">
-        <a className="btn primary" href={`${location.pathname}${location.search}#ownership/organization/${encodeURIComponent(selected)}`} target="_blank" rel="noreferrer">조직도 새 창에서 보기 ↗</a>
+        <a className="btn primary" href={appUrl("dashboard", `/#ownership/organization/${encodeURIComponent(selected)}`)} target="_blank" rel="noopener noreferrer">조직도 새 창에서 보기 ↗</a>
       </Card>
     </>}
   </>;

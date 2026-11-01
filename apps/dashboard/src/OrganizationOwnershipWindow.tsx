@@ -82,6 +82,11 @@ export function OrganizationOwnershipWindow({ route }: { route: string }) {
     return term ? organizations.filter((organization) => `${organization.name} ${organization.organization_code} ${organization.industry}`.toLocaleLowerCase("ko").includes(term)) : [];
   }, [organizationSearch, organizations]);
 
+  useEffect(() => {
+    document.title = personal ? "보유 기업 지배구조 · INAZINA" : "기업 지분·의결권 조직도 · INAZINA";
+    return () => { document.title = "INAZINA Dashboard"; };
+  }, [personal]);
+
   const loadOrganization = useCallback(async (code: string, showMinor: boolean, updateAddress = true) => {
     const id = ++requestId.current;
     setSelected(code);
