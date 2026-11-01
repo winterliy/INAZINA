@@ -708,6 +708,11 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
 .gamble-fields input:focus { box-shadow: 0 0 0 2px var(--accent-focus); }
 .gamble-ev { grid-column: 1 / -1; color: var(--danger); font-size: 15px; font-weight: 600; }
 .gamble-ev.up { color: var(--ok-ink); }
+@media (max-width: 560px) {
+  .gamble-body { gap: 16px; }
+  .gamble-fields { flex: 1 1 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .gamble-fields .primary { grid-column: 1 / -1; justify-self: start; }
+}
 
 /* 관리자 명령어: the gamble and transfer tiles side by side. */
 .feature-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); align-items: start; gap: 16px; margin-bottom: 16px; }
