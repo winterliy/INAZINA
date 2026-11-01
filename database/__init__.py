@@ -60,6 +60,8 @@ class DatabaseManager:
             self.credit = CreditDB()
             self.organizations = OrganizationDB()
             self.currency.register_late_amount_fields()
+            from .nation_accounts import merge_legacy_nation_users
+            merge_legacy_nation_users(self)
             from .numeric_guards import install as install_numeric_guards
             install_numeric_guards(self.users)
             # Refresh planner statistics opportunistically after schema/index
