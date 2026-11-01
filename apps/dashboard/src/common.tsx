@@ -49,3 +49,9 @@ export function changed(current: Record<string, string>, original: Record<string
 }
 
 export const text = (value: unknown) => value === null || value === undefined ? "" : String(value);
+
+/** A tile value; long exact amounts shrink and wrap only after a comma, never inside a digit group. */
+export function BigValue({ value }: { value: string }) {
+  const long = value.length > 14;
+  return <p className={long ? "tile-value long" : "tile-value"} title={value}>{long ? value.split(",").flatMap((part, index) => index ? [",", <wbr key={index} />, part] : [part]) : value}</p>;
+}

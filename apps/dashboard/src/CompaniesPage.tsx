@@ -2,7 +2,7 @@ import { moneyAdd, moneyCompare, minorMoney, moneyMultiply, moneyDivideFloor, ty
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
 import { Donut, ShareholderPie, topSlices, type Shareholders } from "./Donut";
-import { Card, Field, number, plain, show, type Ctx } from "./common";
+import { Card, Field, number, plain, show, type Ctx, BigValue } from "./common";
 import { CompanyLedger } from "./CompanyLedger";
 
 type Holding = { asset_code: string; quantity: number };
@@ -307,7 +307,7 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
     {!company && <><div className="tile-row">
       <section className="tile"><p className="tile-label">법인</p><p className="tile-value">{number(companies.length)}</p></section>
       <section className="tile"><p className="tile-label">장외 3DSG</p><p className="tile-value">{number(companies.filter((item) => item.exchange_id === UNLISTED).length)}</p></section>
-      <section className="tile"><p className="tile-label">법인 현금 합계 · {companies[0]?.base_currency ?? ""}</p><p className="tile-value">{number(companies.reduce<Money>((sum, item) => moneyAdd(sum, item.cash_base), "0"))}</p></section>
+      <section className="tile"><p className="tile-label">법인 현금 합계 · {companies[0]?.base_currency ?? ""}</p><BigValue value={number(companies.reduce<Money>((sum, item) => moneyAdd(sum, item.cash_base), "0"))} /></section>
     </div>
     <Card title="법인 자본" caption="법인은 사람이 아니라 로그인하지 않지만, 자본은 다른 계정과 똑같이 주식·상품 매수매도, 통장, 대출, 송금을 할 수 있습니다. 자기 회사 주식을 사면 자기주식(배당 없음), 다른 회사 지분을 과반 사면 자회사가 됩니다. Discord에서는 $법인 또는 $login [법인ID]를 씁니다.">
       <div className="scroll-x tall"><table><thead><tr><th>법인</th><th>이름</th><th>거래소</th><th className="r">현금</th><th className="r">보유 종목</th><th className="r">통장</th><th className="r">대출</th><th>모회사</th></tr></thead><tbody>

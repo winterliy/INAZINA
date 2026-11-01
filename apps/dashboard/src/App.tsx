@@ -13,7 +13,8 @@ const WarningsCard = lazy(() => import("./WarningsCard").then((module) => ({ def
 const IdentityCard = lazy(() => import("./IdentityCard").then((module) => ({ default: module.IdentityCard })));
 const FeedbackPage = lazy(() => import("./FeedbackPage").then((module) => ({ default: module.FeedbackPage })));
 const LoginHistoryCard = lazy(() => import("./LoginHistoryCard").then((module) => ({ default: module.LoginHistoryCard })));
-const LogCard = lazy(() => import("./LogCard").then((module) => ({ default: module.LogCard })));
+// lazy() erases the generic parameter of LogCard<T>; restore the component type so rows/idOf keep their row type.
+const LogCard = lazy(() => import("./LogCard").then((module) => ({ default: module.LogCard }))) as unknown as typeof import("./LogCard").LogCard;
 const BoardAdminPage = lazy(() => import("./BoardAdminPage").then((module) => ({ default: module.BoardAdminPage })));
 const DocumentsPage = lazy(() => import("./DocumentsPage").then((module) => ({ default: module.DocumentsPage })));
 const CompliancePage = lazy(() => import("./CompliancePage").then((module) => ({ default: module.CompliancePage })));

@@ -45,7 +45,8 @@ export function OwnershipGraph({ graph, fullScreen = false, focusedNodeId, focus
       node.classList.remove("ownership-node-focused");
     };
   }, [focusedNodeId, focusRequest, graph?.nodes.length, viewportWidth]);
-  if (!graph?.nodes.length) return <p className="empty">지분 자료가 없거나 표시할 주주가 없습니다.</p>;
+  // A company with no holders is a single node and no edge: show the empty note, not a blank canvas.
+  if (!graph?.nodes.length || !graph.edges.length) return <p className="empty">지분 자료가 없거나 표시할 주주가 없습니다.</p>;
 
   // Every edge is a direct holding between its two companies. The root
   // percentages are path aggregates and belong in the detail list, not labels.
