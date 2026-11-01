@@ -88,6 +88,7 @@ class SingleFlightTTL:
 
 
 _read_cache = SingleFlightTTL(float(os.environ.get("INAZINA_READ_CACHE_SECONDS", "0.25")))
+_organization_graph_cache = SingleFlightTTL(1.5)
 
 
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):
@@ -2357,7 +2358,7 @@ def db_delete(actor, table, rowid):
 # ---------------------------------------------------------------------------
 PRODUCT_KINDS = {
     # profile: (Korean label, dashboard group, $상품생성 kind token)
-    "stock": ("회사 주식", "market", "company"), "preferred": ("우선주", "market", "preferred"),
+    "stock": ("주식", "market", "company"),
     "asset": ("시장 자산", "market", "asset"), "etf": ("ETF", "market", "etf"),
     "dr": ("주식예탁증서(DR)", "market", "dr"),
     "future": ("주식선물", "market", "future"), "corporatebond": ("회사채", "market", "corporatebond"),
@@ -2415,7 +2416,6 @@ def product_catalog():
                                 else ("결제 통화" if profile == "dr" else "통장 화폐") if field == "quote_currency"
                                 else "발행 은행 ID" if field == "issuer"
                                 else "상장 거래소 (새 법인은 비상장 · 법인 자본에서 상장)" if field == "exchange_id" and profile == "stock"
-                                else "상장 거래소 ID (비상장이면 3DSG)" if field == "exchange_id" and profile == "preferred"
                                 else ARG_LABELS.get(field, field),
                        "optional": field in OPTIONAL_ARGS.get(profile, ()),
                        "text": field in TEXT_ARGS or field == "quote_currency"} for field in _form_fields(profile)]
@@ -2439,7 +2439,7 @@ def product_catalog():
 def _product_kind(source, row):
     from managers.admin_control_manager import KINDS, BOND_FEATURES, SAVING_KINDS
     if source == "company":
-        return "preferred" if row.get("share_class") == "preferred" else "stock"
+        return "stock"
     if source == "investment":
         if row.get("product_type") == "corporate_bond":
             feature = row.get("bond_feature") or "plain"
@@ -2741,7 +2741,7 @@ PRODUCT_RUNTIME = (
     ("web_chart_drawings", "asset_code"), ("fund_components", "product_code"),
     ("leveraged_etf_state", "product_code"), ("market_exchange_index_components", "company_code"),
 )
-PRODUCT_TABLE = {"stock": ("company", "company_code"), "preferred": ("company", "company_code"),
+PRODUCT_TABLE = {"stock": ("company", "company_code"),
                  "asset": ("market_assets", "code"), "bond": ("treasury_bond_products", "product_code"),
                  "option": ("option_contracts", "contract_code"), "saving": ("saving", "product_code"),
                  "currencyproduct": ("saving", "product_code"), "loan": ("liability", "product_code"),
@@ -3097,6 +3097,10 @@ def admin_exchanges():
                 "SELECT i.company_code,i.previous_price,i.total_shares,c.name FROM market_exchange_index_components i "
                 "LEFT JOIN company c ON c.company_code=i.company_code WHERE i.exchange_id=? ORDER BY i.company_code",
                 (exchange,))] if _table_exists(connection, "market_exchange_index_components") else []
+            row["currency_pairs"] = [dict(item) for item in connection.execute(
+                "SELECT code,name,price,quote_currency,status FROM market_assets "
+                "WHERE exchange_id='CURRENCY' AND type='forex' AND status='active' ORDER BY code"
+            )] if exchange == "CURRENCY" else []
         countries = [row[0] for row in connection.execute("SELECT nationality FROM country_currencies ORDER BY nationality")]
     return {"exchanges": rows, "countries": countries}
 
@@ -3106,6 +3110,8 @@ def admin_exchange_action(actor, exchange_id, payload):
     exchange_id = str(exchange_id or "").strip()
     if not exchange_id or len(exchange_id) > 100 or re.search(r"\s", exchange_id):
         raise ValueError("거래소 ID는 공백 없이 1~100자로 입력해주세요.")
+    if exchange_id.upper() == "CURRENCY" and action in {"create", "nationality", "hours", "delete"}:
+        raise ValueError("CURRENCY는 환전 시스템 전용 거래소라 설정을 변경할 수 없습니다.")
     if action in {"open", "close", "pause", "resume", "circuit", "sidecar"}:
         stage = payload.get("stage")
         success, message = domain().market_session.control(actor, action, stage=stage, exchange_id=exchange_id)
@@ -3491,6 +3497,12 @@ def user_history(user_id, limit=150):
     return events[:limit]
 
 
+def _load_organization_graph(code, min_percent):
+    from web_api.organizations import ownership_graph
+    with connect_db(timeout=5) as connection:
+        return ownership_graph(connection, code, min_percent=min_percent)
+
+
 def admin_company_journal(code, period=None):
     from managers.financial_manager import FinancialManager
     return FinancialManager(domain().db).journal(code, period or None)
@@ -3512,6 +3524,8 @@ def admin_company_journal_action(actor, code, payload):
         message = manager.manual(actor, code, note, [], reversal=int(payload.get("entryId")))
     elif action == "configure":
         message = manager.configure(actor, code, payload.get("config"))
+    elif action == "estimate":
+        message = manager.estimate_current_month(actor, code)
     elif action == "close":
         message = manager.close_period(actor, code, str(payload.get("period") or ""))
     else:
@@ -3539,6 +3553,7 @@ def admin_company_share_action(actor, code, payload):
             "legacy_product_code": str(code), "success": bool(success),
         })
         _read_cache.invalidate()
+        _organization_graph_cache.invalidate()
         return str(message) if success or str(message).startswith("❌") else "❌ " + str(message)
     if payload.get("action") == "issue_shares":
         if set(payload) - {"action", "mode", "quantity", "issuePrice"} or not {"mode", "quantity"} <= set(payload):
@@ -3553,6 +3568,7 @@ def admin_company_share_action(actor, code, payload):
             "quantity": payload["quantity"], "success": bool(success),
         })
         _read_cache.invalidate()
+        _organization_graph_cache.invalidate()
         return str(message) if success or str(message).startswith("❌") else "❌ " + str(message)
     if payload.get("action") == "record_resolution":
         if set(payload) != {"action", "ratio", "decision", "meetingReference", "articlesReference", "parValue"}:
@@ -4168,20 +4184,23 @@ class Handler(BaseHTTPRequestHandler):
                 elif parts == ["companies"]:
                     self.send_json(200, admin_companies())
                 elif parts == ["organizations"]:
-                    from web_api.organizations import directory
+                    from web_api.organizations import directory, organization_options
+                    if query.get("options", ["0"])[0] == "1":
+                        with connect_db(timeout=5) as connection:
+                            result = organization_options(connection)
+                        self.send_json(200, result)
+                        return
                     with connect_db(timeout=5) as connection:
-                        result = directory(connection)
+                        result = directory(connection, organization_code=query.get("organization", [None])[0])
                     for change in result.get("sizeChanges", []):
                         audit_admin_access(user["userId"], "organization.size_auto_change", change)
                     self.send_json(200, result)
                 elif len(parts) == 2 and parts[0] == "organizations":
-                    from web_api.organizations import directory
+                    from web_api.organizations import ownership_graph
                     query = parse_qs(parsed.query)
                     min_percent = 0 if query.get("includeMinor", ["0"])[0] == "1" else 1
-                    with connect_db(timeout=5) as connection:
-                        result = directory(connection, parts[1], min_percent=min_percent)
-                    for change in result.get("sizeChanges", []):
-                        audit_admin_access(user["userId"], "organization.size_auto_change", change)
+                    cache_key = ("organization_graph", parts[1], min_percent)
+                    result = _organization_graph_cache.get(cache_key, lambda: _load_organization_graph(parts[1], min_percent))
                     self.send_json(200, result)
                 elif parts == ["companies", "identity"]:
                     self.send_json(200, admin_identity(user["userId"]))
@@ -4827,6 +4846,7 @@ class Handler(BaseHTTPRequestHandler):
                     with connect_db(timeout=5) as connection:
                         result = organization_action(connection, payload, actor)
                     audit_admin_access(actor, "organization.configuration", result)
+                    _organization_graph_cache.invalidate()
                     message = f"조직 설정을 저장했습니다: {result.get('action')}"
                 elif parts == ["products"]:
                     message = product_save(actor, payload)

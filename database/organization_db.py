@@ -83,6 +83,20 @@ class OrganizationDB(DBManager):
             )
         """)
         self.execute("INSERT OR IGNORE INTO organization_size_settings(singleton) VALUES (1)")
+        size_settings = self.execute_one(
+            "SELECT rule_json FROM organization_size_settings WHERE singleton=1"
+        )
+        try:
+            existing_size_rules = json.loads(size_settings[0] or "{}") if size_settings else {}
+        except (TypeError, ValueError):
+            existing_size_rules = {"invalid_existing_rules": True}
+        if isinstance(existing_size_rules, dict) and not existing_size_rules.get("thresholds"):
+            self.execute("""UPDATE organization_size_settings SET announcement_seconds=604800,
+                rule_json=? WHERE singleton=1""", (json.dumps({"mode": "any", "thresholds": {
+                    "revenue": ["10000000000", "100000000000"],
+                    "assets": ["10000000000", "100000000000"],
+                    "employees": ["300", "1000"],
+                }}, separators=(",", ":")),))
         self._import_legacy_companies()
         self._migrate_share_issuance_identity()
         self._install_company_sync_triggers()

@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
+import type { Money } from "../../shared/money";
 import { api } from "../../shared/api";
 import { Card, Field, date, number, plain, show, type Ctx } from "./common";
 
 type Component = { company_code: string; name: string | null; previous_price: number; total_shares: number };
-type Exchange = { exchange_id: string; nationality: string; status: "open" | "closed" | "paused"; reason: string; trading_halted: number; circuit_stage: number | null; halt_started_epoch: number | null; resume_epoch: number | null; updated_epoch: number; hours: Schedule; hours_label: string; index_value: number; index_updated_epoch: number; products: number; components: Component[] };
+type CurrencyPair = { code: string; name: string; price: Money; quote_currency: string | null; status: string };
+type Exchange = { exchange_id: string; nationality: string; status: "open" | "closed" | "paused"; reason: string; trading_halted: number; circuit_stage: number | null; halt_started_epoch: number | null; resume_epoch: number | null; updated_epoch: number; hours: Schedule; hours_label: string; index_value: number; index_updated_epoch: number; products: number; components: Component[]; currency_pairs?: CurrencyPair[] };
 type Result = { message: string; success: boolean };
 
 const STATUS: Record<string, string> = { open: "개장", closed: "휴장", paused: "정지" };
@@ -43,14 +45,27 @@ export function ExchangesPage({ ctx }: { ctx: Ctx }) {
   const control = (item: Exchange, action: string, label: string, stage?: number) =>
     act(item.exchange_id, { action, stage }, `${item.exchange_id} 거래소에 ${label}을(를) 적용할까요?`);
   const all = (action: string, label: string, stage?: number) =>
-    act("ALL", { action, stage }, `모든 거래소에 ${label}을(를) 적용할까요?`);
+    act("ALL", { action, stage }, `모든 일반 거래소에 ${label}을(를) 적용할까요? (CURRENCY 제외)`);
 
   return <>
-    <Card title="전체 거래소" caption="모든 거래소에 한 번에 적용합니다 ($휴장·$개장·$장일시정지·$장재개·$서킷브레이커·$사이드카). 휴장 중인 거래소가 있으면 서킷·사이드카는 거부됩니다.">
+    <Card title="일반 거래소 일괄 제어" caption="개장·휴장·정지·서킷·사이드카를 모든 일반 거래소에 적용합니다. 시스템 거래소 CURRENCY는 항상 운영되며 여기서 제외됩니다.">
       <div className="actions"><button className="btn primary small" disabled={busy} onClick={() => all("open", "개장")}>전체 개장</button><button className="soft" disabled={busy} onClick={() => all("close", "휴장")}>전체 휴장</button><button className="soft" disabled={busy} onClick={() => all("pause", "일시 정지")}>전체 일시 정지</button><button className="soft" disabled={busy} onClick={() => all("resume", "재개")}>전체 재개</button><span className="divider" aria-hidden="true" />{[1, 2, 3].map((stage) => <button key={stage} className="soft" disabled={busy} onClick={() => all("circuit", `서킷브레이커 ${stage}단계`, stage)}>전체 서킷 {stage}단계</button>)}<button className="soft" disabled={busy} onClick={() => all("sidecar", "사이드카(5분)")}>전체 사이드카</button></div>
     </Card>
 
-    {exchange && <Card title={`${exchange.exchange_id} 거래소`} caption={<>{STATUS[exchange.status] ?? exchange.status}{exchange.reason ? ` · ${exchange.reason}` : ""}{exchange.resume_epoch ? ` · 자동 재개 ${date(exchange.resume_epoch)}` : ""} · 지수 {number(exchange.index_value)} · 활성 상품 {number(exchange.products)}개</>}
+    {exchange?.exchange_id === "CURRENCY" && <Card title="CURRENCY · 외환 시스템" caption="환전과 통화쌍 시세를 위한 시스템 전용 거래소입니다. 시장 상태·거래시간·소속 국가는 자동 관리됩니다."
+      actions={<><span className="tag ok">시스템 운영</span><button className="soft" type="button" onClick={() => setSelected("")}>닫기</button></>}>
+      <div className="stats">
+        <div><small>기능</small><b>환전 · 통화쌍 시세</b></div>
+        <div><small>운영 시간</small><b>항상 운영</b></div>
+        <div><small>활성 통화쌍</small><b>{number(exchange.currency_pairs?.length ?? 0)}개</b></div>
+        <div><small>활성 시스템 상품</small><b>{number(exchange.products)}개</b></div>
+      </div>
+      <p className="hint">환율과 통화쌍은 통화 시스템이 관리합니다. CURRENCY는 개장·휴장·정지·서킷·사이드카·거래시간·국가 변경 대상이 아닙니다.</p>
+      <h3 className="sub-head">통화쌍</h3>
+      <div className="scroll-x"><table><thead><tr><th>코드</th><th>통화쌍</th><th className="r">현재 환율</th><th>기준 통화</th></tr></thead><tbody>{(exchange.currency_pairs ?? []).map((pair) => <tr key={pair.code}><td className="mono">{pair.code}</td><td>{pair.name}</td><td className="r mono">{number(pair.price)}</td><td className="mono">{pair.quote_currency || "—"}</td></tr>)}</tbody></table>{!exchange.currency_pairs?.length && <p className="empty">활성 통화쌍이 없습니다.</p>}</div>
+    </Card>}
+
+    {exchange && exchange.exchange_id !== "CURRENCY" && <Card title={`${exchange.exchange_id} 거래소`} caption={<>{STATUS[exchange.status] ?? exchange.status}{exchange.reason ? ` · ${exchange.reason}` : ""}{exchange.resume_epoch ? ` · 자동 재개 ${date(exchange.resume_epoch)}` : ""} · 지수 {number(exchange.index_value)} · 활성 상품 {number(exchange.products)}개</>}
       actions={<><button className="soft danger" type="button" disabled={busy || exchange.exchange_id === "CURRENCY"} onClick={() => act(exchange.exchange_id, { action: "delete" }, `${exchange.exchange_id} 거래소를 삭제할까요? 상장·연동 상품이 있으면 거부됩니다.`)}>거래소 삭제</button><button className="soft" type="button" onClick={() => setSelected("")}>닫기</button></>}>
       <h3 className="sub-head">거래 상태</h3>
       <div className="actions">
@@ -81,7 +96,7 @@ export function ExchangesPage({ ctx }: { ctx: Ctx }) {
       <div className="scroll-x"><table><thead><tr><th>종목</th><th>이름</th><th className="r">기준 가격</th><th className="r">주식 수</th></tr></thead><tbody>{exchange.components.map((item) => <tr key={item.company_code}><td className="mono">{item.company_code}</td><td>{show(item.name)}</td><td className="r mono">{number(item.previous_price)}</td><td className="r mono">{number(item.total_shares)}</td></tr>)}</tbody></table>{!exchange.components.length && <p className="empty">지수 구성 종목이 없습니다. 이 거래소에 회사 주식을 상장하면 자동으로 포함됩니다.</p>}</div>
     </Card>}
 
-    <Card title="새 거래소" caption="거래소를 만든 뒤 상품 생성 시 거래소ID로 지정하세요.">
+    <Card title="새 거래소" caption="거래소를 만든 뒤 상품 생성 시 거래소ID로 지정하세요. CURRENCY는 시스템 전용 ID입니다.">
       <form className="form-grid" onSubmit={(event) => { event.preventDefault(); act(draft.id.trim(), { action: "create", nationality: draft.nationality }, `${draft.id} 거래소를 ${draft.nationality} 소속으로 만들까요?`); }}>
         <Field label="거래소 ID" hint="공백 없이"><input className="mono" value={draft.id} required onChange={(event) => setDraft({ ...draft, id: event.target.value.toUpperCase() })} /></Field>
         <Field label="국가"><select value={draft.nationality} onChange={(event) => setDraft({ ...draft, nationality: event.target.value })}>{countries.map((country) => <option key={country} value={country}>{country}</option>)}</select></Field>
@@ -89,13 +104,13 @@ export function ExchangesPage({ ctx }: { ctx: Ctx }) {
       </form>
     </Card>
 
-    <Card title="거래소" caption="행을 누르면 거래 상태·국가·지수를 설정합니다. 상장·연동 상품이 없는 거래소는 삭제할 수 있습니다. CURRENCY는 환전·통화쌍 시세용 시스템 거래소라 삭제할 수 없고, 휴장·정지하면 환전이 멈춥니다.">
+    <Card title="거래소" caption="일반 거래소 행을 눌러 거래 상태·국가·지수를 설정합니다. CURRENCY는 환전 시스템 전용으로 상태를 자동 운영합니다.">
       <div className="scroll-x tall"><table><thead><tr><th>거래소</th><th>국가</th><th>상태</th><th>거래 시간</th><th>사유</th><th>자동 재개</th><th className="r">지수</th><th className="r">상품</th><th className="r">지수 종목</th><th /></tr></thead><tbody>
         {visible.map((item) => <tr key={item.exchange_id} className={item.exchange_id === selected ? "clickable selected" : "clickable"} tabIndex={0} onClick={() => setSelected(item.exchange_id)} onKeyDown={(event) => { if (event.key === "Enter") setSelected(item.exchange_id); }}>
-          <td className="mono">{item.exchange_id}{item.exchange_id === "CURRENCY" && <span className="tag inline" title="환전과 통화쌍 시세(CUR_…)가 속한 시스템 거래소입니다. 휴장·정지하면 환전이 멈춥니다.">외환시장</span>}</td><td>{item.nationality}</td>
-          <td><span className={item.status === "open" && !item.trading_halted ? "tag ok" : "tag warn"}>{item.circuit_stage ? `서킷 ${item.circuit_stage}단계` : STATUS[item.status] ?? item.status}</span></td>
-          <td className="mono">{item.hours_label}</td><td>{item.reason || "—"}</td><td>{item.resume_epoch ? date(item.resume_epoch) : "—"}</td>
-          <td className="r mono">{number(item.index_value)}</td><td className="r">{number(item.products)}</td><td className="r">{number(item.components.length)}</td>
+          <td className="mono">{item.exchange_id}{item.exchange_id === "CURRENCY" && <span className="tag inline" title="환전과 통화쌍 시세(CUR_…)를 처리하는 시스템 전용 거래소입니다.">시스템</span>}</td><td>{item.exchange_id === "CURRENCY" ? "—" : item.nationality}</td>
+          <td><span className={item.exchange_id === "CURRENCY" || (item.status === "open" && !item.trading_halted) ? "tag ok" : "tag warn"}>{item.exchange_id === "CURRENCY" ? "시스템 운영" : item.circuit_stage ? `서킷 ${item.circuit_stage}단계` : STATUS[item.status] ?? item.status}</span></td>
+          <td className="mono">{item.exchange_id === "CURRENCY" ? "24시간" : item.hours_label}</td><td>{item.exchange_id === "CURRENCY" ? "자동 관리" : item.reason || "—"}</td><td>{item.exchange_id === "CURRENCY" ? "—" : item.resume_epoch ? date(item.resume_epoch) : "—"}</td>
+          <td className="r mono">{item.exchange_id === "CURRENCY" ? "—" : number(item.index_value)}</td><td className="r">{item.exchange_id === "CURRENCY" ? number(item.currency_pairs?.length ?? 0) : number(item.products)}</td><td className="r">{item.exchange_id === "CURRENCY" ? "—" : number(item.components.length)}</td>
           <td className="row-actions"><button className="soft small danger" disabled={busy || item.exchange_id === "CURRENCY"} title={item.products ? "상장 상품이 있으면 서버가 이유와 함께 거부합니다" : "거래소 삭제"} onClick={(event) => { event.stopPropagation(); act(item.exchange_id, { action: "delete" }, `${item.exchange_id} 거래소를 삭제할까요? 상장·연동된 상품이 있으면 거부됩니다.`); }}>삭제</button></td>
         </tr>)}
       </tbody></table>{!visible.length && <p className="empty">거래소가 없습니다.</p>}</div>

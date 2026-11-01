@@ -85,6 +85,25 @@ npm run dev:site &
 pids+=("$!")
 npm run dev:wl &
 pids+=("$!")
+
+# The API owns the Python data service, which initializes and migrates the
+# shared SQLite database. Start the Discord bot only after that initialization
+# is complete so both processes do not contend for startup DDL/writes.
+print "Python 데이터 서비스와 DB 초기화를 기다립니다."
+python_ready=0
+for attempt in {1..90}; do
+  health="$(curl -fsS --max-time 2 http://127.0.0.1:4312/api/health 2>/dev/null || true)"
+  if [[ "$health" == *'"python":"connected"'* ]]; then
+    python_ready=1
+    break
+  fi
+  sleep 1
+done
+if (( ! python_ready )); then
+  print -u2 "Python 데이터 서비스가 90초 안에 준비되지 않아 전체 실행을 중단합니다. 위의 API 로그를 확인해주세요."
+  exit 1
+fi
+print "Python 데이터 서비스와 DB가 준비됐습니다. Discord 봇을 시작합니다."
 "$PYTHON" "$ROOT/run.py" &
 pids+=("$!")
 

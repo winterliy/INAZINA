@@ -6,7 +6,7 @@ import { Field, Tabs, date, errorText, number, plain, type Ctx } from "./common"
 
 type Account = { code: string; name: string; category: string; protected: boolean };
 type Line = { account: string; amount: Money };
-type Entry = { id: number; epoch: number; description: string; flow: string; manual: boolean; reversalOf: number | null; reversedBy: number | null; lines: Line[] };
+type Entry = { id: number; epoch: number; description: string; flow: string; manual: boolean; estimated: boolean; reversalOf: number | null; reversedBy: number | null; lines: Line[] };
 type Profile = { enabled: boolean; revenue: Money; cogs: Money; sga: Money; depreciation: Money; tax_percent: string; start_period: string };
 type Journal = { company: string; period: string; currency: string; places: number; accounts: Account[]; entries: Entry[]; profile: Profile | null; closed: string[] };
 type Row = { account: string; side: "debit" | "credit"; amount: string };
@@ -97,6 +97,8 @@ export function CompanyLedger({ code, ctx, onChanged }: { code: string; ctx: Ctx
     <Tabs label="재무 수정" value={tab} onChange={setTab} options={[["entry", "수정 분개"], ["history", "분개 내역", journal?.entries.length], ["operating", "월간 영업 설정"], ["close", "결산", journal?.closed.length]]} />
 
     {tab === "entry" && <form className="ledger-form" onSubmit={post}>
+      <div className="organization-form-row"><p className="hint">추정치는 실제 공시가 아닌 업종 기반 가정이며, 현금 잔액을 변경하지 않습니다.</p>
+        <button type="button" className="soft" disabled={busy || period !== thisMonth()} onClick={() => act({ action: "estimate" }, `${code} ${period}의 업종 기반 재무 추정치를 채울까요? 기존 계정은 보존되고 추정 분개 하나가 추가됩니다.`)}>이번 달 추정 채우기</button></div>
       <div className="form-grid">
         <Field label="거래 설명" wide><input required maxLength={300} value={description} onChange={(event) => setDescription(event.target.value)} placeholder="예: 3분기 외상매출 인식" /></Field>
         <Field label="현금흐름 구분" hint={touchesCash ? "법인 현금이 움직이면 영업·투자·재무 중 하나가 필요합니다" : undefined}><select value={flow} onChange={(event) => setFlow(event.target.value)}>{FLOW.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
@@ -115,10 +117,10 @@ export function CompanyLedger({ code, ctx, onChanged }: { code: string; ctx: Ctx
     {tab === "history" && <div className="scroll-x tall"><table><thead><tr><th>#</th><th>시각</th><th>설명</th><th>분개</th><th>현금흐름</th><th /></tr></thead><tbody>
       {(journal?.entries ?? []).map((entry) => <tr key={entry.id} className={entry.reversedBy ? "muted" : undefined}>
         <td className="mono">#{entry.id}</td><td>{date(entry.epoch)}</td>
-        <td>{entry.description}{!entry.manual && <span className="tag inline">자동</span>}{entry.reversalOf && <span className="tag inline">#{entry.reversalOf} 정정</span>}{entry.reversedBy && <span className="tag warn inline">#{entry.reversedBy}로 정정됨</span>}</td>
+        <td>{entry.description}{entry.estimated ? <span className="tag warn inline">추정</span> : !entry.manual && <span className="tag inline">자동</span>}{entry.reversalOf && <span className="tag inline">#{entry.reversalOf} 정정</span>}{entry.reversedBy && <span className="tag warn inline">#{entry.reversedBy}로 정정됨</span>}</td>
         <td><ul className="ledger-entry">{entry.lines.map((line, index) => <li key={index}><span>{moneyCompare(line.amount, 0) > 0 ? "차" : "대"}</span>{name(line.account)}<b className="mono">{money(exactMoney(line.amount).replace(/^-/, ""))}</b></li>)}</ul></td>
         <td>{FLOW_NAME[entry.flow] ?? entry.flow}</td>
-        <td>{entry.manual && !entry.reversedBy && !entry.reversalOf && <button type="button" className="soft small" disabled={busy || journal?.closed.includes(journal.period)} onClick={() => reverse(entry)}>정정</button>}</td>
+        <td>{(entry.manual || entry.estimated) && !entry.reversedBy && !entry.reversalOf && <button type="button" className="soft small" disabled={busy || journal?.closed.includes(journal.period)} onClick={() => reverse(entry)}>정정</button>}</td>
       </tr>)}
     </tbody></table>{journal && !journal.entries.length && <p className="empty">{journal.period}에 기록된 분개가 없습니다.</p>}</div>}
 
