@@ -119,63 +119,91 @@ class OrganizationManager:
                 "depth": 0, "direct": True,
             }
             if voting_ratio > Decimal("0.5"):
-                roots.append((code, equity_ratio, voting_ratio, frozenset({code})))
+                controlled_paths = {user_id: (Decimal(1), Decimal(1)),
+                                    company_accounts.get(code): (equity_ratio, voting_ratio)}
+                controlled_paths.pop(None, None)
+                roots.append((code, controlled_paths, frozenset({code})))
 
-        # Expand only majority-controlled companies. Resolve all share classes via
-        # the issuance map, while keeping each path separate until its contribution
-        # is added to the corresponding visual edge.
-        for depth in range(1, max_depth + 1):
-            next_roots = []
-            for parent_code, root_equity, root_votes, ancestry in roots:
-                parent_account = company_accounts.get(parent_code)
-                if not parent_account:
-                    continue
-                held_codes = set()
-                for (code,) in conn.execute(
+        # A controlled group can hold a majority through several of its members.
+        # Keep each direct block visible, then expand the issuer when the group's
+        # combined voting rights exceed half of the outstanding vote.
+        visited_states = set()
+
+        def expand_group(controlled_code, controlled_paths, ancestry, depth):
+            nonlocal truncated
+            state = (controlled_code, tuple(sorted(controlled_paths)))
+            if state in visited_states:
+                return
+            if len(edges) >= 1000:
+                truncated = True
+                return
+            visited_states.add(state)
+            if depth > max_depth:
+                truncated = True
+                return
+            held_codes = set()
+            for holder in controlled_paths:
+                for (issuer,) in conn.execute(
                     "SELECT DISTINCT s.organization_code FROM user_assets a "
-                    "JOIN company c ON c.company_code=a.asset_code JOIN share_issuances s ON s.issuance_id=c.share_issuance_id "
-                    "WHERE a.user_id=?", (parent_account,),
+                    "JOIN company c ON c.company_code=a.asset_code "
+                    "JOIN share_issuances s ON s.issuance_id=c.share_issuance_id "
+                    "WHERE a.user_id=?", (holder,),
                 ):
-                    held_codes.add(str(code))
-                candidates = []
-                for code in held_codes:
-                    if code in ancestry:
-                        continue
-                    ratio = ownership(code).get(parent_account)
-                    if not ratio:
-                        continue
-                    equity_ratio, voting_ratio = ratio
-                    if voting_ratio <= Decimal("0.5") or max(equity_ratio, voting_ratio) * 100 < min_percent:
-                        continue
-                    candidates.append((code, equity_ratio, voting_ratio))
-                candidates.sort(key=lambda item: (-item[2], -item[1], item[0]))
-                if len(candidates) > max_children:
+                    held_codes.add(str(issuer))
+            candidates = []
+            for issuer in held_codes - set(ancestry):
+                ratios = ownership(issuer)
+                group_equity = sum((ratios.get(holder, (Decimal(0), Decimal(0)))[0]
+                                    for holder in controlled_paths), Decimal(0))
+                group_votes = sum((ratios.get(holder, (Decimal(0), Decimal(0)))[1]
+                                   for holder in controlled_paths), Decimal(0))
+                if group_votes > Decimal("0.5"):
+                    candidates.append((issuer, ratios, group_equity, group_votes))
+            candidates.sort(key=lambda item: (-item[3], -item[2], item[0]))
+            if len(candidates) > max_children:
+                truncated = True
+            for issuer, ratios, group_equity, group_votes in candidates[:max_children]:
+                if len(edges) >= 1000:
                     truncated = True
-                for code, equity_ratio, voting_ratio in candidates[:max_children]:
-                    if len(edges) >= 1000:
-                        truncated = True
-                        break
-                    org = conn.execute("SELECT name FROM organizations WHERE organization_code=?", (code,)).fetchone()
-                    parent_id, node_id = "company:" + parent_code, "company:" + code
-                    add_node(parent_id, "company", parent_code,
-                             conn.execute("SELECT name FROM organizations WHERE organization_code=?", (parent_code,)).fetchone()[0] or parent_code)
-                    add_node(node_id, "company", code, org[0] if org else code)
+                    return
+                org = conn.execute("SELECT name FROM organizations WHERE organization_code=?", (issuer,)).fetchone()
+                node_id = "company:" + issuer
+                add_node(node_id, "company", issuer, org[0] if org else issuer)
+                child_paths = {}
+                for holder, (path_equity, path_votes) in controlled_paths.items():
+                    equity_ratio, voting_ratio = ratios.get(holder, (Decimal(0), Decimal(0)))
+                    child_paths[holder] = (path_equity, path_votes)
+                    if max(equity_ratio, voting_ratio) * 100 < min_percent or not (equity_ratio or voting_ratio):
+                        continue
+                    parent_code = company_accounts.get(holder)
+                    if parent_code:
+                        parent_id = "company:" + parent_code
+                        parent = conn.execute("SELECT name FROM organizations WHERE organization_code=?", (parent_code,)).fetchone()
+                        add_node(parent_id, "company", parent_code, parent[0] if parent else parent_code)
+                    else:
+                        parent_id = "user:" + holder
+                        user = conn.execute("SELECT nickname FROM users WHERE user_id=?", (holder,)).fetchone()
+                        add_node(parent_id, "user", holder, user[0] if user else holder)
                     edge = edges.setdefault((parent_id, node_id), {
                         "from": parent_id, "to": node_id,
                         "equity_percent": str(equity_ratio * 100), "voting_percent": str(voting_ratio * 100),
                         "root_equity_percent": "0", "root_voting_percent": "0",
                         "depth": depth, "direct": False,
                     })
-                    edge["root_equity_percent"] = str(Decimal(edge["root_equity_percent"]) + root_equity * equity_ratio * 100)
-                    edge["root_voting_percent"] = str(Decimal(edge["root_voting_percent"]) + root_votes * voting_ratio * 100)
-                    next_roots.append((code, root_equity * equity_ratio, root_votes * voting_ratio, ancestry | {code}))
-                if len(edges) >= 1000:
-                    break
-            roots = next_roots
-            if len(edges) >= 1000:
-                break
-            if not roots:
-                break
+                    edge["root_equity_percent"] = str(Decimal(edge["root_equity_percent"]) + path_equity * equity_ratio * 100)
+                    edge["root_voting_percent"] = str(Decimal(edge["root_voting_percent"]) + path_votes * voting_ratio * 100)
+                child_account = company_accounts.get(issuer)
+                if child_account:
+                    child_paths[child_account] = (
+                        sum((path[0] * ratios.get(holder, (Decimal(0), Decimal(0)))[0]
+                             for holder, path in controlled_paths.items()), Decimal(0)),
+                        sum((path[1] * ratios.get(holder, (Decimal(0), Decimal(0)))[1]
+                             for holder, path in controlled_paths.items()), Decimal(0)),
+                    )
+                expand_group(issuer, child_paths, ancestry | {issuer}, depth + 1)
+
+        for code, controlled_paths, ancestry in roots:
+            expand_group(code, controlled_paths, ancestry, 1)
 
         return {"nodes": list(nodes.values()), "edges": sorted(edges.values(), key=lambda edge: (edge["depth"], edge["to"], edge["from"])),
                 "max_depth": max_depth, "truncated": truncated, "root_kind": "user"}

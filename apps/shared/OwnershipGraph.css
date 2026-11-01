@@ -54,12 +54,13 @@
 .ownership-diagram-edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
 .ownership-edge path { fill: none; stroke: var(--ink2); stroke-width: 1.5; opacity: .72; }
 .ownership-diagram-edges marker path { fill: var(--ink2); stroke: none; }
-.ownership-edge text { fill: var(--ink2); stroke: var(--surface); stroke-width: 5px; paint-order: stroke; font: 11px/1.2 var(--font-system); text-anchor: middle; }
 .ownership-edge.cycle path { stroke-dasharray: 5 4; stroke: var(--warn-ink, #a15c00); }
-.ownership-node { position: absolute; display: grid; align-content: center; gap: 4px; width: 228px; min-height: 92px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); box-shadow: 0 4px 14px rgba(0, 0, 0, .08); }
+.ownership-node { position: absolute; display: grid; align-content: center; gap: 4px; box-sizing: border-box; width: 260px; min-height: 144px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); box-shadow: 0 4px 14px rgba(0, 0, 0, .08); }
 .ownership-node.company { border-color: var(--accent); }
 .ownership-node strong { overflow-wrap: anywhere; font-size: 14px; line-height: 1.35; }
 .ownership-node small { color: var(--ink2); font-size: 11px; overflow-wrap: anywhere; }
+.ownership-node-ownerships { display: grid; gap: 2px; min-width: 0; }
+.ownership-node-ownerships small { line-height: 1.3; }
 .ownership-node-kind { color: var(--accent); font-size: 10px; font-weight: 700; }
 .ownership-beneficial { margin-top: 10px; }
 .ownership-diagram :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }

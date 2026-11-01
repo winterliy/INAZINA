@@ -10,8 +10,8 @@ export type OwnershipGraphData = {
 };
 
 const CARD_WIDTH = 280;
-const CARD_HEIGHT = 112;
-const LEVEL_GAP = 228;
+const CARD_HEIGHT = 144;
+const LEVEL_GAP = 252;
 const NODE_GAP = 72;
 
 function percent(value: string | undefined) {
@@ -87,20 +87,14 @@ export function OwnershipGraph({ graph, fullScreen = false }: { graph?: Ownershi
             const x2 = to.x + CARD_WIDTH / 2;
             const y2 = to.y;
             const midY = (y1 + y2) / 2;
-            const peers = incomingByTarget.get(edge.to) ?? [edge];
-            const peerIndex = peers.indexOf(edge);
             const startX = sameLevel ? (forward ? from.x + CARD_WIDTH : from.x) : x1;
             const endX = sameLevel ? (forward ? to.x : to.x + CARD_WIDTH) : x2;
             const sameRowY = from.y + CARD_HEIGHT / 2;
             const path = sameLevel
               ? `M ${startX} ${sameRowY} C ${startX + (endX - startX) * .25} ${sameRowY - 42}, ${startX + (endX - startX) * .75} ${sameRowY - 42}, ${endX} ${sameRowY}`
               : `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`;
-            const labelX = sameLevel ? (startX + endX) / 2 : x1 + (x2 - x1) * 0.72;
-            const labelY = sameLevel ? from.y - 12 : midY - 4 + (peerIndex - (peers.length - 1) / 2) * 14;
-            const label = `${percent(edge.equity_percent)} 경제 · ${percent(edge.voting_percent)} 의결`;
             return <g key={`${edge.from}-${edge.to}-${edge.depth}-${index}`} className={edge.cycle ? "ownership-edge cycle" : "ownership-edge"}>
               <path d={path} markerEnd={`url(#${markerId})`} />
-              <text x={labelX} y={labelY}>{edge.cycle ? "순환 보유 · " : ""}{label}</text>
             </g>;
           })}
         </svg>
@@ -108,10 +102,13 @@ export function OwnershipGraph({ graph, fullScreen = false }: { graph?: Ownershi
           const node = nodeById.get(id)!;
           const point = positions.get(id)!;
           const connections = edges.filter((edge) => edge.from === id);
+          const ownerships = incomingByTarget.get(id) ?? [];
           return <article className={`ownership-node ${node.kind === "user" ? "person" : "company"}`} key={id} style={{ left: point.x, top: point.y }}>
             <span className="ownership-node-kind">{node.kind === "company" ? "법인" : "개인"} · {level + 1}단계</span>
             <strong>{node.name}</strong>
-            <small>{connections.length ? `${connections.length}개 보유 관계` : node.code}</small>
+            {ownerships.length ? <div className="ownership-node-ownerships">{ownerships.map((edge) => <small key={`${edge.from}-${edge.to}`}>
+              {nodeById.get(edge.from)?.name ?? edge.from} · 경제 {percent(edge.equity_percent)} · 의결 {percent(edge.voting_percent)}{edge.cycle ? " · 순환 보유" : ""}
+            </small>)}</div> : <small>{connections.length ? `${connections.length}개 보유 관계` : node.code}</small>}
           </article>;
         }))}
       </div>
