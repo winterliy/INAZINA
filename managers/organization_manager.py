@@ -14,6 +14,172 @@ import time
 
 class OrganizationManager:
     @staticmethod
+    def user_ownership_graph(conn, user_id, max_depth=3, max_children=20, min_percent=0):
+        """Show a user's direct shareholdings and subsidiaries of companies they control.
+
+        Direct positions include every company share class. Descendant expansion is
+        limited to majority-vote control and simple paths, so cross-holdings cannot
+        recurse forever. Root percentages are summed across distinct paths.
+        """
+        from database.user_db import TREASURY_USER_ID
+
+        user_id = str(user_id)
+        max_depth = max(0, min(int(max_depth), 5))
+        max_children = max(1, min(int(max_children), 100))
+        min_percent = Decimal(str(min_percent))
+        accounts = {str(row[1]): str(row[0]) for row in conn.execute(
+            "SELECT company_code,user_id FROM company_accounts"
+        )}
+        company_accounts = {company: account for account, company in accounts.items()}
+        nodes = {}
+        edges = {}
+        owner_cache = {}
+        truncated = False
+
+        def add_node(node_id, kind, code, name):
+            nodes[node_id] = {"id": node_id, "kind": kind, "code": code, "name": str(name or code)}
+
+        def ownership(code):
+            if code in owner_cache:
+                return owner_cache[code]
+            treasury_ids = {str(TREASURY_USER_ID), company_accounts.get(code)}
+            treasury_ids.discard(None)
+            issues = conn.execute(
+                "SELECT s.legacy_product_code,c.total_shares,s.voting_rights_per_share,"
+                "s.economic_interest_per_share FROM organization_share_issuances s "
+                "JOIN company c ON c.company_code=s.legacy_product_code "
+                "WHERE s.organization_code=?", (code,),
+            ).fetchall()
+            totals = [Decimal(0), Decimal(0)]
+            owners = defaultdict(lambda: [Decimal(0), Decimal(0)])
+            for issue_code, supply_text, vote_text, equity_text in issues:
+                try:
+                    supply, votes, equity = map(Decimal, (str(supply_text or 0), str(vote_text or 0), str(equity_text or 0)))
+                except InvalidOperation:
+                    continue
+                if not all(value.is_finite() for value in (supply, votes, equity)) or supply <= 0 or votes < 0 or equity < 0:
+                    continue
+                holdings = defaultdict(Decimal)
+                for holder, quantity in conn.execute(
+                    "SELECT user_id,quantity FROM user_assets WHERE asset_code=?", (str(issue_code),)
+                ):
+                    try:
+                        amount = Decimal(str(quantity or 0))
+                    except InvalidOperation:
+                        continue
+                    if amount.is_finite() and amount > 0:
+                        holdings[str(holder)] += amount
+                own = sum((holdings.get(holder, Decimal(0)) for holder in treasury_ids), Decimal(0))
+                outstanding = max(Decimal(0), supply - own)
+                totals[0] += outstanding * equity
+                totals[1] += outstanding * votes
+                for holder, quantity in holdings.items():
+                    if holder in treasury_ids:
+                        continue
+                    owners[holder][0] += quantity * equity
+                    owners[holder][1] += quantity * votes
+            ratios = {holder: (values[0] / totals[0] if totals[0] else Decimal(0),
+                               values[1] / totals[1] if totals[1] else Decimal(0))
+                      for holder, values in owners.items()}
+            owner_cache[code] = ratios
+            return ratios
+
+        user = conn.execute("SELECT nickname FROM users WHERE user_id=?", (user_id,)).fetchone()
+        root_id = "user:" + user_id
+        add_node(root_id, "user", user_id, user[0] if user else user_id)
+        direct_orgs = set()
+        for (code,) in conn.execute(
+            "SELECT DISTINCT s.organization_code FROM user_assets a "
+            "JOIN organization_share_issuances s ON s.legacy_product_code=a.asset_code "
+            "WHERE a.user_id=?", (user_id,),
+        ):
+            direct_orgs.add(str(code))
+        root_candidates = []
+        for code in direct_orgs:
+            ratios = ownership(code).get(user_id)
+            if not ratios:
+                continue
+            equity_ratio, voting_ratio = ratios
+            if max(equity_ratio, voting_ratio) * 100 < min_percent:
+                continue
+            root_candidates.append((code, equity_ratio, voting_ratio))
+        root_candidates.sort(key=lambda item: (-max(item[1], item[2]), -item[2], item[0]))
+        roots = []
+        if len(root_candidates) > max_children:
+            truncated = True
+        for code, equity_ratio, voting_ratio in root_candidates[:max_children]:
+            org = conn.execute("SELECT name FROM organizations WHERE organization_code=?", (code,)).fetchone()
+            node_id = "company:" + code
+            add_node(node_id, "company", code, org[0] if org else code)
+            edges[(root_id, node_id)] = {
+                "from": root_id, "to": node_id,
+                "equity_percent": str(equity_ratio * 100), "voting_percent": str(voting_ratio * 100),
+                "root_equity_percent": str(equity_ratio * 100), "root_voting_percent": str(voting_ratio * 100),
+                "depth": 0, "direct": True,
+            }
+            if voting_ratio > Decimal("0.5"):
+                roots.append((code, equity_ratio, voting_ratio, frozenset({code})))
+
+        # Expand only majority-controlled companies. Resolve all share classes via
+        # the issuance map, while keeping each path separate until its contribution
+        # is added to the corresponding visual edge.
+        for depth in range(1, max_depth + 1):
+            next_roots = []
+            for parent_code, root_equity, root_votes, ancestry in roots:
+                parent_account = company_accounts.get(parent_code)
+                if not parent_account:
+                    continue
+                held_codes = set()
+                for (code,) in conn.execute(
+                    "SELECT DISTINCT s.organization_code FROM user_assets a "
+                    "JOIN organization_share_issuances s ON s.legacy_product_code=a.asset_code "
+                    "WHERE a.user_id=?", (parent_account,),
+                ):
+                    held_codes.add(str(code))
+                candidates = []
+                for code in held_codes:
+                    if code in ancestry:
+                        continue
+                    ratio = ownership(code).get(parent_account)
+                    if not ratio:
+                        continue
+                    equity_ratio, voting_ratio = ratio
+                    if voting_ratio <= Decimal("0.5") or max(equity_ratio, voting_ratio) * 100 < min_percent:
+                        continue
+                    candidates.append((code, equity_ratio, voting_ratio))
+                candidates.sort(key=lambda item: (-item[2], -item[1], item[0]))
+                if len(candidates) > max_children:
+                    truncated = True
+                for code, equity_ratio, voting_ratio in candidates[:max_children]:
+                    if len(edges) >= 1000:
+                        truncated = True
+                        break
+                    org = conn.execute("SELECT name FROM organizations WHERE organization_code=?", (code,)).fetchone()
+                    parent_id, node_id = "company:" + parent_code, "company:" + code
+                    add_node(parent_id, "company", parent_code,
+                             conn.execute("SELECT name FROM organizations WHERE organization_code=?", (parent_code,)).fetchone()[0] or parent_code)
+                    add_node(node_id, "company", code, org[0] if org else code)
+                    edge = edges.setdefault((parent_id, node_id), {
+                        "from": parent_id, "to": node_id,
+                        "equity_percent": str(equity_ratio * 100), "voting_percent": str(voting_ratio * 100),
+                        "root_equity_percent": "0", "root_voting_percent": "0",
+                        "depth": depth, "direct": False,
+                    })
+                    edge["root_equity_percent"] = str(Decimal(edge["root_equity_percent"]) + root_equity * equity_ratio * 100)
+                    edge["root_voting_percent"] = str(Decimal(edge["root_voting_percent"]) + root_votes * voting_ratio * 100)
+                    next_roots.append((code, root_equity * equity_ratio, root_votes * voting_ratio, ancestry | {code}))
+                if len(edges) >= 1000:
+                    break
+            roots = next_roots
+            if len(edges) >= 1000:
+                break
+            if not roots:
+                break
+
+        return {"nodes": list(nodes.values()), "edges": sorted(edges.values(), key=lambda edge: (edge["depth"], edge["to"], edge["from"])),
+                "max_depth": max_depth, "truncated": truncated, "root_kind": "user"}
+
+    @staticmethod
     def ownership_graph(conn, organization_code, max_depth=3, max_children=20, min_percent=0):
         """Build a bounded, read-only direct/indirect ownership graph.
 
@@ -33,13 +199,19 @@ class OrganizationManager:
             "SELECT company_code,name FROM company WHERE share_class='common'"
         )}
         nodes = {}
-        edges = []
-        expanded = set()
+        edge_map = {}
+        attributions = {}
+        expansion_count = 0
+        truncated = False
 
         def expand(code, depth, ancestry, path_equity=Decimal(1), path_votes=Decimal(1)):
-            if code in expanded or depth > max_depth:
+            nonlocal expansion_count, truncated
+            if code in ancestry or depth > max_depth:
                 return
-            expanded.add(code)
+            if expansion_count >= 1000:
+                truncated = True
+                return
+            expansion_count += 1
             org = conn.execute(
                 "SELECT name FROM company WHERE company_code=? AND share_class='common'", (code,)
             ).fetchone()
@@ -67,20 +239,20 @@ class OrganizationManager:
                     continue
                 if not supply.is_finite() or supply <= 0 or not vote_per_share.is_finite() or vote_per_share < 0 or not equity_per_share.is_finite() or equity_per_share < 0:
                     continue
-                holdings = conn.execute(
-                    "SELECT user_id,SUM(quantity) FROM user_assets WHERE asset_code=? GROUP BY user_id",
+                holdings = defaultdict(Decimal)
+                for holder, quantity in conn.execute(
+                    "SELECT user_id,quantity FROM user_assets WHERE asset_code=?",
                     (str(issue_code),),
-                ).fetchall()
-                treasury_ids = {TREASURY_USER_ID} | {user_id for user_id, issuer in accounts.items() if issuer == code}
-                own_treasury = sum((Decimal(str(item[1] or 0)) for item in holdings if str(item[0]) in treasury_ids), Decimal(0))
+                ):
+                    holdings[str(holder)] += Decimal(str(quantity or 0))
+                treasury_ids = {str(TREASURY_USER_ID)} | {user_id for user_id, issuer in accounts.items() if issuer == code}
+                own_treasury = sum((quantity for holder, quantity in holdings.items() if holder in treasury_ids), Decimal(0))
                 outstanding = max(Decimal(0), supply - own_treasury)
                 equity_total += outstanding * equity_per_share
                 votes_total += outstanding * vote_per_share
-                for holder, quantity in holdings:
-                    holder = str(holder)
+                for holder, quantity in holdings.items():
                     if holder in treasury_ids:
                         continue
-                    quantity = Decimal(str(quantity or 0))
                     owner_amounts[holder][0] += quantity * equity_per_share
                     owner_amounts[holder][1] += quantity * vote_per_share
 
@@ -102,23 +274,42 @@ class OrganizationManager:
                                       "name": str(user[0] or holder) if user else holder}
                 display_candidates.append((node_id, holder, equity_ratio, votes_ratio, parent_code))
             display_candidates.sort(key=lambda item: (item[0].startswith("user:"), -max(item[2], item[3]), item[0]))
+            if len(display_candidates) > max_children:
+                truncated = True
             for node_id, holder, equity_ratio, votes_ratio, parent_code in display_candidates[:max_children]:
                 root_equity = path_equity * equity_ratio
                 root_votes = path_votes * votes_ratio
-                edges.append({"from": node_id, "to": "company:" + code,
-                              "equity_percent": str(equity_ratio * 100),
-                              "voting_percent": str(votes_ratio * 100),
-                              "root_equity_percent": str(root_equity * 100),
-                              "root_voting_percent": str(root_votes * 100),
-                              "depth": depth,
-                              "direct": True})
-                if parent_code and parent_code not in ancestry and depth < max_depth:
-                    expand(parent_code, depth + 1, ancestry | {code}, equity_ratio, votes_ratio)
+                key = (node_id, "company:" + code)
+                edge = edge_map.setdefault(key, {
+                    "from": node_id, "to": "company:" + code,
+                    "equity_percent": str(equity_ratio * 100),
+                    "voting_percent": str(votes_ratio * 100),
+                    "root_equity_percent": "0", "root_voting_percent": "0",
+                    "depth": depth, "direct": depth == 0,
+                    "cycle": bool(parent_code and parent_code in ancestry),
+                })
+                edge["root_equity_percent"] = str(Decimal(edge["root_equity_percent"]) + root_equity * 100)
+                edge["root_voting_percent"] = str(Decimal(edge["root_voting_percent"]) + root_votes * 100)
+                can_expand = parent_code and parent_code not in ancestry and depth < max_depth
+                if can_expand:
+                    expand(parent_code, depth + 1, ancestry | {code}, root_equity, root_votes)
+                else:
+                    if parent_code and parent_code not in ancestry and depth >= max_depth:
+                        truncated = True
+                    owner = attributions.setdefault(node_id, {
+                        "id": node_id, "kind": "company" if parent_code else "user",
+                        "code": parent_code or holder, "name": nodes[node_id]["name"],
+                        "root_equity_percent": "0", "root_voting_percent": "0",
+                    })
+                    owner["root_equity_percent"] = str(Decimal(owner["root_equity_percent"]) + root_equity * 100)
+                    owner["root_voting_percent"] = str(Decimal(owner["root_voting_percent"]) + root_votes * 100)
 
         expand(root, 0, set())
-        edges.sort(key=lambda edge: (edge["to"], edge["from"]))
+        edges = sorted(edge_map.values(), key=lambda edge: (edge["to"], edge["from"]))
         return {"nodes": list(nodes.values()), "edges": edges, "max_depth": max_depth,
-                "truncated": len(edges) >= max_children * max(1, len(expanded))}
+                "truncated": truncated, "root_kind": "organization",
+                "beneficial_owners": sorted(attributions.values(),
+                    key=lambda owner: (-max(Decimal(owner["root_equity_percent"]), Decimal(owner["root_voting_percent"])), owner["id"]))}
 
     @staticmethod
     def classify_size(metrics, rules, mode="any"):

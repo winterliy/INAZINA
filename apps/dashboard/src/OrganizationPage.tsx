@@ -8,7 +8,8 @@ type Size = "sme" | "mid_market" | "large" | null;
 type Issuance = { legacy_product_code: string; class_name: string; share_class: string; voting_rights_per_share: string; economic_interest_per_share: string; total_shares: string; share_price: string; status: string; dividend_mode: string; dividend_per_share: string; dividend_percent: string; dividend_priority: number; dividend_cycle_seconds: number; dividend_is_active: number; cumulative_dividend: number; liquidation_value_per_share: string; dividend_funding: string };
 type Org = { organization_code: string; name: string; industry: string; purpose: string; ownership_type: string; public_enterprise_type: string; size_override: Size; auto_size: Size; pending_size: Size; size_effective_epoch: number | null; display_size: Size; metrics: { revenue: string | null; assets: string | null; employees: number | null }; issuances: Issuance[] };
 type Group = { group_id: number; name: string; representative_organization_code: string | null; description: string; members: string[] };
-type Graph = { nodes: { id: string; kind: string; code: string; name: string }[]; edges: { from: string; to: string; equity_percent: string; voting_percent: string; root_equity_percent: string; root_voting_percent: string; depth: number }[] };
+export type OwnershipGraphData = { nodes: { id: string; kind: string; code: string; name: string }[]; edges: { from: string; to: string; equity_percent: string; voting_percent: string; root_equity_percent: string; root_voting_percent: string; depth: number; direct?: boolean; cycle?: boolean }[]; beneficial_owners?: { id: string; name: string; root_equity_percent: string; root_voting_percent: string }[]; truncated?: boolean; root_kind?: "user" | "organization" };
+type Graph = OwnershipGraphData;
 type Directory = { organizations: Org[]; groups: Group[]; graph?: Graph; sizeSettings: { announcement_seconds: number; rules: { mode?: string; thresholds?: Record<string, [string, string]> } } };
 
 const SIZE: Record<Exclude<Size, null>, string> = { sme: "중소기업", mid_market: "중견기업", large: "대기업" };
@@ -168,15 +169,17 @@ function IssuanceEditor({ issue, saving, onSave }: { issue: Issuance; saving: bo
   </form>;
 }
 
-function OwnershipGraph({ graph }: { graph?: Graph }) {
+export function OwnershipGraph({ graph }: { graph?: OwnershipGraphData }) {
   if (!graph?.nodes.length) return <p className="empty">지분 자료가 없거나 표시할 주주가 없습니다.</p>;
   const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
   const levels = new Map<string, number>();
-  const root = graph.nodes.find((node) => node.kind === "company" && graph.edges.some((edge) => edge.to === node.id));
+  const userRoot = graph.root_kind === "user" ? graph.nodes.find((node) => node.kind === "user") : undefined;
+  const root = userRoot ?? graph.nodes.find((node) => node.kind === "company" && graph.edges.some((edge) => edge.to === node.id));
   if (root) levels.set(root.id, 0);
   for (let depth = 0; depth < 5; depth += 1) {
     for (const edge of graph.edges) {
-      if (levels.has(edge.to) && !levels.has(edge.from)) levels.set(edge.from, (levels.get(edge.to) ?? 0) + 1);
+      if (userRoot && levels.has(edge.from) && !levels.has(edge.to)) levels.set(edge.to, (levels.get(edge.from) ?? 0) + 1);
+      else if (!userRoot && levels.has(edge.to) && !levels.has(edge.from)) levels.set(edge.from, (levels.get(edge.to) ?? 0) + 1);
     }
   }
   const groups = new Map<number, string[]>();
@@ -185,9 +188,14 @@ function OwnershipGraph({ graph }: { graph?: Graph }) {
     groups.set(level, [...(groups.get(level) ?? []), node.id]);
   }
   return <div className="organization-graph" role="list" aria-label="주식 보유 관계">
+    {graph.truncated && <p className="hint">표시 한도에 따라 일부 소수 지분 또는 하위 기업을 생략했습니다.</p>}
+    {!!graph.beneficial_owners?.length && <details className="help"><summary>경로 말단 보유자 합산 (참고치)</summary>
+      <p className="hint">최대 5단계 단순 경로 기여를 합산했습니다. 순환 출자에 대한 최종 지배 판정은 아닙니다.</p>
+      <ul>{graph.beneficial_owners.map((owner) => <li key={owner.id}>{owner.name} · 경제 {Number(owner.root_equity_percent).toFixed(2)}% · 의결 {Number(owner.root_voting_percent).toFixed(2)}%</li>)}</ul>
+    </details>}
     {[...groups.entries()].sort(([a], [b]) => a - b).map(([level, ids]) => <div className="organization-graph-level" key={level}>
       {ids.map((id) => <article className="organization-node" key={id} role="listitem"><strong>{nodes.get(id)?.name ?? id}</strong><small>{nodes.get(id)?.kind === "company" ? "법인" : "사용자"}</small>
-        {graph.edges.filter((edge) => edge.from === id).map((edge) => <p key={`${edge.to}-${edge.depth}`}>{edge.depth === 0 ? "직접" : "경로 합산"} · 경제 {Number(edge.depth === 0 ? edge.equity_percent : edge.root_equity_percent).toFixed(2)}% · 의결 {Number(edge.depth === 0 ? edge.voting_percent : edge.root_voting_percent).toFixed(2)}%</p>)}
+        {graph.edges.filter((edge) => edge.from === id).map((edge) => <p key={`${edge.to}-${edge.depth}`}>{edge.cycle ? "순환 보유" : edge.depth === 0 ? "직접" : "경로 합산"} · 경제 {Number(edge.depth === 0 ? edge.equity_percent : edge.root_equity_percent).toFixed(2)}% · 의결 {Number(edge.depth === 0 ? edge.voting_percent : edge.root_voting_percent).toFixed(2)}%</p>)}
       </article>)}
     </div>)}
   </div>;

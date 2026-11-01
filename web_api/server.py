@@ -3693,6 +3693,15 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     self.send_json(200, {"user": user})
+            elif path == "/internal/me/ownership-graph":
+                user_id = internal_user_id(self)
+                if not identity(user_id):
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    from managers.organization_manager import OrganizationManager
+                    with connect_db(timeout=5) as connection:
+                        graph = OrganizationManager.user_ownership_graph(connection, user_id)
+                    self.send_json(200, {"graph": graph})
             elif path in {"/internal/board/posts", "/internal/board/boards"} or path.startswith(("/internal/board/posts/", "/internal/board/files/")):
                 viewer = identity(internal_user_id(self)) if internal_user_id(self) else None
                 try:

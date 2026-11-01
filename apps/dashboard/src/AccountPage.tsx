@@ -6,6 +6,7 @@ import { Card, Field, date, errorText, number, type Ctx } from "./common";
 import { IdentityCard } from "./IdentityCard";
 import { AuditHeatmap } from "./ActivityTiles";
 import { LoginHistoryCard, type LoginEvent } from "./LoginHistoryCard";
+import { OwnershipGraph, type OwnershipGraphData } from "./OrganizationPage";
 import "./AccountWithdrawal.css";
 
 type Financial = { company: string; periods: string[]; report: { period: string; currency: string; places: number; summary: { assets: Money; liabilities: Money; equity: Money }; income: Record<string, Money>; checks: { balance_sheet: boolean } } };
@@ -52,6 +53,14 @@ export function AccountPage({ ctx, user, onLogout }: { ctx: Ctx; user: ApiUser; 
   const [password, setPassword] = useState("");
   const admin = user.role === "admin";
   const [logins, setLogins] = useState<LoginEvent[]>([]);
+  const [ownershipGraph, setOwnershipGraph] = useState<OwnershipGraphData>();
+
+  useEffect(() => {
+    if (admin) return;
+    api<{ graph: OwnershipGraphData }>("/api/me/ownership-graph")
+      .then((result) => setOwnershipGraph(result.graph))
+      .catch((cause) => say(errorText(cause, "보유 주식 구조를 불러오지 못했습니다."), true));
+  }, [admin, say, user.userId]);
 
   useEffect(() => {
     api<{ htsId: string | null }>("/api/hts/account").then((account) => { setLoginId(account.htsId); setInput(account.htsId ?? ""); })
@@ -97,6 +106,9 @@ export function AccountPage({ ctx, user, onLogout }: { ctx: Ctx; user: ApiUser; 
         <div className="actions"><a className="btn primary" href={appUrl("hts")}>나루 열기</a><a className="soft" href={appUrl("hts", "/transfer")}>송금</a><a className="soft" href={appUrl("hts", "/bank")}>은행</a><a className="soft" href={appUrl("hts", "/board")}>게시판</a></div>
       </Card>}
     </div>
+    {!admin && <Card title="보유 주식과 지배 구조" caption="직접 보유한 주식과 의결권 과반으로 지배하는 기업의 자회사를 표시합니다. 간접 지분은 각 지배 경로별로 계산합니다.">
+      <OwnershipGraph graph={ownershipGraph} />
+    </Card>}
     {user.role === "company" && <OwnFinancial say={say} />}
     {admin && <OwnHeatmap userId={user.userId} />}
     {admin && <LoginHistoryCard ctx={ctx} userId={user.userId} onLoaded={setLogins} />}

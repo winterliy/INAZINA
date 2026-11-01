@@ -611,6 +611,11 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     send(response, 200, { user });
     return;
   }
+  if (request.method === "GET" && url.pathname === "/api/me/ownership-graph") {
+    const result = await internalGet("/internal/me/ownership-graph", principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
   if (request.method === "POST" && url.pathname === "/api/admin/login-as") {
     if (user.role !== "admin" || principal.by) {
       send(response, 403, { error: "admin_required" });
