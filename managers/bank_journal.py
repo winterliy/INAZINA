@@ -162,7 +162,13 @@ class BankJournal:
             try:
                 places = currency_precision(conn, currency)
             except ValueError:
-                entry["invalid"] += 1
+                # An unknown currency cannot be scaled; report it instead of dropping the balance.
+                results.append({
+                    "issuer": str(issuer), "currency_code": currency,
+                    "account_units": account_units.get(currency, 0), "journal_units": journal_units.get(currency, 0),
+                    "difference_units": account_units.get(currency, 0) - journal_units.get(currency, 0),
+                    "decimal_places": 0, "status": "invalid_currency",
+                })
                 continue
             actual = account_units.get(currency, 0)
             posted = journal_units.get(currency, 0)
