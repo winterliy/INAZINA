@@ -76,12 +76,12 @@ def directory(conn, organization_code=None, now=None, min_percent=1):
         item["display_size"] = OrganizationManager.displayed_size(row)
         item["metrics"] = metrics
         issues = conn.execute(
-            "SELECT s.legacy_product_code,s.class_name,s.share_class,s.voting_rights_per_share,"
+            "SELECT s.issuance_id,s.legacy_product_code,s.class_name,s.share_class,s.voting_rights_per_share,"
             "s.economic_interest_per_share,s.rights_json,c.total_shares,c.share_price,c.status,"
             "c.dividend_mode,c.dividend_per_share,c.dividend_percent,c.dividend_priority,"
             "c.dividend_cycle_seconds,c.dividend_is_active,c.cumulative_dividend,"
             "c.liquidation_value_per_share,c.dividend_funding "
-            "FROM organization_share_issuances s JOIN company c ON c.company_code=s.legacy_product_code "
+            "FROM share_issuances s JOIN company c ON c.share_issuance_id=s.issuance_id "
             "WHERE s.organization_code=? ORDER BY s.legacy_product_code", (row["organization_code"],)
         ).fetchall()
         item["issuances"] = [dict(issue) for issue in issues]
@@ -222,7 +222,7 @@ def action(conn, payload, actor, now=None):
                  str(TREASURY_USER_ID), parent[2], parent[3], organization_code),
             )
             conn.execute(
-                "INSERT INTO organization_share_issuances "
+                "INSERT INTO share_issuances "
                 "(legacy_product_code,organization_code,class_name,share_class,voting_rights_per_share,"
                 "economic_interest_per_share,updated_epoch) VALUES (?,?,?,'preferred',?,?,?) "
                 "ON CONFLICT(legacy_product_code) DO UPDATE SET class_name=excluded.class_name,"
@@ -267,16 +267,16 @@ def action(conn, payload, actor, now=None):
                 or votes > Decimal("1e12") or equity <= 0 or equity > Decimal("1e12")):
             raise ValueError("의결권은 0~1조, 경제적 지분계수는 0 초과~1조 범위여야 합니다.")
         cur = conn.execute(
-            "UPDATE organization_share_issuances SET voting_rights_per_share=?,economic_interest_per_share=?,"
-            "updated_epoch=? WHERE legacy_product_code=?",
-            (str(votes), str(equity), now, code),
+            "UPDATE share_issuances SET voting_rights_per_share=?,economic_interest_per_share=?,"
+            "updated_epoch=? WHERE issuance_id=COALESCE(?,(SELECT issuance_id FROM share_issuances WHERE legacy_product_code=?))",
+            (str(votes), str(equity), now, payload.get("issuance_id"), code),
         )
         if cur.rowcount != 1:
             raise ValueError("주식 발행 종류를 찾을 수 없습니다.")
         if class_name is not None:
             conn.execute(
-                "UPDATE organization_share_issuances SET class_name=?,updated_epoch=? WHERE legacy_product_code=?",
-                (class_name, now, code),
+                "UPDATE share_issuances SET class_name=?,updated_epoch=? WHERE issuance_id=COALESCE(?,(SELECT issuance_id FROM share_issuances WHERE legacy_product_code=?))",
+                (class_name, now, payload.get("issuance_id"), code),
             )
         company = conn.execute(
             "SELECT share_class,dividend_priority,dividend_mode,dividend_per_share,dividend_percent,"

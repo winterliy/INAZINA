@@ -47,8 +47,8 @@ class OrganizationManager:
             issuer_treasuries.discard(None)
             issues = conn.execute(
                 "SELECT s.legacy_product_code,c.total_shares,s.voting_rights_per_share,"
-                "s.economic_interest_per_share FROM organization_share_issuances s "
-                "JOIN company c ON c.company_code=s.legacy_product_code "
+                "s.economic_interest_per_share FROM share_issuances s "
+                "JOIN company c ON c.share_issuance_id=s.issuance_id "
                 "WHERE s.organization_code=?", (code,),
             ).fetchall()
             totals = [Decimal(0), Decimal(0)]
@@ -91,7 +91,7 @@ class OrganizationManager:
         direct_orgs = set()
         for (code,) in conn.execute(
             "SELECT DISTINCT s.organization_code FROM user_assets a "
-            "JOIN organization_share_issuances s ON s.legacy_product_code=a.asset_code "
+            "JOIN share_issuances s ON s.legacy_product_code=a.asset_code "
             "WHERE a.user_id=?", (user_id,),
         ):
             direct_orgs.add(str(code))
@@ -133,7 +133,7 @@ class OrganizationManager:
                 held_codes = set()
                 for (code,) in conn.execute(
                     "SELECT DISTINCT s.organization_code FROM user_assets a "
-                    "JOIN organization_share_issuances s ON s.legacy_product_code=a.asset_code "
+                    "JOIN share_issuances s ON s.legacy_product_code=a.asset_code "
                     "WHERE a.user_id=?", (parent_account,),
                 ):
                     held_codes.add(str(code))
@@ -223,7 +223,7 @@ class OrganizationManager:
             issues = conn.execute(
                 "SELECT c.company_code,c.name,c.total_shares,c.share_class,"
                 "COALESCE(s.voting_rights_per_share,'1'),COALESCE(s.economic_interest_per_share,'1') "
-                "FROM company c LEFT JOIN organization_share_issuances s ON s.legacy_product_code=c.company_code "
+                "FROM company c LEFT JOIN share_issuances s ON s.issuance_id=c.share_issuance_id "
                 "WHERE (c.company_code=? AND COALESCE(c.share_class,'common')='common') "
                 "OR (c.parent_company_code=? AND c.share_class='preferred') ORDER BY c.company_code",
                 (code, code),

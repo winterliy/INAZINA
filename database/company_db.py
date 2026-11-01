@@ -52,6 +52,8 @@ class CompanyDB(DBManager):
             "mean_reversion": "REAL DEFAULT NULL CHECK(mean_reversion IS NULL OR mean_reversion >= 0)",
             # Shares offered to the market when listed (a partial listing); NULL means all of them.
             "listed_shares": "INTEGER DEFAULT NULL CHECK(listed_shares IS NULL OR listed_shares >= 0)",
+            # Stable link to the legal share issuance; company_code remains the market ticker.
+            "share_issuance_id": "INTEGER",
         }.items():
             if column not in columns:
                 self.execute(f"ALTER TABLE company ADD COLUMN {column} {declaration}")
