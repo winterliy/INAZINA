@@ -5,6 +5,50 @@
 .ownership-window h1 { margin: 0; font-size: clamp(1.7rem, 3vw, 2.6rem); }
 .ownership-window .ownership-diagram-scroll { width: 100%; height: calc(100vh - 210px); min-height: 420px; max-height: none; }
 .ownership-window .ownership-diagram-canvas { margin-left: 0; }
+.ownership-window-admin { display: flex; flex-direction: column; height: 100vh; min-height: 0; overflow: hidden; }
+.ownership-window-admin > header { flex: none; margin-bottom: 10px; }
+.ownership-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 18px; flex: none; min-height: 46px; margin-bottom: 8px; }
+.ownership-sidebar-toggle { flex: none; }
+.ownership-minor-toggle { display: inline-flex; align-items: center; gap: 8px; margin: 0; }
+.ownership-workspace { display: grid; grid-template-columns: minmax(220px, 280px) minmax(0, 1fr); gap: 16px; flex: 1; min-height: 0; }
+.ownership-workspace.sidebar-collapsed { grid-template-columns: minmax(0, 1fr); }
+.ownership-sidebar { min-width: 0; min-height: 0; overflow: auto; padding: 14px 12px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface); }
+.ownership-sidebar h2 { margin: 0; font-size: 15px; }
+.ownership-sidebar > p { margin: 6px 0 12px; color: var(--ink2); font-size: 12px; line-height: 1.45; }
+.ownership-search { display: grid; gap: 5px; margin: 0 0 12px; color: var(--ink2); font-size: 11px; }
+.ownership-search input { box-sizing: border-box; width: 100%; min-width: 0; height: 34px; padding: 0 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--pearl, var(--surface)); color: var(--ink); font: inherit; font-size: 12px; }
+.ownership-tree-section { padding: 8px 0; border-top: 1px solid var(--line); }
+.ownership-tree-section > summary { padding: 4px 0 7px; color: var(--ink); font-size: 12px; font-weight: 650; cursor: pointer; }
+.ownership-tree-section > .empty { margin: 6px 0; color: var(--ink2); font-size: 12px; }
+.ownership-tree-company small { color: var(--ink2); font-size: 10px; }
+.ownership-tree, .ownership-tree ul { list-style: none; margin: 0; padding: 0 0 0 14px; }
+.ownership-tree { padding-left: 0; }
+.ownership-tree li { min-width: 0; }
+.ownership-tree-folder > summary { display: flex; align-items: center; gap: 5px; min-width: 0; padding: 4px 0; cursor: pointer; list-style: none; }
+.ownership-tree-folder > summary::-webkit-details-marker { display: none; }
+.ownership-tree-folder > summary::before { content: "▸"; flex: none; width: 10px; color: var(--ink2); font-size: 11px; }
+.ownership-tree-folder[open] > summary::before { content: "▾"; }
+.ownership-tree-icon { flex: none; color: var(--accent); font-size: 13px; }
+.ownership-tree-company, .ownership-tree-person { min-width: 0; overflow: hidden; padding: 3px 5px; border: 0; border-radius: 6px; background: transparent; color: var(--ink); font: inherit; font-size: 12px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.ownership-tree-company { cursor: pointer; }
+.ownership-tree-company:hover, .ownership-tree-company.active { background: var(--select); color: var(--accent); }
+.ownership-tree-leaf-row { padding: 2px 0 2px 18px; }
+.ownership-tree-loading { display: grid; gap: 9px; padding: 6px 0; }
+.ownership-tree-loading i, .ownership-skeleton i { display: block; height: 12px; border-radius: 6px; background: linear-gradient(90deg, var(--line), var(--surface), var(--line)); background-size: 200% 100%; animation: ownership-shimmer 1.2s linear infinite; }
+.ownership-tree-loading i:nth-child(2) { width: 82%; margin-left: 14px; }
+.ownership-tree-loading i:nth-child(3) { width: 68%; margin-left: 28px; }
+.ownership-graph-panel { min-width: 0; min-height: 0; overflow: hidden; }
+.ownership-window-admin .ownership-graph-panel .ownership-diagram { display: flex; flex-direction: column; height: 100%; margin: 0; }
+.ownership-window-admin .ownership-graph-panel .ownership-diagram-scroll { flex: 1; width: 100%; height: auto; min-height: 0; max-height: none; }
+.ownership-window-admin .ownership-graph-panel .ownership-beneficial { flex: none; max-height: 120px; overflow: auto; }
+.ownership-loading, .ownership-load-error { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; width: 100%; height: 100%; min-height: 240px; color: var(--ink2); text-align: center; }
+.ownership-loading strong { color: var(--ink); font-size: 14px; }
+.ownership-spinner { width: 28px; height: 28px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: ownership-spin .8s linear infinite; }
+.ownership-skeleton { display: flex; gap: 12px; width: min(460px, 80%); margin-top: 8px; }
+.ownership-skeleton i { flex: 1; height: 64px; border-radius: 12px; }
+.ownership-load-error p { margin: 0; color: var(--danger, #c4281c); }
+@keyframes ownership-spin { to { transform: rotate(360deg); } }
+@keyframes ownership-shimmer { to { background-position: -200% 0; } }
 .ownership-diagram-scroll { overflow: auto; max-width: 100%; padding: 8px 4px 16px; overscroll-behavior-inline: contain; }
 .ownership-diagram-canvas { position: relative; margin: 0 auto; }
 .ownership-diagram-edges { position: absolute; inset: 0; overflow: visible; pointer-events: none; }
@@ -19,3 +63,10 @@
 .ownership-node-kind { color: var(--accent); font-size: 10px; font-weight: 700; }
 .ownership-beneficial { margin-top: 10px; }
 .ownership-diagram :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+@media (max-width: 760px) {
+  .ownership-window-admin { height: auto; min-height: 100vh; overflow: visible; }
+  .ownership-workspace { grid-template-columns: minmax(0, 1fr); }
+  .ownership-sidebar { max-height: 34vh; }
+  .ownership-window-admin .ownership-graph-panel { min-height: 52vh; }
+  .ownership-window-admin .ownership-graph-panel .ownership-diagram-scroll { min-height: 52vh; }
+}

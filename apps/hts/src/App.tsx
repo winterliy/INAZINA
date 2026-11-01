@@ -130,6 +130,7 @@ export default function App() {
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [taxResidency, setTaxResidency] = useState<TaxResidency | null>(null);
   const [ownershipGraph, setOwnershipGraph] = useState<OwnershipGraphData>();
+  const [ownershipLoading, setOwnershipLoading] = useState(() => ["/ownership", "/ownership/"].includes(location.pathname));
   const [taxResidencyOpen, setTaxResidencyOpen] = useState(false);
   const [taxResidencyValue, setTaxResidencyValue] = useState("");
   const [range, setRange] = useState<string>("1d");
@@ -298,9 +299,11 @@ export default function App() {
   useEffect(() => {
     if (!user || !["/account", "/account/", "/ownership", "/ownership/"].includes(location.pathname)) return;
     let active = true;
+    setOwnershipLoading(true);
     void api<{ graph: OwnershipGraphData }>("/api/me/ownership-graph")
       .then(({ graph }) => { if (active) setOwnershipGraph(graph); })
-      .catch(() => { if (active) setOwnershipGraph(undefined); });
+      .catch(() => { if (active) setOwnershipGraph(undefined); })
+      .finally(() => { if (active) setOwnershipLoading(false); });
     return () => { active = false; };
   }, [user]);
 
@@ -624,7 +627,7 @@ export default function App() {
     <Backdrop />
     <main className="ownership-window">
       <header><div><p className="eyebrow">NARU · 나루</p><h1>보유 기업 지배구조</h1><p className="sub">보유 주식의 의결권과 지배하는 자회사 관계입니다.</p></div><a className="soft" href="/account">계정 페이지로</a></header>
-      <OwnershipGraph graph={ownershipGraph} fullScreen />
+      {ownershipLoading ? <div className="ownership-loading" role="status"><span className="ownership-spinner" aria-hidden="true" /><strong>보유 기업 지배구조를 불러오는 중…</strong></div> : <OwnershipGraph graph={ownershipGraph} fullScreen />}
     </main>
     <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
   </div>;

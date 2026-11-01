@@ -25,7 +25,7 @@ import { NaturalizationPage } from "./NaturalizationPage";
 import { COMMAND_FORMS, CommandForm } from "./CommandForm";
 import { AccountPage } from "./AccountPage";
 import { OrganizationPage } from "./OrganizationPage";
-import { OwnershipGraph, type OwnershipGraphData } from "../../shared/OwnershipGraph";
+import { OrganizationOwnershipWindow } from "./OrganizationOwnershipWindow";
 
 type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "feedback" | "board" | "documents" | "compliance" | "accounting" | "events" | "commands" | "database" | "audit" | "ownership";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
@@ -105,8 +105,6 @@ export default function App() {
   const [user, setUser] = useState<ApiUser | null>(null);
   const [checked, setChecked] = useState(false);
   const [page, setPage] = useState<Page>(initialRoute.page);
-  const [ownershipGraph, setOwnershipGraph] = useState<OwnershipGraphData>();
-  const [ownershipError, setOwnershipError] = useState("");
   const [health, setHealth] = useState("확인 중");
   const [connected, setConnected] = useState(false);
   const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
@@ -230,16 +228,6 @@ export default function App() {
   const visibleCommands = commands.filter((item) => categoryOf(item.name) === activeCategory);
   const commandSection = commandScope === "national" ? NATIONAL : commandScope === "help" ? HELP : activeCategory;
 
-  useEffect(() => {
-    if (page !== "ownership") return;
-    const [type, code, detail] = initialRoute.sub.split("/");
-    const request = type === "personal"
-      ? api<{ graph: OwnershipGraphData }>("/api/me/ownership-graph").then(({ graph }) => graph)
-      : type === "organization" && code
-        ? api<{ graph?: OwnershipGraphData }>(`/api/admin/organizations/${encodeURIComponent(code)}${detail === "minor" ? "?includeMinor=1" : ""}`).then((result) => result.graph)
-        : Promise.reject(new Error("조직도 주소가 올바르지 않습니다."));
-    void request.then((graph) => setOwnershipGraph(graph)).catch((cause) => setOwnershipError(message(cause, "조직도를 불러오지 못했습니다.")));
-  }, [page]);
   // Keep the address in step with the page; back/forward restore it.
   useEffect(() => {
     const hash = `#${page}${page === "commands" && commandSection ? `/${encodeURIComponent(commandSection)}` : ""}`;
@@ -370,7 +358,7 @@ export default function App() {
 
   if (!checked) return <Stage><main className="center-shell"><p className="loading">불러오는 중…</p></main></Stage>;
   if (!user) return <Stage><AuthPanel app="dashboard" onAuthenticated={setUser} /></Stage>;
-  if (page === "ownership") return <Stage><main className="ownership-window"><header><div><p className="eyebrow">INAZINA · 지배구조</p><h1>기업 지분·의결권 조직도</h1><p className="sub">화면을 넓게 사용해 소유 관계와 의결권 경로를 확인합니다.</p></div><button className="soft" type="button" onClick={() => window.close()}>창 닫기</button></header>{ownershipError ? <p className="notice error" role="alert">{ownershipError}</p> : <OwnershipGraph graph={ownershipGraph} fullScreen />}</main></Stage>;
+  if (page === "ownership") return <Stage><OrganizationOwnershipWindow route={initialRoute.sub} /></Stage>;
   // Users, country and company accounts get their own account dashboard, like the HTS.
   if (user.role !== "admin") {
     return <Stage><div className="shell">

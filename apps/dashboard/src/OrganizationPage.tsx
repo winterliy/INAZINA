@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatMoney } from "../../shared/money";
 import { api } from "../../shared/api";
-import type { OwnershipGraphData } from "../../shared/OwnershipGraph";
 import { Card, Field, type Ctx } from "./common";
 import "./OrganizationPage.css";
 
@@ -9,8 +8,7 @@ type Size = "sme" | "mid_market" | "large" | null;
 type Issuance = { issuance_id: number; company_code: string; class_name: string; share_class: string; voting_rights_per_share: string; economic_interest_per_share: string; total_shares: string; share_price: string; status: string; dividend_mode: string; dividend_per_share: string; dividend_percent: string; dividend_priority: number; dividend_cycle_seconds: number; dividend_is_active: number; cumulative_dividend: number; liquidation_value_per_share: string; dividend_funding: string };
 type Org = { organization_code: string; name: string; industry: string; share_price: string | number; purpose: string; ownership_type: string; public_enterprise_type: string; size_override: Size; auto_size: Size; pending_size: Size; size_effective_epoch: number | null; display_size: Size; metrics: { revenue: string | null; assets: string | null; employees: number | null }; issuances: Issuance[] };
 type Group = { group_id: number; name: string; representative_organization_code: string | null; description: string; members: string[] };
-type Graph = OwnershipGraphData;
-type Directory = { organizations: Org[]; groups: Group[]; graph?: Graph; sizeSettings: { announcement_seconds: number; rules: { mode?: string; thresholds?: Record<string, [string, string]> } } };
+type Directory = { organizations: Org[]; groups: Group[]; sizeSettings: { announcement_seconds: number; rules: { mode?: string; thresholds?: Record<string, [string, string]> } } };
 
 const SIZE: Record<Exclude<Size, null>, string> = { sme: "중소기업", mid_market: "중견기업", large: "대기업" };
 const PURPOSE: Record<string, string> = { for_profit: "영리", nonprofit: "비영리" };
@@ -26,11 +24,9 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
   const [announcementSeconds, setAnnouncementSeconds] = useState("0");
   const [thresholds, setThresholds] = useState<Record<string, [string, string]>>({});
   const [ruleMode, setRuleMode] = useState("any");
-  const [includeMinor, setIncludeMinor] = useState(false);
   const [saving, setSaving] = useState(false);
-  const load = useCallback(async (code: string, showMinor = false) => {
-    const query = code && showMinor ? "?includeMinor=1" : "";
-    const next = await api<Directory>(`/api/admin/organizations${code ? `/${encodeURIComponent(code)}` : ""}${query}`);
+  const load = useCallback(async (code: string) => {
+    const next = await api<Directory>(`/api/admin/organizations${code ? `/${encodeURIComponent(code)}` : ""}`);
     setData(next);
     setAnnouncementSeconds(String(next.sizeSettings.announcement_seconds));
     setThresholds(Object.fromEntries(Object.entries(next.sizeSettings.rules.thresholds ?? {}).map(([key, limits]) => [key, [String(limits[0]), String(limits[1])] as [string, string]])));
@@ -44,7 +40,7 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
     try {
       await api("/api/admin/organizations", { method: "POST", body: JSON.stringify(payload) });
       say(success);
-      await load(selected, includeMinor);
+      await load(selected);
       return true;
     } catch (error) {
       say(error instanceof Error ? error.message : "조직 설정을 저장하지 못했습니다.", true);
@@ -59,7 +55,7 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
         method: "POST", body: JSON.stringify({ action: "retire_issuance" }),
       });
       say(result, result.startsWith("❌"));
-      await load(selected, includeMinor);
+      await load(selected);
     } catch (error) {
       say(error instanceof Error ? error.message : "주식 종류를 폐지하지 못했습니다.", true);
     } finally { setSaving(false); }
@@ -73,7 +69,7 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
         method: "POST", body: JSON.stringify({ action: "issue_shares", ...payload }),
       });
       say(result, result.startsWith("❌"));
-      await load(selected, includeMinor);
+      await load(selected);
     } catch (error) {
       say(error instanceof Error ? error.message : "신주를 발행하지 못했습니다.", true);
     } finally { setSaving(false); }
@@ -96,7 +92,7 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
         method: "POST", body: JSON.stringify({ command: "자본변경", arguments: `감자 ${payload.mode} ${issue.company_code} ${payload.quantity}${payload.mode === "유상" ? ` ${payload.payout}` : ""}` }),
       });
       say(result.message, !result.success);
-      await load(selected, includeMinor);
+      await load(selected);
     } catch (error) {
       say(error instanceof Error ? error.message : "감자를 실행하지 못했습니다.", true);
     } finally { setSaving(false); }
@@ -105,7 +101,7 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
   return <>
     <Card title="기업 목록" caption="주식 발행과 법인 프로필을 분리하는 단계적 모델입니다. 현재 거래 코드와 보유 데이터는 유지됩니다.">
       <div className="scroll-x tall"><table><thead><tr><th>기업</th><th>영리성</th><th>공공 분류</th><th>자동 규모</th><th>표시 규모</th><th>주식 종류</th></tr></thead><tbody>
-        {data?.organizations.map((item) => <tr key={item.organization_code} className={selected === item.organization_code ? "selected" : "clickable"} onClick={() => { setSelected(item.organization_code); void load(item.organization_code, includeMinor); }}>
+        {data?.organizations.map((item) => <tr key={item.organization_code} className={selected === item.organization_code ? "selected" : "clickable"} onClick={() => { setSelected(item.organization_code); void load(item.organization_code); }}>
           <td><strong>{item.name || item.organization_code}</strong><small className="mono">{item.organization_code} · {item.industry || "산업 미지정"}</small></td>
           <td>{PURPOSE[item.purpose] ?? item.purpose}</td><td>{PUBLIC[item.public_enterprise_type] ?? item.public_enterprise_type}</td>
           <td>{item.auto_size ? SIZE[item.auto_size] : "자료 부족"}</td><td>{item.display_size ? SIZE[item.display_size] : "자료 부족"}</td>
@@ -120,7 +116,7 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
           <button type="button" disabled={saving || !groupName.trim()} onClick={() => void saveAction({ action: "group_create", name: groupName, representative: selected || null }, "기업집단을 만들었습니다.").then((ok) => { if (ok) setGroupName(""); })}>집단 만들기</button></div>
         <div>{data?.groups.map((group) => <section className="organization-inset" key={group.group_id}>
           <strong>{group.name}</strong><small>대표 기업: {group.representative_organization_code || "미지정"}</small>
-          <div className="chips">{group.members.map((code) => <button className="chip" type="button" key={code} onClick={() => { setSelected(code); void load(code, includeMinor); }}>{code} ×</button>)}</div>
+          <div className="chips">{group.members.map((code) => <button className="chip" type="button" key={code} onClick={() => { setSelected(code); void load(code); }}>{code} ×</button>)}</div>
           {selected && !group.members.includes(selected) && <button className="soft" type="button" disabled={saving} onClick={() => void saveAction({ action: "group_member", group_id: group.group_id, organization_code: selected, active: true }, `${selected} 기업을 집단에 추가했습니다.`)}>선택 기업 추가</button>}
           {selected && group.members.includes(selected) && <button className="soft" type="button" disabled={saving} onClick={() => void saveAction({ action: "group_member", group_id: group.group_id, organization_code: selected, active: false }, `${selected} 기업을 집단에서 제외했습니다.`)}>선택 기업 제외</button>}
         </section>)}</div>
@@ -159,8 +155,7 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
         </Card>
       </div>
       <Card title="지분·의결권 구조" caption="위쪽으로 직접 주주와 법인 주주의 보유 관계를 펼칩니다. 선에는 경제적 지분과 의결권 비율을 각각 표시합니다.">
-        <label className="check"><input type="checkbox" checked={includeMinor} onChange={(event) => { const checked = event.target.checked; setIncludeMinor(checked); void load(selected, checked); }} />1% 미만 지분도 표시</label>
-        <a className="btn primary" href={`${location.pathname}${location.search}#ownership/organization/${encodeURIComponent(selected)}${includeMinor ? "/minor" : ""}`} target="_blank" rel="noreferrer">조직도 새 창에서 보기 ↗</a>
+        <a className="btn primary" href={`${location.pathname}${location.search}#ownership/organization/${encodeURIComponent(selected)}`} target="_blank" rel="noreferrer">조직도 새 창에서 보기 ↗</a>
       </Card>
     </>}
   </>;
