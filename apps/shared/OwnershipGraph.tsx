@@ -11,8 +11,8 @@ export type OwnershipGraphData = {
 
 const CARD_WIDTH = 280;
 const CARD_HEIGHT = 144;
-const LEVEL_GAP = 252;
-const NODE_GAP = 72;
+const LEVEL_GAP = 360;
+const NODE_GAP = 200;
 
 function percent(value: string | undefined) {
   const number = Number(value);
@@ -40,7 +40,10 @@ export function OwnershipGraph({ graph, fullScreen = false, focusedNodeId, focus
     container.scrollTo({ left: Math.max(0, left), top: Math.max(0, top), behavior: "smooth" });
     node.classList.add("ownership-node-focused");
     const timeout = window.setTimeout(() => node.classList.remove("ownership-node-focused"), 1500);
-    return () => window.clearTimeout(timeout);
+    return () => {
+      window.clearTimeout(timeout);
+      node.classList.remove("ownership-node-focused");
+    };
   }, [focusedNodeId, focusRequest, graph?.nodes.length, viewportWidth]);
   if (!graph?.nodes.length) return <p className="empty">지분 자료가 없거나 표시할 주주가 없습니다.</p>;
 

@@ -37,12 +37,20 @@ function ownershipTree(graph?: OwnershipGraphData) {
     if (visited.has(node.id)) return;
     visited.add(node.id);
     for (const relation of outgoing.get(node.id) ?? []) {
-      if (visited.has(relation.node.id)) continue;
+      if (visited.has(relation.node.id)) {
+        // Keep every person's direct company holdings visible even when that
+        // company was already placed under another owner in the spanning tree.
+        if (node.kind === "user" && relation.node.kind === "company") {
+          node.children.push({ ...relation.node, children: [] });
+        }
+        continue;
+      }
       node.children.push(relation.node);
       append(relation.node);
     }
   };
-  const roots = [...nodes.values()].filter((node) => !children.has(node.id)).sort((a, b) => a.name.localeCompare(b.name, "ko"));
+  const roots = [...nodes.values()].filter((node) => !children.has(node.id)).sort((a, b) =>
+    Number(b.kind === "user") - Number(a.kind === "user") || a.name.localeCompare(b.name, "ko"));
   for (const node of roots) append(node);
   for (const node of [...nodes.values()].sort((a, b) => a.name.localeCompare(b.name, "ko"))) {
     if (!visited.has(node.id)) { roots.push(node); append(node); }
@@ -50,26 +58,26 @@ function ownershipTree(graph?: OwnershipGraphData) {
   return roots;
 }
 
-function TreeItem({ node, selected, onSelect, ancestors = new Set<string>() }: {
-  node: TreeNode; selected: string; onSelect: (code: string) => void; ancestors?: Set<string>;
+function TreeItem({ node, selectedNodeId, onSelect, ancestors = new Set<string>() }: {
+  node: TreeNode; selectedNodeId: string; onSelect: (nodeId: string) => void; ancestors?: Set<string>;
 }) {
   const cycle = ancestors.has(node.id);
   const nextAncestors = new Set(ancestors).add(node.id);
-  const select = () => { if (node.kind === "company") onSelect(node.code); };
+  const select = () => onSelect(node.id);
   const title = node.name || node.code;
   if (!node.children.length || cycle) return <li className="ownership-tree-leaf-row">
     {node.kind === "company"
-      ? <button type="button" className={selected === node.code ? "ownership-tree-company active" : "ownership-tree-company"} onClick={select} title={`${title} (${node.code})`}><span aria-hidden="true">▣</span>{title}</button>
-      : <PersonLabel name={title} />}
+      ? <button type="button" className={selectedNodeId === node.id ? "ownership-tree-company active" : "ownership-tree-company"} onClick={select} title={`${title} (${node.code})`}><span aria-hidden="true">▣</span>{title}</button>
+      : <button type="button" className="ownership-tree-person-button" aria-pressed={selectedNodeId === node.id} onClick={select}><PersonLabel name={title} /></button>}
   </li>;
   return <li>
     <details className="ownership-tree-folder" open={node.kind === "user"}>
       <summary>
         {node.kind === "company"
-          ? <><span className="ownership-tree-icon" aria-hidden="true">▰</span><button type="button" className={selected === node.code ? "ownership-tree-company active" : "ownership-tree-company"} onClick={(event) => { event.preventDefault(); event.stopPropagation(); select(); }} title={`${title} (${node.code})`}>{title}</button></>
-          : <PersonLabel name={title} />}
+          ? <><span className="ownership-tree-icon" aria-hidden="true">▰</span><button type="button" className={selectedNodeId === node.id ? "ownership-tree-company active" : "ownership-tree-company"} onClick={(event) => { event.preventDefault(); event.stopPropagation(); select(); }} title={`${title} (${node.code})`}>{title}</button></>
+          : <button type="button" className="ownership-tree-person-button" aria-pressed={selectedNodeId === node.id} onClick={(event) => { event.preventDefault(); event.stopPropagation(); select(); }}><PersonLabel name={title} /></button>}
       </summary>
-      <ul>{node.children.map((child) => <TreeItem key={child.id} node={child} selected={selected} onSelect={onSelect} ancestors={nextAncestors} />)}</ul>
+      <ul>{node.children.map((child) => <TreeItem key={child.id} node={child} selectedNodeId={selectedNodeId} onSelect={onSelect} ancestors={nextAncestors} />)}</ul>
     </details>
   </li>;
 }
@@ -193,7 +201,7 @@ export function OrganizationOwnershipWindow({ route }: { route: string }) {
           <details className="ownership-tree-section" open>
             <summary>현재 지분 관계 경로</summary>
             {loading && !tree.length ? <div className="ownership-tree-loading"><i /><i /><i /></div> : tree.length
-              ? <ul className="ownership-tree">{tree.map((node) => <TreeItem key={node.id} node={node} selected={focusedNodeId.replace(/^company:/, "")} onSelect={(code) => { setFocusedNodeId(`company:${code}`); setFocusRequest((value) => value + 1); }} />)}</ul>
+              ? <ul className="ownership-tree">{tree.map((node) => <TreeItem key={node.id} node={node} selectedNodeId={focusedNodeId} onSelect={(nodeId) => { setFocusedNodeId(nodeId); setFocusRequest((value) => value + 1); }} />)}</ul>
               : <p className="empty">표시할 주주 관계가 없습니다.</p>}
           </details>
           <details className="ownership-tree-section">
