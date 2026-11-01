@@ -151,6 +151,36 @@ class LegacyNames:
 def connect_db(timeout=2):
     connection = sqlite3.connect(DATABASE, timeout=timeout, factory=UnifiedConnection)
     connection.legacy_aliases=False
+    write_lock = None
+    write_lock_held = False
+    write_actions = {
+        sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE,
+        sqlite3.SQLITE_CREATE_INDEX, sqlite3.SQLITE_CREATE_TABLE,
+        sqlite3.SQLITE_CREATE_TEMP_INDEX, sqlite3.SQLITE_CREATE_TEMP_TABLE,
+        sqlite3.SQLITE_CREATE_TEMP_TRIGGER, sqlite3.SQLITE_CREATE_TEMP_VIEW,
+        sqlite3.SQLITE_CREATE_TRIGGER, sqlite3.SQLITE_CREATE_VIEW,
+        sqlite3.SQLITE_DROP_INDEX, sqlite3.SQLITE_DROP_TABLE,
+        sqlite3.SQLITE_DROP_TEMP_INDEX, sqlite3.SQLITE_DROP_TEMP_TABLE,
+        sqlite3.SQLITE_DROP_TEMP_TRIGGER, sqlite3.SQLITE_DROP_TEMP_VIEW,
+        sqlite3.SQLITE_DROP_TRIGGER, sqlite3.SQLITE_DROP_VIEW,
+        sqlite3.SQLITE_ALTER_TABLE, sqlite3.SQLITE_REINDEX,
+    }
+
+    def serialize_writes(action, arg1, arg2, database_name, trigger_name):
+        nonlocal write_lock, write_lock_held
+        if action in write_actions and not write_lock_held:
+            from database.db_manager import DBManager
+            write_lock = DBManager._lock_for_path(DATABASE)
+            wait_started = time.perf_counter()
+            write_lock.acquire()
+            write_lock_held = True
+            wait_ms = (time.perf_counter() - wait_started) * 1000
+            if wait_ms >= 100:
+                logging.getLogger("inazina.performance").warning(
+                    "sqlite_process_lock_wait %.1f ms source=web_api", wait_ms
+                )
+        return sqlite3.SQLITE_OK
+
     try:
         connection.legacy_aliases = False
         connection.row_factory = sqlite3.Row
@@ -159,10 +189,15 @@ def connect_db(timeout=2):
         register(connection)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA busy_timeout={max(1, int(timeout * 1000))}")
+        connection.set_authorizer(serialize_writes)
         with connection:
             yield connection
     finally:
-        connection.close()
+        try:
+            connection.close()
+        finally:
+            if write_lock_held:
+                write_lock.release()
 
 
 def _configured_base_currency(connection):
