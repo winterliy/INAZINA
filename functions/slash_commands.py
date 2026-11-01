@@ -29,6 +29,7 @@ from functions.discord_views import (
 from functions.registration import RegistrationRequired
 from managers.investment_manager import FUND_TYPES
 from managers.currency_exchange_manager import display_units
+from managers.deposit_accounts import OWNER_HOME
 
 
 MAX_DISCORD_INTEGER = 2**53 - 1
@@ -416,7 +417,7 @@ class SlashCommandRegistry:
         await self._reply(interaction, embed=self._result_embed("펀드 환매", message, success))
 
 
-    async def future_margin(self, interaction: discord.Interaction, 선물: str, 금액: app_commands.Range[int, 1, MAX_DISCORD_INTEGER]):
+    async def future_margin(self, interaction: discord.Interaction, 선물: str, 금액: str):
         user_id, _, _ = await self._prepare(interaction)
         success, message = await asyncio.to_thread(self.bot.futures_mgr.add_margin, user_id, 선물, 금액)
         await self._reply(interaction, embed=self._result_embed("선물 증거금", message, success))
@@ -438,7 +439,7 @@ class SlashCommandRegistry:
     @app_commands.choices(작업=[app_commands.Choice(name=n, value=n) for n in ("체결", "해지", "조회")],
                           방향=[app_commands.Choice(name=n, value=n) for n in ("고정지급", "고정수취")])
     async def swap(self, interaction: discord.Interaction, 작업: str, 방향: str | None = None,
-                   명목금액: app_commands.Range[int, 1, MAX_DISCORD_INTEGER] | None = None,
+                   명목금액: str | None = None,
                    만기일수: app_commands.Range[int, 1, 3650] | None = None,
                    스왑번호: app_commands.Range[int, 1, MAX_DISCORD_INTEGER] | None = None):
         user_id, _, _ = await self._prepare(interaction)
@@ -467,7 +468,7 @@ class SlashCommandRegistry:
     @app_commands.choices(방향=[app_commands.Choice(name="매수", value="buy"), app_commands.Choice(name="매도", value="sell")])
     async def wrap_order(self, interaction: discord.Interaction, 계좌: str, 종목: str, 방향: str,
                          수량: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
-                         지정가: app_commands.Range[int, 1, MAX_DISCORD_INTEGER]):
+                         지정가: str):
         user_id, _, _ = await self._prepare(interaction)
         success, message = await asyncio.to_thread(
             self.bot.capital_markets.wrap_order, user_id, 계좌, 종목, 방향, 수량, 지정가)
@@ -896,7 +897,7 @@ class SlashCommandRegistry:
     async def gamble(
         self,
         interaction: discord.Interaction,
-        금액: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
+        금액: str,
     ):
         user_id, _user_data, _role = await self._prepare(interaction)
         success, message = self.bot.user_mgr.gamble(user_id, 금액)
@@ -948,10 +949,10 @@ class SlashCommandRegistry:
         interaction: discord.Interaction,
         기초주식: str,
         유형: app_commands.Choice[str],
-        행사가: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
+        행사가: str,
         만기일수: app_commands.Range[int, 1, 365],
         계약수: app_commands.Range[int, 1, 100000],
-        지정프리미엄: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
+        지정프리미엄: str,
         변동성: app_commands.Range[int, 1, 500] = 50,
     ):
         user_id, _user_data, _role = await self._prepare(interaction)
@@ -974,7 +975,7 @@ class SlashCommandRegistry:
         interaction: discord.Interaction,
         자산: str,
         수량: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
-        지정가: app_commands.Range[int, 1, MAX_DISCORD_INTEGER] | None = None,
+        지정가: str | None = None,
     ):
         user_id, _user_data, _role = await self._prepare(interaction)
         asset = self.bot.market_mgr.get_asset_info(자산.strip())
@@ -1001,7 +1002,7 @@ class SlashCommandRegistry:
         interaction: discord.Interaction,
         자산: str,
         수량: app_commands.Range[int, 1, MAX_DISCORD_INTEGER],
-        지정가: app_commands.Range[int, 1, MAX_DISCORD_INTEGER] | None = None,
+        지정가: str | None = None,
     ):
         user_id, _user_data, _role = await self._prepare(interaction)
         asset = self.bot.market_mgr.get_asset_info(자산.strip())
@@ -1163,11 +1164,11 @@ class SlashCommandRegistry:
                 (TREASURY_USER_ID,),
             )
             accounts = self.bot.db.accounts.execute(
-                "SELECT account_number, user_id, product_code FROM accounts "
-                "WHERE account_type = 'saving' ORDER BY account_number LIMIT 1000"
+                "SELECT account_number, user_id, product_code FROM accounts a "
+                f"WHERE account_type = 'saving' AND quote_currency IS {OWNER_HOME} ORDER BY account_number LIMIT 1000"
             )
             foreign_accounts = self.bot.db.accounts.execute("SELECT a.account_number,a.user_id,a.quote_currency AS currency_code,u.nickname "
-                "FROM accounts a JOIN users u ON u.user_id=a.user_id WHERE a.account_type='currency_saving' AND u.status='active' ORDER BY a.account_number LIMIT 1000")
+                f"FROM accounts a JOIN users u ON u.user_id=a.user_id WHERE a.account_type='saving' AND a.quote_currency IS NOT {OWNER_HOME} AND u.status='active' ORDER BY a.account_number LIMIT 1000")
         except Exception:
             return []
 
@@ -1229,11 +1230,11 @@ class SlashCommandRegistry:
         try:
             user = self.bot.db.users.get_user(user_id)
             accounts = self.bot.db.accounts.execute(
-                "SELECT account_number, product_code, account_type, balance FROM accounts "
-                "WHERE user_id = ? AND account_type<>'currency_saving' ORDER BY account_type, created_at",
+                "SELECT account_number, product_code, account_type, balance FROM accounts a "
+                f"WHERE user_id = ? AND NOT (account_type='saving' AND quote_currency IS NOT {OWNER_HOME}) ORDER BY account_type, created_at",
                 (user_id,),
             )
-            foreign_accounts = self.bot.db.accounts.execute("SELECT *,quote_currency AS currency_code FROM accounts WHERE user_id=? AND account_type='currency_saving' ORDER BY quote_currency",(user_id,))
+            foreign_accounts = self.bot.db.accounts.execute(f"SELECT *,quote_currency AS currency_code FROM accounts a WHERE user_id=? AND account_type='saving' AND quote_currency IS NOT {OWNER_HOME} ORDER BY quote_currency,created_at",(user_id,))
         except Exception:
             return []
         current = current.strip().casefold()
@@ -1366,7 +1367,8 @@ class SlashCommandRegistry:
         from functions.financial_views import FinancialReportView
         manager = FinancialManager(self.bot.db)
         try:
-            report = await asyncio.to_thread(manager.report, product_id.strip())
+            from managers.company_account_manager import CompanyAccounts
+            report = await asyncio.to_thread(CompanyAccounts.financial_report, self.bot.db, product_id.strip())
             periods = await asyncio.to_thread(manager.periods, product_id.strip())
             view = FinancialReportView(self.bot.db, user_id, report, periods)
             await self._reply(interaction, embed=view.build_embed(), view=view)

@@ -6,7 +6,9 @@ from decimal import Decimal
 from functions.money import currency_precision, from_minor_units, to_minor_units
 
 PREFIX = "__fund__:"
-MAX_MONEY = 2**53 - 1
+from functions.amount_limits import MAX_MINOR
+
+MAX_MONEY = MAX_MINOR
 
 
 class FundCashLedger:
@@ -80,7 +82,7 @@ class FundCashLedger:
             "INSERT INTO fund_cash_ledger(product_code,event,amount,balance,reference,recorded_epoch,"
             "currency_code,decimal_places,amount_minor_units,balance_minor_units) "
             "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (fund["product_code"], str(event), float(major_delta), float(major_balance),
+            (fund["product_code"], str(event), major_delta, major_balance,
              reference, now, currency, places, delta, new),
         )
         return int(cur.lastrowid)

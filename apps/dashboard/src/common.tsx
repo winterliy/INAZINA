@@ -1,6 +1,7 @@
+import { formatMoney } from "../../shared/money";
 import type { ReactNode } from "react";
 
-export const number = (value: number) => new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 6 }).format(value);
+export const number = formatMoney;
 export const date = (value: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "medium" }).format(value * 1000);
 export const errorText = (cause: unknown, fallback: string) => cause instanceof Error ? cause.message : fallback;
 export const show = (value: unknown) => value === null || value === undefined || value === "" ? "—" : String(value);

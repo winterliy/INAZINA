@@ -97,7 +97,9 @@ def check(conn):
 
 def main(path=None):
     path = Path(path or Path(__file__).resolve().parent / "inazina.db")
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    from .unified import UnifiedConnection
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, factory=UnifiedConnection)
+    conn.legacy_aliases=False
     try:
         problems = check(conn)
     finally:

@@ -32,7 +32,9 @@ PORT = int(os.environ.get("INAZINA_PYTHON_PORT", "4313"))
 MAX_HTTP_THREADS = max(1, min(int(os.environ.get("INAZINA_MAX_HTTP_THREADS", "16")), 64))
 BOOTSTRAP_ADMIN_IDS = {"1076861147560542278"}
 sys.path.insert(0, str(ROOT))
-from database.unified import sql as unified_sql
+from database.unified import sql as unified_sql, UnifiedConnection
+from functions.exact_money import native_value
+from decimal import Decimal
 from database.user_db import TREASURY_USER_ID, citizen_filter
 from functions.dr_pricing import (
     DEVIATION_ALERT_THRESHOLD_PERCENT as DR_REFERENCE_DEVIATION_ALERT_PERCENT,
@@ -113,10 +115,14 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 @contextmanager
 def connect_readonly():
     uri = DATABASE.as_uri() + "?mode=ro"
-    connection = sqlite3.connect(uri, uri=True, timeout=2)
+    connection = sqlite3.connect(uri, uri=True, timeout=2, factory=UnifiedConnection)
+    connection.legacy_aliases=False
     try:
+        connection.legacy_aliases = False
         connection.row_factory = sqlite3.Row
         connection.create_function("base_currency_code", 0, lambda: _configured_base_currency(connection))
+        from database.exact_cost_basis import register
+        register(connection)
         connection.execute("PRAGMA query_only=ON")
         yield connection
     finally:
@@ -143,10 +149,14 @@ class LegacyNames:
 
 @contextmanager
 def connect_db(timeout=2):
-    connection = sqlite3.connect(DATABASE, timeout=timeout)
+    connection = sqlite3.connect(DATABASE, timeout=timeout, factory=UnifiedConnection)
+    connection.legacy_aliases=False
     try:
+        connection.legacy_aliases = False
         connection.row_factory = sqlite3.Row
         connection.create_function("base_currency_code", 0, lambda: _configured_base_currency(connection))
+        from database.exact_cost_basis import register
+        register(connection)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA busy_timeout={max(1, int(timeout * 1000))}")
         with connection:
@@ -718,6 +728,7 @@ def authenticate_password(user_id, password):
     with connect_db(timeout=2) as connection:
         connection.execute("PRAGMA busy_timeout=5000")
         ensure_auth_table(connection)
+        connection.legacy_aliases = False
         connection.row_factory = sqlite3.Row
         credential = connection.execute(
             "SELECT salt,password_hash FROM web_auth_credentials WHERE user_id=?", (user_id,),
@@ -773,6 +784,7 @@ def authenticate_login_identifier(identifier, password):
             return authenticate_password(account, password), True
     with connect_db(timeout=2) as connection:
         ensure_auth_table(connection)
+        connection.legacy_aliases = False
         connection.row_factory = sqlite3.Row
         country_account = connection.execute(
             "SELECT 1 FROM users u JOIN country_treasuries t ON t.user_id=u.user_id "
@@ -880,7 +892,7 @@ def instruments(include_inactive=False):
                         remaining_days = int(row["maturity_days"] or 1)
                     valuation = RateManager.bond_quote(
                         connection, issuer["nationality"] if issuer and issuer["nationality"] else "낙원",
-                        float(row["face_value"] or 1), float(row["annual_rate"] or 0),
+                        native_value(row["face_value"] or 1), float(row["annual_rate"] or 0),
                         remaining_days,
                         coupon_frequency_days=int(row["coupon_frequency_days"] or 0),
                         spread=float(row["credit_spread"] or 0)+float(row["liquidity_spread"] or 0),
@@ -892,7 +904,7 @@ def instruments(include_inactive=False):
                             "macaulay_duration", "modified_duration", "convexity", "dv01"
                         )
                     }
-                    row["bondRisk"]["faceValue"] = float(row["face_value"] or 1)
+                    row["bondRisk"]["faceValue"] = native_value(row["face_value"] or 1)
                 except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError):
                     row["bondRisk"] = None
             if row["type"] == "depositary_receipt":
@@ -916,7 +928,7 @@ def instruments(include_inactive=False):
                                 program["underlyingPerReceipt"], fx,
                             )
                             if metrics:
-                                program["underlyingPrice"] = float(underlying["price"])
+                                program["underlyingPrice"] = native_value(underlying["price"])
                                 program["underlyingCurrency"] = str(underlying["quote_currency"] or connection.execute("SELECT base_currency_code()").fetchone()[0])
                                 program.update(metrics)
                     except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError):
@@ -930,6 +942,14 @@ def instruments(include_inactive=False):
             if warning:
                 row["warning"] = {"level": warning["level"], "label": LEVELS[warning["level"]],
                                   "reason": warning["reason"], "expiresEpoch": warning["expires_epoch"]}
+        # Exchange-rate assets name the currency they price, so search can show the rate.
+        has_currencies = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='currencies'").fetchone()
+        currency_by_asset = ({asset: code for code, asset in connection.execute("SELECT code,asset_code FROM currencies")}
+                             if has_currencies else {})
+        for row in rows:
+            if row["type"] == "forex" and row["code"] in currency_by_asset:
+                row["currency_code"] = currency_by_asset[row["code"]]
     return sorted(rows, key=lambda row: (str(row["name"]).casefold(), row["code"]))
 
 
@@ -1289,8 +1309,8 @@ def candles(connection, code, start, interval):
         " ORDER BY b.bucket",
         (interval, interval, code, start, MAX_CANDLES, code, code),
     ).fetchall()
-    return [{"time": int(row["bucket"]), "open": float(row["open"]), "high": float(row["high"]),
-             "low": float(row["low"]), "close": float(row["close"]), "ticks": int(row["ticks"])}
+    return [{"time": int(row["bucket"]), "open": native_value(row["open"]), "high": native_value(row["high"]),
+             "low": native_value(row["low"]), "close": native_value(row["close"]), "ticks": int(row["ticks"])}
             for row in rows]
 
 
@@ -1343,7 +1363,7 @@ def chart(code, range_key, interval=None, upper=(), lower=(), with_catalog=False
         volumes = candle_volumes(connection, code, candle_rows[0]["time"], interval) if candle_rows else {}
     for row in candle_rows:
         row["volume"] = volumes.get(row["time"], 0.0)
-    points = [{"time": int(row["recorded_epoch"]), "price": float(row["price"])}
+    points = [{"time": int(row["recorded_epoch"]), "price": native_value(row["price"])}
               for row in reversed(rows)]
     if len(points) > 1200:
         stride = math.ceil(len(points) / 1200)
@@ -1422,14 +1442,20 @@ def save_drawings(user_id, code, drawings):
 
 
 def execute_order(user_id, payload):
+    from decimal import Decimal
     if not isinstance(payload, dict):
         raise ValueError("invalid_order")
     code, side = str(payload.get("assetCode", "")).strip(), payload.get("side")
     quantity, price = payload.get("quantity"), payload.get("limitPrice")
     if (not code or len(code) > 80 or side not in {"buy", "sell"} or
             isinstance(quantity, bool) or not isinstance(quantity, int) or
-            isinstance(price, bool) or not isinstance(price, int)):
+            isinstance(price, bool) or not isinstance(price, (int,float,str,Decimal))):
         raise ValueError("invalid_order")
+    price = native_value(price)
+    if price <= 0 or price > 10**24:
+        raise ValueError("invalid_order")
+    if price == int(price):
+        price = int(price)
     success, message = domain().order_book.place_limit_order(user_id, code, side, quantity, price)
     return success, message
 
@@ -1542,7 +1568,9 @@ def manage_fund(actor, code, payload=None):
     with manager.db.readonly() as connection:
         manager._require(connection, actor, code)
     if payload is None:
-        return manager.snapshot(code)
+        with connect_readonly() as connection:
+            currency = _configured_base_currency(connection)
+        return {**manager.snapshot(code), "currency": currency}
     if not isinstance(payload, dict):
         raise ValueError('펀드 작업 내용을 확인해주세요.')
     action = payload.get('action')
@@ -1554,10 +1582,15 @@ def manage_fund(actor, code, payload=None):
     elif action == 'cancel' and set(payload) == {'action', 'orderId'}:
         success, message = manager.cancel(actor, code, payload['orderId'])
     elif action == 'rebalance' and set(payload) == {'action'}:
-        return manager.rebalance(actor, code)
+        result = manager.rebalance(actor, code)
+        with connect_readonly() as connection:
+            result['fund']['currency'] = _configured_base_currency(connection)
+        return result
     else:
         raise ValueError('펀드 작업 또는 입력 필드를 확인해주세요.')
-    return {'success': success, 'message': message, 'fund': manager.snapshot(code)}
+    with connect_readonly() as connection:
+        currency = _configured_base_currency(connection)
+    return {'success': success, 'message': str(message).replace('기준 통화', currency), 'fund': {**manager.snapshot(code), 'currency': currency}}
 
 
 def admin_users(search, kind="people"):
@@ -2291,8 +2324,8 @@ PRODUCT_KINDS = {
     "fund": ("일반 펀드", "market", "fund"), "indexfund": ("인덱스 펀드", "market", "indexfund"),
     "commodity": ("현물 원자재", "market", "commodity"), "bond": ("국채", "market", "bond"),
     "option": ("옵션", "market", "option"), "els": ("ELS", "market", "els"),
-    "saving": ("저축 · 국적 통화", "finance", "saving"), "loan": ("대출", "finance", "loan"),
-    "currency": ("통화", "finance", "currency"), "currencyproduct": ("저축 · 외환통장", "finance", "currencyproduct"),
+    "saving": ("저축", "finance", "saving"), "loan": ("대출", "finance", "loan"),
+    "currency": ("통화", "finance", "currency"),
     "etn": ("ETN", "market", "etn"),
     "convertiblebond": ("전환사채 (CB)", "market", "convertiblebond"),
     "warrantbond": ("신주인수권부사채 (BW)", "market", "warrantbond"),
@@ -2303,7 +2336,7 @@ PRODUCT_KINDS = {
 }
 # Savings and foreign-currency accounts share one form in the dashboard; only the
 # account currency (and therefore who can open it) differs.
-SAVING_FAMILY = {"saving", "currencyproduct"}
+SAVING_FAMILY = {"saving"}
 SAVING_FIELDS = ("name", "quote_currency", "interest_rate", "deposit_amount", "maturity_days",
                  "interest_cycle", "compound_type", "issuer")
 PRODUCT_PROTECTED = {"created_at", "created_epoch", "sold_amount", "writer_id", "contract_id",
@@ -2342,7 +2375,7 @@ def product_catalog():
                                 else ("결제 통화" if profile == "dr" else "통장 화폐") if field == "quote_currency"
                                 else "발행 은행 ID" if field == "issuer"
                                 else "상장 거래소 (새 법인은 비상장 · 법인 자본에서 상장)" if field == "exchange_id" and profile == "stock"
-                                else "상장 거래소 ID (비상장이면 UNLISTED)" if field == "exchange_id" and profile == "preferred"
+                                else "상장 거래소 ID (비상장이면 3DSG)" if field == "exchange_id" and profile == "preferred"
                                 else ARG_LABELS.get(field, field),
                        "optional": field in OPTIONAL_ARGS.get(profile, ()),
                        "text": field in TEXT_ARGS or field == "quote_currency"} for field in _form_fields(profile)]
@@ -2441,7 +2474,7 @@ def product_list(group):
                             (program["underlying_code"], program["underlying_code"]),
                         ).fetchone()
                         if underlying and float(underlying["price"] or 0) > 0:
-                            dr_program["underlyingPrice"] = float(underlying["price"])
+                            dr_program["underlyingPrice"] = native_value(underlying["price"])
                             dr_program["underlyingCurrency"] = str(underlying["quote_currency"] or connection.execute("SELECT base_currency_code()").fetchone()[0])
                             try:
                                 from managers.currency_manager import CurrencyManager
@@ -2497,10 +2530,6 @@ def product_detail(code):
             elif field == "nationality" and kind == "currency":
                 found = connection.execute("SELECT nationality FROM country_currencies WHERE currency_code=? LIMIT 1", (code,)).fetchone()
                 values[field] = found[0] if found else None
-            elif field == "currency_code" and kind == "currencyproduct":
-                values[field] = row.get("quote_currency")
-            elif field == "annual_rate" and kind == "currencyproduct":
-                values[field] = row.get("interest_rate")
             elif field == "issuer":
                 from functions.banks import bank_ids
                 values[field] = bank_ids(connection).get(row.get(field), row.get(field))
@@ -2888,7 +2917,7 @@ def admin_country_action(actor, nationality, payload):
         args = [str(value).strip() for value in args]
         while args and not args[-1]:
             args.pop()
-        result = AdminCommandsManager(bot).execute(actor, "국가생성", " ".join(quote(value) for value in [nationality, *args]))
+        result = AdminCommandsManager(bot).execute(actor, "국가생성", " ".join(quote(value) for value in [str(payload.get("countryId", "")).strip(), nationality, *args]))
     elif action == "delete":
         result = AdminCommandsManager(bot).execute(actor, "국가삭제", quote(nationality))
     elif action == "rates":
@@ -2991,7 +3020,8 @@ def admin_country_action(actor, nationality, payload):
                 "SELECT user_id FROM country_treasuries WHERE nationality=?", (nationality,)).fetchone()
         if not treasury:
             raise ValueError("국고를 찾을 수 없습니다.")
-        amount = bot.admin_control._number(payload.get("amount"), -2**53 + 1, 2**53 - 1, integer=True)
+        from functions.amount_limits import MAX_NATIVE
+        amount = bot.admin_control._number(payload.get("amount"), -MAX_NATIVE, MAX_NATIVE, integer=True)
         reason = str(payload.get("reason", "")).strip()[:200]
         with bot.db.atomic() as connection:
             bot.admin_control.require(actor, connection)
@@ -3269,7 +3299,7 @@ def admin_bank_create(actor, payload):
             raise ValueError("등록되지 않은 국가입니다.")
         if connection.execute("SELECT 1 FROM financial_institutions WHERE issuer=?", (issuer,)).fetchone():
             raise ValueError("같은 이름의 은행이 이미 있습니다.")
-        capital = float(payload.get("equityCapital") or 1_000_000)
+        capital = native_value(payload.get("equityCapital") or 1_000_000)
         if not capital > 0:
             raise ValueError("자본금은 0보다 커야 합니다.")
         bank_id = str(payload.get("id") or "").strip().upper()
@@ -3298,7 +3328,7 @@ def admin_bank_update(actor, bank_id, payload):
     for key, value in changes.items():
         if key != "status":
             try:
-                changes[key] = float(value)
+                changes[key] = native_value(value) if any(word in key for word in ("capital","limit","amount","balance","reserve")) else float(value)
             except (TypeError, ValueError):
                 raise ValueError(f"{key} 값은 숫자여야 합니다.") from None
     with connect_db(timeout=5) as connection:
@@ -3376,8 +3406,9 @@ def admin_identity_action(actor, payload):
 
 def admin_company_financial(code, period=None):
     from managers.financial_manager import FinancialManager
+    from managers.company_account_manager import CompanyAccounts
     manager = FinancialManager(domain().db)
-    return {"report": manager.report(code, period or None), "periods": manager.periods(code)}
+    return {"report": CompanyAccounts.financial_report(domain().db, code, period or None), "periods": manager.periods(code)}
 
 
 def own_company_financial(user, period=None):
@@ -3406,6 +3437,7 @@ def user_history(user_id, limit=150):
                                "currency": row["source_currency"] if outgoing else row["target_currency"],
                                "amount": (-row["source_units"] if outgoing else row["target_units"]) / 1_000_000,
                                "counterpart": row["recipient"] if outgoing else row["sender"],
+                               "counterpartUserId": row["recipient_id"] if outgoing else row["sender_id"],
                                "account": row["source_account"] if outgoing else row["target_account"]})
         if "basic_income_payments" in tables:
             for row in connection.execute("SELECT * FROM basic_income_payments WHERE user_id=? ORDER BY recorded_epoch DESC LIMIT ?", (owner, limit)):
@@ -3448,6 +3480,43 @@ def admin_company_journal_action(actor, code, payload):
     return message
 
 
+def admin_company_share_history(code):
+    from managers.share_restructuring_manager import ShareRestructuringManager
+    return {"resolutions": ShareRestructuringManager(domain().bot).history(code)}
+
+
+def admin_company_share_action(actor, code, payload):
+    from managers.share_restructuring_manager import ShareRestructuringManager
+    from managers.corporate_actions_manager import CorporateActionsManager
+    if not isinstance(payload, dict):
+        raise ValueError("요청 내용을 확인해주세요.")
+    bot = domain().bot
+    if payload.get("action") == "record_resolution":
+        if set(payload) != {"action", "ratio", "decision", "meetingReference", "articlesReference", "parValue"}:
+            raise ValueError("의결 결과·문서·현재 액면가를 모두 입력해주세요.")
+        key = ShareRestructuringManager(bot).record(actor, code, payload["ratio"], payload["decision"],
+            payload["meetingReference"], payload["articlesReference"], payload["parValue"])
+        return f"주총 의결 #{key}을 등록했습니다. 주식 수는 변경되지 않았습니다. 집행은 관리자가 별도로 실행합니다."
+    if payload.get("action") == "execute":
+        if set(payload) - {"action", "mode", "ratio", "resolutionId", "oldShares", "newShares"} or "mode" not in payload:
+            raise ValueError("집행 방식과 비율을 확인해주세요.")
+        mode = payload["mode"]
+        if mode == "ratio_split":
+            if not {"oldShares", "newShares"} <= set(payload):
+                raise ValueError("기존 주식 수와 새 주식 수를 입력해주세요.")
+        elif "ratio" not in payload or {"oldShares", "newShares"} & set(payload):
+            raise ValueError("집행 방식에 맞는 비율을 입력해주세요.")
+        resolution = payload.get("resolutionId")
+        if resolution is not None:
+            resolution = CorporateActionsManager._integer(resolution, "의결 번호", 1)
+        success, message = CorporateActionsManager(bot).adjust_face_value(actor,
+            "병합" if mode == "reverse_split" else "분할", code, payload.get("ratio", 2), mode=mode, resolution_id=resolution,
+            old_shares=payload.get("oldShares"), new_shares=payload.get("newShares"))
+        _read_cache.invalidate()
+        return str(message) if success or str(message).startswith("❌") else "❌ " + str(message)
+    raise ValueError("의결 등록 또는 관리자 집행을 선택해주세요.")
+
+
 def admin_company_command(actor, code, payload):
     from decimal import InvalidOperation
     from functions import company_actions, user_actions
@@ -3457,6 +3526,8 @@ def admin_company_command(actor, code, payload):
         success, message, _ = company_actions.run(domain().bot, actor, code, command, values)
     except (KeyError, InvalidOperation, sqlite3.IntegrityError, RuntimeError) as exc:
         raise ValueError(str(exc) or "명령어를 처리하지 못했습니다.") from exc
+    with connect_readonly() as connection:
+        message = str(message).replace("기준 통화", _configured_base_currency(connection))
     return message if success or str(message).startswith("❌") else "❌ " + str(message)
 
 
@@ -3480,6 +3551,8 @@ def run_user_command(user, payload):
     except RuntimeError as exc:
         raise ValueError(str(exc)) from exc
     _read_cache.invalidate(("portfolio", trader), ("orders", trader))
+    with connect_readonly() as connection:
+        message = str(message).replace("기준 통화", _configured_base_currency(connection)).replace("기준통화", _configured_base_currency(connection))
     return success, message, data
 
 
@@ -3520,7 +3593,9 @@ def run_admin_command(actor, payload):
     except (KeyError, InvalidOperation, sqlite3.IntegrityError) as exc:
         raise ValueError(str(exc) or "명령어를 처리하지 못했습니다.") from exc
     _read_cache.invalidate()
-    return str(result or "완료했습니다.")
+    with connect_readonly() as connection:
+        currency = _configured_base_currency(connection)
+    return str(result or "완료했습니다.").replace("기준 통화", currency).replace("기준통화", currency)
 
 
 def update_admin_user(actor, user_id, changes):
@@ -3607,6 +3682,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(200, {"status": "ok", "service": "inazina-python-data"})
             elif path == "/internal/auth/countries":
                 self.send_json(200, {"countries": auth_countries()})
+            elif path == "/internal/search-indicators":
+                from web_api.search_indicators import search_indicators
+                with connect_readonly() as connection:
+                    self.send_json(200, search_indicators(connection, parse_qs(parsed.query).get("search", [""])[0]))
             elif path == "/internal/me":
                 user_id = internal_user_id(self)
                 user = identity(user_id)
@@ -3614,6 +3693,15 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     self.send_json(200, {"user": user})
+            elif path == "/internal/me/ownership-graph":
+                user_id = internal_user_id(self)
+                if not identity(user_id):
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    from managers.organization_manager import OrganizationManager
+                    with connect_db(timeout=5) as connection:
+                        graph = OrganizationManager.user_ownership_graph(connection, user_id)
+                    self.send_json(200, {"graph": graph})
             elif path in {"/internal/board/posts", "/internal/board/boards"} or path.startswith(("/internal/board/posts/", "/internal/board/files/")):
                 viewer = identity(internal_user_id(self)) if internal_user_id(self) else None
                 try:
@@ -3987,7 +4075,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, admin_command_catalog())
             elif path.startswith("/internal/admin/") and path.split("/")[3] in {
                     "products", "countries", "exchanges", "help", "bot-jobs", "user", "companies", "warnings", "feedback",
-                    "naturalization", "banks"}:
+                    "naturalization", "banks", "organizations"}:
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
@@ -4016,10 +4104,28 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, detail)
                 elif parts == ["companies"]:
                     self.send_json(200, admin_companies())
+                elif parts == ["organizations"]:
+                    from web_api.organizations import directory
+                    with connect_db(timeout=5) as connection:
+                        result = directory(connection)
+                    for change in result.get("sizeChanges", []):
+                        audit_admin_access(user["userId"], "organization.size_auto_change", change)
+                    self.send_json(200, result)
+                elif len(parts) == 2 and parts[0] == "organizations":
+                    from web_api.organizations import directory
+                    query = parse_qs(parsed.query)
+                    min_percent = 0 if query.get("includeMinor", ["0"])[0] == "1" else 1
+                    with connect_db(timeout=5) as connection:
+                        result = directory(connection, parts[1], min_percent=min_percent)
+                    for change in result.get("sizeChanges", []):
+                        audit_admin_access(user["userId"], "organization.size_auto_change", change)
+                    self.send_json(200, result)
                 elif parts == ["companies", "identity"]:
                     self.send_json(200, admin_identity(user["userId"]))
                 elif len(parts) == 3 and parts[0] == "companies" and parts[2] == "financial":
                     self.send_json(200, admin_company_financial(parts[1], query.get("period", [None])[0]))
+                elif len(parts) == 3 and parts[0] == "companies" and parts[2] == "share-actions":
+                    self.send_json(200, admin_company_share_history(parts[1]))
                 elif len(parts) == 3 and parts[0] == "companies" and parts[2] == "journal":
                     self.send_json(200, admin_company_journal(parts[1], query.get("period", [None])[0]))
                 elif parts == ["warnings"]:
@@ -4647,13 +4753,19 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, admin_login_as(user["userId"], payload))
             elif path.startswith("/internal/admin/") and path.split("/")[3] in {
                     "products", "countries", "exchanges", "user", "companies", "warnings", "feedback", "logs",
-                    "naturalization", "banks"}:
+                    "naturalization", "banks", "organizations"}:
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
                     return
                 parts = [unquote(part) for part in path.split("/")[3:]]
                 actor = user["userId"]
-                if parts == ["products"]:
+                if parts == ["organizations"]:
+                    from web_api.organizations import action as organization_action
+                    with connect_db(timeout=5) as connection:
+                        result = organization_action(connection, payload, actor)
+                    audit_admin_access(actor, "organization.configuration", result)
+                    message = f"조직 설정을 저장했습니다: {result.get('action')}"
+                elif parts == ["products"]:
                     message = product_save(actor, payload)
                 elif len(parts) == 3 and parts[0] == "products" and parts[2] == "status":
                     message = product_status(actor, parts[1], bool(payload.get("active")),
@@ -4666,6 +4778,8 @@ class Handler(BaseHTTPRequestHandler):
                     message = admin_exchange_action(actor, parts[1], payload)
                 elif parts == ["companies", "identity"]:
                     message = admin_identity_action(actor, payload)
+                elif len(parts) == 3 and parts[0] == "companies" and parts[2] == "share-actions":
+                    message = admin_company_share_action(actor, parts[1], payload)
                 elif len(parts) == 3 and parts[0] == "companies" and parts[2] == "journal":
                     message = admin_company_journal_action(actor, parts[1], payload)
                 elif len(parts) == 2 and parts[0] == "companies":
@@ -4809,7 +4923,15 @@ class Handler(BaseHTTPRequestHandler):
             return
 
     def send_json(self, status, payload):
-        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        from functions.exact_money import json_amount
+        from decimal import Decimal
+        def safe(value):
+            if isinstance(value,Decimal) or isinstance(value,int) and not isinstance(value,bool) and abs(value)>2**53-1:
+                return json_amount(value)
+            if isinstance(value,dict):return {key:safe(item) for key,item in value.items()}
+            if isinstance(value,(list,tuple)):return [safe(item) for item in value]
+            return value
+        body = json.dumps(safe(payload), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         try:
             self.send_response(status)
             self.send_header("content-type", "application/json; charset=utf-8")

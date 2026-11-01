@@ -1,3 +1,4 @@
+import type { Money } from "./money";
 const TOKEN_KEY = "inazina.web.token";
 
 export type ApiUser = {
@@ -7,7 +8,7 @@ export type ApiUser = {
   /** Home currency of the nationality; wallet amounts are shown in it. */
   currency?: string;
   role: "admin" | "user" | "nation" | "company";
-  cash: number;
+  cash: Money;
   creditScore: number;
   /** Set when an administrator signed in as this country or company account ($login). */
   delegatedBy?: string;

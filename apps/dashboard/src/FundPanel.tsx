@@ -1,14 +1,16 @@
+import type { Money } from "../../shared/money";
+import { exactMoney } from "../../shared/money";
 import { useEffect, useState } from "react";
 import { api } from "../../shared/api";
 import { Card, Field, number, plain, type Ctx } from "./common";
 
 type Fund = {
-  code: string; mode: "synthetic" | "backed"; availableCash?: number; reservedCash?: number;
+  code: string; mode: "synthetic" | "backed"; availableCash?: Money; reservedCash?: number;
   netAssets?: number; issuedUnits?: number; nav?: number; ledgerBalanced?: boolean; conversionCash?: number; receivables?: number;
-  positions?: { code: string; quantity: number; price: number; value: number }[];
+  positions?: { code: string; quantity: number; price: Money; value: Money }[];
   allocations?: { code: string; weight: number; targetValue: number; actualValue: number; actualWeight: number }[];
   orders: { order_id: number; asset_code: string; side: string; remaining_quantity: number; reserved_cash: number }[];
-  ledger: { entry_id: number; event: string; amount: number; balance: number; reference: string | null }[];
+  ledger: { entry_id: number; event: string; amount: Money; balance: Money; reference: string | null }[];
 };
 
 export function FundPanel({ code, ctx, close }: { code: string; ctx: Ctx; close: () => void }) {
@@ -56,7 +58,7 @@ export function FundPanel({ code, ctx, close }: { code: string; ctx: Ctx; close:
       <form className="form-grid" onSubmit={(event) => {
         event.preventDefault();
         if (window.confirm(`${code}의 자금으로 ${asset} ${quantity}개를 ${price} 기준 통화 지정가에 ${side === "buy" ? "매수" : "매도"}할까요?`)) {
-          act({ action: "order", assetCode: asset.trim(), side, quantity, price: Number(price) });
+          act({ action: "order", assetCode: asset.trim(), side, quantity, price: exactMoney(price) });
         }
       }}>
         <Field label="구성자산 코드"><input required value={asset} onChange={(event) => setAsset(event.target.value)} /></Field>

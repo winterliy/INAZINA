@@ -1,3 +1,4 @@
+import { minorMoney, type Money } from "../../shared/money";
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { api, appUrl, type ApiUser } from "../../shared/api";
@@ -5,8 +6,10 @@ import { Card, Field, date, errorText, number, type Ctx } from "./common";
 import { IdentityCard } from "./IdentityCard";
 import { AuditHeatmap } from "./ActivityTiles";
 import { LoginHistoryCard, type LoginEvent } from "./LoginHistoryCard";
+import { OwnershipGraph, type OwnershipGraphData } from "./OrganizationPage";
+import "./AccountWithdrawal.css";
 
-type Financial = { company: string; periods: string[]; report: { period: string; currency: string; places: number; summary: { assets: number; liabilities: number; equity: number }; income: Record<string, number>; checks: { balance_sheet: boolean } } };
+type Financial = { company: string; periods: string[]; report: { period: string; currency: string; places: number; summary: { assets: Money; liabilities: Money; equity: Money }; income: Record<string, Money>; checks: { balance_sheet: boolean } } };
 
 /** The administrator's own work over the last week, from the audit log. */
 function OwnHeatmap({ userId }: { userId: string }) {
@@ -27,7 +30,7 @@ function OwnFinancial({ say }: { say: Ctx["say"] }) {
   }, [period]);
   if (!financial) return null;
   const { report } = financial;
-  const money = (units: number) => `${number(units / 10 ** report.places)} ${report.currency}`;
+  const money = (units: Money) => `${number(minorMoney(units, report.places))} ${report.currency}`;
   return <Card title={`${financial.company} 재무제표`} caption="원장에서 계산한 이 법인의 재무 상태입니다. 수정은 관리자가 합니다."
     actions={<select aria-label="기간" value={report.period} onChange={(event) => setPeriod(event.target.value)}>{Array.from(new Set([report.period, ...financial.periods])).map((item) => <option key={item}>{item}</option>)}</select>}>
     <div className="stats">
@@ -50,6 +53,14 @@ export function AccountPage({ ctx, user, onLogout }: { ctx: Ctx; user: ApiUser; 
   const [password, setPassword] = useState("");
   const admin = user.role === "admin";
   const [logins, setLogins] = useState<LoginEvent[]>([]);
+  const [ownershipGraph, setOwnershipGraph] = useState<OwnershipGraphData>();
+
+  useEffect(() => {
+    if (admin) return;
+    api<{ graph: OwnershipGraphData }>("/api/me/ownership-graph")
+      .then((result) => setOwnershipGraph(result.graph))
+      .catch((cause) => say(errorText(cause, "보유 주식 구조를 불러오지 못했습니다."), true));
+  }, [admin, say, user.userId]);
 
   useEffect(() => {
     api<{ htsId: string | null }>("/api/hts/account").then((account) => { setLoginId(account.htsId); setInput(account.htsId ?? ""); })
@@ -95,8 +106,19 @@ export function AccountPage({ ctx, user, onLogout }: { ctx: Ctx; user: ApiUser; 
         <div className="actions"><a className="btn primary" href={appUrl("hts")}>나루 열기</a><a className="soft" href={appUrl("hts", "/transfer")}>송금</a><a className="soft" href={appUrl("hts", "/bank")}>은행</a><a className="soft" href={appUrl("hts", "/board")}>게시판</a></div>
       </Card>}
     </div>
+    {!admin && <Card title="보유 주식과 지배 구조" caption="직접 보유한 주식과 의결권 과반으로 지배하는 기업의 자회사를 표시합니다. 간접 지분은 각 지배 경로별로 계산합니다.">
+      <OwnershipGraph graph={ownershipGraph} />
+    </Card>}
     {user.role === "company" && <OwnFinancial say={say} />}
     {admin && <OwnHeatmap userId={user.userId} />}
     {admin && <LoginHistoryCard ctx={ctx} userId={user.userId} onLoaded={setLogins} />}
+    {user.role === "user" && !user.delegatedBy && <details className="account-withdrawal">
+      <summary>회원 탈퇴</summary>
+      <div className="account-withdrawal-panel">
+        <h3>탈퇴를 문의하시겠어요?</h3>
+        <p>계정 탈퇴 전 보유 자산, 예금, 대출과 미처리 거래를 확인해야 합니다. 현재 자동 탈퇴 기능은 제공하지 않으므로, 고객센터에 탈퇴 요청을 보내면 운영진이 정산과 처리 방법을 안내합니다.</p>
+        <a className="account-withdrawal-link" href={appUrl("hts", "/info")}>고객센터에서 탈퇴 요청하기 ↗</a>
+      </div>
+    </details>}
   </>;
 }

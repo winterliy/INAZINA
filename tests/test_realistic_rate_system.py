@@ -563,7 +563,7 @@ class RealisticRateSystemTests(unittest.TestCase):
             tax = UserManager._tax(
                 conn, "borrower", "treasury_bond_interest", "12.34", currency="AAA"
             )
-        self.assertEqual(tax, 1.23)
+        self.assertEqual(tax, Decimal("1.23"))
         row = self.db.tax.execute_one(
             "SELECT gross_amount,tax_amount,net_amount,currency_code FROM tax_transactions "
             "WHERE user_id='borrower' AND source='treasury_bond_interest'"
@@ -1081,7 +1081,7 @@ class RealisticRateSystemTests(unittest.TestCase):
                           row["principal_due_minor_units"], row["interest_due_minor_units"],
                           row["fee_due_minor_units"]), (425, 110, 120, 195, 300, 120, 110))
         self.assertEqual(mirror["amount_minor_units"], 425)
-        self.assertEqual(applied, .04)
+        self.assertEqual(str(applied), "0.04")
         self.assertEqual((second["amount_paid"], second["fee_paid"],
                           second["interest_paid"], second["principal_paid"]),
                          (.04, .03, .01, 0))

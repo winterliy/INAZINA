@@ -62,7 +62,7 @@ class AdminRevisionTests(unittest.TestCase):
         fx=self.bot.currency_mgr.open_account('citizen','INZCU001')
         self.run_command('잔고수정',fx+' modify 1.25')
         self.run_command('잔고수정',fx+' add 0.5')
-        self.assertEqual(self.db.accounts.execute_one("SELECT balance_units FROM accounts WHERE account_number=? AND account_type='currency_saving'",(fx,))[0],1750000)
+        self.assertEqual(self.db.accounts.execute_one("SELECT balance_units FROM accounts WHERE account_number=? AND account_type='saving'",(fx,))[0],1750000)
         with self.assertRaises(ValueError):AdminCommandsManager(self.bot).execute('citizen','세율','5')
 
     def test_rates_settings_and_cross_currency(self):
@@ -214,7 +214,7 @@ class AdminRevisionTests(unittest.TestCase):
     def test_positional_foreign_fund_option_and_creation_usage(self):
         fixtures.InazinaTests.seed(self)
         self.run_command('상품생성',"FXACC currencyproduct 달러통장 USD 1")
-        self.assertEqual(self.db.products.execute_one("SELECT quote_currency FROM saving WHERE product_code='FXACC' AND product_kind='currency_saving'")[0],'USD')
+        self.assertEqual(self.db.products.execute_one("SELECT quote_currency FROM saving WHERE product_code='FXACC' AND product_kind='saving'")[0],'USD')
         self.run_command('상품생성','FUND fund 혼합펀드 1000 10000 INZST001:0.5,INZST002:0.5 INZ')
         self.assertEqual(self.db.products.execute_one("SELECT COUNT(*) FROM fund_components WHERE product_code='FUND'")[0],2)
         self.assertEqual(self.db.products.get_investment('FUND')['fund_category'],'equity')

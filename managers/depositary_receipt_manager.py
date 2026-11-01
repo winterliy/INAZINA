@@ -1,5 +1,6 @@
 """Atomic simulator conversion between DRs and their underlying common shares."""
 
+from functions.exact_money import ExactDecimal
 from decimal import Decimal
 import json
 import math
@@ -474,17 +475,18 @@ class DepositaryReceiptManager:
         account_units = int(Decimal(str(fee_amount))*Decimal(1_000_000))
         account = conn.execute(
             "SELECT account_number FROM accounts.accounts WHERE user_id=? "
-            "AND account_type='currency_saving' AND quote_currency=? AND balance_units>=? "
+            "AND account_type='saving' AND quote_currency=? AND balance_units>=? "
             "ORDER BY balance_units DESC,account_number LIMIT 1",
             (str(user_id), str(currency).upper(), account_units),
         ).fetchone()
         if not account:
             raise ValueError(f"수수료 납부에 필요한 {currency} 통화 예금 계좌 잔액이 부족합니다.")
+        from managers.deposit_accounts import PRINCIPAL_DELTA
         changed = conn.execute(
-            "UPDATE accounts.accounts SET balance_units=balance_units-? "
-            "WHERE account_number=? AND user_id=? AND account_type='currency_saving' "
+            f"UPDATE accounts.accounts SET balance_units=balance_units-?,{PRINCIPAL_DELTA} "
+            "WHERE account_number=? AND user_id=? AND account_type='saving' "
             "AND quote_currency=? AND balance_units>=?",
-            (account_units, account["account_number"], str(user_id),
+            (account_units, -account_units, account["account_number"], str(user_id),
              str(currency).upper(), account_units),
         )
         if changed.rowcount != 1:
@@ -1219,6 +1221,8 @@ class DepositaryReceiptManager:
                     if int(outstanding or 0) + int(pending_issues or 0) + quantity > supply:
                         raise ValueError(f"DR 프로그램 발행 한도({supply:,})를 초과합니다.")
 
+                    from managers.asset_cost_manager import AssetCostManager
+                    AssetCostManager.require_unit_cost_support(conn, str(user), underlying_code)
                     lots = conn.execute(
                         "SELECT holding_id,account_number,quantity,average_cost_minor_units FROM assets.user_assets "
                         "WHERE user_id=? AND asset_code=? ORDER BY holding_id",
@@ -1307,7 +1311,7 @@ class DepositaryReceiptManager:
                     ).fetchone()[0]
                     pending_dr = self._reserved_quantity(conn, code, user,
                                                          exclude_reference=_settling_reference)
-                    if (float(owned or 0) - float(reserved or 0) - float(delegated or 0)
+                    if (float(owned or 0) - ExactDecimal(reserved or 0) - float(delegated or 0)
                             - pending_dr + 1e-9 < quantity):
                         raise ValueError("미체결 매도 주문 및 위임된 의결권을 제외한 DR 보유 수량이 부족합니다.")
                     custody = conn.execute(

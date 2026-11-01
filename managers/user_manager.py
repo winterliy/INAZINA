@@ -1,3 +1,5 @@
+from functions.exact_money import ExactDecimal, native_value
+from functions.amount_limits import MAX_NATIVE
 from functions.money import base_currency_code
 import random
 import math
@@ -83,7 +85,7 @@ class UserManager:
             from functions.money import currency_precision
             currency = str(asset.get("quote_currency") or base_currency_code(conn))
             places = currency_precision(conn, currency)
-            price = float(asset["price"] or 0)
+            price = ExactDecimal(asset["price"] or 0)
             minimum = 1 / (10 ** places)
             asset["price"] = max(minimum, round_money(price, places)) if price > 0 else 0
         if matches and matches[0][1] == "investment":
@@ -111,14 +113,17 @@ class UserManager:
         if not user:
             return None
         if not exclude_wallet and conn.execute(f"SELECT 1 FROM users.users WHERE user_id=? AND {IS_TREASURY}", (str(user_id),)).fetchone():
-            return (2**53 - 1, None)  # a treasury can always pay from its wallet
+            return (MAX_NATIVE, None)  # a treasury can always pay from its wallet
+        from managers.currency_manager import CurrencyManager
+        home = CurrencyManager.home(conn, user_id)
         sources = [] if exclude_wallet else [(int(round(user["cash"] or 0)), None)]
         sources.extend(
             (int(round(row["balance"] or 0)), row["account_number"])
             for row in conn.execute(
                 "SELECT account_number, balance FROM accounts.accounts WHERE user_id = ? "
-                "AND (? IS NULL OR account_number <> ?) AND managed_by IS NULL",
-                (user_id, exclude_account, exclude_account),
+                "AND (? IS NULL OR account_number <> ?) AND managed_by IS NULL "
+                "AND COALESCE(quote_currency, ?) = ?",
+                (user_id, exclude_account, exclude_account, home, home),
             ).fetchall()
         )
         return max(sources, key=lambda source: source[0]) if sources else None
@@ -184,7 +189,7 @@ class UserManager:
                 "balance_units=balance_units-?, principal = MAX(0, COALESCE(principal, 0) - ?), "
                 "last_payment_epoch = ?, last_payment = ? "
                 "WHERE account_number = ? AND user_id = ? AND balance_minor_units >= ?",
-                (minor, minor*quantum, float(amount), now, stamp, account_number, user_id, minor),
+                (minor, minor*quantum, ExactDecimal(amount), now, stamp, account_number, user_id, minor),
             )
         return cursor.rowcount == 1
 
@@ -217,7 +222,7 @@ class UserManager:
                 "balance_units=balance_units+?, "
                 "principal = COALESCE(principal, 0) + ?, last_payment_epoch = ?, "
                 "last_payment = ? WHERE account_number = ? AND user_id = ?",
-                (minor, minor*quantum, float(amount), now, stamp, account_number, user_id),
+                (minor, minor*quantum, ExactDecimal(amount), now, stamp, account_number, user_id),
             )
 
     @staticmethod
@@ -243,7 +248,7 @@ class UserManager:
                            "WHERE u.user_id=?", (source_class,str(user_id))).fetchone()
         fallback = conn.execute("SELECT value FROM settings WHERE key='tax_percent'").fetchone()
         try:
-            rate = float(row["tax_percent"] if row and row["tax_percent"] is not None
+            rate = ExactDecimal(row["tax_percent"] if row and row["tax_percent"] is not None
                          else fallback["value"] if fallback else 3.0)
         except (TypeError, ValueError):
             rate = 3.0
@@ -369,8 +374,8 @@ class UserManager:
                 if funds is None:
                     return False, "❌ 등록된 사용자만 거래할 수 있습니다."
                 balance, account_number = funds
-                if balance < float(total_cost) or not self._debit_source(
-                    conn, user_id, account_number, float(total_cost), currency=currency
+                if balance < ExactDecimal(total_cost) or not self._debit_source(
+                    conn, user_id, account_number, ExactDecimal(total_cost), currency=currency
                 ):
                     return False, f"❌ 잔액이 부족합니다. (필요 금액: {total_cost:,} {currency})"
                 from managers.asset_cost_manager import AssetCostManager
@@ -382,12 +387,12 @@ class UserManager:
                     "INSERT INTO assets.market_trade_history "
                     "(asset_code, side, quantity, price, recorded_epoch) "
                     "VALUES (?, 'buy', ?, ?, ?)",
-                    (asset_code, quantity, float(price), int(time.time())),
+                    (asset_code, quantity, ExactDecimal(price), int(time.time())),
                 )
                 if asset["type"] in {"mutual_fund", "index_fund", "corporate_bond"}:
                     product = conn.execute("SELECT issuer_code FROM product.investment WHERE product_code = ?", (asset_code,)).fetchone()
                     if asset["type"] == "corporate_bond":
-                        conn.execute("UPDATE company.company SET capital = capital + ? WHERE company_code = ?", (float(total_cost), product["issuer_code"]))
+                        conn.execute("UPDATE company.company SET capital = capital + ? WHERE company_code = ?", (ExactDecimal(total_cost), product["issuer_code"]))
                     else:
                         # The listing country's treasury is the counterparty.
                         CurrencyManager.treasury_receive(
@@ -476,10 +481,9 @@ class UserManager:
                     take = min(left, int(row["quantity"]))
                     if take <= 0:
                         continue
-                    basis_minor = (int(row["average_cost_minor_units"] or 0)
-                                   if "average_cost_minor_units" in row.keys()
-                                   else to_minor_units(row["average_cost"] or 0, places))
-                    taxable_gain += max(0, price_minor-basis_minor) * take
+                    from managers.asset_cost_manager import AssetCostManager
+                    basis_minor = AssetCostManager.sale_cost_minor(conn, row['holding_id'], take)
+                    taxable_gain += max(0, price_minor * take - basis_minor)
                     sold.append((row["holding_id"], row["account_number"], take, int(row["quantity"])))
                     left -= take
                     if left == 0:
@@ -493,7 +497,7 @@ class UserManager:
                         gross_proceeds_minor * SCALE // (10 ** places))
                 total_tax = self._tax(
                     conn, user_id, "stock_sale_gain",
-                    from_minor_units(taxable_gain, places), currency=currency,
+                    from_minor_units(AssetCostManager.rounded_minor(taxable_gain), places), currency=currency,
                 )
                 total_tax_units = to_minor_units(total_tax, places)
                 tax_left_units = total_tax_units
@@ -517,7 +521,7 @@ class UserManager:
                         raise RuntimeError("보유 수량이 변경되어 매도를 취소했습니다.")
                     self._credit_source(
                         conn, user_id, account_number,
-                        float(from_minor_units(net_proceeds_units, places)), currency=currency,
+                        ExactDecimal(from_minor_units(net_proceeds_units, places)), currency=currency,
                     )
                     tax_left_units -= share_tax_units
                     qty_left -= take
@@ -527,7 +531,7 @@ class UserManager:
                     "INSERT INTO assets.market_trade_history "
                     "(asset_code, side, quantity, price, recorded_epoch) "
                     "VALUES (?, 'sell', ?, ?, ?)",
-                    (asset_code, quantity, float(price), int(time.time())),
+                    (asset_code, quantity, ExactDecimal(price), int(time.time())),
                 )
             net_proceeds = from_minor_units(
                 max(0, gross_proceeds_minor-total_tax_units), places
@@ -720,7 +724,7 @@ class UserManager:
         except Exception as exc:
             return False, f"❌ 송금 처리 중 오류가 발생했습니다: {exc}"
 
-    def gamble(self, user_id, amount):
+    def gamble(self, user_id, amount, source=None):
         try:
             amount = parse_money(amount, minimum=1)
         except ValueError as exc:
@@ -730,7 +734,8 @@ class UserManager:
             return False, interest_error
         try:
             with self.db.atomic(("users", "accounts", "pot", "tax")) as conn:
-                funds = self._choose_funds(conn, str(user_id))
+                from managers.game_funding import game_funds
+                funds = game_funds(conn, str(user_id), source)
                 if not funds:
                     return False, "❌ 등록된 사용자만 이용할 수 있습니다."
                 balance, account_number = funds
@@ -740,7 +745,7 @@ class UserManager:
                     "SELECT value FROM settings WHERE key = 'gamble_chance'"
                 ).fetchone()
                 try:
-                    chance = float(row["value"] if row else 50)
+                    chance = ExactDecimal(row["value"] if row else 50)
                 except (TypeError, ValueError):
                     chance = 50.0
                 if not 0 <= chance <= 100:
@@ -749,7 +754,7 @@ class UserManager:
                     "SELECT value FROM settings WHERE key = 'gamble_return'"
                 ).fetchone()
                 try:
-                    return_percent = float(return_row["value"] if return_row else 100)
+                    return_percent = ExactDecimal(return_row["value"] if return_row else 100)
                 except (TypeError, ValueError):
                     return_percent = 100.0
                 if not math.isfinite(return_percent) or return_percent < 0:
@@ -812,7 +817,7 @@ class UserManager:
     def _get_total_assets_snapshot(self, user_id, conn):
         """Build every portfolio component from one WAL read snapshot."""
         user = conn.execute("SELECT * FROM users WHERE user_id=?", (str(user_id),)).fetchone()
-        cash = int(round(user["cash"] or 0)) if user else 0
+        cash = native_value(user["cash"] or 0) if user else 0
         nationality = str(user['nationality'] or '미설정') if user else '미설정'
         # Load the whole tradable-code catalog once.  The previous lazy lookup
         # performed up to ten SQL statements for every distinct portfolio code.
@@ -826,8 +831,8 @@ class UserManager:
                                       "ON a.code=c.asset_code WHERE c.status='active'"):
             if row['code']==base_currency_code(conn):
                 continue
-            if row['price'] is not None and float(row['price'])>0:
-                currency_rates[str(row['code'])]=int(round(float(row['price'])))
+            if row['price'] is not None and ExactDecimal(row['price'])>0:
+                currency_rates[str(row['code'])]=int(round(ExactDecimal(row['price'])))
         currency_row = conn.execute("SELECT n.currency_code FROM country_currencies n "
             "JOIN currencies c ON c.code=n.currency_code WHERE n.nationality=? AND c.status='active'",(nationality,))
         currency_row = currency_row.fetchone()
@@ -861,7 +866,7 @@ class UserManager:
                 "risk_tier": str(kyc_row["risk_tier"]),
                 "expires_epoch": expires_epoch,
             }
-        home_cash_units = cash * SCALE
+        home_cash_units = int(ExactDecimal(cash) * SCALE)
         foreign_cash_units = sum(
             int(row['value_home_units']) for row in wallets if row['is_foreign']
         )
@@ -876,12 +881,12 @@ class UserManager:
             "SELECT a.account_number,a.product_code,a.balance,a.account_type,a.quote_currency,"
             "a.rate_type,a.contract_rate,a.next_repricing_epoch,a.benchmark_key,"
             "a.benchmark_tenor_days,a.resolution_status,a.repricing_lag_seconds,"
-            "a.insurance_paid,a.uninsured_claim,"
+            "a.insurance_paid,a.uninsured_claim,a.managed_by,"
             "COALESCE(s.name,l.name) AS product_name "
             "FROM accounts a LEFT JOIN saving s ON s.product_code=a.product_code "
             "LEFT JOIN liability l ON l.product_code=a.product_code "
-            "WHERE a.user_id=? AND a.account_type<>'currency_saving'",
-            (str(user_id),),
+            "WHERE a.user_id=? AND NOT (a.account_type='saving' AND a.quote_currency IS NOT NULL AND a.quote_currency<>?)",
+            (str(user_id),national_currency),
         ).fetchall()
         account_total_home_units = 0
         account_numbers = [str(row["account_number"]) for row in account_rows]
@@ -919,6 +924,7 @@ class UserManager:
             account_details.append({
                 "number": account["account_number"],
                 "account_type": account["account_type"],
+                "managed_by": account["managed_by"],
                 "product_name": (f"대출금 지급 · {product_name}"
                                  if account["account_type"] == "loan_payout" else product_name),
                 "balance": balance,
@@ -956,17 +962,17 @@ class UserManager:
                 "issuer": str(claim["issuer"]),
                 "currency_code": currency,
                 "decimal_places": currency_snapshot.precision(currency),
-                "covered_amount": float(claim["covered_amount"] or 0),
-                "uninsured_amount": float(claim["uninsured_amount"] or 0),
+                "covered_amount": ExactDecimal(claim["covered_amount"] or 0),
+                "uninsured_amount": ExactDecimal(claim["uninsured_amount"] or 0),
                 "payout_currency": (str(claim["payout_currency"])
                                     if claim["payout_currency"] else None),
                 "payout_decimal_places": (currency_snapshot.precision(
                     str(claim["payout_currency"])
                 ) if claim["payout_currency"] else None),
-                "payout_amount": (float(from_minor_units(
+                "payout_amount": (ExactDecimal(from_minor_units(
                     claim["payout_amount_minor_units"], claim["payout_decimal_places"]
                 )) if claim["payout_amount_minor_units"] is not None else
-                    (float(claim["payout_amount"])
+                    (ExactDecimal(claim["payout_amount"])
                      if claim["payout_amount"] is not None else None)),
                 "resolved_epoch": float(claim["resolved_epoch"] or 0),
             })
@@ -1179,18 +1185,18 @@ class UserManager:
             loan_home_units += currency_snapshot.convert(
                 currency_micro_units, currency, national_currency
             )
-        loan_total = float(Decimal(loan_home_units) / Decimal(SCALE))
+        loan_total = native_value(Decimal(loan_home_units) / Decimal(SCALE))
         loan_total_base = currency_snapshot.convert(
             loan_home_units, national_currency, base_currency_code(conn)
         ) // SCALE
         currency_total = 0
         currency_accounts = []
-        currency_rows = conn.execute("SELECT quote_currency AS currency_code,balance_units FROM accounts WHERE user_id=? AND account_type='currency_saving' AND quote_currency<>?",(str(user_id),national_currency)).fetchall()
+        currency_rows = conn.execute("SELECT quote_currency AS currency_code,balance_units FROM accounts WHERE user_id=? AND account_type='saving' AND quote_currency<>?",(str(user_id),national_currency)).fetchall()
         if currency_rows:
             from managers.currency_exchange_manager import CurrencyExchangeManager
             currency_accounts = [{**dict(r),'value_nwx':int(r['balance_units'])*CurrencyExchangeManager._rate(conn,r['currency_code'])//1_000_000 if r['balance_units'] else 0}
                 for r in conn.execute("SELECT a.*,a.quote_currency AS currency_code,p.name AS product_name,COALESCE(a.contract_rate,p.interest_rate) AS annual_rate FROM accounts a "
-                    "LEFT JOIN saving p ON p.product_code=a.product_code WHERE a.user_id=? AND a.account_type='currency_saving' AND a.quote_currency<>? ORDER BY a.quote_currency",(str(user_id),national_currency))]
+                    "LEFT JOIN saving p ON p.product_code=a.product_code WHERE a.user_id=? AND a.account_type='saving' AND a.quote_currency<>? ORDER BY a.quote_currency",(str(user_id),national_currency))]
             currency_total = sum(r['value_nwx'] for r in currency_accounts)
         foreign_account_total_home = sum(
             currency_snapshot.convert(int(r['balance_units']),r['currency_code'],national_currency)
@@ -1278,13 +1284,13 @@ class UserManager:
         if source == "company":
             return {
                 "name": row["name"],
-                "price": max(1, int(math.floor(float(row["share_price"] or 0) + 0.5)))
-                if float(row["share_price"] or 0) > 0 else 0,
+                "price": max(1, int(math.floor(ExactDecimal(row["share_price"] or 0) + 0.5)))
+                if ExactDecimal(row["share_price"] or 0) > 0 else 0,
                 "type": "stock",
                 "quote_currency":row['quote_currency'],
             }
         if source == "investment":
-            price = float(row["unit_price"] or 0)
+            price = ExactDecimal(row["unit_price"] or 0)
             return {
                 "name": row["name"],
                 "price": max(1, int(math.floor(price + 0.5))) if price > 0 else 0,
@@ -1292,7 +1298,7 @@ class UserManager:
                 "quote_currency":row['quote_currency'],
             }
         asset_type = row["type"]
-        price = float(row["price"] or 0)
+        price = ExactDecimal(row["price"] or 0)
         price = max(1, int(math.floor(price + 0.5))) if price > 0 else 0
         return {"name": row["name"], "price": price, "type": asset_type,"quote_currency":row['quote_currency']}
 
@@ -1338,7 +1344,7 @@ class UserManager:
                 catalog[code] = None
                 continue
             row = matches[0]
-            numeric_price = float(row["price"] or 0)
+            numeric_price = ExactDecimal(row["price"] or 0)
             catalog[code] = {
                 "name": row["name"],
                 "price": max(1, int(math.floor(numeric_price + 0.5))) if numeric_price > 0 else 0,

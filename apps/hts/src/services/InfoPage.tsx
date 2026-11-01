@@ -56,7 +56,6 @@ export function InfoPage({ kit }: ServiceProps) {
     <h3 className="svc-section-title">금융 정보</h3>
     <div className="svc-two">
       <a className="svc-card svc-link-card" href="/financials" target="_blank" rel="noopener"><header><h3>기업 재무제표 ↗</h3><p>회사의 자산·부채·자본, 손익과 주요 비율을 새 탭의 재무제표 화면에서 봅니다.</p></header></a>
-      <ActionCard kit={kit} name="법정최고이자" title="법정 최고이자율" description="대출 이율은 국가별 상한을 넘을 수 없습니다." submit="조회" />
     </div>
     <h3 className="svc-section-title">고객센터</h3>
     <a className="svc-help-link" href="https://dramatic-bread-b4a.notion.site/NAKWON-BOTS-3ea27b50c7bf80e0904ef783e0e5dfc4" target="_blank" rel="noreferrer"><b>📚 도움말 (/도움말)</b><small>봇·나루 이용 안내와 정책 문서</small></a>

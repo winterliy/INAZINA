@@ -252,7 +252,8 @@ class ActionModal(CheckedModal):
         elif c=='user':
             return bot.admin_control.user(self.owner,v[0],json.loads(v[1]))
         elif c=='국고':
-            amount = bot.admin_control._number(v[0],-2**53+1,2**53-1,integer=True)
+            from functions.amount_limits import MAX_NATIVE
+            amount = bot.admin_control._number(v[0],-MAX_NATIVE,MAX_NATIVE,integer=True)
             with bot.db.atomic() as conn:
                 bot.admin_control.require(self.owner,conn)
                 conn.execute('UPDATE users SET cash=? WHERE user_id=?',(amount,uid))

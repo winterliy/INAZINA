@@ -1,4 +1,6 @@
 """Typed game products: stock futures, corporate debt, NAV funds and physical spot."""
+from functions.amount_limits import MAX_NATIVE
+from functions.exact_money import ExactDecimal
 from functions.money import base_currency_code
 
 import math
@@ -133,14 +135,14 @@ class InvestmentManager:
             quote = cls.component_quote(conn, asset_code)
             if fund_code is not None and str(asset_code) == str(fund_code):
                 raise ValueError("펀드는 자기 자신을 구성 자산으로 담을 수 없습니다.")
-            if not quote or float(quote["price"] or 0) <= 0:
+            if not quote or ExactDecimal(quote["price"] or 0) <= 0:
                 raise ValueError(f"활성 펀드 구성 자산을 확인해주세요: {asset_code}")
             if str(quote.get("quote_currency") or base_currency_code(conn)).upper() != base_currency_code(conn):
                 raise ValueError("펀드 구성 자산은 현재 기준 통화 결제 자산만 지원합니다.")
             bucket = quote["asset_class"] if quote["asset_class"] in {"equity", "bond"} else "other"
             totals[bucket] += weight
             total += weight
-            parsed.append((str(asset_code), float(weight), float(quote["price"]),
+            parsed.append((str(asset_code), float(weight), ExactDecimal(quote["price"]),
                            quote["asset_source"], quote["asset_class"]))
         if abs(total - Decimal(1)) > Decimal("0.00000001"):
             raise ValueError("펀드 구성 비중의 합은 1이어야 합니다.")
@@ -180,7 +182,7 @@ class InvestmentManager:
                 raise ValueError()
         except (ValueError, TypeError):
             return False, "❌ 연이율은 0~100%여야 합니다."
-        if price * supply * contract_size > 2**63 - 1:
+        if price * supply * contract_size > MAX_NATIVE:
             return False, "❌ 상품의 총 명목금액이 너무 큽니다."
         if product_type in {"stock_future", "corporate_bond"} and maturity_days <= 0:
             return False, "❌ 선물·회사채는 만기 일수를 입력해주세요."
@@ -224,13 +226,13 @@ class InvestmentManager:
                      index_id if product_type == "index_fund" else None,
                      "equity" if product_type in FUND_TYPES else None))
                 if product_type == "mutual_fund":
-                    total_cap = sum(float(row["share_price"]) * int(row["total_shares"]) for row in constituents)
+                    total_cap = sum(ExactDecimal(row["share_price"]) * int(row["total_shares"]) for row in constituents)
                     for row in constituents:
-                        weight = float(row["share_price"]) * int(row["total_shares"]) / total_cap
+                        weight = ExactDecimal(row["share_price"]) * int(row["total_shares"]) / total_cap
                         conn.execute("INSERT INTO product.fund_components "
                             "(product_code,asset_code,weight,base_price,asset_source,asset_class) "
                             "VALUES (?, ?, ?, ?, 'company', 'equity')",
-                            (code, row["company_code"], weight, float(row["share_price"])))
+                            (code, row["company_code"], weight, ExactDecimal(row["share_price"])))
                 if product_type in FUND_TYPES:
                     from managers.fund_manager import FundManager
                     FundManager.create_empty(conn, code)
@@ -277,10 +279,10 @@ class InvestmentManager:
             row = prices.get(product['underlying_code']) if prices is not None else conn.execute("SELECT share_price AS price FROM company.company WHERE company_code = ? "
                 "UNION ALL SELECT price FROM assets.market_assets WHERE code = ?",
                 (product["underlying_code"], product["underlying_code"])).fetchone()
-            if not row or float(row["price"]) <= 0:
+            if not row or ExactDecimal(row["price"]) <= 0:
                 return None
             if now >= expiry:
-                price = max(1, round_money(float(row["price"])))
+                price = max(1, round_money(ExactDecimal(row["price"])))
                 InvestmentManager._fix_future_expiry_price(conn, product, expiry, price, expiry)
                 return price
             remaining_days = max(1, math.ceil((int(product["maturity_epoch"] or now)-now)/86400))
@@ -288,7 +290,7 @@ class InvestmentManager:
                 conn, product['exchange_id'], remaining_days, 'treasury', epoch=now
             )
             years = max(0, int(product["maturity_epoch"] or now) - now) / (365 * 86400)
-            return max(1, round_money(float(row["price"]) * math.exp(market_rate / 100 * years)))
+            return max(1, round_money(ExactDecimal(row["price"]) * math.exp(market_rate / 100 * years)))
         if kind == "corporate_bond":
             remaining = max(0, int(product["maturity_epoch"] or now) - now)
             country = conn.execute(
@@ -314,11 +316,11 @@ class InvestmentManager:
                 row = prices.get(component['asset_code']) if prices is not None else InvestmentManager.component_quote(
                     conn, component["asset_code"], active_only=False
                 )
-                if not row or float(component["base_price"]) <= 0:
+                if not row or ExactDecimal(component["base_price"]) <= 0:
                     return None
-                total += float(component["weight"]) * float(row["price"]) / float(component["base_price"])
+                total += float(component["weight"]) * ExactDecimal(row["price"]) / ExactDecimal(component["base_price"])
                 weight += float(component["weight"])
-            return max(1, round_money(float(product["nav_anchor"]) * total / weight)) if weight > 0 else None
+            return max(1, round_money(ExactDecimal(product["nav_anchor"]) * total / weight)) if weight > 0 else None
         return None
 
     @staticmethod

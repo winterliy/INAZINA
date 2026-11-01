@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { accountBalance, type Result } from "../commandKit";
+import { accountBalance, accountLabel, type Result } from "../commandKit";
 import { Outcome, won, type ServiceProps } from "./ServiceKit";
 
 type Tab = "accounts" | "savings" | "loans";
@@ -34,7 +34,7 @@ export function BankPage({ kit, homeCurrency, creditScore }: ServiceProps) {
 
     {tab === "accounts" && <section className="svc-list">
       {accounts.map((account) => <article key={account.account_number} className="svc-row-card">
-        <div><small>{account.account_type === "currency_saving" ? "외환통장" : "저축"} · {account.product_code}</small><b className="mono">{account.account_number}</b></div>
+        <div><small>{accountLabel(account.quote_currency, homeCurrency, "저축")} · {account.product_code}</small><b className="mono">{account.account_number}</b></div>
         <strong>{won(accountBalance(account), 2)} <small>{account.quote_currency}</small></strong>
         <div className="svc-row-actions"><a href={`/transfer`}>이체</a><button type="button" onClick={() => toggle({ kind: "close", key: account.account_number })}>해지</button></div>
         {open?.kind === "close" && open.key === account.account_number && <form className="svc-inline" onSubmit={(event) => submit(event, "계좌해지", { account: account.account_number, password: form.password ?? "", destination: form.destination ?? "" })}>
@@ -50,10 +50,10 @@ export function BankPage({ kit, homeCurrency, creditScore }: ServiceProps) {
 
     {tab === "savings" && <section className="svc-products">
       {(lookups?.savingProducts ?? []).map((product) => <article key={product.code} className={open?.key === product.code ? "svc-product open" : "svc-product"}>
-        <small>{product.product_kind === "currency_saving" ? `외환통장 · ${product.quote_currency}` : "저축 예금"}</small>
+        <small>{accountLabel(product.quote_currency, homeCurrency, "저축 예금")}{product.quote_currency !== homeCurrency ? ` · ${product.quote_currency}` : ""}</small>
         <h3>{product.name}</h3>
         <p className="svc-rate">연 <b>{product.interest_rate}</b>%</p>
-        <ul><li>최소 예치금 {won(product.deposit_amount)} {product.quote_currency}</li>{product.product_kind !== "currency_saving" && <li>만기 {product.maturity_days}일</li>}</ul>
+        <ul><li>최소 예치금 {won(product.deposit_amount)} {product.quote_currency}</li>{product.maturity_days > 0 && <li>만기 {product.maturity_days}일</li>}</ul>
         <button type="button" className="svc-submit" onClick={() => toggle({ kind: "join", key: product.code })}>{open?.key === product.code ? "닫기" : "가입하기"}</button>
         {open?.kind === "join" && open.key === product.code && <form className="svc-inline" onSubmit={(event) => submit(event, "계좌개설", { product: product.code, password: form.password ?? "", deposit: form.deposit ?? "" })}>
           {field("password", "계좌 비밀번호 (4~16자)", { type: "password", required: true, minLength: 4, maxLength: 16, autoComplete: "new-password" })}

@@ -1,3 +1,5 @@
+import type { Money } from "../../shared/money";
+import { validMoney, moneyCompare, formatMoney } from "../../shared/money";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api, appUrl, clearToken, signedOut, type ApiUser } from "../../shared/api";
@@ -18,24 +20,24 @@ import { CompliancePage } from "./CompliancePage";
 import { BanksPage } from "./BanksPage";
 import { DatabasePage } from "./DatabasePage";
 import { GambleTile } from "./GambleTile";
-import { TransferTile } from "./TransferTile";
-import { AuditHeatmap, EventTimeline } from "./ActivityTiles";
+import { EventTimeline } from "./ActivityTiles";
 import { NaturalizationPage } from "./NaturalizationPage";
 import { COMMAND_FORMS, CommandForm } from "./CommandForm";
 import { AccountPage } from "./AccountPage";
+import { OrganizationPage } from "./OrganizationPage";
 
-type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "users" | "naturalization" | "feedback" | "board" | "documents" | "compliance" | "accounting" | "events" | "commands" | "database" | "audit";
+type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "feedback" | "board" | "documents" | "compliance" | "accounting" | "events" | "commands" | "database" | "audit";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
-type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
+type Instrument = { code: string; name: string; type: string; price: Money; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
 type Exchange = { exchange_id: string; status: string; reason: string | null; trading_halted: number; updated_epoch: number | null; resume_epoch: number | null; circuit_stage: number | null };
-type Overview = { activeUsers: number; activeInstruments: number; openOrders: number; market: Exchange[]; bankDeficits?: { issuer: string; account: string; cash: number; nationality: string }[] };
+type Overview = { activeUsers: number; activeInstruments: number; openOrders: number; market: Exchange[]; bankDeficits?: { issuer: string; account: string; cash: Money; nationality: string }[] };
 type Audit = { auditId: number; actorId: string; action: string; payload: Record<string, unknown>; time: number };
 type Event = { event_id: number; asset_code: string | null; event_type: string; severity: number; starts_epoch: number; ends_epoch: number; created_by: string; target_mode: string | null; target_value: number | null; active: boolean };
 type Command = { name: string; usage: string };
 type NationalField = { label: string; default: string; required: boolean; long: boolean };
 type NationalCommand = { name: string; fields: NationalField[] };
 type HelpPage = { label: string; description: string; fields: { name: string; value: string }[] };
-type Flow = { history_id: number; asset_code: string; anchor_price: number; target_price: number; change_percent: number; start_epoch: number; end_epoch: number; active: boolean };
+type Flow = { history_id: number; asset_code: string; anchor_price: Money; target_price: Money; change_percent: number; start_epoch: number; end_epoch: number; active: boolean };
 type BotJob = { job_id: number; kind: string; actor_id: string; payload: string; status: "pending" | "running" | "done" | "failed"; result: string | null; created_epoch: number; updated_epoch: number };
 type CommandResult = { command: string; arguments: string; message: string; success: boolean; time: number; national: boolean };
 
@@ -46,6 +48,7 @@ const pages: { id: Page; label: string }[] = [
   { id: "finance", label: "금융 상품" },
   { id: "exchanges", label: "거래소" },
   { id: "companies", label: "법인 자본" },
+  { id: "organizations", label: "기업 구조" },
   { id: "users", label: "계정관리" },
   { id: "naturalization", label: "귀화심사" },
   { id: "feedback", label: "문의·신고" },
@@ -65,6 +68,7 @@ const subtitles: Record<Page, string> = {
   finance: "저축·대출·통화·외환통장 상품을 생성·수정·중지합니다.",
   exchanges: "거래소별 개장·휴장·서킷브레이커와 소속 국가·지수를 관리합니다.",
   companies: "법인 현금·보유자산·통장·대출을 보고 법인 계정으로 매수·매도·송금·대출을 실행합니다.",
+  organizations: "기업 규모와 공공 분류, 주식 종류별 권리, 기업집단 및 지분·의결권 구조를 관리합니다.",
   naturalization: "Discord /귀화신청으로 들어온 신청을 심사합니다. 승인하면 신청자의 자산을 정리하고 국적을 옮깁니다.",
   feedback: "공식 사이트의 Contact·Report로 들어온 문의와 신고를 확인하고 처리합니다.",
   documents: "약관·처리방침·규칙·도움말과 Discord 등록 안내문을 고치고 확정합니다.",
@@ -77,7 +81,7 @@ const subtitles: Record<Page, string> = {
   database: "DB Browser에서 하던 설정 편집을 감사 기록과 함께 처리합니다.",
   audit: "모든 관리자 작업과 관리자 계정 로그인의 최근 기록입니다.",
 };
-const number = (value: number) => new Intl.NumberFormat("ko-KR").format(value);
+const number = formatMoney;
 const date = (value: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "medium" }).format(value * 1000);
 const marketStatusName: Record<string, string> = { open: "개장", closed: "휴장", paused: "일시 정지", halted: "거래 정지" };
 const message = (cause: unknown, fallback: string) => cause instanceof Error ? cause.message : fallback;
@@ -292,13 +296,13 @@ export default function App() {
     event.preventDefault();
     const percent = Number(eventSeverity);
     const asset = eventAsset.trim();
-    const target = eventTarget.trim() ? Number(eventTarget) : null;
+    const target = eventTarget.trim() ? eventTarget.trim() : null;
     // Same rules as the Discord $사건 form: a target price needs one asset and
     // must lie above the current price for good news, below it for bad news.
     if (target !== null) {
-      if (!Number.isSafeInteger(target) || target < 1) { say("목표가는 1 이상의 정수로 입력해주세요.", true); return; }
+      if (!validMoney(target, true)) { say("목표가는 0보다 큰 금액으로 입력해주세요.", true); return; }
       if (!asset) { say("목표가를 지정하려면 대상 종목 코드를 입력해주세요.", true); return; }
-      if (eventInstrument && (eventType === "good" ? target < eventInstrument.price : target > eventInstrument.price)) {
+      if (eventInstrument && (eventType === "good" ? moneyCompare(target, eventInstrument.price) < 0 : moneyCompare(target, eventInstrument.price) > 0)) {
         say(`${eventType === "good" ? "호재 목표가는 현재가 이상" : "악재 목표가는 현재가 이하"}로 입력해주세요. (현재가 ${number(eventInstrument.price)})`, true);
         return;
       }
@@ -415,7 +419,7 @@ export default function App() {
             <Metric label="미체결 주문" value={overview ? number(overview.openOrders) : "—"} />
           </section>
           {!!overview?.bankDeficits?.length && <section className="glass card mb rise warn-card" role="alert"><div className="card-head"><div><h2>⚠️ 은행 본사 계좌 적자</h2><p className="cap">적자는 허용되지만 자본 확충을 검토하세요. 처음 적자가 될 때 관리자에게 Discord DM으로도 알립니다.</p></div></div>
-            <div className="scroll-x"><table><thead><tr><th>은행</th><th>본사 계좌</th><th>국가</th><th className="r">잔액</th></tr></thead><tbody>{overview.bankDeficits.map((bank) => <tr key={bank.issuer}><td>{bank.issuer}</td><td className="mono">{bank.account}</td><td>{bank.nationality}</td><td className="r mono">{number(Math.round(bank.cash))}</td></tr>)}</tbody></table></div></section>}
+            <div className="scroll-x"><table><thead><tr><th>은행</th><th>본사 계좌</th><th>국가</th><th className="r">잔액</th></tr></thead><tbody>{overview.bankDeficits.map((bank) => <tr key={bank.issuer}><td>{bank.issuer}</td><td className="mono">{bank.account}</td><td>{bank.nationality}</td><td className="r mono">{number(bank.cash)}</td></tr>)}</tbody></table></div></section>}
           <section className="section">
             <div className="section-head"><div><h2>시장 제어</h2><p className="cap">전체 또는 거래소별로 개장·휴장·정지합니다. 기존 Python 시장 제어와 기록을 거칩니다.</p></div>
               <div className="actions"><button className="btn primary" disabled={busy} onClick={() => marketAction("open")}>전체 개장</button><button className="outline" disabled={busy} onClick={() => marketAction("close")}>전체 휴장</button><button className="outline" disabled={busy} onClick={() => marketAction("pause")}>일시 정지</button><button className="outline" disabled={busy} onClick={() => marketAction("resume")}>재개</button></div></div>
@@ -438,6 +442,7 @@ export default function App() {
         {page === "finance" && <ProductsPage group="finance" ctx={ctx} />}
         {page === "exchanges" && <ExchangesPage ctx={ctx} />}
         {page === "companies" && <CompaniesPage ctx={ctx} />}
+        {page === "organizations" && <OrganizationPage ctx={ctx} />}
         {page === "board" && <BoardAdminPage ctx={ctx} />}
         {page === "documents" && <DocumentsPage ctx={ctx} />}
         {page === "compliance" && <CompliancePage ctx={ctx} />}
@@ -463,7 +468,7 @@ export default function App() {
           <LogCard ctx={ctx} log="flows" title="알고리즘 시장 흐름" caption="시세 엔진이 종목마다 정한 자동 목표가 · 최근 100건 (최대 5,000건 보관)" rows={flows} idOf={(item) => item.history_id}
             empty="기록된 흐름이 없습니다. 시세 엔진이 새 목표가를 정하면 여기에 쌓입니다." onChanged={() => void refresh()}
             head={<><th>#</th><th>종목</th><th>방향</th><th className="r">기준가</th><th className="r">목표가</th><th className="r">변동</th><th>시작</th><th>종료</th></>}
-            row={(item) => <><td className="mono">#{item.history_id}{item.active && <span className="tag ok inline">진행 중</span>}</td><td className="mono">{item.asset_code}</td><td><span className={item.change_percent >= 0 ? "tag up" : "tag down"}>{item.change_percent >= 0 ? "상승" : "하락"}</span></td><td className="r mono">{number(Math.round(item.anchor_price * 100) / 100)}</td><td className="r mono">{number(Math.round(item.target_price * 100) / 100)}</td><td className="r mono">{item.change_percent >= 0 ? "+" : ""}{item.change_percent.toFixed(2)}%</td><td>{date(item.start_epoch)}</td><td>{date(item.end_epoch)}</td></>} />
+            row={(item) => <><td className="mono">#{item.history_id}{item.active && <span className="tag ok inline">진행 중</span>}</td><td className="mono">{item.asset_code}</td><td><span className={item.change_percent >= 0 ? "tag up" : "tag down"}>{item.change_percent >= 0 ? "상승" : "하락"}</span></td><td className="r mono">{number(item.anchor_price)}</td><td className="r mono">{number(item.target_price)}</td><td className="r mono">{item.change_percent >= 0 ? "+" : ""}{Number(item.change_percent).toFixed(2)}%</td><td>{date(item.start_epoch)}</td><td>{date(item.end_epoch)}</td></>} />
         </>}
 
         {page === "commands" && <div className="command-layout">
@@ -475,7 +480,7 @@ export default function App() {
             <button type="button" aria-current={commandSection === HELP ? "page" : undefined} onClick={() => openCategory(HELP)}>도움말 ($도움말)</button>
           </nav>
           <div className="command-content">
-          {commandScope === "admin" && <div className="feature-pair"><GambleTile ctx={ctx} /><TransferTile ctx={ctx} /></div>}
+          {commandScope === "admin" && <div className="feature-pair"><GambleTile ctx={ctx} /></div>}
           {commandScope === "admin" && <section className="command-category-head rise"><p className="eyebrow">관리자 명령어</p><h2>{activeCategory || "불러오는 중…"}</h2><p className="cap">{visibleCommands.length}개 명령어 · 고르면 아래에 입력 칸이 열립니다. 시장 사건($사건)은 시장 사건 화면에서 등록합니다.</p>
             <div className="command-list">{visibleCommands.map((item) => <button key={item.name} type="button" className={item.name === command ? "command-chip active" : "command-chip"} aria-pressed={item.name === command} onClick={() => { setCommand(item.name); setCommandArgs(""); }}><b>${item.name}</b><small>{item.usage || "인자 없음"}</small></button>)}</div>
           </section>}
@@ -510,7 +515,6 @@ export default function App() {
 
         {page === "database" && <DatabasePage ctx={ctx} />}
 
-        {page === "audit" && <AuditHeatmap entries={audit} />}
         {page === "audit" && <Card title="최근 관리자 작업" caption="최근 50건 · 작업 기록은 append-only이며 수정·삭제할 수 없습니다.">
           <div className="scroll-x tall"><table><thead><tr><th>시각</th><th>관리자 ID</th><th>작업</th><th>세부 내용</th></tr></thead><tbody>{audit.map((entry) => <tr key={entry.auditId}>
             <td>{date(entry.time)}</td><td className="mono">{entry.actorId}</td><td><span className="tag">{entry.action}</span></td><td className="audit-payload mono" title={JSON.stringify(entry.payload)}>{JSON.stringify(entry.payload)}</td>

@@ -5,6 +5,8 @@ innovations can move a quote above and below the target until its cycle ends,
 when the market manager samples a new target from the then-current quote.
 Administrator events have their own deadline and take priority over cycles.
 """
+from decimal import Decimal
+from functions.exact_money import ExactDecimal
 
 from dataclasses import dataclass
 import math
@@ -15,7 +17,7 @@ from .price_backend import kernels
 
 
 def _finite_number(value, name):
-    if (isinstance(value, bool) or not isinstance(value, (int, float))
+    if (isinstance(value, bool) or not isinstance(value, (int, float, Decimal))
             or not math.isfinite(value)):
         raise ValueError(f"{name}은 유한한 숫자여야 합니다.")
     return value
@@ -25,7 +27,7 @@ def _price(value):
     _finite_number(value, "가격")
     if not 1 <= value <= MAX_PRICE:
         raise ValueError(f"가격은 1~{MAX_PRICE:,} 사이여야 합니다.")
-    return float(value)
+    return ExactDecimal(value)
 
 
 @dataclass(frozen=True)
@@ -106,14 +108,15 @@ def sample_target(current_price, epoch, config, *, rng=random):
     if int(epoch) != epoch:
         raise ValueError("자동 목표 시작 시각은 정수 초여야 합니다.")
     offset = rng.uniform(-config.range_percent, config.range_percent) / 100
-    target = min(float(MAX_PRICE), max(1.0, price * (1 + offset)))
+    target = min(MAX_PRICE, max(1, price * (1 + ExactDecimal(offset))))
     duration = rng.randint(int(config.min_seconds), int(config.max_seconds))
     return TargetCycle(price, target, int(epoch), int(epoch) + duration)
 
 
 def cycle_bounds(cycle, config):
     """Return a bounded fluctuation band containing both anchor and target."""
-    return kernels.bounds_value(cycle.anchor_price, cycle.target_price, config.band_percent)
+    from . import _price_math
+    return _price_math.bounds_value(cycle.anchor_price, cycle.target_price, config.band_percent)
 
 
 def target_pull(price, cycle, config, *, elapsed_steps=1.0):

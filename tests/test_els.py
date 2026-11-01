@@ -99,7 +99,7 @@ class ELSTests(unittest.TestCase):
             treasury = CurrencyManager.treasury_id(conn, 'A국')
             conn.execute("UPDATE users SET cash=10000000 WHERE user_id=?", (treasury,))
             conn.execute("INSERT INTO accounts(account_number,user_id,product_code,balance,last_payment_epoch,principal,account_type,quote_currency) "
-                         "VALUES ('FXAAA','citizen',NULL,0,0,0,'currency_saving','AAA')")
+                         "VALUES ('FXAAA','citizen',NULL,0,0,0,'saving','AAA')")
             conn.execute("UPDATE accounts SET balance_units=? WHERE account_number='FXAAA'", (50000 * SCALE,))
         with patch('managers.els_manager.time.time', return_value=1000):
             self.manager.create('admin', 'ELSA', {**self.fields, 'issuer_code': treasury})
@@ -142,6 +142,10 @@ class ELSTests(unittest.TestCase):
         self.assertEqual(details['quantity'], 2)
         self.assertEqual(details['underlyings'][0]['initial_price'], 100)
         self.tick(self.issue_epoch + 30 * DAY, 90)
+        import json
+        snapshot = self.db.products.execute_one(
+            "SELECT prices_json FROM els_observations WHERE product_code='ELS1' AND sequence=1")[0]
+        self.assertEqual(json.loads(snapshot), {'CO': '90'})
         notifications = self.manager.process_due(self.issue_epoch + 30 * DAY)
         self.assertEqual(len(notifications), 1)
         self.assertEqual(notifications[0]['gross'], 20197)
@@ -151,6 +155,17 @@ class ELSTests(unittest.TestCase):
         self.assertEqual(self.manager.get_user_positions('citizen'), [])
         self.assertEqual(self.manager.process_due(self.issue_epoch + 31 * DAY), [])
         self.assertEqual(self.db.products.execute_one('SELECT COUNT(*) FROM els_settlements')[0], 1)
+
+    def test_observation_snapshot_preserves_large_price_as_decimal_text(self):
+        import json
+        price = 10**18 + 1
+        self.assertTrue(self.manager.subscribe('citizen', 'ELS1', 2, now=1001)[0])
+        self.tick(self.issue_epoch, price)
+        self.tick(self.issue_epoch + 30 * DAY, price)
+        row = self.db.products.execute_one(
+            "SELECT prices_json,outcome FROM els_observations WHERE product_code='ELS1' AND sequence=1")
+        self.assertEqual(json.loads(row['prices_json']), {'CO': str(price)})
+        self.assertEqual(row['outcome'], 'redeem')
 
     def test_knock_in_persists_through_restart_and_loses_only_principal(self):
         total = self.total_money()

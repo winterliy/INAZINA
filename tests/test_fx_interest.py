@@ -45,23 +45,20 @@ class FxInterestTests(unittest.TestCase):
         with self.db.atomic() as conn:
             return dict(conn.execute("SELECT * FROM accounts WHERE account_number=?", (number,)).fetchone())
 
-    def test_migration_settles_old_interest_once_and_fills_product_defaults(self):
+    def test_legacy_fx_accounts_become_savings_with_balance_as_principal(self):
         number = self.open_usd(10)
-        start = self.account(number)
         with self.db.atomic() as conn:
-            conn.execute("DELETE FROM settings WHERE key=?", (InterestManager.FX_INTEREST_MIGRATION,))
-            conn.execute("UPDATE saving SET interest_cycle=0,compound_type=NULL WHERE product_code='INZCU001'")
-            conn.execute("UPDATE accounts SET last_payment_epoch=? WHERE account_number=?", (start['last_payment_epoch'], number))
-            now = start['last_payment_epoch'] + 30 * DAY
-            self.assertTrue(InterestManager.migrate_currency_accounts(conn, now))
-            self.assertFalse(InterestManager.migrate_currency_accounts(conn, now + DAY))
-            product = conn.execute("SELECT interest_cycle,compound_type FROM saving WHERE product_code='INZCU001'").fetchone()
+            conn.execute("UPDATE accounts SET account_type='currency_saving',principal=0 WHERE account_number=?", (number,))
+            conn.execute("UPDATE saving SET product_kind='currency_saving',interest_cycle=0,compound_type=NULL "
+                         "WHERE product_code='INZCU001'")
+        self.db.currency._unify_deposit_accounts()
+        self.db.currency._unify_deposit_accounts()
         after = self.account(number)
-        expected = start['balance_units'] * 0.10 * 30 / 365
-        self.assertAlmostEqual(after['balance_units'] - start['balance_units'], expected, delta=SCALE / 100)
-        self.assertEqual(after['last_payment_epoch'], now)
-        self.assertEqual(after['interest_remainder'], '0')
-        self.assertEqual((product['interest_cycle'], product['compound_type']), (86400, 0))
+        self.assertEqual(after['account_type'], 'saving')
+        self.assertEqual(Decimal(str(after['principal'])), Decimal(after['balance_units']) / SCALE)
+        product = self.db.products.execute_one(
+            "SELECT product_kind,interest_cycle,compound_type FROM saving WHERE product_code='INZCU001'")
+        self.assertEqual(tuple(product), ('saving', 86400, 0))
 
     def test_interest_is_paid_per_complete_cycle_with_tax(self):
         number = self.open_usd(36.5)
@@ -144,7 +141,7 @@ class FxInterestTests(unittest.TestCase):
         cash = self.db.users.get_user('citizen')['cash']
         ok, message = bank.open_account('citizen', 'INZCU001', 'pass1234', '12.5')
         self.assertTrue(ok, message)
-        account = self.db.accounts.execute_one("SELECT * FROM accounts WHERE user_id='citizen' AND account_type='currency_saving'")
+        account = self.db.accounts.execute_one("SELECT * FROM accounts WHERE user_id='citizen' AND account_type='saving'")
         self.assertEqual(account['balance_units'], 12_500_000)
         self.assertAlmostEqual(account['balance'], 12.5)
         self.assertIsNotNone(account['password'])
@@ -156,7 +153,7 @@ class FxInterestTests(unittest.TestCase):
         self.seed()
         bank = BankManager(self.db)
         self.assertTrue(bank.open_account('citizen', 'INZCU001', 'pass1234', '10')[0])
-        number = self.db.accounts.execute_one("SELECT account_number FROM accounts WHERE user_id='citizen' AND account_type='currency_saving'")[0]
+        number = self.db.accounts.execute_one("SELECT account_number FROM accounts WHERE user_id='citizen' AND account_type='saving'")[0]
         cash = self.db.users.get_user('citizen')['cash']
         self.assertFalse(bank.close_account('citizen', number, None, 'wrong')[0])
         ok, message = bank.close_account('citizen', number, None, 'pass1234')
@@ -188,7 +185,7 @@ class FxInterestTests(unittest.TestCase):
         new = rows['FXNEW']
         self.assertEqual((new['product_kind'], new['quote_currency'], new['interest_rate'], new['deposit_amount'],
                           new['maturity_days'], new['interest_cycle'], new['compound_type']),
-                         ('currency_saving', 'USD', 2, 100, 30, 3600, 1))
+                         ('saving', 'USD', 2, 100, 30, 3600, 1))
 
     def test_supply_counts_accounts_in_their_own_currency_exactly(self):
         from managers.currency_manager import CurrencyReadSnapshot

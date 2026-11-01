@@ -1,10 +1,12 @@
+import { exactMoney, validMoney, moneyCompare, minorMoney, formatMoney } from "../../shared/money";
+import type { Money } from "../../shared/money";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../shared/api";
 import { Card, Field, date, plain, type Ctx } from "./common";
 
 type Kyc = { user_id: string; status: string; risk_tier: string; reviewed_by: string | null; reviewed_epoch: number | null; expires_epoch: number | null; updated_epoch: number };
-type Alert = { alert_id: number; user_id: string; nationality: string; rule_code: string; reference_key: string; currency_code: string; amount: number; amount_text: string; status: string; outcome_code: string | null; opened_epoch: number; reviewed_by: string | null; reviewed_epoch: number | null };
+type Alert = { alert_id: number; user_id: string; nationality: string; rule_code: string; reference_key: string; currency_code: string; amount: Money; amount_text: string; status: string; outcome_code: string | null; opened_epoch: number; reviewed_by: string | null; reviewed_epoch: number | null };
 type Rule = { nationality: string; currency_code: string; large_transaction_limit: number; rolling_24h_amount_limit: number; rolling_24h_count_limit: number; enabled: number; updated_epoch: number };
 type KycEvent = { event_id: number; user_id: string; actor_id: string; event_type: string; prior_status: string; new_status: string; prior_risk_tier: string; new_risk_tier: string; reason_code: string; recorded_epoch: number };
 type AmlEvent = { event_id: number; alert_id: number; actor_id: string; event_type: string; prior_status: string | null; new_status: string; outcome_code: string | null; recorded_epoch: number; nationality: string; user_id: string };
@@ -85,9 +87,9 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
   function saveRule(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!nationality) { say("AML 규칙을 설정할 국적을 선택해주세요.", true); return; }
-    if (rule.enabled && ![rule.large, rule.rollingAmount, rule.rollingCount].some((value) => Number(value) > 0)) { say("감시를 켜려면 하나 이상의 양수 임계치가 필요합니다.", true); return; }
+    if (rule.enabled && !([rule.large, rule.rollingAmount].some((value) => validMoney(value, true)) || Number(rule.rollingCount) > 0)) { say("감시를 켜려면 하나 이상의 양수 임계치가 필요합니다.", true); return; }
     if (!window.confirm(`${nationality}의 AML 시뮬레이터 감시 규칙을 저장할까요? 법정 신고 기준이 아닙니다.`)) return;
-    void run(() => api<Result>("/api/admin/compliance", { method: "POST", body: JSON.stringify({ action: "aml_rule", nationality, largeTransactionLimit: Number(rule.large || 0), rolling24hAmountLimit: Number(rule.rollingAmount || 0), rolling24hCountLimit: Number(rule.rollingCount || 0), enabled: rule.enabled }) }),
+    void run(() => api<Result>("/api/admin/compliance", { method: "POST", body: JSON.stringify({ action: "aml_rule", nationality, largeTransactionLimit: exactMoney(rule.large || 0), rolling24hAmountLimit: exactMoney(rule.rollingAmount || 0), rolling24hCountLimit: Number(rule.rollingCount || 0), enabled: rule.enabled }) }),
       "AML 규칙을 저장하지 못했습니다.", async (result) => { say(plain(JSON.stringify(result.result)), !result.success); await load(); });
   }
 
@@ -129,12 +131,12 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
     event.preventDefault();
     const isGuarantor = creditSupport.supportType === "guarantor";
     const payload = { action: "loan_credit_support", loanId: Number(creditSupport.loanId), partyUserId: creditSupport.partyUserId.trim(), supportType: creditSupport.supportType,
-      exposureShareBps: Number(creditSupport.supportType === "co_borrower" ? creditSupport.exposureShareBps : 0), guaranteeLimit: Number(isGuarantor ? creditSupport.guaranteeLimit : 0),
+      exposureShareBps: Number(creditSupport.supportType === "co_borrower" ? creditSupport.exposureShareBps : 0), guaranteeLimit: isGuarantor ? creditSupport.guaranteeLimit : "0",
       guaranteeRecoveryBps: Number(creditSupport.guaranteeRecoveryBps), recoveryDays: Number(creditSupport.recoveryDays),
       recoveryCostBps: Number(creditSupport.recoveryCostBps), seniorityRank: Number(creditSupport.seniorityRank), active: true };
     if (!Number.isSafeInteger(payload.loanId) || payload.loanId <= 0 || !payload.partyUserId ||
       ![payload.exposureShareBps, payload.guaranteeRecoveryBps, payload.recoveryDays, payload.recoveryCostBps, payload.seniorityRank].every(Number.isSafeInteger) ||
-      (isGuarantor && (!Number.isFinite(payload.guaranteeLimit) || payload.guaranteeLimit <= 0))) {
+      (isGuarantor && (!validMoney(payload.guaranteeLimit, true)))) {
       say("대출·당사자와 신용지원 조건을 확인해주세요.", true); return;
     }
     if (!window.confirm(`대출 #${payload.loanId}의 ${payload.supportType} 신용지원을 등록할까요? 평가에 반영되며 변경 이력을 남깁니다.`)) return;
@@ -166,8 +168,8 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
   function saveFutureCommitment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const expiresEpoch = commitmentDraft.expires ? Math.floor(new Date(commitmentDraft.expires).getTime()/1000) : undefined;
-    const loanId = Number(commitmentDraft.loanId), limit = Number(commitmentDraft.limit), ccf = Number(commitmentDraft.conversionBps);
-    if (!Number.isSafeInteger(loanId) || loanId <= 0 || !Number.isFinite(limit) || limit < 0 ||
+    const loanId = Number(commitmentDraft.loanId), limit = commitmentDraft.limit, ccf = Number(commitmentDraft.conversionBps);
+    if (!Number.isSafeInteger(loanId) || loanId <= 0 || !validMoney(limit) || moneyCompare(limit, 0) < 0 ||
       !Number.isSafeInteger(ccf) || ccf < 0 || ccf > 10000 || (expiresEpoch !== undefined && !Number.isFinite(expiresEpoch))) {
       say("약정 대출 ID·한도·신용환산율을 확인해주세요.", true); return;
     }
@@ -190,9 +192,9 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
 
   function recordChargeoff(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const loanId = Number(chargeoffDraft.loanId), amount = Number(chargeoffDraft.amount);
+    const loanId = Number(chargeoffDraft.loanId), amount = chargeoffDraft.amount;
     if (!Number.isSafeInteger(loanId) || loanId <= 0 || !chargeoffDraft.eventKey.trim() ||
-      (chargeoffDraft.action === "recovery" && (!Number.isFinite(amount) || amount <= 0))) {
+      (chargeoffDraft.action === "recovery" && (!validMoney(amount, true)))) {
       say("대출 ID, 고유 참조 키와 회수액을 확인해주세요.", true); return;
     }
     const chargeoff = chargeoffDraft.action === "charge_off";
@@ -261,7 +263,7 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
         <button className="btn primary" disabled={busy || !nationality}>관할 정책 저장</button>
       </form>
       <div className="scroll-x"><table><thead><tr><th>관할</th><th>상품</th><th>PD 배수</th><th>A~F 상한 PD</th><th>행위자 / 갱신</th></tr></thead><tbody>
-        {data.creditPolicyOverrides.map((item) => <tr key={`${item.nationality}-${item.product_code}`}><td>{item.nationality}</td><td>{item.product_code}</td><td>{item.pd_multiplier.toFixed(2)}×</td><td>{[item.grade_a_max, item.grade_b_max, item.grade_c_max, item.grade_d_max, item.grade_e_max, item.grade_f_max].map((value) => `${(value * 100).toFixed(2)}%`).join(" / ")}</td><td>{item.updated_by} · {date(item.updated_epoch)}</td></tr>)}
+        {data.creditPolicyOverrides.map((item) => <tr key={`${item.nationality}-${item.product_code}`}><td>{item.nationality}</td><td>{item.product_code}</td><td>{Number(item.pd_multiplier).toFixed(2)}×</td><td>{[item.grade_a_max, item.grade_b_max, item.grade_c_max, item.grade_d_max, item.grade_e_max, item.grade_f_max].map((value) => `${(value * 100).toFixed(2)}%`).join(" / ")}</td><td>{item.updated_by} · {date(item.updated_epoch)}</td></tr>)}
       </tbody></table>{!data.creditPolicyOverrides.length && <p className="empty">관할·상품별 예외 정책이 없습니다. 기본 점수카드 설정을 사용합니다.</p>}</div>
     </Card>
 
@@ -288,7 +290,7 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
         <button className="btn primary" disabled={busy}>상각·회수 기록</button>
       </form>
       <div className="scroll-x"><table><thead><tr><th>대출</th><th>이벤트</th><th>키</th><th>금액</th><th>통화</th><th>처리자</th><th>시각</th></tr></thead><tbody>
-        {data.chargeoffEvents.map((item) => <tr key={item.event_id}><td>#{item.loan_id}</td><td>{item.event_type === "charge_off" ? "상각" : "회수"}</td><td className="mono">{item.event_key}</td><td>{(item.amount_minor_units / 10 ** item.decimal_places).toFixed(item.decimal_places)}</td><td>{item.currency_code}</td><td>{item.actor_id}</td><td>{date(item.created_epoch)}</td></tr>)}
+        {data.chargeoffEvents.map((item) => <tr key={item.event_id}><td>#{item.loan_id}</td><td>{item.event_type === "charge_off" ? "상각" : "회수"}</td><td className="mono">{item.event_key}</td><td>{formatMoney(minorMoney(item.amount_minor_units, item.decimal_places))}</td><td>{item.currency_code}</td><td>{item.actor_id}</td><td>{date(item.created_epoch)}</td></tr>)}
       </tbody></table>{!data.chargeoffEvents.length && <p className="empty">상각·회수 기록이 없습니다.</p>}</div>
     </Card>
 
@@ -320,30 +322,30 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
     <Card title="12개월 PD 백테스트" caption="국적 필터 적용 · 대출별 가장 최근 Stage 1/2 성숙 평가 하나만 사용합니다. 예측 PD 구간별 실제 부도율·차주 군집을 할인한 Kish 유효표본 기준 Wilson 95% 구간·Brier 점수·보정 차이를 비교합니다. 군집 보정은 근사 진단이며 독립 검증·규제 승인 모형이 아닙니다.">
       <p className="hint">관측 기준일: {date(data.eclBacktest.maturedThroughEpoch)} · 표본 칸은 대출 수, 괄호 안은 차주 수와 유효표본 수입니다.</p>
       <div className="scroll-x"><table><thead><tr><th>기관</th><th>국적</th><th>성숙 표본</th><th>부도</th><th className="r">변별력 AUROC</th><th className="r">PD 안정성 PSI</th><th>최근/과거 코호트</th></tr></thead><tbody>
-        {data.eclBacktest.discrimination.map((row) => { const stability = data.eclBacktest.stability.find((item) => item.issuer === row.issuer && item.nationality === row.nationality); return <tr key={`${row.issuer}-${row.nationality}`}><td>{row.issuer}</td><td>{row.nationality}</td><td className="r">{row.sampleCount}</td><td className="r">{row.defaults}</td><td className="r mono">{row.auroc == null ? "표본 부족" : row.auroc.toFixed(3)}</td><td className="r mono">{stability?.populationStabilityIndex == null ? "표본 부족" : stability.populationStabilityIndex.toFixed(3)}</td><td className="r">{stability ? `${stability.recentCount} / ${stability.olderCount}` : "—"}</td></tr>; })}
+        {data.eclBacktest.discrimination.map((row) => { const stability = data.eclBacktest.stability.find((item) => item.issuer === row.issuer && item.nationality === row.nationality); return <tr key={`${row.issuer}-${row.nationality}`}><td>{row.issuer}</td><td>{row.nationality}</td><td className="r">{row.sampleCount}</td><td className="r">{row.defaults}</td><td className="r mono">{row.auroc == null ? "표본 부족" : Number(row.auroc).toFixed(3)}</td><td className="r mono">{stability?.populationStabilityIndex == null ? "표본 부족" : Number(stability.populationStabilityIndex).toFixed(3)}</td><td className="r">{stability ? `${stability.recentCount} / ${stability.olderCount}` : "—"}</td></tr>; })}
       </tbody></table>{!data.eclBacktest.discrimination.length && <p className="empty">진단할 성숙 표본이 없습니다.</p>}</div>
       <p className="hint">등급 전이(첫 평가→최근 평가): {data.eclBacktest.gradeTransitionMethod}</p>
       <div className="scroll-x"><table><thead><tr><th>기관</th><th>국적</th><th>최초 등급</th><th>최근 등급</th><th className="r">대출 수</th></tr></thead><tbody>
         {data.eclBacktest.gradeTransitions.map((row) => <tr key={`${row.issuer}-${row.nationality}-${row.from_grade}-${row.to_grade}`}><td>{row.issuer}</td><td>{row.nationality}</td><td>{row.from_grade}</td><td>{row.to_grade}</td><td className="r">{row.loan_count}</td></tr>)}
       </tbody></table>{!data.eclBacktest.gradeTransitions.length && <p className="empty">등급 이력이 충분한 대출이 없습니다.</p>}</div>
       <div className="scroll-x"><table><thead><tr><th>기관</th><th>국적</th><th>예측 PD 구간</th><th className="r">표본 (대출/차주/유효)</th><th className="r">부도</th><th className="r">평균 예측 PD</th><th className="r">관측 부도율 (95% Wilson)</th><th>평균 PD 구간 판정</th><th className="r">보정 차이</th><th className="r">관측/기대</th><th className="r">Brier</th></tr></thead><tbody>
-        {data.eclBacktest.groups.map((row) => <tr key={`${row.issuer}-${row.nationality}-${row.pdBand}`}><td>{row.issuer}</td><td>{row.nationality}</td><td>{row.pdBand}</td><td className="r">{row.sampleCount} / {row.borrowerCount} / {row.effectiveSampleCount.toFixed(1)}</td><td className="r">{row.observedDefaults}</td><td className="r">{(row.meanPredictedPd * 100).toFixed(2)}%</td><td className="r">{(row.observedDefaultRate * 100).toFixed(2)}% ({(row.observedRateLower95 * 100).toFixed(1)}–{(row.observedRateUpper95 * 100).toFixed(1)}%)</td><td>{row.predictedPdWithinObserved95 ? "구간 내" : "구간 밖"}</td><td className="r">{(row.calibrationGap * 100).toFixed(2)}%p</td><td className="r">{row.observedToExpected == null ? "—" : `${row.observedToExpected.toFixed(2)}×`}</td><td className="r mono">{row.brierScore.toFixed(4)}</td></tr>)}
+        {data.eclBacktest.groups.map((row) => <tr key={`${row.issuer}-${row.nationality}-${row.pdBand}`}><td>{row.issuer}</td><td>{row.nationality}</td><td>{row.pdBand}</td><td className="r">{row.sampleCount} / {row.borrowerCount} / {Number(row.effectiveSampleCount).toFixed(1)}</td><td className="r">{row.observedDefaults}</td><td className="r">{(row.meanPredictedPd * 100).toFixed(2)}%</td><td className="r">{(row.observedDefaultRate * 100).toFixed(2)}% ({(row.observedRateLower95 * 100).toFixed(1)}–{(row.observedRateUpper95 * 100).toFixed(1)}%)</td><td>{row.predictedPdWithinObserved95 ? "구간 내" : "구간 밖"}</td><td className="r">{(row.calibrationGap * 100).toFixed(2)}%p</td><td className="r">{row.observedToExpected == null ? "—" : `${Number(row.observedToExpected).toFixed(2)}×`}</td><td className="r mono">{Number(row.brierScore).toFixed(4)}</td></tr>)}
       </tbody></table>{!data.eclBacktest.groups.length && <p className="empty">12개월 관측기간을 마친 평가 표본이 아직 없습니다.</p>}</div>
       <h3 className="sub-head">차주 단위 홀드아웃 진단</h3>
       <p className="hint">차주 ID 해시로 분리한 20% 고정 홀드아웃입니다. 대출이 여러 개인 차주는 기관·국적별 최근 성숙 대출 한 건만 포함하며, 관측 부도율에는 차주 단위 95% Wilson 구간을 표시합니다. 시뮬레이터 내부 표본이므로 외부 독립 검증은 아닙니다.</p>
       <div className="scroll-x"><table><thead><tr><th>기관</th><th>국적</th><th className="r">차주 수</th><th className="r">부도</th><th className="r">평균 예측 PD</th><th className="r">관측 부도율 (95% Wilson)</th><th>평균 PD 구간 판정</th><th className="r">Brier</th><th className="r">AUROC</th></tr></thead><tbody>
-        {data.eclBacktest.borrowerHoldout.map((row) => <tr key={`${row.issuer}-${row.nationality}`}><td>{row.issuer}</td><td>{row.nationality}</td><td className="r">{row.borrowerCount}</td><td className="r">{row.defaults}</td><td className="r">{(row.meanPredictedPd * 100).toFixed(2)}%</td><td className="r">{(row.observedDefaultRate * 100).toFixed(2)}% ({(row.observedRateLower95 * 100).toFixed(1)}–{(row.observedRateUpper95 * 100).toFixed(1)}%)</td><td>{row.predictedPdWithinObserved95 ? "구간 내" : "구간 밖"}</td><td className="r mono">{row.brierScore.toFixed(4)}</td><td className="r mono">{row.auroc == null ? "표본 부족" : row.auroc.toFixed(3)}</td></tr>)}
+        {data.eclBacktest.borrowerHoldout.map((row) => <tr key={`${row.issuer}-${row.nationality}`}><td>{row.issuer}</td><td>{row.nationality}</td><td className="r">{row.borrowerCount}</td><td className="r">{row.defaults}</td><td className="r">{(row.meanPredictedPd * 100).toFixed(2)}%</td><td className="r">{(row.observedDefaultRate * 100).toFixed(2)}% ({(row.observedRateLower95 * 100).toFixed(1)}–{(row.observedRateUpper95 * 100).toFixed(1)}%)</td><td>{row.predictedPdWithinObserved95 ? "구간 내" : "구간 밖"}</td><td className="r mono">{Number(row.brierScore).toFixed(4)}</td><td className="r mono">{row.auroc == null ? "표본 부족" : Number(row.auroc).toFixed(3)}</td></tr>)}
       </tbody></table>{!data.eclBacktest.borrowerHoldout.length && <p className="empty">홀드아웃에 포함된 성숙 차주가 없습니다.</p>}</div>
       <h3 className="sub-head">최근 기간 홀드아웃 (3~1년 전 성숙 표본)</h3>
       <p className="hint">시간순으로 분리한 최근 코호트이며 차주별 최근 관측 한 건을 사용합니다. 과거 6~3년 코호트와 겹치지 않는 시점 진단입니다. 프로젝트 내부 시뮬레이터 데이터만 사용하므로 외부 독립 검증으로 해석하면 안 됩니다.</p>
       <div className="scroll-x"><table><thead><tr><th>기관</th><th>국적</th><th className="r">차주 수</th><th className="r">부도</th><th className="r">평균 예측 PD</th><th className="r">관측 부도율 (95% Wilson)</th><th>평균 PD 구간 판정</th><th className="r">Brier</th><th className="r">AUROC</th></tr></thead><tbody>
-        {data.eclBacktest.outOfTimeBorrowerHoldout.map((row) => <tr key={`${row.issuer}-${row.nationality}`}><td>{row.issuer}</td><td>{row.nationality}</td><td className="r">{row.borrowerCount}</td><td className="r">{row.defaults}</td><td className="r">{(row.meanPredictedPd * 100).toFixed(2)}%</td><td className="r">{(row.observedDefaultRate * 100).toFixed(2)}% ({(row.observedRateLower95 * 100).toFixed(1)}–{(row.observedRateUpper95 * 100).toFixed(1)}%)</td><td>{row.predictedPdWithinObserved95 ? "구간 내" : "구간 밖"}</td><td className="r mono">{row.brierScore.toFixed(4)}</td><td className="r mono">{row.auroc == null ? "표본 부족" : row.auroc.toFixed(3)}</td></tr>)}
+        {data.eclBacktest.outOfTimeBorrowerHoldout.map((row) => <tr key={`${row.issuer}-${row.nationality}`}><td>{row.issuer}</td><td>{row.nationality}</td><td className="r">{row.borrowerCount}</td><td className="r">{row.defaults}</td><td className="r">{(row.meanPredictedPd * 100).toFixed(2)}%</td><td className="r">{(row.observedDefaultRate * 100).toFixed(2)}% ({(row.observedRateLower95 * 100).toFixed(1)}–{(row.observedRateUpper95 * 100).toFixed(1)}%)</td><td>{row.predictedPdWithinObserved95 ? "구간 내" : "구간 밖"}</td><td className="r mono">{Number(row.brierScore).toFixed(4)}</td><td className="r mono">{row.auroc == null ? "표본 부족" : Number(row.auroc).toFixed(3)}</td></tr>)}
       </tbody></table>{!data.eclBacktest.outOfTimeBorrowerHoldout.length && <p className="empty">최근 기간의 성숙 차주 표본이 없습니다.</p>}</div>
     </Card>
 
     <Card title="최근 대출 ECL 평가" caption="최근 100건 · 사용 EIR·예상손실 시점·할인계수를 평가 시점 그대로 보존합니다. Stage 1·2 EAD는 midpoint까지 납부 예정인 미도래 원금을 차감한 proxy이며, 상환일정이 없거나 Stage 3이면 현재 잔액입니다. 시점·EAD 모두 현금흐름 기반 정밀모형이 아닌 근사입니다.">
       <div className="scroll-x"><table><thead><tr><th>일자</th><th>대출</th><th>국적</th><th>단계</th><th>PD 등급</th><th>비이자수익 개시</th><th className="r">12개월 PD</th><th className="r">기간 PD</th><th className="r">거시 PD 배수</th><th className="r">LGD</th><th className="r">적용 EIR</th><th className="r">손실시점(년)</th><th className="r">할인계수</th><th className="r">EAD</th><th className="r">기대손실</th><th>통화</th><th>시나리오</th></tr></thead><tbody>
-        {data.eclAssessments.map((item) => <tr key={item.assessment_id}><td>{item.as_of_day}</td><td className="mono">#{item.loan_id}</td><td>{item.nationality}</td><td>{item.stage}</td><td>{item.risk_grade ?? "과거평가"}</td><td>{item.nonaccrual_since_epoch ? date(item.nonaccrual_since_epoch) : "—"}</td><td className="r">{(item.pd_12m * 100).toFixed(2)}%</td><td className="r">{(item.lifetime_pd * 100).toFixed(2)}%</td><td className="r mono">{item.macro_pd_multiplier.toFixed(3)}×</td><td className="r">{(item.lgd * 100).toFixed(2)}%</td><td className="r mono">{item.effective_interest_rate.toFixed(4)}%</td><td className="r mono">{item.expected_loss_time_years.toFixed(3)}</td><td className="r mono">{item.discount_factor.toFixed(6)}</td><td className="r mono">{groupAmount(item.ead_text)}</td><td className="r mono">{groupAmount(item.expected_loss_text)}</td><td>{item.quote_currency}</td><td>{plain(item.scenario)}</td></tr>)}
+        {data.eclAssessments.map((item) => <tr key={item.assessment_id}><td>{item.as_of_day}</td><td className="mono">#{item.loan_id}</td><td>{item.nationality}</td><td>{item.stage}</td><td>{item.risk_grade ?? "과거평가"}</td><td>{item.nonaccrual_since_epoch ? date(item.nonaccrual_since_epoch) : "—"}</td><td className="r">{(item.pd_12m * 100).toFixed(2)}%</td><td className="r">{(item.lifetime_pd * 100).toFixed(2)}%</td><td className="r mono">{Number(item.macro_pd_multiplier).toFixed(3)}×</td><td className="r">{(item.lgd * 100).toFixed(2)}%</td><td className="r mono">{Number(item.effective_interest_rate).toFixed(4)}%</td><td className="r mono">{Number(item.expected_loss_time_years).toFixed(3)}</td><td className="r mono">{Number(item.discount_factor).toFixed(6)}</td><td className="r mono">{groupAmount(item.ead_text)}</td><td className="r mono">{groupAmount(item.expected_loss_text)}</td><td>{item.quote_currency}</td><td>{plain(item.scenario)}</td></tr>)}
       </tbody></table>{!data.eclAssessments.length && <p className="empty">아직 ECL 평가가 없습니다.</p>}</div>
     </Card>
 

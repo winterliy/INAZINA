@@ -96,7 +96,7 @@ class CurrencyHomeTests(unittest.TestCase):
         msg=self.bot.currency_mgr.transfer('citizen','admin','300')
         self.assertIn('300 AAA → 100 NWX',msg)
         self.assertEqual(self.db.users.get_user('admin')['cash'],1_010_100)
-        self.db.products.execute("INSERT INTO saving(product_code,name,interest_rate,quote_currency,product_kind) VALUES ('NWX_SAVE','NWX 예금',0,'NWX','currency_saving')")
+        self.db.products.execute("INSERT INTO saving(product_code,name,interest_rate,quote_currency,product_kind) VALUES ('NWX_SAVE','NWX 예금',0,'NWX','saving')")
         number = self.bot.currency_mgr.open_account('citizen','NWX_SAVE')
         self.bot.currency_mgr.exchange('citizen','AAA','NWX','300')
         self.assertEqual(self.db.users.get_user('citizen')['cash'],1_029_400)
@@ -357,7 +357,7 @@ class CurrencyHomeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'2자리'):
             cmd.execute('admin','잔고수정','citizen modify 10.555')
         self.db.system.set_setting('currency_exchange_fee_percent','0')
-        self.db.products.execute("INSERT INTO saving(product_code,name,interest_rate,quote_currency,product_kind) VALUES ('KRW_SAVE','원 예금',0,'KRW','currency_saving')")
+        self.db.products.execute("INSERT INTO saving(product_code,name,interest_rate,quote_currency,product_kind) VALUES ('KRW_SAVE','원 예금',0,'KRW','saving')")
         self.bot.currency_mgr.open_account('citizen','KRW_SAVE')
         self.bot.currency_mgr.exchange('citizen','AAA','KRW','0.01')
         with self.db.atomic() as conn:
@@ -411,7 +411,7 @@ class CurrencyHomeTests(unittest.TestCase):
 
     def test_native_currency_deposit_is_a_home_account_not_foreign_account(self):
         self.configure()
-        self.db.products.execute("INSERT INTO saving(product_code,name,interest_rate,quote_currency,product_kind) VALUES ('A_SAVE','A국 예금',0,'AAA','currency_saving')")
+        self.db.products.execute("INSERT INTO saving(product_code,name,interest_rate,quote_currency,product_kind) VALUES ('A_SAVE','A국 예금',0,'AAA','saving')")
         with self.assertRaisesRegex(ValueError,'국적 통화'):
             self.bot.currency_mgr.open_account('citizen','A_SAVE')
         self.db.products.register_saving('HOME_SAVE','국적 통화 예금',0,0,0,86400,0,'Bank')
@@ -424,14 +424,15 @@ class CurrencyHomeTests(unittest.TestCase):
         native_summary(embed,info)
         self.assertEqual(embed.fields[0].value,'```100.00 AAA```')
 
-    def test_product_edit_tells_savings_and_currency_accounts_apart(self):
+    def test_product_edit_treats_foreign_currency_savings_as_savings(self):
         cmd=self.configure()
         cmd.execute('admin','상품생성','SV saving "새 적금" 3 1000 30 86400 1 Inazina')
         self.assertIn('✅',cmd.execute('admin','상품수정','SV saving "새 적금" 4 1000 30 86400 1 Inazina'))
         self.assertEqual(self.db.products.execute_one("SELECT interest_rate FROM saving WHERE product_code='SV'")[0],4)
-        self.db.products.execute("INSERT INTO saving(product_code,name,interest_rate,quote_currency,product_kind) VALUES ('FX_SV','A 외환통장',1,'AAA','currency_saving')")
+        self.db.products.execute("INSERT INTO saving(product_code,name,interest_rate,quote_currency,product_kind) VALUES ('FX_SV','A 외환통장',1,'AAA','saving')")
         with self.db.atomic() as conn:
             self.assertEqual(cmd.locate(conn,'SV')[0],'saving')
-            self.assertEqual(cmd.locate(conn,'FX_SV')[0],'currencyproduct')
+            # A foreign-currency savings product is an ordinary savings product.
+            self.assertEqual(cmd.locate(conn,'FX_SV')[0],'saving')
 
 if __name__=='__main__':unittest.main()

@@ -9,8 +9,8 @@ from functions.time_utils import validate_epoch
 
 
 class MarketSessionManager:
-    # A company listed on no exchange: its shares cannot be bought or sold on any market.
-    UNLISTED = "UNLISTED"
+    # 3DSG is the over-the-counter market: unlisted companies sit there and still trade.
+    UNLISTED = "3DSG"
 
     # Reason shown when regular trading hours end. Such a close is flagged scheduled_close=1 and
     # reopens itself at the next session; the reason is display text only.
@@ -50,7 +50,7 @@ class MarketSessionManager:
             "SELECT exchange_id FROM market_exchanges UNION SELECT exchange_id FROM company "
             "UNION SELECT exchange_id FROM market_assets UNION SELECT exchange_id FROM investment "
             "UNION SELECT exchange_id FROM treasury_bond_products ORDER BY exchange_id"
-        ) if row['exchange_id'] and row['exchange_id'] != cls.UNLISTED]
+        ) if row['exchange_id']]
 
     @classmethod
     def exchange_for_asset(cls, conn, asset_code):
@@ -211,8 +211,6 @@ class MarketSessionManager:
         exchange_id = exchange_id or self.exchange_for_asset(conn, asset_code)
         if exchange_id is None:
             return None
-        if exchange_id == self.UNLISTED:
-            return "❌ 비상장 법인 주식은 거래소에서 매매할 수 없습니다. 지분은 송금·지분 이전으로 옮겨 주세요."
         if conn is None:
             with self.db.atomic(("system",)) as transaction:
                 state = self.process_conn(transaction, now, exchange_id)

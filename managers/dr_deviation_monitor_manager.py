@@ -1,4 +1,5 @@
 """Periodic, append-only DR price-deviation observations and alert transitions."""
+from functions.exact_money import ExactDecimal
 from functions.money import base_currency_code
 
 from functions.dr_pricing import alert_state, reference_metrics
@@ -67,7 +68,7 @@ class DrDeviationMonitorManager:
                 "reference_value,reference_value_minor_units,deviation_percent,state) "
                 "VALUES (?,?,?,?,?,?,?,?,?)",
                 (program["dr_code"], bucket, epoch,
-                 float(program["dr_price"]) if program["dr_price"] is not None else None,
+                 ExactDecimal(program["dr_price"]) if program["dr_price"] is not None else None,
                  dr_price_minor, metrics.get("referenceValue"), reference_minor,
                  metrics.get("referencePremiumPercent"), state),
             )
@@ -93,7 +94,7 @@ class DrDeviationMonitorManager:
                     "reference_value,reference_value_minor_units,deviation_percent,recorded_epoch) "
                     "VALUES (?,?,?,?,?,?,?,?,?)",
                     (program["dr_code"], stable_state, confirmed_state,
-                     float(program["dr_price"]) if program["dr_price"] is not None else None,
+                     ExactDecimal(program["dr_price"]) if program["dr_price"] is not None else None,
                      dr_price_minor, metrics.get("referenceValue"), reference_minor,
                      metrics.get("referencePremiumPercent"), epoch),
                 )

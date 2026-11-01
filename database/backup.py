@@ -20,6 +20,11 @@ def backup(db_path, directory=None, keep=DEFAULT_KEEP):
     try:
         destination = sqlite3.connect(target)
         try:
+            # CHECK constraints call these; integrity_check fails without them.
+            from database.exact_cost_basis import register
+            register(destination)
+            from database.wide_values import register as register_wide
+            register_wide(destination)
             source.backup(destination, pages=1024, sleep=0.01)
             if destination.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
                 raise RuntimeError("백업 파일 무결성 검사에 실패했습니다.")

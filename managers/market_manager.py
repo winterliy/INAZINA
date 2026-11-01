@@ -1,3 +1,4 @@
+from functions.exact_money import ExactDecimal
 from functions.money import base_currency_code
 import math
 import random
@@ -100,7 +101,7 @@ class MarketManager:
     def normalize_market_price(price):
         if isinstance(price, int):
             return max(0, price)
-        numeric_price = float(price or 0)
+        numeric_price = ExactDecimal(price or 0)
         if numeric_price <= 0:
             return 0
         whole = math.floor(numeric_price)
@@ -376,7 +377,7 @@ class MarketManager:
         factor, volatility = 1.0, 0.0
         for row in running:
             duration = row["end_epoch"] - row["start_epoch"]
-            start, goal = float(row["start_price"]), float(row["target_price"])
+            start, goal = ExactDecimal(row["start_price"]), ExactDecimal(row["target_price"])
             path = lambda epoch: start + (goal - start) * max(0, min(duration, epoch - row["start_epoch"])) / duration
             previous = row["last_tick_epoch"] if row["last_tick_epoch"] is not None else row["start_epoch"]
             if now > previous:
@@ -390,7 +391,7 @@ class MarketManager:
                          (now, int(round(path(now))), finished, finished, now, row["event_id"], code))
         next_price = min(MAX_PRICE, max(1, int(Decimal(str(price * factor)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))))
         if context is not None:
-            context.update(event_id=running[-1]["event_id"], advanced=True, latent_price=float(price * factor),
+            context.update(event_id=running[-1]["event_id"], advanced=True, latent_price=ExactDecimal(price * factor),
                            volatility_percent=volatility)
         return next_price
 
@@ -435,7 +436,7 @@ class MarketManager:
         if not target:
             return None
         if context is not None:
-            context.update(event_id=target["event_id"], advanced=False, latent_price=float(price),
+            context.update(event_id=target["event_id"], advanced=False, latent_price=ExactDecimal(price),
                            volatility_percent=float(target["volatility_percent"] or 0))
         duration = target["end_epoch"] - target["start_epoch"]
         elapsed = max(0, min(duration, now - target["start_epoch"]))
@@ -445,13 +446,13 @@ class MarketManager:
         noise = float(target["noise_fraction"])
         if previous_tick is not None and now <= previous_tick:
             return target["last_price"] if target["last_price"] is not None else price
-        latent_price = float(next_price)
+        latent_price = ExactDecimal(next_price)
         if elapsed < duration:
             if previous_tick is None:
                 # Keep the live price when upgrading an already-running event.
                 noise = (price - numerator / duration) / target["start_price"]
                 next_price = price
-                latent_price = float(price)
+                latent_price = ExactDecimal(price)
             else:
                 delta = max(0, now - previous_tick)
                 old_offset = float(target["noise_fraction"]) * target["start_price"]
@@ -487,7 +488,7 @@ class MarketManager:
                 if noise:
                     value = Decimal(numerator) / duration + Decimal(target["start_price"]) * Decimal(str(noise))
                     next_price = min(MAX_PRICE, max(1, int(value.quantize(Decimal("1"), rounding=ROUND_HALF_UP))))
-                    latent_price = min(float(MAX_PRICE), max(1.0, float(value)))
+                    latent_price = min(MAX_PRICE, max(1.0, ExactDecimal(value)))
                 else:
                     latent_price = numerator / duration
                 # A pullback is allowed, but only for part of the mean progress
@@ -499,7 +500,7 @@ class MarketManager:
                     mean_step = abs(target["target_price"] - target["start_price"]) * delta / duration
                     reverse_limit = max(1, int(math.ceil(mean_step * .5)))
                     next_price = previous_price - direction * min(abs(next_price-previous_price),reverse_limit)
-                    latent_price = float(next_price)
+                    latent_price = ExactDecimal(next_price)
         else:
             noise = 0.0
         conn.execute("UPDATE system.market_event_targets SET noise_fraction = ?, last_tick_epoch = ?, last_price = ? "
@@ -572,7 +573,7 @@ class MarketManager:
         cycle = None
         if row is not None:
             try:
-                cycle = TargetCycle(float(row["anchor_price"]), float(row["target_price"]),
+                cycle = TargetCycle(ExactDecimal(row["anchor_price"]), ExactDecimal(row["target_price"]),
                                     int(row["start_epoch"]), int(row["end_epoch"]))
                 if epoch >= cycle.end_epoch or epoch < cycle.start_epoch:
                     cycle = None
@@ -621,7 +622,7 @@ class MarketManager:
         state = batch['states'].get(code) if batch is not None else conn.execute("SELECT * FROM system.market_simulation_state WHERE asset_code = ?", (code,)).fetchone()
         due = state is None or epoch > int(state["last_epoch"])
         edited = state is not None and price != int(state["last_display_price"])
-        latent = float(price) if state is None or edited else float(state["latent_price"])
+        latent = ExactDecimal(price) if state is None or edited else ExactDecimal(state["latent_price"])
         variance = None if state is None or edited or not state["variance"] else float(state["variance"])
         innovation = 0.0 if state is None or edited else float(state["innovation"])
         auto_config = AutoTargetConfig.from_settings(settings)
@@ -666,16 +667,16 @@ class MarketManager:
         if state is not None and state["event_id"] is not None:
             # Start free movement from the completed bridge's actual quote,
             # retaining its volatility memory but not its target trajectory.
-            latent = float(price)
+            latent = ExactDecimal(price)
         if not due:
             if edited:
-                self._save_simulation_state(conn, code, config.step_variance, 0.0, float(price),
+                self._save_simulation_state(conn, code, config.step_variance, 0.0, ExactDecimal(price),
                                             int(state["last_epoch"]), price)
             return price
         if not config.step_variance:
             # Pausing movement also pauses the variance recurrence, retaining
             # recent volatility for when the operator resumes it.
-            self._save_simulation_state(conn, code, variance or 0.0, innovation, float(price), epoch, price)
+            self._save_simulation_state(conn, code, variance or 0.0, innovation, ExactDecimal(price), epoch, price)
             return price
         bias = {"bull": 1, "bear": -1, "flat": 0}[condition] * trend_sensitivity * math.log1p(.10) \
                * config.trading_minutes_per_step / TRADING_MINUTES_PER_YEAR
@@ -711,7 +712,7 @@ class MarketManager:
             bounded = min(upper, max(lower, next_price))
             # Changing a band in SQL must still respect the existing 20%
             # single-step limit while the quote returns to its new band.
-            next_price = min(float(MAX_PRICE), max(1.0, min(latent * 1.2, max(latent * .8, bounded))))
+            next_price = min(MAX_PRICE, max(1.0, min(latent * 1.2, max(latent * .8, bounded))))
             next_innovation = math.log(next_price / latent) - bias + step.variance / 2
         new_price = min(MAX_PRICE, max(1, self.normalize_market_price(next_price)))
         self._save_simulation_state(conn, code, step.variance, next_innovation, next_price, epoch, new_price)
@@ -742,7 +743,7 @@ class MarketManager:
                 conn, str(underlying["quote_currency"] or base_currency_code(conn)),
                 str(program["dr_currency"] or base_currency_code(conn)),
             )
-            value = (float(underlying["price"])*float(program["underlying_per_receipt"])
+            value = (ExactDecimal(underlying["price"])*float(program["underlying_per_receipt"])
                      * float(fx))
             return value if math.isfinite(value) and value > 0 else None
         except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError):
@@ -903,7 +904,7 @@ class MarketManager:
                         ):
                             continue
                         try:
-                            raw_price = float(row["price"])
+                            raw_price = ExactDecimal(row["price"])
                         except (TypeError, ValueError, OverflowError):
                             continue
                         if not math.isfinite(raw_price) or not 0 < raw_price <= MAX_PRICE:
@@ -1118,7 +1119,7 @@ class MarketManager:
                             prices=prices, fund_components=components)
                     except (ValueError, ArithmeticError):
                         continue  # a non-finite or out-of-range quote must not stop the tick
-                    if price is None or not math.isfinite(price) or not 0 < price <= 2**53 - 1:
+                    if price is None or not math.isfinite(price) or not 0 < price <= MAX_PRICE:
                         continue
                     if price != product['unit_price']:
                         updates.append((price, product['product_code']))
@@ -1208,7 +1209,7 @@ class MarketManager:
                         continue
                     try:
                         leverage = float(product["leverage_multiplier"])
-                        raw_nav = float(product["unit_price"] or 0)
+                        raw_nav = ExactDecimal(product["unit_price"] or 0)
                         cycle = int(product["rebalance_cycle_seconds"] or 86400)
                     except (TypeError, ValueError, OverflowError):
                         continue
@@ -1222,7 +1223,7 @@ class MarketManager:
                     index_row = indices.get(exchange_id)
                     if not index_row:
                         continue
-                    current_index = float(index_row["index_value"])
+                    current_index = ExactDecimal(index_row["index_value"])
                     if not math.isfinite(current_index) or current_index <= 0:
                         continue
 
@@ -1238,8 +1239,8 @@ class MarketManager:
                         base_nav = max(1.0, raw_nav)
                         last_reset = int(now)
                     else:
-                        base_index = float(state["base_index_value"])
-                        base_nav = max(1.0, float(state["base_nav"]))
+                        base_index = ExactDecimal(state["base_index_value"])
+                        base_nav = max(1.0, ExactDecimal(state["base_nav"]))
                         last_reset = int(state["last_rebalance_epoch"])
 
                     if int(product["is_fixed"] or 0):
@@ -1258,7 +1259,7 @@ class MarketManager:
                             ).fetchone()
                             if not boundary or int(boundary['recorded_epoch']) > int(now):
                                 break
-                            boundary_index=float(boundary['index_value'])
+                            boundary_index=ExactDecimal(boundary['index_value'])
                             if base_index>0:
                                 base_nav=max(1.0,base_nav*(1+leverage*(boundary_index/base_index-1)))
                             base_index=boundary_index
@@ -1322,7 +1323,7 @@ class MarketManager:
                 exchange_id = str(row["exchange_id"]).strip()
                 code = str(row["company_code"])
                 try:
-                    price = float(row["share_price"] or 0)
+                    price = ExactDecimal(row["share_price"] or 0)
                     shares = max(0, int(row["total_shares"] or 0))
                 except (TypeError, ValueError, OverflowError):
                     continue
@@ -1350,7 +1351,7 @@ class MarketManager:
                     ).fetchone()
                     previous_members = {
                         str(row["company_code"]): (
-                            float(row["previous_price"]), int(row["total_shares"] or 0)
+                            ExactDecimal(row["previous_price"]), int(row["total_shares"] or 0)
                         )
                         for row in conn.execute(
                             "SELECT company_code, previous_price, total_shares "
@@ -1362,7 +1363,7 @@ class MarketManager:
                     if previous_index is None:
                         index_value = 1000.0
                     else:
-                        prior_index_value = float(previous_index["index_value"])
+                        prior_index_value = ExactDecimal(previous_index["index_value"])
                         weighted_return = 0.0
                         total_weight = 0.0
                         unweighted_returns = []
@@ -1474,7 +1475,7 @@ class MarketManager:
         indices = {str(row["exchange_id"]): dict(row) for row in rows}
         active_exchanges = self.db.companies.execute(
             "SELECT DISTINCT exchange_id FROM company WHERE status = 'active' "
-            "AND exchange_id IS NOT NULL AND TRIM(exchange_id) <> '' AND exchange_id <> 'UNLISTED'"
+            "AND exchange_id IS NOT NULL AND TRIM(exchange_id) <> ''"
         )
         for row in active_exchanges:
             exchange_id = str(row["exchange_id"]).strip()
@@ -1665,7 +1666,7 @@ class MarketManager:
 
             ranked = []
             for code, asset in quotes.items():
-                if asset['status'] != 'active' or asset['type'] == 'els' or asset['price'] <= 0:
+                if asset['status'] != 'active' or asset['type'] in {'els','index','exchange_index','rate','interest_rate'} or asset['price'] <= 0:
                     continue
                 details = metadata.get(code)
                 if not details:

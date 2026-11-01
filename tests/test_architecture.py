@@ -14,14 +14,15 @@ LAYERS = {
         "movement_history_manager", "order_validation", "market_session_manager",
         "trading_warning_manager"},
     1: {"currency_manager", "rate_manager", "financial_manager", "bank_journal",
-        "accounting_journal", "credit_score_manager"},
+        "accounting_journal", "credit_score_manager", "deposit_accounts"},
     2: {"bank_manager", "interest_manager", "currency_exchange_manager", "treasury_bond_manager",
         "option_manager", "futures_manager", "els_manager", "fund_manager", "investment_manager",
-        "fractional_trading_manager", "foreign_securities_manager", "corporate_actions_manager",
+        "fractional_trading_manager", "foreign_securities_manager", "corporate_actions_manager", "share_restructuring_manager",
         "order_book_manager", "lottery_manager", "user_manager", "nationality_manager", "naturalization_manager", "market_manager",
         "capital_markets_manager", "company_account_manager", "compliance_manager", "credit_risk_manager",
         "depositary_receipt_manager", "dr_deviation_monitor_manager", "dr_dividend_tax_manager",
-        "fund_dividend_receiver", "price_gap_filler", "bank_companies", "asset_cost_manager"},
+        "fund_dividend_receiver", "price_gap_filler", "bank_companies", "asset_cost_manager", "game_funding",
+        "organization_manager"},
     3: {"admin_manager", "admin_control_manager", "admin_commands_manager", "catalog_manager"},
 }
 LAYER_OF = {module: layer for layer, modules in LAYERS.items() for module in modules}

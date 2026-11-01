@@ -241,7 +241,7 @@ class ShareholderRegisterTests(unittest.TestCase):
         self.db.accounts.execute(
             "INSERT INTO accounts(account_number,user_id,product_code,balance,principal,"
             "account_type,quote_currency,balance_units) "
-            "VALUES ('ADMIN_USD','admin',NULL,0,0,'currency_saving','USD',0)"
+            "VALUES ('ADMIN_USD','admin',NULL,0,0,'saving','USD',0)"
         )
         from database.currency_db import SCALE
         from managers.currency_manager import CurrencyManager

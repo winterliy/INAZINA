@@ -46,7 +46,7 @@ type Value = { time: number; value: number };
  * Like an HTS, the scales re-plan for the space: price steps for the height, calendar
  * steps for the width, an axis as wide as its labels, and panels sized to the chart.
  */
-export function PriceChart({ points, candles, candleInterval, mode, fallbackPrice, drawings, onDrawingsChange, tool, onToolChange, resetKey, controls, label, indicators, data, catalog, onIndicatorsChange }: {
+export function PriceChart({ points: sourcePoints, candles: sourceCandles, candleInterval, mode, fallbackPrice: sourceFallbackPrice, drawings, onDrawingsChange, tool, onToolChange, resetKey, controls, label, indicators, data, catalog, onIndicatorsChange }: {
   points: Point[]; candles: Candle[]; candleInterval: number; mode: "candle" | "line"; fallbackPrice: number;
   drawings: Drawing[]; onDrawingsChange: (next: Drawing[]) => void; tool: Tool; onToolChange: (tool: Tool) => void;
   resetKey: string; controls: ReactNode; label: string;
@@ -100,6 +100,10 @@ export function PriceChart({ points, candles, candleInterval, mode, fallbackPric
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [size.w]);
 
+  // Chart pixels explicitly approximate exact monetary JSON strings; order inputs retain the originals.
+  const points = useMemo(() => sourcePoints.map((point) => ({ ...point, price: Number(point.price) })), [sourcePoints]);
+  const candles = useMemo(() => sourceCandles.map((candle) => ({ ...candle, open: Number(candle.open), high: Number(candle.high), low: Number(candle.low), close: Number(candle.close) })), [sourceCandles]);
+  const fallbackPrice = Number(sourceFallbackPrice);
   const showCandles = mode === "candle" && candles.length > 0;
   const series = useMemo(() => showCandles ? candles.map((item) => ({ time: item.time, price: item.close }))
     : points.length ? points : [{ time: Date.now() / 1000, price: fallbackPrice || 1 }], [showCandles, candles, points, fallbackPrice]);

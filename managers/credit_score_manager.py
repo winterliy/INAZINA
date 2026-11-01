@@ -16,6 +16,7 @@ Weights follow the shape of bureau scorecards (payment history dominates)
 but are simulator assumptions kept in credit_score_policy, not a calibrated
 model of any real bureau.
 """
+from functions.exact_money import ExactDecimal, native_value
 import json
 import math
 import time
@@ -120,13 +121,13 @@ class CreditScoreManager:
             (user_id,),
         ).fetchall()
         for loan in loans:
-            balance = max(0.0, float(loan["outstanding_balance"] or 0))
+            balance = max(0.0, ExactDecimal(loan["outstanding_balance"] or 0))
             if loan["status"] not in ("active", "defaulted") or balance <= 0:
                 continue
             home = home or CurrencyManager.home(conn, user_id)
             currency = str(loan["quote_currency"] or home)
-            debt += balance if currency == home else CurrencyManager.convert(
-                conn, int(round(balance*SCALE)), currency, home)/SCALE
+            debt += balance if currency == home else ExactDecimal(CurrencyManager.convert(
+                conn, int(round(balance*SCALE)), currency, home))/SCALE
             state = str(loan["collection_status"] or "current")
             if loan["status"] == "defaulted" or state == "defaulted":
                 delinquency += p["defaulted_loan_points"]
@@ -141,13 +142,13 @@ class CreditScoreManager:
         user = conn.execute(
             "SELECT annual_income,income_stability FROM users WHERE user_id=?", (user_id,)
         ).fetchone()
-        income = (max(0.0, float(user["annual_income"] or 0))
+        income = (max(0.0, ExactDecimal(user["annual_income"] or 0))
                   * max(0.0, min(1.0, float(user["income_stability"] or 0)))) if user else 0.0
         if debt > 0:
             if income <= 0:
                 factors["debt_burden"] = -p["debt_no_income_penalty"]
             else:
-                ratio = debt/income
+                ratio = float(debt/income)
                 low, high = p["debt_low_ratio"], max(p["debt_low_ratio"]+1e-9, p["debt_high_ratio"])
                 if ratio <= low:
                     burden = p["debt_low_bonus"]

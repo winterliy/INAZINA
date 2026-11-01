@@ -1,12 +1,13 @@
+import { minorMoney, moneyAdd, moneyCompare, exactMoney, validMoney, type Money } from "../../shared/money";
 import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../shared/api";
 import { Field, Tabs, date, errorText, number, plain, type Ctx } from "./common";
 
 type Account = { code: string; name: string; category: string; protected: boolean };
-type Line = { account: string; amount: number };
+type Line = { account: string; amount: Money };
 type Entry = { id: number; epoch: number; description: string; flow: string; manual: boolean; reversalOf: number | null; reversedBy: number | null; lines: Line[] };
-type Profile = { enabled: boolean; revenue: number; cogs: number; sga: number; depreciation: number; tax_percent: string; start_period: string };
+type Profile = { enabled: boolean; revenue: Money; cogs: Money; sga: Money; depreciation: Money; tax_percent: string; start_period: string };
 type Journal = { company: string; period: string; currency: string; places: number; accounts: Account[]; entries: Entry[]; profile: Profile | null; closed: string[] };
 type Row = { account: string; side: "debit" | "credit"; amount: string };
 type Tab = "entry" | "history" | "operating" | "close";
@@ -40,18 +41,17 @@ export function CompanyLedger({ code, ctx, onChanged }: { code: string; ctx: Ctx
   const load = useCallback(async (target: string) => {
     const result = await api<Journal>(`/api/admin/companies/${encodeURIComponent(code)}/journal?period=${encodeURIComponent(target)}`);
     setJournal(result);
-    const scale = 10 ** result.places;
     setEnabled(result.profile?.enabled ?? false);
-    setProfile({ ...Object.fromEntries(AMOUNTS.map(([key]) => [key, String((result.profile?.[key] ?? 0) / scale)])), tax_percent: result.profile?.tax_percent ?? "0" });
+    setProfile({ ...Object.fromEntries(AMOUNTS.map(([key]) => [key, minorMoney(result.profile?.[key] ?? 0, result.places)])), tax_percent: result.profile?.tax_percent ?? "0" });
   }, [code]);
   useEffect(() => { load(period).catch((cause) => say(errorText(cause, "원장을 불러오지 못했습니다."), true)); }, [load, period]);
 
   const accounts = journal?.accounts ?? [];
   const name = (account: string) => accounts.find((item) => item.code === account)?.name ?? account;
-  const money = (units: number) => `${number(units / 10 ** (journal?.places ?? 0))}`;
-  const sum = (side: Row["side"]) => rows.reduce((total, row) => total + (row.side === side ? Number(row.amount) || 0 : 0), 0);
+  const money = (units: Money) => number(minorMoney(units, journal?.places ?? 0));
+  const sum = (side: Row["side"]) => rows.reduce<Money>((total, row) => moneyAdd(total, row.side === side && validMoney(row.amount) ? row.amount : 0), "0");
   const debit = sum("debit"), credit = sum("credit");
-  const balanced = debit > 0 && Math.abs(debit - credit) < 1e-9;
+  const balanced = moneyCompare(debit, 0) > 0 && moneyCompare(debit, credit) === 0;
   const touchesCash = rows.some((row) => row.account === "cash");
 
   function act(body: Record<string, unknown>, confirmText: string, done?: () => void) {
@@ -68,7 +68,7 @@ export function CompanyLedger({ code, ctx, onChanged }: { code: string; ctx: Ctx
 
   function post(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const lines = rows.filter((row) => row.account && Number(row.amount)).map((row) => ({ account: row.account, amount: row.side === "debit" ? row.amount.trim() : `-${row.amount.trim()}` }));
+    const lines = rows.filter((row) => row.account && validMoney(row.amount, true)).map((row) => ({ account: row.account, amount: row.side === "debit" ? row.amount.trim() : `-${row.amount.trim()}` }));
     const summary = lines.map((line) => `${line.amount.startsWith("-") ? "대변" : "차변"} ${name(line.account)} ${line.amount.replace(/^-/, "")}`).join("\n");
     act({ action: "entry", description, flow, lines }, `${code}에 수정 분개를 기록할까요?\n\n${description}\n${summary}`, () => { setRows(blank()); setDescription(""); setFlow("none"); });
   }
@@ -108,7 +108,7 @@ export function CompanyLedger({ code, ctx, onChanged }: { code: string; ctx: Ctx
           <td className="r"><input aria-label={`${index + 1}행 금액`} className="mono r" inputMode="decimal" value={row.amount} onChange={(event) => setRow(index, { amount: event.target.value.replace(/[^\d.]/g, "") })} placeholder="0" /></td>
           <td><button type="button" className="soft small" disabled={rows.length <= 2} onClick={() => setRows(rows.filter((_, position) => position !== index))} aria-label={`${index + 1}행 삭제`}>삭제</button></td>
         </tr>)}
-      </tbody><tfoot><tr><td><button type="button" className="soft small" disabled={rows.length >= 30} onClick={() => setRows([...rows, { account: "", side: credit > debit ? "debit" : "credit", amount: "" }])}>행 추가</button></td><td className={balanced ? "ledger-check ok" : "ledger-check"}>{balanced ? "차대 일치" : `차이 ${number(Math.abs(debit - credit))}`}</td><td className="r mono">차변 {number(debit)} · 대변 {number(credit)}</td><td /></tr></tfoot></table></div>
+      </tbody><tfoot><tr><td><button type="button" className="soft small" disabled={rows.length >= 30} onClick={() => setRows([...rows, { account: "", side: moneyCompare(credit, debit) > 0 ? "debit" : "credit", amount: "" }])}>행 추가</button></td><td className={balanced ? "ledger-check ok" : "ledger-check"}>{balanced ? "차대 일치" : `차이 ${number(exactMoney(moneyAdd(debit, credit, true)).replace(/^-/, ""))}`}</td><td className="r mono">차변 {number(debit)} · 대변 {number(credit)}</td><td /></tr></tfoot></table></div>
       <button className="btn primary" disabled={busy || !balanced || !description.trim()}>분개 기록</button>
     </form>}
 
@@ -116,7 +116,7 @@ export function CompanyLedger({ code, ctx, onChanged }: { code: string; ctx: Ctx
       {(journal?.entries ?? []).map((entry) => <tr key={entry.id} className={entry.reversedBy ? "muted" : undefined}>
         <td className="mono">#{entry.id}</td><td>{date(entry.epoch)}</td>
         <td>{entry.description}{!entry.manual && <span className="tag inline">자동</span>}{entry.reversalOf && <span className="tag inline">#{entry.reversalOf} 정정</span>}{entry.reversedBy && <span className="tag warn inline">#{entry.reversedBy}로 정정됨</span>}</td>
-        <td><ul className="ledger-entry">{entry.lines.map((line, index) => <li key={index}><span>{line.amount > 0 ? "차" : "대"}</span>{name(line.account)}<b className="mono">{money(Math.abs(line.amount))}</b></li>)}</ul></td>
+        <td><ul className="ledger-entry">{entry.lines.map((line, index) => <li key={index}><span>{moneyCompare(line.amount, 0) > 0 ? "차" : "대"}</span>{name(line.account)}<b className="mono">{money(exactMoney(line.amount).replace(/^-/, ""))}</b></li>)}</ul></td>
         <td>{FLOW_NAME[entry.flow] ?? entry.flow}</td>
         <td>{entry.manual && !entry.reversedBy && !entry.reversalOf && <button type="button" className="soft small" disabled={busy || journal?.closed.includes(journal.period)} onClick={() => reverse(entry)}>정정</button>}</td>
       </tr>)}

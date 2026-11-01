@@ -23,7 +23,7 @@ class PartialListingTests(unittest.TestCase):
         self.db.users.create_user("alice", "Alice", "낙원", 10_000_000)
         self.control = AdminControlManager(SimpleNamespace(db=self.db))
         self.control.entity("admin", "stock", "create", "PART", name="Part", price="100", supply="1000",
-                            extra={"exchange_id": "UNLISTED", "industry": "test", "capital": 100000})
+                            extra={"exchange_id": "3DSG", "industry": "test", "capital": 100000})
         self.book = OrderBookManager(self.db, UserManager(self.db))
 
     def tearDown(self):
@@ -57,8 +57,8 @@ class PartialListingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.listing(exchange_id="EX", listed_shares=1001)
         self.listing(exchange_id="EX", listed_shares=500)
-        self.listing(exchange_id="UNLISTED")
-        self.assertEqual(self.company(), {"exchange_id": "UNLISTED", "listed_shares": None})
+        self.listing(exchange_id="3DSG")
+        self.assertEqual(self.company(), {"exchange_id": "3DSG", "listed_shares": None})
 
     def test_full_listing_keeps_every_share_available(self):
         self.listing(exchange_id="EX", listed_shares=None)

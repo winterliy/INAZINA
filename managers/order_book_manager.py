@@ -1,4 +1,6 @@
 """A small, price/time-priority limit order book backed by SQLite."""
+from functions.amount_limits import MAX_NATIVE
+from functions.exact_money import ExactDecimal
 from functions.money import base_currency_code
 
 import time
@@ -10,7 +12,7 @@ from managers.rate_manager import RateManager
 
 
 class OrderBookManager:
-    MAX_LIMIT_PRICE = 2**53 - 1
+    MAX_LIMIT_PRICE = MAX_NATIVE
     MAX_QUANTITY = 2**53 - 1
 
     def __init__(self, db, user_manager):
@@ -127,7 +129,7 @@ class OrderBookManager:
                     return False, "❌ 매수 주문은 현재 거래 중인 자산만 가능합니다."
                 if side == "sell" and asset["status"] not in {"active", "matured"}:
                     return False, "❌ 현재 매도 주문이 불가능한 자산입니다."
-                if float(asset["price"] or 0) <= 0:
+                if ExactDecimal(asset["price"] or 0) <= 0:
                     return False, "❌ 자산 가격이 올바르지 않습니다."
                 # This path settles in the user's own currency, which is the instrument's.
                 currency = str(asset.get("quote_currency") or base_currency_code(conn))
@@ -195,7 +197,7 @@ class OrderBookManager:
                     wallet_watermark = int(conn.execute(
                         "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
                     ).fetchone()[0])
-                    if balance < float(reserved_cash) or not self.user_manager._debit_source(
+                    if balance < ExactDecimal(reserved_cash) or not self.user_manager._debit_source(
                         conn, user_id, funding_account, reserved_cash, currency=currency
                     ):
                         return False, (
@@ -248,8 +250,8 @@ class OrderBookManager:
                     "(user_id, asset_code, side, limit_price, quantity, remaining_quantity, "
                     "reserved_cash, funding_account, order_kind, status, created_epoch, updated_epoch, activation_epoch, scheduled_reason, quote_currency, reserved_cash_minor_units) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'asset', ?, ?, ?, ?, ?, ?, ?)",
-                    (user_id, asset_code, side, float(limit_price), quantity, quantity,
-                    float(reserved_cash), funding_account, 'scheduled' if deferred else 'open', now, now,
+                    (user_id, asset_code, side, ExactDecimal(limit_price), quantity, quantity,
+                    ExactDecimal(reserved_cash), funding_account, 'scheduled' if deferred else 'open', now, now,
                      state.get('resume_epoch') if deferred else now,
                      state.get('reason') if deferred else None, currency,
                      reserved_cash_minor_units),
@@ -274,7 +276,7 @@ class OrderBookManager:
                     f"미체결 {int(order['remaining_quantity']):,}개는 호가에 남았습니다."
                 )
                 if side == "buy":
-                    pending_text += f" 매수 예치액 {float(order['reserved_cash']):,.0f} {currency}는 잠금 상태입니다."
+                    pending_text += f" 매수 예치액 {ExactDecimal(order['reserved_cash']):,.0f} {currency}는 잠금 상태입니다."
                 else:
                     pending_text += " 미체결 수량은 다른 매도에 사용할 수 없습니다."
             else:
@@ -382,13 +384,13 @@ class OrderBookManager:
                         ),
                     )
                     self._apply_execution_price(
-                        conn, incoming["asset_code"], float(reference_price), now
+                        conn, incoming["asset_code"], ExactDecimal(reference_price), now
                     )
                     conn.execute(
                         "INSERT INTO assets.market_trade_history "
                         "(asset_code, side, quantity, price, recorded_epoch) "
                         "VALUES (?, 'buy', ?, ?, ?)",
-                        (incoming["asset_code"], quantity, float(reference_price), now),
+                        (incoming["asset_code"], quantity, ExactDecimal(reference_price), now),
                     )
                     fill_count += 1
                     filled_quantity += quantity
@@ -431,12 +433,12 @@ class OrderBookManager:
                 ),
             )
             self._apply_execution_price(
-                conn, incoming["asset_code"], float(execution_price), now
+                conn, incoming["asset_code"], ExactDecimal(execution_price), now
             )
             conn.execute(
                 "INSERT INTO assets.market_trade_history "
                 "(asset_code, side, quantity, price, recorded_epoch) VALUES (?, ?, ?, ?, ?)",
-                (incoming["asset_code"], incoming["side"], quantity, float(execution_price), now),
+                (incoming["asset_code"], incoming["side"], quantity, ExactDecimal(execution_price), now),
             )
             fill_count += 1
             filled_quantity += quantity
@@ -603,8 +605,8 @@ class OrderBookManager:
                 "principal_minor_units,face_value_minor_units,acquisition_cost_minor_units) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (buyer_id, asset["code"], asset["name"], float(asset["annual_rate"]),
-                 int(asset["maturity_days"]), float(principal), float(face_value),
-                 float(acquisition_cost), int(now), maturity,
+                 int(asset["maturity_days"]), ExactDecimal(principal), ExactDecimal(face_value),
+                 ExactDecimal(acquisition_cost), int(now), maturity,
                  principal_units, face_units, acquisition_units),
             )
             from managers.currency_manager import CurrencyManager, SCALE
@@ -625,12 +627,12 @@ class OrderBookManager:
         if source=='company' and conn.execute("SELECT 1 FROM company WHERE company_code=? AND dividend_funding='issuer'",(buy_order['asset_code'],)).fetchone():
             owner=conn.execute('SELECT COALESCE(parent_company_code,company_code) FROM company WHERE company_code=?',(buy_order['asset_code'],)).fetchone()[0]
             conn.execute('INSERT OR IGNORE INTO issuer_cash_accounts(company_code) VALUES (?)',(owner,))
-            cursor=conn.execute('UPDATE issuer_cash_accounts SET balance=balance+? WHERE company_code=? AND balance<=?',(float(proceeds),owner,self.MAX_LIMIT_PRICE-float(proceeds)))
+            cursor=conn.execute('UPDATE issuer_cash_accounts SET balance=balance+? WHERE company_code=? AND balance<=?',(ExactDecimal(proceeds),owner,self.MAX_LIMIT_PRICE-ExactDecimal(proceeds)))
         elif product and product["product_type"] == "corporate_bond":
             cursor = conn.execute("UPDATE company.company SET capital = capital + ? WHERE company_code = ?",
-                                  (float(proceeds), product["issuer_code"]))
+                                  (ExactDecimal(proceeds), product["issuer_code"]))
             if conn.execute('SELECT 1 FROM issuer_cash_accounts WHERE company_code=?',(product['issuer_code'],)).fetchone():
-                cash_credit=conn.execute('UPDATE issuer_cash_accounts SET balance=balance+? WHERE company_code=? AND balance<=?',(float(proceeds),product['issuer_code'],self.MAX_LIMIT_PRICE-float(proceeds)))
+                cash_credit=conn.execute('UPDATE issuer_cash_accounts SET balance=balance+? WHERE company_code=? AND balance<=?',(ExactDecimal(proceeds),product['issuer_code'],self.MAX_LIMIT_PRICE-ExactDecimal(proceeds)))
                 if cash_credit.rowcount!=1:raise ValueError('법인 현금 한도를 초과합니다.')
             if bond_finance:
                 finance, issuer, face_value = bond_finance
@@ -743,7 +745,7 @@ class OrderBookManager:
         if source == "treasury_bond":
             basis_minor = self.user_manager.bond_manager.transfer_units(
                 conn, seller_id, buyer_id, buy_order["asset_code"], quantity,
-                float(execution_price), now,
+                ExactDecimal(execution_price), now,
             )
             gross_minor = execution_minor * int(quantity)
             taxable_gain_minor = max(0, gross_minor - basis_minor)
@@ -846,7 +848,7 @@ class OrderBookManager:
 
         if self.user_manager._asset_row(conn, sell_order["asset_code"])[1] == "company":
             from managers.corporate_actions_manager import CorporateActionsManager
-            CorporateActionsManager.record_issue_fill(conn, sell_order["order_id"], quantity, float(execution_price))
+            CorporateActionsManager.record_issue_fill(conn, sell_order["order_id"], quantity, ExactDecimal(execution_price))
             self.user_manager._refresh_max_shareholder(conn, sell_order["asset_code"])
         seller_proceeds_minor = max(0, execution_minor * quantity - total_tax_minor)
         return {"tax_amount": total_tax,
@@ -896,7 +898,7 @@ class OrderBookManager:
                 "UPDATE accounts.accounts SET balance_units = balance_units + ?, "
                 "principal = COALESCE(principal, 0) + ?, last_payment_epoch = ?, "
                 "last_payment = CURRENT_TIMESTAMP WHERE account_number = ? AND user_id = ?",
-                (amount_units, float(amount), now, account_number, user_id),
+                (amount_units, ExactDecimal(amount), now, account_number, user_id),
             )
         if cursor.rowcount != 1:
             raise RuntimeError("매수 주문 예치금을 환불할 계좌를 찾지 못했습니다.")
@@ -938,7 +940,7 @@ class OrderBookManager:
         units = (int(order["reserved_cash_minor_units"] or 0)
                  if "reserved_cash_minor_units" in order.keys()
                  else to_minor_units(order["reserved_cash"] or 0, places))
-        return float(from_minor_units(units, places))
+        return ExactDecimal(from_minor_units(units, places))
 
     def cancel_order(self, user_id, order_id):
         fractional = self.db.assets.execute_one('SELECT fractional_order FROM market_orders WHERE order_id=? AND user_id=?', (order_id, str(user_id)))

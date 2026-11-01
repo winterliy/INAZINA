@@ -12,6 +12,7 @@ Only time the asset could have traded is filled: its exchange's regular hours
 exchange an admin left closed or paused. A filled gap is written to
 ``market_price_gap_fills`` so a later restart does not fill its coarse steps again.
 """
+from functions.exact_money import ExactDecimal
 import math
 import random
 import time
@@ -47,6 +48,16 @@ def bridge(start_price, end_price, intervals, sigma, rng):
 
     The walk runs on trading time only, so a closed night is a jump, not a flat line.
     """
+    start_price, end_price = ExactDecimal(start_price), ExactDecimal(end_price)
+    if sigma == 0 and start_price == end_price:
+        span = sum(b - a for a, b in intervals)
+        step = max(1, math.ceil(span / MAX_POINTS_PER_GAP))
+        passed = 0
+        points = []
+        for a, b in intervals:
+            points.extend((a + offset - passed, start_price) for offset in range(step, span, step) if passed <= offset < passed + b - a)
+            passed += b - a
+        return points
     span = sum(b - a for a, b in intervals)
     step = max(1, math.ceil(span / MAX_POINTS_PER_GAP))
     offsets = list(range(step, span, step))
@@ -76,7 +87,7 @@ def _markets(conn):
     markets = {}
     for code, exchange_id, status in conn.execute(_LISTINGS):
         exchange = exchanges.get(str(exchange_id))
-        if status != "active" or exchange_id == MarketSessionManager.UNLISTED or exchange is None:
+        if status != "active" or exchange is None:
             continue
         # A schedule close reopens by itself; an admin's 휴장 or 정지 means the market really stopped.
         if exchange["status"] != "open" and not exchange.get("scheduled_close"):
@@ -120,8 +131,8 @@ def fill_price_gaps(conn, now=None, rng=None):
         schedule = markets.get(code)
         if schedule is None:
             continue
-        price = float(price)
-        end, end_price = (int(next_epoch), float(next_price)) if next_epoch is not None else (now, price)
+        price = ExactDecimal(price)
+        end, end_price = (int(next_epoch), ExactDecimal(next_price)) if next_epoch is not None else (now, price)
         start = max(int(epoch), floor)
         if not (price > 0 and end_price > 0):
             continue
@@ -132,7 +143,7 @@ def fill_price_gaps(conn, now=None, rng=None):
             continue
         if code not in sigmas:
             # One volatility per asset: its real ticks before its first gap in this run.
-            recent = [float(r[0]) for r in conn.execute(
+            recent = [ExactDecimal(r[0]) for r in conn.execute(
                 "SELECT price FROM market_price_history WHERE asset_code=? AND recorded_epoch<=? "
                 "ORDER BY recorded_epoch DESC LIMIT ?", (code, epoch, VOLATILITY_SAMPLE + 1))][::-1]
             sigmas[code] = _volatility(recent)

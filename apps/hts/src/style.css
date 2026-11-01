@@ -924,6 +924,8 @@ th:last-child, td:last-child { padding-right: 20px; }
 .search-pop { position: absolute; top: calc(100% + 8px); left: 0; right: 0; z-index: 20; display: flex; flex-direction: column; max-height: min(560px, calc(100vh - 90px)); padding: 12px; border-radius: 20px; color: var(--ink); background: var(--canvas); box-shadow: 0 24px 60px rgba(0, 0, 0, .28), 0 0 0 1px var(--line); animation: rise 200ms var(--ease) backwards; }
 .search-pop .search-results { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; margin: 0 -4px; padding: 0 4px; }
 .search-pop .search-tabs button { min-height: 30px; }
+.search-pop > .search-tabs, .search-pop > .recommend-sorts, .search-pop > .search-caption { flex: none; }
+.search-result.fx-rate { cursor: default; }
 .top-nav { display: flex; align-items: center; gap: 0 18px; overflow-x: auto; scrollbar-width: none; }
 .top-nav a { min-height: 44px; display: inline-flex; align-items: center; color: #d2d2d7; font-size: 12px; text-decoration: none; white-space: nowrap; }
 .top-nav a:hover, .top-nav a[aria-current="page"] { color: #fff; }
@@ -931,7 +933,7 @@ th:last-child, td:last-child { padding-right: 20px; }
 .hts-topbar a.header-action[aria-current="page"] { text-decoration: underline; text-underline-offset: 3px; }
 
 /* ---- Service pages (송금 · 은행 · 투자상품 · 복권·게임 · 정보) ---- */
-.svc-page { position: relative; z-index: 1; display: grid; gap: 20px; width: min(1120px, calc(100% - 32px)); margin: 24px auto 48px; }
+.svc-page { position: relative; z-index: 1; display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; width: min(1120px, calc(100% - 32px)); margin: 24px auto 48px; }
 .svc-nav { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
 .svc-nav a { flex: none; min-height: 38px; display: inline-flex; align-items: center; padding: 0 16px; border-radius: 999px; color: var(--ink2); background: var(--surface); font-size: 14px; text-decoration: none; }
 .svc-nav a[aria-current="page"] { color: var(--accent-ink); background: var(--ink); font-weight: 600; }
@@ -1020,7 +1022,7 @@ th:last-child, td:last-child { padding-right: 20px; }
 .svc-product .svc-inline { grid-template-columns: 1fr; }
 @media (max-width: 760px) {
   .svc-page { width: calc(100% - 24px); margin-top: 16px; }
-  .svc-transfer-grid { grid-template-columns: 1fr; }
+  .svc-transfer-grid { grid-template-columns: minmax(0, 1fr); }
   .svc-steps li { padding: 10px; font-size: 12px; }
   .svc-row-card { grid-template-columns: 1fr; gap: 8px; }
   .svc-two { grid-template-columns: 1fr; }
@@ -1029,7 +1031,7 @@ th:last-child, td:last-child { padding-right: 20px; }
 
 /* ---- 복권 · 게임: a casino lobby with its own dark look ---- */
 .svc-casino-page { --casino-gold: #f5c542; --casino-felt: #0d3b2e; }
-.casino { display: grid; gap: 18px; }
+.casino { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
 .casino-hero { display: grid; gap: 6px; padding: 36px; border-radius: 28px; color: #fff; background: radial-gradient(circle at 80% 20%, rgba(245, 197, 66, .28), transparent 45%), linear-gradient(135deg, #1b0f2e, #3a0f2f 55%, #0f1530); }
 .casino-hero p { color: var(--casino-gold); font-size: 13px; font-weight: 800; letter-spacing: .2em; }
 .casino-hero h2 { font-size: clamp(26px, 4vw, 38px); font-weight: 800; letter-spacing: -.03em; }
@@ -1075,8 +1077,8 @@ th:last-child, td:last-child { padding-right: 20px; }
 .lotto-buy > button:not(.casino-play) { min-height: 44px; color: #fff; background: rgba(255, 255, 255, .12); border: 0; }
 .lotto-buy .casino-play { flex: 1 1 140px; min-height: 44px; font-size: 15px; }
 .casino-lotto .svc-outcome { color: var(--ink); }
-.casino-info { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; align-items: start; }
-@media (max-width: 860px) { .casino-grid { grid-template-columns: 1fr; } .casino-hero { padding: 26px; } .lotto-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); } }
+.casino-info { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 16px; align-items: start; }
+@media (max-width: 860px) { .casino-grid { grid-template-columns: minmax(0, 1fr); } .casino-hero { padding: 26px; } .lotto-grid { grid-template-columns: repeat(7, minmax(0, 1fr)); } }
 
 /* ---- Account page: profile tile beside the settings ---- */
 .account-page { position: relative; z-index: 1; display: grid; grid-template-columns: 320px minmax(0, 1fr); gap: 20px; align-items: start; width: min(1080px, calc(100% - 32px)); margin: 28px auto 56px; }
@@ -1322,3 +1324,45 @@ th:last-child, td:last-child { padding-right: 20px; }
 .brand { display: inline-flex; align-items: center; gap: 8px; font-weight: 800; letter-spacing: -.01em; }
 .brand .brand-mark { display: inline-grid; place-items: center; width: 24px; height: 24px; color: var(--canvas, #fff); background: var(--ink, #111); font-size: 13px; font-weight: 800; }
 .brand span { color: var(--ink2); font-weight: 500; }
+
+/* Keep account totals and long identifiers inside their own layout columns. */
+.board-row, .extras { grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); }
+.board-row > *, .extras > *, .svc-card, .svc-field, .svc-two > *, .wallet-row > *, .holding > span { min-width: 0; }
+.independent-holdings { grid-column: 1 / -1; }
+.independent-holdings .holdings { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); align-items: start; }
+.independent-holdings .holding { width: 100%; gap: 12px; }
+.holding b, .holding small, .svc-who, .wallet-row span, .svc-outcome p { overflow-wrap: anywhere; }
+.holding strong, .svc-statement-row > b { min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.svc-field select, .svc-field input, .svc-feedback input, .svc-feedback textarea { min-width: 0; max-width: 100%; }
+.svc-actions, .wallet-actions, .svc-tabs, .svc-chips { flex-wrap: wrap; }
+.wallet-summary > strong { overflow-wrap: anywhere; font-size: clamp(24px, 3vw, 40px); }
+@media (max-width: 600px) {
+  .svc-statement-row { grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; }
+  .svc-statement-row .svc-who { grid-column: 1; }
+  .svc-statement-row > b { grid-column: 2; grid-row: 1 / span 3; max-width: 44vw; text-align: right; }
+  .svc-two { grid-template-columns: minmax(0, 1fr); }
+  .independent-holdings .holding { flex-wrap: wrap; }
+}
+.search-pop .search-indicators { max-height: min(35vh, 280px); overflow-y: auto; overscroll-behavior: contain; }
+
+/* Allow long account options and exact amounts to shrink inside service grids. */
+.svc-page > *, .casino > *, .casino-grid > *, .casino-info > *, .casino-table > *, .casino-lotto > *, .casino-hero > * { min-width: 0; }
+.casino-hero label { display: grid; gap: 6px; }
+.casino-hero select { width: 100%; max-width: 100%; min-width: 0; }
+.casino-hero span, .casino-wheel small, .casino-bet b { overflow-wrap: anywhere; }
+.casino-bet { flex-wrap: wrap; gap: 8px; }
+.casino-bet b { min-width: 0; }
+.lotto-picked .lotto-ball { flex: 1 1 0; min-width: 0; max-width: 44px; width: auto; height: auto; aspect-ratio: 1; }
+.svc-statement-row > b { white-space: normal; }
+.svc-transfer { grid-template-columns: minmax(0, 1fr); }
+.svc-transfer > *, .svc-transfer-grid > * { min-width: 0; }
+.svc-card { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 760px) {
+  /* Exact prices can exceed 10^18; let the quote shrink and wrap instead of widening the page. */
+  .quote-side, .quote-value { min-width: 0; max-width: 100%; }
+  .quote-value { flex-wrap: wrap; }
+  .quote-value strong { min-width: 0; font-size: clamp(28px, 9vw, 48px); overflow-wrap: anywhere; }
+}
+.svc-balance { grid-template-columns: minmax(0, 1fr); }
+.svc-balance > * { min-width: 0; }
+.svc-balance b { overflow-wrap: anywhere; }

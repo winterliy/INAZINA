@@ -1,3 +1,4 @@
+import { formatMoney, exactMoney, moneyAdd, moneyMultiply, moneyCompare, moneyDivide, minorMoney, validMoney, type Money } from "../../shared/money";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api, clearToken, signedOut, type ApiUser } from "../../shared/api";
@@ -9,6 +10,7 @@ import { ErrorBoundary } from "./ErrorBoundary";
 import { ServicesApp, legacyCommandPath, servicePath } from "./services/ServicesApp";
 import { SERVICES } from "./services/ServiceKit";
 import { Backdrop } from "./Backdrop";
+import { SearchIndicators } from "./SearchIndicators";
 
 type Warning = { level: "caution" | "warning" | "danger"; label: string; reason: string; expiresEpoch: number | null };
 type DrMovement = { movement_id: number; dr_code: string; underlying_code: string; underlying_currency: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; underlying_average_cost: number; underlying_average_cost_text: string; decimal_places: number; recorded_epoch: number };
@@ -16,35 +18,34 @@ type DrCustodyInstruction = { reference_key: string; dr_code: string; underlying
 type DrVotingDelegation = { delegation_id: number; dr_code: string; underlying_code: string; proxy_user_id: string; dr_quantity: number; status: "active" | "revoked"; created_epoch: number; revoked_epoch: number | null; events: { event_type: string; recorded_epoch: number }[] };
 type ReceivedDrVotingDelegation = { delegation_id: number; dr_code: string; underlying_code: string; owner_user_id: string; dr_quantity: number; created_epoch: number };
 type DrVotingAgenda = { meetingId: number; agendaItemId: number; underlyingCode: string; meetingTitle: string; agendaTitle: string; choices: string[]; recordEpoch: number; opensEpoch: number | null; closesEpoch: number | null; quorumPercent: number; votingPower: number; totalEligible: number; myChoice: string | null; state: "unscheduled" | "upcoming" | "open" | "closed" };
-type Instrument = { code: string; name: string; type: string; price: number; status: string; exchange_id?: string; quote_currency?: string; fund_category?: string | null; bondRisk?: { faceValue: number; macaulay_duration: number; modified_duration: number; convexity: number; dv01: number } | null; drProgram?: { underlyingCode: string; underlyingPerReceipt: number; receiptType: string; programStatus: string; depositaryBank?: string | null; custodian?: string | null; homeExchangeId?: string | null; referenceValue?: number; referencePremiumPercent?: number; referenceDeviationAlert?: boolean }; warning?: Warning; change24h?: number | null; tradeValue24h?: number; trades24h?: number; volume24h?: number };
+type Instrument = { code: string; name: string; type: string; price: Money; status: string; currency_code?: string; exchange_id?: string; quote_currency?: string; fund_category?: string | null; bondRisk?: { faceValue: Money; macaulay_duration: number; modified_duration: number; convexity: number; dv01: Money } | null; drProgram?: { underlyingCode: string; underlyingPerReceipt: number; receiptType: string; programStatus: string; depositaryBank?: string | null; custodian?: string | null; homeExchangeId?: string | null; referenceValue?: Money; referencePremiumPercent?: number; referenceDeviationAlert?: boolean }; warning?: Warning; change24h?: number | null; tradeValue24h?: Money; trades24h?: number; volume24h?: number };
 
 // Administrator trading warnings (투자주의·경고·위험).
 const WarningBadge = ({ warning }: { warning?: Warning }) => warning ? <span className={`warn-badge ${warning.level}`} title={warning.reason || warning.label}>{warning.label}</span> : null;
-type Wallet = { currency_code: string; balance_units: number; decimal_places?: number; is_foreign: boolean };
+type Wallet = { currency_code: string; balance_units: Money; decimal_places?: number; is_foreign: boolean };
 type AccountRateReset = { old_rate: number; new_rate: number; scheduled_epoch: number; applied_epoch: number; benchmark_key: string; benchmark_tenor_days: number };
-type AccountDetail = { number: string; account_type: string; product_name: string; balance: number; currency_code: string; decimal_places: number; resolution_status: string; rate_type: string; contract_rate: number | null; next_repricing_epoch: number | null; benchmark_key: string | null; benchmark_tenor_days: number; repricing_lag_seconds: number; rate_resets: AccountRateReset[]; insurance_paid: number; uninsured_claim: number };
-type DepositInsuranceClaim = { claim_id: number; issuer: string; currency_code: string; decimal_places: number; covered_amount: number; uninsured_amount: number; payout_currency?: string | null; payout_amount?: number | null; payout_decimal_places?: number | null; resolved_epoch: number };
+type AccountDetail = { managed_by?: string | null; number: string; account_type: string; product_name: string; balance: Money; currency_code: string; decimal_places: number; resolution_status: string; rate_type: string; contract_rate: number | null; next_repricing_epoch: number | null; benchmark_key: string | null; benchmark_tenor_days: number; repricing_lag_seconds: number; rate_resets: AccountRateReset[]; insurance_paid: Money; uninsured_claim: Money };
+type DepositInsuranceClaim = { claim_id: number; issuer: string; currency_code: string; decimal_places: number; covered_amount: Money; uninsured_amount: Money; payout_currency?: string | null; payout_amount?: Money | null; payout_decimal_places?: number | null; resolved_epoch: number };
 type KycProfile = { status: "pending" | "verified" | "rejected" | "expired"; risk_tier: "standard" | "enhanced" | "restricted"; expires_epoch: number | null };
-type LoanSchedule = { schedule_id: number; installment_number: number; due_epoch: number; principal_due: number; interest_due: number; fee_due: number; principal_paid: number; interest_paid: number; fee_paid: number; amount_paid: number; status: string };
+type LoanSchedule = { schedule_id: number; installment_number: number; due_epoch: number; principal_due: Money; interest_due: Money; fee_due: Money; principal_paid: Money; interest_paid: Money; fee_paid: Money; amount_paid: Money; status: string };
 type LoanRateReset = { old_rate: number; new_rate: number; scheduled_epoch: number; applied_epoch: number; benchmark_key: string; benchmark_tenor_days: number };
 const RATE_BENCHMARK_LABELS: Record<string, string> = { policy: "정책금리", funding: "조달금리", bank_bond: "은행채 수익률", treasury: "국채 수익률" };
-type LoanScheduleView = { loan_id: number; product_code: string; quote_currency: string; decimal_places: number; outstanding_balance: number; status: string; rate_type: string; contract_rate: number | null; next_repricing_epoch: number | null; benchmark_key: string | null; benchmark_tenor_days: number; repricing_lag_seconds: number; collection_status: string; maturity_epoch: number | null; stage_cure_since_epoch: number | null; underwriting_dsr: number | null; underwriting_stress_dsr: number | null; underwriting_stress_shock_bps: number; underwriting_fx_stress_shock_percent: number; origination_pd_12m: number | null; current_ecl_stage: number | null; current_ecl_pd_12m: number | null; installments: LoanSchedule[]; rate_resets: LoanRateReset[] };
-type DividendPayment = { payment_id: number; asset_code: string; dividend_kind: "regular" | "special"; quantity: number; gross_amount: number; tax_amount: number; net_amount_units: number; quote_currency: string; decimal_places: number; created_epoch: number; allocation_key?: string; dr_code?: string | null; rule_id?: number | null; treaty_code?: string | null; tax_rate_percent?: string | null };
+type LoanScheduleView = { loan_id: number; product_code: string; quote_currency: string; decimal_places: number; outstanding_balance: Money; status: string; rate_type: string; contract_rate: number | null; next_repricing_epoch: number | null; benchmark_key: string | null; benchmark_tenor_days: number; repricing_lag_seconds: number; collection_status: string; maturity_epoch: number | null; stage_cure_since_epoch: number | null; underwriting_dsr: number | null; underwriting_stress_dsr: number | null; underwriting_stress_shock_bps: number; underwriting_fx_stress_shock_percent: number; origination_pd_12m: number | null; current_ecl_stage: number | null; current_ecl_pd_12m: number | null; installments: LoanSchedule[]; rate_resets: LoanRateReset[] };
+type DividendPayment = { payment_id: number; asset_code: string; dividend_kind: "regular" | "special"; quantity: number; gross_amount: Money; tax_amount: Money; net_amount_units: Money; quote_currency: string; decimal_places: number; created_epoch: number; allocation_key?: string; dr_code?: string | null; rule_id?: number | null; treaty_code?: string | null; tax_rate_percent?: string | null };
 type TaxResidency = { nationality: string | null; taxResidency: string | null; countries: string[] };
-type Holding = { code: string; name: string; qty: number; price: number; value: number; type: string | null; quote_currency?: string; sell_reserved_qty?: number; is_collateral?: boolean };
+type Holding = { code: string; name: string; qty: number; price: Money; value: Money; type: string | null; quote_currency?: string; sell_reserved_qty?: number; is_collateral?: boolean };
 type CreditFactor = { key: string; label: string; points: number };
 type CreditEvent = { type: string; reference: string; loanId: number | null; occurredEpoch: number; reason: string | null };
 type CreditReport = { score: number; anchor: number; factors: CreditFactor[]; events: CreditEvent[]; history: { previous: number; score: number; trigger: string; epoch: number }[] };
-type Portfolio = { cash: number; grand_total: number; net_worth: number; loan_total: number; order_reserved_total: number; stock_total: number; account_total: number; bond_total?: number; national_currency?: string; nationality?: string; home_rate_nwx?: number; home_decimal_places?: number; wallets?: Wallet[]; stocks: Holding[]; accounts?: AccountDetail[]; deposit_insurance_claims?: DepositInsuranceClaim[]; kyc_profile?: KycProfile | null };
-type Order = { order_id: number; asset_code: string; side: string; limit_price: number; quantity: number; remaining_quantity: number; filled_quantity: number; status: string; quote_currency?: string };
-type Book = { bids: { limit_price: number; quantity: number; order_count: number }[]; asks: { limit_price: number; quantity: number; order_count: number }[] };
+type Portfolio = { cash: Money; grand_total: Money; net_worth: Money; loan_total: Money; order_reserved_total: Money; stock_total: Money; account_total: Money; bond_total?: Money; national_currency?: string; nationality?: string; home_rate_nwx?: Money; home_decimal_places?: number; wallets?: Wallet[]; stocks: Holding[]; accounts?: AccountDetail[]; deposit_insurance_claims?: DepositInsuranceClaim[]; kyc_profile?: KycProfile | null };
+type Order = { order_id: number; asset_code: string; side: string; limit_price: Money; quantity: number; remaining_quantity: number; filled_quantity: number; status: string; quote_currency?: string };
+type Book = { bids: { limit_price: Money; quantity: number; order_count: number }[]; asks: { limit_price: Money; quantity: number; order_count: number }[] };
 
 const ranges = ["1h", "1d", "1w", "1m", "all"] as const;
 const rangeNames: Record<string, string> = { "1h": "1시간", "1d": "1일", "1w": "1주", "1m": "1개월", all: "전체" };
 const intervals: [number, string][] = [[60, "1분봉"], [300, "5분봉"], [600, "10분봉"], [1800, "30분봉"], [3600, "1시간봉"], [21600, "6시간봉"], [43200, "12시간봉"], [86400, "일봉"]];
 const STATUS: Record<string, string> = { open: "미체결", partial: "부분 체결", scheduled: "예약", filled: "체결", cancelled: "취소", expired: "만료" };
-const UNIT_SCALE = 1_000_000;
-const money = (value: number, digits = 0) => new Intl.NumberFormat("ko-KR", { maximumFractionDigits: digits }).format(value || 0);
+const money = formatMoney;
 const date = (epoch: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "short" }).format(epoch * 1000);
 const CREDIT_EVENTS: Record<string, string> = {
   payment_on_time: "정상 납부", payment_missed: "납부 연체", payment_cured: "연체 회차 사후 납부", loan_closed: "대출 완납",
@@ -86,8 +87,8 @@ const recommended = (items: Instrument[], sort: RecommendSort) => {
   const ranked = sort === "rising" ? items.filter((item) => change(item) > 0).sort((a, b) => change(b) - change(a))
     : sort === "falling" ? items.filter((item) => change(item) < 0).sort((a, b) => change(a) - change(b))
       : [...items].sort(sort === "volume"
-        ? (a, b) => (b.volume24h ?? 0) - (a.volume24h ?? 0) || (b.tradeValue24h ?? 0) - (a.tradeValue24h ?? 0)
-        : (a, b) => (b.tradeValue24h ?? 0) - (a.tradeValue24h ?? 0) || Math.abs(change(b)) - Math.abs(change(a)));
+        ? (a, b) => (b.volume24h ?? 0) - (a.volume24h ?? 0) || moneyCompare(b.tradeValue24h ?? 0, a.tradeValue24h ?? 0)
+        : (a, b) => moneyCompare(b.tradeValue24h ?? 0, a.tradeValue24h ?? 0) || Math.abs(change(b)) - Math.abs(change(a)));
   return ranked.slice(0, 20);
 };
 /** The board is its own page (/board); "종목 토론" opens it filtered to one instrument. */
@@ -157,6 +158,7 @@ export default function App() {
     try { localStorage.setItem(INDICATOR_KEY, JSON.stringify(next)); } catch { /* not remembered */ }
   }
   const [points, setPoints] = useState<Point[]>([]);
+  const [quote, setQuote] = useState<{ code: string; price: Money } | null>(null);
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [drMovements, setDrMovements] = useState<DrMovement[]>([]);
@@ -187,12 +189,14 @@ export default function App() {
   const selected = instruments.find((item) => item.code === selectedCode) ?? null;
   const filtered = useMemo(() => {
     const term = search.trim().toLocaleLowerCase();
-    if (!term) return searchTabValue === "recommended" ? recommended(instruments, recommendSort) : instruments.filter((item) => searchTab(item) === searchTabValue);
-    return instruments.filter((item) => `${item.code} ${item.name} ${item.type} ${instrumentType(item)}`.toLocaleLowerCase().includes(term));
+    // Exchange rates show as rate cards only; they never open the live chart.
+    const tradable = instruments.filter((item) => item.type !== "forex");
+    if (!term) return searchTabValue === "recommended" ? recommended(tradable, recommendSort) : tradable.filter((item) => searchTab(item) === searchTabValue);
+    return tradable.filter((item) => `${item.code} ${item.name} ${item.type} ${instrumentType(item)}`.toLocaleLowerCase().includes(term));
   }, [instruments, search, searchTabValue, recommendSort]);
   const tabCounts = useMemo(() => {
     const counts: Partial<Record<SearchTab, number>> = { recommended: Math.min(20, instruments.length) };
-    for (const item of instruments) counts[searchTab(item)] = (counts[searchTab(item)] ?? 0) + 1;
+    for (const item of instruments) if (item.type !== "forex") counts[searchTab(item)] = (counts[searchTab(item)] ?? 0) + 1;
     return counts;
   }, [instruments]);
 
@@ -312,8 +316,9 @@ export default function App() {
         api<{ points: Point[]; candles?: Candle[]; interval?: number; indicators?: IndicatorData; catalog?: IndicatorCatalog }>(`/api/market/chart/${encodeURIComponent(code)}?${query}`),
         api<Book>(`/api/market/book/${encodeURIComponent(code)}`),
       ]);
-      setPoints(chart.points);
-      setCandles(chart.candles ?? []);
+      setQuote(chart.points.length ? { code, price: chart.points.at(-1)!.price } : null);
+      setPoints(chart.points.map((point) => ({ ...point, price: Number(point.price) })));
+      setCandles((chart.candles ?? []).map((candle) => ({ ...candle, open: Number(candle.open), high: Number(candle.high), low: Number(candle.low), close: Number(candle.close) })));
       if (chart.interval) setCandleInterval(chart.interval);
       setIndicatorData(chart.indicators ?? { upper: {}, lower: {} });
       if (chart.catalog) { setIndicatorCatalog(chart.catalog); catalogLoaded.current = true; }
@@ -361,10 +366,11 @@ export default function App() {
   }, [drawings, selectedCode]);
 
   async function submitOrder() {
+    if (!validMoney(price, true) || !Number.isFinite(Number(quantity)) || Number(quantity) <= 0) return;
     setBusy(true);
     try {
       const result = await api<{ message: string }>("/api/market/orders", {
-        method: "POST", body: JSON.stringify({ assetCode: selectedCode, side, quantity: Number(quantity), limitPrice: Number(price) }),
+        method: "POST", body: JSON.stringify({ assetCode: selectedCode, side, quantity: Number(quantity), limitPrice: exactMoney(price) }),
       });
       setReview(false);
       setNotice(result.message);
@@ -531,13 +537,22 @@ export default function App() {
     <a className="board-guest-button" href={boardUrl()}>로그인 없이 게시판 보기</a>
   </div>;
 
-  const current = points.at(-1)?.price ?? selected?.price ?? 0;
+  const current = quote?.code === selectedCode ? quote.price : selected?.price ?? 0;
+  const orderAmount = validMoney(price) && validMoney(quantity) ? moneyMultiply(price, quantity) : "0";
   // Amounts follow the account's nationality; instrument prices keep their trading currency.
   const homeCurrency = portfolio?.national_currency || user.currency || "";
+  const fxTerm = search.trim().toLocaleLowerCase();
+  const fxPrice = (code: string, base: string) => code === base ? 1 : instruments.find((item) => item.type === "forex" && item.currency_code === code)?.price;
+  // "기준화폐:검색화폐" — how much of the searched currency one unit of the user's currency buys.
+  const fxRates = fxTerm && homeCurrency ? instruments.filter((item) => item.type === "forex" && item.currency_code && item.currency_code !== homeCurrency
+    && `${item.currency_code} ${item.name}`.toLocaleLowerCase().includes(fxTerm)).flatMap((item) => {
+    const home = fxPrice(homeCurrency, item.quote_currency || "");
+    return home && Number(item.price) ? [{ code: item.currency_code!, name: item.name, rate: moneyDivide(home, item.price, 6), inverse: moneyDivide(item.price, home, 4) }] : [];
+  }) : [];
   const homeDigits = portfolio?.home_decimal_places ?? 0;
   const homeRate = portfolio?.home_rate_nwx || 1;
   // Portfolio totals are 기준 통화; the Discord wallet shows them in the home currency.
-  const inHome = (nwx: number) => nwx / homeRate;
+  const inHome = (nwx: Money) => moneyDivide(nwx, homeRate, homeDigits);
   const holdings = (portfolio?.stocks ?? []).filter((item) => item.qty);
   const visibleOrders = orders.filter((order) => orderFilter === "all" || OPEN.has(order.status));
   const openCount = orders.filter((order) => OPEN.has(order.status)).length;
@@ -567,10 +582,10 @@ export default function App() {
     <a className="brand" href="/" aria-label="NARU 나루 홈"><b className="brand-mark" aria-hidden="true">N</b>NARU <span>나루 · INAZINA</span></a>
     <div className="top-search" ref={searchBoxRef}>
       <label className="top-search-field"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M20 20l-4-4" /></svg>
-        <input ref={searchInputRef} value={search} aria-label="종목 검색" aria-expanded={searchOpen} aria-controls="top-search-pop" placeholder="종목명 또는 코드 검색" onFocus={() => setSearchOpen(true)} onChange={(event) => { setSearch(event.target.value); setSearchOpen(true); }} onKeyDown={(event) => { if (event.key === "Enter" && filtered[0]) chooseInstrument(filtered[0].code); }} />
+        <input ref={searchInputRef} value={search} aria-label="종목·금리·지수 검색" aria-expanded={searchOpen} aria-controls="top-search-pop" placeholder="종목·국가·거래소 검색" onFocus={() => setSearchOpen(true)} onChange={(event) => { setSearch(event.target.value); setSearchOpen(true); }} onKeyDown={(event) => { if (event.key === "Enter" && filtered[0]) chooseInstrument(filtered[0].code); }} />
         {search && <button type="button" className="top-search-clear" aria-label="검색어 지우기" onClick={() => { setSearch(""); searchInputRef.current?.focus(); }}>×</button>}
       </label>
-      {searchOpen && <section id="top-search-pop" className="search-pop" aria-label="종목 검색 결과">{!search.trim() && <div className="search-tabs" role="tablist" aria-label="상품 종류">{SEARCH_TABS.filter(([id]) => id === "recommended" || tabCounts[id]).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={searchTabValue === id} className={searchTabValue === id ? "active" : ""} onClick={() => setSearchTabValue(id)}>{label}<span>{tabCounts[id] ?? 0}</span></button>)}</div>}{!search.trim() && searchTabValue === "recommended" && <><div className="recommend-sorts" role="group" aria-label="추천 기준">{RECOMMEND_SORTS.map(([id, label]) => <button key={id} type="button" aria-pressed={recommendSort === id} className={recommendSort === id ? "active" : ""} onClick={() => setRecommendSort(id)}>{label}</button>)}</div><p className="search-caption">{RECOMMEND_SORTS.find(([id]) => id === recommendSort)![2]}</p></>}<div className="search-results">{filtered.slice(0, 200).map((item, index) => <button type="button" key={item.code} className={selectedCode === item.code ? "search-result active" : "search-result"} onClick={() => chooseInstrument(item.code)}><span>{!search.trim() && searchTabValue === "recommended" && <em className="search-rank">{index + 1}</em>}<span className="search-name"><b>{item.name} <WarningBadge warning={item.warning} /></b><small>{item.code} · {instrumentType(item)}{!search.trim() && searchTabValue === "recommended" && recommendSort === "volume" ? (item.volume24h ? ` · 24시간 ${money(item.volume24h, 2)}주` : "") : item.trades24h ? ` · 24시간 ${money(item.trades24h)}건` : ""}</small></span></span><span className="search-price"><strong>{money(item.price, 2)} {item.quote_currency || homeCurrency}</strong>{item.change24h !== null && item.change24h !== undefined && <small className={item.change24h > 0 ? "up" : item.change24h < 0 ? "down" : undefined}>{item.change24h > 0 ? "+" : ""}{item.change24h.toFixed(2)}%</small>}</span></button>)}{!filtered.length && <p className="empty">{search.trim() ? "검색 결과가 없습니다." : searchTabValue === "recommended" ? "최근 24시간 동안 해당하는 종목이 없습니다." : "이 종류의 상품이 없습니다."}</p>}</div></section>}
+      {searchOpen && <section id="top-search-pop" className="search-pop" aria-label="종목 검색 결과">{!search.trim() && <div className="search-tabs" role="tablist" aria-label="상품 종류">{SEARCH_TABS.filter(([id]) => id === "recommended" || tabCounts[id]).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={searchTabValue === id} className={searchTabValue === id ? "active" : ""} onClick={() => setSearchTabValue(id)}>{label}<span>{tabCounts[id] ?? 0}</span></button>)}</div>}{!search.trim() && searchTabValue === "recommended" && <><div className="recommend-sorts" role="group" aria-label="추천 기준">{RECOMMEND_SORTS.map(([id, label]) => <button key={id} type="button" aria-pressed={recommendSort === id} className={recommendSort === id ? "active" : ""} onClick={() => setRecommendSort(id)}>{label}</button>)}</div><p className="search-caption">{RECOMMEND_SORTS.find(([id]) => id === recommendSort)![2]}</p></>}<div className="search-results">{fxRates.map((fx) => <div key={`fx-${fx.code}`} className="search-result fx-rate" aria-label={`${homeCurrency}:${fx.code} 환율`}><span><span className="search-name"><b>{homeCurrency}:{fx.code}</b><small>{fx.name} · 환율</small></span></span><span className="search-price"><strong>1 : {money(fx.rate, 6)}</strong><small>1 {fx.code} = {money(fx.inverse, 4)} {homeCurrency}</small></span></div>)}{filtered.slice(0, 200).map((item, index) => <button type="button" key={item.code} className={selectedCode === item.code ? "search-result active" : "search-result"} onClick={() => chooseInstrument(item.code)}><span>{!search.trim() && searchTabValue === "recommended" && <em className="search-rank">{index + 1}</em>}<span className="search-name"><b>{item.name} <WarningBadge warning={item.warning} /></b><small>{item.code} · {instrumentType(item)}{!search.trim() && searchTabValue === "recommended" && recommendSort === "volume" ? (item.volume24h ? ` · 24시간 ${money(item.volume24h, 2)}주` : "") : item.trades24h ? ` · 24시간 ${money(item.trades24h)}건` : ""}</small></span></span><span className="search-price"><strong>{money(item.price, 2)} {item.quote_currency || homeCurrency}</strong>{item.change24h !== null && item.change24h !== undefined && <small className={item.change24h > 0 ? "up" : item.change24h < 0 ? "down" : undefined}>{item.change24h > 0 ? "+" : ""}{Number(item.change24h).toFixed(2)}%</small>}</span></button>)}{!filtered.length && !fxRates.length && <p className="empty">{search.trim() ? "검색 결과가 없습니다." : searchTabValue === "recommended" ? "최근 24시간 동안 해당하는 종목이 없습니다." : "이 종류의 상품이 없습니다."}</p>}</div>{search.trim() && <SearchIndicators query={search} />}</section>}
     </div>
     <nav className="top-nav" aria-label="서비스">{SERVICES.slice(0, 4).map((item) => <a key={item.path} href={item.path} aria-current={here === "services" && location.pathname.startsWith(item.path) ? "page" : undefined}>{item.label}</a>)}<a href={boardUrl()}>게시판</a></nav>
     <div className="top-actions">
@@ -639,14 +654,14 @@ export default function App() {
     {notice && <div className="toast" role="status">{notice}<button onClick={() => setNotice("")}>닫기</button></div>}
     <main className="hts-main">
       {watch.length > 0 && <nav className="watch-strip" aria-label="관심종목">{watch.map((code) => instruments.find((item) => item.code === code)).filter((item): item is Instrument => Boolean(item)).map((item) => <button type="button" key={item.code} className={item.code === selectedCode ? "active" : ""} onClick={() => chooseInstrument(item.code)}>
-        <b>{item.name}</b><span>{money(item.price, 2)}</span>{item.change24h != null && <small className={item.change24h > 0 ? "up" : item.change24h < 0 ? "down" : undefined}>{item.change24h > 0 ? "+" : ""}{item.change24h.toFixed(2)}%</small>}
+        <b>{item.name}</b><span>{money(item.price, 2)}</span>{item.change24h != null && <small className={item.change24h > 0 ? "up" : item.change24h < 0 ? "down" : undefined}>{item.change24h > 0 ? "+" : ""}{Number(item.change24h).toFixed(2)}%</small>}
       </button>)}</nav>}
-      <div className="quote-strip"><div><p className="eyebrow">{selected?.exchange_id || "MARKET"} · {selected ? instrumentType(selected) : "—"}</p><h1>{selected?.name || "종목을 선택하세요"}<small>{selected?.code}</small>{selected && <button type="button" className={watch.includes(selected.code) ? "watch-star on" : "watch-star"} aria-pressed={watch.includes(selected.code)} title={watch.includes(selected.code) ? "관심종목에서 빼기" : "관심종목에 추가"} onClick={() => toggleWatch(selected.code)}>{watch.includes(selected.code) ? "★" : "☆"}</button>}<WarningBadge warning={selected?.warning} /></h1>{selected?.drProgram && <><p className="orders-hint">{selected.drProgram.receiptType} · 원주 {selected.drProgram.underlyingCode} · 1 DR = {money(selected.drProgram.underlyingPerReceipt, 6)}주 · 원주 거래소 {selected.drProgram.homeExchangeId || "—"} · 예탁 {selected.drProgram.depositaryBank || "—"} · 수탁 {selected.drProgram.custodian || "—"}</p>{selected.drProgram.referenceValue !== undefined && <p className="orders-hint">단순 원주 환산 참고가 {money(selected.drProgram.referenceValue, 4)} {selected.quote_currency || ""}{selected.drProgram.referencePremiumPercent !== undefined && ` · 현재가 괴리 ${selected.drProgram.referencePremiumPercent >= 0 ? "+" : ""}${selected.drProgram.referencePremiumPercent.toFixed(2)}%`}{selected.drProgram.referenceDeviationAlert && " · ⚠ 괴리 주의 (±10% 이상)"} · 수수료·세금·유동성 미반영</p>}</>}{selected?.bondRisk && <p className="orders-hint">액면 {money(selected.bondRisk.faceValue)} 기준 · Macaulay {selected.bondRisk.macaulay_duration.toFixed(3)}년 · 수정듀레이션 {selected.bondRisk.modified_duration.toFixed(3)} · 컨벡서티 {selected.bondRisk.convexity.toFixed(3)} · DV01 {money(selected.bondRisk.dv01, 4)} {selected.quote_currency || homeCurrency} / 1bp. 현 국채 곡선의 평행이동 민감도이며 거래가격 예측이나 규제지표가 아닙니다.</p>}{selected?.warning?.reason && <p className="warn-reason">⚠️ {selected.warning.label} · {selected.warning.reason}</p>}</div>
+      <div className="quote-strip"><div><p className="eyebrow">{selected?.exchange_id || "MARKET"} · {selected ? instrumentType(selected) : "—"}</p><h1>{selected?.name || "종목을 선택하세요"}<small>{selected?.code}</small>{selected && <button type="button" className={watch.includes(selected.code) ? "watch-star on" : "watch-star"} aria-pressed={watch.includes(selected.code)} title={watch.includes(selected.code) ? "관심종목에서 빼기" : "관심종목에 추가"} onClick={() => toggleWatch(selected.code)}>{watch.includes(selected.code) ? "★" : "☆"}</button>}<WarningBadge warning={selected?.warning} /></h1>{selected?.drProgram && <><p className="orders-hint">{selected.drProgram.receiptType} · 원주 {selected.drProgram.underlyingCode} · 1 DR = {money(selected.drProgram.underlyingPerReceipt, 6)}주 · 원주 거래소 {selected.drProgram.homeExchangeId || "—"} · 예탁 {selected.drProgram.depositaryBank || "—"} · 수탁 {selected.drProgram.custodian || "—"}</p>{selected.drProgram.referenceValue !== undefined && <p className="orders-hint">단순 원주 환산 참고가 {money(selected.drProgram.referenceValue, 4)} {selected.quote_currency || ""}{selected.drProgram.referencePremiumPercent !== undefined && ` · 현재가 괴리 ${selected.drProgram.referencePremiumPercent >= 0 ? "+" : ""}${Number(selected.drProgram.referencePremiumPercent).toFixed(2)}%`}{selected.drProgram.referenceDeviationAlert && " · ⚠ 괴리 주의 (±10% 이상)"} · 수수료·세금·유동성 미반영</p>}</>}{selected?.bondRisk && <p className="orders-hint">액면 {money(selected.bondRisk.faceValue)} 기준 · Macaulay {Number(selected.bondRisk.macaulay_duration).toFixed(3)}년 · 수정듀레이션 {Number(selected.bondRisk.modified_duration).toFixed(3)} · 컨벡서티 {Number(selected.bondRisk.convexity).toFixed(3)} · DV01 {money(selected.bondRisk.dv01, 4)} {selected.quote_currency || homeCurrency} / 1bp. 현 국채 곡선의 평행이동 민감도이며 거래가격 예측이나 규제지표가 아닙니다.</p>}{selected?.warning?.reason && <p className="warn-reason">⚠️ {selected.warning.label} · {selected.warning.reason}</p>}</div>
         <div className="quote-side"><div className="quote-value"><strong>{money(current)}</strong><span>{selected?.quote_currency || homeCurrency}</span></div><button className="quote-switch" onClick={() => { setSearchOpen(true); searchInputRef.current?.focus(); window.scrollTo({ top: 0, behavior: "smooth" }); }}>종목 바꾸기</button>{selected && <a className="quote-switch" href={boardUrl(selected.code)}>종목 토론</a>}</div></div>
       <div className="trade-row">
         <div className="chart-col">
           <ErrorBoundary label="차트" resetKey={`${selectedCode}-${range}-${interval}-${chartMode}`}>
-          <PriceChart points={points} candles={candles} candleInterval={candleInterval} mode={chartMode} fallbackPrice={selected?.price ?? 1}
+          <PriceChart points={points} candles={candles} candleInterval={candleInterval} mode={chartMode} fallbackPrice={Number(selected?.price ?? 1)}
             drawings={drawings} onDrawingsChange={setDrawings} tool={tool} onToolChange={setTool} resetKey={`${selectedCode}-${range}-${interval}-${chartMode}`} label={selected?.name || "가격"}
             indicators={indicators} data={indicatorData} catalog={indicatorCatalog} onIndicatorsChange={chooseIndicators}
             controls={<>{ranges.map((item) => <button key={item} className={range === item ? "selected" : ""} onClick={() => setRange(item)}>{rangeNames[item]}</button>)}
@@ -659,21 +674,21 @@ export default function App() {
         <div className="ticket-col">
           <section className="data-panel order-entry"><div className="panel-title"><h2>주문 입력</h2><span>지정가</span></div>
             <div className="order-sides"><button className={side === "buy" ? "buy active" : "buy"} onClick={() => setSide("buy")}>매수</button><button className={side === "sell" ? "sell active" : "sell"} onClick={() => setSide("sell")}>매도</button></div>
-            <label>지정가 ({selected?.quote_currency || homeCurrency})<input inputMode="numeric" value={price} onChange={(event) => setPrice(event.target.value.replace(/[^\d]/g, ""))} /></label>
-            <label>주문 수량<input inputMode="numeric" value={quantity} onChange={(event) => setQuantity(event.target.value.replace(/[^\d]/g, ""))} /></label>
-            <div className="form-total"><span>주문 금액</span><b>{money(Number(price || 0) * Number(quantity || 0), 2)} {selected?.quote_currency || homeCurrency}</b></div>
-            <button className={side === "buy" ? "submit buy-submit" : "submit sell-submit"} disabled={!selected || !Number(price) || !Number(quantity) || busy} onClick={() => setReview(true)}>{side === "buy" ? "매수 주문 검토" : "매도 주문 검토"}</button>
+            <label>지정가 ({selected?.quote_currency || homeCurrency})<input inputMode="numeric" value={price} onChange={(event) => setPrice(event.target.value.replace(/[^\d.]/g, ""))} /></label>
+            <label>주문 수량<input inputMode="numeric" value={quantity} onChange={(event) => setQuantity(event.target.value.replace(/[^\d.]/g, ""))} /></label>
+            <div className="form-total"><span>주문 금액</span><b>{money(orderAmount, 2)} {selected?.quote_currency || homeCurrency}</b></div>
+            <button className={side === "buy" ? "submit buy-submit" : "submit sell-submit"} disabled={!selected || !validMoney(price, true) || !Number.isFinite(Number(quantity)) || Number(quantity) <= 0 || busy} onClick={() => setReview(true)}>{side === "buy" ? "매수 주문 검토" : "매도 주문 검토"}</button>
             <p className="risk-note">호가를 누르면 그 가격이 지정가로 들어갑니다. 펀드 가입·환매와 소수점 수량은 명령어의 매수·매도를 사용하세요.</p>
           </section>
           {selected?.type === "depositary_receipt" && <section className="data-panel order-entry dr-conversion"><div className="panel-title"><h2>DR 발행 · 상환</h2><span>{selected.drProgram?.programStatus === "active" && selected.status === "active" ? "기초주식 예탁 방식" : "프로그램 중지"}</span></div>
             <p className="orders-hint">{selected.drProgram?.programStatus === "active" && selected.status === "active" ? "DR 수량을 입력하세요. 발행은 보유 원주를 잠그고 DR을 지급하며, 상환은 보유 DR을 소각하고 보관 원주를 지급합니다." : "중지되거나 종료된 DR 프로그램은 새 전환을 할 수 없습니다."}</p>
-            <label>전환할 DR 수량<input inputMode="numeric" value={drQuantity} onChange={(event) => setDrQuantity(event.target.value.replace(/[^\d]/g, ""))} /></label>
+            <label>전환할 DR 수량<input inputMode="numeric" value={drQuantity} onChange={(event) => setDrQuantity(event.target.value.replace(/[^\d.]/g, ""))} /></label>
             <div className="actions"><button className="submit buy-submit" disabled={busy || !Number(drQuantity) || selected.drProgram?.programStatus !== "active" || selected.status !== "active"} onClick={() => void convertDr("issue")}>원주 예탁 · DR 발행</button><button className="submit sell-submit" disabled={busy || !Number(drQuantity) || selected.drProgram?.programStatus !== "active" || selected.status !== "active"} onClick={() => void convertDr("redeem")}>DR 반납 · 원주 상환</button></div>
             <hr />
             <h3>DR 의결권 위임</h3>
             <p className="orders-hint">시뮬레이터 내부 위임 기록입니다. 위임된 수량은 매도·상환할 수 없으며, 기준일 의결권은 주주총회 투표에서 대리인에게 합산됩니다. 실제 수탁기관 지시는 포함하지 않습니다.</p>
             <label>대리 사용자 ID<input value={drProxyUserId} onChange={(event) => setDrProxyUserId(event.target.value)} placeholder="예: user-123" /></label>
-            <label>위임 수량 (DR)<input inputMode="numeric" value={drVoteQuantity} onChange={(event) => setDrVoteQuantity(event.target.value.replace(/[^\d]/g, ""))} /></label>
+            <label>위임 수량 (DR)<input inputMode="numeric" value={drVoteQuantity} onChange={(event) => setDrVoteQuantity(event.target.value.replace(/[^\d.]/g, ""))} /></label>
             <button className="submit buy-submit" disabled={busy || !drProxyUserId.trim() || !Number(drVoteQuantity)} onClick={() => void delegateDrVotes()}>의결권 위임</button>
             {drDelegations.filter((item) => item.dr_code === selected.code).map((item) => <div className="holding" key={item.delegation_id}>
               <span><b>{item.proxy_user_id} · {item.dr_quantity} DR · {item.status === "active" ? "위임 중" : "철회됨"}</b><small>위임 {date(item.created_epoch)}{item.revoked_epoch ? ` · 철회 ${date(item.revoked_epoch)}` : ""}</small></span>
@@ -700,9 +715,9 @@ export default function App() {
         </section>
         <section className="wallet-tile" aria-label="내 지갑">
           <section className="wallet-summary">
-            <span>내 지갑 · {portfolio?.nationality ?? user.nationality} · {homeCurrency}</span>
-            <strong>{money(portfolio?.cash ?? user.cash, homeDigits)} <small>{homeCurrency}</small></strong>
-            <p>총자산 {money(inHome(portfolio?.grand_total ?? 0), homeDigits)} · 순자산 {money(inHome(portfolio?.net_worth ?? 0), homeDigits)} {homeCurrency}</p>
+            <span>내 순자산 · {portfolio?.nationality ?? user.nationality} · {homeCurrency}</span>
+            <strong>{money(inHome(portfolio?.net_worth ?? 0), homeDigits)} <small>{homeCurrency}</small></strong>
+            <p>총자산 {money(inHome(portfolio?.grand_total ?? 0), homeDigits)} · 현금 {money(portfolio?.cash ?? user.cash, homeDigits)} {homeCurrency}</p>
             {portfolio?.kyc_profile && <p>KYC · {KYC_STATUS[portfolio.kyc_profile.status]} · {KYC_RISK[portfolio.kyc_profile.risk_tier]}{portfolio.kyc_profile.expires_epoch ? ` · 만료 ${date(portfolio.kyc_profile.expires_epoch)}` : ""}</p>}
             {taxResidency && <button type="button" className="text-button" onClick={() => setTaxResidencyOpen((open) => !open)}>세무거주지 · {taxResidency?.taxResidency || `국적(${taxResidency?.nationality ?? user.nationality}) 사용 중`} 변경</button>}
             {taxResidency && taxResidencyOpen && <form className="account-form tax-residency-form" onSubmit={saveTaxResidency}>
@@ -723,13 +738,13 @@ export default function App() {
           </div>
           <section className="data-panel wallet-panel">
             <div className="wallet-row"><span>현금</span><b>{money(portfolio?.cash || 0, homeDigits)} {homeCurrency}</b></div>
-            {(portfolio?.wallets ?? []).filter((wallet) => wallet.is_foreign && wallet.balance_units).map((wallet) => <div className="wallet-row" key={wallet.currency_code}><span>외화 · {wallet.currency_code}</span><b>{money(wallet.balance_units / UNIT_SCALE, wallet.decimal_places ?? 6)} {wallet.currency_code}</b></div>)}
+            {(portfolio?.wallets ?? []).filter((wallet) => wallet.is_foreign && wallet.balance_units).map((wallet) => <div className="wallet-row" key={wallet.currency_code}><span>외화 · {wallet.currency_code}</span><b>{money(minorMoney(wallet.balance_units, 6), wallet.decimal_places ?? 6)} {wallet.currency_code}</b></div>)}
             <div className="wallet-row"><span>통장</span><b>{money(portfolio?.account_total || 0, homeDigits)} {homeCurrency}</b></div>
             <div className="wallet-row"><span>투자 평가액</span><b>{money(inHome(portfolio?.stock_total || 0), homeDigits)} {homeCurrency}</b></div>
             <div className="wallet-row"><span>매수 예치금</span><b>{money(inHome(portfolio?.order_reserved_total || 0), homeDigits)} {homeCurrency}</b></div>
             <div className="wallet-row"><span>대출</span><b>{money(inHome(portfolio?.loan_total || 0), homeDigits)} {homeCurrency}</b></div>
             <div className="wallet-row net-worth"><span>순자산</span><b>{money(inHome(portfolio?.net_worth || 0), homeDigits)} {homeCurrency}</b></div>
-            {(portfolio?.accounts ?? []).filter((account) => account.resolution_status === "active").map((account) => <div className="wallet-row account-detail" key={account.number}><span>{account.product_name} · {account.currency_code}<small>{account.number}</small>{account.rate_type === "floating" && account.next_repricing_epoch != null && <small>현재 연 {account.contract_rate?.toFixed(4) ?? "—"}% · 지표 관측 기준일 {date(Math.max(0, account.next_repricing_epoch - account.repricing_lag_seconds))} · 재산정 예정 {date(account.next_repricing_epoch)} · {RATE_BENCHMARK_LABELS[account.benchmark_key || ""] || account.benchmark_key || "기준금리"} {account.benchmark_tenor_days}일 · 새 금리는 재산정 시 확정</small>}{account.rate_resets.map((reset, index) => <small key={`${reset.applied_epoch}-${index}`}>이전 재산정 {date(reset.applied_epoch)} · {RATE_BENCHMARK_LABELS[reset.benchmark_key] || reset.benchmark_key} {reset.benchmark_tenor_days}일 · 연 {reset.old_rate}% → {reset.new_rate}%</small>)}</span><b>{money(account.balance, account.decimal_places)} {account.currency_code}</b></div>)}
+            {(portfolio?.accounts ?? []).filter((account) => account.resolution_status === "active").map((account) => <div className="wallet-row account-detail" key={account.number}><span>{account.product_name} · {account.currency_code}<small>{account.number}</small>{account.rate_type === "floating" && account.next_repricing_epoch != null && <small>현재 연 {(account.contract_rate == null ? undefined : Number(account.contract_rate).toFixed(4)) ?? "—"}% · 지표 관측 기준일 {date(Math.max(0, account.next_repricing_epoch - account.repricing_lag_seconds))} · 재산정 예정 {date(account.next_repricing_epoch)} · {RATE_BENCHMARK_LABELS[account.benchmark_key || ""] || account.benchmark_key || "기준금리"} {account.benchmark_tenor_days}일 · 새 금리는 재산정 시 확정</small>}{account.rate_resets.map((reset, index) => <small key={`${reset.applied_epoch}-${index}`}>이전 재산정 {date(reset.applied_epoch)} · {RATE_BENCHMARK_LABELS[reset.benchmark_key] || reset.benchmark_key} {reset.benchmark_tenor_days}일 · 연 {reset.old_rate}% → {reset.new_rate}%</small>)}</span><b>{money(account.balance, account.decimal_places)} {account.currency_code}</b></div>)}
           </section>
           {credit && <section className="data-panel wallet-credit" aria-label="신용점수">
             <div className="panel-title"><h2>신용점수</h2><span>시뮬레이터 · 기준 {credit.anchor}점</span></div>
@@ -744,16 +759,17 @@ export default function App() {
             </details>}
             <p className="credit-note">기준점수에 요인을 더한 시뮬레이터 점수입니다. 연체 영향은 시간이 지나며 줄고, 정상 납부·완납은 점수를 올립니다. 실제 신용평가사 점수가 아닙니다.</p>
           </section>}
-          <section className="data-panel holdings-panel">
+
+        </section>
+      </div>
+      <div className="extras">
+          <section className="data-panel holdings-panel independent-holdings">
             <div className="panel-title"><h2>보유 종목</h2><span>{holdings.length}</span></div>
             <div className="holdings">{holdings.map((item) => <button type="button" key={`${item.code}-${item.is_collateral ? "c" : "h"}`} className={item.code === selectedCode ? "holding active" : "holding"} onClick={() => chooseInstrument(item.code)}>
               <span><b>{item.name}</b><small>{item.code} · {money(item.qty, 3)}주{item.sell_reserved_qty ? ` · 매도 대기 ${money(item.sell_reserved_qty, 3)}` : ""}{item.is_collateral ? " · 담보" : ""}</small></span>
               <strong>{money(inHome(item.value), homeDigits)} <em>{homeCurrency}</em></strong>
             </button>)}{!holdings.length && <p className="empty">보유 종목이 없습니다. 위의 종목 검색으로 시장을 찾아보세요.</p>}</div>
           </section>
-        </section>
-      </div>
-      <div className="extras">
         {(portfolio?.deposit_insurance_claims?.length ?? 0) > 0 && <section className="data-panel holdings-panel">
           <div className="panel-title"><h2>예금보험 정리 이력</h2><span>{portfolio?.deposit_insurance_claims?.length}건</span></div>
           <div className="holdings">{portfolio?.deposit_insurance_claims?.map((claim) => <div className="holding" key={claim.claim_id}>
@@ -764,12 +780,12 @@ export default function App() {
         {loanSchedules.length > 0 && <section className="data-panel holdings-panel"><div className="panel-title"><h2>대출 상환 일정</h2><span>{loanSchedules.length}건</span></div>
           <div className="holdings">{loanSchedules.map((loan) => <div className="holding loan-schedule" key={loan.loan_id}>
             <span><b>#{loan.loan_id} · {loan.product_code} · 잔액 {money(loan.outstanding_balance, loan.decimal_places)} {loan.quote_currency}</b>
-              {loan.underwriting_stress_dsr != null && <small>심사 당시 DSR {loan.underwriting_dsr?.toFixed(1) ?? "—"}% · 금리 +{loan.underwriting_stress_shock_bps}bp / 외화부채 환율 +{loan.underwriting_fx_stress_shock_percent}% 스트레스 DSR {loan.underwriting_stress_dsr.toFixed(1)}%</small>}
+              {loan.underwriting_stress_dsr != null && <small>심사 당시 DSR {(loan.underwriting_dsr == null ? undefined : Number(loan.underwriting_dsr).toFixed(1)) ?? "—"}% · 금리 +{loan.underwriting_stress_shock_bps}bp / 외화부채 환율 +{loan.underwriting_fx_stress_shock_percent}% 스트레스 DSR {Number(loan.underwriting_stress_dsr).toFixed(1)}%</small>}
               {loan.origination_pd_12m != null && <small>취급 시 추정 12개월 부도확률(PD) {(loan.origination_pd_12m * 100).toFixed(2)}% · 현재 ECL 평가의 Stage 2 비교 기준</small>}
               {loan.current_ecl_stage != null && loan.current_ecl_pd_12m != null && <small>최근 ECL 평가 · Stage {loan.current_ecl_stage} · 12개월 PD {(loan.current_ecl_pd_12m * 100).toFixed(2)}%</small>}
               {loan.stage_cure_since_epoch != null && <small>위험 개선 관찰 시작 {date(loan.stage_cure_since_epoch)} · 90일 경과 후 Stage 2 조건이 없으면 Stage 1 재평가</small>}
-              {loan.rate_type === "floating" && loan.next_repricing_epoch != null && <small>현재 연 {loan.contract_rate?.toFixed(4) ?? "—"}% · 지표 관측 기준일 {date(Math.max(0, loan.next_repricing_epoch - loan.repricing_lag_seconds))} · 다음 재산정 {date(loan.next_repricing_epoch)} · {RATE_BENCHMARK_LABELS[loan.benchmark_key || ""] || loan.benchmark_key || "기준금리"} {loan.benchmark_tenor_days}일 · 새 금리는 재산정 시 확정됩니다.</small>}
-              {loan.installments.slice(0, 4).map((item) => <small key={item.schedule_id}>회차 {item.installment_number} · {date(item.due_epoch)} · 잔액 원금 {money(item.principal_due-item.principal_paid, loan.decimal_places)} / 이자 {money(item.interest_due-item.interest_paid, loan.decimal_places)} / 수수료 {money(item.fee_due-item.fee_paid, loan.decimal_places)} {loan.quote_currency}</small>)}
+              {loan.rate_type === "floating" && loan.next_repricing_epoch != null && <small>현재 연 {(loan.contract_rate == null ? undefined : Number(loan.contract_rate).toFixed(4)) ?? "—"}% · 지표 관측 기준일 {date(Math.max(0, loan.next_repricing_epoch - loan.repricing_lag_seconds))} · 다음 재산정 {date(loan.next_repricing_epoch)} · {RATE_BENCHMARK_LABELS[loan.benchmark_key || ""] || loan.benchmark_key || "기준금리"} {loan.benchmark_tenor_days}일 · 새 금리는 재산정 시 확정됩니다.</small>}
+              {loan.installments.slice(0, 4).map((item) => <small key={item.schedule_id}>회차 {item.installment_number} · {date(item.due_epoch)} · 잔액 원금 {money(moneyAdd(item.principal_due, item.principal_paid, true), loan.decimal_places)} / 이자 {money(moneyAdd(item.interest_due, item.interest_paid, true), loan.decimal_places)} / 수수료 {money(moneyAdd(item.fee_due, item.fee_paid, true), loan.decimal_places)} {loan.quote_currency}</small>)}
               {!loan.installments.length && <small>예정된 미납 회차가 없습니다.</small>}
               {loan.rate_resets.map((reset, index) => <small key={`${reset.applied_epoch}-${index}`}>금리 재산정 {date(reset.applied_epoch)} · {RATE_BENCHMARK_LABELS[reset.benchmark_key] || reset.benchmark_key} {reset.benchmark_tenor_days}일 · 연 {reset.old_rate}% → {reset.new_rate}%</small>)}
             </span>
@@ -779,7 +795,7 @@ export default function App() {
         {dividendPayments.length > 0 && <section className="data-panel holdings-panel"><div className="panel-title"><h2>최근 배당 수령</h2><span>최근 {dividendPayments.length}건</span></div>
           <div className="holdings">{dividendPayments.slice(0, 12).map((payment) => <div className="holding" key={payment.payment_id}>
             <span><b>{payment.asset_code} · {payment.dr_code ? `DR ${payment.dr_code}` : payment.allocation_key === "stock" ? "원주" : "배당"} · {payment.dividend_kind === "special" ? "특별배당" : "정기배당"}</b><small>{date(payment.created_epoch)} · {money(payment.quantity, 3)}주 · 세전 {money(payment.gross_amount, payment.decimal_places)} · 세금 {money(payment.tax_amount, payment.decimal_places)} {payment.quote_currency}{payment.rule_id ? ` · ${payment.tax_rate_percent}% (${payment.treaty_code ?? `규칙 #${payment.rule_id}`})` : ""}</small></span>
-            <strong>{money(payment.net_amount_units / UNIT_SCALE, payment.decimal_places)} <em>{payment.quote_currency}</em></strong>
+            <strong>{money(minorMoney(payment.net_amount_units, 6), payment.decimal_places)} <em>{payment.quote_currency}</em></strong>
           </div>)}</div>
           <p className="orders-hint">통화별 지급액 기준 최근 100건입니다. DR 교차통화 배당은 실제 배당통화로 환산된 지급을 표시합니다.</p>
         </section>}
@@ -812,7 +828,7 @@ export default function App() {
       </div>
     </main>
     <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
-    {review && <div className="modal-backdrop"><section className="review-modal" role="dialog" aria-modal="true" aria-labelledby="review-title"><p className="eyebrow">ORDER REVIEW</p><h2 id="review-title">주문을 확인하세요</h2><dl><div><dt>종목</dt><dd>{selected?.name} ({selectedCode}) <WarningBadge warning={selected?.warning} /></dd></div><div><dt>유형</dt><dd className={side === "buy" ? "buy-text" : "sell-text"}>{side === "buy" ? "지정가 매수" : "지정가 매도"}</dd></div><div><dt>지정가</dt><dd>{money(Number(price), 2)} {selected?.quote_currency || homeCurrency}</dd></div><div><dt>수량</dt><dd>{money(Number(quantity), 3)}</dd></div><div><dt>예상 금액</dt><dd>{money(Number(price) * Number(quantity), 2)} {selected?.quote_currency || homeCurrency}</dd></div></dl><div className="modal-actions"><button disabled={busy} onClick={() => setReview(false)}>돌아가기</button><button className={side === "buy" ? "buy-confirm" : "sell-confirm"} disabled={busy} onClick={() => void submitOrder()}>{busy ? "제출 중" : "주문 확정"}</button></div></section></div>}
+    {review && <div className="modal-backdrop"><section className="review-modal" role="dialog" aria-modal="true" aria-labelledby="review-title"><p className="eyebrow">ORDER REVIEW</p><h2 id="review-title">주문을 확인하세요</h2><dl><div><dt>종목</dt><dd>{selected?.name} ({selectedCode}) <WarningBadge warning={selected?.warning} /></dd></div><div><dt>유형</dt><dd className={side === "buy" ? "buy-text" : "sell-text"}>{side === "buy" ? "지정가 매수" : "지정가 매도"}</dd></div><div><dt>지정가</dt><dd>{money(price || "0", 2)} {selected?.quote_currency || homeCurrency}</dd></div><div><dt>수량</dt><dd>{money(Number(quantity), 3)}</dd></div><div><dt>예상 금액</dt><dd>{money(orderAmount, 2)} {selected?.quote_currency || homeCurrency}</dd></div></dl><div className="modal-actions"><button disabled={busy} onClick={() => setReview(false)}>돌아가기</button><button className={side === "buy" ? "buy-confirm" : "sell-confirm"} disabled={busy} onClick={() => void submitOrder()}>{busy ? "제출 중" : "주문 확정"}</button></div></section></div>}
   </div>;
 }
 

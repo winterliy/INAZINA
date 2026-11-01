@@ -2,6 +2,7 @@
 import os
 import re
 import sqlite3
+from decimal import Decimal
 from contextlib import closing, contextmanager
 from pathlib import Path
 
@@ -15,39 +16,88 @@ _SQL = re.compile(r"' (?:[^']|'')* ' | --[^\n]* | /\*.*?\*/ | "
 def sql(statement):
     return _SQL.sub(lambda m: m.group() if m.group().startswith(("'", "--", "/*")) else "", statement)
 
-class UnifiedCursor(sqlite3.Cursor):
-    def execute(self, statement, parameters=()):
-        return super().execute(sql(statement), parameters)
+def _wide_row(cursor, values):
+    from .wide_values import tagged,decoded
+    from .money_columns import possible_money
+    converted=[]
+    for info,value in zip(cursor.description,values):
+        name=info[0].lower()
+        if isinstance(value,str) and ((tagged(value) and name not in {'user_id','account_number','name','nickname','nationality','status','role','payload','description'} and not name.endswith(('_code','_id','_name'))) or possible_money(name) or 'wide_' in name or name in {'total','gross','net','amount','balance','debit','credit'}):
+            try:value=decoded(value,name.endswith(('_minor','_minor_units','_subminor_units')) or name in {'balance_units','cash_minor'})
+            except (ValueError,ArithmeticError):pass
+        converted.append(value)
+    return sqlite3.Row(cursor,tuple(converted))
 
-    def executemany(self, statement, parameters):
-        return super().executemany(sql(statement), parameters)
+
+def _parameters(connection,values,statement=""):
+    from .wide_values import parameters
+    if connection.wide_money:return parameters(values)
+    guarded=set()
+    if not isinstance(values,dict) and any(isinstance(v,(int,Decimal)) and abs(v)>2**63-1 for v in values):
+        import sqlglot
+        from sqlglot import exp
+        tree=sqlglot.parse_one(statement,read='sqlite')
+        guarded={i for i,node in enumerate(tree.find_all(exp.Placeholder)) if node.find_ancestor(exp.Where) is not None}
+    def scalar(value,index=None):
+        if index in guarded and isinstance(value,(int,Decimal)) and abs(value)>2**63-1:return str(value)
+        if not isinstance(value,Decimal):return value
+        if not value.is_finite():raise ValueError('금액은 유한한 숫자여야 합니다.')
+        if abs(value)>2**53-1:raise ValueError('이 DB는 아직 큰 금액 저장 형식으로 이관되지 않았습니다.')
+        if value and float(value)==0:raise ValueError('현재 DB에서 정확하게 저장할 수 없는 금액입니다.')
+        return int(value) if value==value.to_integral_value() else float(value)
+    return {key:scalar(value) for key,value in values.items()} if isinstance(values,dict) else tuple(scalar(value,index) for index,value in enumerate(values))
+
+
+class UnifiedCursor(sqlite3.Cursor):
+    def execute(self,statement,parameters=()):
+        statement=sql(statement) if self.connection.legacy_aliases else statement
+        if self.connection.wide_money:
+            from .wide_sql import compile_sql
+            statement=compile_sql(statement)
+        return super().execute(statement,_parameters(self.connection,parameters,statement))
+
+    def executemany(self,statement,parameters):
+        statement=sql(statement) if self.connection.legacy_aliases else statement
+        if self.connection.wide_money:
+            from .wide_sql import compile_sql
+            statement=compile_sql(statement)
+        return super().executemany(statement,(_parameters(self.connection,row,statement) for row in parameters))
+
 
 class UnifiedConnection(sqlite3.Connection):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Every Inazina connection enforces declared REFERENCES (see database/integrity.py).
+    def __init__(self,*args,**kwargs):
+        kwargs['detect_types']=kwargs.get('detect_types',0)|sqlite3.PARSE_DECLTYPES
+        super().__init__(*args,**kwargs)
+        self.legacy_aliases=True
+        self.wide_money=os.environ.get('INAZINA_WIDE_MONEY')=='1' or bool(sqlite3.Connection.execute(self,"SELECT 1 FROM sqlite_master WHERE name='wide_money_schema'").fetchone())
+        empty=not sqlite3.Connection.execute(self,"SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' LIMIT 1").fetchone()
+        if empty and os.environ.get('INAZINA_WIDE_MONEY')!='0':
+            self.wide_money=True
+            sqlite3.Connection.execute(self,'CREATE TABLE wide_money_schema(version INTEGER NOT NULL)')
+            sqlite3.Connection.execute(self,'INSERT INTO wide_money_schema VALUES (1)')
+            self.commit()
         super().execute("PRAGMA foreign_keys=ON")
-        self.create_function("base_currency_code", 0, self._base_currency_code)
+        self.create_function("base_currency_code",0,self._base_currency_code)
+        from .exact_cost_basis import register
+        register(self)
+        from .wide_values import register
+        register(self)
+
+    @property
+    def row_factory(self):return sqlite3.Connection.row_factory.__get__(self)
+
+    @row_factory.setter
+    def row_factory(self,value):
+        sqlite3.Connection.row_factory.__set__(self,_wide_row if value is sqlite3.Row and self.wide_money else value)
 
     def _base_currency_code(self):
-        """Resolve the configured base denomination inside SQL expressions/triggers."""
-        try:
-            row = sqlite3.Connection.execute(
-                self,
-                "SELECT base_currency_code FROM currency_system_settings WHERE singleton_id=1",
-            ).fetchone()
-        except sqlite3.OperationalError:
-            return None
+        try:row=sqlite3.Connection.execute(self,"SELECT base_currency_code FROM currency_system_settings WHERE singleton_id=1").fetchone()
+        except sqlite3.OperationalError:return None
         return str(row[0]).upper() if row and row[0] else None
 
-    def execute(self, statement, parameters=()):
-        return super().execute(sql(statement), parameters)
-
-    def executemany(self, statement, parameters):
-        return super().executemany(sql(statement), parameters)
-
-    def cursor(self, factory=UnifiedCursor):
-        return super().cursor(factory)
+    def execute(self,statement,parameters=()):return self.cursor().execute(statement,parameters)
+    def executemany(self,statement,parameters):return self.cursor().executemany(statement,parameters)
+    def cursor(self,factory=UnifiedCursor):return super().cursor(factory)
 
 @contextmanager
 def _legacy_snapshot(root):

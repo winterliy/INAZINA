@@ -1,4 +1,6 @@
+from decimal import Decimal
 import tempfile
+from decimal import Decimal
 import unittest
 import sqlite3
 from contextlib import closing
@@ -36,7 +38,7 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         for code in ('USD','EUR','NWX'):
             self.db.products.execute(
                 "INSERT INTO saving(product_code,name,interest_rate,quote_currency,product_kind,status) "
-                "VALUES (?,?,0,?,'currency_saving','active')",
+                "VALUES (?,?,0,?,'saving','active')",
                 (f'FX_{code}',f'{code} 외환통장',code),
             )
 
@@ -139,17 +141,17 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             (order_id,),
         )[0], 1234)
         self.db.currency._ensure_market_order_reservation_units()
-        self.assertEqual(self.db.assets.execute_one(
+        self.assertEqual(tuple(Decimal(str(value)) if isinstance(value,(int,float,Decimal)) else value for value in self.db.assets.execute_one(
             "SELECT reserved_cash,reserved_cash_minor_units FROM market_orders WHERE order_id=?",
             (order_id,),
-        )[:], (12.34, 1234))
+        )[:]), (Decimal('12.34'), 1234))
         self.db.assets.execute(
             "UPDATE market_orders SET reserved_cash_minor_units=1235 WHERE order_id=?",
             (order_id,),
         )
-        self.assertEqual(self.db.assets.execute_one(
+        self.assertEqual(Decimal(str(self.db.assets.execute_one(
             "SELECT reserved_cash FROM market_orders WHERE order_id=?", (order_id,),
-        )[0], 12.35)
+        )[0])), Decimal('12.35'))
 
     def test_instrument_price_tables_use_quote_currency_minor_units(self):
         self.db.assets.execute(
@@ -162,9 +164,9 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.db.assets.execute(
             "UPDATE market_assets SET price_minor_units=124 WHERE code='USD-QUOTE'"
         )
-        self.assertEqual(self.db.assets.execute_one(
+        self.assertEqual(tuple(Decimal(str(value)) if isinstance(value,(int,float,Decimal)) else value for value in self.db.assets.execute_one(
             "SELECT price,price_minor_units FROM market_assets WHERE code='USD-QUOTE'"
-        )[:], (1.24, 124))
+        )[:]), (Decimal('1.24'), 124))
         self.db.assets.execute(
             "UPDATE market_assets SET price=2.36 WHERE code='USD-QUOTE'"
         )
@@ -213,10 +215,10 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             "tax_amount_minor_units=13,net_amount_minor_units=111 WHERE user_id='us-user' "
             "AND source='test'"
         )
-        self.assertEqual(tuple(self.db.tax.execute_one(
+        self.assertEqual(tuple(Decimal(str(value)) if isinstance(value,(int,float,Decimal)) else value for value in tuple(self.db.tax.execute_one(
             "SELECT gross_amount,tax_amount,net_amount FROM tax_transactions "
             "WHERE user_id='us-user' AND source='test'"
-        )), (1.24, 0.13, 1.11))
+        ))), (Decimal('1.24'), Decimal('0.13'), Decimal('1.11')))
         with self.assertRaisesRegex(sqlite3.IntegrityError, "tax transaction currency minor units"):
             self.db.tax.execute(
                 "UPDATE tax_transactions SET net_amount=1.12 WHERE user_id='us-user' AND source='test'"
@@ -238,8 +240,8 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             self.assertEqual(tuple(row), (123, 2))
             conn.execute("UPDATE market_orders SET limit_price_minor_units=124 WHERE order_id=?",
                          (order_id,))
-            self.assertEqual(conn.execute("SELECT limit_price FROM market_orders WHERE order_id=?",
-                                          (order_id,)).fetchone()[0], 1.24)
+            self.assertEqual(Decimal(str(conn.execute("SELECT limit_price FROM market_orders WHERE order_id=?",
+                                          (order_id,)).fetchone()[0])), Decimal('1.24'))
             conn.execute("UPDATE market_orders SET limit_price=1.25 WHERE order_id=?", (order_id,))
             self.assertEqual(conn.execute("SELECT limit_price_minor_units FROM market_orders "
                                           "WHERE order_id=?", (order_id,)).fetchone()[0], 125)
@@ -264,7 +266,7 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             "SELECT limit_price,limit_price_minor_units,limit_price_decimal_places "
             "FROM market_orders WHERE order_id=?", (order_id,),
         )
-        self.assertEqual(tuple(row), (1.23, 123, 2))
+        self.assertEqual(tuple(Decimal(str(value)) if isinstance(value,(int,float,Decimal)) else value for value in tuple(row)), (Decimal('1.23'), 123, 2))
 
     def test_market_order_reconciliation_flags_canonical_limit_price_corruption(self):
         self.db.assets.execute(
@@ -375,17 +377,17 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             "SELECT average_cost,average_cost_minor_units FROM user_assets "
             "WHERE user_id='us-user' AND asset_code='COST-TST'"
         )
-        self.assertEqual((row[0], row[1]), (1.23, 123))
+        self.assertEqual(tuple(Decimal(str(value)) if isinstance(value,(int,float,Decimal)) else value for value in (row[0], row[1])), (Decimal('1.23'), 123))
         self.db.assets.execute(
             "UPDATE user_assets SET average_cost_minor_units=456 "
             "WHERE user_id='us-user' AND asset_code='COST-TST'"
         )
         self.assertEqual(
-            self.db.assets.execute_one(
+            Decimal(str(self.db.assets.execute_one(
                 "SELECT average_cost FROM user_assets "
                 "WHERE user_id='us-user' AND asset_code='COST-TST'"
-            )[0],
-            4.56,
+            )[0])),
+            Decimal('4.56'),
         )
 
     def test_direct_security_buy_and_sell_preserve_fractional_home_currency_units(self):
@@ -566,7 +568,7 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertEqual(row["base_amount_minor_units"], 268)
         self.assertEqual((row["amount_decimal_places"], row["base_decimal_places"]),
                          (2, 2))
-        self.assertEqual((row["amount"], row["base_amount"]), (1.005, 2.675))
+        self.assertEqual(tuple(Decimal(str(value)) if isinstance(value,(int,float,Decimal)) else value for value in (row["amount"], row["base_amount"])), (Decimal('1.005'), Decimal('2.675')))
 
     def test_legacy_wallets_move_to_home_cash_and_foreign_accounts(self):
         self.db.currency.execute("CREATE TABLE currency_wallets(user_id TEXT,currency_code TEXT,balance_units INTEGER,PRIMARY KEY(user_id,currency_code))")
@@ -581,7 +583,7 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             row['quote_currency']:row['balance_units']
             for row in self.db.accounts.execute(
                 "SELECT quote_currency,balance_units FROM accounts "
-                "WHERE user_id='us-user' AND account_type='currency_saving'"
+                "WHERE user_id='us-user' AND account_type='saving'"
             )
         }
         self.assertEqual(balances,{'NWX':1000*SCALE,'EUR':3*SCALE})
@@ -589,7 +591,7 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='currency_wallets'"
         ))
 
-    def test_regular_bank_products_must_match_the_users_home_currency(self):
+    def test_foreign_currency_savings_open_as_ordinary_savings(self):
         for code,currency in (('SAVE_USD','USD'),('SAVE_EUR','EUR')):
             self.db.products.execute(
                 "INSERT INTO saving(product_code,name,interest_rate,deposit_amount,status,"
@@ -598,8 +600,11 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             )
         bank = BankManager(self.db)
         ok,message = bank.open_account('us-user','SAVE_EUR','1234',0)
-        self.assertFalse(ok,message)
-        self.assertIn('국적 통화 USD',message)
+        self.assertTrue(ok,message)
+        self.assertIn('외환통장',message)
+        self.assertEqual(self.db.accounts.execute_one(
+            "SELECT account_type,quote_currency FROM accounts WHERE user_id='us-user' AND product_code='SAVE_EUR'"
+        )[:],('saving','EUR'))
         ok,message = bank.open_account('us-user','SAVE_USD','1234',10)
         self.assertTrue(ok,message)
         account = self.db.accounts.execute_one(
@@ -622,14 +627,14 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             (account['account_number'],),
         )
         portfolio = UserManager(self.db).get_total_assets('us-user', settle=False)
-        self.assertEqual(portfolio['account_total'], 10.13)
-        self.assertEqual(portfolio['accounts'][0]['balance'], 10.13)
+        self.assertEqual(Decimal(str(portfolio['account_total'])), Decimal('10.13'))
+        self.assertEqual(Decimal(str(portfolio['accounts'][0]['balance'])), Decimal('10.13'))
         self.assertEqual(portfolio['accounts'][0]['currency_code'], 'USD')
         self.assertEqual(portfolio['accounts'][0]['decimal_places'], 2)
-        self.assertEqual(portfolio['accounts'][0]['contract_rate'], 4.5)
+        self.assertEqual(Decimal(str(portfolio['accounts'][0]['contract_rate'])), Decimal('4.5'))
         self.assertEqual(portfolio['accounts'][0]['next_repricing_epoch'], 2000)
         self.assertEqual(portfolio['accounts'][0]['benchmark_key'], 'funding')
-        self.assertEqual(portfolio['accounts'][0]['rate_resets'][0]['new_rate'], 4.5)
+        self.assertEqual(Decimal(str(portfolio['accounts'][0]['rate_resets'][0]['new_rate'])), Decimal('4.5'))
 
     def test_pending_kyc_blocks_regular_and_foreign_account_opening(self):
         self.db.users.create_user('admin','관리자','미국',1000,'admin')
@@ -752,8 +757,8 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertEqual(account['resolution_status'], 'resolved')
         self.assertGreater(account['insurance_paid'], 0)
         self.assertGreater(account['uninsured_claim'], 0)
-        self.assertEqual(account['insurance_paid'], 1.87)
-        self.assertEqual(account['uninsured_claim'], 1.38)
+        self.assertEqual(Decimal(str(account['insurance_paid'])), Decimal('1.87'))
+        self.assertEqual(Decimal(str(account['uninsured_claim'])), Decimal('1.38'))
         self.assertAlmostEqual(result['covered'], 1.99)
         self.assertAlmostEqual(result['uninsured'], 1.47)
         self.assertGreater(self.db.users.get_user('us-user')['cash'], cash_before)
@@ -781,8 +786,8 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertEqual(len(claims), 1)
         self.assertEqual(claims[0]['currency_code'], 'EUR')
         self.assertEqual(claims[0]['decimal_places'], 2)
-        self.assertEqual(claims[0]['covered_amount'], 1.87)
-        self.assertEqual(claims[0]['uninsured_amount'], 1.38)
+        self.assertEqual(Decimal(str(claims[0]['covered_amount'])), Decimal('1.87'))
+        self.assertEqual(Decimal(str(claims[0]['uninsured_amount'])), Decimal('1.38'))
         self.assertEqual(claims[0]['payout_currency'], 'USD')
         self.assertAlmostEqual(claims[0]['payout_amount'], 1.99)
         claim_units = self.db.accounts.execute_one(
@@ -899,16 +904,16 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             "UPDATE treasury_bond_products SET market_price_minor_units=1099 "
             "WHERE product_code='USD-BOND'"
         )
-        self.assertEqual(self.db.products.execute_one(
+        self.assertEqual(Decimal(str(self.db.products.execute_one(
             "SELECT market_price FROM treasury_bond_products WHERE product_code='USD-BOND'"
-        )[0], 10.99)
+        )[0])), Decimal('10.99'))
         self.db.accounts.execute(
             "UPDATE treasury_bond_holdings SET principal_minor_units=2010 "
             "WHERE product_code='USD-BOND'"
         )
-        self.assertEqual(self.db.accounts.execute_one(
+        self.assertEqual(Decimal(str(self.db.accounts.execute_one(
             "SELECT principal FROM treasury_bond_holdings WHERE product_code='USD-BOND'"
-        )[0], 20.10)
+        )[0])), Decimal('20.1'))
 
     def test_treasury_bond_primary_purchase_uses_quote_currency_minor_units(self):
         self.db.products.execute(
@@ -980,14 +985,14 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         redeemed = TreasuryBondManager(self.db).redeem_matured('us-user', now=now)
         self.assertEqual(len(redeemed), 1)
         self.assertEqual((redeemed[0]['principal'], redeemed[0]['interest'],
-                          redeemed[0]['tax'], redeemed[0]['net']), (1.25, 0.13, 0.03, 1.35))
+                          redeemed[0]['tax'], redeemed[0]['net']), tuple(Decimal(v) for v in ('1.25', '0.13', '0.03', '1.35')))
         user = self.db.users.get_user('us-user')
         self.assertAlmostEqual(user['cash'], 1001.35)
         tax = self.db.tax.execute_one(
             "SELECT gross_amount,tax_amount,net_amount,currency_code FROM tax_transactions "
             "WHERE user_id='us-user' AND source='treasury_bond_interest'"
         )
-        self.assertEqual(tuple(tax), (0.13, 0.03, 0.10, 'USD'))
+        self.assertEqual(tuple(Decimal(str(value)) if isinstance(value,(int,float,Decimal)) else value for value in tuple(tax)), (Decimal('0.13'), Decimal('0.03'), Decimal('0.1'), 'USD'))
         with self.db.readonly() as conn:
             bond_check = AccountingJournal.reconcile_treasury_bond_cash_events(conn)
         self.assertEqual(bond_check['status'], 'matched', bond_check)
@@ -1011,7 +1016,7 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         )
         paid = TreasuryBondManager(self.db).pay_due_coupons('us-user', now=now)
         self.assertEqual(len(paid), 1)
-        self.assertEqual((paid[0]['coupon'], paid[0]['tax']), (0.06, 0.01))
+        self.assertEqual((paid[0]['coupon'], paid[0]['tax']), (Decimal('0.06'), Decimal('0.01')))
         self.assertAlmostEqual(self.db.users.get_user('us-user')['cash'], 1001.40)
         with self.db.readonly() as conn:
             bond_check = AccountingJournal.reconcile_treasury_bond_cash_events(conn)
@@ -1075,7 +1080,7 @@ class LegacyCurrencySchemaMigrationTests(unittest.TestCase):
                     "payout_amount_minor_units,payout_decimal_places "
                     "FROM deposit_insurance_claims WHERE issuer='Bank'"
                 )
-                self.assertEqual(tuple(claim), (12, 3, 'NWX', 12.0, 12, 0))
+                self.assertEqual(tuple(Decimal(str(value)) if isinstance(value,(int,float,Decimal)) else value for value in tuple(claim)), (12, 3, 'NWX', Decimal('12.0'), 12, 0))
                 with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
                     db.accounts.execute(
                         "UPDATE deposit_insurance_claims SET payout_currency='EUR' "

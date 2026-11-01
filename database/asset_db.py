@@ -531,6 +531,15 @@ class AssetDB(DBManager):
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_assets_position "
             "ON user_assets(user_id, asset_code, IFNULL(account_number, ''))"
         )
+        self.execute("""CREATE TABLE IF NOT EXISTS asset_cost_basis (
+            holding_id INTEGER PRIMARY KEY REFERENCES user_assets(holding_id) ON DELETE CASCADE,
+            total_minor_units TEXT NOT NULL CHECK(valid_cost_basis(total_minor_units))
+        )""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS asset_cost_basis_quantity_reduction
+            AFTER UPDATE OF quantity ON user_assets WHEN NEW.quantity<OLD.quantity
+            BEGIN UPDATE asset_cost_basis SET total_minor_units=
+                remaining_cost_basis(total_minor_units,OLD.quantity,NEW.quantity)
+                WHERE holding_id=NEW.holding_id; END""")
         self.execute("CREATE INDEX IF NOT EXISTS idx_user_assets_user ON user_assets(user_id)")
         self.enforce_integer_money("market_assets", ("price",), "code")
         self.enforce_integer_money("user_assets", ("average_cost",), "holding_id")
@@ -921,6 +930,13 @@ class AssetDB(DBManager):
         )
 
     def add_user_asset(self, user_id, code, qty, account_number=None, unit_cost=0):
+        exact=self.execute_one("SELECT 1 FROM asset_cost_basis b JOIN user_assets u USING(holding_id) "
+                               "WHERE u.user_id=? AND u.asset_code=? AND IFNULL(u.account_number,'')=IFNULL(?,'')",
+                               (str(user_id),str(code),account_number))
+        if exact:
+            from database.asset_cost import AssetCostManager
+            with self.lock,self.conn:AssetCostManager.upsert(self.conn,user_id,code,account_number,qty,unit_cost)
+            return
         self.execute(
             """INSERT INTO user_assets (user_id, asset_code, account_number, quantity, average_cost)
             VALUES (?, ?, ?, ?, ?)
@@ -993,7 +1009,7 @@ class AssetDB(DBManager):
         if not row:
             return None
         places = currency_precision(self.conn, row["currency_code"])
-        return {"price": float(from_minor_units(row["price_minor_units"], places)),
+        return {"price": from_minor_units(row["price_minor_units"], places),
                 "price_minor_units": int(row["price_minor_units"]),
                 "recorded_epoch": row["recorded_epoch"], "trade_id": row["trade_id"]}
 

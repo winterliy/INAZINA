@@ -1,9 +1,12 @@
 """Foreign-currency stock/spot orders using the common price-time order book."""
+from functions.exact_money import ExactDecimal
+from functions.amount_limits import MAX_NATIVE
 import time
 import uuid
 from database.user_db import TREASURY_USER_ID, IS_TREASURY
 from managers.currency_exchange_manager import CurrencyExchangeManager,SCALE,MAX_UNITS
 from managers.currency_manager import CurrencyManager
+from managers.deposit_accounts import PRIMARY_NUMBER, PRINCIPAL_DELTA, account as deposit_account
 from managers.market_session_manager import MarketSessionManager
 from functions.money import (parse_currency_money, currency_precision,
                              to_minor_units, from_minor_units)
@@ -28,7 +31,7 @@ class ForeignSecuritiesManager:
                 raise ValueError(f'{currency} 금액이 통화 최소단위보다 작습니다.')
             minor = int(units) // quantum
             changed = conn.execute("UPDATE users SET cash_minor=cash_minor+? WHERE user_id=? AND cash_minor<=?",
-                (minor,str(user),(2**53-1)-minor))
+                (minor,str(user),MAX_NATIVE-minor))
             if changed.rowcount!=1:
                 raise ValueError(f'{currency} 현금 잔액 한도를 초과했습니다.')
             return
@@ -37,11 +40,11 @@ class ForeignSecuritiesManager:
             CurrencyManager.treasury_receive(conn, user, currency, units)
             return
         if account:
-            changed = conn.execute("UPDATE accounts SET balance_units=balance_units+? WHERE account_number=? AND user_id=? AND quote_currency=? AND account_type='currency_saving' AND balance_units<=?",
-                (units,account,str(user),currency,MAX_UNITS-units))
+            changed = conn.execute(f"UPDATE accounts SET balance_units=balance_units+?,{PRINCIPAL_DELTA} WHERE account_number=? AND user_id=? AND quote_currency=? AND account_type='saving' AND balance_units<=?",
+                (units,units,account,str(user),currency,MAX_UNITS-units))
         else:
-            changed = conn.execute("UPDATE accounts SET balance_units=balance_units+? WHERE user_id=? AND quote_currency=? AND account_type='currency_saving' AND balance_units<=?",
-                (units,str(user),currency,MAX_UNITS-units))
+            changed = conn.execute(f"UPDATE accounts SET balance_units=balance_units+?,{PRINCIPAL_DELTA} WHERE account_number={PRIMARY_NUMBER} AND balance_units<=?",
+                (units,units,str(user),currency,MAX_UNITS-units))
         if changed.rowcount!=1:
             raise ValueError(f'{currency} 외환통장이 없거나 잔액 한도를 초과했습니다.')
 
@@ -70,7 +73,7 @@ class ForeignSecuritiesManager:
                 CurrencyExchangeManager._rate(conn,currency)
                 CurrencyExchangeManager(self.db)._settle(conn,user_id,now)
                 home = CurrencyManager.home(conn,user_id)
-                account = None if currency == home else conn.execute("SELECT * FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'",(user_id,currency)).fetchone()
+                account = None if currency == home else deposit_account(conn,user_id,currency)
                 if currency != home and not account:
                     raise ValueError(f'/계좌개설로 {currency} 외환통장을 먼저 개설해주세요.')
                 account_number = account['account_number'] if account else None
@@ -90,12 +93,12 @@ class ForeignSecuritiesManager:
                     if currency == home:
                         changed=conn.execute(f"UPDATE users SET cash_minor=cash_minor-? WHERE user_id=? AND (cash_minor>=? OR {IS_TREASURY})",(cash_minor,str(user_id),cash_minor))
                     else:
-                        changed=conn.execute("UPDATE accounts SET balance_units=balance_units-? WHERE account_number=? AND account_type='currency_saving' AND balance_units>=?",(cash_units,account_number,cash_units))
+                        changed=conn.execute(f"UPDATE accounts SET balance_units=balance_units-?,{PRINCIPAL_DELTA} WHERE account_number=? AND account_type='saving' AND balance_units>=?",(cash_units,-cash_units,account_number,cash_units))
                     if changed.rowcount!=1:
                         raise ValueError(f'예치할 {currency} 잔액이 부족합니다. 필요액 {cash:,} {currency}')
                 elif owned-reserved<quantity:
                     raise ValueError(f'매도 가능 수량이 부족합니다. 담보 주식은 매도할 수 없습니다. 가능 {max(0,owned-reserved):,}개')
-                order_id=conn.execute("INSERT INTO market_orders(user_id,asset_code,side,limit_price,quantity,remaining_quantity,reserved_cash,funding_account,order_kind,status,created_epoch,updated_epoch,quote_currency,activation_epoch,scheduled_reason) VALUES (?,?,?,?,?,?,?,?,'asset',?,?,?,?,?,?)",(user_id,code,side,limit_price,quantity,quantity,float(cash),account_number,'scheduled' if deferred else 'open',now,now,currency,state.get('resume_epoch') if deferred else now,state.get('reason') if deferred else None)).lastrowid
+                order_id=conn.execute("INSERT INTO market_orders(user_id,asset_code,side,limit_price,quantity,remaining_quantity,reserved_cash,funding_account,order_kind,status,created_epoch,updated_epoch,quote_currency,activation_epoch,scheduled_reason) VALUES (?,?,?,?,?,?,?,?,'asset',?,?,?,?,?,?)",(user_id,code,side,limit_price,quantity,quantity,ExactDecimal(cash),account_number,'scheduled' if deferred else 'open',now,now,currency,state.get('resume_epoch') if deferred else now,state.get('reason') if deferred else None)).lastrowid
                 filled = 0 if deferred else self.match(conn,order_id,now)
                 if deferred:
                     locked = f'예치금 {cash:,} {currency}' if side=='buy' else '매도 수량'
@@ -111,13 +114,13 @@ class ForeignSecuritiesManager:
         Citizens open foreign-currency accounts themselves; the treasury is a
         system account, so its holding account is created on first use.
         """
-        row=conn.execute("SELECT account_number FROM accounts WHERE user_id=? AND quote_currency=? AND account_type='currency_saving'",(TREASURY_USER_ID,currency)).fetchone()
+        row=deposit_account(conn,TREASURY_USER_ID,currency)
         if row:
             return row['account_number']
-        product=conn.execute("SELECT product_code FROM saving WHERE quote_currency=? AND product_kind='currency_saving' AND status='active' ORDER BY product_code LIMIT 1",(currency,)).fetchone()
+        product=conn.execute("SELECT product_code FROM saving WHERE quote_currency=? AND product_kind='saving' AND status='active' ORDER BY product_code LIMIT 1",(currency,)).fetchone()
         account='FXA'+uuid.uuid4().hex[:20].upper()
         conn.execute("INSERT INTO accounts(account_number,user_id,product_code,balance,password,last_payment_epoch,principal,account_type,quote_currency) VALUES (?,?,?,?,?,?,?,?,?)",
-                     (account,TREASURY_USER_ID,product['product_code'] if product else None,0,None,now,0,'currency_saving',currency))
+                     (account,TREASURY_USER_ID,product['product_code'] if product else None,0,None,now,0,'saving',currency))
         return account
 
     @staticmethod
@@ -161,7 +164,7 @@ class ForeignSecuritiesManager:
             if improvement_minor:
                 self.credit_units(conn,buy['user_id'],currency,
                                   self._minor_to_ledger_units(improvement_minor, places))
-            self.add_position(conn,buy['user_id'],asset['code'],buy['funding_account'],quantity,float(price))
+            self.add_position(conn,buy['user_id'],asset['code'],buy['funding_account'],quantity,ExactDecimal(price))
             if primary:
                 # The listing country's treasury sells the primary issue; without an
                 # account in this currency it exchanges the proceeds into its own.
@@ -177,8 +180,9 @@ class ForeignSecuritiesManager:
                     take=min(left,position['quantity'])
                     if not take:
                         continue
-                    cost_minor = int(position['average_cost_minor_units'] or 0)
-                    gain_minor += max(0, price_minor-cost_minor)*take
+                    from managers.asset_cost_manager import AssetCostManager
+                    cost_minor = AssetCostManager.sale_cost_minor(conn, position['holding_id'], take)
+                    gain_minor += max(0, price_minor * take - cost_minor)
                     if take==position['quantity']:
                         conn.execute('DELETE FROM user_assets WHERE holding_id=?',(position['holding_id'],))
                     else:
@@ -188,7 +192,7 @@ class ForeignSecuritiesManager:
                         break
                 if left:
                     raise ValueError('매도 예약 수량과 보유 수량이 달라 체결을 취소했습니다.')
-                gain = from_minor_units(gain_minor, places)
+                gain = from_minor_units(AssetCostManager.rounded_minor(gain_minor), places)
                 tax=self.users._tax(conn,sell['user_id'],'foreign_security_sale_gain',gain,
                                     currency=currency)
                 tax_minor=to_minor_units(tax, places)
@@ -199,7 +203,7 @@ class ForeignSecuritiesManager:
                 proceeds = from_minor_units(price_minor*quantity-tax_minor, places)
                 if source == 'company':
                     from managers.corporate_actions_manager import CorporateActionsManager
-                    CorporateActionsManager.record_issue_fill(conn, sell['order_id'], quantity, float(price))
+                    CorporateActionsManager.record_issue_fill(conn, sell['order_id'], quantity, ExactDecimal(price))
                 self.book._reduce_order(conn,sell,quantity,now)
             self.book._reduce_order(conn,buy,quantity,now)
             self.book._record_execution_event(
@@ -207,12 +211,12 @@ class ForeignSecuritiesManager:
                 tax_amount=tax, seller_proceeds=proceeds,
                 wallet_watermark=wallet_watermark,
             )
-            self.book._apply_execution_price(conn,asset['code'],float(price),now)
+            self.book._apply_execution_price(conn,asset['code'],ExactDecimal(price),now)
             conn.execute(
                 "INSERT INTO assets.market_trade_history "
                 "(asset_code, side, quantity, price, recorded_epoch) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (asset['code'], side, quantity, float(price), now),
+                (asset['code'], side, quantity, ExactDecimal(price), now),
             )
             if source=='company':
                 self.users._refresh_max_shareholder(conn,asset['code'])

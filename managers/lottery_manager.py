@@ -1,4 +1,5 @@
 """Weekly game lottery: frozen rules, funded prizes, durable draws and payouts."""
+from functions.amount_limits import MAX_NATIVE
 import hashlib
 import json
 import secrets
@@ -9,7 +10,7 @@ from managers.user_manager import UserManager
 from managers.rate_manager import RateManager
 
 KST = timezone(timedelta(hours=9))
-MAX_MONEY = 2**53-1
+MAX_MONEY = MAX_NATIVE
 DEFAULTS = {'ticket_price':1000,'max_tickets':100,'prize_percent':70,'treasury_percent':20,
             'close_weekday':5,'close_hour':20,'close_minute':0,'draw_delay_seconds':300}
 WEIGHTS = (50,10,15,15,10)
@@ -61,7 +62,7 @@ class LotteryManager:
     def validate(rules):
         if set(rules)-set(DEFAULTS):
             raise ValueError('지원하지 않는 복권 설정입니다.')
-        limits = {'ticket_price':(1,1000000),'max_tickets':(1,1000),'prize_percent':(0,100),
+        limits = {'ticket_price':(1,MAX_MONEY),'max_tickets':(1,1000),'prize_percent':(0,100),
                   'treasury_percent':(0,100),'close_weekday':(0,6),'close_hour':(0,23),
                   'close_minute':(0,59),'draw_delay_seconds':(60,86400)}
         for key,(lo,hi) in limits.items():
@@ -129,7 +130,7 @@ class LotteryManager:
         with self.db.atomic() as conn:
             return self._public(self._ensure(conn,now))
 
-    def purchase(self,user_id,quantity,numbers,request_id,now=None,expected_round=None):
+    def purchase(self,user_id,quantity,numbers,request_id,now=None,expected_round=None,source=None):
         now = int(RateManager._validated_epoch(now, "invalid_lottery_purchase_epoch"))
         if isinstance(quantity,bool) or not isinstance(quantity,int) or not 1<=quantity<=1000:
             raise ValueError('구매 수량은 1~1000장의 정수여야 합니다.')
@@ -137,6 +138,13 @@ class LotteryManager:
         request_id = str(request_id)
         if not request_id or len(request_id)>100:
             raise ValueError('구매 요청 ID가 올바르지 않습니다.')
+        # Settle accrued account interest before a withdrawal advances its cursor.
+        # A repeated purchase stays a read-only replay of its original result.
+        prior_request = self.db.lottery.execute_one('SELECT 1 FROM lottery_purchases WHERE request_id=?', (request_id,))
+        if not prior_request and source != '__wallet__':
+            interest_error = UserManager(self.db)._settle_user_interest(user_id)
+            if interest_error:
+                raise ValueError(interest_error)
         with self.db.atomic() as conn:
             prior = conn.execute(
                 'SELECT * FROM lottery_purchases WHERE request_id=?', (request_id,)
@@ -165,8 +173,10 @@ class LotteryManager:
             total = price*quantity
             if round['sales_total']+total>MAX_MONEY:
                 raise ValueError('회차별 판매 한도를 초과했습니다.')
-            if not UserManager._change_cash(conn, user_id, -total):
-                raise ValueError('복권을 구매할 지갑 잔액이 부족합니다.')
+            from managers.game_funding import game_funds
+            balance, account_number = game_funds(conn, user_id, source)
+            if balance < total or not UserManager._debit_source(conn, str(user_id), account_number, total):
+                raise ValueError('복권을 구매할 출금 잔액이 부족합니다.')
             prize = price*rules['prize_percent']//100
             treasury = price*rules['treasury_percent']//100
             reserve = price-prize-treasury

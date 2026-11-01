@@ -1,0 +1,29 @@
+.fin-page { min-width: 0; }
+.fin-page .fin-report { gap: 28px; }
+.fin-page .fin-head { padding-top: 8px; }
+.fin-page .fin-head h2 { overflow-wrap: anywhere; letter-spacing: -.025em; }
+.fin-page .fin-head p, .fin-page .fin-unit { font-size: 12px; color: var(--ink2); }
+.fin-page .fin-unit { margin: -2px 0 12px; }
+.fin-page .fin-table { min-width: 0; overflow-x: auto; overscroll-behavior-inline: contain; }
+.fin-page .fin-table table { min-width: 360px; }
+.fin-page .fin-table th { position: static; background: transparent; box-shadow: none; }
+.fin-page .fin-table thead th { white-space: nowrap; }
+.fin-page .fin-table td { white-space: nowrap; padding-block: 11px; }
+.fin-page .fin-table tbody tr:hover { background: var(--hover); }
+.fin-page .fin-total { background: var(--surface); }
+.fin-page .fin-figures { border-radius: 0; border-block: 1px solid var(--line); background: transparent; }
+.fin-page .fin-figures div { min-width: 0; padding: 16px 12px; }
+.fin-page .fin-figures b { font-size: 18px; overflow-wrap: anywhere; }
+.fin-page .fin-ratios dl { gap: 0 24px; }
+.fin-page .fin-ratios dl div { border-radius: 0; box-shadow: none; border-bottom: 1px solid var(--line); padding: 12px 0; }
+.fin-page .fin-ratios dd { margin-top: 6px; }
+.fin-page .fin-notes { line-height: 1.7; max-width: 85ch; }
+.fin-page .fin-notes li + li { margin-top: 6px; }
+.fin-page .fin-empty { margin: 0; padding: 32px 16px; color: var(--ink2); text-align: center; line-height: 1.6; }
+.fin-page :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.fin-page ::selection { background: var(--select); }
+@media (max-width: 600px) {
+  .fin-page .fin-head h2 { font-size: 22px; }
+  .fin-page .fin-figures { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fin-page .fin-grid { gap: 28px; }
+}

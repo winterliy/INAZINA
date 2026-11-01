@@ -149,7 +149,7 @@ export function AuthPanel({ app, onAuthenticated }: { app: "dashboard" | "hts"; 
           <label>비밀번호<input type="password" autoComplete="new-password" minLength={12} maxLength={128} value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
           <label>비밀번호 확인<input type="password" autoComplete="new-password" minLength={12} maxLength={128} value={confirmation} onChange={(event) => setConfirmation(event.target.value)} required /></label>
           <p className="auth-hint">영문과 숫자를 포함해 12자 이상 입력하세요.</p>
-          <p className="auth-hint">새 사용자에게는 기존 봇 가입 기준의 1,000,000 기준 통화가 지급됩니다. 기존 계정 연결 시 잔액은 유지됩니다.</p>
+          <p className="auth-hint">새 사용자에게는 가입 지원금이 지급됩니다. 기존 계정 연결 시 잔액은 유지됩니다.</p>
           <button className="auth-primary" disabled={busy || !countries.length}>{busy ? "계정 생성 중…" : "계정 만들기"}</button>
         </form>}
       </>}

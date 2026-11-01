@@ -1,4 +1,5 @@
 """Cash-backed 기준 통화 funds. Fund owners are not rows in the citizens table."""
+from functions.exact_money import ExactDecimal
 from functions.money import base_currency_code
 import time
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
@@ -130,7 +131,7 @@ class FundManager:
             market_value = Decimal(str(row['quantity'])) * Decimal(str(quote['price']))
             value += market_value
             positions.append({'code': row['asset_code'], 'quantity': row['quantity'],
-                              'price': quote['price'], 'value': float(market_value), 'assetClass': quote['asset_class']})
+                              'price': quote['price'], 'value': ExactDecimal(market_value), 'assetClass': quote['asset_class']})
         from functions.money import currency_precision, from_minor_units, to_minor_units
         bond_holdings = conn.execute("SELECT h.product_code,h.principal_minor_units,h.face_value_minor_units,"
             "p.market_price_minor_units,p.quote_currency FROM treasury_bond_holdings h "
@@ -156,8 +157,8 @@ class FundManager:
                 current[1] += market_value
         for code, (quantity, market_value, price, currency) in bond_positions.items():
             value += market_value
-            positions.append({'code': code, 'quantity': float(quantity), 'price': float(price),
-                              'value': float(market_value), 'assetClass': 'bond'})
+            positions.append({'code': code, 'quantity': float(quantity), 'price': ExactDecimal(price),
+                              'value': ExactDecimal(market_value), 'assetClass': 'bond'})
         reserved = Decimal(str(conn.execute("SELECT COALESCE(SUM(reserved_cash),0) FROM market_orders "
                                 "WHERE user_id=? AND status IN ('open','partial','scheduled')", (owner,)).fetchone()[0]))
         issued = sum((Decimal(str(r[0])) for r in conn.execute('SELECT quantity FROM user_assets WHERE asset_code=?', (code,))), Decimal(0))
@@ -177,7 +178,7 @@ class FundManager:
             places = int(cash_row['decimal_places'])
             minor = int(cash_row['balance_minor_units'])
             amount = from_minor_units(minor, places)
-            cash_by_currency[currency] = float(amount)
+            cash_by_currency[currency] = ExactDecimal(amount)
             if currency == str(product['quote_currency']).upper():
                 cash_nav_value += amount
             elif minor > 0:
@@ -198,20 +199,20 @@ class FundManager:
             (code, fund_currency)).fetchone()[0]
         for position in positions:
             position['targetWeight'] = target_map.get(position['code'], 0.0)
-            position['actualWeight'] = float(Decimal(str(position['value'])) / net) if net else 0.0
+            position['actualWeight'] = ExactDecimal(Decimal(str(position['value'])) / net) if net else 0.0
         allocations = []
         for target in targets:
             position = next((item for item in positions if item['code'] == target['code']), None)
             allocations.append({**target, 'actualValue': position['value'] if position else 0.0,
-                               'targetValue': float(net * Decimal(str(target['weight']))),
+                               'targetValue': ExactDecimal(net * Decimal(str(target['weight']))),
                                'actualWeight': position['actualWeight'] if position else 0.0})
         return {'code': code, 'mode': 'backed', 'ownerId': owner, 'availableCash': fund['cash'],
                 'cashByCurrency': cash_by_currency,
-                'reservedCash': float(reserved), 'cash': float(reserved + cash_nav_value),
-                'receivables': float(receivables),
-                'assetValue': float(value), 'netAssets': net if exact else float(net),
+                'reservedCash': ExactDecimal(reserved), 'cash': ExactDecimal(reserved + cash_nav_value),
+                'receivables': ExactDecimal(receivables),
+                'assetValue': ExactDecimal(value), 'netAssets': net if exact else ExactDecimal(net),
                 'issuedUnits': issued if exact else float(issued),
-                'nav': nav if exact else float(nav), 'positions': positions, 'allocations': allocations,
+                'nav': nav if exact else ExactDecimal(nav), 'positions': positions, 'allocations': allocations,
                 'ledgerBalanced': not ledger_gaps and int(home_cash_ledger) == fund['cash']}
 
     @staticmethod
@@ -324,7 +325,7 @@ class FundManager:
                     "UNION ALL SELECT market_price,0 FROM treasury_bond_products WHERE product_code=?",
                     (item['code'], item['code'], item['code'], item['code']),
                 )
-                if not quote or float(quote['price'] or 0) <= 0:
+                if not quote or ExactDecimal(quote['price'] or 0) <= 0:
                     continue
                 price = max(1, round_money(quote['price']))
                 desired = Decimal(str(refreshed['netAssets'])) * Decimal(str(item['weight']))
@@ -429,7 +430,7 @@ class FundManager:
                         if left <= 0:
                             break
                     change_cash(conn, state['ownerId'], -gross, 'redemption', str(user))
-                    sold, _ = fractions._remove_lots(conn, user, code, units, float(nav))
+                    sold, _ = fractions._remove_lots(conn, user, code, units, ExactDecimal(nav))
                     fractions._pay_seller(conn, user, code, base_currency_code(conn), gross*SCALE, sold, int(gain*SCALE), int(time.time()))
                 else:
                     if issued + Decimal(str(qty)) > product['total_supply']:
@@ -437,7 +438,7 @@ class FundManager:
                     source = fractions._funds(conn, user, base_currency_code(conn), gross*SCALE, int(time.time()))
                     fractions._debit(conn, user, base_currency_code(conn), gross*SCALE, source)
                     change_cash(conn, state['ownerId'], gross, 'subscription', str(user))
-                    fractions._add_lot(conn, user, code, source, units, gross / float(qty))
+                    fractions._add_lot(conn, user, code, source, units, ExactDecimal(gross) / ExactDecimal(qty))
                 after = self.snapshot_conn(conn, code)
                 conn.execute('UPDATE investment SET unit_price=? WHERE product_code=?', (max(1, round_money(after['nav'])), code))
                 conn.execute('INSERT INTO market_trade_history(asset_code,side,quantity,price,recorded_epoch) VALUES (?,?,?,?,?)',

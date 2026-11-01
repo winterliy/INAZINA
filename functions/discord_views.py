@@ -975,7 +975,7 @@ class InfoPanelView(discord.ui.View):
             return [
                 # Savings and foreign-currency accounts are one product family; only the currency differs.
                 f"• **{row['name']}** (`{row['product_code']}`) · {row['quote_currency']}"
-                f"{' 외환' if row['product_kind'] == 'currency_saving' else ''} — 연 {self._number(row['interest_rate']):g}% · "
+                f" — 연 {self._number(row['interest_rate']):g}% · "
                 f"실효 연 {self._effective_rate(row)} · "
                 f"최소 예치 {self._number(row['deposit_amount']):,g} {row['quote_currency']} · "
                 f"만기 {self._number(row['maturity_days']):g}일 · "

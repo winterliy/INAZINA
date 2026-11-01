@@ -5,6 +5,7 @@ import math
 
 import discord
 
+from functions.amount_limits import MAX_NATIVE
 from functions.admin_access import resolve_user_role
 from functions.admin_embeds import admin_response
 
@@ -116,7 +117,7 @@ class MarketEventModal(discord.ui.Modal):
             raw_target = self.target_price_input.value.strip()
             target = None
             if raw_target:
-                if not raw_target.isdecimal() or not 1 <= int(raw_target) <= 2**53 - 1:
+                if not raw_target.isdecimal() or not 1 <= int(raw_target) <= MAX_NATIVE:
                     raise ValueError("목표가격은 양의 정수 기준 통화로 입력해주세요.")
                 if asset_code is None:
                     raise ValueError("목표가격을 지정하려면 개별 자산을 선택해주세요.")

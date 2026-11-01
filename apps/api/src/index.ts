@@ -611,6 +611,11 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     send(response, 200, { user });
     return;
   }
+  if (request.method === "GET" && url.pathname === "/api/me/ownership-graph") {
+    const result = await internalGet("/internal/me/ownership-graph", principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
   if (request.method === "POST" && url.pathname === "/api/admin/login-as") {
     if (user.role !== "admin" || principal.by) {
       send(response, 403, { error: "admin_required" });
@@ -888,6 +893,18 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/search-indicators") {
+    const query = new URLSearchParams({ search: url.searchParams.get("search") ?? "" });
+    const result = await internalGet(`/internal/search-indicators?${query}`, principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+  if (request.method === "POST" && /^\/api\/admin\/companies\/[^/]+\/share-actions$/.test(url.pathname)) {
+    if (user.role !== "admin") { send(response, 403, { error: "admin_required" }); return; }
+    const result = await internalRequest("POST", url.pathname.replace(/^\/api\//, "/internal/"), principal.userId, await requestJson(request));
+    send(response, result.status, result.body);
+    return;
+  }
   const infoMatch = url.pathname.match(/^\/api\/info\/(panel)$/);
   if (request.method === "GET" && infoMatch) {
     const query = new URLSearchParams();
@@ -1193,7 +1210,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
   }
 
   // Product, country, exchange, user-detail, help and bot-job administration.
-  const adminMatch = url.pathname.match(/^\/api\/admin\/((?:products|countries|exchanges|help|bot-jobs|user|companies|warnings|feedback|naturalization|banks|logs|compliance|bank-journal|dr)(?:\/[^/]+){0,2})$/);
+  const adminMatch = url.pathname.match(/^\/api\/admin\/((?:products|countries|exchanges|help|bot-jobs|user|companies|organizations|warnings|feedback|naturalization|banks|logs|compliance|bank-journal|dr)(?:\/[^/]+){0,2})$/);
   if (adminMatch) {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });

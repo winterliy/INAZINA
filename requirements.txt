@@ -2,3 +2,6 @@
 discord.py==2.7.1
 # Admin login locations from the DB-IP City Lite database (tools/update_geoip.py).
 maxminddb==3.1.1
+
+# Exact monetary SQL compilation.
+sqlglot==30.26.0

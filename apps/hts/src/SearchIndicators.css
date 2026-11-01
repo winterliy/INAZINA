@@ -1,0 +1,13 @@
+.search-indicators { border-top: 1px solid var(--line, #d9dee7); padding: 12px 14px; }
+.search-indicators > header { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 6px; }
+.search-indicators small, .search-indicators dt, .search-indicators > p { color: var(--muted, #697386); font-size: 11px; }
+.search-indicators > p { margin: 10px 0; }
+.search-indicator-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; }
+.search-indicator-row + .search-indicator-row { border-top: 1px solid var(--line, #d9dee7); }
+.search-indicator-row > div { min-width: 0; display: grid; gap: 4px; overflow-wrap: anywhere; }
+.search-indicator-row b, .search-indicator-row > strong { font-size: 12px; }
+.search-indicator-row dl { margin: 0; display: flex; gap: 16px; flex-shrink: 0; text-align: right; }
+.search-indicator-row dd { margin: 3px 0 0; font-size: 12px; font-variant-numeric: tabular-nums; }
+@media (max-width: 480px) { .search-indicator-row { flex-wrap: wrap; } .search-indicator-row dl { margin-left: auto; } }
+
+.search-indicator { cursor: default; }

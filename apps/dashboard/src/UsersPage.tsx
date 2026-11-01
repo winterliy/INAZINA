@@ -1,10 +1,11 @@
+import type { Money } from "../../shared/money";
 import { useCallback, useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../shared/api";
 import { Card, Field, Tabs, changed, date, number, plain, show, text, type Ctx } from "./common";
 import { Donut, Gauge, topSlices } from "./Donut";
 
-type Citizen = { userId: string; nickname: string; nationality: string; cash: number; creditScore: number; status: string; role: string; accountType: "discord" | "country" | "company"; companyCode: string | null };
+type Citizen = { userId: string; nickname: string; nationality: string; cash: Money; creditScore: number; status: string; role: string; accountType: "discord" | "country" | "company"; companyCode: string | null };
 type WebLogin = { hts_id: string | null; created_epoch: number; updated_epoch: number; auth_version: number };
 type CreditFactor = { key: string; label: string; points: number };
 type CreditEvent = { type: string; reference: string; loanId: number | null; occurredEpoch: number; points: number; actorId: string | null; reason: string | null };
@@ -16,14 +17,14 @@ type RateHistoryEvent = { operation: "insert" | "update" | "delete"; rate_key: s
 type CurveHistoryEvent = { operation: "insert" | "update" | "delete" | "replace"; benchmark_key: string; tenor_days: number; before_rate: number | null; after_rate: number | null; before_actor: string | null; after_actor: string | null; recorded_epoch: number };
 type MacroIndicators = { inflation_percent: number; real_gdp_growth_percent: number; unemployment_percent: number; fiscal_debt_percent: number; credit_stress_shock_bps: number; fx_stress_shock_percent: number; updated_by: string; updated_epoch: number };
 type SourceTaxRule = { income_source: string; tax_percent: number; updated_by: string; updated_epoch: number };
-type Country = { nationality: string; currency_code: string; currency_name: string | null; base_rate: number; legal_max_rate: number; tax_percent: number; treasuryId: string | null; treasuryCash: number | null; citizens: number; guilds: string[]; exchanges: string[]; marketRates: MarketRate[]; marketRatePressure: RatePressure[]; rateHistoryEvents?: RateHistoryEvent[]; marketRateHistoryEvents?: CurveHistoryEvent[]; macroIndicators: MacroIndicators; externalReferenceRate: number | null; externalRatePremium: number; taxRules: SourceTaxRule[]; account: { status: string; role: string; hts_id: string | null } | null };
+type Country = { nationality: string; currency_code: string; currency_name: string | null; base_rate: number; legal_max_rate: number; tax_percent: number; treasuryId: string | null; treasuryCash: Money | null; citizens: number; guilds: string[]; exchanges: string[]; marketRates: MarketRate[]; marketRatePressure: RatePressure[]; rateHistoryEvents?: RateHistoryEvent[]; marketRateHistoryEvents?: CurveHistoryEvent[]; macroIndicators: MacroIndicators; externalReferenceRate: number | null; externalRatePremium: number; taxRules: SourceTaxRule[]; account: { status: string; role: string; hts_id: string | null } | null };
 type Result = { message: string; success: boolean };
 
 const CREDIT_EVENT_LABELS: Record<string, string> = {
   payment_on_time: "정상 납부", payment_missed: "납부 연체", payment_cured: "연체 회차 사후 납부", loan_closed: "대출 완납",
   acceleration: "기한이익상실", default: "부도", manual_adjustment: "관리자 정정", external_adjustment: "모델 밖 수정 반영", legacy_baseline: "도입 시점 점수 보존",
 };
-const signed = (value: number) => `${value > 0 ? "+" : ""}${number(Math.round(value * 10) / 10)}`;
+const signed = (value: number) => `${value > 0 ? "+" : ""}${number(value)}`;
 
 const USER_FIELDS: [string, string, string?][] = [
   ["nickname", "닉네임"], ["cash", "현금", "국적 통화 기준"],
@@ -190,7 +191,7 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
   const [treasury, setTreasury] = useState({ amount: "", reason: "" });
   const [password, setPassword] = useState("");
   const [htsId, setHtsId] = useState("");
-  const [draft, setDraft] = useState({ nationality: "", currencyCode: "", baseRate: "", legalMaxRate: "", taxPercent: "" });
+  const [draft, setDraft] = useState({ countryId: "", nationality: "", currencyCode: "", baseRate: "", legalMaxRate: "", taxPercent: "" });
   const [marketRate, setMarketRate] = useState({ benchmarkKey: "funding", tenorDays: "30", annualRate: "" });
   const [macro, setMacro] = useState({ inflationPercent: "2", realGdpGrowthPercent: "2", unemploymentPercent: "5", fiscalDebtPercent: "60", creditStressShockBps: "200", fxStressShockPercent: "10" });
   const country = countries.find((item) => item.nationality === selected);
@@ -365,12 +366,13 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
   return <>
     <Card title="국가 만들기" caption="$국가생성과 같습니다. 통화는 먼저 금융 상품 탭에서 통화(currency)로 만들어야 합니다.">
       <form className="form-grid" onSubmit={(event) => { event.preventDefault(); act(draft.nationality.trim(), { action: "create", ...draft }, `${draft.nationality} 국가를 만들까요?`); }}>
+        <Field label="국가 ID (숫자)" hint="국고 계정 ID이자 나루 로그인 ID"><input className="mono" inputMode="numeric" pattern="[0-9]+" value={draft.countryId} required onChange={(event) => setDraft({ ...draft, countryId: event.target.value.trim() })} /></Field>
         <Field label="국가명"><input value={draft.nationality} required onChange={(event) => setDraft({ ...draft, nationality: event.target.value })} /></Field>
         <Field label="통화 코드"><input className="mono" value={draft.currencyCode} required onChange={(event) => setDraft({ ...draft, currencyCode: event.target.value.toUpperCase() })} /></Field>
         <Field label="기준금리 %" hint="선택 · 기본 3"><input className="mono" value={draft.baseRate} onChange={(event) => setDraft({ ...draft, baseRate: event.target.value })} /></Field>
         <Field label="법정최고이자 %" hint="선택 · 기본 20"><input className="mono" value={draft.legalMaxRate} onChange={(event) => setDraft({ ...draft, legalMaxRate: event.target.value })} /></Field>
         <Field label="세율 %" hint="선택 · 기본 3"><input className="mono" value={draft.taxPercent} onChange={(event) => setDraft({ ...draft, taxPercent: event.target.value })} /></Field>
-        <button className="btn primary" disabled={busy || !draft.nationality.trim()}>국가 생성</button>
+        <button className="btn primary" disabled={busy || !draft.countryId || !draft.nationality.trim()}>국가 생성</button>
       </form>
     </Card>
 

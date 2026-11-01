@@ -10,6 +10,7 @@ Banks are created by the dashboard, by the default bank, and by products naming 
 issuer (a database trigger), so :func:`ensure_all` runs at startup and whenever the bank
 list is read; :func:`ensure` runs right after the dashboard creates a bank.
 """
+from functions.exact_money import ExactDecimal, native_value
 from managers.company_account_manager import CompanyAccounts
 from managers.market_session_manager import MarketSessionManager
 
@@ -31,7 +32,7 @@ def ensure(conn, issuer):
             # Another product already uses the bank's ID as its code; never take it over.
             return None
         from managers.currency_manager import CurrencyManager
-        capital = float(bank["equity_capital"] or 0)
+        capital = ExactDecimal(bank["equity_capital"] or 0)
         conn.execute(
             "INSERT INTO company(company_code,name,industry,capital,total_shares,share_price,max_shareholder_id,exchange_id) "
             "VALUES (?,?,?,?,?,?,?,?)",

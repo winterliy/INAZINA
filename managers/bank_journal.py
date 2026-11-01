@@ -1,4 +1,5 @@
 """Append-only, currency-minor-unit journal for financial institutions."""
+from functions.exact_money import ExactDecimal, native_value
 from functions.money import base_currency_code
 
 from decimal import Decimal
@@ -61,7 +62,7 @@ class BankJournal:
                 results.append({
                     "reference_key": ledger["reference_key"],
                     "currency_code": ledger["currency_code"],
-                    "ledger_amount": float(ledger_amount),
+                    "ledger_amount": ExactDecimal(ledger_amount),
                     "journal_amount": None,
                     "difference": None,
                     "status": "missing_journal",
@@ -74,8 +75,8 @@ class BankJournal:
             results.append({
                 "reference_key": ledger["reference_key"],
                 "currency_code": ledger["currency_code"],
-                "ledger_amount": float(ledger_amount),
-                "journal_amount": float(journal_amount),
+                "ledger_amount": ExactDecimal(ledger_amount),
+                "journal_amount": ExactDecimal(journal_amount),
                 "difference": difference,
                 "status": "matched" if difference == 0 else "mismatch",
             })
@@ -161,7 +162,13 @@ class BankJournal:
             try:
                 places = currency_precision(conn, currency)
             except ValueError:
-                entry["invalid"] += 1
+                # An unknown currency cannot be scaled; report it instead of dropping the balance.
+                results.append({
+                    "issuer": str(issuer), "currency_code": currency,
+                    "account_units": account_units.get(currency, 0), "journal_units": journal_units.get(currency, 0),
+                    "difference_units": account_units.get(currency, 0) - journal_units.get(currency, 0),
+                    "decimal_places": 0, "status": "invalid_currency",
+                })
                 continue
             actual = account_units.get(currency, 0)
             posted = journal_units.get(currency, 0)

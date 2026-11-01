@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import discord
+from functions.amount_limits import MAX_NATIVE
 from database import DatabaseManager
 from database.db_manager import DBManager
 from database.system_db import SystemDB
@@ -449,7 +450,7 @@ class MarketFeatureTests(unittest.TestCase):
             ("good", "missing", {"target_price": 200}),
         ]
         invalid.extend(("good", "CO", {"target_price": value})
-                       for value in (0, -1, 1.5, True, float("nan"), float("inf"), 2 ** 53))
+                       for value in (0, -1, 1.5, True, float("nan"), float("inf"), MAX_NATIVE + 1))
         invalid.extend(("good", "CO", {"target_percent": value})
                        for value in (-1, 101, True, float("nan"), float("inf")))
         for event_type, code, kwargs in invalid:
@@ -551,7 +552,7 @@ class MarketFeatureTests(unittest.TestCase):
         create = Mock(return_value=(True, "registered"))
         bot = SimpleNamespace(db=self.db, market_mgr=self.market, admin_mgr=SimpleNamespace(create_market_event=create))
         invalid = [{"duration": value} for value in ("", "0", "-1", "604801", "1.5", "nan", "inf", "abc")]
-        invalid.extend({"target": value} for value in ("0", "-1", "1.5", "abc", "nan", "inf", str(2 ** 53)))
+        invalid.extend({"target": value} for value in ("0", "-1", "1.5", "abc", "nan", "inf", str(MAX_NATIVE + 1)))
         invalid.extend(({"code": None}, {"code": "missing"}, {"code": "__all__", "target": "40"}))
         for values in invalid:
             with self.subTest(values=values):

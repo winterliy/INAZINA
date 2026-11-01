@@ -1,4 +1,6 @@
 """European, physically settled options backed by segregated collateral."""
+from functions.exact_money import ExactDecimal
+from functions.amount_limits import MAX_NATIVE
 from functions.money import base_currency_code, currency_precision
 from functions.quantities import quantity_number
 
@@ -17,8 +19,8 @@ from managers.rate_manager import RateManager
 class OptionManager:
     CONTRACT_SIZE = 1  # The MVP represents one underlying share per option contract.
     MAX_CONTRACTS = 2**53 - 1
-    MAX_PRICE = 2**53 - 1
-    MAX_MONEY = 2**63 - 1
+    MAX_PRICE = MAX_NATIVE
+    MAX_MONEY = MAX_NATIVE
 
     def __init__(self, db, user_manager):
         self.db = db
@@ -37,8 +39,8 @@ class OptionManager:
     @staticmethod
     def theoretical_price(spot, strike, years, volatility, option_type, risk_free_rate=0):
         """Black-Scholes reference premium; rates are annual decimal fractions."""
-        spot = float(spot or 0)
-        strike = float(strike or 0)
+        spot = ExactDecimal(spot or 0)
+        strike = ExactDecimal(strike or 0)
         years = float(years or 0)
         volatility = float(volatility or 0)
         rate = float(risk_free_rate or 0)
@@ -150,6 +152,11 @@ class OptionManager:
         option_type = str(option_type).strip().casefold()
         if option_type not in {"call", "put"}:
             return False, "❌ 옵션 유형은 콜 또는 풋이어야 합니다."
+        from functions.money import parse_money
+        try:
+            if isinstance(strike_price,str):strike_price=parse_money(strike_price,minimum=1)
+            if isinstance(limit_price,str):limit_price=parse_money(limit_price,minimum=1)
+        except ValueError as exc:return False, f"❌ {exc}"
         for value, label in ((strike_price, "행사가"), (maturity_days, "만기 일수"),
                              (quantity, "계약 수량"), (limit_price, "프리미엄"),
                              (volatility_percent, "변동성")):
@@ -185,6 +192,8 @@ class OptionManager:
                 call_lots = []
                 cash_lots = []
                 if option_type == "call":
+                    from managers.asset_cost_manager import AssetCostManager
+                    AssetCostManager.require_unit_cost_support(conn, str(writer_id), underlying_code)
                     positions = conn.execute(
                         "SELECT holding_id, account_number, quantity, average_cost "
                         "FROM assets.user_assets WHERE user_id = ? AND asset_code = ? "
@@ -828,6 +837,8 @@ class OptionManager:
 
     def _take_user_shares(self, conn, user_id, underlying_code, quantity):
         user_id = str(user_id)
+        from managers.asset_cost_manager import AssetCostManager
+        AssetCostManager.require_unit_cost_support(conn, user_id, underlying_code)
         rows = conn.execute(
             "SELECT holding_id, account_number, quantity, average_cost "
             "FROM assets.user_assets WHERE user_id = ? AND asset_code = ? ORDER BY holding_id",

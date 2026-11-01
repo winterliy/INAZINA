@@ -1,10 +1,11 @@
+import { moneyAdd, moneyMultiply, moneyCompare, exactMoney, type Money } from "../../../shared/money";
 import { useEffect, useState } from "react";
 import type { Result } from "../commandKit";
 import { Outcome, won, type Kit, type ServiceProps } from "./ServiceKit";
 
-type Round = { round_id: number; status: string; close_epoch: number; draw_epoch: number; sales_total: number; rules: { ticket_price: number; max_tickets: number; prize_percent: number };
-  pools: number[]; winning: number[]; bonus: number | null; result: Record<string, { winners: number; gross_per_ticket: number }>; commitment?: string };
-type Ticket = { ticket_id: number; round_id: number; numbers_json: string; price: number; created_epoch: number; rank: number | null; net: number | null };
+type Round = { round_id: number; status: string; close_epoch: number; draw_epoch: number; sales_total: Money; rules: { ticket_price: Money; max_tickets: number; prize_percent: number };
+  pools: Money[]; winning: number[]; bonus: number | null; result: Record<string, { winners: number; gross_per_ticket: Money }>; commitment?: string };
+type Ticket = { ticket_id: number; round_id: number; numbers_json: string; price: Money; created_epoch: number; rank: number | null; net: Money | null };
 const ROUND_STATUS: Record<string, string> = { selling: "판매 중", closed: "판매 마감", drawn: "추첨 완료", settled: "당첨금 지급 완료" };
 const RANKS = ["1등", "2등", "3등", "4등", "5등"];
 const at = (epoch: number) => new Date(epoch * 1000).toLocaleString("ko-KR", { month: "long", day: "numeric", weekday: "short", hour: "2-digit", minute: "2-digit" });
@@ -66,23 +67,30 @@ const BALLS = Array.from({ length: 45 }, (_, index) => index + 1);
 const ball = (number: number) => number <= 10 ? "b1" : number <= 20 ? "b2" : number <= 30 ? "b3" : number <= 40 ? "b4" : "b5";
 
 /** 복권 · 게임 as a casino lobby: 럭키 베팅 with chips and a 6/45 slip. Same 도박 and 복권 rules as Discord. */
-export function CasinoPage({ kit, cash, homeCurrency, homeDigits }: ServiceProps) {
-  const [bet, setBet] = useState(0);
+export function CasinoPage({ kit, cash, homeCurrency, homeDigits, accounts }: ServiceProps) {
+  const [bet, setBet] = useState<Money>("0");
   const [spin, setSpin] = useState<Result | null>(null);
   const [picked, setPicked] = useState<number[]>([]);
   const [tickets, setTickets] = useState("1");
   const [slip, setSlip] = useState<Result | null>(null);
   const [refresh, setRefresh] = useState(0);
+  const [source, setSource] = useState("__wallet__");
+  const eligibleAccounts = accounts.filter((account) => account.account_type === "saving" && !account.managed_by && account.currency_code === homeCurrency && account.resolution_status === "active");
+  const balance = source === "__wallet__" ? cash : (eligibleAccounts.find((account) => account.number === source)?.balance ?? 0);
+  const [ticketPrice, setTicketPrice] = useState<Money | null>(null);
+  useEffect(() => { void kit.run("복권규칙", {}, false).then((result) => { if (result?.success) setTicketPrice((result.data as Round).rules.ticket_price); }); }, [refresh]);
+  const ticketCount = Number(tickets);
+  const canBuy = Number.isInteger(ticketCount) && ticketCount >= 1 && ticketCount <= 1000 && ticketPrice !== null && moneyCompare(moneyMultiply(ticketPrice, ticketCount), balance) <= 0;
 
   async function play() {
-    if (bet <= 0) return;
-    const outcome = await kit.run("도박", { amount: String(bet) });
+    if (moneyCompare(bet, 0) <= 0) return;
+    const outcome = await kit.run("도박", { amount: String(bet), source });
     if (outcome) setSpin(outcome);
   }
   async function buy(auto: boolean) {
     const numbers = auto ? "" : [...picked].sort((a, b) => a - b).join(",");
     if (!auto && picked.length !== 6) return;
-    const outcome = await kit.run("복권구매", { quantity: tickets || "1", numbers });
+    const outcome = await kit.run("복권구매", { quantity: tickets || "1", numbers, source });
     if (outcome) { setSlip(outcome); if (outcome.success) { setPicked([]); setRefresh((value) => value + 1); } }
   }
   // 도박 answers 🎉 당첨 on a win and 💀 꽝 (success false) on a loss; anything else is an error.
@@ -92,20 +100,21 @@ export function CasinoPage({ kit, cash, homeCurrency, homeDigits }: ServiceProps
     <section className="casino-hero">
       <p>INAZINA CASINO</p>
       <h2>오늘의 행운을 시험해 보세요</h2>
-      <span>보유 {won(cash, homeDigits)} {homeCurrency}</span>
+      <label>출금 계좌<select value={source} onChange={(event) => setSource(event.target.value)}><option value="__wallet__">현금 · {won(cash, homeDigits)} {homeCurrency}</option>{eligibleAccounts.map((account) => <option key={account.number} value={account.number}>{account.product_name} · {account.number} · {won(account.balance, homeDigits)} {homeCurrency}</option>)}</select></label>
+      <span>출금 가능 {won(balance, homeDigits)} {homeCurrency}</span>
     </section>
 
     <div className="casino-grid">
       <section className="casino-table" aria-label="럭키 베팅">
-        <header><h3>럭키 베팅</h3><p>관리자가 정한 확률로 당첨되면 리턴 비율만큼 받고, 지면 건 금액은 국고로 갑니다.</p></header>
+        <header><h3>럭키 베팅</h3></header>
         <div className={`casino-wheel ${outcome}`} aria-live="polite">
           <b>{{ idle: "BET", win: "WIN", lose: "LOSE", error: "!" }[outcome]}</b>
           {spin && <small>{spin.message}</small>}
         </div>
         <div className="casino-bet"><span>베팅 금액</span><b>{won(bet)} <small>{homeCurrency}</small></b></div>
-        <div className="casino-chips">{CHIPS.map((chip) => <button type="button" key={chip} className="chip" onClick={() => setBet(bet + chip)}>{chip >= 10_000 ? `${chip / 10_000}만` : `${chip / 1000}천`}</button>)}<button type="button" className="chip all" onClick={() => setBet(Math.floor(cash))}>올인</button><button type="button" className="chip clear" onClick={() => setBet(0)}>초기화</button></div>
-        <button type="button" className="casino-play" disabled={kit.busy || bet <= 0 || bet > cash} onClick={() => void play()}>{kit.busy ? "결과 확인 중…" : "베팅하기"}</button>
-        {bet > cash && <p className="casino-warn">보유 금액보다 많이 걸 수 없습니다.</p>}
+        <div className="casino-chips">{CHIPS.map((chip) => <button type="button" key={chip} className="chip" onClick={() => setBet(moneyAdd(bet, chip))}>{chip >= 10_000 ? `${chip / 10_000}만` : `${chip / 1000}천`}</button>)}<button type="button" className="chip all" onClick={() => setBet(exactMoney(balance).split(".")[0])}>올인</button><button type="button" className="chip clear" onClick={() => setBet(0)}>초기화</button></div>
+        <button type="button" className="casino-play" disabled={kit.busy || moneyCompare(bet, 0) <= 0 || moneyCompare(bet, balance) > 0} onClick={() => void play()}>{kit.busy ? "결과 확인 중…" : "베팅하기"}</button>
+        {moneyCompare(bet, balance) > 0 && <p className="casino-warn">보유 금액보다 많이 걸 수 없습니다.</p>}
       </section>
 
       <section className="casino-lotto" aria-label="로또 6/45">
@@ -115,8 +124,8 @@ export function CasinoPage({ kit, cash, homeCurrency, homeDigits }: ServiceProps
         <div className="lotto-buy">
           <label>장 수<input inputMode="numeric" value={tickets} onChange={(event) => setTickets(event.target.value.replace(/\D/g, ""))} /></label>
           <button type="button" onClick={() => setPicked([])} disabled={!picked.length}>지우기</button>
-          <button type="button" className="casino-play" disabled={kit.busy || picked.length !== 6} onClick={() => void buy(false)}>선택 번호로 구매</button>
-          <button type="button" className="casino-play alt" disabled={kit.busy} onClick={() => void buy(true)}>자동 구매</button>
+          <button type="button" className="casino-play" disabled={kit.busy || picked.length !== 6 || !canBuy} onClick={() => void buy(false)}>선택 번호로 구매</button>
+          <button type="button" className="casino-play alt" disabled={kit.busy || !canBuy} onClick={() => void buy(true)}>자동 구매</button>
         </div>
         <Outcome result={slip} />
       </section>

@@ -1,9 +1,10 @@
+import { moneyCompare, type Money } from "../../../shared/money";
 import { useEffect, useState } from "react";
 import { api } from "../../../shared/api";
 import { VALUES } from "../commandKit";
 import { won, type ServiceProps } from "./ServiceKit";
 
-type Event = { kind: "transfer_out" | "transfer_in" | "basic_income" | "exchange"; epoch: number; currency: string; amount: number; counterpart: string; account: string | null };
+type Event = { kind: "transfer_out" | "transfer_in" | "basic_income" | "exchange"; epoch: number; currency: string; amount: Money; counterpart: string; counterpartUserId?: string; account: string | null };
 type Tab = "money" | "orders";
 const KIND: Record<Event["kind"], string> = { transfer_out: "보냄", transfer_in: "받음", basic_income: "기본소득", exchange: "환전" };
 const when = (epoch: number) => new Date(epoch * 1000).toLocaleString("ko-KR", { year: "2-digit", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
@@ -14,7 +15,7 @@ export function HistoryPage({ orders }: ServiceProps) {
   const [events, setEvents] = useState<Event[] | null>(null);
   const [error, setError] = useState("");
   useEffect(() => { api<{ events: Event[] }>("/api/me/history").then((result) => setEvents(result.events)).catch((cause) => setError(cause instanceof Error ? cause.message : "거래내역을 불러오지 못했습니다.")); }, []);
-  const income = (events ?? []).filter((item) => item.amount > 0).length, spend = (events ?? []).length - income;
+  const income = (events ?? []).filter((item) => moneyCompare(item.amount, 0) > 0).length, spend = (events ?? []).length - income;
 
   return <div className="svc-history">
     <div className="svc-tabs" role="tablist" aria-label="거래내역">
@@ -27,8 +28,8 @@ export function HistoryPage({ orders }: ServiceProps) {
       <div className="svc-statement">{(events ?? []).map((item, index) => <div key={`${item.epoch}-${index}`} className="svc-statement-row">
         <time>{when(item.epoch)}</time>
         <span className={`svc-kind ${item.kind}`}>{KIND[item.kind]}</span>
-        <span className="svc-who">{item.counterpart}{item.account && <small>{item.account}</small>}</span>
-        <b className={item.amount > 0 ? "plus" : "minus"}>{item.amount > 0 ? "+" : ""}{won(item.amount, 2)} <small>{item.currency}</small></b>
+        <span className="svc-who">{item.counterpart}{item.counterpartUserId && <small>사용자 ID · {item.counterpartUserId}</small>}{item.account && <small>{item.account}</small>}</span>
+        <b className={moneyCompare(item.amount, 0) > 0 ? "plus" : "minus"}>{moneyCompare(item.amount, 0) > 0 ? "+" : ""}{won(item.amount, 2)} <small>{item.currency}</small></b>
       </div>)}</div>
       {events && !events.length && <p className="svc-empty">아직 입출금 내역이 없습니다.</p>}
       {!events && !error && <p className="svc-hint">불러오는 중…</p>}
