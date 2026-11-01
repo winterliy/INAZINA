@@ -83,9 +83,9 @@ class OrganizationDB(DBManager):
             )
         """)
         self.execute("INSERT OR IGNORE INTO organization_size_settings(singleton) VALUES (1)")
-        size_settings = self.execute(
+        size_settings = self.execute_one(
             "SELECT rule_json FROM organization_size_settings WHERE singleton=1"
-        ).fetchone()
+        )
         try:
             existing_size_rules = json.loads(size_settings[0] or "{}") if size_settings else {}
         except (TypeError, ValueError):
