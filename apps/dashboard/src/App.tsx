@@ -217,8 +217,11 @@ export default function App() {
   useEffect(() => {
     if (!user || user.role !== "admin" || page === "ownership") return;
     void loadUnread();
-    const timer = window.setInterval(() => void loadUnread(), 60_000);
-    return () => window.clearInterval(timer);
+    // Skip polling while the tab is hidden and catch up as soon as it is shown again.
+    const timer = window.setInterval(() => { if (!document.hidden) void loadUnread(); }, 60_000);
+    const onVisible = () => { if (!document.hidden) void loadUnread(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { window.clearInterval(timer); document.removeEventListener("visibilitychange", onVisible); };
   }, [user, page, loadUnread]);
   useEffect(() => { setQuery(""); setNotice(null); }, [page]);
 

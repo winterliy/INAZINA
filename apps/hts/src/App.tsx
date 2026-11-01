@@ -1,5 +1,5 @@
 import { formatMoney, exactMoney, moneyAdd, moneyMultiply, moneyCompare, moneyDivide, minorMoney, validMoney, type Money } from "../../shared/money";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api, clearToken, signedOut, type ApiUser } from "../../shared/api";
 import { navigate } from "./nav";
@@ -7,11 +7,15 @@ import { AuthPanel } from "../../shared/AuthPanel";
 import { DEFAULT_INDICATORS, INDICATOR_CATALOG, PriceChart, type Candle, type Drawing, type IndicatorCatalog, type IndicatorChoice, type IndicatorData, type Point, type Tool } from "./PriceChart";
 import { OPEN } from "./commandKit";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { ServicesApp, legacyCommandPath, servicePath } from "./services/ServicesApp";
+import { legacyCommandPath, servicePath } from "./services/paths";
 import { SERVICES } from "./services/ServiceKit";
 import { Backdrop } from "./Backdrop";
 import { SearchIndicators } from "./SearchIndicators";
-import { OwnershipGraph, type OwnershipGraphData } from "../../shared/OwnershipGraph";
+import type { OwnershipGraphData } from "../../shared/OwnershipGraph";
+
+// Heavy, route-only screens load on first visit instead of with the trading screen.
+const ServicesApp = lazy(() => import("./services/ServicesApp").then((m) => ({ default: m.ServicesApp })));
+const OwnershipGraph = lazy(() => import("../../shared/OwnershipGraph").then((m) => ({ default: m.OwnershipGraph })));
 
 type Warning = { level: "caution" | "warning" | "danger"; label: string; reason: string; expiresEpoch: number | null };
 type DrMovement = { movement_id: number; dr_code: string; underlying_code: string; underlying_currency: string; movement_type: "issue" | "redeem"; dr_quantity: number; underlying_quantity: number; underlying_average_cost: number; underlying_average_cost_text: string; decimal_places: number; recorded_epoch: number };
@@ -620,7 +624,9 @@ export default function App() {
   if (service) return <div className="hts-shell stage service-shell">
     <Backdrop />
     {topbar("services")}
-    <ServicesApp path={service} instruments={instruments} portfolio={portfolio} orders={orders} homeCurrency={homeCurrency} homeDigits={homeDigits} cash={portfolio?.cash ?? user.cash} creditScore={credit?.score ?? user.creditScore} accounts={portfolio?.accounts ?? []} onDone={() => void refreshAccount().catch(() => undefined)} />
+    <Suspense fallback={<p className="svc-empty">불러오는 중…</p>}>
+      <ServicesApp path={service} instruments={instruments} portfolio={portfolio} orders={orders} homeCurrency={homeCurrency} homeDigits={homeDigits} cash={portfolio?.cash ?? user.cash} creditScore={credit?.score ?? user.creditScore} accounts={portfolio?.accounts ?? []} onDone={() => void refreshAccount().catch(() => undefined)} />
+    </Suspense>
     <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
   </div>;
 
@@ -628,7 +634,7 @@ export default function App() {
     <Backdrop />
     <main className="ownership-window">
       <header><div><p className="eyebrow">NARU · 나루</p><h1>보유 기업 지배구조</h1><p className="sub">보유 주식의 의결권과 지배하는 자회사 관계입니다.</p></div><a className="soft" href="/account">계정 페이지로</a></header>
-      {ownershipLoading ? <div className="ownership-loading" role="status"><span className="ownership-spinner" aria-hidden="true" /><strong>보유 기업 지배구조를 불러오는 중…</strong></div> : <OwnershipGraph graph={ownershipGraph} fullScreen />}
+      {ownershipLoading ? <div className="ownership-loading" role="status"><span className="ownership-spinner" aria-hidden="true" /><strong>보유 기업 지배구조를 불러오는 중…</strong></div> : <Suspense fallback={null}><OwnershipGraph graph={ownershipGraph} fullScreen /></Suspense>}
     </main>
     <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
   </div>;
