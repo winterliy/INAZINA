@@ -12,12 +12,113 @@ corporate-action journal are booked to the company's financial statements by
 :meth:`CompanyAccounts.reconcile`.
 """
 from functions.exact_money import ExactDecimal
+import threading
 from decimal import Decimal
 
 from functions.money import base_currency_code
 from functions.time_utils import MAX_SUPPORTED_EPOCH
 
 PREFIX = "company:"
+
+
+def _trace_effective_owners(shares_by_holder, votes_by_holder, equity_by_holder, equity_total_by_org,
+                            votes_total_by_org, share_supply_by_org, issuer_accounts, account_issuers,
+                            treasury_ids, organization_names, user_names):
+    effective_owners_by_org = {}
+    # Trace each issuer's ownership through corporate accounts to terminal
+    # holders. Simple paths prevent circular cross-holdings from multiplying
+    # control indefinitely; different valid paths to the same terminal owner
+    # are summed, matching the organization graph's path attribution model.
+    for root in shares_by_holder:
+        totals = {}
+        equity_denominator = equity_total_by_org.get(root, Decimal(0))
+        vote_denominator = votes_total_by_org.get(root, Decimal(0))
+        pending = []
+        for holder in shares_by_holder.get(root, {}):
+            if holder in treasury_ids or holder == issuer_accounts.get(root):
+                continue
+            equity_ratio = (equity_by_holder.get(root, {}).get(holder, Decimal(0)) / equity_denominator
+                            if equity_denominator else Decimal(0))
+            vote_ratio = (votes_by_holder.get(root, {}).get(holder, Decimal(0)) / vote_denominator
+                          if vote_denominator else Decimal(0))
+            if equity_ratio or vote_ratio:
+                pending.append((holder, equity_ratio, vote_ratio, frozenset({root})))
+        traversed = 0
+        while pending and traversed < 50000:
+            holder, equity_path, vote_path, ancestry = pending.pop()
+            traversed += 1
+            intermediary = account_issuers.get(holder)
+            if not intermediary or intermediary in ancestry:
+                node = ("company", intermediary) if intermediary else ("user", holder)
+                amount = totals.setdefault(node, [Decimal(0), Decimal(0)])
+                amount[0] += equity_path
+                amount[1] += vote_path
+                continue
+            equity_denominator = equity_total_by_org.get(intermediary, Decimal(0))
+            vote_denominator = votes_total_by_org.get(intermediary, Decimal(0))
+            owners = shares_by_holder.get(intermediary, {})
+            if not owners:
+                node = ("company", intermediary)
+                amount = totals.setdefault(node, [Decimal(0), Decimal(0)])
+                amount[0] += equity_path
+                amount[1] += vote_path
+                continue
+            for next_holder in owners:
+                if next_holder in treasury_ids or next_holder == issuer_accounts.get(intermediary):
+                    continue
+                equity_ratio = (equity_by_holder.get(intermediary, {}).get(next_holder, Decimal(0)) / equity_denominator
+                                if equity_denominator else Decimal(0))
+                vote_ratio = (votes_by_holder.get(intermediary, {}).get(next_holder, Decimal(0)) / vote_denominator
+                              if vote_denominator else Decimal(0))
+                if not equity_ratio and not vote_ratio:
+                    continue
+                next_equity_path = equity_path * equity_ratio
+                next_vote_path = vote_path * vote_ratio
+                next_ancestry = ancestry | {intermediary}
+                if len(next_ancestry) >= 8 and account_issuers.get(next_holder) not in next_ancestry:
+                    terminal_code = account_issuers.get(next_holder)
+                    node = ("company", terminal_code) if terminal_code else ("user", next_holder)
+                    amount = totals.setdefault(node, [Decimal(0), Decimal(0)])
+                    amount[0] += next_equity_path
+                    amount[1] += next_vote_path
+                else:
+                    pending.append((next_holder, next_equity_path, next_vote_path, next_ancestry))
+        if totals:
+            (kind, holder), (equity_ratio, vote_ratio) = max(
+                totals.items(), key=lambda pair: (pair[1][1], pair[1][0], pair[0][1]))
+            name = (organization_names.get(holder, holder) if kind == "company"
+                    else user_names.get(holder, holder))
+            effective_owners_by_org[root] = {
+                "id": holder, "kind": kind, "name": name,
+                "shares": str(equity_ratio * share_supply_by_org.get(root, Decimal(0))),
+                "percent": str(vote_ratio * 100),
+            }
+    return effective_owners_by_org
+
+
+_OWNER_TRACE_CACHE = {"key": None, "value": None}
+_OWNER_TRACE_LOCK = threading.Lock()
+
+
+def _cached_effective_owners(shares_by_holder, votes_by_holder, equity_by_holder, equity_total_by_org,
+                             votes_total_by_org, share_supply_by_org, issuer_accounts, account_issuers,
+                             treasury_ids, organization_names, user_names):
+    def frozen(nested):
+        return tuple(sorted((k, tuple(sorted(v.items()))) for k, v in nested.items()))
+    key = (frozen(shares_by_holder), frozen(votes_by_holder), frozen(equity_by_holder),
+           tuple(sorted(equity_total_by_org.items())), tuple(sorted(votes_total_by_org.items())),
+           tuple(sorted(share_supply_by_org.items())), tuple(sorted(issuer_accounts.items())),
+           tuple(sorted(account_issuers.items())), tuple(sorted(treasury_ids)),
+           tuple(sorted(organization_names.items())), tuple(sorted(user_names.items())))
+    with _OWNER_TRACE_LOCK:
+        if _OWNER_TRACE_CACHE["key"] == key:
+            return _OWNER_TRACE_CACHE["value"]
+    value = _trace_effective_owners(
+        shares_by_holder, votes_by_holder, equity_by_holder, equity_total_by_org, votes_total_by_org,
+        share_supply_by_org, issuer_accounts, account_issuers, treasury_ids, organization_names, user_names)
+    with _OWNER_TRACE_LOCK:
+        _OWNER_TRACE_CACHE["key"], _OWNER_TRACE_CACHE["value"] = key, value
+    return value
 
 
 class CompanyAccounts:
@@ -268,10 +369,14 @@ class CompanyAccounts:
         issuer_accounts = {str(row[0]): str(row[1]) for row in conn.execute(
             "SELECT company_code,user_id FROM company_accounts")}
         account_issuers = {user_id: code for code, user_id in issuer_accounts.items()}
+        organization_names = {str(row[0]): str(row[1]) for row in conn.execute(
+            "SELECT organization_code,name FROM organizations")}
+        user_names = {str(row[0]): str(row[1] or row[0]) for row in conn.execute(
+            "SELECT user_id,nickname FROM users")}
         treasury_ids = {str(TREASURY_USER_ID)} | {str(row[0]) for row in conn.execute(
             "SELECT user_id FROM country_treasuries")}
         issues = conn.execute(
-            "SELECT s.organization_code,c.company_code,c.total_shares,s.voting_rights_per_share "
+            "SELECT s.organization_code,c.company_code,c.total_shares,s.voting_rights_per_share,s.economic_interest_per_share "
             "FROM share_issuances s JOIN company c ON c.share_issuance_id=s.issuance_id "
             "WHERE c.status='active' ORDER BY s.organization_code,c.company_code").fetchall()
         holdings_by_issue = {}
@@ -282,32 +387,72 @@ class CompanyAccounts:
             "WHERE c.status='active' GROUP BY u.asset_code,u.user_id"):
             holdings_by_issue.setdefault(str(holding[0]), []).append((str(holding[1]), Decimal(str(holding[2] or 0))))
         parents_by_org = {}
+        shares_by_holder = {}
+        votes_by_holder = {}
+        equity_by_holder = {}
         votes_total_by_org = {}
+        equity_total_by_org = {}
+        share_supply_by_org = {}
         votes_by_org = {}
         for issue in issues:
             organization, issue_code = str(issue[0]), str(issue[1])
             try:
                 supply = Decimal(str(issue[2] or 0))
                 votes_per_share = Decimal(str(issue[3] or 0))
+                equity_per_share = Decimal(str(issue[4] or 0))
             except InvalidOperation:
                 continue
-            if not supply.is_finite() or supply <= 0 or not votes_per_share.is_finite() or votes_per_share <= 0:
+            if (not supply.is_finite() or supply <= 0 or not votes_per_share.is_finite()
+                    or votes_per_share < 0 or not equity_per_share.is_finite() or equity_per_share < 0):
                 continue
             issuer_user = issuer_accounts.get(organization)
             amounts = holdings_by_issue.get(issue_code, ())
             excluded = treasury_ids | ({issuer_user} if issuer_user else set())
             excluded_amount = sum((quantity for holder, quantity in amounts if holder in excluded), Decimal(0))
             votes_total = max(Decimal(0), supply - excluded_amount) * votes_per_share
+            equity_total_by_org[organization] = equity_total_by_org.get(organization, Decimal(0)) + max(Decimal(0), supply - excluded_amount) * equity_per_share
+            share_supply_by_org[organization] = share_supply_by_org.get(organization, Decimal(0)) + supply
             if votes_total <= 0:
-                continue
-            votes_total_by_org[organization] = votes_total_by_org.get(organization, Decimal(0)) + votes_total
+                votes_total = Decimal(0)
+            else:
+                votes_total_by_org[organization] = votes_total_by_org.get(organization, Decimal(0)) + votes_total
+            issue_shares = shares_by_holder.setdefault(organization, {})
+            issue_votes = votes_by_holder.setdefault(organization, {})
+            issue_equity = equity_by_holder.setdefault(organization, {})
             votes_by_company = votes_by_org.setdefault(organization, {})
             for holder, quantity in amounts:
+                if issuer_user and holder == issuer_user:
+                    continue
+                issue_shares[holder] = issue_shares.get(holder, Decimal(0)) + quantity
                 if holder in excluded:
                     continue
+                voting_power = quantity * votes_per_share
+                issue_votes[holder] = issue_votes.get(holder, Decimal(0)) + voting_power
+                issue_equity[holder] = issue_equity.get(holder, Decimal(0)) + quantity * equity_per_share
                 shareholder = account_issuers.get(holder)
                 if shareholder and shareholder != organization:
-                    votes_by_company[shareholder] = votes_by_company.get(shareholder, Decimal(0)) + quantity * votes_per_share
+                    votes_by_company[shareholder] = votes_by_company.get(shareholder, Decimal(0)) + voting_power
+        largest_shareholder_by_org = {}
+        max_voting_holder_by_org = {}
+        for organization, holders in shares_by_holder.items():
+            if holders:
+                holder, shares = max(holders.items(), key=lambda pair: (pair[1], pair[0]))
+                code = account_issuers.get(holder)
+                largest_shareholder_by_org[organization] = {
+                    "id": holder,
+                    "name": organization_names.get(code, code) if code else user_names.get(holder, holder),
+                    "shares": str(shares),
+                }
+        for organization, holders in votes_by_holder.items():
+            votes_total = votes_total_by_org.get(organization, Decimal(0))
+            if holders and votes_total > 0:
+                holder, votes = max(holders.items(), key=lambda pair: (pair[1], pair[0]))
+                code = account_issuers.get(holder)
+                max_voting_holder_by_org[organization] = {
+                    "id": holder,
+                    "name": organization_names.get(code, code) if code else user_names.get(holder, holder),
+                    "percent": str(votes / votes_total * 100),
+                }
         for organization, votes_by_company in votes_by_org.items():
             votes_total = votes_total_by_org.get(organization, Decimal(0))
             controlling = [(holder, votes / votes_total) for holder, votes in votes_by_company.items()
@@ -315,6 +460,12 @@ class CompanyAccounts:
             if controlling:
                 holder, ratio = max(controlling, key=lambda pair: pair[1])
                 parents_by_org[organization] = {"code": holder, "percent": float(ratio * 100)}
+
+        # The ownership trace below is a pure function of these inputs and explodes
+        # combinatorially with cross-holdings, so an unchanged ledger reuses the last result.
+        effective_owners_by_org = _cached_effective_owners(
+            shares_by_holder, votes_by_holder, equity_by_holder, equity_total_by_org, votes_total_by_org,
+            share_supply_by_org, issuer_accounts, account_issuers, treasury_ids, organization_names, user_names)
 
         # One grouped query per table instead of three per company.
         holders = sorted({row["account"] for row in rows if row["account"]})
@@ -357,5 +508,9 @@ class CompanyAccounts:
             item["loans"] = loan_totals.get(holder, 0) if holder else 0
             parent = parents_by_org.get(str(item["company_code"]))
             item["parents"] = [parent] if parent else []
+            item["largest_shareholder"] = largest_shareholder_by_org.get(str(item["company_code"]))
+            item["max_voting_holder"] = max_voting_holder_by_org.get(str(item["company_code"]))
+            controller = effective_owners_by_org.get(str(item["company_code"]))
+            item["ultimate_controller"] = dict(controller) if controller else controller
             result.append(item)
         return result
