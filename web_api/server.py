@@ -4066,7 +4066,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, admin_command_catalog())
             elif path.startswith("/internal/admin/") and path.split("/")[3] in {
                     "products", "countries", "exchanges", "help", "bot-jobs", "user", "companies", "warnings", "feedback",
-                    "naturalization", "banks"}:
+                    "naturalization", "banks", "organizations"}:
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
@@ -4095,6 +4095,20 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, detail)
                 elif parts == ["companies"]:
                     self.send_json(200, admin_companies())
+                elif parts == ["organizations"]:
+                    from web_api.organizations import directory
+                    with connect_db(timeout=5) as connection:
+                        result = directory(connection)
+                    for change in result.get("sizeChanges", []):
+                        audit_admin_access(user["userId"], "organization.size_auto_change", change)
+                    self.send_json(200, result)
+                elif len(parts) == 2 and parts[0] == "organizations":
+                    from web_api.organizations import directory
+                    with connect_db(timeout=5) as connection:
+                        result = directory(connection, parts[1])
+                    for change in result.get("sizeChanges", []):
+                        audit_admin_access(user["userId"], "organization.size_auto_change", change)
+                    self.send_json(200, result)
                 elif parts == ["companies", "identity"]:
                     self.send_json(200, admin_identity(user["userId"]))
                 elif len(parts) == 3 and parts[0] == "companies" and parts[2] == "financial":
@@ -4728,13 +4742,19 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, admin_login_as(user["userId"], payload))
             elif path.startswith("/internal/admin/") and path.split("/")[3] in {
                     "products", "countries", "exchanges", "user", "companies", "warnings", "feedback", "logs",
-                    "naturalization", "banks"}:
+                    "naturalization", "banks", "organizations"}:
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
                     return
                 parts = [unquote(part) for part in path.split("/")[3:]]
                 actor = user["userId"]
-                if parts == ["products"]:
+                if parts == ["organizations"]:
+                    from web_api.organizations import action as organization_action
+                    with connect_db(timeout=5) as connection:
+                        result = organization_action(connection, payload, actor)
+                    audit_admin_access(actor, "organization.configuration", result)
+                    message = f"조직 설정을 저장했습니다: {result.get('action')}"
+                elif parts == ["products"]:
                     message = product_save(actor, payload)
                 elif len(parts) == 3 and parts[0] == "products" and parts[2] == "status":
                     message = product_status(actor, parts[1], bool(payload.get("active")),

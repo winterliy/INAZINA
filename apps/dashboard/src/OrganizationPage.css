@@ -1,0 +1,19 @@
+.organization-layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.organization-inset { min-width: 0; margin-top: 12px; padding: 14px; border-radius: 16px; background: rgba(var(--glass-rgb), .62); box-shadow: inset 0 0 0 1px var(--line); }
+.organization-inset > strong, .organization-inset > small { display: block; }
+.organization-inset > small { margin-top: 4px; color: var(--ink2); font-size: 12px; }
+.organization-inset .chips { margin-bottom: 10px; }
+.organization-inset .chip { max-width: 100%; overflow-wrap: anywhere; }
+.organization-form-row { display: flex; flex-wrap: wrap; align-items: end; gap: 10px; }
+.organization-form-row > label { flex: 1 1 200px; min-width: 0; }
+.organization-form-row input, .organization-form-row select { width: 100%; min-height: 42px; padding: 0 12px; border: 0; border-radius: 12px; background: var(--field); box-shadow: inset 0 0 0 1px var(--line); }
+.organization-graph { display: flex; gap: 16px; overflow: auto; padding: 4px 2px 12px; }
+.organization-graph-level { display: flex; flex: 0 0 auto; flex-direction: column; gap: 12px; min-width: 200px; }
+.organization-node { display: grid; gap: 4px; min-width: 0; padding: 14px; border-radius: 14px; background: rgba(var(--glass-rgb), .72); box-shadow: inset 0 0 0 1px var(--line); }
+.organization-node strong { overflow-wrap: anywhere; }
+.organization-node small, .organization-node p { color: var(--ink2); font-size: 12px; }
+.organization-node p { padding-top: 6px; border-top: 1px solid var(--line); }
+@media (max-width: 760px) {
+  .organization-layout { grid-template-columns: minmax(0, 1fr); }
+  .organization-graph-level { min-width: 170px; }
+}

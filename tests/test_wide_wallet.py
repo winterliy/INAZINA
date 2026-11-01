@@ -39,3 +39,17 @@ class WideWalletTests(unittest.TestCase):
         self.assertTrue(report['checks']['live_cash'],report['checks'])
         self.assertTrue(report['checks']['balance_sheet'],report['checks'])
         self.assertEqual(report['balances']['cash'],10**18+1)
+
+    def test_large_transfer_to_treasury_is_exact_apart_from_interest_tax(self):
+        # transfer() first settles the sender's accrued interest; that tax is a separate, legitimate treasury credit.
+        from unittest.mock import patch
+        from managers.user_manager import UserManager
+        self.db.users.execute("UPDATE users SET nationality='낙원' WHERE user_id='citizen'")
+        self.db.users.execute("UPDATE users SET cash=? WHERE user_id='citizen'",(3*10**18+2,))
+        before=Decimal(str(self.db.users.get_treasury_balance()))
+        amount=10**18+1
+        with patch.object(UserManager,'_settle_user_interest',return_value=None):
+            ok,message=self.bot.user_mgr.transfer('citizen','국고',str(amount))
+        self.assertTrue(ok,message)
+        self.assertEqual(Decimal(str(self.db.users.get_treasury_balance()))-before,amount)
+        self.assertEqual(Decimal(str(self.db.users.get_user('citizen')['cash'])),3*10**18+2-amount)

@@ -18,6 +18,7 @@ from .corporate_db import CorporateDB
 from .els_db import ELSDB
 from .financial_db import FinancialDB
 from .credit_db import CreditDB
+from .organization_db import OrganizationDB
 
 
 _schema_lock = threading.RLock()
@@ -57,6 +58,7 @@ class DatabaseManager:
             self.els = ELSDB()
             self.financial = FinancialDB()
             self.credit = CreditDB()
+            self.organizations = OrganizationDB()
             self.currency.register_late_amount_fields()
             from .numeric_guards import install as install_numeric_guards
             install_numeric_guards(self.users)
@@ -70,5 +72,5 @@ class DatabaseManager:
     def close(self):
         for database in (self.users, self.assets, self.products, self.companies,
                          self.accounts, self.pot, self.tax, self.system, self.currency,self.lottery,
-                         self.corporate,self.els,self.financial,self.credit):
+                         self.corporate,self.els,self.financial,self.credit,self.organizations):
             database.close()

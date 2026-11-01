@@ -20,7 +20,6 @@ import { CompliancePage } from "./CompliancePage";
 import { BanksPage } from "./BanksPage";
 import { DatabasePage } from "./DatabasePage";
 import { GambleTile } from "./GambleTile";
-import { TransferTile } from "./TransferTile";
 import { EventTimeline } from "./ActivityTiles";
 import { NaturalizationPage } from "./NaturalizationPage";
 import { COMMAND_FORMS, CommandForm } from "./CommandForm";
@@ -465,7 +464,7 @@ export default function App() {
           <LogCard ctx={ctx} log="flows" title="알고리즘 시장 흐름" caption="시세 엔진이 종목마다 정한 자동 목표가 · 최근 100건 (최대 5,000건 보관)" rows={flows} idOf={(item) => item.history_id}
             empty="기록된 흐름이 없습니다. 시세 엔진이 새 목표가를 정하면 여기에 쌓입니다." onChanged={() => void refresh()}
             head={<><th>#</th><th>종목</th><th>방향</th><th className="r">기준가</th><th className="r">목표가</th><th className="r">변동</th><th>시작</th><th>종료</th></>}
-            row={(item) => <><td className="mono">#{item.history_id}{item.active && <span className="tag ok inline">진행 중</span>}</td><td className="mono">{item.asset_code}</td><td><span className={item.change_percent >= 0 ? "tag up" : "tag down"}>{item.change_percent >= 0 ? "상승" : "하락"}</span></td><td className="r mono">{number(item.anchor_price)}</td><td className="r mono">{number(item.target_price)}</td><td className="r mono">{item.change_percent >= 0 ? "+" : ""}{item.change_percent.toFixed(2)}%</td><td>{date(item.start_epoch)}</td><td>{date(item.end_epoch)}</td></>} />
+            row={(item) => <><td className="mono">#{item.history_id}{item.active && <span className="tag ok inline">진행 중</span>}</td><td className="mono">{item.asset_code}</td><td><span className={item.change_percent >= 0 ? "tag up" : "tag down"}>{item.change_percent >= 0 ? "상승" : "하락"}</span></td><td className="r mono">{number(item.anchor_price)}</td><td className="r mono">{number(item.target_price)}</td><td className="r mono">{item.change_percent >= 0 ? "+" : ""}{Number(item.change_percent).toFixed(2)}%</td><td>{date(item.start_epoch)}</td><td>{date(item.end_epoch)}</td></>} />
         </>}
 
         {page === "commands" && <div className="command-layout">
@@ -477,7 +476,7 @@ export default function App() {
             <button type="button" aria-current={commandSection === HELP ? "page" : undefined} onClick={() => openCategory(HELP)}>도움말 ($도움말)</button>
           </nav>
           <div className="command-content">
-          {commandScope === "admin" && <div className="feature-pair"><GambleTile ctx={ctx} /><TransferTile ctx={ctx} /></div>}
+          {commandScope === "admin" && <div className="feature-pair"><GambleTile ctx={ctx} /></div>}
           {commandScope === "admin" && <section className="command-category-head rise"><p className="eyebrow">관리자 명령어</p><h2>{activeCategory || "불러오는 중…"}</h2><p className="cap">{visibleCommands.length}개 명령어 · 고르면 아래에 입력 칸이 열립니다. 시장 사건($사건)은 시장 사건 화면에서 등록합니다.</p>
             <div className="command-list">{visibleCommands.map((item) => <button key={item.name} type="button" className={item.name === command ? "command-chip active" : "command-chip"} aria-pressed={item.name === command} onClick={() => { setCommand(item.name); setCommandArgs(""); }}><b>${item.name}</b><small>{item.usage || "인자 없음"}</small></button>)}</div>
           </section>}

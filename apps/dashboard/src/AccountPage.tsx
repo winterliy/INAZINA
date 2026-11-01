@@ -6,6 +6,7 @@ import { Card, Field, date, errorText, number, type Ctx } from "./common";
 import { IdentityCard } from "./IdentityCard";
 import { AuditHeatmap } from "./ActivityTiles";
 import { LoginHistoryCard, type LoginEvent } from "./LoginHistoryCard";
+import "./AccountWithdrawal.css";
 
 type Financial = { company: string; periods: string[]; report: { period: string; currency: string; places: number; summary: { assets: Money; liabilities: Money; equity: Money }; income: Record<string, Money>; checks: { balance_sheet: boolean } } };
 
@@ -99,5 +100,13 @@ export function AccountPage({ ctx, user, onLogout }: { ctx: Ctx; user: ApiUser; 
     {user.role === "company" && <OwnFinancial say={say} />}
     {admin && <OwnHeatmap userId={user.userId} />}
     {admin && <LoginHistoryCard ctx={ctx} userId={user.userId} onLoaded={setLogins} />}
+    {user.role === "user" && !user.delegatedBy && <details className="account-withdrawal">
+      <summary>회원 탈퇴</summary>
+      <div className="account-withdrawal-panel">
+        <h3>탈퇴를 문의하시겠어요?</h3>
+        <p>계정 탈퇴 전 보유 자산, 예금, 대출과 미처리 거래를 확인해야 합니다. 현재 자동 탈퇴 기능은 제공하지 않으므로, 고객센터에 탈퇴 요청을 보내면 운영진이 정산과 처리 방법을 안내합니다.</p>
+        <a className="account-withdrawal-link" href={appUrl("hts", "/info")}>고객센터에서 탈퇴 요청하기 ↗</a>
+      </div>
+    </details>}
   </>;
 }

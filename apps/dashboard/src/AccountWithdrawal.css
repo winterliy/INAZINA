@@ -1,0 +1,9 @@
+.account-withdrawal { margin-top: 32px; padding-top: 20px; border-top: 1px solid var(--line); }
+.account-withdrawal summary { display: inline-flex; align-items: center; gap: 8px; color: var(--ink2); font-size: 13px; cursor: pointer; list-style: none; }
+.account-withdrawal summary::-webkit-details-marker { display: none; }
+.account-withdrawal summary::after { content: "＋"; font-size: 14px; transition: transform .18s ease; }
+.account-withdrawal[open] summary::after { transform: rotate(45deg); }
+.account-withdrawal-panel { display: grid; gap: 10px; max-width: 620px; margin-top: 14px; padding: 18px; border-radius: 16px; background: var(--surface); }
+.account-withdrawal-panel h3 { font-size: 15px; }
+.account-withdrawal-panel p { color: var(--ink2); font-size: 13px; line-height: 1.6; }
+.account-withdrawal-link { justify-self: start; color: var(--danger); font-size: 13px; font-weight: 600; text-decoration: underline; text-underline-offset: 3px; }
