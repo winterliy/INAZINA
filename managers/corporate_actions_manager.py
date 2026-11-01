@@ -1214,7 +1214,12 @@ class CorporateActionsManager:
                     raise ValueError('이미 거래가 중지된 주식 종류입니다.')
                 if conn.execute("SELECT 1 FROM depositary_receipts WHERE underlying_code=? AND program_status<>'terminated' LIMIT 1", (code,)).fetchone():
                     raise ValueError('미종료 DR 프로그램을 먼저 상환하고 종료해주세요.')
-                if conn.execute('SELECT 1 FROM user_assets WHERE asset_code=? LIMIT 1', (code,)).fetchone():
+                from managers.company_account_manager import CompanyAccounts
+                holdings = conn.execute('SELECT holding_id,user_id FROM user_assets WHERE asset_code=?', (code,)).fetchall()
+                external_holding = next((row for row in holdings
+                    if not CurrencyManager.is_treasury(conn, row['user_id'])
+                    and not CompanyAccounts.own_shares(conn, row['user_id'], code)), None)
+                if external_holding:
                     raise ValueError('보유자가 남아 있어 주식 종류를 폐지할 수 없습니다. 먼저 보유 수량을 정산해주세요.')
                 self._unencumbered(conn, [code], allow_orders=False)
                 if conn.execute("SELECT 1 FROM market_orders WHERE asset_code=? AND status='scheduled' LIMIT 1", (code,)).fetchone():
@@ -1229,6 +1234,9 @@ class CorporateActionsManager:
                     raise ValueError('펀드 구성 종목에서 제거한 뒤 폐지해주세요.')
                 if conn.execute('SELECT 1 FROM market_exchange_index_components WHERE company_code=? LIMIT 1', (code,)).fetchone():
                     raise ValueError('거래소 지수 구성 종목에서 제거한 뒤 폐지해주세요.')
+                for row in holdings:
+                    if CurrencyManager.is_treasury(conn, row['user_id']) or CompanyAccounts.own_shares(conn, row['user_id'], code):
+                        conn.execute('DELETE FROM user_assets WHERE holding_id=?', (row['holding_id'],))
                 conn.execute(
                     "UPDATE company SET status='inactive',total_shares=0,listed_shares=0,"
                     "max_shareholder_id=NULL,dividend_next_epoch=NULL WHERE company_code=?", (code,)

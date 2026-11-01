@@ -188,7 +188,7 @@ def action(conn, payload, actor, now=None):
             equity = Decimal(str(payload.get("economic_interest_per_share", "1")))
         except (InvalidOperation, TypeError, ValueError, OverflowError):
             raise ValueError("주식 수량, 초기 가격과 주당 권리 수치를 확인해주세요.") from None
-        if (shares <= 0 or shares > 9_223_372_036_854_775_807 or price <= 0
+        if (shares <= 0 or shares > 9_007_199_254_740_991 or price <= 0
                 or not votes.is_finite()
                 or not equity.is_finite() or votes < 0 or votes > Decimal("1e12")
                 or equity <= 0 or equity > Decimal("1e12")
@@ -210,6 +210,8 @@ def action(conn, payload, actor, now=None):
         if DatabaseManager.code_locations(conn, code):
             raise ValueError("이미 사용 중인 종목 코드입니다.")
         from database.user_db import TREASURY_USER_ID
+        from managers.asset_cost_manager import AssetCostManager
+        from managers.currency_manager import CurrencyManager
         conn.execute("SAVEPOINT organization_share_issuance_create")
         try:
             conn.execute(
@@ -228,13 +230,27 @@ def action(conn, payload, actor, now=None):
                 "economic_interest_per_share=excluded.economic_interest_per_share,updated_epoch=excluded.updated_epoch",
                 (code, organization_code, class_name, str(votes), str(equity), now),
             )
+            seller = CurrencyManager.exchange_treasury(conn, code)
+            conn.execute("UPDATE company SET max_shareholder_id=? WHERE company_code=?", (seller, code))
+            AssetCostManager.upsert(conn, seller, code, None, shares, price)
+            order_id = conn.execute(
+                "INSERT INTO market_orders(user_id,asset_code,side,limit_price,quantity,remaining_quantity,"
+                "order_kind,status,created_epoch,updated_epoch,quote_currency) "
+                "VALUES (?,?,'sell',?,?,?,'asset','open',?,?,?)",
+                (seller, code, price, shares, shares, now, now, parent[3]),
+            ).lastrowid
+            conn.execute(
+                "INSERT INTO corporate_equity_offerings(asset_code,order_id,quantity,issue_price,recorded_epoch) "
+                "VALUES (?,?,?,?,?)", (code, order_id, shares, price, now),
+            )
             conn.execute("RELEASE SAVEPOINT organization_share_issuance_create")
         except Exception:
             conn.execute("ROLLBACK TO SAVEPOINT organization_share_issuance_create")
             conn.execute("RELEASE SAVEPOINT organization_share_issuance_create")
             raise
         return {"action": kind, "organization_code": organization_code, "legacy_product_code": code,
-                "class_name": class_name, "total_shares": shares, "share_price": price}
+                "class_name": class_name, "total_shares": shares, "share_price": price,
+                "initial_offering_order": order_id}
     if kind == "issuance_rights":
         code = str(payload.get("legacy_product_code") or "")
         class_name = payload.get("class_name")
