@@ -3491,6 +3491,29 @@ def admin_company_share_action(actor, code, payload):
     if not isinstance(payload, dict):
         raise ValueError("요청 내용을 확인해주세요.")
     bot = domain().bot
+    if payload.get("action") == "retire_issuance":
+        if set(payload) != {"action"}:
+            raise ValueError("주식 종류 폐지 요청을 확인해주세요.")
+        success, message = CorporateActionsManager(bot).retire_share_class(actor, code)
+        audit_admin_access(actor, "organization.share_class_retire", {
+            "legacy_product_code": str(code), "success": bool(success),
+        })
+        _read_cache.invalidate()
+        return str(message) if success or str(message).startswith("❌") else "❌ " + str(message)
+    if payload.get("action") == "issue_shares":
+        if set(payload) - {"action", "mode", "quantity", "issuePrice"} or not {"mode", "quantity"} <= set(payload):
+            raise ValueError("신주 발행 유형과 수량을 확인해주세요.")
+        mode = {"paid": "유상", "bonus": "무상"}.get(str(payload["mode"]))
+        if not mode or (mode == "유상" and "issuePrice" not in payload) or (mode == "무상" and "issuePrice" in payload):
+            raise ValueError("유상증자는 발행가를, 무상증자는 발행가 없이 입력해주세요.")
+        success, message = CorporateActionsManager(bot).increase_capital(
+            actor, mode, code, payload["quantity"], payload.get("issuePrice"))
+        audit_admin_access(actor, "organization.share_class_issue", {
+            "legacy_product_code": str(code), "mode": mode,
+            "quantity": payload["quantity"], "success": bool(success),
+        })
+        _read_cache.invalidate()
+        return str(message) if success or str(message).startswith("❌") else "❌ " + str(message)
     if payload.get("action") == "record_resolution":
         if set(payload) != {"action", "ratio", "decision", "meetingReference", "articlesReference", "parValue"}:
             raise ValueError("의결 결과·문서·현재 액면가를 모두 입력해주세요.")

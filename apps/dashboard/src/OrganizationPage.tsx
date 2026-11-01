@@ -5,8 +5,8 @@ import { Card, Field, type Ctx } from "./common";
 import "./OrganizationPage.css";
 
 type Size = "sme" | "mid_market" | "large" | null;
-type Issuance = { legacy_product_code: string; class_name: string; share_class: string; voting_rights_per_share: string; economic_interest_per_share: string; total_shares: string; share_price: string; status: string; dividend_mode: string; dividend_per_share: string; dividend_percent: string; dividend_priority: number; dividend_cycle_seconds: number; dividend_is_active: number; cumulative_dividend: number; liquidation_value_per_share: string; dividend_funding: string };
-type Org = { organization_code: string; name: string; industry: string; purpose: string; ownership_type: string; public_enterprise_type: string; size_override: Size; auto_size: Size; pending_size: Size; size_effective_epoch: number | null; display_size: Size; metrics: { revenue: string | null; assets: string | null; employees: number | null }; issuances: Issuance[] };
+type Issuance = { issuance_id: number; legacy_product_code: string; class_name: string; share_class: string; voting_rights_per_share: string; economic_interest_per_share: string; total_shares: string; share_price: string; status: string; dividend_mode: string; dividend_per_share: string; dividend_percent: string; dividend_priority: number; dividend_cycle_seconds: number; dividend_is_active: number; cumulative_dividend: number; liquidation_value_per_share: string; dividend_funding: string };
+type Org = { organization_code: string; name: string; industry: string; share_price: string | number; purpose: string; ownership_type: string; public_enterprise_type: string; size_override: Size; auto_size: Size; pending_size: Size; size_effective_epoch: number | null; display_size: Size; metrics: { revenue: string | null; assets: string | null; employees: number | null }; issuances: Issuance[] };
 type Group = { group_id: number; name: string; representative_organization_code: string | null; description: string; members: string[] };
 export type OwnershipGraphData = { nodes: { id: string; kind: string; code: string; name: string }[]; edges: { from: string; to: string; equity_percent: string; voting_percent: string; root_equity_percent: string; root_voting_percent: string; depth: number; direct?: boolean; cycle?: boolean }[]; beneficial_owners?: { id: string; name: string; root_equity_percent: string; root_voting_percent: string }[]; truncated?: boolean; root_kind?: "user" | "organization" };
 type Graph = OwnershipGraphData;
@@ -49,6 +49,33 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
     } catch (error) {
       say(error instanceof Error ? error.message : "조직 설정을 저장하지 못했습니다.", true);
       return false;
+    } finally { setSaving(false); }
+  };
+  const retireIssuance = async (issue: Issuance) => {
+    if (!window.confirm(`${issue.class_name} (${issue.legacy_product_code}) 주식 종류를 폐지할까요? 보유자·미체결 주문·계약·미지급 배당이 없어야 하며, 폐지 후 이 거래 코드는 다시 사용할 수 없습니다.`)) return;
+    setSaving(true);
+    try {
+      const result = await api<string>(`/api/admin/companies/${encodeURIComponent(issue.legacy_product_code)}/share-actions`, {
+        method: "POST", body: JSON.stringify({ action: "retire_issuance" }),
+      });
+      say(result, result.startsWith("❌"));
+      await load(selected, includeMinor);
+    } catch (error) {
+      say(error instanceof Error ? error.message : "주식 종류를 폐지하지 못했습니다.", true);
+    } finally { setSaving(false); }
+  };
+  const issueShares = async (issue: Issuance, payload: { mode: "paid" | "bonus"; quantity: string; issuePrice?: string }) => {
+    const modeLabel = payload.mode === "paid" ? "유상증자" : "무상증자";
+    if (!window.confirm(`${issue.class_name} (${issue.legacy_product_code}) ${modeLabel} ${payload.quantity}주를 진행할까요? 다른 주식 종류의 수량과 가격은 변경하지 않습니다.`)) return;
+    setSaving(true);
+    try {
+      const result = await api<string>(`/api/admin/companies/${encodeURIComponent(issue.legacy_product_code)}/share-actions`, {
+        method: "POST", body: JSON.stringify({ action: "issue_shares", ...payload }),
+      });
+      say(result, result.startsWith("❌"));
+      await load(selected, includeMinor);
+    } catch (error) {
+      say(error instanceof Error ? error.message : "신주를 발행하지 못했습니다.", true);
     } finally { setSaving(false); }
   };
 
@@ -103,8 +130,9 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
           <div className="organization-form-row"><Field label="관리자 지정 규모"><select key={organization.organization_code} id="organization-size-override" defaultValue={organization.size_override ?? ""}><option value="">자동 판정 사용</option><option value="sme">중소기업</option><option value="mid_market">중견기업</option><option value="large">대기업</option></select></Field>
             <button type="button" disabled={saving} onClick={() => { const size = (document.getElementById("organization-size-override") as HTMLSelectElement).value || null; void saveAction({ action: "size_override", organization_code: organization.organization_code, size, reason: "관리자 대시보드 지정" }, "기업 규모 지정을 저장했습니다."); }}>규모 적용</button></div>
         </Card>
-        <Card title="주식 발행 종류" caption="경제적 지분과 의결권은 종류별 조건으로 각각 산출합니다.">
-          {organization.issuances.map((issue) => <IssuanceEditor key={issue.legacy_product_code} issue={issue} saving={saving} onSave={(rights) => saveAction({ action: "issuance_rights", legacy_product_code: issue.legacy_product_code, voting_rights_per_share: rights.voting_rights_per_share, economic_interest_per_share: rights.economic_interest_per_share, rights: rights.dividend }, `${issue.class_name} 권리를 저장했습니다.`)} />)}
+        <Card title="주식 발행 종류" caption="새 종류는 별도 거래 코드로 추가되며 기존 보통주 가격·수량은 변경하지 않습니다. 분배·매입 절차는 별도 기업행동으로 처리해야 합니다.">
+          {organization.issuances.map((issue) => <IssuanceEditor key={issue.legacy_product_code} issue={issue} saving={saving} onIssue={(payload) => void issueShares(issue, payload)} onRetire={() => void retireIssuance(issue)} onSave={(rights) => saveAction({ action: "issuance_rights", issuance_id: issue.issuance_id, legacy_product_code: issue.legacy_product_code, class_name: rights.class_name, voting_rights_per_share: rights.voting_rights_per_share, economic_interest_per_share: rights.economic_interest_per_share, rights: rights.dividend }, `${rights.class_name} 권리를 저장했습니다.`)} />)}
+          <NewIssuanceForm key={organization.organization_code} organization={organization} saving={saving} onCreate={(payload) => void saveAction({ action: "issuance_create", ...payload }, `${payload.class_name} 주식 종류를 추가했습니다.`)} />
         </Card>
       </div>
       <Card title="지분·의결권 구조" caption="위쪽으로 직접 주주와 법인 주주의 보유 관계를 펼칩니다. 선에는 경제적 지분과 의결권 비율을 각각 표시합니다.">
@@ -130,7 +158,8 @@ function ClassificationEditor({ organization, saving, onSave }: { organization: 
   </div>;
 }
 
-function IssuanceEditor({ issue, saving, onSave }: { issue: Issuance; saving: boolean; onSave: (value: { voting_rights_per_share: string; economic_interest_per_share: string; dividend: Record<string, unknown> }) => void }) {
+function IssuanceEditor({ issue, saving, onSave, onIssue, onRetire }: { issue: Issuance; saving: boolean; onSave: (value: { class_name: string; voting_rights_per_share: string; economic_interest_per_share: string; dividend: Record<string, unknown> }) => void; onIssue: (payload: { mode: "paid" | "bonus"; quantity: string; issuePrice?: string }) => void; onRetire: () => void }) {
+  const [className, setClassName] = useState(issue.class_name);
   const [votes, setVotes] = useState(issue.voting_rights_per_share);
   const [equity, setEquity] = useState(issue.economic_interest_per_share);
   const [dividendMode, setDividendMode] = useState(issue.dividend_mode);
@@ -142,9 +171,10 @@ function IssuanceEditor({ issue, saving, onSave }: { issue: Issuance; saving: bo
   const [cumulative, setCumulative] = useState(Boolean(issue.cumulative_dividend));
   const [liquidation, setLiquidation] = useState(issue.liquidation_value_per_share);
   const [funding, setFunding] = useState(issue.dividend_funding);
-  return <form className="organization-inset" onSubmit={(event) => {
+  return <>
+  <form className="organization-inset" onSubmit={(event) => {
     event.preventDefault();
-    onSave({ voting_rights_per_share: votes, economic_interest_per_share: equity,
+    onSave({ class_name: className, voting_rights_per_share: votes, economic_interest_per_share: equity,
       dividend: { dividend_mode: dividendMode, dividend_per_share: dividend, dividend_percent: percent,
         dividend_priority: Number(priority), dividend_cycle_seconds: Number(cycle), dividend_is_active: active,
         cumulative_dividend: cumulative, liquidation_value_per_share: liquidation, dividend_funding: funding } });
@@ -152,6 +182,7 @@ function IssuanceEditor({ issue, saving, onSave }: { issue: Issuance; saving: bo
     <strong>{issue.class_name} · {issue.legacy_product_code}</strong>
     <small>발행 {num(issue.total_shares)}주 · 종목코드와 기존 보유·거래 기록은 유지됩니다.</small>
     <div className="form-grid section-gap">
+      <Field label="주식 종류 이름"><input value={className} maxLength={120} onChange={(event) => setClassName(event.target.value)} /></Field>
       <Field label="주당 의결권"><input inputMode="decimal" value={votes} onChange={(event) => setVotes(event.target.value)} /></Field>
       <Field label="주당 경제 지분 계수"><input inputMode="decimal" value={equity} onChange={(event) => setEquity(event.target.value)} /></Field>
       <Field label="배당 방식"><select value={dividendMode} onChange={(event) => setDividendMode(event.target.value)}><option value="fixed">고정액</option><option value="percent">가격 비율</option></select></Field>
@@ -165,7 +196,56 @@ function IssuanceEditor({ issue, saving, onSave }: { issue: Issuance; saving: bo
       <label className="check"><input type="checkbox" checked={cumulative} onChange={(event) => setCumulative(event.target.checked)} />누적 배당</label>
     </div>
     <p className="hint">배당·청산 권리는 이 발행 종류에만 적용됩니다. 미지급 우선배당이 있으면 순위 변경은 제한됩니다.</p>
-    <button className="soft" type="submit" disabled={saving}>주식 권리 저장</button>
+    <div className="actions"><button className="soft" type="submit" disabled={saving}>주식 권리 저장</button>
+      {issue.share_class === "preferred" && <button className="outline" type="button" disabled={saving || issue.status !== "active"} onClick={onRetire}>이 종류 폐지</button>}</div>
+  </form>
+  {issue.status === "active" && <ShareCapitalEditor issue={issue} saving={saving} onIssue={onIssue} />}
+  </>;
+}
+
+function ShareCapitalEditor({ issue, saving, onIssue }: { issue: Issuance; saving: boolean; onIssue: (payload: { mode: "paid" | "bonus"; quantity: string; issuePrice?: string }) => void }) {
+  const [mode, setMode] = useState<"paid" | "bonus">("paid");
+  const [quantity, setQuantity] = useState("");
+  const [price, setPrice] = useState(issue.share_price);
+  return <form className="organization-inset" onSubmit={(event) => {
+    event.preventDefault();
+    onIssue({ mode, quantity, ...(mode === "paid" ? { issuePrice: price } : {}) });
+  }}>
+    <strong>이 종류 신주 발행</strong>
+    <small>유상은 국고 매도 주문으로 판매하고, 무상은 기존 보유 비율에 따라 이 종류 주식만 배정합니다.</small>
+    <div className="form-grid section-gap">
+      <Field label="발행 방식"><select value={mode} onChange={(event) => setMode(event.target.value as "paid" | "bonus")}><option value="paid">유상증자</option><option value="bonus">무상증자</option></select></Field>
+      <Field label="신주 수량"><input required inputMode="numeric" pattern="[0-9]+" value={quantity} onChange={(event) => setQuantity(event.target.value)} /></Field>
+      {mode === "paid" && <Field label="주당 발행가"><input required inputMode="numeric" pattern="[0-9]+" value={price} onChange={(event) => setPrice(event.target.value)} /></Field>}
+    </div>
+    <button className="soft" type="submit" disabled={saving}>이 종류 신주 발행</button>
+  </form>;
+}
+
+function NewIssuanceForm({ organization, saving, onCreate }: { organization: Org; saving: boolean; onCreate: (payload: Record<string, string>) => void }) {
+  const [code, setCode] = useState("");
+  const [className, setClassName] = useState("");
+  const [shares, setShares] = useState("1000000");
+  const [price, setPrice] = useState(String(organization.share_price || "1"));
+  const [votes, setVotes] = useState("0");
+  const [equity, setEquity] = useState("1");
+  return <form className="organization-inset" onSubmit={(event) => {
+    event.preventDefault();
+    onCreate({ organization_code: organization.organization_code, legacy_product_code: code.trim().toUpperCase(),
+      class_name: className.trim(), total_shares: shares, share_price: price,
+      voting_rights_per_share: votes, economic_interest_per_share: equity });
+  }}>
+    <strong>주식 종류 추가</strong>
+    <small>새 거래 코드를 등록합니다. 회사 공통 정보와 기존 주식 수량은 바뀌지 않습니다.</small>
+    <div className="form-grid section-gap">
+      <Field label="거래 코드"><input required maxLength={32} pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,31}" value={code} onChange={(event) => setCode(event.target.value)} /></Field>
+      <Field label="종류 이름"><input required maxLength={120} value={className} onChange={(event) => setClassName(event.target.value)} placeholder="예: Class B" /></Field>
+      <Field label="발행 주식 수"><input required inputMode="numeric" pattern="[0-9]+" value={shares} onChange={(event) => setShares(event.target.value)} /></Field>
+      <Field label="초기 주가"><input required inputMode="numeric" pattern="[0-9]+" value={price} onChange={(event) => setPrice(event.target.value)} /></Field>
+      <Field label="주당 의결권"><input required inputMode="decimal" value={votes} onChange={(event) => setVotes(event.target.value)} /></Field>
+      <Field label="주당 경제 지분"><input required inputMode="decimal" value={equity} onChange={(event) => setEquity(event.target.value)} /></Field>
+    </div>
+    <button className="soft" type="submit" disabled={saving}>종류 추가</button>
   </form>;
 }
 

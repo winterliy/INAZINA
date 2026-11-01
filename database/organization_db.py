@@ -1,8 +1,8 @@
-"""Additive organization and share-class metadata over the legacy company catalog.
+"""Organization entities and their independently identified share issuances.
 
 The existing ``company`` table remains the trading and holdings source of truth
-while this model is introduced incrementally. Legacy product codes are stable
-keys so orders, portfolios and history do not need rewriting in this phase.
+while the market ticker remains on the legacy company catalog. Issuances have
+stable IDs; tickers link to them so orders and historical holdings stay intact.
 """
 from .db_manager import DBManager
 import json
@@ -33,6 +33,20 @@ class OrganizationDB(DBManager):
                 auto_size TEXT CHECK(auto_size IS NULL OR auto_size IN ('sme','mid_market','large')),
                 pending_size TEXT CHECK(pending_size IS NULL OR pending_size IN ('sme','mid_market','large')),
                 size_effective_epoch INTEGER,
+                created_epoch INTEGER NOT NULL DEFAULT (unixepoch()),
+                updated_epoch INTEGER NOT NULL DEFAULT (unixepoch())
+            )
+        """)
+        self.execute("""
+            CREATE TABLE IF NOT EXISTS share_issuances (
+                issuance_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                organization_code TEXT NOT NULL REFERENCES organizations(organization_code),
+                legacy_product_code TEXT UNIQUE,
+                class_name TEXT NOT NULL,
+                share_class TEXT NOT NULL CHECK(share_class IN ('common','preferred')),
+                voting_rights_per_share TEXT NOT NULL DEFAULT '1',
+                economic_interest_per_share TEXT NOT NULL DEFAULT '1',
+                rights_json TEXT NOT NULL DEFAULT '{}',
                 created_epoch INTEGER NOT NULL DEFAULT (unixepoch()),
                 updated_epoch INTEGER NOT NULL DEFAULT (unixepoch())
             )
@@ -85,7 +99,22 @@ class OrganizationDB(DBManager):
         """)
         self.execute("INSERT OR IGNORE INTO organization_size_settings(singleton) VALUES (1)")
         self._import_legacy_companies()
+        self._migrate_share_issuance_identity()
         self._install_company_sync_triggers()
+
+    def _migrate_share_issuance_identity(self):
+        """Give every existing ticker-backed issuance a stable independent ID."""
+        self.execute(
+            "INSERT OR IGNORE INTO share_issuances(organization_code,legacy_product_code,class_name,share_class,"
+            "voting_rights_per_share,economic_interest_per_share,rights_json,created_epoch,updated_epoch) "
+            "SELECT organization_code,legacy_product_code,class_name,share_class,voting_rights_per_share,"
+            "economic_interest_per_share,rights_json,created_epoch,updated_epoch FROM organization_share_issuances"
+        )
+        self.execute(
+            "UPDATE company SET share_issuance_id=(SELECT issuance_id FROM share_issuances s "
+            "WHERE s.legacy_product_code=company.company_code) WHERE share_issuance_id IS NULL "
+            "AND EXISTS(SELECT 1 FROM share_issuances s WHERE s.legacy_product_code=company.company_code)"
+        )
 
     def _import_legacy_companies(self):
         """Create profile/class links idempotently; never rewrite legacy share data."""
@@ -143,6 +172,7 @@ class OrganizationDB(DBManager):
 
     def _install_company_sync_triggers(self):
         """Keep new legacy catalog rows discoverable until trading is migrated."""
+        self.execute("DROP TRIGGER IF EXISTS organization_company_after_update")
         self.execute("""
             CREATE TRIGGER IF NOT EXISTS organization_company_after_insert
             AFTER INSERT ON company BEGIN
@@ -150,15 +180,21 @@ class OrganizationDB(DBManager):
               SELECT NEW.company_code,COALESCE(NEW.name,''),COALESCE(NEW.industry,''),
                 (SELECT nationality FROM market_exchanges WHERE exchange_id=NEW.exchange_id),COALESCE(NEW.status,'active')
               WHERE COALESCE(NEW.share_class,'common')='common';
-              INSERT OR IGNORE INTO organization_share_issuances
+              INSERT OR IGNORE INTO share_issuances
                 (legacy_product_code,organization_code,class_name,share_class,voting_rights_per_share)
               SELECT NEW.company_code,NEW.company_code,COALESCE(NEW.name,NEW.company_code)||' 보통주','common','1'
               WHERE COALESCE(NEW.share_class,'common')='common';
-              INSERT OR IGNORE INTO organization_share_issuances
+              INSERT OR IGNORE INTO share_issuances
                 (legacy_product_code,organization_code,class_name,share_class,voting_rights_per_share)
               SELECT NEW.company_code,NEW.parent_company_code,COALESCE(NEW.name,NEW.company_code)||' 우선주','preferred','1'
               WHERE NEW.share_class='preferred' AND NEW.parent_company_code IS NOT NULL
                 AND EXISTS(SELECT 1 FROM organizations WHERE organization_code=NEW.parent_company_code);
+              UPDATE company SET share_issuance_id=(SELECT issuance_id FROM share_issuances WHERE legacy_product_code=NEW.company_code)
+                WHERE company_code=NEW.company_code AND NEW.share_issuance_id IS NULL;
+              INSERT OR IGNORE INTO organization_share_issuances
+                (legacy_product_code,organization_code,class_name,share_class,voting_rights_per_share)
+              SELECT legacy_product_code,organization_code,class_name,share_class,voting_rights_per_share
+                FROM share_issuances WHERE legacy_product_code=NEW.company_code;
             END
         """)
         self.execute("""
@@ -170,9 +206,7 @@ class OrganizationDB(DBManager):
                 country_code=(SELECT nationality FROM market_exchanges WHERE exchange_id=NEW.exchange_id),
                 status=COALESCE(NEW.status,'active'),updated_epoch=unixepoch()
               WHERE organization_code=NEW.company_code AND COALESCE(NEW.share_class,'common')='common';
-              UPDATE organization_share_issuances SET class_name=COALESCE(NEW.name,NEW.company_code)||
-                CASE WHEN share_class='preferred' THEN ' 우선주' ELSE ' 보통주' END,
-                rights_json=json_object('dividend_priority',NEW.dividend_priority,
+              UPDATE share_issuances SET rights_json=json_object('dividend_priority',NEW.dividend_priority,
                   'cumulative_dividend',NEW.cumulative_dividend,'dividend_mode',NEW.dividend_mode,
                   'dividend_per_share',CAST(NEW.dividend_per_share AS TEXT),
                   'dividend_percent',CAST(NEW.dividend_percent AS TEXT),
@@ -181,7 +215,7 @@ class OrganizationDB(DBManager):
                   'dividend_cycle_seconds',NEW.dividend_cycle_seconds,
                   'dividend_is_active',NEW.dividend_is_active),
                 updated_epoch=unixepoch()
-              WHERE legacy_product_code=NEW.company_code;
+              WHERE issuance_id=NEW.share_issuance_id;
             END
         """)
 
