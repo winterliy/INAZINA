@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatMoney } from "../../shared/money";
 import { api } from "../../shared/api";
-import { Card, Field, type Ctx } from "./common";
+import { Card, Field, type Ctx, BigValue } from "./common";
 import "./OrganizationPage.css";
 
 type Size = "sme" | "mid_market" | "large" | null;
@@ -144,7 +144,7 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
-  return <section className="tile"><p className="tile-label">{label}</p><p className="tile-value">{value}</p></section>;
+  return <section className="tile"><p className="tile-label">{label}</p><BigValue value={value} /></section>;
 }
 
 function ClassificationEditor({ organization, saving, onSave }: { organization: Org; saving: boolean; onSave: (ownership: string, publicType: string) => void }) {

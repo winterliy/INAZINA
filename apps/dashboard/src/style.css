@@ -873,3 +873,22 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
 .theme-d .transfer-amount .btn { flex: none; color: #0a0a0a; background: #ffffff; }
 .theme-d .command-rail button { border-radius: 0 !important; }
 .theme-d .command-rail button[aria-current="page"] { color: var(--accent-ink); background: var(--accent); }
+
+/* 거래 시간: two time fields, then weekdays and holidays on their own full-width rows. */
+.hours-form { grid-template-columns: repeat(auto-fill, minmax(180px, 220px)); align-items: start; }
+.hours-form .span-wide { grid-column: 1 / -1; }
+.hours-form .span-wide textarea { max-width: 420px; }
+.hours-form textarea { width: 100%; min-height: 84px; padding: 10px 12px; border: 0; border-radius: 12px; color: var(--ink); background: var(--field); box-shadow: inset 0 0 0 1px var(--line); outline: none; resize: vertical; line-height: 1.5; }
+.hours-form textarea:focus { box-shadow: inset 0 0 0 2px var(--accent); }
+.hours-form textarea:disabled, .hours-form input:disabled { opacity: .55; cursor: not-allowed; }
+.hours-days { display: grid; gap: 8px; min-width: 0; color: var(--ink2); font-size: 13px; font-weight: 500; }
+.hours-days .segment-tabs { flex-wrap: wrap; justify-self: start; }
+.hours-days .segment-tabs button { min-width: 48px; padding: 0 14px; }
+.hours-form .actions { margin-top: 4px; }
+.hours-form .actions .btn, .hours-form .actions .soft { min-height: 42px; }
+
+/* Long exact amounts: smaller type, wrap only where a <wbr> allows it. */
+.tile-value.long { font-size: 26px; line-height: 1.2; overflow-wrap: normal; word-break: keep-all; }
+
+/* Form buttons: a long label wraps inside its cell instead of being clipped. */
+.form-grid button, .command-form button { white-space: normal; height: auto; min-height: 42px; padding-top: 8px; padding-bottom: 8px; line-height: 1.25; }
