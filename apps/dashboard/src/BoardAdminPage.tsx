@@ -168,16 +168,21 @@ function BoardStructure({ busy, boards, onSubmit }: { busy: boolean; boards: Boa
       })}
     </tbody></table></div>
     <h3 className="sub-head">새 게시판</h3>
-    <form className="form-grid" onSubmit={(event) => { event.preventDefault(); onSubmit("board", "new", { action: "create", boardId: draft.boardId, ...send(draft) }); setDraft(blank); }}>
-      <Field label="게시판 ID" hint="영문 소문자·숫자·_·- (바꿀 수 없음)"><input className="mono" value={draft.boardId} maxLength={32} required onChange={(event) => setDraft({ ...draft, boardId: event.target.value.toLowerCase() })} /></Field>
-      <Field label="이름"><input value={draft.name} maxLength={30} required onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></Field>
-      <Field label="설명" hint="선택"><input value={draft.description} maxLength={200} onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></Field>
-      <Field label="순서" hint="작을수록 앞"><input type="number" value={draft.sortOrder} onChange={(event) => setDraft({ ...draft, sortOrder: event.target.value })} /></Field>
-      <label className="check"><input type="checkbox" checked={draft.adminOnly} onChange={(event) => setDraft({ ...draft, adminOnly: event.target.checked })} />관리자만 쓰기</label>
-      <label className="check"><input type="checkbox" checked={draft.allowAsset} onChange={(event) => setDraft({ ...draft, allowAsset: event.target.checked })} />종목 코드 허용</label>
-      <label className="check"><input type="checkbox" checked={draft.news} onChange={(event) => setDraft({ ...draft, news: event.target.checked })} />뉴스 게시판 (관리자 글에 시장 영향)</label>
-      <label className="check"><input type="checkbox" checked={draft.secret} onChange={(event) => setDraft({ ...draft, secret: event.target.checked })} />비밀게시판 (만든 뒤 허용할 Discord 아이디 추가)</label>
-      <button className="btn primary" disabled={busy || !draft.boardId || !draft.name.trim()}>게시판 만들기</button>
+    <form className="board-create-form" onSubmit={(event) => { event.preventDefault(); onSubmit("board", "new", { action: "create", boardId: draft.boardId, ...send(draft) }); setDraft(blank); }}>
+      <div className="board-create-fields">
+        <Field label="게시판 ID" hint="영문 소문자·숫자·_·- (바꿀 수 없음)"><input className="mono" value={draft.boardId} maxLength={32} required onChange={(event) => setDraft({ ...draft, boardId: event.target.value.toLowerCase() })} /></Field>
+        <Field label="이름"><input value={draft.name} maxLength={30} required onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></Field>
+        <Field label="설명" hint="선택"><input value={draft.description} maxLength={200} onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></Field>
+        <Field label="순서" hint="작을수록 앞"><input type="number" value={draft.sortOrder} onChange={(event) => setDraft({ ...draft, sortOrder: event.target.value })} /></Field>
+      </div>
+      <fieldset className="board-create-options">
+        <legend>게시판 설정</legend>
+        <label className="board-create-option"><input type="checkbox" checked={draft.adminOnly} onChange={(event) => setDraft({ ...draft, adminOnly: event.target.checked })} /><span>관리자만 쓰기</span></label>
+        <label className="board-create-option"><input type="checkbox" checked={draft.allowAsset} onChange={(event) => setDraft({ ...draft, allowAsset: event.target.checked })} /><span>종목 코드 허용</span></label>
+        <label className="board-create-option"><input type="checkbox" checked={draft.news} onChange={(event) => setDraft({ ...draft, news: event.target.checked })} /><span><b>뉴스 게시판</b><small>관리자 글에 시장 영향 설정을 사용할 수 있습니다.</small></span></label>
+        <label className="board-create-option"><input type="checkbox" checked={draft.secret} onChange={(event) => setDraft({ ...draft, secret: event.target.checked })} /><span><b>비밀게시판</b><small>게시판을 만든 뒤 허용할 Discord 아이디를 추가합니다.</small></span></label>
+      </fieldset>
+      <div className="board-create-actions"><button className="btn primary" disabled={busy || !draft.boardId || !draft.name.trim()}>게시판 만들기</button></div>
     </form>
   </Card>;
 }

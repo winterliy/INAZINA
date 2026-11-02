@@ -219,7 +219,9 @@ class OrganizationDB(DBManager):
               dividend_per_share,dividend_percent,dividend_cycle_seconds,dividend_is_active,
               liquidation_value_per_share,dividend_funding ON company BEGIN
               UPDATE organizations SET name=COALESCE(NEW.name,''),industry=COALESCE(NEW.industry,''),
-                country_code=(SELECT nationality FROM market_exchanges WHERE exchange_id=NEW.exchange_id),
+                country_code=CASE WHEN NEW.exchange_id IS NOT OLD.exchange_id
+                  THEN (SELECT nationality FROM market_exchanges WHERE exchange_id=NEW.exchange_id)
+                  ELSE country_code END,
                 status=COALESCE(NEW.status,'active'),updated_epoch=unixepoch()
               WHERE organization_code=NEW.company_code AND COALESCE(NEW.share_class,'common')='common';
               UPDATE share_issuances SET rights_json=json_object('dividend_priority',NEW.dividend_priority,

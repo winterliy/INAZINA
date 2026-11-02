@@ -189,6 +189,8 @@ class SystemDB(DBManager):
         exchange_columns = {row[1] for row in self.execute("PRAGMA table_info(market_exchanges)")}
         if 'nationality' not in exchange_columns:
             self.execute("ALTER TABLE market_exchanges ADD COLUMN nationality TEXT NOT NULL DEFAULT '낙원'")
+        if 'operator_company_code' not in exchange_columns:
+            self.execute("ALTER TABLE market_exchanges ADD COLUMN operator_company_code TEXT")
         # Regular trading hours (functions/trading_hours.py); empty open and close times mean 24 hours.
         for column, ddl in (("open_time", "TEXT NOT NULL DEFAULT ''"), ("close_time", "TEXT NOT NULL DEFAULT ''"),
                             ("trading_days", "TEXT NOT NULL DEFAULT '1,2,3,4,5'"), ("holidays", "TEXT NOT NULL DEFAULT '[]'"),

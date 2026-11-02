@@ -138,8 +138,9 @@ class FinancialManager:
         existing = cls.entity(conn,issuer)
         currency = company.get('quote_currency') or base_currency_code(conn)
         if existing:
-            if existing['currency']!=currency:
-                raise ValueError('회계 원장 개설 후 기준통화를 변경할 수 없습니다.')
+            # Keep the accounting book's opening currency. A company may move
+            # exchanges or adopt a local share currency after the book exists;
+            # new activity is converted into this stable ledger currency.
             return issuer
         precision = conn.execute('SELECT decimal_places FROM currencies WHERE code=?', (currency,)).fetchone()
         places = int(precision[0]) if precision else (0 if currency==base_currency_code(conn) else 6)

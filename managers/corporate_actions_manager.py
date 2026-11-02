@@ -161,10 +161,17 @@ class CorporateActionsManager:
 
     def _source_balance(self, conn, issuer, funding, currency):
         if funding == 'issuer':
-            if currency != base_currency_code(conn):
-                raise ValueError('발행법인 현금 배당은 기준 통화 상품에만 사용할 수 있습니다.')
             row = conn.execute('SELECT balance FROM issuer_cash_accounts WHERE company_code=?', (issuer,)).fetchone()
-            return int(row['balance']) if row else 0
+            if not row:
+                return 0
+            # Issuer cash is a legacy base-currency wallet even when the company's
+            # shares and dividends are denominated in its local currency.
+            balance = int(row['balance'])
+            base = base_currency_code(conn)
+            if str(currency).upper() == str(base).upper():
+                return balance
+            target_units = CurrencyManager.convert(conn, balance * SCALE, base, currency)
+            return target_units // SCALE
         # The listing country's treasury funds treasury dividends and can always pay.
         return self.MAX_MONEY
 
@@ -182,7 +189,14 @@ class CorporateActionsManager:
         if tracked:
             Finance.ensure(conn,issuer)
         if funding == 'issuer':
-            changed = conn.execute('UPDATE issuer_cash_accounts SET balance=balance-? WHERE company_code=? AND balance>=?', (gross, issuer, gross))
+            # The issuer cash subledger is stored in the base currency; book the
+            # dividend in the share currency, then debit its spot-converted value.
+            base = base_currency_code(conn)
+            cash_debit = (gross if str(currency).upper() == str(base).upper() else
+                          Finance.converted(conn, gross, currency, base, 0))
+            changed = conn.execute('UPDATE issuer_cash_accounts SET balance=balance-? '
+                                   'WHERE company_code=? AND balance>=?',
+                                   (cash_debit, issuer, cash_debit))
         else:
             # A treasury can always pay, even into deficit.
             CurrencyManager.treasury_pay(conn, CurrencyManager.exchange_treasury(conn, issuer), currency, gross*SCALE)
@@ -735,9 +749,6 @@ class CorporateActionsManager:
                 with DBManager.admin_scope(actor), self.db.atomic() as conn:
                     self._require(conn, actor)
                     listing = self._dividend_listing(conn, code)
-                    if (listing['table']=='company'
-                            and str(listing.get('quote_currency') or '').upper()!=base_currency_code(conn)):
-                        raise ValueError('외화 표시 법인의 배당은 현지 통화 현금 계정 지원 후 지급할 수 있습니다.')
                     existing = conn.execute('SELECT pay_epoch FROM shareholder_registers WHERE operation_key=?', (key,)).fetchone()
                     pay_epoch = int(existing['pay_epoch']) if existing else now + delay
                     self._close_register(conn, listing, 'special', key, pay_epoch, now, amount, actor)
@@ -750,9 +761,6 @@ class CorporateActionsManager:
             with DBManager.admin_scope(actor), self.db.atomic() as conn:
                 self._require(conn, actor)
                 listing = self._dividend_listing(conn, code)
-                if (listing['table']=='company'
-                        and str(listing.get('quote_currency') or '').upper()!=base_currency_code(conn)):
-                    raise ValueError('외화 표시 법인의 배당은 현지 통화 현금 계정 지원 후 지급할 수 있습니다.')
                 if listing['table'] == 'company':
                     issuer = self._issuer_code(listing)
                     self._settle_claims(conn, issuer, now)

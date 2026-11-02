@@ -298,7 +298,9 @@ class OrganizationManager:
         issue_rows = conn.execute(
             "SELECT s.organization_code,c.company_code,c.name,c.total_shares,s.share_class,"
             "s.voting_rights_per_share,s.economic_interest_per_share FROM share_issuances s "
-            "JOIN company c ON c.share_issuance_id=s.issuance_id WHERE c.status='active' "
+            "JOIN company c ON c.share_issuance_id=s.issuance_id "
+            "WHERE c.status='active' OR EXISTS(SELECT 1 FROM organizations o "
+            "WHERE o.organization_code=s.organization_code AND o.status='active') "
             "ORDER BY s.organization_code,c.company_code"
         ).fetchall()
         issues_by_org = defaultdict(list)

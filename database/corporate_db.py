@@ -411,7 +411,7 @@ class CorporateDB(DBManager):
             ON dividend_payments(user_id,distribution_id)''')
         self.enforce_currency_money(
             'issuer_cash_accounts', ('balance','locked_amount'), 'company_code',
-            "SELECT quote_currency FROM company WHERE company_code=NEW.company_code",
+            'base_currency_code()',
         )
         self.enforce_currency_money(
             'preferred_dividend_claims', ('gross_amount','paid_amount'), 'claim_id',

@@ -141,6 +141,16 @@ input::placeholder { color: var(--ink2); opacity: .75; }
 .kind-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
 .check { display: inline-flex; align-items: center; gap: 6px; color: var(--ink2); font-size: 13px; white-space: nowrap; }
 .check input { width: 16px; height: 16px; accent-color: var(--accent); }
+.board-create-form { display: grid; gap: 18px; max-width: 1120px; }
+.board-create-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; }
+.board-create-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 24px; margin: 0; padding: 14px 0 0; border: 0; border-top: 1px solid var(--line); }
+.board-create-options legend { padding: 0 10px 0 0; color: var(--ink2); font-size: 13px; font-weight: 650; }
+.board-create-option { display: flex !important; align-items: flex-start; gap: 10px !important; min-width: 0; color: var(--ink2); font-size: 13px; font-weight: 500 !important; line-height: 1.45; white-space: normal; }
+.board-create-option input { flex: 0 0 16px; width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--accent); }
+.board-create-option span { display: grid; gap: 3px; min-width: 0; }
+.board-create-option b { color: var(--ink); font-size: 13px; font-weight: 600; }
+.board-create-option small { color: var(--ink2); font-size: 12px; font-weight: 400; line-height: 1.45; }
+.board-create-actions { display: flex; justify-content: flex-start; }
 .mini-select { min-height: 32px; max-width: 150px; padding: 0 10px; border: 0; border-radius: 999px; background: rgba(var(--glass-rgb), .7); font-size: 12px; box-shadow: inset 0 0 0 1px var(--line); }
 .sub-head { margin: 18px 0 10px; font-size: 15px; font-weight: 650; }
 .card-head + .sub-head { margin-top: 4px; }
@@ -208,10 +218,12 @@ td { padding: 12px; vertical-align: middle; }
 
 /* Responsive */
 @media (max-width: 900px) {
+  .board-create-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .command-form { grid-template-columns: 1fr; }
   .span-wide { grid-column: auto; }
 }
 @media (max-width: 560px) {
+  .board-create-fields, .board-create-options { grid-template-columns: minmax(0, 1fr); }
   .card { padding: 18px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
