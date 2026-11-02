@@ -291,7 +291,10 @@ class OrganizationManager:
         accounts = {str(row[1]): str(row[0]) for row in conn.execute(
             "SELECT company_code,user_id FROM company_accounts"
         )}
-        treasury_user_ids = {str(TREASURY_USER_ID)} | {str(row[0]) for row in conn.execute("SELECT user_id FROM country_treasuries")}
+        # National accounts are real shareholders in the ownership graph. Only
+        # the system treasury is excluded; hiding every country_treasuries user
+        # made state-owned companies appear ownerless (or disappear from graphs).
+        treasury_user_ids = {str(TREASURY_USER_ID)}
         company_rows = {str(row[0]): str(row[1]) for row in conn.execute(
             "SELECT organization_code,name FROM organizations"
         )}
