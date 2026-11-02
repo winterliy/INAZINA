@@ -112,7 +112,11 @@ class CurrencyDB(DBManager):
             WHEN COALESCE((SELECT decimal_places FROM currencies
                            WHERE code=NEW.base_currency_code),-1)<>0
             BEGIN SELECT RAISE(ABORT,'기본 통화는 현재 정수 잔액 경로를 위해 0자리 통화여야 합니다.'); END""")
-        self.execute("UPDATE currencies SET decimal_places=0 WHERE code=base_currency_code()")
+        # Avoid firing currency precision rescale triggers on every service boot.
+        # Several wallet rows can exceed SQLite's native integer range, so even a
+        # no-op precision UPDATE can rewrite cash_minor and then mirror it to cash.
+        self.execute("UPDATE currencies SET decimal_places=0 "
+                     "WHERE code=base_currency_code() AND COALESCE(decimal_places,-1)<>0")
         self.execute("""CREATE TABLE IF NOT EXISTS country_macro_indicators (
             nationality TEXT PRIMARY KEY REFERENCES country_currencies(nationality) ON DELETE CASCADE,
             inflation_percent REAL NOT NULL DEFAULT 2 CHECK(inflation_percent BETWEEN -100 AND 1000),
@@ -1751,9 +1755,9 @@ class CurrencyDB(DBManager):
             "(SELECT quote_currency FROM investment WHERE product_code=NEW.underlying_code),"
             "(SELECT quote_currency FROM treasury_bond_products WHERE product_code=NEW.underlying_code),base_currency_code())"
         )
-        corporate_currency = (
-            "COALESCE((SELECT quote_currency FROM company WHERE company_code=NEW.company_code),base_currency_code())"
-        )
+        # Company issuer cash and its transfer snapshots mirror users.cash,
+        # which remains denominated in the system base currency.
+        corporate_currency = "base_currency_code()"
         specifications = (
             ("lottery_tickets", ("price",), "ticket_id", "'NWX'"),
             ("lottery_purchases", ("price",), "request_id", "'NWX'"),
@@ -1762,7 +1766,7 @@ class CurrencyDB(DBManager):
             ("lottery_rounds", ("reserve_total",), "round_id", "'NWX'"),
             ("issuer_cash_accounts", ("balance", "locked_amount"), "company_code", corporate_currency),
             ("issuer_cash_transfers", ("old_balance", "new_balance", "delta"), "transfer_id",
-             "SELECT quote_currency FROM company WHERE company_code=NEW.company_code"),
+             "base_currency_code()"),
             ("dividend_distributions", ("reference_price", "gross_amount", "entitlement_amount",
                                          "deferred_amount"), "distribution_id", "NEW.quote_currency"),
             ("dividend_payments", ("gross_amount", "tax_amount"), "payment_id", "NEW.quote_currency"),
@@ -1885,7 +1889,8 @@ class CurrencyDB(DBManager):
         currency's minor unit (e.g. cents) at once, so float error never accumulates.
         """
         columns = {row[1] for row in self.execute("PRAGMA table_info(users)")}
-        if "cash_minor" not in columns:
+        added_cash_minor = "cash_minor" not in columns
+        if added_cash_minor:
             self.execute("ALTER TABLE users ADD COLUMN cash_minor INTEGER NOT NULL DEFAULT 0")
         factor = self.FACTOR.format(places=self.PLACES.format(who="NEW.nationality"))
         mirror = (f"CASE WHEN NEW.cash_minor % {factor} = 0 THEN NEW.cash_minor / {factor} "
@@ -1906,23 +1911,32 @@ class CurrencyDB(DBManager):
         # A citizen's minor unit changes with a currency's decimal places or a nationality.
         self.execute("DROP TRIGGER IF EXISTS trg_currency_places_rescale")
         self.execute("DROP TRIGGER IF EXISTS trg_users_nationality_rescale")
+        currency_precision_factor = self.FACTOR.format(
+            places=self.PLACES.format(who="users.nationality"))
         self.execute(f"""CREATE TRIGGER trg_currency_places_rescale AFTER UPDATE OF decimal_places ON currencies
-            BEGIN UPDATE users SET cash_minor=CAST(ROUND(COALESCE(cash,0) *
-                    {self.FACTOR.format(places=self.PLACES.format(who="users.nationality"))}) AS INTEGER)
-                  WHERE nationality IN (SELECT nationality FROM country_currencies WHERE currency_code=NEW.code); END""")
+            WHEN NEW.decimal_places IS NOT OLD.decimal_places
+            BEGIN UPDATE users SET cash_minor=CAST(ROUND(COALESCE(users.cash,0) *
+                    {currency_precision_factor}) AS INTEGER)
+                  WHERE users.nationality IN (SELECT nationality FROM country_currencies WHERE currency_code=NEW.code); END""")
         self.execute(f"""CREATE TRIGGER trg_users_nationality_rescale AFTER UPDATE OF nationality ON users
             WHEN NEW.nationality IS NOT OLD.nationality
             BEGIN UPDATE users SET cash_minor=CAST(ROUND(COALESCE(NEW.cash,0) * {factor}) AS INTEGER)
                   WHERE user_id=NEW.user_id; END""")
-        rescale = (f"UPDATE users SET cash_minor=CAST(ROUND(COALESCE(cash,0) * "
-                   f"{self.FACTOR.format(places=self.PLACES.format(who='users.nationality'))}) AS INTEGER) "
-                   "WHERE nationality=NEW.nationality;")
+        user_precision_factor = self.FACTOR.format(
+            places=self.PLACES.format(who="users.nationality"))
+        rescale = (f"UPDATE users SET cash_minor=CAST(ROUND(COALESCE(users.cash,0) * "
+                   f"{user_precision_factor}) AS INTEGER) "
+                   "WHERE users.nationality=NEW.nationality;")
         for name, event in (("trg_country_currency_insert", "AFTER INSERT ON country_currencies"),
                             ("trg_country_currency_update", "AFTER UPDATE OF currency_code ON country_currencies")):
             self.execute(f"DROP TRIGGER IF EXISTS {name}")
             self.execute(f"CREATE TRIGGER {name} {event} BEGIN {rescale} END")
-        self.execute(f"UPDATE users SET cash_minor=CAST(ROUND(COALESCE(cash,0) * "
-                     f"{self.FACTOR.format(places=self.PLACES.format(who='users.nationality'))}) AS INTEGER)")
+        # Backfill once when introducing the integer mirror. Rewriting it on every
+        # boot can saturate SQLite's signed 64-bit INTEGER for very large balances,
+        # then the mirror trigger would overwrite the original cash amount.
+        if added_cash_minor:
+            self.execute(f"UPDATE users SET cash_minor=CAST(ROUND(COALESCE(users.cash,0) * "
+                         f"{currency_precision_factor}) AS INTEGER)")
 
     def _ensure_money_snaps(self):
         """Money held in other tables is kept at its currency's minor unit (no float drift)."""

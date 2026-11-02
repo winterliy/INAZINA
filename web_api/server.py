@@ -1636,7 +1636,7 @@ def manage_fund(actor, code, payload=None):
 
 
 def admin_users(search, kind="people"):
-    """People and country accounts (``kind='people'``) or company capital accounts (``kind='company'``)."""
+    """Citizens, excluding nation accounts, or company capital accounts."""
     term = f"%{search.strip()}%"
     with connect_readonly() as connection:
         has_companies = _table_exists(connection, "company_accounts")
@@ -1649,7 +1649,10 @@ def admin_users(search, kind="people"):
             + ("(SELECT a.company_code FROM company_accounts a WHERE a.user_id=users.user_id)" if has_companies else "NULL")
             + " AS company_code FROM users WHERE user_id<>? AND (user_id LIKE ? OR nickname LIKE ?) "
             f"AND {'' if kind == 'company' else 'NOT '}{company} "
-            "ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END,nickname LIMIT 100",
+            + ("" if kind == "company" else
+               "AND COALESCE(users.role,'user')<>'nation' "
+               "AND NOT EXISTS(SELECT 1 FROM country_treasuries t WHERE t.user_id=users.user_id) ")
+            + "ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END,nickname LIMIT 100",
             (TREASURY_USER_ID, term, term),
         ).fetchall()
     return [{"userId": row["user_id"], "nickname": row["nickname"],
@@ -2595,8 +2598,9 @@ def _company_voting_distributions(connection, root_code):
         "JOIN share_issuances s ON s.issuance_id=c.share_issuance_id"):
         organization_for_account[str(row[0])] = str(row[1])
         issuer_account_for_org.setdefault(str(row[1]), str(row[0]))
-    treasury_ids = {str(TREASURY_USER_ID)} | {str(row[0]) for row in connection.execute(
-        "SELECT user_id FROM country_treasuries")}
+    # Country accounts are real shareholders; only the internal system treasury
+    # is excluded from voting and beneficial-owner distributions.
+    treasury_ids = {str(TREASURY_USER_ID)}
     names = {str(row[0]): str(row[1] or row[0]) for row in connection.execute(
         "SELECT user_id,nickname FROM users")}
     cache = {}
@@ -3228,6 +3232,34 @@ def admin_exchanges():
             row["products"] = sum(connection.execute(
                 f"SELECT COUNT(*) FROM {table} WHERE exchange_id=? AND status='active'", (exchange,)).fetchone()[0]
                 for table, _key in EXCHANGE_PRODUCT_TABLES if _table_exists(connection, table))
+            operator_code = row.get("operator_company_code")
+            operator = connection.execute(
+                "SELECT COALESCE(c.name,o.name) AS name FROM organizations o "
+                "LEFT JOIN company c ON c.company_code=o.organization_code "
+                "WHERE o.organization_code=?", (operator_code,),
+            ).fetchone() if operator_code else None
+            row["operator_name"] = operator["name"] if operator else None
+            row["listings"] = []
+            if _table_exists(connection, "company"):
+                row["listings"].extend(dict(item) for item in connection.execute(
+                    "SELECT company_code AS code,name,'주식' AS kind,share_class,quote_currency,status "
+                    "FROM company WHERE exchange_id=? AND status='active' "
+                    "ORDER BY company_code,share_class", (exchange,)))
+            if _table_exists(connection, "market_assets"):
+                row["listings"].extend(dict(item) for item in connection.execute(
+                    "SELECT code,name,type AS kind,NULL AS share_class,quote_currency,status "
+                    "FROM market_assets WHERE exchange_id=? AND status='active' "
+                    "ORDER BY code", (exchange,)))
+            if _table_exists(connection, "investment"):
+                row["listings"].extend(dict(item) for item in connection.execute(
+                    "SELECT product_code AS code,name,product_type AS kind,NULL AS share_class,quote_currency,status "
+                    "FROM investment WHERE exchange_id=? AND status='active' "
+                    "ORDER BY product_code", (exchange,)))
+            if _table_exists(connection, "treasury_bond_products"):
+                row["listings"].extend(dict(item) for item in connection.execute(
+                    "SELECT product_code AS code,name,'국채' AS kind,NULL AS share_class,quote_currency,status "
+                    "FROM treasury_bond_products WHERE exchange_id=? AND status='active' "
+                    "ORDER BY product_code", (exchange,)))
             row["components"] = [dict(item) for item in connection.execute(
                 "SELECT i.company_code,i.previous_price,i.total_shares,c.name FROM market_exchange_index_components i "
                 "LEFT JOIN company c ON c.company_code=i.company_code WHERE i.exchange_id=? ORDER BY i.company_code",

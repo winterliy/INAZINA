@@ -340,11 +340,13 @@ class CompanyAccounts:
     @staticmethod
     def summary(conn):
         rows = conn.execute(
-            "SELECT c.company_code,c.name,c.exchange_id,c.total_shares,c.listed_shares,c.share_price,c.capital,c.par_value_minor_units,c.quote_currency,"
+            "SELECT c.company_code,c.name,c.exchange_id,c.status,c.total_shares,c.listed_shares,c.share_price,c.capital,c.par_value_minor_units,c.quote_currency,"
             "COALESCE(i.balance,0) cash,COALESCE(i.locked_amount,0) locked,a.user_id account "
             "FROM company c LEFT JOIN issuer_cash_accounts i ON i.company_code=c.company_code "
             "LEFT JOIN company_accounts a ON a.company_code=c.company_code "
-            "WHERE c.status='active' AND COALESCE(c.share_class,'common')='common' ORDER BY c.company_code").fetchall()
+            "WHERE (c.status='active' OR EXISTS(SELECT 1 FROM organizations o "
+            "WHERE o.organization_code=c.company_code AND o.status='active')) "
+            "AND COALESCE(c.share_class,'common')='common' ORDER BY c.company_code").fetchall()
         from database.user_db import TREASURY_USER_ID
         from decimal import Decimal, InvalidOperation
         from functions.money import base_currency_code, currency_precision, round_money
@@ -373,18 +375,22 @@ class CompanyAccounts:
             "SELECT organization_code,name FROM organizations")}
         user_names = {str(row[0]): str(row[1] or row[0]) for row in conn.execute(
             "SELECT user_id,nickname FROM users")}
-        treasury_ids = {str(TREASURY_USER_ID)} | {str(row[0]) for row in conn.execute(
-            "SELECT user_id FROM country_treasuries")}
+        # National accounts are real shareholders, unlike the internal system treasury.
+        treasury_ids = {str(TREASURY_USER_ID)}
         issues = conn.execute(
             "SELECT s.organization_code,c.company_code,c.total_shares,s.voting_rights_per_share,s.economic_interest_per_share "
             "FROM share_issuances s JOIN company c ON c.share_issuance_id=s.issuance_id "
-            "WHERE c.status='active' ORDER BY s.organization_code,c.company_code").fetchall()
+            "WHERE c.status='active' OR EXISTS(SELECT 1 FROM organizations o "
+            "WHERE o.organization_code=s.organization_code AND o.status='active') "
+            "ORDER BY s.organization_code,c.company_code").fetchall()
         holdings_by_issue = {}
         for holding in conn.execute(
             "SELECT u.asset_code,u.user_id,SUM(u.quantity) quantity FROM user_assets u "
             "JOIN company c ON c.company_code=u.asset_code "
             "JOIN share_issuances s ON s.issuance_id=c.share_issuance_id "
-            "WHERE c.status='active' GROUP BY u.asset_code,u.user_id"):
+            "WHERE c.status='active' OR EXISTS(SELECT 1 FROM organizations o "
+            "WHERE o.organization_code=s.organization_code AND o.status='active') "
+            "GROUP BY u.asset_code,u.user_id"):
             holdings_by_issue.setdefault(str(holding[0]), []).append((str(holding[1]), Decimal(str(holding[2] or 0))))
         parents_by_org = {}
         shares_by_holder = {}

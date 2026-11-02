@@ -31,10 +31,11 @@ class CurrencyManager:
 
     @staticmethod
     def treasury_id(conn, nationality, user_id=None):
-        """Return the dedicated treasury account for one federation country.
+        """Return the single national account used for treasury and country work.
 
-        The treasury is also the country's own account: its id is numeric (given by
-        $국가생성, else the next free 9xxxxxxx) and it is the country's 나루 login ID.
+        This is not a separate treasury-only wallet. Its numeric id (given by
+        $국가생성, else the next free 9xxxxxxx) is also the country's account and
+        나루 login ID.
         """
         nationality = str(nationality or '낙원')
         row = conn.execute('SELECT user_id FROM country_treasuries WHERE nationality=?',
@@ -56,7 +57,7 @@ class CurrencyManager:
             raise ValueError('이미 사용 중인 ID입니다. 다른 국가 ID를 입력해주세요.')
         conn.execute("INSERT OR IGNORE INTO users(user_id,nickname,nationality,cash,status,role) "
                      "VALUES (?,?,?,0,'active','nation')",
-                     (user_id, f'{nationality} 국고', nationality))
+                     (user_id, nationality, nationality))
         conn.execute('INSERT INTO country_treasuries(nationality,user_id) VALUES (?,?)',
                      (nationality, user_id))
         return user_id

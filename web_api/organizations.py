@@ -88,7 +88,7 @@ def directory(conn, organization_code=None, now=None, min_percent=1):
             "c.dividend_cycle_seconds,c.dividend_is_active,c.cumulative_dividend,"
             "c.liquidation_value_per_share,c.dividend_funding "
             f"FROM share_issuances s JOIN company c ON c.share_issuance_id=s.issuance_id "
-            f"WHERE s.organization_code IN ({placeholders}) AND c.status='active' ORDER BY s.organization_code,c.company_code",
+            f"WHERE s.organization_code IN ({placeholders}) ORDER BY s.organization_code,c.company_code",
             batch,
         ):
             issues_by_org.setdefault(str(issue[0]), []).append(dict(issue))

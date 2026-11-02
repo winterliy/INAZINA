@@ -37,7 +37,7 @@ export function UsersPage({ ctx, currentUserId }: { ctx: Ctx; currentUserId: str
   const loadCountries = useCallback(async () => setCountries((await api<{ countries: Country[] }>("/api/admin/countries")).countries), []);
   useEffect(() => { loadCountries().catch((cause) => ctx.say(cause instanceof Error ? cause.message : "국가를 불러오지 못했습니다.", true)); }, [loadCountries]);
   return <>
-    <Tabs label="사용자 종류" value={tab} onChange={setTab} options={[["users", "사용자"], ["companies", "법인"], ["countries", "국가 · 국가 계정", countries.length]]} />
+    <Tabs label="사용자 종류" value={tab} onChange={setTab} options={[["users", "사용자"], ["companies", "법인"], ["countries", "국가"]]} />
     {tab === "countries" ? <CountryTab ctx={ctx} countries={countries} reload={loadCountries} />
       : <UserTab key={tab} ctx={ctx} countries={countries} currentUserId={currentUserId} companies={tab === "companies"} />}
   </>;
@@ -53,7 +53,10 @@ function UserTab({ ctx, countries, currentUserId, companies }: { ctx: Ctx; count
   const [nationality, setNationality] = useState("");
   const [creditReason, setCreditReason] = useState("");
 
-  const loadList = useCallback(async () => setCitizens((await api<{ users: Citizen[] }>(`/api/admin/users?search=${encodeURIComponent(query)}${companies ? "&kind=company" : ""}`)).users), [query, companies]);
+  const loadList = useCallback(async () => {
+    const { users } = await api<{ users: Citizen[] }>(`/api/admin/users?search=${encodeURIComponent(query)}${companies ? "&kind=company" : ""}`);
+    setCitizens(companies ? users : users.filter((citizen) => citizen.accountType !== "country" && citizen.role !== "nation"));
+  }, [query, companies]);
   useEffect(() => { loadList().catch((cause) => say(cause instanceof Error ? cause.message : "사용자를 불러오지 못했습니다.", true)); }, [loadList]);
 
   async function open(userId: string) {
@@ -335,13 +338,13 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
           </tbody></table>{!(country.rateHistoryEvents ?? []).length && <p className="empty">금리 변경 증적이 없습니다.</p>}</div>
           <p className="hint">최근 50건의 조회용 금리 이력 추가·정정·삭제 이벤트입니다. 증적은 읽기 전용입니다.</p>
         </section>
-        <form className="form-grid section-gap" onSubmit={(event) => { event.preventDefault(); act(country.nationality, { action: "treasury", ...treasury }, `${country.nationality} 국고 현금을 ${treasury.amount}(으)로 설정할까요?`); }}>
-          <Field label="국고 현금" hint={`현재 ${country.treasuryCash === null ? "—" : number(country.treasuryCash)} · 설정값`}><input className="mono" value={treasury.amount} required onChange={(event) => setTreasury({ ...treasury, amount: event.target.value })} /></Field>
+        <form className="form-grid section-gap" onSubmit={(event) => { event.preventDefault(); act(country.nationality, { action: "treasury", ...treasury }, `${country.nationality} 국가 계정 현금을 ${treasury.amount}(으)로 설정할까요?`); }}>
+          <Field label="국가 계정 현금 · 국고" hint={`현재 ${country.treasuryCash === null ? "—" : number(country.treasuryCash)} · 설정값`}><input className="mono" value={treasury.amount} required onChange={(event) => setTreasury({ ...treasury, amount: event.target.value })} /></Field>
           <Field label="사유" wide><input value={treasury.reason} onChange={(event) => setTreasury({ ...treasury, reason: event.target.value })} /></Field>
-          <button className="btn primary" disabled={busy}>국고 저장</button>
+          <button className="btn primary" disabled={busy}>국가 계정 저장</button>
         </form>
       </Card>
-      <Card title="국가 계정 (나루 로그인)" caption={country.account ? `국가 ID ${country.treasuryId}로 로그인하면 국고로 거래합니다. 상태 ${country.account.status} · 권한 ${country.account.role}` : "아직 국가 계정이 없습니다. 비밀번호를 정하면 국가 ID로 나루에 로그인할 수 있습니다."}>
+      <Card title="국가 계정 · 국고와 국가 업무 · 나루 로그인" caption={country.account ? `국가 계정 ID ${country.treasuryId}로 로그인하면 같은 계정에서 국고와 국가 업무를 처리합니다. 상태 ${country.account.status} · 권한 ${country.account.role}` : "국가 생성 시 만들어진 국가 계정 하나를 국고와 국가 업무에 함께 사용합니다. 비밀번호를 설정하면 나루에도 로그인할 수 있습니다."}>
         <div className="form-grid">
           <Field label={country.account ? "새 비밀번호" : "비밀번호"} hint="영문+숫자 12자 이상"><input type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} /></Field>
           {country.account ? <>
@@ -350,7 +353,7 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
             <button className="soft" type="button" disabled={busy} onClick={() => countryLogin("hts_id")}>나루 ID 저장</button>
             <button className="soft" type="button" disabled={busy} onClick={() => countryLogin("logout")}>모든 로그인 만료</button>
             <button className="soft danger" type="button" disabled={busy} onClick={() => countryLogin("remove")}>웹 로그인 삭제</button>
-          </> : <button className="btn primary" type="button" disabled={busy || !password} onClick={() => countryLogin("create")}>국가 계정 만들기</button>}
+          </> : <button className="btn primary" type="button" disabled={busy || !password} onClick={() => countryLogin("create")}>국가 계정 로그인 설정</button>}
         </div>
       </Card>
   </>;
@@ -358,7 +361,7 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
   if (country) return <>
     <div className="subpage-bar">
       <button className="soft" type="button" onClick={() => setSelected("")}>← 국가 목록으로 돌아가기</button>
-      <p><b>{country.nationality}</b> <span className="mono">국가 ID {country.treasuryId ?? "—"} · 국가 계정 ID {country.account?.hts_id ?? "—"}</span></p>
+      <p><b>{country.nationality}</b> <span className="mono">국가 계정 ID {country.treasuryId ?? "—"} · 나루 ID {country.account?.hts_id ?? "—"}</span></p>
     </div>
     {countryPanel}
   </>;
@@ -366,7 +369,7 @@ function CountryTab({ ctx, countries, reload }: { ctx: Ctx; countries: Country[]
   return <>
     <Card title="국가 만들기" caption="$국가생성과 같습니다. 통화는 먼저 금융 상품 탭에서 통화(currency)로 만들어야 합니다.">
       <form className="form-grid" onSubmit={(event) => { event.preventDefault(); act(draft.nationality.trim(), { action: "create", ...draft }, `${draft.nationality} 국가를 만들까요?`); }}>
-        <Field label="국가 ID (숫자)" hint="국고 계정 ID이자 나루 로그인 ID"><input className="mono" inputMode="numeric" pattern="[0-9]+" value={draft.countryId} required onChange={(event) => setDraft({ ...draft, countryId: event.target.value.trim() })} /></Field>
+        <Field label="국가 계정 ID (숫자)" hint="국고·국가 업무·나루 로그인이 함께 쓰는 계정 ID"><input className="mono" inputMode="numeric" pattern="[0-9]+" value={draft.countryId} required onChange={(event) => setDraft({ ...draft, countryId: event.target.value.trim() })} /></Field>
         <Field label="국가명"><input value={draft.nationality} required onChange={(event) => setDraft({ ...draft, nationality: event.target.value })} /></Field>
         <Field label="통화 코드"><input className="mono" value={draft.currencyCode} required onChange={(event) => setDraft({ ...draft, currencyCode: event.target.value.toUpperCase() })} /></Field>
         <Field label="기준금리 %" hint="선택 · 기본 3"><input className="mono" value={draft.baseRate} onChange={(event) => setDraft({ ...draft, baseRate: event.target.value })} /></Field>

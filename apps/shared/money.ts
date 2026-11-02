@@ -75,8 +75,16 @@ export function formatMoney(value: Money, _digits = 6): string {
     const full = exactMoney(value), [whole, fraction] = full.split('.');
     const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (fraction ? '.' + fraction : '');
     if (whole.replace('-', '').length < 17) return grouped;
-    const magnitude = exactMoney(minorMoney(whole, 16).replace(/(\.\d{4})\d+$/, '$1'));
-    return `${magnitude}경 (${grouped})`;
+    const units = [[24, '자'], [20, '해'], [16, '경']] as const;
+    const absolute = BigInt(whole.replace('-', ''));
+    const [power, label] = units.find(([exponent]) => absolute >= 10n ** BigInt(exponent)) ?? units[2];
+    const scale = 10n ** BigInt(power);
+    const scaled = absolute * 10_000n / scale;
+    const magnitudeWhole = (scaled / 10_000n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    const magnitudeFraction = (scaled % 10_000n).toString().padStart(4, '0').replace(/0+$/, '');
+    const sign = whole.startsWith('-') ? '-' : '';
+    const magnitude = `${sign}${magnitudeWhole}${magnitudeFraction ? `.${magnitudeFraction}` : ''}`;
+    return `${magnitude}${label} (${grouped})`;
   } catch { return String(value ?? '—'); }
 }
 
