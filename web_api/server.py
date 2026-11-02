@@ -2598,8 +2598,9 @@ def _company_voting_distributions(connection, root_code):
         "JOIN share_issuances s ON s.issuance_id=c.share_issuance_id"):
         organization_for_account[str(row[0])] = str(row[1])
         issuer_account_for_org.setdefault(str(row[1]), str(row[0]))
-    treasury_ids = {str(TREASURY_USER_ID)} | {str(row[0]) for row in connection.execute(
-        "SELECT user_id FROM country_treasuries")}
+    # Country accounts are real shareholders; only the internal system treasury
+    # is excluded from voting and beneficial-owner distributions.
+    treasury_ids = {str(TREASURY_USER_ID)}
     names = {str(row[0]): str(row[1] or row[0]) for row in connection.execute(
         "SELECT user_id,nickname FROM users")}
     cache = {}

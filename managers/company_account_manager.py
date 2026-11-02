@@ -375,8 +375,8 @@ class CompanyAccounts:
             "SELECT organization_code,name FROM organizations")}
         user_names = {str(row[0]): str(row[1] or row[0]) for row in conn.execute(
             "SELECT user_id,nickname FROM users")}
-        treasury_ids = {str(TREASURY_USER_ID)} | {str(row[0]) for row in conn.execute(
-            "SELECT user_id FROM country_treasuries")}
+        # National accounts are real shareholders, unlike the internal system treasury.
+        treasury_ids = {str(TREASURY_USER_ID)}
         issues = conn.execute(
             "SELECT s.organization_code,c.company_code,c.total_shares,s.voting_rights_per_share,s.economic_interest_per_share "
             "FROM share_issuances s JOIN company c ON c.share_issuance_id=s.issuance_id "
