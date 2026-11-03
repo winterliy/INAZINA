@@ -3544,6 +3544,10 @@ def admin_bank_create(actor, payload):
         connection.execute("INSERT INTO financial_institutions(issuer,nationality,equity_capital,institution_id) VALUES (?,?,?,?)",
                            (issuer, nationality, capital, bank_id or None))
         bank_id = connection.execute("SELECT institution_id FROM financial_institutions WHERE issuer=?", (issuer,)).fetchone()[0]
+        from database.db_manager import DBManager
+        conflicts = DBManager.code_locations(LegacyNames(connection), bank_id)
+        if conflicts:
+            raise ValueError(f"은행 ID가 다른 법인 또는 상품에서 사용 중입니다 ({', '.join(conflicts)}). 다른 ID를 입력해주세요.")
         from managers.bank_companies import ensure
         company_code = ensure(LegacyNames(connection), issuer)
         _audit_db(connection, actor, "bank.create", {"id": bank_id, "issuer": issuer, "nationality": nationality,
