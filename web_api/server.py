@@ -325,6 +325,7 @@ FEEDBACK_KINDS = {"contact": "문의", "report": "신고"}
 FEEDBACK_STATUSES = {"new", "read", "done"}
 _board_ready = False
 _board_ip_purged = 0.0
+_board_init_lock = threading.Lock()
 # Board attachments: the API server writes the files here, this service tracks them.
 BOARD_FILES_DIR = Path(os.environ.get("INAZINA_BOARD_FILES_DIR", ROOT / "database" / "board_files")).resolve()
 
@@ -339,8 +340,26 @@ def board_db():
     global _board_ready, _board_ip_purged
     with connect_db(timeout=5) as connection:
         if not _board_ready:
-            board.ensure_tables(connection)
-            _board_ready = True
+            # Requests and the scheduled-news worker can reach this function at
+            # once. Serialize the first schema migration, and retry transient
+            # SQLite contention from the bot process sharing the same database.
+            with _board_init_lock:
+                if not _board_ready:
+                    for attempt in range(4):
+                        try:
+                            board.ensure_tables(connection)
+                            _board_ready = True
+                            break
+                        except sqlite3.OperationalError as exc:
+                            connection.rollback()
+                            locked = "locked" in str(exc).lower() or "busy" in str(exc).lower()
+                            if not locked or attempt == 3:
+                                raise
+                            delay = 0.25 * (2 ** attempt)
+                            logging.getLogger("inazina.board").warning(
+                                "board schema initialization is waiting for SQLite (%d/4)", attempt + 1
+                            )
+                            time.sleep(delay)
         if time.time() - _board_ip_purged >= 3600:
             board.purge_expired_ips(connection)
             board.cleanup_files(connection, BOARD_FILES_DIR)
