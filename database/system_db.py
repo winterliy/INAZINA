@@ -191,6 +191,11 @@ class SystemDB(DBManager):
             self.execute("ALTER TABLE market_exchanges ADD COLUMN nationality TEXT NOT NULL DEFAULT '낙원'")
         if 'operator_company_code' not in exchange_columns:
             self.execute("ALTER TABLE market_exchanges ADD COLUMN operator_company_code TEXT")
+        if 'market_type' not in exchange_columns:
+            self.execute("ALTER TABLE market_exchanges ADD COLUMN market_type TEXT NOT NULL DEFAULT 'exchange'")
+        self.execute("INSERT OR IGNORE INTO market_exchanges(exchange_id,status,updated_epoch,trading_halted,nationality,market_type) "
+                     "VALUES ('3DSG','open',0,0,'낙원','otc')")
+        self.execute("UPDATE market_exchanges SET market_type='otc',nationality='낙원' WHERE exchange_id='3DSG'")
         # Regular trading hours (functions/trading_hours.py); empty open and close times mean 24 hours.
         for column, ddl in (("open_time", "TEXT NOT NULL DEFAULT ''"), ("close_time", "TEXT NOT NULL DEFAULT ''"),
                             ("trading_days", "TEXT NOT NULL DEFAULT '1,2,3,4,5'"), ("holidays", "TEXT NOT NULL DEFAULT '[]'"),
@@ -260,6 +265,7 @@ class SystemDB(DBManager):
                 UNION SELECT DISTINCT TRIM(exchange_id) FROM treasury_bond_products WHERE exchange_id IS NOT NULL AND TRIM(exchange_id) <> ''
                 UNION SELECT 'CURRENCY'
             )""")
+        self.execute("UPDATE market_exchanges SET market_type='otc',nationality='낙원' WHERE exchange_id='3DSG'")
         self.execute("DROP TABLE IF EXISTS market_exchange_indices")
         self.execute("DROP TABLE IF EXISTS market_exchange_sessions")
         self.execute("DROP TABLE IF EXISTS market_session")

@@ -56,7 +56,8 @@ class UserManager:
         row = conn.execute(
             "SELECT company_code AS code, name, exchange_id, share_price AS price, 'stock' AS type, "
             # A partial listing caps what the market can ever hold at listed_shares.
-            "status, is_fixed, COALESCE(listed_shares, total_shares) AS supply, quote_currency, Fractal "
+            "CASE WHEN status='active' AND trading_status='active' AND exchange_id IS NOT NULL THEN 'active' ELSE 'inactive' END AS status, "
+            "is_fixed, COALESCE(listed_shares, total_shares) AS supply, quote_currency, Fractal "
             "FROM company.company WHERE company_code = ?", (code,)
         ).fetchone()
         if row:

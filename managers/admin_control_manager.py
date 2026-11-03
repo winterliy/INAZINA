@@ -506,19 +506,35 @@ class AdminControlManager:
                         integer=True,
                     )
             if category=='stock':
+                legal_form = conn.execute("SELECT legal_form FROM organizations WHERE organization_code=?",
+                                           (code,)).fetchone()
+                if legal_form and legal_form[0] != 'stock_company':
+                    raise ValueError('비주식 법인은 주식·주식 종류로 발행할 수 없습니다. 출자지분 명부를 사용해주세요.')
                 if existing and values.get('exchange_id',existing['exchange_id'])!=existing['exchange_id']:
                     from managers.els_manager import ELSManager
                     if ELSManager.index_removal_blocked(conn,[code]):
                         raise ValueError('미상환 ELS의 기초지수를 구성하는 마지막 주식은 거래소를 변경할 수 없습니다.')
                 if 'listed_shares' in columns:
                     # Listed shares: how many of total_shares the market may ever hold (NULL: all).
-                    from managers.market_session_manager import MarketSessionManager
                     raw=values.get('listed_shares')
-                    if merged.get('exchange_id')==MarketSessionManager.UNLISTED:
+                    venue=conn.execute("SELECT market_type FROM market_exchanges WHERE exchange_id=?",
+                                        (merged.get('exchange_id'),)).fetchone() if merged.get('exchange_id') else None
+                    if not venue or venue[0]=='otc':
                         values['listed_shares']=None
                     elif 'listed_shares' in values:
                         values['listed_shares']=None if raw in (None,'') else self._number(
                             raw,1,int(merged.get('total_shares') or 0),integer=True)
+                market_exchange = conn.execute(
+                    "SELECT nationality FROM market_exchanges WHERE exchange_id=?",
+                    (merged.get('exchange_id'),),
+                ).fetchone() if merged.get('exchange_id') else None
+                nationality = str(merged.get('nationality') or (existing['nationality'] if existing else '낙원'))
+                if merged.get('exchange_id') and (not market_exchange or str(market_exchange[0]) != nationality):
+                    raise ValueError('법인 국적과 같은 국가의 등록 거래소·장외시장만 선택할 수 있습니다. 국가에 장외시장이 없으면 거래소 없음으로 저장하세요.')
+                if 'nationality' in values and not conn.execute(
+                    "SELECT 1 FROM country_currencies WHERE nationality=?", (nationality,)
+                ).fetchone():
+                    raise ValueError('등록된 국가를 법인 국적으로 선택해주세요.')
                 share_class=merged.get('share_class','common')
                 if share_class not in {'common','preferred'}:
                     raise ValueError('share_class는 common 또는 preferred입니다.')

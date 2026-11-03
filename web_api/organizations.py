@@ -70,9 +70,9 @@ def directory(conn, organization_code=None, now=None, min_percent=1):
     except (TypeError, ValueError):
         raise ValueError("기업 규모 판정 설정을 읽을 수 없습니다.") from None
     rows = conn.execute(
-        "SELECT o.*,c.exchange_id,c.quote_currency,c.total_shares,c.share_price "
-        "FROM organizations o JOIN company c ON c.company_code=o.organization_code "
-        "WHERE c.share_class='common' AND (? IS NULL OR o.organization_code=?) "
+        "SELECT o.*,c.exchange_id,c.quote_currency,c.total_shares,c.share_price,c.trading_status,c.ownership_unit "
+        "FROM organizations o LEFT JOIN company c ON c.company_code=o.organization_code "
+        "WHERE (c.share_class='common' OR c.company_code IS NULL) AND (? IS NULL OR o.organization_code=?) "
         "ORDER BY o.name,o.organization_code", (organization_code, organization_code)
     ).fetchall()
     metrics_by_code = _metrics_batch(conn, [row["organization_code"] for row in rows])
@@ -111,6 +111,10 @@ def directory(conn, organization_code=None, now=None, min_percent=1):
         item["display_size"] = item["size_override"] or item["auto_size"]
         item["metrics"] = metrics
         item["issuances"] = issues_by_org.get(str(row["organization_code"]), [])
+        item["capital_interests"] = [dict(entry) for entry in conn.execute(
+            "SELECT holder_id,holder_kind,contribution_amount,currency_code,economic_percent,voting_percent "
+            "FROM company_capital_interests WHERE organization_code=? ORDER BY holder_kind,holder_id",
+            (row["organization_code"],))]
         organizations.append(item)
     groups = conn.execute(
         "SELECT g.group_id,g.name,g.representative_organization_code,g.description,g.status,"
@@ -136,9 +140,9 @@ def organization_options(conn):
     return {"organizations": [
         {"organization_code": str(row[0]), "name": str(row[1] or row[0]), "industry": str(row[2] or "")}
         for row in conn.execute(
-            "SELECT o.organization_code,o.name,o.industry FROM organizations o "
-            "JOIN company c ON c.company_code=o.organization_code "
-            "WHERE c.share_class='common' ORDER BY o.name,o.organization_code"
+        "SELECT o.organization_code,o.name,o.industry FROM organizations o "
+        "LEFT JOIN company c ON c.company_code=o.organization_code "
+        "WHERE c.share_class='common' OR c.company_code IS NULL ORDER BY o.name,o.organization_code"
         )
     ]}
 
@@ -151,13 +155,165 @@ def ownership_graph(conn, organization_code, min_percent=1):
         "SELECT 1 FROM organizations WHERE organization_code=?", (code,)
     ).fetchone():
         raise ValueError("조직도를 표시할 법인을 찾을 수 없습니다.")
-    return {"graph": OrganizationManager.ownership_graph(conn, code, min_percent=min_percent)}
+    graph = OrganizationManager.ownership_graph(conn, code, min_percent=min_percent)
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='company_capital_interests'").fetchone():
+        nodes = {node["id"]: node for node in graph["nodes"]}
+        edges = {(edge["from"], edge["to"]): edge for edge in graph["edges"]}
+        parent_graphs = {}
+        organization_codes = {str(item[0]) for item in conn.execute("SELECT organization_code FROM organizations")}
+
+        def add_capital_holders(target, depth, path, path_equity=Decimal(1), path_votes=Decimal(1)):
+            if depth > 8 or target in path:
+                return
+            rows = conn.execute(
+                "SELECT holder_id,holder_kind,economic_percent,voting_percent,contribution_amount,currency_code "
+                "FROM company_capital_interests WHERE organization_code=?", (target,)
+            ).fetchall()
+            for holder in rows:
+                holder_id, holder_kind = str(holder[0]), str(holder[1])
+                try:
+                    equity, votes = Decimal(str(holder[2])), Decimal(str(holder[3]))
+                except (InvalidOperation, TypeError, ValueError):
+                    continue
+                if not equity.is_finite() or not votes.is_finite() or max(equity, votes) < Decimal(str(min_percent)):
+                    continue
+                if holder_kind == "company":
+                    node_id = "company:" + holder_id
+                    info = conn.execute("SELECT name FROM organizations WHERE organization_code=?", (holder_id,)).fetchone()
+                    if not info:
+                        continue
+                    name = str(info[0] or holder_id)
+                else:
+                    if holder_kind == "country":
+                        info = conn.execute("SELECT user_id FROM country_treasuries WHERE nationality=?", (holder_id,)).fetchone()
+                        if not info:
+                            continue
+                        holder_id = str(info[0])
+                    node_id = "user:" + holder_id
+                    info = conn.execute("SELECT nickname FROM users WHERE user_id=?", (holder_id,)).fetchone()
+                    name = str(info[0] or holder_id) if info else holder_id
+                nodes[node_id] = {"id": node_id, "kind": "company" if holder_kind == "company" else "user",
+                                  "code": holder_id, "name": name}
+                edge = {"from": node_id, "to": "company:" + target,
+                        "equity_percent": str(equity), "voting_percent": str(votes),
+                        "root_equity_percent": str(path_equity * equity),
+                        "root_voting_percent": str(path_votes * votes),
+                        "depth": depth, "direct": depth == 0,
+                        "cycle": holder_kind == "company" and holder_id in (path | {target}),
+                        "ownership_unit": "capital_interest", "contribution_amount": str(holder[4]),
+                        "currency_code": str(holder[5])}
+                edges[(node_id, "company:" + target)] = edge
+                if holder_kind == "company" and holder_id not in (path | {target}) and holder_id in organization_codes:
+                    if holder_id not in parent_graphs:
+                        parent_graphs[holder_id] = OrganizationManager.ownership_graph(
+                            conn, holder_id, min_percent=min_percent
+                        )
+                    parent_graph = parent_graphs[holder_id]
+                    for node in parent_graph["nodes"]:
+                        nodes[node["id"]] = node
+                    for parent_edge in parent_graph["edges"]:
+                        item = dict(parent_edge)
+                        item["depth"] = int(item.get("depth", 0)) + depth + 1
+                        item["root_equity_percent"] = str(path_equity * equity * Decimal(str(item.get("root_equity_percent", 0))) / 100)
+                        item["root_voting_percent"] = str(path_votes * votes * Decimal(str(item.get("root_voting_percent", 0))) / 100)
+                        key = (item["from"], item["to"])
+                        previous = edges.get(key)
+                        if previous:
+                            item["root_equity_percent"] = str(Decimal(str(previous.get("root_equity_percent", 0))) + Decimal(item["root_equity_percent"]))
+                            item["root_voting_percent"] = str(Decimal(str(previous.get("root_voting_percent", 0))) + Decimal(item["root_voting_percent"]))
+                        edges[key] = item
+                    add_capital_holders(holder_id, depth + 1, path | {target},
+                                        path_equity * equity / 100, path_votes * votes / 100)
+
+        add_capital_holders(code, 0, set())
+        graph["nodes"] = list(nodes.values())
+        graph["edges"] = list(edges.values())
+    return {"graph": graph}
 
 
 def action(conn, payload, actor, now=None):
     from managers.organization_manager import OrganizationManager
     now = int(time.time() if now is None else now)
     kind = str(payload.get("action") or "")
+    legal_forms = {"stock_company", "limited_company", "limited_liability_company",
+                   "general_partnership", "limited_partnership"}
+    if kind == "organization_create":
+        code = str(payload.get("organization_code") or "").strip().upper()
+        name = str(payload.get("name") or "").strip()
+        industry = str(payload.get("industry") or "").strip()
+        country = str(payload.get("country_code") or "").strip()
+        legal_form = str(payload.get("legal_form") or "limited_company")
+        if not re.fullmatch(r"[A-Z0-9][A-Z0-9._-]{0,31}", code) or not name or len(name) > 160:
+            raise ValueError("법인 ID와 이름을 확인해주세요.")
+        if legal_form not in legal_forms - {"stock_company"}:
+            raise ValueError("신규 비주식 법인은 유한회사·유한책임회사·합명회사·합자회사 중 선택해주세요.")
+        if not conn.execute("SELECT 1 FROM country_currencies WHERE nationality=?", (country,)).fetchone():
+            raise ValueError("등록된 국가를 선택해주세요.")
+        if conn.execute("SELECT 1 FROM organizations WHERE organization_code=? UNION SELECT 1 FROM company WHERE company_code=?", (code, code)).fetchone():
+            raise ValueError("이미 사용 중인 법인 ID입니다.")
+        conn.execute("INSERT INTO organizations(organization_code,name,industry,country_code,legal_form,ownership_type) "
+                     "VALUES (?,?,?,?,?,'private')", (code, name, industry[:120], country, legal_form))
+        return {"action": kind, "organization_code": code, "legal_form": legal_form}
+    if kind == "legal_form":
+        code = str(payload.get("organization_code") or "").strip()
+        legal_form = str(payload.get("legal_form") or "")
+        if legal_form not in legal_forms:
+            raise ValueError("법인 형태를 확인해주세요.")
+        company = conn.execute("SELECT total_shares FROM company WHERE company_code=? AND share_class='common'", (code,)).fetchone()
+        issuance = conn.execute("SELECT 1 FROM share_issuances WHERE organization_code=? LIMIT 1", (code,)).fetchone()
+        if legal_form != "stock_company" and (company or issuance):
+            raise ValueError("주식 종목이 연결된 법인은 법인 형태를 비주식으로 바꿀 수 없습니다. 새 비주식 법인으로 등록해주세요.")
+        cur = conn.execute("UPDATE organizations SET legal_form=?,updated_epoch=? WHERE organization_code=?",
+                           (legal_form, now, code))
+        if cur.rowcount != 1:
+            raise ValueError("법인을 찾을 수 없습니다.")
+        conn.execute("UPDATE company SET legal_form=?,ownership_unit=? WHERE company_code=?",
+                     (legal_form, "shares" if legal_form == "stock_company" else "capital_interest", code))
+        return {"action": kind, "organization_code": code, "legal_form": legal_form}
+    if kind == "capital_interest":
+        code = str(payload.get("organization_code") or "").strip()
+        org = conn.execute("SELECT legal_form,country_code FROM organizations WHERE organization_code=?", (code,)).fetchone()
+        if not org or org["legal_form"] == "stock_company":
+            raise ValueError("출자지분 명부는 비주식 법인에만 사용할 수 있습니다.")
+        holder_kind = str(payload.get("holder_kind") or "")
+        holder_id = str(payload.get("holder_id") or "").strip()
+        if holder_kind not in {"user", "company", "country"} or not holder_id:
+            raise ValueError("출자자 유형과 ID를 입력해주세요.")
+        if holder_kind == "company":
+            exists = conn.execute("SELECT 1 FROM organizations WHERE organization_code=?", (holder_id,)).fetchone()
+        elif holder_kind == "country":
+            exists = conn.execute("SELECT 1 FROM country_treasuries WHERE nationality=?", (holder_id,)).fetchone()
+        else:
+            exists = conn.execute("SELECT 1 FROM users WHERE user_id=? AND status='active'", (holder_id,)).fetchone()
+        if not exists:
+            raise ValueError("등록된 출자자를 찾을 수 없습니다.")
+        currency = str(payload.get("currency_code") or "").upper()
+        if not conn.execute("SELECT 1 FROM currencies WHERE code=? AND status='active'", (currency,)).fetchone():
+            raise ValueError("활성 통화 코드를 선택해주세요.")
+        try:
+            contribution = Decimal(str(payload.get("contribution_amount", "0")))
+            economic = Decimal(str(payload.get("economic_percent", "0")))
+            voting = Decimal(str(payload.get("voting_percent", "0")))
+        except (InvalidOperation, TypeError, ValueError):
+            raise ValueError("출자금과 지분율은 유한한 숫자로 입력해주세요.") from None
+        if (not all(value.is_finite() for value in (contribution, economic, voting))
+                or contribution < 0 or economic < 0 or economic > 100 or voting < 0 or voting > 100):
+            raise ValueError("출자금은 0 이상, 경제 지분과 의결권은 0~100%여야 합니다.")
+        others = conn.execute(
+            "SELECT economic_percent,voting_percent FROM company_capital_interests "
+            "WHERE organization_code=? AND NOT(holder_kind=? AND holder_id=?)",
+            (code, holder_kind, holder_id),
+        ).fetchall()
+        if (sum((Decimal(str(row[0])) for row in others), Decimal(0)) + economic > 100
+                or sum((Decimal(str(row[1])) for row in others), Decimal(0)) + voting > 100):
+            raise ValueError("등록된 출자자의 경제 지분 합계와 의결권 합계는 각각 100%를 넘을 수 없습니다.")
+        conn.execute("""INSERT INTO company_capital_interests
+            (organization_code,holder_id,holder_kind,contribution_amount,currency_code,economic_percent,voting_percent,updated_epoch)
+            VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(organization_code,holder_kind,holder_id) DO UPDATE SET
+            contribution_amount=excluded.contribution_amount,currency_code=excluded.currency_code,
+            economic_percent=excluded.economic_percent,voting_percent=excluded.voting_percent,updated_epoch=excluded.updated_epoch""",
+            (code, holder_id, holder_kind, str(contribution), currency, str(economic), str(voting), now))
+        return {"action": kind, "organization_code": code, "holder_id": holder_id}
     if kind == "group_create":
         group_id = OrganizationManager.create_group(
             conn, payload.get("name"), payload.get("representative"), payload.get("description", "")
@@ -228,6 +384,9 @@ def action(conn, payload, actor, now=None):
         code = str(payload.get("company_code") or "").strip().upper()
         class_name = str(payload.get("class_name") or "").strip()
         organization_code = str(payload.get("organization_code") or "").strip()
+        legal = conn.execute("SELECT legal_form FROM organizations WHERE organization_code=?", (organization_code,)).fetchone()
+        if legal and legal[0] != "stock_company":
+            raise ValueError("비주식 법인은 주식 종류를 발행할 수 없습니다. 출자지분 명부를 사용해주세요.")
         if not re.fullmatch(r"[A-Z0-9][A-Z0-9._-]{0,31}", code):
             raise ValueError("종목 코드는 영문·숫자와 . _ - 조합으로 1~32자 입력해주세요.")
         if not class_name or len(class_name) > 120:

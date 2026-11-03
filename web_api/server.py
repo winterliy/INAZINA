@@ -2825,9 +2825,17 @@ def product_save(actor, payload):
     bot = domain().bot
     if operation == "create":
         if profile == "stock":
-            # A new 법인 starts unlisted; 법인 자본 lists it, with the share of it offered.
-            from managers.market_session_manager import MarketSessionManager
-            fields["exchange_id"] = MarketSessionManager.UNLISTED
+            # Keep a new company private on its own country's OTC market when one
+            # exists; NULL means private in a country without an OTC venue.
+            nationality = str(fields.get("nationality") or "낙원")
+            with connect_readonly() as connection:
+                venue = connection.execute(
+                    "SELECT exchange_id FROM market_exchanges WHERE nationality=? AND market_type='otc' "
+                    "ORDER BY CASE WHEN exchange_id='3DSG' THEN 0 ELSE 1 END,exchange_id LIMIT 1",
+                    (nationality,),
+                ).fetchone()
+            fields["nationality"] = nationality
+            fields["exchange_id"] = str(venue[0]) if venue else None
         token = PRODUCT_KINDS[profile][2]
         raw = f"{code} {token} {json.dumps(fields, ensure_ascii=False)}"
         result = AdminCommandsManager(bot).execute(actor, "상품생성", raw)
@@ -2868,6 +2876,40 @@ def product_status(actor, code, active, terminate=False):
     result = domain().bot.admin_control.entity(actor, _profile_category(kind), operation, code)
     _read_cache.invalidate()
     return str(result)
+
+
+def company_trading_status(actor, code, trading_status):
+    """Suspend/resume market access without changing the company's legal lifecycle."""
+    trading_status = str(trading_status or "")
+    if trading_status not in {"active", "suspended"}:
+        raise ValueError("거래 상태는 거래중 또는 거래중지로 지정해주세요.")
+    with connect_db(timeout=5) as connection:
+        row = connection.execute(
+            "SELECT company_code,name,status,trading_status FROM company "
+            "WHERE company_code=? AND share_class='common'", (str(code),)
+        ).fetchone()
+        if not row or row["status"] != "active":
+            raise ValueError("거래 가능한 보통주 법인을 찾을 수 없습니다.")
+        connection.execute("UPDATE company SET trading_status=? WHERE company_code=?",
+                           (trading_status, str(code)))
+        _audit_db(connection, actor, "company.trading_status",
+                   {"company_code": str(code), "before": row["trading_status"], "after": trading_status})
+        orders = [dict(item) for item in connection.execute(
+            "SELECT order_id,user_id FROM market_orders WHERE asset_code=? "
+            "AND status IN ('open','partial','scheduled') AND order_kind='asset' ORDER BY order_id",
+            (str(code),))] if trading_status == "suspended" else []
+    failed = []
+    for order in orders:
+        success, _message = domain().order_book.cancel_order(str(order["user_id"]), int(order["order_id"]))
+        if not success:
+            failed.append(int(order["order_id"]))
+    _read_cache.invalidate()
+    message = f"✅ {row['name']} 거래 상태를 {'거래중지' if trading_status == 'suspended' else '거래중'}로 바꿨습니다."
+    if orders:
+        message += f" 미체결 주문 {len(orders) - len(failed)}건을 취소했습니다."
+    if failed:
+        message += " 일부 주문 취소가 실패했습니다: " + ", ".join(f"#{item}" for item in failed)
+    return message
 
 
 # Live obligations that make a product impossible to delete: (table, condition, reason).
@@ -3249,7 +3291,8 @@ def admin_exchanges():
             row["hours"] = trading_hours.from_row(row)
             row["hours_label"] = trading_hours.describe(row["hours"])
             row["products"] = sum(connection.execute(
-                f"SELECT COUNT(*) FROM {table} WHERE exchange_id=? AND status='active'", (exchange,)).fetchone()[0]
+                f"SELECT COUNT(*) FROM {table} WHERE exchange_id=? AND status='active'"
+                + (" AND trading_status='active'" if table == "company" else ""), (exchange,)).fetchone()[0]
                 for table, _key in EXCHANGE_PRODUCT_TABLES if _table_exists(connection, table))
             operator_code = row.get("operator_company_code")
             operator = connection.execute(
@@ -3262,7 +3305,7 @@ def admin_exchanges():
             if _table_exists(connection, "company"):
                 row["listings"].extend(dict(item) for item in connection.execute(
                     "SELECT company_code AS code,name,'주식' AS kind,share_class,quote_currency,status "
-                    "FROM company WHERE exchange_id=? AND status='active' "
+                    "FROM company WHERE exchange_id=? AND status='active' AND trading_status='active' "
                     "ORDER BY company_code,share_class", (exchange,)))
             if _table_exists(connection, "market_assets"):
                 row["listings"].extend(dict(item) for item in connection.execute(
@@ -3309,23 +3352,46 @@ def admin_exchange_action(actor, exchange_id, payload):
         if actor not in BOOTSTRAP_ADMIN_IDS and (not role or str(role["role"]).strip().lower() != "admin"):
             raise ValueError("admin_required")
         exists = connection.execute("SELECT * FROM market_exchanges WHERE exchange_id=?", (exchange_id,)).fetchone()
-        if action in {"create", "nationality"}:
+        if action in {"create", "nationality", "market_type"}:
             nationality = str(payload.get("nationality", "")).strip()
-            if not connection.execute("SELECT 1 FROM country_currencies WHERE nationality=?", (nationality,)).fetchone():
+            if action != "market_type" and not connection.execute("SELECT 1 FROM country_currencies WHERE nationality=?", (nationality,)).fetchone():
                 raise ValueError("등록된 국가를 선택해주세요.")
+            market_type = str(payload.get("marketType", "exchange"))
+            if action in {"create", "market_type"} and market_type not in {"exchange", "otc"}:
+                raise ValueError("시장 유형은 거래소 또는 장외시장이어야 합니다.")
             if action == "create":
                 if exists:
                     raise ValueError("이미 있는 거래소 ID입니다.")
                 connection.execute(
-                    "INSERT INTO market_exchanges(exchange_id,status,updated_epoch,trading_halted,nationality) VALUES (?,?,?,?,?)",
-                    (exchange_id, "open", int(time.time()), 0, nationality))
-                message = f"✅ 거래소 {exchange_id}를 만들었습니다. 상품 생성 시 거래소ID로 지정하세요."
+                    "INSERT INTO market_exchanges(exchange_id,status,updated_epoch,trading_halted,nationality,market_type) VALUES (?,?,?,?,?,?)",
+                    (exchange_id, "open", int(time.time()), 0, nationality, market_type))
+                message = f"✅ {('장외시장' if market_type == 'otc' else '거래소')} {exchange_id}를 만들었습니다."
             else:
                 if not exists:
                     raise ValueError("거래소를 찾을 수 없습니다.")
-                connection.execute("UPDATE market_exchanges SET nationality=? WHERE exchange_id=?", (nationality, exchange_id))
-                message = f"✅ {exchange_id} 거래소 국가를 {nationality}(으)로 변경했습니다."
-            _audit_db(connection, actor, f"exchange.{action}", {"exchange_id": exchange_id, "nationality": nationality})
+                if exchange_id == "3DSG" and (
+                    (action == "nationality" and nationality != "낙원")
+                    or (action == "market_type" and market_type != "otc")
+                ):
+                    raise ValueError("3DSG는 낙원 소속 장외시장으로 고정되어 있습니다.")
+                if action == "nationality":
+                    mismatch = connection.execute(
+                        "SELECT company_code FROM company WHERE exchange_id=? AND nationality<>? LIMIT 1",
+                        (exchange_id, nationality),
+                    ).fetchone()
+                    if mismatch:
+                        raise ValueError(f"{mismatch[0]} 법인의 시장 경로가 연결되어 있어 국가를 바꿀 수 없습니다.")
+                    connection.execute("UPDATE market_exchanges SET nationality=? WHERE exchange_id=?", (nationality, exchange_id))
+                    message = f"✅ {exchange_id} 시장 국가를 {nationality}(으)로 변경했습니다."
+                elif action == "market_type":
+                    connection.execute("UPDATE market_exchanges SET market_type=? WHERE exchange_id=?", (market_type, exchange_id))
+                    connection.execute("UPDATE company SET listed_shares=NULL WHERE exchange_id=?", (exchange_id,))
+                    message = f"✅ {exchange_id} 시장 유형을 {'장외시장' if market_type == 'otc' else '거래소'}(으)로 변경했습니다."
+            _audit_db(connection, actor, f"exchange.{action}", {
+                "exchange_id": exchange_id,
+                "nationality": nationality if action in {"create", "nationality"} else exists["nationality"],
+                "market_type": market_type if action in {"create", "market_type"} else exists["market_type"],
+            })
         elif action == "hours":
             if not exists:
                 raise ValueError("거래소를 찾을 수 없습니다.")
@@ -3544,6 +3610,10 @@ def admin_bank_create(actor, payload):
         connection.execute("INSERT INTO financial_institutions(issuer,nationality,equity_capital,institution_id) VALUES (?,?,?,?)",
                            (issuer, nationality, capital, bank_id or None))
         bank_id = connection.execute("SELECT institution_id FROM financial_institutions WHERE issuer=?", (issuer,)).fetchone()[0]
+        from database.db_manager import DBManager
+        conflicts = DBManager.code_locations(LegacyNames(connection), bank_id)
+        if conflicts:
+            raise ValueError(f"은행 ID가 다른 법인 또는 상품에서 사용 중입니다 ({', '.join(conflicts)}). 다른 ID를 입력해주세요.")
         from managers.bank_companies import ensure
         company_code = ensure(LegacyNames(connection), issuer)
         _audit_db(connection, actor, "bank.create", {"id": bank_id, "issuer": issuer, "nationality": nationality,
@@ -5165,6 +5235,8 @@ class Handler(BaseHTTPRequestHandler):
                     message = admin_identity_action(actor, payload)
                 elif len(parts) == 3 and parts[0] == "companies" and parts[2] == "share-actions":
                     message = admin_company_share_action(actor, parts[1], payload)
+                elif len(parts) == 3 and parts[0] == "companies" and parts[2] == "trading-status":
+                    message = company_trading_status(actor, parts[1], payload.get("tradingStatus"))
                 elif len(parts) == 3 and parts[0] == "companies" and parts[2] == "journal":
                     message = admin_company_journal_action(actor, parts[1], payload)
                 elif len(parts) == 2 and parts[0] == "companies":

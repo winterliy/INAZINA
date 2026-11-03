@@ -14,7 +14,7 @@ from managers.currency_exchange_manager import SCALE, MAX_UNITS, amount_units, d
 from managers.rate_manager import RateManager
 from functions.money import parse_currency_money
 
-COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값','서버설치','소수점거래관리','상품이율수정',
+COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값','서버설치','소수점거래관리','상품이율수정','양도',
             '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','소득세율','환율수정',
             '국가생성','국가삭제',
             '복권가격설정','금리수정','시장금리수정','법정최고이자수정','자본변경','증자','정기배당수정','정기배당활성','특별배당실시','합병','분할','액면분할병합',
@@ -67,7 +67,8 @@ COUNTRY_ARGUMENT = {'기본소득': 0, '세율': 0, '소득세율': 0, '금리�
 USAGE.update({'법인잔고수정':'[보통주 법인id] [add/del/modify] [금액]',
               '법인청산':'[보통주 법인id]', 'ELS취소':'[ELS id]',
               '거래경고':'[종목id] [주의/경고/위험/해제] [사유(선택)] [기간 일수(선택)]',
-              '귀화심사':'[목록|승인|거절] [신청번호] [사유(선택)]'})
+              '귀화심사':'[목록|승인|거절] [신청번호] [사유(선택)]',
+              '양도':'[받을 유저·법인·국가 ID] [주식 코드] [주] · 보유분 간 이전은 [보내는 ID] [받는 ID] [주식 코드] [주]'})
 
 # Core positional arguments vary by product type; extra JSON is always optional.
 CREATE_ARGS = {
@@ -269,6 +270,94 @@ class AdminCommandsManager:
             self.control._audit(conn, actor, 'country.delete', {'nationality': nationality})
         return f'✅ 연방국가 {nationality}을(를) 삭제했습니다. 통화 자체는 유지됩니다.'
 
+    @staticmethod
+    def _share_account_id(conn, identity):
+        """Resolve a user ID, company code, or national account ID to the holder key."""
+        identity = str(identity).strip()
+        company = conn.execute("SELECT user_id FROM company_accounts WHERE company_code=?", (identity,)).fetchone()
+        if company:
+            return str(company["user_id"])
+        country = conn.execute("SELECT user_id FROM country_treasuries WHERE user_id=?", (identity,)).fetchone()
+        if country:
+            return str(country["user_id"])
+        user = conn.execute("SELECT user_id FROM users WHERE user_id=? AND status='active'", (identity,)).fetchone()
+        if user:
+            return str(user["user_id"])
+        company = conn.execute("SELECT company_code FROM company WHERE company_code=? AND share_class='common'",
+                               (identity,)).fetchone()
+        if company:
+            from managers.company_account_manager import CompanyAccounts
+            return CompanyAccounts.account_id(conn, identity)
+        raise ValueError(f'받는 사람 또는 보내는 계정 ID를 찾을 수 없습니다: {identity}')
+
+    def transfer_shares(self, actor, args):
+        from database.asset_cost import AssetCostManager
+        from fractions import Fraction
+
+        if len(args) == 3:
+            sender_id = None
+            recipient_ref, code, raw_quantity = args
+        else:
+            sender_ref, recipient_ref, code, raw_quantity = args
+            sender_id = sender_ref
+        quantity = self.control._number(raw_quantity, 1, integer=True)
+        code = str(code).strip()
+        with self.db.atomic() as conn:
+            self.control.require(actor, conn)
+            stock = conn.execute("SELECT company_code,name,total_shares FROM company WHERE company_code=?", (code,)).fetchone()
+            if not stock:
+                raise ValueError('대상 보통주·우선주 코드를 확인해주세요.')
+            recipient = self._share_account_id(conn, recipient_ref)
+            if sender_id is None:
+                held = Decimal(str(conn.execute(
+                    "SELECT COALESCE((SELECT SUM(quantity) FROM user_assets WHERE asset_code=?),0) + "
+                    "COALESCE((SELECT SUM(quantity) FROM option_collateral_lots WHERE underlying_code=?),0) + "
+                    "COALESCE((SELECT SUM(quantity) FROM loan_collateral_assets WHERE asset_code=? AND status='pledged'),0)",
+                    (code, code, code),
+                ).fetchone()[0] or 0))
+                available = Decimal(str(stock['total_shares'] or 0)) - held
+                if quantity > available:
+                    raise ValueError(f'미보유 주식이 부족합니다. 양도 가능 {max(Decimal(0), available):,}주')
+                AssetCostManager.upsert(conn, recipient, code, None, quantity, 0)
+                source = '미보유(유통 전)'
+            else:
+                sender = self._share_account_id(conn, sender_ref)
+                if sender == recipient:
+                    raise ValueError('보내는 계정과 받는 계정이 같습니다.')
+                lots = conn.execute("SELECT holding_id,quantity FROM user_assets WHERE user_id=? AND asset_code=? ORDER BY holding_id",
+                                    (sender, code)).fetchall()
+                available = sum((Decimal(str(row['quantity'] or 0)) for row in lots), Decimal(0))
+                if available < quantity:
+                    raise ValueError(f'보유 주식이 부족합니다. 양도 가능 {available:,}주')
+                remaining_to_move = Decimal(quantity)
+                incoming_basis = Fraction(0)
+                for lot in lots:
+                    if remaining_to_move <= 0:
+                        break
+                    old_quantity = Decimal(str(lot['quantity'] or 0))
+                    moved_quantity = min(old_quantity, remaining_to_move)
+                    moved_basis = AssetCostManager.sale_cost_minor(conn, lot['holding_id'], moved_quantity)
+                    old_basis = AssetCostManager.total_cost_minor(conn, lot['holding_id'])
+                    remaining_quantity = old_quantity - moved_quantity
+                    remaining_basis = old_basis - moved_basis
+                    incoming_basis += moved_basis
+                    if remaining_quantity == 0:
+                        conn.execute('DELETE FROM asset_cost_basis WHERE holding_id=?', (lot['holding_id'],))
+                        conn.execute('DELETE FROM user_assets WHERE holding_id=?', (lot['holding_id'],))
+                    else:
+                        unit_basis = AssetCostManager.decimal_minor(remaining_basis / Fraction(str(remaining_quantity)))
+                        AssetCostManager.reprice(conn, lot['holding_id'], code, remaining_quantity, unit_basis)
+                        AssetCostManager._save_total(conn, lot['holding_id'], remaining_basis)
+                    remaining_to_move -= moved_quantity
+                unit_basis = AssetCostManager.decimal_minor(incoming_basis / quantity)
+                AssetCostManager.upsert(conn, recipient, code, None, quantity, unit_basis,
+                                        incoming_total_minor=incoming_basis)
+                source = sender
+            self.control._audit(conn, actor, 'shares.transfer', {
+                'source': source, 'recipient': recipient, 'asset': code, 'quantity': quantity,
+            })
+        return f'✅ {stock["name"]} ({code}) {quantity:,}주를 {recipient_ref}에 양도했습니다.'
+
     def execute(self,actor,command,raw,guild_id=None):
         with DBManager.admin_scope(actor):
             self.control.require(actor)
@@ -295,6 +384,7 @@ class AdminCommandsManager:
                         or (command in {'휴장','개장','장일시정지','장재개','사이드카'} and len(args) in {0,1})
                         or (command=='서킷브레이커' and len(args) in {1,2})
                         or (command=='거래경고' and len(args) in {2,3,4})
+                        or (command=='양도' and len(args) in {3,4})
                         or (command=='귀화심사' and (args[:1]==['목록'] and len(args)==1 or args[:1] in (['승인'],['거절']) and len(args) in {2,3})))
             if not flexible and command not in {'복권당첨번호변경'} and len(args)!=count.get(command,-1):
                 raise ValueError(f'사용법: ${command} {USAGE.get(command,"")}')
@@ -327,6 +417,8 @@ class AdminCommandsManager:
                 stage=int(args[-1].removesuffix('단계')) if command=='서킷브레이커' else None
                 result=MarketSessionManager(self.db).control(actor,actions[command],stage=stage,exchange_id=exchange_id)
                 return self.result_text(result)
+            if command=='양도':
+                return self.transfer_shares(actor,args)
             if command=='거래경고':
                 from managers.trading_warning_manager import TradingWarnings
                 return TradingWarnings(self.db).set(actor,args[0],args[1],args[2] if len(args)>2 else '',args[3] if len(args)>3 else None)
