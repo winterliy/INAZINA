@@ -27,7 +27,7 @@ class OrganizationDB(DBManager):
                     CHECK(ownership_type IN ('private','national','local','mixed','other')),
                 public_enterprise_type TEXT NOT NULL DEFAULT 'none'
                     CHECK(public_enterprise_type IN ('none','public_corporation','market_based','quasi_market_based','other_public')),
-                legal_form TEXT NOT NULL DEFAULT 'corporation',
+                legal_form TEXT NOT NULL DEFAULT 'stock_company',
                 size_override TEXT CHECK(size_override IS NULL OR size_override IN ('sme','mid_market','large')),
                 size_override_reason TEXT,
                 auto_size TEXT CHECK(auto_size IS NULL OR auto_size IN ('sme','mid_market','large')),
@@ -83,6 +83,7 @@ class OrganizationDB(DBManager):
             )
         """)
         self.execute("INSERT OR IGNORE INTO organization_size_settings(singleton) VALUES (1)")
+        self.execute("UPDATE organizations SET legal_form='stock_company' WHERE legal_form IN ('corporation','company','')")
         size_settings = self.execute_one(
             "SELECT rule_json FROM organization_size_settings WHERE singleton=1"
         )
@@ -149,7 +150,7 @@ class OrganizationDB(DBManager):
             "dividend_priority,cumulative_dividend,dividend_mode,dividend_per_share,"
             "dividend_percent,liquidation_value_per_share,dividend_funding,"
             "dividend_cycle_seconds,dividend_is_active,status,"
-            "(SELECT nationality FROM market_exchanges WHERE exchange_id=company.exchange_id) "
+            "COALESCE((SELECT nationality FROM market_exchanges WHERE exchange_id=company.exchange_id),company.nationality) "
             "FROM company ORDER BY company_code"
         )
         for row in rows:
@@ -193,7 +194,7 @@ class OrganizationDB(DBManager):
             AFTER INSERT ON company BEGIN
               INSERT OR IGNORE INTO organizations(organization_code,name,industry,country_code,status)
               SELECT NEW.company_code,COALESCE(NEW.name,''),COALESCE(NEW.industry,''),
-                (SELECT nationality FROM market_exchanges WHERE exchange_id=NEW.exchange_id),COALESCE(NEW.status,'active')
+                COALESCE((SELECT nationality FROM market_exchanges WHERE exchange_id=NEW.exchange_id),NEW.nationality),COALESCE(NEW.status,'active')
               WHERE COALESCE(NEW.share_class,'common')='common';
               INSERT INTO share_issuances
                 (organization_code,class_name,share_class,voting_rights_per_share)
@@ -215,12 +216,13 @@ class OrganizationDB(DBManager):
         """)
         self.execute("""
             CREATE TRIGGER IF NOT EXISTS organization_company_after_update
-            AFTER UPDATE OF name,industry,exchange_id,dividend_priority,cumulative_dividend,dividend_mode,
+            AFTER UPDATE OF name,industry,exchange_id,nationality,dividend_priority,cumulative_dividend,dividend_mode,
               dividend_per_share,dividend_percent,dividend_cycle_seconds,dividend_is_active,
               liquidation_value_per_share,dividend_funding ON company BEGIN
               UPDATE organizations SET name=COALESCE(NEW.name,''),industry=COALESCE(NEW.industry,''),
                 country_code=CASE WHEN NEW.exchange_id IS NOT OLD.exchange_id
-                  THEN (SELECT nationality FROM market_exchanges WHERE exchange_id=NEW.exchange_id)
+                  THEN COALESCE((SELECT nationality FROM market_exchanges WHERE exchange_id=NEW.exchange_id),NEW.nationality)
+                  WHEN NEW.nationality IS NOT OLD.nationality THEN NEW.nationality
                   ELSE country_code END,
                 updated_epoch=unixepoch()
               WHERE organization_code=NEW.company_code AND COALESCE(NEW.share_class,'common')='common';

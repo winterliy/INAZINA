@@ -151,7 +151,7 @@ class MarketManager:
                 "code": row["company_code"], "name": row["name"],
                 "exchange_id": row["exchange_id"],
                 "price": MarketManager.normalize_market_price(row["share_price"]),
-                "type": "stock", "status": row["status"],
+                "type": "stock", "status": "active" if row["status"] == "active" and ("trading_status" not in row.keys() or row["trading_status"] == "active") else "inactive",
                 "Fractal": int(row['Fractal']),
                 "is_fixed": int(row["is_fixed"] or 0), "source": source,
                 "total_supply": int(row["total_shares"] or 0),
@@ -891,9 +891,10 @@ class MarketManager:
             extra = f", {', '.join(optional_columns)}" if optional_columns else ""
             try:
                 with self._short_market_transaction((schema, "system")) as conn:
+                    trade_filter = " AND trading_status='active'" if schema == "company" else ""
                     rows = conn.execute(
                         f"SELECT {code_column} AS code, {price_column} AS price, exchange_id, is_fixed{extra} "
-                        f"FROM {schema}.{table} WHERE status = 'active'"
+                        f"FROM {schema}.{table} WHERE status = 'active'{trade_filter}"
                     ).fetchall()
                     for row in rows:
                         if has_derivative and row['product_type']=='els':
@@ -1315,7 +1316,7 @@ class MarketManager:
             with self._short_market_transaction("company") as company_conn:
                 rows = company_conn.execute(
                     "SELECT company_code, exchange_id, share_price, total_shares "
-                    "FROM company.company WHERE status = 'active' "
+                    "FROM company.company WHERE status = 'active' AND trading_status='active' "
                     "AND exchange_id IS NOT NULL AND TRIM(exchange_id) <> ''"
                 ).fetchall()
             constituents = {}
@@ -1474,7 +1475,7 @@ class MarketManager:
         )
         indices = {str(row["exchange_id"]): dict(row) for row in rows}
         active_exchanges = self.db.companies.execute(
-            "SELECT DISTINCT exchange_id FROM company WHERE status = 'active' "
+            "SELECT DISTINCT exchange_id FROM company WHERE status = 'active' AND trading_status='active' "
             "AND exchange_id IS NOT NULL AND TRIM(exchange_id) <> ''"
         )
         for row in active_exchanges:
@@ -1496,7 +1497,7 @@ class MarketManager:
         if row:
             return dict(row)
         exists = self.db.companies.execute_one(
-            "SELECT 1 FROM company WHERE exchange_id = ? AND status = 'active' LIMIT 1",
+            "SELECT 1 FROM company WHERE exchange_id = ? AND status = 'active' AND trading_status='active' LIMIT 1",
             (exchange_id,),
         )
         if not exists:
@@ -1560,7 +1561,7 @@ class MarketManager:
             if asset and asset["status"] == "active":
                 assets.append(asset)
         for row in self.db.companies.execute(
-            "SELECT company_code AS code FROM company WHERE exchange_id = ? AND status = 'active'", (exchange_id,)
+            "SELECT company_code AS code FROM company WHERE exchange_id = ? AND status = 'active' AND trading_status='active'", (exchange_id,)
         ):
             asset = self.get_asset_info(row["code"])
             if asset and asset["status"] == "active":

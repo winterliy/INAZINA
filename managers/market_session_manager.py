@@ -9,8 +9,10 @@ from functions.time_utils import validate_epoch
 
 
 class MarketSessionManager:
-    # 3DSG is the over-the-counter market: unlisted companies sit there and still trade.
-    UNLISTED = "3DSG"
+    # Nakwon's OTC market. This legacy alias is retained for existing callers;
+    # private/no-OTC is represented by a NULL company.exchange_id.
+    OTC_NAKWON = "3DSG"
+    UNLISTED = OTC_NAKWON
     # CURRENCY is the always-on system exchange used by FX conversion and currency pairs.
     SYSTEM_EXCHANGE = "CURRENCY"
 

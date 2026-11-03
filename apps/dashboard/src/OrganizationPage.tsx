@@ -6,7 +6,8 @@ import "./OrganizationPage.css";
 
 type Size = "sme" | "mid_market" | "large" | null;
 type Issuance = { issuance_id: number; company_code: string; class_name: string; share_class: string; voting_rights_per_share: string; economic_interest_per_share: string; total_shares: string; share_price: string; status: string; dividend_mode: string; dividend_per_share: string; dividend_percent: string; dividend_priority: number; dividend_cycle_seconds: number; dividend_is_active: number; cumulative_dividend: number; liquidation_value_per_share: string; dividend_funding: string };
-type Org = { organization_code: string; name: string; industry: string; share_price: string | number; purpose: string; ownership_type: string; public_enterprise_type: string; size_override: Size; auto_size: Size; pending_size: Size; size_effective_epoch: number | null; display_size: Size; metrics: { revenue: string | null; assets: string | null; employees: number | null }; issuances: Issuance[] };
+type CapitalInterest = { holder_id: string; holder_kind: "user" | "company" | "country"; contribution_amount: string; currency_code: string; economic_percent: string; voting_percent: string };
+type Org = { organization_code: string; name: string; industry: string; country_code: string; legal_form: string; share_price: string | number | null; purpose: string; ownership_type: string; public_enterprise_type: string; size_override: Size; auto_size: Size; pending_size: Size; size_effective_epoch: number | null; display_size: Size; metrics: { revenue: string | null; assets: string | null; employees: number | null }; issuances: Issuance[]; capital_interests: CapitalInterest[] };
 type Group = { group_id: number; name: string; representative_organization_code: string | null; description: string; members: string[] };
 type Directory = { organizations: Org[]; groups: Group[]; sizeSettings: { announcement_seconds: number; rules: { mode?: string; thresholds?: Record<string, [string, string]> } } };
 
@@ -14,6 +15,7 @@ const SIZE: Record<Exclude<Size, null>, string> = { sme: "중소기업", mid_mar
 const PURPOSE: Record<string, string> = { for_profit: "영리", nonprofit: "비영리" };
 const PUBLIC: Record<string, string> = { none: "민간·기타", public_corporation: "공기업", market_based: "시장형", quasi_market_based: "준시장형", other_public: "기타 공공기관" };
 const OWNERSHIP: Record<string, string> = { private: "민간 소유", national: "국가 소유", local: "지방자치단체 소유", mixed: "혼합 소유", other: "기타" };
+const LEGAL_FORMS: Record<string, string> = { stock_company: "주식회사", limited_company: "유한회사", limited_liability_company: "유한책임회사", general_partnership: "합명회사", limited_partnership: "합자회사" };
 const num = (value: string | null | undefined) => value === null || value === undefined ? "—" : formatMoney(value);
 
 export function OrganizationPage({ ctx }: { ctx: Ctx }) {
@@ -21,6 +23,11 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
   const [data, setData] = useState<Directory | null>(null);
   const [selected, setSelected] = useState("");
   const [groupName, setGroupName] = useState("");
+  const [newCode, setNewCode] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newIndustry, setNewIndustry] = useState("");
+  const [newCountry, setNewCountry] = useState("낙원");
+  const [newLegalForm, setNewLegalForm] = useState("limited_company");
   const [announcementSeconds, setAnnouncementSeconds] = useState("604800");
   const [thresholds, setThresholds] = useState<Record<string, [string, string]>>({
     revenue: ["10000000000", "100000000000"], assets: ["10000000000", "100000000000"], employees: ["300", "1000"],
@@ -113,13 +120,21 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
   };
 
   return <>
-    <Card title="기업 목록" caption="주식 발행과 법인 프로필을 분리하는 단계적 모델입니다. 현재 거래 코드와 보유 데이터는 유지됩니다.">
-      <div className="scroll-x tall"><table><thead><tr><th>기업</th><th>영리성</th><th>공공 분류</th><th>자동 규모</th><th>표시 규모</th><th>주식 종류</th></tr></thead><tbody>
+    <Card title="기업 목록" caption="법인 형태와 소유 단위, 시장 경로를 별도로 관리합니다. 비주식 법인은 출자지분으로 소유관계를 기록합니다.">
+      <div className="organization-inset"><h3>비주식 영리법인 등록</h3><div className="organization-form-row">
+        <Field label="법인 ID"><input value={newCode} onChange={(event) => setNewCode(event.target.value.toUpperCase())} maxLength={32} /></Field>
+        <Field label="법인명"><input value={newName} onChange={(event) => setNewName(event.target.value)} maxLength={160} /></Field>
+        <Field label="업종"><input value={newIndustry} onChange={(event) => setNewIndustry(event.target.value)} maxLength={120} /></Field>
+        <Field label="국적"><input value={newCountry} onChange={(event) => setNewCountry(event.target.value)} maxLength={80} /></Field>
+        <Field label="법인 형태"><select value={newLegalForm} onChange={(event) => setNewLegalForm(event.target.value)}>{Object.entries(LEGAL_FORMS).filter(([key]) => key !== "stock_company").map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></Field>
+        <button type="button" disabled={saving || !newCode.trim() || !newName.trim() || !newCountry.trim()} onClick={() => void saveAction({ action: "organization_create", organization_code: newCode, name: newName, industry: newIndustry, country_code: newCountry, legal_form: newLegalForm }, "비주식 영리법인을 등록했습니다.").then((ok) => { if (ok) { setNewCode(""); setNewName(""); setNewIndustry(""); } })}>비주식 법인 등록</button>
+      </div><p className="hint">등록한 비주식 법인은 주식 종목이나 거래소를 만들지 않습니다. 자본은 아래 출자지분 명부에서 관리합니다.</p></div>
+      <div className="scroll-x tall"><table><thead><tr><th>기업</th><th>법인 형태</th><th>영리성</th><th>공공 분류</th><th>자동 규모</th><th>표시 규모</th><th>소유 항목</th></tr></thead><tbody>
         {data?.organizations.map((item) => <tr key={item.organization_code} className={selected === item.organization_code ? "selected" : "clickable"} onClick={() => { setSelected(item.organization_code); void load(item.organization_code); }}>
           <td><strong>{item.name || item.organization_code}</strong><small className="mono">{item.organization_code} · {item.industry || "산업 미지정"}</small></td>
-          <td>{PURPOSE[item.purpose] ?? item.purpose}</td><td>{PUBLIC[item.public_enterprise_type] ?? item.public_enterprise_type}</td>
+          <td>{LEGAL_FORMS[item.legal_form] ?? item.legal_form}</td><td>{PURPOSE[item.purpose] ?? item.purpose}</td><td>{PUBLIC[item.public_enterprise_type] ?? item.public_enterprise_type}</td>
           <td>{item.auto_size ? SIZE[item.auto_size] : "자료 부족"}</td><td>{item.display_size ? SIZE[item.display_size] : "자료 부족"}</td>
-          <td>{item.issuances.length}</td>
+          <td>{item.legal_form === "stock_company" ? `${item.issuances.length}개 주식 종류` : `${item.capital_interests.length}개 출자 관계`}</td>
         </tr>)}
       </tbody></table>{!data?.organizations.length && <p className="empty">기업 정보가 없습니다.</p>}</div>
     </Card>
@@ -157,7 +172,8 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
 
     {organization && <>
       <div className="organization-layout">
-        <Card title="기업 분류" caption="법적 형태는 현재 주식회사로 유지합니다. 비영리법인 동작은 배당·잔여재산 제한을 구현한 뒤 활성화합니다.">
+        <Card title="기업 분류" caption="법인 형태, 영리성, 소유 유형, 공공기관 분류는 별도 속성입니다.">
+          <LegalFormEditor key={organization.organization_code} organization={organization} saving={saving} onSave={(legal_form) => void saveAction({ action: "legal_form", organization_code: organization.organization_code, legal_form }, "법인 형태를 저장했습니다.")} />
           <ClassificationEditor key={organization.organization_code} organization={organization} saving={saving} onSave={(ownership_type, public_enterprise_type) => void saveAction({ action: "classification", organization_code: organization.organization_code, ownership_type, public_enterprise_type }, "기업 분류를 저장했습니다.")} />
         </Card>
         <Card title={`${organization.name || organization.organization_code} · 규모`} caption={`자동 판정: ${organization.auto_size ? SIZE[organization.auto_size] : "자료 부족"} · 현재 표시: ${organization.display_size ? SIZE[organization.display_size] : "자료 부족"}`}>
@@ -166,10 +182,13 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
           <div className="organization-form-row"><Field label="관리자 지정 규모"><select key={organization.organization_code} id="organization-size-override" defaultValue={organization.size_override ?? ""}><option value="">자동 판정 사용</option><option value="sme">중소기업</option><option value="mid_market">중견기업</option><option value="large">대기업</option></select></Field>
             <button type="button" disabled={saving} onClick={() => { const size = (document.getElementById("organization-size-override") as HTMLSelectElement).value || null; void saveAction({ action: "size_override", organization_code: organization.organization_code, size, reason: "관리자 대시보드 지정" }, "기업 규모 지정을 저장했습니다."); }}>규모 적용</button></div>
         </Card>
-        <Card className="organization-issuances" title="주식 발행 종류" caption="모든 주식은 같은 종목·발행 절차를 사용합니다. 의결권·경제지분·배당 조건은 각 발행 종류의 권리로 설정합니다.">
+        {organization.legal_form === "stock_company" ? <Card className="organization-issuances" title="주식 발행 종류" caption="주식회사만 주식 종류를 발행할 수 있습니다. 의결권·경제지분·배당 조건은 발행 종류별 권리입니다.">
           {organization.issuances.map((issue) => <IssuanceEditor key={issue.company_code} issue={issue} saving={saving} canRetire={issue.company_code !== organization.organization_code} onIssue={(payload) => void issueShares(issue, payload)} onRetire={() => void retireIssuance(issue)} onReduce={(ratio) => void reduceShares(issue, ratio)} onSave={(rights) => saveAction({ action: "issuance_rights", issuance_id: issue.issuance_id, company_code: issue.company_code, class_name: rights.class_name, voting_rights_per_share: rights.voting_rights_per_share, economic_interest_per_share: rights.economic_interest_per_share, rights: rights.dividend }, `${rights.class_name} 권리를 저장했습니다.`)} />)}
           <NewIssuanceForm key={organization.organization_code} organization={organization} saving={saving} onCreate={(payload) => void saveAction({ action: "issuance_create", ...payload }, `${payload.class_name} 주식 종류를 추가했습니다.`)} />
-        </Card>
+        </Card> : <Card title="출자지분 명부" caption="비주식 법인의 지분은 출자금, 경제적 지분, 의결권으로 기록하며 거래 가능한 주식 수로 환산하지 않습니다.">
+          {organization.capital_interests.map((interest) => <div className="organization-inset" key={`${interest.holder_kind}:${interest.holder_id}`}><strong>{interest.holder_kind} · {interest.holder_id}</strong><p>{interest.contribution_amount} {interest.currency_code} · 경제 지분 {interest.economic_percent}% · 의결권 {interest.voting_percent}%</p></div>)}
+          <CapitalInterestForm saving={saving} onSave={(payload) => void saveAction({ action: "capital_interest", organization_code: organization.organization_code, ...payload }, "출자지분을 저장했습니다.")} />
+        </Card>}
       </div>
       <Card title="지분·의결권 구조" caption="위쪽으로 직접 주주와 법인 주주의 보유 관계를 펼칩니다. 선에는 경제적 지분과 의결권 비율을 각각 표시합니다.">
         <a className="btn primary" href={appUrl("dashboard", `/#ownership/organization/${encodeURIComponent(selected)}`)} target="_blank" rel="noopener noreferrer">조직도 새 창에서 보기 ↗</a>
@@ -180,6 +199,37 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
 
 function Metric({ label, value }: { label: string; value: string }) {
   return <section className="tile"><p className="tile-label">{label}</p><BigValue value={value} /></section>;
+}
+
+function LegalFormEditor({ organization, saving, onSave }: { organization: Org; saving: boolean; onSave: (legalForm: string) => void }) {
+  const [legalForm, setLegalForm] = useState(organization.legal_form || "stock_company");
+  return <div className="organization-form-row">
+    <Field label="법인 형태"><select value={legalForm} onChange={(event) => setLegalForm(event.target.value)}>{Object.entries(LEGAL_FORMS).map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select></Field>
+    <span className="hint">주식회사는 주식 발행, 나머지는 출자지분 명부를 사용합니다.</span>
+    <button type="button" disabled={saving || legalForm === organization.legal_form} onClick={() => onSave(legalForm)}>법인 형태 저장</button>
+  </div>;
+}
+
+function CapitalInterestForm({ saving, onSave }: { saving: boolean; onSave: (payload: CapitalInterest) => void }) {
+  const [holderKind, setHolderKind] = useState<CapitalInterest["holder_kind"]>("company");
+  const [holderId, setHolderId] = useState("");
+  const [contribution, setContribution] = useState("0");
+  const [currency, setCurrency] = useState("NWX");
+  const [economic, setEconomic] = useState("0");
+  const [voting, setVoting] = useState("0");
+  return <form className="organization-form-row" onSubmit={(event) => {
+    event.preventDefault();
+    onSave({ holder_kind: holderKind, holder_id: holderId.trim(), contribution_amount: contribution, currency_code: currency.toUpperCase(), economic_percent: economic, voting_percent: voting });
+  }}>
+    <Field label="출자자 유형"><select value={holderKind} onChange={(event) => setHolderKind(event.target.value as CapitalInterest["holder_kind"])}><option value="user">사용자 ID</option><option value="company">법인 ID</option><option value="country">국가</option></select></Field>
+    <Field label="출자자 ID"><input required value={holderId} onChange={(event) => setHolderId(event.target.value)} placeholder={holderKind === "country" ? "국가명" : "ID"} /></Field>
+    <Field label="출자금"><input required inputMode="decimal" value={contribution} onChange={(event) => setContribution(event.target.value)} /></Field>
+    <Field label="통화 코드"><input required value={currency} onChange={(event) => setCurrency(event.target.value)} maxLength={12} /></Field>
+    <Field label="경제적 지분 (%)"><input required type="number" min="0" max="100" step="0.01" value={economic} onChange={(event) => setEconomic(event.target.value)} /></Field>
+    <Field label="의결권 (%)"><input required type="number" min="0" max="100" step="0.01" value={voting} onChange={(event) => setVoting(event.target.value)} /></Field>
+    <button type="submit" disabled={saving || !holderId.trim()}>출자지분 저장</button>
+    <p className="hint">같은 출자자의 항목은 새 행을 추가하지 않고 값이 갱신됩니다. 지분 이전은 기존 지분을 줄이고 새 출자자 항목을 등록해주세요.</p>
+  </form>;
 }
 
 function ClassificationEditor({ organization, saving, onSave }: { organization: Org; saving: boolean; onSave: (ownership: string, publicType: string) => void }) {

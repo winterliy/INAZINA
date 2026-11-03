@@ -28,7 +28,8 @@ VOLATILITY_BOUNDS = (1e-5, 0.01)
 
 # Every listed product with its exchange and lifecycle status.
 _LISTINGS = ("SELECT code, exchange_id, status FROM market_assets "
-             "UNION ALL SELECT company_code, exchange_id, status FROM company "
+             "UNION ALL SELECT company_code, exchange_id, "
+             "CASE WHEN status='active' AND trading_status='active' THEN 'active' ELSE 'inactive' END FROM company "
              "UNION ALL SELECT product_code, exchange_id, status FROM investment "
              "UNION ALL SELECT product_code, exchange_id, status FROM treasury_bond_products")
 

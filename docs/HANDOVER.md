@@ -259,10 +259,10 @@ npm run test:wl && npm run test:hts      # 프런트엔드 단위 테스트
 - **화면 검수의 빈틈**: 운영 DB에는 대출·외화 계좌·주문 데이터가 거의 없어서, 그 필드가 나오는 화면은 실제 데이터로 눈으로 검수하지 못했다. 서버가 일부 숫자를 문자열로 보내므로, 화면에서 숫자 메서드(`toFixed` 등)를 부를 때는 `Number()`로 감싼다.
 - **조직(organizations) 기능**: `web_api/organizations.py`, `managers/organization_manager.py`, 대시보드 `OrganizationPage.tsx`는 최근 추가되어 아직 진행 중이다. 기획은 [corporate.md의 기업·주식·지배구조 기획](corporate.md#기업주식지배구조-기획)에 있고, 구현이 기획보다 앞서거나 뒤처질 수 있으니 코드와 함께 읽는다.
 
-## 7. 최근 변경 (2026-10-31 ~ 11-01)
+## 7. 최근 변경 (2026-10-31 ~ 11-04)
 
 - **큰 금액 지원**: 10^18 이상을 오차 없이 저장·계산. 운영 DB를 새 형식으로 전환했다. → [wide_money.md](wide_money.md)
-- **3DSG 장외시장**: 비상장 법인은 거래소 `3DSG`(장외시장)에 속해 거래된다. 코드의 내부 상수 `MarketSessionManager.UNLISTED`가 `"3DSG"`를 가리킨다. 예전 `UNLISTED` 값은 시작할 때 `3DSG`로 옮겨진다(`CompanyDB._rename_unlisted_exchange`).
+- **시장 경로·거래 상태·법인 형태**: `market_exchanges.market_type`은 거래소와 장외시장을 구분하고, `company.exchange_id=NULL`은 해당 법인의 국적에 사용할 장외시장이 없거나 별도 시장에 등록하지 않은 비상장 상태다. `3DSG`는 낙원 소속 장외시장이다. `company.trading_status`는 법인 존속 상태와 분리되어 거래중지/재개를 관리한다. 주식회사는 주식 원장을, 유한회사·유한책임회사·합명회사·합자회사는 출자지분 원장을 사용한다. 기존 `UNLISTED` 주식은 낙원 법인만 3DSG로 옮기고 그 외 국적은 거래소 없음으로 바꾼다.
 - **국가 계정 통합**: 국고 계정이 곧 국가의 계정이다. 국가 이름으로 남아 있던 비활성 잔재 사용자를 시작할 때 정리한다(`database/nation_accounts.py`).
 - **정식 액면분할·주식분할·액면병합**과 일반 비율분할. → [corporate.md](corporate.md)
 - **HTS 검색**: 국가별 기준금리·법정 최고이자·거래소 지수를 검색할 때만 일반 결과 행으로 보여준다(`web_api/search_indicators.py`, `apps/hts/src/SearchIndicators.tsx`). 환율은 환율 행으로만 보이고 실시간 차트로 가지 않는다.

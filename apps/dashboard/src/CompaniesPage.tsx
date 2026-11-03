@@ -2,11 +2,11 @@ import { formatQuantity, moneyAdd, moneyCompare, minorMoney, moneyMultiply, mone
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
 import { Donut, ShareholderPie, VotingRightsPie, topSlices, type Shareholders } from "./Donut";
-import { Card, Field, number, plain, show, type Ctx, BigValue } from "./common";
+import { Card, Field, number, plain, type Ctx, BigValue } from "./common";
 import { CompanyLedger } from "./CompanyLedger";
 
 type Holding = { asset_code: string; quantity: number };
-type Company = { company_code: string; name: string; exchange_id: string; status?: "active" | "inactive"; total_shares: number; listed_shares: number | null; share_price: Money; capital: Money; par_value_minor_units: string | null; quote_currency: string; share_decimal_places: number; currency: string; base_currency?: string; cash: Money; cash_base?: Money; locked: Money; account: string | null; holdings: Holding[]; accounts: number; loans: Money; parents: { code: string; percent: number }[]; largest_shareholder?: { id: string; name: string; shares: Money } | null; max_voting_holder?: { id: string; name: string; percent: string } | null; ultimate_controller?: { id: string; kind: "user" | "company"; name: string; shares: string; percent: string } | null };
+type Company = { company_code: string; name: string; exchange_id: string | null; exchange_type?: "exchange" | "otc" | null; status?: "active" | "inactive"; trading_status?: "active" | "suspended"; nationality?: string; legal_form?: string; ownership_unit?: string; total_shares: number; listed_shares: number | null; share_price: Money; capital: Money; par_value_minor_units: string | null; quote_currency: string; share_decimal_places: number; currency: string; base_currency?: string; cash: Money; cash_base?: Money; locked: Money; account: string | null; holdings: Holding[]; accounts: number; loans: Money; parents: { code: string; percent: number }[]; largest_shareholder?: { id: string; name: string; shares: Money } | null; max_voting_holder?: { id: string; name: string; percent: string } | null; ultimate_controller?: { id: string; kind: "user" | "company"; name: string; shares: string; percent: string } | null };
 type CommandField = { key: string; label: string; kind: string; optional: boolean; hint: string };
 type Command = { name: string; group: string; description: string; guide: string; fields: CommandField[] };
 type Stock = { name: string; code: string; qty: number; value: Money; price: Money };
@@ -14,7 +14,7 @@ type Account = { number: string; product_name: string; balance: Money };
 type Assets = { cash: Money; grand_total: Money; loan_total: Money; net_worth: Money; stocks: Stock[]; accounts: Account[] };
 type Detail = { account: string; webLogin: boolean; loginId: string; assets: Assets; shareholders: Shareholders };
 
-const UNLISTED = "3DSG";
+const LEGAL_FORMS: Record<string, string> = { stock_company: "주식회사", limited_company: "유한회사", limited_liability_company: "유한책임회사", general_partnership: "합명회사", limited_partnership: "합자회사" };
 
 /**
  * 상장하기 / 비상장 전환하기: list the company on an exchange with the share of it offered
@@ -23,51 +23,46 @@ const UNLISTED = "3DSG";
  */
 function ListingControl({ ctx, company, onDone }: { ctx: Ctx; company: Company; onDone: () => void }) {
   const { busy, run, say } = ctx;
-  const current = company.exchange_id || UNLISTED;
-  const listedNow = current !== UNLISTED;
+  const current = company.exchange_id || "";
   const currentPercent = company.listed_shares == null ? 100 : Math.round(company.listed_shares / company.total_shares * 10000) / 100;
-  const [mode, setMode] = useState<"list" | "unlist">("list");
-  const [exchanges, setExchanges] = useState<string[]>([]);
-  const [target, setTarget] = useState(listedNow ? current : "");
+  const [exchanges, setExchanges] = useState<{ exchange_id: string; nationality: string; market_type: "exchange" | "otc" }[]>([]);
+  const [target, setTarget] = useState(current);
   const [percent, setPercent] = useState(String(currentPercent));
   useEffect(() => {
-    api<{ exchanges: { exchange_id: string }[] }>("/api/admin/exchanges").then((result) => {
-      const ids = result.exchanges.map((item) => item.exchange_id).filter((id) => id !== "CURRENCY" && id !== UNLISTED);
-      setExchanges(ids);
-      setTarget((value) => value || ids[0] || "");
-    }).catch(() => undefined);
-  }, []);
+    api<{ exchanges: { exchange_id: string; nationality: string; market_type: "exchange" | "otc" }[] }>("/api/admin/exchanges")
+      .then((result) => setExchanges(result.exchanges.filter((item) => item.exchange_id !== "CURRENCY" && item.nationality === company.nationality)))
+      .catch(() => undefined);
+  }, [company.nationality]);
+  useEffect(() => setTarget(current), [current]);
+  const venue = exchanges.find((item) => item.exchange_id === target);
   const ratio = Number(percent);
   const listed = Math.floor(company.total_shares * ratio / 100);
-  const ratioValid = ratio <= 100 && listed >= 1;
-  const changed = !listedNow || target !== current || ratio !== currentPercent;
+  const ratioValid = venue?.market_type !== "exchange" || (ratio > 0 && ratio <= 100 && listed >= 1);
+  const changed = target !== current || (venue?.market_type === "exchange" && ratio !== currentPercent);
 
-  function save(exchange: string, listedShares: number | null, question: string) {
+  function save(question: string) {
     if (!window.confirm(question)) return;
     void run(async () => {
       const detail = await api<{ kind: string }>(`/api/admin/products/${encodeURIComponent(company.company_code)}`);
-      return api<{ message: string; success: boolean }>("/api/admin/products", { method: "POST", body: JSON.stringify({ operation: "edit", kind: detail.kind, code: company.company_code, fields: { exchange_id: exchange }, advanced: { listed_shares: listedShares } }) });
-    }, "상장 상태를 바꾸지 못했습니다.", (result) => { say(plain(result.message), !result.success); if (result.success) onDone(); });
+      const listedShares = venue?.market_type === "exchange" && ratio !== 100 ? listed : null;
+      return api<{ message: string; success: boolean }>("/api/admin/products", { method: "POST", body: JSON.stringify({ operation: "edit", kind: detail.kind, code: company.company_code, fields: {}, advanced: { exchange_id: target || null, listed_shares: listedShares } }) });
+    }, "시장 경로를 바꾸지 못했습니다.", (result) => { say(plain(result.message), !result.success); if (result.success) onDone(); });
   }
-  const list = () => save(target, ratio === 100 ? null : listed,
-    `${company.name} (${company.company_code})를 ${target}에 전체 ${number(company.total_shares)}주 중 ${ratio}% (${number(listed)}주) 상장할까요?\n시장에 풀리는 주식은 상장 주식 수까지입니다(이미 보유 중인 주식 포함).`);
-  const unlist = () => save(UNLISTED, null,
-    `${company.name} (${company.company_code})를 비상장으로 전환할까요?\n장외시장 3DSG로 옮겨 계속 매매됩니다. 주주의 보유 주식은 그대로 남습니다.`);
-
+  const venueLabel = venue ? `${venue.exchange_id} · ${venue.market_type === "otc" ? "장외시장" : "거래소"}` : "거래소 없음 · 비상장";
   return <div className="listing-control">
-    <div className="segment-tabs" role="radiogroup" aria-label="상장 상태">
-      {([["list", "상장하기"], ["unlist", "비상장 전환하기"]] as const).map(([key, label]) => <button key={key} type="button" role="radio" aria-checked={mode === key} className={mode === key ? "active" : ""} onClick={() => setMode(key)}>{label}</button>)}
-    </div>
-    {mode === "list" ? <>
-      <Field label="상장 거래소" hint={listedNow ? `지금 ${current} · ${currentPercent}% 상장` : "지금 비상장 · 장외시장 3DSG"}>
-        <select value={target} onChange={(event) => setTarget(event.target.value)}>{exchanges.map((id) => <option key={id} value={id}>{id}</option>)}</select>
-      </Field>
-      <Field label="상장 비율 (%)" hint={ratioValid ? `${number(listed)}주 / ${number(company.total_shares)}주` : "0 초과 100 이하"}><input type="number" min="0.01" max="100" step="0.01" value={percent} onChange={(event) => setPercent(event.target.value)} /></Field>
-      <button className="btn primary" type="button" disabled={busy || !target || !ratioValid || !changed} onClick={list}>{listedNow ? "상장 조건 저장" : "상장하기"}</button>
-    </> : <>
-      <p className="hint">{listedNow ? `${current}에서 상장을 폐지하고 장외시장 3DSG로 옮깁니다. 다시 상장하려면 상장하기를 고르세요.` : "이미 비상장입니다."}</p>
-      <button className="soft danger" type="button" disabled={busy || !listedNow} onClick={unlist}>비상장 전환</button>
-    </>}
+    <Field label="시장 경로" hint={`${company.nationality || "국적 미지정"} · ${venueLabel}`}>
+      <select value={target} onChange={(event) => setTarget(event.target.value)}><option value="">거래소 없음 · 비상장</option>{exchanges.map((item) => <option key={item.exchange_id} value={item.exchange_id}>{item.exchange_id} · {item.market_type === "otc" ? "장외시장" : "거래소"}</option>)}</select>
+    </Field>
+    {venue?.market_type === "exchange" && <Field label="상장 비율 (%)" hint={ratioValid ? `${number(listed)}주 / ${number(company.total_shares)}주` : "0 초과 100 이하"}><input type="number" min="0.01" max="100" step="0.01" value={percent} onChange={(event) => setPercent(event.target.value)} /></Field>}
+    <button className="btn primary" type="button" disabled={busy || !ratioValid || !changed} onClick={() => save(`${company.name} (${company.company_code})의 시장 경로를 ${venueLabel}(으)로 변경할까요?${venue?.market_type === "exchange" ? `\n발행 주식 ${number(company.total_shares)}주 중 ${ratio}% (${number(listed)}주)를 상장합니다.` : "\n주주의 보유 지분은 유지됩니다."}`)}>시장 경로 저장</button>
+    <button className="soft" type="button" disabled={busy || company.trading_status === "suspended"} onClick={() => {
+      if (!window.confirm(`${company.name}의 거래를 중지할까요? 미체결 주문은 취소되며 법인과 주주 지분은 유지됩니다.`)) return;
+      void run(() => api<{ message: string; success: boolean }>(`/api/admin/companies/${encodeURIComponent(company.company_code)}/trading-status`, { method: "POST", body: JSON.stringify({ tradingStatus: "suspended" }) }), "거래를 중지하지 못했습니다.", (result) => { say(plain(result.message), !result.success); if (result.success) onDone(); });
+    }}>거래중지</button>
+    <button className="soft" type="button" disabled={busy || company.trading_status !== "suspended"} onClick={() => {
+      if (!window.confirm(`${company.name}의 거래를 재개할까요?`)) return;
+      void run(() => api<{ message: string; success: boolean }>(`/api/admin/companies/${encodeURIComponent(company.company_code)}/trading-status`, { method: "POST", body: JSON.stringify({ tradingStatus: "active" }) }), "거래를 재개하지 못했습니다.", (result) => { say(plain(result.message), !result.success); if (result.success) onDone(); });
+    }}>거래재개</button>
   </div>;
 }
 
@@ -217,7 +212,7 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
     {company && <>
       <div className="subpage-bar">
         <button className="soft" type="button" onClick={() => { setSelected(""); setDetail(null); }}>← 법인 목록으로 돌아가기</button>
-        <p><b>{company.name}</b> <span className="mono">{company.company_code} · {company.exchange_id === UNLISTED ? "3DSG (장외)" : company.exchange_id}</span></p>
+        <p><b>{company.name}</b> <span className="mono">{company.company_code} · {LEGAL_FORMS[company.legal_form ?? "stock_company"] ?? "법인"} · {company.exchange_id ? `${company.exchange_id}${company.exchange_type === "otc" ? " 장외시장" : " 거래소"}` : "거래소 없음 · 비상장"} · {company.trading_status === "suspended" ? "거래중지" : "거래중"}</span></p>
       </div>
       <Card title="개요 · 지분" caption={<>계정 <span className="mono">{detail?.account ?? company.account ?? "첫 실행 때 개설"}</span> · 현금·잠금 예치금은 법인 국적 통화로 실시간 환산됩니다 · 거래는 재무제표에 자동 기록됩니다</>}
         actions={<button className="soft" type="button" onClick={() => { setSelected(""); setDetail(null); }}>닫기</button>}>
@@ -308,13 +303,13 @@ export function CompaniesPage({ ctx }: { ctx: Ctx }) {
 
     {!company && <><div className="tile-row">
       <section className="tile"><p className="tile-label">법인</p><p className="tile-value">{number(companies.length)}</p></section>
-      <section className="tile"><p className="tile-label">장외 3DSG</p><p className="tile-value">{number(companies.filter((item) => item.exchange_id === UNLISTED).length)}</p></section>
+      <section className="tile"><p className="tile-label">장외시장 등록</p><p className="tile-value">{number(companies.filter((item) => item.exchange_type === "otc").length)}</p></section>
       <section className="tile"><p className="tile-label">법인 현금 합계 · {companies[0]?.base_currency ?? ""}</p><BigValue value={number(companies.reduce<Money>((sum, item) => moneyAdd(sum, item.cash_base ?? item.cash), "0"))} /></section>
     </div>
     <Card title="법인 자본" caption="법인은 사람이 아니라 로그인하지 않지만, 자본은 다른 계정과 똑같이 주식·상품 매수매도, 통장, 대출, 송금을 할 수 있습니다. 자기 회사 주식을 사면 자기주식(배당 없음), 다른 회사 지분을 과반 사면 자회사가 됩니다. Discord에서는 $법인 또는 $login [법인ID]를 씁니다.">
       <div className="scroll-x tall"><table><thead><tr><th>법인</th><th>이름</th><th>거래소</th><th className="r">현금</th><th className="r">보유 종목</th><th className="r">통장</th><th className="r">대출</th><th>모회사</th><th>최대주주</th><th>최대 의결권 보유자</th><th>실질 지배자</th></tr></thead><tbody>
         {visible.map((item) => <tr key={item.company_code} className={item.company_code === selected ? "clickable selected" : "clickable"} tabIndex={0} onClick={() => void open(item.company_code).catch((cause) => say(cause instanceof Error ? cause.message : "법인을 열지 못했습니다.", true))} onKeyDown={(event) => { if (event.key === "Enter") void open(item.company_code); }}>
-          <td className="mono">{item.company_code}</td><td>{item.name}</td><td>{item.status === "inactive" ? <span className="tag">비상장·거래중지</span> : item.exchange_id === UNLISTED ? <span className="tag">3DSG 장외</span> : show(item.exchange_id)}</td>
+          <td className="mono">{item.company_code}</td><td>{item.name}</td><td>{item.exchange_id ? <span className="tag">{item.exchange_id}{item.exchange_type === "otc" ? " · 장외" : " · 거래소"}</span> : <span className="tag">비상장 · 거래소 없음</span>} {item.trading_status === "suspended" && <span className="tag">거래중지</span>}</td>
           <td className="r mono">{number(item.cash)} {item.currency}</td><td className="r">{number(item.holdings.length)}</td><td className="r">{number(item.accounts)}</td><td className="r mono">{number(item.loans)}</td>
           <td>{item.parents.length ? item.parents.map((parent) => `${parent.code} 의결 ${Number(parent.percent).toFixed(1)}%`).join(", ") : "—"}</td>
           <td>{item.largest_shareholder ? <>{item.largest_shareholder.name}<br /><span className="mono">{formatQuantity(item.largest_shareholder.shares)}주</span></> : "—"}</td>

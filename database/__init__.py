@@ -59,6 +59,7 @@ class DatabaseManager:
             self.financial = FinancialDB()
             self.credit = CreditDB()
             self.organizations = OrganizationDB()
+            self.companies.backfill_nationality_from_exchange()
             self.currency.register_late_amount_fields()
             from .nation_accounts import merge_legacy_nation_users
             merge_legacy_nation_users(self)

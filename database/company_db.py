@@ -24,7 +24,22 @@ class CompanyDB(DBManager):
                 market_volatility REAL DEFAULT NULL
             )
         ''')
+        self.execute("""CREATE TABLE IF NOT EXISTS company_capital_interests (
+            interest_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            organization_code TEXT NOT NULL,
+            holder_id TEXT NOT NULL,
+            holder_kind TEXT NOT NULL CHECK(holder_kind IN ('user','company','country')),
+            contribution_amount TEXT NOT NULL DEFAULT '0',
+            currency_code TEXT NOT NULL,
+            economic_percent TEXT NOT NULL DEFAULT '0',
+            voting_percent TEXT NOT NULL DEFAULT '0',
+            created_epoch INTEGER NOT NULL DEFAULT (unixepoch()),
+            updated_epoch INTEGER NOT NULL DEFAULT (unixepoch()),
+            UNIQUE(organization_code,holder_kind,holder_id)
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_capital_interests_holder ON company_capital_interests(holder_kind,holder_id)")
         columns = {row[1] for row in self.execute("PRAGMA table_info(company)")}
+        added_trading_status = "trading_status" not in columns
         if "is_fixed" not in columns:
             self.execute("ALTER TABLE company ADD COLUMN is_fixed INTEGER NOT NULL DEFAULT 0")
         if "market_condition" not in columns:
@@ -54,9 +69,16 @@ class CompanyDB(DBManager):
             "listed_shares": "INTEGER DEFAULT NULL CHECK(listed_shares IS NULL OR listed_shares >= 0)",
             # Stable link to the legal share issuance; company_code remains the market ticker.
             "share_issuance_id": "INTEGER",
+            "legal_form": "TEXT NOT NULL DEFAULT 'stock_company' CHECK(legal_form IN ('stock_company','limited_company','limited_liability_company','general_partnership','limited_partnership'))",
+            "ownership_unit": "TEXT NOT NULL DEFAULT 'shares' CHECK(ownership_unit IN ('shares','capital_interest'))",
+            "trading_status": "TEXT NOT NULL DEFAULT 'active' CHECK(trading_status IN ('active','suspended'))",
+            "nationality": "TEXT NOT NULL DEFAULT '낙원'",
         }.items():
             if column not in columns:
                 self.execute(f"ALTER TABLE company ADD COLUMN {column} {declaration}")
+        if added_trading_status:
+            # Older inactive stock rows represented trade suspension, not legal dissolution.
+            self.execute("UPDATE company SET trading_status='suspended',status='active' WHERE status='inactive'")
         # Company stock dividends always come from the issuing company's cash.
         self.execute("UPDATE company SET dividend_funding='issuer' WHERE dividend_funding<>'issuer'")
         self.execute("""
@@ -73,14 +95,35 @@ class CompanyDB(DBManager):
         """)
         if "dividend_priority" not in columns:
             self.execute("UPDATE company SET dividend_priority=1 WHERE share_class='preferred'")
-        self._rename_unlisted_exchange()
         self.initialize_dividend_activation("company", "company_code")
         self.enforce_integer_money("company", ("capital", "share_price"), "company_code")
 
+    def backfill_nationality_from_exchange(self):
+        """Preserve each existing company's home country before venues become optional."""
+        self.execute("UPDATE company SET nationality=COALESCE((SELECT o.country_code FROM organizations o "
+                     "WHERE o.organization_code=company.company_code),nationality) WHERE EXISTS "
+                     "(SELECT 1 FROM organizations o WHERE o.organization_code=company.company_code "
+                     "AND o.country_code IS NOT NULL)")
+        self.execute("UPDATE company SET nationality=COALESCE((SELECT nationality FROM market_exchanges e "
+                     "WHERE e.exchange_id=company.exchange_id),nationality) WHERE exchange_id IS NOT NULL "
+                     "AND exchange_id<>'UNLISTED' "
+                     "AND EXISTS(SELECT 1 FROM market_exchanges e WHERE e.exchange_id=company.exchange_id)")
+        # The organization catalog is the authoritative legal classification when it exists.
+        self.execute("UPDATE company SET legal_form=(SELECT o.legal_form FROM organizations o "
+                     "WHERE o.organization_code=company.company_code), ownership_unit=CASE "
+                     "WHEN (SELECT o.legal_form FROM organizations o WHERE o.organization_code=company.company_code)='stock_company' "
+                     "THEN 'shares' ELSE 'capital_interest' END WHERE EXISTS "
+                     "(SELECT 1 FROM organizations o WHERE o.organization_code=company.company_code "
+                     "AND o.legal_form IN ('stock_company','limited_company','limited_liability_company','general_partnership','limited_partnership'))")
+        self._rename_unlisted_exchange()
+
     def _rename_unlisted_exchange(self):
-        """Unlisted companies moved from the UNLISTED marker to the 3DSG over-the-counter market."""
+        """Map the old sentinel only to Nakwon's OTC venue; other private assets get no venue."""
         tables = {row[0] for row in self.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        for table in ("company", "market_assets", "investment", "treasury_bond_products"):
+        if "company" in tables:
+            self.execute("UPDATE company SET exchange_id=CASE WHEN nationality='낙원' THEN '3DSG' ELSE NULL END "
+                         "WHERE exchange_id='UNLISTED'")
+        for table in ("market_assets", "investment", "treasury_bond_products"):
             if table in tables:
                 self.execute(f"UPDATE {table} SET exchange_id='3DSG' WHERE exchange_id='UNLISTED'")
 

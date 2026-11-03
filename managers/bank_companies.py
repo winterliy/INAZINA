@@ -12,7 +12,6 @@ list is read; :func:`ensure` runs right after the dashboard creates a bank.
 """
 from functions.exact_money import ExactDecimal, native_value
 from managers.company_account_manager import CompanyAccounts
-from managers.market_session_manager import MarketSessionManager
 
 INDUSTRY = "은행"
 SHARES = 1_000_000
@@ -32,12 +31,17 @@ def ensure(conn, issuer):
             # Another product already uses the bank's ID as its code; never take it over.
             return None
         from managers.currency_manager import CurrencyManager
+        venue = conn.execute(
+            "SELECT exchange_id FROM market_exchanges WHERE nationality=? AND market_type='otc' "
+            "ORDER BY exchange_id LIMIT 1", (str(bank["nationality"]),)
+        ).fetchone()
         capital = ExactDecimal(bank["equity_capital"] or 0)
         conn.execute(
-            "INSERT INTO company(company_code,name,industry,capital,total_shares,share_price,max_shareholder_id,exchange_id) "
-            "VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT INTO company(company_code,name,industry,capital,total_shares,share_price,max_shareholder_id,exchange_id,nationality) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
             (code, bank["issuer"], INDUSTRY, capital, SHARES, max(1, round(capital / SHARES)),
-             CurrencyManager.treasury_id(conn, bank["nationality"]), MarketSessionManager.UNLISTED))
+             CurrencyManager.treasury_id(conn, bank["nationality"]), str(venue[0]) if venue else None,
+             str(bank["nationality"])))
     elif company["industry"] != INDUSTRY:
         return None
     CompanyAccounts.account_id(conn, code)

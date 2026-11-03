@@ -143,10 +143,10 @@ class CompanyAccounts:
             raise ValueError("거래 중인 보통주 법인 코드를 입력해주세요. 우선주는 소속 법인의 자본을 사용합니다.")
         # The issuer's cash is 기준 통화, so the account lives in an 기준 통화 country:
         # the listing country when it uses 기준 통화, otherwise 낙원.
-        listing = conn.execute("SELECT e.nationality FROM market_exchanges e JOIN country_currencies c "
-                               "ON c.nationality=e.nationality WHERE e.exchange_id=? AND c.currency_code=base_currency_code()",
-                               (company["exchange_id"],)).fetchone()
-        nationality = listing[0] if listing else "낙원"
+        listing = conn.execute("SELECT COALESCE(e.nationality,c.nationality) FROM company c "
+                               "LEFT JOIN market_exchanges e ON e.exchange_id=c.exchange_id "
+                               "WHERE c.company_code=?", (code,)).fetchone()
+        nationality = listing[0] if listing and listing[0] else "낙원"
         conn.execute("INSERT OR IGNORE INTO issuer_cash_accounts(company_code) VALUES (?)", (code,))
         cash = conn.execute("SELECT balance FROM issuer_cash_accounts WHERE company_code=?", (code,)).fetchone()[0]
         user_id = PREFIX + code  # non-decimal: can never be a Discord or web login
@@ -340,7 +340,7 @@ class CompanyAccounts:
     @staticmethod
     def summary(conn):
         rows = conn.execute(
-            "SELECT c.company_code,c.name,c.exchange_id,c.status,c.total_shares,c.listed_shares,c.share_price,c.capital,c.par_value_minor_units,c.quote_currency,"
+            "SELECT c.company_code,c.name,c.exchange_id,(SELECT market_type FROM market_exchanges e WHERE e.exchange_id=c.exchange_id) exchange_type,c.status,c.trading_status,c.nationality,c.legal_form,c.ownership_unit,c.total_shares,c.listed_shares,c.share_price,c.capital,c.par_value_minor_units,c.quote_currency,"
             "COALESCE(i.balance,0) cash,COALESCE(i.locked_amount,0) locked,a.user_id account "
             "FROM company c LEFT JOIN issuer_cash_accounts i ON i.company_code=c.company_code "
             "LEFT JOIN company_accounts a ON a.company_code=c.company_code "

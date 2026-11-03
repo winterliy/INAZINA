@@ -6,7 +6,7 @@ import { Card, Field, date, number, plain, show, type Ctx } from "./common";
 type Component = { company_code: string; name: string | null; previous_price: number; total_shares: number };
 type Listing = { code: string; name: string | null; kind: string; share_class: "common" | "preferred" | null; quote_currency: string | null; status: string };
 type CurrencyPair = { code: string; name: string; price: Money; quote_currency: string | null; status: string };
-type Exchange = { exchange_id: string; nationality: string; operator_company_code?: string | null; operator_name?: string | null; status: "open" | "closed" | "paused"; reason: string; trading_halted: number; circuit_stage: number | null; halt_started_epoch: number | null; resume_epoch: number | null; updated_epoch: number; hours: Schedule; hours_label: string; index_value: number; index_updated_epoch: number; products: number; listings: Listing[]; components: Component[]; currency_pairs?: CurrencyPair[] };
+type Exchange = { exchange_id: string; nationality: string; market_type: "exchange" | "otc"; operator_company_code?: string | null; operator_name?: string | null; status: "open" | "closed" | "paused"; reason: string; trading_halted: number; circuit_stage: number | null; halt_started_epoch: number | null; resume_epoch: number | null; updated_epoch: number; hours: Schedule; hours_label: string; index_value: number; index_updated_epoch: number; products: number; listings: Listing[]; components: Component[]; currency_pairs?: CurrencyPair[] };
 type Result = { message: string; success: boolean };
 
 const STATUS: Record<string, string> = { open: "개장", closed: "휴장", paused: "정지" };
@@ -22,7 +22,7 @@ export function ExchangesPage({ ctx }: { ctx: Ctx }) {
   const [countries, setCountries] = useState<string[]>([]);
   const [selected, setSelected] = useState("");
   const [nationality, setNationality] = useState("");
-  const [draft, setDraft] = useState({ id: "", nationality: "" });
+  const [draft, setDraft] = useState({ id: "", nationality: "", marketType: "exchange" as "exchange" | "otc" });
   const [hours, setHours] = useState<Hours>({ open: "", close: "", days: [1, 2, 3, 4, 5], holidays: "" });
 
   const load = useCallback(async () => {
@@ -93,24 +93,27 @@ export function ExchangesPage({ ctx }: { ctx: Ctx }) {
         <Field label="국가" hint="금리·세율·국채 기준이 됩니다"><select value={nationality} onChange={(event) => setNationality(event.target.value)}>{countries.map((country) => <option key={country} value={country}>{country}</option>)}</select></Field>
         <button className="btn primary" type="button" disabled={busy || nationality === exchange.nationality} onClick={() => act(exchange.exchange_id, { action: "nationality", nationality }, `${exchange.exchange_id} 거래소 국가를 ${nationality}(으)로 바꿀까요?`)}>국가 저장</button>
       </div>
+      <h3 className="sub-head">시장 구분</h3>
+      <div className="form-grid"><Field label="구분"><select value={exchange.market_type} onChange={(event) => void act(exchange.exchange_id, { action: "market_type", marketType: event.target.value }, `${exchange.exchange_id}를 ${event.target.value === "otc" ? "장외시장" : "거래소"}(으)로 구분할까요?`)}><option value="exchange">거래소</option><option value="otc">장외시장</option></select></Field></div>
       <h3 className="sub-head">상장 상품 전체</h3>
       <div className="scroll-x"><table><thead><tr><th>코드</th><th>이름</th><th>상품 종류</th><th>주식 클래스</th><th>통화</th></tr></thead><tbody>{exchange.listings.map((item) => <tr key={`${item.kind}:${item.code}`}><td className="mono">{item.code}</td><td>{show(item.name)}</td><td>{item.kind}</td><td>{item.share_class === "preferred" ? "우선주" : item.share_class === "common" ? "보통주" : "—"}</td><td className="mono">{item.quote_currency || "—"}</td></tr>)}</tbody></table>{!exchange.listings.length && <p className="empty">활성 상장 상품이 없습니다.</p>}</div>
       <h3 className="sub-head">지수 구성 종목</h3>
       <div className="scroll-x"><table><thead><tr><th>종목</th><th>이름</th><th className="r">기준 가격</th><th className="r">주식 수</th></tr></thead><tbody>{exchange.components.map((item) => <tr key={item.company_code}><td className="mono">{item.company_code}</td><td>{show(item.name)}</td><td className="r mono">{number(item.previous_price)}</td><td className="r mono">{number(item.total_shares)}</td></tr>)}</tbody></table>{!exchange.components.length && <p className="empty">지수 구성 종목이 없습니다. 이 거래소에 회사 주식을 상장하면 자동으로 포함됩니다.</p>}</div>
     </Card>}
 
-    <Card title="새 거래소" caption="거래소를 만든 뒤 상품 생성 시 거래소ID로 지정하세요. CURRENCY는 시스템 전용 ID입니다.">
-      <form className="form-grid" onSubmit={(event) => { event.preventDefault(); act(draft.id.trim(), { action: "create", nationality: draft.nationality }, `${draft.id} 거래소를 ${draft.nationality} 소속으로 만들까요?`); }}>
-        <Field label="거래소 ID" hint="공백 없이"><input className="mono" value={draft.id} required onChange={(event) => setDraft({ ...draft, id: event.target.value.toUpperCase() })} /></Field>
+    <Card title="새 거래소·장외시장" caption="국가별로 시장 유형을 지정합니다. 장외시장이 없는 국가는 만들지 않아도 되며, 해당 국가 회사는 거래소 없음으로 비상장 유지됩니다.">
+      <form className="form-grid" onSubmit={(event) => { event.preventDefault(); act(draft.id.trim(), { action: "create", nationality: draft.nationality, marketType: draft.marketType }, `${draft.id} ${draft.marketType === "otc" ? "장외시장" : "거래소"}를 ${draft.nationality} 소속으로 만들까요?`); }}>
+        <Field label="시장 ID" hint="공백 없이"><input className="mono" value={draft.id} required onChange={(event) => setDraft({ ...draft, id: event.target.value.toUpperCase() })} /></Field>
         <Field label="국가"><select value={draft.nationality} onChange={(event) => setDraft({ ...draft, nationality: event.target.value })}>{countries.map((country) => <option key={country} value={country}>{country}</option>)}</select></Field>
-        <button className="btn primary" disabled={busy || !draft.id.trim()}>거래소 만들기</button>
+        <Field label="시장 유형"><select value={draft.marketType} onChange={(event) => setDraft({ ...draft, marketType: event.target.value as "exchange" | "otc" })}><option value="exchange">거래소</option><option value="otc">장외시장</option></select></Field>
+        <button className="btn primary" disabled={busy || !draft.id.trim()}>시장 만들기</button>
       </form>
     </Card>
 
     <Card title="거래소" caption="일반 거래소 행을 눌러 거래 상태·국가·지수를 설정합니다. CURRENCY는 환전 시스템 전용으로 상태를 자동 운영합니다.">
       <div className="scroll-x tall"><table><thead><tr><th>거래소</th><th>국가</th><th>상태</th><th>거래 시간</th><th>사유</th><th>자동 재개</th><th className="r">지수</th><th className="r">상품</th><th className="r">지수 종목</th><th /></tr></thead><tbody>
         {visible.map((item) => <tr key={item.exchange_id} className={item.exchange_id === selected ? "clickable selected" : "clickable"} tabIndex={0} onClick={() => setSelected(item.exchange_id)} onKeyDown={(event) => { if (event.key === "Enter") setSelected(item.exchange_id); }}>
-          <td className="mono">{item.exchange_id}{item.exchange_id === "CURRENCY" && <span className="tag inline" title="환전과 통화쌍 시세(CUR_…)를 처리하는 시스템 전용 거래소입니다.">시스템</span>}</td><td>{item.exchange_id === "CURRENCY" ? "—" : item.nationality}</td>
+          <td className="mono">{item.exchange_id}{item.exchange_id === "CURRENCY" && <span className="tag inline" title="환전과 통화쌍 시세(CUR_…)를 처리하는 시스템 전용 거래소입니다.">시스템</span>}</td><td>{item.exchange_id === "CURRENCY" ? "—" : `${item.nationality} · ${item.market_type === "otc" ? "장외시장" : "거래소"}`}</td>
           <td><span className={item.exchange_id === "CURRENCY" || (item.status === "open" && !item.trading_halted) ? "tag ok" : "tag warn"}>{item.exchange_id === "CURRENCY" ? "시스템 운영" : item.circuit_stage ? `서킷 ${item.circuit_stage}단계` : STATUS[item.status] ?? item.status}</span></td>
           <td className="mono">{item.exchange_id === "CURRENCY" ? "24시간" : item.hours_label}</td><td>{item.exchange_id === "CURRENCY" ? "자동 관리" : item.reason || "—"}</td><td>{item.exchange_id === "CURRENCY" ? "—" : item.resume_epoch ? date(item.resume_epoch) : "—"}</td>
           <td className="r mono">{item.exchange_id === "CURRENCY" ? "—" : number(item.index_value)}</td><td className="r">{item.exchange_id === "CURRENCY" ? number(item.currency_pairs?.length ?? 0) : number(item.products)}</td><td className="r">{item.exchange_id === "CURRENCY" ? "—" : number(item.components.length)}</td>
