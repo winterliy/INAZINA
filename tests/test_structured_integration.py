@@ -17,7 +17,7 @@ class StructuredIntegrationTests(unittest.TestCase):
 
     def test_preferred_primary_proceeds_claim_wallet_and_deletion_protection(self):
         self.command('상품생성', 'CO company 회사 게임 10000 1000 1000 EX {"dividend_funding":"issuer"}')
-        self.command('상품생성', 'PR preferred 우선주 CO 0 100 1000 EX 1분 10 {"dividend_funding":"issuer","cumulative_dividend":1}')
+        self.command('상품생성', 'PR stock 우선주 게임 0 100 1000 EX 1분 10 {"share_class":"preferred","parent_company_code":"CO","dividend_funding":"issuer","cumulative_dividend":1}')
         success, message = self.bot.order_book.place_limit_order('citizen', 'PR', 'buy', 2, 1000)
         self.assertTrue(success, message)
         self.assertEqual(self.db.corporate.execute_one("SELECT balance FROM issuer_cash_accounts WHERE company_code='CO'")[0], 2000)
@@ -32,7 +32,7 @@ class StructuredIntegrationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '법인청산'):
                 self.command('상품삭제', code)
         self.assertEqual(self.db.companies.get_company('PR')['status'], 'active')
-        self.command('상품생성', 'PR2 preferred 우선주2 CO 0 100 900 EX {"liquidation_value_per_share":1000,"dividend_funding":"issuer","cumulative_dividend":1}')
+        self.command('상품생성', 'PR2 stock 우선주2 게임 0 100 900 EX {"share_class":"preferred","parent_company_code":"CO","liquidation_value_per_share":1000,"dividend_funding":"issuer","cumulative_dividend":1}')
         with self.assertRaisesRegex(ValueError, '가격이 같은'):
             self.command('합병', 'PR PR2')
         self.assertEqual(self.db.companies.get_company('PR2')['status'], 'active')
@@ -75,7 +75,9 @@ class StructuredIntegrationTests(unittest.TestCase):
 
     def test_referenced_index_survives_company_deletion_liquidation_and_merge(self):
         self.command('상품생성', 'CO company 회사 게임 10000 1000 100 EX')
-        self.command('상품생성', 'PR preferred 우선주 CO 0 100 100 EX')
+        self.command('상품생성', 'PR stock 우선주 게임 0 100 100 EX {"share_class":"preferred","parent_company_code":"CO"}')
+        self.db.system.execute("INSERT OR IGNORE INTO market_exchanges(exchange_id,status,updated_epoch,trading_halted,nationality) "
+                               "VALUES ('OTHEREX','open',0,0,'낙원')")
         self.command('상품생성', 'OTHER company 타회사 게임 10000 1000 100 OTHEREX')
         self.bot.market_mgr.update_prices(now=999,volatility=0)
         self.command('상품생성', 'E1 els 지수ELS 1000 20 __exchange_index__:EX 12 180 30 90 75 60 1 EX')

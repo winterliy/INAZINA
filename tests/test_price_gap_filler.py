@@ -19,12 +19,12 @@ class PriceGapFillerTests(unittest.TestCase):
             CREATE TABLE market_exchanges (exchange_id TEXT PRIMARY KEY, status TEXT, reason TEXT DEFAULT '',
                 open_time TEXT DEFAULT '', close_time TEXT DEFAULT '', trading_days TEXT DEFAULT '1,2,3,4,5',
                 holidays TEXT DEFAULT '[]', scheduled_close INTEGER DEFAULT 0);
-            CREATE TABLE company (company_code TEXT, exchange_id TEXT, status TEXT);
+            CREATE TABLE company (company_code TEXT, exchange_id TEXT, status TEXT, trading_status TEXT NOT NULL DEFAULT 'active');
             CREATE TABLE market_assets (code TEXT, exchange_id TEXT, status TEXT);
             CREATE TABLE investment (product_code TEXT, exchange_id TEXT, status TEXT);
             CREATE TABLE treasury_bond_products (product_code TEXT, exchange_id TEXT, status TEXT);
             INSERT INTO market_exchanges(exchange_id, status) VALUES ('EX', 'open');
-            INSERT INTO company VALUES ('CO', 'EX', 'active');
+            INSERT INTO company(company_code, exchange_id, status) VALUES ('CO', 'EX', 'active');
         """)
         rng = random.Random(1)
         price = 1000.0

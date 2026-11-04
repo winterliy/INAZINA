@@ -234,7 +234,9 @@ class EconomyTests(unittest.TestCase):
             "SELECT SUM(quantity) AS quantity FROM user_assets WHERE asset_code = 'ISSUE'"
         )["quantity"]
         self.assertEqual(total_held, 5)
-        self.assertEqual(self.db.users.get_treasury_balance(), 100)
+        # Primary proceeds are credited to the issuer's cash account, not the treasury.
+        self.assertEqual(self.db.corporate.execute_one(
+            "SELECT balance FROM issuer_cash_accounts WHERE company_code='ISSUE'")[0], 100)
         order = order_book.get_user_open_orders("citizen-2")[0]
         self.assertEqual(order["remaining_quantity"], 1)
         self.assertEqual(order["reserved_cash"], 100)
@@ -611,9 +613,8 @@ class EconomyTests(unittest.TestCase):
         self.db.products.register_liability("LOAN", "Loan", 3, 5000, 365, 3600, 600, "New Bank")
         success, message = self.bank.apply_loan("citizen-1", "LOAN", 1000)
         self.assertTrue(success, message)
-        account = self.db.accounts.get_user_accounts("citizen-1")[0]
-        self.assertEqual(account["account_type"], "loan_payout")
-        self.assertEqual(account["balance"], 1000)
+        # Loan proceeds are paid into the borrower's cash balance.
+        self.assertEqual(self.db.users.get_user("citizen-1")["cash"], 11000)
         self.assertTrue(self.bank.repay_loan("citizen-1", "LOAN", 250)[0])
         loan = self.db.accounts.execute_one("SELECT outstanding_balance FROM loans WHERE user_id='citizen-1'")
         self.assertEqual(loan["outstanding_balance"], 750)
@@ -678,8 +679,7 @@ class EconomyTests(unittest.TestCase):
             repayment_cycle_seconds=60, repayment_amount=250,
         )
         self.assertTrue(self.bank.apply_loan("citizen-1", "AUTO", 1000)[0])
-        payout = self.db.accounts.get_user_accounts("citizen-1")[0]
-        self.db.users.execute("UPDATE users SET cash = 0 WHERE user_id = 'citizen-1'")
+        self.db.users.execute("UPDATE users SET cash = 1000 WHERE user_id = 'citizen-1'")
         now = time.time()
         self.db.accounts.execute(
             "UPDATE loans SET last_repayment_epoch = ? WHERE user_id = 'citizen-1'",
@@ -695,7 +695,7 @@ class EconomyTests(unittest.TestCase):
             "SELECT outstanding_balance FROM loans WHERE user_id = 'citizen-1'"
         )
         self.assertEqual(loan["outstanding_balance"], 500)
-        self.assertEqual(self.db.accounts.get_account(payout["account_number"])["balance"], 500)
+        self.assertEqual(self.db.users.get_user("citizen-1")["cash"], 500)
 
     def test_missed_scheduled_loan_payment_reduces_credit_once_per_due_period(self):
         self.db.products.register_liability(

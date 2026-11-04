@@ -134,7 +134,9 @@ class FundAccountingTests(unittest.TestCase):
         state = fund.snapshot('FD')
         self.assertEqual((state['availableCash'], state['issuedUnits'], state['positions']), (0, 0, []))
         self.assertTrue(state['ledgerBalanced'])
-        self.assertEqual(sum(r[0] for r in self.db.users.execute('SELECT cash FROM users')), initial)
+        # Primary-issue proceeds now sit in the issuer's cash account instead of the treasury user.
+        issuer_cash = self.db.corporate.execute_one('SELECT COALESCE(SUM(balance),0) FROM issuer_cash_accounts')[0]
+        self.assertEqual(sum(r[0] for r in self.db.users.execute('SELECT cash FROM users')) + issuer_cash, initial)
         self.assertGreater(self.db.tax.execute_one("SELECT COALESCE(SUM(tax_amount),0) FROM tax_transactions WHERE user_id='alice'")[0], 0)
 
     def test_reservations_are_assets_cancel_refunds_once(self):

@@ -723,7 +723,7 @@ class WebApiTests(unittest.TestCase):
             """)
         people = {user["userId"]: user["accountType"] for user in server.admin_users("")}
         companies = {user["userId"]: user["companyCode"] for user in server.admin_users("", "company")}
-        self.assertEqual(people, {"admin-1": "discord", "person-1": "discord", "30010001": "country"})
+        self.assertEqual(people, {"admin-1": "discord", "person-1": "discord"})
         self.assertEqual(companies, {"company:SELO": "SELO"})
 
     def test_admin_accounting_period_close_is_authorized_and_audited(self):

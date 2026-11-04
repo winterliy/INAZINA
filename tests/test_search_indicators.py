@@ -11,6 +11,8 @@ class SearchIndicatorsTests(unittest.TestCase):
         self.conn.executescript("""
             CREATE TABLE country_currencies(nationality,currency_code,base_rate,legal_max_rate);
             CREATE TABLE market_exchanges(exchange_id,nationality,index_value,index_updated_epoch);
+            CREATE TABLE saving(product_code,name,issuer,interest_rate,quote_currency,status);
+            CREATE TABLE liability(product_code,name,issuer,interest_rate,quote_currency,status);
             INSERT INTO country_currencies VALUES ('한국','KRW',-0.5,20),('미국','USD',4.25,30);
             INSERT INTO market_exchanges VALUES ('KSE','한국',1234.56,100),('NYSE','미국',2000,200);
         """)
@@ -31,7 +33,7 @@ class SearchIndicatorsTests(unittest.TestCase):
         self.assertEqual(search_indicators(self.conn, ' usd ')['countries'][0]['country'], '미국')
         self.assertEqual(search_indicators(self.conn, 'kse')['exchanges'][0]['exchangeId'], 'KSE')
         self.assertEqual(len(search_indicators(self.conn, '기준금리')['countries']), 2)
-        self.assertEqual(search_indicators(self.conn, '%'), {'countries': [], 'exchanges': []})
+        self.assertEqual(search_indicators(self.conn, '%'), {'countries': [], 'exchanges': [], 'products': []})
 
     def test_non_finite_and_missing_values_serialize_as_null(self):
         self.conn.execute("UPDATE country_currencies SET base_rate=?,legal_max_rate=?", (float('inf'), None))

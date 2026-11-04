@@ -18,6 +18,8 @@ class ShareholderRegisterTests(unittest.TestCase):
                                       "dividend_next_epoch=? WHERE company_code='CO'", (due,))
         self.db.assets.add_user_asset('citizen', 'CO', 10)
         self.manager = CorporateActionsManager(self.bot)
+        # Dividends are always funded from the issuer's own cash account.
+        self.assertTrue(self.manager.fund_issuer('admin', 'CO', 'add', 1000000)[0])
 
     def cash(self, user):
         return self.db.users.get_user(user)['cash']

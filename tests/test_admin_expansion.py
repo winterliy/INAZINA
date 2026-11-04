@@ -32,10 +32,10 @@ class AdminExpansionTests(unittest.TestCase):
 
     def test_preferred_creation_and_loan_extension_fields(self):
         self.command('상품생성','P company 법인 게임 1000000 10000 100 INZ')
-        self.command('상품생성','PR preferred 우선주 P 100000 1000 90 INZ 1일 3')
+        self.command('상품생성','PR stock 우선주 게임 100000 1000 90 INZ 1일 3 {"share_class":"preferred","parent_company_code":"P"}')
         row=self.db.companies.get_company('PR')
         self.assertEqual((row['share_class'],row['parent_company_code'],row['dividend_per_share']),('preferred','P',3))
-        with self.assertRaises(ValueError):self.command('상품생성','BAD preferred 우선주 NONE 1 10 1 INZ')
+        with self.assertRaises(ValueError):self.command('상품생성','BAD stock 우선주 게임 1 10 1 INZ {"share_class":"preferred","parent_company_code":"NONE"}')
         self.command('상품생성','LN loan 대출 0 10000 30 86400 500 Inazina 700 7')
         product=self.db.products.get_liability('LN')
         self.assertEqual((product['extension_min_credit_score'],product['extension_days']),(700,7))
@@ -54,7 +54,7 @@ class AdminExpansionTests(unittest.TestCase):
         from managers.corporate_actions_manager import CorporateActionsManager
         listings = (
             ('ST', 'company 회사 게임 1000000 10000 100 INZ', 'company', 'company_code'),
-            ('PR', 'preferred 우선주 ST 100000 1000 90 INZ', 'company', 'company_code'),
+            ('PR', 'stock 우선주 게임 100000 1000 90 INZ', 'company', 'company_code'),
             ('AS', 'asset 현물 commodity_spot 100 1000 COM', 'market_assets', 'code'),
             ('ET', 'etf ETF 100 1000 INZ 1 86400 INZ', 'investment', 'product_code'),
             ('FD', 'fund 펀드 100 1000 ST:1 INZ', 'investment', 'product_code'),
@@ -78,6 +78,8 @@ class AdminExpansionTests(unittest.TestCase):
         self.assertIsNone(self.db.products.get_investment('NO'))
         self.command('세율', '10')
         manager = CorporateActionsManager(self.bot)
+        self.assertTrue(manager.fund_issuer('admin', 'ST', 'add', 1000000)[0])  # dividends are paid from issuer cash
+        self.assertTrue(manager.fund_issuer('admin', 'PR', 'add', 1000000)[0])
         self.assertEqual(manager.process_due(now=now+86399), [])
         cash = self.db.users.get_user('citizen')['cash']
         treasury = self.db.users.get_user(TREASURY_USER_ID)['cash']
@@ -85,7 +87,9 @@ class AdminExpansionTests(unittest.TestCase):
         self.assertEqual(len(results), len(listings))
         self.assertTrue(all(success and gross==10 for _,success,gross in results), results)
         self.assertEqual(self.db.users.get_user('citizen')['cash']-cash, 9*len(listings))
-        self.assertEqual(treasury-self.db.users.get_user(TREASURY_USER_ID)['cash'], 9*len(listings))
+        # Company shares (ST, PR) are paid from issuer cash; the treasury funds the other five
+        # listings (9 net each) and still collects the 10% tax on the two company dividends.
+        self.assertEqual(treasury-self.db.users.get_user(TREASURY_USER_ID)['cash'], 9*5-1*2)
         self.assertEqual(manager.process_due(now=now+86400), [])
         self.assertEqual(self.db.assets.execute_one('SELECT COUNT(*) FROM dividend_payments')[0], len(listings))
         self.command('정기배당수정', 'ST 0 5')
@@ -106,6 +110,7 @@ class AdminExpansionTests(unittest.TestCase):
                 self.db.assets.add_user_asset('citizen', code, 2)
                 row = self.db.system.execute_one(f'SELECT * FROM {table} WHERE {key}=?', (code,))
                 self.assertEqual((row['dividend_is_active'],row['dividend_next_epoch']), (0,None))
+        self.assertTrue(manager.fund_issuer('admin', 'ST', 'add', 1000000)[0])  # dividends are paid from issuer cash
         resumed = start + 10*86400
         self.assertEqual(manager.process_due(now=resumed), [])
         with self.assertRaises(ValueError):self.command('정기배당활성', 'ST maybe')
@@ -161,6 +166,7 @@ class AdminExpansionTests(unittest.TestCase):
                 self.db.assets.add_user_asset('citizen',code,3)
                 self.db.assets.add_user_asset('admin',code,5)
                 self.db.system.execute(f'UPDATE {table} SET {price}=105 WHERE {key}=?', (code,))
+        self.assertTrue(manager.fund_issuer('admin', 'ST', 'add', 1000000)[0])  # dividends are paid from issuer cash
         citizen_cash = self.db.users.get_user('citizen')['cash']
         admin_cash = self.db.users.get_user('admin')['cash']
         treasury = self.db.users.get_user(TREASURY_USER_ID)['cash']
@@ -170,7 +176,7 @@ class AdminExpansionTests(unittest.TestCase):
         self.assertTrue(all(success and gross==5 for _,success,gross in results),results)
         self.assertEqual(self.db.users.get_user('citizen')['cash']-citizen_cash,6)
         self.assertEqual(self.db.users.get_user('admin')['cash']-admin_cash,9)
-        self.assertEqual(treasury-self.db.users.get_user(TREASURY_USER_ID)['cash'],15)
+        self.assertEqual(treasury-self.db.users.get_user(TREASURY_USER_ID)['cash'],10)
         for row in self.db.assets.execute('SELECT * FROM dividend_distributions'):
             self.assertEqual((row['dividend_mode'],row['reference_price'],row['dividend_percent'],row['per_share']), ('percent',105,0.5,0))
         self.assertEqual(manager.process_due(now=start+86400), [])

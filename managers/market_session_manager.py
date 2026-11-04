@@ -104,7 +104,9 @@ class MarketSessionManager:
     def _resume(cls, conn, exchange_id, state, resume_at):
         start = int(state["halt_started_epoch"] if state["halt_started_epoch"] is not None else resume_at)
         if resume_at > start:
-            if not conn.execute("SELECT 1 FROM market_exchanges WHERE status='open' LIMIT 1").fetchone():
+            # CURRENCY is the always-on system exchange, so it never counts as an open market.
+            if not conn.execute("SELECT 1 FROM market_exchanges WHERE status='open' AND exchange_id<>? LIMIT 1",
+                                (cls.SYSTEM_EXCHANGE,)).fetchone():
                 conn.execute('UPDATE market_factor_state SET last_epoch=last_epoch+?', (resume_at-start,))
             scope, params = cls._asset_scope(exchange_id)
             conn.execute(f"UPDATE market_auto_targets SET start_epoch=start_epoch+?,end_epoch=end_epoch+? WHERE asset_code IN ({scope})", (resume_at-start,resume_at-start,*params))

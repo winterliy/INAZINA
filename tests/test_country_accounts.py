@@ -61,8 +61,8 @@ class CountryAccountTests(unittest.TestCase):
         user, found = server.authenticate_login_identifier("5001", "CountryPass123")
         self.assertTrue(found)
         self.assertEqual(user["userId"], "5001")
-        country_user = next(row for row in server.admin_users("") if row["userId"] == "5001")
-        self.assertEqual(country_user["accountType"], "country")
+        # Country accounts are managed as organizations, not listed among people.
+        self.assertNotIn("5001", {row["userId"] for row in server.admin_users("")})
         with closing(server.sqlite3.connect(server.DATABASE)) as connection:
             discord_cash = connection.execute("SELECT cash FROM users WHERE user_id='discord-1'").fetchone()[0]
         self.assertEqual(discord_cash, 2500)

@@ -19,6 +19,8 @@ class PartialListingTests(unittest.TestCase):
         DBManager.database_dir = Path(self.tmp.name)
         self.db = DatabaseManager()
         self.db.system.set_setting("auto_target_enabled", "0")
+        self.db.system.execute("INSERT OR IGNORE INTO market_exchanges(exchange_id,status,updated_epoch,trading_halted,nationality) "
+                               "VALUES ('EX','open',0,0,'낙원')")
         self.db.users.create_user("admin", "Admin", "낙원", 1000000, role="admin")
         self.db.users.create_user("alice", "Alice", "낙원", 10_000_000)
         self.control = AdminControlManager(SimpleNamespace(db=self.db))

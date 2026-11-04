@@ -32,7 +32,7 @@ class FractionalTradingTests(unittest.TestCase):
 
     def test_eligibility_flags_creation_and_disable_guards(self):
         self.stock()
-        self.command('상품생성', 'PR preferred 우선주 ST 100000 10 100 EX 1일 10 1')
+        self.command('상품생성', 'PR stock 우선주 게임 100000 10 100 EX 1일 10 1 {"share_class":"preferred","parent_company_code":"ST"}')
         self.command('상품생성', 'ETF etf ETF 100 10 EX 1 86400 EX 1')
         self.command('상품생성', 'MF fund 펀드 100 10 ST:1 EX 1')
         self.command('상품생성', 'IF indexfund 인덱스 100 10 EX EX 1')
@@ -194,7 +194,7 @@ class FractionalTradingTests(unittest.TestCase):
 
     def test_fractional_preferred_claim_and_merger_cash(self):
         self.stock()
-        self.command('상품생성', 'PR preferred 우선주 ST 100000 10 100 EX 1 {"dividend_funding":"issuer","liquidation_value_per_share":1}')
+        self.command('상품생성', 'PR stock 우선주 게임 100000 10 100 EX 1 {"share_class":"preferred","parent_company_code":"ST","dividend_funding":"issuer","liquidation_value_per_share":1}')
         self.db.assets.add_user_asset('citizen', 'PR', .5, unit_cost=100)
         CorporateActionsManager(self.bot).fund_issuer('admin', 'ST', 'add', 1)
         result = CorporateActionsManager(self.bot).liquidate('admin', 'ST', 'fractional-preference')

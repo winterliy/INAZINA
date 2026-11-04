@@ -367,10 +367,10 @@ class CurrencyHomeTests(unittest.TestCase):
 
     def test_native_stock_order_and_cancel_use_home_cash_not_nwx(self):
         cmd=self.configure();cmd.execute('admin','기본소득','미국 30000')
-        self.bot.admin_control.entity('admin','stock','create','AAA_ST','A국 주식',100,1000,{'quote_currency':'AAA','exchange_id':'A'})
         # Exchange A belongs to A국, so A국's treasury sells the primary issue in its own AAA.
         self.db.system.execute("INSERT INTO market_exchanges(exchange_id,status,updated_epoch,trading_halted,nationality) "
                                "VALUES ('A','open',0,0,'A국') ON CONFLICT(exchange_id) DO UPDATE SET nationality='A국'")
+        self.bot.admin_control.entity('admin','stock','create','AAA_ST','A국 주식',100,1000,{'quote_currency':'AAA','exchange_id':'A','nationality':'A국'})
         with self.db.atomic() as conn:
             a_treasury=CurrencyManager.treasury_id(conn,'A국')
             before=CurrencyManager.balance(conn,a_treasury,'AAA')
@@ -378,7 +378,9 @@ class CurrencyHomeTests(unittest.TestCase):
         self.assertTrue(ok,msg)
         with self.db.atomic() as conn:
             self.assertEqual(CurrencyManager.balance(conn,'citizen','AAA'),1_029_500*SCALE)
-            self.assertEqual(CurrencyManager.balance(conn,a_treasury,'AAA')-before,500*SCALE)
+            # Primary proceeds now go to the issuer's cash account, not the country treasury.
+            self.assertEqual(CurrencyManager.balance(conn,a_treasury,'AAA')-before,0)
+            self.assertEqual(conn.execute("SELECT balance FROM issuer_cash_accounts WHERE company_code='AAA_ST'").fetchone()[0],500)
         self.assertEqual(self.db.users.get_user('citizen')['cash'],1_029_500)
         ok,msg=self.bot.order_book.place_limit_order('citizen','AAA_ST','buy',5,50)
         self.assertTrue(ok,msg)

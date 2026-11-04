@@ -62,7 +62,7 @@ class CompanyAccountSyncTests(unittest.TestCase):
 
     def test_listing_opens_the_account_and_names_stay_equal(self):
         self.seed()
-        self.bot.admin_control.entity('admin', 'stock', 'create', 'SYNC1', '동기화전자', '1000', '100', {'exchange_id': 'INZ'})
+        self.bot.admin_control.entity('admin', 'stock', 'create', 'SYNC1', '동기화전자', '1000', '100', {'exchange_id': 'EX'})
         account = self.db.users.execute_one("SELECT user_id,nickname FROM users WHERE user_id='company:SYNC1'")
         self.assertEqual(tuple(account), ('company:SYNC1', '동기화전자'))
         self.db.companies.execute("UPDATE company SET name='동기화텔레콤' WHERE company_code='SYNC1'")

@@ -95,6 +95,9 @@ class CompanyAccountTests(unittest.TestCase):
             FinancialManager.ensure(conn, 'SUB')
         self.assertTrue(self.actions.fund_issuer('admin', 'SUB', 'add', 20000)[0])
         self.acquire_subsidiary()
+        # A subsidiary's ledger is only filled with its share capital on its first report,
+        # so open it before consolidating (as /재무 does for a real user).
+        FinancialManager(self.db).report('SUB')
         report = FinancialManager(self.db).report('CO')
         consolidated = report['consolidated']
         self.assertEqual([m['code'] for m in consolidated['subsidiaries']], ['SUB'])
@@ -193,7 +196,8 @@ class CompanyAccountTests(unittest.TestCase):
         ok, message, _ = company_actions.run(self.bot, 'admin', 'CO', '매수', {'asset': 'SUB', 'quantity': '50', 'price': '100'})
         self.assertTrue(ok, message)
         # SUB pays a dividend to its holders, including CO's account.
-        self.assertTrue(self.actions.special_dividend('admin', 'SUB', 2, 'sub-div', delay=0)[0])
+        self.assertTrue(self.actions.fund_issuer('admin', 'SUB', 'add', 5000)[0])
+        _r =self.actions.special_dividend('admin', 'SUB', 2, 'sub-div', delay=0); self.assertTrue(_r[0], _r)
         # CO sells 20 shares at 150 (cost 100): a 1,000 gain.
         self.assertTrue(self.bot.order_book.place_limit_order('citizen', 'SUB', 'buy', 20, 150)[0])
         ok, message, _ = company_actions.run(self.bot, 'admin', 'CO', '매도', {'asset': 'SUB', 'quantity': '20', 'price': '150'})

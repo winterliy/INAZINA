@@ -36,6 +36,10 @@ class InazinaTests(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory()
         DBManager.database_dir=Path(self.tmp.name)
         self.db=DatabaseManager()
+        # Companies may only list on a registered venue of their own nationality.
+        for exchange_id in ('EX','INZ','TEST'):
+            self.db.system.execute("INSERT OR IGNORE INTO market_exchanges(exchange_id,status,updated_epoch,trading_halted,nationality) "
+                                   "VALUES (?,'open',0,0,'낙원')",(exchange_id,))
         self.db.users.create_user('admin','관리자','낙원',1000000,'admin')
         self.db.users.create_user('citizen','시민','미국',1000000)
         self.db.users.update_cash(TREASURY_USER_ID,10000000)
