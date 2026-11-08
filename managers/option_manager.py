@@ -312,63 +312,56 @@ class OptionManager:
             return False, f"❌ 옵션 작성 중 오류가 발생했습니다: {exc}"
 
     @staticmethod
-    def _available_cash(conn, user_id):
-        user = conn.execute(
-            f"SELECT cash FROM users.users WHERE user_id = ? AND {ACTIVE_OR_TREASURY}",
-            (str(user_id),),
-        ).fetchone()
-        if not user:
-            return 0
-        accounts = conn.execute(
-            "SELECT COALESCE(SUM(balance), 0) AS balance FROM accounts.accounts WHERE user_id = ?",
-            (str(user_id),),
-        ).fetchone()
-        return int(round(user["cash"] or 0)) + int(round(accounts["balance"] or 0))
+    def _cash_sources(conn, user_id):
+        from managers.currency_manager import CurrencyManager
 
-    @staticmethod
-    def _debit_cash_lots(conn, user_id, amount):
         user_id = str(user_id)
-        amount = int(amount)
+        currency = base_currency_code(conn)
+        if currency_precision(conn, currency) != 0:
+            raise ValueError("옵션은 기준 통화 최소단위가 정수인 통화에서만 거래할 수 있습니다.")
         user = conn.execute(
-            f"SELECT cash FROM users.users WHERE user_id = ? AND {ACTIVE_OR_TREASURY}",
+            f"SELECT cash_minor FROM users.users WHERE user_id=? AND {ACTIVE_OR_TREASURY}",
             (user_id,),
         ).fetchone()
         if not user:
-            raise ValueError("등록된 사용자만 담보를 설정할 수 있습니다.")
-        sources = [(int(round(user["cash"] or 0)), None)]
+            return []
+        sources = []
+        if CurrencyManager.home(conn, user_id) == currency:
+            sources.append((int(user["cash_minor"] or 0), None))
         sources.extend(
-            (int(round(row["balance"] or 0)), row["account_number"])
+            (int(row["balance_minor_units"] or 0), row["account_number"])
             for row in conn.execute(
-                "SELECT account_number, balance FROM accounts.accounts WHERE user_id = ?",
-                (user_id,),
-            ).fetchall()
+                "SELECT account_number,balance_minor_units FROM accounts.accounts "
+                "WHERE user_id=? AND quote_currency=? AND account_type IN ('saving','loan_payout') "
+                "AND managed_by IS NULL", (user_id, currency),
+            )
         )
-        sources.sort(key=lambda item: item[0], reverse=True)
-        left = amount
+        return sorted(sources, key=lambda item: item[0], reverse=True)
+
+    @staticmethod
+    def _available_cash(conn, user_id):
+        return sum(max(0, balance) for balance, _ in OptionManager._cash_sources(conn, user_id))
+
+    @staticmethod
+    def _debit_cash_lots(conn, user_id, amount):
+        from managers.user_manager import UserManager
+
+        user_id, left = str(user_id), int(amount)
+        currency = base_currency_code(conn)
+        sources = OptionManager._cash_sources(conn, user_id)
+        if sum(max(0, balance) for balance, _ in sources) < left:
+            raise ValueError("담보를 설정할 기준통화 잔액이 부족합니다.")
         debited = []
         for balance, account_number in sources:
-            take = min(balance, left)
-            if take <= 0:
-                continue
-            if account_number is None:
-                changed = conn.execute(
-                    f"UPDATE users.users SET cash = cash - ? WHERE user_id = ? AND (cash >= ? OR {IS_TREASURY})",
-                    (take, user_id, take),
-                )
-            else:
-                changed = conn.execute(
-                    "UPDATE accounts.accounts SET balance_units = balance_units - CAST(ROUND(? * 1000000) AS INTEGER), "
-                    "principal = MAX(0, COALESCE(principal, 0) - ?) "
-                    "WHERE account_number = ? AND user_id = ? AND balance >= ?",
-                    (take, take, account_number, user_id, take),
-                )
-            if changed.rowcount != 1:
-                raise RuntimeError("담보 출금 중 잔액이 변경됐습니다.")
-            debited.append((account_number, take))
-            left -= take
-            if left == 0:
+            take = min(max(0, balance), left)
+            if take:
+                if not UserManager._debit_source(conn, user_id, account_number, take, currency=currency):
+                    raise RuntimeError("옵션 현금 출금 중 잔액이 변경됐습니다.")
+                debited.append((account_number, take))
+                left -= take
+            if not left:
                 return debited
-        raise ValueError("담보를 설정할 잔액이 부족합니다.")
+        raise ValueError("담보를 설정할 기준통화 잔액이 부족합니다.")
 
     def place_limit_order(self, user_id, contract_code, side, quantity, limit_price):
         user_id = str(user_id)
@@ -935,47 +928,10 @@ class OptionManager:
 
     @staticmethod
     def _debit_available_cash(conn, user_id, amount):
-        user_id = str(user_id)
-        left = int(amount)
-        user = conn.execute(
-            f"SELECT cash FROM users.users WHERE user_id = ? AND {ACTIVE_OR_TREASURY}",
-            (user_id,),
-        ).fetchone()
-        if not user:
+        if OptionManager._available_cash(conn, user_id) < int(amount):
             return False
-        sources = [(int(round(user["cash"] or 0)), None)]
-        sources.extend(
-            (int(round(row["balance"] or 0)), row["account_number"])
-            for row in conn.execute(
-                "SELECT account_number, balance FROM accounts.accounts WHERE user_id = ?",
-                (user_id,),
-            ).fetchall()
-        )
-        sources.sort(key=lambda item: item[0], reverse=True)
-        if sum(balance for balance, _account in sources) < left:
-            return False
-        for balance, account_number in sources:
-            take = min(balance, left)
-            if take <= 0:
-                continue
-            if account_number is None:
-                changed = conn.execute(
-                    f"UPDATE users.users SET cash = cash - ? WHERE user_id = ? AND (cash >= ? OR {IS_TREASURY})",
-                    (take, user_id, take),
-                )
-            else:
-                changed = conn.execute(
-                    "UPDATE accounts.accounts SET balance_units = balance_units - CAST(ROUND(? * 1000000) AS INTEGER), "
-                    "principal = MAX(0, COALESCE(principal, 0) - ?) "
-                    "WHERE account_number = ? AND user_id = ? AND balance >= ?",
-                    (take, take, account_number, user_id, take),
-                )
-            if changed.rowcount != 1:
-                raise RuntimeError("옵션 행사 결제 중 잔액이 변경됐습니다.")
-            left -= take
-            if left == 0:
-                return True
-        return False
+        OptionManager._debit_cash_lots(conn, user_id, amount)
+        return True
 
     def expire_matured(self, now=None):
         now = int(RateManager._validated_epoch(now, "invalid_option_expiration_epoch"))

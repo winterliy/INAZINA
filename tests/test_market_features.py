@@ -174,6 +174,27 @@ class MarketFeatureTests(unittest.TestCase):
         self.assertEqual(written["collateral_cash"], 200)
         self.assertEqual(self.db.users.get_user("alice")["cash"], 9800)
 
+    def test_option_cash_sources_exclude_other_currencies_and_managed_accounts(self):
+        self.db.currency.execute("INSERT INTO currencies(code,name,reference_rate,decimal_places) VALUES ('TST','Test','1',2)")
+        self.db.accounts.execute("INSERT INTO accounts(account_number,user_id,quote_currency,managed_by) VALUES ('foreign','alice','TST',NULL)")
+        self.db.accounts.execute("INSERT INTO accounts(account_number,user_id,quote_currency,managed_by) VALUES ('managed','alice',base_currency_code(),'manager')")
+        self.db.accounts.execute("UPDATE accounts SET balance_units=50000000000 WHERE account_number='foreign'")
+        self.db.accounts.execute("UPDATE accounts SET balance_units=30000000000 WHERE account_number='managed'")
+        with self.db.atomic() as conn:
+            self.assertEqual(self.options._available_cash(conn, 'alice'), 10000)
+            self.assertFalse(self.options._debit_available_cash(conn, 'alice', 10001))
+        self.assertEqual(self.db.users.get_user('alice')['cash'], 10000)
+
+    def test_foreign_home_cash_cannot_fund_base_currency_put_collateral(self):
+        self.db.currency.execute("INSERT INTO currencies(code,name,reference_rate,decimal_places) VALUES ('TST','Test','1',2)")
+        self.db.currency.execute("INSERT INTO country_currencies(nationality,currency_code) VALUES ('Foreign','TST')")
+        self.db.users.execute("UPDATE users SET nationality='Foreign' WHERE user_id='alice'")
+        with self.db.atomic() as conn:
+            self.assertEqual(self.options._available_cash(conn, 'alice'), 0)
+        ok, _ = self.options.create_and_write('alice', 'CO', 'put', 100, 1, 1, 10)
+        self.assertFalse(ok)
+        self.assertEqual(self.db.users.get_user('alice')['cash'], 10000)
+
     def test_default_rates_permissions_and_option_rate_sensitivity(self):
         self.assertEqual(self.rates.get_rate("base_rate"), 3)
         self.assertEqual(self.rates.get_rate("legal_max_rate"), 20)
