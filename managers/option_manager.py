@@ -837,6 +837,20 @@ class OptionManager:
         if left:
             raise RuntimeError("풋 옵션 현금 담보가 부족합니다.")
 
+    @staticmethod
+    def _credit_option_cash(conn, user_id, amount):
+        if amount <= 0:
+            return
+        from database.fund_accounting import FundCashLedger
+        from managers.currency_manager import CurrencyManager, SCALE
+
+        currency = base_currency_code(conn)
+        fund = FundCashLedger(conn)
+        if fund.account(user_id):
+            fund.deposit(user_id, amount, currency, "option_settlement")
+        else:
+            CurrencyManager.change(conn, user_id, currency, int(amount) * SCALE)
+
     def _release_cash_collateral(self, conn, contract_id, amount=None):
         rows = conn.execute(
             "SELECT * FROM assets.option_collateral_cash_lots WHERE contract_id = ? "
@@ -1002,14 +1016,10 @@ class OptionManager:
                                     for lot_quantity, basis in delivered_lots
                                 )
                                 tax = self.user_manager._tax(
-                                    conn, contract["writer_id"], "stock_sale_gain", basis_gain
+                                    conn, contract["writer_id"], "stock_sale_gain", basis_gain,
+                                    currency=base_currency_code(conn),
                                 )
-                                writer_credit = conn.execute(
-                                    "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
-                                    (strike * exercised - tax, contract["writer_id"]),
-                                )
-                                if writer_credit.rowcount != 1:
-                                    raise RuntimeError("콜 옵션 작성자 계정을 찾지 못했습니다.")
+                                self._credit_option_cash(conn, contract["writer_id"], strike * exercised - tax)
                                 self._add_asset_position(
                                     conn, holder_id, contract["underlying_code"], exercised,
                                     strike, None,
@@ -1029,14 +1039,10 @@ class OptionManager:
                                     for lot_quantity, basis, _account in lots
                                 )
                                 tax = self.user_manager._tax(
-                                    conn, holder_id, "stock_sale_gain", taxable_gain
+                                    conn, holder_id, "stock_sale_gain", taxable_gain,
+                                    currency=base_currency_code(conn),
                                 )
-                                holder_credit = conn.execute(
-                                    "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
-                                    (collateral_payment - tax, holder_id),
-                                )
-                                if holder_credit.rowcount != 1:
-                                    raise RuntimeError("풋 옵션 보유자 계정을 찾지 못했습니다.")
+                                self._credit_option_cash(conn, holder_id, collateral_payment - tax)
                                 self._add_asset_position(
                                     conn, contract["writer_id"], contract["underlying_code"],
                                     exercised, strike, None,

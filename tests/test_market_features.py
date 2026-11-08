@@ -195,6 +195,21 @@ class MarketFeatureTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(self.db.users.get_user('alice')['cash'], 10000)
 
+    def test_foreign_writer_receives_call_exercise_in_option_currency(self):
+        self.db.currency.execute("INSERT INTO currencies(code,name,reference_rate,decimal_places) VALUES ('TST','Test','1',2)")
+        self.db.currency.execute("INSERT INTO country_currencies(nationality,currency_code) VALUES ('Foreign','TST')")
+        self.db.users.execute("UPDATE users SET nationality='Foreign' WHERE user_id='alice'")
+        self.db.accounts.execute("INSERT INTO accounts(account_number,user_id,quote_currency) VALUES ('base-alice','alice',base_currency_code())")
+        self.db.assets.add_user_asset('alice', 'CO', 2, unit_cost=100)
+        self.assertTrue(self.options.create_and_write('alice', 'CO', 'call', 100, 1, 1, 10)[0])
+        code = self.options.get_active_contracts()[0]['contract_code']
+        self.assertTrue(self.options.place_limit_order('bob', code, 'buy', 1, 10)[0])
+        self.db.companies.update_share_price('CO', 120)
+        self.db.assets.execute("UPDATE option_contracts SET expiration_epoch=? WHERE contract_code=?", (int(time.time())-1, code))
+        self.assertTrue(self.options.expire_matured())
+        self.assertEqual(self.db.accounts.get_account('base-alice')['balance_minor_units'], 110)
+        self.assertEqual(self.db.users.get_user('alice')['cash'], 10000)
+
     def test_default_rates_permissions_and_option_rate_sensitivity(self):
         self.assertEqual(self.rates.get_rate("base_rate"), 3)
         self.assertEqual(self.rates.get_rate("legal_max_rate"), 20)
