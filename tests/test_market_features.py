@@ -136,6 +136,8 @@ class MarketFeatureTests(unittest.TestCase):
         with self.db.readonly() as conn:
             event = conn.execute('SELECT * FROM option_exercise_events').fetchone()
             self.assertEqual((event['contract_code'], event['holder_id'], event['gross_minor_units']), (code, 'bob', 100))
+            links = conn.execute("SELECT role,SUM(delta_minor_units) FROM option_exercise_cash_links GROUP BY role ORDER BY role").fetchall()
+            self.assertEqual([tuple(row) for row in links], [('payer', -100), ('recipient', 100)])
             self.assertEqual(AccountingJournal.reconcile_option_exercises(conn)['status'], 'matched')
         self.assertEqual(self.options.expire_matured(), [])
 
@@ -151,7 +153,25 @@ class MarketFeatureTests(unittest.TestCase):
         with self.db.readonly() as conn:
             row = conn.execute('SELECT option_type,gross_minor_units FROM option_exercise_events').fetchone()
             self.assertEqual(tuple(row), ('put', 100))
+            links = conn.execute("SELECT role,SUM(delta_minor_units) FROM option_exercise_cash_links GROUP BY role").fetchall()
+            self.assertEqual([tuple(link) for link in links], [('recipient', 100)])
             self.assertEqual(AccountingJournal.reconcile_option_exercises(conn)['status'], 'matched')
+
+    def test_exercise_reconciliation_detects_removed_cash_link(self):
+        from managers.accounting_journal import AccountingJournal
+        self.db.assets.add_user_asset('alice', 'CO', 1, unit_cost=100)
+        self.assertTrue(self.options.create_and_write('alice', 'CO', 'call', 100, 1, 1, 10)[0])
+        code = self.options.get_active_contracts()[0]['contract_code']
+        self.assertTrue(self.options.place_limit_order('bob', code, 'buy', 1, 10)[0])
+        self.db.companies.update_share_price('CO', 120)
+        self.db.assets.execute('UPDATE option_contracts SET expiration_epoch=? WHERE contract_code=?', (int(time.time())-1, code))
+        self.assertTrue(self.options.expire_matured())
+        with self.db.atomic() as conn:
+            conn.execute('DROP TRIGGER trg_option_exercise_cash_links_delete')
+            conn.execute("DELETE FROM option_exercise_cash_links WHERE role='recipient'")
+            result = AccountingJournal.reconcile_option_exercises(conn)
+            self.assertEqual(result['status'], 'mismatch')
+            self.assertTrue(any(row['status'] == 'cash_amount_mismatch' for row in result['gaps']))
 
     def test_exercise_post_failure_rolls_back_the_whole_expiry(self):
         from managers.accounting_journal import AccountingJournal

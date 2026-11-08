@@ -1006,6 +1006,10 @@ class OptionManager:
                         cash_paid = 0
                         cash_received = 0
                         strike = int(contract["strike_price"])
+                        payer_start = self._wallet_watermark(conn)
+                        payer_end = payer_start
+                        recipient_start = payer_start
+                        recipient_fund_start = conn.execute("SELECT COALESCE(MAX(entry_id),0) FROM fund_cash_ledger").fetchone()[0]
                         if contract["option_type"] == "call" and spot > strike:
                             affordable = self._available_cash(conn, holder_id) // strike
                             exercised = min(held, affordable)
@@ -1014,6 +1018,7 @@ class OptionManager:
                             ):
                                 raise RuntimeError("콜 옵션 행사 대금 결제를 완료하지 못했습니다.")
                             if exercised:
+                                payer_end = self._wallet_watermark(conn)
                                 delivered_lots = self._take_share_collateral(
                                     conn, contract["contract_id"], exercised
                                 )
@@ -1025,6 +1030,7 @@ class OptionManager:
                                     conn, contract["writer_id"], "stock_sale_gain", basis_gain,
                                     currency=base_currency_code(conn),
                                 )
+                                recipient_start = self._wallet_watermark(conn)
                                 self._credit_option_cash(conn, contract["writer_id"], strike * exercised - tax)
                                 self._add_asset_position(
                                     conn, holder_id, contract["underlying_code"], exercised,
@@ -1048,6 +1054,7 @@ class OptionManager:
                                     conn, holder_id, "stock_sale_gain", taxable_gain,
                                     currency=base_currency_code(conn),
                                 )
+                                recipient_start = self._wallet_watermark(conn)
                                 self._credit_option_cash(conn, holder_id, collateral_payment - tax)
                                 self._add_asset_position(
                                     conn, contract["writer_id"], contract["underlying_code"],
@@ -1056,7 +1063,11 @@ class OptionManager:
                                 cash_received = collateral_payment - tax
                         if exercised:
                             from managers.accounting_journal import AccountingJournal
-                            AccountingJournal.post_option_exercise(conn, contract, holder_id, exercised, tax, now)
+                            AccountingJournal.post_option_exercise(
+                                conn, contract, holder_id, exercised, tax, now,
+                                payer_range=(payer_start, payer_end), recipient_start=recipient_start,
+                                recipient_fund_start=recipient_fund_start,
+                            )
                         conn.execute(
                             "DELETE FROM assets.option_positions WHERE contract_id = ? AND user_id = ?",
                             (contract["contract_id"], holder_id),

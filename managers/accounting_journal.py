@@ -610,7 +610,7 @@ class AccountingJournal:
                 "status": "mismatch" if gaps else "matched"}
 
     @classmethod
-    def post_option_exercise(cls, conn, contract, holder, quantity, tax, epoch):
+    def post_option_exercise(cls, conn, contract, holder, quantity, tax, epoch, *, payer_range, recipient_start, recipient_fund_start):
         """Record the gross exercise and tax in the contract's settlement currency."""
         currency = base_currency_code(conn)
         gross = int(contract["strike_price"]) * int(quantity)
@@ -633,6 +633,39 @@ class AccountingJournal:
             (key,contract["contract_id"],contract["contract_code"],contract["option_type"],
              str(holder),contract["writer_id"],quantity,gross,tax,currency,epoch,entry))
 
+        payer = str(holder) if contract["option_type"] == "call" else None
+        recipient = str(contract["writer_id"]) if payer else str(holder)
+        if payer:
+            debits = conn.execute("""SELECT entry_id,user_id,currency_code,decimal_places,delta_minor_units
+                FROM customer_wallet_ledger WHERE entry_id>? AND entry_id<=? ORDER BY entry_id""", payer_range).fetchall()
+            if (any((r["user_id"],r["currency_code"],r["decimal_places"]) != (payer,currency,0)
+                    or r["delta_minor_units"]>=0 for r in debits)
+                    or sum(r["delta_minor_units"] for r in debits) != -gross):
+                raise RuntimeError("옵션 행사 출금과 행사가액이 일치하지 않습니다.")
+            for r in debits:
+                conn.execute("INSERT INTO option_exercise_cash_links VALUES (?,?,?,NULL,?)",
+                             (key,"payer",r["entry_id"],r["delta_minor_units"]))
+        net = gross-tax
+        if net:
+            from database.fund_accounting import FundCashLedger
+            fund = FundCashLedger(conn).account(recipient)
+            if fund:
+                rows = conn.execute("""SELECT entry_id,amount_minor_units FROM fund_cash_ledger
+                    WHERE entry_id>? AND product_code=? AND event='option_settlement'
+                    AND currency_code=? AND decimal_places=0""", (recipient_fund_start,fund["product_code"],currency)).fetchall()
+                if len(rows)!=1 or rows[0]["amount_minor_units"] != net:
+                    raise RuntimeError("옵션 행사 펀드 입금과 순대금이 일치하지 않습니다.")
+                conn.execute("INSERT INTO option_exercise_cash_links VALUES (?,?,NULL,?,?)",
+                             (key,"recipient",rows[0]["entry_id"],net))
+            else:
+                rows = conn.execute("""SELECT entry_id,user_id,currency_code,decimal_places,delta_minor_units
+                    FROM customer_wallet_ledger WHERE entry_id>? ORDER BY entry_id""", (recipient_start,)).fetchall()
+                if (len(rows)!=1 or (rows[0]["user_id"],rows[0]["currency_code"],rows[0]["decimal_places"],
+                        rows[0]["delta_minor_units"]) != (recipient,currency,0,net)):
+                    raise RuntimeError("옵션 행사 수취 지갑과 순대금이 일치하지 않습니다.")
+                conn.execute("INSERT INTO option_exercise_cash_links VALUES (?,?,?,NULL,?)",
+                             (key,"recipient",rows[0]["entry_id"],net))
+
     @staticmethod
     def reconcile_option_exercises(conn):
         gaps, count = [], 0
@@ -652,6 +685,28 @@ class AccountingJournal:
             actual = {line[0]:(line[1],line[2]) for line in conn.execute(
                 "SELECT account_code,debit_units,credit_units FROM accounting_lines WHERE entry_id=?",
                 (r["journal_entry_id"],))}
+            baseline = conn.execute("SELECT 1 FROM option_exercise_link_baseline WHERE event_key=?", (r["event_key"],)).fetchone()
+            if not baseline:
+                links = conn.execute("""SELECT l.*,w.user_id,w.currency_code,w.decimal_places,w.delta_minor_units wallet_delta,
+                    f.amount_minor_units fund_delta,f.currency_code fund_currency,f.decimal_places fund_places,
+                    a.owner_id fund_owner FROM option_exercise_cash_links l
+                    LEFT JOIN customer_wallet_ledger w ON w.entry_id=l.wallet_entry_id
+                    LEFT JOIN fund_cash_ledger f ON f.entry_id=l.fund_entry_id
+                    LEFT JOIN fund_accounts a ON a.product_code=f.product_code WHERE l.event_key=?""", (r["event_key"],)).fetchall()
+                totals = {"payer":0,"recipient":0}
+                for link in links:
+                    role = link["role"]
+                    owner = r["holder_id"] if role=="payer" or r["option_type"]=="put" else r["writer_id"]
+                    if link["wallet_entry_id"] is not None:
+                        valid = (link["user_id"],link["currency_code"],link["decimal_places"],link["wallet_delta"]) == (owner,r["currency_code"],0,link["delta_minor_units"])
+                    else:
+                        valid = (link["fund_owner"],link["fund_currency"],link["fund_places"],link["fund_delta"]) == (owner,r["currency_code"],0,link["delta_minor_units"])
+                    if not valid or (link["delta_minor_units"] >= 0 if role=="payer" else link["delta_minor_units"] <= 0):
+                        gaps.append({"event_key":r["event_key"],"status":"cash_link_mismatch"})
+                    totals[role] += link["delta_minor_units"]
+                expected_payer = -r["gross_minor_units"] if r["option_type"]=="call" else 0
+                if totals != {"payer":expected_payer,"recipient":r["gross_minor_units"]-r["tax_minor_units"]}:
+                    gaps.append({"event_key":r["event_key"],"status":"cash_amount_mismatch"})
             if ((r["actual_code"],r["actual_type"],r["actual_writer"]) !=
                     (r["contract_code"],r["option_type"],r["writer_id"])
                 or r["gross_minor_units"] != r["quantity"] * (r["strike_price"] or 0)
