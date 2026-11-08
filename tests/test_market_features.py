@@ -160,6 +160,7 @@ class MarketFeatureTests(unittest.TestCase):
             moves = conn.execute("SELECT role,quantity FROM option_exercise_asset_movements ORDER BY role").fetchall()
             self.assertEqual([tuple(move) for move in moves], [('collateral', '-100'), ('recipient', '1'), ('seller', '-1')])
             self.assertEqual(AccountingJournal.reconcile_option_exercises(conn)['status'], 'matched')
+            self.assertEqual(AccountingJournal.reconcile_option_collateral_cash(conn)['status'], 'matched')
 
     def test_exercise_reconciliation_detects_removed_cash_link(self):
         from managers.accounting_journal import AccountingJournal
@@ -277,6 +278,27 @@ class MarketFeatureTests(unittest.TestCase):
         written = self.options.get_user_written("alice")[0]
         self.assertEqual(written["collateral_cash"], 200)
         self.assertEqual(self.db.users.get_user("alice")["cash"], 9800)
+
+    def test_put_collateral_deposit_and_refund_link_wallet_and_journal(self):
+        from managers.accounting_journal import AccountingJournal
+        self.assertTrue(self.options.create_and_write('alice', 'CO', 'put', 100, 1, 2, 10)[0])
+        order = self.db.assets.execute_one("SELECT order_id FROM market_orders WHERE user_id='alice' AND option_order_type='write'")
+        self.assertTrue(self.options.cancel_order('alice', order['order_id'])[0])
+        with self.db.readonly() as conn:
+            events = conn.execute('SELECT movement,amount_minor_units FROM option_collateral_cash_events ORDER BY event_id').fetchall()
+            self.assertEqual([tuple(row) for row in events], [('deposit', 200), ('release', 200)])
+            result = AccountingJournal.reconcile_option_collateral_cash(conn)
+            self.assertEqual(result['status'], 'matched', result)
+
+    def test_put_collateral_reconciliation_detects_missing_deposit_event(self):
+        from managers.accounting_journal import AccountingJournal
+        self.assertTrue(self.options.create_and_write('alice', 'CO', 'put', 100, 1, 2, 10)[0])
+        with self.db.atomic() as conn:
+            conn.execute('DROP TRIGGER trg_option_collateral_cash_events_delete')
+            conn.execute("DELETE FROM option_collateral_cash_events WHERE movement='deposit'")
+            result = AccountingJournal.reconcile_option_collateral_cash(conn)
+            self.assertEqual(result['status'], 'mismatch')
+            self.assertTrue(any(row['status'] == 'deposit_total_mismatch' for row in result['gaps']))
 
     def test_option_collateral_reconciliation_detects_shortfall_after_partial_fill(self):
         from managers.accounting_journal import AccountingJournal

@@ -830,6 +830,15 @@ class AssetDB(DBManager):
                 SELECT event_key,'asset snapshots unavailable before activation' FROM option_exercise_events
                 WHERE NOT EXISTS(SELECT 1 FROM option_exercise_asset_activation WHERE singleton_id=1)""")
             self.conn.execute("INSERT OR IGNORE INTO option_exercise_asset_activation VALUES (1)")
+        self.execute("""CREATE TABLE IF NOT EXISTS option_collateral_cash_events (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT, event_key TEXT NOT NULL UNIQUE,
+            contract_id INTEGER NOT NULL, collateral_id INTEGER NOT NULL,
+            writer_id TEXT NOT NULL, movement TEXT NOT NULL CHECK(movement IN ('deposit','release')),
+            currency_code TEXT NOT NULL, decimal_places INTEGER NOT NULL CHECK(decimal_places=0),
+            amount_minor_units INTEGER NOT NULL CHECK(amount_minor_units>0),
+            wallet_entry_id INTEGER NOT NULL UNIQUE, journal_entry_id INTEGER NOT NULL UNIQUE,
+            recorded_epoch INTEGER NOT NULL)""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_option_collateral_cash_event_contract ON option_collateral_cash_events(contract_id,collateral_id)")
         self.execute("""CREATE TABLE IF NOT EXISTS option_order_cash_links (
             link_id INTEGER PRIMARY KEY AUTOINCREMENT,
             order_id INTEGER NOT NULL,
@@ -855,7 +864,7 @@ class AssetDB(DBManager):
                 AND NOT EXISTS(SELECT 1 FROM option_audit_activation WHERE singleton_id=1)""")
             self.conn.execute("""INSERT OR IGNORE INTO option_audit_activation
                 SELECT 1,COALESCE(MAX(order_id),0) FROM market_orders""")
-        for table in ("option_premium_events", "option_exercise_events", "option_exercise_asset_movements", "option_exercise_asset_baseline",
+        for table in ("option_premium_events", "option_collateral_cash_events", "option_exercise_events", "option_exercise_asset_movements", "option_exercise_asset_baseline",
                       "option_exercise_asset_activation", "option_exercise_cash_links", "option_exercise_link_baseline",
                       "option_exercise_link_activation", "option_order_cash_links",
                       "option_audit_activation", "option_order_fill_baselines"):
@@ -1010,6 +1019,15 @@ class AssetDB(DBManager):
             "CREATE INDEX IF NOT EXISTS idx_option_cash_collateral_contract "
             "ON option_collateral_cash_lots(contract_id, collateral_id)"
         )
+        self.execute("""CREATE TABLE IF NOT EXISTS option_collateral_cash_activation (
+            singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1), through_contract_id INTEGER NOT NULL)""")
+        self.execute("""INSERT OR IGNORE INTO option_collateral_cash_activation
+            SELECT 1,COALESCE(MAX(contract_id),0) FROM option_contracts""")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_option_collateral_cash_activation_{operation.lower()}
+                BEFORE {operation} ON option_collateral_cash_activation
+                BEGIN SELECT RAISE(ABORT,'option collateral activation is immutable'); END""")
+
 
     def register_asset(self, code, name, ex_id, price, asset_type, total_supply=None):
         self.execute(

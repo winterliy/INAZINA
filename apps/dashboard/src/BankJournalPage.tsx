@@ -146,6 +146,11 @@ export function BankJournalPage({ ctx, bank }: { ctx: Ctx; bank?: string }) {
         {row.gaps?.length ? <div className="scroll-x"><pre className="mono">{JSON.stringify(row.gaps.slice(0, 100), null, 2)}</pre></div> : <p className="empty">현재 옵션 잔량과 담보에 불일치가 없습니다.</p>}
         <p className="hint">현재 잔량 검사이며 과거 담보 이동은 재구성하지 않습니다.</p>
       </section>)}
+      {report.commonJournalReconciliation.filter((row) => row.ledger_scope === "option_collateral_cash").map((row) => <section key="option-collateral-cash-findings">
+        <h4>풋 현금담보 입출금 대사</h4>
+        {row.gaps?.length ? <div className="scroll-x"><pre className="mono">{JSON.stringify(row.gaps.slice(0, 100), null, 2)}</pre></div> : <p className="empty">기록된 현금담보 입출금과 분개에 불일치가 없습니다.</p>}
+        <p className="hint">기능 적용 이전 담보의 입출금 내역은 연결하지 않습니다.</p>
+      </section>)}
       {report.commonJournalReconciliation.filter((row) => row.ledger_scope === "company_bond_liabilities").map((row) => <section key="company-bond-findings"><h4>회사채 발행잔액 · 회사 원장 대사</h4>
         {row.gaps?.length ? <div className="scroll-x"><pre className="mono">{JSON.stringify(row.gaps, null, 2)}</pre></div> : <p className="empty">회사 재무원장에 등록된 회사채 발행잔액이 현재 보유 잔액과 일치합니다.</p>}
         <p className="hint">기말 잔액 비교입니다. 과거 발행·쿠폰·상환의 개별 전기나 현금 지급 시점을 증명하지 않습니다.</p>

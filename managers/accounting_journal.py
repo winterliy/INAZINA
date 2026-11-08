@@ -686,6 +686,76 @@ class AccountingJournal:
                 (event_key,role,user_id,asset_code,quantity,before_quantity,after_quantity)
                 VALUES (?,?,?,?,?,?,?)""", (key,role,user,asset,str(delta),str(before[role]),str(after[role])))
 
+    @classmethod
+    def post_option_collateral_cash(cls, conn, contract_id, collateral_id, writer, movement,
+                                    amount, wallet_id, epoch, *, remaining):
+        currency = base_currency_code(conn)
+        key = f"option-collateral:{contract_id}:{collateral_id}:{movement}:{remaining}"
+        debit, credit = (("collateral_cash", "collateral_funding") if movement == 'deposit'
+                         else ("collateral_funding", "collateral_cash"))
+        for code in (debit,credit):
+            cls.register_mapping(conn, 'option_collateral', code, code)
+        journal = cls.post(conn, ledger_scope='option_collateral', entity_type='option_contract',
+            entity_id=str(contract_id), source_key=key, currency_code=currency, decimal_places=0,
+            recorded_epoch=epoch, lines=[(debit,'debit',amount),(credit,'credit',amount)])
+        conn.execute("""INSERT INTO option_collateral_cash_events
+            (event_key,contract_id,collateral_id,writer_id,movement,currency_code,decimal_places,
+             amount_minor_units,wallet_entry_id,journal_entry_id,recorded_epoch)
+            VALUES (?,?,?,?,?,?,0,?,?,?,?)""",
+            (key,contract_id,collateral_id,str(writer),movement,currency,amount,wallet_id,journal,epoch))
+
+    @staticmethod
+    def reconcile_option_collateral_cash(conn):
+        gaps, count = [], 0
+        for row in conn.execute("""SELECT e.*,c.writer_id contract_writer,c.option_type,
+                w.user_id wallet_user,w.currency_code wallet_currency,w.decimal_places wallet_places,
+                w.delta_minor_units wallet_delta,j.ledger_scope,j.entity_type,j.entity_id,j.source_key,
+                j.currency_code journal_currency,j.decimal_places journal_places,j.recorded_epoch journal_epoch
+            FROM option_collateral_cash_events e LEFT JOIN option_contracts c USING(contract_id)
+            LEFT JOIN customer_wallet_ledger w ON w.entry_id=e.wallet_entry_id
+            LEFT JOIN accounting_entries j ON j.entry_id=e.journal_entry_id"""):
+            count += 1
+            amount = row['amount_minor_units']
+            deposit = row['movement']=='deposit'
+            expected_delta = -amount if deposit else amount
+            expected = ({'collateral_cash':(amount,0),'collateral_funding':(0,amount)} if deposit
+                        else {'collateral_funding':(amount,0),'collateral_cash':(0,amount)})
+            lines = conn.execute('SELECT account_code,debit_units,credit_units FROM accounting_lines WHERE entry_id=?',
+                                 (row['journal_entry_id'],)).fetchall()
+            actual = {r[0]:(r[1],r[2]) for r in lines}
+            if ((row['contract_writer'],row['option_type']) != (row['writer_id'],'put')
+                or (row['wallet_user'],row['wallet_currency'],row['wallet_places'],row['wallet_delta']) !=
+                   (row['writer_id'],row['currency_code'],0,expected_delta)
+                or (row['ledger_scope'],row['entity_type'],row['entity_id'],row['source_key'],
+                    row['journal_currency'],row['journal_places'],row['journal_epoch']) !=
+                   ('option_collateral','option_contract',str(row['contract_id']),row['event_key'],
+                    row['currency_code'],0,row['recorded_epoch']) or actual!=expected or len(lines)!=2):
+                gaps.append({'event_key':row['event_key'],'status':'collateral_cash_mismatch'})
+        for row in conn.execute("""SELECT c.contract_id,c.strike_price,c.issued_contracts,c.status,
+                COALESCE(e.deposited,0) deposited,COALESCE(e.released,0) released,
+                COALESCE(x.exercised,0) exercised,COALESCE(l.balance,0) balance
+            FROM option_contracts c
+            LEFT JOIN (SELECT contract_id,SUM(CASE WHEN movement='deposit' THEN amount_minor_units ELSE 0 END) deposited,
+                SUM(CASE WHEN movement='release' THEN amount_minor_units ELSE 0 END) released
+                FROM option_collateral_cash_events GROUP BY contract_id) e USING(contract_id)
+            LEFT JOIN (SELECT contract_id,SUM(gross_minor_units) exercised FROM option_exercise_events
+                WHERE option_type='put' GROUP BY contract_id) x USING(contract_id)
+            LEFT JOIN (SELECT contract_id,SUM(amount) balance FROM option_collateral_cash_lots GROUP BY contract_id) l USING(contract_id)
+            WHERE c.option_type='put' AND c.contract_id>(SELECT through_contract_id
+                FROM option_collateral_cash_activation WHERE singleton_id=1)"""):
+            expected = int(row['strike_price']) * int(row['issued_contracts'])
+            if int(row['deposited']) != expected:
+                gaps.append({'contract_id':row['contract_id'], 'status':'deposit_total_mismatch',
+                             'expected_minor_units':expected,'actual_minor_units':int(row['deposited'])})
+            if int(row['deposited']) - int(row['released']) - int(row['exercised']) != int(row['balance']):
+                gaps.append({'contract_id':row['contract_id'], 'status':'collateral_balance_mismatch'})
+        for row in conn.execute("""SELECT source_key FROM accounting_entries j
+            WHERE ledger_scope='option_collateral' AND NOT EXISTS
+            (SELECT 1 FROM option_collateral_cash_events e WHERE e.journal_entry_id=j.entry_id)"""):
+            gaps.append({'source_key':row[0],'status':'orphan_journal'})
+        return {'event_count':count,'gaps':gaps,'status':'mismatch' if gaps else 'matched',
+                'historical_baseline_policy':'prior deposits and releases have no wallet links'}
+
     @staticmethod
     def reconcile_option_collateral(conn):
         """Reconcile live written obligations, positions and collateral without altering history."""
@@ -1619,6 +1689,8 @@ class AccountingJournal:
                        **AccountingJournal.reconcile_period_closings(conn)})
         checks.append({"ledger_scope": "currency_cash",
                        **AccountingJournal.reconcile_currency_cash(conn)})
+        checks.append({"ledger_scope": "option_collateral_cash",
+                       **AccountingJournal.reconcile_option_collateral_cash(conn)})
         checks.append({"ledger_scope": "option_collateral",
                        **AccountingJournal.reconcile_option_collateral(conn)})
         checks.append({"ledger_scope": "option_exercises",

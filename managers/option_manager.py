@@ -279,13 +279,19 @@ class OptionManager:
                              take, int(position["average_cost"] or 0)),
                         )
                 else:
+                    watermark = self._wallet_watermark(conn)
                     cash_lots = self._debit_cash_lots(conn, writer_id, strike_price * quantity)
                     for account_number, amount in cash_lots:
-                        conn.execute(
+                        cursor = conn.execute(
                             "INSERT INTO assets.option_collateral_cash_lots "
                             "(contract_id, writer_id, account_number, amount) VALUES (?, ?, ?, ?)",
                             (contract_id, writer_id, account_number, amount),
                         )
+                        wallet = self._order_wallet_receipt(conn, watermark, writer_id, account_number,
+                                                            base_currency_code(conn), -amount)
+                        from managers.accounting_journal import AccountingJournal
+                        AccountingJournal.post_option_collateral_cash(conn, contract_id, cursor.lastrowid,
+                            writer_id, 'deposit', amount, wallet, now, remaining=amount)
 
                 order_cursor = conn.execute(
                     "INSERT INTO assets.market_orders "
@@ -877,6 +883,7 @@ class OptionManager:
                 )
             from managers.currency_manager import CurrencyManager
             currency = base_currency_code(conn)
+            watermark = self._wallet_watermark(conn)
             number = row["account_number"]
             destination = conn.execute(
                 "SELECT 1 FROM accounts.accounts WHERE account_number=? AND user_id=? AND quote_currency=?",
@@ -886,6 +893,15 @@ class OptionManager:
                 self.user_manager._credit_source(conn, row["writer_id"], number, take, currency=currency)
             else:
                 self._credit_option_cash(conn, row["writer_id"], take)
+            receipts = conn.execute("""SELECT entry_id,user_id,currency_code,decimal_places,delta_minor_units
+                FROM customer_wallet_ledger WHERE entry_id>? ORDER BY entry_id""", (watermark,)).fetchall()
+            if len(receipts)!=1 or (receipts[0]['user_id'],receipts[0]['currency_code'],
+                    receipts[0]['decimal_places'],receipts[0]['delta_minor_units']) != (row['writer_id'],currency,0,take):
+                raise RuntimeError('옵션 담보 반환 지갑 변동이 일치하지 않습니다.')
+            from managers.accounting_journal import AccountingJournal
+            AccountingJournal.post_option_collateral_cash(conn, contract_id, row['collateral_id'],
+                row['writer_id'], 'release', take, receipts[0]['entry_id'], now,
+                remaining=int(row['amount'])-take)
             left -= take
             if left == 0:
                 break
