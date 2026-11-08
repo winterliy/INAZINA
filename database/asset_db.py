@@ -806,6 +806,7 @@ class AssetDB(DBManager):
             delta_minor_units INTEGER NOT NULL,
             CHECK((wallet_entry_id IS NULL)<>(fund_entry_id IS NULL)),
             FOREIGN KEY(event_key) REFERENCES option_exercise_events(event_key))""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_option_exercise_cash_event ON option_exercise_cash_links(event_key)")
         self.execute("""CREATE TABLE IF NOT EXISTS option_exercise_link_baseline (
             event_key TEXT PRIMARY KEY, reason TEXT NOT NULL)""")
         self.execute("""CREATE TABLE IF NOT EXISTS option_exercise_link_activation (

@@ -177,6 +177,11 @@ class MarketFeatureTests(unittest.TestCase):
             self.assertEqual(result['status'], 'mismatch')
             self.assertTrue(any(row['status'] == 'cash_amount_mismatch' for row in result['gaps']))
 
+    def test_exercise_cash_link_lookup_uses_event_index(self):
+        with self.db.readonly() as conn:
+            plan = conn.execute('EXPLAIN QUERY PLAN SELECT * FROM option_exercise_cash_links WHERE event_key=?', ('example',)).fetchall()
+        self.assertTrue(any('INDEX' in row[3].upper() and 'EVENT' in row[3].upper() for row in plan), plan)
+
     def test_exercise_reconciliation_detects_missing_asset_movement(self):
         from managers.accounting_journal import AccountingJournal
         self.db.assets.add_user_asset('alice', 'CO', 1, unit_cost=100)
