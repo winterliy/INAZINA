@@ -815,6 +815,20 @@ class AssetDB(DBManager):
                 SELECT event_key,'cash links unavailable before activation' FROM option_exercise_events
                 WHERE NOT EXISTS(SELECT 1 FROM option_exercise_link_activation WHERE singleton_id=1)""")
             self.conn.execute("INSERT OR IGNORE INTO option_exercise_link_activation VALUES (1)")
+        self.execute("""CREATE TABLE IF NOT EXISTS option_exercise_asset_movements (
+            event_key TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('collateral','seller','recipient')),
+            user_id TEXT NOT NULL, asset_code TEXT NOT NULL, quantity TEXT NOT NULL,
+            before_quantity TEXT NOT NULL, after_quantity TEXT NOT NULL,
+            PRIMARY KEY(event_key,role), FOREIGN KEY(event_key) REFERENCES option_exercise_events(event_key))""")
+        self.execute("""CREATE TABLE IF NOT EXISTS option_exercise_asset_baseline (
+            event_key TEXT PRIMARY KEY, reason TEXT NOT NULL)""")
+        self.execute("""CREATE TABLE IF NOT EXISTS option_exercise_asset_activation (
+            singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1))""")
+        with self.lock, self.conn:
+            self.conn.execute("""INSERT OR IGNORE INTO option_exercise_asset_baseline
+                SELECT event_key,'asset snapshots unavailable before activation' FROM option_exercise_events
+                WHERE NOT EXISTS(SELECT 1 FROM option_exercise_asset_activation WHERE singleton_id=1)""")
+            self.conn.execute("INSERT OR IGNORE INTO option_exercise_asset_activation VALUES (1)")
         self.execute("""CREATE TABLE IF NOT EXISTS option_order_cash_links (
             link_id INTEGER PRIMARY KEY AUTOINCREMENT,
             order_id INTEGER NOT NULL,
@@ -840,7 +854,8 @@ class AssetDB(DBManager):
                 AND NOT EXISTS(SELECT 1 FROM option_audit_activation WHERE singleton_id=1)""")
             self.conn.execute("""INSERT OR IGNORE INTO option_audit_activation
                 SELECT 1,COALESCE(MAX(order_id),0) FROM market_orders""")
-        for table in ("option_premium_events", "option_exercise_events", "option_exercise_cash_links", "option_exercise_link_baseline",
+        for table in ("option_premium_events", "option_exercise_events", "option_exercise_asset_movements", "option_exercise_asset_baseline",
+                      "option_exercise_asset_activation", "option_exercise_cash_links", "option_exercise_link_baseline",
                       "option_exercise_link_activation", "option_order_cash_links",
                       "option_audit_activation", "option_order_fill_baselines"):
             for operation in ("UPDATE", "DELETE"):

@@ -953,6 +953,19 @@ class OptionManager:
         OptionManager._debit_cash_lots(conn, user_id, amount)
         return True
 
+    @staticmethod
+    def _exercise_asset_snapshot(conn, contract, holder):
+        from decimal import Decimal
+        def total(query, params):
+            return sum((Decimal(str(row[0] or 0)) for row in conn.execute(query, params)), Decimal(0))
+        asset, writer, contract_id = contract['underlying_code'], str(contract['writer_id']), contract['contract_id']
+        if contract['option_type'] == 'call':
+            return {'collateral': total('SELECT quantity FROM option_collateral_lots WHERE contract_id=?', (contract_id,)),
+                    'recipient': total('SELECT quantity FROM user_assets WHERE user_id=? AND asset_code=?', (str(holder), asset))}
+        return {'collateral': total('SELECT amount FROM option_collateral_cash_lots WHERE contract_id=?', (contract_id,)),
+                'seller': total('SELECT quantity FROM user_assets WHERE user_id=? AND asset_code=?', (str(holder), asset)),
+                'recipient': total('SELECT quantity FROM user_assets WHERE user_id=? AND asset_code=?', (writer, asset))}
+
     def expire_matured(self, now=None):
         now = int(RateManager._validated_epoch(now, "invalid_option_expiration_epoch"))
         contracts = self.db.assets.execute(
@@ -1006,6 +1019,7 @@ class OptionManager:
                         cash_paid = 0
                         cash_received = 0
                         strike = int(contract["strike_price"])
+                        assets_before = self._exercise_asset_snapshot(conn, contract, holder_id)
                         payer_start = self._wallet_watermark(conn)
                         payer_end = payer_start
                         recipient_start = payer_start
@@ -1067,6 +1081,10 @@ class OptionManager:
                                 conn, contract, holder_id, exercised, tax, now,
                                 payer_range=(payer_start, payer_end), recipient_start=recipient_start,
                                 recipient_fund_start=recipient_fund_start,
+                            )
+                            AccountingJournal.record_option_exercise_assets(
+                                conn, contract, holder_id, exercised, assets_before,
+                                self._exercise_asset_snapshot(conn, contract, holder_id),
                             )
                         conn.execute(
                             "DELETE FROM assets.option_positions WHERE contract_id = ? AND user_id = ?",

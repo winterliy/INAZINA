@@ -139,7 +139,7 @@ export function BankJournalPage({ ctx, bank }: { ctx: Ctx; bank?: string }) {
       {report.commonJournalReconciliation.filter((row) => row.ledger_scope === "option_exercises").map((row) => <section key="option-exercise-findings">
         <h4>옵션 행사 대사</h4>
         {row.gaps?.length ? <div className="scroll-x"><pre className="mono">{JSON.stringify(row.gaps.slice(0, 100), null, 2)}</pre></div> : <p className="empty">기록된 행사금액과 공통 분개에 불일치가 없습니다.</p>}
-        <p className="hint">이전 행사의 지갑 연결은 기준점으로 분리합니다. 풋 현금담보와 주식 이동의 직접 대사는 별도로 필요합니다.</p>
+        <p className="hint">이전 행사 연결은 기준점으로 분리합니다. 신규 행사의 현금과 행사 전후 담보·주식 수량을 대사합니다.</p>
       </section>)}
       {report.commonJournalReconciliation.filter((row) => row.ledger_scope === "company_bond_liabilities").map((row) => <section key="company-bond-findings"><h4>회사채 발행잔액 · 회사 원장 대사</h4>
         {row.gaps?.length ? <div className="scroll-x"><pre className="mono">{JSON.stringify(row.gaps, null, 2)}</pre></div> : <p className="empty">회사 재무원장에 등록된 회사채 발행잔액이 현재 보유 잔액과 일치합니다.</p>}

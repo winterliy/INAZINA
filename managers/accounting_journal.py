@@ -667,10 +667,30 @@ class AccountingJournal:
                              (key,"recipient",rows[0]["entry_id"],net))
 
     @staticmethod
+    def record_option_exercise_assets(conn, contract, holder, quantity, before, after):
+        from decimal import Decimal
+        key = f"option-exercise:{contract['contract_id']}:{holder}"
+        is_call = contract['option_type'] == 'call'
+        expected = {'collateral': -Decimal(quantity if is_call else quantity * int(contract['strike_price'])),
+                    'recipient': Decimal(quantity)}
+        if not is_call:
+            expected['seller'] = -Decimal(quantity)
+        if set(before) != set(expected) or set(after) != set(expected):
+            raise ValueError('옵션 행사 자산 이동 범위가 올바르지 않습니다.')
+        for role, delta in expected.items():
+            if after[role] - before[role] != delta:
+                raise RuntimeError(f'옵션 행사 {role} 이동 수량이 일치하지 않습니다.')
+            user = str(holder) if role == 'seller' or (role == 'recipient' and is_call) else str(contract['writer_id'])
+            asset = base_currency_code(conn) if role == 'collateral' and not is_call else contract['underlying_code']
+            conn.execute("""INSERT INTO option_exercise_asset_movements
+                (event_key,role,user_id,asset_code,quantity,before_quantity,after_quantity)
+                VALUES (?,?,?,?,?,?,?)""", (key,role,user,asset,str(delta),str(before[role]),str(after[role])))
+
+    @staticmethod
     def reconcile_option_exercises(conn):
         gaps, count = [], 0
         rows = conn.execute("""SELECT x.*,c.contract_code actual_code,c.option_type actual_type,
-            c.writer_id actual_writer,c.strike_price,j.ledger_scope,j.entity_id,j.source_key,
+            c.writer_id actual_writer,c.strike_price,c.underlying_code,j.ledger_scope,j.entity_id,j.source_key,
             j.currency_code journal_currency,j.decimal_places journal_places,j.recorded_epoch journal_epoch
             FROM option_exercise_events x LEFT JOIN option_contracts c USING(contract_id)
             LEFT JOIN accounting_entries j ON j.entry_id=x.journal_entry_id""")
@@ -707,6 +727,26 @@ class AccountingJournal:
                 expected_payer = -r["gross_minor_units"] if r["option_type"]=="call" else 0
                 if totals != {"payer":expected_payer,"recipient":r["gross_minor_units"]-r["tax_minor_units"]}:
                     gaps.append({"event_key":r["event_key"],"status":"cash_amount_mismatch"})
+            if not conn.execute('SELECT 1 FROM option_exercise_asset_baseline WHERE event_key=?', (r['event_key'],)).fetchone():
+                from decimal import Decimal, InvalidOperation
+                moves = conn.execute('SELECT * FROM option_exercise_asset_movements WHERE event_key=?', (r['event_key'],)).fetchall()
+                call = r['option_type'] == 'call'
+                wanted = {'collateral': -Decimal(r['quantity'] if call else r['gross_minor_units']), 'recipient': Decimal(r['quantity'])}
+                if not call:
+                    wanted['seller'] = -Decimal(r['quantity'])
+                if {m['role'] for m in moves} != set(wanted):
+                    gaps.append({'event_key': r['event_key'], 'status': 'missing_asset_movements'})
+                for m in moves:
+                    owner = r['holder_id'] if m['role']=='seller' or (m['role']=='recipient' and call) else r['writer_id']
+                    asset = r['currency_code'] if m['role']=='collateral' and not call else r['underlying_code']
+                    try:
+                        valid = (Decimal(m['quantity']) == wanted[m['role']] and
+                                 Decimal(m['after_quantity']) - Decimal(m['before_quantity']) == wanted[m['role']] and
+                                 Decimal(m['before_quantity']) >= 0 and Decimal(m['after_quantity']) >= 0)
+                    except (InvalidOperation, KeyError):
+                        valid = False
+                    if not valid or m['user_id'] != owner or m['asset_code'] != asset:
+                        gaps.append({'event_key': r['event_key'], 'status': 'asset_movement_mismatch'})
             if ((r["actual_code"],r["actual_type"],r["actual_writer"]) !=
                     (r["contract_code"],r["option_type"],r["writer_id"])
                 or r["gross_minor_units"] != r["quantity"] * (r["strike_price"] or 0)
