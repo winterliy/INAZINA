@@ -1,5 +1,6 @@
 """Compare real pricing calls and optional market ticks on disposable DB copies."""
 import argparse
+import hashlib
 from contextlib import ExitStack
 from pathlib import Path
 import random
@@ -11,13 +12,21 @@ import time
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from managers import _price_math, _price_math_native, stochastic_price_engine as garch, auto_target_engine as target
+from managers import _price_math, stochastic_price_engine as garch, auto_target_engine as target
+
+
+def validate_native_source(module):
+    source_hash = hashlib.sha256(Path(_price_math.__file__).read_bytes()).hexdigest()
+    if getattr(module, 'SOURCE_HASH', None) != source_hash:
+        raise RuntimeError('Native price module is stale; rebuild it with build_price_native.py build_ext --inplace')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--database', type=Path, help='Optional DB, read-only backup; never tick the source')
     args = parser.parse_args()
+    from managers import _price_math_native
+    validate_native_source(_price_math_native)
     backends = {'python': _price_math, 'cython': _price_math_native}
     config = garch.GarchConfig()
     cycle = target.TargetCycle(1000, 1100, 0, 60)

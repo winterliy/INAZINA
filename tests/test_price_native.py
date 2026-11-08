@@ -5,6 +5,7 @@ import random
 import subprocess
 import sys
 import unittest
+from types import SimpleNamespace
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -24,6 +25,11 @@ def backend(module):
 
 
 class PriceNativeTests(unittest.TestCase):
+    def test_benchmark_rejects_stale_native_module(self):
+        from tools.benchmark_price_native import validate_native_source
+        with self.assertRaisesRegex(RuntimeError, 'stale'):
+            validate_native_source(SimpleNamespace(SOURCE_HASH='old'))
+
     def test_python_fallback_without_compiler_or_extension(self):
         code = '''
 import importlib.abc, sys
