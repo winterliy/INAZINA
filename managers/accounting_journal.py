@@ -104,19 +104,8 @@ class AccountingJournal:
                 conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_{operation.lower()}
                     BEFORE {operation} ON {table}
                     BEGIN SELECT RAISE(ABORT,'{message}'); END""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS accounting_period_closings (
-            closing_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ledger_scope TEXT NOT NULL, entity_id TEXT NOT NULL, currency_code TEXT NOT NULL,
-            period_start_epoch INTEGER NOT NULL, period_end_epoch INTEGER NOT NULL,
-            closed_epoch INTEGER NOT NULL, actor_id TEXT NOT NULL,
-            entry_count INTEGER NOT NULL CHECK(entry_count>=0),
-            closing_digest TEXT NOT NULL,
-            CHECK(period_start_epoch<period_end_epoch),
-            UNIQUE(ledger_scope,entity_id,currency_code,period_start_epoch,period_end_epoch))""")
-        for operation in ("UPDATE", "DELETE"):
-            conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_accounting_period_closings_{operation.lower()}_immutable
-                BEFORE {operation} ON accounting_period_closings
-                BEGIN SELECT RAISE(ABORT,'accounting period closings are append-only'); END""")
+        from database.accounting_periods import ensure_period_guards
+        ensure_period_guards(conn)
         for table in ("accounting_entries", "accounting_lines"):
             for operation in ("UPDATE", "DELETE"):
                 name = f"trg_{table}_{operation.lower()}_immutable"
@@ -251,6 +240,25 @@ class AccountingJournal:
             LIMIT 1""", (scope, entity, currency, start, end)).fetchone()
         if unbalanced:
             raise ValueError(f"불균형 분개가 있어 기간을 마감할 수 없습니다: {unbalanced[0]}")
+        count, digest = cls._period_snapshot(conn, scope, entity, currency, start, end)
+        prior = conn.execute("""SELECT closing_id,entry_count,closing_digest FROM accounting_period_closings
+            WHERE ledger_scope=? AND entity_id=? AND currency_code=?
+              AND period_start_epoch=? AND period_end_epoch=?""",
+            (scope, entity, currency, start, end)).fetchone()
+        if prior:
+            if (int(prior[1]), str(prior[2])) != (count, digest):
+                raise ValueError("기존 회계기간 마감 스냅샷과 현재 원장이 다릅니다.")
+            return int(prior[0])
+        cursor = conn.execute("""INSERT INTO accounting_period_closings
+            (ledger_scope,entity_id,currency_code,period_start_epoch,period_end_epoch,
+             closed_epoch,actor_id,entry_count,closing_digest)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (scope, entity, currency, start, end, closed_at, actor,
+             count, digest))
+        return int(cursor.lastrowid)
+
+    @staticmethod
+    def _period_snapshot(conn, scope, entity, currency, start, end):
         rows = conn.execute("""SELECT e.entry_id,e.source_key,l.account_code,
                 l.debit_units,l.credit_units
             FROM accounting_entries e JOIN accounting_lines l USING(entry_id)
@@ -261,21 +269,23 @@ class AccountingJournal:
         normalized = [tuple(row) for row in rows]
         digest = hashlib.sha256(json.dumps(normalized, separators=(",", ":"),
                                  ensure_ascii=False).encode()).hexdigest()
-        prior = conn.execute("""SELECT closing_id,entry_count,closing_digest FROM accounting_period_closings
-            WHERE ledger_scope=? AND entity_id=? AND currency_code=?
-              AND period_start_epoch=? AND period_end_epoch=?""",
-            (scope, entity, currency, start, end)).fetchone()
-        if prior:
-            if (int(prior[1]), str(prior[2])) != (len({row[0] for row in normalized}), digest):
-                raise ValueError("기존 회계기간 마감 스냅샷과 현재 원장이 다릅니다.")
-            return int(prior[0])
-        cursor = conn.execute("""INSERT INTO accounting_period_closings
-            (ledger_scope,entity_id,currency_code,period_start_epoch,period_end_epoch,
-             closed_epoch,actor_id,entry_count,closing_digest)
-            VALUES (?,?,?,?,?,?,?,?,?)""",
-            (scope, entity, currency, start, end, closed_at, actor,
-             len({row[0] for row in normalized}), digest))
-        return int(cursor.lastrowid)
+        return len({row[0] for row in normalized}), digest
+
+    @classmethod
+    def reconcile_period_closings(cls, conn):
+        """Recheck the immutable digest and entry count of each sealed period."""
+        gaps, count = [], 0
+        for row in conn.execute("SELECT * FROM accounting_period_closings ORDER BY closing_id"):
+            count += 1
+            actual = cls._period_snapshot(conn, row["ledger_scope"], row["entity_id"],
+                                          row["currency_code"], row["period_start_epoch"],
+                                          row["period_end_epoch"])
+            if actual != (row["entry_count"], row["closing_digest"]):
+                gaps.append({"closing_id": row["closing_id"], "ledger_scope": row["ledger_scope"],
+                             "entity_id": row["entity_id"], "currency_code": row["currency_code"],
+                             "expected_count": row["entry_count"], "actual_count": actual[0],
+                             "status": "closing_snapshot_mismatch"})
+        return {"closing_count": count, "gaps": gaps, "status": "mismatch" if gaps else "matched"}
 
     @staticmethod
     def trial_balance(conn, *, ledger_scope, entity_id, currency_code,
@@ -397,6 +407,360 @@ class AccountingJournal:
                     raise RuntimeError("국채 지급 이벤트에 대응하는 고객 지갑 입금이 없습니다.")
                 conn.execute("INSERT INTO treasury_bond_cash_wallet_links(event_key,wallet_entry_id) VALUES (?,?)",
                              (source_key, int(wallet_entry["entry_id"])))
+
+    @staticmethod
+    def wallet_watermark(conn):
+        return conn.execute("SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger").fetchone()[0]
+
+    @staticmethod
+    def _currency_cash_amount(conn, currency, units):
+        from functions.money import currency_precision
+        places = currency_precision(conn, currency)
+        minor, remainder = divmod(int(units), 10 ** (6 - places))
+        if remainder or not minor:
+            raise ValueError("환전 결제액은 통화 최소단위에 맞아야 합니다.")
+        return places, minor
+
+    @classmethod
+    def post_currency_cash(cls, conn, kind, transaction_id, epoch, legs):
+        """Keep the two currencies separate and trace split funding to actual wallet rows."""
+        for role, owner, currency, units, before, after in legs:
+            places, delta = cls._currency_cash_amount(conn, currency, units)
+            wallet_rows = conn.execute("""SELECT entry_id,user_id,source_type,source_account,
+                currency_code,decimal_places,delta_minor_units FROM customer_wallet_ledger WHERE entry_id>? AND entry_id<=? ORDER BY entry_id""",
+                (before, after)).fetchall()
+            if (any((r["user_id"], r["currency_code"], r["decimal_places"]) != (owner, currency, places)
+                    or (r["delta_minor_units"] > 0) != (delta > 0) for r in wallet_rows)
+                    or sum(r["delta_minor_units"] for r in wallet_rows) != delta):
+                raise RuntimeError("환전 또는 송금의 지갑 변동이 결제액과 일치하지 않습니다.")
+            key = f"{kind}:{transaction_id}:{role}"
+            dr, cr = {"source": ("fx_cash_control", "fx_settlement_clearing"),
+                      "target": ("fx_settlement_clearing", "fx_cash_control"),
+                      "fee": ("fx_cash_control", "fx_fee_revenue")}[role]
+            for account in (dr, cr):
+                cls.register_mapping(conn, "currency_cash", account, account)
+            entry = cls.post(conn, ledger_scope="currency_cash", entity_type=kind,
+                             entity_id=str(transaction_id), source_key=key, currency_code=currency,
+                             decimal_places=places, recorded_epoch=int(epoch),
+                             lines=((dr, "debit", abs(delta)), (cr, "credit", abs(delta))),
+                             description=f"{kind} {role} settlement")
+            conn.execute("""INSERT INTO currency_cash_postings
+                (transaction_kind,transaction_id,role,user_id,currency_code,decimal_places,
+                 delta_minor_units,journal_entry_id) VALUES (?,?,?,?,?,?,?,?)""",
+                (kind, transaction_id, role, owner, currency, places, delta, entry))
+            bank_index = 0
+            for wallet in wallet_rows:
+                issuer = bank_entry = None
+                if wallet["source_type"] == "account":
+                    row = conn.execute("""SELECT COALESCE(s.issuer,p.issuer)
+                        FROM accounts a LEFT JOIN saving s ON s.product_code=a.product_code
+                        LEFT JOIN liability p ON p.product_code=a.product_code
+                        WHERE a.account_number=?""", (wallet["source_account"],)).fetchone()
+                    issuer = row[0] if row else None
+                if issuer:
+                    from functions.money import from_minor_units
+                    from managers.bank_journal import BankJournal
+
+                    bank_index += 1
+                    outgoing = delta < 0
+                    suffix = f"out:{bank_index}" if outgoing else "in" if role == "target" else "fee"
+                    bank_event = f"customer_{kind}_{'out' if outgoing else 'in' if role == 'target' else 'fee'}"
+                    reference = f"{kind}:{transaction_id}:{suffix}"
+                    amount = from_minor_units(abs(wallet["delta_minor_units"]), places)
+                    liability = "customer_deposits_payable"
+                    asset = "settlement_asset"
+                    BankJournal.post(conn, issuer, bank_event, reference, currency,
+                                     [(liability if outgoing else asset, "debit", amount),
+                                      (asset if outgoing else liability, "credit", amount)], now=epoch)
+                    bank_entry = conn.execute("""SELECT entry_id FROM bank_journal_entries
+                        WHERE issuer=? AND event_type=? AND reference_key=? AND currency_code=?""",
+                        (issuer, bank_event, reference, currency)).fetchone()[0]
+                conn.execute("""INSERT INTO currency_cash_wallet_links
+                    (transaction_kind,transaction_id,role,wallet_entry_id,institution_id,bank_entry_id)
+                    VALUES (?,?,?,?,?,?)""", (kind, transaction_id, role, wallet["entry_id"], issuer, bank_entry))
+
+    @classmethod
+    def post_currency_fee(cls, conn, kind, transaction_id, epoch, fee, receipt, before):
+        if not fee:
+            return
+        from functions.money import currency_precision, to_minor_units
+
+        treasury, base, currency, units = receipt
+        places = currency_precision(conn, currency)
+        after = cls.wallet_watermark(conn)
+        if units:
+            _, minor = cls._currency_cash_amount(conn, currency, units)
+            cls.post_currency_cash(conn, kind, transaction_id, epoch,
+                                   (("fee", treasury, currency, units, before, after),))
+        else:
+            minor = 0
+            if after != before:
+                raise RuntimeError("0으로 반올림된 환전 수수료에 지갑 변동이 발생했습니다.")
+        conn.execute("""INSERT INTO currency_cash_fee_settlements
+            (transaction_kind,transaction_id,treasury_id,quote_currency,quote_fee_minor_units,
+             receipt_currency,receipt_minor_units,receipt_decimal_places) VALUES (?,?,?,?,?,?,?,?)""",
+            (kind, transaction_id, treasury, base, to_minor_units(fee, currency_precision(conn, base)),
+             currency, minor, places))
+
+    @classmethod
+    def reconcile_currency_cash(cls, conn):
+        """Compare new source and target movements to native transactions and common postings."""
+        postings = {}
+        for r in conn.execute("""SELECT p.*, j.ledger_scope,j.entity_type,j.entity_id,j.source_key,
+            j.currency_code journal_currency,j.decimal_places journal_places,j.recorded_epoch,
+            dr.debit_units debit,cr.credit_units credit,
+            (SELECT COUNT(*) FROM accounting_lines l WHERE l.entry_id=j.entry_id) line_count
+            FROM currency_cash_postings p LEFT JOIN accounting_entries j ON j.entry_id=p.journal_entry_id
+            LEFT JOIN accounting_lines dr ON dr.entry_id=j.entry_id AND dr.account_code=
+                CASE p.role WHEN 'target' THEN 'fx_settlement_clearing' ELSE 'fx_cash_control' END
+            LEFT JOIN accounting_lines cr ON cr.entry_id=j.entry_id AND cr.account_code=
+                CASE p.role WHEN 'source' THEN 'fx_settlement_clearing'
+                    WHEN 'fee' THEN 'fx_fee_revenue' ELSE 'fx_cash_control' END"""):
+            postings[(r["transaction_kind"], r["transaction_id"], r["role"])] = r
+        receipts = {}
+        for r in conn.execute("""SELECT l.*,w.user_id,w.currency_code,w.decimal_places,w.delta_minor_units,
+            b.issuer bank_issuer,b.event_type bank_event,b.currency_code bank_currency,
+            b.decimal_places bank_places,b.status bank_status,
+            d.debit_units deposit_debit,d.credit_units deposit_credit,
+            a.debit_units settlement_debit,a.credit_units settlement_credit,
+            (SELECT COUNT(*) FROM bank_journal_lines bl WHERE bl.entry_id=b.entry_id) bank_line_count
+            FROM currency_cash_wallet_links l LEFT JOIN customer_wallet_ledger w ON w.entry_id=l.wallet_entry_id
+            LEFT JOIN bank_journal_entries b ON b.entry_id=l.bank_entry_id
+            LEFT JOIN bank_journal_lines d ON d.entry_id=b.entry_id AND d.account_code='customer_deposits_payable'
+            LEFT JOIN bank_journal_lines a ON a.entry_id=b.entry_id AND a.account_code='settlement_asset'"""):
+            receipts.setdefault((r["transaction_kind"], r["transaction_id"], r["role"]), []).append(r)
+        from functions.money import currency_precision, to_minor_units
+        fee_rows = {(r["transaction_kind"], r["transaction_id"]): r for r in conn.execute(
+            "SELECT * FROM currency_cash_fee_settlements")}
+        seen_fees = set()
+        gaps, seen = [], set()
+        for kind, table, source, target in (
+            ("exchange", "currency_transactions", "user_id", "user_id"),
+            ("transfer", "currency_transfer_transactions", "sender_id", "recipient_id"),
+        ):
+            for tx in conn.execute(f"""SELECT * FROM {table} WHERE transaction_id>
+                (SELECT through_transaction_id FROM currency_cash_activation WHERE transaction_kind=?)""", (kind,)):
+                tid = tx["transaction_id"]
+                legs = [("source", tx[source], tx["source_currency"], -tx["source_units"]),
+                        ("target", tx[target], tx["target_currency"], tx["target_units"])]
+                if tx["fee_nwx"]:
+                    seen_fees.add((kind, tid))
+                    fee = fee_rows.get((kind, tid))
+                    if not fee:
+                        gaps.append({"transaction_kind": kind, "transaction_id": tid,
+                                     "role": "fee", "status": "missing_fee_settlement"})
+                    else:
+                        base = fee["quote_currency"]
+                        if (fee["quote_fee_minor_units"] != to_minor_units(tx["fee_nwx"], currency_precision(conn, base))
+                                or fee["receipt_decimal_places"] != currency_precision(conn, fee["receipt_currency"])):
+                            gaps.append({"transaction_kind": kind, "transaction_id": tid,
+                                         "role": "fee", "status": "invalid_fee_settlement"})
+                        if fee["receipt_minor_units"]:
+                            legs.append(("fee", fee["treasury_id"], fee["receipt_currency"],
+                                         fee["receipt_minor_units"] * 10 ** (6 - fee["receipt_decimal_places"])))
+                for role, owner, currency, units in legs:
+                    k = kind, tid, role
+                    seen.add(k)
+                    finding = {"transaction_kind": kind, "transaction_id": tid, "role": role}
+                    post = postings.get(k)
+                    try:
+                        places, delta = cls._currency_cash_amount(conn, currency, units)
+                    except ValueError:
+                        gaps.append({**finding, "status": "invalid_native_amount"})
+                        continue
+                    if post is None:
+                        gaps.append({**finding, "status": "missing_posting"})
+                        continue
+                    if (post["user_id"], post["currency_code"], post["decimal_places"],
+                            post["delta_minor_units"], post["ledger_scope"], post["entity_type"],
+                            post["entity_id"], post["source_key"], post["journal_currency"],
+                            post["journal_places"], post["recorded_epoch"], post["debit"], post["credit"],
+                            post["line_count"]) != (owner, currency, places, delta, "currency_cash", kind,
+                            str(tid), f"{kind}:{tid}:{role}", currency, places,
+                            int(tx["recorded_epoch"]), abs(delta), abs(delta), 2):
+                        gaps.append({**finding, "status": "journal_mismatch"})
+                    linked = receipts.get(k, [])
+                    if (any((r["user_id"], r["currency_code"], r["decimal_places"]) != (owner, currency, places)
+                            or ((r["delta_minor_units"] or 0) > 0) != (delta > 0) for r in linked)
+                            or sum(r["delta_minor_units"] or 0 for r in linked) != delta):
+                        gaps.append({**finding, "status": "wallet_mismatch"})
+                    for r in linked:
+                        if r["institution_id"] is None:
+                            continue
+                        debit = max(0, -(r["delta_minor_units"] or 0))
+                        credit = max(0, r["delta_minor_units"] or 0)
+                        suffix = {"source": "out", "target": "in", "fee": "fee"}[role]
+                        if (r["bank_issuer"], r["bank_event"], r["bank_currency"], r["bank_places"],
+                                r["bank_status"], r["deposit_debit"], r["deposit_credit"],
+                                r["settlement_debit"], r["settlement_credit"], r["bank_line_count"]) != (
+                                r["institution_id"], f"customer_{kind}_{suffix}", currency, places,
+                                "posted", debit, credit, credit, debit, 2):
+                            gaps.append({**finding, "wallet_entry_id": r["wallet_entry_id"],
+                                         "status": "institution_mismatch"})
+        for kind, tid, role in sorted((set(postings) | set(receipts)) - seen):
+            gaps.append({"transaction_kind": kind, "transaction_id": tid, "role": role, "status": "orphan_posting"})
+        for kind, tid in sorted(set(fee_rows) - seen_fees):
+            gaps.append({"transaction_kind": kind, "transaction_id": tid, "role": "fee",
+                         "status": "orphan_fee_settlement"})
+        for row in conn.execute("""SELECT source_key FROM accounting_entries j WHERE ledger_scope='currency_cash'
+            AND NOT EXISTS(SELECT 1 FROM currency_cash_postings p WHERE p.journal_entry_id=j.entry_id)"""):
+            gaps.append({"source_key": row[0], "status": "missing_native_posting"})
+        return {"event_count": len(postings), "gaps": gaps,
+                "historical_baseline_policy": "pre-activation transactions lack historical cash links",
+                "status": "mismatch" if gaps else "matched"}
+
+    @classmethod
+    def post_option_premium(cls, conn, buy_order, sell_order, quantity, price, now):
+        """Post the transfer from reserved premium and link the actual receipt."""
+        from database.fund_accounting import FundCashLedger
+        from functions.money import currency_precision
+        from managers.currency_manager import CurrencyManager, SCALE
+
+        contract = str(buy_order["asset_code"])
+        buyer, seller = str(buy_order["user_id"]), str(sell_order["user_id"])
+        buy_id, sell_id = int(buy_order["order_id"]), int(sell_order["order_id"])
+        key = f"option-premium:{buy_id}:{sell_id}:{int(buy_order['filled_quantity']) + quantity}"
+        currency = base_currency_code(conn)
+        if (currency_precision(conn, currency) != 0
+                or any(order["quote_currency"] != currency for order in (buy_order, sell_order))):
+            raise ValueError("옵션 주문의 프리미엄 결제 통화가 일치하지 않습니다.")
+        premium = price * quantity
+        accounts = (("option_reserved_cash", "debit", premium),
+                    ("option_seller_cash", "credit", premium))
+        for account, _, _ in accounts:
+            cls.register_mapping(conn, "option", account, account)
+        entry = cls.post(conn, ledger_scope="option", entity_type="option_contract",
+                         entity_id=contract, source_key=key, currency_code=currency,
+                         decimal_places=0, recorded_epoch=now, lines=accounts,
+                         description="Option premium settlement")
+        wallet_entry = fund_entry = None
+        fund = FundCashLedger(conn)
+        if fund.account(seller):
+            fund_entry = fund.deposit(seller, premium, currency, "option_premium", key, now)
+        else:
+            watermark = conn.execute(
+                "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
+            ).fetchone()[0]
+            CurrencyManager.change(conn, seller, currency, premium * SCALE)
+            receipts = conn.execute("""SELECT entry_id FROM customer_wallet_ledger
+                WHERE entry_id>? AND user_id=? AND currency_code=? AND decimal_places=0
+                AND delta_minor_units=?""", (watermark, seller, currency, premium)).fetchall()
+            if len(receipts) != 1:
+                raise RuntimeError("옵션 프리미엄에 대응하는 지갑 입금이 없습니다.")
+            wallet_entry = receipts[0][0]
+        conn.execute("""INSERT INTO option_premium_events
+            (event_key,contract_code,buy_order_id,sell_order_id,buyer_id,seller_id,quantity,
+             price_minor_units,premium_minor_units,currency_code,decimal_places,recorded_epoch,
+             journal_entry_id,wallet_entry_id,fund_entry_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,0,?,?,?,?)""",
+            (key, contract, buy_id, sell_id, buyer, seller, quantity, price, premium,
+             currency, now, entry, wallet_entry, fund_entry))
+
+    @staticmethod
+    def reconcile_option_premiums(conn):
+        """Verify each recorded premium against its orders, posting and receipt."""
+        rows = conn.execute("""SELECT e.*,
+            b.user_id buy_user,s.user_id sell_user,
+            j.ledger_scope,j.entity_type,j.entity_id,j.source_key,
+            j.currency_code journal_currency,j.decimal_places journal_places,
+            j.recorded_epoch journal_epoch,
+            dr.debit_units reserved_debit,cr.credit_units seller_credit,
+            (SELECT COUNT(*) FROM accounting_lines l WHERE l.entry_id=j.entry_id) line_count,
+            w.user_id wallet_owner,w.currency_code wallet_currency,
+            w.decimal_places wallet_places,w.delta_minor_units wallet_delta,
+            a.owner_id fund_owner,f.currency_code fund_currency,f.decimal_places fund_places,
+            f.amount_minor_units fund_delta,f.event fund_event,f.reference fund_reference
+            FROM option_premium_events e
+            LEFT JOIN market_orders b ON b.order_id=e.buy_order_id AND b.side='buy'
+                AND b.order_kind='option' AND b.asset_code=e.contract_code AND b.quote_currency=e.currency_code
+            LEFT JOIN market_orders s ON s.order_id=e.sell_order_id AND s.side='sell'
+                AND s.order_kind='option' AND s.asset_code=e.contract_code AND s.quote_currency=e.currency_code
+            LEFT JOIN accounting_entries j ON j.entry_id=e.journal_entry_id
+            LEFT JOIN accounting_lines dr ON dr.entry_id=j.entry_id AND dr.account_code='option_reserved_cash'
+            LEFT JOIN accounting_lines cr ON cr.entry_id=j.entry_id AND cr.account_code='option_seller_cash'
+            LEFT JOIN customer_wallet_ledger w ON w.entry_id=e.wallet_entry_id
+            LEFT JOIN fund_cash_ledger f ON f.entry_id=e.fund_entry_id
+            LEFT JOIN fund_accounts a ON a.product_code=f.product_code
+            ORDER BY e.event_key""").fetchall()
+        gaps = []
+        for row in rows:
+            key, contract, premium = row["event_key"], row["contract_code"], row["premium_minor_units"]
+            currency, places = row["currency_code"], row["decimal_places"]
+            receipt = (row["seller_id"], currency, places, premium)
+            if (row["buy_user"], row["sell_user"]) != (row["buyer_id"], row["seller_id"]):
+                gaps.append({"event_key": key, "status": "order_mismatch"})
+            if (row["ledger_scope"], row["entity_type"], row["entity_id"], row["source_key"],
+                    row["journal_currency"], row["journal_places"], row["journal_epoch"],
+                    row["reserved_debit"], row["seller_credit"], row["line_count"]) != (
+                    "option", "option_contract", contract, key, currency, places, row["recorded_epoch"],
+                    premium, premium, 2):
+                gaps.append({"event_key": key, "status": "journal_mismatch"})
+            if row["wallet_entry_id"] is not None:
+                actual = tuple(row[k] for k in ("wallet_owner", "wallet_currency", "wallet_places", "wallet_delta"))
+                if actual != receipt:
+                    gaps.append({"event_key": key, "status": "wallet_mismatch"})
+            else:
+                actual = tuple(row[k] for k in ("fund_owner", "fund_currency", "fund_places", "fund_delta"))
+                if actual != receipt or (row["fund_event"], row["fund_reference"]) != ("option_premium", key):
+                    gaps.append({"event_key": key, "status": "fund_mismatch"})
+        orphaned = conn.execute("""SELECT j.source_key FROM accounting_entries j
+            WHERE j.ledger_scope='option' AND j.entity_type='option_contract'
+              AND NOT EXISTS(SELECT 1 FROM option_premium_events e WHERE e.journal_entry_id=j.entry_id)""")
+        gaps.extend({"event_key": row[0], "status": "missing_premium_event"} for row in orphaned)
+        cash_links = {}
+        for link in conn.execute("""SELECT l.*,o.user_id,o.quote_currency,o.funding_account,
+            w.user_id wallet_owner,w.source_type,w.source_account,w.currency_code wallet_currency,
+            w.decimal_places wallet_places,w.delta_minor_units wallet_delta,
+            a.owner_id fund_owner,f.currency_code fund_currency,f.decimal_places fund_places,
+            f.amount_minor_units fund_delta,f.event fund_event
+            FROM option_order_cash_links l
+            LEFT JOIN market_orders o ON o.order_id=l.order_id AND o.order_kind='option' AND o.side='buy'
+            LEFT JOIN customer_wallet_ledger w ON w.entry_id=l.wallet_entry_id
+            LEFT JOIN fund_cash_ledger f ON f.entry_id=l.fund_entry_id
+            LEFT JOIN fund_accounts a ON a.product_code=f.product_code"""):
+            order_id = link["order_id"]
+            expected = (link["user_id"], link["quote_currency"], 0)
+            if link["wallet_entry_id"] is not None:
+                amount = link["wallet_delta"]
+                actual = (link["wallet_owner"], link["wallet_currency"], link["wallet_places"])
+                account = link["funding_account"]
+                valid = (link["source_type"], link["source_account"]) == (
+                    ("cash", link["user_id"]) if account is None else ("account", account))
+            else:
+                amount = link["fund_delta"]
+                actual = (link["fund_owner"], link["fund_currency"], link["fund_places"])
+                valid = link["fund_event"] == "option_order_" + link["movement"]
+            reserve = link["movement"] == "reserve"
+            if (not valid or not expected[0] or actual != expected or amount is None
+                    or (amount >= 0 if reserve else amount <= 0)):
+                gaps.append({"order_id": order_id, "link_id": link["link_id"], "status": "cash_link_mismatch"})
+            cash_links.setdefault(order_id, []).append((reserve, int(amount or 0)))
+        for order in conn.execute("""WITH fill_legs AS (
+                SELECT buy_order_id order_id,quantity,premium_minor_units premium FROM option_premium_events
+                UNION ALL SELECT sell_order_id,quantity,0 FROM option_premium_events
+            ), fills AS (
+                SELECT order_id,SUM(quantity) quantity,SUM(premium) premium FROM fill_legs GROUP BY order_id
+            )
+            SELECT o.order_id,o.side,o.quantity,o.limit_price_minor_units,o.filled_quantity,
+                o.reserved_cash_minor_units,COALESCE(f.quantity,0) audited_quantity,
+                COALESCE(f.premium,0) premium,COALESCE(b.filled_quantity,0) baseline_quantity,
+                o.order_id>(SELECT through_order_id FROM option_audit_activation WHERE singleton_id=1) tracked
+            FROM market_orders o LEFT JOIN fills f USING(order_id)
+            LEFT JOIN option_order_fill_baselines b USING(order_id)
+            WHERE o.order_kind='option'"""):
+            order_id = order["order_id"]
+            if order["filled_quantity"] != order["baseline_quantity"] + order["audited_quantity"]:
+                gaps.append({"order_id": order_id, "status": "fill_quantity_mismatch"})
+            if order["side"] == "buy" and order["tracked"]:
+                links = cash_links.get(order_id, [])
+                reserves = [amount for reserve, amount in links if reserve]
+                expected_debit = order["premium"] + int(order["reserved_cash_minor_units"] or 0)
+                initial = order["quantity"] * order["limit_price_minor_units"]
+                if reserves != [-initial] or -sum(amount for _, amount in links) != expected_debit:
+                    gaps.append({"order_id": order_id, "status": "reserve_reconciliation_mismatch"})
+        return {"event_count": len(rows), "gaps": gaps,
+                "historical_baseline_policy": "old fill quantities are baseline-only; legacy reserves have no cash links",
+                "status": "mismatch" if gaps else "matched"}
 
     @classmethod
     def reconcile_treasury_bond_cash_events(cls, conn):
@@ -1049,6 +1413,12 @@ class AccountingJournal:
                        "status": "matched" if not execution_gaps and not market_journal_gaps
                        and not wallet_link_gaps and not primary_settlement_gaps
                        and not holding_movement_gaps else "mismatch"})
+        checks.append({"ledger_scope": "period_closings",
+                       **AccountingJournal.reconcile_period_closings(conn)})
+        checks.append({"ledger_scope": "currency_cash",
+                       **AccountingJournal.reconcile_currency_cash(conn)})
+        checks.append({"ledger_scope": "option_premiums",
+                       **AccountingJournal.reconcile_option_premiums(conn)})
         checks.append({"ledger_scope":"treasury_bond_cash",
                        **AccountingJournal.reconcile_treasury_bond_cash_events(conn)})
         native = int(conn.execute("""SELECT

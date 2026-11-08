@@ -201,11 +201,21 @@ class CurrencyExchangeManager:
             output = CurrencyManager.exchange_amount(conn, units, source, target, fee)
             if output <= 0 or output > MAX_UNITS:
                 raise ValueError("환전 결과가 최소 단위 미만이거나 한도를 초과합니다.")
+            from managers.accounting_journal import AccountingJournal
+            before = AccountingJournal.wallet_watermark(conn)
             CurrencyManager.change(conn, user_id, source, -units)
+            between = AccountingJournal.wallet_watermark(conn)
             CurrencyManager.change(conn, user_id, target, output)
-            CurrencyManager.credit_treasury_fee(conn, user_id, fee)
-            conn.execute('INSERT INTO currency_transactions(user_id,source_currency,target_currency,source_units,target_units,fee_nwx,recorded_epoch) VALUES (?,?,?,?,?,?,?)',
+            after = AccountingJournal.wallet_watermark(conn)
+            fee_receipt = CurrencyManager.credit_treasury_fee_receipt(conn, user_id, fee)
+            cursor = conn.execute('INSERT INTO currency_transactions(user_id,source_currency,target_currency,source_units,target_units,fee_nwx,recorded_epoch) VALUES (?,?,?,?,?,?,?)',
                 (str(user_id),source,target,units,output,fee,now))
+            AccountingJournal.post_currency_cash(conn, "exchange", cursor.lastrowid, now, (
+                ("source", str(user_id), source, -units, before, between),
+                ("target", str(user_id), target, output, between, after),
+            ))
+            AccountingJournal.post_currency_fee(conn, "exchange", cursor.lastrowid, now,
+                                               fee, fee_receipt, after)
             return f"✅ {display_units(units)} {source} → {display_units(output)} {target} · 수수료 {fee:,} 기준 통화"
 
     def accounts(self, user_id):
@@ -340,8 +350,9 @@ class CurrencyExchangeManager:
                 value = Decimal(int(value_units)) / Decimal(SCALE)
                 return int(value) if value == value.to_integral_value() else ExactDecimal(value)
 
+            from managers.accounting_journal import AccountingJournal
+            before = AccountingJournal.wallet_watermark(conn)
             debited_sources = []
-            debited_source_details = []
             if src[1] in {'cash','balance'}:
                 preferred = None if src[0]=='users' else src[3]
                 candidates = [(None,int(Decimal(str(conn.execute(
@@ -366,7 +377,6 @@ class CurrencyExchangeManager:
                             raise RuntimeError('출금 잔액이 변경되어 송금을 취소했습니다.')
                         if take:
                             debited_sources.append(account_number or '지갑')
-                            debited_source_details.append((account_number, take))
                             remaining -= take
                         if not remaining:
                             break
@@ -376,9 +386,9 @@ class CurrencyExchangeManager:
                 debited = conn.execute(f'UPDATE {src[0]} SET {src[1]}={src[1]}-?{principal} WHERE {src[2]}=? AND {src[1]}>=?',(debit,*((-debit,) if principal else ()),src[3],debit)).rowcount==1
                 if debited:
                     debited_sources.append(src[3])
-                    debited_source_details.append((src[3], debit))
             if not debited:
                 raise ValueError('출금 잔액이 부족합니다.')
+            between = AccountingJournal.wallet_watermark(conn)
             if dst[0]=='accounts' and dst[1]=='balance':
                 native_credit = native_amount(credit)
                 changed = conn.execute('UPDATE accounts SET balance_units = balance_units + CAST(ROUND(? * 1000000) AS INTEGER),principal=COALESCE(principal,0)+?,last_payment_epoch=?,last_payment=CURRENT_TIMESTAMP WHERE account_number=? AND balance<=?',(native_credit,native_credit,now,dst[3],MAX_NATIVE-native_credit))
@@ -393,11 +403,18 @@ class CurrencyExchangeManager:
                 changed = conn.execute(f'UPDATE {dst[0]} SET {dst[1]}={dst[1]}+?{principal} WHERE {dst[2]}=? AND {dst[1]}<=?',(credit,*((credit,) if principal else ()),dst[3],MAX_UNITS-credit))
             if changed.rowcount!=1:
                 raise ValueError('입금 계좌 잔액 한도를 초과했습니다.')
-            CurrencyManager.credit_treasury_fee(conn, sender, fee)
+            after = AccountingJournal.wallet_watermark(conn)
+            fee_receipt = CurrencyManager.credit_treasury_fee_receipt(conn, sender, fee)
             destination_label = '국고' if CurrencyManager.is_treasury(conn, dst[4]) else recipient
             transfer_cursor = conn.execute('INSERT INTO currency_transfer_transactions(sender_id,recipient_id,source_account,target_account,source_currency,target_currency,source_units,target_units,fee_nwx,recorded_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)',
                 (sender,dst[4],source_account,recipient,src[5],dst[5],units,output,fee,now))
             transfer_id = int(transfer_cursor.lastrowid)
+            AccountingJournal.post_currency_cash(conn, "transfer", transfer_id, now, (
+                ("source", sender, src[5], -units, before, between),
+                ("target", dst[4], dst[5], output, between, after),
+            ))
+            AccountingJournal.post_currency_fee(conn, "transfer", transfer_id, now,
+                                               fee, fee_receipt, after)
             if sender != dst[4]:
                 from managers.compliance_manager import ComplianceManager
                 for monitored_user, monitored_units, monitored_currency in (
@@ -418,47 +435,6 @@ class CurrencyExchangeManager:
                             source_currency=monitored_currency, now=now,
                         )
 
-            def institution_for_account(number):
-                if number is None:
-                    return None
-                row = conn.execute(
-                    "SELECT COALESCE(s.issuer,l.issuer) issuer FROM accounts.accounts a "
-                    "LEFT JOIN product.saving s ON s.product_code=a.product_code "
-                    "LEFT JOIN product.liability l ON l.product_code=a.product_code "
-                    "WHERE a.account_number=?",
-                    (str(number),),
-                ).fetchone()
-                return row["issuer"] if row else None
-
-            from managers.bank_journal import BankJournal
-            source_index = 0
-            # Named debited_units: "amount_units" would shadow the module's
-            # amount_units() for this whole function (UnboundLocalError above).
-            for account_number, debited_units in debited_source_details:
-                issuer = institution_for_account(account_number)
-                if not issuer:
-                    continue
-                source_index += 1
-                BankJournal.post(
-                    conn, issuer, "customer_transfer_out",
-                    f"transfer:{transfer_id}:out:{source_index}", src[5],
-                    [("customer_deposits_payable", "debit", native_amount(debited_units)),
-                     ("settlement_asset", "credit", native_amount(debited_units))],
-                    description=f"Customer transfer {transfer_id} outgoing",
-                    now=now,
-                )
-            destination_issuer = institution_for_account(
-                dst[3] if dst[0] == 'accounts' else None
-            )
-            if destination_issuer:
-                BankJournal.post(
-                    conn, destination_issuer, "customer_transfer_in",
-                    f"transfer:{transfer_id}:in", dst[5],
-                    [("settlement_asset", "debit", native_amount(credit)),
-                     ("customer_deposits_payable", "credit", native_amount(credit))],
-                    description=f"Customer transfer {transfer_id} incoming",
-                    now=now,
-                )
             if sender != dst[4]:
                 # Company books classify transfers as 영업외 income/expense (and consolidation eliminates intra-group ones).
                 from managers.company_account_manager import CompanyAccounts

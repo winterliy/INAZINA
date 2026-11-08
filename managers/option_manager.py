@@ -406,6 +406,7 @@ class OptionManager:
 
                 funding_account = None
                 reserved_cash = 0
+                reserve_receipt = None
                 base_currency = base_currency_code(conn)
                 if currency_precision(conn, base_currency) != 0:
                     raise ValueError("옵션은 기준 통화 최소단위가 정수인 통화에서만 거래할 수 있습니다.")
@@ -433,14 +434,32 @@ class OptionManager:
                             f"추가 주문 가능 {capacity:,}계약입니다."
                         )
                     reserved_cash = limit_price * quantity
-                    funds = self.user_manager._choose_funds(conn, user_id)
-                    if not funds:
-                        return False, "❌ 등록된 사용자만 주문할 수 있습니다."
-                    balance, funding_account = funds
-                    if balance < reserved_cash or not self.user_manager._debit_source(
-                        conn, user_id, funding_account, reserved_cash
-                    ):
-                        return False, f"❌ 잔액이 부족합니다. 지정가 기준 예치 필요액: {reserved_cash:,} 기준 통화"
+                    from database.fund_accounting import FundCashLedger
+                    from managers.currency_manager import CurrencyManager
+                    fund = FundCashLedger(conn)
+                    if fund.account(user_id):
+                        if fund.balance(user_id, base_currency) < reserved_cash:
+                            return False, "❌ 옵션 프리미엄을 예치할 상품통화 잔액이 부족합니다."
+                        reserve_receipt = (None, fund.withdraw(user_id, reserved_cash, base_currency,
+                                                               "option_order_reserve", recorded_epoch=now))
+                    else:
+                        if CurrencyManager.home(conn, user_id) == base_currency:
+                            funds = self.user_manager._choose_funds(conn, user_id)
+                        else:
+                            from managers.deposit_accounts import account
+                            row = account(conn, user_id, base_currency)
+                            funds = ((row["balance_minor_units"], row["account_number"])
+                                     if row and row["managed_by"] is None else None)
+                        if not funds:
+                            return False, "❌ 옵션 프리미엄을 예치할 상품통화 계좌가 없습니다."
+                        balance, funding_account = funds
+                        watermark = self._wallet_watermark(conn)
+                        if balance < reserved_cash or not self.user_manager._debit_source(
+                            conn, user_id, funding_account, reserved_cash, currency=base_currency
+                        ):
+                            return False, f"❌ 잔액이 부족합니다. 지정가 기준 예치 필요액: {reserved_cash:,} 기준 통화"
+                        reserve_receipt = (self._order_wallet_receipt(
+                            conn, watermark, user_id, funding_account, base_currency, -reserved_cash), None)
                 else:
                     owned = conn.execute(
                         "SELECT COALESCE(SUM(quantity), 0) AS quantity FROM assets.option_positions "
@@ -469,6 +488,8 @@ class OptionManager:
                      reserved_cash, funding_account, now, now, base_currency, limit_price, reserved_cash),
                 )
                 order_id = int(cursor.lastrowid)
+                if reserve_receipt:
+                    self._link_order_cash(conn, order_id, "reserve", reserve_receipt)
                 filled, filled_quantity, traded_value = self._match_incoming_order(
                     conn, order_id, now
                 )
@@ -539,9 +560,7 @@ class OptionManager:
         if improvement < 0:
             raise RuntimeError("체결 가격이 매수 프리미엄 지정가를 초과했습니다.")
         if improvement:
-            self._credit_reserved_source(
-                conn, buy_order["user_id"], buy_order["funding_account"], improvement, now
-            )
+            self._refund_order_cash(conn, buy_order, improvement, now)
         contract = conn.execute(
             "SELECT contract_id, writer_id FROM assets.option_contracts WHERE contract_code = ?",
             (buy_order["asset_code"],),
@@ -581,12 +600,8 @@ class OptionManager:
             if seller_position.rowcount != 1:
                 raise RuntimeError("매도 예약 옵션 수량이 변경되어 체결을 취소했습니다.")
             self._add_option_position(conn, contract["contract_id"], buyer_id, quantity, price)
-        currency = base_currency_code(conn)
-        try:
-            self.user_manager._credit_source(conn, seller_id, None, price * quantity,
-                                             event="option_premium", currency=currency)
-        except Exception:
-            raise RuntimeError("프리미엄을 받을 사용자 계정을 찾지 못했습니다.")
+        from managers.accounting_journal import AccountingJournal
+        AccountingJournal.post_option_premium(conn, buy_order, sell_order, quantity, price, now)
 
     @staticmethod
     def _add_option_position(conn, contract_id, user_id, quantity, premium):
@@ -613,6 +628,46 @@ class OptionManager:
             (remaining, quantity, reserved_cash, "filled" if remaining == 0 else "partial",
              now, order["order_id"]),
         )
+
+    @staticmethod
+    def _wallet_watermark(conn):
+        return conn.execute("SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger").fetchone()[0]
+
+    @staticmethod
+    def _order_wallet_receipt(conn, watermark, user, account, currency, delta):
+        rows = conn.execute("""SELECT entry_id FROM customer_wallet_ledger
+            WHERE entry_id>? AND user_id=? AND source_type=? AND source_account=?
+              AND currency_code=? AND decimal_places=0 AND delta_minor_units=?""",
+            (watermark, user, "account" if account is not None else "cash",
+             account if account is not None else user, currency, delta)).fetchall()
+        if len(rows) != 1:
+            raise RuntimeError("옵션 주문 예치 또는 환불에 대응하는 지갑 변동이 없습니다.")
+        return rows[0][0]
+
+    @staticmethod
+    def _link_order_cash(conn, order_id, movement, receipt):
+        conn.execute("""INSERT INTO option_order_cash_links
+            (order_id,movement,wallet_entry_id,fund_entry_id) VALUES (?,?,?,?)""",
+            (order_id, movement, *receipt))
+
+    def _refund_order_cash(self, conn, order, amount, now):
+        user, number = str(order["user_id"]), order["funding_account"]
+        reserve = conn.execute("""SELECT fund_entry_id FROM option_order_cash_links
+            WHERE order_id=? AND movement='reserve'""", (order["order_id"],)).fetchone()
+        if not reserve:
+            # Pre-link orders retain their original refund rules and are not claimed as traced.
+            self._credit_reserved_source(conn, user, number, amount, now)
+            return
+        currency = order["quote_currency"]
+        if reserve["fund_entry_id"] is not None:
+            from database.fund_accounting import FundCashLedger
+            receipt = (None, FundCashLedger(conn).deposit(
+                user, amount, currency, "option_order_refund", recorded_epoch=now))
+        else:
+            watermark = self._wallet_watermark(conn)
+            self.user_manager._credit_source(conn, user, number, amount, currency=currency)
+            receipt = (self._order_wallet_receipt(conn, watermark, user, number, currency, amount), None)
+        self._link_order_cash(conn, order["order_id"], "refund", receipt)
 
     @staticmethod
     def _credit_reserved_source(conn, user_id, account_number, amount, now):
@@ -649,7 +704,7 @@ class OptionManager:
                     return False, f"❌ 이미 {order['status']} 상태라 취소할 수 없습니다."
                 refund = int(order["reserved_cash_minor_units"] or 0) if order["side"] == "buy" else 0
                 if refund:
-                    self._credit_reserved_source(conn, user_id, order["funding_account"], refund, now)
+                    self._refund_order_cash(conn, order, refund, now)
                 if order["side"] == "sell" and order["option_order_type"] == "write":
                     contract = conn.execute(
                         "SELECT * FROM assets.option_contracts WHERE contract_code = ?",
@@ -955,10 +1010,7 @@ class OptionManager:
                     ).fetchall()
                     for order in pending:
                         if order["side"] == "buy" and int(order["reserved_cash"] or 0):
-                            self._credit_reserved_source(
-                                conn, order["user_id"], order["funding_account"],
-                                int(order["reserved_cash"]), now,
-                            )
+                            self._refund_order_cash(conn, order, int(order["reserved_cash"]), now)
                         conn.execute(
                             "UPDATE assets.market_orders SET status = 'expired', reserved_cash = 0, "
                             "updated_epoch = ? WHERE order_id = ?",

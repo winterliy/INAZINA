@@ -773,6 +773,54 @@ class AssetDB(DBManager):
         ):
             if column not in execution_columns:
                 self.execute(f"ALTER TABLE market_execution_events ADD COLUMN {column} {declaration}")
+        self.execute("""CREATE TABLE IF NOT EXISTS option_premium_events (
+            event_key TEXT PRIMARY KEY,
+            contract_code TEXT NOT NULL,
+            buy_order_id INTEGER NOT NULL,
+            sell_order_id INTEGER NOT NULL,
+            buyer_id TEXT NOT NULL,
+            seller_id TEXT NOT NULL,
+            quantity INTEGER NOT NULL CHECK(quantity>0),
+            price_minor_units INTEGER NOT NULL CHECK(price_minor_units>0),
+            premium_minor_units INTEGER NOT NULL CHECK(premium_minor_units=quantity*price_minor_units),
+            currency_code TEXT NOT NULL,
+            decimal_places INTEGER NOT NULL CHECK(decimal_places=0),
+            recorded_epoch INTEGER NOT NULL,
+            journal_entry_id INTEGER NOT NULL UNIQUE,
+            wallet_entry_id INTEGER UNIQUE,
+            fund_entry_id INTEGER UNIQUE,
+            CHECK((wallet_entry_id IS NULL)<>(fund_entry_id IS NULL)))""")
+        self.execute("""CREATE TABLE IF NOT EXISTS option_order_cash_links (
+            link_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL,
+            movement TEXT NOT NULL CHECK(movement IN ('reserve','refund')),
+            wallet_entry_id INTEGER UNIQUE,
+            fund_entry_id INTEGER UNIQUE,
+            CHECK((wallet_entry_id IS NULL)<>(fund_entry_id IS NULL)))""")
+        self.execute("""CREATE UNIQUE INDEX IF NOT EXISTS idx_option_order_initial_reserve
+            ON option_order_cash_links(order_id) WHERE movement='reserve'""")
+        self.execute("""CREATE INDEX IF NOT EXISTS idx_option_premium_buy_order
+            ON option_premium_events(buy_order_id)""")
+        self.execute("""CREATE INDEX IF NOT EXISTS idx_option_order_cash_order
+            ON option_order_cash_links(order_id)""")
+        self.execute("""CREATE TABLE IF NOT EXISTS option_audit_activation (
+            singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),
+            through_order_id INTEGER NOT NULL)""")
+        self.execute("""CREATE TABLE IF NOT EXISTS option_order_fill_baselines (
+            order_id INTEGER PRIMARY KEY, filled_quantity INTEGER NOT NULL)""")
+        # Capture the old fill quantities once, before the startup schema is published.
+        with self.lock, self.conn:
+            self.conn.execute("""INSERT OR IGNORE INTO option_order_fill_baselines
+                SELECT order_id,filled_quantity FROM market_orders WHERE order_kind='option'
+                AND NOT EXISTS(SELECT 1 FROM option_audit_activation WHERE singleton_id=1)""")
+            self.conn.execute("""INSERT OR IGNORE INTO option_audit_activation
+                SELECT 1,COALESCE(MAX(order_id),0) FROM market_orders""")
+        for table in ("option_premium_events", "option_order_cash_links",
+                      "option_audit_activation", "option_order_fill_baselines"):
+            for operation in ("UPDATE", "DELETE"):
+                self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_{operation.lower()}
+                    BEFORE {operation} ON {table}
+                    BEGIN SELECT RAISE(ABORT,'option cash audit rows are append-only'); END""")
         self.execute("""CREATE TABLE IF NOT EXISTS market_execution_order_baselines (
             order_id INTEGER PRIMARY KEY,
             baseline_filled_quantity INTEGER NOT NULL CHECK(baseline_filled_quantity>=0),

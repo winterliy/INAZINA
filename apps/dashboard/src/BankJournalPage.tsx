@@ -126,6 +126,16 @@ export function BankJournalPage({ ctx, bank }: { ctx: Ctx; bank?: string }) {
           {findings.length ? findings.map(([label, items]) => <div className="scroll-x" key={label}><h5>{label} · {items.length}건</h5><pre className="mono">{JSON.stringify(items, null, 2)}</pre></div>) : <p className="empty">신규 표준 현물 체결의 체결량·분개·지갑·1차 발행 수취처·보유 이동 불일치가 없습니다.</p>}
         </section>;
       })}
+      {report.commonJournalReconciliation.filter((row) => row.ledger_scope === "currency_cash").map((row) => <section key="currency-cash-findings">
+        <h4>환전·송금 대사</h4>
+        {row.gaps?.length ? <div className="scroll-x"><pre className="mono">{JSON.stringify(row.gaps.slice(0, 100), null, 2)}</pre></div> : <p className="empty">기록된 환전·송금 원금 및 수수료와 지갑 변동에 불일치가 없습니다.</p>}
+        <p className="hint">기능 적용 이전 거래는 이 검사 범위에서 제외합니다.</p>
+      </section>)}
+      {report.commonJournalReconciliation.filter((row) => row.ledger_scope === "option_premiums").map((row) => <section key="option-premium-findings">
+        <h4>옵션 프리미엄 대사</h4>
+        {row.gaps?.length ? <div className="scroll-x"><pre className="mono">{JSON.stringify(row.gaps.slice(0, 100), null, 2)}</pre></div> : <p className="empty">기록된 옵션 체결·분개와 결제에 불일치가 없습니다.</p>}
+        <p className="hint">기능 적용 이전 체결은 수량 기준으로만 보존하며 당시 지갑 이동을 재구성하지 않습니다.</p>
+      </section>)}
       {report.commonJournalReconciliation.filter((row) => row.ledger_scope === "company_bond_liabilities").map((row) => <section key="company-bond-findings"><h4>회사채 발행잔액 · 회사 원장 대사</h4>
         {row.gaps?.length ? <div className="scroll-x"><pre className="mono">{JSON.stringify(row.gaps, null, 2)}</pre></div> : <p className="empty">회사 재무원장에 등록된 회사채 발행잔액이 현재 보유 잔액과 일치합니다.</p>}
         <p className="hint">기말 잔액 비교입니다. 과거 발행·쿠폰·상환의 개별 전기나 현금 지급 시점을 증명하지 않습니다.</p>

@@ -182,6 +182,14 @@ class FinancialTests(unittest.TestCase):
                 AccountingJournal.post(conn, ledger_scope="period_test", entity_type="entity",
                     entity_id="one", source_key="late:backdate", currency_code="NWX",
                     decimal_places=0, recorded_epoch=199, lines=lines)
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "closed accounting period"):
+                conn.execute("""INSERT INTO accounting_entries
+                    (ledger_scope,entity_type,entity_id,source_key,currency_code,decimal_places,recorded_epoch)
+                    VALUES ('period_test','entity','one','sql-backdate','NWX',0,199)""")
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "closed accounting period"):
+                conn.execute("""INSERT INTO accounting_lines(entry_id,account_code,debit_units,credit_units)
+                    SELECT entry_id,'cash',1,0 FROM accounting_entries
+                    WHERE ledger_scope='period_test' AND source_key='sale:1'""")
             adjustment = [("revenue", "debit", 5), ("cash", "credit", 5)]
             AccountingJournal.post(conn, ledger_scope="period_test", entity_type="entity",
                 entity_id="one", source_key=f"adjustment:close:{closing_id}",
@@ -236,6 +244,31 @@ class FinancialTests(unittest.TestCase):
         self.assertTrue(next(account for account in journal['accounts'] if account['code']=='common_capital')['protected'])
         self.assertIsNone(journal['profile'])
         with self.assertRaises(ValueError):self.fin.journal('CO','2026-13')
+
+    def test_closed_wallet_period_survives_restart_and_reports_snapshot_drift(self):
+        from database.currency_db import CurrencyDB
+        from functions.money import base_currency_code
+        from managers.accounting_journal import AccountingJournal
+
+        with self.db.atomic() as conn:
+            currency = base_currency_code(conn)
+            epoch = conn.execute("""SELECT MIN(recorded_epoch) FROM accounting_entries
+                WHERE ledger_scope='customer' AND entity_id='citizen'""").fetchone()[0]
+            closing_id = AccountingJournal.close_period(
+                conn, ledger_scope="customer", entity_id="citizen", currency_code=currency,
+                period_start_epoch=epoch, period_end_epoch=epoch+1,
+                actor_id="admin", closed_epoch=epoch+1,
+            )
+        CurrencyDB().close()
+        with self.db.atomic() as conn:
+            self.assertEqual(AccountingJournal.reconcile_period_closings(conn)["status"], "matched")
+            conn.execute("DROP TRIGGER trg_accounting_lines_closed_insert")
+            conn.execute("""INSERT INTO accounting_lines(entry_id,account_code,debit_units,credit_units)
+                SELECT MIN(entry_id),'unexpected',1,0 FROM accounting_entries
+                WHERE ledger_scope='customer' AND entity_id='citizen' AND recorded_epoch=?""", (epoch,))
+            result = AccountingJournal.reconcile_period_closings(conn)
+            self.assertEqual(result["status"], "mismatch")
+            self.assertEqual(result["gaps"][0]["closing_id"], closing_id)
 
     def test_close_freezes_report_and_rejects_backdating(self):
         self.setup_company()

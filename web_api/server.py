@@ -3812,7 +3812,49 @@ def user_wallet_history(user_id, source_type, source_account, limit=150):
                     label = "매수" if bought else "매도"
                     detail = f"{trade['asset_code']} · {native_value(trade['quantity'])}주"
                     counterpart_id = str(trade["seller_id"] if bought else trade["buyer_id"] or "") or None
-            if "currency_transfer_transactions" in tables:
+            if "option_premium_events" in tables:
+                premium = connection.execute(
+                    "SELECT contract_code,quantity,buyer_id FROM option_premium_events WHERE wallet_entry_id=?",
+                    (entry_id,),
+                ).fetchone()
+                if premium:
+                    label = "옵션 프리미엄 수취"
+                    detail = f"{premium['contract_code']} · {premium['quantity']}계약"
+                    counterpart_id = str(premium["buyer_id"])
+            if "option_order_cash_links" in tables:
+                option_cash = connection.execute(
+                    "SELECT l.movement,o.asset_code FROM option_order_cash_links l "
+                    "JOIN market_orders o USING(order_id) WHERE l.wallet_entry_id=?", (entry_id,),
+                ).fetchone()
+                if option_cash:
+                    label = "옵션 주문 예치" if option_cash["movement"] == "reserve" else "옵션 예치금 반환"
+                    detail = str(option_cash["asset_code"])
+            cash_link = None
+            if "currency_cash_wallet_links" in tables:
+                cash_link = connection.execute("""SELECT l.transaction_kind,l.role,
+                    COALESCE(t.source_currency,x.source_currency) source_currency,
+                    COALESCE(t.target_currency,x.target_currency) target_currency,
+                    t.sender_id,t.recipient_id
+                    FROM currency_cash_wallet_links l
+                    LEFT JOIN currency_transfer_transactions t
+                        ON l.transaction_kind='transfer' AND t.transaction_id=l.transaction_id
+                    LEFT JOIN currency_transactions x
+                        ON l.transaction_kind='exchange' AND x.transaction_id=l.transaction_id
+                    WHERE l.wallet_entry_id=?""", (entry_id,)).fetchone()
+                if cash_link:
+                    detail = f"{cash_link['source_currency']} → {cash_link['target_currency']}"
+                    if cash_link["role"] == "fee":
+                        label = "환전 수수료 수취"
+                    elif cash_link["transaction_kind"] == "exchange":
+                        label = "환전 출금" if cash_link["role"] == "source" else "환전 입금"
+                    else:
+                        outgoing = cash_link["role"] == "source"
+                        label = "송금" if outgoing else "송금 수령"
+                        counterpart_id = str(cash_link["recipient_id"] if outgoing else cash_link["sender_id"])
+                        nickname = connection.execute("SELECT NULLIF(nickname,'') FROM users WHERE user_id=?",
+                                                      (counterpart_id,)).fetchone()
+                        counterpart = (nickname[0] if nickname else None) or counterpart_id
+            if not cash_link and "currency_transfer_transactions" in tables and label in {"입금", "출금"}:
                 transfer = connection.execute(
                     "SELECT t.sender_id,t.recipient_id,t.source_currency,t.target_currency "
                     "FROM currency_transfer_transactions t WHERE "

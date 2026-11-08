@@ -105,6 +105,58 @@ class CurrencyHomeTests(unittest.TestCase):
         with self.db.atomic() as conn:
             self.assertEqual(CurrencyManager.balance(conn,'citizen','AAA'),1_029_400*SCALE)
 
+    def test_fx_and_transfer_post_each_currency_and_link_actual_wallet_rows(self):
+        from managers.accounting_journal import AccountingJournal
+
+        self.configure()
+        self.db.system.set_setting("currency_exchange_fee_percent", "0")
+        self.db.products.execute("INSERT INTO saving(product_code,name,interest_rate,quote_currency,product_kind) "
+                                 "VALUES ('BASE_SAVE','Base account',0,'NWX','saving')")
+        self.bot.currency_mgr.open_account("citizen", "BASE_SAVE")
+        self.bot.currency_mgr.exchange("citizen", "AAA", "NWX", "300")
+        self.bot.currency_mgr.transfer("citizen", "admin", "300")
+        with self.db.readonly() as conn:
+            rows = conn.execute("""SELECT transaction_kind,role,currency_code,decimal_places,
+                delta_minor_units FROM currency_cash_postings ORDER BY transaction_kind,role""").fetchall()
+            self.assertEqual([tuple(row) for row in rows], [
+                ("exchange", "source", "AAA", 2, -30000),
+                ("exchange", "target", "NWX", 0, 100),
+                ("transfer", "source", "AAA", 2, -30000),
+                ("transfer", "target", "NWX", 0, 100),
+            ])
+            check = AccountingJournal.reconcile_currency_cash(conn)
+            self.assertEqual((check["status"], check["event_count"]), ("matched", 4))
+
+    def test_exchange_fee_links_the_treasury_receipt_in_its_actual_currency(self):
+        from managers.accounting_journal import AccountingJournal
+
+        self.configure()
+        self.db.system.set_setting("currency_exchange_fee_percent", "1")
+        self.db.products.execute("INSERT INTO saving(product_code,name,interest_rate,quote_currency,product_kind) "
+                                 "VALUES ('BASE_SAVE','Base account',0,'NWX','saving')")
+        self.bot.currency_mgr.open_account("citizen", "BASE_SAVE")
+        self.bot.currency_mgr.exchange("citizen", "AAA", "NWX", "300")
+        with self.db.readonly() as conn:
+            row = conn.execute("""SELECT p.currency_code,p.delta_minor_units,w.delta_minor_units,
+                p.user_id FROM currency_cash_postings p JOIN currency_cash_wallet_links l
+                USING(transaction_kind,transaction_id,role) JOIN customer_wallet_ledger w
+                ON w.entry_id=l.wallet_entry_id WHERE p.role='fee'""").fetchone()
+            self.assertEqual(tuple(row), ("AAA", 300, 300, CurrencyManager.treasury_id(conn, "미국")))
+            self.assertEqual(AccountingJournal.reconcile_currency_cash(conn)["status"], "matched")
+
+    def test_currency_audit_reports_unposted_post_activation_transaction(self):
+        from managers.accounting_journal import AccountingJournal
+
+        self.configure()
+        self.db.currency.execute("""INSERT INTO currency_transactions
+            (user_id,source_currency,target_currency,source_units,target_units,fee_nwx,recorded_epoch)
+            VALUES ('citizen','AAA','NWX',?,?,0,1)""", (3*SCALE,SCALE))
+        with self.db.readonly() as conn:
+            check = AccountingJournal.reconcile_currency_cash(conn)
+        self.assertEqual(check["status"], "mismatch")
+        self.assertEqual({(gap["role"], gap["status"]) for gap in check["gaps"]},
+                         {("source", "missing_posting"), ("target", "missing_posting")})
+
     def test_aml_monitors_sender_and_recipient_in_their_home_currencies(self):
         cmd=self.configure()
         self.db.users.create_user('recipient','수취인','미국',1000)

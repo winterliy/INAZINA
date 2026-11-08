@@ -920,6 +920,24 @@ class EconomyTests(unittest.TestCase):
             self.db.accounts.get_account(account["account_number"])["balance"], 1250
         )
 
+    def test_transfer_links_the_recipient_deposit_to_the_bank_journal(self):
+        from managers.accounting_journal import AccountingJournal
+
+        self.db.users.update_cash("citizen-2", 2000)
+        self.db.products.register_saving("RECIPIENT", "Recipient Savings", 0, 0, 0, 3600, 0, "Bank")
+        self.assertTrue(self.bank.open_account("citizen-2", "RECIPIENT", "1234", 1000)[0])
+        account = self.db.accounts.execute_one("SELECT account_number FROM accounts WHERE user_id='citizen-2'")[0]
+        ok, message = self.users.transfer("citizen-1", account, 250, "__wallet__")
+        self.assertTrue(ok, message)
+        with self.db.readonly() as conn:
+            row = conn.execute("""SELECT l.institution_id,w.source_account,b.event_type,b.reference_key
+                FROM currency_cash_wallet_links l JOIN customer_wallet_ledger w ON w.entry_id=l.wallet_entry_id
+                JOIN bank_journal_entries b ON b.entry_id=l.bank_entry_id
+                WHERE l.transaction_kind='transfer' AND l.role='target'""").fetchone()
+            self.assertEqual(tuple(row)[:3], ("Bank", account, "customer_transfer_in"))
+            self.assertTrue(row["reference_key"].endswith(":in"))
+            self.assertEqual(AccountingJournal.reconcile_currency_cash(conn)["status"], "matched")
+
     def test_transfer_can_deposit_to_treasury(self):
         starting_treasury = self.db.users.get_treasury_balance()
 

@@ -343,11 +343,19 @@ class CurrencyManager:
     @classmethod
     def credit_treasury_fee(cls, conn, user_id, fee_nwx):
         """Exchange fees (quoted in 기준 통화) go to the user's nationality treasury, in its currency."""
+        receipt = cls.credit_treasury_fee_receipt(conn, user_id, fee_nwx)
+        return receipt[0] if receipt else None
+
+    @classmethod
+    def credit_treasury_fee_receipt(cls, conn, user_id, fee_nwx):
+        """Return the treasury, quoted currency, received currency and exact received units."""
         if not fee_nwx:
             return None
         treasury = cls.user_treasury_id(conn, user_id)
-        cls.treasury_receive(conn, treasury, base_currency_code(conn), int(fee_nwx) * SCALE)
-        return treasury
+        base = base_currency_code(conn)
+        currency = base if cls._treasury_target(conn, treasury, base) else cls.home(conn, treasury)
+        received = cls.treasury_receive(conn, treasury, base, int(fee_nwx) * SCALE)
+        return treasury, base, currency, received
 
     @classmethod
     def change(cls, conn, user_id, currency, delta, allow_deficit=False):

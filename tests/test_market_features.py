@@ -124,6 +124,50 @@ class MarketFeatureTests(unittest.TestCase):
         self.assertEqual(sum(r["quantity"] for r in self.db.assets.get_user_portfolio("bob")), 2)
         self.assertEqual(self.options.expire_matured(), [])
 
+    def test_option_premium_fill_reconciles_recipient_and_common_journal(self):
+        from managers.accounting_journal import AccountingJournal
+
+        self.db.assets.add_user_asset("alice", "CO", 5, unit_cost=100)
+        self.assertTrue(self.options.create_and_write("alice", "CO", "call", 100, 1, 2, 10)[0])
+        code = self.options.get_active_contracts()[0]["contract_code"]
+        for price in (12, 10):
+            ok, message = self.options.place_limit_order("bob", code, "buy", 1, price)
+            self.assertTrue(ok, message)
+        with self.db.readonly() as conn:
+            rows = conn.execute("""SELECT e.buyer_id,e.seller_id,e.premium_minor_units,
+                w.delta_minor_units,j.source_key FROM option_premium_events e
+                JOIN customer_wallet_ledger w ON w.entry_id=e.wallet_entry_id
+                JOIN accounting_entries j ON j.entry_id=e.journal_entry_id
+                ORDER BY e.buy_order_id""").fetchall()
+            self.assertEqual([tuple(r)[:4] for r in rows], [("bob", "alice", 10, 10)] * 2)
+            self.assertEqual(len({r[4] for r in rows}), 2)
+            result = AccountingJournal.reconcile_option_premiums(conn)
+            self.assertEqual((result["event_count"], result["status"]), (2, "matched"))
+        self.assertEqual(self.db.users.get_user("bob")["cash"], 9980)
+
+    def test_option_premium_posting_failure_rolls_back_cash_and_fill(self):
+        from functions.money import base_currency_code
+        from managers.accounting_journal import AccountingJournal
+
+        self.db.assets.add_user_asset("alice", "CO", 5, unit_cost=100)
+        self.assertTrue(self.options.create_and_write("alice", "CO", "call", 100, 1, 2, 10)[0])
+        code = self.options.get_active_contracts()[0]["contract_code"]
+        now = int(time.time())
+        with self.db.atomic() as conn:
+            AccountingJournal.close_period(
+                conn, ledger_scope="option", entity_id=code, currency_code=base_currency_code(conn),
+                period_start_epoch=now-60, period_end_epoch=now+60,
+                actor_id="admin", closed_epoch=now+60,
+            )
+        ok, message = self.options.place_limit_order("bob", code, "buy", 1, 12)
+        self.assertFalse(ok)
+        self.assertIn("마감된 회계기간", message)
+        self.assertEqual(self.db.users.get_user("alice")["cash"], 10000)
+        self.assertEqual(self.db.users.get_user("bob")["cash"], 10000)
+        self.assertEqual(self.options.get_user_positions("bob"), [])
+        self.assertEqual(self.db.assets.execute_one("SELECT COUNT(*) FROM option_premium_events")[0], 0)
+        self.assertEqual(self.db.assets.execute_one("SELECT COUNT(*) FROM option_order_cash_links")[0], 0)
+
     def test_cash_secured_put_is_available_to_ordinary_user(self):
         self.assertTrue(self.options.create_and_write("alice", "CO", "put", 100, 1, 2, 10)[0])
         written = self.options.get_user_written("alice")[0]

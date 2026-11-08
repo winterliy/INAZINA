@@ -50,6 +50,43 @@ class CurrencyDB(DBManager):
             source_currency TEXT NOT NULL, target_currency TEXT NOT NULL,
             source_units INTEGER NOT NULL, target_units INTEGER NOT NULL,
             fee_nwx INTEGER NOT NULL, recorded_epoch REAL NOT NULL)""")
+        self.execute("""CREATE TABLE IF NOT EXISTS currency_cash_activation (
+            transaction_kind TEXT PRIMARY KEY CHECK(transaction_kind IN ('exchange','transfer')),
+            through_transaction_id INTEGER NOT NULL)""")
+        for kind, table in (("exchange", "currency_transactions"), ("transfer", "currency_transfer_transactions")):
+            self.execute(f"""INSERT OR IGNORE INTO currency_cash_activation
+                SELECT ?,COALESCE(MAX(transaction_id),0) FROM {table}""", (kind,))
+        self.execute("""CREATE TABLE IF NOT EXISTS currency_cash_postings (
+            transaction_kind TEXT NOT NULL CHECK(transaction_kind IN ('exchange','transfer')),
+            transaction_id INTEGER NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('source','target','fee')),
+            user_id TEXT NOT NULL, currency_code TEXT NOT NULL,
+            decimal_places INTEGER NOT NULL CHECK(decimal_places BETWEEN 0 AND 6),
+            delta_minor_units INTEGER NOT NULL CHECK(
+                (role='source' AND delta_minor_units<0) OR (role IN ('target','fee') AND delta_minor_units>0)),
+            journal_entry_id INTEGER NOT NULL UNIQUE,
+            PRIMARY KEY(transaction_kind,transaction_id,role))""")
+        self.execute("""CREATE TABLE IF NOT EXISTS currency_cash_wallet_links (
+            transaction_kind TEXT NOT NULL, transaction_id INTEGER NOT NULL, role TEXT NOT NULL,
+            wallet_entry_id INTEGER NOT NULL UNIQUE,
+            institution_id TEXT, bank_entry_id INTEGER UNIQUE,
+            CHECK((institution_id IS NULL)=(bank_entry_id IS NULL)),
+            PRIMARY KEY(transaction_kind,transaction_id,role,wallet_entry_id),
+            FOREIGN KEY(transaction_kind,transaction_id,role)
+                REFERENCES currency_cash_postings(transaction_kind,transaction_id,role))""")
+        self.execute("""CREATE TABLE IF NOT EXISTS currency_cash_fee_settlements (
+            transaction_kind TEXT NOT NULL CHECK(transaction_kind IN ('exchange','transfer')),
+            transaction_id INTEGER NOT NULL, treasury_id TEXT NOT NULL,
+            quote_currency TEXT NOT NULL, quote_fee_minor_units INTEGER NOT NULL CHECK(quote_fee_minor_units>0),
+            receipt_currency TEXT NOT NULL, receipt_minor_units INTEGER NOT NULL CHECK(receipt_minor_units>=0),
+            receipt_decimal_places INTEGER NOT NULL CHECK(receipt_decimal_places BETWEEN 0 AND 6),
+            PRIMARY KEY(transaction_kind,transaction_id))""")
+        for table in ("currency_cash_activation", "currency_cash_postings", "currency_cash_wallet_links",
+                      "currency_cash_fee_settlements"):
+            for operation in ("UPDATE", "DELETE"):
+                self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_{operation.lower()}
+                    BEFORE {operation} ON {table}
+                    BEGIN SELECT RAISE(ABORT,'currency cash postings are append-only'); END""")
         self.execute("""CREATE TABLE IF NOT EXISTS basic_income_payments (
             payment_id INTEGER PRIMARY KEY AUTOINCREMENT,
             batch_id TEXT NOT NULL, user_id TEXT NOT NULL,
@@ -948,6 +985,9 @@ class CurrencyDB(DBManager):
         self._ensure_minor_amount_snapshots(snapshot_direct, derived)
         self._ensure_customer_wallet_journal()
         self._ensure_fund_cash_common_journal()
+        from .accounting_periods import ensure_period_guards
+        with self.lock, self.conn:
+            ensure_period_guards(self.conn)
         with self.lock, self.conn:
             self._ensure_tax_transaction_wallet_links()
 
@@ -963,7 +1003,11 @@ class CurrencyDB(DBManager):
              recorded_epoch,description)
             SELECT 'fund','fund_cash',product_code,'fund-cash:'||entry_id,
                 currency_code,decimal_places,recorded_epoch,event
-            FROM fund_cash_ledger ORDER BY entry_id""")
+            FROM fund_cash_ledger f
+            WHERE NOT EXISTS (SELECT 1 FROM accounting_entries e
+                WHERE e.ledger_scope='fund' AND e.entity_type='fund_cash'
+                AND e.entity_id=f.product_code AND e.source_key='fund-cash:'||f.entry_id)
+            ORDER BY f.entry_id""")
         self.execute("""INSERT INTO accounting_lines(entry_id,account_code,debit_units,credit_units)
             SELECT e.entry_id,'fund_cash',
                 CASE WHEN f.amount_minor_units>0 THEN f.amount_minor_units ELSE 0 END,
@@ -1337,12 +1381,16 @@ class CurrencyDB(DBManager):
             recorded_epoch INTEGER NOT NULL)""")
         for local in ("customer_funds_payable", "wallet_clearing", "opening_balance_equity"):
             self.execute("INSERT OR IGNORE INTO accounting_account_mappings(ledger_scope,local_code,common_code) VALUES ('customer',?,?)", (local,local))
+        self.execute("""CREATE INDEX IF NOT EXISTS idx_customer_wallet_source
+            ON customer_wallet_ledger(source_type,source_account,user_id,entry_id)""")
         # Historical state is one opening transaction per wallet, guarded by a
         # deterministic source key so startup retries are harmless.
         cash_rows = self.execute("""SELECT u.user_id,u.cash_minor,
             COALESCE(n.currency_code,base_currency_code()) currency_code,COALESCE(c.decimal_places,0) decimal_places
             FROM users u LEFT JOIN country_currencies n ON n.nationality=u.nationality
-            LEFT JOIN currencies c ON c.code=n.currency_code WHERE u.cash_minor<>0""")
+            LEFT JOIN currencies c ON c.code=n.currency_code WHERE u.cash_minor<>0
+            AND NOT EXISTS (SELECT 1 FROM customer_wallet_ledger w
+                WHERE w.source_type='cash' AND w.source_account=u.user_id AND w.user_id=u.user_id)""")
         for row in cash_rows:
             source = f"opening:cash:{row['user_id']}"
             self.execute("""INSERT OR IGNORE INTO customer_wallet_ledger
@@ -1352,8 +1400,10 @@ class CurrencyDB(DBManager):
                 (source,str(row['user_id']),str(row['user_id']),str(row['currency_code']),
                  int(row['decimal_places']),int(row['cash_minor']),int(row['cash_minor'])))
         account_rows = self.execute("""SELECT account_number,user_id,quote_currency,
-            balance_minor_units,balance_decimal_places FROM accounts
-            WHERE balance_minor_units<>0 AND user_id IS NOT NULL""")
+            balance_minor_units,balance_decimal_places FROM accounts a
+            WHERE balance_minor_units<>0 AND user_id IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM customer_wallet_ledger w WHERE w.source_type='account'
+                AND w.source_account=a.account_number AND w.user_id=a.user_id)""")
         for row in account_rows:
             source = f"opening:account:{row['account_number']}"
             self.execute("""INSERT OR IGNORE INTO customer_wallet_ledger
@@ -1418,21 +1468,28 @@ class CurrencyDB(DBManager):
             (ledger_scope,entity_type,entity_id,source_key,currency_code,decimal_places,recorded_epoch,description)
             SELECT 'customer','wallet_holder',user_id,'wallet:'||entry_id,currency_code,decimal_places,
                 recorded_epoch,source_type||' balance movement'
-            FROM customer_wallet_ledger""")
+            FROM customer_wallet_ledger w
+            WHERE NOT EXISTS (SELECT 1 FROM accounting_entries e
+                WHERE e.ledger_scope='customer' AND e.entity_type='wallet_holder'
+                AND e.entity_id=w.user_id AND e.source_key='wallet:'||w.entry_id)""")
         self.execute("""INSERT OR IGNORE INTO accounting_lines(entry_id,account_code,debit_units,credit_units)
             SELECT e.entry_id,'customer_funds_payable',
                 CASE WHEN w.delta_minor_units<0 THEN -w.delta_minor_units ELSE 0 END,
                 CASE WHEN w.delta_minor_units>0 THEN w.delta_minor_units ELSE 0 END
             FROM customer_wallet_ledger w JOIN accounting_entries e
               ON e.ledger_scope='customer' AND e.entity_type='wallet_holder'
-             AND e.entity_id=w.user_id AND e.source_key='wallet:'||w.entry_id""")
+             AND e.entity_id=w.user_id AND e.source_key='wallet:'||w.entry_id
+            WHERE NOT EXISTS (SELECT 1 FROM accounting_lines l
+                WHERE l.entry_id=e.entry_id AND l.account_code='customer_funds_payable')""")
         self.execute("""INSERT OR IGNORE INTO accounting_lines(entry_id,account_code,debit_units,credit_units)
             SELECT e.entry_id,'wallet_clearing',
                 CASE WHEN w.delta_minor_units>0 THEN w.delta_minor_units ELSE 0 END,
                 CASE WHEN w.delta_minor_units<0 THEN -w.delta_minor_units ELSE 0 END
             FROM customer_wallet_ledger w JOIN accounting_entries e
               ON e.ledger_scope='customer' AND e.entity_type='wallet_holder'
-             AND e.entity_id=w.user_id AND e.source_key='wallet:'||w.entry_id""")
+             AND e.entity_id=w.user_id AND e.source_key='wallet:'||w.entry_id
+            WHERE NOT EXISTS (SELECT 1 FROM accounting_lines l
+                WHERE l.entry_id=e.entry_id AND l.account_code='wallet_clearing')""")
         # Install the immutable Treasury-bond cash subledger during writable
         # startup. Keep the database package independent from manager modules;
         # read-only reports only query this table during reconciliation.
