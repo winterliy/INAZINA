@@ -687,6 +687,48 @@ class AccountingJournal:
                 VALUES (?,?,?,?,?,?,?)""", (key,role,user,asset,str(delta),str(before[role]),str(after[role])))
 
     @staticmethod
+    def reconcile_option_collateral(conn):
+        """Reconcile live written obligations, positions and collateral without altering history."""
+        from decimal import Decimal
+
+        contracts = {r['contract_id']: r for r in conn.execute(
+            "SELECT contract_id,contract_code,option_type,writer_id,underlying_code,strike_price,"
+            "outstanding_contracts,status FROM option_contracts")}
+        outstanding, unfilled, share_lots, cash_lots, gaps = {}, {}, {}, {}, []
+        for row in conn.execute("SELECT contract_id,quantity FROM option_positions"):
+            outstanding[row['contract_id']] = outstanding.get(row['contract_id'], 0) + int(row['quantity'])
+        for row in conn.execute("""SELECT asset_code,remaining_quantity FROM market_orders
+            WHERE order_kind='option' AND option_order_type='write' AND side='sell'
+              AND status IN ('open','partial')"""):
+            unfilled[row['asset_code']] = unfilled.get(row['asset_code'], 0) + int(row['remaining_quantity'])
+        for table, field, totals in (("option_collateral_lots", "quantity", share_lots),
+                                     ("option_collateral_cash_lots", "amount", cash_lots)):
+            for row in conn.execute(f"SELECT * FROM {table}"):
+                contract = contracts.get(row['contract_id'])
+                if (not contract or row['writer_id'] != contract['writer_id'] or
+                    (field == 'quantity' and row['underlying_code'] != contract['underlying_code'])):
+                    gaps.append({'contract_id':row['contract_id'], 'status':'invalid_collateral_owner', 'source':table})
+                totals[row['contract_id']] = totals.get(row['contract_id'], Decimal(0)) + Decimal(str(row[field]))
+        for cid, contract in contracts.items():
+            active = contract['status'] == 'active'
+            held = outstanding.get(cid, 0)
+            written = int(contract['outstanding_contracts'])
+            if (active and held != written) or (not active and held):
+                gaps.append({'contract_id':cid, 'status':'position_mismatch',
+                             'held_contracts':held, 'outstanding_contracts':written})
+            exposure = written + unfilled.get(contract['contract_code'], 0) if active else 0
+            shares, cash = share_lots.get(cid, Decimal(0)), cash_lots.get(cid, Decimal(0))
+            expected_shares = Decimal(exposure if contract['option_type']=='call' else 0)
+            expected_cash = Decimal(exposure * int(contract['strike_price']) if contract['option_type']=='put' else 0)
+            if shares != expected_shares or cash != expected_cash:
+                gaps.append({'contract_id':cid, 'status':'collateral_mismatch',
+                             'share_quantity':str(shares), 'expected_shares':str(expected_shares),
+                             'cash_minor_units':str(cash), 'expected_cash_minor_units':str(expected_cash)})
+        return {'contract_count':len(contracts), 'gaps':gaps,
+                'status':'mismatch' if gaps else 'matched',
+                'coverage':'current positions and collateral; historical collateral movements are not reconstructed'}
+
+    @staticmethod
     def reconcile_option_exercises(conn):
         gaps, count = [], 0
         rows = conn.execute("""SELECT x.*,c.contract_code actual_code,c.option_type actual_type,
@@ -1577,6 +1619,8 @@ class AccountingJournal:
                        **AccountingJournal.reconcile_period_closings(conn)})
         checks.append({"ledger_scope": "currency_cash",
                        **AccountingJournal.reconcile_currency_cash(conn)})
+        checks.append({"ledger_scope": "option_collateral",
+                       **AccountingJournal.reconcile_option_collateral(conn)})
         checks.append({"ledger_scope": "option_exercises",
                        **AccountingJournal.reconcile_option_exercises(conn)})
         checks.append({"ledger_scope": "option_premiums",

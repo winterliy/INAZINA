@@ -278,6 +278,30 @@ class MarketFeatureTests(unittest.TestCase):
         self.assertEqual(written["collateral_cash"], 200)
         self.assertEqual(self.db.users.get_user("alice")["cash"], 9800)
 
+    def test_option_collateral_reconciliation_detects_shortfall_after_partial_fill(self):
+        from managers.accounting_journal import AccountingJournal
+        self.assertTrue(self.options.create_and_write('alice', 'CO', 'put', 100, 1, 2, 10)[0])
+        code = self.options.get_active_contracts()[0]['contract_code']
+        self.assertTrue(self.options.place_limit_order('bob', code, 'buy', 1, 10)[0])
+        with self.db.atomic() as conn:
+            self.assertEqual(AccountingJournal.reconcile_option_collateral(conn)['status'], 'matched')
+            conn.execute('UPDATE option_collateral_cash_lots SET amount=amount-1')
+            report = AccountingJournal.reconcile_option_collateral(conn)
+            self.assertEqual(report['status'], 'mismatch')
+            self.assertTrue(any(gap['status'] == 'collateral_mismatch' for gap in report['gaps']))
+
+    def test_option_collateral_reconciliation_handles_partial_write_cancellation(self):
+        from managers.accounting_journal import AccountingJournal
+        self.db.assets.add_user_asset('alice', 'CO', 2, unit_cost=100)
+        self.assertTrue(self.options.create_and_write('alice', 'CO', 'call', 100, 1, 2, 10)[0])
+        code = self.options.get_active_contracts()[0]['contract_code']
+        self.assertTrue(self.options.place_limit_order('bob', code, 'buy', 1, 10)[0])
+        write_order = self.db.assets.execute_one("SELECT order_id FROM market_orders WHERE asset_code=? AND option_order_type='write'", (code,))
+        self.assertTrue(self.options.cancel_order('alice', write_order['order_id'])[0])
+        with self.db.readonly() as conn:
+            report = AccountingJournal.reconcile_option_collateral(conn)
+            self.assertEqual(report['status'], 'matched', report)
+
     def test_option_cash_sources_exclude_other_currencies_and_managed_accounts(self):
         self.db.currency.execute("INSERT INTO currencies(code,name,reference_rate,decimal_places) VALUES ('TST','Test','1',2)")
         self.db.accounts.execute("INSERT INTO accounts(account_number,user_id,quote_currency,managed_by) VALUES ('foreign','alice','TST',NULL)")
