@@ -610,6 +610,60 @@ class AccountingJournal:
                 "status": "mismatch" if gaps else "matched"}
 
     @classmethod
+    def post_option_exercise(cls, conn, contract, holder, quantity, tax, epoch):
+        """Record the gross exercise and tax in the contract's settlement currency."""
+        currency = base_currency_code(conn)
+        gross = int(contract["strike_price"]) * int(quantity)
+        tax = int(tax)
+        key = f"option-exercise:{contract['contract_id']}:{holder}"
+        lines = [("exercise_cash_clearing", "debit", gross),
+                 ("exercise_seller_payable", "credit", gross-tax)]
+        if tax:
+            lines.append(("exercise_tax_payable", "credit", tax))
+        for account, _, _ in lines:
+            cls.register_mapping(conn, "option_exercise", account, account)
+        entry = cls.post(conn, ledger_scope="option_exercise", entity_type="option_contract",
+                         entity_id=contract["contract_code"], source_key=key,
+                         currency_code=currency, decimal_places=0, recorded_epoch=epoch,
+                         lines=lines, description="Option exercise consideration")
+        conn.execute("""INSERT INTO option_exercise_events
+            (event_key,contract_id,contract_code,option_type,holder_id,writer_id,quantity,
+             gross_minor_units,tax_minor_units,currency_code,decimal_places,recorded_epoch,journal_entry_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,0,?,?)""",
+            (key,contract["contract_id"],contract["contract_code"],contract["option_type"],
+             str(holder),contract["writer_id"],quantity,gross,tax,currency,epoch,entry))
+
+    @staticmethod
+    def reconcile_option_exercises(conn):
+        gaps, count = [], 0
+        rows = conn.execute("""SELECT x.*,c.contract_code actual_code,c.option_type actual_type,
+            c.writer_id actual_writer,c.strike_price,j.ledger_scope,j.entity_id,j.source_key,
+            j.currency_code journal_currency,j.decimal_places journal_places,j.recorded_epoch journal_epoch
+            FROM option_exercise_events x LEFT JOIN option_contracts c USING(contract_id)
+            LEFT JOIN accounting_entries j ON j.entry_id=x.journal_entry_id""")
+        for r in rows:
+            count += 1
+            expected = {"exercise_cash_clearing": (r["gross_minor_units"], 0),
+                        "exercise_seller_payable": (0, r["gross_minor_units"]-r["tax_minor_units"])}
+            if not expected["exercise_seller_payable"][1]:
+                del expected["exercise_seller_payable"]
+            if r["tax_minor_units"]:
+                expected["exercise_tax_payable"] = (0,r["tax_minor_units"])
+            actual = {line[0]:(line[1],line[2]) for line in conn.execute(
+                "SELECT account_code,debit_units,credit_units FROM accounting_lines WHERE entry_id=?",
+                (r["journal_entry_id"],))}
+            if ((r["actual_code"],r["actual_type"],r["actual_writer"]) !=
+                    (r["contract_code"],r["option_type"],r["writer_id"])
+                or r["gross_minor_units"] != r["quantity"] * (r["strike_price"] or 0)
+                or (r["ledger_scope"],r["entity_id"],r["source_key"],r["journal_currency"],
+                    r["journal_places"],r["journal_epoch"]) !=
+                   ("option_exercise",r["contract_code"],r["event_key"],r["currency_code"],0,r["recorded_epoch"])
+                or actual != expected):
+                gaps.append({"event_key":r["event_key"],"status":"exercise_mismatch"})
+        return {"event_count":count,"gaps":gaps,"status":"mismatch" if gaps else "matched",
+                "historical_baseline_policy":"only exercises after activation are represented"}
+
+    @classmethod
     def post_option_premium(cls, conn, buy_order, sell_order, quantity, price, now):
         """Post the transfer from reserved premium and link the actual receipt."""
         from database.fund_accounting import FundCashLedger
@@ -1417,6 +1471,8 @@ class AccountingJournal:
                        **AccountingJournal.reconcile_period_closings(conn)})
         checks.append({"ledger_scope": "currency_cash",
                        **AccountingJournal.reconcile_currency_cash(conn)})
+        checks.append({"ledger_scope": "option_exercises",
+                       **AccountingJournal.reconcile_option_exercises(conn)})
         checks.append({"ledger_scope": "option_premiums",
                        **AccountingJournal.reconcile_option_premiums(conn)})
         checks.append({"ledger_scope":"treasury_bond_cash",

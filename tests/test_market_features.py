@@ -124,6 +124,51 @@ class MarketFeatureTests(unittest.TestCase):
         self.assertEqual(sum(r["quantity"] for r in self.db.assets.get_user_portfolio("bob")), 2)
         self.assertEqual(self.options.expire_matured(), [])
 
+    def test_call_exercise_records_settlement_and_reconciles(self):
+        from managers.accounting_journal import AccountingJournal
+        self.db.assets.add_user_asset('alice', 'CO', 2, unit_cost=100)
+        self.assertTrue(self.options.create_and_write('alice', 'CO', 'call', 100, 1, 1, 10)[0])
+        code = self.options.get_active_contracts()[0]['contract_code']
+        self.assertTrue(self.options.place_limit_order('bob', code, 'buy', 1, 10)[0])
+        self.db.companies.update_share_price('CO', 120)
+        self.db.assets.execute('UPDATE option_contracts SET expiration_epoch=? WHERE contract_code=?', (int(time.time())-1, code))
+        self.assertTrue(self.options.expire_matured())
+        with self.db.readonly() as conn:
+            event = conn.execute('SELECT * FROM option_exercise_events').fetchone()
+            self.assertEqual((event['contract_code'], event['holder_id'], event['gross_minor_units']), (code, 'bob', 100))
+            self.assertEqual(AccountingJournal.reconcile_option_exercises(conn)['status'], 'matched')
+        self.assertEqual(self.options.expire_matured(), [])
+
+    def test_put_exercise_records_settlement_and_reconciles(self):
+        from managers.accounting_journal import AccountingJournal
+        self.db.assets.add_user_asset('bob', 'CO', 1, unit_cost=90)
+        self.assertTrue(self.options.create_and_write('alice', 'CO', 'put', 100, 1, 1, 10)[0])
+        code = self.options.get_active_contracts()[0]['contract_code']
+        self.assertTrue(self.options.place_limit_order('bob', code, 'buy', 1, 10)[0])
+        self.db.companies.update_share_price('CO', 80)
+        self.db.assets.execute('UPDATE option_contracts SET expiration_epoch=? WHERE contract_code=?', (int(time.time())-1, code))
+        self.assertTrue(self.options.expire_matured())
+        with self.db.readonly() as conn:
+            row = conn.execute('SELECT option_type,gross_minor_units FROM option_exercise_events').fetchone()
+            self.assertEqual(tuple(row), ('put', 100))
+            self.assertEqual(AccountingJournal.reconcile_option_exercises(conn)['status'], 'matched')
+
+    def test_exercise_post_failure_rolls_back_the_whole_expiry(self):
+        from managers.accounting_journal import AccountingJournal
+        self.db.assets.add_user_asset('alice', 'CO', 1, unit_cost=100)
+        self.assertTrue(self.options.create_and_write('alice', 'CO', 'call', 100, 1, 1, 10)[0])
+        code = self.options.get_active_contracts()[0]['contract_code']
+        self.assertTrue(self.options.place_limit_order('bob', code, 'buy', 1, 10)[0])
+        self.db.companies.update_share_price('CO', 120)
+        self.db.assets.execute('UPDATE option_contracts SET expiration_epoch=? WHERE contract_code=?', (int(time.time())-1, code))
+        before = self.db.users.get_user('bob')['cash']
+        with patch.object(AccountingJournal, 'post_option_exercise', side_effect=ValueError('posting failure')):
+            self.assertEqual(self.options.expire_matured(), [])
+        self.assertEqual(self.db.users.get_user('bob')['cash'], before)
+        self.assertEqual(self.options.get_contract(code)['status'], 'active')
+        self.assertEqual(self.options.get_user_positions('bob')[0]['quantity'], 1)
+        self.assertTrue(self.options.expire_matured())
+
     def test_option_premium_fill_reconciles_recipient_and_common_journal(self):
         from managers.accounting_journal import AccountingJournal
 

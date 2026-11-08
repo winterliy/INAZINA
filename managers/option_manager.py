@@ -1054,6 +1054,9 @@ class OptionManager:
                                     exercised, strike, None,
                                 )
                                 cash_received = collateral_payment - tax
+                        if exercised:
+                            from managers.accounting_journal import AccountingJournal
+                            AccountingJournal.post_option_exercise(conn, contract, holder_id, exercised, tax, now)
                         conn.execute(
                             "DELETE FROM assets.option_positions WHERE contract_id = ? AND user_id = ?",
                             (contract["contract_id"], holder_id),

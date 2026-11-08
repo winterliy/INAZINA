@@ -790,6 +790,16 @@ class AssetDB(DBManager):
             wallet_entry_id INTEGER UNIQUE,
             fund_entry_id INTEGER UNIQUE,
             CHECK((wallet_entry_id IS NULL)<>(fund_entry_id IS NULL)))""")
+        self.execute("""CREATE TABLE IF NOT EXISTS option_exercise_events (
+            event_key TEXT PRIMARY KEY, contract_id INTEGER NOT NULL, contract_code TEXT NOT NULL,
+            option_type TEXT NOT NULL CHECK(option_type IN ('call','put')),
+            holder_id TEXT NOT NULL, writer_id TEXT NOT NULL,
+            quantity INTEGER NOT NULL CHECK(quantity>0),
+            gross_minor_units INTEGER NOT NULL CHECK(gross_minor_units>0),
+            tax_minor_units INTEGER NOT NULL CHECK(tax_minor_units>=0 AND tax_minor_units<=gross_minor_units),
+            currency_code TEXT NOT NULL, decimal_places INTEGER NOT NULL CHECK(decimal_places=0),
+            recorded_epoch INTEGER NOT NULL, journal_entry_id INTEGER NOT NULL UNIQUE,
+            UNIQUE(contract_id,holder_id))""")
         self.execute("""CREATE TABLE IF NOT EXISTS option_order_cash_links (
             link_id INTEGER PRIMARY KEY AUTOINCREMENT,
             order_id INTEGER NOT NULL,
@@ -815,7 +825,7 @@ class AssetDB(DBManager):
                 AND NOT EXISTS(SELECT 1 FROM option_audit_activation WHERE singleton_id=1)""")
             self.conn.execute("""INSERT OR IGNORE INTO option_audit_activation
                 SELECT 1,COALESCE(MAX(order_id),0) FROM market_orders""")
-        for table in ("option_premium_events", "option_order_cash_links",
+        for table in ("option_premium_events", "option_exercise_events", "option_order_cash_links",
                       "option_audit_activation", "option_order_fill_baselines"):
             for operation in ("UPDATE", "DELETE"):
                 self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_{operation.lower()}
