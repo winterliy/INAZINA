@@ -875,11 +875,17 @@ class OptionManager:
                     "WHERE collateral_id = ?",
                     (take, row["collateral_id"]),
                 )
-            self.user_manager._credit_source(
-                conn, row["writer_id"],
-                self._live_account_or_wallet(conn, row["writer_id"], row["account_number"]),
-                take,
-            )
+            from managers.currency_manager import CurrencyManager
+            currency = base_currency_code(conn)
+            number = row["account_number"]
+            destination = conn.execute(
+                "SELECT 1 FROM accounts.accounts WHERE account_number=? AND user_id=? AND quote_currency=?",
+                (number, row["writer_id"], currency),
+            ).fetchone() if number is not None else None
+            if destination or (number is None and CurrencyManager.home(conn, row["writer_id"]) == currency):
+                self.user_manager._credit_source(conn, row["writer_id"], number, take, currency=currency)
+            else:
+                self._credit_option_cash(conn, row["writer_id"], take)
             left -= take
             if left == 0:
                 break

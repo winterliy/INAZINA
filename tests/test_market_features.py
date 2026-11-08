@@ -210,6 +210,18 @@ class MarketFeatureTests(unittest.TestCase):
         self.assertEqual(self.db.accounts.get_account('base-alice')['balance_minor_units'], 110)
         self.assertEqual(self.db.users.get_user('alice')['cash'], 10000)
 
+    def test_put_collateral_returns_to_base_account_after_nationality_change(self):
+        self.assertTrue(self.options.create_and_write('alice', 'CO', 'put', 100, 1, 1, 10)[0])
+        self.db.currency.execute("INSERT INTO currencies(code,name,reference_rate,decimal_places) VALUES ('TST','Test','1',2)")
+        self.db.currency.execute("INSERT INTO country_currencies(nationality,currency_code) VALUES ('Foreign','TST')")
+        self.db.users.execute("UPDATE users SET nationality='Foreign' WHERE user_id='alice'")
+        self.db.accounts.execute("INSERT INTO accounts(account_number,user_id,quote_currency) VALUES ('base-alice','alice',base_currency_code())")
+        order = self.db.assets.execute_one("SELECT order_id FROM market_orders WHERE user_id='alice' AND order_kind='option'")
+        ok, message = self.options.cancel_order('alice', order['order_id'])
+        self.assertTrue(ok, message)
+        self.assertEqual(self.db.accounts.get_account('base-alice')['balance_minor_units'], 100)
+        self.assertEqual(self.db.users.get_user('alice')['cash'], 9900)
+
     def test_default_rates_permissions_and_option_rate_sensitivity(self):
         self.assertEqual(self.rates.get_rate("base_rate"), 3)
         self.assertEqual(self.rates.get_rate("legal_max_rate"), 20)
