@@ -198,6 +198,20 @@ class MarketFeatureTests(unittest.TestCase):
             self.assertEqual(result['status'], 'mismatch')
             self.assertTrue(any(row['status'] == 'missing_asset_movements' for row in result['gaps']))
 
+    def test_exercise_reconciliation_detects_orphan_journal(self):
+        from managers.accounting_journal import AccountingJournal
+        from functions.money import base_currency_code
+        with self.db.atomic() as conn:
+            for name in ('exercise_cash_clearing', 'exercise_seller_payable'):
+                AccountingJournal.register_mapping(conn, 'option_exercise', name, name)
+            AccountingJournal.post(conn, ledger_scope='option_exercise', entity_type='option_contract',
+                entity_id='MISSING', source_key='orphan-test', currency_code=base_currency_code(conn),
+                decimal_places=0, recorded_epoch=1,
+                lines=[('exercise_cash_clearing', 'debit', 100), ('exercise_seller_payable', 'credit', 100)])
+            result = AccountingJournal.reconcile_option_exercises(conn)
+            self.assertEqual(result['status'], 'mismatch')
+            self.assertTrue(any(row['status'] == 'orphan_journal' for row in result['gaps']))
+
     def test_exercise_post_failure_rolls_back_the_whole_expiry(self):
         from managers.accounting_journal import AccountingJournal
         self.db.assets.add_user_asset('alice', 'CO', 1, unit_cost=100)

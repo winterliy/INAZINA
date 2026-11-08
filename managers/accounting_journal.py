@@ -690,7 +690,7 @@ class AccountingJournal:
     def reconcile_option_exercises(conn):
         gaps, count = [], 0
         rows = conn.execute("""SELECT x.*,c.contract_code actual_code,c.option_type actual_type,
-            c.writer_id actual_writer,c.strike_price,c.underlying_code,j.ledger_scope,j.entity_id,j.source_key,
+            c.writer_id actual_writer,c.strike_price,c.underlying_code,j.ledger_scope,j.entity_type,j.entity_id,j.source_key,
             j.currency_code journal_currency,j.decimal_places journal_places,j.recorded_epoch journal_epoch
             FROM option_exercise_events x LEFT JOIN option_contracts c USING(contract_id)
             LEFT JOIN accounting_entries j ON j.entry_id=x.journal_entry_id""")
@@ -702,9 +702,10 @@ class AccountingJournal:
                 del expected["exercise_seller_payable"]
             if r["tax_minor_units"]:
                 expected["exercise_tax_payable"] = (0,r["tax_minor_units"])
-            actual = {line[0]:(line[1],line[2]) for line in conn.execute(
+            journal_lines = conn.execute(
                 "SELECT account_code,debit_units,credit_units FROM accounting_lines WHERE entry_id=?",
-                (r["journal_entry_id"],))}
+                (r["journal_entry_id"],)).fetchall()
+            actual = {line[0]:(line[1],line[2]) for line in journal_lines}
             baseline = conn.execute("SELECT 1 FROM option_exercise_link_baseline WHERE event_key=?", (r["event_key"],)).fetchone()
             if not baseline:
                 links = conn.execute("""SELECT l.*,w.user_id,w.currency_code,w.decimal_places,w.delta_minor_units wallet_delta,
@@ -750,11 +751,21 @@ class AccountingJournal:
             if ((r["actual_code"],r["actual_type"],r["actual_writer"]) !=
                     (r["contract_code"],r["option_type"],r["writer_id"])
                 or r["gross_minor_units"] != r["quantity"] * (r["strike_price"] or 0)
-                or (r["ledger_scope"],r["entity_id"],r["source_key"],r["journal_currency"],
+                or (r["ledger_scope"],r["entity_type"],r["entity_id"],r["source_key"],r["journal_currency"],
                     r["journal_places"],r["journal_epoch"]) !=
-                   ("option_exercise",r["contract_code"],r["event_key"],r["currency_code"],0,r["recorded_epoch"])
-                or actual != expected):
+                   ("option_exercise","option_contract",r["contract_code"],r["event_key"],r["currency_code"],0,r["recorded_epoch"])
+                or len(journal_lines) != len(expected) or actual != expected):
                 gaps.append({"event_key":r["event_key"],"status":"exercise_mismatch"})
+        for orphan in conn.execute("""SELECT entry_id,source_key FROM accounting_entries j
+            WHERE j.ledger_scope='option_exercise' AND NOT EXISTS
+            (SELECT 1 FROM option_exercise_events x WHERE x.journal_entry_id=j.entry_id)"""):
+            gaps.append({"entry_id": orphan["entry_id"], "source_key": orphan["source_key"],
+                         "status": "orphan_journal"})
+        for table in ("option_exercise_cash_links", "option_exercise_asset_movements",
+                      "option_exercise_link_baseline", "option_exercise_asset_baseline"):
+            for orphan in conn.execute(f"""SELECT DISTINCT l.event_key FROM {table} l
+                LEFT JOIN option_exercise_events e ON e.event_key=l.event_key WHERE e.event_key IS NULL"""):
+                gaps.append({"event_key": orphan[0], "source": table, "status": "orphan_link"})
         return {"event_count":count,"gaps":gaps,"status":"mismatch" if gaps else "matched",
                 "historical_baseline_policy":"only exercises after activation are represented"}
 
