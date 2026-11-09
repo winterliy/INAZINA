@@ -300,6 +300,36 @@ class MarketFeatureTests(unittest.TestCase):
             self.assertEqual(result['status'], 'mismatch')
             self.assertTrue(any(row['status'] == 'deposit_total_mismatch' for row in result['gaps']))
 
+    def test_put_collateral_reconciliation_batches_journal_lines(self):
+        from managers.accounting_journal import AccountingJournal
+        self.assertTrue(self.options.create_and_write('alice', 'CO', 'put', 100, 1, 2, 10)[0])
+        order = self.db.assets.execute_one("SELECT order_id FROM market_orders WHERE user_id='alice' AND option_order_type='write'")
+        self.assertTrue(self.options.cancel_order('alice', order['order_id'])[0])
+        with self.db.readonly() as conn:
+            statements = []
+            conn.set_trace_callback(statements.append)
+            try:
+                result = AccountingJournal.reconcile_option_collateral_cash(conn)
+            finally:
+                conn.set_trace_callback(None)
+            self.assertEqual((result['event_count'], result['status']), (2, 'matched'))
+            line_queries = [s for s in statements if 'accounting_lines' in s.lower()]
+            self.assertEqual(len(line_queries), 1)
+
+    def test_put_collateral_reconciliation_detects_invalid_event_precision(self):
+        from managers.accounting_journal import AccountingJournal
+        self.assertTrue(self.options.create_and_write('alice', 'CO', 'put', 100, 1, 2, 10)[0])
+        with self.db.atomic() as conn:
+            conn.execute('DROP TRIGGER trg_option_collateral_cash_events_update')
+            conn.execute('PRAGMA ignore_check_constraints=ON')
+            try:
+                conn.execute('UPDATE option_collateral_cash_events SET decimal_places=2')
+            finally:
+                conn.execute('PRAGMA ignore_check_constraints=OFF')
+            result = AccountingJournal.reconcile_option_collateral_cash(conn)
+            self.assertEqual(result['status'], 'mismatch')
+            self.assertTrue(any(gap['status'] == 'collateral_cash_mismatch' for gap in result['gaps']))
+
     def test_option_collateral_reconciliation_detects_shortfall_after_partial_fill(self):
         from managers.accounting_journal import AccountingJournal
         self.assertTrue(self.options.create_and_write('alice', 'CO', 'put', 100, 1, 2, 10)[0])

@@ -707,6 +707,11 @@ class AccountingJournal:
     @staticmethod
     def reconcile_option_collateral_cash(conn):
         gaps, count = [], 0
+        lines_by_entry = {}
+        for line in conn.execute("""SELECT l.entry_id,l.account_code,l.debit_units,l.credit_units
+            FROM option_collateral_cash_events e
+            JOIN accounting_lines l ON l.entry_id=e.journal_entry_id"""):
+            lines_by_entry.setdefault(line['entry_id'], []).append(line)
         for row in conn.execute("""SELECT e.*,c.writer_id contract_writer,c.option_type,
                 w.user_id wallet_user,w.currency_code wallet_currency,w.decimal_places wallet_places,
                 w.delta_minor_units wallet_delta,j.ledger_scope,j.entity_type,j.entity_id,j.source_key,
@@ -720,10 +725,10 @@ class AccountingJournal:
             expected_delta = -amount if deposit else amount
             expected = ({'collateral_cash':(amount,0),'collateral_funding':(0,amount)} if deposit
                         else {'collateral_funding':(amount,0),'collateral_cash':(0,amount)})
-            lines = conn.execute('SELECT account_code,debit_units,credit_units FROM accounting_lines WHERE entry_id=?',
-                                 (row['journal_entry_id'],)).fetchall()
-            actual = {r[0]:(r[1],r[2]) for r in lines}
+            lines = lines_by_entry.get(row['journal_entry_id'], [])
+            actual = {r['account_code']:(r['debit_units'],r['credit_units']) for r in lines}
             if ((row['contract_writer'],row['option_type']) != (row['writer_id'],'put')
+                or row['decimal_places'] != 0
                 or (row['wallet_user'],row['wallet_currency'],row['wallet_places'],row['wallet_delta']) !=
                    (row['writer_id'],row['currency_code'],0,expected_delta)
                 or (row['ledger_scope'],row['entity_type'],row['entity_id'],row['source_key'],
