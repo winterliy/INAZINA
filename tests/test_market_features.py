@@ -373,6 +373,28 @@ class MarketFeatureTests(unittest.TestCase):
             self.assertEqual(report['status'], 'mismatch')
             self.assertTrue(any(gap['status'] == 'collateral_mismatch' for gap in report['gaps']))
 
+    def test_option_collateral_reconciliation_detects_orphans_and_wrong_writer(self):
+        from managers.accounting_journal import AccountingJournal
+        self.assertTrue(self.options.create_and_write('alice', 'CO', 'put', 100, 1, 2, 10)[0])
+        with self.db.atomic() as conn:
+            conn.execute("INSERT INTO option_positions(contract_id,user_id,quantity) VALUES (999999,'bob',1)")
+            conn.execute("""INSERT INTO market_orders(user_id,asset_code,side,limit_price,quantity,
+                remaining_quantity,order_kind,option_order_type,status,created_epoch,updated_epoch)
+                VALUES ('alice','MISSING','sell',1,1,1,'option','write','open',1,1)""")
+            conn.execute("UPDATE market_orders SET user_id='bob' WHERE option_order_type='write' AND asset_code<>'MISSING'")
+            report = AccountingJournal.reconcile_option_collateral(conn)
+            self.assertEqual(report['status'], 'mismatch')
+            statuses = {gap['status'] for gap in report['gaps']}
+            self.assertTrue({'orphan_position', 'orphan_write_order', 'write_order_owner_mismatch'} <= statuses, report)
+
+    def test_option_collateral_reconciliation_detects_open_order_on_inactive_contract(self):
+        from managers.accounting_journal import AccountingJournal
+        self.assertTrue(self.options.create_and_write('alice', 'CO', 'put', 100, 1, 2, 10)[0])
+        with self.db.atomic() as conn:
+            conn.execute("UPDATE option_contracts SET status='expired'")
+            report = AccountingJournal.reconcile_option_collateral(conn)
+            self.assertTrue(any(gap['status'] == 'inactive_contract_write_order' for gap in report['gaps']), report)
+
     def test_option_collateral_reconciliation_handles_partial_write_cancellation(self):
         from managers.accounting_journal import AccountingJournal
         self.db.assets.add_user_asset('alice', 'CO', 2, unit_cost=100)

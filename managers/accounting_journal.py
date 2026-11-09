@@ -770,11 +770,25 @@ class AccountingJournal:
             "SELECT contract_id,contract_code,option_type,writer_id,underlying_code,strike_price,"
             "outstanding_contracts,status FROM option_contracts")}
         outstanding, unfilled, share_lots, cash_lots, gaps = {}, {}, {}, {}, []
-        for row in conn.execute("SELECT contract_id,quantity FROM option_positions"):
+        for row in conn.execute("SELECT contract_id,user_id,quantity FROM option_positions"):
+            if row['contract_id'] not in contracts:
+                gaps.append({'contract_id':row['contract_id'], 'user_id':row['user_id'],
+                             'status':'orphan_position'})
             outstanding[row['contract_id']] = outstanding.get(row['contract_id'], 0) + int(row['quantity'])
-        for row in conn.execute("""SELECT asset_code,remaining_quantity FROM market_orders
+        contracts_by_code = {contract['contract_code']: contract for contract in contracts.values()}
+        for row in conn.execute("""SELECT order_id,user_id,asset_code,remaining_quantity FROM market_orders
             WHERE order_kind='option' AND option_order_type='write' AND side='sell'
               AND status IN ('open','partial')"""):
+            contract = contracts_by_code.get(row['asset_code'])
+            if not contract:
+                gaps.append({'order_id':row['order_id'], 'asset_code':row['asset_code'],
+                             'status':'orphan_write_order'})
+            elif row['user_id'] != contract['writer_id']:
+                gaps.append({'order_id':row['order_id'], 'contract_id':contract['contract_id'],
+                             'status':'write_order_owner_mismatch'})
+            if contract and contract['status'] != 'active':
+                gaps.append({'order_id':row['order_id'], 'contract_id':contract['contract_id'],
+                             'status':'inactive_contract_write_order'})
             unfilled[row['asset_code']] = unfilled.get(row['asset_code'], 0) + int(row['remaining_quantity'])
         for table, field, totals in (("option_collateral_lots", "quantity", share_lots),
                                      ("option_collateral_cash_lots", "amount", cash_lots)):
