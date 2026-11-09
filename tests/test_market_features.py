@@ -183,6 +183,28 @@ class MarketFeatureTests(unittest.TestCase):
             plan = conn.execute('EXPLAIN QUERY PLAN SELECT * FROM option_exercise_cash_links WHERE event_key=?', ('example',)).fetchall()
         self.assertTrue(any('INDEX' in row[3].upper() and 'EVENT' in row[3].upper() for row in plan), plan)
 
+    def test_exercise_reconciliation_batches_cash_link_lookups(self):
+        from managers.accounting_journal import AccountingJournal
+        self.db.assets.add_user_asset('alice', 'CO', 2, unit_cost=100)
+        for strike in (90, 100):
+            self.assertTrue(self.options.create_and_write('alice', 'CO', 'call', strike, 1, 1, 10)[0])
+            code = next(c['contract_code'] for c in self.options.get_active_contracts()
+                        if c['strike_price'] == strike)
+            self.assertTrue(self.options.place_limit_order('bob', code, 'buy', 1, 10)[0])
+        self.db.companies.update_share_price('CO', 120)
+        self.db.assets.execute('UPDATE option_contracts SET expiration_epoch=?', (int(time.time())-1,))
+        self.assertTrue(self.options.expire_matured())
+        with self.db.readonly() as conn:
+            statements = []
+            conn.set_trace_callback(statements.append)
+            try:
+                result = AccountingJournal.reconcile_option_exercises(conn)
+            finally:
+                conn.set_trace_callback(None)
+        self.assertEqual((result['event_count'], result['status']), (2, 'matched'))
+        link_queries = [s for s in statements if 'from option_exercise_cash_links' in s.lower()]
+        self.assertEqual(len(link_queries), 2)  # Bulk lookup and orphan check.
+
     def test_exercise_reconciliation_detects_missing_asset_movement(self):
         from managers.accounting_journal import AccountingJournal
         self.db.assets.add_user_asset('alice', 'CO', 1, unit_cost=100)

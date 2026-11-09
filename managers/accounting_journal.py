@@ -806,6 +806,14 @@ class AccountingJournal:
     @staticmethod
     def reconcile_option_exercises(conn):
         gaps, count = [], 0
+        cash_links = {}
+        for link in conn.execute("""SELECT l.*,w.user_id,w.currency_code,w.decimal_places,w.delta_minor_units wallet_delta,
+            f.amount_minor_units fund_delta,f.currency_code fund_currency,f.decimal_places fund_places,
+            a.owner_id fund_owner FROM option_exercise_cash_links l
+            LEFT JOIN customer_wallet_ledger w ON w.entry_id=l.wallet_entry_id
+            LEFT JOIN fund_cash_ledger f ON f.entry_id=l.fund_entry_id
+            LEFT JOIN fund_accounts a ON a.product_code=f.product_code"""):
+            cash_links.setdefault(link['event_key'], []).append(link)
         rows = conn.execute("""SELECT x.*,c.contract_code actual_code,c.option_type actual_type,
             c.writer_id actual_writer,c.strike_price,c.underlying_code,j.ledger_scope,j.entity_type,j.entity_id,j.source_key,
             j.currency_code journal_currency,j.decimal_places journal_places,j.recorded_epoch journal_epoch
@@ -825,12 +833,7 @@ class AccountingJournal:
             actual = {line[0]:(line[1],line[2]) for line in journal_lines}
             baseline = conn.execute("SELECT 1 FROM option_exercise_link_baseline WHERE event_key=?", (r["event_key"],)).fetchone()
             if not baseline:
-                links = conn.execute("""SELECT l.*,w.user_id,w.currency_code,w.decimal_places,w.delta_minor_units wallet_delta,
-                    f.amount_minor_units fund_delta,f.currency_code fund_currency,f.decimal_places fund_places,
-                    a.owner_id fund_owner FROM option_exercise_cash_links l
-                    LEFT JOIN customer_wallet_ledger w ON w.entry_id=l.wallet_entry_id
-                    LEFT JOIN fund_cash_ledger f ON f.entry_id=l.fund_entry_id
-                    LEFT JOIN fund_accounts a ON a.product_code=f.product_code WHERE l.event_key=?""", (r["event_key"],)).fetchall()
+                links = cash_links.get(r['event_key'], [])
                 totals = {"payer":0,"recipient":0}
                 for link in links:
                     role = link["role"]
