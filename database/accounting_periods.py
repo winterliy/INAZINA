@@ -24,6 +24,16 @@ def ensure_period_guards(conn):
             AND e.currency_code=NEW.currency_code AND e.recorded_epoch>=NEW.period_start_epoch
             AND e.recorded_epoch<NEW.period_end_epoch)>1
         BEGIN SELECT RAISE(ABORT,'mixed currency precision in accounting period'); END""")
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS trg_accounting_closing_unbalanced
+        BEFORE INSERT ON accounting_period_closings
+        WHEN EXISTS (SELECT e.entry_id FROM accounting_entries e
+            LEFT JOIN accounting_lines l ON l.entry_id=e.entry_id
+            WHERE e.ledger_scope=NEW.ledger_scope AND e.entity_id=NEW.entity_id
+            AND e.currency_code=NEW.currency_code AND e.recorded_epoch>=NEW.period_start_epoch
+            AND e.recorded_epoch<NEW.period_end_epoch
+            GROUP BY e.entry_id
+            HAVING COUNT(l.line_id)<2 OR SUM(l.debit_units)<>SUM(l.credit_units))
+        BEGIN SELECT RAISE(ABORT,'unbalanced accounting period'); END""")
     conn.execute("""CREATE TRIGGER IF NOT EXISTS trg_accounting_entries_closed_insert
         BEFORE INSERT ON accounting_entries
         WHEN EXISTS(SELECT 1 FROM accounting_period_closings c

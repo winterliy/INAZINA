@@ -236,6 +236,22 @@ class FinancialTests(unittest.TestCase):
                     VALUES ('mixed_scale','one',?,0,200,200,'admin',2,'invalid')""", (currency,))
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM accounting_period_closings WHERE ledger_scope='mixed_scale'").fetchone()[0], 0)
 
+    def test_direct_period_close_rejects_incomplete_journal(self):
+        from managers.accounting_journal import AccountingJournal
+        from functions.money import base_currency_code
+        with self.db.atomic() as conn:
+            currency = base_currency_code(conn)
+            AccountingJournal.ensure_schema(conn)
+            entry = conn.execute("""INSERT INTO accounting_entries
+                (ledger_scope,entity_type,entity_id,source_key,currency_code,decimal_places,recorded_epoch)
+                VALUES ('incomplete','entity','one','broken',?,0,100)""", (currency,)).lastrowid
+            conn.execute("INSERT INTO accounting_lines(entry_id,account_code,debit_units,credit_units) VALUES (?,'cash',10,0)", (entry,))
+            with self.assertRaisesRegex(sqlite3.IntegrityError, 'unbalanced accounting period'):
+                conn.execute("""INSERT INTO accounting_period_closings
+                    (ledger_scope,entity_id,currency_code,period_start_epoch,period_end_epoch,
+                     closed_epoch,actor_id,entry_count,closing_digest)
+                    VALUES ('incomplete','one',?,0,200,200,'admin',1,'invalid')""", (currency,))
+
     def test_manual_authorization_balance_and_reversal(self):
         self.setup_company()
         lines=[{'account':'receivables','amount':1000},{'account':'revenue','amount':-1000}]
