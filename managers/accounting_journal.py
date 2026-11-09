@@ -240,6 +240,12 @@ class AccountingJournal:
             LIMIT 1""", (scope, entity, currency, start, end)).fetchone()
         if unbalanced:
             raise ValueError(f"불균형 분개가 있어 기간을 마감할 수 없습니다: {unbalanced[0]}")
+        scales = conn.execute("""SELECT COUNT(DISTINCT decimal_places) FROM accounting_entries
+            WHERE ledger_scope=? AND entity_id=? AND currency_code=?
+              AND recorded_epoch>=? AND recorded_epoch<?""",
+            (scope, entity, currency, start, end)).fetchone()[0]
+        if scales > 1:
+            raise ValueError("통화 정밀도가 서로 다른 분개가 있어 기간을 마감할 수 없습니다.")
         count, digest = cls._period_snapshot(conn, scope, entity, currency, start, end)
         prior = conn.execute("""SELECT closing_id,entry_count,closing_digest FROM accounting_period_closings
             WHERE ledger_scope=? AND entity_id=? AND currency_code=?

@@ -17,6 +17,13 @@ def ensure_period_guards(conn):
             BEGIN SELECT RAISE(ABORT,'accounting period closings are append-only'); END""")
     conn.execute("""CREATE INDEX IF NOT EXISTS idx_accounting_entry_period
         ON accounting_entries(ledger_scope,entity_id,currency_code,recorded_epoch)""")
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS trg_accounting_closing_mixed_precision
+        BEFORE INSERT ON accounting_period_closings
+        WHEN (SELECT COUNT(DISTINCT decimal_places) FROM accounting_entries e
+            WHERE e.ledger_scope=NEW.ledger_scope AND e.entity_id=NEW.entity_id
+            AND e.currency_code=NEW.currency_code AND e.recorded_epoch>=NEW.period_start_epoch
+            AND e.recorded_epoch<NEW.period_end_epoch)>1
+        BEGIN SELECT RAISE(ABORT,'mixed currency precision in accounting period'); END""")
     conn.execute("""CREATE TRIGGER IF NOT EXISTS trg_accounting_entries_closed_insert
         BEFORE INSERT ON accounting_entries
         WHEN EXISTS(SELECT 1 FROM accounting_period_closings c

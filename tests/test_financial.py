@@ -212,6 +212,30 @@ class FinancialTests(unittest.TestCase):
                     period_start_epoch=200, period_end_epoch=100,
                 )
 
+    def test_common_journal_close_rejects_mixed_currency_precision(self):
+        from managers.accounting_journal import AccountingJournal
+        from functions.money import base_currency_code
+        with self.db.atomic() as conn:
+            currency = base_currency_code(conn)
+            AccountingJournal.ensure_schema(conn)
+            for places in (0, 2):
+                entry = conn.execute("""INSERT INTO accounting_entries
+                    (ledger_scope,entity_type,entity_id,source_key,currency_code,decimal_places,recorded_epoch)
+                    VALUES ('mixed_scale','entity','one',?,?,?,100)""",
+                    (f'scale-{places}', currency, places)).lastrowid
+                conn.executemany("INSERT INTO accounting_lines(entry_id,account_code,debit_units,credit_units) VALUES (?,?,?,?)",
+                                 [(entry, 'cash', 100, 0), (entry, 'income', 0, 100)])
+            with self.assertRaisesRegex(ValueError, '정밀도'):
+                AccountingJournal.close_period(conn, ledger_scope='mixed_scale', entity_id='one',
+                    currency_code=currency, period_start_epoch=0, period_end_epoch=200,
+                    actor_id='admin', closed_epoch=200)
+            with self.assertRaisesRegex(sqlite3.IntegrityError, 'mixed currency precision'):
+                conn.execute("""INSERT INTO accounting_period_closings
+                    (ledger_scope,entity_id,currency_code,period_start_epoch,period_end_epoch,
+                     closed_epoch,actor_id,entry_count,closing_digest)
+                    VALUES ('mixed_scale','one',?,0,200,200,'admin',2,'invalid')""", (currency,))
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM accounting_period_closings WHERE ledger_scope='mixed_scale'").fetchone()[0], 0)
+
     def test_manual_authorization_balance_and_reversal(self):
         self.setup_company()
         lines=[{'account':'receivables','amount':1000},{'account':'revenue','amount':-1000}]
