@@ -199,6 +199,15 @@ class MarketFeatureTests(unittest.TestCase):
             self.assertEqual(result['status'], 'mismatch')
             self.assertTrue(any(row['status'] == 'missing_asset_movements' for row in result['gaps']))
 
+    def test_exercise_historical_baselines_cannot_be_added_after_activation(self):
+        self.db.close()
+        self.db = DatabaseManager()
+        with self.db.atomic() as conn:
+            for table in ('option_exercise_link_baseline', 'option_exercise_asset_baseline'):
+                with self.subTest(table=table), self.assertRaises(sqlite3.IntegrityError):
+                    conn.execute(f"INSERT INTO {table}(event_key,reason) VALUES (?,?)",
+                                 ('new-event', 'not historical'))
+
     def test_exercise_reconciliation_detects_orphan_journal(self):
         from managers.accounting_journal import AccountingJournal
         from functions.money import base_currency_code

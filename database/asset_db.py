@@ -830,6 +830,11 @@ class AssetDB(DBManager):
                 SELECT event_key,'asset snapshots unavailable before activation' FROM option_exercise_events
                 WHERE NOT EXISTS(SELECT 1 FROM option_exercise_asset_activation WHERE singleton_id=1)""")
             self.conn.execute("INSERT OR IGNORE INTO option_exercise_asset_activation VALUES (1)")
+        for kind in ('link', 'asset'):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_option_exercise_{kind}_baseline_insert
+                BEFORE INSERT ON option_exercise_{kind}_baseline
+                WHEN EXISTS (SELECT 1 FROM option_exercise_{kind}_activation WHERE singleton_id=1)
+                BEGIN SELECT RAISE(ABORT,'option exercise historical baseline is closed'); END""")
         self.execute("""CREATE TABLE IF NOT EXISTS option_collateral_cash_events (
             event_id INTEGER PRIMARY KEY AUTOINCREMENT, event_key TEXT NOT NULL UNIQUE,
             contract_id INTEGER NOT NULL, collateral_id INTEGER NOT NULL,
