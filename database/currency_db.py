@@ -1055,6 +1055,14 @@ class CurrencyDB(DBManager):
             transaction_id INTEGER PRIMARY KEY REFERENCES tax_transactions(transaction_id),
             source_entry_id INTEGER NOT NULL UNIQUE REFERENCES bank_journal_entries(entry_id),
             settlement_entry_id INTEGER UNIQUE REFERENCES bank_journal_entries(entry_id))""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_tax_bank_remittance_links_insert_immutable
+            BEFORE INSERT ON tax_bank_remittance_links
+            WHEN NEW.source_entry_id=NEW.settlement_entry_id OR EXISTS (
+                SELECT 1 FROM tax_bank_remittance_links l WHERE l.transaction_id=NEW.transaction_id
+                OR l.source_entry_id=NEW.source_entry_id OR l.settlement_entry_id=NEW.source_entry_id
+                OR (NEW.settlement_entry_id IS NOT NULL AND
+                    (l.source_entry_id=NEW.settlement_entry_id OR l.settlement_entry_id=NEW.settlement_entry_id)))
+            BEGIN SELECT RAISE(ABORT,'tax bank remittance links are append-only'); END""")
         self.execute("""CREATE TABLE IF NOT EXISTS tax_bank_remittance_activation (
             singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),
             through_transaction_id INTEGER NOT NULL CHECK(through_transaction_id>=0))""")
@@ -1066,6 +1074,10 @@ class CurrencyDB(DBManager):
             source_currency TEXT NOT NULL, settlement_currency TEXT NOT NULL,
             source_places INTEGER NOT NULL, settlement_places INTEGER NOT NULL,
             rate_numerator TEXT NOT NULL, rate_denominator TEXT NOT NULL)""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_tax_bank_remittance_quotes_insert_immutable
+            BEFORE INSERT ON tax_bank_remittance_quotes
+            WHEN EXISTS (SELECT 1 FROM tax_bank_remittance_quotes WHERE transaction_id=NEW.transaction_id)
+            BEGIN SELECT RAISE(ABORT,'tax bank remittance quotes are append-only'); END""")
         self.execute("""CREATE TABLE IF NOT EXISTS tax_bank_remittance_quote_activation (
             singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),
             through_transaction_id INTEGER NOT NULL CHECK(through_transaction_id>=0))""")

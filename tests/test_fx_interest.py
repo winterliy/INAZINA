@@ -1,5 +1,6 @@
 """Foreign-currency accounts behave like savings: interest, opening, closing and storage."""
 import unittest
+import sqlite3
 from decimal import Decimal
 
 import test_inazina as fixtures
@@ -144,6 +145,16 @@ class FxInterestTests(unittest.TestCase):
             check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
                          if item['ledger_scope'] == 'tax_transactions')
             self.assertEqual(check['status'], 'matched', check)
+            with self.assertRaisesRegex(sqlite3.IntegrityError, 'remittance links are append-only'):
+                conn.execute("""INSERT OR REPLACE INTO tax_bank_remittance_links
+                    SELECT transaction_id,source_entry_id,settlement_entry_id FROM tax_bank_remittance_links
+                    WHERE transaction_id=?""", (links[0]['transaction_id'],))
+            with self.assertRaisesRegex(sqlite3.IntegrityError, 'remittance quotes are append-only'):
+                conn.execute("""INSERT OR REPLACE INTO tax_bank_remittance_quotes
+                    SELECT * FROM tax_bank_remittance_quotes WHERE transaction_id=?""", (links[0]['transaction_id'],))
+            with self.assertRaisesRegex(sqlite3.IntegrityError, 'remittance links are append-only'):
+                conn.execute('INSERT INTO tax_bank_remittance_links VALUES (?,?,NULL)',
+                             (999999, links[0]['settlement_entry_id']))
             quote = conn.execute('SELECT rate_numerator,rate_denominator FROM tax_bank_remittance_quotes WHERE transaction_id=?',
                                  (links[0]['transaction_id'],)).fetchone()
             self.assertIsNotNone(quote)
