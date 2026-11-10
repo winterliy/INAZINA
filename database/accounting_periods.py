@@ -15,6 +15,14 @@ def ensure_period_guards(conn):
         conn.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_accounting_period_closings_{operation.lower()}_immutable
             BEFORE {operation} ON accounting_period_closings
             BEGIN SELECT RAISE(ABORT,'accounting period closings are append-only'); END""")
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS trg_accounting_period_closings_insert_immutable
+        BEFORE INSERT ON accounting_period_closings
+        WHEN EXISTS (SELECT 1 FROM accounting_period_closings c
+            WHERE c.closing_id=NEW.closing_id OR
+                (c.ledger_scope=NEW.ledger_scope AND c.entity_id=NEW.entity_id
+                 AND c.currency_code=NEW.currency_code AND c.period_start_epoch=NEW.period_start_epoch
+                 AND c.period_end_epoch=NEW.period_end_epoch))
+        BEGIN SELECT RAISE(ABORT,'accounting period closings are append-only'); END""")
     conn.execute("""CREATE INDEX IF NOT EXISTS idx_accounting_entry_period
         ON accounting_entries(ledger_scope,entity_id,currency_code,recorded_epoch)""")
     conn.execute("""CREATE TRIGGER IF NOT EXISTS trg_accounting_closing_mixed_precision

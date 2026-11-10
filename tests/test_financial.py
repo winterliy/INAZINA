@@ -252,6 +252,28 @@ class FinancialTests(unittest.TestCase):
                      closed_epoch,actor_id,entry_count,closing_digest)
                     VALUES ('incomplete','one',?,0,200,200,'admin',1,'invalid')""", (currency,))
 
+    def test_closed_period_cannot_be_replaced(self):
+        from managers.accounting_journal import AccountingJournal
+        from functions.money import base_currency_code
+        with self.db.atomic() as conn:
+            currency = base_currency_code(conn)
+            closing_id = AccountingJournal.close_period(conn, ledger_scope='replace_test', entity_id='one',
+                currency_code=currency, period_start_epoch=0, period_end_epoch=200,
+                actor_id='admin', closed_epoch=200)
+            with self.assertRaisesRegex(sqlite3.IntegrityError, 'closings are append-only'):
+                conn.execute("""INSERT OR REPLACE INTO accounting_period_closings
+                    SELECT closing_id,ledger_scope,entity_id,currency_code,period_start_epoch,period_end_epoch,
+                    closed_epoch,actor_id,entry_count,'forged' FROM accounting_period_closings WHERE closing_id=?""", (closing_id,))
+            with self.assertRaisesRegex(sqlite3.IntegrityError, 'closings are append-only'):
+                conn.execute("""INSERT OR REPLACE INTO accounting_period_closings
+                    (ledger_scope,entity_id,currency_code,period_start_epoch,period_end_epoch,
+                     closed_epoch,actor_id,entry_count,closing_digest)
+                    VALUES ('replace_test','one',?,0,200,201,'admin',0,'forged')""", (currency,))
+            self.assertEqual(AccountingJournal.close_period(conn, ledger_scope='replace_test', entity_id='one',
+                currency_code=currency, period_start_epoch=0, period_end_epoch=200,
+                actor_id='admin', closed_epoch=201), closing_id)
+            self.assertEqual(AccountingJournal.reconcile_period_closings(conn)['status'], 'matched')
+
     def test_manual_authorization_balance_and_reversal(self):
         self.setup_company()
         lines=[{'account':'receivables','amount':1000},{'account':'revenue','amount':-1000}]
