@@ -1269,10 +1269,10 @@ class AccountingJournal:
             native = len(native_rows)
             common = int(conn.execute("SELECT COUNT(*) FROM accounting_entries WHERE ledger_scope=?", (scope,)).fetchone()[0])
             common_rows = conn.execute(
-                "SELECT entry_id,entity_id,source_key,currency_code,decimal_places,recorded_epoch "
+                "SELECT entry_id,entity_type,entity_id,source_key,currency_code,decimal_places,recorded_epoch "
                 "FROM accounting_entries WHERE ledger_scope=?", (scope,),
             ).fetchall()
-            common_by_key = {(str(row["entity_id"]), str(row["source_key"])): row
+            common_by_key = {(str(row["entity_type"]), str(row["entity_id"]), str(row["source_key"])): row
                              for row in common_rows}
             common_lines = {}
             for line in conn.execute(
@@ -1324,7 +1324,8 @@ class AccountingJournal:
                     currency = str(entry["currency_code"])
                     places = int(entry["decimal_places"])
                     recorded = int(float(entry["created_epoch"]))
-                common_entry = common_by_key.get((entity_id, source_key))
+                entity_type = 'company' if scope == 'company' else 'financial_institution'
+                common_entry = common_by_key.get((entity_type, entity_id, source_key))
                 if (common_entry is None or str(common_entry["currency_code"]) != currency
                         or int(common_entry["decimal_places"]) != places
                         or int(common_entry["recorded_epoch"]) != recorded):

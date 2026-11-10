@@ -59,6 +59,17 @@ class CurrencyAccountStorageTests(unittest.TestCase):
                     BankJournal.post(conn, 'Bank', 'test', 'replay', currency,
                         [('tax_payable', 'debit', amount), ('settlement_asset', 'credit', amount)], now=12)
 
+    def test_institution_reconciliation_rejects_wrong_common_entity_type(self):
+        from managers.bank_journal import BankJournal
+        with self.db.atomic() as conn:
+            BankJournal.post(conn, 'Bank', 'test', 'wrong-entity', 'USD',
+                [('tax_payable', 'debit', 1), ('settlement_asset', 'credit', 1)], now=10)
+            conn.execute('DROP TRIGGER trg_accounting_entries_update_immutable')
+            conn.execute("UPDATE accounting_entries SET entity_type='customer' WHERE ledger_scope='institution' AND source_key='test:wrong-entity'")
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item['ledger_scope'] == 'institution')
+            self.assertEqual(check['status'], 'mismatch', check)
+
     def test_bank_journal_common_post_failure_rolls_back_bank_entry(self):
         from managers.bank_journal import BankJournal
         with self.db.atomic() as conn:
