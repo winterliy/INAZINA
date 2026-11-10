@@ -274,6 +274,23 @@ class FinancialTests(unittest.TestCase):
                 actor_id='admin', closed_epoch=201), closing_id)
             self.assertEqual(AccountingJournal.reconcile_period_closings(conn)['status'], 'matched')
 
+    def test_common_journal_entry_cannot_be_replaced(self):
+        from managers.accounting_journal import AccountingJournal
+        from functions.money import base_currency_code
+        with self.db.atomic() as conn:
+            currency = base_currency_code(conn)
+            for account in ('cash', 'income'):
+                AccountingJournal.register_mapping(conn, 'replace_entry', account, account)
+            entry_id = AccountingJournal.post(conn, ledger_scope='replace_entry', entity_type='entity',
+                entity_id='one', source_key='original', currency_code=currency, decimal_places=0,
+                recorded_epoch=100, lines=[('cash', 'debit', 10), ('income', 'credit', 10)])
+            with self.assertRaisesRegex(sqlite3.IntegrityError, 'journal is append-only'):
+                conn.execute("""INSERT OR REPLACE INTO accounting_entries
+                    SELECT entry_id,ledger_scope,entity_type,entity_id,source_key,currency_code,
+                           decimal_places,recorded_epoch,'forged'
+                    FROM accounting_entries WHERE entry_id=?""", (entry_id,))
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM accounting_lines WHERE entry_id=?', (entry_id,)).fetchone()[0], 2)
+
     def test_manual_authorization_balance_and_reversal(self):
         self.setup_company()
         lines=[{'account':'receivables','amount':1000},{'account':'revenue','amount':-1000}]

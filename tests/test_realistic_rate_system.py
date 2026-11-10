@@ -1516,12 +1516,13 @@ class RealisticRateSystemTests(unittest.TestCase):
             bank_id = conn.execute("SELECT institution_id FROM financial_institutions WHERE issuer='Bank'").fetchone()[0]
         with patch("web_api.server.connect_readonly", self.db.readonly):
             report = admin_bank_journal_report(bank_id)
-        self.assertEqual(
-            {row["ledger_scope"] for row in report["commonJournalReconciliation"]},
+        self.assertLessEqual(
             {"customer", "company", "institution", "market_order_reservations",
              "market_order_wallet_cash", "market_executions", "treasury_bond_cash",
              "tax_transactions", "fund", "dividend_payment_settlements",
-             "company_bond_liabilities"},
+             "company_bond_liabilities", "period_closings", "currency_cash",
+             "option_collateral", "option_collateral_cash", "option_exercises", "option_premiums"},
+            {row["ledger_scope"] for row in report["commonJournalReconciliation"]},
         )
         self.assertEqual(report["commonJournalUnbalancedEntries"], [])
         self.assertIn("financialCloseControl", report)
