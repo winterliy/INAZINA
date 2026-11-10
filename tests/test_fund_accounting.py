@@ -406,7 +406,8 @@ class FundAccountingTests(unittest.TestCase):
         from web_api import server
         self.fund()
         self.ok(self.users.buy_asset('alice', 'FD', 10))
-        with patch.object(server, 'domain', return_value=SimpleNamespace(db=self.db)):
+        with patch.object(server, 'domain', return_value=SimpleNamespace(db=self.db)), \
+             patch.object(server, 'connect_readonly', side_effect=AssertionError('wrong database')):
             state = server.manage_fund('admin', 'FD')
             self.assertEqual(state['availableCash'], 1000)
             result = server.manage_fund('admin', 'FD', {'action': 'order', 'assetCode': 'CO', 'side': 'buy', 'quantity': '2', 'price': 100})

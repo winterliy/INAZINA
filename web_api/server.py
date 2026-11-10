@@ -1629,7 +1629,7 @@ def manage_fund(actor, code, payload=None):
     with manager.db.readonly() as connection:
         manager._require(connection, actor, code)
     if payload is None:
-        with connect_readonly() as connection:
+        with manager.db.readonly() as connection:
             currency = _configured_base_currency(connection)
         return {**manager.snapshot(code), "currency": currency}
     if not isinstance(payload, dict):
@@ -1644,12 +1644,12 @@ def manage_fund(actor, code, payload=None):
         success, message = manager.cancel(actor, code, payload['orderId'])
     elif action == 'rebalance' and set(payload) == {'action'}:
         result = manager.rebalance(actor, code)
-        with connect_readonly() as connection:
+        with manager.db.readonly() as connection:
             result['fund']['currency'] = _configured_base_currency(connection)
         return result
     else:
         raise ValueError('펀드 작업 또는 입력 필드를 확인해주세요.')
-    with connect_readonly() as connection:
+    with manager.db.readonly() as connection:
         currency = _configured_base_currency(connection)
     return {'success': success, 'message': str(message).replace('기준 통화', currency), 'fund': {**manager.snapshot(code), 'currency': currency}}
 
