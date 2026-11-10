@@ -390,6 +390,11 @@ class InterestManager:
                     conn, tax_transaction.lastrowid, tax_wallet_watermark,
                     tax_treasury_id,
                 )
+                AccountingJournal.link_tax_bank_remittance(
+                    conn, tax_transaction.lastrowid, product['issuer'],
+                    f"account:{account['account_number']}:{paid_until}:tax-remittance",
+                    account['quote_currency'], home_currency,
+                )
             total += net
             credited = True
         if account["rate_type"] == "floating":

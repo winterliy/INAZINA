@@ -128,6 +128,34 @@ class FxInterestTests(unittest.TestCase):
         self.assertGreater(nwx_accounts.get('fx_conversion_clearing', 0), 0)
         self.assertEqual(remittances, 2)
 
+    def test_foreign_savings_tax_receipt_links_both_bank_remittance_legs(self):
+        from managers.accounting_journal import AccountingJournal
+        number = self.open_usd(36.5)
+        self.bot.currency_mgr.exchange('citizen', 'NWX', 'USD', '450000')
+        start = self.account(number)
+        InterestManager(self.db).process_user_interests('citizen', now=start['last_payment_epoch'] + DAY)
+        with self.db.atomic() as conn:
+            links = conn.execute("""SELECT t.transaction_id,l.source_entry_id,l.settlement_entry_id
+                FROM tax_transactions t JOIN tax_bank_remittance_links l USING(transaction_id)
+                WHERE t.source='saving_interest' AND t.tax_amount_minor_units>0""").fetchall()
+            self.assertEqual(len(links), 1)
+            self.assertIsNotNone(links[0]['source_entry_id'])
+            self.assertIsNotNone(links[0]['settlement_entry_id'])
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item['ledger_scope'] == 'tax_transactions')
+            self.assertEqual(check['status'], 'matched', check)
+            conn.execute('DROP TRIGGER trg_tax_bank_remittance_links_update_immutable')
+            conn.execute('UPDATE tax_bank_remittance_links SET source_entry_id=settlement_entry_id WHERE transaction_id=?',
+                         (links[0]['transaction_id'],))
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item['ledger_scope'] == 'tax_transactions')
+            self.assertTrue(any(gap['status'] == 'bank_remittance_mismatch' for gap in check['wallet_gaps']), check)
+            conn.execute('DROP TRIGGER trg_tax_bank_remittance_links_delete_immutable')
+            conn.execute('DELETE FROM tax_bank_remittance_links WHERE transaction_id=?', (links[0]['transaction_id'],))
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item['ledger_scope'] == 'tax_transactions')
+            self.assertTrue(any(gap['status'] == 'bank_remittance_mismatch' for gap in check['wallet_gaps']), check)
+
     def test_fx_opening_needs_password_and_minimum_deposit_paid_from_home_cash(self):
         self.seed()
         with self.db.atomic() as conn:

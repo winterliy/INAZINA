@@ -1051,6 +1051,23 @@ class CurrencyDB(DBManager):
             wallet_entry_id INTEGER NOT NULL REFERENCES customer_wallet_ledger(entry_id),
             treasury_user_id TEXT NOT NULL,
             PRIMARY KEY(transaction_id,wallet_entry_id))""")
+        self.execute("""CREATE TABLE IF NOT EXISTS tax_bank_remittance_links (
+            transaction_id INTEGER PRIMARY KEY REFERENCES tax_transactions(transaction_id),
+            source_entry_id INTEGER NOT NULL UNIQUE REFERENCES bank_journal_entries(entry_id),
+            settlement_entry_id INTEGER UNIQUE REFERENCES bank_journal_entries(entry_id))""")
+        self.execute("""CREATE TABLE IF NOT EXISTS tax_bank_remittance_activation (
+            singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),
+            through_transaction_id INTEGER NOT NULL CHECK(through_transaction_id>=0))""")
+        self.execute("""INSERT OR IGNORE INTO tax_bank_remittance_activation
+            SELECT 1,COALESCE(MAX(transaction_id),0) FROM tax_transactions""")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_tax_bank_remittance_activation_{operation.lower()}_immutable
+                BEFORE {operation} ON tax_bank_remittance_activation
+                BEGIN SELECT RAISE(ABORT,'tax bank remittance activation is immutable'); END""")
+        for operation in ("UPDATE", "DELETE"):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_tax_bank_remittance_links_{operation.lower()}_immutable
+                BEFORE {operation} ON tax_bank_remittance_links
+                BEGIN SELECT RAISE(ABORT,'tax bank remittance links are append-only'); END""")
         self.execute("""CREATE TABLE IF NOT EXISTS tax_transaction_wallet_baselines (
             transaction_id INTEGER PRIMARY KEY REFERENCES tax_transactions(transaction_id),
             reason TEXT NOT NULL DEFAULT 'pre-link historical tax row')""")

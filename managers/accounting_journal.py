@@ -11,6 +11,24 @@ import json
 
 
 class AccountingJournal:
+    @staticmethod
+    def link_tax_bank_remittance(conn, transaction_id, issuer, reference_key, source_currency, settlement_currency):
+        """Link the actual bank remittance legs created for a withholding transaction."""
+        cross_currency = str(source_currency).upper() != str(settlement_currency).upper()
+        references = [f'{reference_key}:source', f'{reference_key}:settlement'] if cross_currency else [reference_key]
+        entries = []
+        for reference, currency in zip(references, (source_currency, settlement_currency)):
+            row = conn.execute("""SELECT entry_id FROM bank_journal_entries
+                WHERE issuer=? AND event_type='tax_remittance' AND reference_key=?
+                AND currency_code=? AND status='posted'""",
+                (str(issuer), reference, str(currency).upper())).fetchone()
+            if not row:
+                raise RuntimeError('세금 송금에 대응하는 금융기관 분개가 없습니다.')
+            entries.append(int(row[0]))
+        conn.execute("""INSERT INTO tax_bank_remittance_links
+            (transaction_id,source_entry_id,settlement_entry_id) VALUES (?,?,?)""",
+            (int(transaction_id), entries[0], entries[1] if cross_currency else None))
+
     @classmethod
     def link_tax_transaction_wallet_entries(cls, conn, transaction_id, wallet_watermark,
                                             treasury_user_id):
@@ -1857,6 +1875,8 @@ class AccountingJournal:
         baseline = conn.execute("SELECT through_transaction_id FROM "
                                  "tax_transaction_wallet_baseline_state WHERE singleton_id=1").fetchone()
         legacy_tax_through = int(baseline[0]) if baseline else 0
+        bank_baseline = conn.execute("SELECT through_transaction_id FROM tax_bank_remittance_activation WHERE singleton_id=1").fetchone()
+        legacy_bank_through = int(bank_baseline[0]) if bank_baseline else 0
         tax_rows = conn.execute("SELECT * FROM tax_transactions ORDER BY transaction_id").fetchall()
         for row in tax_rows:
             currency = str(row["currency_code"] or base_currency_code(conn)).upper()
@@ -1907,10 +1927,43 @@ class AccountingJournal:
                         "received_minor_units": sum(int(link["delta_minor_units"])
                                                      for link in same_currency),
                         "status": "same_currency_receipt_amount_mismatch"})
+                if row['source'] == 'saving_interest' and transaction_id > legacy_bank_through:
+                    bank_link = conn.execute("SELECT source_entry_id,settlement_entry_id FROM tax_bank_remittance_links WHERE transaction_id=?",
+                                             (transaction_id,)).fetchone()
+                    valid = bank_link is not None
+                    if bank_link:
+                        source = conn.execute("SELECT * FROM bank_journal_entries WHERE entry_id=?", (bank_link['source_entry_id'],)).fetchone()
+                        settlement = (conn.execute("SELECT * FROM bank_journal_entries WHERE entry_id=?", (bank_link['settlement_entry_id'],)).fetchone()
+                                      if bank_link['settlement_entry_id'] is not None else None)
+                        cross = bank_link['settlement_entry_id'] is not None
+                        valid = bool(source and source['event_type'] == 'tax_remittance' and source['status'] == 'posted'
+                                     and source['currency_code'] == currency and source['decimal_places'] == places)
+                        if source:
+                            source_lines = conn.execute("SELECT account_code,debit_units,credit_units FROM bank_journal_lines WHERE entry_id=?", (source['entry_id'],)).fetchall()
+                            expected = {'tax_payable': (tax, 0), ('fx_conversion_clearing' if cross else 'settlement_asset'): (0, tax)}
+                            valid = valid and len(source_lines) == 2 and {line[0]:(line[1],line[2]) for line in source_lines} == expected
+                        if cross:
+                            valid = bool(valid and settlement and settlement['event_type'] == 'tax_remittance'
+                                         and settlement['status'] == 'posted' and settlement['issuer'] == source['issuer']
+                                         and source['reference_key'].endswith(':source')
+                                         and settlement['reference_key'] == source['reference_key'][:-7] + ':settlement')
+                            if settlement:
+                                target_links = [link for link in links if link['currency_code'] == settlement['currency_code']
+                                                and link['decimal_places'] == settlement['decimal_places']]
+                                received = sum(int(link['delta_minor_units']) for link in target_links)
+                                target_lines = conn.execute("SELECT account_code,debit_units,credit_units FROM bank_journal_lines WHERE entry_id=?", (settlement['entry_id'],)).fetchall()
+                                valid = bool(valid and len(target_links) == len(links) and received > 0 and len(target_lines) == 2
+                                             and {line[0]:(line[1],line[2]) for line in target_lines} ==
+                                             {'fx_conversion_clearing': (received, 0), 'settlement_asset': (0, received)})
+                        else:
+                            valid = bool(valid and len(same_currency) == len(links))
+                    if not valid:
+                        tax_wallet_gaps.append({'transaction_id': transaction_id, 'status': 'bank_remittance_mismatch'})
         checks.append({"ledger_scope": "tax_transactions",
                        "transaction_count": len(tax_rows), "gaps": tax_gaps,
                        "wallet_gaps": tax_wallet_gaps,
                        "legacy_wallet_baseline_through": legacy_tax_through,
+                       "legacy_bank_remittance_baseline_through": legacy_bank_through,
                        "status": "matched" if not tax_gaps and not tax_wallet_gaps else "mismatch"})
         checks.append({"ledger_scope": "dividend_payment_settlements",
                        **AccountingJournal.reconcile_dividend_payment_settlements(conn)})
