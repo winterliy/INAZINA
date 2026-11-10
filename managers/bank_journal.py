@@ -626,6 +626,16 @@ class BankJournal:
              created_epoch, str(description or ""), places),
         )
         if cursor.rowcount != 1:
+            existing = conn.execute("""SELECT entry_id,currency_code,decimal_places,status
+                FROM bank_journal_entries WHERE issuer=? AND event_type=? AND reference_key=?""",
+                (str(issuer), str(event_type), str(reference_key))).fetchone()
+            old_lines = (conn.execute("""SELECT account_code,debit_units,credit_units
+                FROM bank_journal_lines WHERE entry_id=?""", (existing['entry_id'],)).fetchall()
+                if existing else [])
+            if (not existing or existing['status'] != 'posted'
+                or (existing['currency_code'], existing['decimal_places']) != (currency, places)
+                or sorted(tuple(row) for row in old_lines) != sorted(normalized)):
+                raise ValueError('동일한 금융기관 원장 멱등성 키에 다른 통화 또는 분개가 들어왔습니다.')
             from managers.accounting_journal import AccountingJournal
             AccountingJournal.rebuild_from_subledgers(conn)
             return False

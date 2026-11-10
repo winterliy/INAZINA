@@ -47,6 +47,17 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         DBManager.database_dir = self.old_root
         self.tmp.cleanup()
 
+    def test_bank_journal_replay_rejects_a_different_amount_or_currency(self):
+        from managers.bank_journal import BankJournal
+        with self.db.atomic() as conn:
+            lines = [('tax_payable', 'debit', 1), ('settlement_asset', 'credit', 1)]
+            self.assertTrue(BankJournal.post(conn, 'Bank', 'test', 'replay', 'USD', lines, now=10))
+            self.assertFalse(BankJournal.post(conn, 'Bank', 'test', 'replay', 'USD', lines, now=11))
+            for currency, amount in (('USD', 2), ('EUR', 1)):
+                with self.subTest(currency=currency, amount=amount), self.assertRaisesRegex(ValueError, '멱등성'):
+                    BankJournal.post(conn, 'Bank', 'test', 'replay', currency,
+                        [('tax_payable', 'debit', amount), ('settlement_asset', 'credit', amount)], now=12)
+
     def test_home_currency_uses_cash_and_foreign_currency_requires_account(self):
         manager = CurrencyExchangeManager(self.db)
         with self.db.atomic() as conn:
