@@ -2061,6 +2061,18 @@ class AccountingJournal:
             for row in conn.execute("""SELECT s.schedule_id,s.loan_id FROM loan_payment_schedule s
                 LEFT JOIN loans l ON l.loan_id=s.loan_id WHERE l.loan_id IS NULL""")
         ]
+        loan_related_reference_findings = []
+        for table, key in (
+            ('loan_chargeoff_events', 'event_id'), ('loan_ecl_assessments', 'assessment_id'),
+            ('loan_collateral_assets', 'collateral_id'), ('collateral_liquidation_events', 'event_id'),
+            ('loan_credit_support', 'support_id'), ('loan_credit_support_events', 'event_id'),
+            ('loan_future_commitments', 'loan_id'), ('loan_future_commitment_events', 'event_id'),
+            ('loan_collateral_recovery_events', 'event_id'),
+        ):
+            for row in conn.execute(f"""SELECT s.{key} AS row_id,s.loan_id FROM {table} s
+                LEFT JOIN loans l ON l.loan_id=s.loan_id WHERE l.loan_id IS NULL"""):
+                loan_related_reference_findings.append({'table': table, 'row_id': int(row['row_id']),
+                    'loan_id': int(row['loan_id']), 'status': 'missing_loan'})
         common_checks = cls.reconcile_subledgers(conn)
         common_findings = [dict(row) for row in common_checks
                            if row.get("status") != "matched"]
@@ -2083,6 +2095,7 @@ class AccountingJournal:
                     + schema_findings
                     + [{"scope": "foreign_key_integrity", **finding} for finding in foreign_key_findings]
                     + [{"scope": "loan_schedule_references", **finding} for finding in loan_schedule_reference_findings]
+                    + [{"scope": "loan_related_references", **finding} for finding in loan_related_reference_findings]
                     + [{"scope": "common_journals", **finding}
                        for finding in common_findings]
                     + [{"scope": "institution_subledgers", **finding}
@@ -2092,6 +2105,7 @@ class AccountingJournal:
             "amount_schema_coverage",
             "foreign_key_integrity",
             "loan_schedule_references",
+            "loan_related_references",
             "common_journals",
             "institution_subledgers",
             "institution_pnl",

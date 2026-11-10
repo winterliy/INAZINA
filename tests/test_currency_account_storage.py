@@ -149,6 +149,30 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertTrue(any(finding['scope'] == 'loan_schedule_references' and finding['loan_id'] == 999999
                             for finding in result['findings']), result)
 
+    def test_financial_reconciliation_reports_orphan_loan_chargeoff(self):
+        with self.db.atomic() as conn:
+            conn.execute("""INSERT INTO loan_chargeoff_events
+                (loan_id,issuer,event_key,event_type,amount_minor_units,decimal_places,currency_code,actor_id,created_epoch)
+                VALUES (999999,'Bank','orphan-chargeoff','charge_off',1,2,'USD','admin',1)""")
+            result = AccountingJournal.reconcile_all_financial_ledgers(conn)
+        self.assertEqual(result['status'], 'mismatch', result)
+        self.assertTrue(any(finding['scope'] == 'loan_related_references'
+                            and finding['table'] == 'loan_chargeoff_events' and finding['loan_id'] == 999999
+                            for finding in result['findings']), result)
+
+    def test_financial_reconciliation_reports_orphan_ecl_and_commitment(self):
+        with self.db.atomic() as conn:
+            conn.execute("""INSERT INTO loan_ecl_assessments
+                (loan_id,as_of_day,stage,pd_12m,lifetime_pd,lgd,ead,expected_loss,quote_currency,calculated_epoch)
+                VALUES (999998,'2026-01-01',1,0,0,0,0,0,'USD',1)""")
+            conn.execute("""INSERT INTO loan_future_commitments
+                (loan_id,committed_limit_minor_units,credit_conversion_factor_bps,active,updated_epoch,updated_by)
+                VALUES (999997,1,100,1,1,'admin')""")
+            result = AccountingJournal.reconcile_all_financial_ledgers(conn)
+        self.assertEqual(result['status'], 'mismatch', result)
+        tables = {finding['table'] for finding in result['findings'] if finding['scope'] == 'loan_related_references'}
+        self.assertTrue({'loan_ecl_assessments', 'loan_future_commitments'} <= tables, result)
+
     def test_home_currency_uses_cash_and_foreign_currency_requires_account(self):
         manager = CurrencyExchangeManager(self.db)
         with self.db.atomic() as conn:
