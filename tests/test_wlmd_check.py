@@ -1,4 +1,3 @@
-import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -68,7 +67,16 @@ class WlmdCheckTests(unittest.TestCase):
     def setUp(self):
         self.folder = tempfile.TemporaryDirectory()
         self.root = Path(self.folder.name) / "wide-learning"
-        shutil.copytree(REAL_ROOT, self.root)
+        for relative in (*wlmd_check.APPEND_ONLY, 'topics.md', 'apply-queue.md', 'wide-learning.md'):
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('', encoding='utf-8')
+        (self.root / 'topics.md').write_text(
+            '### [T-04] Test topic\n- question: Test?\n- laplace: 4\n- status: approved\n- owner: both\n\n'
+            '### [T-05] Draft topic\n- question: Test?\n- laplace: 5\n- status: draft\n- owner: both\n', encoding='utf-8')
+        (self.root / 'registry/user.md').write_text(
+            '### [S-001] Test source\n- url: https://example.org/source\n- publisher: Test\n'
+            '- tier: S3\n- accessed: 2026-10-18\n- added-by: USER\n', encoding='utf-8')
 
     def tearDown(self):
         self.folder.cleanup()
@@ -81,6 +89,8 @@ class WlmdCheckTests(unittest.TestCase):
         return wlmd_check.Checker(self.root).run()
 
     def test_repository_records_are_valid(self):
+        if not REAL_ROOT.is_dir():
+            self.skipTest('local Wide-Learning documents are not present')
         self.assertEqual(wlmd_check.Checker(REAL_ROOT).run(), [])
 
     def test_claim_review_verify_and_apply_flow_passes(self):
