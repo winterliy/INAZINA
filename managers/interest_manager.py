@@ -363,12 +363,8 @@ class InterestManager:
                 tax_wallet_watermark = int(conn.execute(
                     "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
                 ).fetchone()[0])
-                treasury = conn.execute(
-                    "UPDATE users.users SET cash=cash+? WHERE user_id=?",
-                    (treasury_units//SCALE, treasury_id),
-                )
-                if treasury.rowcount != 1:
-                    raise RuntimeError("국고 계정을 찾을 수 없어 이자 지급을 취소했습니다.")
+                CurrencyManager.change(conn, treasury_id, home_currency, treasury_units,
+                                       allow_deficit=True)
                 from managers.bank_journal import BankJournal
                 settlement_amount = Decimal(treasury_units) / Decimal(SCALE)
                 BankJournal.post_tax_remittance(

@@ -156,6 +156,27 @@ class FxInterestTests(unittest.TestCase):
                          if item['ledger_scope'] == 'tax_transactions')
             self.assertTrue(any(gap['status'] == 'bank_remittance_mismatch' for gap in check['wallet_gaps']), check)
 
+    def test_savings_tax_credits_fractional_national_currency_to_treasury(self):
+        from managers.accounting_journal import AccountingJournal
+        number = self.open_usd(36.5)
+        self.bot.currency_mgr.exchange('citizen', 'NWX', 'USD', '450000')
+        start = self.account(number)
+        with self.db.atomic() as conn:
+            conn.execute("INSERT INTO country_currencies(nationality,currency_code) VALUES ('FractionalCountry','USD')")
+            conn.execute("UPDATE users SET nationality='FractionalCountry' WHERE user_id='citizen'")
+            treasury_id = CurrencyManager.treasury_id(conn, 'FractionalCountry')
+            before = conn.execute('SELECT cash_minor FROM users WHERE user_id=?', (treasury_id,)).fetchone()[0]
+        InterestManager(self.db).process_user_interests('citizen', now=start['last_payment_epoch'] + DAY)
+        with self.db.readonly() as conn:
+            after = conn.execute('SELECT cash_minor FROM users WHERE user_id=?', (treasury_id,)).fetchone()[0]
+            tax = conn.execute("SELECT tax_amount_minor_units FROM tax_transactions WHERE source='saving_interest' ORDER BY transaction_id DESC LIMIT 1").fetchone()
+            self.assertIsNotNone(tax)
+            self.assertGreater(tax[0], 0)
+            self.assertEqual(after-before, tax[0])
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item['ledger_scope'] == 'tax_transactions')
+            self.assertEqual(check['status'], 'matched', check)
+
     def test_fx_opening_needs_password_and_minimum_deposit_paid_from_home_cash(self):
         self.seed()
         with self.db.atomic() as conn:
