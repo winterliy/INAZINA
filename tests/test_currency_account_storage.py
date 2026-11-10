@@ -159,6 +159,62 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertTrue(any(row['user_id'] == 'us-user' and row['currency_code'] == 'USD'
                             for row in check['orphan_balances']), check)
 
+    def test_reconstruct_closed_wallet_requires_matching_bank_evidence_and_is_idempotent(self):
+        from managers.bank_journal import BankJournal
+        with self.db.atomic() as conn:
+            BankJournal.post(conn, 'Bank', 'deposit_close', 'account:legacy-closed', 'USD',
+                [('customer_deposits_payable', 'debit', 1.25), ('settlement_asset', 'credit', 1.25)], now=10)
+            for account in ('legacy-closed', 'unproven'):
+                conn.execute("""INSERT INTO customer_wallet_ledger
+                    (source_key,user_id,source_type,source_account,currency_code,decimal_places,
+                     delta_minor_units,balance_minor_units,recorded_epoch)
+                    VALUES (?,'us-user','account',?,'USD',2,125,125,10)""", ('fixture:'+account, account))
+            entry = AccountingJournal.reconstruct_closed_account_wallet(conn, 'legacy-closed', actor_id='admin', now=20)
+            self.assertEqual(AccountingJournal.reconstruct_closed_account_wallet(conn, 'legacy-closed', actor_id='admin', now=21), entry)
+            row = conn.execute('SELECT delta_minor_units,balance_minor_units FROM customer_wallet_ledger WHERE entry_id=?', (entry,)).fetchone()
+            self.assertEqual(tuple(row), (-125, 0))
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM customer_wallet_ledger WHERE source_account=?', ('legacy-closed',)).fetchone()[0], 2)
+            with self.assertRaisesRegex(ValueError, '근거'):
+                AccountingJournal.reconstruct_closed_account_wallet(conn, 'unproven', actor_id='admin', now=20)
+            conn.execute('DROP TRIGGER trg_legacy_wallet_closure_adjustments_update_immutable')
+            conn.execute("UPDATE legacy_wallet_closure_adjustments SET amount_minor_units=126 WHERE account_number='legacy-closed'")
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn) if item['ledger_scope'] == 'customer')
+            self.assertGreater(check['legacy_closure_gaps'], 0, check)
+
+    def test_reconstruct_closed_wallet_rolls_back_if_evidence_link_fails(self):
+        from managers.bank_journal import BankJournal
+        with self.db.atomic() as conn:
+            BankJournal.post(conn, 'Bank', 'deposit_close', 'account:legacy-failed', 'USD',
+                [('customer_deposits_payable', 'debit', 1), ('settlement_asset', 'credit', 1)], now=10)
+            conn.execute("""INSERT INTO customer_wallet_ledger
+                (source_key,user_id,source_type,source_account,currency_code,decimal_places,
+                 delta_minor_units,balance_minor_units,recorded_epoch)
+                VALUES ('fixture:legacy-failed','us-user','account','legacy-failed','USD',2,100,100,10)""")
+            before = conn.execute('SELECT COUNT(*) FROM accounting_entries').fetchone()[0]
+            conn.execute("CREATE TEMP TRIGGER fail_legacy_link BEFORE INSERT ON legacy_wallet_closure_adjustments "
+                         "BEGIN SELECT RAISE(ABORT,'injected evidence failure'); END")
+            with self.assertRaisesRegex(sqlite3.IntegrityError, 'injected evidence failure'):
+                AccountingJournal.reconstruct_closed_account_wallet(conn, 'legacy-failed', actor_id='admin', now=20)
+            conn.execute('DROP TRIGGER fail_legacy_link')
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM customer_wallet_ledger WHERE source_account='legacy-failed'").fetchone()[0], 1)
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM accounting_entries').fetchone()[0], before)
+
+    def test_reconstruct_closed_wallet_rejects_inconsistent_common_journal(self):
+        from managers.bank_journal import BankJournal
+        with self.db.atomic() as conn:
+            BankJournal.post(conn, 'Bank', 'deposit_close', 'account:legacy-bad', 'USD',
+                [('customer_deposits_payable', 'debit', 1), ('settlement_asset', 'credit', 1)], now=10)
+            conn.execute("""INSERT INTO customer_wallet_ledger
+                (source_key,user_id,source_type,source_account,currency_code,decimal_places,
+                 delta_minor_units,balance_minor_units,recorded_epoch)
+                VALUES ('fixture:legacy-bad','us-user','account','legacy-bad','USD',2,100,100,10)""")
+            conn.execute('DROP TRIGGER trg_accounting_lines_update_immutable')
+            conn.execute("""UPDATE accounting_lines SET credit_units=99 WHERE account_code='settlement_asset'
+                AND entry_id=(SELECT entry_id FROM accounting_entries WHERE ledger_scope='institution'
+                              AND source_key='deposit_close:account:legacy-bad')""")
+            with self.assertRaisesRegex(ValueError, '근거'):
+                AccountingJournal.reconstruct_closed_account_wallet(conn, 'legacy-bad', actor_id='admin', now=20)
+
     def test_financial_reconciliation_reports_orphan_loan_chargeoff(self):
         with self.db.atomic() as conn:
             conn.execute("""INSERT INTO loan_chargeoff_events

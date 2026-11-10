@@ -1430,6 +1430,22 @@ class CurrencyDB(DBManager):
             delta_minor_units INTEGER NOT NULL CHECK(typeof(delta_minor_units)='integer' AND delta_minor_units<>0),
             balance_minor_units INTEGER NOT NULL CHECK(typeof(balance_minor_units)='integer'),
             recorded_epoch INTEGER NOT NULL)""")
+        self.execute("""CREATE TABLE IF NOT EXISTS legacy_wallet_closure_adjustments (
+            account_number TEXT PRIMARY KEY, user_id TEXT NOT NULL, currency_code TEXT NOT NULL,
+            decimal_places INTEGER NOT NULL, amount_minor_units INTEGER NOT NULL CHECK(amount_minor_units>0),
+            bank_entry_id INTEGER NOT NULL UNIQUE REFERENCES bank_journal_entries(entry_id),
+            wallet_entry_id INTEGER NOT NULL UNIQUE REFERENCES customer_wallet_ledger(entry_id),
+            actor_id TEXT NOT NULL, recorded_epoch INTEGER NOT NULL)""")
+        self.execute("""CREATE TRIGGER IF NOT EXISTS trg_legacy_wallet_closure_adjustments_insert_immutable
+            BEFORE INSERT ON legacy_wallet_closure_adjustments WHEN EXISTS (
+                SELECT 1 FROM legacy_wallet_closure_adjustments a
+                WHERE a.account_number=NEW.account_number OR a.bank_entry_id=NEW.bank_entry_id
+                   OR a.wallet_entry_id=NEW.wallet_entry_id)
+            BEGIN SELECT RAISE(ABORT,'legacy wallet closure adjustments are append-only'); END""")
+        for operation in ('UPDATE', 'DELETE'):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_legacy_wallet_closure_adjustments_{operation.lower()}_immutable
+                BEFORE {operation} ON legacy_wallet_closure_adjustments
+                BEGIN SELECT RAISE(ABORT,'legacy wallet closure adjustments are append-only'); END""")
         for local in ("customer_funds_payable", "wallet_clearing", "opening_balance_equity"):
             self.execute("INSERT OR IGNORE INTO accounting_account_mappings(ledger_scope,local_code,common_code) VALUES ('customer',?,?)", (local,local))
         self.execute("""CREATE INDEX IF NOT EXISTS idx_customer_wallet_source

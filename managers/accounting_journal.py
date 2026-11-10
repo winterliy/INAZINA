@@ -11,6 +11,87 @@ import json
 
 
 class AccountingJournal:
+    @classmethod
+    def reconstruct_closed_account_wallet(cls, conn, account_number, *, actor_id, now):
+        """Append a present-period correction only when a bank close proves the missing withdrawal."""
+        from managers.bank_journal import BankJournal
+        from functions.money import currency_precision
+        account, actor = str(account_number).strip(), str(actor_id).strip()
+        epoch = int(BankJournal.validate_epoch(now))
+        if not account or not actor:
+            raise ValueError('계좌와 조정 실행자를 지정해야 합니다.')
+        conn.execute('SAVEPOINT legacy_wallet_closure')
+        try:
+            prior = conn.execute('SELECT wallet_entry_id FROM legacy_wallet_closure_adjustments WHERE account_number=?', (account,)).fetchone()
+            if prior:
+                result = int(prior[0])
+            else:
+                if conn.execute('SELECT 1 FROM accounts WHERE account_number=?', (account,)).fetchone():
+                    raise ValueError('삭제되지 않은 계좌는 과거 해지 복구 대상이 아닙니다.')
+                rows = conn.execute("""SELECT user_id,currency_code,decimal_places,delta_minor_units,
+                    balance_minor_units,recorded_epoch FROM customer_wallet_ledger
+                    WHERE source_type='account' AND source_account=? ORDER BY entry_id""", (account,)).fetchall()
+                if not rows:
+                    raise ValueError('계좌 지갑 이력 근거가 없습니다.')
+                identities = {(str(r['user_id']),str(r['currency_code']),int(r['decimal_places'])) for r in rows}
+                if len(identities) != 1:
+                    raise ValueError('계좌 지갑 이력의 소유자 또는 통화 근거가 일치하지 않습니다.')
+                owner, currency, places = identities.pop()
+                amount = sum(int(r['delta_minor_units']) for r in rows)
+                if (amount <= 0 or int(rows[-1]['balance_minor_units']) != amount
+                    or epoch < int(rows[-1]['recorded_epoch']) or currency_precision(conn, currency) != places
+                    or not conn.execute('SELECT 1 FROM users WHERE user_id=?', (owner,)).fetchone()):
+                    raise ValueError('계좌 지갑 잔액 또는 소유자 근거를 확인할 수 없습니다.')
+                banks = conn.execute("""SELECT b.entry_id,b.issuer,b.reference_key,b.currency_code,b.decimal_places,b.created_epoch,
+                    COALESCE(SUM(CASE WHEN l.account_code='customer_deposits_payable' THEN l.debit_units ELSE 0 END),0) debit
+                    FROM bank_journal_entries b JOIN bank_journal_lines l USING(entry_id)
+                    WHERE b.event_type='deposit_close' AND b.reference_key=? AND b.status='posted'
+                    GROUP BY b.entry_id""", (f'account:{account}',)).fetchall()
+                if len(banks) != 1 or (str(banks[0]['currency_code']),int(banks[0]['decimal_places']),int(banks[0]['debit'])) != (currency,places,amount):
+                    raise ValueError('계좌 해지 금액을 입증하는 금융기관 분개 근거가 없습니다.')
+                bank = banks[0]
+                if float(bank['created_epoch']) < float(rows[-1]['recorded_epoch']) or epoch < int(float(bank['created_epoch'])):
+                    raise ValueError('계좌 해지 분개 시각이 지갑 이력 근거와 일치하지 않습니다.')
+                common = conn.execute("""SELECT e.entry_id,e.recorded_epoch FROM accounting_entries e JOIN accounting_lines l USING(entry_id)
+                    WHERE e.ledger_scope='institution' AND e.entity_type='financial_institution'
+                    AND e.entity_id=? AND e.source_key=? AND e.currency_code=? AND e.decimal_places=?
+                    GROUP BY e.entry_id HAVING SUM(CASE WHEN l.account_code=(SELECT common_code FROM accounting_account_mappings
+                        WHERE ledger_scope='institution' AND local_code='customer_deposits_payable' AND active=1)
+                        THEN l.debit_units ELSE 0 END)=?""",
+                    (str(bank['issuer']),f"deposit_close:{bank['reference_key']}",currency,places,amount)).fetchone()
+                if not common:
+                    raise ValueError('계좌 해지의 공통 분개 근거가 없습니다.')
+                expected = {}
+                bank_lines = conn.execute('SELECT account_code,debit_units,credit_units FROM bank_journal_lines WHERE entry_id=?', (bank['entry_id'],)).fetchall()
+                for line in bank_lines:
+                    mapping = conn.execute("SELECT common_code FROM accounting_account_mappings WHERE ledger_scope='institution' AND local_code=? AND active=1", (line['account_code'],)).fetchone()
+                    if not mapping:
+                        raise ValueError('계좌 해지의 공통 계정 매핑 근거가 없습니다.')
+                    debit, credit = expected.get(mapping[0], (0, 0))
+                    expected[mapping[0]] = (debit+int(line['debit_units']), credit+int(line['credit_units']))
+                actual = {}
+                for line in conn.execute('SELECT account_code,debit_units,credit_units FROM accounting_lines WHERE entry_id=?', (common['entry_id'],)):
+                    debit, credit = actual.get(line['account_code'], (0, 0))
+                    actual[line['account_code']] = (debit+int(line['debit_units']), credit+int(line['credit_units']))
+                if (len(bank_lines)<2 or sum(v[0] for v in expected.values()) != sum(v[1] for v in expected.values())
+                    or expected != actual or int(common['recorded_epoch']) != int(float(bank['created_epoch']))):
+                    raise ValueError('계좌 해지 원장 간 분개 근거가 일치하지 않습니다.')
+                cursor = conn.execute("""INSERT INTO customer_wallet_ledger
+                    (source_key,user_id,source_type,source_account,currency_code,decimal_places,
+                     delta_minor_units,balance_minor_units,recorded_epoch)
+                    VALUES (?,?,'account',?,?,?,?,0,?)""",
+                    (f'legacy-close-adjustment:{account}',owner,account,currency,places,-amount,epoch))
+                result = int(cursor.lastrowid)
+                conn.execute("""INSERT INTO legacy_wallet_closure_adjustments
+                    (account_number,user_id,currency_code,decimal_places,amount_minor_units,bank_entry_id,wallet_entry_id,actor_id,recorded_epoch)
+                    VALUES (?,?,?,?,?,?,?,?,?)""", (account,owner,currency,places,amount,int(bank['entry_id']),result,actor,epoch))
+        except Exception:
+            conn.execute('ROLLBACK TO legacy_wallet_closure')
+            conn.execute('RELEASE legacy_wallet_closure')
+            raise
+        conn.execute('RELEASE legacy_wallet_closure')
+        return result
+
     @staticmethod
     def link_tax_bank_remittance(conn, transaction_id, issuer, reference_key, source_currency, settlement_currency, fx_quote,
                                  *, settlement_zero=False):
@@ -1842,13 +1923,29 @@ class AccountingJournal:
                     THEN w.delta_minor_units ELSE 0 END
               OR COALESCE(lines.clearing_credit,0)<>CASE WHEN w.delta_minor_units<0
                     THEN -w.delta_minor_units ELSE 0 END""").fetchone()[0])
+        legacy_closure_gaps = int(conn.execute("""SELECT COUNT(*) FROM legacy_wallet_closure_adjustments a
+            LEFT JOIN customer_wallet_ledger w ON w.entry_id=a.wallet_entry_id
+            LEFT JOIN bank_journal_entries b ON b.entry_id=a.bank_entry_id
+            LEFT JOIN (SELECT entry_id,SUM(debit_units) debit FROM bank_journal_lines
+                       WHERE account_code='customer_deposits_payable' GROUP BY entry_id) lines ON lines.entry_id=b.entry_id
+            WHERE w.entry_id IS NULL OR b.entry_id IS NULL OR w.user_id<>a.user_id
+              OR w.source_type<>'account' OR w.source_account<>a.account_number
+              OR w.source_key<>'legacy-close-adjustment:'||a.account_number
+              OR w.currency_code<>a.currency_code OR w.decimal_places<>a.decimal_places
+              OR w.delta_minor_units<>-a.amount_minor_units OR w.balance_minor_units<>0
+              OR w.recorded_epoch<>a.recorded_epoch OR a.actor_id=''
+              OR b.event_type<>'deposit_close' OR b.status<>'posted'
+              OR b.reference_key<>'account:'||a.account_number OR b.currency_code<>a.currency_code
+              OR b.decimal_places<>a.decimal_places OR COALESCE(lines.debit,0)<>a.amount_minor_units""").fetchone()[0])
         status = ("matched" if wallet == common and gaps == 0 and orphan_balance_gaps == 0 and posting_gaps == 0
+                  and legacy_closure_gaps == 0
                   else "mismatch")
         checks.append({"ledger_scope": "customer", "native_balances": native,
                        "wallet_entries": wallet, "common_entries": common,
                        "balance_gaps": gaps, "posting_gaps": posting_gaps,
                        "orphan_balance_gaps": orphan_balance_gaps,
                        "orphan_balances": orphan_balances,
+                       "legacy_closure_gaps": legacy_closure_gaps,
                        "missing_entries": wallet-common,
                        "status": status})
         fund_rows = conn.execute("""SELECT entry_id,product_code,event,amount,balance,

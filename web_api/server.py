@@ -4954,6 +4954,24 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 self.send_json(201 if success else 400, {"success": success, "result": result})
                 return
+            if path == "/internal/admin/bank-journal/reconstruct-wallet":
+                user = identity(verified_id)
+                if not user or user['role'] != 'admin':
+                    self.send_json(403, {'error': 'admin_required'})
+                    return
+                if set(payload) != {'accountNumber'} or not str(payload['accountNumber']).strip():
+                    raise ValueError('invalid_wallet_reconstruction_payload')
+                account = str(payload['accountNumber']).strip()
+                if len(account) > 100:
+                    raise ValueError('invalid_wallet_reconstruction_payload')
+                from managers.accounting_journal import AccountingJournal
+                with domain().db.atomic() as connection:
+                    wallet_entry_id = AccountingJournal.reconstruct_closed_account_wallet(
+                        connection, account, actor_id=user['userId'], now=int(time.time()))
+                audit_admin_access(user['userId'], 'accounting.wallet.reconstruct',
+                                   {'account_number': account, 'wallet_entry_id': wallet_entry_id})
+                self.send_json(200, {'success': True, 'walletEntryId': wallet_entry_id})
+                return
             if path == "/internal/admin/bank-journal/close":
                 user = identity(verified_id)
                 if not user or user["role"] != "admin":

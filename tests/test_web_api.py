@@ -753,6 +753,32 @@ class WebApiTests(unittest.TestCase):
         audit = server.admin_audit()[0]
         self.assertEqual(audit["action"], "accounting.period.close")
 
+    def test_admin_legacy_wallet_reconstruction_requires_admin_and_is_audited(self):
+        from contextlib import nullcontext
+        payload = {'accountNumber': 'legacy-closed'}
+        body = json.dumps(payload).encode()
+        response = {}
+        def handler():
+            return SimpleNamespace(headers={'x-inazina-internal-token': 'secret', 'x-inazina-user-id': 'admin-1',
+                'content-length': str(len(body))}, path='/internal/admin/bank-journal/reconstruct-wallet',
+                rfile=io.BytesIO(body), send_json=lambda status, value: response.update(status=status, value=value))
+        db = SimpleNamespace(atomic=lambda: nullcontext(object()))
+        with patch.object(server, 'INTERNAL_TOKEN', 'secret'), \
+             patch.object(server, 'identity', return_value={'userId': 'admin-1', 'role': 'admin'}), \
+             patch.object(server, 'domain', return_value=SimpleNamespace(db=db)), \
+             patch('managers.accounting_journal.AccountingJournal.reconstruct_closed_account_wallet', return_value=17) as reconstruct:
+            server.Handler.do_POST(handler())
+        self.assertEqual(response, {'status': 200, 'value': {'success': True, 'walletEntryId': 17}})
+        reconstruct.assert_called_once()
+        self.assertEqual(server.admin_audit()[0]['action'], 'accounting.wallet.reconstruct')
+        response.clear()
+        with patch.object(server, 'INTERNAL_TOKEN', 'secret'), \
+             patch.object(server, 'identity', return_value={'userId': 'user-1', 'role': 'user'}), \
+             patch('managers.accounting_journal.AccountingJournal.reconstruct_closed_account_wallet') as reconstruct:
+            server.Handler.do_POST(handler())
+        self.assertEqual(response['status'], 403)
+        reconstruct.assert_not_called()
+
     def test_admin_loan_chargeoff_action_is_available_through_compliance_api(self):
         from contextlib import nullcontext
         response = {}

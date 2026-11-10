@@ -22,7 +22,8 @@ type CreditStress = { issuer: string; currency: string; decimalPlaces: number; p
 type CorrelatedCreditStress = { issuer: string; currency: string; decimalPlaces: number; confidence: number; assetCorrelation: number; exposureCount: number; performingEad: number; independentExpectedLoss: number; correlatedTailLoss: number; connectedPartyCorrelation: number; connectedPartyBorrowerCount: number; connectedPartyExposureCount: number; connectedPartyEad: number; connectedPartyJointTailLoss: number; method: string };
 type BorrowerConcentrationStress = { issuer: string; currency: string; decimalPlaces: number; borrowerCount: number; totalLoanExposure: number; largestBorrowerSharePercent: number; topFiveExposureSharePercent: number; borrowers: { borrowerId: string; loanCount: number; exposure: number; exposureSharePercent: number; grossLoss: number; existingAllowanceApplied: number; incrementalProvision: number; equityAfterProvision: number }[]; method: string };
 type Prudential = { issuer: string; currency: string; decimalPlaces: number; status: string; effectiveEquity: number; riskWeightedAssets: number; capitalRatioPercent: number | null; targetCapitalRatioPercent: number; leverageExposure: number; leverageRatioPercent: number | null; minimumLeverageRatioPercent: number; exposureCount: number; cashCollateralCovered: number; weightedComponents: Record<string, number>; method: string };
-type CommonJournalReconciliation = { ledger_scope: string; native_entries?: number; native_balances?: number; wallet_entries?: number; common_entries: number; missing_entries: number; balance_gaps?: number; orphan_balance_gaps?: number; orphan_balances?: unknown[]; status: string; execution_gaps?: unknown[]; common_journal_gaps?: unknown[]; wallet_link_gaps?: unknown[]; primary_settlement_gaps?: unknown[]; holding_movement_gaps?: unknown[]; gaps?: unknown[] };
+type OrphanBalance = { user_id: string; source_type: string; source_account: string; currency_code: string; actual: Money };
+type CommonJournalReconciliation = { ledger_scope: string; native_entries?: number; native_balances?: number; wallet_entries?: number; common_entries: number; missing_entries: number; balance_gaps?: number; orphan_balance_gaps?: number; orphan_balances?: OrphanBalance[]; legacy_closure_gaps?: number; status: string; execution_gaps?: unknown[]; common_journal_gaps?: unknown[]; wallet_link_gaps?: unknown[]; primary_settlement_gaps?: unknown[]; holding_movement_gaps?: unknown[]; gaps?: unknown[] };
 type AmountSnapshotAudit = { status: string; findingCount: number; findings: { source_table?: string; source_key?: string; amount_field?: string; currency_code?: string; status: string }[] };
 type FinancialCloseControl = { status: string; coverage: string[]; institution_count: number; findingCount: number; foreignKeyFindingCount: number; findings: Record<string, unknown>[]; amount_field_coverage: { status: string; registered_count: number; exempt_count: number; unclassified: { source_table?: string; amount_field?: string; status: string }[] } };
 type Report = { issuer: string; currency: string | null; trialBalance: Trial[]; commonTrialBalance: Trial[]; unbalancedEntries: Unbalanced[]; resultReconciliation: Reconciliation[]; depositReconciliation: DepositReconciliation[]; loanReconciliation: LoanReconciliation[]; loanScheduleReconciliation: LoanScheduleFinding[]; eclAllowanceReconciliation: LoanReconciliation[]; chargeoffMemoReconciliation: ChargeoffMemoReconciliation[]; depositInsuranceReconciliation: DepositInsuranceReconciliation[]; depositInsuranceClaims: DepositInsuranceClaim[]; commonJournalReconciliation: CommonJournalReconciliation[]; financialCloseControl: FinancialCloseControl; commonJournalUnbalancedEntries: { entry_id: number; ledger_scope: string; entity_type: string; entity_id: string; currency_code: string }[]; amountSnapshotAudit: AmountSnapshotAudit; maturityGap: MaturityGap; liquidityStress: LiquidityStress; rateStress: RateStress; fixedRateEveStress: FixedRateEveStress; fxStress: FxStress; prudential: Prudential; creditStress: CreditStress; correlatedCreditStress: CorrelatedCreditStress; borrowerConcentrationStress: BorrowerConcentrationStress };
@@ -89,6 +90,14 @@ export function BankJournalPage({ ctx, bank }: { ctx: Ctx; bank?: string }) {
       method: "POST", body: JSON.stringify({ ledgerScope: closing.scope, entityId: closing.entity.trim(), currencyCode: closing.currency.trim().toUpperCase(), periodStartEpoch: start, periodEndEpoch: end }),
     }), "회계기간을 마감하지 못했습니다.", (result) => say(`회계기간 마감 #${result.closingId}을 기록했습니다.`, !result.success));
   }
+  function reconstructWallet(accountNumber: string) {
+    void run(() => api<{ success: boolean; walletEntryId: number }>("/api/admin/bank-journal/reconstruct-wallet", {
+      method: "POST", body: JSON.stringify({ accountNumber }),
+    }), "계좌 지갑 복구에 실패했습니다.", (result) => {
+      say(`계좌 지갑 조정 #${result.walletEntryId}을 기록했습니다.`, !result.success);
+      fetchReport();
+    });
+  }
   return <Card title="은행 이중분개 원장 대사" caption="조회 전용 · 시산 잔액과 불균형은 전체 이력, 손익 원장 대사는 지정 기간입니다. 금액은 각 통화 정밀도를 따르며 법정 감사의견이 아닙니다.">
     <form className="form-grid" onSubmit={load}>
       <Field label="은행 ID"><input className="mono" required maxLength={100} readOnly={Boolean(bank)} value={issuer} onChange={(event) => setIssuer(event.target.value.toUpperCase())} /></Field>
@@ -116,10 +125,16 @@ export function BankJournalPage({ ctx, bank }: { ctx: Ctx; bank?: string }) {
       <div className="scroll-x"><table><thead><tr><th>원장 범위</th><th className="r">원장 행/잔액</th><th className="r">공통 전기</th><th className="r">누락</th><th className="r">잔액 차이</th><th>상태</th></tr></thead><tbody>
         {report.commonJournalReconciliation.map((row) => <tr key={row.ledger_scope}><td>{row.ledger_scope}</td><td className="r">{row.native_entries ?? row.wallet_entries ?? row.native_balances ?? 0}</td><td className="r">{row.common_entries}</td><td className="r">{row.missing_entries}</td><td className="r">{row.balance_gaps ?? "—"}</td><td>{row.status}</td></tr>)}
       </tbody></table></div>
+      {report.commonJournalReconciliation.filter((row) => row.ledger_scope === 'customer' && (row.legacy_closure_gaps ?? 0) > 0).map((row) => <p key="legacy-closure-gaps" className="hint">과거 계좌 해지 조정 근거 불일치: {row.legacy_closure_gaps}건</p>)}
       {report.commonJournalReconciliation.filter((row) => row.ledger_scope === 'customer' && (row.orphan_balance_gaps ?? 0) > 0).map((row) => <section key="customer-orphan-balances">
         <h4>연결 대상이 없는 지갑 잔액 · {row.orphan_balance_gaps}건</h4>
-        <p className="hint">최대 100건을 표시합니다. 계좌 해지·국적 변경 등 과거 거래의 잔액을 확인하세요.</p>
-        <div className="scroll-x"><pre className="mono">{JSON.stringify(row.orphan_balances, null, 2)}</pre></div>
+        <p className="hint">최대 100건을 표시합니다. 계좌 해지 분개와 금액이 일치하는 경우에만 현재 기간에 조정을 기록합니다.</p>
+        <div className="scroll-x"><table><thead><tr><th>소유자</th><th>지갑</th><th>통화</th><th>잔액 최소단위</th><th>복구</th></tr></thead><tbody>
+          {(row.orphan_balances ?? []).map((item) => <tr key={`${item.user_id}:${item.source_type}:${item.source_account}:${item.currency_code}`}>
+            <td>{item.user_id}</td><td>{item.source_account} ({item.source_type})</td><td>{item.currency_code}</td><td>{String(item.actual)}</td>
+            <td>{item.source_type === 'account' && <button type="button" disabled={busy} onClick={() => reconstructWallet(item.source_account)}>근거 확인 후 복구</button>}</td>
+          </tr>)}
+        </tbody></table></div>
       </section>)}
       {report.commonJournalReconciliation.filter((row) => row.ledger_scope === "market_executions").map((row) => {
         const findings = [

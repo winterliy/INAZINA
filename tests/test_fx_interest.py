@@ -303,6 +303,23 @@ class FxInterestTests(unittest.TestCase):
         with self.db.readonly() as conn:
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM customer_wallet_ledger').fetchone()[0], wallet_count)
 
+    def test_legacy_account_close_can_be_reconstructed_from_bank_journal(self):
+        from managers.accounting_journal import AccountingJournal
+        import time
+        self.seed()
+        bank = BankManager(self.db)
+        self.assertTrue(bank.open_account('citizen', 'INZCU001', 'pass1234', '10')[0])
+        number = self.db.accounts.execute_one("SELECT account_number FROM accounts WHERE user_id='citizen' AND account_type='saving'")[0]
+        with self.db.atomic() as conn:
+            conn.execute('DROP TRIGGER trg_customer_account_ledger_update')
+        self.assertTrue(bank.close_account('citizen', number, None, 'pass1234')[0])
+        with self.db.atomic() as conn:
+            before = next(item for item in AccountingJournal.reconcile_subledgers(conn) if item['ledger_scope'] == 'customer')
+            self.assertGreater(before['orphan_balance_gaps'], 0)
+            AccountingJournal.reconstruct_closed_account_wallet(conn, number, actor_id='admin', now=int(time.time()))
+            after = next(item for item in AccountingJournal.reconcile_subledgers(conn) if item['ledger_scope'] == 'customer')
+            self.assertEqual(after['orphan_balance_gaps'], 0, after)
+
     def test_savings_balances_live_in_balance_units(self):
         self.seed()
         bank = BankManager(self.db)
