@@ -2051,6 +2051,10 @@ class AccountingJournal:
 
         amount_findings = audit_amount_snapshots(conn)
         amount_field_coverage = audit_amount_field_coverage(conn)
+        foreign_key_findings = [
+            {'table': row[0], 'rowid': row[1], 'parent_table': row[2], 'foreign_key_id': row[3]}
+            for row in conn.execute('PRAGMA foreign_key_check')
+        ]
         common_checks = cls.reconcile_subledgers(conn)
         common_findings = [dict(row) for row in common_checks
                            if row.get("status") != "matched"]
@@ -2071,6 +2075,7 @@ class AccountingJournal:
         findings = ([{"scope": "amount_snapshot_registry", **finding}
                      for finding in amount_findings]
                     + schema_findings
+                    + [{"scope": "foreign_key_integrity", **finding} for finding in foreign_key_findings]
                     + [{"scope": "common_journals", **finding}
                        for finding in common_findings]
                     + [{"scope": "institution_subledgers", **finding}
@@ -2078,6 +2083,7 @@ class AccountingJournal:
         coverage = (
             "amount_snapshot_registry",
             "amount_schema_coverage",
+            "foreign_key_integrity",
             "common_journals",
             "institution_subledgers",
             "institution_pnl",
@@ -2096,6 +2102,7 @@ class AccountingJournal:
             "institution_count": len(issuers),
             "amount_snapshot_findings": amount_findings,
             "amount_field_coverage": amount_field_coverage,
+            "foreign_key_findings": foreign_key_findings,
             "common_journal_checks": common_checks,
             "institution_reports": institution_reports,
             "findings": findings,

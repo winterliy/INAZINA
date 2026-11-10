@@ -1983,8 +1983,9 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
             # shows the first 100 and the count (all snapshot findings are in amountSnapshotAudit).
             "financialCloseControl": {
                 **{key: value for key, value in financial_close_control.items()
-                   if key not in ("findings", "amount_snapshot_findings")},
+                   if key not in ("findings", "amount_snapshot_findings", "foreign_key_findings")},
                 "findingCount": len(financial_close_control["findings"]),
+                "foreignKeyFindingCount": len(financial_close_control["foreign_key_findings"]),
                 "findings": financial_close_control["findings"][:100],
             },
             "commonTrialBalance": common_trial_balance,

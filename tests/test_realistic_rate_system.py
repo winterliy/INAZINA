@@ -1528,6 +1528,8 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertIn("financialCloseControl", report)
         self.assertIn("amount_snapshot_registry", report["financialCloseControl"]["coverage"])
         self.assertIn("amount_schema_coverage", report["financialCloseControl"]["coverage"])
+        self.assertIn("foreign_key_integrity", report["financialCloseControl"]["coverage"])
+        self.assertEqual(report["financialCloseControl"]["foreignKeyFindingCount"], 0)
         self.assertEqual(report["financialCloseControl"]["amount_field_coverage"]["status"], "matched")
         self.assertEqual(report["financialCloseControl"]["amount_field_coverage"]["unclassified"], [])
         self.assertIn("institution_subledgers", report["financialCloseControl"]["coverage"])

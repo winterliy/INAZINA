@@ -127,6 +127,20 @@ class CurrencyAccountStorageTests(unittest.TestCase):
                     conn.execute(f'INSERT OR REPLACE INTO {table}(singleton_id,through_transaction_id) VALUES (1,999)')
         CurrencyDB().close()
 
+    def test_financial_reconciliation_reports_dangling_declared_references(self):
+        # A legacy or externally edited database can contain violations even
+        # though application connections enable foreign keys today.
+        with closing(sqlite3.connect(self.db.currency.db_path)) as raw:
+            with raw:
+                raw.execute('PRAGMA foreign_keys=OFF')
+                raw.execute("INSERT INTO tax_bank_remittance_links(transaction_id,source_entry_id) VALUES (999999,999999)")
+        with self.db.readonly() as conn:
+            result = AccountingJournal.reconcile_all_financial_ledgers(conn)
+        self.assertEqual(result['status'], 'mismatch', result)
+        self.assertTrue(any(finding['scope'] == 'foreign_key_integrity'
+                            and finding['table'] == 'tax_bank_remittance_links'
+                            for finding in result['findings']), result)
+
     def test_home_currency_uses_cash_and_foreign_currency_requires_account(self):
         manager = CurrencyExchangeManager(self.db)
         with self.db.atomic() as conn:
