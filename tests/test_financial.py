@@ -291,6 +291,52 @@ class FinancialTests(unittest.TestCase):
                     FROM accounting_entries WHERE entry_id=?""", (entry_id,))
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM accounting_lines WHERE entry_id=?', (entry_id,)).fetchone()[0], 2)
 
+    def test_company_reconciliation_detects_wrong_common_entity_type(self):
+        from managers.accounting_journal import AccountingJournal
+        self.setup_company()
+        self.fin.manual('admin', 'CO', 'entity-type-check',
+                        [{'account': 'receivables', 'amount': 10}, {'account': 'revenue', 'amount': -10}])
+        with self.db.atomic() as conn:
+            conn.execute('DROP TRIGGER trg_accounting_entries_update_immutable')
+            conn.execute("UPDATE accounting_entries SET entity_type='customer' WHERE ledger_scope='company' AND entity_id='CO'")
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item['ledger_scope'] == 'company')
+            self.assertEqual(check['status'], 'mismatch', check)
+
+    def test_closed_period_detects_journal_metadata_tampering(self):
+        from managers.accounting_journal import AccountingJournal
+        from functions.money import base_currency_code
+        with self.db.atomic() as conn:
+            currency = base_currency_code(conn)
+            for account in ('cash', 'income'):
+                AccountingJournal.register_mapping(conn, 'close_metadata', account, account)
+            entry_id = AccountingJournal.post(conn, ledger_scope='close_metadata', entity_type='entity',
+                entity_id='one', source_key='sale', currency_code=currency, decimal_places=0,
+                recorded_epoch=100, description='original', lines=[('cash', 'debit', 10), ('income', 'credit', 10)])
+            AccountingJournal.close_period(conn, ledger_scope='close_metadata', entity_id='one',
+                currency_code=currency, period_start_epoch=0, period_end_epoch=200, actor_id='admin', closed_epoch=200)
+            conn.execute('DROP TRIGGER trg_accounting_entries_update_immutable')
+            conn.execute("UPDATE accounting_entries SET recorded_epoch=101,description='changed' WHERE entry_id=?", (entry_id,))
+            self.assertEqual(AccountingJournal.reconcile_period_closings(conn)['status'], 'mismatch')
+
+    def test_legacy_period_digest_remains_verifiable_and_idempotent(self):
+        from managers.accounting_journal import AccountingJournal
+        from functions.money import base_currency_code
+        with self.db.atomic() as conn:
+            currency = base_currency_code(conn)
+            for account in ('cash', 'income'):
+                AccountingJournal.register_mapping(conn, 'legacy_close', account, account)
+            AccountingJournal.post(conn, ledger_scope='legacy_close', entity_type='entity', entity_id='one',
+                source_key='sale', currency_code=currency, decimal_places=0, recorded_epoch=100,
+                lines=[('cash', 'debit', 10), ('income', 'credit', 10)])
+            count, digest = AccountingJournal._period_snapshot(conn, 'legacy_close', 'one', currency, 0, 200, version=1)
+            closing_id = conn.execute("""INSERT INTO accounting_period_closings
+                (ledger_scope,entity_id,currency_code,period_start_epoch,period_end_epoch,closed_epoch,actor_id,entry_count,closing_digest)
+                VALUES ('legacy_close','one',?,0,200,200,'admin',?,?)""", (currency, count, digest)).lastrowid
+            self.assertEqual(AccountingJournal.close_period(conn, ledger_scope='legacy_close', entity_id='one',
+                currency_code=currency, period_start_epoch=0, period_end_epoch=200, actor_id='admin', closed_epoch=201), closing_id)
+            self.assertEqual(AccountingJournal.reconcile_period_closings(conn)['status'], 'matched')
+
     def test_manual_authorization_balance_and_reversal(self):
         self.setup_company()
         lines=[{'account':'receivables','amount':1000},{'account':'revenue','amount':-1000}]

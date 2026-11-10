@@ -277,11 +277,12 @@ class AccountingJournal:
             (scope, entity, currency, start, end)).fetchone()[0]
         if scales > 1:
             raise ValueError("통화 정밀도가 서로 다른 분개가 있어 기간을 마감할 수 없습니다.")
-        count, digest = cls._period_snapshot(conn, scope, entity, currency, start, end)
         prior = conn.execute("""SELECT closing_id,entry_count,closing_digest FROM accounting_period_closings
             WHERE ledger_scope=? AND entity_id=? AND currency_code=?
               AND period_start_epoch=? AND period_end_epoch=?""",
             (scope, entity, currency, start, end)).fetchone()
+        version = 1 if prior and not str(prior['closing_digest']).startswith('v2:') else 2
+        count, digest = cls._period_snapshot(conn, scope, entity, currency, start, end, version=version)
         if prior:
             if (int(prior[1]), str(prior[2])) != (count, digest):
                 raise ValueError("기존 회계기간 마감 스냅샷과 현재 원장이 다릅니다.")
@@ -295,18 +296,26 @@ class AccountingJournal:
         return int(cursor.lastrowid)
 
     @staticmethod
-    def _period_snapshot(conn, scope, entity, currency, start, end):
-        rows = conn.execute("""SELECT e.entry_id,e.source_key,l.account_code,
+    def _period_snapshot(conn, scope, entity, currency, start, end, *, version=2):
+        if version == 1:
+            query = """SELECT e.entry_id,e.source_key,l.account_code,
                 l.debit_units,l.credit_units
             FROM accounting_entries e JOIN accounting_lines l USING(entry_id)
             WHERE e.ledger_scope=? AND e.entity_id=? AND e.currency_code=?
               AND e.recorded_epoch>=? AND e.recorded_epoch<?
-            ORDER BY e.entry_id,l.account_code""",
-            (scope, entity, currency, start, end)).fetchall()
+            ORDER BY e.entry_id,l.account_code"""
+        else:
+            query = """SELECT e.entry_id,e.entity_type,e.source_key,e.currency_code,e.decimal_places,
+                e.recorded_epoch,e.description,l.line_id,l.account_code,l.debit_units,l.credit_units
+            FROM accounting_entries e JOIN accounting_lines l USING(entry_id)
+            WHERE e.ledger_scope=? AND e.entity_id=? AND e.currency_code=?
+              AND e.recorded_epoch>=? AND e.recorded_epoch<?
+            ORDER BY e.entry_id,l.account_code,l.line_id"""
+        rows = conn.execute(query, (scope, entity, currency, start, end)).fetchall()
         normalized = [tuple(row) for row in rows]
         digest = hashlib.sha256(json.dumps(normalized, separators=(",", ":"),
                                  ensure_ascii=False).encode()).hexdigest()
-        return len({row[0] for row in normalized}), digest
+        return len({row[0] for row in normalized}), ('v2:' + digest if version == 2 else digest)
 
     @classmethod
     def reconcile_period_closings(cls, conn):
@@ -316,7 +325,8 @@ class AccountingJournal:
             count += 1
             actual = cls._period_snapshot(conn, row["ledger_scope"], row["entity_id"],
                                           row["currency_code"], row["period_start_epoch"],
-                                          row["period_end_epoch"])
+                                          row["period_end_epoch"],
+                                          version=2 if str(row['closing_digest']).startswith('v2:') else 1)
             if actual != (row["entry_count"], row["closing_digest"]):
                 gaps.append({"closing_id": row["closing_id"], "ledger_scope": row["ledger_scope"],
                              "entity_id": row["entity_id"], "currency_code": row["currency_code"],
