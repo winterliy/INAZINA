@@ -84,6 +84,23 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM bank_journal_entries WHERE reference_key LIKE 'partial-tax:%'").fetchone()[0], 0)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM accounting_entries WHERE source_key LIKE 'tax_remittance:partial-tax:%'").fetchone()[0], 0)
 
+    def test_tax_remittance_link_failure_rolls_back_partial_links(self):
+        from fractions import Fraction
+        from managers.bank_journal import BankJournal
+        with self.db.atomic() as conn:
+            BankJournal.post_tax_remittance(conn, 'Bank', 'link-failure', 'USD', 1, 'USD', 1, now=10)
+            transaction_id = conn.execute("""INSERT INTO tax_transactions
+                (user_id,source,gross_amount,tax_amount,net_amount,currency_code)
+                VALUES ('us-user','fixture',2,1,1,'USD')""").lastrowid
+            conn.execute("CREATE TEMP TRIGGER fail_tax_quote BEFORE INSERT ON tax_bank_remittance_quotes "
+                         "BEGIN SELECT RAISE(ABORT,'injected quote failure'); END")
+            with self.assertRaisesRegex(sqlite3.IntegrityError, 'injected quote failure'):
+                AccountingJournal.link_tax_bank_remittance(conn, transaction_id, 'Bank',
+                    'link-failure', 'USD', 'USD', Fraction(1, 1))
+            conn.execute('DROP TRIGGER fail_tax_quote')
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM tax_bank_remittance_links WHERE transaction_id=?',
+                                          (transaction_id,)).fetchone()[0], 0)
+
     def test_home_currency_uses_cash_and_foreign_currency_requires_account(self):
         manager = CurrencyExchangeManager(self.db)
         with self.db.atomic() as conn:

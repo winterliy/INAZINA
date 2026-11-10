@@ -25,15 +25,22 @@ class AccountingJournal:
             if not row:
                 raise RuntimeError('세금 송금에 대응하는 금융기관 분개가 없습니다.')
             entries.append(int(row[0]))
-        conn.execute("""INSERT INTO tax_bank_remittance_links
-            (transaction_id,source_entry_id,settlement_entry_id) VALUES (?,?,?)""",
-            (int(transaction_id), entries[0], entries[1] if cross_currency else None))
         from functions.money import currency_precision
-        conn.execute("""INSERT INTO tax_bank_remittance_quotes
-            (transaction_id,source_currency,settlement_currency,source_places,settlement_places,rate_numerator,rate_denominator)
-            VALUES (?,?,?,?,?,?,?)""", (int(transaction_id), str(source_currency).upper(), str(settlement_currency).upper(),
-                currency_precision(conn, source_currency), currency_precision(conn, settlement_currency),
-                str(fx_quote.numerator), str(fx_quote.denominator)))
+        conn.execute('SAVEPOINT tax_bank_remittance_link')
+        try:
+            conn.execute("""INSERT INTO tax_bank_remittance_links
+                (transaction_id,source_entry_id,settlement_entry_id) VALUES (?,?,?)""",
+                (int(transaction_id), entries[0], entries[1] if cross_currency else None))
+            conn.execute("""INSERT INTO tax_bank_remittance_quotes
+                (transaction_id,source_currency,settlement_currency,source_places,settlement_places,rate_numerator,rate_denominator)
+                VALUES (?,?,?,?,?,?,?)""", (int(transaction_id), str(source_currency).upper(), str(settlement_currency).upper(),
+                    currency_precision(conn, source_currency), currency_precision(conn, settlement_currency),
+                    str(fx_quote.numerator), str(fx_quote.denominator)))
+        except Exception:
+            conn.execute('ROLLBACK TO tax_bank_remittance_link')
+            conn.execute('RELEASE tax_bank_remittance_link')
+            raise
+        conn.execute('RELEASE tax_bank_remittance_link')
 
     @classmethod
     def link_tax_transaction_wallet_entries(cls, conn, transaction_id, wallet_watermark,
