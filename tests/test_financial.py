@@ -399,6 +399,29 @@ class FinancialTests(unittest.TestCase):
                          if item['ledger_scope'] == 'tax_transactions')
             self.assertEqual(check['status'], 'mismatch')
 
+    def test_tax_receipt_reconciliation_rejects_wrong_wallet_precision(self):
+        from managers.accounting_journal import AccountingJournal
+        from managers.currency_manager import CurrencyManager
+        self.db.currency.execute("INSERT INTO currencies(code,name,reference_rate,decimal_places) VALUES ('TST','Test',1,2)")
+        with self.db.atomic() as conn:
+            watermark = conn.execute("SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger").fetchone()[0]
+            treasury_id = CurrencyManager.treasury_id(conn, '낙원')
+            conn.execute("""INSERT INTO customer_wallet_ledger
+                (source_key,user_id,source_type,source_account,currency_code,decimal_places,
+                 delta_minor_units,balance_minor_units,recorded_epoch)
+                VALUES ('test-tax-precision',?,'account','test','TST',2,12,12,1)""", (treasury_id,))
+            transaction_id = conn.execute("""INSERT INTO tax_transactions
+                (user_id,source,gross_amount,tax_amount,net_amount,currency_code)
+                VALUES ('citizen','precision-test',1.23,0.12,1.11,'TST')""").lastrowid
+            AccountingJournal.link_tax_transaction_wallet_entries(conn, transaction_id, watermark, treasury_id)
+            conn.execute("""UPDATE customer_wallet_ledger SET decimal_places=0 WHERE entry_id IN
+                (SELECT wallet_entry_id FROM tax_transaction_wallet_links WHERE transaction_id=?)""", (transaction_id,))
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item['ledger_scope'] == 'tax_transactions')
+            self.assertEqual(check['status'], 'mismatch', check)
+            self.assertTrue(any(gap['status'] == 'invalid_treasury_receipt_precision'
+                                for gap in check['wallet_gaps']), check)
+
     def test_cumulative_preferred_liability(self):
         self.setup_company()
         self.db.companies.create_company('PR','우선주','게임',1000,10,100,'admin','INZ')

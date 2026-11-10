@@ -1874,7 +1874,7 @@ class AccountingJournal:
                     "status": "mismatch"})
             transaction_id = int(row["transaction_id"])
             if tax > 0 and transaction_id > legacy_tax_through:
-                links = conn.execute("""SELECT l.treasury_user_id,w.user_id,w.currency_code,
+                links = conn.execute("""SELECT l.treasury_user_id,w.user_id,w.currency_code,w.decimal_places,
                     w.delta_minor_units,w.entry_id FROM tax_transaction_wallet_links l
                     JOIN customer_wallet_ledger w ON w.entry_id=l.wallet_entry_id
                     WHERE l.transaction_id=? ORDER BY w.entry_id""",
@@ -1895,6 +1895,11 @@ class AccountingJournal:
                         "status": "invalid_treasury_receipt"})
                 same_currency = [link for link in links
                                  if str(link["currency_code"]).upper() == currency]
+                wrong_precision = [link for link in same_currency if int(link["decimal_places"]) != places]
+                if wrong_precision:
+                    tax_wallet_gaps.append({"transaction_id": transaction_id,
+                        "wallet_entry_ids": [int(link["entry_id"]) for link in wrong_precision],
+                        "status": "invalid_treasury_receipt_precision"})
                 if same_currency and sum(int(link["delta_minor_units"])
                                          for link in same_currency) != tax:
                     tax_wallet_gaps.append({"transaction_id": transaction_id,
