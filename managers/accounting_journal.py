@@ -22,9 +22,26 @@ class AccountingJournal:
             raise ValueError('계좌와 조정 실행자를 지정해야 합니다.')
         conn.execute('SAVEPOINT legacy_wallet_closure')
         try:
-            prior = conn.execute('SELECT wallet_entry_id FROM legacy_wallet_closure_adjustments WHERE account_number=?', (account,)).fetchone()
+            prior = conn.execute("""SELECT a.*,w.user_id wallet_user,w.source_type,w.source_account,w.source_key,
+                w.currency_code wallet_currency,w.decimal_places wallet_places,w.delta_minor_units,w.balance_minor_units,
+                w.recorded_epoch wallet_epoch,b.event_type,b.status bank_status,b.reference_key,
+                b.currency_code bank_currency,b.decimal_places bank_places,
+                (SELECT COALESCE(SUM(debit_units),0) FROM bank_journal_lines
+                 WHERE entry_id=b.entry_id AND account_code='customer_deposits_payable') bank_debit
+                FROM legacy_wallet_closure_adjustments a
+                LEFT JOIN customer_wallet_ledger w ON w.entry_id=a.wallet_entry_id
+                LEFT JOIN bank_journal_entries b ON b.entry_id=a.bank_entry_id
+                WHERE a.account_number=?""", (account,)).fetchone()
             if prior:
-                result = int(prior[0])
+                if (not prior['actor_id'] or int(prior['amount_minor_units']) <= 0 or
+                    (prior['wallet_user'],prior['source_type'],prior['source_account'],prior['source_key'],
+                     prior['wallet_currency'],prior['wallet_places'],prior['delta_minor_units'],prior['balance_minor_units'],prior['wallet_epoch']) !=
+                    (prior['user_id'],'account',account,f'legacy-close-adjustment:{account}',prior['currency_code'],
+                     prior['decimal_places'],-int(prior['amount_minor_units']),0,prior['recorded_epoch'])
+                    or (prior['event_type'],prior['bank_status'],prior['reference_key'],prior['bank_currency'],prior['bank_places'],prior['bank_debit']) !=
+                    ('deposit_close','posted',f'account:{account}',prior['currency_code'],prior['decimal_places'],prior['amount_minor_units'])):
+                    raise ValueError('기존 계좌 지갑 조정 근거가 일치하지 않습니다.')
+                result = int(prior['wallet_entry_id'])
             else:
                 if conn.execute('SELECT 1 FROM accounts WHERE account_number=?', (account,)).fetchone():
                     raise ValueError('삭제되지 않은 계좌는 과거 해지 복구 대상이 아닙니다.')

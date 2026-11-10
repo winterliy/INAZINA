@@ -180,6 +180,8 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             conn.execute("UPDATE legacy_wallet_closure_adjustments SET amount_minor_units=126 WHERE account_number='legacy-closed'")
             check = next(item for item in AccountingJournal.reconcile_subledgers(conn) if item['ledger_scope'] == 'customer')
             self.assertGreater(check['legacy_closure_gaps'], 0, check)
+            with self.assertRaisesRegex(ValueError, '근거'):
+                AccountingJournal.reconstruct_closed_account_wallet(conn, 'legacy-closed', actor_id='admin', now=22)
 
     def test_reconstruct_closed_wallet_rolls_back_if_evidence_link_fails(self):
         from managers.bank_journal import BankJournal
