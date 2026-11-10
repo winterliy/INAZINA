@@ -144,6 +144,21 @@ class FxInterestTests(unittest.TestCase):
             check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
                          if item['ledger_scope'] == 'tax_transactions')
             self.assertEqual(check['status'], 'matched', check)
+            quote = conn.execute('SELECT rate_numerator,rate_denominator FROM tax_bank_remittance_quotes WHERE transaction_id=?',
+                                 (links[0]['transaction_id'],)).fetchone()
+            self.assertIsNotNone(quote)
+            self.assertGreater(int(quote['rate_numerator']), 0)
+            self.assertGreater(int(quote['rate_denominator']), 0)
+            conn.execute("UPDATE currencies SET rate_multiplier='2' WHERE code='USD'")
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item['ledger_scope'] == 'tax_transactions')
+            self.assertEqual(check['status'], 'matched', check)
+            conn.execute('DROP TRIGGER trg_tax_bank_remittance_quotes_update_immutable')
+            conn.execute("UPDATE tax_bank_remittance_quotes SET rate_numerator='1',rate_denominator='1000000000' WHERE transaction_id=?",
+                         (links[0]['transaction_id'],))
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item['ledger_scope'] == 'tax_transactions')
+            self.assertTrue(any(gap['status'] == 'bank_remittance_fx_mismatch' for gap in check['wallet_gaps']), check)
             conn.execute('DROP TRIGGER trg_tax_bank_remittance_links_update_immutable')
             conn.execute('UPDATE tax_bank_remittance_links SET source_entry_id=settlement_entry_id WHERE transaction_id=?',
                          (links[0]['transaction_id'],))

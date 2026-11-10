@@ -356,6 +356,7 @@ class InterestManager:
                 tax_units = int(round(ExactDecimal(tax)*SCALE))
                 treasury_id = CurrencyManager.user_treasury_id(conn, account['user_id'])
                 home_currency = CurrencyManager.home(conn, account['user_id'])
+                tax_fx_quote = CurrencyManager.quote(conn, account['quote_currency'], home_currency)
                 treasury_units = CurrencyManager.convert(
                     conn, tax_units, account["quote_currency"], home_currency
                 )
@@ -389,7 +390,7 @@ class InterestManager:
                 AccountingJournal.link_tax_bank_remittance(
                     conn, tax_transaction.lastrowid, product['issuer'],
                     f"account:{account['account_number']}:{paid_until}:tax-remittance",
-                    account['quote_currency'], home_currency,
+                    account['quote_currency'], home_currency, tax_fx_quote,
                 )
             total += net
             credited = True
