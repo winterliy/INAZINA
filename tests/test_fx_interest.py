@@ -1,6 +1,7 @@
 """Foreign-currency accounts behave like savings: interest, opening, closing and storage."""
 import unittest
 import sqlite3
+from unittest.mock import patch
 from decimal import Decimal
 
 import test_inazina as fixtures
@@ -202,6 +203,26 @@ class FxInterestTests(unittest.TestCase):
             check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
                          if item['ledger_scope'] == 'tax_transactions')
             self.assertEqual(check['status'], 'matched', check)
+
+    def test_external_transaction_rolls_back_failed_savings_interest(self):
+        from managers.accounting_journal import AccountingJournal
+        number = self.open_usd(36.5)
+        self.bot.currency_mgr.exchange('citizen', 'NWX', 'USD', '450000')
+        before = self.account(number)
+        with self.db.atomic() as conn:
+            treasury_id = CurrencyManager.user_treasury_id(conn, 'citizen')
+            treasury_before = CurrencyManager.balance(conn, treasury_id, CurrencyManager.home(conn, treasury_id))
+            journal_before = conn.execute('SELECT COUNT(*) FROM bank_journal_entries').fetchone()[0]
+            with patch.object(AccountingJournal, 'link_tax_bank_remittance', side_effect=RuntimeError('injected link failure')):
+                with self.assertRaisesRegex(RuntimeError, 'injected link failure'):
+                    InterestManager(self.db).process_all_interests(now=before['last_payment_epoch']+DAY,
+                                                                  user_id='citizen', conn=conn)
+            after = conn.execute('SELECT balance_units,last_payment_epoch FROM accounts WHERE account_number=?', (number,)).fetchone()
+            self.assertEqual((after['balance_units'], after['last_payment_epoch']),
+                             (before['balance_units'], before['last_payment_epoch']))
+            self.assertEqual(CurrencyManager.balance(conn, treasury_id, CurrencyManager.home(conn, treasury_id)), treasury_before)
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM bank_journal_entries').fetchone()[0], journal_before)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM tax_transactions WHERE source='saving_interest'").fetchone()[0], 0)
 
     def test_fx_opening_needs_password_and_minimum_deposit_paid_from_home_cash(self):
         self.seed()

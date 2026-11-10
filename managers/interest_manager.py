@@ -238,6 +238,19 @@ class InterestManager:
 
     @classmethod
     def _settle_saving_account(cls, conn, account, now):
+        """Settle one account without leaving partial postings on failure."""
+        conn.execute('SAVEPOINT savings_interest_settlement')
+        try:
+            result = cls._settle_saving_account_impl(conn, account, now)
+        except Exception:
+            conn.execute('ROLLBACK TO savings_interest_settlement')
+            conn.execute('RELEASE savings_interest_settlement')
+            raise
+        conn.execute('RELEASE savings_interest_settlement')
+        return result
+
+    @classmethod
+    def _settle_saving_account_impl(cls, conn, account, now):
         """Pay every complete interest cycle of one savings or foreign-currency account.
 
         Returns (net paid, whether anything was credited).
@@ -410,6 +423,20 @@ class InterestManager:
         return total, credited
 
     def process_all_interests(self, now=None, user_id=None, *, conn=None, product_code=None):
+        """Accrue interest atomically, including within a caller-owned transaction."""
+        if conn is None:
+            return self._process_all_interests_impl(now, user_id, product_code=product_code)
+        conn.execute('SAVEPOINT all_interest_settlement')
+        try:
+            result = self._process_all_interests_impl(now, user_id, conn=conn, product_code=product_code)
+        except Exception:
+            conn.execute('ROLLBACK TO all_interest_settlement')
+            conn.execute('RELEASE all_interest_settlement')
+            raise
+        conn.execute('RELEASE all_interest_settlement')
+        return result
+
+    def _process_all_interests_impl(self, now=None, user_id=None, *, conn=None, product_code=None):
         """Accrue due savings/loan interest, optionally for one user only.
 
         The account/loan last-payment epoch is the persisted cursor. A call compares
