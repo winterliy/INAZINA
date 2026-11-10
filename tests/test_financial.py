@@ -291,6 +291,20 @@ class FinancialTests(unittest.TestCase):
                     FROM accounting_entries WHERE entry_id=?""", (entry_id,))
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM accounting_lines WHERE entry_id=?', (entry_id,)).fetchone()[0], 2)
 
+    def test_common_journal_line_cannot_be_replaced(self):
+        from managers.accounting_journal import AccountingJournal
+        from functions.money import base_currency_code
+        with self.db.atomic() as conn:
+            for account in ('cash', 'income'):
+                AccountingJournal.register_mapping(conn, 'replace_line', account, account)
+            entry_id = AccountingJournal.post(conn, ledger_scope='replace_line', entity_type='entity',
+                entity_id='one', source_key='original', currency_code=base_currency_code(conn),
+                decimal_places=0, recorded_epoch=100, lines=[('cash', 'debit', 10), ('income', 'credit', 10)])
+            line = conn.execute('SELECT line_id FROM accounting_lines WHERE entry_id=? ORDER BY line_id LIMIT 1', (entry_id,)).fetchone()
+            with self.assertRaisesRegex(sqlite3.IntegrityError, 'journal is append-only'):
+                conn.execute("INSERT OR REPLACE INTO accounting_lines(line_id,entry_id,account_code,debit_units,credit_units) VALUES (?,?,'cash',99,0)", (line[0], entry_id))
+            self.assertEqual(AccountingJournal.audit_unbalanced(conn, 'replace_line'), [])
+
     def test_company_reconciliation_detects_wrong_common_entity_type(self):
         from managers.accounting_journal import AccountingJournal
         self.setup_company()

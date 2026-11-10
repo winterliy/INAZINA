@@ -31,6 +31,10 @@ def ensure_period_guards(conn):
             (e.ledger_scope=NEW.ledger_scope AND e.entity_type=NEW.entity_type
              AND e.entity_id=NEW.entity_id AND e.source_key=NEW.source_key))
         BEGIN SELECT RAISE(ABORT,'common accounting journal is append-only'); END""")
+    conn.execute("""CREATE TRIGGER IF NOT EXISTS trg_accounting_lines_insert_immutable
+        BEFORE INSERT ON accounting_lines
+        WHEN EXISTS (SELECT 1 FROM accounting_lines l WHERE l.line_id=NEW.line_id)
+        BEGIN SELECT RAISE(ABORT,'common accounting journal is append-only'); END""")
     conn.execute("""CREATE TRIGGER IF NOT EXISTS trg_accounting_closing_mixed_precision
         BEFORE INSERT ON accounting_period_closings
         WHEN (SELECT COUNT(DISTINCT decimal_places) FROM accounting_entries e
