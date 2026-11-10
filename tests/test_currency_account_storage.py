@@ -5,6 +5,7 @@ import unittest
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 from database import DatabaseManager
 from database.currency_db import CurrencyDB
@@ -57,6 +58,31 @@ class CurrencyAccountStorageTests(unittest.TestCase):
                 with self.subTest(currency=currency, amount=amount), self.assertRaisesRegex(ValueError, '멱등성'):
                     BankJournal.post(conn, 'Bank', 'test', 'replay', currency,
                         [('tax_payable', 'debit', amount), ('settlement_asset', 'credit', amount)], now=12)
+
+    def test_bank_journal_common_post_failure_rolls_back_bank_entry(self):
+        from managers.bank_journal import BankJournal
+        with self.db.atomic() as conn:
+            with patch.object(AccountingJournal, 'post', side_effect=RuntimeError('injected failure')):
+                with self.assertRaisesRegex(RuntimeError, 'injected failure'):
+                    BankJournal.post(conn, 'Bank', 'test', 'failed-common-post', 'USD',
+                        [('tax_payable', 'debit', 1), ('settlement_asset', 'credit', 1)], now=10)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM bank_journal_entries WHERE reference_key='failed-common-post'").fetchone()[0], 0)
+
+    def test_cross_currency_tax_remittance_failure_rolls_back_both_legs(self):
+        from managers.bank_journal import BankJournal
+        with self.db.atomic() as conn:
+            original = BankJournal.post
+            calls = []
+            def fail_second(*args, **kwargs):
+                calls.append(args)
+                if len(calls) == 2:
+                    raise RuntimeError('injected settlement failure')
+                return original(*args, **kwargs)
+            with patch.object(BankJournal, 'post', side_effect=fail_second):
+                with self.assertRaisesRegex(RuntimeError, 'injected settlement failure'):
+                    BankJournal.post_tax_remittance(conn, 'Bank', 'partial-tax', 'USD', 1, 'EUR', 1, now=10)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM bank_journal_entries WHERE reference_key LIKE 'partial-tax:%'").fetchone()[0], 0)
+            self.assertEqual(conn.execute("SELECT COUNT(*) FROM accounting_entries WHERE source_key LIKE 'tax_remittance:partial-tax:%'").fetchone()[0], 0)
 
     def test_home_currency_uses_cash_and_foreign_currency_requires_account(self):
         manager = CurrencyExchangeManager(self.db)

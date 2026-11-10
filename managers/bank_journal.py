@@ -554,6 +554,22 @@ class BankJournal:
                             source_amount, settlement_currency, settlement_amount,
                             *, description="", now=None):
         """Settle withheld tax, using currency-specific FX clearing legs if needed."""
+        conn.execute('SAVEPOINT bank_tax_remittance')
+        try:
+            result = BankJournal._post_tax_remittance_impl(
+                conn, issuer, reference_key, source_currency, source_amount,
+                settlement_currency, settlement_amount, description=description, now=now)
+        except Exception:
+            conn.execute('ROLLBACK TO bank_tax_remittance')
+            conn.execute('RELEASE bank_tax_remittance')
+            raise
+        conn.execute('RELEASE bank_tax_remittance')
+        return result
+
+    @staticmethod
+    def _post_tax_remittance_impl(conn, issuer, reference_key, source_currency,
+                                  source_amount, settlement_currency, settlement_amount,
+                                  *, description="", now=None):
         source = str(source_currency or "").upper()
         settlement = str(settlement_currency or "").upper()
         if source == settlement:
@@ -582,6 +598,21 @@ class BankJournal:
     @staticmethod
     def post(conn, issuer, event_type, reference_key, currency_code, lines,
              *, description="", now=None):
+        """Post bank and common-ledger entries atomically within the caller's transaction."""
+        conn.execute('SAVEPOINT bank_journal_post')
+        try:
+            result = BankJournal._post_impl(conn, issuer, event_type, reference_key, currency_code,
+                                            lines, description=description, now=now)
+        except Exception:
+            conn.execute('ROLLBACK TO bank_journal_post')
+            conn.execute('RELEASE bank_journal_post')
+            raise
+        conn.execute('RELEASE bank_journal_post')
+        return result
+
+    @staticmethod
+    def _post_impl(conn, issuer, event_type, reference_key, currency_code, lines,
+                   *, description="", now=None):
         """Post balanced lines; ``lines`` is [(account, side, amount), ...].
 
         Each amount is rounded to the currency's configured precision before it
