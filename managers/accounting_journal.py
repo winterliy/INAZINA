@@ -12,10 +12,12 @@ import json
 
 class AccountingJournal:
     @staticmethod
-    def link_tax_bank_remittance(conn, transaction_id, issuer, reference_key, source_currency, settlement_currency, fx_quote):
+    def link_tax_bank_remittance(conn, transaction_id, issuer, reference_key, source_currency, settlement_currency, fx_quote,
+                                 *, settlement_zero=False):
         """Link the actual bank remittance legs created for a withholding transaction."""
         cross_currency = str(source_currency).upper() != str(settlement_currency).upper()
-        references = [f'{reference_key}:source', f'{reference_key}:settlement'] if cross_currency else [reference_key]
+        references = ([f'{reference_key}:source'] + ([] if settlement_zero else [f'{reference_key}:settlement'])
+                      if cross_currency else [reference_key])
         entries = []
         for reference, currency in zip(references, (source_currency, settlement_currency)):
             row = conn.execute("""SELECT entry_id FROM bank_journal_entries
@@ -30,7 +32,7 @@ class AccountingJournal:
         try:
             conn.execute("""INSERT INTO tax_bank_remittance_links
                 (transaction_id,source_entry_id,settlement_entry_id) VALUES (?,?,?)""",
-                (int(transaction_id), entries[0], entries[1] if cross_currency else None))
+                (int(transaction_id), entries[0], entries[1] if len(entries) > 1 else None))
             conn.execute("""INSERT INTO tax_bank_remittance_quotes
                 (transaction_id,source_currency,settlement_currency,source_places,settlement_places,rate_numerator,rate_denominator)
                 VALUES (?,?,?,?,?,?,?)""", (int(transaction_id), str(source_currency).upper(), str(settlement_currency).upper(),
@@ -1932,7 +1934,20 @@ class AccountingJournal:
                     JOIN customer_wallet_ledger w ON w.entry_id=l.wallet_entry_id
                     WHERE l.transaction_id=? ORDER BY w.entry_id""",
                     (transaction_id,)).fetchall()
-                if not links:
+                quote = (conn.execute("SELECT * FROM tax_bank_remittance_quotes WHERE transaction_id=?", (transaction_id,)).fetchone()
+                         if row['source'] == 'saving_interest' and transaction_id > legacy_quote_through else None)
+                zero_settlement = False
+                if quote and not links:
+                    try:
+                        numerator, denominator = int(quote['rate_numerator']), int(quote['rate_denominator'])
+                        source_places, target_places = int(quote['source_places']), int(quote['settlement_places'])
+                        zero_settlement = (numerator > 0 and denominator > 0 and 0 <= source_places <= 6 and 0 <= target_places <= 6
+                            and quote['source_currency'] == currency and source_places == places
+                            and quote['settlement_currency'] != currency
+                            and tax * numerator * 10**target_places // (denominator * 10**source_places) == 0)
+                    except (ValueError, TypeError, OverflowError):
+                        pass
+                if not links and not zero_settlement:
                     tax_wallet_gaps.append({"transaction_id": transaction_id,
                         "tax_minor_units": tax, "status": "missing_treasury_receipt"})
                     continue
@@ -1968,7 +1983,8 @@ class AccountingJournal:
                         source = conn.execute("SELECT * FROM bank_journal_entries WHERE entry_id=?", (bank_link['source_entry_id'],)).fetchone()
                         settlement = (conn.execute("SELECT * FROM bank_journal_entries WHERE entry_id=?", (bank_link['settlement_entry_id'],)).fetchone()
                                       if bank_link['settlement_entry_id'] is not None else None)
-                        cross = bank_link['settlement_entry_id'] is not None
+                        cross = (quote['source_currency'] != quote['settlement_currency'] if quote
+                                 else bank_link['settlement_entry_id'] is not None)
                         valid = bool(source and source['event_type'] == 'tax_remittance' and source['status'] == 'posted'
                                      and source['currency_code'] == currency and source['decimal_places'] == places)
                         if source:
@@ -1976,10 +1992,13 @@ class AccountingJournal:
                             expected = {'tax_payable': (tax, 0), ('fx_conversion_clearing' if cross else 'settlement_asset'): (0, tax)}
                             valid = valid and len(source_lines) == 2 and {line[0]:(line[1],line[2]) for line in source_lines} == expected
                         if cross:
-                            valid = bool(valid and settlement and settlement['event_type'] == 'tax_remittance'
-                                         and settlement['status'] == 'posted' and settlement['issuer'] == source['issuer']
-                                         and source['reference_key'].endswith(':source')
-                                         and settlement['reference_key'] == source['reference_key'][:-7] + ':settlement')
+                            valid = bool(valid and source['reference_key'].endswith(':source'))
+                            if zero_settlement:
+                                valid = bool(valid and settlement is None)
+                            else:
+                                valid = bool(valid and settlement and settlement['event_type'] == 'tax_remittance'
+                                             and settlement['status'] == 'posted' and settlement['issuer'] == source['issuer']
+                                             and settlement['reference_key'] == source['reference_key'][:-7] + ':settlement')
                             if settlement:
                                 target_links = [link for link in links if link['currency_code'] == settlement['currency_code']
                                                 and link['decimal_places'] == settlement['decimal_places']]
@@ -1993,7 +2012,6 @@ class AccountingJournal:
                     if not valid:
                         tax_wallet_gaps.append({'transaction_id': transaction_id, 'status': 'bank_remittance_mismatch'})
                     if transaction_id > legacy_quote_through:
-                        quote = conn.execute("SELECT * FROM tax_bank_remittance_quotes WHERE transaction_id=?", (transaction_id,)).fetchone()
                         valid_quote = False
                         if quote:
                             try:

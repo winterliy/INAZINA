@@ -224,6 +224,32 @@ class FxInterestTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM bank_journal_entries').fetchone()[0], journal_before)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM tax_transactions WHERE source='saving_interest'").fetchone()[0], 0)
 
+    def test_savings_tax_rounding_to_zero_preserves_source_and_quote(self):
+        from managers.accounting_journal import AccountingJournal
+        number = self.open_usd(36.5)
+        self.bot.currency_mgr.exchange('citizen', 'NWX', 'USD', '450000')
+        before = self.account(number)
+        with self.db.atomic() as conn:
+            conn.execute("UPDATE currencies SET asset_code=NULL,reference_rate='0.000001',rate_multiplier='1' WHERE code='USD'")
+            treasury_id = CurrencyManager.user_treasury_id(conn, 'citizen')
+            treasury_before = CurrencyManager.balance(conn, treasury_id, CurrencyManager.home(conn, treasury_id))
+        InterestManager(self.db).process_user_interests('citizen', now=before['last_payment_epoch']+DAY)
+        with self.db.atomic() as conn:
+            tax = conn.execute("SELECT transaction_id,tax_amount_minor_units FROM tax_transactions WHERE source='saving_interest'").fetchone()
+            self.assertIsNotNone(tax)
+            self.assertGreater(tax['tax_amount_minor_units'], 0)
+            link = conn.execute('SELECT * FROM tax_bank_remittance_links WHERE transaction_id=?', (tax['transaction_id'],)).fetchone()
+            self.assertIsNotNone(link['source_entry_id'])
+            self.assertIsNone(link['settlement_entry_id'])
+            self.assertEqual(CurrencyManager.balance(conn, treasury_id, CurrencyManager.home(conn, treasury_id)), treasury_before)
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM tax_transaction_wallet_links WHERE transaction_id=?', (tax['transaction_id'],)).fetchone()[0], 0)
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn) if item['ledger_scope'] == 'tax_transactions')
+            self.assertEqual(check['status'], 'matched', check)
+            conn.execute('DROP TRIGGER trg_tax_bank_remittance_links_delete_immutable')
+            conn.execute('DELETE FROM tax_bank_remittance_links WHERE transaction_id=?', (tax['transaction_id'],))
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn) if item['ledger_scope'] == 'tax_transactions')
+            self.assertTrue(any(gap['status'] == 'bank_remittance_mismatch' for gap in check['wallet_gaps']), check)
+
     def test_fx_opening_needs_password_and_minimum_deposit_paid_from_home_cash(self):
         self.seed()
         with self.db.atomic() as conn:

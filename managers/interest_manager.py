@@ -377,8 +377,9 @@ class InterestManager:
                 tax_wallet_watermark = int(conn.execute(
                     "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
                 ).fetchone()[0])
-                CurrencyManager.change(conn, treasury_id, home_currency, treasury_units,
-                                       allow_deficit=True)
+                if treasury_units:
+                    CurrencyManager.change(conn, treasury_id, home_currency, treasury_units,
+                                           allow_deficit=True)
                 from managers.bank_journal import BankJournal
                 settlement_amount = Decimal(treasury_units) / Decimal(SCALE)
                 BankJournal.post_tax_remittance(
@@ -396,14 +397,16 @@ class InterestManager:
             )
             if tax > 0:
                 from managers.accounting_journal import AccountingJournal
-                AccountingJournal.link_tax_transaction_wallet_entries(
-                    conn, tax_transaction.lastrowid, tax_wallet_watermark,
-                    tax_treasury_id,
-                )
+                if treasury_units:
+                    AccountingJournal.link_tax_transaction_wallet_entries(
+                        conn, tax_transaction.lastrowid, tax_wallet_watermark,
+                        tax_treasury_id,
+                    )
                 AccountingJournal.link_tax_bank_remittance(
                     conn, tax_transaction.lastrowid, product['issuer'],
                     f"account:{account['account_number']}:{paid_until}:tax-remittance",
                     account['quote_currency'], home_currency, tax_fx_quote,
+                    settlement_zero=treasury_units == 0,
                 )
             total += net
             credited = True

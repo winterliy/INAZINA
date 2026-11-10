@@ -586,6 +586,9 @@ class BankJournal:
             description=f"{description} · source currency settlement",
             now=now,
         )
+        if Decimal(str(settlement_amount)) == 0:
+            # The converted value is below one settlement-currency minor unit.
+            return source_posted
         settlement_posted = BankJournal.post(
             conn, issuer, "tax_remittance", f"{reference_key}:settlement", settlement,
             [("fx_conversion_clearing", "debit", settlement_amount),
