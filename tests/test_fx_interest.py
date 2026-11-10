@@ -282,6 +282,26 @@ class FxInterestTests(unittest.TestCase):
         self.assertTrue(ok, message)
         self.assertIsNone(self.db.accounts.execute_one("SELECT 1 FROM accounts WHERE account_number=?", (number,)))
         self.assertGreater(self.db.users.get_user('citizen')['cash'], cash)
+        from managers.accounting_journal import AccountingJournal
+        with self.db.readonly() as conn:
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn) if item['ledger_scope'] == 'customer')
+        self.assertEqual(check['orphan_balance_gaps'], 0, check)
+
+    def test_account_close_failure_rolls_back_wallet_and_account(self):
+        from managers.rate_manager import RateManager
+        self.seed()
+        bank = BankManager(self.db)
+        self.assertTrue(bank.open_account('citizen', 'INZCU001', 'pass1234', '10')[0])
+        number = self.db.accounts.execute_one("SELECT account_number FROM accounts WHERE user_id='citizen' AND account_type='saving'")[0]
+        before = self.account(number)
+        with self.db.readonly() as conn:
+            wallet_count = conn.execute('SELECT COUNT(*) FROM customer_wallet_ledger').fetchone()[0]
+        with patch.object(RateManager, 'refresh_all_market_pressure', side_effect=RuntimeError('injected close failure')):
+            ok, message = bank.close_account('citizen', number, None, 'pass1234')
+        self.assertFalse(ok, message)
+        self.assertEqual(self.account(number)['balance_units'], before['balance_units'])
+        with self.db.readonly() as conn:
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM customer_wallet_ledger').fetchone()[0], wallet_count)
 
     def test_savings_balances_live_in_balance_units(self):
         self.seed()

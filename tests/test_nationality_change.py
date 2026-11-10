@@ -55,6 +55,10 @@ class NationalityChangeTests(unittest.TestCase):
         self.assertGreater(self.cash('citizen'), 0)
         # The fee stays with the treasury of the nationality that was left.
         self.assertGreater(self.cash(old_treasury), treasury_before - record['sold'])
+        from managers.accounting_journal import AccountingJournal
+        with self.db.readonly() as conn:
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn) if item['ledger_scope'] == 'customer')
+        self.assertEqual(check['orphan_balance_gaps'], 0, check)
 
     def test_obligations_block_the_change_and_nothing_moves(self):
         self.prepare()

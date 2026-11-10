@@ -1795,6 +1795,22 @@ class AccountingJournal:
             FROM customer_wallet_ledger GROUP BY user_id,source_type,source_account,currency_code
         ) ledger USING(user_id,source_type,source_account,currency_code)
         WHERE COALESCE(live.expected,0)<>COALESCE(ledger.actual,0)""").fetchone()[0])
+        orphan_query = """SELECT ledger.user_id,ledger.source_type,ledger.source_account,ledger.currency_code,ledger.actual FROM (
+            SELECT user_id,source_type,source_account,currency_code,SUM(delta_minor_units) actual
+            FROM customer_wallet_ledger GROUP BY user_id,source_type,source_account,currency_code
+        ) ledger LEFT JOIN (
+            SELECT u.user_id,'cash' source_type,u.user_id source_account,
+                   COALESCE(n.currency_code,base_currency_code()) currency_code
+            FROM users u LEFT JOIN country_currencies n ON n.nationality=u.nationality
+            UNION ALL
+            SELECT a.user_id,'account',a.account_number,a.quote_currency
+            FROM accounts a WHERE a.user_id IS NOT NULL
+        ) live USING(user_id,source_type,source_account,currency_code)
+        WHERE live.user_id IS NULL AND ledger.actual<>0"""
+        orphan_balance_gaps = int(conn.execute(f'SELECT COUNT(*) FROM ({orphan_query})').fetchone()[0])
+        orphan_balances = [dict(row) for row in conn.execute(
+            orphan_query + ' ORDER BY ledger.user_id,ledger.source_type,ledger.source_account,ledger.currency_code LIMIT 100'
+        ).fetchall()] if orphan_balance_gaps else []
         posting_gaps = int(conn.execute("""SELECT COUNT(*) FROM customer_wallet_ledger w
             LEFT JOIN accounting_entries e ON e.ledger_scope='customer'
               AND e.entity_type='wallet_holder' AND e.entity_id=w.user_id
@@ -1826,11 +1842,13 @@ class AccountingJournal:
                     THEN w.delta_minor_units ELSE 0 END
               OR COALESCE(lines.clearing_credit,0)<>CASE WHEN w.delta_minor_units<0
                     THEN -w.delta_minor_units ELSE 0 END""").fetchone()[0])
-        status = ("matched" if wallet == common and gaps == 0 and posting_gaps == 0
+        status = ("matched" if wallet == common and gaps == 0 and orphan_balance_gaps == 0 and posting_gaps == 0
                   else "mismatch")
         checks.append({"ledger_scope": "customer", "native_balances": native,
                        "wallet_entries": wallet, "common_entries": common,
                        "balance_gaps": gaps, "posting_gaps": posting_gaps,
+                       "orphan_balance_gaps": orphan_balance_gaps,
+                       "orphan_balances": orphan_balances,
                        "missing_entries": wallet-common,
                        "status": status})
         fund_rows = conn.execute("""SELECT entry_id,product_code,event,amount,balance,

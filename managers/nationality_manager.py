@@ -127,6 +127,7 @@ class NationalityManager:
                         conn, units, account["quote_currency"], old)
                     CurrencyManager.change(conn, user_id, old, amount)
                     closed += amount
+                conn.execute("UPDATE accounts SET balance_units=0 WHERE account_number=?", (account['account_number'],))
                 conn.execute("DELETE FROM accounts WHERE account_number=?", (account["account_number"],))
             loans = Decimal(0)
             for loan in conn.execute("SELECT outstanding_balance,quote_currency FROM loans WHERE user_id=? AND status='active'", (user_id,)):

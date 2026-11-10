@@ -149,6 +149,16 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.assertTrue(any(finding['scope'] == 'loan_schedule_references' and finding['loan_id'] == 999999
                             for finding in result['findings']), result)
 
+    def test_customer_reconciliation_detects_orphan_wallet_balance(self):
+        with self.db.atomic() as conn:
+            conn.execute("DELETE FROM users WHERE user_id='us-user'")
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item['ledger_scope'] == 'customer')
+        self.assertEqual(check['status'], 'mismatch', check)
+        self.assertGreater(check['orphan_balance_gaps'], 0)
+        self.assertTrue(any(row['user_id'] == 'us-user' and row['currency_code'] == 'USD'
+                            for row in check['orphan_balances']), check)
+
     def test_financial_reconciliation_reports_orphan_loan_chargeoff(self):
         with self.db.atomic() as conn:
             conn.execute("""INSERT INTO loan_chargeoff_events

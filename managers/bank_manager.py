@@ -586,6 +586,10 @@ class BankManager:
                     "DELETE FROM assets.user_assets WHERE user_id = ? AND account_number = ?",
                     (str(user_id), str(account_number)),
                 )
+                # Record the withdrawal before removing the account, so its
+                # immutable wallet history closes to zero in its own currency.
+                conn.execute("UPDATE accounts.accounts SET balance_units=0 WHERE account_number=?",
+                             (str(account_number),))
                 conn.execute("DELETE FROM accounts.accounts WHERE account_number = ?", (str(account_number),))
                 RateManager.refresh_all_market_pressure(conn)
             target_text = f"계좌 `{destination_number}`" if destination_number else "현금 지갑"
