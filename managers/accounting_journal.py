@@ -2055,6 +2055,12 @@ class AccountingJournal:
             {'table': row[0], 'rowid': row[1], 'parent_table': row[2], 'foreign_key_id': row[3]}
             for row in conn.execute('PRAGMA foreign_key_check')
         ]
+        loan_schedule_reference_findings = [
+            {'schedule_id': int(row['schedule_id']), 'loan_id': int(row['loan_id']),
+             'status': 'missing_loan'}
+            for row in conn.execute("""SELECT s.schedule_id,s.loan_id FROM loan_payment_schedule s
+                LEFT JOIN loans l ON l.loan_id=s.loan_id WHERE l.loan_id IS NULL""")
+        ]
         common_checks = cls.reconcile_subledgers(conn)
         common_findings = [dict(row) for row in common_checks
                            if row.get("status") != "matched"]
@@ -2076,6 +2082,7 @@ class AccountingJournal:
                      for finding in amount_findings]
                     + schema_findings
                     + [{"scope": "foreign_key_integrity", **finding} for finding in foreign_key_findings]
+                    + [{"scope": "loan_schedule_references", **finding} for finding in loan_schedule_reference_findings]
                     + [{"scope": "common_journals", **finding}
                        for finding in common_findings]
                     + [{"scope": "institution_subledgers", **finding}
@@ -2084,6 +2091,7 @@ class AccountingJournal:
             "amount_snapshot_registry",
             "amount_schema_coverage",
             "foreign_key_integrity",
+            "loan_schedule_references",
             "common_journals",
             "institution_subledgers",
             "institution_pnl",

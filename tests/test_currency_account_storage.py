@@ -141,6 +141,14 @@ class CurrencyAccountStorageTests(unittest.TestCase):
                             and finding['table'] == 'tax_bank_remittance_links'
                             for finding in result['findings']), result)
 
+    def test_financial_reconciliation_reports_orphan_loan_schedule(self):
+        with self.db.atomic() as conn:
+            conn.execute("INSERT INTO loan_payment_schedule(loan_id,installment_number,due_epoch) VALUES (999999,1,1)")
+            result = AccountingJournal.reconcile_all_financial_ledgers(conn)
+        self.assertEqual(result['status'], 'mismatch', result)
+        self.assertTrue(any(finding['scope'] == 'loan_schedule_references' and finding['loan_id'] == 999999
+                            for finding in result['findings']), result)
+
     def test_home_currency_uses_cash_and_foreign_currency_requires_account(self):
         manager = CurrencyExchangeManager(self.db)
         with self.db.atomic() as conn:
