@@ -79,6 +79,14 @@ class CurrencyAccountStorageTests(unittest.TestCase):
                         [('tax_payable', 'debit', 1), ('settlement_asset', 'credit', 1)], now=10)
             self.assertEqual(conn.execute("SELECT COUNT(*) FROM bank_journal_entries WHERE reference_key='failed-common-post'").fetchone()[0], 0)
 
+    def test_bank_journal_batches_mapping_schema_initialization(self):
+        from managers.bank_journal import BankJournal
+        with self.db.atomic() as conn:
+            with patch.object(AccountingJournal, 'ensure_schema', wraps=AccountingJournal.ensure_schema) as ensure:
+                BankJournal.post(conn, 'Bank', 'test', 'batch-mappings', 'USD',
+                    [('tax_payable', 'debit', 1), ('settlement_asset', 'credit', 1)], now=10)
+            self.assertLessEqual(ensure.call_count, 2)
+
     def test_cross_currency_tax_remittance_failure_rolls_back_both_legs(self):
         from managers.bank_journal import BankJournal
         with self.db.atomic() as conn:

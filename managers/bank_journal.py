@@ -683,8 +683,8 @@ class BankJournal:
         )
         from managers.accounting_journal import AccountingJournal
         common_lines = []
+        AccountingJournal.register_mappings(conn, "institution", [(account, account) for account, _, _ in normalized])
         for account, debit, credit in normalized:
-            AccountingJournal.register_mapping(conn, "institution", account, account)
             if debit:
                 common_lines.append((account, "debit", debit))
             if credit:

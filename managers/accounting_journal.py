@@ -145,20 +145,27 @@ class AccountingJournal:
 
     @classmethod
     def register_mapping(cls, conn, ledger_scope, local_code, common_code):
+        cls.register_mappings(conn, ledger_scope, [(local_code, common_code)])
+
+    @classmethod
+    def register_mappings(cls, conn, ledger_scope, mappings):
+        """Register several mappings while initializing the journal schema once."""
         cls.ensure_schema(conn)
-        scope, local, common = map(str, (ledger_scope, local_code, common_code))
-        if not scope or not local or not common:
-            raise ValueError("원장 계정 매핑은 빈 값일 수 없습니다.")
-        row = conn.execute(
-            "SELECT common_code FROM accounting_account_mappings WHERE ledger_scope=? AND local_code=?",
-            (scope, local),
-        ).fetchone()
-        if row and row[0] != common:
-            raise ValueError(f"기존 계정 매핑과 충돌합니다: {scope}/{local}")
-        conn.execute(
-            "INSERT OR IGNORE INTO accounting_account_mappings(ledger_scope,local_code,common_code) VALUES (?,?,?)",
-            (scope, local, common),
-        )
+        scope = str(ledger_scope)
+        for local_code, common_code in mappings:
+            local, common = map(str, (local_code, common_code))
+            if not scope or not local or not common:
+                raise ValueError("원장 계정 매핑은 빈 값일 수 없습니다.")
+            row = conn.execute(
+                "SELECT common_code FROM accounting_account_mappings WHERE ledger_scope=? AND local_code=?",
+                (scope, local),
+            ).fetchone()
+            if row and row[0] != common:
+                raise ValueError(f"기존 계정 매핑과 충돌합니다: {scope}/{local}")
+            conn.execute(
+                "INSERT OR IGNORE INTO accounting_account_mappings(ledger_scope,local_code,common_code) VALUES (?,?,?)",
+                (scope, local, common),
+            )
 
     @classmethod
     def post(cls, conn, *, ledger_scope, entity_type, entity_id, source_key,
