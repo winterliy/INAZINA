@@ -1058,8 +1058,9 @@ class CurrencyDB(DBManager):
         self.execute("""CREATE TABLE IF NOT EXISTS tax_bank_remittance_activation (
             singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),
             through_transaction_id INTEGER NOT NULL CHECK(through_transaction_id>=0))""")
-        self.execute("""INSERT OR IGNORE INTO tax_bank_remittance_activation
-            SELECT 1,COALESCE(MAX(transaction_id),0) FROM tax_transactions""")
+        self.execute("""INSERT INTO tax_bank_remittance_activation
+            SELECT 1,(SELECT COALESCE(MAX(transaction_id),0) FROM tax_transactions)
+            WHERE NOT EXISTS (SELECT 1 FROM tax_bank_remittance_activation WHERE singleton_id=1)""")
         self.execute("""CREATE TABLE IF NOT EXISTS tax_bank_remittance_quotes (
             transaction_id INTEGER PRIMARY KEY REFERENCES tax_transactions(transaction_id),
             source_currency TEXT NOT NULL, settlement_currency TEXT NOT NULL,
@@ -1068,8 +1069,14 @@ class CurrencyDB(DBManager):
         self.execute("""CREATE TABLE IF NOT EXISTS tax_bank_remittance_quote_activation (
             singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),
             through_transaction_id INTEGER NOT NULL CHECK(through_transaction_id>=0))""")
-        self.execute("""INSERT OR IGNORE INTO tax_bank_remittance_quote_activation
-            SELECT 1,COALESCE(MAX(transaction_id),0) FROM tax_transactions""")
+        self.execute("""INSERT INTO tax_bank_remittance_quote_activation
+            SELECT 1,(SELECT COALESCE(MAX(transaction_id),0) FROM tax_transactions)
+            WHERE NOT EXISTS (SELECT 1 FROM tax_bank_remittance_quote_activation WHERE singleton_id=1)""")
+        for table in ('tax_bank_remittance_activation', 'tax_bank_remittance_quote_activation'):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_insert_immutable
+                BEFORE INSERT ON {table}
+                WHEN EXISTS (SELECT 1 FROM {table} WHERE singleton_id=NEW.singleton_id)
+                BEGIN SELECT RAISE(ABORT,'tax remittance activation is immutable'); END""")
         for table in ('tax_bank_remittance_quotes', 'tax_bank_remittance_quote_activation'):
             for operation in ('UPDATE', 'DELETE'):
                 self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_{operation.lower()}_immutable

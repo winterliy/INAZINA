@@ -101,6 +101,13 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM tax_bank_remittance_links WHERE transaction_id=?',
                                           (transaction_id,)).fetchone()[0], 0)
 
+    def test_tax_remittance_activation_cannot_be_replaced(self):
+        with self.db.atomic() as conn:
+            for table in ('tax_bank_remittance_activation', 'tax_bank_remittance_quote_activation'):
+                with self.subTest(table=table), self.assertRaisesRegex(sqlite3.IntegrityError, 'activation is immutable'):
+                    conn.execute(f'INSERT OR REPLACE INTO {table}(singleton_id,through_transaction_id) VALUES (1,999)')
+        CurrencyDB().close()
+
     def test_home_currency_uses_cash_and_foreign_currency_requires_account(self):
         manager = CurrencyExchangeManager(self.db)
         with self.db.atomic() as conn:
