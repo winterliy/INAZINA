@@ -2,9 +2,10 @@ import sqlite3
 import threading
 import time
 import logging
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from .unified import UnifiedConnection, migrate
+from .pool import pooled
 
 class DBManager:
     """SQLite 데이터베이스 연결 및 기본 설정을 관리하는 클래스"""
@@ -13,6 +14,8 @@ class DBManager:
     _path_locks_guard = threading.Lock()
     _admin_context = threading.local()
     BUSY_TIMEOUT_MS = 2_000
+    # Set by DatabaseManager after schema initialization (see _run).
+    pooled_reads = False
     BEGIN_BUSY_TIMEOUT_MS = 200
     BEGIN_RETRY_DELAYS = (0.05, 0.10, 0.20, 0.40, 0.50)
 
@@ -63,19 +66,37 @@ class DBManager:
         conn.row_factory = sqlite3.Row # 결과를 딕셔너리 형태로 반환
         return conn
 
-    def execute(self, query, params=()):
+    def _open_reader(self):
+        conn = sqlite3.connect(
+            f"file:{self.db_path}?mode=ro", uri=True, timeout=self.BUSY_TIMEOUT_MS / 1_000,
+            check_same_thread=False, factory=UnifiedConnection,
+        )
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only=ON")
+        return conn
+
+    def _run(self, query, params, fetch):
+        # Once the schema is initialized, plain SELECTs read committed data on a
+        # pooled read-only connection, so they no longer queue behind the
+        # process-wide writer lock. During initialization they stay on the shared
+        # connection: interleaved DDL would make a separate connection reparse
+        # the whole schema before every read. A transaction left open on the
+        # shared connection also takes the old path, which commits it as before.
+        if (self.pooled_reads and not self.conn.in_transaction
+                and query.lstrip()[:6].upper() == "SELECT"):
+            with pooled("db_manager.read", self.db_path, self._open_reader, readonly=True) as conn:
+                return fetch(conn.execute(query, params))
         with self.lock:
             with self.conn:
                 cursor = self.conn.cursor()
                 cursor.execute(query, params)
-                return cursor.fetchall()
+                return fetch(cursor)
+
+    def execute(self, query, params=()):
+        return self._run(query, params, lambda cursor: cursor.fetchall())
 
     def execute_one(self, query, params=()):
-        with self.lock:
-            with self.conn:
-                cursor = self.conn.cursor()
-                cursor.execute(query, params)
-                return cursor.fetchone()
+        return self._run(query, params, lambda cursor: cursor.fetchone())
 
     def commit(self):
         with self.lock:
@@ -234,6 +255,7 @@ class DBManager:
         locks = []
         acquired_locks = []
         conn = None
+        writer_stack = ExitStack()
         try:
             for name in databases:
                 if not name.replace("_", "").isalnum():
@@ -260,12 +282,12 @@ class DBManager:
             # Fail well before the HTTP proxy's 10-second timeout.  A short,
             # bounded retry handles ordinary cross-process writer hand-offs
             # without leaving abandoned requests blocked for 30 seconds.
-            conn = sqlite3.connect(
-                root / "inazina.db",
-                timeout=DBManager.BEGIN_BUSY_TIMEOUT_MS / 1_000,
-                isolation_level=None,
-                factory=UnifiedConnection,
-            )
+            path = root / "inazina.db"
+            conn = writer_stack.enter_context(pooled(
+                "db_manager.atomic", path, lambda: sqlite3.connect(
+                    path, timeout=DBManager.BEGIN_BUSY_TIMEOUT_MS / 1_000, isolation_level=None,
+                    check_same_thread=False, factory=UnifiedConnection),
+                readonly=False))
             conn.row_factory = sqlite3.Row
             conn.execute(f"PRAGMA busy_timeout={DBManager.BEGIN_BUSY_TIMEOUT_MS}")
             begin_started = time.perf_counter()
@@ -297,8 +319,7 @@ class DBManager:
             raise
         finally:
             try:
-                if conn is not None:
-                    conn.close()
+                writer_stack.close()
             finally:
                 for lock in reversed(acquired_locks):
                     lock.release()

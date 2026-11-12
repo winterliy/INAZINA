@@ -80,12 +80,17 @@ class DatabaseManager:
             self.users.execute("PRAGMA optimize")
             with self.users.lock, self.users.conn:
                 startup_state.record(self.users.conn, pre_hash)
+        for database in self._databases():
+            database.pooled_reads = True
 
     def base_currency_code(self):
         return self.currency.base_currency_code()
 
+    def _databases(self):
+        return (self.users, self.assets, self.products, self.companies,
+                self.accounts, self.pot, self.tax, self.system, self.currency, self.lottery,
+                self.corporate, self.els, self.financial, self.credit, self.organizations)
+
     def close(self):
-        for database in (self.users, self.assets, self.products, self.companies,
-                         self.accounts, self.pot, self.tax, self.system, self.currency,self.lottery,
-                         self.corporate,self.els,self.financial,self.credit,self.organizations):
+        for database in self._databases():
             database.close()

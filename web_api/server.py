@@ -35,6 +35,7 @@ MAX_HTTP_THREADS = max(1, min(int(os.environ.get("INAZINA_MAX_HTTP_THREADS", "16
 BOOTSTRAP_ADMIN_IDS = {"1076861147560542278"}
 sys.path.insert(0, str(ROOT))
 from database.unified import sql as unified_sql, UnifiedConnection
+from database.pool import pooled
 from functions.exact_money import native_value
 from decimal import Decimal
 from database.user_db import TREASURY_USER_ID, citizen_filter
@@ -119,16 +120,12 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             self._request_slots.release()
 
 
-def _reset_connection(connection):
-    connection.legacy_aliases = False
-    connection.row_factory = sqlite3.Row
-
-
 def _open_connection(readonly):
     uri = DATABASE.as_uri() + ("?mode=ro" if readonly else "")
     connection = sqlite3.connect(uri, uri=True, timeout=2, factory=UnifiedConnection,
                                  check_same_thread=False)
-    _reset_connection(connection)
+    connection.legacy_aliases = False
+    connection.row_factory = sqlite3.Row
     connection.create_function("base_currency_code", 0, lambda: _configured_base_currency(connection))
     from database.exact_cost_basis import register
     register(connection)
@@ -136,67 +133,10 @@ def _open_connection(readonly):
     return connection
 
 
-# Opening a connection parses the whole schema (~1k triggers, ~17 ms), so connections
-# are kept and reused. The server starts a thread per request, so this is a shared
-# pool rather than thread-local storage. Keyed by the file's identity: a replaced
-# database file (restore, tests) never reuses a connection to the old one.
-_connection_pool = {}
-_connection_pool_lock = threading.Lock()
-
-
-def _pool_key(readonly):
-    try:
-        stat = DATABASE.stat()
-    except OSError:
-        return None
-    return readonly, stat.st_dev, stat.st_ino
-
-
-def _checkout(readonly):
-    key = _pool_key(readonly)
-    if key is not None:
-        with _connection_pool_lock:
-            idle = _connection_pool.get(key)
-            if idle:
-                return key, idle.pop()
-    return key, _open_connection(readonly)
-
-
-def _release(key, connection):
-    """Return ``connection`` to the pool, or close it when it cannot be reused."""
-    if key is None:
-        connection.close()
-        return
-    try:
-        if connection.in_transaction:
-            connection.rollback()
-        connection.set_authorizer(None)
-        _reset_connection(connection)
-        with _connection_pool_lock:
-            idle = _connection_pool.get(key)
-            if idle is None:
-                # A new file identity: connections to the replaced file are useless.
-                for stale_key in [k for k in _connection_pool if k[1:] != key[1:]]:
-                    for old in _connection_pool.pop(stale_key):
-                        old.close()
-                idle = _connection_pool[key] = []
-            if len(idle) < MAX_HTTP_THREADS:
-                idle.append(connection)
-                return
-    except sqlite3.Error:
-        pass
-    connection.close()
-
-
 @contextmanager
 def connect_readonly():
-    key, connection = _checkout(True)
-    try:
+    with pooled("web_api.read", DATABASE, lambda: _open_connection(True), readonly=True) as connection:
         yield connection
-    except BaseException:
-        connection.close()
-        raise
-    _release(key, connection)
 
 
 class LegacyNames:
@@ -233,7 +173,6 @@ _WRITE_ACTIONS = frozenset({
 
 @contextmanager
 def connect_db(timeout=2):
-    key, connection = _checkout(False)
     write_lock = None
 
     def serialize_writes(action, arg1, arg2, database_name, trigger_name):
@@ -252,21 +191,14 @@ def connect_db(timeout=2):
         return sqlite3.SQLITE_OK
 
     try:
-        connection.execute(f"PRAGMA busy_timeout={max(1, int(timeout * 1000))}")
-        connection.set_authorizer(serialize_writes)
-        with connection:
-            yield connection
-    except BaseException:
-        connection.close()
-        connection = None
-        raise
+        with pooled("web_api.write", DATABASE, lambda: _open_connection(False), readonly=False) as connection:
+            connection.execute(f"PRAGMA busy_timeout={max(1, int(timeout * 1000))}")
+            connection.set_authorizer(serialize_writes)
+            with connection:
+                yield connection
     finally:
-        try:
-            if connection is not None:
-                _release(key, connection)
-        finally:
-            if write_lock is not None:
-                write_lock.release()
+        if write_lock is not None:
+            write_lock.release()
 
 
 def _configured_base_currency(connection):
