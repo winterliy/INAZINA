@@ -88,6 +88,22 @@ export function formatMoney(value: Money, _digits = 6): string {
   } catch { return String(value ?? '—'); }
 }
 
+/** Readable magnitude for tight UI surfaces; exact values remain available elsewhere. */
+export function formatMoneyCompact(value: Money): string {
+  return formatMoney(value).replace(/ \([^)]*\)$/, "");
+}
+
+/** Exact grouped decimal digits for screens where magnitude labels are ambiguous. */
+export function formatMoneyNumeric(value: Money): string {
+  try {
+    const [whole, fraction] = exactMoney(value).split('.');
+    const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+    return fraction ? `${grouped}.${fraction}` : grouped;
+  } catch {
+    return String(value ?? '—');
+  }
+}
+
 /** Format a native currency amount at its declared minor-unit precision. */
 export function formatMoneyFixed(value: Money, digits = 0): string {
   try {

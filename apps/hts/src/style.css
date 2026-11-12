@@ -224,6 +224,10 @@ td small { display: block; margin-top: 2px; color: var(--ink2); font-size: 11px;
 .dr-conversion .orders-hint { margin: 0 14px 12px; }
 .dr-conversion .actions { display: flex; gap: 8px; }
 .dr-conversion .actions .submit { flex: 1; width: auto; margin: 0 14px; }
+.order-types { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin: 12px 14px 0; }
+.order-types button { min-height: 32px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink2); background: transparent; box-shadow: none; font-size: 13px; }
+.order-types button.active { border-color: var(--ink); color: var(--canvas); background: var(--ink); }
+.order-entry input[readonly] { color: var(--ink2); background: var(--select); }
 .order-sides { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin: 12px 14px; padding: 3px; border-radius: 999px; background: rgba(var(--glass-rgb), .55); box-shadow: inset 0 0 0 1px var(--line); }
 .order-sides button { min-height: 34px; background: transparent; box-shadow: none; color: var(--ink2); font-size: 14px; }
 .order-sides .buy.active { color: #fff; background: var(--up); box-shadow: 0 4px 12px rgba(224, 54, 44, .3); }
@@ -317,11 +321,16 @@ td small { display: block; margin-top: 2px; color: var(--ink2); font-size: 11px;
 /* Wallet rail (item 20) */
 .wallet-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
 .wallet-actions button, .wallet-actions a { display: grid; place-items: center; min-height: 34px; padding: 0 6px; border: 1px solid var(--line); border-radius: 999px; color: var(--ink); background: var(--pearl); font-size: 12px; text-decoration: none; }
+.chart-refresh { order: 5; margin-left: auto; }
 .wallet-panel { padding: 4px 0; }
 .hts-footer { position: relative; z-index: 1; padding: 22px 16px 30px; color: var(--ink2); font-size: 12px; text-align: center; }
 .holdings-panel { flex: 1 1 auto; min-height: 160px; }
 .holdings { overflow: auto; }
 .holding.active { background: var(--select); }
+
+@media (max-width: 700px) {
+  .chart-refresh { margin-left: 0; }
+}
 
 /* Quote and orders (item 21) */
 .quote-side { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
@@ -771,8 +780,25 @@ th:last-child, td:last-child { padding-right: 20px; }
 /* ---- Layout: quote headline, chart | order ticket, book | orders | wallet, then everything else ---- */
 .hts-main { position: relative; z-index: 1; max-width: 1360px; margin: 0 auto; padding: 0 24px 80px; }
 .trade-row { display: flex; flex-wrap: wrap; align-items: stretch; gap: 20px; }
-.chart-col { display: flex; flex: 2 1 640px; min-width: 0; }
+.chart-col { display: flex; flex: 2 1 640px; flex-direction: column; min-width: 0; }
 .chart-col .chart-panel { flex: 1; min-width: 0; }
+.exchange-heatmap { margin-top: 20px; padding: 22px; }
+.exchange-heatmap .panel-title { align-items: flex-start; }
+.exchange-heatmap .panel-title p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+.heatmap-exchange-search { display: grid; gap: 4px; min-width: 130px; color: var(--muted); font-size: 11px; }
+.heatmap-exchange-search input { width: 130px; min-height: 32px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 9px; color: var(--ink); background: var(--surface); font: inherit; font-size: 12px; }
+.heatmap-heading-actions { display: flex; align-items: end; gap: 12px; }
+.heatmap-more { align-self: center; color: var(--accent); font-size: 12px; text-decoration: none; white-space: nowrap; }
+.heatmap-more:hover { text-decoration: underline; }
+.exchange-heatmap-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.exchange-heatmap-cell { flex: var(--heat-size) 1 110px; min-height: 110px; display: flex; flex-direction: column; justify-content: space-between; gap: 5px; padding: 13px; border-radius: 16px; border: 1px solid transparent; text-align: left; cursor: pointer; }
+.exchange-heatmap-cell strong { font-size: 13px; letter-spacing: .04em; }
+.exchange-heatmap-cell b { font-size: 21px; letter-spacing: -.04em; }
+.exchange-heatmap-cell small { opacity: .78; font-size: 11px; }
+.exchange-heatmap-cell.positive { color: #155d3a; background: color-mix(in srgb, #55c98b 25%, var(--panel)); border-color: color-mix(in srgb, #55c98b 45%, transparent); }
+.exchange-heatmap-cell.negative { color: #8b2e3c; background: color-mix(in srgb, #ed7c8b 24%, var(--panel)); border-color: color-mix(in srgb, #ed7c8b 45%, transparent); }
+.exchange-heatmap-cell.neutral { color: var(--ink); background: color-mix(in srgb, var(--muted) 12%, var(--panel)); border-color: color-mix(in srgb, var(--muted) 25%, transparent); }
+.exchange-heatmap-cell:hover { transform: translateY(-1px); filter: saturate(1.08); }
 .ticket-col { display: flex; flex: 1 1 340px; flex-direction: column; gap: 20px; min-width: 0; }
 .board-row, .extras { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); align-items: start; gap: 20px; margin-top: 20px; }
 .extras:empty { display: none; }
