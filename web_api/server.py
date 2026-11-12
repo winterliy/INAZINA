@@ -45,6 +45,7 @@ from functions.dr_pricing import (
 )
 from functions.performance import log_slow
 from web_api import admin_logins, board, documents
+from functions.time_utils import validate_epoch
 _domain = None
 _domain_lock = threading.Lock()
 
@@ -4426,10 +4427,7 @@ class Handler(BaseHTTPRequestHandler):
                     raw_since = query.get("since", [None])[0]
                     if raw_since:
                         from managers.bank_journal import BankJournal
-                        try:
-                            since = BankJournal.validate_epoch(raw_since)
-                        except ValueError as exc:
-                            raise ValueError("invalid_since_epoch") from exc
+                        since = validate_epoch(raw_since, "invalid_since_epoch")
                     else:
                         since = None
                     if not issuer or len(issuer) > 100 or (currency and len(currency) > 12):

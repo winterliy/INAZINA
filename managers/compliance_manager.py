@@ -39,11 +39,8 @@ class ComplianceManager:
 
     @staticmethod
     def _validated_epoch(value, error_code):
-        from managers.bank_journal import BankJournal
-        try:
-            return BankJournal.validate_epoch(value)
-        except ValueError as exc:
-            raise ValueError(error_code) from exc
+        from functions.time_utils import validate_epoch
+        return validate_epoch(value, error_code)
 
     @staticmethod
     def require_financial_eligibility(conn, user_id, *, now=None):

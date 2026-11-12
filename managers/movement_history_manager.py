@@ -4,6 +4,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from database.unified import UnifiedConnection
+from functions.time_utils import validate_epoch
 
 
 class MovementHistoryManager:
@@ -39,10 +40,7 @@ class MovementHistoryManager:
     @classmethod
     def day_boundary(cls, now):
         from functions.time_utils import validate_epoch
-        try:
-            now = validate_epoch(now)
-        except ValueError as exc:
-            raise ValueError("invalid_movement_history_cleanup_epoch") from exc
+        now = validate_epoch(now, "invalid_movement_history_cleanup_epoch")
         local = datetime.fromtimestamp(int(now), cls.KST)
         midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
         return local.date().isoformat(), int(midnight.timestamp())
@@ -98,10 +96,7 @@ class MovementHistoryManager:
         chart history and remain intact.
         """
         from functions.time_utils import validate_epoch
-        try:
-            now = int(validate_epoch(now))
-        except ValueError as exc:
-            raise ValueError("invalid_movement_history_cleanup_epoch") from exc
+        now = int(validate_epoch(now, "invalid_movement_history_cleanup_epoch"))
         date, midnight = self.day_boundary(now)
         if self.db.system.get_setting(self.DATE_KEY) == date:
             return False

@@ -31,10 +31,7 @@ class MarketSessionManager:
 
     @staticmethod
     def _epoch(now, error_code="invalid_market_session_epoch"):
-        try:
-            return int(validate_epoch(now))
-        except ValueError as exc:
-            raise ValueError(error_code) from exc
+        return int(validate_epoch(now, error_code))
 
     @classmethod
     def next_day_epoch(cls, now):

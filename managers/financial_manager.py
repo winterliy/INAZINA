@@ -20,10 +20,7 @@ PROTECTED_ACCOUNTS = frozenset({'restricted_cash','common_capital','preferred_ca
 
 
 def month(epoch=None):
-    try:
-        epoch = validate_epoch(epoch)
-    except ValueError as exc:
-        raise ValueError('회계 시각은 유효한 UNIX epoch이어야 합니다.') from exc
+    epoch = validate_epoch(epoch, '회계 시각은 유효한 UNIX epoch이어야 합니다.')
     return datetime.fromtimestamp(epoch, KST).strftime('%Y-%m')
 
 

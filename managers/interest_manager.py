@@ -39,10 +39,8 @@ class InterestManager:
 
     @classmethod
     def _validated_processing_epoch(cls, value):
-        try:
-            return BankJournal.validate_epoch(value)
-        except ValueError as exc:
-            raise ValueError("invalid_interest_processing_epoch") from exc
+        from functions.time_utils import validate_epoch
+        return validate_epoch(value, "invalid_interest_processing_epoch")
 
     @staticmethod
     def _utc_epoch(value):

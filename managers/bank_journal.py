@@ -11,10 +11,7 @@ class BankJournal:
 
     @classmethod
     def validate_epoch(cls, value):
-        try:
-            return validate_epoch(value)
-        except ValueError as exc:
-            raise ValueError("분개 시각은 유효한 UNIX epoch이어야 합니다.") from exc
+        return validate_epoch(value, "분개 시각은 유효한 UNIX epoch이어야 합니다.")
 
     @staticmethod
     def reconcile_institution_results(conn, issuer, *, since_epoch=None):

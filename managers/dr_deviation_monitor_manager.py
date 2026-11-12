@@ -4,6 +4,7 @@ from functions.money import base_currency_code
 
 from functions.dr_pricing import alert_state, reference_metrics
 from managers.bank_journal import BankJournal
+from functions.time_utils import validate_epoch
 
 
 class DrDeviationMonitorManager:
@@ -13,10 +14,7 @@ class DrDeviationMonitorManager:
     @classmethod
     def sample_conn(cls, conn, now=None):
         """Capture five-minute observations; confirm alert transitions across two buckets."""
-        try:
-            epoch = BankJournal.validate_epoch(now)
-        except ValueError as exc:
-            raise ValueError("invalid_monitor_epoch") from exc
+        epoch = validate_epoch(now, "invalid_monitor_epoch")
         bucket = int(epoch // cls.SAMPLE_SECONDS)
         programs = conn.execute(
             "SELECT d.dr_code,d.underlying_code,d.underlying_per_receipt,d.program_status,"

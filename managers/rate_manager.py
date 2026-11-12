@@ -13,6 +13,7 @@ from functions.interest_calc import YEAR_SECONDS
 from functions.interest_calc import year_fraction
 from functions.admin_access import resolve_user_role
 from functions.admin_audit import record_admin_audit
+from functions.time_utils import validate_epoch
 
 
 RATE_CHART_PREFIX = "__rate__:"
@@ -52,10 +53,7 @@ class RateManager:
     @staticmethod
     def _validated_epoch(value, error_code):
         from functions.time_utils import validate_epoch
-        try:
-            return validate_epoch(value)
-        except ValueError as exc:
-            raise ValueError(error_code) from exc
+        return validate_epoch(value, error_code)
 
     @staticmethod
     def adjust_business_day(conn, epoch, nationality, convention="following"):
@@ -197,10 +195,7 @@ class RateManager:
             if isinstance(percent, bool) or not math.isfinite(rate) or not low <= rate <= 100:
                 raise ValueError(f"{self.KEYS[key]}는 {low}~100%여야 합니다.")
             from managers.bank_journal import BankJournal
-            try:
-                now = BankJournal.validate_epoch(now)
-            except ValueError as exc:
-                raise ValueError("적용 시각은 유효한 UNIX 시각이어야 합니다.") from exc
+            now = validate_epoch(now, "적용 시각은 유효한 UNIX 시각이어야 합니다.")
             with (self.db.atomic(("system",)) if conn is None else nullcontext(conn)) as conn:
                 conn.execute("INSERT INTO system.settings (key, value) VALUES (?, ?) "
                              "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, str(rate)))
@@ -221,10 +216,7 @@ class RateManager:
                 raise ValueError(f"{self.KEYS[key]}는 {low}~100%여야 합니다.")
             wall_now = time.time()
             from managers.bank_journal import BankJournal
-            try:
-                now = BankJournal.validate_epoch(wall_now if now is None else now)
-            except ValueError as exc:
-                raise ValueError("적용 시각은 유효한 UNIX 시각이어야 합니다.") from exc
+            now = validate_epoch(wall_now if now is None else now, "적용 시각은 유효한 UNIX 시각이어야 합니다.")
             country = str(nationality or "").strip()
             if not country:
                 raise ValueError("국적을 입력해주세요.")
@@ -433,10 +425,7 @@ class RateManager:
         if not country:
             return {}
         from managers.bank_journal import BankJournal
-        try:
-            when = BankJournal.validate_epoch(now)
-        except ValueError as exc:
-            raise ValueError("시장금리 재평가 시각은 유효한 UNIX 시각이어야 합니다.") from exc
+        when = validate_epoch(now, "시장금리 재평가 시각은 유효한 UNIX 시각이어야 합니다.")
         deposits = conn.execute(
             "SELECT COALESCE(SUM(a.balance),0) amount FROM accounts a "
             "LEFT JOIN saving s ON s.product_code=a.product_code "
@@ -1735,10 +1724,7 @@ class RateManager:
                 raise ValueError("기준지표는 funding/bank_bond/treasury 중 하나여야 합니다.")
             tenor, rate = int(tenor_days), float(percent)
             from managers.bank_journal import BankJournal
-            try:
-                when = BankJournal.validate_epoch(now)
-            except ValueError as exc:
-                raise ValueError("시장금리 적용 시각은 유효한 UNIX 시각이어야 합니다.") from exc
+            when = validate_epoch(now, "시장금리 적용 시각은 유효한 UNIX 시각이어야 합니다.")
             if tenor <= 0 or not math.isfinite(rate) or not -100 <= rate <= 100:
                 raise ValueError("만기는 양의 정수, 시장금리는 -100~100%여야 합니다.")
             with (self.db.atomic(("system", "product")) if conn is None else nullcontext(conn)) as db_conn:
