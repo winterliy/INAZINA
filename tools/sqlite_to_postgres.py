@@ -26,7 +26,7 @@ def quoted(name):
 
 def column_type(conn, table, column, declared):
     declared = (declared or "").upper()
-    if declared.startswith(("MONEY", "MONEYUNITS", "MONEYREAL")):
+    if declared.startswith("MONEY"):  # MONEY, MONEYUNITS, MONEYREAL
         return "numeric"
     kinds = {row[0] for row in conn.execute(
         f"SELECT DISTINCT typeof({quoted(column)}) FROM {quoted(table)}")} - {"null"}
