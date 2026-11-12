@@ -24,6 +24,12 @@ type SignedPayload = { kind: "session" | "discord"; userId: string; exp: number;
 const host = "127.0.0.1";
 const port = Number(process.env.PORT ?? 4312);
 const pythonPort = Number(process.env.INAZINA_PYTHON_PORT ?? 4313);
+// Optional extra data-service processes on the following ports, so CPU-bound Python
+// work (one GIL per process) runs on several cores. Off by default: a few caches
+// (market event targets, browser-password attempt counts) live per process.
+const pythonWorkers = Math.max(1, Math.min(8, Number(process.env.INAZINA_PYTHON_WORKERS ?? 1) || 1));
+const pythonPorts = Array.from({ length: pythonWorkers }, (_, index) => pythonPort + index);
+let nextPythonPort = 0;
 const internalToken = randomBytes(32).toString("hex");
 const browserPasswordHash = process.env.INAZINA_BROWSER_PASSWORD_SHA256 || "04b2ad6979a436129b5f30cd00a3804bd87fc8bef73b0bb38640bf49a8479c64";
 const browserLoginAttempts = new Map<string, { count: number; resetAt: number }>();
@@ -42,26 +48,27 @@ const python = existsSync(join(projectRoot, ".venv", "bin", "python"))
   : process.env.PYTHON ?? "python3";
 let stopping = false;
 let lastPythonFailureLog = 0;
-let pythonRestarts = 0;
+const pythonRestarts = new Map<number, number>();
 // The data service is restarted when it exits on its own (a startup failure, a crash),
 // so one bad start does not leave every request failing until the whole stack is restarted.
-function startPython(): ChildProcess {
+function startPython(workerPort: number): ChildProcess {
   const child = spawn(python, [join(projectRoot, "web_api", "server.py")], {
     cwd: projectRoot,
     env: { ...process.env, INAZINA_INTERNAL_TOKEN: internalToken,
-      INAZINA_BROWSER_PASSWORD_SHA256: browserPasswordHash, INAZINA_PYTHON_PORT: String(pythonPort) },
+      INAZINA_BROWSER_PASSWORD_SHA256: browserPasswordHash, INAZINA_PYTHON_PORT: String(workerPort) },
     stdio: ["ignore", "inherit", "inherit"],
   });
   child.once("exit", (code, signal) => {
     if (stopping) return;
-    const delay = Math.min(30, 2 ** Math.min(pythonRestarts, 5));
-    pythonRestarts += 1;
+    const restarts = pythonRestarts.get(workerPort) ?? 0;
+    const delay = Math.min(30, 2 ** Math.min(restarts, 5));
+    pythonRestarts.set(workerPort, restarts + 1);
     console.error(`INAZINA Python data service exited (code ${code ?? "-"}${signal ? `, ${signal}` : ""}); the error above is the cause. Restarting in ${delay}s.`);
-    setTimeout(() => { if (!stopping) pythonProcess = startPython(); }, delay * 1000);
+    setTimeout(() => { if (!stopping) pythonProcesses.set(workerPort, startPython(workerPort)); }, delay * 1000);
   });
   return child;
 }
-let pythonProcess = startPython();
+const pythonProcesses = new Map(pythonPorts.map((workerPort) => [workerPort, startPython(workerPort)]));
 
 function findProjectRoot(): string {
   let current = dirname(fileURLToPath(import.meta.url));
@@ -255,7 +262,8 @@ async function internalRequest(
   timeoutMs = 10_000,
 ): Promise<{ status: number; body: any }> {
   try {
-    const result = await fetch(`http://127.0.0.1:${pythonPort}${path}`, {
+    const workerPort = pythonPorts[nextPythonPort++ % pythonPorts.length];
+    const result = await fetch(`http://127.0.0.1:${workerPort}${path}`, {
       method,
       headers: {
         "x-inazina-internal-token": internalToken,
@@ -1286,10 +1294,13 @@ server.listen(port, host, () => {
 function shutdown(): void {
   stopping = true;
   server.close();
-  pythonProcess.kill("SIGTERM");
+  for (const child of pythonProcesses.values()) child.kill("SIGTERM");
 }
 
 process.once("SIGINT", shutdown);
 process.once("SIGTERM", shutdown);
 // Any other way out (a crash, process.exit) must not leave the data service holding its port.
-process.once("exit", () => { stopping = true; if (pythonProcess.exitCode === null) pythonProcess.kill("SIGTERM"); });
+process.once("exit", () => {
+  stopping = true;
+  for (const child of pythonProcesses.values()) if (child.exitCode === null) child.kill("SIGTERM");
+});
