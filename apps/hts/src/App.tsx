@@ -1,4 +1,4 @@
-import { formatMoney, exactMoney, moneyAdd, moneyMultiply, moneyCompare, moneyDivide, minorMoney, validMoney, type Money } from "../../shared/money";
+import { formatMoney, formatMoneyNumeric, exactMoney, moneyAdd, moneyMultiply, moneyCompare, moneyDivide, minorMoney, validMoney, type Money } from "../../shared/money";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api, clearToken, signedOut, type ApiUser } from "../../shared/api";
@@ -11,6 +11,10 @@ import { legacyCommandPath, servicePath } from "./services/paths";
 import { SERVICES } from "./services/ServiceKit";
 import { Backdrop } from "./Backdrop";
 import { SearchIndicators } from "./SearchIndicators";
+import { ExchangeHeatmap } from "./ExchangeHeatmap";
+import { PortfolioPage } from "./PortfolioPage";
+import { HeatmapPage } from "./HeatmapPage";
+import "./pages.css";
 import type { OwnershipGraphData } from "../../shared/OwnershipGraph";
 
 // Heavy, route-only screens load on first visit instead of with the trading screen.
@@ -50,6 +54,8 @@ const rangeNames: Record<string, string> = { "1h": "1시간", "1d": "1일", "1w"
 const intervals: [number, string][] = [[60, "1분봉"], [300, "5분봉"], [600, "10분봉"], [1800, "30분봉"], [3600, "1시간봉"], [21600, "6시간봉"], [43200, "12시간봉"], [86400, "일봉"]];
 const STATUS: Record<string, string> = { open: "미체결", partial: "부분 체결", scheduled: "예약", filled: "체결", cancelled: "취소", expired: "만료" };
 const money = formatMoney;
+const compactMoney = formatMoneyNumeric;
+const ORDER_TYPES = [["limit", "지정가"], ["market", "시장가"], ["current", "현재가"]] as const;
 const date = (epoch: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "short" }).format(epoch * 1000);
 const CREDIT_EVENTS: Record<string, string> = {
   payment_on_time: "정상 납부", payment_missed: "납부 연체", payment_cured: "연체 회차 사후 납부", loan_closed: "대출 완납",
@@ -121,6 +127,7 @@ export default function App() {
   const [health, setHealth] = useState("확인 중");
   const [instruments, setInstruments] = useState<Instrument[]>([]);
   const [selectedCode, setSelectedCode] = useState("");
+  const [heatmapExchangeOverride, setHeatmapExchangeOverride] = useState<string | undefined>(() => new URLSearchParams(location.search).get("exchange") || undefined);
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchTabValue, setSearchTabValue] = useState<SearchTab>("recommended");
@@ -182,6 +189,7 @@ export default function App() {
   const [drVoteQuantity, setDrVoteQuantity] = useState("1");
   const [drProxyUserId, setDrProxyUserId] = useState("");
   const [price, setPrice] = useState("");
+  const [orderType, setOrderType] = useState<"limit" | "market" | "current">("limit");
   const [review, setReview] = useState(false);
   const [tool, setTool] = useState<Tool>("select");
   const [drawings, setDrawings] = useState<Drawing[]>([]);
@@ -192,6 +200,12 @@ export default function App() {
   const savedDrawings = useRef("[]");
 
   const selected = instruments.find((item) => item.code === selectedCode) ?? null;
+  const defaultHeatmapExchange = useMemo(() => {
+    const term = search.trim().toLocaleLowerCase();
+    const exchanges = [...new Set(instruments.map((item) => item.exchange_id).filter((item): item is string => Boolean(item)))];
+    return exchanges.find((item) => term && item.toLocaleLowerCase() === term) ?? selected?.exchange_id ?? exchanges[0];
+  }, [instruments, search, selected?.exchange_id]);
+  const heatmapExchange = heatmapExchangeOverride ?? defaultHeatmapExchange;
   const filtered = useMemo(() => {
     const term = search.trim().toLocaleLowerCase();
     // Exchange rates show as rate cards only; they never open the live chart.
@@ -381,11 +395,11 @@ export default function App() {
   }, [drawings, selectedCode]);
 
   async function submitOrder() {
-    if (!validMoney(price, true) || !Number.isFinite(Number(quantity)) || Number(quantity) <= 0) return;
+    if (!orderReady) return;
     setBusy(true);
     try {
       const result = await api<{ message: string }>("/api/market/orders", {
-        method: "POST", body: JSON.stringify({ assetCode: selectedCode, side, quantity: Number(quantity), limitPrice: exactMoney(price) }),
+        method: "POST", body: JSON.stringify({ assetCode: selectedCode, side, quantity: Number(quantity), orderType: orderType === "market" ? "market" : "limit", limitPrice: exactMoney(orderPrice) }),
       });
       setReview(false);
       setNotice(result.message);
@@ -553,7 +567,16 @@ export default function App() {
   </div>;
 
   const current = quote?.code === selectedCode ? quote.price : selected?.price ?? 0;
-  const orderAmount = validMoney(price) && validMoney(quantity) ? moneyMultiply(price, quantity) : "0";
+  // Market orders are priced by the server against the live book; this estimate uses the visible levels.
+  const marketEstimate = (() => {
+    const levels = (side === "buy" ? book.asks : book.bids) ?? [];
+    let needed = Number(quantity) || 0;
+    for (const level of levels) { needed -= Number(level.quantity); if (needed <= 0) return { price: String(level.limit_price), enough: true }; }
+    return { price: levels.length ? String(levels[levels.length - 1].limit_price) : "", enough: false };
+  })();
+  const orderPrice = orderType === "market" ? marketEstimate.price : orderType === "current" ? String(selected?.price ?? "") : price;
+  const orderReady = Boolean(selected) && validMoney(orderPrice, true) && Number.isFinite(Number(quantity)) && Number(quantity) > 0 && (orderType !== "market" || marketEstimate.enough);
+  const orderAmount = validMoney(orderPrice) && validMoney(quantity) ? moneyMultiply(orderPrice, quantity) : "0";
   // Amounts follow the account's nationality; instrument prices keep their trading currency.
   const homeCurrency = portfolio?.national_currency || user.currency || "";
   const fxTerm = search.trim().toLocaleLowerCase();
@@ -600,7 +623,7 @@ export default function App() {
         <input ref={searchInputRef} value={search} aria-label="종목·상품코드·금리·지수 검색" aria-expanded={searchOpen} aria-controls="top-search-pop" placeholder="종목명·상품코드·국가·거래소 검색" onFocus={() => setSearchOpen(true)} onChange={(event) => { setSearch(event.target.value); setSearchOpen(true); }} onKeyDown={(event) => { if (event.key === "Enter" && filtered[0]) chooseInstrument(filtered[0].code); }} />
         {search && <button type="button" className="top-search-clear" aria-label="검색어 지우기" onClick={() => { setSearch(""); searchInputRef.current?.focus(); }}>×</button>}
       </label>
-      {searchOpen && <section id="top-search-pop" className="search-pop" aria-label="종목 검색 결과">{!search.trim() && <div className="search-tabs" role="tablist" aria-label="상품 종류">{SEARCH_TABS.filter(([id]) => id === "recommended" || tabCounts[id]).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={searchTabValue === id} className={searchTabValue === id ? "active" : ""} onClick={() => setSearchTabValue(id)}>{label}<span>{tabCounts[id] ?? 0}</span></button>)}</div>}{!search.trim() && searchTabValue === "recommended" && <><div className="recommend-sorts" role="group" aria-label="추천 기준">{RECOMMEND_SORTS.map(([id, label]) => <button key={id} type="button" aria-pressed={recommendSort === id} className={recommendSort === id ? "active" : ""} onClick={() => setRecommendSort(id)}>{label}</button>)}</div><p className="search-caption">{RECOMMEND_SORTS.find(([id]) => id === recommendSort)![2]}</p></>}<div className="search-results">{fxRates.map((fx) => <div key={`fx-${fx.code}`} className="search-result fx-rate" aria-label={`${homeCurrency}:${fx.code} 환율`}><span><span className="search-name"><b>{homeCurrency}:{fx.code}</b><small>{fx.name} · 환율</small></span></span><span className="search-price"><strong>1 : {money(fx.rate, 6)}</strong><small>1 {fx.code} = {money(fx.inverse, 4)} {homeCurrency}</small></span></div>)}{filtered.slice(0, 200).map((item, index) => <button type="button" key={item.code} className={selectedCode === item.code ? "search-result active" : "search-result"} onClick={() => chooseInstrument(item.code)}><span>{!search.trim() && searchTabValue === "recommended" && <em className="search-rank">{index + 1}</em>}<span className="search-name"><b>{item.name} <WarningBadge warning={item.warning} /></b><small>{item.code} · {instrumentType(item)}{!search.trim() && searchTabValue === "recommended" && recommendSort === "volume" ? (item.volume24h ? ` · 24시간 ${money(item.volume24h, 2)}주` : "") : item.trades24h ? ` · 24시간 ${money(item.trades24h)}건` : ""}</small></span></span><span className="search-price"><strong>{money(item.price, 2)} {item.quote_currency || homeCurrency}</strong>{item.change24h !== null && item.change24h !== undefined && <small className={item.change24h > 0 ? "up" : item.change24h < 0 ? "down" : undefined}>{item.change24h > 0 ? "+" : ""}{Number(item.change24h).toFixed(2)}%</small>}</span></button>)}{!filtered.length && !fxRates.length && <p className="empty">{search.trim() ? "거래 종목 결과가 없습니다. 상품 코드·금리·지수는 아래 관련 결과를 확인하세요." : searchTabValue === "recommended" ? "최근 24시간 동안 해당하는 종목이 없습니다." : "이 종류의 상품이 없습니다."}</p>}</div>{search.trim() && <SearchIndicators query={search} />}</section>}
+      {searchOpen && <section id="top-search-pop" className="search-pop" aria-label="종목 검색 결과">{!search.trim() && <div className="search-tabs" role="tablist" aria-label="상품 종류">{SEARCH_TABS.filter(([id]) => id === "recommended" || tabCounts[id]).map(([id, label]) => <button key={id} type="button" role="tab" aria-selected={searchTabValue === id} className={searchTabValue === id ? "active" : ""} onClick={() => setSearchTabValue(id)}>{label}<span>{tabCounts[id] ?? 0}</span></button>)}</div>}{!search.trim() && searchTabValue === "recommended" && <><div className="recommend-sorts" role="group" aria-label="추천 기준">{RECOMMEND_SORTS.map(([id, label]) => <button key={id} type="button" aria-pressed={recommendSort === id} className={recommendSort === id ? "active" : ""} onClick={() => setRecommendSort(id)}>{label}</button>)}</div><p className="search-caption">{RECOMMEND_SORTS.find(([id]) => id === recommendSort)![2]}</p></>}<div className="search-results">{fxRates.map((fx) => <div key={`fx-${fx.code}`} className="search-result fx-rate" aria-label={`${homeCurrency}:${fx.code} 환율`}><span><span className="search-name"><b>{homeCurrency}:{fx.code}</b><small>{fx.name} · 환율</small></span></span><span className="search-price"><strong>1 : {money(fx.rate, 6)}</strong><small>1 {fx.code} = {money(fx.inverse, 4)} {homeCurrency}</small></span></div>)}{filtered.slice(0, 200).map((item, index) => <button type="button" key={item.code} className={selectedCode === item.code ? "search-result active" : "search-result"} onClick={() => chooseInstrument(item.code)}><span>{!search.trim() && searchTabValue === "recommended" && <em className="search-rank">{index + 1}</em>}<span className="search-name"><b>{item.name} <WarningBadge warning={item.warning} /></b><small>{item.code} · {instrumentType(item)}{!search.trim() && searchTabValue === "recommended" && recommendSort === "volume" ? (item.volume24h ? ` · 24시간 ${money(item.volume24h, 2)}주` : "") : item.trades24h ? ` · 24시간 ${money(item.trades24h)}건` : ""}</small></span></span><span className="search-price"><strong>{money(item.price, 2)} {item.quote_currency || homeCurrency}</strong>{item.change24h !== null && item.change24h !== undefined && <small className={item.change24h > 0 ? "up" : item.change24h < 0 ? "down" : undefined}>{item.change24h > 0 ? "+" : ""}{Number(item.change24h).toFixed(2)}%</small>}</span></button>)}{!filtered.length && !fxRates.length && <p className="empty">{search.trim() ? "거래 종목 결과가 없습니다. 상품 코드·금리·지수는 아래 관련 결과를 확인하세요." : searchTabValue === "recommended" ? "최근 24시간 동안 해당하는 종목이 없습니다." : "이 종류의 상품이 없습니다."}</p>}</div>{search.trim() && <SearchIndicators query={search} onExchangeSelect={setHeatmapExchangeOverride} />}</section>}
     </div>
     <nav className="top-nav" aria-label="서비스">{SERVICES.slice(0, 4).map((item) => <a key={item.path} href={item.path} aria-current={here === "services" && location.pathname.startsWith(item.path) ? "page" : undefined}>{item.label}</a>)}<a href={boardUrl()}>게시판</a></nav>
     <div className="top-actions">
@@ -617,6 +640,18 @@ export default function App() {
     return null;
   }
   const service = servicePath(location.pathname);
+  if (location.pathname === "/heatmap" || location.pathname === "/heatmap/") return <div className="hts-shell stage heatmap-page-shell">
+    <Backdrop />
+    {topbar("home")}
+    <main><HeatmapPage instruments={instruments} exchangeId={heatmapExchange} onExchangeChange={setHeatmapExchangeOverride} onSelect={chooseInstrument} /></main>
+    <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
+  </div>;
+  if (location.pathname === "/portfolio" || location.pathname === "/portfolio/") return <div className="hts-shell stage portfolio-page-shell">
+    <Backdrop />
+    {topbar("home")}
+    <main><PortfolioPage holdings={holdings} instruments={instruments} homeCurrency={homeCurrency} cash={portfolio?.cash ?? user.cash} totalAssets={portfolio?.grand_total ?? portfolio?.net_worth ?? 0} onSelect={(code) => { window.location.href = `/?symbol=${encodeURIComponent(code)}`; }} /></main>
+    <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
+  </div>;
   if (service) return <div className="hts-shell stage service-shell">
     <Backdrop />
     {topbar("services")}
@@ -698,17 +733,22 @@ export default function App() {
               <span className="divider" aria-hidden="true" />
               <button className={chartMode === "candle" ? "selected" : ""} onClick={() => setChartMode("candle")}>캔들</button>
               <button className={chartMode === "line" ? "selected" : ""} onClick={() => setChartMode("line")}>선</button>
-              {chartMode === "candle" && <select className="interval-select" aria-label="봉 주기" value={interval ?? ""} onChange={(event) => setIntervalSeconds(event.target.value ? Number(event.target.value) : null)}><option value="">자동 ({intervals.find(([seconds]) => seconds === candleInterval)?.[1] ?? "봉"})</option>{intervals.map(([seconds, name]) => <option key={seconds} value={seconds}>{name}</option>)}</select>}</>} />
+              {chartMode === "candle" && <select className="interval-select" aria-label="봉 주기" value={interval ?? ""} onChange={(event) => setIntervalSeconds(event.target.value ? Number(event.target.value) : null)}><option value="">자동 ({intervals.find(([seconds]) => seconds === candleInterval)?.[1] ?? "봉"})</option>{intervals.map(([seconds, name]) => <option key={seconds} value={seconds}>{name}</option>)}</select>}<button className="chart-refresh" onClick={() => void refreshAccount().catch((cause) => setNotice(errorText(cause, "지갑을 새로 고치지 못했습니다.")))}>새로고침</button></>} />
           </ErrorBoundary>
+          <ExchangeHeatmap instruments={instruments} exchangeId={heatmapExchange} onExchangeChange={setHeatmapExchangeOverride} onSelect={chooseInstrument} />
         </div>
         <div className="ticket-col">
-          <section className="data-panel order-entry"><div className="panel-title"><h2>주문 입력</h2><span>지정가</span></div>
+          <section className="data-panel order-entry"><div className="panel-title"><h2>주문 입력</h2><span>{ORDER_TYPES.find(([id]) => id === orderType)![1]}</span></div>
+            <div className="order-types" role="group" aria-label="주문 유형">{ORDER_TYPES.map(([id, label]) => <button key={id} type="button" aria-pressed={orderType === id} className={orderType === id ? "active" : ""} onClick={() => setOrderType(id)}>{label}</button>)}</div>
             <div className="order-sides"><button className={side === "buy" ? "buy active" : "buy"} onClick={() => setSide("buy")}>매수</button><button className={side === "sell" ? "sell active" : "sell"} onClick={() => setSide("sell")}>매도</button></div>
-            <label>지정가 ({selected?.quote_currency || homeCurrency})<input inputMode="numeric" value={price} onChange={(event) => setPrice(event.target.value.replace(/[^\d.]/g, ""))} /></label>
+            {orderType === "limit" && <label>지정가 ({selected?.quote_currency || homeCurrency})<input inputMode="numeric" value={price} onChange={(event) => setPrice(event.target.value.replace(/[^\d.]/g, ""))} /></label>}
+            {orderType === "current" && <label>현재가 ({selected?.quote_currency || homeCurrency})<input value={orderPrice ? money(orderPrice, 2) : "—"} readOnly aria-readonly="true" /></label>}
+            {orderType === "market" && <label>예상 체결가 ({selected?.quote_currency || homeCurrency})<input value={orderPrice ? money(orderPrice, 2) : "—"} readOnly aria-readonly="true" /></label>}
+            {orderType === "market" && Number(quantity) > 0 && !marketEstimate.enough && <p className="risk-note">상대 호가 수량이 부족해 시장가로 모두 체결할 수 없습니다.</p>}
             <label>주문 수량<input inputMode="numeric" value={quantity} onChange={(event) => setQuantity(event.target.value.replace(/[^\d.]/g, ""))} /></label>
             <div className="form-total"><span>주문 금액</span><b>{money(orderAmount, 2)} {selected?.quote_currency || homeCurrency}</b></div>
-            <button className={side === "buy" ? "submit buy-submit" : "submit sell-submit"} disabled={!selected || !validMoney(price, true) || !Number.isFinite(Number(quantity)) || Number(quantity) <= 0 || busy} onClick={() => setReview(true)}>{side === "buy" ? "매수 주문 검토" : "매도 주문 검토"}</button>
-            <p className="risk-note">호가를 누르면 그 가격이 지정가로 들어갑니다. 펀드 가입·환매와 소수점 수량은 명령어의 매수·매도를 사용하세요.</p>
+            <button className={side === "buy" ? "submit buy-submit" : "submit sell-submit"} disabled={!orderReady || busy} onClick={() => setReview(true)}>{side === "buy" ? "매수 주문 검토" : "매도 주문 검토"}</button>
+            <p className="risk-note">{orderType === "market" ? "시장가는 상대 호가를 순서대로 체결하며, 실제 체결가는 제출 시점 호가로 정해집니다. " : orderType === "current" ? "현재가는 마지막 체결가로 지정가 주문을 냅니다. " : ""}호가를 누르면 그 가격이 지정가로 들어갑니다. 펀드 가입·환매와 소수점 수량은 명령어의 매수·매도를 사용하세요.</p>
           </section>
           {selected?.type === "depositary_receipt" && <section className="data-panel order-entry dr-conversion"><div className="panel-title"><h2>DR 발행 · 상환</h2><span>{selected.drProgram?.programStatus === "active" && selected.status === "active" ? "기초주식 예탁 방식" : "프로그램 중지"}</span></div>
             <p className="orders-hint">{selected.drProgram?.programStatus === "active" && selected.status === "active" ? "DR 수량을 입력하세요. 발행은 보유 원주를 잠그고 DR을 지급하며, 상환은 보유 DR을 소각하고 보관 원주를 지급합니다." : "중지되거나 종료된 DR 프로그램은 새 전환을 할 수 없습니다."}</p>
@@ -729,9 +769,9 @@ export default function App() {
       </div>
       <div className="board-row">
         <section className="data-panel orderbook-panel"><div className="panel-title"><h2>호가</h2><span>수량 · 가격</span></div><div className="book-head"><span>수량</span><span>가격</span></div>
-          <div className="book-side asks">{[...book.asks].reverse().map((item, index) => <button type="button" className="book-row" key={`${item.limit_price}-${index}`} title="이 가격으로 주문" onClick={() => setPrice(String(item.limit_price))}><span>{money(item.quantity, 3)}</span><b>{money(item.limit_price, 2)}</b></button>)}</div>
+          <div className="book-side asks">{[...book.asks].reverse().map((item, index) => <button type="button" className="book-row" key={`${item.limit_price}-${index}`} title="이 가격으로 주문" onClick={() => { setOrderType("limit"); setPrice(String(item.limit_price)); }}><span>{money(item.quantity, 3)}</span><b>{money(item.limit_price, 2)}</b></button>)}</div>
           <div className="book-current"><span>현재가</span><strong>{money(current)}</strong></div>
-          <div className="book-side bids">{book.bids.map((item, index) => <button type="button" className="book-row" key={`${item.limit_price}-${index}`} title="이 가격으로 주문" onClick={() => setPrice(String(item.limit_price))}><span>{money(item.quantity, 3)}</span><b>{money(item.limit_price, 2)}</b></button>)}</div>
+          <div className="book-side bids">{book.bids.map((item, index) => <button type="button" className="book-row" key={`${item.limit_price}-${index}`} title="이 가격으로 주문" onClick={() => { setOrderType("limit"); setPrice(String(item.limit_price)); }}><span>{money(item.quantity, 3)}</span><b>{money(item.limit_price, 2)}</b></button>)}</div>
         </section>
         <section className="data-panel orders-panel">
           <div className="panel-title"><h2>주문 · 체결</h2><div className="order-tabs" role="tablist" aria-label="주문 필터"><button role="tab" aria-selected={orderFilter === "open"} className={orderFilter === "open" ? "selected" : ""} onClick={() => setOrderFilter("open")}>미체결 {openCount}</button><button role="tab" aria-selected={orderFilter === "all"} className={orderFilter === "all" ? "selected" : ""} onClick={() => setOrderFilter("all")}>전체</button></div></div>
@@ -746,8 +786,8 @@ export default function App() {
         <section className="wallet-tile" aria-label="내 지갑">
           <section className="wallet-summary">
             <span>내 순자산 · {portfolio?.nationality ?? user.nationality} · {homeCurrency}</span>
-            <strong>{money(inHome(portfolio?.net_worth ?? 0), homeDigits)} <small>{homeCurrency}</small></strong>
-            <p>총자산 {money(inHome(portfolio?.grand_total ?? 0), homeDigits)} · 현금 {money(portfolio?.cash ?? user.cash, homeDigits)} {homeCurrency}</p>
+            <strong>{compactMoney(inHome(portfolio?.net_worth ?? 0))} <small>{homeCurrency}</small></strong>
+            <p>총자산 {compactMoney(inHome(portfolio?.grand_total ?? 0))} · 현금 {compactMoney(portfolio?.cash ?? user.cash)} {homeCurrency}</p>
             {portfolio?.kyc_profile && <p>KYC · {KYC_STATUS[portfolio.kyc_profile.status]} · {KYC_RISK[portfolio.kyc_profile.risk_tier]}{portfolio.kyc_profile.expires_epoch ? ` · 만료 ${date(portfolio.kyc_profile.expires_epoch)}` : ""}</p>}
             {taxResidency && <button type="button" className="text-button" onClick={() => setTaxResidencyOpen((open) => !open)}>세무거주지 · {taxResidency?.taxResidency || `국적(${taxResidency?.nationality ?? user.nationality}) 사용 중`} 변경</button>}
             {taxResidency && taxResidencyOpen && <form className="account-form tax-residency-form" onSubmit={saveTaxResidency}>
@@ -764,16 +804,16 @@ export default function App() {
             <a href={`/commands/${encodeURIComponent("송금")}`}>송금</a>
             <a href={`/commands/${encodeURIComponent("계좌개설")}`}>계좌개설</a>
             <a href={`/commands/${encodeURIComponent("대출신청")}`}>대출</a>
-            <button onClick={() => void refreshAccount().catch((cause) => setNotice(errorText(cause, "지갑을 새로 고치지 못했습니다.")))}>새로고침</button>
+            <a href="/portfolio" target="_blank" rel="noreferrer">내 주식</a>
           </div>
           <section className="data-panel wallet-panel">
-            <div className="wallet-row"><span>현금</span><b>{money(portfolio?.cash || 0, homeDigits)} {homeCurrency}</b></div>
-            {(portfolio?.wallets ?? []).filter((wallet) => wallet.is_foreign && wallet.balance_units).map((wallet) => <div className="wallet-row" key={wallet.currency_code}><span>외화 · {wallet.currency_code}</span><b>{money(minorMoney(wallet.balance_units, 6), wallet.decimal_places ?? 6)} {wallet.currency_code}</b></div>)}
-            <div className="wallet-row"><span>통장</span><b>{money(portfolio?.account_total || 0, homeDigits)} {homeCurrency}</b></div>
-            <div className="wallet-row"><span>투자 평가액</span><b>{money(inHome(portfolio?.stock_total || 0), homeDigits)} {homeCurrency}</b></div>
-            <div className="wallet-row"><span>매수 예치금</span><b>{money(inHome(portfolio?.order_reserved_total || 0), homeDigits)} {homeCurrency}</b></div>
-            <div className="wallet-row"><span>대출</span><b>{money(inHome(portfolio?.loan_total || 0), homeDigits)} {homeCurrency}</b></div>
-            <div className="wallet-row net-worth"><span>순자산</span><b>{money(inHome(portfolio?.net_worth || 0), homeDigits)} {homeCurrency}</b></div>
+            <div className="wallet-row"><span>현금</span><b>{compactMoney(portfolio?.cash || 0)} {homeCurrency}</b></div>
+            {(portfolio?.wallets ?? []).filter((wallet) => wallet.is_foreign && wallet.balance_units).map((wallet) => <div className="wallet-row" key={wallet.currency_code}><span>외화 · {wallet.currency_code}</span><b>{compactMoney(minorMoney(wallet.balance_units, 6))} {wallet.currency_code}</b></div>)}
+            <div className="wallet-row"><span>통장</span><b>{compactMoney(portfolio?.account_total || 0)} {homeCurrency}</b></div>
+            <div className="wallet-row"><span>투자 평가액</span><b>{compactMoney(inHome(portfolio?.stock_total || 0))} {homeCurrency}</b></div>
+            <div className="wallet-row"><span>매수 예치금</span><b>{compactMoney(inHome(portfolio?.order_reserved_total || 0))} {homeCurrency}</b></div>
+            <div className="wallet-row"><span>대출</span><b>{compactMoney(inHome(portfolio?.loan_total || 0))} {homeCurrency}</b></div>
+            <div className="wallet-row net-worth"><span>순자산</span><b>{compactMoney(inHome(portfolio?.net_worth || 0))} {homeCurrency}</b></div>
             {(portfolio?.accounts ?? []).filter((account) => account.resolution_status === "active").map((account) => <div className="wallet-row account-detail" key={account.number}><span>{account.product_name} · {account.currency_code}<small>{account.number}</small>{account.rate_type === "floating" && account.next_repricing_epoch != null && <small>현재 연 {(account.contract_rate == null ? undefined : Number(account.contract_rate).toFixed(4)) ?? "—"}% · 지표 관측 기준일 {date(Math.max(0, account.next_repricing_epoch - account.repricing_lag_seconds))} · 재산정 예정 {date(account.next_repricing_epoch)} · {RATE_BENCHMARK_LABELS[account.benchmark_key || ""] || account.benchmark_key || "기준금리"} {account.benchmark_tenor_days}일 · 새 금리는 재산정 시 확정</small>}{account.rate_resets.map((reset, index) => <small key={`${reset.applied_epoch}-${index}`}>이전 재산정 {date(reset.applied_epoch)} · {RATE_BENCHMARK_LABELS[reset.benchmark_key] || reset.benchmark_key} {reset.benchmark_tenor_days}일 · 연 {reset.old_rate}% → {reset.new_rate}%</small>)}</span><b>{money(account.balance, account.decimal_places)} {account.currency_code}</b></div>)}
           </section>
           {credit && <section className="data-panel wallet-credit" aria-label="신용점수">
@@ -793,13 +833,6 @@ export default function App() {
         </section>
       </div>
       <div className="extras">
-          <section className="data-panel holdings-panel independent-holdings">
-            <div className="panel-title"><h2>보유 종목</h2><span>{holdings.length}</span></div>
-            <div className="holdings">{holdings.map((item) => <button type="button" key={`${item.code}-${item.is_collateral ? "c" : "h"}`} className={item.code === selectedCode ? "holding active" : "holding"} onClick={() => chooseInstrument(item.code)}>
-              <span><b>{item.name}</b><small>{item.code} · {money(item.qty, 3)}주{item.sell_reserved_qty ? ` · 매도 대기 ${money(item.sell_reserved_qty, 3)}` : ""}{item.is_collateral ? " · 담보" : ""}</small></span>
-              <strong>{money(inHome(item.value), homeDigits)} <em>{homeCurrency}</em></strong>
-            </button>)}{!holdings.length && <p className="empty">보유 종목이 없습니다. 위의 종목 검색으로 시장을 찾아보세요.</p>}</div>
-          </section>
         {(portfolio?.deposit_insurance_claims?.length ?? 0) > 0 && <section className="data-panel holdings-panel">
           <div className="panel-title"><h2>예금보험 정리 이력</h2><span>{portfolio?.deposit_insurance_claims?.length}건</span></div>
           <div className="holdings">{portfolio?.deposit_insurance_claims?.map((claim) => <div className="holding" key={claim.claim_id}>
@@ -851,7 +884,7 @@ export default function App() {
       </div>
     </main>
     <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
-    {review && <div className="modal-backdrop"><section className="review-modal" role="dialog" aria-modal="true" aria-labelledby="review-title"><p className="eyebrow">ORDER REVIEW</p><h2 id="review-title">주문을 확인하세요</h2><dl><div><dt>종목</dt><dd>{selected?.name} ({selectedCode}) <WarningBadge warning={selected?.warning} /></dd></div><div><dt>유형</dt><dd className={side === "buy" ? "buy-text" : "sell-text"}>{side === "buy" ? "지정가 매수" : "지정가 매도"}</dd></div><div><dt>지정가</dt><dd>{money(price || "0", 2)} {selected?.quote_currency || homeCurrency}</dd></div><div><dt>수량</dt><dd>{money(Number(quantity), 3)}</dd></div><div><dt>예상 금액</dt><dd>{money(orderAmount, 2)} {selected?.quote_currency || homeCurrency}</dd></div></dl><div className="modal-actions"><button disabled={busy} onClick={() => setReview(false)}>돌아가기</button><button className={side === "buy" ? "buy-confirm" : "sell-confirm"} disabled={busy} onClick={() => void submitOrder()}>{busy ? "제출 중" : "주문 확정"}</button></div></section></div>}
+    {review && <div className="modal-backdrop"><section className="review-modal" role="dialog" aria-modal="true" aria-labelledby="review-title"><p className="eyebrow">ORDER REVIEW</p><h2 id="review-title">주문을 확인하세요</h2><dl><div><dt>종목</dt><dd>{selected?.name} ({selectedCode}) <WarningBadge warning={selected?.warning} /></dd></div><div><dt>유형</dt><dd className={side === "buy" ? "buy-text" : "sell-text"}>{ORDER_TYPES.find(([id]) => id === orderType)![1]} {side === "buy" ? "매수" : "매도"}</dd></div><div><dt>{orderType === "market" ? "예상 체결가" : orderType === "current" ? "현재가" : "지정가"}</dt><dd>{money(orderPrice || "0", 2)} {selected?.quote_currency || homeCurrency}</dd></div><div><dt>수량</dt><dd>{money(Number(quantity), 3)}</dd></div><div><dt>예상 금액</dt><dd>{money(orderAmount, 2)} {selected?.quote_currency || homeCurrency}</dd></div></dl><div className="modal-actions"><button disabled={busy} onClick={() => setReview(false)}>돌아가기</button><button className={side === "buy" ? "buy-confirm" : "sell-confirm"} disabled={busy} onClick={() => void submitOrder()}>{busy ? "제출 중" : "주문 확정"}</button></div></section></div>}
   </div>;
 }
 

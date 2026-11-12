@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { exactMoney, formatMoney, moneyAdd, moneyCompare, moneyMultiply, minorMoney, validMoney, moneyDivideFloor, moneyDivide } from './money.ts';
+import { exactMoney, formatMoney, formatMoneyCompact, formatMoneyNumeric, moneyAdd, moneyCompare, moneyMultiply, minorMoney, validMoney, moneyDivideFloor, moneyDivide } from './money.ts';
 test('scientific and decimal input retain every native and fractional unit', () => {
   assert.equal(exactMoney('1e18'), '1000000000000000000');
   assert.equal(exactMoney('1.000000000000000001e18'), '1000000000000000001');
@@ -17,6 +17,11 @@ test('display and JSON payload retain exact review and readback value', () => {
   assert.match(formatMoney(value), /1,000,000,000,000,000,000\.01/);
   assert.equal(JSON.parse(JSON.stringify({ amount: value })).amount, value);
   assert.equal(moneyAdd(value, '0.01', true), '1000000000000000000.00');
+});
+test('compact money display omits the raw exact-value suffix', () => {
+  assert.equal(formatMoneyCompact('34386071002333180000'), '3,438.6071경');
+  assert.equal(formatMoneyCompact('1234567.89'), '1,234,567.89');
+  assert.equal(formatMoneyNumeric('34386071002333180000'), '34,386,071,002,333,180,000');
 });
 test('reject nonfinite, excessive scale/exponent and range', () => {
   for (const value of ['NaN', 'Infinity', '1e999', '1e25', '0.0000001', '']) assert.equal(validMoney(value), false, value);

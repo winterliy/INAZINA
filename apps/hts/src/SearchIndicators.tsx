@@ -37,7 +37,7 @@ function HistoryChart({ data }: { data: IndicatorChart }) {
 }
 
 /** Reference data stays outside the instrument selection and trading-chart flow. */
-export function SearchIndicators({ query }: { query: string }) {
+export function SearchIndicators({ query, onExchangeSelect }: { query: string; onExchangeSelect?: (exchangeId: string) => void }) {
   const [data, setData] = useState<Indicators | null>(null);
   const [failed, setFailed] = useState(false);
   const [openChart, setOpenChart] = useState("");
@@ -80,7 +80,7 @@ export function SearchIndicators({ query }: { query: string }) {
       {openChart === id && <div className="indicator-chart-panel">{chartLoading ? <p className="indicator-chart-empty">그래프 불러오는 중…</p> : chart && <HistoryChart data={chart} />}</div>}
     </div>; })}
     {data.exchanges.map((exchange) => { const id = `exchange:${exchange.exchangeId}`; return <div key={id}>
-      <button type="button" className="search-result search-indicator" aria-expanded={openChart === id} onClick={() => void toggleChart("exchange", exchange.exchangeId)}>
+      <button type="button" className="search-result search-indicator" aria-expanded={openChart === id} onClick={() => { onExchangeSelect?.(exchange.exchangeId); void toggleChart("exchange", exchange.exchangeId); }}>
         <span className="search-name"><b>{exchange.name}</b><small>{exchange.exchangeId} · 지수 · {exchange.country} · 그래프 보기</small></span>
         <span className="search-price"><strong>{display(exchange.indexValue)}</strong></span>
       </button>

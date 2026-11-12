@@ -338,7 +338,11 @@ def board_db():
     (board.IP_RETENTION_SECONDS, as the privacy policy promises).
     """
     global _board_ready, _board_ip_purged
-    with connect_db(timeout=5) as connection:
+    # Startup market backfills can hold SQLite's writer lock for longer than the
+    # normal request timeout. Board initialization is idempotent, so wait for
+    # that transaction instead of letting the scheduled-news worker report a
+    # transient failure and leave due news unpublished until its next tick.
+    with connect_db(timeout=30) as connection:
         if not _board_ready:
             # Requests and the scheduled-news worker can reach this function at
             # once. Serialize the first schema migration, and retry transient
@@ -1497,6 +1501,31 @@ def save_drawings(user_id, code, drawings):
     return drawings
 
 
+def market_sweep_price(code, side, quantity):
+    """Price that fills `quantity` against the resting opposite side right now.
+
+    The engine only books limit orders, so a market order is placed as a limit at the
+    worst level it must reach. Without enough opposite depth it is rejected rather than
+    left resting at a stale price.
+    """
+    opposite = "sell" if side == "buy" else "buy"
+    with connect_readonly() as connection:
+        rows = connection.execute(
+            "SELECT limit_price,SUM(remaining_quantity) AS quantity FROM market_orders "
+            "WHERE asset_code=? AND side=? AND status IN ('open','partial') GROUP BY limit_price",
+            (code, opposite),
+        ).fetchall()
+    levels = sorted(((native_value(row["limit_price"]), row["quantity"] or 0) for row in rows), key=lambda level: level[0], reverse=side == "sell")
+    needed = quantity
+    for level_price, level_quantity in levels:
+        needed -= level_quantity
+        if needed <= 0:
+            return level_price
+    if not levels:
+        raise ValueError("상대 호가가 없어 시장가 주문을 낼 수 없습니다.")
+    raise ValueError(f"시장가로 체결할 수 있는 수량은 {quantity - needed:g}주입니다. 수량을 줄이거나 지정가로 주문해주세요.")
+
+
 def execute_order(user_id, payload):
     from decimal import Decimal
     if not isinstance(payload, dict):
@@ -1507,6 +1536,8 @@ def execute_order(user_id, payload):
         raise ValueError("종목과 매수·매도 방향을 확인해주세요.")
     if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 1:
         raise ValueError("주문 수량은 1 이상의 정수여야 합니다.")
+    if payload.get("orderType") == "market":
+        price = market_sweep_price(code, side, quantity)
     if isinstance(price, bool) or not isinstance(price, (int, float, str, Decimal)):
         raise ValueError("지정가는 숫자로 입력해주세요.")
     try:
