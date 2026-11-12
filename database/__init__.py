@@ -1,6 +1,7 @@
 import fcntl
+import sqlite3
 import threading
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from .user_db import UserDB
@@ -43,7 +44,10 @@ class DatabaseManager:
     code_locations = staticmethod(DBManager.code_locations)
 
     def __init__(self):
+        from . import startup_state
         with _schema_initialization_lock():
+            with closing(sqlite3.connect(Path(DBManager.database_dir).resolve() / "inazina.db")) as probe:
+                last_pre_hash = startup_state.recorded(probe)
             self.users = UserDB()
             self.assets = AssetDB()
             self.products = ProductDB()
@@ -52,7 +56,13 @@ class DatabaseManager:
             self.pot = PotDB()
             self.tax = TaxDB()
             self.system = SystemDB()
-            self.currency = CurrencyDB()
+            with self.users.lock:
+                pre_hash = startup_state.schema_hash(self.users.conn)
+            CurrencyDB.skip_precision_migration = pre_hash == last_pre_hash
+            try:
+                self.currency = CurrencyDB()
+            finally:
+                CurrencyDB.skip_precision_migration = False
             self.lottery = LotteryDB()
             self.corporate = CorporateDB()
             self.els = ELSDB()
@@ -68,6 +78,8 @@ class DatabaseManager:
             # Refresh planner statistics opportunistically after schema/index
             # initialization. SQLite decides internally when analysis is needed.
             self.users.execute("PRAGMA optimize")
+            with self.users.lock, self.users.conn:
+                startup_state.record(self.users.conn, pre_hash)
 
     def base_currency_code(self):
         return self.currency.base_currency_code()

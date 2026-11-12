@@ -9,6 +9,10 @@ from .db_manager import DBManager
 SCALE = 1_000_000
 
 class CurrencyDB(DBManager):
+    # Set by DatabaseManager when database.startup_state shows this exact schema and
+    # code already ran the precision migration; standalone CurrencyDB() always runs it.
+    skip_precision_migration = False
+
     # Money snapshots that follow their source row out when it is deleted (see the trigger loop).
     SNAPSHOTS_DELETED_WITH_SOURCE = frozenset({"market_price_history", "market_exchange_index_components"})
 
@@ -318,7 +322,8 @@ class CurrencyDB(DBManager):
         self._init_legal_rate_caps()
         self._init_floating_rate_pricing()
         self._seed_liquidity_states()
-        self._init_currency_precision_triggers()
+        if not self.skip_precision_migration:
+            self._init_currency_precision_triggers()
         self._remove_legacy_currency_defaults()
 
     def base_currency_code(self):
@@ -1157,9 +1162,12 @@ class CurrencyDB(DBManager):
                 continue
             if minor_column not in columns:
                 self.execute(f'ALTER TABLE "{table}" ADD COLUMN "{minor_column}" INTEGER NOT NULL DEFAULT 0')
-            rows = self.execute(f'SELECT "{key}","{asset_code}","{amount_column}","{minor_column}" FROM "{table}"')
+            # Only rows still missing minor units need work; filtering in SQL keeps
+            # startup from decoding every history row (~780k) through Python.
+            rows = self.execute(f'SELECT "{key}","{asset_code}","{amount_column}","{minor_column}" FROM "{table}" '
+                                f'WHERE "{minor_column}" IS NULL OR "{minor_column}"=0')
             for row in rows:
-                if int(row[minor_column] or 0) == 0 and float(row[amount_column] or 0) != 0:
+                if float(row[amount_column] or 0) != 0:
                     currency = self.execute_one(
                         "SELECT COALESCE((SELECT quote_currency FROM market_assets WHERE code=?),"
                         "(SELECT quote_currency FROM company WHERE company_code=?),"

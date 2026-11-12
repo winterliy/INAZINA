@@ -95,6 +95,10 @@ _organization_graph_cache = SingleFlightTTL(1.5)
 class BoundedThreadingHTTPServer(ThreadingHTTPServer):
     """Thread-per-request server with backpressure instead of unbounded threads."""
 
+    # The default listen backlog (5) refused bursts: one HTS page load sends ~30
+    # requests at once, and refused connects only retry after a back-off.
+    request_queue_size = 128
+
     def __init__(self, server_address, request_handler_class, max_threads=MAX_HTTP_THREADS):
         self._request_slots = threading.BoundedSemaphore(max_threads)
         super().__init__(server_address, request_handler_class)
@@ -114,21 +118,84 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
             self._request_slots.release()
 
 
+def _reset_connection(connection):
+    connection.legacy_aliases = False
+    connection.row_factory = sqlite3.Row
+
+
+def _open_connection(readonly):
+    uri = DATABASE.as_uri() + ("?mode=ro" if readonly else "")
+    connection = sqlite3.connect(uri, uri=True, timeout=2, factory=UnifiedConnection,
+                                 check_same_thread=False)
+    _reset_connection(connection)
+    connection.create_function("base_currency_code", 0, lambda: _configured_base_currency(connection))
+    from database.exact_cost_basis import register
+    register(connection)
+    connection.execute("PRAGMA query_only=ON" if readonly else "PRAGMA foreign_keys=ON")
+    return connection
+
+
+# Opening a connection parses the whole schema (~1k triggers, ~17 ms), so connections
+# are kept and reused. The server starts a thread per request, so this is a shared
+# pool rather than thread-local storage. Keyed by the file's identity: a replaced
+# database file (restore, tests) never reuses a connection to the old one.
+_connection_pool = {}
+_connection_pool_lock = threading.Lock()
+
+
+def _pool_key(readonly):
+    try:
+        stat = DATABASE.stat()
+    except OSError:
+        return None
+    return readonly, stat.st_dev, stat.st_ino
+
+
+def _checkout(readonly):
+    key = _pool_key(readonly)
+    if key is not None:
+        with _connection_pool_lock:
+            idle = _connection_pool.get(key)
+            if idle:
+                return key, idle.pop()
+    return key, _open_connection(readonly)
+
+
+def _release(key, connection):
+    """Return ``connection`` to the pool, or close it when it cannot be reused."""
+    if key is None:
+        connection.close()
+        return
+    try:
+        if connection.in_transaction:
+            connection.rollback()
+        connection.set_authorizer(None)
+        _reset_connection(connection)
+        with _connection_pool_lock:
+            idle = _connection_pool.get(key)
+            if idle is None:
+                # A new file identity: connections to the replaced file are useless.
+                for stale_key in [k for k in _connection_pool if k[1:] != key[1:]]:
+                    for old in _connection_pool.pop(stale_key):
+                        old.close()
+                idle = _connection_pool[key] = []
+            if len(idle) < MAX_HTTP_THREADS:
+                idle.append(connection)
+                return
+    except sqlite3.Error:
+        pass
+    connection.close()
+
+
 @contextmanager
 def connect_readonly():
-    uri = DATABASE.as_uri() + "?mode=ro"
-    connection = sqlite3.connect(uri, uri=True, timeout=2, factory=UnifiedConnection)
-    connection.legacy_aliases=False
+    key, connection = _checkout(True)
     try:
-        connection.legacy_aliases = False
-        connection.row_factory = sqlite3.Row
-        connection.create_function("base_currency_code", 0, lambda: _configured_base_currency(connection))
-        from database.exact_cost_basis import register
-        register(connection)
-        connection.execute("PRAGMA query_only=ON")
         yield connection
-    finally:
+    except BaseException:
         connection.close()
+        raise
+    _release(key, connection)
 
 
 class LegacyNames:
@@ -149,33 +216,33 @@ class LegacyNames:
         return getattr(self._connection, name)
 
 
+_WRITE_ACTIONS = frozenset({
+    sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE,
+    sqlite3.SQLITE_CREATE_INDEX, sqlite3.SQLITE_CREATE_TABLE,
+    sqlite3.SQLITE_CREATE_TEMP_INDEX, sqlite3.SQLITE_CREATE_TEMP_TABLE,
+    sqlite3.SQLITE_CREATE_TEMP_TRIGGER, sqlite3.SQLITE_CREATE_TEMP_VIEW,
+    sqlite3.SQLITE_CREATE_TRIGGER, sqlite3.SQLITE_CREATE_VIEW,
+    sqlite3.SQLITE_DROP_INDEX, sqlite3.SQLITE_DROP_TABLE,
+    sqlite3.SQLITE_DROP_TEMP_INDEX, sqlite3.SQLITE_DROP_TEMP_TABLE,
+    sqlite3.SQLITE_DROP_TEMP_TRIGGER, sqlite3.SQLITE_DROP_TEMP_VIEW,
+    sqlite3.SQLITE_DROP_TRIGGER, sqlite3.SQLITE_DROP_VIEW,
+    sqlite3.SQLITE_ALTER_TABLE, sqlite3.SQLITE_REINDEX,
+})
+
+
 @contextmanager
 def connect_db(timeout=2):
-    connection = sqlite3.connect(DATABASE, timeout=timeout, factory=UnifiedConnection)
-    connection.legacy_aliases=False
+    key, connection = _checkout(False)
     write_lock = None
-    write_lock_held = False
-    write_actions = {
-        sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE,
-        sqlite3.SQLITE_CREATE_INDEX, sqlite3.SQLITE_CREATE_TABLE,
-        sqlite3.SQLITE_CREATE_TEMP_INDEX, sqlite3.SQLITE_CREATE_TEMP_TABLE,
-        sqlite3.SQLITE_CREATE_TEMP_TRIGGER, sqlite3.SQLITE_CREATE_TEMP_VIEW,
-        sqlite3.SQLITE_CREATE_TRIGGER, sqlite3.SQLITE_CREATE_VIEW,
-        sqlite3.SQLITE_DROP_INDEX, sqlite3.SQLITE_DROP_TABLE,
-        sqlite3.SQLITE_DROP_TEMP_INDEX, sqlite3.SQLITE_DROP_TEMP_TABLE,
-        sqlite3.SQLITE_DROP_TEMP_TRIGGER, sqlite3.SQLITE_DROP_TEMP_VIEW,
-        sqlite3.SQLITE_DROP_TRIGGER, sqlite3.SQLITE_DROP_VIEW,
-        sqlite3.SQLITE_ALTER_TABLE, sqlite3.SQLITE_REINDEX,
-    }
 
     def serialize_writes(action, arg1, arg2, database_name, trigger_name):
-        nonlocal write_lock, write_lock_held
-        if action in write_actions and not write_lock_held:
+        nonlocal write_lock
+        if action in _WRITE_ACTIONS and write_lock is None:
             from database.db_manager import DBManager
-            write_lock = DBManager._lock_for_path(DATABASE)
+            lock = DBManager._lock_for_path(DATABASE)
             wait_started = time.perf_counter()
-            write_lock.acquire()
-            write_lock_held = True
+            lock.acquire()
+            write_lock = lock
             wait_ms = (time.perf_counter() - wait_started) * 1000
             if wait_ms >= 100:
                 logging.getLogger("inazina.performance").warning(
@@ -184,21 +251,20 @@ def connect_db(timeout=2):
         return sqlite3.SQLITE_OK
 
     try:
-        connection.legacy_aliases = False
-        connection.row_factory = sqlite3.Row
-        connection.create_function("base_currency_code", 0, lambda: _configured_base_currency(connection))
-        from database.exact_cost_basis import register
-        register(connection)
-        connection.execute("PRAGMA foreign_keys=ON")
         connection.execute(f"PRAGMA busy_timeout={max(1, int(timeout * 1000))}")
         connection.set_authorizer(serialize_writes)
         with connection:
             yield connection
+    except BaseException:
+        connection.close()
+        connection = None
+        raise
     finally:
         try:
-            connection.close()
+            if connection is not None:
+                _release(key, connection)
         finally:
-            if write_lock_held:
+            if write_lock is not None:
                 write_lock.release()
 
 
@@ -927,9 +993,16 @@ def instruments(include_inactive=False):
         warnings = TradingWarnings.active(connection) if has_warnings else {}
         # 24-hour activity for the 나루 "실시간 추천" list: price change and traded value.
         since = int(time.time()) - 86400
-        opening = {code: price for code, price, _ in connection.execute(
-            "SELECT asset_code,price,MIN(recorded_epoch) FROM market_price_history "
-            "WHERE recorded_epoch>=? GROUP BY asset_code", (since,))} if _table_exists(connection, "market_price_history") else {}
+        # One index seek per instrument (asset_code, recorded_epoch) instead of
+        # grouping every row of the last day (~750k).
+        opening = {}
+        if _table_exists(connection, "market_price_history"):
+            for code in {row["code"] for row in rows}:
+                first = connection.execute(
+                    "SELECT price FROM market_price_history WHERE asset_code=? AND recorded_epoch>=? "
+                    "ORDER BY recorded_epoch LIMIT 1", (code, since)).fetchone()
+                if first:
+                    opening[code] = first[0]
         traded = {code: (value, count, volume) for code, value, count, volume in connection.execute(
             "SELECT asset_code,SUM(quantity*price),COUNT(*),SUM(quantity) FROM market_trade_history "
             "WHERE recorded_epoch>=? GROUP BY asset_code", (since,))} if _table_exists(connection, "market_trade_history") else {}

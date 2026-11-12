@@ -4,6 +4,7 @@ import re
 import sqlite3
 from decimal import Decimal
 from contextlib import closing, contextmanager
+from functools import lru_cache
 from pathlib import Path
 
 ALIASES = ("users", "accounts", "assets", "product", "company", "pot", "tax", "system")
@@ -16,16 +17,35 @@ _SQL = re.compile(r"' (?:[^']|'')* ' | --[^\n]* | /\*.*?\*/ | "
 def sql(statement):
     return _SQL.sub(lambda m: m.group() if m.group().startswith(("'", "--", "/*")) else "", statement)
 
+_NEVER_TAGGED={'user_id','account_number','name','nickname','nationality','status','role','payload','description'}
+_ALWAYS_NAMES={'total','gross','net','amount','balance','debit','credit'}
+
+
+@lru_cache(maxsize=4096)
+def _column_plan(names):
+    """Per column: (decode every text value, decode only tagged text, integral)."""
+    from .money_columns import possible_money
+    plan=[]
+    for name in names:
+        name=name.lower()
+        always=possible_money(name) or 'wide_' in name or name in _ALWAYS_NAMES
+        if_tagged=not always and name not in _NEVER_TAGGED and not name.endswith(('_code','_id','_name'))
+        integral=name.endswith(('_minor','_minor_units','_subminor_units')) or name in {'balance_units','cash_minor'}
+        plan.append((always,if_tagged,integral))
+    return tuple(plan)
+
+
 def _wide_row(cursor, values):
     from .wide_values import tagged,decoded
-    from .money_columns import possible_money
-    converted=[]
-    for info,value in zip(cursor.description,values):
-        name=info[0].lower()
-        if isinstance(value,str) and ((tagged(value) and name not in {'user_id','account_number','name','nickname','nationality','status','role','payload','description'} and not name.endswith(('_code','_id','_name'))) or possible_money(name) or 'wide_' in name or name in {'total','gross','net','amount','balance','debit','credit'}):
-            try:value=decoded(value,name.endswith(('_minor','_minor_units','_subminor_units')) or name in {'balance_units','cash_minor'})
+    plan=_column_plan(tuple(info[0] for info in cursor.description))
+    converted=list(values)
+    for index,value in enumerate(converted):
+        if value.__class__ is not str:
+            continue
+        always,if_tagged,integral=plan[index]
+        if always or (if_tagged and tagged(value)):
+            try:converted[index]=decoded(value,integral)
             except (ValueError,ArithmeticError):pass
-        converted.append(value)
     return sqlite3.Row(cursor,tuple(converted))
 
 
