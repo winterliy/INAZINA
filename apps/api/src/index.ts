@@ -834,6 +834,24 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     return;
   }
 
+  // HTS refreshes the account every 15 s; one request instead of six saves the
+  // per-request session check and five browser round trips. Each part keeps its
+  // own status so an optional panel (credit, tax residency) never fails the rest.
+  if (request.method === "GET" && url.pathname === "/api/me/account-bundle") {
+    const parts = {
+      portfolio: "/internal/market/portfolio",
+      orders: "/internal/market/orders",
+      loans: "/internal/me/loan-schedules",
+      conversions: "/internal/me/dr/conversions",
+      credit: "/internal/me/credit",
+      taxResidency: "/internal/me/tax-residency",
+    } as const;
+    const results = await Promise.all(Object.values(parts).map((path) => internalGet(path, principal.userId)));
+    send(response, 200, Object.fromEntries(Object.keys(parts).map((name, index) =>
+      [name, { status: results[index].status, body: results[index].body }])));
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/me/portfolio") {
     const result = await internalGet("/internal/market/portfolio", principal.userId);
     send(response, result.status, result.body);

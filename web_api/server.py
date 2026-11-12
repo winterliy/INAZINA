@@ -20,7 +20,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlsplit, parse_qs, unquote
-from functions.admin_audit import record_admin_audit
 
 ROOT = Path(__file__).resolve().parents[1]
 DATABASE = Path(os.environ.get("INAZINA_DB_PATH", ROOT / "database" / "inazina.db")).resolve()
@@ -43,6 +42,7 @@ from functions.dr_pricing import (
     DEVIATION_ALERT_THRESHOLD_PERCENT as DR_REFERENCE_DEVIATION_ALERT_PERCENT,
     reference_metrics as dr_reference_metrics,
 )
+from functions.admin_audit import record_admin_audit
 from functions.performance import log_slow
 from web_api import admin_logins, board, documents
 from functions.time_utils import validate_epoch

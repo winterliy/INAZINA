@@ -1,7 +1,7 @@
 import { formatMoney, formatMoneyNumeric, exactMoney, moneyAdd, moneyMultiply, moneyCompare, moneyDivide, minorMoney, validMoney, type Money } from "../../shared/money";
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
-import { api, clearToken, signedOut, type ApiUser } from "../../shared/api";
+import { api, apiError, clearToken, signedOut, type ApiUser } from "../../shared/api";
 import { navigate } from "./nav";
 import { AuthPanel } from "../../shared/AuthPanel";
 import { DEFAULT_INDICATORS, INDICATOR_CATALOG, PriceChart, type Candle, type Drawing, type IndicatorCatalog, type IndicatorChoice, type IndicatorData, type Point, type Tool } from "./PriceChart";
@@ -233,27 +233,28 @@ export default function App() {
 
   const userRole = user?.role;
   const refreshAccount = useCallback(async () => {
-    const [wallet, orderData, loanData, custodyData] = await Promise.all([
-      api<{ portfolio: Portfolio }>("/api/me/portfolio"),
-      api<{ orders: Order[] }>("/api/market/orders"),
-      api<{ loans: LoanScheduleView[] }>("/api/me/loan-schedules"),
-      api<{ instructions: DrCustodyInstruction[] }>("/api/me/dr/conversions"),
-    ]);
+    type Part<T> = { status: number; body: T & { error?: string } };
+    const bundle = await api<{
+      portfolio: Part<{ portfolio: Portfolio }>; orders: Part<{ orders: Order[] }>;
+      loans: Part<{ loans: LoanScheduleView[] }>; conversions: Part<{ instructions: DrCustodyInstruction[] }>;
+      credit: Part<Partial<CreditReport>>; taxResidency: Part<TaxResidency>;
+    }>("/api/me/account-bundle");
+    const required = [bundle.portfolio, bundle.orders, bundle.loans, bundle.conversions];
+    const failed = required.find((part) => part.status !== 200);
+    if (failed) throw apiError(failed.status, failed.body);
     // Tax residency exists only for ordinary user accounts (the server refuses admin, nation and
     // company accounts); like the credit panel, it must never block the wallet or the instrument list.
-    if (userRole === "user") {
-      api<TaxResidency>("/api/me/tax-residency")
-        .then((data) => { setTaxResidency(data); setTaxResidencyValue(data.taxResidency ?? ""); })
-        .catch(() => setTaxResidency(null));
+    if (userRole === "user" && bundle.taxResidency.status === 200) {
+      setTaxResidency(bundle.taxResidency.body);
+      setTaxResidencyValue(bundle.taxResidency.body.taxResidency ?? "");
     } else setTaxResidency(null);
     // The credit panel is optional; a failed report must not hide the wallet.
-    api<Partial<CreditReport>>("/api/me/credit")
-      .then((report) => setCredit(typeof report.score === "number" ? report as CreditReport : null))
-      .catch(() => setCredit(null));
-    setPortfolio(wallet.portfolio);
-    setOrders(orderData.orders);
-    setLoanSchedules(loanData.loans);
-    setDrCustodyInstructions(custodyData.instructions);
+    const report = bundle.credit.body;
+    setCredit(bundle.credit.status === 200 && typeof report.score === "number" ? report as CreditReport : null);
+    setPortfolio(bundle.portfolio.body.portfolio);
+    setOrders(bundle.orders.body.orders);
+    setLoanSchedules(bundle.loans.body.loans);
+    setDrCustodyInstructions(bundle.conversions.body.instructions);
   }, [userRole]);
 
   async function saveTaxResidency(event: FormEvent<HTMLFormElement>) {
