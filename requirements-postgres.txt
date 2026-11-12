@@ -1,0 +1,3 @@
+# Optional: PostgreSQL backend (gradual switch, see tools/sqlite_to_postgres.py).
+psycopg==3.3.9
+psycopg-binary==3.3.9
