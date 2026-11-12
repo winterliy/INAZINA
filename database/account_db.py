@@ -397,10 +397,9 @@ class AccountDB(DBManager):
             installments_recast INTEGER NOT NULL DEFAULT 0,
             UNIQUE(contract_type,contract_id,scheduled_epoch)
         )""")
-        self.execute(
-            "CREATE INDEX IF NOT EXISTS idx_contract_rate_reset_history_contract "
-            "ON contract_rate_reset_history(contract_type,contract_id,scheduled_epoch)"
-        )
+        # Same columns as the table's UNIQUE constraint index; a second copy only
+        # doubled index writes. SQLite scans the UNIQUE index backwards for DESC order.
+        self.execute("DROP INDEX IF EXISTS idx_contract_rate_reset_history_contract")
         for operation in ("UPDATE", "DELETE"):
             self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_contract_rate_reset_history_immutable_{operation.lower()}
                 BEFORE {operation} ON contract_rate_reset_history

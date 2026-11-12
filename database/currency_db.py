@@ -2516,8 +2516,9 @@ class CurrencyDB(DBManager):
             changed_by TEXT NOT NULL DEFAULT 'migration',
             PRIMARY KEY(nationality,rate_key,effective_epoch)
         )""")
-        self.execute("CREATE INDEX IF NOT EXISTS idx_country_rate_history_lookup "
-                     "ON country_rate_history(nationality,rate_key,effective_epoch DESC)")
+        # Same columns as the table's UNIQUE constraint index; a second copy only
+        # doubled index writes. SQLite scans the UNIQUE index backwards for DESC order.
+        self.execute("DROP INDEX IF EXISTS idx_country_rate_history_lookup")
         for row in legacy_rows:
             self.execute(
                 "INSERT OR IGNORE INTO country_rate_history VALUES (?,?,?,?,?)",
@@ -2626,8 +2627,9 @@ class CurrencyDB(DBManager):
             changed_by TEXT NOT NULL DEFAULT 'system',
             PRIMARY KEY(nationality,benchmark_key,tenor_days,effective_epoch)
         )""")
-        self.execute("CREATE INDEX IF NOT EXISTS idx_market_curve_history_lookup ON "
-                     "market_rate_curve_history(nationality,benchmark_key,tenor_days,effective_epoch DESC)")
+        # Same columns as the table's UNIQUE constraint index; a second copy only
+        # doubled index writes. SQLite scans the UNIQUE index backwards for DESC order.
+        self.execute("DROP INDEX IF EXISTS idx_market_curve_history_lookup")
         self.execute("""CREATE TABLE IF NOT EXISTS market_rate_pressure (
             nationality TEXT NOT NULL,
             benchmark_key TEXT NOT NULL CHECK(benchmark_key IN ('funding','bank_bond','treasury')),
@@ -2642,10 +2644,9 @@ class CurrencyDB(DBManager):
             effective_epoch REAL NOT NULL,
             PRIMARY KEY(nationality,benchmark_key,effective_epoch)
         )""")
-        self.execute(
-            "CREATE INDEX IF NOT EXISTS idx_market_rate_pressure_history "
-            "ON market_rate_pressure_history(nationality,benchmark_key,effective_epoch DESC)"
-        )
+        # Same columns as the table's UNIQUE constraint index; a second copy only
+        # doubled index writes. SQLite scans the UNIQUE index backwards for DESC order.
+        self.execute("DROP INDEX IF EXISTS idx_market_rate_pressure_history")
         for operation in ("UPDATE", "DELETE"):
             self.execute(f"""CREATE TRIGGER IF NOT EXISTS
                 trg_market_rate_pressure_history_immutable_{operation.lower()}
