@@ -335,23 +335,16 @@ class DBManager:
         works concurrently with writers in WAL mode and rejects accidental
         mutations.
         """
-        root = Path(DBManager.database_dir).resolve()
-        path = (root / "inazina.db").resolve()
-        conn = None
-        try:
-            conn = sqlite3.connect(
-                f"file:{path}?mode=ro", uri=True, timeout=5,
-                isolation_level=None, factory=UnifiedConnection,
-            )
+        path = (Path(DBManager.database_dir).resolve() / "inazina.db").resolve()
+
+        def open_snapshot_reader():
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5, isolation_level=None,
+                                   check_same_thread=False, factory=UnifiedConnection)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA busy_timeout=5000")
             conn.execute("PRAGMA query_only=ON")
+            return conn
+
+        with pooled("db_manager.snapshot", path, open_snapshot_reader, readonly=True) as conn:
             conn.execute("BEGIN")
             yield conn
-        finally:
-            if conn is not None:
-                try:
-                    if conn.in_transaction:
-                        conn.rollback()
-                finally:
-                    conn.close()
