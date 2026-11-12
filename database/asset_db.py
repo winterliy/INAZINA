@@ -540,7 +540,8 @@ class AssetDB(DBManager):
             BEGIN UPDATE asset_cost_basis SET total_minor_units=
                 remaining_cost_basis(total_minor_units,OLD.quantity,NEW.quantity)
                 WHERE holding_id=NEW.holding_id; END""")
-        self.execute("CREATE INDEX IF NOT EXISTS idx_user_assets_user ON user_assets(user_id)")
+        # Prefix of the UNIQUE idx_user_assets_position (user_id, asset_code, account).
+        self.execute("DROP INDEX IF EXISTS idx_user_assets_user")
         self.enforce_integer_money("market_assets", ("price",), "code")
         self.enforce_integer_money("user_assets", ("average_cost",), "holding_id")
         self.execute(
