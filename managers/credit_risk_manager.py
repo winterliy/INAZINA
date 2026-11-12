@@ -9,6 +9,7 @@ import math
 
 from functions.money import (currency_precision, from_minor_units, round_currency,
                              to_minor_units)
+from functions.admin_audit import record_admin_audit
 from managers.rate_manager import RateManager
 
 
@@ -303,11 +304,7 @@ class CreditRiskManager:
             VALUES (?,?,?,?,?,?,?)""",
             (support_id, loan_id, party, str(actor_id), event_type,
              json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str), epoch))
-        conn.execute(
-            "INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
-            (str(actor_id), "credit_risk.support.configure",
-             json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str), epoch),
-        )
+        record_admin_audit(conn, str(actor_id), "credit_risk.support.configure", json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str), epoch)
         return snapshot
 
     @staticmethod
@@ -354,11 +351,9 @@ class CreditRiskManager:
              grade_f_max=excluded.grade_f_max,updated_epoch=excluded.updated_epoch,
              updated_by=excluded.updated_by""",
             (country, product, multiplier, *thresholds, epoch, str(actor_id)))
-        conn.execute("INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
-                     (str(actor_id), "credit_risk.policy.configure",
-                      json.dumps({"nationality": country, "productCode": product,
+        record_admin_audit(conn, str(actor_id), "credit_risk.policy.configure", json.dumps({"nationality": country, "productCode": product,
                                   "pdMultiplier": multiplier, "gradeThresholds": dict(zip(keys, thresholds))},
-                                 sort_keys=True, separators=(",", ":"), default=str), epoch))
+                                 sort_keys=True, separators=(",", ":"), default=str), epoch)
         snapshot = {"nationality": country, "productCode": product,
                     "pdMultiplier": multiplier,
                     "gradeThresholds": dict(zip(keys, thresholds))}
@@ -423,9 +418,7 @@ class CreditRiskManager:
         conn.execute("""INSERT INTO accounts.loan_future_commitment_events
             (loan_id,actor_id,snapshot,recorded_epoch) VALUES (?,?,?,?)""",
             (loan_id, str(actor_id), json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str), epoch))
-        conn.execute("INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
-                     (str(actor_id), "credit_risk.commitment.configure",
-                      json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str), epoch))
+        record_admin_audit(conn, str(actor_id), "credit_risk.commitment.configure", json.dumps(snapshot, sort_keys=True, separators=(",", ":"), default=str), epoch)
         return snapshot
 
     @staticmethod
@@ -470,10 +463,8 @@ class CreditRiskManager:
             VALUES (?,?,?,?,?,?)""", (collateral_id, int(row["loan_id"]), str(actor_id),
             json.dumps(prior, sort_keys=True, separators=(",", ":"), default=str),
             json.dumps(current, sort_keys=True, separators=(",", ":"), default=str), epoch))
-        conn.execute("INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
-                     (str(actor_id), "credit_risk.collateral_recovery.configure",
-                      json.dumps({"collateralId": collateral_id, **current}, sort_keys=True,
-                                 separators=(",", ":"), default=str), epoch))
+        record_admin_audit(conn, str(actor_id), "credit_risk.collateral_recovery.configure", json.dumps({"collateralId": collateral_id, **current}, sort_keys=True,
+                                 separators=(",", ":"), default=str), epoch)
         return {"collateralId": collateral_id, "loanId": int(row["loan_id"]), **current}
 
     @classmethod
@@ -810,11 +801,7 @@ class CreditRiskManager:
             )
             if changed.rowcount != 1:
                 raise ValueError("ECL 시나리오 설정이 초기화되지 않았습니다. 국가 설정을 확인해주세요.")
-        conn.execute(
-            "INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
-            (str(actor_id), "credit_risk.scenarios.configure",
-             json.dumps({"nationality": country, "scenarios": normalized}, separators=(",", ":"), default=str), epoch),
-        )
+        record_admin_audit(conn, str(actor_id), "credit_risk.scenarios.configure", json.dumps({"nationality": country, "scenarios": normalized}, separators=(",", ":"), default=str), epoch)
         return {"nationality": country, "updated": len(normalized)}
 
     @classmethod

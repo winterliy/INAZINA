@@ -20,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlsplit, parse_qs, unquote
+from functions.admin_audit import record_admin_audit
 
 ROOT = Path(__file__).resolve().parents[1]
 DATABASE = Path(os.environ.get("INAZINA_DB_PATH", ROOT / "database" / "inazina.db")).resolve()
@@ -1886,12 +1887,7 @@ def audit_admin_access(actor_id, action, payload):
     with connect_db(timeout=5) as connection:
         if not _table_exists(connection, "admin_audit"):
             raise ValueError("admin_audit_unavailable")
-        connection.execute(
-            "INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) "
-            "VALUES (?,?,?,?)",
-            (str(actor_id), str(action),
-             json.dumps(payload, ensure_ascii=False, default=str), time.time()),
-        )
+        record_admin_audit(connection, actor_id, str(action), payload)
 
 
 def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
@@ -2425,10 +2421,7 @@ def db_rows(table, search="", offset=0):
 
 def _audit_db(connection, actor, action, payload):
     if _table_exists(connection, "admin_audit"):
-        connection.execute(
-            "INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
-            (actor, action, json.dumps(payload, ensure_ascii=False, default=str), time.time()),
-        )
+        record_admin_audit(connection, actor, action, payload)
 
 
 def _row_snapshot(connection, table, rowid):

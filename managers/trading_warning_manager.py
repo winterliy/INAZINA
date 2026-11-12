@@ -4,6 +4,7 @@ A warning is a market notice: it does not halt trading. Discord views, the HTS,
 the dashboard and order confirmations show it until it is cleared or expires.
 """
 import time
+from functions.admin_audit import record_admin_audit
 
 LEVELS = {"caution": "투자주의", "warning": "투자경고", "danger": "투자위험"}
 ALIASES = {"주의": "caution", "투자주의": "caution", "caution": "caution",
@@ -102,5 +103,4 @@ class TradingWarnings:
     @staticmethod
     def _audit(conn, actor, action, payload):
         import json
-        conn.execute("INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
-                     (str(actor), action, json.dumps(payload, ensure_ascii=False), time.time()))
+        record_admin_audit(conn, str(actor), action, json.dumps(payload, ensure_ascii=False), time.time())

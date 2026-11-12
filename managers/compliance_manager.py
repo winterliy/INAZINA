@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 import json
 import math
 from functions.money import currency_precision, to_minor_units
+from functions.admin_audit import record_admin_audit
 
 
 class ComplianceManager:
@@ -34,11 +35,7 @@ class ComplianceManager:
 
     @staticmethod
     def _audit(conn, actor_id, action, payload, now):
-        conn.execute(
-            "INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) "
-            "VALUES (?,?,?,?)",
-            (str(actor_id), str(action), json.dumps(payload, sort_keys=True, default=str), float(now)),
-        )
+        record_admin_audit(conn, str(actor_id), str(action), json.dumps(payload, sort_keys=True, default=str), float(now))
 
     @staticmethod
     def _validated_epoch(value, error_code):

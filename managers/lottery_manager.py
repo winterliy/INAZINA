@@ -8,6 +8,7 @@ from datetime import datetime,timedelta,timezone
 from database.user_db import TREASURY_USER_ID
 from managers.user_manager import UserManager
 from managers.rate_manager import RateManager
+from functions.admin_audit import record_admin_audit
 
 KST = timezone(timedelta(hours=9))
 MAX_MONEY = MAX_NATIVE
@@ -82,10 +83,7 @@ class LotteryManager:
             rules = {**self._rules(conn),**updates}
             self.validate(rules)
             conn.execute("INSERT INTO settings(key,value) VALUES ('lottery_config',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",(json.dumps(rules),))
-            conn.execute(
-                "INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
-                (str(actor), 'lottery.configure', json.dumps(updates), int(time.time())),
-            )
+            record_admin_audit(conn, str(actor), 'lottery.configure', json.dumps(updates), int(time.time()))
         return '✅ 다음에 개설되는 회차부터 복권 설정을 적용합니다. 판매 중인 회차는 기존 규칙을 유지합니다.'
 
     def _ensure(self,conn,now):

@@ -12,6 +12,7 @@ from contextlib import nullcontext
 from functions.interest_calc import YEAR_SECONDS
 from functions.interest_calc import year_fraction
 from functions.admin_access import resolve_user_role
+from functions.admin_audit import record_admin_audit
 
 
 RATE_CHART_PREFIX = "__rate__:"
@@ -1760,14 +1761,11 @@ class RateManager:
                     (str(nationality), key, tenor, rate, when, str(actor_id)),
                 )
                 self.reprice_floating_products(db_conn, str(nationality))
-                db_conn.execute(
-                    "INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
-                    (str(actor_id), "market_rate.set", json.dumps({
+                record_admin_audit(db_conn, str(actor_id), "market_rate.set", json.dumps({
                         "nationality": str(nationality), "benchmark_key": key,
                         "tenor_days": tenor, "before": float(previous["annual_rate"]),
                         "after": rate,
-                    }, sort_keys=True, separators=(",", ":")), when),
-                )
+                    }, sort_keys=True, separators=(",", ":")), when)
             return True, f"✅ {nationality} {MARKET_RATE_NAMES[key]} {tenor}일물을 연 {rate:g}%로 설정했습니다."
         except (ValueError, TypeError, OverflowError) as exc:
             return False, f"❌ {exc}"

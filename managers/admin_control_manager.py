@@ -13,6 +13,7 @@ from managers.credit_score_manager import CreditScoreManager
 from managers.rate_manager import RateManager
 from database.db_manager import DBManager
 from functions.money import parse_currency_money
+from functions.admin_audit import record_admin_audit
 
 ENTITIES = {
     'stock': ('company','company_code','share_price','total_shares'),
@@ -96,10 +97,7 @@ class AdminControlManager:
 
     @staticmethod
     def _audit(conn,actor,action,payload):
-        conn.execute(
-            "INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)",
-            (str(actor), action, json.dumps(payload, ensure_ascii=False, default=str), time.time()),
-        )
+        record_admin_audit(conn, actor, action, payload)
 
     @staticmethod
     def _number(value, low=0, high=2**53-1, integer=False):

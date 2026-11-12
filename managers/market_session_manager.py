@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from functions import trading_hours
 from functions.time_utils import validate_epoch
+from functions.admin_audit import record_admin_audit
 
 
 class MarketSessionManager:
@@ -141,8 +142,7 @@ class MarketSessionManager:
             return cls._row(conn, exchange_id)
         if state["status"] != "open" and state["resume_epoch"] is not None and int(state["resume_epoch"]) <= now:
             cls._resume(conn, exchange_id, state, int(state["resume_epoch"]))
-            conn.execute('INSERT INTO admin_audit(actor_id,action,payload,recorded_epoch) VALUES (?,?,?,?)',
-                ('system','market_auto_resume',json.dumps({'exchange_id':exchange_id}),state['resume_epoch']))
+            record_admin_audit(conn, 'system', 'market_auto_resume', json.dumps({'exchange_id':exchange_id}), state['resume_epoch'])
             state = cls._row(conn, exchange_id)
         schedule = cls._hours_close_due(state, now)
         if schedule:
