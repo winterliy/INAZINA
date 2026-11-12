@@ -552,8 +552,7 @@ class AssetDB(DBManager):
                 UNIQUE(asset_code, recorded_epoch)
             )"""
         )
-        # Same columns as the table's UNIQUE constraint index; a second copy only
-        # doubled index writes. SQLite scans the UNIQUE index backwards for DESC order.
+        # Duplicate of the UNIQUE constraint index (also serves DESC scans).
         self.execute("DROP INDEX IF EXISTS idx_market_price_history_code_time")
         self.execute(
             "CREATE INDEX IF NOT EXISTS idx_market_price_history_epoch "
@@ -660,8 +659,7 @@ class AssetDB(DBManager):
                 UNIQUE(exchange_id, recorded_epoch)
             )"""
         )
-        # Same columns as the table's UNIQUE constraint index; a second copy only
-        # doubled index writes. SQLite scans the UNIQUE index backwards for DESC order.
+        # Duplicate of the UNIQUE constraint index (also serves DESC scans).
         self.execute("DROP INDEX IF EXISTS idx_exchange_index_history_time")
         self.execute(
             """CREATE TABLE IF NOT EXISTS leveraged_etf_state (
