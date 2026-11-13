@@ -122,6 +122,12 @@ class BoundedThreadingHTTPServer(ThreadingHTTPServer):
 
 
 def _open_connection(readonly):
+    from database import pg_backend
+    if pg_backend.enabled():
+        connection = pg_backend.connect(readonly=readonly)
+        connection.legacy_aliases = False
+        connection.row_factory = sqlite3.Row
+        return connection
     uri = DATABASE.as_uri() + ("?mode=ro" if readonly else "")
     connection = sqlite3.connect(uri, uri=True, timeout=2, factory=UnifiedConnection,
                                  check_same_thread=False)
@@ -134,9 +140,14 @@ def _open_connection(readonly):
     return connection
 
 
+def _pool_target():
+    from database import pg_backend
+    return pg_backend.dsn() if pg_backend.enabled() else DATABASE
+
+
 @contextmanager
 def connect_readonly():
-    with pooled("web_api.read", DATABASE, lambda: _open_connection(True), readonly=True) as connection:
+    with pooled("web_api.read", _pool_target(), lambda: _open_connection(True), readonly=True) as connection:
         yield connection
 
 
@@ -192,7 +203,7 @@ def connect_db(timeout=2):
         return sqlite3.SQLITE_OK
 
     try:
-        with pooled("web_api.write", DATABASE, lambda: _open_connection(False), readonly=False) as connection:
+        with pooled("web_api.write", _pool_target(), lambda: _open_connection(False), readonly=False) as connection:
             connection.execute(f"PRAGMA busy_timeout={max(1, int(timeout * 1000))}")
             connection.set_authorizer(serialize_writes)
             with connection:

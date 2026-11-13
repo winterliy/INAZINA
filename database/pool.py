@@ -17,6 +17,8 @@ _lock = threading.Lock()
 
 
 def _identity(path):
+    if str(path).startswith("postgresql:"):
+        return "dsn", str(path)
     try:
         stat = os.stat(path)
     except OSError:

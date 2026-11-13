@@ -44,6 +44,10 @@ class DatabaseManager:
     code_locations = staticmethod(DBManager.code_locations)
 
     def __init__(self):
+        from . import pg_backend
+        if pg_backend.enabled():
+            self._attach_postgres()
+            return
         from . import startup_state
         with _schema_initialization_lock():
             with closing(sqlite3.connect(Path(DBManager.database_dir).resolve() / "inazina.db")) as probe:
@@ -85,6 +89,21 @@ class DatabaseManager:
 
     def base_currency_code(self):
         return self.currency.base_currency_code()
+
+    def _attach_postgres(self):
+        """Connect every database module without running the SQLite schema setup:
+        PostgreSQL gets its schema from database/postgres/*.sql."""
+        for attribute, cls, name in (
+                ("users", UserDB, "users"), ("assets", AssetDB, "assets"), ("products", ProductDB, "product"),
+                ("companies", CompanyDB, "company"), ("accounts", AccountDB, "accounts"), ("pot", PotDB, "pot"),
+                ("tax", TaxDB, "tax"), ("system", SystemDB, "system"), ("currency", CurrencyDB, "forex"),
+                ("lottery", LotteryDB, "lottery"), ("corporate", CorporateDB, "corporate"),
+                ("els", ELSDB, "els"), ("financial", FinancialDB, "financial"), ("credit", CreditDB, "credit"),
+                ("organizations", OrganizationDB, "organizations")):
+            database = cls.__new__(cls)
+            DBManager.__init__(database, name)
+            database.pooled_reads = True
+            setattr(self, attribute, database)
 
     def _databases(self):
         return (self.users, self.assets, self.products, self.companies,

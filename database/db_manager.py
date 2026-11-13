@@ -6,6 +6,18 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from .unified import UnifiedConnection, migrate
 from .pool import pooled
+from . import pg_backend
+
+def _connect_unmanaged(path, *, timeout, readonly=False):
+    """A connection with explicit transactions (isolation_level None) to the active backend."""
+    if pg_backend.enabled():
+        conn = pg_backend.connect(readonly=readonly)
+        conn.isolation_level = None
+        return conn
+    target = f"file:{path}?mode=ro" if readonly else path
+    return sqlite3.connect(target, uri=readonly, timeout=timeout, isolation_level=None,
+                           check_same_thread=False, factory=UnifiedConnection)
+
 
 class DBManager:
     """SQLite 데이터베이스 연결 및 기본 설정을 관리하는 클래스"""
@@ -41,6 +53,12 @@ class DBManager:
             return lock
 
     def __init__(self, db_name):
+        if pg_backend.enabled():
+            # Schema and seeds live in PostgreSQL already (database/postgres/*.sql).
+            self.db_path = pg_backend.dsn()
+            self.lock = self._lock_for_path(self.db_path)
+            self.conn = self._get_connection()
+            return
         self.db_path = str(Path(self.database_dir).resolve() / "inazina.db")
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         # Different managers/threads can connect to the same file. SQLite serializes
@@ -51,6 +69,10 @@ class DBManager:
             self.conn = self._get_connection()
 
     def _get_connection(self):
+        if pg_backend.enabled():
+            conn = pg_backend.connect()
+            conn.row_factory = sqlite3.Row
+            return conn
         conn = sqlite3.connect(
             self.db_path,
             timeout=self.BUSY_TIMEOUT_MS / 1_000,
@@ -67,6 +89,10 @@ class DBManager:
         return conn
 
     def _open_reader(self):
+        if pg_backend.enabled():
+            conn = pg_backend.connect(readonly=True)
+            conn.row_factory = sqlite3.Row
+            return conn
         conn = sqlite3.connect(
             f"file:{self.db_path}?mode=ro", uri=True, timeout=self.BUSY_TIMEOUT_MS / 1_000,
             check_same_thread=False, factory=UnifiedConnection,
@@ -282,11 +308,10 @@ class DBManager:
             # Fail well before the HTTP proxy's 10-second timeout.  A short,
             # bounded retry handles ordinary cross-process writer hand-offs
             # without leaving abandoned requests blocked for 30 seconds.
-            path = root / "inazina.db"
+            path = pg_backend.dsn() if pg_backend.enabled() else root / "inazina.db"
             conn = writer_stack.enter_context(pooled(
-                "db_manager.atomic", path, lambda: sqlite3.connect(
-                    path, timeout=DBManager.BEGIN_BUSY_TIMEOUT_MS / 1_000, isolation_level=None,
-                    check_same_thread=False, factory=UnifiedConnection),
+                "db_manager.atomic", path, lambda: _connect_unmanaged(
+                    path, timeout=DBManager.BEGIN_BUSY_TIMEOUT_MS / 1_000),
                 readonly=False))
             conn.row_factory = sqlite3.Row
             conn.execute(f"PRAGMA busy_timeout={DBManager.BEGIN_BUSY_TIMEOUT_MS}")
@@ -335,11 +360,11 @@ class DBManager:
         works concurrently with writers in WAL mode and rejects accidental
         mutations.
         """
-        path = (Path(DBManager.database_dir).resolve() / "inazina.db").resolve()
+        path = (pg_backend.dsn() if pg_backend.enabled()
+                else (Path(DBManager.database_dir).resolve() / "inazina.db").resolve())
 
         def open_snapshot_reader():
-            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5, isolation_level=None,
-                                   check_same_thread=False, factory=UnifiedConnection)
+            conn = _connect_unmanaged(path, timeout=5, readonly=True)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA busy_timeout=5000")
             conn.execute("PRAGMA query_only=ON")
