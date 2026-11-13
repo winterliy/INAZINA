@@ -11,7 +11,9 @@ Triggers of merged tables move to the merged table with a guard (bank_products: 
 country_rate_history: nationality '*'), and statements touching a merged table get the
 same filter. Triggers that only guard dropped tables are skipped with the reason.
 """
+import hashlib
 import re
+import textwrap
 
 import sqlglot
 from sqlglot import exp
@@ -217,7 +219,6 @@ def _identifier(name, suffix=""):
     """A quoted PostgreSQL identifier of at most 63 bytes, unique for long names."""
     full = name + suffix
     if len(full.encode()) > 63:
-        import hashlib
         full = full[:50] + "_" + hashlib.sha1(full.encode()).hexdigest()[:8] + suffix[-3:]
     return f'"{full}"'
 
@@ -276,13 +277,13 @@ def translate(conn):
                          and _same_row_update(statements[0], table, keys.get(table, [])))
             if normalize:
                 assign = "\n".join(f"        NEW.\"{column}\" := {value};" for column, value in normalize)
-                block = f"    IF ({condition}) THEN\n{assign}\n    END IF;" if condition else assign.replace("    ", "", 1)
+                block = f"    IF ({condition}) THEN\n{assign}\n    END IF;" if condition else textwrap.dedent(assign).replace("\n", "\n    ").join(("    ", ""))
                 out.append(_function(fn, block, "NEW"))
                 out.append(f'CREATE TRIGGER {_identifier(name)} BEFORE {event} ON "{target_table(table)}" '
                            f"FOR EACH ROW EXECUTE FUNCTION {fn}();")
                 continue
             translated = "\n".join(f"        {_statement(s, keys, columns)};" for s in statements)
-            block = f"    IF ({condition}) THEN\n{translated}\n    END IF;" if condition else translated.replace("    ", "", 1)
+            block = f"    IF ({condition}) THEN\n{translated}\n    END IF;" if condition else textwrap.dedent(translated).replace("\n", "\n    ").join(("    ", ""))
             out.append(_function(fn, block, _row(event) if timing in {"BEFORE", "INSTEAD OF"} else "NULL"))
             out.append(f'CREATE TRIGGER {_identifier(name)} {timing} {event} ON "{target_table(table)}" '
                        f"FOR EACH ROW EXECUTE FUNCTION {fn}();")
