@@ -28,8 +28,6 @@ ROW_FILTER = {
 }
 # Dropped tables whose rules already exist elsewhere (verified 2026-11-14).
 COVERED = {
-    "bank_journal_entries": "journal_entries/journal_lines are append-only and the writer checks balance",
-    "bank_journal_lines": "journal_lines are append-only",
     "market_execution_order_baselines": "table dropped (v2 kept)",
 }
 
@@ -271,6 +269,14 @@ def translate(conn):
         if table in DROPPED or any(re.search(rf"\b{re.escape(t)}\b", body, re.I) for t in DROPPED):
             skipped.append((name, "uses a dropped table"))
             continue
+        if event.startswith("UPDATE OF"):
+            # SQLite fires UPDATE OF when another trigger's UPDATE writes the column; here a
+            # BEFORE trigger may change it through NEW instead, which PostgreSQL's UPDATE OF
+            # does not see. Fire on any UPDATE that changes one of the columns.
+            watched = [c.strip().strip('"') for c in event[len("UPDATE OF"):].split(",")]
+            changed = " OR ".join(f"NEW.{c} IS DISTINCT FROM OLD.{c}" for c in watched)
+            when = f"({changed}) AND ({when})" if when else changed
+            event = "UPDATE"
         if table in ROW_FILTER:
             # The trigger now sits on the merged table: fire only for the source table's rows.
             column, value = ROW_FILTER[table]

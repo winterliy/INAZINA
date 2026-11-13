@@ -164,6 +164,35 @@ def _replace_to_upsert(tree):
                                         expressions=updates or None))
 
 
+def _any_value_for_bare_columns(tree):
+    """SQLite lets a grouped SELECT name columns outside GROUP BY (any row's value);
+    PostgreSQL needs that said: ANY_VALUE(column)."""
+    for select in tree.find_all(exp.Select):
+        group = select.args.get("group")
+        if not group:
+            continue
+        grouped = {g.sql() for g in group.expressions}
+        aliases = {e.alias for e in select.expressions if e.alias}
+        for expression in select.expressions:
+            for column in list(expression.find_all(exp.Column)):
+                if column.sql() in grouped or column.name in aliases or column.find_ancestor(exp.AggFunc, exp.Subquery):
+                    continue
+                if column.find_ancestor(exp.Select) is not select:
+                    continue
+                column.replace(exp.AnyValue(this=column.copy()))
+
+
+def _drop_order_on_single_row_aggregates(tree):
+    """SELECT agg(...) ... ORDER BY col (no GROUP BY) returns one row; SQLite ignores the
+    ORDER BY, PostgreSQL rejects it."""
+    for select in tree.find_all(exp.Select):
+        order = select.args.get("order")
+        if not order or select.args.get("group"):
+            continue
+        if any(e.find(exp.AggFunc) for e in select.expressions):
+            select.set("order", None)
+
+
 def _map_rowid(tree):
     """rowid / _rowid_ / oid -> the table's integer primary key."""
     columns = [c for c in tree.find_all(exp.Column) if c.name.lower() in {"rowid", "_rowid_", "oid"}]
@@ -205,6 +234,8 @@ def translate(sql):
         _replace_to_upsert(tree)
     tree = _filter_merged(tree)
     _map_rowid(tree)
+    _any_value_for_bare_columns(tree)
+    _drop_order_on_single_row_aggregates(tree)
     tree = rewrite(tree)
     for table in tree.find_all(exp.Table):
         if table.name in DROPPED:
