@@ -112,38 +112,34 @@ def _pragma(sql):
     return None
 
 
-_ROWID_LOCK = threading.Lock()
-_rowid_columns = {}
-
-
-def _integer_keys():
-    """table -> its integer primary key column (what SQLite's rowid aliases)."""
-    key = dsn()
-    with _ROWID_LOCK:
-        if key not in _rowid_columns:
-            with psycopg.connect(key) as conn:
-                _rowid_columns[key] = dict(conn.execute(
-                    "SELECT c.table_name, c.column_name FROM information_schema.columns c "
-                    "JOIN information_schema.key_column_usage k ON k.table_name = c.table_name "
-                    "AND k.column_name = c.column_name JOIN information_schema.table_constraints t "
-                    "ON t.constraint_name = k.constraint_name AND t.constraint_type = 'PRIMARY KEY' "
-                    "WHERE c.table_schema = 'public' AND c.data_type = 'bigint' "
-                    "AND (SELECT count(*) FROM information_schema.key_column_usage k2 "
-                    "     WHERE k2.constraint_name = k.constraint_name) = 1").fetchall())
-        return _rowid_columns[key]
+_CATALOG_LOCK = threading.Lock()
+_catalog_cache = {}
 
 
 def _catalog(query):
+    """{table: [column, ...]} for a (table, column) catalog query, cached per database."""
     key = (dsn(), query)
-    with _ROWID_LOCK:
-        if key not in _rowid_columns:
+    with _CATALOG_LOCK:
+        if key not in _catalog_cache:
             with psycopg.connect(dsn()) as conn:
                 rows = conn.execute(query).fetchall()
             grouped = {}
             for table, column in rows:
                 grouped.setdefault(table, []).append(column)
-            _rowid_columns[key] = grouped
-        return _rowid_columns[key]
+            _catalog_cache[key] = grouped
+        return _catalog_cache[key]
+
+
+def _integer_keys():
+    """table -> its single bigint primary key column (what SQLite's rowid aliases)."""
+    primary = ("SELECT c.table_name, c.column_name FROM information_schema.columns c "
+               "JOIN information_schema.key_column_usage k ON k.table_name = c.table_name "
+               "AND k.column_name = c.column_name JOIN information_schema.table_constraints t "
+               "ON t.constraint_name = k.constraint_name AND t.constraint_type = 'PRIMARY KEY' "
+               "WHERE c.table_schema = 'public'")
+    keys, bigint_keys = _catalog(primary), _catalog(primary + " AND c.data_type = 'bigint'")
+    return {table: columns[0] for table, columns in keys.items()
+            if len(columns) == 1 and columns == bigint_keys.get(table)}
 
 
 def _replace_to_upsert(tree):
