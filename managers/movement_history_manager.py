@@ -1,6 +1,7 @@
 """Clear prior Korean calendar days of Movement chart samples."""
 
 import sqlite3
+from database.db_manager import _connect_unmanaged
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from database.unified import UnifiedConnection
@@ -23,7 +24,7 @@ class MovementHistoryManager:
     def _transaction(self):
         # Market ticks skip a busy database instead of queueing behind the
         # general transaction manager's longer timeout or process-wide locks.
-        conn = sqlite3.connect(self.db.assets.db_path, timeout=0.05, isolation_level=None, factory=UnifiedConnection)
+        conn = _connect_unmanaged(self.db.assets.db_path, timeout=0.05)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 50")
         try:

@@ -89,8 +89,25 @@ END $$;
 """
 
 
-def _expr(sql):
-    tree = rewrite(_filter_merged(sqlglot.parse_one(f"SELECT {sql}", read="sqlite")))
+# table -> column that SQLite's rowid aliases (single INTEGER primary key, or the key of a
+# merged table, which has no rowid column of its own). Filled by translate().
+ROWID_ALIAS = {}
+
+
+def _map_rowid(tree, table=None):
+    for column in tree.find_all(exp.Column):
+        if column.name.lower() not in {"rowid", "_rowid_", "oid"}:
+            continue
+        owner = column.table.upper() if column.table else ""
+        source = table if owner in {"", "NEW", "OLD"} and table else column.table
+        alias = ROWID_ALIAS.get(source)
+        if alias:
+            column.set("this", exp.to_identifier(alias))
+    return tree
+
+
+def _expr(sql, table=None):
+    tree = rewrite(_filter_merged(_map_rowid(sqlglot.parse_one(f"SELECT {sql}", read="sqlite"), table)))
     for table in tree.find_all(exp.Table):
         table.set("this", exp.to_identifier(target_table(table.name)))
     return tree.expressions[0].sql(dialect="postgres")
@@ -125,6 +142,8 @@ def _filter_merged(tree):
         if isinstance(statement, exp.Schema) and isinstance(statement.parent, exp.Insert):
             statement = statement.parent  # INSERT INTO t (columns ...)
         if isinstance(statement, (exp.Update, exp.Delete)) and statement.this is table:
+            if not table.alias:
+                table.set("alias", exp.TableAlias(this=exp.to_identifier(alias)))  # "liability.col" still resolves
             condition = exp.EQ(this=exp.column(column, table=alias), expression=exp.Literal.string(value))
             where = statement.args.get("where")
             statement.set("where", exp.Where(this=exp.and_(where.this, condition) if where else condition))
@@ -148,8 +167,8 @@ def _filter_merged(tree):
     return tree
 
 
-def _statement(sql, keys=None, columns=None):
-    tree = _filter_merged(sqlglot.parse_one(sql, read="sqlite"))
+def _statement(sql, keys=None, columns=None, table=None):
+    tree = _filter_merged(_map_rowid(sqlglot.parse_one(sql, read="sqlite"), table))
     chain = _raise_chain(tree)
     if chain:
         return chain
@@ -189,7 +208,7 @@ def _row(event):
 
 def _same_row_update(statement, table, keys):
     """'UPDATE table SET a=e WHERE key=NEW.key' -> [(a, e)], else None."""
-    tree = sqlglot.parse_one(statement, read="sqlite")
+    tree = _map_rowid(sqlglot.parse_one(statement, read="sqlite"), table)
     if not isinstance(tree, exp.Update) or tree.this.name != table:
         return None
     where = tree.args.get("where")
@@ -236,6 +255,10 @@ def translate(conn):
         info = list(conn.execute(f'PRAGMA table_info("{table}")'))
         keys[table] = [r[1] for r in sorted(info, key=lambda r: r[5]) if r[5]]
         columns[table] = [r[1] for r in info]
+        integer_key = [r for r in info if r[5]]
+        if len(integer_key) == 1 and (integer_key[0][2] or "").upper() == "INTEGER" or (
+                table in MERGED and len(keys[table]) == 1):
+            ROWID_ALIAS[table] = keys[table][0]
     for name, sql in conn.execute("SELECT name, sql FROM sqlite_master WHERE type='trigger' ORDER BY name"):
         m = HEAD.match(" ".join(sql.split()))
         if not m:
@@ -255,7 +278,7 @@ def translate(conn):
             guard = f"{row}.{column} = '{value}'"
             when = f"({guard}) AND ({when})" if when else guard
         try:
-            condition = _expr(when) if when else None
+            condition = _expr(when, table) if when else None
             raise_only = RAISE_ONLY.match(body)
             if raise_only:
                 message = raise_only["msg"].replace("''", "'")
@@ -282,7 +305,7 @@ def translate(conn):
                 out.append(f'CREATE TRIGGER {_identifier(name)} BEFORE {event} ON "{target_table(table)}" '
                            f"FOR EACH ROW EXECUTE FUNCTION {fn}();")
                 continue
-            translated = "\n".join(f"        {_statement(s, keys, columns)};" for s in statements)
+            translated = "\n".join(f"        {_statement(s, keys, columns, table)};" for s in statements)
             block = f"    IF ({condition}) THEN\n{translated}\n    END IF;" if condition else textwrap.dedent(translated).replace("\n", "\n    ").join(("    ", ""))
             out.append(_function(fn, block, _row(event) if timing in {"BEFORE", "INSTEAD OF"} else "NULL"))
             out.append(f'CREATE TRIGGER {_identifier(name)} {timing} {event} ON "{target_table(table)}" '

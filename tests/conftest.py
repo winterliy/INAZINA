@@ -39,15 +39,80 @@ def _build_template():
 
 def _init_from_template(self):
     root = Path(DBManager.database_dir)
-    if _template is not None and (not root.exists() or not any(root.iterdir())):
+    if _pg_template is not None:
+        _use_fresh_postgres_database(root)
+    elif _template is not None and (not root.exists() or not any(root.iterdir())):
         root.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(_template, root / "inazina.db")
     _original_init(self)
 
 
+# INAZINA_DB_BACKEND=postgres: the same tests on PostgreSQL. Each worker converts its
+# SQLite template once into a PostgreSQL template database; every test directory gets
+# a fresh clone (CREATE DATABASE ... TEMPLATE), and the previous clone is dropped.
+_pg_template = None
+_pg_current = {}
+
+
+def _pg_admin():
+    import psycopg
+    return psycopg.connect("postgresql:///postgres", autocommit=True)
+
+
+def _build_postgres_template(sqlite_template):
+    import os
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    from sqlite_to_postgres import load
+    name = f"inazina_test_tpl_{os.getpid()}"
+    with _pg_admin() as admin:
+        admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+        admin.execute(f'CREATE DATABASE "{name}"')
+    load(str(sqlite_template), f"postgresql:///{name}")
+    atexit.register(_drop_postgres_databases)
+    return name
+
+
+def _use_fresh_postgres_database(root):
+    import hashlib
+    import os
+    key = str(root.resolve())
+    if _pg_current.get("root") == key:
+        return  # same test directory: keep its database (several managers per test)
+    name = f"inazina_test_{os.getpid()}_{hashlib.sha1(key.encode()).hexdigest()[:10]}"
+    with _pg_admin() as admin:
+        if _pg_current.get("name"):
+            admin.execute(f'DROP DATABASE IF EXISTS "{_pg_current["name"]}" WITH (FORCE)')
+        admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+        admin.execute(f'CREATE DATABASE "{name}" TEMPLATE "{_pg_template}"')
+    _pg_current.update(root=key, name=name)
+    os.environ["INAZINA_PG_DSN"] = f"postgresql:///{name}"
+
+
+def _drop_postgres_databases():
+    try:
+        with _pg_admin() as admin:
+            for name in (_pg_current.get("name"), _pg_template):
+                if name:
+                    admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+    except Exception:
+        pass
+
+
 def pytest_configure(config):
-    global _template
-    _template = _build_template()
+    global _template, _pg_template
+    from database import pg_backend
+    if pg_backend.enabled():
+        # The SQLite template is built with the SQLite backend, then converted.
+        import os
+        os.environ["INAZINA_DB_BACKEND"] = "sqlite"
+        try:
+            _template = _build_template()
+        finally:
+            os.environ["INAZINA_DB_BACKEND"] = "postgres"
+        _pg_template = _build_postgres_template(_template)
+    else:
+        _template = _build_template()
     database.DatabaseManager.__init__ = _init_from_template
 
 

@@ -96,11 +96,85 @@ def _pragma(sql):
         return ("SELECT 'main' AS schema, table_name AS name, "
                 "CASE table_type WHEN 'VIEW' THEN 'view' ELSE 'table' END AS type, 0 AS ncol, 0 AS wr, 0 AS strict "
                 "FROM information_schema.tables WHERE table_schema = 'public'"), ()
+    if name == "foreign_key_list" and (argument or match[3]):
+        table = target_table((argument or match[3]).strip("'\" "))
+        return ("SELECT row_number() OVER () - 1 AS id, 0 AS seq, ccu.table_name AS \"table\", "
+                "kcu.column_name AS \"from\", ccu.column_name AS \"to\", rc.update_rule AS on_update, "
+                "rc.delete_rule AS on_delete, 'NONE' AS match "
+                "FROM information_schema.referential_constraints rc "
+                "JOIN information_schema.key_column_usage kcu ON kcu.constraint_name = rc.constraint_name "
+                "JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = rc.unique_constraint_name "
+                f"WHERE kcu.table_name = '{table}'"), ()
     if name == "foreign_key_check":
         return "SELECT NULL AS \"table\" WHERE false", ()
     if name in _NO_OP_PRAGMAS or name in {"user_version", "schema_version", "data_version"}:
         return "SELECT 0 WHERE false", ()
     return None
+
+
+_ROWID_LOCK = threading.Lock()
+_rowid_columns = {}
+
+
+def _integer_keys():
+    """table -> its integer primary key column (what SQLite's rowid aliases)."""
+    key = dsn()
+    with _ROWID_LOCK:
+        if key not in _rowid_columns:
+            with psycopg.connect(key) as conn:
+                _rowid_columns[key] = dict(conn.execute(
+                    "SELECT c.table_name, c.column_name FROM information_schema.columns c "
+                    "JOIN information_schema.key_column_usage k ON k.table_name = c.table_name "
+                    "AND k.column_name = c.column_name JOIN information_schema.table_constraints t "
+                    "ON t.constraint_name = k.constraint_name AND t.constraint_type = 'PRIMARY KEY' "
+                    "WHERE c.table_schema = 'public' AND c.data_type = 'bigint' "
+                    "AND (SELECT count(*) FROM information_schema.key_column_usage k2 "
+                    "     WHERE k2.constraint_name = k.constraint_name) = 1").fetchall())
+        return _rowid_columns[key]
+
+
+def _catalog(query):
+    key = (dsn(), query)
+    with _ROWID_LOCK:
+        if key not in _rowid_columns:
+            with psycopg.connect(dsn()) as conn:
+                rows = conn.execute(query).fetchall()
+            grouped = {}
+            for table, column in rows:
+                grouped.setdefault(table, []).append(column)
+            _rowid_columns[key] = grouped
+        return _rowid_columns[key]
+
+
+def _replace_to_upsert(tree):
+    """INSERT OR REPLACE -> INSERT ... ON CONFLICT (primary key) DO UPDATE every other column."""
+    table = target_table(tree.find(exp.Table).name)
+    keys = _catalog("SELECT k.table_name, k.column_name FROM information_schema.key_column_usage k "
+                    "JOIN information_schema.table_constraints t ON t.constraint_name = k.constraint_name "
+                    "AND t.constraint_type = 'PRIMARY KEY' WHERE k.table_schema = 'public' "
+                    "ORDER BY k.ordinal_position").get(table, [])
+    target = tree.this.expressions if isinstance(tree.this, exp.Schema) else None
+    names = [c.name for c in target] if target else _catalog(
+        "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public' "
+        "AND column_name <> 'rowid' ORDER BY ordinal_position").get(table, [])
+    tree.set("alternative", None)
+    updates = [exp.EQ(this=exp.column(n), expression=exp.column(n, table="EXCLUDED")) for n in names if n not in keys]
+    tree.set("conflict", exp.OnConflict(conflict_keys=[exp.to_identifier(k) for k in keys],
+                                        action=exp.var("DO UPDATE" if updates else "DO NOTHING"),
+                                        expressions=updates or None))
+
+
+def _map_rowid(tree):
+    """rowid / _rowid_ / oid -> the table's integer primary key."""
+    columns = [c for c in tree.find_all(exp.Column) if c.name.lower() in {"rowid", "_rowid_", "oid"}]
+    if not columns:
+        return
+    keys = _integer_keys()
+    tables = {t.alias_or_name: target_table(t.name) for t in tree.find_all(exp.Table)}
+    for column in columns:
+        table = tables.get(column.table) if column.table else (next(iter(tables.values())) if len(tables) == 1 else None)
+        if table and table in keys:
+            column.set("this", exp.to_identifier(keys[table]))
 
 
 @lru_cache(maxsize=20000)
@@ -117,7 +191,20 @@ def translate(sql):
         return "BEGIN; " + WRITER_LOCK, None
     if upper in {"COMMIT", "END", "END TRANSACTION", "COMMIT TRANSACTION"}:
         return "COMMIT", None
-    tree = _filter_merged(sqlglot.parse_one(stripped, read="sqlite"))
+    savepoint = re.fullmatch(r"(SAVEPOINT|RELEASE(?: SAVEPOINT)?|ROLLBACK(?: TRANSACTION)? TO(?: SAVEPOINT)?)\s+(\w+)",
+                             stripped, re.I)
+    if savepoint:
+        verb = savepoint[1].upper().split()[0]
+        return f"{verb}:{savepoint[2]}", None
+    if re.match(r"(CREATE|DROP)\s+TRIGGER\b", upper):
+        # Triggers come from database/postgres/triggers.sql; runtime trigger DDL is SQLite schema setup.
+        return "SELECT 1 WHERE false", None
+    from database.unified import sql as without_legacy_prefixes
+    tree = sqlglot.parse_one(without_legacy_prefixes(stripped), read="sqlite")
+    if isinstance(tree, exp.Insert) and str(tree.args.get("alternative") or "").upper() == "REPLACE":
+        _replace_to_upsert(tree)
+    tree = _filter_merged(tree)
+    _map_rowid(tree)
     tree = rewrite(tree)
     for table in tree.find_all(exp.Table):
         if table.name in DROPPED:
@@ -166,6 +253,7 @@ class PgCursor:
         self.rowcount = -1
         self.description = None
         self._rows = None
+        self._hide_rowid = False
 
     def _params(self, parameters):
         if isinstance(parameters, dict):
@@ -181,6 +269,9 @@ class PgCursor:
         if text == "COMMIT":
             connection.commit()
             return self
+        if text.startswith(("SAVEPOINT:", "RELEASE:", "ROLLBACK:")):
+            connection._savepoint(*text.split(":", 1))
+            return self
         is_write = not text.lstrip().upper().startswith(("SELECT", "WITH", "VALUES"))
         if is_write and connection.isolation_level is not None and not connection.in_transaction:
             connection._begin(immediate=False)  # sqlite3 legacy: implicit BEGIN before DML
@@ -193,6 +284,10 @@ class PgCursor:
             raise _sqlite_error(error) from error
         self.rowcount = self._cursor.rowcount
         self.description = self._cursor.description
+        # The rowid column PostgreSQL tables carry for SQLite code shows up only when asked for.
+        self._hide_rowid = "rowid" not in sql.lower()
+        if self.description and self._hide_rowid and any(d.name == "rowid" for d in self.description):
+            self.description = tuple(d for d in self.description if d.name != "rowid")
         if key:
             row = self._cursor.fetchone()
             self.lastrowid = row[0] if row else None
@@ -208,11 +303,14 @@ class PgCursor:
         return self
 
     def _convert(self, row):
+        names = [d.name for d in self.description or ()]
+        if self._hide_rowid and "rowid" in names:
+            index = names.index("rowid")
+            row, names = row[:index] + row[index + 1:], names[:index] + names[index + 1:]
         values = tuple(_decode(v) for v in row)
         factory = self.connection.row_factory
         if factory is None:
             return values
-        names = [d.name for d in self.description or ()]
         if factory is sqlite3.Row or factory is Row:
             return Row(names, values)
         return factory(self, values)
@@ -255,7 +353,9 @@ class PgConnection:
     """The subset of sqlite3.Connection the app uses."""
 
     def __init__(self, conninfo=None, *, readonly=False):
-        self._raw = psycopg.connect(conninfo or dsn(), autocommit=True)
+        # Client-side binding: SQLite code passes parameters PostgreSQL cannot type on its
+        # own (``? IS NULL``), and values are sent as literals either way.
+        self._raw = psycopg.connect(conninfo or dsn(), autocommit=True, cursor_factory=psycopg.ClientCursor)
         self._lock = threading.RLock()
         self.isolation_level = ""
         self.row_factory = None
@@ -276,6 +376,23 @@ class PgConnection:
             self._in_transaction = True
         if immediate:
             self._raw.execute(WRITER_LOCK)
+
+    def _savepoint(self, verb, name):
+        """SQLite semantics: SAVEPOINT outside a transaction starts one, and releasing
+        that outermost savepoint commits it."""
+        if verb == "SAVEPOINT":
+            if not self._in_transaction:
+                self._begin(immediate=False)
+                self._savepoint_root = name
+            self._raw.execute(f'SAVEPOINT "{name}"')
+        elif verb == "RELEASE":
+            if getattr(self, "_savepoint_root", None) == name:
+                self._savepoint_root = None
+                self.commit()
+            else:
+                self._raw.execute(f'RELEASE SAVEPOINT "{name}"')
+        else:
+            self._raw.execute(f'ROLLBACK TO SAVEPOINT "{name}"')
 
     def commit(self):
         if self._in_transaction:

@@ -3,6 +3,7 @@ from functions.money import base_currency_code
 import math
 import random
 import sqlite3
+from database.db_manager import _connect_unmanaged
 import time
 import threading
 from decimal import Decimal, ROUND_HALF_UP
@@ -124,7 +125,7 @@ class MarketManager:
         if active is not None:
             yield active
             return
-        conn = sqlite3.connect(self.db.assets.db_path, timeout=0.05, isolation_level=None, factory=UnifiedConnection)
+        conn = _connect_unmanaged(self.db.assets.db_path, timeout=0.05)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 50")
         try:

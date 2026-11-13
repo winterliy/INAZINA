@@ -57,6 +57,7 @@ def converter(pg_type):
 # Per source table: (target table, function(row dict) -> row dict) for consolidated tables.
 def _fold_rate(row):
     row.pop("history_id", None)
+    row.pop("rowid", None)  # country_rate_history numbers its own rows
     return {**row, "nationality": "*"}
 
 
@@ -67,6 +68,16 @@ ROW_MAPPERS = {
     "board_post_reactions": lambda row: row,
     "board_comment_reactions": lambda row: row,
 }
+
+
+def _advance_identities(target, table):
+    """Identity columns continue after the copied ids (later rows may be folded in)."""
+    for (column,) in target.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name=%s AND is_identity='YES'", (table,)).fetchall():
+        target.execute(f"SELECT setval(pg_get_serial_sequence(%s, %s), "
+                       f"COALESCE((SELECT MAX({quoted(column)}) FROM {quoted(table)}), 0) + 1, false)",
+                       (table, column))
 
 
 def load(source_path, dsn):
@@ -93,7 +104,8 @@ def load(source_path, dsn):
             table = RENAMED.get(name) or FOLDED.get(name) or MERGED.get(name) or name
             mapper = ROW_MAPPERS.get(name, lambda row: row)
             columns = pg_columns[table]
-            rows = [mapper(dict(row)) for row in source.execute(f"SELECT * FROM {quoted(name)}")]
+            select = f"SELECT rowid AS rowid, * FROM {quoted(name)}" if "rowid" in columns else f"SELECT * FROM {quoted(name)}"
+            rows = [mapper(dict(row)) for row in source.execute(select)]
             if not rows:
                 report.append((name, table, 0))
                 continue
@@ -103,18 +115,13 @@ def load(source_path, dsn):
                     f"COPY {quoted(table)} ({', '.join(map(quoted, names))}) FROM STDIN") as copy:
                 for row in rows:
                     copy.write_row([fn(row[c]) for fn, c in zip(convert, names)])
+            _advance_identities(target, table)
             report.append((name, table, len(rows)))
         target.execute("SET session_replication_role = origin")
         # Triggers last: the copied rows are already normalized by SQLite's own triggers.
         from build_postgres_triggers import translate
         target.execute(translate(source)[0])
-        # Identity columns continue after the copied ids.
-        for table, column in target.execute(
-                "SELECT table_name, column_name FROM information_schema.columns "
-                "WHERE table_schema='public' AND is_identity='YES'").fetchall():
-            target.execute(f"SELECT setval(pg_get_serial_sequence(%s, %s), "
-                           f"COALESCE((SELECT MAX({quoted(column)}) FROM {quoted(table)}), 0) + 1, false)",
-                           (table, column))
+        target.execute((Path(__file__).resolve().parents[1] / "database" / "postgres" / "compat.sql").read_text())
         target.execute("ANALYZE")
     return report
 
