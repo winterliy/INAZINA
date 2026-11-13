@@ -41,7 +41,14 @@ def converter(pg_type):
     if pg_type == "text":
         return lambda value: None if value is None else str(_text(value))
     if pg_type == "bigint":
-        return lambda value: None if value is None else int(Decimal(str(_text(value))))
+        def whole(value):
+            if value is None:
+                return None
+            number = Decimal(str(_text(value)))
+            if number != number.to_integral_value():
+                raise ValueError(f"fractional value {number} for a bigint column")  # never truncate
+            return int(number)
+        return whole
     if pg_type == "double precision":
         return lambda value: None if value is None else float(str(_text(value)).removeprefix("~R~").removeprefix("~M~"))
     return _text
@@ -98,6 +105,9 @@ def load(source_path, dsn):
                     copy.write_row([fn(row[c]) for fn, c in zip(convert, names)])
             report.append((name, table, len(rows)))
         target.execute("SET session_replication_role = origin")
+        # Triggers last: the copied rows are already normalized by SQLite's own triggers.
+        from build_postgres_triggers import translate
+        target.execute(translate(source)[0])
         # Identity columns continue after the copied ids.
         for table, column in target.execute(
                 "SELECT table_name, column_name FROM information_schema.columns "

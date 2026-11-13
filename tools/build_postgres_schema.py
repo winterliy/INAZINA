@@ -54,6 +54,13 @@ def _is_integral(value):
 _COMPARISONS = (exp.EQ, exp.NEQ, exp.LT, exp.LTE, exp.GT, exp.GTE)
 
 
+def _already_numeric_round(node):
+    def is_cast(value, kind):
+        return isinstance(value, exp.Cast) and value.to.is_type(kind)
+    decimals = node.args.get("decimals")
+    return is_cast(node.this, "numeric") and (decimals is None or is_cast(decimals, "int"))
+
+
 def _wide_cmp_args(node):
     if isinstance(node, exp.Anonymous) and node.name.upper() == "WIDE_CMP" and len(node.expressions) == 2:
         return node.expressions
@@ -96,14 +103,55 @@ def _rewrite(node):
                                          expression=exp.Paren(this=valid)))
         if name == "WIDE_IS" and len(args) == 2:
             return exp.NullSafeEQ(this=args[0], expression=args[1])
-        if name == "WIDE_MUL" and len(args) == 2:
-            return exp.Mul(this=args[0], expression=args[1])
+        # Exact arithmetic is native on NUMERIC. Decimal // and % truncate toward
+        # zero, like trunc() and mod().
+        binary = {"WIDE_ADD": exp.Add, "WIDE_SUB": exp.Sub, "WIDE_MUL": exp.Mul, "WIDE_DIV_REAL": exp.Div}
+        if name in binary and len(args) == 2:
+            return exp.Paren(this=binary[name](this=args[0], expression=args[1]))
+        if name == "WIDE_DIV" and len(args) == 2:
+            a, b = args
+            quotient = exp.Div(this=a, expression=b, typed=True)
+            if any(isinstance(arg, exp.Anonymous) and arg.name.upper() == "WIDE_REAL" for arg in args):
+                return exp.Paren(this=quotient)  # a real operand: ordinary division (wide_values.py)
+            both_whole = exp.And(this=_is_integral(a.copy()), expression=_is_integral(b.copy()))
+            return exp.Case(ifs=[exp.If(this=both_whole, true=exp.func("trunc", quotient.copy()))],
+                            default=quotient)
+        if name == "WIDE_MOD" and len(args) == 2:
+            return exp.func("mod", args[0], args[1])
+        if name == "WIDE_ROUND" and 1 <= len(args) <= 2:
+            return exp.Round(this=args[0], decimals=args[1] if len(args) == 2 else exp.Literal.number(0))
+        if name == "WIDE_INT" and len(args) == 1:
+            return exp.func("trunc", args[0])
+        if name in {"WIDE_REAL", "WIDE_TEXT"} and len(args) == 1:
+            return exp.Cast(this=args[0], to=exp.DataType.build("numeric" if name == "WIDE_REAL" else "text"))
+        if name == "WIDE_ABS" and len(args) == 1:
+            return exp.Abs(this=args[0])
+        aggregates = {"WIDE_SUM": exp.Sum, "WIDE_MAX_AGG": exp.Max, "WIDE_MIN_AGG": exp.Min, "WIDE_AVG": exp.Avg}
+        if name in aggregates and len(args) == 1:
+            return aggregates[name](this=args[0])
+        if name == "WIDE_TOTAL" and len(args) == 1:
+            return exp.Coalesce(this=exp.Sum(this=args[0]), expressions=[exp.Literal.number(0)])
         if name == "WIDE_CANONICAL" and len(args) == 1:
             return args[0]  # NUMERIC is already canonical
         if name == "VALID_COST_BASIS" and len(args) == 1:
             # A non-negative decimal or fraction such as "12", "1.5" or "7/3" (exact_cost_basis).
             return exp.RegexpLike(this=args[0], expression=exp.Literal.string(
                 r"^\s*[0-9]+(\.[0-9]+)?(/[0-9]*[1-9][0-9]*)?\s*$"))
+        if name == "JSON_VALID" and len(args) == 1:
+            valid = exp.Anonymous(this="pg_input_is_valid", expressions=[args[0], exp.Literal.string("json")])
+            return exp.Case(ifs=[exp.If(this=valid, true=exp.Literal.number(1))], default=exp.Literal.number(0))
+        if name == "LAST_INSERT_ROWID" and not args:
+            return exp.Anonymous(this="lastval", expressions=[])
+        if name == "PRINTF" and len(args) == 2 and args[0].is_string:
+            import re as _re
+            match = _re.fullmatch(r"(.*)%0(\d+)d", args[0].this)
+            if match:
+                padded = exp.Anonymous(this="lpad", expressions=[
+                    exp.Cast(this=args[1], to=exp.DataType.build("text")),
+                    exp.Literal.number(match[2]), exp.Literal.string("0")])
+                return exp.DPipe(this=exp.Literal.string(match[1]), expression=padded)
+        if name == "JULIANDAY" and len(args) == 1 and args[0].is_string and args[0].this == "now":
+            return sqlglot.parse_one("(EXTRACT(epoch FROM now()) / 86400.0 + 2440587.5)", read="postgres")
         if name == "UNIXEPOCH" and not args:
             return exp.Cast(this=exp.Extract(this=exp.var("epoch"), expression=exp.CurrentTimestamp()),
                             to=exp.DataType.build("bigint"))
@@ -116,6 +164,49 @@ def _rewrite(node):
                                                               exp.Literal.string("numeric")]),
                    true=exp.Literal.string("real")),
         ], default=exp.Literal.string("text"))
+    if isinstance(node, exp.Is) and not isinstance(node.expression, (exp.Null, exp.Boolean)):
+        return exp.NullSafeEQ(this=node.this, expression=node.expression)  # SQLite "a IS b"
+    if isinstance(node, exp.Insert) and str(node.args.get("alternative") or "").upper() == "IGNORE":
+        node.set("alternative", None)
+        node.set("conflict", exp.OnConflict(action=exp.var("DO NOTHING")))
+        return node
+    if isinstance(node, exp.Hex) and isinstance(node.this, exp.Anonymous) \
+            and node.this.name.upper() == "RANDOMBLOB":
+        # HEX(RANDOMBLOB(n)): 2n random hex digits (only used for unique ledger keys).
+        size = int(node.this.expressions[0].this) * 2
+        digest = exp.Anonymous(this="md5", expressions=[sqlglot.parse_one(
+            "CAST(random() AS TEXT) || CAST(clock_timestamp() AS TEXT)", read="postgres")])
+        return exp.Substring(this=digest, start=exp.Literal.number(1), length=exp.Literal.number(size))
+    if isinstance(node, exp.JSONType):
+        # SQLite json_type(): 'integer' / 'real' / 'text' / 'true' / 'false' / 'object' ...
+        value = node.this
+        return sqlglot.parse_one(
+            "CASE jsonb_typeof(CAST(x AS JSONB)) WHEN 'number' THEN CASE WHEN x ~ '^-?[0-9]+$' "
+            "THEN 'integer' ELSE 'real' END WHEN 'string' THEN 'text' WHEN 'boolean' THEN x "
+            "ELSE jsonb_typeof(CAST(x AS JSONB)) END", read="postgres"
+        ).transform(lambda n: value.copy() if isinstance(n, exp.Column) and n.name == "x" else n)
+    if isinstance(node, exp.TimeToStr) and node.args.get("format") is not None \
+            and node.args["format"].this == "%s":
+        # strftime('%s', 'now'): the current UNIX time.
+        return exp.Cast(this=exp.Extract(this=exp.var("epoch"), expression=exp.CurrentTimestamp()),
+                        to=exp.DataType.build("bigint"))
+    if isinstance(node, exp.OnConflict) and any(isinstance(k, exp.Ordered) for k in node.args.get("conflict_keys") or []):
+        node.set("conflict_keys", [k.this if isinstance(k, exp.Ordered) else k for k in node.args["conflict_keys"]])
+        return node
+    if isinstance(node, exp.Rand):
+        # SQLite random() is a signed 64-bit integer; callers take abs() and a modulus.
+        scaled = exp.Mul(this=exp.Anonymous(this="random", expressions=[]),
+                         expression=exp.Literal.number(9007199254740991))
+        return exp.Cast(this=exp.Floor(this=scaled), to=exp.DataType.build("bigint"))
+    if isinstance(node, exp.Round) and not _already_numeric_round(node):
+        # PostgreSQL rounds exactly only on NUMERIC, and takes an int place count.
+        return exp.Round(this=exp.Cast(this=node.this, to=exp.DataType.build("numeric")),
+                         decimals=exp.Cast(this=node.args["decimals"], to=exp.DataType.build("int"))
+                         if node.args.get("decimals") else None)
+    if isinstance(node, exp.Div) and not node.args.get("typed"):
+        # No float cast: bigint/bigint divides like SQLite, NUMERIC divides exactly.
+        node.set("typed", True)
+        return node
     if isinstance(node, exp.Collate):
         return node.this
     if isinstance(node, exp.Literal) and node.is_string and node.this.startswith(("~M~", "~R~")):
@@ -125,6 +216,16 @@ def _rewrite(node):
     if isinstance(node, exp.ColumnConstraint) and isinstance(node.args.get("kind"), exp.CollateColumnConstraint):
         return None
     return node
+
+
+def rewrite(tree):
+    """Apply _rewrite until nothing changes: a rewritten helper can wrap another one."""
+    for _ in range(10):
+        before = tree.sql(dialect="postgres")
+        tree = tree.transform(_rewrite)
+        if tree.sql(dialect="postgres") == before:
+            return tree
+    raise ValueError("rewrite did not settle")
 
 
 def _column_type(declared, is_rowid_pk):
@@ -144,6 +245,18 @@ def target_table(name):
     return RENAMED.get(name) or FOLDED.get(name) or MERGED.get(name) or name
 
 
+def fractional_integer_columns(conn):
+    """INTEGER-declared columns the schema itself rounds to decimals (e.g. fractional share
+    quantities): SQLite stores 1.235 there anyway, so PostgreSQL needs NUMERIC."""
+    import re
+    found = set()
+    for table, sql in conn.execute("SELECT tbl_name, sql FROM sqlite_master WHERE type IN ('trigger', 'table')"):
+        for column, places in re.findall(r'ROUND\(\s*(?:NEW\.)?"?(\w+)"?\s*,\s*(\d+)\s*\)', sql or "", re.I):
+            if int(places) > 0:
+                found.add((table, column))
+    return found
+
+
 def table_ddl(conn, name, sql, *, out_name=None, nullable=(), extra_columns=()):
     """PostgreSQL CREATE TABLE for one SQLite table, plus its foreign keys.
 
@@ -152,6 +265,7 @@ def table_ddl(conn, name, sql, *, out_name=None, nullable=(), extra_columns=()):
     """
     info = list(conn.execute(f'PRAGMA table_info("{name}")'))
     pk_columns = [row[1] for row in sorted(info, key=lambda r: r[5]) if row[5]]
+    fractional = fractional_integer_columns(conn)
     rowid_pk = len(pk_columns) == 1 and next(r for r in info if r[1] == pk_columns[0])[2].upper() == "INTEGER"
     tree = sqlglot.parse_one(sql.replace("MONEYUNITS TEXT", "TEXT").replace("MONEYREAL TEXT", "TEXT")
                              .replace("MONEY TEXT", "TEXT"), read="sqlite")
@@ -162,6 +276,8 @@ def table_ddl(conn, name, sql, *, out_name=None, nullable=(), extra_columns=()):
         row = next(r for r in info if r[1] == column.name)
         is_rowid = rowid_pk and column.name == pk_columns[0]
         kind = _column_type(row[2], False)
+        if kind == "BIGINT" and (name, column.name) in fractional:
+            kind = "NUMERIC"
         if kind in {"BIGINT", "DOUBLE PRECISION"} and not is_rowid and conn.execute(
                 f'SELECT 1 FROM "{name}" WHERE typeof("{column.name}") = \'text\' LIMIT 1').fetchone():
             # SQLite stored exact values (wide "~M~"/"~R~" text) in a numeric column.
@@ -206,8 +322,7 @@ def table_ddl(conn, name, sql, *, out_name=None, nullable=(), extra_columns=()):
         schema.append("expressions", column)
     if out_name:
         schema.this.set("this", exp.to_identifier(out_name))
-    # Twice: a rewritten helper can contain another helper call as an argument.
-    tree = tree.transform(_rewrite).transform(_rewrite)
+    tree = rewrite(tree)
     return tree.sql(dialect="postgres") + ";", foreign_keys
 
 
@@ -276,7 +391,12 @@ def build(source):
             "SELECT name, tbl_name, sql FROM sqlite_master WHERE type='index' AND sql IS NOT NULL ORDER BY name"):
         if table in MERGED or table in DROPPED or table in FOLDED:
             continue
-        tree = sqlglot.parse_one(sql, read="sqlite").transform(_rewrite).transform(_rewrite)
+        tree = rewrite(sqlglot.parse_one(sql, read="sqlite"))
+        for reference in tree.find_all(exp.Table):
+            reference.set("this", exp.to_identifier(target_table(reference.name)))
+        out.append(tree.sql(dialect="postgres") + ";")
+    for (sql,) in conn.execute("SELECT sql FROM sqlite_master WHERE type='view' ORDER BY name"):
+        tree = rewrite(sqlglot.parse_one(sql, read="sqlite"))
         for reference in tree.find_all(exp.Table):
             reference.set("this", exp.to_identifier(target_table(reference.name)))
         out.append(tree.sql(dialect="postgres") + ";")
@@ -289,8 +409,17 @@ def build(source):
 if __name__ == "__main__":
     if len(sys.argv) not in (2, 3):
         raise SystemExit(__doc__)
+    from build_postgres_triggers import translate
     text, skipped = build(sys.argv[1])
     target = Path(sys.argv[2]) if len(sys.argv) == 3 else ROOT / "database" / "postgres" / "schema.sql"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text)
-    print(f"wrote {target} ({text.count(chr(10))} lines); merged/dropped: {len(skipped)}")
+    triggers, not_ported = translate(sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True))
+    trigger_file = target.with_name("triggers.sql")
+    notes = "".join(f"-- not ported: {name} ({reason})\n" for name, reason in not_ported
+                    if not name.startswith("trg_amount_snapshot_"))
+    trigger_file.write_text("-- Generated by tools/build_postgres_schema.py; do not edit by hand.\n"
+                            f"-- {len(not_ported)} SQLite triggers not ported, listed here except the "
+                            "financial_amount_snapshots ones (table dropped).\n" + notes + "\n" + triggers)
+    print(f"wrote {target} ({text.count(chr(10))} lines; merged/dropped tables: {len(skipped)}) "
+          f"and {trigger_file.name} ({triggers.count('CREATE TRIGGER')} triggers)")
