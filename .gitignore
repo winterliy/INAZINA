@@ -22,7 +22,3 @@ database/document_history/
 
 # SQLiteBrowser per-user workspace state.
 database/*.sqbpro
-
-# documentation kept locally only
-*.md
-README*
