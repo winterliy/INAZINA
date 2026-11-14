@@ -268,6 +268,9 @@ def translate(conn):
         if table in COVERED:
             skipped.append((name, f"covered: {COVERED[table]}"))
             continue
+        if name.startswith("trg_account_kind_"):
+            skipped.append((name, "hand-ported: database/postgres/account_kinds.sql"))
+            continue
         if table in DROPPED or any(re.search(rf"\b{re.escape(t)}\b", body, re.I) for t in DROPPED):
             skipped.append((name, "uses a dropped table"))
             continue

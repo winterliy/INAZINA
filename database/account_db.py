@@ -71,6 +71,10 @@ class AccountDB(DBManager):
             "reference_price_minor_units": "INTEGER",
             "fee_paid_epoch": "REAL",  # wrap: management fee charged up to here
             "managed_by": "TEXT",  # wrap: manager allowed to trade this account
+            # 정기적금 자동 납입 progress (terms live on the product).
+            "next_installment_epoch": "REAL",
+            "installments_paid": "INTEGER NOT NULL DEFAULT 0",
+            "installments_missed": "INTEGER NOT NULL DEFAULT 0",
         }
         for column, declaration in account_rate_columns.items():
             if column not in columns:

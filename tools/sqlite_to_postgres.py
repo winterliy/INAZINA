@@ -115,6 +115,8 @@ def load(source_path, dsn):
         from build_postgres_triggers import translate
         target.execute(translate(source)[0])
         target.execute((Path(__file__).resolve().parents[1] / "database" / "postgres" / "compat.sql").read_text())
+        # 통장 종류 rules: hand-ported, see tools/build_postgres_account_kinds.py.
+        target.execute((Path(__file__).resolve().parents[1] / "database" / "postgres" / "account_kinds.sql").read_text())
         target.execute("ANALYZE")
     return report
 

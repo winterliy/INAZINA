@@ -7,9 +7,9 @@ export type Field = { key: string; label: string; kind: string; optional: boolea
 export type Command = { name: string; group: string; description: string; guide: string; fields: Field[]; job: boolean };
 export type Option = { value: string; label: string; detail?: string };
 export type Lookups = {
-  savingProducts: { code: string; name: string; interest_rate: number; deposit_amount: Money; maturity_days: number; quote_currency: string; product_kind: string }[];
+  savingProducts: { code: string; name: string; interest_rate: number; deposit_amount: Money; maturity_days: number; quote_currency: string; product_kind: string; account_kind?: string | null; kind_terms?: Record<string, unknown> }[];
   loanProducts: { code: string; name: string; interest_rate: number; loan_limit: Money; maturity_days: number; min_credit_score: number }[];
-  accounts: { account_number: string; product_code: string; account_type: string; quote_currency: string; balance: Money | null; balance_units: Money | null }[];
+  accounts: { account_number: string; product_code: string; account_type: string; quote_currency: string; balance: Money | null; balance_units: Money | null; account_kind?: string | null; kind_terms?: Record<string, unknown>; overdraft_units?: number; overdraft_limit_units?: number }[];
   loans: { loan_id: number; product_code: string; outstanding_balance: Money; quote_currency: string }[];
   futures: { code: string; name: string }[];
   countries: string[];
@@ -39,6 +39,36 @@ export const number = formatMoney;
 /** A bank account's balance; foreign-currency savings are kept in millionths. */
 export const accountBalance = (account: Lookups["accounts"][number]) => account.account_type === "currency_saving" ? minorMoney(account.balance_units ?? 0, 6) : account.balance ?? 0;
 /** Every account is a savings account; it reads as "외환통장" only to an owner whose currency differs. */
+/** 통장 종류 labels; keys match managers/deposit_accounts.py ACCOUNT_KINDS. */
+export const ACCOUNT_KINDS: Record<string, string> = {
+  demand: "입출금통장", parking: "파킹통장", cma: "CMA", time_deposit: "정기예금",
+  fixed_installment: "정기적금", free_installment: "자유적금", housing: "주택청약",
+  combined: "종합통장", isa: "ISA", irp: "IRP",
+};
+type KindSource = { account_kind?: string | null; product_kind?: string; maturity_days?: number | null } | undefined;
+/** The product's kind, or the same fallback the server backfills with. */
+export const savingKind = (product: KindSource) =>
+  ACCOUNT_KINDS[product?.account_kind ?? ""]
+  ?? (product?.product_kind === "cma" ? "CMA" : (product?.maturity_days ?? 0) > 0 ? "정기예금" : "입출금통장");
+/** One-line real rule of a kind for product cards, from its contract terms. */
+export const kindRule = (kind: string | null | undefined, terms: Record<string, unknown> = {}) => {
+  const n = (key: string) => Number(terms[key] ?? 0).toLocaleString("ko-KR");
+  switch (kind) {
+    case "parking": return `${n("preferred_limit")}까지 우대금리 · 입출금 자유`;
+    case "cma": return "매일 이자 · 예금자보호 제외";
+    case "time_deposit": return "가입 때 한 번 예치 · 추가 입금·일부 출금 불가";
+    case "fixed_installment": return "약정 금액 자동 납입 · 출금 불가";
+    case "free_installment": return `${n("period_days")}일마다 ${n("period_limit")}까지 자유 납입 · 출금 불가`;
+    case "housing": return `1인 1계좌 · 회당 ${n("min_payment")}~${n("max_payment")} · 이자는 해지 때 가입기간 금리`;
+    case "combined": return `마이너스 한도 ${n("overdraft_limit")} · 연 ${n("overdraft_rate")}% · 신용점수 ${n("min_credit_score")} 이상`;
+    case "isa": return `1인 1계좌 · 연 ${n("annual_limit")} · ${n("lock_days")}일 후 ${n("tax_free")} 비과세`;
+    case "irp": return `연 ${n("annual_limit")} 납입 · 연말정산 세액공제 · 출금 불가`;
+    default: return "";
+  }
+};
+/** "외환통장 · SCD · 정기예금" for foreign currencies, otherwise just the kind. */
+export const depositLabel = (currency: string | null | undefined, homeCurrency: string, product: KindSource) =>
+  currency && currency !== homeCurrency ? `외환통장 · ${currency} · ${savingKind(product)}` : savingKind(product);
 export const accountLabel = (currency: string | null | undefined, homeCurrency: string, home = "통장") => currency && currency !== homeCurrency ? "외환통장" : home;
 export const plain = (text: string) => text.replace(/<t:(\d+)(?::[a-zA-Z])?>/g, (_m, epoch: string) => new Date(Number(epoch) * 1000).toLocaleString("ko-KR")).replace(/\*\*/g, "").replace(/`/g, "");
 

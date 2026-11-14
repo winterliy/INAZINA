@@ -1,3 +1,4 @@
+import json
 from functions.exact_money import ExactDecimal
 from datetime import datetime, timezone
 from contextlib import nullcontext
@@ -248,7 +249,201 @@ class InterestManager:
         return result
 
     @classmethod
+    def _credit_interest(cls, conn, account, product, gross, paid_until, *, defer_tax=False):
+        """Credit one interest amount: bank books, withholding tax and its remittance.
+
+        ISA·IRP interest is credited untaxed (과세이연) and remembered for the
+        tax computed when the account closes. Returns the net amount credited.
+        """
+        from managers.currency_manager import SCALE
+        balance = ExactDecimal(conn.execute(
+            "SELECT balance_units FROM accounts.accounts WHERE account_number=?",
+            (account["account_number"],)).fetchone()[0] or 0) / SCALE
+        if defer_tax and gross > 0:
+            conn.execute("UPDATE accounts.accounts SET deferred_interest_units=deferred_interest_units+? "
+                         "WHERE account_number=?", (int(round(ExactDecimal(gross)*SCALE)), account["account_number"]))
+        tax = (round_currency(
+            conn, gross*cls._tax_rate(conn, account['user_id'], 'saving_interest')/100.0,
+            account["quote_currency"]
+        ) if gross > 0 and not defer_tax else 0)
+        net = max(-ExactDecimal(balance), gross-tax)
+        # A negative-rate charge cannot reduce an account below zero. Book
+        # the amount actually applied to the balance, not the uncapped accrual.
+        accounting_gross = gross if gross >= 0 else net
+        stamp = datetime.fromtimestamp(
+            paid_until, timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        conn.execute(
+            "UPDATE accounts.accounts SET balance_units=balance_units+?,last_payment=?,"
+            "last_payment_epoch=? WHERE account_number=?",
+            (int(round(net*SCALE)), stamp, paid_until, account["account_number"]),
+        )
+        RateManager.record_institution_result(
+            conn, product["issuer"], -accounting_gross, "deposit_interest",
+            f"account:{account['account_number']}:{paid_until}",
+            now=paid_until, currency_code=account["quote_currency"],
+        )
+        if accounting_gross != 0:
+            from managers.bank_journal import BankJournal
+            if accounting_gross > 0:
+                lines = [("interest_expense", "debit", accounting_gross),
+                         ("customer_deposits_payable", "credit", net),
+                         ("tax_payable", "credit", tax)]
+            else:
+                charge = -accounting_gross
+                lines = [("customer_deposits_payable", "debit", charge),
+                         ("interest_income", "credit", charge)]
+            BankJournal.post(
+                conn, product["issuer"], "deposit_interest",
+                f"account:{account['account_number']}:{paid_until}",
+                account["quote_currency"],
+                lines,
+                description=f"Deposit interest for {account['account_number']}",
+                now=paid_until,
+            )
+        tax_wallet_watermark = None
+        tax_treasury_id = None
+        company_kind = "interest_income" if accounting_gross >= 0 else "interest_expense"
+        cls._log_company_interest(
+            conn, account['user_id'], company_kind, abs(accounting_gross), tax,
+            account['quote_currency'], product['issuer'],
+        )
+        if tax > 0:
+            from managers.currency_manager import CurrencyManager, SCALE
+            tax_units = int(round(ExactDecimal(tax)*SCALE))
+            treasury_id = CurrencyManager.user_treasury_id(conn, account['user_id'])
+            home_currency = CurrencyManager.home(conn, account['user_id'])
+            tax_fx_quote = CurrencyManager.quote(conn, account['quote_currency'], home_currency)
+            treasury_units = CurrencyManager.convert(
+                conn, tax_units, account["quote_currency"], home_currency
+            )
+            tax_treasury_id = treasury_id
+            tax_wallet_watermark = int(conn.execute(
+                "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
+            ).fetchone()[0])
+            if treasury_units:
+                CurrencyManager.change(conn, treasury_id, home_currency, treasury_units,
+                                       allow_deficit=True)
+            from managers.bank_journal import BankJournal
+            settlement_amount = Decimal(treasury_units) / Decimal(SCALE)
+            BankJournal.post_tax_remittance(
+                conn, product["issuer"],
+                f"account:{account['account_number']}:{paid_until}:tax-remittance",
+                account["quote_currency"], tax, home_currency, settlement_amount,
+                description=f"Withholding tax remittance for {account['account_number']}",
+                now=paid_until,
+            )
+        tax_transaction = conn.execute(
+            'INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount,currency_code) '
+            'VALUES (?,?,?,?,?,?)',
+            (account['user_id'], 'saving_interest', accounting_gross, tax, net,
+             account['quote_currency']),
+        )
+        if tax > 0:
+            from managers.accounting_journal import AccountingJournal
+            if treasury_units:
+                AccountingJournal.link_tax_transaction_wallet_entries(
+                    conn, tax_transaction.lastrowid, tax_wallet_watermark,
+                    tax_treasury_id,
+                )
+            AccountingJournal.link_tax_bank_remittance(
+                conn, tax_transaction.lastrowid, product['issuer'],
+                f"account:{account['account_number']}:{paid_until}:tax-remittance",
+                account['quote_currency'], home_currency, tax_fx_quote,
+                settlement_zero=treasury_units == 0,
+            )
+        return net
+
+    @classmethod
     def _settle_saving_account_impl(cls, conn, account, now):
+        """Contract-period interest, then the kind's own rules (managers/deposit_accounts.py)."""
+        kind = account["account_kind"] if "account_kind" in account.keys() else None
+        terms = json.loads(account["kind_terms"] or "{}") if kind and account["kind_terms"] else {}
+        if kind == "housing":
+            # 주택청약: no interest while saving; closing pays the holding-period rate.
+            cls._advance_account_cursor(conn, account["account_number"], now)
+            return 0.0, False
+        total, credited = cls._settle_contract_interest(conn, account, now, kind, terms)
+        stub = cls._settle_maturity_stub(conn, account, now)
+        total += stub
+        credited = credited or bool(stub)
+        if terms.get("post_maturity"):
+            extra = cls._settle_post_maturity(conn, account, now, terms["post_maturity"])
+            total += extra
+            credited = credited or bool(extra)
+        return total, credited
+
+    @classmethod
+    def _settle_maturity_stub(cls, conn, account, now):
+        """At maturity, pay the days since the last full interest cycle (만기일 일할 이자).
+
+        Without it a deposit whose term ends inside a cycle (or a fraction of a
+        second before it) would never receive its final interest.
+        """
+        product = conn.execute(
+            "SELECT maturity_days,compound_type,issuer,status FROM product.saving WHERE product_code=?",
+            (account["product_code"],)).fetchone()
+        created = cls._utc_epoch(account["created_at"])
+        if not product or product["status"] != "active" or not product["maturity_days"] or created is None:
+            return 0.0
+        matured = created + int(product["maturity_days"]) * 86400
+        row = conn.execute("SELECT last_payment_epoch,balance_units,principal,contract_rate FROM accounts.accounts "
+                           "WHERE account_number=?", (account["account_number"],)).fetchone()
+        last = cls._number(row["last_payment_epoch"])
+        if now < matured or last is None or last >= matured:
+            return 0.0
+        from managers.currency_manager import SCALE
+        base = (ExactDecimal(row["balance_units"] or 0) / SCALE if int(product["compound_type"] or 0) == 1
+                else ExactDecimal(row["principal"] or 0))
+        gross = round_currency(conn, base * ExactDecimal(cls._number(row["contract_rate"], 0) or 0) / 100
+                               * ExactDecimal(matured - last) / (365 * 86400), account["quote_currency"])
+        if gross <= 0:
+            cls._advance_account_cursor(conn, account["account_number"], matured)
+            return 0.0
+        return cls._credit_interest(conn, account, product, gross, matured,
+                                    defer_tax=account["account_kind"] in ("isa", "irp"))
+
+    @classmethod
+    def _settle_post_maturity(cls, conn, account, now, tiers):
+        """만기후이율: simple interest after maturity, by days since maturity.
+
+        Each tier is {"days": n, "percent": p} (p% of the contract rate until n
+        days after maturity) or a last open-ended {"percent": p} / {"rate": r}.
+        """
+        product = conn.execute(
+            "SELECT maturity_days,issuer,status FROM product.saving WHERE product_code=?",
+            (account["product_code"],)).fetchone()
+        created = cls._utc_epoch(account["created_at"])
+        if not product or product["status"] != "active" or not product["maturity_days"] or created is None:
+            return 0.0
+        matured = created + int(product["maturity_days"]) * 86400
+        row = conn.execute("SELECT last_payment_epoch,balance_units,contract_rate FROM accounts.accounts "
+                           "WHERE account_number=?", (account["account_number"],)).fetchone()
+        start = max(matured, cls._number(row["last_payment_epoch"], matured))
+        if now - start < 86400:  # paid daily, like the contract period
+            return 0.0
+        from managers.currency_manager import SCALE
+        balance = ExactDecimal(row["balance_units"] or 0) / SCALE
+        rate = ExactDecimal(cls._number(row["contract_rate"], 0) or 0)
+        gross, low = ExactDecimal(0), matured
+        for tier in tiers:
+            high = matured + int(tier["days"]) * 86400 if tier.get("days") is not None else now
+            tier_rate = (ExactDecimal(tier["rate"]) if tier.get("rate") is not None
+                         else rate * ExactDecimal(tier.get("percent", 0)) / 100)
+            overlap = max(0, min(high, now) - max(low, start))
+            gross += balance * tier_rate / 100 * ExactDecimal(overlap) / (365 * 86400)
+            low = high
+            if low >= now:
+                break
+        gross = round_currency(conn, gross, account["quote_currency"])
+        if gross <= 0:
+            cls._advance_account_cursor(conn, account["account_number"], now)
+            return 0.0
+        return cls._credit_interest(conn, account, product, gross, now,
+                                    defer_tax=account["account_kind"] in ("isa", "irp"))
+
+    @classmethod
+    def _settle_contract_interest(cls, conn, account, now, kind, terms):
         """Pay every complete interest cycle of one savings or foreign-currency account.
 
         Returns (net paid, whether anything was credited).
@@ -295,15 +490,26 @@ class InterestManager:
         compound = int(compound_setting) == 1
         credited = False
         for periods, segment_rate, paid_until in segments:
-            gross = (cls._period_interest(
-                         balance, segment_rate, cycle, periods,
-                         product["day_count_convention"],
-                         paid_until-periods*cycle)
-                     if compound else
-                     calculate_simple_interest_decimal(
-                         principal, segment_rate, periods*cycle,
-                         product["day_count_convention"],
-                         paid_until-periods*cycle))
+            def accrue(base, annual_rate):
+                return (cls._period_interest(
+                            base, annual_rate, cycle, periods,
+                            product["day_count_convention"],
+                            paid_until-periods*cycle)
+                        if compound else
+                        calculate_simple_interest_decimal(
+                            base, annual_rate, periods*cycle,
+                            product["day_count_convention"],
+                            paid_until-periods*cycle))
+            base = balance if compound else principal
+            if kind == "parking" and terms.get("preferred_limit") is not None:
+                # 우대금리는 한도까지만; the rest earns the excess rate.
+                preferred = min(base, ExactDecimal(terms["preferred_limit"]))
+                gross = accrue(preferred, segment_rate)
+                if gross is not None and base > preferred:
+                    excess = accrue(base - preferred, ExactDecimal(terms.get("excess_rate", 0)))
+                    gross = None if excess is None else gross + excess
+            else:
+                gross = accrue(base, segment_rate)
             if gross is None or not math.isfinite(gross):
                 cls._advance_account_cursor(conn, account["account_number"], now)
                 break
@@ -315,97 +521,9 @@ class InterestManager:
                     conn, account["account_number"], paid_until
                 )
                 continue
-            tax = (round_currency(
-                conn, gross*cls._tax_rate(conn, account['user_id'], 'saving_interest')/100.0,
-                account["quote_currency"]
-            ) if gross > 0 else 0)
-            net = max(-ExactDecimal(balance), gross-tax)
-            # A negative-rate charge cannot reduce an account below zero. Book
-            # the amount actually applied to the balance, not the uncapped accrual.
-            accounting_gross = gross if gross >= 0 else net
-            stamp = datetime.fromtimestamp(
-                paid_until, timezone.utc
-            ).strftime("%Y-%m-%d %H:%M:%S")
-            conn.execute(
-                "UPDATE accounts.accounts SET balance_units=balance_units+?,last_payment=?,"
-                "last_payment_epoch=? WHERE account_number=?",
-                (int(round(net*SCALE)), stamp, paid_until, account["account_number"]),
-            )
-            RateManager.record_institution_result(
-                conn, product["issuer"], -accounting_gross, "deposit_interest",
-                f"account:{account['account_number']}:{paid_until}",
-                now=paid_until, currency_code=account["quote_currency"],
-            )
-            if accounting_gross != 0:
-                from managers.bank_journal import BankJournal
-                if accounting_gross > 0:
-                    lines = [("interest_expense", "debit", accounting_gross),
-                             ("customer_deposits_payable", "credit", net),
-                             ("tax_payable", "credit", tax)]
-                else:
-                    charge = -accounting_gross
-                    lines = [("customer_deposits_payable", "debit", charge),
-                             ("interest_income", "credit", charge)]
-                BankJournal.post(
-                    conn, product["issuer"], "deposit_interest",
-                    f"account:{account['account_number']}:{paid_until}",
-                    account["quote_currency"],
-                    lines,
-                    description=f"Deposit interest for {account['account_number']}",
-                    now=paid_until,
-                )
+            net = cls._credit_interest(conn, account, product, gross, paid_until,
+                                       defer_tax=account["account_kind"] in ("isa", "irp"))
             balance += net
-            tax_wallet_watermark = None
-            tax_treasury_id = None
-            company_kind = "interest_income" if accounting_gross >= 0 else "interest_expense"
-            cls._log_company_interest(
-                conn, account['user_id'], company_kind, abs(accounting_gross), tax,
-                account['quote_currency'], product['issuer'],
-            )
-            if tax > 0:
-                from managers.currency_manager import CurrencyManager, SCALE
-                tax_units = int(round(ExactDecimal(tax)*SCALE))
-                treasury_id = CurrencyManager.user_treasury_id(conn, account['user_id'])
-                home_currency = CurrencyManager.home(conn, account['user_id'])
-                tax_fx_quote = CurrencyManager.quote(conn, account['quote_currency'], home_currency)
-                treasury_units = CurrencyManager.convert(
-                    conn, tax_units, account["quote_currency"], home_currency
-                )
-                tax_treasury_id = treasury_id
-                tax_wallet_watermark = int(conn.execute(
-                    "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
-                ).fetchone()[0])
-                if treasury_units:
-                    CurrencyManager.change(conn, treasury_id, home_currency, treasury_units,
-                                           allow_deficit=True)
-                from managers.bank_journal import BankJournal
-                settlement_amount = Decimal(treasury_units) / Decimal(SCALE)
-                BankJournal.post_tax_remittance(
-                    conn, product["issuer"],
-                    f"account:{account['account_number']}:{paid_until}:tax-remittance",
-                    account["quote_currency"], tax, home_currency, settlement_amount,
-                    description=f"Withholding tax remittance for {account['account_number']}",
-                    now=paid_until,
-                )
-            tax_transaction = conn.execute(
-                'INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount,currency_code) '
-                'VALUES (?,?,?,?,?,?)',
-                (account['user_id'], 'saving_interest', accounting_gross, tax, net,
-                 account['quote_currency']),
-            )
-            if tax > 0:
-                from managers.accounting_journal import AccountingJournal
-                if treasury_units:
-                    AccountingJournal.link_tax_transaction_wallet_entries(
-                        conn, tax_transaction.lastrowid, tax_wallet_watermark,
-                        tax_treasury_id,
-                    )
-                AccountingJournal.link_tax_bank_remittance(
-                    conn, tax_transaction.lastrowid, product['issuer'],
-                    f"account:{account['account_number']}:{paid_until}:tax-remittance",
-                    account['quote_currency'], home_currency, tax_fx_quote,
-                    settlement_zero=treasury_units == 0,
-                )
             total += net
             credited = True
         if account["rate_type"] == "floating":
@@ -457,7 +575,8 @@ class InterestManager:
                     "created_at, last_payment, last_payment_epoch,contract_rate,rate_type,"
                     "rate_nationality,base_rate_spread,rate_floor,rate_cap,repricing_cycle_seconds,"
                     "next_repricing_epoch,benchmark_key,benchmark_tenor_days,repricing_lag_seconds,"
-                    "contract_effective_rate,quote_currency,account_type,balance_units "
+                    "contract_effective_rate,quote_currency,account_type,balance_units,"
+                    "account_kind,kind_terms "
                     "FROM accounts.accounts "
                     "WHERE resolution_status='active' AND (? IS NULL OR user_id = ?) AND (? IS NULL OR product_code=?)",
                     (user_id, user_id, product_code, product_code),

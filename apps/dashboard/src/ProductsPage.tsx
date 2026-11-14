@@ -1,3 +1,4 @@
+import { AccountKindPicker } from "./accountKinds";
 import type { Money } from "../../shared/money";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
@@ -6,7 +7,7 @@ import { FundPanel } from "./FundPanel";
 import { ShareholderPie, type Shareholders } from "./Donut";
 import { Card, Field, changed, date, number, plain, show, text, type Ctx } from "./common";
 
-type KindField = { key: string; label: string; optional: boolean; text: boolean };
+type KindField = { key: string; label: string; optional: boolean; text: boolean; choices?: Record<string, string>; terms?: Record<string, Record<string, unknown>> };
 type AdvancedField = { key: string; label: string; type: string };
 type Kind = { kind: string; token: string; label: string; group: "market" | "finance"; family: string; fields: KindField[]; advanced: AdvancedField[]; example: Record<string, unknown>; editable: boolean };
 type Product = { code: string; name: string; kind: string; status: string; exchangeId: string | null; currency: string | null; value: Money | null; fields?: Record<string, unknown>; drProgram?: { underlyingCode: string; receiptType: string; depositaryBank: string; custodian: string; underlyingPerReceipt: number; receiptSupply: number; depositedUnderlyingQuantity: number; custodiedUnderlyingQuantity: number; outstandingReceiptQuantity: number; programStatus: string; underlyingPrice?: Money; underlyingCurrency?: string; referenceValue?: Money; referencePremiumPercent?: number; referenceDeviationAlert?: boolean } };
@@ -353,11 +354,20 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
       </section>}
       <Card title={editor.mode === "create" ? `${spec.label} 생성` : `${editor.code} 수정`} caption={editor.kind === "dr" ? editor.mode === "create" ? "기초 코드는 활성 보통주여야 하고 결제 통화·상장 거래소도 이미 등록되어야 합니다. 발행량 × DR당 원주 수는 원주 발행량 한도 안에 있어야 합니다." : "기초주식·비율·통화·거래소 등 발행조건은 변경할 수 없습니다. 가격과 표시 이름만 수정할 수 있습니다." : editor.mode === "create" ? "선택 항목은 비워 둘 수 있습니다. 배당주기는 초 또는 1일·1주·1달, 배당은 5 또는 5%처럼 입력합니다." : "바꾼 값만 저장합니다. 결제 통화와 발행된 계약 조건처럼 바꿀 수 없는 값은 서버가 거부합니다."}
       actions={<button className="soft" type="button" onClick={() => setEditor(null)}>닫기</button>}>
-      {spec.family === "saving" && <p className="hint">통장 화폐(quote_currency)만 정하면 됩니다. 이율·단리/복리·주기·만기 규칙은 모든 통화에 똑같이 적용되고, 가입자의 기준 통화와 다르면 그 사람에게 외환통장으로 보입니다.</p>}
+      {spec.family === "saving" && <p className="hint">통장 화폐(quote_currency)만 정하면 됩니다. 이율·단리/복리·주기·만기 규칙은 모든 통화에 똑같이 적용되고, 가입자의 기준 통화와 다르면 그 사람에게 외환통장으로 보입니다. 통장 종류의 (i)에 마우스를 올리면 설명과 추천값이 보이고, 생성 중에 종류를 누르면 추천값이 채워집니다. 자동 납입은 정기적금만 사용합니다. 한도·세율 같은 종류별 약관은 비워 두면 현실 기본값이 적용되고, 가입한 계좌는 가입 당시 약관을 유지합니다.</p>}
       <form className="form-grid" onSubmit={save}>
         <Field label="상품 코드" hint={editor.mode === "edit" ? "변경 불가" : "선택 · 비우면 무작위로 붙입니다"}><input className="mono" value={editor.code} readOnly={editor.mode === "edit"} onChange={(event) => setEditor({ ...editor, code: event.target.value })} /></Field>
         {spec.fields.map((field) => {
           const drFixed = editor.kind === "dr" && ["total_supply", "exchange_id", "underlying_code", "underlying_per_receipt", "receipt_type", "depositary_bank", "custodian", "home_exchange_id", "quote_currency"].includes(field.key);
+          if (field.choices) return <div key={field.key} className="span-wide kind-field" role="group" aria-label={field.label}>{field.label}<small>{field.key} · 선택 · 다시 누르면 해제</small>
+            <AccountKindPicker value={editor.values[field.key] ?? ""} terms={field.terms} onPick={(kind, recommended) => setEditor({ ...editor, values: {
+              ...editor.values,
+              // Creating fills the recommended terms; editing only relabels the product.
+              ...(editor.mode === "create" ? Object.fromEntries(Object.entries(recommended).filter(([key]) => spec.fields.some((item) => item.key === key))) : {}),
+              ...(editor.mode === "create" && !recommended.installment_amount ? { installment_amount: "", installment_cycle_seconds: "" } : {}),
+              ...(editor.mode === "create" ? { kind_terms: "" } : {}),
+              [field.key]: editor.values[field.key] === kind ? "" : kind } })} />
+          </div>;
           return <Field key={field.key} label={field.label} hint={`${field.key}${field.optional ? " · 선택" : ""}${editor.mode === "edit" && drFixed ? " · 발행조건 고정" : ""}`} wide={field.key === "components" || field.key === "underlyings"}>
             <input className={field.text ? undefined : "mono"} readOnly={editor.mode === "edit" && drFixed} required={editor.mode === "create" && !field.optional} value={editor.values[field.key] ?? ""} onChange={(event) => setEditor({ ...editor, values: { ...editor.values, [field.key]: event.target.value } })} />
           </Field>;

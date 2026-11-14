@@ -2,6 +2,7 @@
 from functions.exact_money import ExactDecimal
 from functions.amount_limits import MAX_NATIVE
 from functions.money import base_currency_code
+from managers.deposit_accounts import ACCOUNT_KINDS, INSTALLMENT_KINDS, KIND_TERMS, default_account_kind
 import json
 import math
 import time
@@ -309,6 +310,8 @@ class AdminControlManager:
                     values['type'] = 'depositary_receipt'
                 if category in DEPOSIT_CATEGORIES:
                     values['product_kind'] = SAVING_KINDS[category]
+                    if 'account_kind' in columns and not values.get('account_kind'):
+                        values['account_kind'] = default_account_kind(values['product_kind'], values.get('maturity_days'))
                 if category in BOND_FEATURES:
                     values['bond_feature'] = BOND_FEATURES[category]
                 if 'name' in columns and not values.get('name'):
@@ -342,8 +345,8 @@ class AdminControlManager:
             money_fields = {
                 'stock': {'capital','share_price','liquidation_value_per_share','dividend_per_share'},
                 'asset': {'price','dividend_per_share'},
-                'saving': {'deposit_amount'},
-                'currencyproduct': {'deposit_amount'},
+                'saving': {'deposit_amount','installment_amount'},
+                'currencyproduct': {'deposit_amount','installment_amount'},
                 'cma': {'deposit_amount'}, 'ima': {'deposit_amount'}, 'wrap': {'deposit_amount'},
                 'etn': {'unit_price','dividend_per_share'},
                 **{bond: {'unit_price','face_value','conversion_price','warrant_exercise_price'}
@@ -820,6 +823,49 @@ class AdminControlManager:
             raise ValueError('ABCP(자산유동화기업어음)는 만기 365일 이하 단기물입니다.')
         if category in {'abs', 'mbs', 'abcp'} and not str(merged.get('collateral_note') or '').strip():
             raise ValueError('자산유동화증권은 기초자산 풀 설명(collateral_note)이 필요합니다.')
+        if 'account_kind' in extra:
+            kind = merged.get('account_kind')
+            if category == 'cma' and kind != 'cma':
+                raise ValueError('CMA 상품의 통장 종류(account_kind)는 cma입니다.')
+            if kind not in (None, '') and kind not in ACCOUNT_KINDS:
+                raise ValueError('통장 종류(account_kind): ' + ', '.join(ACCOUNT_KINDS))
+        if {'account_kind', 'kind_terms', 'maturity_days', 'interest_cycle'} & set(extra) and category in ('saving', 'currencyproduct'):
+            kind = merged.get('account_kind')
+            maturity = int(float(merged.get('maturity_days') or 0))
+            if kind in ('demand', 'parking', 'cma', 'combined', 'housing') and maturity > 0:
+                raise ValueError(f"{ACCOUNT_KINDS[kind]}은(는) 만기가 없는 상품입니다. 만기일수(maturity_days)를 0으로 두세요.")
+            if kind in ('time_deposit', 'fixed_installment', 'free_installment') and maturity <= 0:
+                raise ValueError(f"{ACCOUNT_KINDS[kind]}은(는) 만기일수(maturity_days)가 필요합니다.")
+            if kind == 'cma' and float(merged.get('interest_cycle') or 0) != 86400:
+                raise ValueError('CMA는 하루만 맡겨도 이자가 붙는 상품입니다. 이자주기(interest_cycle)는 86400초(1일)입니다.')
+            raw = merged.get('kind_terms')
+            if raw not in (None, ''):
+                try:
+                    terms = json.loads(raw) if isinstance(raw, str) else raw
+                except ValueError:
+                    raise ValueError('종류별 약관(kind_terms)은 JSON 객체여야 합니다.')
+                allowed = set(KIND_TERMS.get(kind or '', {}))
+                if not isinstance(terms, dict) or set(terms) - allowed:
+                    raise ValueError(f"{ACCOUNT_KINDS.get(kind, kind)} 약관에 쓸 수 있는 키: "
+                                     + (', '.join(sorted(allowed)) or '없음'))
+                for key, value in terms.items():
+                    if key in ('post_maturity', 'rate_tiers'):
+                        if not isinstance(value, list) or not value:
+                            raise ValueError(f'{key}는 구간 목록이어야 합니다.')
+                    elif isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                        raise ValueError(f'약관 값 {key}는 0 이상의 숫자여야 합니다.')
+                merged['kind_terms'] = json.dumps(terms)
+        if {'installment_amount', 'installment_cycle_seconds'} & set(extra):
+            amount = ExactDecimal(merged.get('installment_amount') or 0)
+            cycle = int(float(merged.get('installment_cycle_seconds') or 0))
+            if amount < 0 or cycle < 0:
+                raise ValueError('자동 납입 금액·주기는 0 이상이어야 합니다.')
+            if (amount > 0) != (cycle > 0):
+                raise ValueError('자동 납입은 금액(installment_amount)과 주기(installment_cycle_seconds)를 함께 정해야 합니다.')
+            if amount > 0 and merged.get('account_kind') not in INSTALLMENT_KINDS:
+                raise ValueError('자동 납입은 통장 종류가 정기적금(fixed_installment)인 상품에만 설정할 수 있습니다. 정기예금은 가입할 때 한 번에 예치합니다.')
+            if amount > 0 and int(merged.get('maturity_days') or 0) <= 0:
+                raise ValueError('자동 납입 상품은 만기일수(maturity_days)가 필요합니다.')
         if category == 'ima':
             from managers.investment_manager import InvestmentManager
             if not InvestmentManager.component_quote(conn, merged.get('reference_code') or ''):

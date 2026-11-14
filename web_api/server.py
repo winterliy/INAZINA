@@ -2443,8 +2443,9 @@ PRODUCT_KINDS = {
 # Savings and foreign-currency accounts share one form in the dashboard; only the
 # account currency (and therefore who can open it) differs.
 SAVING_FAMILY = {"saving"}
-SAVING_FIELDS = ("name", "quote_currency", "interest_rate", "deposit_amount", "maturity_days",
-                 "interest_cycle", "compound_type", "issuer")
+SAVING_FIELDS = ("name", "account_kind", "quote_currency", "interest_rate", "deposit_amount", "maturity_days",
+                 "interest_cycle", "compound_type", "issuer", "installment_amount", "installment_cycle_seconds",
+                 "kind_terms")
 PRODUCT_PROTECTED = {"created_at", "created_epoch", "sold_amount", "writer_id", "contract_id",
                      "issued_contracts", "status", "product_type", "outstanding_contracts",
                      "collateral_account", "settled_epoch", "max_shareholder_id"}
@@ -2468,6 +2469,7 @@ def _form_fields(profile):
 def product_catalog():
     from managers.admin_commands_manager import OPTIONAL_ARGS, TEXT_ARGS
     from managers.admin_control_manager import EXAMPLES
+    from managers.deposit_accounts import ACCOUNT_KINDS, KIND_TERMS
     from functions.admin_embeds import ARG_LABELS
     from functions.banks import bank_ids
     kinds = []
@@ -2480,10 +2482,16 @@ def product_catalog():
                        "label": "발행총액" if profile == "bond" and field == "total_supply"
                                 else ("결제 통화" if profile == "dr" else "통장 화폐") if field == "quote_currency"
                                 else "발행 은행 ID" if field == "issuer"
+                                else "통장 종류" if field == "account_kind"
+                                else "종류별 약관 (JSON · 비우면 현실 기본값)" if field == "kind_terms"
+                                else "자동 납입 금액" if field == "installment_amount"
+                                else "자동 납입 주기 (초 또는 1일·1주·1달)" if field == "installment_cycle_seconds"
                                 else "상장 거래소 (새 법인은 비상장 · 법인 자본에서 상장)" if field == "exchange_id" and profile == "stock"
                                 else ARG_LABELS.get(field, field),
-                       "optional": field in OPTIONAL_ARGS.get(profile, ()),
-                       "text": field in TEXT_ARGS or field == "quote_currency"} for field in _form_fields(profile)]
+                       "optional": field in OPTIONAL_ARGS.get(profile, ()) or field in ("account_kind", "installment_amount", "installment_cycle_seconds", "kind_terms"),
+                       "text": field in TEXT_ARGS or field in ("quote_currency", "account_kind", "kind_terms"),
+                       **({"choices": ACCOUNT_KINDS, "terms": KIND_TERMS} if field == "account_kind" else {})}
+                      for field in _form_fields(profile)]
             listed = {field["key"] for field in fields} | {key}
             example = dict(EXAMPLES.get(_profile_category(profile), {}))
             if "issuer" in example:
@@ -2808,13 +2816,13 @@ def _convert_product_fields(profile, fields, advanced, columns):
                 if not separator or not asset or asset in result[key]:
                     raise ValueError("구성 종목은 종목코드:비중,종목코드:비중 형식입니다.")
                 result[key][asset] = float(weight)
-        elif key == "dividend_cycle_seconds":
+        elif key in ("dividend_cycle_seconds", "installment_cycle_seconds"):
             result[key] = duration_seconds(value)
         elif key == "dividend_per_share":
             result.update(CorporateActionsManager.dividend_terms(value))
         elif profile == "els" and key in {"underlyings", "observation_days", "redemption_levels"}:
             result[key] = value
-        elif key in TEXT_ARGS or key == "quote_currency":
+        elif key in TEXT_ARGS or key in ("quote_currency", "account_kind", "kind_terms"):
             result[key] = value.upper() if key == "quote_currency" else value
         else:
             try:
@@ -4075,6 +4083,17 @@ def run_user_command(user, payload):
     return success, message, data
 
 
+def _with_kind_terms(row):
+    """A product's or account's 통장 종류 terms as an object (product rows: defaults + overrides)."""
+    from managers.deposit_accounts import KIND_TERMS
+    raw = row.get("kind_terms")
+    terms = json.loads(raw) if raw else {}
+    if "code" in row:  # a product: show the contract a new account would sign
+        terms = {**KIND_TERMS.get(row.get("account_kind") or "", {}), **terms}
+    row["kind_terms"] = terms
+    return row
+
+
 def user_lookups(user):
     """Choices for the HTS command forms: products, the user's accounts and loans, countries."""
     trader = trading_user_id(user["userId"])
@@ -4082,9 +4101,9 @@ def user_lookups(user):
         def rows(sql, params=()):
             return [dict(row) for row in connection.execute(sql, params)] if _table_exists(connection, sql.split(" FROM ")[1].split()[0]) else []
         return {
-            "savingProducts": rows("SELECT product_code AS code,name,interest_rate,deposit_amount,maturity_days,quote_currency,product_kind FROM saving WHERE status='active' ORDER BY product_kind,name"),
+            "savingProducts": [_with_kind_terms(row) for row in rows("SELECT product_code AS code,name,interest_rate,deposit_amount,maturity_days,quote_currency,product_kind,account_kind,kind_terms FROM saving WHERE status='active' ORDER BY product_kind,name")],
             "loanProducts": rows("SELECT product_code AS code,name,interest_rate,loan_limit,maturity_days,min_credit_score,quote_currency FROM liability WHERE status='active' AND issuer<>'국립정책금융공사' ORDER BY name"),
-            "accounts": [_masked(row) for row in rows("SELECT account_number,product_code,account_type,quote_currency,balance,balance_units FROM accounts WHERE user_id=? ORDER BY account_number", (trader,))],
+            "accounts": [_masked(_with_kind_terms(row)) for row in rows("SELECT account_number,product_code,account_type,quote_currency,balance,balance_units,principal,account_kind,kind_terms,overdraft_units,overdraft_limit_units,deferred_interest_units FROM accounts WHERE user_id=? ORDER BY account_number", (trader,))],
             "loans": rows("SELECT loan_id,product_code,outstanding_balance,quote_currency,maturity_epoch,status FROM loans WHERE user_id=? AND outstanding_balance>0 ORDER BY loan_id", (trader,)),
             "futures": rows("SELECT product_code AS code,name FROM investment WHERE product_type='stock_future' AND status='active' ORDER BY name"),
             "countries": [row["nationality"] for row in rows("SELECT nationality FROM country_currencies ORDER BY nationality")],

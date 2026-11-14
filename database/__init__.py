@@ -73,6 +73,8 @@ class DatabaseManager:
             self.financial = FinancialDB()
             self.credit = CreditDB()
             self.organizations = OrganizationDB()
+            from .account_kind_rules import install as install_account_kind_rules
+            install_account_kind_rules(self.accounts)
             self.companies.backfill_nationality_from_exchange()
             self.currency.register_late_amount_fields()
             from .nation_accounts import merge_legacy_nation_users

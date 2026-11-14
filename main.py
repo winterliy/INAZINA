@@ -418,6 +418,60 @@ class InazinaBot(discord.Client):
                         await recipient.send(embed=notice)
                     except (discord.HTTPException, ValueError, TypeError) as exc:
                         print(f"[Loan Repayment Notice Error] {result['user_id']}: {exc}")
+                deposit_notices = await self._run_background_write(
+                    self.bank_mgr.process_scheduled_deposits
+                )
+                for result in deposit_notices:
+                    try:
+                        recipient_id = int(result["user_id"])
+                        recipient = self.get_user(recipient_id) or await self.fetch_user(recipient_id)
+                        notice = discord.Embed(
+                            title="🐷 정기적금 자동 납입",
+                            description=f"**{result['product_name']}** · `{result['account_number']}`",
+                            color=(discord.Color.green() if not result["missed_count"] else discord.Color.orange()),
+                        )
+                        if result["paid_count"]:
+                            notice.add_field(name="납입",
+                                             value=f"{result['paid_count']}회 · 회당 {result['amount']:,} {result['currency']}",
+                                             inline=False)
+                        if result["missed_count"]:
+                            notice.add_field(name="미납",
+                                             value=f"{result['missed_count']}회 · 지갑이나 입출금 계열 통장의 잔액이 부족했습니다.",
+                                             inline=False)
+                        await recipient.send(embed=notice)
+                    except (discord.HTTPException, ValueError, TypeError) as exc:
+                        print(f"[Installment Notice Error] {result['user_id']}: {exc}")
+                kind_notices = await self._run_background_write(
+                    self.bank_mgr.process_account_kind_jobs
+                )
+                for result in kind_notices:
+                    try:
+                        recipient_id = int(result["user_id"])
+                        recipient = self.get_user(recipient_id) or await self.fetch_user(recipient_id)
+                        if result["kind"] == "irp_credit":
+                            notice = discord.Embed(
+                                title="🧾 IRP 연말정산 세액공제",
+                                description=(f"{result['year']}년 IRP 납입분 세액공제 "
+                                             f"**{result['refund']:,} {result['currency']}**"
+                                             f"(공제율 {result['percent']}%)를 지갑으로 환급했습니다."),
+                                color=discord.Color.green(),
+                            )
+                        else:
+                            lines = []
+                            if result["repaid"]:
+                                lines.append(f"자동 상환 {result['repaid']:,} {result['currency']}")
+                            if result["interest"]:
+                                lines.append(f"이번 달 이자 {result['interest']:,} {result['currency']}를 대출 잔액에 더했습니다")
+                            if result["limit_cut"]:
+                                lines.append(f"한도 사용률이 낮아 한도가 {result['limit_cut']:,} {result['currency']} 줄었습니다")
+                            notice = discord.Embed(
+                                title="💳 종합통장(마이너스) 정산",
+                                description=f"`{result['account_number']}`\n" + "\n".join(lines),
+                                color=discord.Color.blurple(),
+                            )
+                        await recipient.send(embed=notice)
+                    except (discord.HTTPException, ValueError, TypeError) as exc:
+                        print(f"[Account Kind Notice Error] {result['user_id']}: {exc}")
             except Exception as e:
                 now = asyncio.get_running_loop().time()
                 if now - self._last_loan_error_log >= self.BACKGROUND_ERROR_LOG_INTERVAL_SECONDS:

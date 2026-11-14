@@ -123,6 +123,61 @@ class CapitalMarketsTests(unittest.TestCase):
                 )), swap_before)
                 self.assertEqual(self.db.users.get_user('citizen')['cash'], cash_before)
 
+    def test_account_kind_labels_saving_products(self):
+        self.prepare()
+        kind = lambda code: self.db.products.execute_one(
+            "SELECT account_kind FROM saving WHERE product_code=?", (code,))[0]
+        saving = dict(interest_rate=3, deposit_amount=0, interest_cycle=86400, compound_type=0, issuer='')
+        self.create('saving', 'DEM1', '입출금', '', '', maturity_days=0, **saving)
+        self.create('saving', 'TD1', '정기예금', '', '', maturity_days=30, **saving)
+        self.create('saving', 'ISA1', 'ISA', '', '', maturity_days=0, account_kind='isa', **saving)
+        self.create('cma', 'CMA1', 'CMA', '', '', interest_rate=2, deposit_amount=0)
+        self.assertEqual([kind(c) for c in ('DEM1', 'TD1', 'ISA1', 'CMA1')], ['demand', 'time_deposit', 'isa', 'cma'])
+        self.bot.admin_control.entity('admin', 'saving', 'edit', 'DEM1', None, None, None, {'account_kind': 'parking'})
+        self.assertEqual(kind('DEM1'), 'parking')
+        with self.assertRaisesRegex(ValueError, '통장 종류'):
+            self.bot.admin_control.entity('admin', 'saving', 'edit', 'DEM1', None, None, None, {'account_kind': 'bogus'})
+        with self.assertRaisesRegex(ValueError, 'cma'):
+            self.bot.admin_control.entity('admin', 'cma', 'edit', 'CMA1', None, None, None, {'account_kind': 'demand'})
+
+    def test_installment_products_collect_on_schedule_until_maturity(self):
+        import time as _time
+        self.prepare()
+        bank = self.bot.bank_mgr
+        saving = dict(interest_rate=0, deposit_amount=0, interest_cycle=86400, compound_type=0, issuer='')
+        for kind, days in (('demand', 0), ('time_deposit', 5)):  # 정기예금 is funded once at opening
+            with self.assertRaisesRegex(ValueError, '정기적금'):
+                self.create('saving', 'BAD1', '잘못', '', '', maturity_days=days, account_kind=kind,
+                            installment_amount=100, installment_cycle_seconds=86400, **saving)
+        self.create('saving', 'FI1', '정기적금', '', '', maturity_days=5, account_kind='fixed_installment',
+                    installment_amount=100, installment_cycle_seconds=86400, **saving)
+        self.create('saving', 'DEM2', '입출금', '', '', maturity_days=0, account_kind='demand', **saving)
+        self.assertTrue(bank.open_account('citizen', 'FI1', 'pass1234', 0)[0])
+        number = self.db.accounts.execute_one("SELECT account_number FROM accounts WHERE product_code='FI1'")[0]
+        balance = lambda n: self.db.accounts.execute_one("SELECT balance FROM accounts WHERE account_number=?", (n,))[0]
+        progress = lambda: tuple(self.db.accounts.execute_one(
+            "SELECT installments_paid,installments_missed FROM accounts WHERE account_number=?", (number,)))
+        cash = lambda: self.db.users.get_user('citizen')['cash']
+        start = _time.time()
+        before = cash()
+        notices = bank.process_scheduled_deposits(now=start + 2 * 86400 + 60)
+        self.assertEqual(progress(), (2, 0))
+        self.assertEqual(balance(number), 200)
+        self.assertEqual(cash(), before - 200)
+        self.assertEqual(notices[0]['paid_count'], 2)
+        self.assertEqual(bank.process_scheduled_deposits(now=start + 2 * 86400 + 60), [])
+        # No wallet cash: the spendable 입출금통장 pays instead.
+        self.assertTrue(bank.open_account('citizen', 'DEM2', 'pass1234', 150)[0])
+        demand = self.db.accounts.execute_one("SELECT account_number FROM accounts WHERE product_code='DEM2'")[0]
+        self.db.users.execute("UPDATE users SET cash=0 WHERE user_id='citizen'")
+        bank.process_scheduled_deposits(now=start + 3 * 86400 + 60)
+        self.assertEqual(progress(), (3, 0))
+        self.assertEqual(balance(demand), 50)
+        # Nothing left anywhere: missed, and nothing is taken after maturity (day 5).
+        bank.process_scheduled_deposits(now=start + 30 * 86400)
+        self.assertEqual(progress(), (3, 1))
+        self.assertEqual(balance(number), 300)
+
     def test_cma_and_wrap_accounts(self):
         self.prepare()
         self.create('cma', 'CMA1', 'CMA', '', '', interest_rate=2, deposit_amount=0)

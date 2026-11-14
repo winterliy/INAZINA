@@ -31,6 +31,21 @@ class ProductDB(DBManager):
             self.execute("ALTER TABLE saving ADD COLUMN quote_currency TEXT")
         if "product_kind" not in saving_columns:
             self.execute("ALTER TABLE saving ADD COLUMN product_kind TEXT NOT NULL DEFAULT 'saving'")
+        if "account_kind" not in saving_columns:
+            # 통장 종류 label (managers.deposit_accounts.ACCOUNT_KINDS); existing rows are
+            # backfilled from product_kind and maturity.
+            self.execute("ALTER TABLE saving ADD COLUMN account_kind TEXT")
+            self.execute("UPDATE saving SET account_kind = CASE WHEN product_kind='cma' THEN 'cma' "
+                         "WHEN product_kind IN ('ima','wrap') THEN NULL "
+                         "WHEN COALESCE(maturity_days,0) > 0 THEN 'time_deposit' ELSE 'demand' END")
+        # 정기적금 자동 납입: the bank takes installment_amount every
+        # installment_cycle_seconds until maturity (0 = no installments).
+        if "installment_amount" not in saving_columns:
+            self.execute("ALTER TABLE saving ADD COLUMN installment_amount INTEGER NOT NULL DEFAULT 0 "
+                         "CHECK(installment_amount >= 0)")
+        if "installment_cycle_seconds" not in saving_columns:
+            self.execute("ALTER TABLE saving ADD COLUMN installment_cycle_seconds INTEGER NOT NULL DEFAULT 0 "
+                         "CHECK(installment_cycle_seconds >= 0)")
         self._init_rate_pricing_columns("saving", saving_columns)
         # CMA / IMA / wrap accounts are savings products with extra terms.
         for column, declaration in {

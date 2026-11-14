@@ -350,6 +350,16 @@ class CurrencyExchangeManager:
                 value = Decimal(int(value_units)) / Decimal(SCALE)
                 return int(value) if value == value.to_integral_value() else ExactDecimal(value)
 
+            only_named = False
+            if src[0] == 'accounts':
+                # 마이너스통장: a payment from it uses its balance and then its limit,
+                # never the wallet. The shortfall is lent in before the payment
+                # window opens, so the wallet ledger of the payment stays exact.
+                from managers.overdraft import cover
+                only_named = conn.execute("SELECT account_kind FROM accounts WHERE account_number=?",
+                                          (src[3],)).fetchone()[0] == 'combined'
+                if only_named:
+                    cover(conn, src[3], debit, now)
             from managers.accounting_journal import AccountingJournal
             before = AccountingJournal.wallet_watermark(conn)
             debited_sources = []
@@ -360,10 +370,15 @@ class CurrencyExchangeManager:
                 ).fetchone()[0] or 0))*SCALE))]
                 candidates += [(str(row['account_number']),int(Decimal(str(row['balance'] or 0))*SCALE)) for row in conn.execute(
                     "SELECT account_number,balance FROM accounts WHERE user_id=? "
-                    "AND account_type IN ('saving','loan_payout') AND quote_currency=?",(sender,src[5])).fetchall()]
+                    "AND account_type IN ('saving','loan_payout') AND quote_currency=? "
+                    # Only spendable accounts top up a payment; a locked account pays only when named.
+                    "AND (COALESCE(account_kind,'demand') IN ('demand','parking','cma','combined') OR account_number=?)",
+                    (sender,src[5],preferred)).fetchall()]
                 if dst[4]==sender:
                     destination_source = None if dst[0]=='users' else dst[3]
                     candidates = [item for item in candidates if item[0]!=destination_source]
+                if only_named:
+                    candidates = [item for item in candidates if item[0]==preferred]
                 candidates.sort(key=lambda item:(item[0]!=preferred,item[0] is None,-item[1]))
                 if sum(max(0,balance) for _,balance in candidates) < debit:
                     debited = False

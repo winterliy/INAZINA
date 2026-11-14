@@ -410,13 +410,16 @@ class BankManager:
                 source = conn.execute(
                     "SELECT account_number,user_id,balance,balance_units,password,principal,created_at,"
                     "early_withdrawal_rate,early_withdrawal_fee_percent,product_code,account_type,"
-                    "reference_price,reference_price_minor_units "
+                    "reference_price,reference_price_minor_units,account_kind,kind_terms,"
+                    "deferred_interest_units,credited_contribution_units,overdraft_units "
                     "FROM accounts.accounts "
                     "WHERE account_number = ? AND user_id = ? AND account_type = 'saving'",
                     (str(account_number), str(user_id)),
                 ).fetchone()
                 if not source:
                     return False, "❌ 해당 계좌를 찾을 수 없거나 권한이 없습니다."
+                if int(source["overdraft_units"] or 0) > 0:
+                    return False, "❌ 마이너스 사용액을 모두 갚아야 종합통장을 해지할 수 있습니다."
                 # System-opened foreign-currency accounts (e.g. the treasury's) have no password.
                 if source["password"] is not None and not self._verify_password(password, source["password"]):
                     return False, "❌ 계좌 비밀번호가 올바르지 않습니다. 계좌 해지를 취소했습니다."
@@ -456,6 +459,7 @@ class BankManager:
                         "SELECT a.account_number,s.issuer FROM accounts.accounts a "
                         "JOIN product.saving s ON s.product_code=a.product_code "
                         "WHERE a.user_id = ? AND a.account_number <> ? AND a.account_type = 'saving' "
+                        "AND COALESCE(a.account_kind,'demand') IN ('demand','parking','cma','combined') "
                         "AND a.quote_currency=(SELECT quote_currency FROM accounts.accounts "
                         "WHERE account_number=?) ORDER BY a.balance DESC LIMIT 1",
                         (str(user_id), str(account_number), str(account_number)),
@@ -494,7 +498,9 @@ class BankManager:
                         if source_currency != bank_home:
                             cost = _CM.convert(conn, cost, source_currency, bank_home)
                         _CM.change(conn, bank, bank_home, -cost, allow_deficit=True)
-                if product and int(product["maturity_days"] or 0) > 0:
+                # ISA·IRP·청약 keep their interest on early closing; their own tax rules apply below.
+                if (product and int(product["maturity_days"] or 0) > 0
+                        and source["account_kind"] not in ("isa", "irp", "housing")):
                     opened = datetime.strptime(
                         source["created_at"], "%Y-%m-%d %H:%M:%S"
                     ).replace(tzinfo=timezone.utc).timestamp()
@@ -518,15 +524,35 @@ class BankManager:
                             CurrencyManager.treasury_receive(
                                 conn, CurrencyManager.user_treasury_id(conn, user_id),
                                 source_currency, int(round(early_penalty*SCALE)))
-                if product and (account_liability or ima_top_up or early_penalty):
+                from managers.account_kind_settlement import closing as kind_closing
+                kind_interest, kind_tax, kind_label = kind_closing(conn, source, source_currency)
+                if kind_interest or kind_tax:
+                    balance += kind_interest - kind_tax
+                    if kind_tax:
+                        from managers.currency_manager import CurrencyManager, SCALE
+                        CurrencyManager.treasury_receive(
+                            conn, CurrencyManager.user_treasury_id(conn, user_id),
+                            source_currency, int(round(ExactDecimal(kind_tax)*SCALE)))
+                    # gross: the income taxed now (deferred ISA·IRP interest or 청약 interest).
+                    kind_gross = round_currency(
+                        conn, ExactDecimal(source["deferred_interest_units"] or 0)/1000000 + kind_interest
+                        + (ExactDecimal(source["credited_contribution_units"] or 0)/1000000
+                           if source["account_kind"] == "irp" else 0), source_currency)
+                    conn.execute(
+                        "INSERT INTO tax_transactions(user_id,source,gross_amount,tax_amount,net_amount,currency_code) "
+                        "VALUES (?,?,?,?,?,?)",
+                        (str(user_id), f"{source['account_kind']}_closing",
+                         kind_gross, kind_tax, kind_gross - kind_tax, source_currency))
+                if product and (account_liability or ima_top_up or early_penalty or kind_interest or kind_tax):
                     from managers.bank_journal import BankJournal
                     closing_lines = [
                         ("customer_deposits_payable", "debit", account_liability),
                         ("ima_payout_expense", "debit", ima_top_up),
+                        ("interest_expense", "debit", kind_interest),
                         ("customer_deposits_payable" if destination_number
                          and destination_issuer == product["issuer"]
                          else "settlement_asset", "credit", balance),
-                        ("treasury_payable", "credit", early_penalty),
+                        ("treasury_payable", "credit", early_penalty + kind_tax),
                     ]
                     BankJournal.post(
                         conn, product["issuer"], "deposit_close",
@@ -588,15 +614,19 @@ class BankManager:
                 )
                 # Record the withdrawal before removing the account, so its
                 # immutable wallet history closes to zero in its own currency.
-                conn.execute("UPDATE accounts.accounts SET balance_units=0 WHERE account_number=?",
-                             (str(account_number),))
-                conn.execute("DELETE FROM accounts.accounts WHERE account_number = ?", (str(account_number),))
+                from managers.deposit_accounts import rule_bypass
+                with rule_bypass(conn, account_number):
+                    conn.execute("UPDATE accounts.accounts SET balance_units=0 WHERE account_number=?",
+                                 (str(account_number),))
+                    conn.execute("DELETE FROM accounts.accounts WHERE account_number = ?", (str(account_number),))
                 RateManager.refresh_all_market_pressure(conn)
             target_text = f"계좌 `{destination_number}`" if destination_number else "현금 지갑"
             penalty_text = (
                 f" 중도해지 조정 {early_penalty:,} {source_currency}를 차감했습니다."
                 if early_penalty else ""
-            ) + (f" IMA 성과 분배 {ima_top_up:,} {source_currency}를 더했습니다." if ima_top_up else "")
+            ) + (f" IMA 성과 분배 {ima_top_up:,} {source_currency}를 더했습니다." if ima_top_up else "") + (
+                f" {kind_label}: 이자 {kind_interest:,} · 세금 {kind_tax:,} {source_currency}."
+                if kind_interest or kind_tax else "")
             return True, (
                 f"✅ 계좌를 해지했습니다. 잔액과 보유 자산을 {target_text}(으)로 이관했습니다."
                 f"{penalty_text}"
@@ -1764,6 +1794,122 @@ class BankManager:
         except Exception:
             raise
 
+    def process_scheduled_deposits(self, now=None):
+        """정기적금 자동 납입: take each due installment until maturity.
+
+        Money comes from the wallet (home currency), else the same-currency
+        spendable account (입출금·파킹·CMA·종합) with the largest balance. A due
+        date with no funds counts as missed and moves on. Returns notices.
+        """
+        from managers.deposit_accounts import FLEXIBLE_KINDS, INSTALLMENT_KINDS
+        from managers.currency_manager import CurrencyManager
+        try:
+            now = float(time.time() if now is None else now)
+        except (TypeError, ValueError, OverflowError):
+            return []
+        if not math.isfinite(now) or not 0 <= now <= self.MAX_SUPPORTED_EPOCH:
+            return []
+        kinds = ",".join("?" * len(INSTALLMENT_KINDS))
+        candidates_sql = (
+            "SELECT a.account_number,a.user_id,a.quote_currency,a.next_installment_epoch,a.installments_paid,"
+            "a.created_at,a.kind_terms,p.name,p.issuer,p.maturity_days "
+            "FROM accounts.accounts a JOIN product.saving p ON p.product_code=a.product_code "
+            f"WHERE a.account_type='saving' AND a.account_kind IN ({kinds}) "
+            "AND COALESCE(a.resolution_status,'active')='active'"
+        )
+
+        def due_rows(conn):
+            """Accounts with an installment due, using the contract's own terms (kind_terms)."""
+            from managers.account_kind_settlement import _opened
+            rows = []
+            for row in conn.execute(candidates_sql, INSTALLMENT_KINDS).fetchall():
+                terms = json.loads(row["kind_terms"] or "{}")
+                amount = ExactDecimal(terms.get("installment_amount") or 0)
+                cycle = int(float(terms.get("installment_cycle_seconds") or 0))
+                if amount <= 0 or cycle <= 0:
+                    continue
+                opened = _opened(row)
+                due = float(row["next_installment_epoch"] or opened + cycle)
+                if due <= now:
+                    rows.append({**dict(row), "opened_epoch": opened, "installment_amount": amount,
+                                 "installment_cycle_seconds": cycle})
+            return rows
+
+        with self.db.readonly() as conn:
+            users = {str(row["user_id"]) for row in due_rows(conn)}
+        if not users:
+            return []
+        for user_id in users:
+            # Interest up to now accrues on the old balance before money moves.
+            self._settle_user_interest(user_id, now=now)
+        notices = []
+        flexible = ",".join("?" * len(FLEXIBLE_KINDS))
+        with self.db.atomic(("users", "accounts", "product")) as conn:
+            for row in due_rows(conn):
+                cycle = int(row["installment_cycle_seconds"])
+                maturity = float(row["opened_epoch"]) + int(row["maturity_days"] or 0) * 86400
+                due = float(row["next_installment_epoch"] or float(row["opened_epoch"]) + cycle)
+                currency = str(row["quote_currency"])
+                amount = round_currency(conn, ExactDecimal(row["installment_amount"]), currency)
+                number, user_id = row["account_number"], str(row["user_id"])
+                paid = missed = 0
+                for _ in range(100):  # bounded catch-up after downtime
+                    if due > now or due >= maturity:
+                        break
+                    sequence = int(row["installments_paid"]) + paid + missed + 1
+                    source = None
+                    if CurrencyManager.home(conn, user_id) == currency:
+                        cash = conn.execute("SELECT cash FROM users.users WHERE user_id=?", (user_id,)).fetchone()
+                        if cash and ExactDecimal(cash["cash"] or 0) >= amount:
+                            source = (None, None)
+                    if source is None:
+                        account = conn.execute(
+                            "SELECT a.account_number,p.issuer FROM accounts.accounts a "
+                            "JOIN product.saving p ON p.product_code=a.product_code "
+                            "WHERE a.user_id=? AND a.quote_currency=? AND a.account_type='saving' "
+                            "AND a.account_number<>? AND COALESCE(a.resolution_status,'active')='active' "
+                            f"AND COALESCE(a.account_kind,'demand') IN ({flexible}) AND a.balance>=? "
+                            "ORDER BY a.balance DESC LIMIT 1",
+                            (user_id, currency, number, *FLEXIBLE_KINDS, amount)).fetchone()
+                        if account:
+                            source = (account["account_number"], account["issuer"])
+                    if source is not None and UserFunds.debit(conn, user_id, source[0], amount):
+                        UserFunds.credit(conn, user_id, amount, number, currency)
+                        key = f"account:{number}:installment:{sequence}"
+                        if source[0] is not None and source[1] != row["issuer"]:
+                            BankJournal.post(conn, source[1], "deposit_installment_out", key, currency,
+                                             [("customer_deposits_payable", "debit", amount),
+                                              ("settlement_asset", "credit", amount)],
+                                             description=f"Installment from {source[0]} to {number}", now=due)
+                        if source[0] is None or source[1] != row["issuer"]:
+                            BankJournal.post(conn, row["issuer"], "deposit_installment", key, currency,
+                                             [("settlement_asset", "debit", amount),
+                                              ("customer_deposits_payable", "credit", amount)],
+                                             description=f"Installment {sequence} into {number}", now=due)
+                        paid += 1
+                    else:
+                        missed += 1
+                    due += cycle
+                conn.execute(
+                    "UPDATE accounts.accounts SET next_installment_epoch=?,installments_paid=installments_paid+?,"
+                    "installments_missed=installments_missed+? WHERE account_number=?",
+                    (due, paid, missed, number))
+                if paid or missed:
+                    notices.append({"user_id": user_id, "account_number": number, "product_name": row["name"],
+                                    "paid_count": paid, "missed_count": missed,
+                                    "amount": amount, "currency": currency})
+        return notices
+
+    def process_account_kind_jobs(self, now=None):
+        """마이너스통장 상환·이자·한도 재검토와 IRP 연말정산 세액공제. Returns notices."""
+        from managers import overdraft
+        from managers.account_kind_settlement import settle_irp_tax_credits
+        now = time.time() if now is None else float(now)
+        with self.db.atomic(("users", "accounts", "product", "tax")) as conn:
+            notices = [{"kind": "overdraft", **item} for item in overdraft.process(conn, now)]
+            notices += [{"kind": "irp_credit", **item} for item in settle_irp_tax_credits(conn, now)]
+        return notices
+
     def refresh_credit_scores(self, now=None):
         """Settle loans past maturity, then re-score users with stale scores."""
         now = time.time() if now is None else float(now)
@@ -2188,12 +2334,14 @@ class BankManager:
                     description=f"Failed-institution claim transfer for {account['account_number']}",
                     now=when,
                 )
-            conn.execute(
-                "UPDATE accounts.accounts SET balance_units=0,principal=0,"
-                "resolution_status='resolved',insurance_paid=?,uninsured_claim=? "
-                "WHERE account_number=?",
-                (covered, uninsured, account["account_number"]),
-            )
+            from managers.deposit_accounts import rule_bypass
+            with rule_bypass(conn, account["account_number"]):
+                conn.execute(
+                    "UPDATE accounts.accounts SET balance_units=0,principal=0,"
+                    "resolution_status='resolved',insurance_paid=?,uninsured_claim=? "
+                    "WHERE account_number=?",
+                    (covered, uninsured, account["account_number"]),
+                )
             conn.execute(
                 "INSERT OR IGNORE INTO accounts.deposit_insurance_claims "
                 "(issuer,user_id,account_number,covered_amount,uninsured_amount,"
@@ -2456,7 +2604,8 @@ class UserFunds:
             (ExactDecimal(row["balance"] or 0), row["account_number"])
             for row in conn.execute(
                 "SELECT account_number,balance FROM accounts.accounts WHERE user_id=? "
-                "AND quote_currency=? AND account_type IN ('saving','loan_payout')",
+                "AND quote_currency=? AND account_type IN ('saving','loan_payout') "
+                "AND COALESCE(account_kind,'demand') IN ('demand','parking','cma','combined')",
                 (user_id, currency),
             ).fetchall()
         )
@@ -2474,6 +2623,8 @@ class UserFunds:
             )
         else:
             now = time.time()
+            from managers.overdraft import cover
+            cover(conn, account_number, int(round(ExactDecimal(amount) * 1000000)), now)
             cursor = conn.execute(
                 "UPDATE accounts.accounts SET balance_units = balance_units - CAST(ROUND(? * 1000000) AS INTEGER), "
                 "principal = MAX(0, COALESCE(principal, 0) - ?), last_payment_epoch = ?, "

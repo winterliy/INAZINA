@@ -1,3 +1,4 @@
+import sqlite3
 from functions.exact_money import ExactDecimal, native_value
 from functions.amount_limits import MAX_NATIVE
 from functions.money import base_currency_code
@@ -185,6 +186,8 @@ class UserManager:
             quantum = SCALE // (10 ** places)
             now = time.time()
             stamp = datetime.fromtimestamp(now, timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            from managers.overdraft import cover
+            cover(conn, account_number, minor*quantum, now)  # 마이너스통장: borrow the shortfall first
             cursor = conn.execute(
                 "UPDATE accounts.accounts SET balance_minor_units=balance_minor_units-?, "
                 "balance_units=balance_units-?, principal = MAX(0, COALESCE(principal, 0) - ?), "
@@ -557,6 +560,12 @@ class UserManager:
             )
         except ValueError as exc:
             return False,f'❌ {exc}'
+        except sqlite3.IntegrityError as exc:
+            # An account-kind rule (정기예금 추가입금, ISA 한도 ...) refused the payment.
+            from managers.deposit_accounts import rule_message
+            if rule_message(exc) is None:
+                raise
+            return False,f'❌ {rule_message(exc)}'
 
     def gamble(self, user_id, amount, source=None):
         try:
