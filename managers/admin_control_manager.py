@@ -658,7 +658,9 @@ class AdminControlManager:
                 values['is_fixed'] = self._number(values['is_fixed'],0,1,integer=True)
             if 'compound_type' in merged:
                 values['compound_type']=self._number(merged['compound_type'],0,1,integer=True)
-            if 'min_credit_score' in merged:
+            # PostgreSQL keeps deposits and loans in one table (bank_products), so a
+            # deposit row carries an empty loan-only column.
+            if merged.get('min_credit_score') is not None:
                 values['min_credit_score']=self._number(merged['min_credit_score'],0,1000,integer=True)
             if 'initial_margin' in merged and not 0 < float(merged['maintenance_margin']) <= float(merged['initial_margin']) <= 1:
                 raise ValueError('유지증거금은 초기증거금 이하이며 모두 0보다 커야 합니다.')

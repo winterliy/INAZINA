@@ -159,6 +159,11 @@ def _replace_to_upsert(tree):
                     "ORDER BY k.ordinal_position").get(table, [])
     every = _catalog("SELECT table_name, column_name FROM information_schema.columns "
                      "WHERE table_schema = 'public' ORDER BY ordinal_position").get(table, [])
+    if not keys:
+        # No primary key: a view (its INSTEAD OF trigger does the replacing) or a
+        # keyless table, where SQLite's REPLACE has nothing to conflict with.
+        tree.set("alternative", None)
+        return
     target = tree.this.expressions if isinstance(tree.this, exp.Schema) else None
     listed = [c.name for c in target] if target else [c for c in every if c != "rowid"]
     if source in ROW_FILTER:
@@ -182,9 +187,14 @@ def _any_value_for_bare_columns(tree):
             continue
         grouped = {g.sql() for g in group.expressions}
         aliases = {e.alias for e in select.expressions if e.alias}
-        for position, expression in enumerate(select.expressions, start=1):
+        for position, expression in enumerate(list(select.expressions), start=1):
             if expression.alias in grouped or str(position) in grouped:
                 continue  # GROUP BY names this expression (by alias or position): it is the key
+            if isinstance(expression, exp.Column) and not expression.find_ancestor(exp.AggFunc, exp.Subquery) \
+                    and expression.sql() not in grouped and expression.name not in aliases:
+                # A bare column keeps its name in the result row (row['issuer']), as in SQLite.
+                expression.replace(exp.alias_(exp.AnyValue(this=expression.copy()), expression.name))
+                continue
             for column in list(expression.find_all(exp.Column)):
                 if column.sql() in grouped or column.name in aliases or column.find_ancestor(exp.AggFunc, exp.Subquery):
                     continue
@@ -236,6 +246,27 @@ def translate(sql):
     if savepoint:
         verb = savepoint[1].upper().split()[0]
         return f"{verb}:{savepoint[2]}", None
+    abort = re.fullmatch(r"CREATE\s+(?:TEMP(?:ORARY)?\s+)?TRIGGER\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)\s+"
+                         r"BEFORE\s+(INSERT|UPDATE|DELETE)\s+ON\s+(\w+)\s+(?:FOR\s+EACH\s+ROW\s+)?"
+                         r"BEGIN\s+SELECT\s+RAISE\s*\(\s*ABORT\s*,\s*'((?:[^']|'')*)'\s*\)\s*;\s*END;?", stripped, re.I | re.S)
+    if abort:
+        # A runtime "refuse this" trigger (a test's injected failure, or a guard put
+        # back after a fixture edit): the same rule with the shared raise_abort().
+        # PostgreSQL has no temporary triggers; it lives until dropped or rolled back.
+        name, event, table, message = abort.groups()
+        return (f'DROP TRIGGER IF EXISTS "{name}" ON "{target_table(table)}"; '
+                f'CREATE TRIGGER "{name}" BEFORE {event.upper()} ON "{target_table(table)}" '
+                f"FOR EACH ROW EXECUTE FUNCTION raise_abort('{message}')"), None
+    dropped = re.fullmatch(r"DROP\s+TRIGGER\s+(?:IF\s+EXISTS\s+)?(\w+)\s*;?", stripped, re.I)
+    if dropped:
+        # PostgreSQL drops a trigger on a named table; find the table it is on. Only
+        # tests do this at runtime: PostgreSQL mode never runs the SQLite schema setup.
+        name = dropped.group(1)
+        return ("DO $drop$ DECLARE t text; BEGIN "
+                f"SELECT c.relname INTO t FROM pg_trigger g JOIN pg_class c ON c.oid = g.tgrelid "
+                f"WHERE g.tgname = '{name}' AND NOT g.tgisinternal LIMIT 1; "
+                f"IF t IS NOT NULL THEN EXECUTE 'DROP TRIGGER ' || quote_ident('{name}') || ' ON ' || quote_ident(t); END IF; "
+                "END $drop$"), None
     if re.match(r"(CREATE|DROP)\s+TRIGGER\b", upper):
         # Triggers come from database/postgres/triggers.sql; runtime trigger DDL is SQLite schema setup.
         return "SELECT 1 WHERE false", None

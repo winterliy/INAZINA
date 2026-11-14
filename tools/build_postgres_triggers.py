@@ -24,6 +24,11 @@ ROW_FILTER = {
     "saving": ("kind", "deposit"),
     "liability": ("kind", "loan"),
 }
+# PostgreSQL fires triggers of one event in name order; SQLite fired these
+# earlier. A trigger that later ones read from gets a name that sorts first:
+# accounts' balance_units must be derived from balance before the minor-unit
+# mirror reads it.
+FIRE_FIRST = {"trg_accounts_units_insert": "a_trg_accounts_units_insert"}
 # Dropped tables whose rules already exist elsewhere (verified 2026-11-14).
 COVERED = {
     "market_execution_order_baselines": "table dropped (v2 kept)",
@@ -109,9 +114,31 @@ def _expr(sql, table=None):
     return tree.expressions[0].sql(dialect="postgres")
 
 
+def _raise_where(tree):
+    """SELECT RAISE(ABORT, 'm') [FROM ...] WHERE c -> IF [EXISTS] c THEN RAISE, else None."""
+    if not (isinstance(tree, exp.Select) and len(tree.expressions) == 1):
+        return None
+    action = tree.expressions[0]
+    if not (isinstance(action, exp.Anonymous) and action.name.upper() == "RAISE"
+            and len(action.expressions) == 2 and action.expressions[1].is_string):
+        return None
+    message = action.expressions[1].this.replace("'", "''")
+    if tree.args.get("from") or tree.args.get("from_"):
+        probe = tree.copy()
+        probe.set("expressions", [exp.Literal.number(1)])
+        condition = f"EXISTS ({rewrite(probe).sql(dialect='postgres')})"
+    elif tree.args.get("where"):
+        condition = rewrite(tree.args["where"].this).sql(dialect="postgres")
+    else:
+        condition = "TRUE"
+    return (f"IF ({condition}) THEN\n            RAISE EXCEPTION USING MESSAGE = '{message}', "
+            f"ERRCODE = 'check_violation';\n        END IF")
+
+
 def _raise_chain(tree):
     """SELECT CASE WHEN c THEN RAISE(ABORT, 'm') ... END -> a PL/pgSQL IF chain, else None."""
-    if not (isinstance(tree, exp.Select) and len(tree.expressions) == 1 and not tree.args.get("from")
+    if not (isinstance(tree, exp.Select) and len(tree.expressions) == 1
+            and not (tree.args.get("from") or tree.args.get("from_"))
             and isinstance(tree.expressions[0], exp.Case) and not tree.expressions[0].args.get("default")):
         return None
     branches = []
@@ -165,7 +192,7 @@ def _filter_merged(tree):
 
 def _statement(sql, keys=None, columns=None, table=None):
     tree = _filter_merged(_map_rowid(sqlglot.parse_one(sql, read="sqlite"), table))
-    chain = _raise_chain(tree)
+    chain = _raise_chain(tree) or _raise_where(tree)
     if chain:
         return chain
     if isinstance(tree, exp.Insert) and str(tree.args.get("alternative") or "").upper() == "REPLACE":
@@ -265,6 +292,7 @@ def translate(conn):
             skipped.append((name, "unrecognized trigger form"))
             continue
         table, timing, event, when, body = m["table"], m["timing"].upper(), _event(m["event"]), m["when"], m["body"]
+        name = FIRE_FIRST.get(name, name)
         if table in COVERED:
             skipped.append((name, f"covered: {COVERED[table]}"))
             continue

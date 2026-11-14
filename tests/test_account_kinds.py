@@ -195,8 +195,10 @@ class AccountKindRuleTests(unittest.TestCase):
 
     def age(self, account, days):
         """Pretend the account (and its payments) started ``days`` ago."""
-        self.db.accounts.execute(
-            "UPDATE accounts SET created_at=datetime(created_at, ?) WHERE account_number=?", (f'-{days} days', account))
+        from datetime import datetime, timedelta
+        created = self.db.accounts.execute_one("SELECT created_at FROM accounts WHERE account_number=?", (account,))[0]
+        moved = (datetime.strptime(created, "%Y-%m-%d %H:%M:%S") - timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+        self.db.accounts.execute("UPDATE accounts SET created_at=? WHERE account_number=?", (moved, account))
         self.db.accounts.execute(
             "UPDATE account_contributions SET epoch=epoch-? WHERE account_number=?", (days * 86400, account))
 

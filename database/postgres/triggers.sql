@@ -274,7 +274,7 @@ END $$;
 CREATE TRIGGER "market_exchange_indices_update" INSTEAD OF UPDATE ON "market_exchange_indices" FOR EACH ROW EXECUTE FUNCTION "market_exchange_indices_update_fn"();
 CREATE OR REPLACE FUNCTION "organization_company_after_insert_fn"() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    INSERT INTO organizations (organization_code, name, industry, country_code, status) SELECT NEW.company_code, COALESCE(NEW.name, ''), COALESCE(NEW.industry, ''), COALESCE((SELECT nationality FROM market_exchanges WHERE exchange_id = NEW.exchange_id), NEW.nationality), COALESCE(NEW.status, 'active') WHERE COALESCE(NEW.share_class, 'common') = 'common' ON CONFLICT DO NOTHING;
+    INSERT INTO organizations (organization_code, name, industry, country_code, status) SELECT NEW.company_code, COALESCE(NEW.name, ''), COALESCE(NEW.industry, ''), COALESCE(NULLIF(TRIM(NEW.nationality), ''), (SELECT nationality FROM market_exchanges WHERE exchange_id = NEW.exchange_id)), COALESCE(NEW.status, 'active') WHERE COALESCE(NEW.share_class, 'common') = 'common' ON CONFLICT DO NOTHING;
     INSERT INTO share_issuances (organization_code, class_name, share_class, voting_rights_per_share) SELECT NEW.company_code, COALESCE(NEW.name, NEW.company_code) || ' 보통주', 'common', '1' WHERE COALESCE(NEW.share_class, 'common') = 'common' AND NEW.share_issuance_id IS NULL;
     UPDATE company SET share_issuance_id = LASTVAL() WHERE company_code = NEW.company_code AND COALESCE(NEW.share_class, 'common') = 'common' AND NEW.share_issuance_id IS NULL;
     INSERT INTO share_issuances (organization_code, class_name, share_class, voting_rights_per_share) SELECT NEW.parent_company_code, COALESCE(NEW.name, NEW.company_code) || ' 우선주', 'preferred', '1' WHERE NEW.share_class = 'preferred' AND NEW.share_issuance_id IS NULL AND NOT NEW.parent_company_code IS NULL AND EXISTS(SELECT 1 FROM organizations WHERE organization_code = NEW.parent_company_code);
@@ -285,7 +285,7 @@ CREATE TRIGGER "organization_company_after_insert" AFTER INSERT ON "company" FOR
 CREATE OR REPLACE FUNCTION "organization_company_after_update_fn"() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF (NEW.name IS DISTINCT FROM OLD.name OR NEW.industry IS DISTINCT FROM OLD.industry OR NEW.exchange_id IS DISTINCT FROM OLD.exchange_id OR NEW.nationality IS DISTINCT FROM OLD.nationality OR NEW.dividend_priority IS DISTINCT FROM OLD.dividend_priority OR NEW.cumulative_dividend IS DISTINCT FROM OLD.cumulative_dividend OR NEW.dividend_mode IS DISTINCT FROM OLD.dividend_mode OR NEW.dividend_per_share IS DISTINCT FROM OLD.dividend_per_share OR NEW.dividend_percent IS DISTINCT FROM OLD.dividend_percent OR NEW.dividend_cycle_seconds IS DISTINCT FROM OLD.dividend_cycle_seconds OR NEW.dividend_is_active IS DISTINCT FROM OLD.dividend_is_active OR NEW.liquidation_value_per_share IS DISTINCT FROM OLD.liquidation_value_per_share OR NEW.dividend_funding IS DISTINCT FROM OLD.dividend_funding) THEN
-        UPDATE organizations SET name = COALESCE(NEW.name, ''), industry = COALESCE(NEW.industry, ''), country_code = CASE WHEN NOT NEW.exchange_id IS NOT DISTINCT FROM OLD.exchange_id THEN COALESCE((SELECT nationality FROM market_exchanges WHERE exchange_id = NEW.exchange_id), NEW.nationality) WHEN NOT NEW.nationality IS NOT DISTINCT FROM OLD.nationality THEN NEW.nationality ELSE country_code END, updated_epoch = CAST(EXTRACT(epoch FROM CURRENT_TIMESTAMP) AS BIGINT) WHERE organization_code = NEW.company_code AND COALESCE(NEW.share_class, 'common') = 'common';
+        UPDATE organizations SET name = COALESCE(NEW.name, ''), industry = COALESCE(NEW.industry, ''), country_code = CASE WHEN NOT NEW.nationality IS NOT DISTINCT FROM OLD.nationality THEN NEW.nationality ELSE country_code END, updated_epoch = CAST(EXTRACT(epoch FROM CURRENT_TIMESTAMP) AS BIGINT) WHERE organization_code = NEW.company_code AND COALESCE(NEW.share_class, 'common') = 'common';
         UPDATE share_issuances SET rights_json = JSON_OBJECT('dividend_priority': NEW.dividend_priority, 'cumulative_dividend': NEW.cumulative_dividend, 'dividend_mode': NEW.dividend_mode, 'dividend_per_share': CAST(NEW.dividend_per_share AS TEXT), 'dividend_percent': CAST(NEW.dividend_percent AS TEXT), 'liquidation_value_per_share': CAST(NEW.liquidation_value_per_share AS TEXT), 'dividend_funding': NEW.dividend_funding, 'dividend_cycle_seconds': NEW.dividend_cycle_seconds, 'dividend_is_active': NEW.dividend_is_active), updated_epoch = CAST(EXTRACT(epoch FROM CURRENT_TIMESTAMP) AS BIGINT) WHERE issuance_id = NEW.share_issuance_id;
     END IF;
     RETURN NULL;
@@ -452,12 +452,12 @@ BEGIN
     RETURN NEW;
 END $$;
 CREATE TRIGGER "trg_accounts_minor_units_update" BEFORE UPDATE ON "accounts" FOR EACH ROW EXECUTE FUNCTION "trg_accounts_minor_units_update_fn"();
-CREATE OR REPLACE FUNCTION "trg_accounts_units_insert_fn"() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION "a_trg_accounts_units_insert_fn"() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     NEW."balance_units" := CASE WHEN NEW.balance_units = 0 AND COALESCE(NEW.balance, 0) <> 0 THEN TRUNC(ROUND(CAST((ROUND(CAST(NEW.balance AS DECIMAL), CAST(COALESCE((SELECT decimal_places FROM currencies WHERE code = NEW.quote_currency), 0) AS INT)) * 1000000) AS DECIMAL), CAST(0 AS INT))) ELSE NEW.balance_units END;
     RETURN NEW;
 END $$;
-CREATE TRIGGER "trg_accounts_units_insert" BEFORE INSERT ON "accounts" FOR EACH ROW EXECUTE FUNCTION "trg_accounts_units_insert_fn"();
+CREATE TRIGGER "a_trg_accounts_units_insert" BEFORE INSERT ON "accounts" FOR EACH ROW EXECUTE FUNCTION "a_trg_accounts_units_insert_fn"();
 CREATE OR REPLACE FUNCTION "trg_accounts_units_mirror_fn"() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF ((NEW.balance_units IS DISTINCT FROM OLD.balance_units) AND (NOT NEW.balance_units IS NOT DISTINCT FROM OLD.balance_units)) THEN
