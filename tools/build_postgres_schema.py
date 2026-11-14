@@ -21,7 +21,9 @@ ROOT = Path(__file__).resolve().parents[1]
 # Same table under a clearer name.
 RENAMED = {"accounting_entries": "journal_entries", "accounting_lines": "journal_lines"}
 # Rows move into another table that keeps its own definition.
-FOLDED = {"rate_history": "country_rate_history"}  # federation-wide rates use nationality '*'
+# rate_history is not folded into country_rate_history: it keeps several rows for one
+# effective time (the latest history_id wins), which the country table's key forbids.
+FOLDED = {}
 # Several tables become one (built by MERGED_BUILDERS below).
 MERGED = {
     "board_post_reactions": "board_reactions", "board_comment_reactions": "board_reactions",

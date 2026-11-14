@@ -7,9 +7,8 @@ Shapes, most to least common:
 - "normalize the row it just wrote": AFTER INSERT/UPDATE ... BEGIN UPDATE same_table
   SET a = expr WHERE key = NEW.key; END -> BEFORE trigger assigning NEW.a := expr.
 - anything else: the body statements run as-is inside a per-trigger function.
-Triggers of merged tables move to the merged table with a guard (bank_products: kind;
-country_rate_history: nationality '*'), and statements touching a merged table get the
-same filter. Triggers that only guard dropped tables are skipped with the reason.
+Triggers of merged tables move to the merged table with a guard (bank_products: kind),
+and statements touching a merged table get the same filter. Triggers that only guard dropped tables are skipped with the reason.
 """
 import hashlib
 import re
@@ -24,7 +23,6 @@ from build_postgres_schema import DROPPED, FOLDED, MERGED, rewrite, target_table
 ROW_FILTER = {
     "saving": ("kind", "deposit"),
     "liability": ("kind", "loan"),
-    "rate_history": ("nationality", "*"),
 }
 # Dropped tables whose rules already exist elsewhere (verified 2026-11-14).
 COVERED = {

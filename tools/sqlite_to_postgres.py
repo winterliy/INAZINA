@@ -55,14 +55,7 @@ def converter(pg_type):
 
 
 # Per source table: (target table, function(row dict) -> row dict) for consolidated tables.
-def _fold_rate(row):
-    row.pop("history_id", None)
-    row.pop("rowid", None)  # country_rate_history numbers its own rows
-    return {**row, "nationality": "*"}
-
-
 ROW_MAPPERS = {
-    "rate_history": _fold_rate,
     "saving": lambda row: {**row, "kind": "deposit"},
     "liability": lambda row: {**row, "kind": "loan"},
     "board_post_reactions": lambda row: row,
