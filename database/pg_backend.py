@@ -279,8 +279,7 @@ class PgCursor:
         self.lastrowid = None
         self.rowcount = -1
         self.description = None
-        self._rows = None
-        self._hide_rowid = False
+        self._names, self._rows, self._next = None, [], 0
 
     def _params(self, parameters):
         if isinstance(parameters, dict):
@@ -305,20 +304,37 @@ class PgCursor:
         key = connection._identity(returning) if returning else None
         if key:
             text = f"{text} RETURNING \"{key}\""
+        # SQLite undoes only the failed statement and keeps the transaction usable;
+        # PostgreSQL aborts the whole transaction. A savepoint per statement keeps
+        # SQLite's behavior for callers that catch an error and carry on.
+        guarded = connection.in_transaction
+        cursor = self._cursor
         try:
-            self._cursor.execute(text, self._params(parameters))
+            if guarded:
+                cursor.execute("SAVEPOINT inazina_statement")
+            cursor.execute(text, self._params(parameters))
+            names = [d.name for d in cursor.description] if cursor.description else None
+            rows = cursor.fetchall() if names is not None else []
+            self.rowcount = cursor.rowcount
+            if guarded:
+                cursor.execute("RELEASE SAVEPOINT inazina_statement")
         except psycopg.Error as error:
+            if guarded:
+                try:
+                    cursor.execute("ROLLBACK TO SAVEPOINT inazina_statement")
+                except psycopg.Error:
+                    pass
             raise _sqlite_error(error) from error
-        self.rowcount = self._cursor.rowcount
-        self.description = self._cursor.description
-        # The rowid column PostgreSQL tables carry for SQLite code shows up only when asked for.
-        self._hide_rowid = "rowid" not in sql.lower()
-        if self.description and self._hide_rowid and any(d.name == "rowid" for d in self.description):
-            self.description = tuple(d for d in self.description if d.name != "rowid")
         if key:
-            row = self._cursor.fetchone()
-            self.lastrowid = row[0] if row else None
-            self.description = None
+            self.lastrowid = rows[0][0] if rows else None
+            names, rows = None, []
+        # The rowid column PostgreSQL tables carry for SQLite code shows up only when asked for.
+        if names is not None and "rowid" in names and "rowid" not in sql.lower():
+            index = names.index("rowid")
+            names = names[:index] + names[index + 1:]
+            rows = [row[:index] + row[index + 1:] for row in rows]
+        self._names, self._rows, self._next = names, rows, 0
+        self.description = None if names is None else tuple((n, None, None, None, None, None, None) for n in names)
         return self
 
     def executemany(self, sql, seq):
@@ -330,31 +346,29 @@ class PgCursor:
         return self
 
     def _convert(self, row):
-        names = [d.name for d in self.description or ()]
-        if self._hide_rowid and "rowid" in names:
-            index = names.index("rowid")
-            row, names = row[:index] + row[index + 1:], names[:index] + names[index + 1:]
         values = tuple(_decode(v) for v in row)
         factory = self.connection.row_factory
         if factory is None:
             return values
         if factory is sqlite3.Row or factory is Row:
-            return Row(names, values)
+            return Row(self._names, values)
         return factory(self, values)
 
+    def _take(self, count=None):
+        end = len(self._rows) if count is None else min(len(self._rows), self._next + count)
+        taken = self._rows[self._next:end]
+        self._next = end
+        return [self._convert(row) for row in taken]
+
     def fetchone(self):
-        if self.description is None:
-            return None
-        row = self._cursor.fetchone()
-        return None if row is None else self._convert(row)
+        taken = self._take(1)
+        return taken[0] if taken else None
 
     def fetchall(self):
-        if self.description is None:
-            return []
-        return [self._convert(row) for row in self._cursor.fetchall()]
+        return self._take()
 
     def fetchmany(self, size=100):
-        return [self._convert(row) for row in self._cursor.fetchmany(size)]
+        return self._take(size)
 
     def __iter__(self):
         while True:

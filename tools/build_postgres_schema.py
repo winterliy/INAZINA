@@ -246,6 +246,14 @@ def _rewrite(node):
             child = node.args.get(key)
             if isinstance(child, exp.Literal) and child.is_number:
                 node.set(key, exp.Boolean(this=child.this not in ("0", "0.0")))
+    if isinstance(node, exp.CurrentTimestamp) and not node.meta.get("pg") \
+            and not node.find_ancestor(exp.Extract, exp.AtTimeZone):
+        # SQLite CURRENT_TIMESTAMP is UTC text 'YYYY-MM-DD HH:MM:SS'.
+        stamp = exp.CurrentTimestamp()
+        stamp.meta["pg"] = True
+        return exp.Anonymous(this="to_char", expressions=[
+            exp.AtTimeZone(this=stamp, zone=exp.Literal.string("UTC")),
+            exp.Literal.string("YYYY-MM-DD HH24:MI:SS")])
     if isinstance(node, exp.Rand):
         # SQLite random() is a signed 64-bit integer; callers take abs() and a modulus.
         scaled = exp.Mul(this=exp.Anonymous(this="random", expressions=[]),
