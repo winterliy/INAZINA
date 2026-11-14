@@ -9,6 +9,7 @@ are not carried over (business-rule triggers are ported separately).
 Tables are also consolidated on the way (see RENAMED, FOLDED, MERGED, DROPPED);
 tools/sqlite_to_postgres.py moves their rows accordingly.
 """
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -320,6 +321,37 @@ def fractional_integer_columns(conn):
     return found
 
 
+# (table, column) -> type the code declares, when it differs from the database being converted
+# (SQLite keeps an old declared type after a migration rebuilds a table; see code_column_types).
+CODE_TYPES = {}
+
+
+def code_column_types():
+    """Declared column types of a schema freshly built by the current code (SQLite backend)."""
+    import tempfile
+    previous = os.environ.get("INAZINA_DB_BACKEND")
+    os.environ["INAZINA_DB_BACKEND"] = "sqlite"
+    sys.path.insert(0, str(ROOT))
+    try:
+        import database
+        from database.db_manager import DBManager
+        saved, DBManager.database_dir = DBManager.database_dir, tempfile.mkdtemp(prefix="inazina-code-schema-")
+        try:
+            db = database.DatabaseManager()
+            db.close()
+            fresh = sqlite3.connect(Path(DBManager.database_dir) / "inazina.db")
+            return {(table, row[1]): row[2] for (table,) in fresh.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'")
+                    for row in fresh.execute(f'PRAGMA table_info("{table}")')}
+        finally:
+            DBManager.database_dir = saved
+    finally:
+        if previous is None:
+            os.environ.pop("INAZINA_DB_BACKEND", None)
+        else:
+            os.environ["INAZINA_DB_BACKEND"] = previous
+
+
 def table_ddl(conn, name, sql, *, out_name=None, nullable=(), extra_columns=()):
     """PostgreSQL CREATE TABLE for one SQLite table, plus its foreign keys.
 
@@ -338,7 +370,7 @@ def table_ddl(conn, name, sql, *, out_name=None, nullable=(), extra_columns=()):
             continue
         row = next(r for r in info if r[1] == column.name)
         is_rowid = rowid_pk and column.name == pk_columns[0]
-        kind = _column_type(row[2], False)
+        kind = _column_type(CODE_TYPES.get((name, column.name), row[2]), False)
         if kind == "BIGINT" and (name, column.name) in fractional:
             kind = "NUMERIC"
         if kind in {"BIGINT", "DOUBLE PRECISION"} and not is_rowid and conn.execute(
@@ -489,6 +521,7 @@ if __name__ == "__main__":
     if len(sys.argv) not in (2, 3):
         raise SystemExit(__doc__)
     from build_postgres_triggers import translate
+    CODE_TYPES.update(code_column_types())
     text, skipped = build(sys.argv[1])
     target = Path(sys.argv[2]) if len(sys.argv) == 3 else ROOT / "database" / "postgres" / "schema.sql"
     target.parent.mkdir(parents=True, exist_ok=True)

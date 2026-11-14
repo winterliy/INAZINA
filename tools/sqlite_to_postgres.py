@@ -15,7 +15,7 @@ from pathlib import Path
 import psycopg
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_postgres_schema import DROPPED, FOLDED, MERGED, RENAMED, build  # noqa: E402
+from build_postgres_schema import CODE_TYPES, DROPPED, FOLDED, MERGED, RENAMED, build, code_column_types  # noqa: E402
 
 WIDE_TAGS = ("~M~", "~R~")
 
@@ -122,5 +122,6 @@ def load(source_path, dsn):
 if __name__ == "__main__":
     if len(sys.argv) != 3:
         raise SystemExit(__doc__)
+    CODE_TYPES.update(code_column_types())  # a production copy may carry outdated declared types
     rows = load(sys.argv[1], sys.argv[2])
     print(f"{len(rows)} source tables, {sum(count for *_, count in rows)} rows")

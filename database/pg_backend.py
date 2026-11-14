@@ -24,7 +24,7 @@ _TOOLS = Path(__file__).resolve().parents[1] / "tools"
 if str(_TOOLS) not in sys.path:
     sys.path.insert(0, str(_TOOLS))
 from build_postgres_schema import DROPPED, rewrite, target_table  # noqa: E402
-from build_postgres_triggers import _filter_merged  # noqa: E402
+from build_postgres_triggers import ROW_FILTER, _filter_merged  # noqa: E402
 
 DSN_ENV = "INAZINA_PG_DSN"
 _MARK = "\x00P\x00"
@@ -143,18 +143,30 @@ def _integer_keys():
 
 
 def _replace_to_upsert(tree):
-    """INSERT OR REPLACE -> INSERT ... ON CONFLICT (primary key) DO UPDATE every other column."""
-    table = target_table(tree.find(exp.Table).name)
+    """INSERT OR REPLACE with SQLite's result: on a primary-key conflict the row is replaced,
+    so listed columns take the new values and every other column returns to its DEFAULT
+    (a new rowid included) instead of keeping the old row's value.
+
+    Differences that remain: SQLite also replaces rows that conflict on another UNIQUE
+    constraint, and fires no DELETE triggers for the replaced row; here the key is the
+    primary key and UPDATE triggers fire."""
+    source = tree.find(exp.Table).name
+    table = target_table(source)
     keys = _catalog("SELECT k.table_name, k.column_name FROM information_schema.key_column_usage k "
                     "JOIN information_schema.table_constraints t ON t.constraint_name = k.constraint_name "
                     "AND t.constraint_type = 'PRIMARY KEY' WHERE k.table_schema = 'public' "
                     "ORDER BY k.ordinal_position").get(table, [])
+    every = _catalog("SELECT table_name, column_name FROM information_schema.columns "
+                     "WHERE table_schema = 'public' ORDER BY ordinal_position").get(table, [])
     target = tree.this.expressions if isinstance(tree.this, exp.Schema) else None
-    names = [c.name for c in target] if target else _catalog(
-        "SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public' "
-        "AND column_name <> 'rowid' ORDER BY ordinal_position").get(table, [])
+    listed = [c.name for c in target] if target else [c for c in every if c != "rowid"]
+    if source in ROW_FILTER:
+        listed.append(ROW_FILTER[source][0])  # the merged table's kind column comes with the insert
     tree.set("alternative", None)
-    updates = [exp.EQ(this=exp.column(n), expression=exp.column(n, table="EXCLUDED")) for n in names if n not in keys]
+    updates = [exp.EQ(this=exp.column(n), expression=exp.column(n, table="EXCLUDED"))
+               for n in listed if n not in keys]
+    updates += [exp.EQ(this=exp.column(n), expression=exp.var("DEFAULT"))
+                for n in every if n not in keys and n not in listed]
     tree.set("conflict", exp.OnConflict(conflict_keys=[exp.to_identifier(k) for k in keys],
                                         action=exp.var("DO UPDATE" if updates else "DO NOTHING"),
                                         expressions=updates or None))

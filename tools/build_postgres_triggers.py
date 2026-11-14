@@ -174,12 +174,16 @@ def _statement(sql, keys=None, columns=None, table=None):
         target = tree.this.expressions if isinstance(tree.this, exp.Schema) else None
         names = [c.name for c in target] if target else (columns or {}).get(table, [])
         key = (keys or {}).get(table, [])
+        every = (columns or {}).get(table, names)
         tree.set("alternative", None)
+        # SQLite replaces the row: unlisted columns return to their DEFAULT (see pg_backend).
         tree.set("conflict", exp.OnConflict(
             conflict_keys=[exp.to_identifier(k) for k in key],
             action=exp.var("DO UPDATE"),
             expressions=[exp.EQ(this=exp.column(n), expression=exp.column(n, table="EXCLUDED"))
-                         for n in names if n not in key]))
+                         for n in names if n not in key]
+                        + [exp.EQ(this=exp.column(n), expression=exp.var("DEFAULT"))
+                           for n in every if n not in key and n not in names]))
     tree = rewrite(tree)
     for table in tree.find_all(exp.Table):
         table.set("this", exp.to_identifier(target_table(table.name)))
