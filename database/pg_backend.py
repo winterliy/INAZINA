@@ -63,11 +63,12 @@ class Row(tuple):
 
     def __getitem__(self, key):
         if isinstance(key, str):
-            try:
-                return tuple.__getitem__(self, self._names.index(key))
-            except ValueError:
-                lowered = [n.lower() for n in self._names]
-                return tuple.__getitem__(self, lowered.index(key.lower()))
+            # Case-insensitive like sqlite3.Row, and IndexError for an unknown name (callers catch it).
+            lowered = key.lower()
+            for index, name in enumerate(self._names):
+                if name.lower() == lowered:
+                    return tuple.__getitem__(self, index)
+            raise IndexError("No item with that key")
         return tuple.__getitem__(self, key)
 
     def keys(self):
@@ -181,7 +182,9 @@ def _any_value_for_bare_columns(tree):
             continue
         grouped = {g.sql() for g in group.expressions}
         aliases = {e.alias for e in select.expressions if e.alias}
-        for expression in select.expressions:
+        for position, expression in enumerate(select.expressions, start=1):
+            if expression.alias in grouped or str(position) in grouped:
+                continue  # GROUP BY names this expression (by alias or position): it is the key
             for column in list(expression.find_all(exp.Column)):
                 if column.sql() in grouped or column.name in aliases or column.find_ancestor(exp.AggFunc, exp.Subquery):
                     continue
@@ -300,6 +303,8 @@ class PgCursor:
 
     def execute(self, sql, parameters=()):
         connection = self.connection
+        if connection._trace is not None:
+            connection._trace(sql)
         text, returning = translate(sql)
         if text == "BEGIN" or text.startswith("BEGIN;"):
             connection._begin(immediate=text.startswith("BEGIN;"))
@@ -417,6 +422,7 @@ class PgConnection:
         self.wide_money = True
         self._in_transaction = False
         self._identities = {}
+        self._trace = None
 
     # transactions -------------------------------------------------------
     @property
@@ -509,6 +515,10 @@ class PgConnection:
 
     def set_authorizer(self, *args, **kwargs):
         pass
+
+    def set_trace_callback(self, callback):
+        """Called with each statement as written by the caller (sqlite3 passes the SQL it runs)."""
+        self._trace = callback
 
     def close(self):
         try:
