@@ -191,8 +191,23 @@ def _filter_merged(tree):
     return tree
 
 
+def _rename_row_aliases(tree):
+    """A table alias named old/new is legal in SQLite, but in a PL/pgSQL trigger function
+    OLD and NEW are the row variables: "old.nationality" becomes ambiguous. The table
+    alias (and the columns qualified with it) get another name."""
+    for alias in {t.alias.lower() for t in tree.find_all(exp.Table) if t.alias and t.alias.lower() in {"old", "new"}}:
+        fresh = f"{alias}_row"
+        for found in tree.find_all(exp.Table):
+            if found.alias and found.alias.lower() == alias:
+                found.set("alias", exp.TableAlias(this=exp.to_identifier(fresh)))
+        for column in tree.find_all(exp.Column):
+            if column.table and column.table.lower() == alias:
+                column.set("table", exp.to_identifier(fresh))
+    return tree
+
+
 def _statement(sql, keys=None, columns=None, table=None):
-    tree = _filter_merged(_map_rowid(sqlglot.parse_one(sql, read="sqlite"), table))
+    tree = _filter_merged(_map_rowid(_rename_row_aliases(sqlglot.parse_one(sql, read="sqlite")), table))
     chain = _raise_chain(tree) or _raise_where(tree)
     if chain:
         return chain
