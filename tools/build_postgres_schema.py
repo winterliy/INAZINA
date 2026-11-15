@@ -180,6 +180,12 @@ def _rewrite(node):
             return sqlglot.parse_one("(EXTRACT(epoch FROM now()) / 86400.0 + 2440587.5)", read="postgres")
         if name == "DATETIME" and len(args) == 1 and args[0].is_string and args[0].this == "now":
             return sqlglot.parse_one("to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS')", read="postgres")
+        if name == "DATETIME" and len(args) == 2 and args[0].is_string and args[0].this == "now" and args[1].is_string:
+            import re
+            if re.fullmatch(r"[+-]?\d+(?:\.\d+)?\s+(?:seconds?|minutes?|hours?|days?)", args[1].this, re.I):
+                stamp = exp.Add(this=sqlglot.parse_one("now() AT TIME ZONE 'UTC'", read="postgres"),
+                                expression=exp.Interval(this=exp.Literal.string(args[1].this)))
+                return exp.Anonymous(this="to_char", expressions=[stamp, exp.Literal.string("YYYY-MM-DD HH24:MI:SS")])
         if name == "DATETIME" and len(args) == 2 and args[1].is_string and args[1].this == "unixepoch":
             stamp = exp.Anonymous(this="to_timestamp", expressions=[args[0]])
             return exp.Anonymous(this="to_char", expressions=[

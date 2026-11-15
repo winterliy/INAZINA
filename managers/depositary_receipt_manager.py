@@ -259,7 +259,8 @@ class DepositaryReceiptManager:
             return False, f"❌ {exc}"
         except sqlite3.IntegrityError as exc:
             # A uniqueness conflict means this voter already cast a ballot for this item.
-            if "UNIQUE constraint failed" in str(exc):
+            if ("UNIQUE constraint failed" in str(exc)
+                    or "duplicate key value violates unique constraint" in str(exc)):
                 return False, "❌ 이 안건에는 이미 투표했습니다."
             raise
 
@@ -978,7 +979,7 @@ class DepositaryReceiptManager:
             "SELECT user_id,asset_code,SUM(quantity) AS quantity FROM assets.user_assets "
             "GROUP BY user_id,asset_code) a "
             "ON a.user_id=r.user_id AND a.asset_code=r.reserved_asset_code "
-            "WHERE r.released_epoch IS NULL GROUP BY r.user_id,r.reserved_asset_code "
+            "WHERE r.released_epoch IS NULL GROUP BY r.user_id,r.reserved_asset_code,a.quantity "
             "HAVING SUM(r.reserved_quantity)>COALESCE(a.quantity,0) "
             "ORDER BY r.reserved_asset_code,r.user_id LIMIT 200"
         )

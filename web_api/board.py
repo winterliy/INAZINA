@@ -746,7 +746,8 @@ def react(connection, user, kind, target_id, value):
                            (target, user["userId"], value, int(time.time())))
         mine = value
     likes, dislikes = connection.execute(
-        f"SELECT COALESCE(SUM(value=1),0),COALESCE(SUM(value=-1),0) FROM {table} WHERE {key}=?", (target,)).fetchone()
+        f"SELECT COALESCE(SUM(CASE WHEN value=1 THEN 1 ELSE 0 END),0),"
+        f"COALESCE(SUM(CASE WHEN value=-1 THEN 1 ELSE 0 END),0) FROM {table} WHERE {key}=?", (target,)).fetchone()
     return {"reaction": mine, "likes": likes, "dislikes": dislikes}
 
 
