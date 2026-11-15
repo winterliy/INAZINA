@@ -6,7 +6,7 @@ import { Card, Field, number, plain, type Ctx, BigValue } from "./common";
 import { CompanyLedger } from "./CompanyLedger";
 
 type Holding = { asset_code: string; quantity: number };
-type Company = { company_code: string; name: string; exchange_id: string | null; exchange_type?: "exchange" | "otc" | null; status?: "active" | "inactive"; trading_status?: "active" | "suspended"; nationality?: string; legal_form?: string; ownership_unit?: string; total_shares: number; listed_shares: number | null; share_price: Money; capital: Money; par_value_minor_units: string | null; quote_currency: string; secondary_listings?: { exchange_id: string; listed_shares: number }[]; share_decimal_places: number; currency: string; base_currency?: string; cash: Money; cash_base?: Money; locked: Money; account: string | null; holdings: Holding[]; accounts: number; loans: Money; parents: { code: string; percent: number }[]; largest_shareholder?: { id: string; name: string; shares: Money } | null; max_voting_holder?: { id: string; name: string; percent: string } | null; ultimate_controller?: { id: string; kind: "user" | "company"; name: string; shares: string; percent: string } | null };
+type Company = { company_code: string; name: string; exchange_id: string | null; exchange_type?: "exchange" | "otc" | null; status?: "active" | "inactive"; trading_status?: "active" | "suspended"; nationality?: string; legal_form?: string; ownership_unit?: string; total_shares: number; listed_shares: number | null; share_price: Money; capital: Money; par_value_minor_units: string | null; quote_currency: string; secondary_listings?: { exchange_id: string; listed_shares: number; code?: string | null; currency?: string | null }[]; share_decimal_places: number; currency: string; base_currency?: string; cash: Money; cash_base?: Money; locked: Money; account: string | null; holdings: Holding[]; accounts: number; loans: Money; parents: { code: string; percent: number }[]; largest_shareholder?: { id: string; name: string; shares: Money } | null; max_voting_holder?: { id: string; name: string; percent: string } | null; ultimate_controller?: { id: string; kind: "user" | "company"; name: string; shares: string; percent: string } | null };
 type CommandField = { key: string; label: string; kind: string; optional: boolean; hint: string };
 type Command = { name: string; group: string; description: string; guide: string; fields: CommandField[] };
 type Stock = { name: string; code: string; qty: number; value: Money; price: Money };
@@ -67,8 +67,18 @@ function ListingControl({ ctx, company, onDone }: { ctx: Ctx; company: Company; 
   const localCurrency = secondVenue?.requirements?.currency || company.quote_currency;
   const currencyChoice = secondCurrency || localCurrency;
   const secondCount = Number(secondShares);
-  const secondValid = !!second && Number.isInteger(secondCount) && secondCount >= 1 && secondCount <= room;
+  const secondProblem = ruleProblem(secondVenue, secondCount);
+  const secondValid = !!second && Number.isInteger(secondCount) && secondCount >= 1 && secondCount <= room && !secondProblem;
   const foreign = venue && company.nationality && venue.nationality !== company.nationality;
+  /** The venue's own listing rules the request already breaks (the server checks them all again). */
+  function ruleProblem(item: Venue | undefined, shares: number) {
+    const rules = item?.market_type === "exchange" ? item.requirements : undefined;
+    if (!rules) return "";
+    if (!rules.allowForeign && company.nationality && item!.nationality !== company.nationality) return `${item!.exchange_id}는 ${item!.nationality} 법인만 상장할 수 있습니다.`;
+    if (rules.minShares && shares < rules.minShares) return `${item!.exchange_id}는 최소 ${number(rules.minShares)}주 이상 상장해야 합니다.`;
+    if (rules.minFloatPercent && shares * 100 < company.total_shares * rules.minFloatPercent) return `${item!.exchange_id}는 발행 주식의 ${rules.minFloatPercent}% 이상 상장해야 합니다.`;
+    return "";
+  }
 
   function open() {
     setTarget(current); setPercent(String(currentPercent)); setSecond(""); setSecondShares(""); setStep("venue");
@@ -113,7 +123,8 @@ function ListingControl({ ctx, company, onDone }: { ctx: Ctx; company: Company; 
         <select value={target} onChange={(event) => setTarget(event.target.value)}><option value="">거래소 없음 · 비상장</option>{exchanges.map((item) => <option key={item.exchange_id} value={item.exchange_id}>{venueName(item)}</option>)}</select>
       </Field>
       {venue?.market_type === "exchange" && <Field label="상장 비율 (%)" hint={ratioValid ? `${number(listed)}주 / ${number(company.total_shares)}주` : "0 초과 100 이하"}><input type="number" min="0.01" max="100" step="0.01" value={percent} onChange={(event) => setPercent(event.target.value)} /></Field>}
-      <button className="btn primary" type="button" disabled={busy || !ratioValid} onClick={() => venue?.market_type === "exchange" ? setStep("dual") : finishPrimary()}>{venue?.market_type === "exchange" ? "다음" : "저장"}</button>
+      {ruleProblem(venue, listed) && <p className="hint warn-text">{ruleProblem(venue, listed)}</p>}
+      <button className="btn primary" type="button" disabled={busy || !ratioValid || !!ruleProblem(venue, listed)} onClick={() => venue?.market_type === "exchange" ? setStep("dual") : finishPrimary()}>{venue?.market_type === "exchange" ? "다음" : "저장"}</button>
       <button className="soft" type="button" onClick={() => setStep(null)}>취소</button>
     </div>}
     {step === "dual" && <div className="wizard-step span-wide">
@@ -131,15 +142,16 @@ function ListingControl({ ctx, company, onDone }: { ctx: Ctx; company: Company; 
       <Field label="거래 통화" hint="2차 거래소에서 매매할 통화"><select value={currencyChoice} onChange={(event) => setSecondCurrency(event.target.value)}><option value={localCurrency}>{localCurrency} · 거래소 통화</option>{company.quote_currency !== localCurrency && <option value={company.quote_currency}>{company.quote_currency} · 본주 통화</option>}</select></Field>
       <Field label="전환 수수료 (bp)" hint="본주 ↔ 2차상장 라인 1:1 전환 시 · 100bp = 1%"><input type="number" min="0" max="10000" step="1" value={feeBps} onChange={(event) => setFeeBps(event.target.value)} /></Field>
       <p className="hint">2차상장은 {second ? `${company.company_code}.${second}` : "별도"} 종목으로 이 거래소의 거래 시간·통화로 따로 매매됩니다. 미보유분은 1차 상장처럼 시장에 매물로 나오고, 주주는 본주를 1:1로 전환해 옮길 수도 있습니다. 가격은 차익거래로 본주에 수렴합니다. 배당·의결권은 본주와 같습니다.</p>
+      {secondProblem && <p className="hint warn-text">{secondProblem}</p>}
       <button className="btn primary" type="button" disabled={busy || !secondValid || !Number.isInteger(Number(feeBps)) || Number(feeBps) < 0 || Number(feeBps) > 10000} onClick={finishDual}>이중상장 완료</button>
       <button className="soft" type="button" onClick={() => setStep("dual")}>이전</button>
     </div>}
     {secondary.length > 0 && <div className="span-wide">
       <p className="tile-label">2차상장 관리</p>
-      <table><thead><tr><th>거래소</th><th className="r">상장 주식 수</th><th></th></tr></thead><tbody>{secondary.map((item) => {
+      <table className="secondary-table"><thead><tr><th>종목</th><th>거래소</th><th>통화</th><th className="r">상장 주식 수</th><th /></tr></thead><tbody>{secondary.map((item) => {
         const value = edits[item.exchange_id] ?? String(item.listed_shares);
         const shares = Number(value);
-        return <tr key={item.exchange_id}><td className="mono">{(() => { const found = exchanges.find((row) => row.exchange_id === item.exchange_id); return found ? venueName(found) : item.exchange_id; })()}</td>
+        return <tr key={item.exchange_id}><td className="mono">{item.code ?? "—"}</td><td>{(() => { const found = exchanges.find((row) => row.exchange_id === item.exchange_id); return found ? venueName(found) : item.exchange_id; })()}</td><td className="mono">{item.currency ?? "—"}</td>
           <td className="r"><input type="number" min="1" step="1" value={value} onChange={(event) => setEdits({ ...edits, [item.exchange_id]: event.target.value })} /></td>
           <td className="row-actions"><button className="soft small" disabled={busy || !Number.isInteger(shares) || shares < 1 || shares === item.listed_shares} onClick={() => secondaryAction(item.exchange_id, "update", shares)}>저장</button>
             <button className="soft small danger" disabled={busy} onClick={() => secondaryAction(item.exchange_id, "remove")}>해제</button></td></tr>;

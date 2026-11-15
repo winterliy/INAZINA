@@ -341,7 +341,7 @@ class CompanyAccounts:
     def summary(conn):
         rows = conn.execute(
             "SELECT c.company_code,c.name,c.exchange_id,(SELECT market_type FROM market_exchanges e WHERE e.exchange_id=c.exchange_id) exchange_type,c.status,c.trading_status,c.nationality,c.legal_form,c.ownership_unit,c.total_shares,c.listed_shares,c.share_price,c.capital,c.par_value_minor_units,c.quote_currency,"
-            "(SELECT GROUP_CONCAT(s.exchange_id || ':' || s.listed_shares, ',') FROM company_secondary_listings s WHERE s.company_code=c.company_code) secondary_exchanges,"
+            "(SELECT GROUP_CONCAT(s.exchange_id || '|' || s.listed_shares || '|' || COALESCE(s.dr_code,'') || '|' || COALESCE((SELECT a.quote_currency FROM market_assets a WHERE a.code=s.dr_code),''), ',') FROM company_secondary_listings s WHERE s.company_code=c.company_code) secondary_exchanges,"
             "COALESCE(i.balance,0) cash,COALESCE(i.locked_amount,0) locked,a.user_id account "
             "FROM company c LEFT JOIN issuer_cash_accounts i ON i.company_code=c.company_code "
             "LEFT JOIN company_accounts a ON a.company_code=c.company_code "
@@ -496,8 +496,10 @@ class CompanyAccounts:
         for row in rows:
             item = dict(row)
             item["secondary_listings"] = sorted(
-                ({"exchange_id": part.rsplit(":", 1)[0], "listed_shares": int(part.rsplit(":", 1)[1])}
-                 for part in str(item.pop("secondary_exchanges", None) or "").split(",") if ":" in part),
+                ({"exchange_id": fields[0], "listed_shares": int(fields[1]), "code": fields[2] or None,
+                  "currency": fields[3] or None}
+                 for fields in (part.split("|") for part in str(item.pop("secondary_exchanges", None) or "").split(","))
+                 if len(fields) == 4),
                 key=lambda listing: listing["exchange_id"])
             item["cash_base"] = item["cash"]
             item["base_currency"] = base_currency

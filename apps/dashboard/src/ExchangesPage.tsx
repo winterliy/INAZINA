@@ -24,7 +24,7 @@ function RequirementsFields({ value, onChange, currency }: { value: Requirements
   return <>
     <Field label="최소 상장 주식 수" hint="0이면 제한 없음"><input type="number" min="0" step="1" value={value.minShares} onChange={(event) => onChange({ ...value, minShares: Number(event.target.value) })} /></Field>
     <Field label="최소 상장 비율 (%)" hint="발행 주식 대비 · 0이면 제한 없음"><input type="number" min="0" max="100" step="0.01" value={value.minFloatPercent} onChange={(event) => onChange({ ...value, minFloatPercent: Number(event.target.value) })} /></Field>
-    <Field label={`최소 상장 시가총액 (${currency})`} hint="상장 주식 수 × 주가, 거래소 통화 환산 · 0이면 제한 없음"><input className="mono" inputMode="decimal" value={value.minMarketCap} onChange={(event) => onChange({ ...value, minMarketCap: event.target.value.replace(/[^0-9.]/g, "") })} /></Field>
+    <Field label={`최소 상장 시가총액 (${currency})`} hint="주가 × 상장 주식 수 · 0이면 제한 없음"><input className="mono" inputMode="decimal" value={value.minMarketCap} onChange={(event) => onChange({ ...value, minMarketCap: event.target.value.replace(/[^0-9.]/g, "") })} /></Field>
     {flag("allowForeign", "해외 법인 직접 상장", "다른 국가 법인의 1차·2차 상장 허용")}
     {flag("allowSecondary", "2차상장 허용", "다른 거래소 1차 상장 법인의 이중상장")}
     {flag("requiresDisclosure", "재무보고서 공시 필요", "마감된 재무보고서 1건 이상")}
@@ -126,7 +126,7 @@ export function ExchangesPage({ ctx }: { ctx: Ctx }) {
         <p className="hint">현재: {requirementLabel(exchange.requirements ?? NO_REQUIREMENTS)}. 새 상장·2차상장·상장 주식 수 변경부터 적용되며, 이미 상장된 종목은 유지됩니다.</p>
         <form className="form-grid" onSubmit={(event) => { event.preventDefault(); act(exchange.exchange_id, { action: "requirements", requirements: rules }, `${exchange.exchange_id} 상장요건을 "${requirementLabel({ ...rules, currency: exchange.requirements?.currency })}"(으)로 저장할까요?`); }}>
           <RequirementsFields value={rules} onChange={setRules} currency={exchange.requirements?.currency ?? ""} />
-          <div className="actions span-wide"><button className="btn primary" disabled={busy}>상장요건 저장</button><button className="soft" type="button" disabled={busy} onClick={() => setRules(NO_REQUIREMENTS)}>요건 없음으로</button></div>
+          <div className="actions" style={{ gridColumn: "1 / -1" }}><button className="btn primary" disabled={busy}>상장요건 저장</button><button className="soft" type="button" disabled={busy} onClick={() => setRules(NO_REQUIREMENTS)}>요건 없음으로</button></div>
         </form>
       </>}
       <h3 className="sub-head">상장 상품 전체</h3>
@@ -152,9 +152,9 @@ export function ExchangesPage({ ctx }: { ctx: Ctx }) {
         void run(() => api<Result>(`/api/admin/exchanges/${encodeURIComponent(draft.id.trim())}`, { method: "POST", body: JSON.stringify({ action: "create", nationality: draft.nationality, marketType: "exchange", requirements: draftRules }) }),
           "거래소를 만들지 못했습니다.", async (result) => { say(plain(result.message), !result.success); if (result.success) { setCreateStep(1); setDraft({ ...draft, id: "" }); setDraftRules(NO_REQUIREMENTS); } await load(); });
       }}>
-        <p className="hint span-wide">{draft.id} · {draft.nationality} 거래소</p>
+        <p className="hint" style={{ gridColumn: "1 / -1" }}>{draft.id} · {draft.nationality} 거래소 · 0은 기준 없음</p>
         <RequirementsFields value={draftRules} onChange={setDraftRules} currency={draftCurrency} />
-        <div className="actions span-wide"><button className="btn primary" disabled={busy}>거래소 만들기</button><button className="soft" type="button" onClick={() => setCreateStep(1)}>이전</button></div>
+        <div className="actions" style={{ gridColumn: "1 / -1" }}><button className="btn primary" disabled={busy}>거래소 만들기</button><button className="soft" type="button" onClick={() => setCreateStep(1)}>이전</button></div>
       </form>}
     </Card>
 
