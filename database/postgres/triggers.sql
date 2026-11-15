@@ -461,7 +461,7 @@ CREATE TRIGGER "a_trg_accounts_units_insert" BEFORE INSERT ON "accounts" FOR EAC
 CREATE OR REPLACE FUNCTION "trg_accounts_units_mirror_fn"() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF ((NEW.balance_units IS DISTINCT FROM OLD.balance_units) AND (NOT NEW.balance_units IS NOT DISTINCT FROM OLD.balance_units)) THEN
-        NEW."balance" := CASE WHEN NEW.balance_units = TRUNC(NEW.balance_units) AND 1000000.0 = TRUNC(1000000.0) THEN TRUNC(NEW.balance_units / 1000000.0) ELSE NEW.balance_units / 1000000.0 END;
+        NEW."balance" := (NEW.balance_units / 1000000.0);
     END IF;
     RETURN NEW;
 END $$;
@@ -780,14 +780,14 @@ CREATE TRIGGER "trg_currency_cash_postings_delete" BEFORE DELETE ON "currency_ca
 CREATE TRIGGER "trg_currency_cash_postings_update" BEFORE UPDATE ON "currency_cash_postings" FOR EACH ROW EXECUTE FUNCTION raise_abort('currency cash postings are append-only');
 CREATE TRIGGER "trg_currency_cash_wallet_links_delete" BEFORE DELETE ON "currency_cash_wallet_links" FOR EACH ROW EXECUTE FUNCTION raise_abort('currency cash postings are append-only');
 CREATE TRIGGER "trg_currency_cash_wallet_links_update" BEFORE UPDATE ON "currency_cash_wallet_links" FOR EACH ROW EXECUTE FUNCTION raise_abort('currency cash postings are append-only');
-CREATE OR REPLACE FUNCTION "trg_currency_default_accounts_quote_currency_fn"() RETURNS trigger LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION "a0_trg_currency_default_accounts_quote_currency_fn"() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF (NEW."quote_currency" IS NULL OR NEW."quote_currency" = '') THEN
-        UPDATE accounts SET "quote_currency" = BASE_CURRENCY_CODE() WHERE rowid = NEW.rowid;
+        NEW."quote_currency" := BASE_CURRENCY_CODE();
     END IF;
-    RETURN NULL;
+    RETURN NEW;
 END $$;
-CREATE TRIGGER "trg_currency_default_accounts_quote_currency" AFTER INSERT ON "accounts" FOR EACH ROW EXECUTE FUNCTION "trg_currency_default_accounts_quote_currency_fn"();
+CREATE TRIGGER "a0_trg_currency_default_accounts_quote_currency" BEFORE INSERT ON "accounts" FOR EACH ROW EXECUTE FUNCTION "a0_trg_currency_default_accounts_quote_currency_fn"();
 CREATE OR REPLACE FUNCTION "trg_currency_default_company_quote_currency_fn"() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF (NEW."quote_currency" IS NULL OR NEW."quote_currency" = '') THEN
@@ -3164,7 +3164,7 @@ CREATE TRIGGER "trg_users_cash_insert" BEFORE INSERT ON "users" FOR EACH ROW EXE
 CREATE OR REPLACE FUNCTION "trg_users_cash_minor_mirror_fn"() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF ((NEW.cash_minor IS DISTINCT FROM OLD.cash_minor) AND (NOT NEW.cash_minor IS NOT DISTINCT FROM OLD.cash_minor)) THEN
-        NEW."cash" := CASE WHEN NEW.cash_minor % (CASE (SELECT COALESCE(MAX(c.decimal_places), 0) FROM country_currencies AS n JOIN currencies AS c ON c.code = n.currency_code WHERE n.nationality = NEW.nationality) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END) = 0 THEN CASE WHEN NEW.cash_minor = TRUNC(NEW.cash_minor) AND (CASE (SELECT COALESCE(MAX(c.decimal_places), 0) FROM country_currencies AS n JOIN currencies AS c ON c.code = n.currency_code WHERE n.nationality = NEW.nationality) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END) = TRUNC((CASE (SELECT COALESCE(MAX(c.decimal_places), 0) FROM country_currencies AS n JOIN currencies AS c ON c.code = n.currency_code WHERE n.nationality = NEW.nationality) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END)) THEN TRUNC(NEW.cash_minor / (CASE (SELECT COALESCE(MAX(c.decimal_places), 0) FROM country_currencies AS n JOIN currencies AS c ON c.code = n.currency_code WHERE n.nationality = NEW.nationality) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END)) ELSE NEW.cash_minor / (CASE (SELECT COALESCE(MAX(c.decimal_places), 0) FROM country_currencies AS n JOIN currencies AS c ON c.code = n.currency_code WHERE n.nationality = NEW.nationality) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END) END ELSE CASE WHEN (NEW.cash_minor * 1.0) = TRUNC((NEW.cash_minor * 1.0)) AND (CASE (SELECT COALESCE(MAX(c.decimal_places), 0) FROM country_currencies AS n JOIN currencies AS c ON c.code = n.currency_code WHERE n.nationality = NEW.nationality) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END) = TRUNC((CASE (SELECT COALESCE(MAX(c.decimal_places), 0) FROM country_currencies AS n JOIN currencies AS c ON c.code = n.currency_code WHERE n.nationality = NEW.nationality) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END)) THEN TRUNC((NEW.cash_minor * 1.0) / (CASE (SELECT COALESCE(MAX(c.decimal_places), 0) FROM country_currencies AS n JOIN currencies AS c ON c.code = n.currency_code WHERE n.nationality = NEW.nationality) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END)) ELSE (NEW.cash_minor * 1.0) / (CASE (SELECT COALESCE(MAX(c.decimal_places), 0) FROM country_currencies AS n JOIN currencies AS c ON c.code = n.currency_code WHERE n.nationality = NEW.nationality) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END) END END;
+        NEW."cash" := CASE WHEN NEW.cash_minor % (CASE (SELECT COALESCE(MAX(c.decimal_places), 0) FROM country_currencies AS n JOIN currencies AS c ON c.code = n.currency_code WHERE n.nationality = NEW.nationality) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END) = 0 THEN CASE WHEN NEW.cash_minor = TRUNC(NEW.cash_minor) AND (CASE (SELECT COALESCE(MAX(c.decimal_places), 0) FROM country_currencies AS n JOIN currencies AS c ON c.code = n.currency_code WHERE n.nationality = NEW.nationality) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END) = TRUNC((CASE (SELECT COALESCE(MAX(c.decimal_places), 0) FROM country_currencies AS n JOIN currencies AS c ON c.code = n.currency_code WHERE n.nationality = NEW.nationality) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END)) THEN TRUNC(NEW.cash_minor / (CASE (SELECT COALESCE(MAX(c.decimal_places), 0) FROM country_currencies AS n JOIN currencies AS c ON c.code = n.currency_code WHERE n.nationality = NEW.nationality) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END)) ELSE NEW.cash_minor / (CASE (SELECT COALESCE(MAX(c.decimal_places), 0) FROM country_currencies AS n JOIN currencies AS c ON c.code = n.currency_code WHERE n.nationality = NEW.nationality) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END) END ELSE ((NEW.cash_minor * 1.0) / (CASE (SELECT COALESCE(MAX(c.decimal_places), 0) FROM country_currencies AS n JOIN currencies AS c ON c.code = n.currency_code WHERE n.nationality = NEW.nationality) WHEN 0 THEN 1 WHEN 1 THEN 10 ELSE 100 END)) END;
     END IF;
     RETURN NEW;
 END $$;

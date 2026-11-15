@@ -213,7 +213,15 @@ SQLITE_ONLY = {
     "test_currency_account_storage.py::CurrencyAccountStorageTests::test_late_dividend_amount_field_uses_each_currency_scale": "financial_amount_snapshots is not carried to PostgreSQL (redesign pending)",
     "test_currency_account_storage.py::CurrencyAccountStorageTests::test_late_initialized_financial_schemas_are_included_in_amount_registry": "financial_amount_snapshots is not carried to PostgreSQL (redesign pending)",
     "test_currency_account_storage.py::CurrencyAccountStorageTests::test_registered_currency_amount_snapshots_reconcile_to_source_rows": "financial_amount_snapshots is not carried to PostgreSQL (redesign pending)",
+    "test_currency_account_storage.py::CurrencyAccountStorageTests::test_market_event_target_snapshots_use_asset_code_and_rowid": "inspects the SQLite-only financial_amount_snapshots table; PostgreSQL inventory redesign is pending",
     "test_financial.py::FinancialTests::test_closed_wallet_period_survives_restart_and_reports_snapshot_drift": "financial_amount_snapshots is not carried to PostgreSQL (redesign pending)",
+    # These tests explicitly lock or corrupt a separate SQLite file; PostgreSQL
+    # needs its own concurrent-writer and integrity-audit coverage.
+    "test_auto_target_market.py::AutoTargetMarketTests::test_busy_price_database_rolls_back_cycle_creation_and_stochastic_state": "uses sqlite3 BEGIN IMMEDIATE on the local database file",
+    "test_stochastic_market.py::StochasticMarketTests::test_busy_price_database_rolls_back_its_stochastic_state": "uses sqlite3 BEGIN IMMEDIATE on the local database file",
+    "test_stochastic_market.py::StochasticMarketTests::test_busy_event_price_rolls_back_goal_noise_jump_marker_and_model_state": "uses sqlite3 BEGIN IMMEDIATE on the local database file",
+    "test_movement_daily.py::MovementDailyTests::test_external_write_lock_skips_quickly_and_retries_without_marking_date": "uses sqlite3 BEGIN IMMEDIATE on the local database file",
+    "test_currency_account_storage.py::CurrencyAccountStorageTests::test_financial_reconciliation_reports_dangling_declared_references": "uses a raw SQLite connection with PRAGMA foreign_keys=OFF to inject corruption",
     # asserts SQLite EXPLAIN QUERY PLAN output
     "test_market_features.py::MarketFeatureTests::test_exercise_cash_link_lookup_uses_event_index": "asserts SQLite EXPLAIN QUERY PLAN output",
     # plants a corrupt row with PRAGMA ignore_check_constraints, which PostgreSQL cannot do

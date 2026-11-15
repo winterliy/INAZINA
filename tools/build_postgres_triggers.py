@@ -28,7 +28,8 @@ ROW_FILTER = {
 # earlier. A trigger that later ones read from gets a name that sorts first:
 # accounts' balance_units must be derived from balance before the minor-unit
 # mirror reads it.
-FIRE_FIRST = {"trg_accounts_units_insert": "a_trg_accounts_units_insert"}
+FIRE_FIRST = {"trg_currency_default_accounts_quote_currency": "a0_trg_currency_default_accounts_quote_currency",
+              "trg_accounts_units_insert": "a_trg_accounts_units_insert"}
 # Dropped tables whose rules already exist elsewhere (verified 2026-11-14).
 COVERED = {
     "market_execution_order_baselines": "table dropped (v2 kept)",
@@ -251,7 +252,9 @@ def _same_row_update(statement, table, keys):
                 and right.table.upper() == "NEW" and left.name == right.name):
             return None
         matched.add(left.name)
-    if matched != set(keys):
+    # Tables with a non-integer primary key get a separate unique rowid in the
+    # PostgreSQL schema; SQLite triggers can identify the same row by that key.
+    if matched != set(keys) and matched != {"rowid"}:
         return None
     assignments = []
     for setting in tree.expressions:

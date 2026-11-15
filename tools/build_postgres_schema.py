@@ -55,6 +55,22 @@ def _is_integral(value):
     return exp.EQ(this=value, expression=exp.func("trunc", value.copy()))
 
 
+def _real_expression(value):
+    """Whether SQLite wide arithmetic explicitly carries a real operand."""
+    if isinstance(value, exp.Literal):
+        return not value.is_string and any(char in value.this.lower() for char in (".", "e"))
+    if isinstance(value, exp.Paren):
+        return _real_expression(value.this)
+    if isinstance(value, exp.Anonymous):
+        if value.name.upper() in {"WIDE_REAL", "WIDE_DIV_REAL"}:
+            return True
+        if value.name.upper() in {"WIDE_ADD", "WIDE_SUB", "WIDE_MUL", "WIDE_DIV"}:
+            return any(_real_expression(item) for item in value.expressions)
+    if isinstance(value, (exp.Add, exp.Sub, exp.Mul, exp.Div)):
+        return _real_expression(value.this) or _real_expression(value.expression)
+    return False
+
+
 _COMPARISONS = (exp.EQ, exp.NEQ, exp.LT, exp.LTE, exp.GT, exp.GTE)
 
 # Column names that are not all lowercase. SQLite matches them case-insensitively;
@@ -103,7 +119,7 @@ def _rewrite(node):
                             default=exp.Literal.string("real"))
         if name == "WIDE_VALID_MONEY" and len(args) == 3:
             value, limit, integral = args
-            in_range = exp.LT(this=exp.Abs(this=value.copy()),
+            in_range = exp.LTE(this=exp.Abs(this=value.copy()),
                               expression=exp.Cast(this=limit, to=exp.DataType.build("numeric")))
             if integral.is_number and int(integral.this) == 0:
                 valid = in_range
@@ -121,7 +137,7 @@ def _rewrite(node):
         if name == "WIDE_DIV" and len(args) == 2:
             a, b = args
             quotient = exp.Div(this=a, expression=b, typed=True)
-            if any(isinstance(arg, exp.Anonymous) and arg.name.upper() == "WIDE_REAL" for arg in args):
+            if any(_real_expression(arg) for arg in args):
                 return exp.Paren(this=quotient)  # a real operand: ordinary division (wide_values.py)
             both_whole = exp.And(this=_is_integral(a.copy()), expression=_is_integral(b.copy()))
             return exp.Case(ifs=[exp.If(this=both_whole, true=exp.func("trunc", quotient.copy()))],
@@ -335,6 +351,14 @@ def fractional_integer_columns(conn):
 # (SQLite keeps an old declared type after a migration rebuilds a table; see code_column_types).
 CODE_TYPES = {}
 
+# SQLite INTEGER affinity still stores fractional values when application code
+# writes them. These fields carry fractional share quantities even though their
+# declarations and triggers do not advertise that fact.
+FRACTIONAL_QUANTITY_COLUMNS = {
+    ("market_orders", "quantity"), ("market_orders", "remaining_quantity"),
+    ("market_orders", "filled_quantity"), ("corporate_liquidation_payments", "quantity"),
+}
+
 
 def code_column_types():
     """Declared column types of a schema freshly built by the current code (SQLite backend)."""
@@ -381,7 +405,7 @@ def table_ddl(conn, name, sql, *, out_name=None, nullable=(), extra_columns=()):
         row = next(r for r in info if r[1] == column.name)
         is_rowid = rowid_pk and column.name == pk_columns[0]
         kind = _column_type(CODE_TYPES.get((name, column.name), row[2]), False)
-        if kind == "BIGINT" and (name, column.name) in fractional:
+        if kind == "BIGINT" and (name, column.name) in fractional | FRACTIONAL_QUANTITY_COLUMNS:
             kind = "NUMERIC"
         if kind in {"BIGINT", "DOUBLE PRECISION"} and not is_rowid and conn.execute(
                 f'SELECT 1 FROM "{name}" WHERE typeof("{column.name}") = \'text\' LIMIT 1').fetchone():

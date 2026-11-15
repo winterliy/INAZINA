@@ -674,7 +674,7 @@ class AdminControlManager:
                 values['interest_cycle'] = self._number(merged['interest_cycle'],.001,365*86400)
             if 'is_fixed' in values:
                 values['is_fixed'] = self._number(values['is_fixed'],0,1,integer=True)
-            if 'compound_type' in merged:
+            if 'compound_type' in merged and (category != 'loan' or merged['compound_type'] is not None):
                 values['compound_type']=self._number(merged['compound_type'],0,1,integer=True)
             # PostgreSQL keeps deposits and loans in one table (bank_products), so a
             # deposit row carries an empty loan-only column.
