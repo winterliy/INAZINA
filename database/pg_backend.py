@@ -83,6 +83,11 @@ def _pragma(sql):
     if not match:
         return None
     name, argument = match[1].lower(), match[2]
+    if name == "foreign_keys" and argument is None and match[3] is None:
+        # PostgreSQL enforces foreign keys unless this session has disabled
+        # constraint triggers via its replication role.
+        return ("SELECT CASE WHEN current_setting('session_replication_role') = 'replica' "
+                "THEN 0 ELSE 1 END AS foreign_keys"), ()
     if name == "table_info" and argument:
         table = target_table(argument)
         return ("SELECT c.ordinal_position - 1 AS cid, c.column_name AS name, upper(c.data_type) AS type, "

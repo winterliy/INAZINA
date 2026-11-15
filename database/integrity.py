@@ -89,7 +89,7 @@ def check(conn):
         if column not in columns:
             continue
         rows = conn.execute(
-            f'SELECT "{column}", COUNT(*) FROM "{table}" WHERE "{column}" IS NOT NULL AND "{column}"<>\'\' '
+            f'SELECT "{column}", COUNT(*) FROM "{table}" WHERE "{column}" IS NOT NULL AND CAST("{column}" AS TEXT)<>\'\' '
             f'AND "{column}" NOT IN ({parents}){f" AND {where}" if where else ""} GROUP BY "{column}"').fetchall()
         problems.extend((table, column, value, count) for value, count in rows)
     return problems

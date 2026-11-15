@@ -1468,7 +1468,7 @@ class MarketManager:
                     SELECT CAST(recorded_epoch / ? AS INTEGER)*? AS time,
                         MIN(recorded_epoch) AS first_epoch, MAX(recorded_epoch) AS last_epoch,
                         MIN({price}) AS low, MAX({price}) AS high,
-                        SUM(recorded_epoch>=?) AS visible_count,
+                        SUM(CASE WHEN recorded_epoch>=? THEN 1 ELSE 0 END) AS visible_count,
                         MIN(CASE WHEN recorded_epoch>=? THEN recorded_epoch END) AS visible_epoch
                     FROM {table} WHERE {key}=? AND recorded_epoch>=? GROUP BY time
                 )

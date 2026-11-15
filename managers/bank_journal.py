@@ -455,8 +455,8 @@ class BankJournal:
             "c.liquidation_proceeds_minor_units asset_proceeds_minor_units,l.quote_currency "
             "FROM accounts.collateral_liquidation_events e "
             "JOIN accounts.loan_collateral_assets c USING(collateral_id) "
-            "JOIN accounts.loans l USING(loan_id) "
-            "JOIN product.liability p USING(product_code) WHERE p.issuer=? "
+            "JOIN accounts.loans l ON l.loan_id=e.loan_id "
+            "JOIN product.liability p ON p.product_code=l.product_code WHERE p.issuer=? "
             "ORDER BY e.event_id", (str(issuer),),
         ).fetchall()
         findings = []
