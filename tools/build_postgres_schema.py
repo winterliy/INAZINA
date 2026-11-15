@@ -215,8 +215,18 @@ def _rewrite(node):
         ).transform(lambda n: value.copy() if isinstance(n, exp.Column) and n.name == "x" else n)
     if isinstance(node, exp.TimeToStr) and node.args.get("format") is not None \
             and node.args["format"].this == "%s":
-        # strftime('%s', 'now'): the current UNIX time.
-        return exp.Cast(this=exp.Extract(this=exp.var("epoch"), expression=exp.CurrentTimestamp()),
+        # SQLite treats a timestamp without a timezone as UTC. Preserve the
+        # argument (including placeholders) instead of always using "now".
+        value = node.this
+        if isinstance(value, exp.TsOrDsToTimestamp):
+            value = value.this
+        if isinstance(value, exp.Literal) and value.is_string and value.this.lower() == "now":
+            timestamp = exp.CurrentTimestamp()
+        else:
+            timestamp = exp.Paren(this=exp.AtTimeZone(
+                this=exp.Cast(this=value.copy(), to=exp.DataType.build("timestamp")),
+                zone=exp.Literal.string("UTC")))
+        return exp.Cast(this=exp.Extract(this=exp.var("epoch"), expression=timestamp),
                         to=exp.DataType.build("bigint"))
     if isinstance(node, exp.OnConflict) and any(isinstance(k, exp.Ordered) for k in node.args.get("conflict_keys") or []):
         node.set("conflict_keys", [k.this if isinstance(k, exp.Ordered) else k for k in node.args["conflict_keys"]])
