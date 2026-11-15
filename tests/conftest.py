@@ -184,6 +184,20 @@ def pytest_report_to_serializable(config, report):
 
 # Tests about SQLite itself, skipped on INAZINA_DB_BACKEND=postgres (reviewed 2026-11-14).
 SQLITE_ONLY = {
+    # Fixtures built on SQLite specifics (reduced tables, the database file itself).
+    "test_log_delete.py::LogDeleteTests::test_flows_are_listed_and_deleted": "creates its own reduced SQLite tables with CREATE TABLE; PostgreSQL already has the full schema",
+    "test_market_features.py::MarketFeatureTests::test_database_browser_rate_edits_apply_live": "opens the test's SQLite database file directly; PostgreSQL has no such file",
+    "test_market_features.py::MarketFeatureTests::test_system_reinitialization_preserves_browser_rates": "opens the test's SQLite database file directly; PostgreSQL has no such file",
+    "test_market_features.py::MarketFeatureTests::test_database_browser_rejects_invalid_rates": "opens the test's SQLite database file directly; PostgreSQL has no such file",
+    "test_market_features.py::MarketFeatureTests::test_equivalent_rate_and_other_settings_remain_valid": "opens the test's SQLite database file directly; PostgreSQL has no such file",
+    "test_inazina.py::InazinaTests::test_only_one_database_and_cross_manager_atomic_rollback": "asserts the single SQLite database file in the test directory; PostgreSQL has no such file",
+    "test_web_api.py::WebApiTests::test_compliance_overview_exposes_ecl_discount_factor": "inserts positionally into a reduced SQLite table; PostgreSQL's real table has other columns",
+    "test_web_api.py::WebApiTests::test_db_editor_masks_password_columns": "creates its own reduced SQLite table with CREATE TABLE; PostgreSQL already has the full schema",
+    "test_web_api.py::WebApiTests::test_product_catalog_covers_every_creatable_kind": "creates its own reduced SQLite tables with CREATE TABLE; PostgreSQL already has the full schema",
+    "test_web_api.py::WebApiTests::test_market_instruments_include_bond_rate_risk_metrics": "inserts positionally into a reduced SQLite table; PostgreSQL's real table has other columns",
+    "test_web_api.py::WebApiTests::test_market_instruments_report_24h_value_trades_and_volume": "inserts positionally into a reduced SQLite table; PostgreSQL's real table has other columns",
+    "test_web_api.py::WebApiTests::test_macro_indicator_web_action_validates_and_audits_inputs": "creates its own reduced SQLite table with CREATE TABLE; PostgreSQL already has the full schema",
+    "test_web_api.py::WebApiTests::test_products_are_purged_only_when_stopped_and_unused": "creates its own reduced SQLite tables with CREATE TABLE; PostgreSQL already has the full schema",
     # exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema
     "test_country_accounts.py::CountryAccountTests::test_legacy_treasuries_merge_into_nation_account": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
     "test_credit_risk_stages.py::DefaultedLoanEclTests::test_legacy_assessment_migration_preserves_rows_and_uses_neutral_factor": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
