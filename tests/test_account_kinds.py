@@ -24,11 +24,48 @@ class AccountKindRuleTests(unittest.TestCase):
         return self.db.accounts.execute_one(
             "SELECT account_number FROM accounts WHERE product_code=? AND user_id=?", (code, user))[0]
 
+    def existing_housing(self, code, deposit=0):
+        """Recreate a pre-existing contract without reopening housing to customers."""
+        from database.account_kind_terms import KIND_TERMS
+        product = self.db.products.execute_one(
+            "SELECT kind_terms FROM saving WHERE product_code=?", (code,))
+        terms = {**KIND_TERMS['housing'], **json.loads(product['kind_terms'] or '{}')}
+        self.db.products.execute("UPDATE saving SET account_kind='demand' WHERE product_code=?", (code,))
+        try:
+            number = self.open(code, deposit)
+        finally:
+            self.db.products.execute("UPDATE saving SET account_kind='housing' WHERE product_code=?", (code,))
+        self.db.accounts.execute("UPDATE accounts SET account_kind='housing',kind_terms=? WHERE account_number=?",
+                                 (json.dumps(terms), number))
+        if deposit:
+            import time
+            self.db.accounts.execute(
+                "INSERT INTO account_contributions(account_number,user_id,account_kind,units,epoch) VALUES (?,?,?,?,?)",
+                (number, 'citizen', 'housing', int(deposit * 1000000), time.time()))
+        return number
+
     def pay(self, account, amount, source=None, user='citizen'):
         return self.bot.user_mgr.transfer(user, account, amount, source)
 
     def balance(self, account):
         return self.db.accounts.execute_one("SELECT balance FROM accounts WHERE account_number=?", (account,))[0]
+
+    def test_housing_open_is_unavailable(self):
+        self.seed()
+        self.product('HS_BLOCK', 'housing')
+        ok, message = self.bot.bank_mgr.open_account('citizen', 'HS_BLOCK', 'pass1234', 0)
+        self.assertFalse(ok)
+        self.assertIn('주택청약은 아직 준비 중이라 가입할 수 없습니다.', message)
+
+    def test_housing_direct_insert_rejected_with_explicit_kind(self):
+        self.seed()
+        self.product('HS_SQL', 'housing')
+        for kind in (None, 'housing', 'demand'):
+            with self.subTest(kind=kind):
+                with self.assertRaisesRegex(Exception, '주택청약은 아직 준비 중이라 가입할 수 없습니다'):
+                    with self.db.atomic() as conn:
+                        conn.execute("INSERT INTO accounts(account_number,user_id,product_code,account_type,account_kind) "
+                                     "VALUES (?,?,?,?,?)", ('housing-direct', 'citizen', 'HS_SQL', 'saving', kind))
 
     def test_contract_copies_kind_and_terms_at_opening(self):
         self.seed()
@@ -76,7 +113,7 @@ class AccountKindRuleTests(unittest.TestCase):
         self.seed()
         self.product('HS1', 'housing', terms={'min_payment': 20, 'max_payment': 50})
         self.product('HS2', 'housing')
-        number = self.open('HS1')
+        number = self.existing_housing('HS1')
         ok, message = self.pay(number, 10)
         self.assertFalse(ok)
         self.assertIn('최소', message)
@@ -86,7 +123,33 @@ class AccountKindRuleTests(unittest.TestCase):
         self.assertIn('최대', message)
         ok, message = self.bot.bank_mgr.open_account('citizen', 'HS2', 'pass1234', 0)
         self.assertFalse(ok)
-        self.assertIn('1인 1계좌', message)
+        self.assertIn('준비 중', message)
+
+    def test_housing_one_account_rule_remains_in_open_trigger(self):
+        # Exercise the preserved rule independently of the temporary admission ban.
+        import sqlite3
+        from database.account_kind_rules import _install_triggers
+
+        class Capture:
+            def __init__(self):
+                self.statements = []
+            def execute(self, statement):
+                self.statements.append(statement)
+
+        capture = Capture()
+        _install_triggers(capture)
+        trigger = next(s for s in capture.statements if s.startswith('CREATE TRIGGER trg_account_kind_open_rules'))
+        trigger = trigger.replace("SELECT RAISE(ABORT,'주택청약은 아직 준비 중이라 가입할 수 없습니다.')\n         WHERE (SELECT s.account_kind FROM saving s WHERE s.product_code=NEW.product_code)='housing';", '')
+        with sqlite3.connect(':memory:') as conn:
+            conn.executescript('CREATE TABLE saving(product_code TEXT, account_kind TEXT, kind_terms TEXT);'
+                               'CREATE TABLE accounts(user_id TEXT, product_code TEXT, account_type TEXT, account_kind TEXT);'
+                               'CREATE TABLE users(user_id TEXT, credit_score INTEGER);'
+                               'CREATE TABLE account_kind_defaults(kind TEXT, terms TEXT);')
+            conn.execute(trigger)
+            conn.execute("INSERT INTO saving VALUES ('h1','housing',NULL),('h2','housing',NULL)")
+            conn.execute("INSERT INTO accounts VALUES ('u','h1','saving','housing')")
+            with self.assertRaisesRegex(sqlite3.IntegrityError, '1인 1계좌'):
+                conn.execute("INSERT INTO accounts VALUES ('u','h2','saving',NULL)")
 
     def test_isa_limits_and_principal_only_withdrawal(self):
         self.seed()
@@ -179,7 +242,7 @@ class AccountKindRuleTests(unittest.TestCase):
     def test_housing_pays_no_interest_while_saving(self):
         self.seed()
         self.product('HS3', 'housing', interest_rate=10, interest_cycle=86400)
-        number = self.open('HS3', 20000)
+        number = self.existing_housing('HS3', 20000)
         self.settle(self.opened(number) + 400 * 86400)
         self.assertEqual(self.balance(number), 20000)
 
@@ -228,7 +291,7 @@ class AccountKindRuleTests(unittest.TestCase):
         self.seed()
         self.product('HS4', 'housing', interest_rate=0,
                      terms={'rate_tiers': [{'days': 30, 'rate': 0}, {'days': 730, 'rate': 10}, {'rate': 20}]})
-        number = self.open('HS4', 100000)
+        number = self.existing_housing('HS4', 100000)
         self.age(number, 365)
         ok, message = self.bot.bank_mgr.close_account('citizen', number, password='pass1234')
         self.assertTrue(ok, message)

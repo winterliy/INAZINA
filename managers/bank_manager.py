@@ -300,6 +300,8 @@ class BankManager:
                 ).fetchone()
                 if not product:
                     return False, "❌ 존재하지 않는 저축 상품입니다."
+                if product['account_kind'] == 'housing':
+                    return False, "❌ 주택청약은 아직 준비 중이라 가입할 수 없습니다."
                 locations = DatabaseManager.code_locations(conn, product_code)
                 if len(locations) != 1 or locations[0] != "저축 상품":
                     return False, f"❌ 상품 코드 `{product_code}`가 다른 상품·자산 코드와 중복 등록되어 있습니다. SQL Browser에서 정리해주세요."

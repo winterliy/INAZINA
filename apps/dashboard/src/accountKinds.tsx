@@ -39,7 +39,7 @@ export const ACCOUNT_KIND_GUIDE: Record<string, Guide> = {
   },
   housing: {
     label: "주택청약", summary: "청약 자격을 위한 장기 저축 · 1인 1계좌",
-    detail: "회당 2만~50만(한 달 50만까지), 회차당 25만 인정. 출금 불가. 이자는 해지할 때 가입기간 금리로 지급: 1개월 이내 0%, 1년 미만 2.3%, 2년 미만 2.8%, 2년 이상 3.1%.",
+    detail: "현재 가입 불가(청약 기능 준비 중). 회당 2만~50만(한 달 50만까지), 회차당 25만 인정. 출금 불가. 이자는 해지할 때 가입기간 금리로 지급: 1개월 이내 0%, 1년 미만 2.3%, 2년 미만 2.8%, 2년 이상 3.1%.",
     recommended: { interest_rate: "0", deposit_amount: "20000", maturity_days: "0", interest_cycle: YEAR, compound_type: "0" },
   },
   combined: {

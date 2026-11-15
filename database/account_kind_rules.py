@@ -101,6 +101,8 @@ def _install_triggers(conn):
     product_kind = "(SELECT s.account_kind FROM saving s WHERE s.product_code=NEW.product_code)"
     conn.execute(f"""CREATE TRIGGER trg_account_kind_open_rules BEFORE INSERT ON accounts
         WHEN NEW.account_type='saving' BEGIN
+        SELECT RAISE(ABORT,'주택청약은 아직 준비 중이라 가입할 수 없습니다.')
+         WHERE {product_kind}='housing';
         SELECT RAISE(ABORT,'주택청약·ISA는 1인 1계좌만 가입할 수 있습니다. 이미 가입한 계좌가 있습니다.')
          WHERE {product_kind} IN ({_kinds(ONE_PER_PERSON_KINDS)})
            AND EXISTS (SELECT 1 FROM accounts o WHERE o.user_id=NEW.user_id AND o.account_kind={product_kind});

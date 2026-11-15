@@ -81,6 +81,8 @@ class CurrencyExchangeManager:
             product = conn.execute("SELECT * FROM saving WHERE product_code=? AND product_kind='saving' AND status='active'", (product_code,)).fetchone()
             if not product:
                 raise ValueError("저축 상품 코드를 확인해주세요.")
+            if product['account_kind'] == 'housing':
+                raise ValueError("주택청약은 아직 준비 중이라 가입할 수 없습니다.")
             institution = conn.execute(
                 "SELECT status FROM financial_institutions WHERE issuer=?",
                 (product['issuer'],),

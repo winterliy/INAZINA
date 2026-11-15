@@ -97,7 +97,7 @@ export function BankPage({ kit, userId, cash, homeCurrency, homeDigits, creditSc
         <h3>{product.name}</h3>
         <p className="svc-rate">연 <b>{product.interest_rate}</b>%</p>
         <ul><li>최소 예치금 {won(product.deposit_amount)} {product.quote_currency}</li>{product.maturity_days > 0 && <li>만기 {product.maturity_days}일</li>}{kindRule(product.account_kind, product.kind_terms) && <li>{kindRule(product.account_kind, product.kind_terms)}</li>}</ul>
-        <button type="button" className="svc-submit" onClick={() => toggle({ kind: "join", key: product.code })}>{open?.key === product.code ? "닫기" : "가입하기"}</button>
+        <button type="button" className="svc-submit" disabled={product.account_kind === "housing"} onClick={() => toggle({ kind: "join", key: product.code })}>{product.account_kind === "housing" ? "준비 중" : open?.key === product.code ? "닫기" : "가입하기"}</button>
         {open?.kind === "join" && open.key === product.code && <form className="svc-inline" onSubmit={(event) => submit(event, "계좌개설", { product: product.code, password: form.password ?? "", deposit: form.deposit ?? "" })}>
           {field("password", "계좌 비밀번호 (4~16자)", { type: "password", required: true, minLength: 4, maxLength: 16, autoComplete: "new-password" })}
           {field("deposit", `처음 넣을 돈 (${product.quote_currency})`, { inputMode: "decimal", placeholder: `최소 ${won(product.deposit_amount)}` })}

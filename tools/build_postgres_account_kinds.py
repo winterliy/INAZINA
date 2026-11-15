@@ -48,10 +48,14 @@ $$ BEGIN RAISE EXCEPTION USING MESSAGE = message, ERRCODE = 'check_violation'; E
 CREATE OR REPLACE FUNCTION trg_account_kind_open_fn() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE p record; terms jsonb; opening bigint; t text;
 BEGIN
-    IF NEW.account_type <> 'saving' OR NEW.account_kind IS NOT NULL THEN RETURN NEW; END IF;
+    IF NEW.account_type <> 'saving' THEN RETURN NEW; END IF;
     SELECT account_kind, kind_terms, installment_amount, installment_cycle_seconds INTO p
       FROM bank_products WHERE product_code = NEW.product_code AND kind = 'deposit';
     IF NOT FOUND OR p.account_kind IS NULL THEN RETURN NEW; END IF;
+    IF p.account_kind = 'housing' THEN
+        PERFORM account_kind_refuse('주택청약은 아직 준비 중이라 가입할 수 없습니다.');
+    END IF;
+    IF NEW.account_kind IS NOT NULL THEN RETURN NEW; END IF;
     terms := COALESCE((SELECT d.terms::jsonb FROM account_kind_defaults d WHERE d.kind = p.account_kind), '{{}}'::jsonb)
              || COALESCE(NULLIF(p.kind_terms, '')::jsonb, '{{}}'::jsonb)
              || jsonb_build_object('installment_amount', COALESCE(p.installment_amount, 0),
