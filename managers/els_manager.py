@@ -478,7 +478,10 @@ class ELSManager:
             details["status"] = details["state"]
             details["code"] = details["product_code"]
             details["underlyings"] = []
-            for underlying in conn.execute("SELECT * FROM els_underlyings WHERE product_code=? ORDER BY underlying_code", (code,)).fetchall():
+            # SQLite's default binary ordering differs from PostgreSQL's locale
+            # collation (notably for index codes beginning with underscores).
+            underlyings = conn.execute("SELECT * FROM els_underlyings WHERE product_code=?", (code,)).fetchall()
+            for underlying in sorted(underlyings, key=lambda item: item["underlying_code"].encode("utf-8")):
                 info = self._underlying(conn, underlying["underlying_code"])
                 price = underlying["last_price"] if underlying["initial_price"] else self._valid_price(info["price"]) if info else None
                 details["underlyings"].append(dict(code=underlying["underlying_code"], name=info["name"] if info else underlying["underlying_code"],
