@@ -19,18 +19,27 @@ CREATE OR REPLACE FUNCTION account_kind_opened(created text) RETURNS double prec
 $$ SELECT EXTRACT(EPOCH FROM (created::timestamp AT TIME ZONE 'UTC'))::double precision $$;
 CREATE OR REPLACE FUNCTION account_kind_term(terms text, name text) RETURNS numeric LANGUAGE sql IMMUTABLE AS
 $$ SELECT NULLIF(NULLIF(terms, '')::jsonb ->> name, '')::numeric $$;
-CREATE OR REPLACE FUNCTION account_kind_units(amount numeric) RETURNS bigint LANGUAGE sql IMMUTABLE AS
-$$ SELECT ROUND(COALESCE(amount, 0) * 1000000)::bigint $$;
-CREATE OR REPLACE FUNCTION account_kind_units(amount double precision) RETURNS bigint LANGUAGE sql IMMUTABLE AS
-$$ SELECT ROUND(COALESCE(amount, 0)::numeric * 1000000)::bigint $$;
-CREATE OR REPLACE FUNCTION account_kind_paid(account text, since double precision) RETURNS bigint LANGUAGE sql STABLE AS
-$$ SELECT COALESCE(SUM(units), 0)::bigint FROM account_contributions WHERE account_number = account AND epoch >= since $$;
+-- Amounts can exceed bigint after conversion to millionths.
+ALTER TABLE account_contributions ALTER COLUMN units TYPE numeric;
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = 'account_contributions'::regclass
+                   AND conname = 'account_contributions_units_integral') THEN
+        ALTER TABLE account_contributions ADD CONSTRAINT account_contributions_units_integral
+            CHECK (units = TRUNC(units));
+    END IF;
+END $$;
+CREATE OR REPLACE FUNCTION account_kind_units_exact(amount numeric) RETURNS numeric LANGUAGE sql IMMUTABLE AS
+$$ SELECT ROUND(COALESCE(amount, 0) * 1000000) $$;
+CREATE OR REPLACE FUNCTION account_kind_units_exact(amount double precision) RETURNS numeric LANGUAGE sql IMMUTABLE AS
+$$ SELECT ROUND(COALESCE(amount, 0)::numeric * 1000000) $$;
+CREATE OR REPLACE FUNCTION account_kind_paid_exact(account text, since double precision) RETURNS numeric LANGUAGE sql STABLE AS
+$$ SELECT COALESCE(SUM(units), 0) FROM account_contributions WHERE account_number = account AND epoch >= since $$;
 CREATE OR REPLACE FUNCTION account_kind_refuse(message text) RETURNS void LANGUAGE plpgsql AS
 $$ BEGIN RAISE EXCEPTION USING MESSAGE = message, ERRCODE = 'check_violation'; END $$;
 
 -- Opening: copy the product's kind and terms, then the opening rules.
 CREATE OR REPLACE FUNCTION trg_account_kind_open_fn() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE p record; terms jsonb; opening bigint; t text;
+DECLARE p record; terms jsonb; opening numeric; t text;
 BEGIN
     IF NEW.account_type <> 'saving' THEN RETURN NEW; END IF;
     SELECT account_kind, kind_terms, installment_amount, installment_cycle_seconds, transaction_policy INTO p
@@ -57,32 +66,32 @@ BEGIN
        < COALESCE(account_kind_term(t, 'min_credit_score'), 0) THEN
         PERFORM account_kind_refuse('종합통장(마이너스통장)은 신용점수가 상품 기준 이상이어야 개설할 수 있습니다.');
     END IF;
-    opening := account_kind_units(NEW.principal);
-    IF p.account_kind = 'fixed_installment' AND opening > 0 AND opening <> account_kind_units(account_kind_term(t, 'installment_amount')) THEN
+    opening := account_kind_units_exact(NEW.principal);
+    IF p.account_kind = 'fixed_installment' AND opening > 0 AND opening <> account_kind_units_exact(account_kind_term(t, 'installment_amount')) THEN
         PERFORM account_kind_refuse('정기적금의 첫 납입은 약정한 납입 금액이어야 합니다.');
     END IF;
-    IF p.account_kind = 'free_installment' AND account_kind_units(account_kind_term(t, 'period_limit')) > 0
-       AND opening > account_kind_units(account_kind_term(t, 'period_limit')) THEN
+    IF p.account_kind = 'free_installment' AND account_kind_units_exact(account_kind_term(t, 'period_limit')) > 0
+       AND opening > account_kind_units_exact(account_kind_term(t, 'period_limit')) THEN
         PERFORM account_kind_refuse('자유적금의 납입 기간 한도를 넘습니다.');
     END IF;
-    IF p.account_kind = 'housing' AND opening > 0 AND opening < account_kind_units(account_kind_term(t, 'min_payment')) THEN
+    IF p.account_kind = 'housing' AND opening > 0 AND opening < account_kind_units_exact(account_kind_term(t, 'min_payment')) THEN
         PERFORM account_kind_refuse('주택청약은 1회 최소 납입 금액 이상 입금해야 합니다.');
     END IF;
-    IF p.account_kind = 'housing' AND opening > account_kind_units(account_kind_term(t, 'max_payment')) THEN
+    IF p.account_kind = 'housing' AND opening > account_kind_units_exact(account_kind_term(t, 'max_payment')) THEN
         PERFORM account_kind_refuse('주택청약은 한 달(납입 기간)에 최대 납입 금액까지만 넣을 수 있습니다.');
     END IF;
-    IF p.account_kind = 'isa' AND (opening > account_kind_units(account_kind_term(t, 'annual_limit'))
-                                   OR opening > account_kind_units(account_kind_term(t, 'total_limit'))) THEN
+    IF p.account_kind = 'isa' AND (opening > account_kind_units_exact(account_kind_term(t, 'annual_limit'))
+                                   OR opening > account_kind_units_exact(account_kind_term(t, 'total_limit'))) THEN
         PERFORM account_kind_refuse('ISA 연간 납입한도를 넘습니다.');
     END IF;
-    IF p.account_kind = 'irp' AND opening > account_kind_units(account_kind_term(t, 'annual_limit')) THEN
+    IF p.account_kind = 'irp' AND opening > account_kind_units_exact(account_kind_term(t, 'annual_limit')) THEN
         PERFORM account_kind_refuse('IRP 연간 납입한도를 넘습니다.');
     END IF;
     NEW.account_kind := p.account_kind;
     NEW.kind_terms := t;
     IF terms ? 'deposit_insured' THEN NEW.deposit_insured := (terms ->> 'deposit_insured')::int; END IF;
     NEW.overdraft_limit_units := CASE WHEN p.account_kind = 'combined'
-        THEN account_kind_units(account_kind_term(t, 'overdraft_limit')) ELSE 0 END;
+        THEN account_kind_units_exact(account_kind_term(t, 'overdraft_limit')) ELSE 0 END;
     NEW.overdraft_epoch := account_kind_now();
     NEW.overdraft_charged_epoch := account_kind_now();
     NEW.overdraft_review_epoch := account_kind_now();
@@ -93,9 +102,9 @@ CREATE TRIGGER trg_account_kind_open BEFORE INSERT ON accounts FOR EACH ROW EXEC
 
 CREATE OR REPLACE FUNCTION trg_account_kind_opened_fn() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    IF NEW.account_kind IN ('time_deposit', 'fixed_installment', 'free_installment', 'housing', 'isa', 'irp') AND account_kind_units(NEW.principal) > 0 THEN
+    IF NEW.account_kind IN ('time_deposit', 'fixed_installment', 'free_installment', 'housing', 'isa', 'irp') AND account_kind_units_exact(NEW.principal) > 0 THEN
         INSERT INTO account_contributions (account_number, user_id, account_kind, units, epoch)
-        VALUES (NEW.account_number, NEW.user_id, NEW.account_kind, account_kind_units(NEW.principal), account_kind_now());
+        VALUES (NEW.account_number, NEW.user_id, NEW.account_kind, account_kind_units_exact(NEW.principal), account_kind_now());
     END IF;
     RETURN NULL;
 END $$;
@@ -104,7 +113,7 @@ CREATE TRIGGER trg_account_kind_opened AFTER INSERT ON accounts FOR EACH ROW EXE
 
 -- Money moving: deposit limits, locked withdrawals, and 마이너스통장 daily peak use.
 CREATE OR REPLACE FUNCTION trg_account_kind_update_fn() RETURNS trigger LANGUAGE plpgsql AS $$
-DECLARE t text := NEW.kind_terms; delta bigint; now_s double precision := account_kind_now();
+DECLARE t text := NEW.kind_terms; delta numeric; now_s double precision := account_kind_now();
         opened double precision; period double precision; period_start double precision;
         year_start double precision; maturity bigint; bypass boolean;
         today bigint; use_old numeric; use_new numeric; rate numeric;
@@ -119,7 +128,7 @@ BEGIN
     IF NEW.account_kind IS NULL THEN RETURN NEW; END IF;
     bypass := EXISTS (SELECT 1 FROM account_rule_bypass b WHERE b.account_number = NEW.account_number);
     opened := account_kind_opened(NEW.created_at);
-    delta := account_kind_units(NEW.principal) - account_kind_units(OLD.principal);
+    delta := account_kind_units_exact(NEW.principal) - account_kind_units_exact(OLD.principal);
     IF delta > 0 AND NEW.account_kind IN ('time_deposit', 'fixed_installment', 'free_installment', 'housing', 'isa', 'irp') AND NOT bypass THEN
         period := COALESCE(account_kind_term(t, 'period_days'), 30) * 86400;
         period_start := opened + FLOOR((now_s - opened) / period) * period;
@@ -128,38 +137,38 @@ BEGIN
         IF NEW.account_kind = 'time_deposit' THEN
             PERFORM account_kind_refuse('정기예금은 가입할 때 한 번만 예치합니다. 추가 입금할 수 없습니다.');
         END IF;
-        IF NEW.account_kind = 'fixed_installment' AND delta <> account_kind_units(account_kind_term(t, 'installment_amount')) THEN
+        IF NEW.account_kind = 'fixed_installment' AND delta <> account_kind_units_exact(account_kind_term(t, 'installment_amount')) THEN
             PERFORM account_kind_refuse('정기적금은 약정한 납입 금액만 입금할 수 있습니다.');
         END IF;
         IF NEW.account_kind IN ('fixed_installment', 'free_installment') AND maturity > 0 AND now_s >= opened + maturity * 86400 THEN
             PERFORM account_kind_refuse('만기가 지난 적금에는 입금할 수 없습니다.');
         END IF;
         IF NEW.account_kind = 'free_installment' AND COALESCE(account_kind_term(t, 'period_limit'), 0) > 0
-           AND account_kind_paid(NEW.account_number, period_start) + delta > account_kind_units(account_kind_term(t, 'period_limit')) THEN
+           AND account_kind_paid_exact(NEW.account_number, period_start) + delta > account_kind_units_exact(account_kind_term(t, 'period_limit')) THEN
             PERFORM account_kind_refuse('자유적금의 이번 납입 기간 한도를 넘습니다.');
         END IF;
-        IF NEW.account_kind = 'housing' AND delta < account_kind_units(account_kind_term(t, 'min_payment')) THEN
+        IF NEW.account_kind = 'housing' AND delta < account_kind_units_exact(account_kind_term(t, 'min_payment')) THEN
             PERFORM account_kind_refuse('주택청약은 1회 최소 납입 금액 이상 입금해야 합니다.');
         END IF;
         IF NEW.account_kind = 'housing'
-           AND account_kind_paid(NEW.account_number, period_start) + delta > account_kind_units(account_kind_term(t, 'max_payment')) THEN
+           AND account_kind_paid_exact(NEW.account_number, period_start) + delta > account_kind_units_exact(account_kind_term(t, 'max_payment')) THEN
             PERFORM account_kind_refuse('주택청약은 한 달(납입 기간)에 최대 납입 금액까지만 넣을 수 있습니다.');
         END IF;
         IF NEW.account_kind = 'isa'
-           AND account_kind_paid(NEW.account_number, 0) + delta > account_kind_units(account_kind_term(t, 'total_limit')) THEN
+           AND account_kind_paid_exact(NEW.account_number, 0) + delta > account_kind_units_exact(account_kind_term(t, 'total_limit')) THEN
             PERFORM account_kind_refuse('ISA 총 납입한도를 넘습니다.');
         END IF;
         IF NEW.account_kind = 'isa' AND COALESCE(account_kind_term(t, 'carry_over'), 1) = 1
-           AND account_kind_paid(NEW.account_number, 0) + delta
-               > account_kind_units(account_kind_term(t, 'annual_limit') * (FLOOR((now_s - opened) / 31536000) + 1)) THEN
+           AND account_kind_paid_exact(NEW.account_number, 0) + delta
+               > account_kind_units_exact(account_kind_term(t, 'annual_limit') * (FLOOR((now_s - opened) / 31536000) + 1)) THEN
             PERFORM account_kind_refuse('ISA 연간 납입한도(이월분 포함)를 넘습니다.');
         END IF;
         IF NEW.account_kind = 'isa' AND COALESCE(account_kind_term(t, 'carry_over'), 1) = 0
-           AND account_kind_paid(NEW.account_number, year_start) + delta > account_kind_units(account_kind_term(t, 'annual_limit')) THEN
+           AND account_kind_paid_exact(NEW.account_number, year_start) + delta > account_kind_units_exact(account_kind_term(t, 'annual_limit')) THEN
             PERFORM account_kind_refuse('ISA 연간 납입한도를 넘습니다.');
         END IF;
         IF NEW.account_kind = 'irp'
-           AND account_kind_paid(NEW.account_number, year_start) + delta > account_kind_units(account_kind_term(t, 'annual_limit')) THEN
+           AND account_kind_paid_exact(NEW.account_number, year_start) + delta > account_kind_units_exact(account_kind_term(t, 'annual_limit')) THEN
             PERFORM account_kind_refuse('IRP 연간 납입한도를 넘습니다.');
         END IF;
     END IF;
@@ -167,7 +176,7 @@ BEGIN
         IF NEW.account_kind IN ('time_deposit', 'fixed_installment', 'free_installment', 'housing', 'irp') THEN
             PERFORM account_kind_refuse('이 통장은 만기·해지 전에는 일부 출금할 수 없습니다. 해지로만 찾을 수 있습니다.');
         END IF;
-        IF NEW.account_kind = 'isa' AND OLD.balance_units - NEW.balance_units > account_kind_units(OLD.principal - NEW.principal) + 1 THEN
+        IF NEW.account_kind = 'isa' AND OLD.balance_units - NEW.balance_units > account_kind_units_exact(OLD.principal - NEW.principal) + 1 THEN
             PERFORM account_kind_refuse('ISA는 납입 원금 범위 안에서만 중도인출할 수 있습니다.');
         END IF;
     END IF;
@@ -198,11 +207,11 @@ CREATE TRIGGER trg_account_kind_update BEFORE UPDATE ON accounts FOR EACH ROW EX
 CREATE OR REPLACE FUNCTION trg_account_kind_paid_fn() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF NEW.account_kind IN ('time_deposit', 'fixed_installment', 'free_installment', 'housing', 'isa', 'irp')
-       AND account_kind_units(NEW.principal) > account_kind_units(OLD.principal)
+       AND account_kind_units_exact(NEW.principal) > account_kind_units_exact(OLD.principal)
        AND NOT EXISTS (SELECT 1 FROM account_rule_bypass b WHERE b.account_number = NEW.account_number) THEN
         INSERT INTO account_contributions (account_number, user_id, account_kind, units, epoch)
         VALUES (NEW.account_number, NEW.user_id, NEW.account_kind,
-                account_kind_units(NEW.principal) - account_kind_units(OLD.principal), account_kind_now());
+                account_kind_units_exact(NEW.principal) - account_kind_units_exact(OLD.principal), account_kind_now());
     END IF;
     RETURN NULL;
 END $$;

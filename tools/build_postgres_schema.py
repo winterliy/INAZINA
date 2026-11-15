@@ -365,6 +365,9 @@ FRACTIONAL_QUANTITY_COLUMNS = {
     ("market_orders", "filled_quantity"), ("corporate_liquidation_payments", "quantity"),
 }
 
+# These integer units may exceed PostgreSQL bigint even on an empty source DB.
+EXACT_INTEGER_COLUMNS = {("account_contributions", "units")}
+
 
 def code_column_types():
     """Declared column types of a schema freshly built by the current code (SQLite backend)."""
@@ -411,13 +414,17 @@ def table_ddl(conn, name, sql, *, out_name=None, nullable=(), extra_columns=()):
         row = next(r for r in info if r[1] == column.name)
         is_rowid = rowid_pk and column.name == pk_columns[0]
         kind = _column_type(CODE_TYPES.get((name, column.name), row[2]), False)
-        if kind == "BIGINT" and (name, column.name) in fractional | FRACTIONAL_QUANTITY_COLUMNS:
+        if kind == "BIGINT" and (name, column.name) in fractional | FRACTIONAL_QUANTITY_COLUMNS | EXACT_INTEGER_COLUMNS:
             kind = "NUMERIC"
         if kind in {"BIGINT", "DOUBLE PRECISION"} and not is_rowid and conn.execute(
                 f'SELECT 1 FROM "{name}" WHERE typeof("{column.name}") = \'text\' LIMIT 1').fetchone():
             # SQLite stored exact values (wide "~M~"/"~R~" text) in a numeric column.
             kind = "NUMERIC"
         column.set("kind", exp.DataType.build(kind, dialect="postgres"))
+        if (name, column.name) in EXACT_INTEGER_COLUMNS:
+            check = sqlglot.parse_one(f"CREATE TABLE t (v NUMERIC CHECK ({column.name} = TRUNC({column.name})))",
+                                      read="postgres").this.expressions[0].constraints[0]
+            column.append("constraints", check)
         if is_rowid:
             # SQLite assigns INTEGER PRIMARY KEY values itself; identity does that here.
             kept = [c for c in column.constraints
