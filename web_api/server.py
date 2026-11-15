@@ -2928,6 +2928,146 @@ def product_status(actor, code, active, terminate=False):
     return str(result)
 
 
+def _secondary_shares(payload):
+    raw = payload.get("listedShares")
+    try:
+        shares = int(str(raw).strip())
+    except (TypeError, ValueError):
+        shares = 0
+    if isinstance(raw, bool) or shares <= 0:
+        raise ValueError("2차상장 주식 수는 1 이상의 정수로 입력해주세요.")
+    return shares
+
+
+def company_secondary_listing(actor, code, payload):
+    """이중상장: list a company's shares on a second exchange as their own trading line, or end it.
+
+    The primary listing stays company.exchange_id. Each secondary listing is a 1:1
+    depositary line (receipt_type SECONDARY, code "<company>.<exchange>") with its own
+    order book, the venue's trading hours and currency, up to ``listedShares`` shares.
+    Holders move shares between the lines through DR issue/redeem conversion; prices
+    are pulled back to parity by arbitrage drift. Dividends and votes follow the shares.
+    """
+    from managers import listing_requirements
+    action = str(payload.get("action") or "")
+    exchange_id = str(payload.get("exchangeId") or "").strip()
+    if action not in {"add", "update", "remove"} or not exchange_id:
+        raise ValueError("2차상장 추가·수정·해제와 대상 거래소를 지정해주세요.")
+    d = domain()
+    with d.db.atomic() as conn:
+        role = conn.execute("SELECT role FROM users WHERE user_id=?", (actor,)).fetchone()
+        if actor not in BOOTSTRAP_ADMIN_IDS and (not role or str(role["role"]).strip().lower() != "admin"):
+            raise ValueError("admin_required")
+        row = conn.execute(
+            "SELECT c.company_code,c.name,c.status,c.exchange_id,c.total_shares,c.listed_shares,c.share_price,"
+            "c.quote_currency,e.market_type FROM company c "
+            "LEFT JOIN market_exchanges e ON e.exchange_id=c.exchange_id "
+            "WHERE c.company_code=? AND c.share_class='common'", (str(code),)
+        ).fetchone()
+        if not row or row["status"] != "active":
+            raise ValueError("활성 보통주 법인을 찾을 수 없습니다.")
+        if action == "remove":
+            listing = conn.execute(
+                "SELECT dr_code FROM company_secondary_listings WHERE company_code=? AND exchange_id=?",
+                (row["company_code"], exchange_id)).fetchone()
+            if not listing:
+                raise ValueError("해당 거래소의 2차상장을 찾을 수 없습니다.")
+            if listing["dr_code"]:
+                # Refused while any 2차상장 line is held, pledged or on order: holders redeem first.
+                d.bot.admin_control.entity(actor, "dr", "terminate", listing["dr_code"], conn=conn)
+            conn.execute("DELETE FROM company_secondary_listings WHERE company_code=? AND exchange_id=?",
+                         (row["company_code"], exchange_id))
+            message = f"✅ {row['name']}의 {exchange_id} 2차상장을 해제했습니다."
+            shares = None
+        elif action == "update":
+            listing = conn.execute(
+                "SELECT dr_code,listed_shares FROM company_secondary_listings WHERE company_code=? AND exchange_id=?",
+                (row["company_code"], exchange_id)).fetchone()
+            if not listing:
+                raise ValueError("해당 거래소의 2차상장을 찾을 수 없습니다.")
+            shares = _secondary_shares(payload)
+            primary = int(row["listed_shares"] if row["listed_shares"] is not None else row["total_shares"] or 0)
+            others = conn.execute(
+                "SELECT COALESCE(SUM(listed_shares),0) FROM company_secondary_listings WHERE company_code=? AND exchange_id<>?",
+                (row["company_code"], exchange_id)).fetchone()[0]
+            room = int(row["total_shares"] or 0) - primary - int(others)
+            if shares > room:
+                raise ValueError(f"상장 가능 주식이 부족합니다. 이 거래소에는 {max(room, 0):,}주까지 상장할 수 있습니다.")
+            code_ = listing["dr_code"]
+            outstanding = conn.execute(
+                "SELECT (SELECT COALESCE(SUM(quantity),0) FROM user_assets WHERE asset_code=?) + "
+                "(SELECT COALESCE(SUM(dr_quantity),0) FROM dr_custody_instructions WHERE dr_code=? "
+                "AND movement_type='issue' AND status IN ('requested','verified'))", (code_, code_)).fetchone()[0]
+            if shares < int(outstanding or 0):
+                raise ValueError(f"이미 이 거래소 라인에 {int(outstanding):,}주가 전환·보유되어 있어 그보다 줄일 수 없습니다.")
+            line = conn.execute("SELECT price,quote_currency FROM market_assets WHERE code=?", (code_,)).fetchone()
+            listing_requirements.check(conn, exchange_id, row["company_code"], shares, secondary=True,
+                                       price=line["price"], currency=line["quote_currency"])
+            conn.execute("UPDATE market_assets SET total_supply=? WHERE code=?", (shares, code_))
+            conn.execute("UPDATE company_secondary_listings SET listed_shares=? WHERE company_code=? AND exchange_id=?",
+                         (shares, row["company_code"], exchange_id))
+            message = f"✅ {row['name']}의 {exchange_id} 2차상장 주식 수를 {shares:,}주로 바꿨습니다."
+        else:
+            if not row["exchange_id"] or row["market_type"] != "exchange":
+                raise ValueError("먼저 정규 거래소에 1차 상장해야 2차상장할 수 있습니다.")
+            venue = conn.execute("SELECT * FROM market_exchanges WHERE exchange_id=?", (exchange_id,)).fetchone()
+            if not venue or exchange_id == "CURRENCY" or venue["market_type"] != "exchange":
+                raise ValueError("2차상장 대상은 등록된 정규 거래소여야 합니다 (장외시장 제외).")
+            if exchange_id == row["exchange_id"]:
+                raise ValueError("1차 상장 거래소와 다른 거래소를 선택해주세요.")
+            if conn.execute("SELECT 1 FROM company_secondary_listings WHERE company_code=? AND exchange_id=?",
+                            (row["company_code"], exchange_id)).fetchone():
+                raise ValueError(f"이미 {exchange_id}에 2차상장되어 있습니다.")
+            shares = _secondary_shares(payload)
+            primary = int(row["listed_shares"] if row["listed_shares"] is not None else row["total_shares"] or 0)
+            others = conn.execute(
+                "SELECT COALESCE(SUM(listed_shares),0) FROM company_secondary_listings WHERE company_code=?",
+                (row["company_code"],)).fetchone()[0]
+            room = int(row["total_shares"] or 0) - primary - int(others)
+            if shares > room:
+                raise ValueError(f"상장 가능 주식이 부족합니다. 발행 {int(row['total_shares']):,}주 중 1차 상장 "
+                                 f"{primary:,}주·다른 2차상장 {int(others):,}주를 빼면 {max(room, 0):,}주까지 가능합니다. "
+                                 "1차 상장 비율을 줄이면 2차상장 몫이 생깁니다.")
+            # Trade in the venue's currency (default) or keep the company's own currency.
+            home_currency = str(row["quote_currency"])
+            local_currency = listing_requirements.exchange_currency(conn, venue["nationality"])
+            currency = str(payload.get("currency") or local_currency).upper()
+            if currency not in {home_currency, local_currency}:
+                raise ValueError(f"2차상장 통화는 {local_currency}(거래소 통화) 또는 {home_currency}(본주 통화)입니다.")
+            from managers.currency_manager import CurrencyManager
+            from fractions import Fraction
+            price = Fraction(str(row["share_price"])) * (CurrencyManager.quote(conn, home_currency, currency)
+                                                         if currency != home_currency else 1)
+            places = CurrencyManager.precision(conn, currency)
+            quantum = Fraction(1, 10 ** places)
+            price = max(quantum, Fraction(round(price / quantum)) * quantum)
+            from decimal import Decimal
+            shown_price = str(Decimal(price.numerator) / Decimal(price.denominator))
+            listing_requirements.check(conn, exchange_id, row["company_code"], shares, secondary=True,
+                                       price=shown_price, currency=currency)
+            try:
+                fee_bps = int(payload.get("conversionFeeBps") or 0)
+            except (TypeError, ValueError):
+                fee_bps = -1
+            if not 0 <= fee_bps <= 10_000:
+                raise ValueError("전환 수수료는 0~10000bp 정수입니다.")
+            dr_code = f"{row['company_code']}.{exchange_id}"[:80]
+            d.bot.admin_control.entity(
+                actor, "dr", "create", dr_code, f"{row['name']} ({exchange_id} 2차상장)"[:100], shown_price, str(shares),
+                {"underlying_code": row["company_code"], "underlying_per_receipt": 1, "receipt_type": "SECONDARY",
+                 "home_exchange_id": row["exchange_id"], "exchange_id": exchange_id, "quote_currency": currency,
+                 "issue_fee_bps": fee_bps, "redeem_fee_bps": fee_bps}, conn=conn)
+            conn.execute(
+                "INSERT INTO company_secondary_listings(company_code,exchange_id,listed_shares,dr_code,listed_epoch,listed_by) "
+                "VALUES (?,?,?,?,?,?)", (row["company_code"], exchange_id, shares, dr_code, int(time.time()), str(actor)))
+            message = (f"✅ {row['name']}을(를) {exchange_id}에 2차상장했습니다. 종목 {dr_code} · 최대 {shares:,}주 · {currency} 거래. "
+                       "미보유분은 1차 상장처럼 시장에 매물로 나오고, 주주는 본주를 1:1로 전환해 옮길 수도 있습니다.")
+        _audit_db(conn, actor, f"company.secondary_listing.{action}",
+                  {"company_code": row["company_code"], "exchange_id": exchange_id, "listed_shares": shares})
+    _read_cache.invalidate()
+    return message
+
+
 def company_trading_status(actor, code, trading_status):
     """Suspend/resume market access without changing the company's legal lifecycle."""
     trading_status = str(trading_status or "")
@@ -3340,6 +3480,9 @@ def admin_exchanges():
             exchange = row["exchange_id"]
             row["hours"] = trading_hours.from_row(row)
             row["hours_label"] = trading_hours.describe(row["hours"])
+            from managers import listing_requirements
+            row["requirements"] = listing_requirements.as_payload(row)
+            row["requirements"]["currency"] = listing_requirements.exchange_currency(connection, row["nationality"])
             row["products"] = sum(connection.execute(
                 f"SELECT COUNT(*) FROM {table} WHERE exchange_id=? AND status='active'"
                 + (" AND trading_status='active'" if table == "company" else ""), (exchange,)).fetchone()[0]
@@ -3412,9 +3555,15 @@ def admin_exchange_action(actor, exchange_id, payload):
             if action == "create":
                 if exists:
                     raise ValueError("이미 있는 거래소 ID입니다.")
+                from managers import listing_requirements
+                rules = listing_requirements.normalize(payload.get("requirements") or {}) if market_type == "exchange" else {}
                 connection.execute(
                     "INSERT INTO market_exchanges(exchange_id,status,updated_epoch,trading_halted,nationality,market_type) VALUES (?,?,?,?,?,?)",
                     (exchange_id, "open", int(time.time()), 0, nationality, market_type))
+                if rules:
+                    connection.execute(
+                        f"UPDATE market_exchanges SET {','.join(f'{column}=?' for column in rules)} WHERE exchange_id=?",
+                        (*rules.values(), exchange_id))
                 message = f"✅ {('장외시장' if market_type == 'otc' else '거래소')} {exchange_id}를 만들었습니다."
             else:
                 if not exists:
@@ -3425,12 +3574,6 @@ def admin_exchange_action(actor, exchange_id, payload):
                 ):
                     raise ValueError("3DSG는 낙원 소속 장외시장으로 고정되어 있습니다.")
                 if action == "nationality":
-                    mismatch = connection.execute(
-                        "SELECT company_code FROM company WHERE exchange_id=? AND nationality<>? LIMIT 1",
-                        (exchange_id, nationality),
-                    ).fetchone()
-                    if mismatch:
-                        raise ValueError(f"{mismatch[0]} 법인의 시장 경로가 연결되어 있어 국가를 바꿀 수 없습니다.")
                     connection.execute("UPDATE market_exchanges SET nationality=? WHERE exchange_id=?", (nationality, exchange_id))
                     message = f"✅ {exchange_id} 시장 국가를 {nationality}(으)로 변경했습니다."
                 elif action == "market_type":
@@ -3442,6 +3585,20 @@ def admin_exchange_action(actor, exchange_id, payload):
                 "nationality": nationality if action in {"create", "nationality"} else exists["nationality"],
                 "market_type": market_type if action in {"create", "market_type"} else exists["market_type"],
             })
+        elif action == "requirements":
+            if not exists:
+                raise ValueError("거래소를 찾을 수 없습니다.")
+            if exists["market_type"] != "exchange":
+                raise ValueError("장외시장에는 상장요건이 없습니다.")
+            from managers import listing_requirements
+            rules = listing_requirements.normalize(payload.get("requirements") or {})
+            if not rules:
+                raise ValueError("바꿀 상장요건을 입력해주세요.")
+            connection.execute(
+                f"UPDATE market_exchanges SET {','.join(f'{column}=?' for column in rules)} WHERE exchange_id=?",
+                (*rules.values(), exchange_id))
+            _audit_db(connection, actor, "exchange.requirements", {"exchange_id": exchange_id, **rules})
+            message = f"✅ {exchange_id} 상장요건을 저장했습니다. 새 상장·2차상장·상장 주식 수 변경부터 적용됩니다."
         elif action == "hours":
             if not exists:
                 raise ValueError("거래소를 찾을 수 없습니다.")
@@ -3460,6 +3617,9 @@ def admin_exchange_action(actor, exchange_id, payload):
                       for row in connection.execute(f"SELECT {key} FROM {table} WHERE exchange_id=?", (exchange_id,))]
             linked = [row[0] for row in connection.execute(
                 "SELECT product_code FROM investment WHERE underlying_exchange_id=?", (exchange_id,))]
+            if _table_exists(connection, "company_secondary_listings"):
+                linked += [f"{row[0]}(2차상장)" for row in connection.execute(
+                    "SELECT company_code FROM company_secondary_listings WHERE exchange_id=?", (exchange_id,))]
             if listed or linked:
                 shown = ", ".join((listed + linked)[:8]) + (" 외" if len(listed + linked) > 8 else "")
                 raise ValueError(f"이 거래소에 상장·연동된 상품 {len(listed + linked)}개가 있어 삭제할 수 없습니다: {shown}. "
@@ -5353,6 +5513,8 @@ class Handler(BaseHTTPRequestHandler):
                     message = admin_identity_action(actor, payload)
                 elif len(parts) == 3 and parts[0] == "companies" and parts[2] == "share-actions":
                     message = admin_company_share_action(actor, parts[1], payload)
+                elif len(parts) == 3 and parts[0] == "companies" and parts[2] == "secondary-listings":
+                    message = company_secondary_listing(actor, parts[1], payload)
                 elif len(parts) == 3 and parts[0] == "companies" and parts[2] == "trading-status":
                     message = company_trading_status(actor, parts[1], payload.get("tradingStatus"))
                 elif len(parts) == 3 and parts[0] == "companies" and parts[2] == "journal":

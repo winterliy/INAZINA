@@ -796,6 +796,10 @@ button.link { min-height: 0; padding: 0; border: 0; color: var(--accent); backgr
 /* 법인 자본: the listing exchange picker in a company's card. */
 .listing-control { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin: 4px 0 16px; }
 .listing-control label { display: grid; gap: 6px; min-width: 220px; color: var(--ink2); font-size: 12px; font-weight: 600; }
+.listing-control .wizard-step { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; width: 100%; padding: 12px; border: 1px solid var(--rule); border-radius: 10px; }
+.listing-control .wizard-step > p { width: 100%; margin: 0; }
+.listing-control .span-wide { width: 100%; }
+.listing-control td input { width: 140px; }
 
 /* 법인 자본: shareholders and holdings donuts side by side in a company's page. */
 .pie-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 16px 32px; margin-top: 8px; }

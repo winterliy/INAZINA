@@ -150,7 +150,7 @@ class OrganizationDB(DBManager):
             "dividend_priority,cumulative_dividend,dividend_mode,dividend_per_share,"
             "dividend_percent,liquidation_value_per_share,dividend_funding,"
             "dividend_cycle_seconds,dividend_is_active,status,"
-            "COALESCE((SELECT nationality FROM market_exchanges WHERE exchange_id=company.exchange_id),company.nationality) "
+            "COALESCE(NULLIF(TRIM(company.nationality),''),(SELECT nationality FROM market_exchanges WHERE exchange_id=company.exchange_id)) "
             "FROM company ORDER BY company_code"
         )
         for row in rows:
@@ -194,7 +194,7 @@ class OrganizationDB(DBManager):
             AFTER INSERT ON company BEGIN
               INSERT OR IGNORE INTO organizations(organization_code,name,industry,country_code,status)
               SELECT NEW.company_code,COALESCE(NEW.name,''),COALESCE(NEW.industry,''),
-                COALESCE((SELECT nationality FROM market_exchanges WHERE exchange_id=NEW.exchange_id),NEW.nationality),COALESCE(NEW.status,'active')
+                COALESCE(NULLIF(TRIM(NEW.nationality),''),(SELECT nationality FROM market_exchanges WHERE exchange_id=NEW.exchange_id)),COALESCE(NEW.status,'active')
               WHERE COALESCE(NEW.share_class,'common')='common';
               INSERT INTO share_issuances
                 (organization_code,class_name,share_class,voting_rights_per_share)
@@ -215,14 +215,13 @@ class OrganizationDB(DBManager):
             END
         """)
         self.execute("""
-            CREATE TRIGGER IF NOT EXISTS organization_company_after_update
+            CREATE TRIGGER organization_company_after_update
             AFTER UPDATE OF name,industry,exchange_id,nationality,dividend_priority,cumulative_dividend,dividend_mode,
               dividend_per_share,dividend_percent,dividend_cycle_seconds,dividend_is_active,
               liquidation_value_per_share,dividend_funding ON company BEGIN
               UPDATE organizations SET name=COALESCE(NEW.name,''),industry=COALESCE(NEW.industry,''),
-                country_code=CASE WHEN NEW.exchange_id IS NOT OLD.exchange_id
-                  THEN COALESCE((SELECT nationality FROM market_exchanges WHERE exchange_id=NEW.exchange_id),NEW.nationality)
-                  WHEN NEW.nationality IS NOT OLD.nationality THEN NEW.nationality
+                -- A company keeps its country when it lists abroad; only its own nationality moves it.
+                country_code=CASE WHEN NEW.nationality IS NOT OLD.nationality THEN NEW.nationality
                   ELSE country_code END,
                 updated_epoch=unixepoch()
               WHERE organization_code=NEW.company_code AND COALESCE(NEW.share_class,'common')='common';

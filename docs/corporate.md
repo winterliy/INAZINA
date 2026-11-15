@@ -197,3 +197,18 @@
 https://law.go.kr/LSW/lsLinkCommonInfo.do?chrClsCd=010202&lsJoLnkSeq=1026993199
 
 실DB 적용 보고서: database/backups/stock-splits-report-1793379502.json
+
+## 해외 직접 상장 · 거래소별 상장요건 · 2차상장
+
+2026-11-15 결정. 구현은 `managers/listing_requirements.py`, `web_api/server.py`의 `company_secondary_listing`, 대시보드 `CompaniesPage.tsx`(상장 마법사)·`ExchangesPage.tsx`(거래소 생성 마법사·상장요건)에 있다.
+
+- **해외 직접 상장**: 법인은 국적과 다른 나라의 거래소에도 본주를 상장할 수 있다. 법인 국적(`company.nationality`, `organizations.country_code`)은 상장 거래소를 따라 바뀌지 않는다.
+- **본주는 한 거래소**: 1차 상장은 `company.exchange_id` 하나이고 `listed_shares`로 상장 주식 수를 정한다.
+- **2차상장**: 거래소마다 따로 몇 주를 올릴지 정한다(`company_secondary_listings`). 1차 상장분과 모든 2차상장분의 합은 발행 주식 수를 넘을 수 없다.
+  - 각 2차상장은 `<법인코드>.<거래소>` 종목으로 따로 거래된다. 그 거래소의 호가창·거래 시간·서킷브레이커를 따르고, 통화는 거래소 통화(기본) 또는 본주 통화 중에서 고른다.
+  - DR 로직(`depositary_receipts`, `receipt_type='SECONDARY'`, 1:1)을 재사용한다. 고정 발행량은 발행 주식 전체로 잡아 상한 역할만 하고, 실제 상장 주식 수는 수정 가능한 `market_assets.total_supply`다. 그래서 일반 상장처럼 나중에 늘리거나 줄일 수 있다(이미 전환·보유된 수량 밑으로는 못 줄임). 예탁 용량은 차지하지 않는다.
+  - 미보유분은 1차 상장처럼 시장에 매물로 나온다. 매수 체결 시 같은 수량의 미보유 원주가 예탁 장부에 발행으로 기록돼 1:1 담보가 유지되고, 산 사람도 본주로 환매할 수 있다(`DepositaryReceiptManager.record_secondary_primary_issue`).
+  - 주주는 본주를 1:1로 전환해 2차 라인으로 옮길 수도 있다(전환 수수료 bp 설정 가능). 가격은 원주 환산가로 수렴하고, 괴리가 경보 구간(10%)을 넘으면 차익거래 끌림이 40배 강해진다.
+  - 배당 원천징수·의결권 위임은 기존 DR 규칙을 따른다. 2차 거래소 지수에는 2차 라인 가격과 상장 주식 수로 들어간다.
+  - 1차 거래소를 장외·비상장으로 옮기거나 2차상장 거래소로 옮기려면 해당 2차상장을 먼저 해제해야 한다. 해제는 그 라인을 보유·담보·주문 중인 수량이 없을 때만 된다.
+- **거래소별 상장요건**(`market_exchanges.listing_*`, 장외시장은 없음): 최소 상장 주식 수, 최소 상장 비율, 최소 상장 시가총액(거래소 통화 환산), 해외 법인 허용, 2차상장 허용, 재무보고서 공시 필요(`financial_periods` 1건 이상). 새 상장·2차상장·상장 주식 수 변경 때 검사하며, 이미 상장된 종목에는 소급하지 않는다.

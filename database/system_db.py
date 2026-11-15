@@ -203,6 +203,15 @@ class SystemDB(DBManager):
                             ("scheduled_close", "INTEGER NOT NULL DEFAULT 0 CHECK(scheduled_close IN (0, 1))")):
             if column not in exchange_columns:
                 self.execute(f"ALTER TABLE market_exchanges ADD COLUMN {column} {ddl}")
+        # Per-exchange listing requirements (managers/listing_requirements.py); 0 means no minimum.
+        for column, ddl in (("listing_min_shares", "INTEGER NOT NULL DEFAULT 0 CHECK(listing_min_shares >= 0)"),
+                            ("listing_min_float_percent", "REAL NOT NULL DEFAULT 0 CHECK(listing_min_float_percent BETWEEN 0 AND 100)"),
+                            ("listing_min_market_cap", "TEXT NOT NULL DEFAULT '0'"),
+                            ("listing_allow_foreign", "INTEGER NOT NULL DEFAULT 1 CHECK(listing_allow_foreign IN (0, 1))"),
+                            ("listing_allow_secondary", "INTEGER NOT NULL DEFAULT 1 CHECK(listing_allow_secondary IN (0, 1))"),
+                            ("listing_requires_disclosure", "INTEGER NOT NULL DEFAULT 0 CHECK(listing_requires_disclosure IN (0, 1))")):
+            if column not in exchange_columns:
+                self.execute(f"ALTER TABLE market_exchanges ADD COLUMN {column} {ddl}")
         # Migrate both former exchange tables before removing them.  This also
         # covers installations that predate per-exchange market sessions.
         if self.execute_one("SELECT 1 FROM sqlite_master WHERE type='view' AND name='market_exchange_indices'"):
