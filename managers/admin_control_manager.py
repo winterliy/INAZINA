@@ -509,7 +509,8 @@ class AdminControlManager:
             if category=='stock':
                 legal_form = conn.execute("SELECT legal_form FROM organizations WHERE organization_code=?",
                                            (code,)).fetchone()
-                if legal_form and legal_form[0] != 'stock_company':
+                # A just-created company's organization has no legal form yet: it is a stock company.
+                if legal_form and legal_form[0] not in (None, 'stock_company'):
                     raise ValueError('비주식 법인은 주식·주식 종류로 발행할 수 없습니다. 출자지분 명부를 사용해주세요.')
                 if existing and values.get('exchange_id',existing['exchange_id'])!=existing['exchange_id']:
                     from managers.els_manager import ELSManager
@@ -523,15 +524,32 @@ class AdminControlManager:
                     if not venue or venue[0]=='otc':
                         values['listed_shares']=None
                     elif 'listed_shares' in values:
-                        values['listed_shares']=None if raw in (None,'') else self._number(
-                            raw,1,int(merged.get('total_shares') or 0),integer=True)
+                        secondary=conn.execute("SELECT COALESCE(SUM(listed_shares),0) FROM company_secondary_listings "
+                                               "WHERE company_code=? AND exchange_id<>?",
+                                               (code, merged.get('exchange_id'))).fetchone()[0]
+                        room=int(merged.get('total_shares') or 0)-int(secondary)
+                        if raw in (None,'') and secondary:
+                            raise ValueError(f'2차상장에 {int(secondary):,}주가 배정되어 있어 1차 상장은 {room:,}주 이하로 지정해주세요.')
+                        values['listed_shares']=None if raw in (None,'') else self._number(raw,1,max(room,1),integer=True)
                 market_exchange = conn.execute(
                     "SELECT nationality FROM market_exchanges WHERE exchange_id=?",
                     (merged.get('exchange_id'),),
                 ).fetchone() if merged.get('exchange_id') else None
                 nationality = str(merged.get('nationality') or (existing['nationality'] if existing else '낙원'))
-                if merged.get('exchange_id') and (not market_exchange or str(market_exchange[0]) != nationality):
-                    raise ValueError('법인 국적과 같은 국가의 등록 거래소·장외시장만 선택할 수 있습니다. 국가에 장외시장이 없으면 거래소 없음으로 저장하세요.')
+                # Companies may list directly on a foreign exchange (real-world direct
+                # foreign listings); the venue only has to be registered.
+                if merged.get('exchange_id') and not market_exchange:
+                    raise ValueError('등록된 거래소·장외시장을 선택해주세요.')
+                if existing and 'exchange_id' in values and values['exchange_id'] != existing['exchange_id']:
+                    venue_type = conn.execute("SELECT market_type FROM market_exchanges WHERE exchange_id=?",
+                                              (values['exchange_id'],)).fetchone() if values['exchange_id'] else None
+                    # Secondary listings are their own trading lines tied to the primary listing.
+                    held = [row[0] for row in conn.execute(
+                        "SELECT exchange_id FROM company_secondary_listings WHERE company_code=?", (code,))]
+                    if held and (not venue_type or venue_type[0] != 'exchange'):
+                        raise ValueError(f"2차상장({', '.join(held)})을 먼저 해제해야 1차 상장을 장외·비상장으로 옮길 수 있습니다.")
+                    if values['exchange_id'] in held:
+                        raise ValueError(f"{values['exchange_id']}에는 이미 2차상장되어 있습니다. 2차상장을 먼저 해제해주세요.")
                 if 'nationality' in values and not conn.execute(
                     "SELECT 1 FROM country_currencies WHERE nationality=?", (nationality,)
                 ).fetchone():
@@ -721,12 +739,21 @@ class AdminControlManager:
                     ratio = self._number(extra.get('underlying_per_receipt'), 0.000001, 1_000_000)
                     dr_supply = int(values.get('total_supply') or supply or 0)
                     deposited = ratio * dr_supply
+                    # 2차상장 line (web_api company_secondary_listing): like an ordinary listing, its
+                    # size is market_assets.total_supply and stays editable. The fixed program terms
+                    # only cap it at the company's issued shares and reserve no deposit capacity.
+                    secondary_line = str(extra.get('receipt_type') or '') == 'SECONDARY'
+                    if secondary_line:
+                        if ratio != 1:
+                            raise ValueError('2차상장 라인은 원주 1:1이어야 합니다.')
+                        deposited = 0
+                    program_supply = int(original['total_shares'] or 0) if secondary_line else dr_supply
                     already_deposited = conn.execute(
                         "SELECT COALESCE(SUM(deposited_underlying_quantity),0) "
                         "FROM depositary_receipts WHERE underlying_code=? AND program_status<>'terminated'",
                         (underlying,),
                     ).fetchone()[0]
-                    if (dr_supply <= 0 or already_deposited + deposited
+                    if (dr_supply <= 0 or program_supply < dr_supply or already_deposited + deposited
                             > int(original['total_shares'] or 0)):
                         raise ValueError('활성 DR 프로그램의 최대 예탁 가능량 합계가 원주 발행량을 초과합니다.')
                     listing_exchange = str(values.get('exchange_id') or '').strip()
@@ -743,7 +770,7 @@ class AdminControlManager:
                          str(extra.get('depositary_bank') or '')[:100] or None,
                          str(extra.get('custodian') or '')[:100] or None,
                          str(extra.get('home_exchange_id') or original['exchange_id'] or '')[:40] or None,
-                         listing_exchange, currency, ratio, dr_supply, deposited),
+                         listing_exchange, currency, ratio, program_supply, deposited),
                     )
             if operation=='create':
                 fields = ','.join(f'"{k}"' for k in values)
@@ -754,6 +781,12 @@ class AdminControlManager:
                 if 'dividend_is_active' in values and values['dividend_is_active'] != existing['dividend_is_active']:
                     # The trigger also protects direct DB edits; restore the explicit admin schedule.
                     conn.execute(f'UPDATE "{table}" SET dividend_next_epoch=? WHERE "{key}"=?', (values['dividend_next_epoch'],code))
+            if category=='stock' and share_class=='common' and merged.get('exchange_id') and (
+                    operation=='create' or 'listed_shares' in values
+                    or ('exchange_id' in values and values['exchange_id']!=existing['exchange_id'])):
+                from managers import listing_requirements
+                listed_row=conn.execute("SELECT COALESCE(listed_shares,total_shares) FROM company WHERE company_code=?",(code,)).fetchone()
+                listing_requirements.check(conn, merged['exchange_id'], code, int(listed_row[0] or 0))
             if category=='stock' and operation=='create' and share_class=='common':
                 # Open the capital account with the listing, so the company shows on every
                 # account screen from the start instead of after its first trade.

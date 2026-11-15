@@ -6,7 +6,7 @@ import { Card, Field, number, plain, type Ctx, BigValue } from "./common";
 import { CompanyLedger } from "./CompanyLedger";
 
 type Holding = { asset_code: string; quantity: number };
-type Company = { company_code: string; name: string; exchange_id: string | null; exchange_type?: "exchange" | "otc" | null; status?: "active" | "inactive"; trading_status?: "active" | "suspended"; nationality?: string; legal_form?: string; ownership_unit?: string; total_shares: number; listed_shares: number | null; share_price: Money; capital: Money; par_value_minor_units: string | null; quote_currency: string; share_decimal_places: number; currency: string; base_currency?: string; cash: Money; cash_base?: Money; locked: Money; account: string | null; holdings: Holding[]; accounts: number; loans: Money; parents: { code: string; percent: number }[]; largest_shareholder?: { id: string; name: string; shares: Money } | null; max_voting_holder?: { id: string; name: string; percent: string } | null; ultimate_controller?: { id: string; kind: "user" | "company"; name: string; shares: string; percent: string } | null };
+type Company = { company_code: string; name: string; exchange_id: string | null; exchange_type?: "exchange" | "otc" | null; status?: "active" | "inactive"; trading_status?: "active" | "suspended"; nationality?: string; legal_form?: string; ownership_unit?: string; total_shares: number; listed_shares: number | null; share_price: Money; capital: Money; par_value_minor_units: string | null; quote_currency: string; secondary_listings?: { exchange_id: string; listed_shares: number; code?: string | null; currency?: string | null }[]; share_decimal_places: number; currency: string; base_currency?: string; cash: Money; cash_base?: Money; locked: Money; account: string | null; holdings: Holding[]; accounts: number; loans: Money; parents: { code: string; percent: number }[]; largest_shareholder?: { id: string; name: string; shares: Money } | null; max_voting_holder?: { id: string; name: string; percent: string } | null; ultimate_controller?: { id: string; kind: "user" | "company"; name: string; shares: string; percent: string } | null };
 type CommandField = { key: string; label: string; kind: string; optional: boolean; hint: string };
 type Command = { name: string; group: string; description: string; guide: string; fields: CommandField[] };
 type Stock = { name: string; code: string; qty: number; value: Money; price: Money };
@@ -16,45 +16,148 @@ type Detail = { account: string; webLogin: boolean; loginId: string; assets: Ass
 
 const LEGAL_FORMS: Record<string, string> = { stock_company: "주식회사", limited_company: "유한회사", limited_liability_company: "유한책임회사", general_partnership: "합명회사", limited_partnership: "합자회사" };
 
+type Venue = { exchange_id: string; nationality: string; market_type: "exchange" | "otc"; requirements?: { minShares: number; minFloatPercent: number; minMarketCap: string; allowForeign: boolean; allowSecondary: boolean; requiresDisclosure: boolean; currency?: string } };
+const rulesLabel = (venue: Venue | undefined) => {
+  const rules = venue?.market_type === "exchange" ? venue.requirements : undefined;
+  if (!rules) return "";
+  const parts = [rules.minShares ? `${number(rules.minShares)}주 이상` : "", rules.minFloatPercent ? `발행주식 ${rules.minFloatPercent}% 이상` : "",
+    Number(rules.minMarketCap) ? `시가총액 ${number(rules.minMarketCap)} ${rules.currency ?? ""} 이상` : "", rules.allowForeign ? "" : "해외 법인 불가",
+    rules.allowSecondary ? "" : "2차상장 불가", rules.requiresDisclosure ? "재무보고서 공시 필요" : ""].filter(Boolean);
+  return `상장요건: ${parts.join(" · ") || "없음"}`;
+};
+type WizardStep = "venue" | "dual" | "secondary";
+
+const venueName = (item: Venue | undefined) => item ? `${item.exchange_id} · ${item.nationality} ${item.market_type === "otc" ? "장외시장" : "거래소"}` : "거래소 없음 · 비상장";
+
 /**
- * 상장하기 / 비상장 전환하기: list the company on an exchange with the share of it offered
- * (listing again, after a delisting, is the same step), or take it off the market.
- * Keyed by the company's listing so a saved change starts from the new terms.
+ * 상장 마법사: 1) 대상 거래소(국적 무관) → 2) 이중상장 여부 → 3) 2차상장 거래소·주식 수.
+ * 본주(1차 상장)는 한 거래소에만 두고, 2차상장은 거래소마다 몇 주를 올릴지 따로 관리한다.
  */
 function ListingControl({ ctx, company, onDone }: { ctx: Ctx; company: Company; onDone: () => void }) {
   const { busy, run, say } = ctx;
   const current = company.exchange_id || "";
+  const secondary = company.secondary_listings ?? [];
+  const secondaryTotal = secondary.reduce((sum, item) => sum + item.listed_shares, 0);
   const currentPercent = company.listed_shares == null ? 100 : Math.round(company.listed_shares / company.total_shares * 10000) / 100;
-  const [exchanges, setExchanges] = useState<{ exchange_id: string; nationality: string; market_type: "exchange" | "otc" }[]>([]);
+  const [exchanges, setExchanges] = useState<Venue[]>([]);
+  const [step, setStep] = useState<WizardStep | null>(null);
   const [target, setTarget] = useState(current);
   const [percent, setPercent] = useState(String(currentPercent));
+  const [second, setSecond] = useState("");
+  const [secondShares, setSecondShares] = useState("");
+  const [secondCurrency, setSecondCurrency] = useState("");
+  const [feeBps, setFeeBps] = useState("0");
+  const [edits, setEdits] = useState<Record<string, string>>({});
   useEffect(() => {
-    api<{ exchanges: { exchange_id: string; nationality: string; market_type: "exchange" | "otc" }[] }>("/api/admin/exchanges")
-      .then((result) => setExchanges(result.exchanges.filter((item) => item.exchange_id !== "CURRENCY" && item.nationality === company.nationality)))
+    api<{ exchanges: Venue[] }>("/api/admin/exchanges")
+      .then((result) => setExchanges(result.exchanges.filter((item) => item.exchange_id !== "CURRENCY")))
       .catch(() => undefined);
-  }, [company.nationality]);
+  }, []);
   useEffect(() => setTarget(current), [current]);
   const venue = exchanges.find((item) => item.exchange_id === target);
   const ratio = Number(percent);
   const listed = Math.floor(company.total_shares * ratio / 100);
   const ratioValid = venue?.market_type !== "exchange" || (ratio > 0 && ratio <= 100 && listed >= 1);
-  const changed = target !== current || (venue?.market_type === "exchange" && ratio !== currentPercent);
+  // 2차상장 몫은 1차 상장 후 남은 주식에서 나온다 (이미 다른 곳에 올린 2차상장 제외).
+  const keptSecondary = secondary.filter((item) => item.exchange_id !== target).reduce((sum, item) => sum + item.listed_shares, 0);
+  const primaryShares = venue?.market_type === "exchange" ? listed : 0;
+  const room = company.total_shares - primaryShares - keptSecondary;
+  const secondVenues = exchanges.filter((item) => item.market_type === "exchange" && item.requirements?.allowSecondary !== false && item.exchange_id !== target && !secondary.some((row) => row.exchange_id === item.exchange_id));
+  const secondVenue = exchanges.find((item) => item.exchange_id === second);
+  const localCurrency = secondVenue?.requirements?.currency || company.quote_currency;
+  const currencyChoice = secondCurrency || localCurrency;
+  const secondCount = Number(secondShares);
+  const secondProblem = ruleProblem(secondVenue, secondCount);
+  const secondValid = !!second && Number.isInteger(secondCount) && secondCount >= 1 && secondCount <= room && !secondProblem;
+  const foreign = venue && company.nationality && venue.nationality !== company.nationality;
+  /** The venue's own listing rules the request already breaks (the server checks them all again). */
+  function ruleProblem(item: Venue | undefined, shares: number) {
+    const rules = item?.market_type === "exchange" ? item.requirements : undefined;
+    if (!rules) return "";
+    if (!rules.allowForeign && company.nationality && item!.nationality !== company.nationality) return `${item!.exchange_id}는 ${item!.nationality} 법인만 상장할 수 있습니다.`;
+    if (rules.minShares && shares < rules.minShares) return `${item!.exchange_id}는 최소 ${number(rules.minShares)}주 이상 상장해야 합니다.`;
+    if (rules.minFloatPercent && shares * 100 < company.total_shares * rules.minFloatPercent) return `${item!.exchange_id}는 발행 주식의 ${rules.minFloatPercent}% 이상 상장해야 합니다.`;
+    return "";
+  }
 
-  function save(question: string) {
-    if (!window.confirm(question)) return;
-    void run(async () => {
-      const detail = await api<{ kind: string }>(`/api/admin/products/${encodeURIComponent(company.company_code)}`);
+  function open() {
+    setTarget(current); setPercent(String(currentPercent)); setSecond(""); setSecondShares(""); setStep("venue");
+  }
+  function primaryRequest() {
+    return api<{ kind: string }>(`/api/admin/products/${encodeURIComponent(company.company_code)}`).then((detail) => {
       const listedShares = venue?.market_type === "exchange" && ratio !== 100 ? listed : null;
       return api<{ message: string; success: boolean }>("/api/admin/products", { method: "POST", body: JSON.stringify({ operation: "edit", kind: detail.kind, code: company.company_code, fields: {}, advanced: { exchange_id: target || null, listed_shares: listedShares } }) });
-    }, "시장 경로를 바꾸지 못했습니다.", (result) => { say(plain(result.message), !result.success); if (result.success) onDone(); });
+    });
   }
-  const venueLabel = venue ? `${venue.exchange_id} · ${venue.market_type === "otc" ? "장외시장" : "거래소"}` : "거래소 없음 · 비상장";
+  const primaryChanged = target !== current || (venue?.market_type === "exchange" && ratio !== currentPercent);
+  /** 3-1: 이중상장 없이 대상 거래소에만 상장하고 마법사를 닫는다. */
+  function finishPrimary() {
+    const question = `${company.name} (${company.company_code})을(를) ${venueName(venue)}에 상장할까요?${venue?.market_type === "exchange" ? `\n발행 주식 ${number(company.total_shares)}주 중 ${ratio}% (${number(listed)}주)를 상장합니다.` : "\n주주의 보유 지분은 유지됩니다."}`;
+    if (!window.confirm(question)) return;
+    void run(primaryRequest, "상장하지 못했습니다.", (result) => { say(plain(result.message), !result.success); if (result.success) { setStep(null); onDone(); } });
+  }
+  /** 3-2: 대상 거래소 1차 상장 뒤 2차상장 거래소에 지정 주식 수를 올린다. */
+  function finishDual() {
+    if (!window.confirm(`${company.name}을(를) ${target}(1차, ${number(listed)}주)와 ${second}(2차, ${number(secondCount)}주)에 이중상장할까요?`)) return;
+    void run(async () => {
+      if (primaryChanged) {
+        const first = await primaryRequest();
+        if (!first.success) return first;
+      }
+      return api<{ message: string; success: boolean }>(`/api/admin/companies/${encodeURIComponent(company.company_code)}/secondary-listings`, { method: "POST", body: JSON.stringify({ action: "add", exchangeId: second, listedShares: secondCount, currency: currencyChoice, conversionFeeBps: Number(feeBps) }) });
+    }, "이중상장하지 못했습니다.", (result) => { say(plain(result.message), !result.success); if (result.success) { setStep(null); onDone(); } });
+  }
+  function secondaryAction(exchangeId: string, action: "update" | "remove", shares?: number) {
+    const question = action === "remove" ? `${exchangeId} 2차상장을 해제할까요? 주주 보유 지분은 유지됩니다.` : `${exchangeId} 2차상장 주식 수를 ${number(shares ?? 0)}주로 바꿀까요?`;
+    if (!window.confirm(question)) return;
+    void run(() => api<{ message: string; success: boolean }>(`/api/admin/companies/${encodeURIComponent(company.company_code)}/secondary-listings`, { method: "POST", body: JSON.stringify({ action, exchangeId, listedShares: shares }) }),
+      "2차상장을 바꾸지 못했습니다.", (result) => { say(plain(result.message), !result.success); if (result.success) { setEdits({}); onDone(); } });
+  }
+
   return <div className="listing-control">
-    <Field label="시장 경로" hint={`${company.nationality || "국적 미지정"} · ${venueLabel}`}>
-      <select value={target} onChange={(event) => setTarget(event.target.value)}><option value="">거래소 없음 · 비상장</option>{exchanges.map((item) => <option key={item.exchange_id} value={item.exchange_id}>{item.exchange_id} · {item.market_type === "otc" ? "장외시장" : "거래소"}</option>)}</select>
-    </Field>
-    {venue?.market_type === "exchange" && <Field label="상장 비율 (%)" hint={ratioValid ? `${number(listed)}주 / ${number(company.total_shares)}주` : "0 초과 100 이하"}><input type="number" min="0.01" max="100" step="0.01" value={percent} onChange={(event) => setPercent(event.target.value)} /></Field>}
-    <button className="btn primary" type="button" disabled={busy || !ratioValid || !changed} onClick={() => save(`${company.name} (${company.company_code})의 시장 경로를 ${venueLabel}(으)로 변경할까요?${venue?.market_type === "exchange" ? `\n발행 주식 ${number(company.total_shares)}주 중 ${ratio}% (${number(listed)}주)를 상장합니다.` : "\n주주의 보유 지분은 유지됩니다."}`)}>시장 경로 저장</button>
+    <p className="hint span-wide">1차 상장: <b>{venueName(exchanges.find((item) => item.exchange_id === current))}</b>{current && company.listed_shares != null ? ` · ${number(company.listed_shares)}주` : ""}{secondary.length ? ` · 2차상장 ${secondary.length}곳 ${number(secondaryTotal)}주` : ""}</p>
+    {!step && <button className="btn primary" type="button" disabled={busy} onClick={open}>상장 마법사</button>}
+    {step === "venue" && <div className="wizard-step span-wide">
+      <p className="tile-label">1단계 · 대상 거래소</p>
+      <Field label="상장 거래소" hint={`${foreign ? `해외 직접 상장 (${company.nationality} 법인 → ${venue?.nationality})` : `${company.nationality || "국적 미지정"} 법인 · 국적이 다른 거래소도 선택할 수 있습니다`}${rulesLabel(venue) ? ` · ${rulesLabel(venue)}` : ""}`}>
+        <select value={target} onChange={(event) => setTarget(event.target.value)}><option value="">거래소 없음 · 비상장</option>{exchanges.map((item) => <option key={item.exchange_id} value={item.exchange_id}>{venueName(item)}</option>)}</select>
+      </Field>
+      {venue?.market_type === "exchange" && <Field label="상장 비율 (%)" hint={ratioValid ? `${number(listed)}주 / ${number(company.total_shares)}주` : "0 초과 100 이하"}><input type="number" min="0.01" max="100" step="0.01" value={percent} onChange={(event) => setPercent(event.target.value)} /></Field>}
+      {ruleProblem(venue, listed) && <p className="hint warn-text">{ruleProblem(venue, listed)}</p>}
+      <button className="btn primary" type="button" disabled={busy || !ratioValid || !!ruleProblem(venue, listed)} onClick={() => venue?.market_type === "exchange" ? setStep("dual") : finishPrimary()}>{venue?.market_type === "exchange" ? "다음" : "저장"}</button>
+      <button className="soft" type="button" onClick={() => setStep(null)}>취소</button>
+    </div>}
+    {step === "dual" && <div className="wizard-step span-wide">
+      <p className="tile-label">2단계 · 이중상장</p>
+      <p>{target}에 {number(listed)}주를 상장하기 전에, 다른 거래소에도 이중상장할까요?</p>
+      <button className="btn primary" type="button" disabled={busy || room < 1 || !secondVenues.length} title={room < 1 ? "1차 상장 비율을 줄여야 2차상장 몫이 생깁니다" : undefined} onClick={() => { setSecond(secondVenues[0]?.exchange_id ?? ""); setSecondShares(String(Math.max(room, 0))); setStep("secondary"); }}>예, 이중상장</button>
+      <button className="soft" type="button" disabled={busy || !primaryChanged} onClick={finishPrimary}>아니오, {target}에만 상장</button>
+      <button className="soft" type="button" onClick={() => setStep("venue")}>이전</button>
+      {room < 1 && <p className="hint">1차 상장이 발행 주식 전부라 2차상장할 주식이 없습니다. 이전 단계에서 상장 비율을 줄여주세요.</p>}
+    </div>}
+    {step === "secondary" && <div className="wizard-step span-wide">
+      <p className="tile-label">3단계 · 2차상장 거래소</p>
+      <Field label="2차상장 거래소" hint={rulesLabel(secondVenue) || "정규 거래소만 · 1차 거래소와 달라야 합니다"}><select value={second} onChange={(event) => { setSecond(event.target.value); setSecondCurrency(""); }}>{secondVenues.map((item) => <option key={item.exchange_id} value={item.exchange_id}>{venueName(item)}</option>)}</select></Field>
+      <Field label="2차상장 주식 수" hint={`최대 ${number(Math.max(room, 0))}주 (발행 ${number(company.total_shares)} − 1차 ${number(primaryShares)} − 기존 2차 ${number(keptSecondary)})`}><input type="number" min="1" max={Math.max(room, 1)} step="1" value={secondShares} onChange={(event) => setSecondShares(event.target.value)} /></Field>
+      <Field label="거래 통화" hint="2차 거래소에서 매매할 통화"><select value={currencyChoice} onChange={(event) => setSecondCurrency(event.target.value)}><option value={localCurrency}>{localCurrency} · 거래소 통화</option>{company.quote_currency !== localCurrency && <option value={company.quote_currency}>{company.quote_currency} · 본주 통화</option>}</select></Field>
+      <Field label="전환 수수료 (bp)" hint="본주 ↔ 2차상장 라인 1:1 전환 시 · 100bp = 1%"><input type="number" min="0" max="10000" step="1" value={feeBps} onChange={(event) => setFeeBps(event.target.value)} /></Field>
+      <p className="hint">2차상장은 {second ? `${company.company_code}.${second}` : "별도"} 종목으로 이 거래소의 거래 시간·통화로 따로 매매됩니다. 미보유분은 1차 상장처럼 시장에 매물로 나오고, 주주는 본주를 1:1로 전환해 옮길 수도 있습니다. 가격은 차익거래로 본주에 수렴합니다. 배당·의결권은 본주와 같습니다.</p>
+      {secondProblem && <p className="hint warn-text">{secondProblem}</p>}
+      <button className="btn primary" type="button" disabled={busy || !secondValid || !Number.isInteger(Number(feeBps)) || Number(feeBps) < 0 || Number(feeBps) > 10000} onClick={finishDual}>이중상장 완료</button>
+      <button className="soft" type="button" onClick={() => setStep("dual")}>이전</button>
+    </div>}
+    {secondary.length > 0 && <div className="span-wide">
+      <p className="tile-label">2차상장 관리</p>
+      <table className="secondary-table"><thead><tr><th>종목</th><th>거래소</th><th>통화</th><th className="r">상장 주식 수</th><th /></tr></thead><tbody>{secondary.map((item) => {
+        const value = edits[item.exchange_id] ?? String(item.listed_shares);
+        const shares = Number(value);
+        return <tr key={item.exchange_id}><td className="mono">{item.code ?? "—"}</td><td>{(() => { const found = exchanges.find((row) => row.exchange_id === item.exchange_id); return found ? venueName(found) : item.exchange_id; })()}</td><td className="mono">{item.currency ?? "—"}</td>
+          <td className="r"><input type="number" min="1" step="1" value={value} onChange={(event) => setEdits({ ...edits, [item.exchange_id]: event.target.value })} /></td>
+          <td className="row-actions"><button className="soft small" disabled={busy || !Number.isInteger(shares) || shares < 1 || shares === item.listed_shares} onClick={() => secondaryAction(item.exchange_id, "update", shares)}>저장</button>
+            <button className="soft small danger" disabled={busy} onClick={() => secondaryAction(item.exchange_id, "remove")}>해제</button></td></tr>;
+      })}</tbody></table>
+    </div>}
+    {current && exchanges.find((item) => item.exchange_id === current)?.market_type === "exchange" && !step && <button className="soft" type="button" disabled={busy} onClick={() => { setStep("secondary"); setTarget(current); setPercent(String(currentPercent)); const left = company.total_shares - (company.listed_shares ?? company.total_shares) - secondaryTotal; setSecond(secondVenues[0]?.exchange_id ?? ""); setSecondShares(String(Math.max(left, 0))); }}>2차상장 추가</button>}
     <button className="soft" type="button" disabled={busy || company.trading_status === "suspended"} onClick={() => {
       if (!window.confirm(`${company.name}의 거래를 중지할까요? 미체결 주문은 취소되며 법인과 주주 지분은 유지됩니다.`)) return;
       void run(() => api<{ message: string; success: boolean }>(`/api/admin/companies/${encodeURIComponent(company.company_code)}/trading-status`, { method: "POST", body: JSON.stringify({ tradingStatus: "suspended" }) }), "거래를 중지하지 못했습니다.", (result) => { say(plain(result.message), !result.success); if (result.success) onDone(); });

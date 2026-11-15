@@ -855,6 +855,42 @@ class DepositaryReceiptManager:
             " ORDER BY i.requested_epoch DESC,i.reference_key DESC LIMIT ?", tuple(params),
         )]
 
+    @staticmethod
+    def record_secondary_primary_issue(conn, dr_code, user_id, quantity, now):
+        """A 2차상장 line sells its unheld shares like an ordinary listing (order-book primary fill).
+
+        Each such sale moves the same number of not-yet-held underlying shares into custody,
+        so the line stays 1:1 backed: holders can redeem them for ordinary shares and the
+        custody ledger reconciles. Other DR programs only issue against deposited shares.
+        """
+        program = conn.execute(
+            "SELECT d.underlying_code,d.receipt_type,c.share_price,c.quote_currency "
+            "FROM assets.depositary_receipts d JOIN company.company c ON c.company_code=d.underlying_code "
+            "WHERE d.dr_code=?", (str(dr_code),)).fetchone()
+        if not program or program["receipt_type"] != "SECONDARY" or int(quantity) <= 0:
+            return
+        from functions.money import currency_precision, to_minor_units
+        currency = str(program["quote_currency"])
+        places = currency_precision(conn, currency)
+        cost = program["share_price"]
+        units = to_minor_units(cost, places)
+        sequence = conn.execute("SELECT COUNT(*) FROM assets.depositary_receipt_movements WHERE dr_code=?",
+                                (str(dr_code),)).fetchone()[0]
+        conn.execute(
+            "INSERT INTO assets.depositary_receipt_movements(reference_key,dr_code,user_id,"
+            "movement_type,dr_quantity,underlying_quantity,underlying_average_cost,recorded_epoch,"
+            "holder_underlying_average_cost,holder_underlying_currency,"
+            "custody_underlying_average_cost,custody_underlying_currency,"
+            "underlying_average_cost_minor_units,underlying_average_cost_decimal_places,"
+            "underlying_average_cost_currency,holder_underlying_average_cost_minor_units,"
+            "holder_underlying_average_cost_decimal_places,custody_underlying_average_cost_minor_units,"
+            "custody_underlying_average_cost_decimal_places) "
+            "VALUES (?,?,?,'issue',?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (f"secondary-primary:{dr_code}:{int(sequence) + 1}:{now}", str(dr_code), str(user_id),
+             int(quantity), int(quantity), cost, now, cost, currency, cost, currency,
+             units, places, currency, units, places, units, places),
+        )
+
     def reconcile_custody_ledger(self):
         """Read-only consistency report for DR movements, holdings, states and reservations."""
         programs = self.db.assets.execute(

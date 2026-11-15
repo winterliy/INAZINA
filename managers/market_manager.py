@@ -38,6 +38,7 @@ class MarketManager:
     DEFAULT_VOLATILITY = 0.15
     MAX_VOLATILITY = 1.0
     DR_ARBITRAGE_MEAN_REVERSION_SPEED = 0.25
+    DR_ARBITRAGE_BAND_MULTIPLIER = 40
     # These dictionaries remain only as a compatibility cache for callers from
     # older processes. Durable target and event state lives in SQLite.
     _runtime_lock = threading.RLock()
@@ -684,11 +685,15 @@ class MarketManager:
         if str(sector_key or "").casefold() == "depositary_receipt":
             reference = self._dr_reference_value(conn, code)
             if reference is not None and latent > 0:
-                from functions.dr_pricing import convergence_drift
+                from functions.dr_pricing import DEVIATION_ALERT_THRESHOLD_PERCENT, convergence_drift
+                speed = self.DR_ARBITRAGE_MEAN_REVERSION_SPEED
+                # Past the alert band arbitrageurs step in: a much stronger pull back to parity.
+                if abs(latent / float(reference) - 1) * 100 >= DEVIATION_ALERT_THRESHOLD_PERCENT:
+                    speed *= self.DR_ARBITRAGE_BAND_MULTIPLIER
                 bias += convergence_drift(
                     latent, reference,
                     config.trading_minutes_per_step / TRADING_MINUTES_PER_YEAR,
-                    self.DR_ARBITRAGE_MEAN_REVERSION_SPEED,
+                    speed,
                 )
         if sector_sensitivity:
             bias += sector_sensitivity * math.sqrt(config.step_variance) * self._sector_shock(sector_key, epoch, config) * 0.25
@@ -1320,6 +1325,18 @@ class MarketManager:
                     "FROM company.company WHERE status = 'active' AND trading_status='active' "
                     "AND exchange_id IS NOT NULL AND TRIM(exchange_id) <> ''"
                 ).fetchall()
+                # 이중상장: the same shares also count in each secondary venue's index.
+                # A secondary line trades as its own asset: the index follows that line's price.
+                secondary = company_conn.execute(
+                    "SELECT s.dr_code AS company_code, s.exchange_id, a.price AS share_price, "
+                    "s.listed_shares AS total_shares "
+                    "FROM company.company_secondary_listings s JOIN company.company c "
+                    "ON c.company_code = s.company_code JOIN assets.market_assets a ON a.code = s.dr_code "
+                    "WHERE c.status = 'active' AND c.trading_status='active' AND a.status='active'"
+                ).fetchall() if company_conn.execute(
+                    "SELECT 1 FROM company.sqlite_master WHERE type='table' AND name='company_secondary_listings'"
+                ).fetchone() else []
+                rows = list(rows) + list(secondary)
             constituents = {}
             for row in rows:
                 exchange_id = str(row["exchange_id"]).strip()

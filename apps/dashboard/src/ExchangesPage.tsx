@@ -6,8 +6,30 @@ import { Card, Field, date, number, plain, show, type Ctx } from "./common";
 type Component = { company_code: string; name: string | null; previous_price: number; total_shares: number };
 type Listing = { code: string; name: string | null; kind: string; share_class: "common" | "preferred" | null; quote_currency: string | null; status: string };
 type CurrencyPair = { code: string; name: string; price: Money; quote_currency: string | null; status: string };
-type Exchange = { exchange_id: string; nationality: string; market_type: "exchange" | "otc"; operator_company_code?: string | null; operator_name?: string | null; status: "open" | "closed" | "paused"; reason: string; trading_halted: number; circuit_stage: number | null; halt_started_epoch: number | null; resume_epoch: number | null; updated_epoch: number; hours: Schedule; hours_label: string; index_value: number; index_updated_epoch: number; products: number; listings: Listing[]; components: Component[]; currency_pairs?: CurrencyPair[] };
+type Exchange = { exchange_id: string; nationality: string; market_type: "exchange" | "otc"; operator_company_code?: string | null; operator_name?: string | null; status: "open" | "closed" | "paused"; reason: string; trading_halted: number; circuit_stage: number | null; halt_started_epoch: number | null; resume_epoch: number | null; updated_epoch: number; hours: Schedule; hours_label: string; index_value: number; index_updated_epoch: number; products: number; requirements?: Requirements; listings: Listing[]; components: Component[]; currency_pairs?: CurrencyPair[] };
 type Result = { message: string; success: boolean };
+type Requirements = { minShares: number; minFloatPercent: number; minMarketCap: string; allowForeign: boolean; allowSecondary: boolean; requiresDisclosure: boolean; currency?: string };
+const NO_REQUIREMENTS: Requirements = { minShares: 0, minFloatPercent: 0, minMarketCap: "0", allowForeign: true, allowSecondary: true, requiresDisclosure: false };
+const requirementLabel = (rules: Requirements) => [
+  rules.minShares ? `${number(rules.minShares)}주 이상` : "",
+  rules.minFloatPercent ? `발행주식 ${rules.minFloatPercent}% 이상` : "",
+  Number(rules.minMarketCap) ? `시가총액 ${number(rules.minMarketCap)} ${rules.currency ?? ""} 이상` : "",
+  rules.allowForeign ? "" : "해외 법인 불가", rules.allowSecondary ? "" : "2차상장 불가", rules.requiresDisclosure ? "재무보고서 공시 필요" : "",
+].filter(Boolean).join(" · ") || "요건 없음";
+
+/** 상장요건 입력: 거래소 생성 마법사와 거래소 관리에서 함께 쓴다. 0은 최소 기준 없음. */
+function RequirementsFields({ value, onChange, currency }: { value: Requirements; onChange: (next: Requirements) => void; currency: string }) {
+  const flag = (key: "allowForeign" | "allowSecondary" | "requiresDisclosure", label: string, hint: string) =>
+    <Field label={label} hint={hint}><select value={value[key] ? "1" : "0"} onChange={(event) => onChange({ ...value, [key]: event.target.value === "1" })}><option value="1">예</option><option value="0">아니오</option></select></Field>;
+  return <>
+    <Field label="최소 상장 주식 수" hint="0이면 제한 없음"><input type="number" min="0" step="1" value={value.minShares} onChange={(event) => onChange({ ...value, minShares: Number(event.target.value) })} /></Field>
+    <Field label="최소 상장 비율 (%)" hint="발행 주식 대비 · 0이면 제한 없음"><input type="number" min="0" max="100" step="0.01" value={value.minFloatPercent} onChange={(event) => onChange({ ...value, minFloatPercent: Number(event.target.value) })} /></Field>
+    <Field label={`최소 상장 시가총액 (${currency})`} hint="주가 × 상장 주식 수 · 0이면 제한 없음"><input className="mono" inputMode="decimal" value={value.minMarketCap} onChange={(event) => onChange({ ...value, minMarketCap: event.target.value.replace(/[^0-9.]/g, "") })} /></Field>
+    {flag("allowForeign", "해외 법인 직접 상장", "다른 국가 법인의 1차·2차 상장 허용")}
+    {flag("allowSecondary", "2차상장 허용", "다른 거래소 1차 상장 법인의 이중상장")}
+    {flag("requiresDisclosure", "재무보고서 공시 필요", "마감된 재무보고서 1건 이상")}
+  </>;
+}
 
 const STATUS: Record<string, string> = { open: "개장", closed: "휴장", paused: "정지" };
 const WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"];
@@ -23,6 +45,9 @@ export function ExchangesPage({ ctx }: { ctx: Ctx }) {
   const [selected, setSelected] = useState("");
   const [nationality, setNationality] = useState("");
   const [draft, setDraft] = useState({ id: "", nationality: "", marketType: "exchange" as "exchange" | "otc" });
+  const [draftRules, setDraftRules] = useState<Requirements>(NO_REQUIREMENTS);
+  const [createStep, setCreateStep] = useState<1 | 2>(1);
+  const [rules, setRules] = useState<Requirements>(NO_REQUIREMENTS);
   const [hours, setHours] = useState<Hours>({ open: "", close: "", days: [1, 2, 3, 4, 5], holidays: "" });
 
   const load = useCallback(async () => {
@@ -34,7 +59,8 @@ export function ExchangesPage({ ctx }: { ctx: Ctx }) {
   useEffect(() => { load().catch((cause) => say(cause instanceof Error ? cause.message : "거래소를 불러오지 못했습니다.", true)); }, [load]);
 
   const exchange = exchanges.find((item) => item.exchange_id === selected);
-  useEffect(() => { if (exchange) { setNationality(exchange.nationality); setHours(hoursOf(exchange)); } }, [exchange]);
+  useEffect(() => { if (exchange) { setNationality(exchange.nationality); setHours(hoursOf(exchange)); setRules(exchange.requirements ?? NO_REQUIREMENTS); } }, [exchange]);
+  const draftCurrency = exchanges.find((item) => item.nationality === draft.nationality)?.requirements?.currency || "거래소 통화";
   const visible = exchanges.filter((item) => !query.trim() || `${item.exchange_id} ${item.nationality}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
 
   function act(id: string, body: Record<string, unknown>, question: string) {
@@ -95,19 +121,41 @@ export function ExchangesPage({ ctx }: { ctx: Ctx }) {
       </div>
       <h3 className="sub-head">시장 구분</h3>
       <div className="form-grid"><Field label="구분"><select value={exchange.market_type} onChange={(event) => void act(exchange.exchange_id, { action: "market_type", marketType: event.target.value }, `${exchange.exchange_id}를 ${event.target.value === "otc" ? "장외시장" : "거래소"}(으)로 구분할까요?`)}><option value="exchange">거래소</option><option value="otc">장외시장</option></select></Field></div>
+      {exchange.market_type === "exchange" && <>
+        <h3 className="sub-head">상장요건</h3>
+        <p className="hint">현재: {requirementLabel(exchange.requirements ?? NO_REQUIREMENTS)}. 새 상장·2차상장·상장 주식 수 변경부터 적용되며, 이미 상장된 종목은 유지됩니다.</p>
+        <form className="form-grid" onSubmit={(event) => { event.preventDefault(); act(exchange.exchange_id, { action: "requirements", requirements: rules }, `${exchange.exchange_id} 상장요건을 "${requirementLabel({ ...rules, currency: exchange.requirements?.currency })}"(으)로 저장할까요?`); }}>
+          <RequirementsFields value={rules} onChange={setRules} currency={exchange.requirements?.currency ?? ""} />
+          <div className="actions" style={{ gridColumn: "1 / -1" }}><button className="btn primary" disabled={busy}>상장요건 저장</button><button className="soft" type="button" disabled={busy} onClick={() => setRules(NO_REQUIREMENTS)}>요건 없음으로</button></div>
+        </form>
+      </>}
       <h3 className="sub-head">상장 상품 전체</h3>
       <div className="scroll-x"><table><thead><tr><th>코드</th><th>이름</th><th>상품 종류</th><th>주식 클래스</th><th>통화</th></tr></thead><tbody>{exchange.listings.map((item) => <tr key={`${item.kind}:${item.code}`}><td className="mono">{item.code}</td><td>{show(item.name)}</td><td>{item.kind}</td><td>{item.share_class === "preferred" ? "우선주" : item.share_class === "common" ? "보통주" : "—"}</td><td className="mono">{item.quote_currency || "—"}</td></tr>)}</tbody></table>{!exchange.listings.length && <p className="empty">활성 상장 상품이 없습니다.</p>}</div>
       <h3 className="sub-head">지수 구성 종목</h3>
       <div className="scroll-x"><table><thead><tr><th>종목</th><th>이름</th><th className="r">기준 가격</th><th className="r">주식 수</th></tr></thead><tbody>{exchange.components.map((item) => <tr key={item.company_code}><td className="mono">{item.company_code}</td><td>{show(item.name)}</td><td className="r mono">{number(item.previous_price)}</td><td className="r mono">{number(item.total_shares)}</td></tr>)}</tbody></table>{!exchange.components.length && <p className="empty">지수 구성 종목이 없습니다. 이 거래소에 회사 주식을 상장하면 자동으로 포함됩니다.</p>}</div>
     </Card>}
 
-    <Card title="새 거래소·장외시장" caption="국가별로 시장 유형을 지정합니다. 장외시장이 없는 국가는 만들지 않아도 되며, 해당 국가 회사는 거래소 없음으로 비상장 유지됩니다.">
-      <form className="form-grid" onSubmit={(event) => { event.preventDefault(); act(draft.id.trim(), { action: "create", nationality: draft.nationality, marketType: draft.marketType }, `${draft.id} ${draft.marketType === "otc" ? "장외시장" : "거래소"}를 ${draft.nationality} 소속으로 만들까요?`); }}>
+    <Card title="거래소 생성 마법사" caption={createStep === 1 ? "1단계 · 시장 ID·국가·유형을 정합니다. 장외시장이 없는 국가는 만들지 않아도 되며, 해당 국가 회사는 거래소 없음으로 비상장 유지됩니다." : "2단계 · 이 거래소의 상장요건을 정합니다. 나중에 거래소 관리에서 바꿀 수 있습니다."}>
+      {createStep === 1 && <form className="form-grid" onSubmit={(event) => {
+        event.preventDefault();
+        if (draft.marketType === "exchange") { setCreateStep(2); return; }
+        act(draft.id.trim(), { action: "create", nationality: draft.nationality, marketType: draft.marketType }, `${draft.id} 장외시장을 ${draft.nationality} 소속으로 만들까요? (장외시장은 상장요건이 없습니다)`);
+      }}>
         <Field label="시장 ID" hint="공백 없이"><input className="mono" value={draft.id} required onChange={(event) => setDraft({ ...draft, id: event.target.value.toUpperCase() })} /></Field>
         <Field label="국가"><select value={draft.nationality} onChange={(event) => setDraft({ ...draft, nationality: event.target.value })}>{countries.map((country) => <option key={country} value={country}>{country}</option>)}</select></Field>
         <Field label="시장 유형"><select value={draft.marketType} onChange={(event) => setDraft({ ...draft, marketType: event.target.value as "exchange" | "otc" })}><option value="exchange">거래소</option><option value="otc">장외시장</option></select></Field>
-        <button className="btn primary" disabled={busy || !draft.id.trim()}>시장 만들기</button>
-      </form>
+        <button className="btn primary" disabled={busy || !draft.id.trim()}>{draft.marketType === "exchange" ? "다음 · 상장요건" : "장외시장 만들기"}</button>
+      </form>}
+      {createStep === 2 && <form className="form-grid" onSubmit={(event) => {
+        event.preventDefault();
+        if (!window.confirm(`${draft.id} 거래소를 ${draft.nationality} 소속으로 만들까요?\n상장요건: ${requirementLabel({ ...draftRules, currency: draftCurrency })}`)) return;
+        void run(() => api<Result>(`/api/admin/exchanges/${encodeURIComponent(draft.id.trim())}`, { method: "POST", body: JSON.stringify({ action: "create", nationality: draft.nationality, marketType: "exchange", requirements: draftRules }) }),
+          "거래소를 만들지 못했습니다.", async (result) => { say(plain(result.message), !result.success); if (result.success) { setCreateStep(1); setDraft({ ...draft, id: "" }); setDraftRules(NO_REQUIREMENTS); } await load(); });
+      }}>
+        <p className="hint" style={{ gridColumn: "1 / -1" }}>{draft.id} · {draft.nationality} 거래소 · 0은 기준 없음</p>
+        <RequirementsFields value={draftRules} onChange={setDraftRules} currency={draftCurrency} />
+        <div className="actions" style={{ gridColumn: "1 / -1" }}><button className="btn primary" disabled={busy}>거래소 만들기</button><button className="soft" type="button" onClick={() => setCreateStep(1)}>이전</button></div>
+      </form>}
     </Card>
 
     <Card title="거래소" caption="일반 거래소 행을 눌러 거래 상태·국가·지수를 설정합니다. CURRENCY는 환전 시스템 전용으로 상태를 자동 운영합니다.">

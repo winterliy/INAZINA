@@ -38,6 +38,22 @@ class CompanyDB(DBManager):
             UNIQUE(organization_code,holder_kind,holder_id)
         )""")
         self.execute("CREATE INDEX IF NOT EXISTS idx_capital_interests_holder ON company_capital_interests(holder_kind,holder_id)")
+        # Secondary (dual) listings: the same shares also listed on another exchange.
+        # The primary listing stays company.exchange_id; each row lists listed_shares of them on another venue
+        # as their own 1:1 trading line (dr_code, a depositary_receipts program of type SECONDARY).
+        self.execute("""CREATE TABLE IF NOT EXISTS company_secondary_listings (
+            company_code TEXT NOT NULL,
+            exchange_id TEXT NOT NULL,
+            listed_shares INTEGER NOT NULL CHECK(listed_shares > 0),
+            dr_code TEXT,
+            listed_epoch INTEGER NOT NULL,
+            listed_by TEXT NOT NULL,
+            PRIMARY KEY(company_code, exchange_id)
+        )""")
+        self.execute("CREATE INDEX IF NOT EXISTS idx_secondary_listings_exchange ON company_secondary_listings(exchange_id)")
+        secondary_columns = {row[1] for row in self.execute("PRAGMA table_info(company_secondary_listings)")}
+        if "dr_code" not in secondary_columns:
+            self.execute("ALTER TABLE company_secondary_listings ADD COLUMN dr_code TEXT")
         columns = {row[1] for row in self.execute("PRAGMA table_info(company)")}
         added_trading_status = "trading_status" not in columns
         if "is_fixed" not in columns:
@@ -107,6 +123,8 @@ class CompanyDB(DBManager):
         self.execute("UPDATE company SET nationality=COALESCE((SELECT nationality FROM market_exchanges e "
                      "WHERE e.exchange_id=company.exchange_id),nationality) WHERE exchange_id IS NOT NULL "
                      "AND exchange_id<>'UNLISTED' "
+                     # Direct foreign listings keep their own country: only fill a missing one.
+                     "AND (nationality IS NULL OR TRIM(nationality)='') "
                      "AND EXISTS(SELECT 1 FROM market_exchanges e WHERE e.exchange_id=company.exchange_id)")
         # The organization catalog is the authoritative legal classification when it exists.
         self.execute("UPDATE company SET legal_form=(SELECT o.legal_form FROM organizations o "

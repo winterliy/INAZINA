@@ -67,7 +67,7 @@ class OrderBookManager:
             if limit_price < product['face_value']:return False,'❌ ELS 청약 지정가는 액면가 이상이어야 합니다.'
             from managers.els_manager import ELSManager
             return ELSManager(self.db,self.user_manager).subscribe(user_id,asset_code,quantity)
-        foreign = self.db.assets.execute_one("SELECT quote_currency FROM market_assets WHERE code=? UNION ALL SELECT quote_currency FROM company WHERE company_code=? UNION ALL SELECT quote_currency FROM investment WHERE product_code=?",(asset_code,asset_code,asset_code))
+        foreign = self.db.assets.execute_one("SELECT quote_currency FROM market_assets WHERE code=? UNION ALL SELECT quote_currency FROM company WHERE company_code=? UNION ALL SELECT quote_currency FROM investment WHERE product_code=? UNION ALL SELECT quote_currency FROM treasury_bond_products WHERE product_code=?",(asset_code,asset_code,asset_code,asset_code))
         home = None
         if foreign:
             try:
@@ -375,6 +375,11 @@ class OrderBookManager:
                     self._settle_primary_fill(
                         conn, incoming, asset, source, quantity, reference_price, now
                     )
+                    if source != "treasury_bond":
+                        # 2차상장 lines back each newly sold share with custody stock.
+                        from managers.depositary_receipt_manager import DepositaryReceiptManager
+                        DepositaryReceiptManager.record_secondary_primary_issue(
+                            conn, incoming["asset_code"], incoming["user_id"], quantity, now)
                     self._reduce_order(conn, incoming, quantity, now)
                     self._record_execution_event(
                         conn, incoming, None, quantity, reference_price, now,
