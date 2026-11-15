@@ -273,11 +273,13 @@ class InterestManager:
         stamp = datetime.fromtimestamp(
             paid_until, timezone.utc
         ).strftime("%Y-%m-%d %H:%M:%S")
-        conn.execute(
-            "UPDATE accounts.accounts SET balance_units=balance_units+?,last_payment=?,"
-            "last_payment_epoch=? WHERE account_number=?",
-            (int(round(net*SCALE)), stamp, paid_until, account["account_number"]),
-        )
+        from managers.deposit_accounts import rule_bypass
+        with rule_bypass(conn, account["account_number"]):
+            conn.execute(
+                "UPDATE accounts.accounts SET balance_units=balance_units+?,last_payment=?,"
+                "last_payment_epoch=? WHERE account_number=?",
+                (int(round(net*SCALE)), stamp, paid_until, account["account_number"]),
+            )
         RateManager.record_institution_result(
             conn, product["issuer"], -accounting_gross, "deposit_interest",
             f"account:{account['account_number']}:{paid_until}",

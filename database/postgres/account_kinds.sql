@@ -33,9 +33,13 @@ CREATE OR REPLACE FUNCTION trg_account_kind_open_fn() RETURNS trigger LANGUAGE p
 DECLARE p record; terms jsonb; opening bigint; t text;
 BEGIN
     IF NEW.account_type <> 'saving' THEN RETURN NEW; END IF;
-    SELECT account_kind, kind_terms, installment_amount, installment_cycle_seconds INTO p
+    SELECT account_kind, kind_terms, installment_amount, installment_cycle_seconds, transaction_policy INTO p
       FROM bank_products WHERE product_code = NEW.product_code AND kind = 'deposit';
-    IF NOT FOUND OR p.account_kind IS NULL THEN RETURN NEW; END IF;
+    IF NOT FOUND THEN RETURN NEW; END IF;
+    IF p.transaction_policy IN ('no_new', 'blocked') THEN
+        PERFORM account_kind_refuse('현재 가입할 수 없는 상품입니다.');
+    END IF;
+    IF p.account_kind IS NULL THEN RETURN NEW; END IF;
     IF p.account_kind = 'housing' THEN
         PERFORM account_kind_refuse('주택청약은 아직 준비 중이라 가입할 수 없습니다.');
     END IF;
@@ -105,6 +109,13 @@ DECLARE t text := NEW.kind_terms; delta bigint; now_s double precision := accoun
         year_start double precision; maturity bigint; bypass boolean;
         today bigint; use_old numeric; use_new numeric; rate numeric;
 BEGIN
+    IF OLD.account_type = 'saving' AND (NEW.balance_units IS DISTINCT FROM OLD.balance_units
+       OR NEW.balance IS DISTINCT FROM OLD.balance OR NEW.balance_minor_units IS DISTINCT FROM OLD.balance_minor_units)
+       AND NOT EXISTS (SELECT 1 FROM account_rule_bypass b WHERE b.account_number = NEW.account_number)
+       AND EXISTS (SELECT 1 FROM bank_products p WHERE p.product_code = OLD.product_code
+                   AND p.kind = 'deposit' AND p.transaction_policy = 'blocked') THEN
+        PERFORM account_kind_refuse('현재 이 상품의 입출금 거래가 제한되어 있습니다.');
+    END IF;
     IF NEW.account_kind IS NULL THEN RETURN NEW; END IF;
     bypass := EXISTS (SELECT 1 FROM account_rule_bypass b WHERE b.account_number = NEW.account_number);
     opened := account_kind_opened(NEW.created_at);

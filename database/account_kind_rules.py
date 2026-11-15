@@ -96,11 +96,13 @@ def _snapshot_sql(product):
 def _install_triggers(conn):
     for name in ("trg_account_kind_open_rules", "trg_account_kind_snapshot", "trg_account_kind_terms_effects",
                  "trg_account_kind_contribution", "trg_account_kind_inflow", "trg_account_kind_outflow",
-                 "trg_account_kind_overdraft_repay", "trg_account_kind_overdraft_use"):
+                 "trg_account_kind_overdraft_repay", "trg_account_kind_overdraft_use", "trg_account_kind_transaction_policy"):
         conn.execute(f"DROP TRIGGER IF EXISTS {name}")
     product_kind = "(SELECT s.account_kind FROM saving s WHERE s.product_code=NEW.product_code)"
     conn.execute(f"""CREATE TRIGGER trg_account_kind_open_rules BEFORE INSERT ON accounts
         WHEN NEW.account_type='saving' BEGIN
+        SELECT RAISE(ABORT,'현재 가입할 수 없는 상품입니다.')
+         WHERE (SELECT s.transaction_policy FROM saving s WHERE s.product_code=NEW.product_code) IN ('no_new','blocked');
         SELECT RAISE(ABORT,'주택청약은 아직 준비 중이라 가입할 수 없습니다.')
          WHERE {product_kind}='housing';
         SELECT RAISE(ABORT,'주택청약·ISA는 1인 1계좌만 가입할 수 있습니다. 이미 가입한 계좌가 있습니다.')
@@ -152,6 +154,12 @@ def _install_triggers(conn):
         WHERE rowid=NEW.rowid;
         END""")
     bypass = "NOT EXISTS (SELECT 1 FROM account_rule_bypass b WHERE b.account_number=NEW.account_number)"
+    conn.execute(f"""CREATE TRIGGER trg_account_kind_transaction_policy BEFORE UPDATE OF balance_units,balance,balance_minor_units ON accounts
+        WHEN OLD.account_type='saving' AND (NEW.balance_units IS NOT OLD.balance_units
+          OR NEW.balance IS NOT OLD.balance OR NEW.balance_minor_units IS NOT OLD.balance_minor_units) AND {bypass}
+          AND (SELECT transaction_policy FROM saving WHERE product_code=OLD.product_code)='blocked' BEGIN
+        SELECT RAISE(ABORT,'현재 이 상품의 입출금 거래가 제한되어 있습니다.');
+        END""")
     delta = "CAST(ROUND((NEW.principal-OLD.principal)*1000000) AS INTEGER)"
     period = (f"CAST(({NOW}-{OPENED})/(COALESCE({_term('period_days')},30)*86400) AS INTEGER)")
     period_start = f"({OPENED}+{period}*COALESCE({_term('period_days')},30)*86400)"

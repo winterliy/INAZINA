@@ -302,6 +302,8 @@ class BankManager:
                     return False, "❌ 존재하지 않는 저축 상품입니다."
                 if product['account_kind'] == 'housing':
                     return False, "❌ 주택청약은 아직 준비 중이라 가입할 수 없습니다."
+                if product['transaction_policy'] != 'allowed':
+                    return False, "❌ 현재 가입할 수 없는 상품입니다."
                 locations = DatabaseManager.code_locations(conn, product_code)
                 if len(locations) != 1 or locations[0] != "저축 상품":
                     return False, f"❌ 상품 코드 `{product_code}`가 다른 상품·자산 코드와 중복 등록되어 있습니다. SQL Browser에서 정리해주세요."
@@ -462,6 +464,7 @@ class BankManager:
                         "JOIN product.saving s ON s.product_code=a.product_code "
                         "WHERE a.user_id = ? AND a.account_number <> ? AND a.account_type = 'saving' "
                         "AND COALESCE(a.account_kind,'demand') IN ('demand','parking','cma','combined') "
+                        "AND s.transaction_policy <> 'blocked' "
                         "AND a.quote_currency=(SELECT quote_currency FROM accounts.accounts "
                         "WHERE account_number=?) ORDER BY a.balance DESC LIMIT 1",
                         (str(user_id), str(account_number), str(account_number)),
@@ -1817,7 +1820,7 @@ class BankManager:
             "a.created_at,a.kind_terms,p.name,p.issuer,p.maturity_days "
             "FROM accounts.accounts a JOIN product.saving p ON p.product_code=a.product_code "
             f"WHERE a.account_type='saving' AND a.account_kind IN ({kinds}) "
-            "AND COALESCE(a.resolution_status,'active')='active'"
+            "AND COALESCE(a.resolution_status,'active')='active' AND p.transaction_policy <> 'blocked'"
         )
 
         def due_rows(conn):
@@ -1870,6 +1873,7 @@ class BankManager:
                             "JOIN product.saving p ON p.product_code=a.product_code "
                             "WHERE a.user_id=? AND a.quote_currency=? AND a.account_type='saving' "
                             "AND a.account_number<>? AND COALESCE(a.resolution_status,'active')='active' "
+                            "AND p.transaction_policy <> 'blocked' "
                             f"AND COALESCE(a.account_kind,'demand') IN ({flexible}) AND a.balance>=? "
                             "ORDER BY a.balance DESC LIMIT 1",
                             (user_id, currency, number, *FLEXIBLE_KINDS, amount)).fetchone()
@@ -2605,9 +2609,10 @@ class UserFunds:
         sources.extend(
             (ExactDecimal(row["balance"] or 0), row["account_number"])
             for row in conn.execute(
-                "SELECT account_number,balance FROM accounts.accounts WHERE user_id=? "
-                "AND quote_currency=? AND account_type IN ('saving','loan_payout') "
-                "AND COALESCE(account_kind,'demand') IN ('demand','parking','cma','combined')",
+                "SELECT a_source.account_number,a_source.balance FROM accounts.accounts a_source WHERE a_source.user_id=? "
+                "AND a_source.quote_currency=? AND a_source.account_type IN ('saving','loan_payout') "
+                "AND COALESCE(a_source.account_kind,'demand') IN ('demand','parking','cma','combined') "
+                "AND NOT EXISTS (SELECT 1 FROM saving s WHERE s.product_code=a_source.product_code AND s.transaction_policy='blocked')",
                 (user_id, currency),
             ).fetchall()
         )

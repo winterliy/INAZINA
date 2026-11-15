@@ -359,6 +359,7 @@ export function ProductsPage({ group, ctx }: { group: "market" | "finance"; ctx:
         <Field label="상품 코드" hint={editor.mode === "edit" ? "변경 불가" : "선택 · 비우면 무작위로 붙입니다"}><input className="mono" value={editor.code} readOnly={editor.mode === "edit"} onChange={(event) => setEditor({ ...editor, code: event.target.value })} /></Field>
         {spec.fields.map((field) => {
           const drFixed = editor.kind === "dr" && ["total_supply", "exchange_id", "underlying_code", "underlying_per_receipt", "receipt_type", "depositary_bank", "custodian", "home_exchange_id", "quote_currency"].includes(field.key);
+          if (field.key === "transaction_policy") return <Field key={field.key} label={field.label} hint="상품 중지 상태와 별도로 신규 가입과 입출금을 제한합니다."><select value={editor.values[field.key] || "allowed"} onChange={(event) => setEditor({ ...editor, values: { ...editor.values, [field.key]: event.target.value } })}><option value="allowed">허용</option><option value="no_new">신규 가입 불허</option><option value="blocked">신규·기존 모두 불허</option></select></Field>;
           if (field.choices) return <div key={field.key} className="span-wide kind-field" role="group" aria-label={field.label}>{field.label}<small>{field.key} · 선택 · 다시 누르면 해제</small>
             <AccountKindPicker value={editor.values[field.key] ?? ""} terms={field.terms} onPick={(kind, recommended) => setEditor({ ...editor, values: {
               ...editor.values,

@@ -83,6 +83,8 @@ class CurrencyExchangeManager:
                 raise ValueError("저축 상품 코드를 확인해주세요.")
             if product['account_kind'] == 'housing':
                 raise ValueError("주택청약은 아직 준비 중이라 가입할 수 없습니다.")
+            if product['transaction_policy'] != 'allowed':
+                raise ValueError("현재 가입할 수 없는 상품입니다.")
             institution = conn.execute(
                 "SELECT status FROM financial_institutions WHERE issuer=?",
                 (product['issuer'],),
@@ -371,8 +373,9 @@ class CurrencyExchangeManager:
                     "SELECT cash FROM users WHERE user_id=?",(sender,)
                 ).fetchone()[0] or 0))*SCALE))]
                 candidates += [(str(row['account_number']),int(Decimal(str(row['balance'] or 0))*SCALE)) for row in conn.execute(
-                    "SELECT account_number,balance FROM accounts WHERE user_id=? "
+                    "SELECT a_source.account_number,a_source.balance FROM accounts a_source WHERE a_source.user_id=? "
                     "AND account_type IN ('saving','loan_payout') AND quote_currency=? "
+                    "AND NOT EXISTS (SELECT 1 FROM saving s WHERE s.product_code=a_source.product_code AND s.transaction_policy='blocked') "
                     # Only spendable accounts top up a payment; a locked account pays only when named.
                     "AND (COALESCE(account_kind,'demand') IN ('demand','parking','cma','combined') OR account_number=?)",
                     (sender,src[5],preferred)).fetchall()]

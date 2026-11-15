@@ -31,6 +31,9 @@ class ProductDB(DBManager):
             self.execute("ALTER TABLE saving ADD COLUMN quote_currency TEXT")
         if "product_kind" not in saving_columns:
             self.execute("ALTER TABLE saving ADD COLUMN product_kind TEXT NOT NULL DEFAULT 'saving'")
+        if "transaction_policy" not in saving_columns:
+            self.execute("ALTER TABLE saving ADD COLUMN transaction_policy TEXT NOT NULL DEFAULT 'allowed' "
+                         "CHECK(transaction_policy IN ('allowed','no_new','blocked'))")
         if "account_kind" not in saving_columns:
             # 통장 종류 label (managers.deposit_accounts.ACCOUNT_KINDS); existing rows are
             # backfilled from product_kind and maturity.

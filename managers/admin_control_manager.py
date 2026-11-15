@@ -864,6 +864,8 @@ class AdminControlManager:
                 raise ValueError('CMA 상품의 통장 종류(account_kind)는 cma입니다.')
             if kind not in (None, '') and kind not in ACCOUNT_KINDS:
                 raise ValueError('통장 종류(account_kind): ' + ', '.join(ACCOUNT_KINDS))
+        if 'transaction_policy' in extra and merged.get('transaction_policy') not in ('allowed', 'no_new', 'blocked'):
+            raise ValueError('거래 허용 범위를 확인해주세요.')
         if {'account_kind', 'kind_terms', 'maturity_days', 'interest_cycle'} & set(extra) and category in ('saving', 'currencyproduct'):
             kind = merged.get('account_kind')
             maturity = int(float(merged.get('maturity_days') or 0))

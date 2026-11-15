@@ -7,7 +7,7 @@ export type Field = { key: string; label: string; kind: string; optional: boolea
 export type Command = { name: string; group: string; description: string; guide: string; fields: Field[]; job: boolean };
 export type Option = { value: string; label: string; detail?: string };
 export type Lookups = {
-  savingProducts: { code: string; name: string; interest_rate: number; deposit_amount: Money; maturity_days: number; quote_currency: string; product_kind: string; account_kind?: string | null; kind_terms?: Record<string, unknown> }[];
+  savingProducts: { code: string; name: string; interest_rate: number; deposit_amount: Money; maturity_days: number; quote_currency: string; product_kind: string; account_kind?: string | null; transaction_policy?: string; kind_terms?: Record<string, unknown> }[];
   loanProducts: { code: string; name: string; interest_rate: number; loan_limit: Money; maturity_days: number; min_credit_score: number }[];
   accounts: { account_number: string; product_code: string; account_type: string; quote_currency: string; balance: Money | null; balance_units: Money | null; account_kind?: string | null; kind_terms?: Record<string, unknown>; overdraft_units?: number; overdraft_limit_units?: number }[];
   loans: { loan_id: number; product_code: string; outstanding_balance: Money; quote_currency: string }[];

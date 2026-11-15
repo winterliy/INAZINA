@@ -141,12 +141,12 @@ class AccountKindRuleTests(unittest.TestCase):
         trigger = next(s for s in capture.statements if s.startswith('CREATE TRIGGER trg_account_kind_open_rules'))
         trigger = trigger.replace("SELECT RAISE(ABORT,'주택청약은 아직 준비 중이라 가입할 수 없습니다.')\n         WHERE (SELECT s.account_kind FROM saving s WHERE s.product_code=NEW.product_code)='housing';", '')
         with sqlite3.connect(':memory:') as conn:
-            conn.executescript('CREATE TABLE saving(product_code TEXT, account_kind TEXT, kind_terms TEXT);'
+            conn.executescript("CREATE TABLE saving(product_code TEXT, account_kind TEXT, kind_terms TEXT, transaction_policy TEXT DEFAULT 'allowed');"
                                'CREATE TABLE accounts(user_id TEXT, product_code TEXT, account_type TEXT, account_kind TEXT);'
                                'CREATE TABLE users(user_id TEXT, credit_score INTEGER);'
                                'CREATE TABLE account_kind_defaults(kind TEXT, terms TEXT);')
             conn.execute(trigger)
-            conn.execute("INSERT INTO saving VALUES ('h1','housing',NULL),('h2','housing',NULL)")
+            conn.execute("INSERT INTO saving(product_code,account_kind) VALUES ('h1','housing'),('h2','housing')")
             conn.execute("INSERT INTO accounts VALUES ('u','h1','saving','housing')")
             with self.assertRaisesRegex(sqlite3.IntegrityError, '1인 1계좌'):
                 conn.execute("INSERT INTO accounts VALUES ('u','h2','saving',NULL)")

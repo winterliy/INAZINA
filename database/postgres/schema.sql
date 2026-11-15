@@ -448,3 +448,4 @@ ALTER TABLE "web_auth_credentials" ADD FOREIGN KEY ("user_id") REFERENCES users 
 ALTER TABLE "board_reactions" ADD FOREIGN KEY ("post_id") REFERENCES board_posts (post_id) ON DELETE CASCADE;
 ALTER TABLE "board_reactions" ADD FOREIGN KEY ("comment_id") REFERENCES board_comments (comment_id) ON DELETE CASCADE;
 ALTER TABLE "board_reactions" ADD FOREIGN KEY ("user_id") REFERENCES users (user_id);
+ALTER TABLE bank_products ADD COLUMN transaction_policy TEXT NOT NULL DEFAULT 'allowed' CHECK (transaction_policy IN ('allowed', 'no_new', 'blocked'));

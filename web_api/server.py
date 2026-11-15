@@ -2445,7 +2445,7 @@ PRODUCT_KINDS = {
 SAVING_FAMILY = {"saving"}
 SAVING_FIELDS = ("name", "account_kind", "quote_currency", "interest_rate", "deposit_amount", "maturity_days",
                  "interest_cycle", "compound_type", "issuer", "installment_amount", "installment_cycle_seconds",
-                 "kind_terms")
+                 "kind_terms", "transaction_policy")
 PRODUCT_PROTECTED = {"created_at", "created_epoch", "sold_amount", "writer_id", "contract_id",
                      "issued_contracts", "status", "product_type", "outstanding_contracts",
                      "collateral_account", "settled_epoch", "max_shareholder_id"}
@@ -2483,13 +2483,14 @@ def product_catalog():
                                 else ("결제 통화" if profile == "dr" else "통장 화폐") if field == "quote_currency"
                                 else "발행 은행 ID" if field == "issuer"
                                 else "통장 종류" if field == "account_kind"
+                                else "거래 허용 범위" if field == "transaction_policy"
                                 else "종류별 약관 (JSON · 비우면 현실 기본값)" if field == "kind_terms"
                                 else "자동 납입 금액" if field == "installment_amount"
                                 else "자동 납입 주기 (초 또는 1일·1주·1달)" if field == "installment_cycle_seconds"
                                 else "상장 거래소 (새 법인은 비상장 · 법인 자본에서 상장)" if field == "exchange_id" and profile == "stock"
                                 else ARG_LABELS.get(field, field),
-                       "optional": field in OPTIONAL_ARGS.get(profile, ()) or field in ("account_kind", "installment_amount", "installment_cycle_seconds", "kind_terms"),
-                       "text": field in TEXT_ARGS or field in ("quote_currency", "account_kind", "kind_terms"),
+                       "optional": field in OPTIONAL_ARGS.get(profile, ()) or field in ("account_kind", "installment_amount", "installment_cycle_seconds", "kind_terms", "transaction_policy"),
+                       "text": field in TEXT_ARGS or field in ("quote_currency", "account_kind", "kind_terms", "transaction_policy"),
                        **({"choices": ACCOUNT_KINDS, "terms": KIND_TERMS} if field == "account_kind" else {})}
                       for field in _form_fields(profile)]
             listed = {field["key"] for field in fields} | {key}
@@ -2822,7 +2823,7 @@ def _convert_product_fields(profile, fields, advanced, columns):
             result.update(CorporateActionsManager.dividend_terms(value))
         elif profile == "els" and key in {"underlyings", "observation_days", "redemption_levels"}:
             result[key] = value
-        elif key in TEXT_ARGS or key in ("quote_currency", "account_kind", "kind_terms"):
+        elif key in TEXT_ARGS or key in ("quote_currency", "account_kind", "kind_terms", "transaction_policy"):
             result[key] = value.upper() if key == "quote_currency" else value
         else:
             try:
@@ -4261,7 +4262,7 @@ def user_lookups(user):
         def rows(sql, params=()):
             return [dict(row) for row in connection.execute(sql, params)] if _table_exists(connection, sql.split(" FROM ")[1].split()[0]) else []
         return {
-            "savingProducts": [_with_kind_terms(row) for row in rows("SELECT product_code AS code,name,interest_rate,deposit_amount,maturity_days,quote_currency,product_kind,account_kind,kind_terms FROM saving WHERE status='active' ORDER BY product_kind,name")],
+            "savingProducts": [_with_kind_terms(row) for row in rows("SELECT product_code AS code,name,interest_rate,deposit_amount,maturity_days,quote_currency,product_kind,account_kind,kind_terms,transaction_policy FROM saving WHERE status='active' ORDER BY product_kind,name")],
             "loanProducts": rows("SELECT product_code AS code,name,interest_rate,loan_limit,maturity_days,min_credit_score,quote_currency FROM liability WHERE status='active' AND issuer<>'국립정책금융공사' ORDER BY name"),
             "accounts": [_masked(_with_kind_terms(row)) for row in rows("SELECT account_number,product_code,account_type,quote_currency,balance,balance_units,principal,account_kind,kind_terms,overdraft_units,overdraft_limit_units,deferred_interest_units FROM accounts WHERE user_id=? ORDER BY account_number", (trader,))],
             "loans": rows("SELECT loan_id,product_code,outstanding_balance,quote_currency,maturity_epoch,status FROM loans WHERE user_id=? AND outstanding_balance>0 ORDER BY loan_id", (trader,)),

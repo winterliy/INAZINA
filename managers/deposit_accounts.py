@@ -21,9 +21,11 @@ def default_account_kind(product_kind, maturity_days):
 
 
 # SQL for "this user's primary account in this currency"; binds (user_id, currency).
-SPENDABLE = ("COALESCE(account_kind,'demand') IN ('demand','parking','cma','combined')")
-PRIMARY_NUMBER = ("(SELECT account_number FROM accounts WHERE user_id=? AND quote_currency=? "
-                  f"AND account_type='saving' AND {SPENDABLE} ORDER BY created_at,rowid LIMIT 1)")
+SPENDABLE = ("COALESCE(a_policy.account_kind,'demand') IN ('demand','parking','cma','combined') "
+             "AND NOT EXISTS (SELECT 1 FROM saving s WHERE s.product_code=a_policy.product_code "
+             "AND s.transaction_policy='blocked')")
+PRIMARY_NUMBER = ("(SELECT a_policy.account_number FROM accounts a_policy WHERE a_policy.user_id=? AND a_policy.quote_currency=? "
+                  f"AND a_policy.account_type='saving' AND {SPENDABLE} ORDER BY a_policy.created_at,a_policy.rowid LIMIT 1)")
 
 # SQL for the national currency of the row ``a``'s owner.
 OWNER_HOME = ("(SELECT c.currency_code FROM country_currencies c JOIN users h ON h.nationality=c.nationality "
