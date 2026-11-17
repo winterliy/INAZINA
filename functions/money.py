@@ -129,6 +129,29 @@ def from_subminor_units(units, decimal_places):
     return Decimal(integer_units).scaleb(-(places+6))
 
 
+def _audit_postgres_minor_units(conn):
+    """PostgreSQL keeps money as exact NUMERIC, so the SQLite snapshot copy is not carried over.
+
+    The risk the snapshots guard against there (a drifted or fractional amount) is checked on the
+    source tables directly: every NUMERIC ``*_units`` column must hold whole minor units.
+    """
+    findings = []
+    columns = conn.execute(
+        "SELECT table_name, column_name FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND data_type = 'numeric' "
+        "AND column_name LIKE '%\\_units' ESCAPE '\\' ORDER BY table_name, column_name").fetchall()
+    for row in columns:
+        table, field = str(row[0]), str(row[1])
+        if not all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in (table, field)):
+            continue
+        bad = conn.execute(
+            f'SELECT count(*) FROM "{table}" WHERE "{field}" IS NOT NULL AND "{field}" <> trunc("{field}")').fetchone()[0]
+        if bad:
+            findings.append({"source_table": table, "source_key": "*", "amount_field": field,
+                             "status": "fractional_minor_units", "rows": int(bad)})
+    return findings
+
+
 def audit_amount_snapshots(conn):
     """Check the explicit money-field inventory against its integer snapshot.
 
@@ -138,9 +161,7 @@ def audit_amount_snapshots(conn):
     """
     from database import pg_backend
     if pg_backend.enabled():
-        # The snapshot inventory is not carried to PostgreSQL (redesign pending);
-        # source tables are reconciled directly, so there is nothing to compare.
-        return []
+        return _audit_postgres_minor_units(conn)
     exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='financial_amount_snapshots'"
     ).fetchone()
@@ -254,7 +275,8 @@ def audit_amount_field_coverage(conn):
         # report covers fewer checks than SQLite via ``skipped``.
         return {"status": "matched", "registered_count": 0,
                 "exempt_count": 0, "unclassified": [],
-                "skipped": "amount_field_registry is not carried to PostgreSQL"}
+                "skipped": "amount_field_registry is not carried to PostgreSQL; "
+                           "audit_amount_snapshots checks NUMERIC *_units columns for fractional values instead"}
     table_exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='financial_amount_field_registry'"
     ).fetchone()

@@ -226,6 +226,15 @@ class AutoTargetMarketTests(unittest.TestCase):
         self.assertEqual(self.target()["anchor_price"], 1200000)
         self.assertEqual(self.target()["start_epoch"], 1012)
 
+    def test_target_price_sent_as_text_is_accepted_when_it_is_a_whole_amount(self):
+        admin = AdminManager(self.db)
+        self.assertTrue(admin.create_market_event("admin", "good", 0, "CO", 10, now=1001,
+                                                  target_price="1,200,000", target_percent=0)[0])
+        ok, message = admin.create_market_event("admin", "good", 0, "CO", 10, now=1002,
+                                                target_price="1200000.5", target_percent=0)
+        self.assertFalse(ok)
+        self.assertIn("정수", message)
+
     def test_busy_price_database_rolls_back_cycle_creation_and_stochastic_state(self):
         blocker = sqlite3.connect(self.db.companies.db_path, isolation_level=None)
         try:

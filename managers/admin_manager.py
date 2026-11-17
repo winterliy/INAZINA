@@ -46,6 +46,13 @@ class AdminManager:
                 raise ValueError()
         except (ValueError, TypeError, OverflowError):
             return False, "❌ 변동률은 0~100% 사이의 숫자여야 합니다."
+        if isinstance(target_price, (str, Decimal)) and not isinstance(target_price, bool):
+            # The dashboard sends money as text ("500000"); only a whole amount is accepted.
+            try:
+                exact = Decimal(str(target_price).strip().replace(",", ""))
+                target_price = int(exact) if exact.is_finite() and exact == exact.to_integral_value() else target_price
+            except (ArithmeticError, ValueError):
+                pass
         if target_price is not None:
             if not asset_code:
                 return False, "❌ 목표 가격을 지정하려면 개별 자산을 선택해주세요."

@@ -5,13 +5,12 @@ PostgreSQL을 운영 DB로 전환할 때(`INAZINA_DB_BACKEND=postgres`) 반드�
 
 현재 상태: 테스트는 SQLite 전체 통과, PostgreSQL 전체 통과(`SQLITE_ONLY` 제외).
 
-## 1. 금액 스냅샷 점검이 PostgreSQL에서 건너뛰어진다
-- `financial_amount_snapshots`, `financial_amount_field_registry`, `financial_amount_field_exemptions`는
-  PostgreSQL 스키마에 일부러 싣지 않았다(재설계 보류). `tools/build_postgres_schema.py`의 `DROPPED` 참고.
-- `functions/money.py`의 `audit_amount_snapshots` / `audit_amount_field_coverage`는 PostgreSQL에서
-  빈 결과(`matched`)를 돌려주고, `amount_field_coverage.skipped`에 이유를 남긴다.
-- 따라서 PostgreSQL의 전체 금융 대조(`reconcile_all_financial_ledgers`)는 SQLite보다 점검이 하나 적다.
-- 전환 전: 원본 표를 직접 비교하는 점검으로 재설계하거나, 건너뜀을 운영 화면에 명시한다.
+## 1. 금액 스냅샷 점검은 PostgreSQL에서 원본 직접 점검으로 대체했다
+- `financial_amount_snapshots`, 필드 등록부, 면제 목록은 PostgreSQL에 싣지 않는다(`DROPPED`). PostgreSQL의 금액은
+  정확한 NUMERIC이라 SQLite의 정수 복사본이 필요 없다.
+- `audit_amount_snapshots`는 PostgreSQL에서 모든 NUMERIC `*_units` 열에 소수 단위가 섞였는지 원본 표를 직접 점검한다
+  (`tests/test_pg_amount_audit.py`). 삭제된 행의 스냅샷이나 미등록 열 후보 점검은 SQLite 전용이다.
+- `audit_amount_field_coverage`는 여전히 `skipped`로 이유를 남긴다. 전환 시 운영 화면에도 이 차이를 알린다.
 
 ## 2. `INSERT OR REPLACE` 위험 4가지
 `docs/postgres-replace-audit.md`에 기록돼 있다. 코드는 고치지 않았다.
