@@ -17,6 +17,7 @@ import { HeatmapPage } from "./HeatmapPage";
 import { PasswordSection } from "./PasswordSection";
 import { NotificationBell } from "./NotificationBell";
 import { PayoutPage } from "./PayoutPage";
+import { PendingPayouts } from "./PendingPayouts";
 import "./pages.css";
 import type { OwnershipGraphData } from "../../shared/OwnershipGraph";
 
@@ -699,6 +700,7 @@ export default function App() {
         <button type="button" onClick={() => void logout()}>{user.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button>
       </aside>
       <div className="account-sections">
+        <PendingPayouts />
         <section className="account-section">
           <header><h2>로그인 아이디</h2><p>나루와 대시보드 로그인에 쓰는 아이디입니다. 영문, 숫자, 점, 밑줄, 하이픈으로 3~32자.</p></header>
           <form className="account-form" onSubmit={saveHtsId}>

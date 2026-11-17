@@ -34,6 +34,7 @@ class NationalityManager:
         checks = (
             ("futures_positions", "user_id=?", "선물 포지션"),
             ("option_contracts", "writer_id=? AND status='active'", "작성한 옵션"),
+            ("option_positions", "user_id=? AND quantity>0", "보유 옵션"),
             ("option_collateral_lots", "writer_id=?", "옵션 담보"),
             ("els_subscriptions", f"user_id=? AND status NOT IN {CLOSED_ELS_STATES}", "ELS 청약·보유"),
         )

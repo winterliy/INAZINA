@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import discord
 from functions.amount_limits import MAX_NATIVE
-from database import DatabaseManager
+from database import DatabaseManager, pg_backend
 from database.db_manager import DBManager
 from database.system_db import SystemDB
 from database.user_db import TREASURY_USER_ID
@@ -1285,6 +1285,21 @@ class MarketFeatureTests(unittest.TestCase):
         self.db.assets.execute("DELETE FROM option_positions WHERE user_id='foreign-future'")
         ok, message = BankManager(self.db).close_account('foreign-future', number)
         self.assertTrue(ok, message)                                         # free to close once nothing is open
+
+    @unittest.skipIf(pg_backend.enabled(), "the guard is a SQLite trigger until the PostgreSQL triggers are regenerated")
+    def test_no_path_can_delete_the_last_nwx_account_while_option_contracts_remain(self):
+        number = self._foreign_future_trader(5000)
+        self.db.assets.add_user_asset("alice", "CO", 5, unit_cost=100)
+        self.assertTrue(self.options.create_and_write("alice", "CO", "call", 100, 1, 2, 10)[0])
+        code = self.options.get_active_contracts("CO")[0]["contract_code"]
+        self.assertTrue(self.book.place_limit_order('foreign-future', code, 'buy', 1, 10)[0])
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "option contracts remain"):
+            self.db.accounts.execute("DELETE FROM accounts WHERE account_number=?", (number,))   # e.g. the SQL editor
+        self.assertEqual(self._nwx_units(number), 4990)
+        self.db.assets.execute("DELETE FROM option_positions WHERE user_id='foreign-future'")
+        self.db.accounts.execute("UPDATE accounts SET balance_units=0,balance_minor_units=0,balance=0 WHERE account_number=?", (number,))
+        self.db.accounts.execute("DELETE FROM accounts WHERE account_number=?", (number,))        # nothing open: allowed
+        self.assertIsNone(self.db.accounts.execute_one("SELECT 1 FROM accounts WHERE account_number=?", (number,)))
 
     def test_option_order_without_an_nwx_account_is_refused_and_touches_no_wallet(self):
         self._foreign_future_trader()

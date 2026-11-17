@@ -1,23 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../../shared/api";
 import { navigate } from "./nav";
-import { daysLeft, formatAmount } from "./notificationFormat";
+import { daysLeft, formatAmount, type Payout } from "./notificationFormat";
 import "./notifications.css";
-
-type Payout = {
-  payout_id: number;
-  status: "pending" | "converted" | "temp_open" | "withdrawn" | "forfeited";
-  kind: string;
-  currency: string;
-  decimal_places: number;
-  amount: string;
-  withdraw_fee: string;
-  withdraw_net: string;
-  created_epoch: number;
-  expires_epoch: number;
-  temp_number: string | null;
-  payer_id: string;
-};
 
 const errorText = (cause: unknown, fallback: string) => cause instanceof Error ? cause.message : fallback;
 

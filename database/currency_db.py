@@ -1627,6 +1627,7 @@ class CurrencyDB(DBManager):
         ensure_primary_recipient_overrides(self.execute)
         ensure_notifications(self.execute)
         ensure_snapshot_retirements(self.execute)
+        ensure_option_settlement_account_guard(self.execute)
         ensure_payout_requests(self.execute)
 
     def _ensure_treasury_bond_minor_units(self):
@@ -3745,6 +3746,25 @@ def ensure_accounting_line_repairs(execute):
         execute(f"""CREATE TRIGGER IF NOT EXISTS trg_accounting_line_repairs_{operation.lower()}
             BEFORE {operation} ON accounting_line_repairs
             BEGIN SELECT RAISE(ABORT,'accounting line repairs are append-only'); END""")
+
+
+def ensure_option_settlement_account_guard(execute):
+    """Option settlements are traced one-to-one against the receiver's wallet rows, so the account they are paid
+    into must exist until every contract is settled. The user-facing close already refuses; this stops any other
+    deletion (an administrator's SQL editor, a migration) of a citizen's last settlement-currency account."""
+    execute("""CREATE TRIGGER IF NOT EXISTS trg_accounts_keep_option_settlement_account
+        BEFORE DELETE ON accounts
+        WHEN OLD.user_id IS NOT NULL AND OLD.account_type='saving'
+         AND COALESCE(OLD.quote_currency,base_currency_code())=base_currency_code()
+         AND COALESCE((SELECT n.currency_code FROM users u JOIN country_currencies n ON n.nationality=u.nationality
+                       WHERE u.user_id=OLD.user_id),base_currency_code())<>base_currency_code()
+         AND NOT EXISTS (SELECT 1 FROM accounts o WHERE o.user_id=OLD.user_id AND o.account_number<>OLD.account_number
+                         AND o.account_type='saving' AND COALESCE(o.quote_currency,base_currency_code())=base_currency_code())
+         AND (EXISTS (SELECT 1 FROM option_positions p JOIN option_contracts c ON c.contract_id=p.contract_id
+                      WHERE p.user_id=OLD.user_id AND p.quantity>0 AND c.status='active')
+              OR EXISTS (SELECT 1 FROM option_contracts WHERE writer_id=OLD.user_id AND status='active')
+              OR EXISTS (SELECT 1 FROM option_collateral_cash_lots WHERE writer_id=OLD.user_id))
+        BEGIN SELECT RAISE(ABORT,'the last settlement-currency account cannot be deleted while option contracts remain'); END""")
 
 
 def ensure_snapshot_retirements(execute):
