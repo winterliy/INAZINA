@@ -713,8 +713,16 @@ class UserManager:
                     return False, "❌ 설정된 당첨 지급률로 상금을 계산할 수 없습니다."
                 payout_before_tax = round_money(payout_before_tax)
                 won = random.random() * 100 < chance
+                from functions.money import currency_precision, to_minor_units
+                from managers.currency_manager import CurrencyManager
+                from managers.pnl_ledger import PnlLedger
+                bet_currency = CurrencyManager.home(conn, str(user_id))
+                bet_places = currency_precision(conn, bet_currency)
                 if won:
                     tax = self._tax(conn, str(user_id), "gambling_winnings", payout_before_tax)
+                    PnlLedger.record(conn, str(user_id), "gamble", f"{user_id}:{time.time_ns()}", bet_currency, bet_places,
+                                     to_minor_units(payout_before_tax, bet_places), 0,
+                                     tax_minor=to_minor_units(tax, bet_places), now=int(time.time()))
                     self._credit_source(conn, str(user_id), account_number, payout_before_tax - tax)
                     from managers.currency_manager import CurrencyManager
                     treasury = conn.execute(
@@ -726,6 +734,8 @@ class UserManager:
                 else:
                     if not self._debit_source(conn, str(user_id), account_number, amount):
                         return False, "❌ 잔액이 부족합니다."
+                    PnlLedger.record(conn, str(user_id), "gamble", f"{user_id}:{time.time_ns()}", bet_currency, bet_places,
+                                     0, to_minor_units(amount, bet_places), now=int(time.time()))
                     from managers.currency_manager import CurrencyManager
                     treasury = conn.execute(
                         "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",

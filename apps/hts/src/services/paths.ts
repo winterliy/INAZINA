@@ -1,5 +1,5 @@
 // Route table kept free of page components so the router can resolve a path without loading them.
-export const SERVICE_PATHS = ["/transfer", "/bank", "/invest", "/casino", "/history", "/market", "/financials", "/meetings", "/court", "/info"] as const;
+export const SERVICE_PATHS = ["/transfer", "/bank", "/invest", "/casino", "/history", "/market", "/financials", "/meetings", "/court", "/stats", "/info"] as const;
 export type ServicePath = (typeof SERVICE_PATHS)[number];
 export const servicePath = (path: string): ServicePath | undefined => SERVICE_PATHS.find((key) => path === key || path === `${key}/`);
 

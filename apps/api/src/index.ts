@@ -882,6 +882,13 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     return;
   }
 
+  // Personal statistics (always computed at today's exchange rates, so no caching).
+  if (request.method === "GET" && url.pathname === "/api/me/stats") {
+    const result = await internalGet(`/internal/me/stats${url.search}`, principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+
   // Bell notifications and payout choices (the receiver's decision on a payment with no account to credit).
   if (url.pathname.startsWith("/api/me/notifications") || url.pathname.startsWith("/api/me/payouts")) {
     const internalPath = url.pathname.replace("/api/", "/internal/");

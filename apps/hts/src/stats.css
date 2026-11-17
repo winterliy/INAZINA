@@ -1,0 +1,34 @@
+/* Statistics page: tokens come from the HTS (--ink, --ink2, --line, --surface, --canvas, --chip, --select, --accent, --up, --down). */
+.stats-page { display: grid; gap: 16px; }
+.stats-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.stats-seg { display: inline-flex; gap: 2px; padding: 3px; border-radius: 999px; background: var(--canvas); box-shadow: inset 0 0 0 1px var(--line); }
+.stats-seg button { min-height: 0; padding: 5px 13px; border: 0; border-radius: 999px; background: transparent; color: var(--ink2); font-size: 12.5px; font-weight: 600; }
+.stats-seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.stats-seg button:hover:not(:disabled):not([aria-pressed="true"]) { background: var(--select); }
+.stats-rate { color: var(--ink2); font-size: 12.5px; }
+.stats-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.stats-tile { min-width: 0; padding: 14px 16px; border-radius: 18px; background: var(--canvas); box-shadow: inset 0 0 0 1px var(--line); }
+.stats-tile span { display: block; color: var(--ink2); font-size: 12.5px; }
+.stats-tile b { display: block; margin-top: 2px; font-size: 22px; letter-spacing: -.02em; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.stats-tile small { color: var(--ink2); }
+.stats-up { color: var(--up); } .stats-down { color: var(--down); }
+.stats-panel { min-width: 0; padding: 16px 18px; border-radius: 18px; background: var(--canvas); box-shadow: inset 0 0 0 1px var(--line); }
+.stats-panel header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.stats-panel h2 { margin: 0; font-size: 16px; }
+.stats-panel .stats-note { color: var(--ink2); font-size: 12.5px; }
+.stats-scroll { overflow-x: auto; }
+.stats-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.stats-table th, .stats-table td { padding: 9px 8px; border-top: 1px solid var(--line); text-align: right; white-space: nowrap; }
+.stats-table th:first-child, .stats-table td:first-child { text-align: left; white-space: normal; }
+.stats-table thead th { border-top: 0; color: var(--ink2); font-size: 12px; font-weight: 600; }
+.stats-chip { display: inline-block; margin-left: 6px; padding: 1px 8px; border-radius: 999px; background: rgba(178, 106, 0, .12); color: #b26a00; font-size: 11px; font-weight: 650; vertical-align: 1px; }
+.stats-meter { height: 6px; min-width: 70px; margin-top: 4px; overflow: hidden; border-radius: 3px; background: var(--chip); }
+.stats-meter i { display: block; height: 100%; background: var(--accent); }
+.stats-two { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 14px; }
+.stats-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.stats-kv div { padding: 10px 12px; border-radius: 12px; background: var(--surface); }
+.stats-kv span { display: block; color: var(--ink2); font-size: 12px; }
+.stats-kv b { font-variant-numeric: tabular-nums; }
+.stats-defs { margin: 0; padding-left: 18px; color: var(--ink2); font-size: 12.5px; }
+.stats-defs li + li { margin-top: 3px; }
+.stats-empty { padding: 28px 12px; text-align: center; color: var(--ink2); }

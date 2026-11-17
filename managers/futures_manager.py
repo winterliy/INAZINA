@@ -187,6 +187,12 @@ class FuturesManager:
         currency = self._currency(conn)
         tax = (self.users._tax_in_home_currency(conn, order["user_id"], "futures_realized_gain",
                                                 max(0, realized_pnl), currency) if closing else 0)
+        if closing:
+            from functions.money import currency_precision
+            from managers.pnl_ledger import PnlLedger
+            PnlLedger.record(conn, order["user_id"], "futures", f"fill:{order['order_id']}:{time.time_ns()}", currency,
+                             currency_precision(conn, currency), realized_pnl, 0, tax_minor=tax,
+                             asset_code=product["product_code"], now=now)
         collateral -= returned
         net_pnl -= realized_pnl
         opening = quantity - closing
@@ -273,6 +279,12 @@ class FuturesManager:
                     currency = self._currency(conn)
                     tax = self.users._tax_in_home_currency(conn, position["user_id"], "futures_realized_gain",
                                                            max(0, net_pnl), currency)
+                    from functions.money import currency_precision
+                    from managers.pnl_ledger import PnlLedger
+                    PnlLedger.record(conn, position["user_id"], "futures",
+                                     f"close:{product['product_code']}:{position['user_id']}:{time.time_ns()}", currency,
+                                     currency_precision(conn, currency), net_pnl, 0, tax_minor=tax,
+                                     asset_code=product["product_code"], now=now)
                     self.users._credit_currency(conn, position["user_id"], currency, collateral - tax,
                                                 event="futures_close",
                                                 payout=self._payout(conn, product["product_code"], position["user_id"], "close", now))

@@ -1330,6 +1330,14 @@ def change_notifications(user_id, action, notification_id=None):
     return {"changed": changed}
 
 
+def user_stats(user_id, period="all"):
+    """The 통계 page: earnings, losses and taxes from existing records, at today's exchange rates."""
+    domain()
+    from managers.stats_manager import StatsManager
+    with connect_readonly() as connection:
+        return StatsManager.build(LegacyNames(connection), user_id, period)
+
+
 def user_payouts(user_id):
     domain()
     from managers.payout_manager import PayoutManager
@@ -4702,6 +4710,13 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     self.send_json(200, user_credit_report(user["userId"]) or {})
+            elif path == "/internal/me/stats":
+                user = identity(internal_user_id(self))
+                if not user:
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    period = (parse_qs(urlsplit(self.path).query).get("period") or ["all"])[0]
+                    self.send_json(200, user_stats(user["userId"], period))
             elif path in {"/internal/me/notifications", "/internal/me/payouts"}:
                 user = identity(internal_user_id(self))
                 if not user:

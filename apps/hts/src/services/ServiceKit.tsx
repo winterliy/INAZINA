@@ -17,6 +17,7 @@ export const SERVICES = [
   { path: "/financials", label: "기업 재무", description: "회사·우선주의 재무상태표 · 손익 · 현금흐름 · 주요 비율" },
   { path: "/meetings", label: "주주총회", description: "주주총회 소집 · 의제 투표 · 지난 회의록" },
   { path: "/court", label: "회생 · 파산", description: "개인회생 · 파산 신청서 작성과 제출 · 신청 내역" },
+  { path: "/stats", label: "통계", description: "총수익 · 총손실 · 총세액 · 손익 구성 · 세목별 세액" },
   { path: "/info", label: "정보 · 고객센터", description: "도움말 · 문의 · 신고" },
 ] as const;
 

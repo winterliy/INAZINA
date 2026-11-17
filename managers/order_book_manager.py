@@ -775,6 +775,10 @@ class OrderBookManager:
                 from_minor_units(taxable_gain_minor, places), currency=currency,
             )
             tax_minor = to_minor_units(tax, places)
+            from managers.pnl_ledger import PnlLedger
+            PnlLedger.record(conn, seller_id, "bond_sale",
+                             f"{sell_order['order_id']}:{buy_order['order_id']}:{time.time_ns()}", currency, places,
+                             gross_minor, basis_minor, tax_minor=tax_minor, asset_code=buy_order["asset_code"], now=now)
             proceeds_minor = max(0, gross_minor - tax_minor)
             from managers.currency_manager import CurrencyManager, SCALE
             sale_currency = str(sell_order["quote_currency"] or base_currency_code(conn))
@@ -810,6 +814,7 @@ class OrderBookManager:
         left = quantity
         sold = []
         taxable_gain_minor = 0
+        cost_total_minor = 0
         for position in positions:
             take = min(left, int(position["quantity"]))
             if take <= 0:
@@ -818,6 +823,7 @@ class OrderBookManager:
                                   if "average_cost_minor_units" in position.keys()
                                   else to_minor_units(position["average_cost"] or 0, places))
             taxable_gain_minor += max(0, execution_minor - average_cost_minor) * take
+            cost_total_minor += average_cost_minor * take
             sold.append((position, take))
             left -= take
             if left == 0:
@@ -830,6 +836,11 @@ class OrderBookManager:
             from_minor_units(taxable_gain_minor, places), currency=currency
         )
         total_tax_minor = to_minor_units(total_tax, places)
+        from managers.pnl_ledger import PnlLedger
+        PnlLedger.record(conn, seller_id, "stock_sale",
+                         f"{sell_order['order_id']}:{buy_order['order_id']}:{time.time_ns()}", currency, places,
+                         execution_minor * quantity, cost_total_minor, tax_minor=total_tax_minor,
+                         asset_code=sell_order["asset_code"], now=now)
         tax_left_minor = total_tax_minor
         quantity_left = quantity
         for position, take in sold:

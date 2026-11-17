@@ -176,12 +176,14 @@ class ForeignSecuritiesManager:
             else:
                 positions=conn.execute('SELECT * FROM user_assets WHERE user_id=? AND asset_code=? ORDER BY holding_id',(sell['user_id'],asset['code'])).fetchall()
                 left,gain_minor = quantity,0
+                cost_total_minor = 0
                 for position in positions:
                     take=min(left,position['quantity'])
                     if not take:
                         continue
                     from managers.asset_cost_manager import AssetCostManager
                     cost_minor = AssetCostManager.sale_cost_minor(conn, position['holding_id'], take)
+                    cost_total_minor += cost_minor
                     gain_minor += max(0, price_minor * take - cost_minor)
                     if take==position['quantity']:
                         conn.execute('DELETE FROM user_assets WHERE holding_id=?',(position['holding_id'],))
@@ -196,6 +198,10 @@ class ForeignSecuritiesManager:
                 tax=self.users._tax(conn,sell['user_id'],'foreign_security_sale_gain',gain,
                                     currency=currency)
                 tax_minor=to_minor_units(tax, places)
+                from managers.pnl_ledger import PnlLedger
+                PnlLedger.record(conn, sell['user_id'], 'stock_sale', f"{sell['order_id']}:{incoming['order_id']}:{time.time_ns()}",
+                                 currency, places, price_minor*quantity, AssetCostManager.rounded_minor(cost_total_minor),
+                                 tax_minor=tax_minor, asset_code=asset['code'], now=now)
                 proceeds_units = self._minor_to_ledger_units(price_minor*quantity-tax_minor, places)
                 quantum = SCALE // (10 ** places)
                 proceeds_units = max(0, proceeds_units//quantum*quantum)

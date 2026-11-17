@@ -1628,6 +1628,7 @@ class CurrencyDB(DBManager):
         ensure_notifications(self.execute)
         ensure_snapshot_retirements(self.execute)
         ensure_option_settlement_account_guard(self.execute)
+        ensure_user_realized_pnl(self.execute)
         ensure_payout_requests(self.execute)
 
     def _ensure_treasury_bond_minor_units(self):
@@ -3746,6 +3747,23 @@ def ensure_accounting_line_repairs(execute):
         execute(f"""CREATE TRIGGER IF NOT EXISTS trg_accounting_line_repairs_{operation.lower()}
             BEFORE {operation} ON accounting_line_repairs
             BEGIN SELECT RAISE(ABORT,'accounting line repairs are append-only'); END""")
+
+
+def ensure_user_realized_pnl(execute):
+    """Realized profit and loss per sale, close or game result: the one thing the statistics page cannot
+    rebuild from other tables (taxes only keep the gain, never the loss). Rows are written by the business
+    paths when they settle and can never change."""
+    execute("""CREATE TABLE IF NOT EXISTS user_realized_pnl (
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, kind TEXT NOT NULL, asset_code TEXT,
+        currency_code TEXT NOT NULL, decimal_places INTEGER NOT NULL CHECK(decimal_places BETWEEN 0 AND 6),
+        proceeds_minor_units INTEGER NOT NULL, cost_minor_units INTEGER NOT NULL, pnl_minor_units INTEGER NOT NULL,
+        tax_minor_units INTEGER NOT NULL DEFAULT 0, ref TEXT NOT NULL, recorded_epoch INTEGER NOT NULL,
+        UNIQUE(kind,ref))""")
+    execute("CREATE INDEX IF NOT EXISTS idx_user_realized_pnl_user ON user_realized_pnl(user_id, recorded_epoch)")
+    for operation in ("UPDATE", "DELETE"):
+        execute(f"""CREATE TRIGGER IF NOT EXISTS trg_user_realized_pnl_{operation.lower()}
+            BEFORE {operation} ON user_realized_pnl
+            BEGIN SELECT RAISE(ABORT,'realized profit and loss rows are append-only'); END""")
 
 
 def ensure_option_settlement_account_guard(execute):

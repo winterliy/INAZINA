@@ -18,7 +18,9 @@ import { PasswordSection } from "./PasswordSection";
 import { NotificationBell } from "./NotificationBell";
 import { PayoutPage } from "./PayoutPage";
 import { PendingPayouts } from "./PendingPayouts";
+import { RefreshRateButton } from "./RefreshRateButton";
 import "./pages.css";
+import "./notifications.css";
 import type { OwnershipGraphData } from "../../shared/OwnershipGraph";
 
 // Heavy, route-only screens load on first visit instead of with the trading screen.
@@ -260,6 +262,12 @@ export default function App() {
     setLoanSchedules(bundle.loans.body.loans);
     setDrCustodyInstructions(bundle.conversions.body.instructions);
   }, [userRole]);
+  // Figures in the citizen's own currency use the exchange rate the server read when the account was loaded.
+  const [ratesBusy, setRatesBusy] = useState(false);
+  const refreshRates = useCallback(async () => {
+    setRatesBusy(true);
+    try { await refreshAccount(); } catch { /* the figures simply stay as they were */ } finally { setRatesBusy(false); }
+  }, [refreshAccount]);
 
   async function saveTaxResidency(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -662,7 +670,7 @@ export default function App() {
   if (location.pathname === "/portfolio" || location.pathname === "/portfolio/") return <div className="hts-shell stage portfolio-page-shell">
     <Backdrop />
     {topbar("home")}
-    <main><PortfolioPage holdings={holdings} instruments={instruments} homeCurrency={homeCurrency} cash={portfolio?.cash ?? user.cash} totalAssets={portfolio?.grand_total ?? portfolio?.net_worth ?? 0} onSelect={(code) => { window.location.href = `/?symbol=${encodeURIComponent(code)}`; }} /></main>
+    <main><PortfolioPage holdings={holdings} instruments={instruments} homeCurrency={homeCurrency} cash={portfolio?.cash ?? user.cash} totalAssets={portfolio?.grand_total ?? portfolio?.net_worth ?? 0} onRefreshRates={() => void refreshRates()} ratesBusy={ratesBusy} onSelect={(code) => { window.location.href = `/?symbol=${encodeURIComponent(code)}`; }} /></main>
     <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
   </div>;
   if (service) return <div className="hts-shell stage service-shell">
@@ -694,7 +702,7 @@ export default function App() {
         <dl>
           <div><dt>로그인 아이디</dt><dd>{htsId || "미설정"}</dd></div>
           <div><dt>지갑</dt><dd>{money(portfolio?.cash ?? user.cash, homeDigits)} {homeCurrency}</dd></div>
-          <div><dt>순자산</dt><dd>{money(inHome(portfolio?.net_worth ?? 0), homeDigits)} {homeCurrency}</dd></div>
+          <div><dt>순자산 <RefreshRateButton busy={ratesBusy} onRefresh={() => void refreshRates()} /></dt><dd>{money(inHome(portfolio?.net_worth ?? 0), homeDigits)} {homeCurrency}</dd></div>
           {credit && <div><dt>신용점수</dt><dd>{credit.score}점</dd></div>}
         </dl>
         <button type="button" onClick={() => void logout()}>{user.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button>
@@ -800,7 +808,7 @@ export default function App() {
         </section>
         <section className="wallet-tile" aria-label="내 지갑">
           <section className="wallet-summary">
-            <span>내 순자산 · {portfolio?.nationality ?? user.nationality} · {homeCurrency}</span>
+            <span>내 순자산 · {portfolio?.nationality ?? user.nationality} · {homeCurrency}<RefreshRateButton busy={ratesBusy} onRefresh={() => void refreshRates()} /></span>
             <strong>{compactMoney(inHome(portfolio?.net_worth ?? 0))} <small>{homeCurrency}</small></strong>
             <p>총자산 {compactMoney(inHome(portfolio?.grand_total ?? 0))} · 현금 {compactMoney(portfolio?.cash ?? user.cash)} {homeCurrency}</p>
             {portfolio?.kyc_profile && <p>KYC · {KYC_STATUS[portfolio.kyc_profile.status]} · {KYC_RISK[portfolio.kyc_profile.risk_tier]}{portfolio.kyc_profile.expires_epoch ? ` · 만료 ${date(portfolio.kyc_profile.expires_epoch)}` : ""}</p>}

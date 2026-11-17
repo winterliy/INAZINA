@@ -1,4 +1,5 @@
 import type { Money } from "../../shared/money";
+import { RefreshRateButton } from "./RefreshRateButton";
 import { formatMoneyNumeric } from "../../shared/money";
 import { useEffect, useMemo, useState } from "react";
 import { GuideLayout, Hero, isDark, pad, RotatingStat, Section } from "./GuideLayout";
@@ -23,7 +24,7 @@ export function performanceRankings(holdings: PortfolioHolding[], instruments: P
 const signed = (value: number) => `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 const SECTIONS = ["보유 비중", "순위", "자산군과 성장", "포트폴리오 리포트", "모든 내 주식"];
 
-export function PortfolioPage({ holdings, instruments, homeCurrency, cash = 0, totalAssets = 0, onSelect }: { holdings: PortfolioHolding[]; instruments: PortfolioInstrument[]; homeCurrency: string; cash?: Money; totalAssets?: Money; onSelect: (code: string) => void }) {
+export function PortfolioPage({ holdings, instruments, homeCurrency, cash = 0, totalAssets = 0, onSelect, onRefreshRates, ratesBusy = false }: { holdings: PortfolioHolding[]; instruments: PortfolioInstrument[]; homeCurrency: string; cash?: Money; totalAssets?: Money; onRefreshRates?: () => void; ratesBusy?: boolean; onSelect: (code: string) => void }) {
   const [filter, setFilter] = useState<"all" | "up" | "down">("all");
   const [sort, setSort] = useState<"value" | "change" | "qty">("value");
   const segments = allocationSegments(holdings);
@@ -62,7 +63,7 @@ export function PortfolioPage({ holdings, instruments, homeCurrency, cash = 0, t
       <div><p className="bg-label">INAZINA · PORTFOLIO</p><h1>내 주식</h1></div>
       <div className="bg-copy">
         <p>보유 비중과 최근 성과를 한눈에 확인합니다.</p>
-        <p className="bg-muted">{holdings.length}개 종목 · 평가액 기준</p>
+        <p className="bg-muted">{holdings.length}개 종목 · 평가액 기준{onRefreshRates && <RefreshRateButton busy={ratesBusy} onRefresh={onRefreshRates} />}</p>
         <a className="bg-btn" href="/">HTS로 돌아가기 <i aria-hidden="true">→</i></a>
       </div>
     </header>

@@ -9,11 +9,12 @@ import { MarketInfoPage } from "./MarketInfoPage";
 import { InvestPage } from "./InvestPage";
 import { MeetingsPage } from "./MeetingsPage";
 import { CourtPage } from "./CourtPage";
+import { StatsPage } from "./StatsPage";
 import { SERVICES, ServiceNav, type Account } from "./ServiceKit";
 import { TransferPage } from "./TransferPage";
 import type { ServicePath } from "./paths";
 
-const PAGES = { "/transfer": TransferPage, "/bank": BankPage, "/invest": InvestPage, "/casino": CasinoPage, "/history": HistoryPage, "/market": MarketInfoPage, "/financials": FinancialsPage, "/meetings": MeetingsPage, "/court": CourtPage, "/info": InfoPage };
+const PAGES = { "/transfer": TransferPage, "/bank": BankPage, "/invest": InvestPage, "/casino": CasinoPage, "/history": HistoryPage, "/market": MarketInfoPage, "/financials": FinancialsPage, "/meetings": MeetingsPage, "/court": CourtPage, "/stats": StatsPage, "/info": InfoPage };
 /** The HTS's banking, product and game pages, one URL each, sharing one command session. */
 export function ServicesApp({ path, instruments, portfolio, orders, userId, homeCurrency, homeDigits, cash, creditScore, accounts, onDone }: {
   path: ServicePath; instruments: Instrument[]; portfolio: Portfolio | null; orders: Order[]; homeCurrency: string; homeDigits: number;
