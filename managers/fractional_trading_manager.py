@@ -129,7 +129,8 @@ class FractionalTradingManager:
         rate = CurrencyManager.rate_fraction(conn, currency)
         taxable = min(gain, gross) * rate / SCALE
         taxable_nwx = taxable.numerator // taxable.denominator
-        tax = self.users._tax(conn, str(user), 'fractional_sale_gain', taxable_nwx)
+        tax = self.users._tax(conn, str(user), 'fractional_sale_gain', taxable_nwx,
+                              currency=base_currency_code(conn))
         tax_local = Fraction(tax*SCALE, 1) / rate
         tax_units = min(gross, self._ceil(-(-tax_local.numerator//tax_local.denominator), quantum))
         net_quanta = (gross-tax_units)//quantum

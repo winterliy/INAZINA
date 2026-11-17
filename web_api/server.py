@@ -44,7 +44,7 @@ from functions.dr_pricing import (
 )
 from functions.admin_audit import record_admin_audit
 from functions.performance import log_slow
-from web_api import admin_logins, board, documents
+from web_api import admin_logins, board, documents, governance
 from functions.time_utils import validate_epoch
 _domain = None
 _domain_lock = threading.Lock()
@@ -339,6 +339,72 @@ _board_ip_purged = 0.0
 _board_init_lock = threading.Lock()
 # Board attachments: the API server writes the files here, this service tracks them.
 BOARD_FILES_DIR = Path(os.environ.get("INAZINA_BOARD_FILES_DIR", ROOT / "database" / "board_files")).resolve()
+
+
+@contextmanager
+def governance_db():
+    """A write connection with the 주주총회 and 회생·파산 tables in place."""
+    with connect_db(timeout=10) as connection:
+        governance.ensure_tables(connection)
+        yield connection
+
+
+def file_court_case(user, payload):
+    """회생·파산 신청: kept with an asset snapshot, and the bot DMs the administrators."""
+    trader = trading_user_id(user["userId"])
+    try:
+        assets = domain().bot.user_mgr.get_total_assets(trader, settle=False)
+    except Exception:  # the snapshot is a courtesy for the reviewer; the filing still stands
+        assets = {}
+    with governance_db() as connection:
+        filing_id = governance.file_court(connection, user, payload, dict(assets or {}))
+    label = governance.KINDS[payload["kind"]]
+    queue_bot_job("relief_request", user["userId"], {"type": label, "name": user["nickname"]})
+    return {"filingId": filing_id, "message": f"{label} 신청서 제{filing_id}호가 접수되었습니다. 관리자가 검토합니다."}
+
+
+def admin_court_decide(actor, filing_id, payload):
+    """회생·파산 심리: record the decision, and the bot DMs the applicant.
+    인가는 먼저 실제 처리(청산·배당·면책 또는 변제계획 개시)를 하고, 성공해야 상태가 바뀝니다."""
+    outcome = ""
+    if payload.get("status") == "approved":
+        with connect_readonly() as connection:
+            row = connection.execute("SELECT * FROM court_filings WHERE filing_id=?", (int(filing_id),)).fetchone()
+        if not row:
+            raise ValueError("신청을 찾을 수 없습니다.")
+        if row["status"] in ("approved", "rejected"):
+            raise ValueError("이미 결정된 신청입니다.")
+        from managers.insolvency_manager import InsolvencyManager
+        filing = dict(row)
+        filing["user_id"] = str(row["user_id"])  # 국가 계정을 국고로 바꾸지 않습니다(국고 청산 방지).
+        if payload.get("weeks"):
+            filing["weeks"] = int(payload["weeks"])
+        outcome = InsolvencyManager(domain().bot).approve(actor, filing)
+    with governance_db() as connection:
+        decided = governance.decide_filing(connection, actor, filing_id, payload)
+        if outcome:
+            decided["outcome"] = outcome
+            note = (decided["note"] + "\n" if decided["note"] else "") + outcome
+            connection.execute("UPDATE court_filings SET note=? WHERE filing_id=?", (note, int(filing_id)))
+        _audit_db(connection, actor, "court.filing", {"id": int(filing_id), "status": decided["status"], "outcome": outcome})
+    queue_bot_job("court_decision", decided["userId"], decided)
+    suffix = f" {outcome}." if outcome else ""
+    return f"✅ {decided['label']} 신청 제{decided['filingId']}호를 '{decided['statusLabel']}'(으)로 처리했습니다.{suffix} 신청자에게 DM으로 알립니다."
+
+
+def admin_court_policies():
+    from managers import insolvency_manager
+    with governance_db() as connection:
+        insolvency_manager.ensure_tables(connection)
+        return {"items": insolvency_manager.policies(connection), "defaults": insolvency_manager.DEFAULTS}
+
+
+def admin_court_policy_update(actor, nationality, payload):
+    from managers import insolvency_manager
+    with governance_db() as connection:
+        insolvency_manager.set_policy(connection, actor, nationality, payload.get("values") or {})
+        _audit_db(connection, actor, "court.policy", {"nationality": nationality, "values": payload.get("values")})
+    return f"✅ {nationality}의 회생·파산 기준을 저장했습니다."
 
 
 @contextmanager
@@ -714,6 +780,17 @@ def set_hts_login_id(user_id, hts_id, password):
     except sqlite3.IntegrityError as exc:
         raise ValueError("hts_id_taken") from exc
     return normalized_id
+
+
+def change_password(user_id, current_password, new_password):
+    """Account page: the signed-in user replaces their password after re-entering the current one."""
+    if delegated_by():
+        raise ValueError("delegated_session")
+    if not authenticate_password(user_id, current_password):
+        raise ValueError("invalid_credentials")
+    if current_password == new_password:
+        raise ValueError("password_unchanged")
+    return save_password(user_id, new_password)
 
 
 def create_country_account(actor_id, country_id, password):
@@ -1873,8 +1950,21 @@ def admin_bank_journal_report(issuer, currency=None, since_epoch=None):
                     "balance_amount": money_text(Decimal(row["balance_units"]) / scale, places),
                 })
         financial_close_control = AccountingJournal.reconcile_all_financial_ledgers(connection)
+        for row in (financial_close_control["common_trial_balance"]["totals"]
+                    + financial_close_control["common_trial_balance"]["accounts"]):
+            scale = 10 ** row["decimal_places"]
+            # Units can exceed what a browser number holds; send them as text.
+            for field in ("debit", "credit", "difference", "balance"):
+                if f"{field}_units" in row:
+                    row[f"{field}_amount"] = money_text(
+                        Decimal(row[f"{field}_units"]) / scale, row["decimal_places"])
+                    row[f"{field}_units"] = str(row[f"{field}_units"])
         common_journal_reconciliation = financial_close_control["common_journal_checks"]
-        common_journal_unbalanced = AccountingJournal.audit_unbalanced(connection)
+        # The close control already audited every scope; reuse its rows.
+        common_journal_unbalanced = [
+            {key: value for key, value in finding.items() if key != "status"}
+            for finding in financial_close_control["common_trial_balance"]["findings"]
+            if finding["status"] == "unbalanced_entry"]
         amount_snapshot_findings = financial_close_control["amount_snapshot_findings"]
         unbalanced = BankJournal.audit_unbalanced(connection, issuer)
         deposit_reconciliation = BankJournal.reconcile_customer_deposits(connection, issuer)
@@ -4499,6 +4589,14 @@ class Handler(BaseHTTPRequestHandler):
                         user["userId"],
                     )
                     self.send_json(200, {"agenda": agenda})
+            elif path in ("/internal/governance/meetings", "/internal/court/filings"):
+                user = identity(internal_user_id(self))
+                if not user:
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    with governance_db() as connection:
+                        self.send_json(200, governance.list_meetings(connection, user) if "governance" in path
+                                       else {"filings": governance.list_filings(connection, user)})
             elif path == "/internal/info/panel":
                 user = identity(internal_user_id(self))
                 query = parse_qs(parsed.query)
@@ -4787,7 +4885,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, admin_command_catalog())
             elif path.startswith("/internal/admin/") and path.split("/")[3] in {
                     "products", "countries", "exchanges", "help", "bot-jobs", "user", "companies", "warnings", "feedback",
-                    "naturalization", "banks", "organizations"}:
+                    "court", "naturalization", "banks", "organizations"}:
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
@@ -4847,6 +4945,11 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, admin_warnings())
                 elif parts == ["feedback"]:
                     self.send_json(200, admin_feedback(query.get("status", [None])[0]))
+                elif parts == ["court", "policies"]:
+                    self.send_json(200, admin_court_policies())
+                elif parts == ["court"]:
+                    with governance_db() as connection:
+                        self.send_json(200, governance.admin_filings(connection, query.get("status", [None])[0]))
                 elif parts == ["naturalization"]:
                     self.send_json(200, admin_naturalization())
                 elif parts == ["banks"]:
@@ -5412,6 +5515,22 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/internal/hts/account":
                 hts_id = set_hts_login_id(user["userId"], payload.get("htsId"), payload.get("password"))
                 self.send_json(200, {"htsId": hts_id})
+            elif path == "/internal/court/filings":
+                self.send_json(200, file_court_case(user, payload))
+            elif path == "/internal/governance/meetings":
+                with governance_db() as connection:
+                    result = governance.convene(connection, user, payload, str(TREASURY_USER_ID))
+                # The bot still invites every holder by Discord DM.
+                queue_bot_job("user_shareholder_meeting", user["userId"], {"meetingId": result["meetingId"]})
+                self.send_json(200, result)
+            elif re.fullmatch(r"/internal/governance/meetings/\d+/(respond|close)", path):
+                meeting_id = int(path.split("/")[4])
+                with governance_db() as connection:
+                    result = governance.respond(connection, user, meeting_id, payload) if path.endswith("/respond") \
+                        else governance.close(connection, user, meeting_id)
+                self.send_json(200, result)
+            elif path == "/internal/hts/password":
+                self.send_json(200, {"user": change_password(user["userId"], payload.get("password"), payload.get("newPassword"))})
             elif path == "/internal/market/orders":
                 trader = trading_user_id(user["userId"])
                 success, message = execute_order(trader, payload)
@@ -5486,7 +5605,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(200, admin_login_as(user["userId"], payload))
             elif path.startswith("/internal/admin/") and path.split("/")[3] in {
                     "products", "countries", "exchanges", "user", "companies", "warnings", "feedback", "logs",
-                    "naturalization", "banks", "organizations"}:
+                    "court", "naturalization", "banks", "organizations"}:
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
                     return
@@ -5536,6 +5655,10 @@ class Handler(BaseHTTPRequestHandler):
                     message = admin_bank_update(actor, parts[1], payload)
                 elif len(parts) == 2 and parts[0] == "feedback":
                     message = admin_feedback_action(actor, parts[1], payload)
+                elif len(parts) == 3 and parts[:2] == ["court", "policies"]:
+                    message = admin_court_policy_update(actor, unquote(parts[2]), payload)
+                elif len(parts) == 2 and parts[0] == "court":
+                    message = admin_court_decide(actor, parts[1], payload)
                 elif len(parts) == 2 and parts[0] == "user":
                     message = admin_update_user(actor, parts[1], payload.get("changes"))
                 elif len(parts) == 3 and parts[0] == "user" and parts[2] == "web":

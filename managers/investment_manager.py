@@ -347,6 +347,29 @@ class InvestmentManager:
         # UserManager's fund paths include NAV cash settlement with the game treasury.
         return (self.users.sell_asset if redeem else self.users.buy_asset)(str(user_id), str(code), quantity)
 
+    def _pay_bond_holder(self, conn, user_id, product, principal, coupon, event, now):
+        """Tax the coupon and pay principal plus net coupon in the bond's currency; returns the tax.
+
+        A holder whose own currency differs is paid into an account in the bond
+        currency or exchanged at the current quote, and the exchange is recorded.
+        """
+        from database.fund_accounting import account as fund_account
+        from functions.money import currency_precision, to_minor_units
+        from managers.currency_manager import CurrencyManager
+        currency = str(product["quote_currency"] or base_currency_code(conn)).upper()
+        tax = self.users._tax(conn, user_id, "corporate_bond_interest", coupon, currency=currency)
+        net = principal + coupon - tax
+        if fund_account(conn, user_id) or CurrencyManager.home(conn, user_id) == currency:
+            self.users._credit_source(conn, user_id, None, net, event=event, reference=product['product_code'])
+            return tax
+        units = to_minor_units(net, currency_precision(conn, currency))
+        settlement = CurrencyManager.receive(conn, user_id, currency, units)
+        if settlement:
+            CurrencyManager.record_fx_settlement(
+                conn, f"corporate_{event}", f"{product['product_code']}:{user_id}:{now}",
+                user_id, currency, units, settlement, now)
+        return tax
+
     def redeem_corporate_bonds(self, now=None):
         now = int(RateManager._validated_epoch(
             now, "invalid_corporate_bond_redemption_epoch"
@@ -403,9 +426,7 @@ class InvestmentManager:
                     conn.execute("UPDATE product.investment SET status = 'defaulted' WHERE product_code = ?", (product["product_code"],))
                     continue
                 for user_id, quantity, principal, coupon in payments:
-                    tax = self.users._tax(conn, user_id, "corporate_bond_interest", coupon)
-                    self.users._credit_source(conn, user_id, None, principal + coupon - tax,
-                                              event='bond_redemption', reference=product['product_code'])
+                    tax = self._pay_bond_holder(conn, user_id, product, principal, coupon, 'bond_redemption', now)
                     notifications.append(dict(user_id=user_id, product_code=product["product_code"], net=principal + coupon - tax))
                 if bond_finance and due:
                     finance, issuer = bond_finance
@@ -495,9 +516,7 @@ class InvestmentManager:
                     )
                     continue
                 for user_id, coupon in payments:
-                    tax = self.users._tax(conn, user_id, "corporate_bond_interest", coupon)
-                    self.users._credit_source(conn, user_id, None, coupon-tax,
-                                              event='bond_coupon', reference=product['product_code'])
+                    tax = self._pay_bond_holder(conn, user_id, product, 0, coupon, 'bond_coupon', now)
                     notifications.append({"user_id": str(user_id),
                                           "product_code": product["product_code"],
                                           "coupon": coupon, "tax": tax})

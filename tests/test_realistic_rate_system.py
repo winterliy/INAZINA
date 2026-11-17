@@ -730,6 +730,7 @@ class RealisticRateSystemTests(unittest.TestCase):
             report = BankJournal.reconcile_all(conn, "Bank")
         self.assertEqual(report["status"], "matched")
         self.assertEqual(set(report["coverage"]), {
+            "wholesale_funding",
             "institution_pnl", "customer_deposits", "loan_receivables",
             "ecl_allowances", "charged_off_memo_balances",
             "loan_payment_schedules", "collateral_liquidations",
@@ -1538,6 +1539,17 @@ class RealisticRateSystemTests(unittest.TestCase):
         self.assertEqual(report["financialCloseControl"]["amount_field_coverage"]["status"], "matched")
         self.assertEqual(report["financialCloseControl"]["amount_field_coverage"]["unclassified"], [])
         self.assertIn("institution_subledgers", report["financialCloseControl"]["coverage"])
+        close_trial = report["financialCloseControl"]["common_trial_balance"]
+        self.assertEqual(close_trial["status"], "matched", close_trial["findings"])
+        institution_row = next(row for row in close_trial["totals"] if row["ledger_scope"] == "institution")
+        # Units travel as text with a display amount beside them, and every scope balances.
+        self.assertIsInstance(institution_row["debit_units"], str)
+        self.assertEqual(institution_row["debit_amount"], institution_row["credit_amount"])
+        self.assertTrue(all(int(row["difference_units"]) == 0 for row in close_trial["totals"]))
+        self.assertEqual(report["financialCloseControl"]["consumer_coverage"]["unclassified"], [])
+        self.assertEqual(report["financialCloseControl"]["consumer_coverage"]["unconnected"], [])
+        self.assertIs(report["financialCloseControl"]["close_ready"],
+                      report["financialCloseControl"]["findingCount"] == 0)
         self.assertTrue(any(item["issuer"] == "Bank"
                             for item in report["financialCloseControl"]["institution_reports"]))
         self.assertTrue(all(row["currency_code"] == "NWX"

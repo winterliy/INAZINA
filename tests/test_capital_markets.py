@@ -79,6 +79,14 @@ class CapitalMarketsTests(unittest.TestCase):
         self.assertEqual(self.db.corporate.execute_one(
             "SELECT balance FROM issuer_cash_accounts WHERE company_code='INZST001'")[0], 2000)
         self.assertFalse(self.bot.capital_markets.exercise_warrant('citizen', 'BW1', 1)[0])
+        # The exercise cost is tied to the wallet row that paid it.
+        from managers.accounting_journal import AccountingJournal
+        with self.db.readonly() as conn:
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item['ledger_scope'] == 'business_cash')
+            kinds = [row[0] for row in conn.execute('SELECT kind FROM business_cash_events')]
+        self.assertEqual(check['status'], 'matched', check)
+        self.assertEqual(kinds, ['hybrid_bond'])
 
     def test_fund_of_funds_accepts_funds_and_rejects_itself(self):
         self.prepare()
@@ -104,6 +112,27 @@ class CapitalMarketsTests(unittest.TestCase):
         ok, message = markets.close_swap('citizen', swap['swap_id'])
         self.assertTrue(ok, message)
         self.assertEqual(self.db.accounts.execute_one("SELECT status,margin FROM swap_contracts")[:], ('closed', 0))
+
+    def test_swap_margin_interest_and_termination_reconcile_with_the_wallet_ledger(self):
+        from managers.accounting_journal import AccountingJournal
+        self.prepare()
+        markets = self.bot.capital_markets
+
+        def check():
+            with self.db.readonly() as conn:
+                return next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                            if item['ledger_scope'] == 'swap_cash')
+        self.assertEqual((check()['status'], check()['active']), ('matched', False))
+        self.assertTrue(markets.open_swap('citizen', 1_000_000, '고정지급', 365)[0])
+        result = check()
+        self.assertEqual((result['status'], result['active'], result['held']), ('matched', True, 50_000), result)
+        swap = self.db.accounts.execute_one("SELECT * FROM swap_contracts")
+        self.db.currency.execute("UPDATE country_currencies SET base_rate=base_rate+5 WHERE nationality='낙원'")
+        markets.process_due(now=swap['start_epoch'] + 10 * 86400)
+        self.assertEqual(check()['status'], 'matched', check())
+        self.assertTrue(markets.close_swap('citizen', swap['swap_id'])[0])
+        result = check()
+        self.assertEqual((result['status'], result['held']), ('matched', 0), result)
 
     def test_due_processing_rejects_invalid_epoch_before_swap_settlement(self):
         self.prepare()

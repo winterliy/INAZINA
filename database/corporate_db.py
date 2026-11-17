@@ -186,18 +186,21 @@ class CorporateDB(DBManager):
         if self.execute("SELECT 1 FROM sqlite_master WHERE name='company_income_log_v1'"):
             self.execute("INSERT INTO company_income_log SELECT * FROM company_income_log_v1")
             self.execute("DROP TABLE company_income_log_v1")
-        # Shareholder register (주주명부): who is entitled is fixed when the register
-        # closes, before the payment. Regular dividends close 10 minutes before the
-        # due time; a special dividend closes at the command and pays 10 minutes later.
+        # Shareholder register (주주명부), shared by dividends and shareholder meetings.
+        # Holdings change live; the register is frozen ('closed') only while something
+        # needs a fixed record: a dividend (regular: 10 minutes before the due time;
+        # special: at the command, paying 10 minutes later) or a meeting (from convening
+        # until voting ends). Payment ('paid') or the meeting's end ('released') lifts it.
+        self._widen_shareholder_registers()
         self.execute('''CREATE TABLE IF NOT EXISTS shareholder_registers (
             register_id INTEGER PRIMARY KEY AUTOINCREMENT,
             operation_key TEXT NOT NULL UNIQUE,
             asset_code TEXT NOT NULL,
-            dividend_kind TEXT NOT NULL CHECK(dividend_kind IN ('regular','special')),
+            dividend_kind TEXT NOT NULL CHECK(dividend_kind IN ('regular','special','meeting')),
             record_epoch INTEGER NOT NULL,
             pay_epoch INTEGER NOT NULL,
             per_share INTEGER NOT NULL DEFAULT 0 CHECK(per_share >= 0),
-            status TEXT NOT NULL DEFAULT 'closed' CHECK(status IN ('closed','paid','failed')),
+            status TEXT NOT NULL DEFAULT 'closed' CHECK(status IN ('closed','paid','failed','released')),
             actor_id TEXT,
             note TEXT,
             created_epoch INTEGER NOT NULL)''')
@@ -426,3 +429,34 @@ class CorporateDB(DBManager):
             'dividend_payments', ('gross_amount','tax_amount'), 'payment_id',
             'NEW.quote_currency',
         )
+
+    def _widen_shareholder_registers(self):
+        """Older registers allowed dividends only; rebuild once to admit meetings and release."""
+        from database import pg_backend
+        if pg_backend.enabled():
+            return  # database/postgres/schema.sql already has the wide checks
+        row = self.execute_one("SELECT sql FROM sqlite_master WHERE type='table' AND name='shareholder_registers'")
+        if not row or "'released'" in str(row['sql']):
+            return
+        with self.lock:
+            self.conn.commit()
+            self.conn.execute("PRAGMA foreign_keys=OFF")
+            self.conn.execute("PRAGMA legacy_alter_table=ON")
+            try:
+                self.conn.execute("BEGIN IMMEDIATE")
+                import re
+                definition = re.sub(r"(dividend_kind\s+IN\s*\(\s*'regular'\s*,\s*'special')\s*\)", r"\1, 'meeting')", str(row['sql']))
+                definition = re.sub(r"(status\s+IN\s*\(\s*'closed'\s*,\s*'paid'\s*,\s*'failed')\s*\)", r"\1, 'released')", definition)
+                if "'released'" not in definition:
+                    raise RuntimeError("shareholder_registers: unexpected definition, not widened")
+                self.conn.execute(definition.replace("shareholder_registers", "shareholder_registers_wide", 1))
+                self.conn.execute("INSERT INTO shareholder_registers_wide SELECT * FROM shareholder_registers")
+                self.conn.execute("DROP TABLE shareholder_registers")
+                self.conn.execute("ALTER TABLE shareholder_registers_wide RENAME TO shareholder_registers")
+                self.conn.execute("COMMIT")
+            except Exception:
+                self.conn.execute("ROLLBACK")
+                raise
+            finally:
+                self.conn.execute("PRAGMA legacy_alter_table=OFF")
+                self.conn.execute("PRAGMA foreign_keys=ON")

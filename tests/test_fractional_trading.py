@@ -226,7 +226,7 @@ class FractionalTradingTests(unittest.TestCase):
             asyncio.run(registry.shareholder_meeting(interaction, 'ST', '온라인'))
         target.send.assert_awaited_once()
         self.bot.get_user.assert_called_with(int(holder))
-        self.assertIn('1명 성공', interaction.followup.send.call_args.kwargs['content'])
+        self.assertIn('1명 전달', interaction.followup.send.call_args.kwargs['content'])
         self.db.assets.add_user_asset(TREASURY_USER_ID, 'ST', 1, unit_cost=100)
         target.send.reset_mock()
         async def national_meeting():

@@ -112,6 +112,10 @@ class CreditDB(DBManager):
             "INSERT OR IGNORE INTO credit_score_policy(key,value,description) VALUES (?,?,?)",
             CREDIT_POLICY_DEFAULTS,
         )
+        self.migrate_policy_defaults()
+
+    def migrate_policy_defaults(self):
+        """Move only unchanged legacy defaults, preserving administrator edits."""
         defaults = {key: (value, description) for key, value, description in CREDIT_POLICY_DEFAULTS}
         self.conn.executemany(
             "UPDATE credit_score_policy SET value=?,description=? WHERE key=? AND value=?",

@@ -14,7 +14,10 @@ class CurrencyDB(DBManager):
     skip_precision_migration = False
 
     # Money snapshots that follow their source row out when it is deleted (see the trigger loop).
-    SNAPSHOTS_DELETED_WITH_SOURCE = frozenset({"market_price_history", "market_exchange_index_components"})
+    # market_auto_target_history is trimmed to its newest rows and user_assets rows disappear when a
+    # position is sold out; the snapshots of both are routine leftovers, not missing money.
+    SNAPSHOTS_DELETED_WITH_SOURCE = frozenset({"market_price_history", "market_exchange_index_components",
+                                               "market_auto_target_history", "user_assets"})
 
     def __init__(self):
         super().__init__("forex")
@@ -1613,6 +1616,14 @@ class CurrencyDB(DBManager):
                     BEFORE {operation} ON {table}
                     BEGIN SELECT RAISE(ABORT,'{message}'); END""")
 
+        ensure_treasury_bond_fx_settlements(self.execute)
+        ensure_cash_fx_settlements(self.execute)
+        ensure_business_cash_links(self.execute)
+        ensure_institution_funding(self.execute)
+        ensure_accounting_line_repairs(self.execute)
+        ensure_wallet_baseline_adjustments(self.execute)
+        ensure_primary_recipient_overrides(self.execute)
+
     def _ensure_treasury_bond_minor_units(self):
         """Make bond offer and lot cash amounts authoritative in quote-currency units."""
         from functions.money import currency_precision, to_minor_units
@@ -1965,6 +1976,7 @@ class CurrencyDB(DBManager):
             ("bank_deficit_alerts", ("cash",), "issuer", "NEW.cash_currency_code"),
             ("aml_monitoring_rules", ("rolling_24h_amount_limit",), "nationality", "NEW.currency_code"),
             ("deposit_insurance_claims", ("payout_amount",), "claim_id", "NEW.payout_currency"),
+            ("swap_contracts", ("notional", "margin", "realized"), "swap_id", "NEW.currency"),
             ("futures_positions", ("settlement_price", "collateral", "net_pnl"), "rowid",
              "SELECT quote_currency FROM investment WHERE product_code=NEW.product_code"),
             ("dr_custody_instructions", ("fee_price",), "reference_key",
@@ -1990,6 +2002,8 @@ class CurrencyDB(DBManager):
                 ("leveraged_etf_state", "base_index_value", "통화 금액이 아닌 기초 지수 포인트"),
                 ("users", "income_stability", "소득 안정성 점수"),
                 ("credit_score_policy", "value", "신용점수 정책값"),
+                ("board_post_reactions", "value", "게시글 반응 값(+1/-1)이며 금액이 아님"),
+                ("board_comment_reactions", "value", "댓글 반응 값(+1/-1)이며 금액이 아님"),
                 ("financial_institutions", "operating_cost_spread", "금액이 아닌 비용 가산율"),
                 ("financial_lines", "amount", "이미 회사 원장 통화 최소단위로 저장된 서명 분개액"),
                 ("users", "cash_minor", "이미 고객 통화 최소단위로 저장된 권위 잔액"),
@@ -3049,6 +3063,7 @@ class CurrencyDB(DBManager):
             ('treasury_payable','국고지급채무','liability','credit'),
             ('deposit_insurance_payable','예금보험금지급채무','liability','credit'),
             ('uninsured_deposit_claim','미보호예금청구채무','liability','credit'),
+            ('wholesale_funding_payable','도매조달부채','liability','credit'),
             ('fx_conversion_clearing','외환전환청산','clearing','debit'),
             ('interest_income','이자수익','revenue','credit'),
             ('fee_income','수수료수익','revenue','credit'),
@@ -3568,3 +3583,186 @@ class CurrencyDB(DBManager):
                 "(currency_code,baseline_supply_units,baseline_circulation_ratio) VALUES (?,?,?)",
                 (code, str(max(0, total)), ratio),
             )
+
+
+def ensure_treasury_bond_fx_settlements(execute):
+    """Immutable FX snapshot for a bond payment converted into the holder's home currency.
+
+    ``rate`` is settlement currency per one source currency, kept as an exact
+    fraction in text so the converted amount can be recomputed at any time.
+    Events without a row were paid in the bond currency itself.
+    """
+    execute("""CREATE TABLE IF NOT EXISTS treasury_bond_cash_fx_settlements (
+        event_key TEXT PRIMARY KEY REFERENCES treasury_bond_cash_events(event_key),
+        source_currency TEXT NOT NULL, source_decimal_places INTEGER NOT NULL
+            CHECK(source_decimal_places BETWEEN 0 AND 6),
+        source_minor_units INTEGER NOT NULL
+            CHECK(typeof(source_minor_units)='integer' AND source_minor_units>0),
+        settlement_currency TEXT NOT NULL, settlement_decimal_places INTEGER NOT NULL
+            CHECK(settlement_decimal_places BETWEEN 0 AND 6),
+        settlement_minor_units INTEGER NOT NULL
+            CHECK(typeof(settlement_minor_units)='integer' AND settlement_minor_units>=0),
+        rate_numerator TEXT NOT NULL, rate_denominator TEXT NOT NULL,
+        recorded_epoch INTEGER NOT NULL,
+        CHECK(source_currency<>settlement_currency))""")
+    for operation in ("UPDATE", "DELETE"):
+        execute(f"""CREATE TRIGGER IF NOT EXISTS trg_treasury_bond_cash_fx_settlements_{operation.lower()}
+            BEFORE {operation} ON treasury_bond_cash_fx_settlements
+            BEGIN SELECT RAISE(ABORT,'treasury bond fx settlements are append-only'); END""")
+    execute("""CREATE TRIGGER IF NOT EXISTS trg_treasury_bond_cash_fx_settlements_insert
+        BEFORE INSERT ON treasury_bond_cash_fx_settlements
+        WHEN EXISTS (SELECT 1 FROM treasury_bond_cash_fx_settlements f WHERE f.event_key=NEW.event_key)
+        BEGIN SELECT RAISE(ABORT,'treasury bond fx settlements are append-only'); END""")
+
+
+def ensure_cash_fx_settlements(execute):
+    """Immutable record of a payment exchanged into the receiver's own currency.
+
+    ``kind`` and ``reference`` name the business row that was paid; ``rate`` is
+    the receiver's currency per one source unit, kept as an exact fraction.
+    """
+    execute("""CREATE TABLE IF NOT EXISTS cash_fx_settlements (
+        kind TEXT NOT NULL, reference TEXT NOT NULL, user_id TEXT NOT NULL,
+        source_currency TEXT NOT NULL, source_decimal_places INTEGER NOT NULL
+            CHECK(source_decimal_places BETWEEN 0 AND 6),
+        source_minor_units INTEGER NOT NULL
+            CHECK(typeof(source_minor_units)='integer' AND source_minor_units>0),
+        currency TEXT NOT NULL, decimal_places INTEGER NOT NULL CHECK(decimal_places BETWEEN 0 AND 6),
+        minor_units INTEGER NOT NULL CHECK(typeof(minor_units)='integer' AND minor_units>=0),
+        rate_numerator TEXT NOT NULL, rate_denominator TEXT NOT NULL,
+        recorded_epoch INTEGER NOT NULL,
+        PRIMARY KEY(kind,reference), CHECK(source_currency<>currency))""")
+    for operation in ("UPDATE", "DELETE"):
+        execute(f"""CREATE TRIGGER IF NOT EXISTS trg_cash_fx_settlements_{operation.lower()}
+            BEFORE {operation} ON cash_fx_settlements
+            BEGIN SELECT RAISE(ABORT,'cash fx settlements are append-only'); END""")
+
+
+def ensure_business_cash_links(execute):
+    """Which wallet and fund-cash rows each business record moved.
+
+    An event names one business row (``kind`` + ``reference``); every wallet row
+    belongs to at most one event. Records older than a kind's first event are
+    its baseline and are never given invented links.
+    """
+    execute("""CREATE TABLE IF NOT EXISTS business_cash_events (
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, reference TEXT NOT NULL,
+        recorded_epoch INTEGER NOT NULL, UNIQUE(kind,reference))""")
+    execute("""CREATE TABLE IF NOT EXISTS business_cash_links (
+        wallet_entry_id INTEGER PRIMARY KEY REFERENCES customer_wallet_ledger(entry_id),
+        event_id INTEGER NOT NULL REFERENCES business_cash_events(event_id))""")
+    execute("CREATE INDEX IF NOT EXISTS idx_business_cash_links_event ON business_cash_links(event_id)")
+    execute("""CREATE TABLE IF NOT EXISTS business_cash_fund_links (
+        fund_entry_id INTEGER PRIMARY KEY REFERENCES fund_cash_ledger(entry_id),
+        event_id INTEGER NOT NULL REFERENCES business_cash_events(event_id))""")
+    # What a product already held when its cash movements started being linked.
+    execute("""CREATE TABLE IF NOT EXISTS business_cash_baseline_values (
+        kind TEXT PRIMARY KEY, amount TEXT NOT NULL, recorded_epoch INTEGER NOT NULL)""")
+    for table in ("business_cash_events", "business_cash_links", "business_cash_fund_links",
+                  "business_cash_baseline_values"):
+        for operation in ("UPDATE", "DELETE"):
+            execute(f"""CREATE TRIGGER IF NOT EXISTS trg_{table}_{operation.lower()}
+                BEFORE {operation} ON {table}
+                BEGIN SELECT RAISE(ABORT,'business cash links are append-only'); END""")
+
+
+def ensure_institution_funding(execute):
+    """Wholesale funding rows of financial institutions, their limits and their event log."""
+    execute("""CREATE TABLE IF NOT EXISTS institution_funding_limits (
+        issuer TEXT NOT NULL, source_type TEXT NOT NULL
+            CHECK(source_type IN ('bank_bond','interbank','repo','central_bank')),
+        currency_code TEXT NOT NULL,
+        limit_minor_units INTEGER NOT NULL CHECK(typeof(limit_minor_units)='integer' AND limit_minor_units>=0),
+        updated_by TEXT NOT NULL, updated_epoch INTEGER NOT NULL,
+        PRIMARY KEY(issuer,source_type,currency_code))""")
+    execute("""CREATE TABLE IF NOT EXISTS institution_funding (
+        funding_id INTEGER PRIMARY KEY AUTOINCREMENT, reference_key TEXT NOT NULL UNIQUE,
+        issuer TEXT NOT NULL, source_type TEXT NOT NULL
+            CHECK(source_type IN ('bank_bond','interbank','repo','central_bank')),
+        counterparty TEXT NOT NULL DEFAULT '', currency_code TEXT NOT NULL,
+        decimal_places INTEGER NOT NULL CHECK(decimal_places BETWEEN 0 AND 6),
+        principal_minor_units INTEGER NOT NULL
+            CHECK(typeof(principal_minor_units)='integer' AND principal_minor_units>0),
+        rate_bps INTEGER NOT NULL CHECK(rate_bps>=0),
+        collateral_minor_units INTEGER NOT NULL DEFAULT 0
+            CHECK(typeof(collateral_minor_units)='integer' AND collateral_minor_units>=0),
+        haircut_bps INTEGER NOT NULL DEFAULT 0 CHECK(haircut_bps BETWEEN 0 AND 10000),
+        start_epoch INTEGER NOT NULL, maturity_epoch INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','repaid')),
+        interest_minor_units INTEGER NOT NULL DEFAULT 0
+            CHECK(typeof(interest_minor_units)='integer' AND interest_minor_units>=0),
+        repaid_epoch INTEGER, CHECK(maturity_epoch>start_epoch))""")
+    execute("CREATE INDEX IF NOT EXISTS idx_institution_funding_issuer ON institution_funding(issuer,status,currency_code)")
+    execute("""CREATE TABLE IF NOT EXISTS institution_funding_events (
+        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        funding_id INTEGER NOT NULL REFERENCES institution_funding(funding_id),
+        event_type TEXT NOT NULL CHECK(event_type IN ('draw','repay')),
+        principal_minor_units INTEGER NOT NULL, interest_minor_units INTEGER NOT NULL DEFAULT 0,
+        recorded_epoch INTEGER NOT NULL, UNIQUE(funding_id,event_type))""")
+    # A funding row may only move from active to repaid, once, recording its interest.
+    execute("""CREATE TRIGGER IF NOT EXISTS trg_institution_funding_immutable_update
+        BEFORE UPDATE ON institution_funding
+        WHEN OLD.status<>'active' OR NEW.status<>'repaid' OR NEW.funding_id<>OLD.funding_id
+          OR NEW.reference_key<>OLD.reference_key OR NEW.issuer<>OLD.issuer OR NEW.source_type<>OLD.source_type
+          OR NEW.currency_code<>OLD.currency_code OR NEW.decimal_places<>OLD.decimal_places
+          OR NEW.principal_minor_units<>OLD.principal_minor_units OR NEW.rate_bps<>OLD.rate_bps
+          OR NEW.collateral_minor_units<>OLD.collateral_minor_units OR NEW.haircut_bps<>OLD.haircut_bps
+          OR NEW.start_epoch<>OLD.start_epoch OR NEW.maturity_epoch<>OLD.maturity_epoch
+        BEGIN SELECT RAISE(ABORT,'institution funding rows are append-only'); END""")
+    execute("""CREATE TRIGGER IF NOT EXISTS trg_institution_funding_immutable_delete
+        BEFORE DELETE ON institution_funding
+        BEGIN SELECT RAISE(ABORT,'institution funding rows are append-only'); END""")
+    for operation in ("UPDATE", "DELETE"):
+        execute(f"""CREATE TRIGGER IF NOT EXISTS trg_institution_funding_events_{operation.lower()}
+            BEFORE {operation} ON institution_funding_events
+            BEGIN SELECT RAISE(ABORT,'institution funding events are append-only'); END""")
+
+
+def ensure_accounting_line_repairs(execute):
+    """Audit trail of the one sanctioned edit to the append-only journal: removing exact repeated lines."""
+    execute("""CREATE TABLE IF NOT EXISTS accounting_line_repairs (
+        repair_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entry_id INTEGER NOT NULL REFERENCES accounting_entries(entry_id),
+        lines_before INTEGER NOT NULL, lines_after INTEGER NOT NULL,
+        actor_id TEXT NOT NULL, recorded_epoch INTEGER NOT NULL)""")
+    for operation in ("UPDATE", "DELETE"):
+        execute(f"""CREATE TRIGGER IF NOT EXISTS trg_accounting_line_repairs_{operation.lower()}
+            BEFORE {operation} ON accounting_line_repairs
+            BEGIN SELECT RAISE(ABORT,'accounting line repairs are append-only'); END""")
+
+
+def ensure_primary_recipient_overrides(execute):
+    """Who really received the proceeds of a primary fill that predates the issuer's cash account.
+
+    Reconciliation expects primary proceeds in the issuer's cash account. A fill made before that
+    account existed legitimately paid the treasury; this append-only note records the actual
+    recipient, and the reconciliation then checks the receipt against that recipient instead.
+    """
+    execute("""CREATE TABLE IF NOT EXISTS market_execution_primary_recipient_overrides (
+        execution_key TEXT PRIMARY KEY, recipient_id TEXT NOT NULL, reason TEXT NOT NULL,
+        actor_id TEXT NOT NULL, recorded_epoch INTEGER NOT NULL)""")
+    for operation in ("UPDATE", "DELETE"):
+        execute(f"""CREATE TRIGGER IF NOT EXISTS trg_market_execution_primary_recipient_overrides_{operation.lower()}
+            BEFORE {operation} ON market_execution_primary_recipient_overrides
+            BEGIN SELECT RAISE(ABORT,'primary recipient overrides are append-only'); END""")
+
+
+def ensure_wallet_baseline_adjustments(execute):
+    """Wallet ledger rows that only restate a balance whose history is missing.
+
+    Each row marks one ledger entry as a baseline: the difference between what
+    the ledger added up to and what the wallet actually held, with who accepted
+    it and why. They are never presented as transactions.
+    """
+    execute("""CREATE TABLE IF NOT EXISTS customer_wallet_baseline_adjustments (
+        wallet_entry_id INTEGER PRIMARY KEY REFERENCES customer_wallet_ledger(entry_id),
+        user_id TEXT NOT NULL, source_type TEXT NOT NULL, source_account TEXT NOT NULL,
+        currency_code TEXT NOT NULL, decimal_places INTEGER NOT NULL,
+        ledger_before_minor_units INTEGER NOT NULL, balance_minor_units INTEGER NOT NULL,
+        difference_minor_units INTEGER NOT NULL CHECK(difference_minor_units<>0),
+        orphan INTEGER NOT NULL CHECK(orphan IN (0,1)),
+        actor_id TEXT NOT NULL, reason TEXT NOT NULL, recorded_epoch INTEGER NOT NULL)""")
+    for operation in ("UPDATE", "DELETE"):
+        execute(f"""CREATE TRIGGER IF NOT EXISTS trg_customer_wallet_baseline_adjustments_{operation.lower()}
+            BEFORE {operation} ON customer_wallet_baseline_adjustments
+            BEGIN SELECT RAISE(ABORT,'wallet baseline adjustments are append-only'); END""")

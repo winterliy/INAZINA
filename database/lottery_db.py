@@ -32,3 +32,17 @@ class LotteryDB(DBManager):
             kind TEXT NOT NULL, rank INTEGER NOT NULL DEFAULT 0,
             amount INTEGER NOT NULL, ticket_id INTEGER, recorded_epoch INTEGER NOT NULL)""")
         self.execute('CREATE INDEX IF NOT EXISTS idx_lottery_pool_round ON lottery_pool_ledger(round_id,entry_id)')
+        # What a player whose own currency is not the lottery's actually paid or
+        # received, with the exact rate (player currency per base unit) used.
+        self.execute("""CREATE TABLE IF NOT EXISTS lottery_fx_settlements (
+            kind TEXT NOT NULL CHECK(kind IN ('purchase','payout')), reference TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            base_minor_units INTEGER NOT NULL CHECK(typeof(base_minor_units)='integer' AND base_minor_units>0),
+            currency TEXT NOT NULL, decimal_places INTEGER NOT NULL CHECK(decimal_places BETWEEN 0 AND 6),
+            minor_units INTEGER NOT NULL CHECK(typeof(minor_units)='integer' AND minor_units>=0),
+            rate_numerator TEXT NOT NULL, rate_denominator TEXT NOT NULL,
+            recorded_epoch INTEGER NOT NULL, PRIMARY KEY(kind,reference))""")
+        for operation in ('UPDATE', 'DELETE'):
+            self.execute(f"""CREATE TRIGGER IF NOT EXISTS trg_lottery_fx_settlements_{operation.lower()}
+                BEFORE {operation} ON lottery_fx_settlements
+                BEGIN SELECT RAISE(ABORT,'lottery fx settlements are append-only'); END""")

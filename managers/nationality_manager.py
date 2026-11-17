@@ -58,12 +58,7 @@ class NationalityManager:
         if reasons:
             raise ValueError(f"{', '.join(reasons)}이(가) 남아 있어 국적을 바꿀 수 없습니다. 먼저 정리해주세요.")
 
-        orders = self.db.assets.execute(
-            f"SELECT order_id FROM market_orders WHERE user_id=? AND status IN {OPEN_ORDER_STATES}", (user_id,))
-        for order in orders:
-            ok, message = self.bot.order_book.cancel_order(user_id, order["order_id"])
-            if not ok:
-                raise ValueError(f"주문 #{order['order_id']}을 취소하지 못했습니다: {message}")
+        self.cancel_open_orders(user_id)
 
         from managers.interest_manager import InterestManager
         InterestManager(self.db).process_user_interests(user_id)
@@ -82,7 +77,15 @@ class NationalityManager:
                 raise ValueError(f"대출 #{loan['loan_id']}을 상환하지 못했습니다: {message}")
         return self._exchange_and_move(actor, user_id, nationality, summary)
 
-    def _liquidate(self, actor, user_id, unit_nwx, bond_values):
+    def cancel_open_orders(self, user_id):
+        orders = self.db.assets.execute(
+            f"SELECT order_id FROM market_orders WHERE user_id=? AND status IN {OPEN_ORDER_STATES}", (user_id,))
+        for order in orders:
+            ok, message = self.bot.order_book.cancel_order(user_id, order["order_id"])
+            if not ok:
+                raise ValueError(f"주문 #{order['order_id']}을 취소하지 못했습니다: {message}")
+
+    def _liquidate(self, actor, user_id, unit_nwx, bond_values, require_cover=True):
         now = time.time()
         with self.db.atomic() as conn:
             old = CurrencyManager.home(conn, user_id)
@@ -134,9 +137,9 @@ class NationalityManager:
                 units = int(Decimal(str(loan["outstanding_balance"] or 0)) * SCALE)
                 loans += units if (loan["quote_currency"] or old) == old else CurrencyManager.convert(conn, units, loan["quote_currency"], old)
             cash = CurrencyManager.balance(conn, user_id, old)
-            if cash < loans:
+            if require_cover and cash < loans:
                 raise ValueError(f"자산을 모두 현금화해도 대출을 갚기에 부족합니다 (필요 {loans / SCALE:,} {old}, 보유 {cash / SCALE:,} {old}).")
-            self.bot.admin_control._audit(conn, actor, "nationality.liquidate", {
+            self.bot.admin_control._audit(conn, actor, "nationality.liquidate" if require_cover else "court.liquidate", {
                 "user_id": user_id, "currency": old, "sold_units": sold, "accounts_units": closed})
         return {"sold": sold, "accounts": closed}
 

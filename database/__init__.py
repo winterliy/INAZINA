@@ -106,6 +106,9 @@ class DatabaseManager:
             DBManager.__init__(database, name)
             database.pooled_reads = True
             setattr(self, attribute, database)
+        # The policy data upgrade is backend-independent; the SQLite schema
+        # initializer normally performs it, but PostgreSQL skips that setup.
+        self.credit.migrate_policy_defaults()
 
     def _databases(self):
         return (self.users, self.assets, self.products, self.companies,

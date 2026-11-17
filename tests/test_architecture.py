@@ -21,7 +21,7 @@ LAYERS = {
         "order_book_manager", "lottery_manager", "user_manager", "nationality_manager", "naturalization_manager", "market_manager",
         "capital_markets_manager", "company_account_manager", "compliance_manager", "credit_risk_manager",
         "depositary_receipt_manager", "dr_deviation_monitor_manager", "dr_dividend_tax_manager", "listing_requirements",
-        "fund_dividend_receiver", "price_gap_filler", "bank_companies", "asset_cost_manager", "game_funding",
+        "fund_dividend_receiver", "price_gap_filler", "bank_companies", "asset_cost_manager", "game_funding", "funding_manager",
         "organization_manager", "overdraft", "account_kind_settlement", "insolvency_manager"},
     3: {"admin_manager", "admin_control_manager", "admin_commands_manager", "catalog_manager"},
 }

@@ -154,8 +154,20 @@ def _drop_postgres_databases():
         pass
 
 
+def _quarantine_default_database():
+    """Point the default database directory at an empty temporary one.
+
+    A test that forgets to choose its own directory then builds a throwaway
+    database instead of running startup migrations on the live one.
+    """
+    root = Path(tempfile.mkdtemp(prefix="inazina-test-default-"))
+    atexit.register(shutil.rmtree, root, ignore_errors=True)
+    DBManager.database_dir = root
+
+
 def pytest_configure(config):
     global _template, _pg_template
+    _quarantine_default_database()
     from database import pg_backend
     if pg_backend.enabled():
         # The SQLite template is built with the SQLite backend, then converted.

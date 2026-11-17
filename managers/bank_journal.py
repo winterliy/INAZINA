@@ -505,6 +505,25 @@ class BankJournal:
         return findings
 
     @staticmethod
+    def reconcile_wholesale_funding(conn, issuer):
+        """Outstanding funding rows per currency against the journal's funding liability."""
+        outstanding = {(str(row[0]), int(row[1])): int(row[2]) for row in conn.execute(
+            """SELECT currency_code,decimal_places,SUM(principal_minor_units) FROM institution_funding
+               WHERE issuer=? AND status='active' GROUP BY currency_code,decimal_places""", (str(issuer),))}
+        journal = {(str(row[0]), int(row[1])): int(row[2]) for row in conn.execute(
+            """SELECT e.currency_code,e.decimal_places,SUM(l.credit_units-l.debit_units)
+               FROM bank_journal_entries e JOIN bank_journal_lines l ON l.entry_id=e.entry_id
+               WHERE e.issuer=? AND e.status='posted' AND l.account_code='wholesale_funding_payable'
+               GROUP BY e.currency_code,e.decimal_places""", (str(issuer),))}
+        return [{"currency_code": currency, "decimal_places": places,
+                 "funding_units": outstanding.get((currency, places), 0),
+                 "journal_units": journal.get((currency, places), 0),
+                 "difference_units": outstanding.get((currency, places), 0) - journal.get((currency, places), 0),
+                 "status": ("matched" if outstanding.get((currency, places), 0) == journal.get((currency, places), 0)
+                            else "mismatch")}
+                for currency, places in sorted(set(outstanding) | set(journal))]
+
+    @staticmethod
     def reconcile_all(conn, issuer):
         """Run every implemented institution subledger-to-journal reconciliation.
 
@@ -527,6 +546,7 @@ class BankJournal:
             "deposit_insurance_claims": BankJournal.reconcile_deposit_insurance_claims(
                 conn, issuer
             ),
+            "wholesale_funding": BankJournal.reconcile_wholesale_funding(conn, issuer),
             "journal_invariants": [
                 {**row, "status": "mismatch"}
                 for row in BankJournal.audit_unbalanced(conn, issuer)

@@ -38,6 +38,12 @@ from functions.interest_calc import year_fraction
 from managers.rate_manager import RateManager
 
 
+def _pay_holder(conn, user_id, currency, places, net_units):
+    """Credit a net coupon or redemption to a citizen and return its FX snapshot, if any."""
+    from managers.currency_manager import CurrencyManager
+    return CurrencyManager.receive(conn, user_id, currency, net_units)
+
+
 class TreasuryBondManager:
     """Government bond offers, citizen holdings, treasury funding and maturity redemption."""
 
@@ -154,24 +160,39 @@ class TreasuryBondManager:
         )
 
     @staticmethod
-    def _debit_funds(conn, user_id, amount):
+    def _debit_funds(conn, user_id, amount, currency):
+        """Take ``amount`` of the bond's own currency from the buyer.
+
+        Home cash counts only when the bond is in the buyer's home currency, and
+        only spendable deposit accounts in the bond currency are considered — the
+        same accounts a payout may be credited to. A balance in another currency
+        is never debited as the same number, and no account is opened.
+        """
+        from managers.currency_manager import CurrencyManager, SCALE
+        from managers.deposit_accounts import SPENDABLE
         user = conn.execute(
             f"SELECT cash FROM users.users WHERE user_id = ? AND {ACTIVE_OR_TREASURY}",
             (user_id,),
         ).fetchone()
         if not user:
             return False, "지급·매수를 진행할 등록 시민이 없습니다."
-        sources = [(int(round(user["cash"] or 0)), None)]
+        sources = []
+        if currency == CurrencyManager.home(conn, user_id):
+            sources.append((int(round(user["cash"] or 0)), None))
         sources.extend(
             (int(round(row["balance"] or 0)), row["account_number"])
             for row in conn.execute(
-                "SELECT account_number, balance FROM accounts.accounts WHERE user_id = ?",
-                (user_id,),
+                "SELECT a_policy.account_number, a_policy.balance FROM accounts a_policy "
+                "WHERE a_policy.user_id = ? AND a_policy.quote_currency = ? "
+                f"AND a_policy.account_type = 'saving' AND {SPENDABLE}",
+                (user_id, currency),
             ).fetchall()
         )
+        if not sources:
+            return False, f"{currency} 외환통장을 먼저 개설해주세요. 이 국채는 {currency}로만 결제합니다."
         balance, account_number = max(sources, key=lambda item: item[0])
         if balance < amount:
-            return False, "현금·통장 잔액이 부족합니다."
+            return False, f"{currency} 현금·통장 잔액이 부족합니다."
         if account_number is None:
             cursor = conn.execute(
                 "UPDATE users.users SET cash = cash - ? "
@@ -180,11 +201,11 @@ class TreasuryBondManager:
             )
         else:
             cursor = conn.execute(
-                "UPDATE accounts.accounts SET balance_units = balance_units - CAST(ROUND(? * 1000000) AS INTEGER), "
+                "UPDATE accounts.accounts SET balance_units = balance_units - ?, "
                 "principal = MAX(0, COALESCE(principal, 0) - ?), "
-                "last_payment_epoch = unixepoch('now'), last_payment = CURRENT_TIMESTAMP "
+                "last_payment_epoch = ?, last_payment = CURRENT_TIMESTAMP "
                 "WHERE account_number = ? AND user_id = ? AND balance >= ?",
-                (amount, amount, account_number, user_id, amount),
+                (int(amount) * SCALE, amount, int(time.time()), account_number, user_id, amount),
             )
         return cursor.rowcount == 1, "잔액이 변경되어 국채 매수를 취소했습니다."
 
@@ -210,7 +231,8 @@ class TreasuryBondManager:
                 bond = conn.execute(
                     "SELECT product_code, name, annual_rate, maturity_days, face_value, "
                     "exchange_id, market_price, total_supply, sold_amount, status,"
-                    "coupon_frequency_days,day_count_convention,credit_spread,liquidity_spread "
+                    "coupon_frequency_days,day_count_convention,credit_spread,liquidity_spread,"
+                    "COALESCE(quote_currency,base_currency_code()) AS currency "
                     "FROM product.treasury_bond_products WHERE product_code = ?",
                     (str(product_code).upper(),),
                 ).fetchone()
@@ -225,7 +247,8 @@ class TreasuryBondManager:
                 remaining = int(bond["total_supply"]) - int(bond["sold_amount"] or 0)
                 if amount > remaining:
                     return False, f"❌ 발행 잔여 한도를 초과했습니다. 남은 한도: {remaining:,} 기준 통화"
-                debited, reason = self._debit_funds(conn, str(user_id), amount)
+                debited, reason = self._debit_funds(
+                    conn, str(user_id), amount, str(bond["currency"]).upper())
                 if not debited:
                     return False, f"❌ {reason}"
                 update = conn.execute(
@@ -313,7 +336,6 @@ class TreasuryBondManager:
                 matured_codes = set()
                 for holding in rows:
                     from functions.money import currency_precision, from_minor_units, to_minor_units
-                    from managers.currency_manager import CurrencyManager, SCALE
                     currency = str(holding["currency"] or base_currency_code(conn)).upper()
                     places = currency_precision(conn, currency)
                     principal_units = int(holding["principal_minor_units"] or
@@ -329,7 +351,7 @@ class TreasuryBondManager:
                     from managers.user_manager import UserManager
                     tax = UserManager._tax(
                         conn, holding['user_id'], 'treasury_bond_interest', gross_interest,
-                        currency=currency if currency != base_currency_code(conn) else None,
+                        currency=currency,
                     )
                     tax_units = to_minor_units(tax, places)
                     gross_payment_units = principal_units + interest_units
@@ -343,20 +365,12 @@ class TreasuryBondManager:
                     fund_watermark = int(conn.execute(
                         "SELECT COALESCE(MAX(entry_id),0) FROM fund_cash_ledger"
                     ).fetchone()[0])
+                    fx_settlement = None
                     if fund:
                         change_cash(conn, holding['user_id'], net_payment, 'bond_redemption', holding['product_code'])
-                    elif currency == base_currency_code(conn) or currency == CurrencyManager.home(conn, holding['user_id']):
-                        credit = conn.execute(
-                            "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
-                            (ExactDecimal(net_payment), holding["user_id"]),
-                        )
-                        if credit.rowcount != 1:
-                            raise RuntimeError("국채 보유자가 활성 사용자가 아니어서 상환을 취소했습니다.")
                     else:
-                        CurrencyManager.change(
-                            conn, holding["user_id"], currency,
-                            net_payment_units * (10 ** (6 - places)), allow_deficit=True,
-                        )
+                        fx_settlement = _pay_holder(
+                            conn, holding["user_id"], currency, places, net_payment_units)
                     closed = conn.execute(
                         "UPDATE accounts.treasury_bond_holdings SET status = 'redeemed', "
                         "redeemed_epoch = ? WHERE holding_id = ? AND status = 'active'",
@@ -374,6 +388,7 @@ class TreasuryBondManager:
                         interest_minor_units=interest_units, tax_minor_units=tax_units,
                         net_minor_units=net_payment_units, recorded_epoch=now,
                         wallet_watermark=wallet_watermark, fund_watermark=fund_watermark,
+                        fx_settlement=fx_settlement,
                     )
                     redeemed.append({
                         "user_id": str(holding["user_id"]),
@@ -413,7 +428,6 @@ class TreasuryBondManager:
             ).fetchall()
             for holding in rows:
                 from functions.money import currency_precision, from_minor_units, to_minor_units
-                from managers.currency_manager import CurrencyManager
                 currency = str(holding["currency"] or base_currency_code(conn)).upper()
                 places = currency_precision(conn, currency)
                 frequency = int(holding["coupon_frequency_days"])
@@ -443,9 +457,10 @@ class TreasuryBondManager:
                 from managers.user_manager import UserManager
                 tax = UserManager._tax(
                     conn, holding['user_id'], 'treasury_bond_interest', coupon,
-                    currency=currency if currency != base_currency_code(conn) else None,
+                    currency=currency,
                 )
                 tax_units = to_minor_units(tax, places)
+                net_units = coupon_units-tax_units
                 _treasury_move(conn, holding["product_code"], -coupon)
                 wallet_watermark = int(conn.execute(
                     "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
@@ -453,21 +468,13 @@ class TreasuryBondManager:
                 fund_watermark = int(conn.execute(
                     "SELECT COALESCE(MAX(entry_id),0) FROM fund_cash_ledger"
                 ).fetchone()[0])
+                fx_settlement = None
                 if fund:
                     change_cash(conn, holding['user_id'],
-                                ExactDecimal(from_minor_units(coupon_units-tax_units, places)),
+                                ExactDecimal(from_minor_units(net_units, places)),
                                 'bond_coupon', holding['product_code'])
-                elif currency == base_currency_code(conn) or currency == CurrencyManager.home(conn, holding['user_id']):
-                    conn.execute(
-                        "UPDATE users.users SET cash=cash+? WHERE user_id=?",
-                        (ExactDecimal(from_minor_units(coupon_units-tax_units, places)),
-                         holding["user_id"]),
-                    )
                 else:
-                    CurrencyManager.change(
-                        conn, holding["user_id"], currency,
-                        (coupon_units-tax_units) * (10 ** (6 - places)), allow_deficit=True,
-                    )
+                    fx_settlement = _pay_holder(conn, holding["user_id"], currency, places, net_units)
                 conn.execute(
                     "UPDATE accounts.treasury_bond_holdings SET last_coupon_epoch=? "
                     "WHERE holding_id=?", (paid_until, holding["holding_id"]),
@@ -481,8 +488,9 @@ class TreasuryBondManager:
                         currency_code=currency, decimal_places=places,
                         principal_minor_units=0, interest_minor_units=coupon_units,
                         tax_minor_units=tax_units,
-                        net_minor_units=coupon_units-tax_units, recorded_epoch=now,
+                        net_minor_units=net_units, recorded_epoch=now,
                         wallet_watermark=wallet_watermark, fund_watermark=fund_watermark,
+                        fx_settlement=fx_settlement,
                     )
                 paid.append({"user_id": str(holding["user_id"]),
                              "product_code": holding["product_code"],

@@ -21,7 +21,6 @@ from functions.discord_views import (
     LoanProductApplyView,
     LoanRepaymentView,
     PriceMovementView,
-    ShareholderMeetingResponseView,
     MyOrdersView,
     HelpLinksView,
     RegistrationModal,
@@ -96,51 +95,6 @@ async def submit_relief_request(bot, user_id, display_name, request_type):
     else:
         result = "⚠️ DM을 받을 관리자를 찾지 못했습니다."
     return result
-
-
-async def convene_shareholder_meeting(bot, user_id, role, 주식코드, 장소):
-    """Largest shareholders or admins invite every holder by DM (/주총소집 and 나루)."""
-    company = bot.db.companies.get_company(주식코드)
-    if not company:
-        return "❌ 회사 주식 코드를 찾을 수 없습니다."
-    if 'share_class' in company.keys() and company['share_class'] == 'preferred':
-        return '❌ 우선주는 의결권이 없습니다. 존속 법인의 보통주 코드로 주주총회를 소집해주세요.'
-    holders = bot.db.assets.execute(
-        "SELECT user_id, SUM(quantity) AS shares FROM ("
-        "SELECT user_id, quantity FROM user_assets WHERE asset_code = ? AND quantity > 0 "
-        "UNION ALL SELECT writer_id AS user_id, quantity FROM option_collateral_lots "
-        "WHERE underlying_code = ? AND quantity > 0) "
-        # Treasury stock (the company's own shares) carries no vote.
-        "WHERE user_id <> ? GROUP BY user_id ORDER BY shares DESC, user_id ASC",
-        (주식코드, 주식코드, "company:" + 주식코드),
-    )
-    if not holders:
-        return "❌ 해당 주식을 보유한 주주가 없습니다."
-    largest = holders[0]["shares"]
-    largest_ids = {str(row["user_id"]) for row in holders if row["shares"] == largest}
-    if role != "admin" and user_id not in largest_ids:
-        return "❌ 해당 종목 최대주주 또는 관리자만 소집할 수 있습니다."
-
-    notice = discord.Embed(
-        title=f"📣 {company['name']} 주주총회 공지",
-        description="아래 버튼으로 참석 여부를 선택해주세요. 응답은 DM 수신 후 1시간 동안 가능합니다.",
-        color=discord.Color.gold(),
-    )
-    notice.add_field(name="장소", value=장소[:1024], inline=False)
-    notice.add_field(name="주식 코드", value=주식코드, inline=True)
-    sent = failed = 0
-    for holder in holders:
-        try:
-            holder_id = int(holder["user_id"])
-            target = bot.get_user(holder_id) or await bot.fetch_user(holder_id)
-            view = ShareholderMeetingResponseView(
-                bot, holder_id, int(user_id), company["name"], 주식코드, 장소
-            )
-            view.message = await target.send(embed=notice, view=view)
-            sent += 1
-        except (discord.HTTPException, ValueError, TypeError):
-            failed += 1
-    return f"✅ 주주총회 DM 전달: {sent}명 성공 · {failed}명 실패"
 
 
 class NaturalizationConfirmView(discord.ui.View):
@@ -1407,10 +1361,12 @@ class SlashCommandRegistry:
         self,
         interaction: discord.Interaction,
         주식코드: str,
-        장소: app_commands.Range[str, 1, 500],
+        장소: app_commands.Range[str, 1, 200],
+        의안: app_commands.Range[str, 1, 1200] | None = None,
     ):
         user_id, _user_data, role = await self._prepare(interaction)
-        message = await convene_shareholder_meeting(self.bot, user_id, role, 주식코드, 장소)
+        from functions.governance_notices import convene_from_discord
+        message = await convene_from_discord(self.bot, user_id, role, 주식코드, 장소, 의안)
         if message.startswith("✅"):
             await interaction.followup.send(content=message, ephemeral=True)
         else:

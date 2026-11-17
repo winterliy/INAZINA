@@ -104,7 +104,11 @@ class UserManager:
         return matches[0] if matches else (None, None)
 
     @staticmethod
-    def _choose_funds(conn, user_id, exclude_account=None, exclude_wallet=False):
+    def _choose_funds(conn, user_id, exclude_account=None, exclude_wallet=False, currency=None):
+        """Largest source (balance, account_number|None) holding ``currency`` (default: the citizen's own).
+
+        The wallet is the citizen's own currency only, so another currency is paid from
+        a deposit account in that currency or not at all."""
         from database.fund_accounting import account
         fund = account(conn, user_id)
         if fund:
@@ -114,10 +118,12 @@ class UserManager:
         ).fetchone()
         if not user:
             return None
-        if not exclude_wallet and conn.execute(f"SELECT 1 FROM users.users WHERE user_id=? AND {IS_TREASURY}", (str(user_id),)).fetchone():
-            return (MAX_NATIVE, None)  # a treasury can always pay from its wallet
         from managers.currency_manager import CurrencyManager
         home = CurrencyManager.home(conn, user_id)
+        currency = str(currency or home).upper()
+        exclude_wallet = exclude_wallet or currency != home
+        if not exclude_wallet and conn.execute(f"SELECT 1 FROM users.users WHERE user_id=? AND {IS_TREASURY}", (str(user_id),)).fetchone():
+            return (MAX_NATIVE, None)  # a treasury can always pay from its wallet
         sources = [] if exclude_wallet else [(int(round(user["cash"] or 0)), None)]
         sources.extend(
             (int(round(row["balance"] or 0)), row["account_number"])
@@ -125,7 +131,7 @@ class UserManager:
                 "SELECT account_number, balance FROM accounts.accounts WHERE user_id = ? "
                 "AND (? IS NULL OR account_number <> ?) AND managed_by IS NULL "
                 "AND COALESCE(quote_currency, ?) = ?",
-                (user_id, exclude_account, exclude_account, home, home),
+                (user_id, exclude_account, exclude_account, home, currency),
             ).fetchall()
         )
         return max(sources, key=lambda source: source[0]) if sources else None
@@ -198,6 +204,41 @@ class UserManager:
         return cursor.rowcount == 1
 
     @staticmethod
+    def _credit_currency(conn, user_id, currency, amount, *, preferred_account=None,
+                         event='settlement', reference=None):
+        """Pay ``amount`` (native units) of ``currency``: into ``preferred_account`` if it still
+        holds that currency, else the wallet when it is the citizen's own, else their largest
+        account in it, else exchanged at the live quote into their own currency."""
+        if amount <= 0:
+            return
+        from database.fund_accounting import account
+        if account(conn, user_id):
+            UserManager._credit_source(conn, user_id, None, amount, event=event, reference=reference)
+            return
+        from managers.currency_manager import CurrencyManager
+        currency = str(currency).upper()
+        home = CurrencyManager.home(conn, user_id)
+        target = None
+        if preferred_account is not None and conn.execute(
+                "SELECT 1 FROM accounts.accounts WHERE account_number=? AND user_id=? "
+                "AND COALESCE(quote_currency,?)=?", (preferred_account, user_id, home, currency)).fetchone():
+            target = preferred_account
+        elif currency != home:
+            funds = UserManager._choose_funds(conn, user_id, currency=currency)
+            if funds is None:
+                from functions.money import currency_precision, to_minor_units
+                minor = to_minor_units(amount, currency_precision(conn, currency))
+                settlement = CurrencyManager.receive(conn, user_id, currency, minor)
+                if settlement:
+                    CurrencyManager.record_fx_settlement(
+                        conn, event, reference or f"{event}:{user_id}:{time.time_ns()}", user_id,
+                        currency, minor, settlement, time.time())
+                return
+            target = funds[1]
+        UserManager._credit_source(conn, user_id, target, amount, event=event, reference=reference,
+                                   currency=currency)
+
+    @staticmethod
     def _credit_source(conn, user_id, account_number, amount, *, event='settlement', reference=None,
                        currency=None):
         if amount <= 0:
@@ -230,16 +271,24 @@ class UserManager:
             )
 
     @staticmethod
-    def _tax(conn, user_id, source, gross_amount, currency=None):
+    def _tax(conn, user_id, source, gross_amount, currency=None, settle_currency=None):
         """양수 소득에 시민 국적의 세율을 적용하고 내역을 기록합니다.
 
-        ``currency``: the income's currency when it is not the citizen's own."""
+        ``currency``: the income's currency when it is not the citizen's own.
+        ``settle_currency``: the currency the withheld tax is actually taken in when it differs
+        from the one it is assessed in; the tax is converted at the live quote, rounded up, and
+        that converted amount is what is returned."""
         from database.fund_accounting import account
         if account(conn, user_id):
             return 0  # Fund income stays in NAV; investor gains are taxed on redemption.
-        income_currency_was_supplied = currency is not None
-        tax_currency = str(currency or base_currency_code(conn)).upper()
-        from functions.money import currency_precision, round_currency
+        from managers.currency_manager import CurrencyManager
+        try:
+            home = CurrencyManager.home(conn, user_id)
+        except ValueError:
+            home = base_currency_code(conn)
+        # Unnamed income is the citizen's own money, in their currency and scale.
+        tax_currency = str(currency or home).upper()
+        from functions.money import currency_precision, round_currency, to_minor_units
         places = currency_precision(conn, tax_currency)
         gross = max(0, round_currency(conn, gross_amount, tax_currency))
         if gross == 0:
@@ -263,19 +312,35 @@ class UserManager:
         net_income = max(0, round_currency(conn, gross - tax_amount, tax_currency))
         treasury_id = None
         wallet_watermark = None
+        withheld = 0
         if tax_amount > 0:
-            from managers.currency_manager import CurrencyManager
             treasury_id = CurrencyManager.user_treasury_id(conn, user_id)
             wallet_watermark = int(conn.execute(
                 "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"
             ).fetchone()[0])
-            if income_currency_was_supplied and tax_currency != CurrencyManager.home(conn, user_id):
+            settle = str(settle_currency or tax_currency).upper()
+            if settle != tax_currency:
+                from fractions import Fraction
                 from managers.currency_manager import SCALE
-                CurrencyManager.treasury_receive(
-                    conn, treasury_id, tax_currency,
-                    int(Decimal(str(tax_amount))*SCALE),
-                )
+                settle_places = currency_precision(conn, settle)
+                scaled = (Fraction(str(tax_amount)) * CurrencyManager.quote(conn, tax_currency, settle)
+                          * 10 ** settle_places)
+                units = -(-scaled.numerator // scaled.denominator)
+                withheld = units if settle_places == 0 else Decimal(units).scaleb(-settle_places)
+                if not units or not CurrencyManager.treasury_receive(
+                        conn, treasury_id, settle, int(Decimal(str(withheld)) * SCALE)):
+                    tax_amount, net_income, withheld = 0, gross, 0
+            elif tax_currency != home:
+                from managers.currency_manager import SCALE
+                withheld = tax_amount
+                if not CurrencyManager.treasury_receive(
+                        conn, treasury_id, tax_currency,
+                        int(Decimal(str(tax_amount))*SCALE)):
+                    # Worth less than one minor unit of the receiving treasury's
+                    # currency: nothing was remitted, so nothing is withheld.
+                    tax_amount, net_income, withheld = 0, gross, 0
             else:
+                withheld = tax_amount
                 treasury = conn.execute(
                     "UPDATE users.users SET cash = cash + ? WHERE user_id = ?",
                     (tax_amount, treasury_id),
@@ -287,12 +352,46 @@ class UserManager:
             "VALUES (?,?,?,?,?,?)",
             (str(user_id), str(source), gross, tax_amount, net_income, tax_currency),
         )
+        if settle_currency and withheld and str(settle_currency).upper() != tax_currency:
+            # What was taken (in the settlement currency) and what the treasury was credited
+            # for it, so a ledger of the settlement currency can account for the exchange.
+            settle = str(settle_currency).upper()
+            CurrencyManager.record_fx_settlement(
+                conn, f"tax:{str(source).split(':', 1)[0]}", f"tax:{inserted.lastrowid}", user_id, settle,
+                to_minor_units(withheld, currency_precision(conn, settle)),
+                {"currency": tax_currency, "decimal_places": places,
+                 "minor_units": to_minor_units(tax_amount, places),
+                 "rate": CurrencyManager.quote(conn, settle, tax_currency)}, time.time())
         if tax_amount > 0:
             from managers.accounting_journal import AccountingJournal
             AccountingJournal.link_tax_transaction_wallet_entries(
                 conn, inserted.lastrowid, wallet_watermark, treasury_id
             )
-        return tax_amount
+        return withheld if settle_currency else tax_amount
+
+    @staticmethod
+    def _tax_in_home_currency(conn, user_id, source, gross, income_currency):
+        """Tax income earned in ``income_currency`` in the citizen's own currency.
+
+        The gain is converted at the live quote, assessed with the nationality's rate in that
+        currency, and the tax is returned in ``income_currency`` for the caller to withhold."""
+        from database.fund_accounting import account
+        if account(conn, user_id):
+            return 0
+        from fractions import Fraction
+        from functions.money import currency_precision
+        from managers.currency_manager import CurrencyManager
+        income = str(income_currency).upper()
+        try:
+            home = CurrencyManager.home(conn, user_id)
+        except ValueError:
+            home = base_currency_code(conn)
+        if home == income:
+            return UserManager._tax(conn, user_id, source, gross)
+        places = currency_precision(conn, home)
+        scaled = Fraction(str(gross)) * CurrencyManager.quote(conn, income, home) * 10 ** places
+        home_gross = Decimal(scaled.numerator // scaled.denominator).scaleb(-places)
+        return UserManager._tax(conn, user_id, source, home_gross, settle_currency=income)
 
     @staticmethod
     def _refresh_max_shareholder(conn, asset_code):
@@ -635,7 +734,7 @@ class UserManager:
                     f"상금 {payout_before_tax:,} 기준 통화 · 세금 {tax:,} 기준 통화 · "
                     f"실수령 {net_payout:,} 기준 통화 (원금 별도, 국고 지급)"
                 )
-            return False, f"💀 꽝! {amount:,} 기준 통화를 잃어 국고에 입금했습니다."
+            return False, f"💀 꽝! {amount:,} 기준 통화를 잃었습니다."
         except Exception as exc:
             return False, f"❌ 도박 처리 중 오류가 발생했습니다: {exc}"
 
@@ -715,9 +814,10 @@ class UserManager:
         )
         home_decimal_places = currency_snapshot.precision(national_currency)
         home_rate_nwx = currency_snapshot.rate_nwx(national_currency)
-        cash_value_nwx = currency_snapshot.convert(
-            home_cash_units, national_currency, base_currency_code(conn)
-        ) // SCALE if user else 0
+        # 국고처럼 마이너스를 허용하는 계정이 있어 절댓값으로 환산한 뒤 부호를 되돌립니다.
+        cash_value_nwx = (currency_snapshot.convert(
+            abs(home_cash_units), national_currency, base_currency_code(conn)
+        ) // SCALE) * (-1 if home_cash_units < 0 else 1) if user else 0
         account_details = []
         total_account_balance = 0
         account_rows = conn.execute(

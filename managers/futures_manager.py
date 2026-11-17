@@ -8,6 +8,7 @@ from managers.market_session_manager import MarketSessionManager
 from database.user_db import TREASURY_USER_ID
 from managers.investment_manager import InvestmentManager
 from managers.rate_manager import RateManager
+from managers.accounting_journal import AccountingJournal
 
 
 class FuturesManager:
@@ -80,9 +81,14 @@ class FuturesManager:
                 reserved = unit_margin * quantity
                 if reserved > MAX_NATIVE:
                     return False, "❌ 증거금 금액이 너무 큽니다."
-                funds = self.users._choose_funds(conn, user_id)
-                if not funds or funds[0] < reserved or not self.users._debit_source(conn, user_id, funds[1], reserved):
-                    return False, f"❌ 선물 주문 증거금 {reserved:,} 기준 통화가 필요합니다."
+                currency = self._currency(conn)
+                funds = self.users._choose_funds(conn, user_id, currency=currency)
+                cash_mark = AccountingJournal.futures_cash_mark(conn, now)
+                if not funds or funds[0] < reserved or not self.users._debit_source(conn, user_id, funds[1], reserved,
+                                                                                     currency=currency):
+                    return False, (f"❌ 선물 주문 증거금 {reserved:,} {currency}이(가) 필요합니다. "
+                                   f"{currency} 통장 잔액을 확인해주세요.")
+                AccountingJournal.link_futures_cash(conn, "order_margin", cash_mark, now)
                 cursor = conn.execute("INSERT INTO assets.market_orders "
                     "(user_id, asset_code, side, limit_price, quantity, remaining_quantity, reserved_cash, funding_account, "
                     "order_kind, created_epoch, updated_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'future', ?, ?)",
@@ -131,6 +137,12 @@ class FuturesManager:
             filled += quantity
         return filled
 
+    @staticmethod
+    def _currency(conn):
+        """Futures are quoted and margined in the base currency, whoever trades them."""
+        from functions.money import base_currency_code
+        return base_currency_code(conn)
+
     def _mark(self, conn, position, product, price, now):
         pnl = int(position["quantity"]) * int(product["contract_size"]) * (price - int(position["settlement_price"]))
         # Limited game liability: liquidation consumes margin, never creates negative user cash.
@@ -140,11 +152,14 @@ class FuturesManager:
         # The listing country's treasury is the counterparty to every futures position.
         from managers.currency_manager import CurrencyManager, SCALE
         treasury = CurrencyManager.exchange_treasury(conn, product["product_code"])
-        currency = CurrencyManager.home(conn, position["user_id"])
+        currency = self._currency(conn)
+        cash_mark = AccountingJournal.futures_cash_mark(conn, now)
         if actual_pnl > 0:
             CurrencyManager.treasury_pay(conn, treasury, currency, actual_pnl * SCALE)
         elif actual_pnl < 0:
             CurrencyManager.treasury_receive(conn, treasury, currency, -actual_pnl * SCALE)
+        if actual_pnl:
+            AccountingJournal.link_futures_cash(conn, "mark", cash_mark, now)
         conn.execute("UPDATE assets.futures_positions SET settlement_price = ?, collateral = ?, net_pnl = ?, updated_epoch = ? "
                      "WHERE user_id = ? AND product_code = ?",
                      (price, collateral, net_pnl, now, position["user_id"], product["product_code"]))
@@ -162,7 +177,10 @@ class FuturesManager:
         returned = collateral * closing // abs(old_qty) if closing else 0
         realized_pnl = (self._allocate_proportional_amount(net_pnl, closing, abs(old_qty))
                         if closing else 0)
-        tax = self.users._tax(conn, order["user_id"], "futures_realized_gain", max(0, realized_pnl)) if closing else 0
+        cash_mark = AccountingJournal.futures_cash_mark(conn, now)
+        currency = self._currency(conn)
+        tax = (self.users._tax_in_home_currency(conn, order["user_id"], "futures_realized_gain",
+                                                max(0, realized_pnl), currency) if closing else 0)
         collateral -= returned
         net_pnl -= realized_pnl
         opening = quantity - closing
@@ -170,12 +188,15 @@ class FuturesManager:
         deposit = int(order["reserved_cash"]) * quantity // int(order["remaining_quantity"])
         available = deposit + returned - tax
         if required > available:
-            funds = self.users._choose_funds(conn, order["user_id"])
+            funds = self.users._choose_funds(conn, order["user_id"], currency=currency)
             extra = required - available
-            if not funds or funds[0] < extra or not self.users._debit_source(conn, order["user_id"], funds[1], extra):
+            if not funds or funds[0] < extra or not self.users._debit_source(conn, order["user_id"], funds[1], extra,
+                                                                              currency=currency):
                 raise ValueError("체결가가 변해 추가 증거금이 필요합니다. 주문을 다시 제출해주세요.")
             available += extra
-        self.users._credit_source(conn, order["user_id"], order["funding_account"], available - required)
+        self.users._credit_currency(conn, order["user_id"], currency, available - required,
+                                    preferred_account=order["funding_account"], event="futures_fill")
+        AccountingJournal.link_futures_cash(conn, "fill", cash_mark, now)
         collateral += required
         new_qty = old_qty + delta
         if new_qty:
@@ -193,7 +214,10 @@ class FuturesManager:
                      (remaining, quantity, deposit, "filled" if remaining == 0 else "partial", now, order["order_id"]))
 
     def _cancel(self, conn, order, now, status="cancelled"):
-        self.users._credit_source(conn, order["user_id"], order["funding_account"], int(order["reserved_cash"]))
+        cash_mark = AccountingJournal.futures_cash_mark(conn, now)
+        self.users._credit_currency(conn, order["user_id"], self._currency(conn), int(order["reserved_cash"]),
+                                    preferred_account=order["funding_account"], event="futures_cancel")
+        AccountingJournal.link_futures_cash(conn, "cancel", cash_mark, now)
         conn.execute("UPDATE assets.market_orders SET reserved_cash = 0, status = ?, updated_epoch = ? WHERE order_id = ?",
                      (status, now, order["order_id"]))
 
@@ -229,8 +253,13 @@ class FuturesManager:
                     )
                     if not expired and collateral >= maintenance:
                         continue
-                    tax = self.users._tax(conn, position["user_id"], "futures_realized_gain", max(0, net_pnl))
-                    self.users._credit_source(conn, position["user_id"], None, collateral - tax)
+                    cash_mark = AccountingJournal.futures_cash_mark(conn, now)
+                    currency = self._currency(conn)
+                    tax = self.users._tax_in_home_currency(conn, position["user_id"], "futures_realized_gain",
+                                                           max(0, net_pnl), currency)
+                    self.users._credit_currency(conn, position["user_id"], currency, collateral - tax,
+                                                event="futures_close")
+                    AccountingJournal.link_futures_cash(conn, "close", cash_mark, now)
                     conn.execute("DELETE FROM assets.futures_positions WHERE user_id = ? AND product_code = ?",
                                  (position["user_id"], product["product_code"]))
                     reason = "futures_maturity" if expired else "futures_liquidation"
@@ -264,11 +293,16 @@ class FuturesManager:
             return False, "❌ 추가 증거금은 양의 정수 기준 통화여야 합니다."
         with self.db.atomic(("users", "accounts", "assets")) as conn:
             position = conn.execute("SELECT 1 FROM assets.futures_positions WHERE user_id = ? AND product_code = ?", (str(user_id), code)).fetchone()
-            funds = self.users._choose_funds(conn, str(user_id))
+            currency = self._currency(conn)
+            funds = self.users._choose_funds(conn, str(user_id), currency=currency)
             if not position:
                 return False, "❌ 보유 선물 포지션이 없습니다."
-            if not funds or funds[0] < amount or not self.users._debit_source(conn, str(user_id), funds[1], amount):
+            now = int(time.time())
+            cash_mark = AccountingJournal.futures_cash_mark(conn, now)
+            if not funds or funds[0] < amount or not self.users._debit_source(conn, str(user_id), funds[1], amount,
+                                                                              currency=currency):
                 return False, "❌ 증거금을 추가할 잔액이 부족합니다."
+            AccountingJournal.link_futures_cash(conn, "add_margin", cash_mark, now)
             conn.execute("UPDATE assets.futures_positions SET collateral = collateral + ? WHERE user_id = ? AND product_code = ?",
                          (amount, str(user_id), code))
             return True, f"✅ 선물 `{code}`에 증거금 {amount:,} 기준 통화를 추가했습니다."

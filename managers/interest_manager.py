@@ -602,6 +602,8 @@ class InterestManager:
                     "AND (? IS NULL OR user_id = ?) AND (? IS NULL OR product_code=?)",
                     (user_id, user_id, product_code, product_code),
                 ).fetchall()
+                from managers.insolvency_manager import frozen_users
+                frozen = frozen_users(conn)
                 for loan in loans:
                     product = conn.execute(
                         "SELECT interest_rate,maturity_days,interest_cycle,status,delinquency_spread,"
@@ -616,6 +618,11 @@ class InterestManager:
                             "WHERE loan_id = ?",
                             (now, loan["loan_id"]),
                         )
+                        continue
+                    if str(loan["user_id"]) in frozen:
+                        # 회생 변제 중: 이자·연체 진행을 멈추고 커서만 옮깁니다.
+                        conn.execute("UPDATE accounts.loans SET last_payment_epoch=?,interest_remainder=0,"
+                                     "overdue_interest_remainder=0 WHERE loan_id=?", (now, loan["loan_id"]))
                         continue
                     if loan["status"] == "defaulted" or loan["collection_status"] == "defaulted":
                         # Defaulted/stage-3 exposures are on nonaccrual in this

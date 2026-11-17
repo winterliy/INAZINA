@@ -1,0 +1,122 @@
+"""One-time ledger repair for the November 2026 reconciliation findings.
+
+    python tools/repair_ledger.py <data-dir> [--apply] [--actor NAME]
+
+<data-dir> is a folder holding inazina.db (the live database/ folder, or a copy).
+Without --apply every step runs inside a transaction that is rolled back, so the
+printed before/after reconciliation shows what applying would do. Start-up still creates
+the new tables/triggers and prunes orphan snapshots, so dry-run on a COPY of database/.
+With --apply the database is first copied to <data-dir>/backups/ and the changes commit.
+
+Steps, in order (each is idempotent):
+  1. rebuild_from_subledgers      company/bank entries missing from the common journal
+  2. repair_duplicated_lines      exact repeated journal lines, one audit row per entry
+  3. rebaseline_customer_wallets  wallet/ledger gaps restated as labelled baseline rows
+  4. deposit liability correction interest later repaid into a loan from the same bank's deposit
+  5. primary recipient note       market-fill:79 paid the treasury before SELOA had a cash account
+Stop the bot and the web API before running with --apply.
+"""
+import argparse
+import collections
+import sqlite3
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+DEPOSIT_CORRECTION = {
+    "issuer": "낙원시민은행", "currency": "NWX", "units": 5611,
+    "reference_key": "correction:deposit-interest-repaid:7428377058",
+    "description": "Deposit interest of account 7428377058 was repaid into loan 1; "
+                   "the repayment debited settlement cash instead of the deposit liability",
+}
+PRIMARY_RECIPIENT = {
+    "execution_key": "market-fill:79:primary:1500000", "recipient_id": "20230216",
+    "reason": "SELOA's issuer cash account did not exist when this fill was made; "
+              "the proceeds correctly went to the treasury (낙원국고)",
+}
+
+
+def summarize(report):
+    counts = collections.Counter((f["scope"], f.get("status") or "") for f in report["findings"])
+    return dict(sorted(counts.items()))
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("data_dir")
+    parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--actor", default="ledger-repair-2026-11")
+    args = parser.parse_args(argv)
+    data_dir = Path(args.data_dir).resolve()
+    db_path = data_dir / "inazina.db"
+    if not db_path.exists():
+        raise SystemExit(f"{db_path} not found")
+
+    from database.db_manager import DBManager
+    DBManager.database_dir = data_dir
+    from database import DatabaseManager
+    DatabaseManager().close()                      # creates tables/triggers the new code needs
+    from database.unified import UnifiedConnection
+    from managers.accounting_journal import AccountingJournal
+    from managers.bank_journal import BankJournal
+
+    if args.apply:
+        backups = data_dir / "backups"
+        backups.mkdir(exist_ok=True)
+        target = backups / f"inazina-before-ledger-repair-{time.strftime('%Y%m%d-%H%M%S')}.db"
+        with sqlite3.connect(db_path) as source, sqlite3.connect(target) as copy:
+            source.backup(copy)
+        print(f"backup: {target}")
+
+    conn = sqlite3.connect(db_path, factory=UnifiedConnection, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    now = int(time.time())
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        print("before:", summarize(AccountingJournal.reconcile_all_financial_ledgers(conn)))
+        print("1 rebuild_from_subledgers:", AccountingJournal.rebuild_from_subledgers(conn))
+        print("2 repair_duplicated_lines:", AccountingJournal.repair_duplicated_lines(
+            conn, actor_id=args.actor, now=now))
+        print("3 rebaseline_customer_wallets:", AccountingJournal.rebaseline_customer_wallets(
+            conn, actor_id=args.actor, now=now,
+            reason="wallet balances without matching ledger history, restated as baseline (2026-11 repair)"))
+        c = DEPOSIT_CORRECTION
+        if conn.execute("SELECT 1 FROM bank_journal_entries WHERE issuer=? AND reference_key=?",
+                        (c["issuer"], c["reference_key"])).fetchone():
+            print("4 deposit liability correction: already recorded")
+        else:
+            BankJournal.post(conn, c["issuer"], "deposit_repayment_correction", c["reference_key"], c["currency"],
+                             [("customer_deposits_payable", "debit", c["units"]),
+                              ("settlement_asset", "credit", c["units"])],
+                             description=c["description"], now=now)
+            print("4 deposit liability correction: posted", c["units"], c["currency"])
+        p = PRIMARY_RECIPIENT
+        if conn.execute("SELECT 1 FROM market_execution_primary_recipient_overrides WHERE execution_key=?",
+                        (p["execution_key"],)).fetchone():
+            print("5 primary recipient note: already recorded")
+        else:
+            AccountingJournal.record_primary_recipient_override(
+                conn, execution_key=p["execution_key"], recipient_id=p["recipient_id"],
+                reason=p["reason"], actor_id=args.actor, now=now)
+            print("5 primary recipient note: recorded")
+        report = AccountingJournal.reconcile_all_financial_ledgers(conn)
+        print("after: ", summarize(report))
+        for finding in report["findings"][:10]:
+            print("  remaining:", {k: v for k, v in finding.items() if k != "orphan_balances"})
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    if args.apply:
+        conn.execute("COMMIT")
+        print("committed")
+    else:
+        conn.execute("ROLLBACK")
+        print("dry run: rolled back (use --apply to commit)")
+    conn.close()
+
+
+if __name__ == "__main__":
+    main()

@@ -48,6 +48,17 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         DBManager.database_dir = self.old_root
         self.tmp.cleanup()
 
+    @unittest.skipIf(pg_backend.enabled(), "financial_amount_snapshots is not carried to PostgreSQL")
+    def test_snapshots_of_routinely_pruned_rows_are_removed_with_them(self):
+        count = lambda table: self.db.system.execute_one(
+            "SELECT COUNT(*) FROM financial_amount_snapshots WHERE source_table=?", (table,))[0]
+        self.db.system.execute(
+            "INSERT INTO market_auto_target_history(asset_code,anchor_price,target_price,start_epoch,end_epoch) "
+            "VALUES ('X',1.5,2.5,1,2)")
+        self.assertEqual(count("market_auto_target_history"), 2)      # anchor and target price
+        self.db.system.execute("DELETE FROM market_auto_target_history")
+        self.assertEqual(count("market_auto_target_history"), 0)      # no orphaned audit findings
+
     def test_bank_journal_replay_rejects_a_different_amount_or_currency(self):
         from managers.bank_journal import BankJournal
         with self.db.atomic() as conn:

@@ -22,3 +22,10 @@ database/document_history/
 
 # SQLiteBrowser per-user workspace state.
 database/*.sqbpro
+
+
+# WL entry login attempts (apps/wl/vite.config.ts)
+database/wl-entry-log.jsonl
+
+# Wide-Learning agent notes stay local
+docs/wide-learning/

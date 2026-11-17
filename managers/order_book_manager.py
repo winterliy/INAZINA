@@ -67,6 +67,11 @@ class OrderBookManager:
             if limit_price < product['face_value']:return False,'❌ ELS 청약 지정가는 액면가 이상이어야 합니다.'
             from managers.els_manager import ELSManager
             return ELSManager(self.db,self.user_manager).subscribe(user_id,asset_code,quantity)
+        if self.futures_manager and self.futures_manager.is_future(asset_code):
+            # Futures settle in the base currency from an account in it, whatever the citizen's nationality.
+            if funding_account is not None:
+                return False, "❌ 랩어카운트로는 선물·옵션을 거래할 수 없습니다."
+            return self.futures_manager.place_limit_order(user_id, asset_code, side, quantity, limit_price)
         foreign = self.db.assets.execute_one("SELECT quote_currency FROM market_assets WHERE code=? UNION ALL SELECT quote_currency FROM company WHERE company_code=? UNION ALL SELECT quote_currency FROM investment WHERE product_code=? UNION ALL SELECT quote_currency FROM treasury_bond_products WHERE product_code=?",(asset_code,asset_code,asset_code,asset_code))
         home = None
         if foreign:
@@ -77,7 +82,10 @@ class OrderBookManager:
             except ValueError:
                 pass
         # Instruments in the user's own currency settle from cash/home accounts; others via FX accounts.
-        if foreign and (foreign['quote_currency'] or base_currency_code(conn)) != home:
+        # Treasury bonds stay on this path in any currency: they are paid from an account in the bond's own currency.
+        is_treasury_bond = bool(self.db.products.execute_one(
+            "SELECT 1 FROM treasury_bond_products WHERE product_code=?", (asset_code,)))
+        if foreign and not is_treasury_bond and (foreign['quote_currency'] or base_currency_code(conn)) != home:
             if funding_account is not None:
                 return False, "❌ 랩어카운트는 계좌 통화로 결제하는 종목만 운용할 수 있습니다."
             from managers.foreign_securities_manager import ForeignSecuritiesManager
@@ -190,9 +198,10 @@ class OrderBookManager:
                                            (wrap_account, user_id)).fetchone()
                         funds = (int(row["balance"] or 0), wrap_account) if row else None
                     else:
-                        funds = self.user_manager._choose_funds(conn, user_id)
+                        funds = self.user_manager._choose_funds(conn, user_id, currency=currency)
                     if not funds:
-                        return False, "❌ 등록된 사용자만 주문할 수 있습니다."
+                        return False, (f"❌ {currency} 통장이 필요합니다. {currency}로 결제하는 상품이라 "
+                                       f"해당 통화 통장을 먼저 개설해주세요.")
                     balance, funding_account = funds
                     wallet_watermark = int(conn.execute(
                         "SELECT COALESCE(MAX(entry_id),0) FROM customer_wallet_ledger"

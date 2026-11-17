@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, ROUND_CEILING
 from database.db_manager import DBManager
 from database.user_db import TREASURY_USER_ID
 from managers.currency_exchange_manager import CurrencyExchangeManager, SCALE, MAX_UNITS
+from database.fund_accounting import account as fund_account
 from managers.currency_manager import CurrencyManager
 from managers.user_manager import UserManager
 from managers.financial_manager import FinancialManager as Finance
@@ -360,6 +361,7 @@ class CorporateActionsManager:
             "COALESCE(ue.nationality,'낙원') underlying_nationality,u.nationality recipient_nationality,"
             "COALESCE(NULLIF(h.tax_residency,''),NULLIF(u.tax_residency,''),u.nationality,'낙원') recipient_residency "
             "FROM depositary_receipts d JOIN shareholder_registers sr ON sr.asset_code=d.underlying_code "
+            "AND sr.dividend_kind<>'meeting' "
             "JOIN shareholder_register_dr_entitlements h ON h.register_id=sr.register_id AND h.user_id=? "
             "AND h.payout_currency=d.quote_currency "
             "JOIN market_assets a ON a.code=d.dr_code "
@@ -380,7 +382,7 @@ class CorporateActionsManager:
         recipient = str(row['recipient_nationality'] or '낙원')
         residency = str(row['recipient_residency'] or recipient)
         product = 'depositary_receipt'
-        record = conn.execute("SELECT record_epoch FROM shareholder_registers WHERE asset_code=? AND status IN ('closed','paid') AND (? IS NULL OR operation_key=?) ORDER BY register_id DESC LIMIT 1", (str(underlying_code), operation_key, operation_key)).fetchone()
+        record = conn.execute("SELECT record_epoch FROM shareholder_registers WHERE asset_code=? AND dividend_kind<>'meeting' AND status IN ('closed','paid') AND (? IS NULL OR operation_key=?) ORDER BY register_id DESC LIMIT 1", (str(underlying_code), operation_key, operation_key)).fetchone()
         effective_epoch = int(record['record_epoch']) if record else int(contract_epoch)
         rule = DrDividendTaxManager.applicable_rule(
             conn, issuer=issuer, underlying=underlying, recipient=recipient,
@@ -435,6 +437,22 @@ class CorporateActionsManager:
         if conn.execute("SELECT 1 FROM preferred_dividend_claims c JOIN company s ON s.company_code=c.asset_code WHERE c.issuer_code=? AND c.status IN ('unpaid','partial') AND s.dividend_priority>? LIMIT 1", (issuer,priority)).fetchone():
             return True
         return bool(conn.execute("SELECT 1 FROM company WHERE status='active' AND COALESCE(parent_company_code,company_code)=? AND dividend_priority>? AND dividend_is_active=1 AND dividend_cycle_seconds>0 AND dividend_next_epoch<=? AND ((dividend_mode='fixed' AND dividend_per_share>0) OR (dividend_mode='percent' AND dividend_percent>0)) LIMIT 1", (issuer,priority,now)).fetchone())
+
+    @classmethod
+    def freeze_meeting_register(cls, conn, code, key, release_epoch, actor=None, now=None):
+        """Freeze the live register of one share class for a shareholder meeting.
+        Dividends and meetings share the register; this one is lifted by release_register."""
+        now = int(now or time.time())
+        quote = conn.execute("SELECT quote_currency FROM company WHERE company_code=?", (str(code),)).fetchone()
+        listing = {"code": str(code), "quote_currency": quote[0] if quote else None}
+        return cls._close_register(cls, conn, listing, 'meeting', key, int(release_epoch), now, 0, actor)
+
+    @staticmethod
+    def release_register(conn, key_prefix, now=None):
+        """Lift a meeting's frozen register: holdings count live again."""
+        conn.execute("UPDATE shareholder_registers SET status='released', pay_epoch=? "
+                     "WHERE dividend_kind='meeting' AND status='closed' AND operation_key LIKE ?",
+                     (int(now or time.time()), str(key_prefix) + '%'))
 
     def _close_register(self, conn, listing, kind, key, pay_epoch, now, per_share=0, actor=None):
         """Snapshot the entitled holders once; later trades do not change the register."""
@@ -805,6 +823,9 @@ class CorporateActionsManager:
         now = int(RateManager._validated_epoch(
             now, "invalid_corporate_action_processing_epoch"
         ))
+        # A meeting register whose voting has ended is lifted even if nobody opened the meeting.
+        self.db.companies.execute("UPDATE shareholder_registers SET status='released' "
+                                  "WHERE dividend_kind='meeting' AND status='closed' AND pay_epoch<=?", (now,))
         groups = defaultdict(list)
         for database,table,key in ((self.db.companies,'company','company_code'),(self.db.products,'investment','product_code'),(self.db.assets,'market_assets','code')):
             for row in database.execute(f"SELECT * FROM {table} WHERE status='active' AND dividend_is_active=1 AND dividend_cycle_seconds>0 AND ((dividend_mode='fixed' AND dividend_per_share>0) OR (dividend_mode='percent' AND dividend_percent>0))"):
@@ -1028,15 +1049,26 @@ class CorporateActionsManager:
                     raise ValueError('청산 채권 또는 지급액이 금액 한도를 초과했습니다.')
                 for item,amount in waterfall:
                     taxable = amount if item['kind']=='arrears' else max(0,amount-item.get('principal',amount)) if item['kind']=='debt' else 0
-                    tax = UserManager._tax(conn,item['user'],f'liquidation:{item["kind"]}:{issuer}',taxable)
+                    # Liquidation cash is base currency for every creditor, whatever their own.
+                    base = base_currency_code(conn)
+                    from managers.accounting_journal import AccountingJournal
+                    cash_mark = AccountingJournal.cash_mark(conn)
+                    tax = UserManager._tax(conn,item['user'],f'liquidation:{item["kind"]}:{issuer}',taxable,currency=base)
                     net = amount-tax
+                    settlement = None
                     if item['kind']=='unowned_residual':
                         # The listing country's treasury keeps the residual (in 기준 통화 or exchanged).
-                        CurrencyManager.treasury_receive(conn, item['user'], base_currency_code(conn), net * SCALE)
+                        CurrencyManager.treasury_receive(conn, item['user'], base, net * SCALE)
+                    elif not fund_account(conn, item['user']) and CurrencyManager.home(conn, item['user']) != base:
+                        settlement = CurrencyManager.receive(conn, item['user'], base, net)
                     elif not UserManager._change_cash(conn, item['user'], net, maximum=self.MAX_MONEY):
                         raise ValueError('청산금을 받을 사용자 또는 잔액 한도를 확인해주세요.')
-                    conn.execute('INSERT INTO corporate_liquidation_payments(operation_key,issuer_code,asset_code,user_id,kind,quantity,claim_amount,paid_amount,tax_amount,recorded_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                    payment = conn.execute('INSERT INTO corporate_liquidation_payments(operation_key,issuer_code,asset_code,user_id,kind,quantity,claim_amount,paid_amount,tax_amount,recorded_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)',
                                  (key,issuer,item['asset'],item['user'],item['kind'],item['quantity'],item['claim'],amount,tax,now))
+                    if settlement:
+                        CurrencyManager.record_fx_settlement(
+                            conn, 'liquidation', payment.lastrowid, item['user'], base, net, settlement, now)
+                    AccountingJournal.link_cash(conn, 'liquidation', payment.lastrowid, cash_mark, now)
                     conn.execute('INSERT INTO product_settlements(user_id,product_code,kind,quantity,gross_amount,tax_amount,recorded_epoch) VALUES (?,?,?,?,?,?,?)',
                                  (item['user'],item['asset'],'liquidation:'+item['kind'],item['quantity'],amount,tax,now))
                     if item['kind']=='arrears':
@@ -1250,7 +1282,7 @@ class CorporateActionsManager:
                 self._unencumbered(conn, [code], allow_orders=False)
                 if conn.execute("SELECT 1 FROM market_orders WHERE asset_code=? AND status='scheduled' LIMIT 1", (code,)).fetchone():
                     raise ValueError('예약 주문을 먼저 취소해주세요.')
-                if conn.execute("SELECT 1 FROM shareholder_registers WHERE asset_code=? AND status='closed' LIMIT 1", (code,)).fetchone():
+                if conn.execute("SELECT 1 FROM shareholder_registers WHERE asset_code=? AND dividend_kind<>'meeting' AND status='closed' LIMIT 1", (code,)).fetchone():
                     raise ValueError('지급 대기 중인 주주명부가 있어 배당 지급을 먼저 완료해주세요.')
                 if conn.execute("SELECT 1 FROM preferred_dividend_claims WHERE asset_code=? AND status IN ('unpaid','partial') LIMIT 1", (code,)).fetchone():
                     raise ValueError('미지급 누적 배당이 있어 청구를 먼저 정산해주세요.')

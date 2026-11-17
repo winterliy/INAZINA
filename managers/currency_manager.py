@@ -358,6 +358,51 @@ class CurrencyManager:
         return treasury, base, currency, received
 
     @classmethod
+    def receive(cls, conn, user_id, currency, minor_units):
+        """Pay a citizen ``minor_units`` of ``currency`` without ever booking it as another currency's number.
+
+        Kept in ``currency`` when it is the citizen's own or they hold a spendable
+        account in it; otherwise exchanged at the current quote into their home
+        currency, rounded down to its minor unit. Returns the conversion snapshot
+        ``{"currency", "decimal_places", "minor_units", "rate"}`` or None.
+        """
+        from functions.money import convert_minor_units
+        from managers.deposit_accounts import account
+
+        minor_units = int(minor_units)
+        if not minor_units:
+            return None
+        currency = str(currency).upper()
+        places = cls.precision(conn, currency)
+        home = cls.home(conn, user_id)
+        if currency != home and account(conn, user_id, currency):
+            cls.change(conn, user_id, currency, minor_units * (10 ** (6 - places)), allow_deficit=True)
+            return None
+        settlement, value = None, minor_units
+        if currency != home:
+            rate = cls.quote(conn, currency, home)
+            home_places = cls.precision(conn, home)
+            value = convert_minor_units(minor_units, places, rate, home_places)
+            settlement = {"currency": home, "decimal_places": home_places,
+                          "minor_units": value, "rate": rate}
+        if value:
+            credit = conn.execute("UPDATE users SET cash_minor=cash_minor+? WHERE user_id=?",
+                                  (value, str(user_id)))
+            if credit.rowcount != 1:
+                raise RuntimeError("지급받을 사용자를 찾을 수 없어 지급을 취소했습니다.")
+        return settlement
+
+    @classmethod
+    def record_fx_settlement(cls, conn, kind, reference, user_id, currency, minor_units, settlement, now):
+        """Keep what ``receive`` exchanged: the source amount, what arrived and the exact rate."""
+        rate = settlement["rate"]
+        conn.execute("INSERT INTO cash_fx_settlements VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                     (str(kind), str(reference), str(user_id), str(currency).upper(),
+                      cls.precision(conn, str(currency).upper()), int(minor_units),
+                      settlement["currency"], settlement["decimal_places"], settlement["minor_units"],
+                      str(rate.numerator), str(rate.denominator), int(now)))
+
+    @classmethod
     def change(cls, conn, user_id, currency, delta, allow_deficit=False):
         user_id = str(user_id)
         if not (conn.execute("SELECT 1 FROM users WHERE user_id=? AND status='active'", (user_id,)).fetchone()
@@ -528,6 +573,8 @@ class CurrencyReadSnapshot:
         quantum = 10 ** (6 - self.precision(target))
         output = (value.numerator // value.denominator) // quantum * quantum
         limit = MAX_NATIVE * SCALE if target == self.base_currency else MAX_UNITS
-        if not 0 <= output <= limit:
+        if output < 0:
+            raise ValueError('음수 금액은 환산할 수 없습니다.')
+        if output > limit:
             raise ValueError('환산 금액이 저장 한도를 초과했습니다.')
         return output

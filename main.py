@@ -418,6 +418,22 @@ class InazinaBot(discord.Client):
                         await recipient.send(embed=notice)
                     except (discord.HTTPException, ValueError, TypeError) as exc:
                         print(f"[Loan Repayment Notice Error] {result['user_id']}: {exc}")
+                from managers.insolvency_manager import InsolvencyManager
+                rehab_notices = await self._run_background_write(InsolvencyManager(self).process_due)
+                rehab_text = {
+                    "paid": ("⚖️ 회생 변제", "{week}주차 변제금을 자동으로 냈습니다.", discord.Color.green()),
+                    "missed": ("⚖️ 회생 변제 미납", "잔액이 부족해 이번 주 변제금을 내지 못했습니다(누적 {missed}회). 앞으로 {left}번 더 못 내면 회생이 폐지됩니다.", discord.Color.orange()),
+                    "revoked": ("⚖️ 회생 폐지", "변제금을 거듭 내지 못해 회생이 폐지되었습니다. 남은 대출이 원래대로 되살아나고 이자가 다시 붙습니다.", discord.Color.red()),
+                    "completed": ("⚖️ 회생 변제 완료 · 면책", "변제계획을 모두 마쳐 남은 대출 {discharged}건이 면책되었습니다.", discord.Color.green()),
+                }
+                for result in rehab_notices or []:
+                    try:
+                        title, text, color = rehab_text[result["event"]]
+                        recipient_id = int(result["user_id"])
+                        recipient = self.get_user(recipient_id) or await self.fetch_user(recipient_id)
+                        await recipient.send(embed=discord.Embed(title=title, description=text.format(**result), color=color))
+                    except (discord.HTTPException, ValueError, TypeError, KeyError) as exc:
+                        print(f"[Rehab Notice Error] {result.get('user_id')}: {exc}")
                 deposit_notices = await self._run_background_write(
                     self.bank_mgr.process_scheduled_deposits
                 )

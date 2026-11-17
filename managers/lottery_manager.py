@@ -158,6 +158,11 @@ class LotteryManager:
             user = conn.execute('SELECT status,cash FROM users WHERE user_id=?',(str(user_id),)).fetchone()
             if not user or (user['status']!='active' and str(user_id)!=TREASURY_USER_ID):
                 raise ValueError('등록된 활성 사용자만 구매할 수 있습니다.')
+            from functions.money import base_currency_code, from_minor_units
+            from managers.currency_manager import CurrencyManager, SCALE
+            # The operator is a base-currency company: price, pool and prizes are base
+            # units for everyone, and other currencies are exchanged at the wallet.
+            base, home = base_currency_code(conn), CurrencyManager.home(conn, user_id)
             round = self._ensure(conn,now)
             if expected_round is not None and round['round_id']!=expected_round:
                 raise ValueError('회차가 변경되었습니다. /복권구매를 다시 실행해주세요.')
@@ -172,9 +177,27 @@ class LotteryManager:
             if round['sales_total']+total>MAX_MONEY:
                 raise ValueError('회차별 판매 한도를 초과했습니다.')
             from managers.game_funding import game_funds
-            balance, account_number = game_funds(conn, user_id, source)
-            if balance < total or not UserManager._debit_source(conn, str(user_id), account_number, total):
-                raise ValueError('복권을 구매할 출금 잔액이 부족합니다.')
+            fx = None
+            from managers.deposit_accounts import account as deposit_account
+            base_account = deposit_account(conn, user_id, base) if home != base else None
+            named_base = bool(base_account) and str(source or '') == base_account['account_number']
+            if base_account and (named_base or (not source and int(base_account['balance_units']) >= total * SCALE)):
+                # A player holding the lottery's own currency pays with it, unexchanged.
+                if int(base_account['balance_units']) < total * SCALE:
+                    raise ValueError('복권을 구매할 출금 잔액이 부족합니다.')
+                CurrencyManager.change(conn, user_id, base, -total * SCALE)
+            else:
+                balance, account_number = game_funds(conn, user_id, source)
+                charge = total
+                if home != base:
+                    # No usable base-currency account: exchange home money at the current quote,
+                    # rounded up to the player's minor unit so it is never less than the price.
+                    rate = CurrencyManager.quote(conn, base, home)
+                    places = CurrencyManager.precision(conn, home)
+                    paid = -(-total * rate.numerator * 10 ** places // rate.denominator)
+                    charge, fx = from_minor_units(paid, places), (home, places, paid, rate)
+                if balance < charge or not UserManager._debit_source(conn, str(user_id), account_number, charge):
+                    raise ValueError('복권을 구매할 출금 잔액이 부족합니다.')
             prize = price*rules['prize_percent']//100
             treasury = price*rules['treasury_percent']//100
             reserve = price-prize-treasury
@@ -183,8 +206,14 @@ class LotteryManager:
             pools = json.loads(round['pools_json'])
             pools = [a+b*quantity for a,b in zip(pools,changes)]
             treasury_amount = treasury * quantity
-            from managers.currency_manager import CurrencyManager
-            if not UserManager._change_cash(
+            if home != base:
+                # The levy belongs to the operator's country, in the lottery's currency.
+                operator = conn.execute('SELECT nationality FROM country_currencies WHERE currency_code=? '
+                                        'ORDER BY nationality', (base,)).fetchone()
+                CurrencyManager.treasury_receive(
+                    conn, CurrencyManager.treasury_id(conn, operator[0] if operator else '낙원'),
+                    base, treasury_amount * SCALE)
+            elif not UserManager._change_cash(
                 conn, CurrencyManager.user_treasury_id(conn, user_id), treasury_amount, maximum=MAX_MONEY
             ):
                 raise ValueError('국고 잔액 한도를 초과했습니다.')
@@ -211,7 +240,16 @@ class LotteryManager:
                 'INSERT INTO lottery_purchases VALUES (?,?,?,?,?,?)',
                 (request_id, str(user_id), round['round_id'], quantity, price, json.dumps(tickets)),
             )
+            if fx:
+                self._record_fx(conn, 'purchase', request_id, user_id, total, fx, now)
             return {'round_id':round['round_id'],'price':price,'tickets':tickets}
+
+    @staticmethod
+    def _record_fx(conn, kind, reference, user_id, base_units, fx, now):
+        currency, places, minor_units, rate = fx
+        conn.execute('INSERT INTO lottery_fx_settlements VALUES (?,?,?,?,?,?,?,?,?,?)',
+                     (kind, str(reference), str(user_id), int(base_units), currency, places,
+                      int(minor_units), str(rate.numerator), str(rate.denominator), now))
 
     @staticmethod
     def _backfill_legacy_ledger(conn, round_row, now):
@@ -319,6 +357,9 @@ class LotteryManager:
             if round['status']!='drawn':
                 return None
             self._backfill_legacy_ledger(conn, round, now)
+            from functions.money import base_currency_code
+            from managers.currency_manager import CurrencyManager
+            base = base_currency_code(conn)
             winning = json.loads(round['winning_json'])
             pools = json.loads(round['pools_json'])
             allocated = conn.execute(
@@ -340,9 +381,15 @@ class LotteryManager:
                 gross = pools[rank-1]//len(winners) if winners else 0
                 paid = 0
                 for ticket in winners:
-                    tax = UserManager._tax(conn, ticket['user_id'], 'lottery_winnings', gross)
+                    tax = UserManager._tax(conn, ticket['user_id'], 'lottery_winnings', gross, currency=base)
                     net = gross-tax
-                    if not UserManager._change_cash(
+                    if CurrencyManager.home(conn, ticket['user_id']) != base:
+                        settled = CurrencyManager.receive(conn, ticket['user_id'], base, net)
+                        if settled:
+                            self._record_fx(conn, 'payout', ticket['ticket_id'], ticket['user_id'], net,
+                                            (settled['currency'], settled['decimal_places'],
+                                             settled['minor_units'], settled['rate']), now)
+                    elif not UserManager._change_cash(
                         conn, ticket['user_id'], net, maximum=MAX_MONEY
                     ):
                         raise ValueError('당첨자의 계정 또는 잔액 한도를 확인해주세요. 추첨 결과를 보존하고 지급을 보류합니다.')

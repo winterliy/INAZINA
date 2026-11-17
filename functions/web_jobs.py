@@ -38,18 +38,38 @@ async def run_job(bot, job):
         from functions.slash_commands import submit_relief_request
         return await submit_relief_request(bot, job["actor_id"], payload.get("name") or job["actor_id"], payload["type"])
     if job["kind"] == "user_shareholder_meeting":
+        from functions import governance_notices
+        if "meetingId" in payload:
+            # 나루 already convened it (and checked who may); only the invitations are left.
+            return await governance_notices.invite_holders(bot, payload["meetingId"])
         from functions.admin_access import resolve_user_role
-        from functions.slash_commands import convene_shareholder_meeting
         user = await asyncio.to_thread(bot.db.users.get_user, job["actor_id"])
         role = resolve_user_role(job["actor_id"], user) if user else "user"
-        return await convene_shareholder_meeting(bot, job["actor_id"], role, payload["code"], payload["place"])
+        return await governance_notices.convene_from_discord(bot, job["actor_id"], role, payload["code"], payload["place"])
+    if job["kind"] == "court_decision":
+        from functions import governance_notices
+        return await governance_notices.send_court_decision(bot, payload)
     raise ValueError(f"지원하지 않는 작업입니다: {job['kind']}")
+
+
+async def _send_meeting_results(bot, log):
+    """Ended 주주총회: lift their registers and DM the minutes (at most once a minute)."""
+    now = time.monotonic()
+    if now - getattr(bot, "_meeting_results_checked", 0) < 60:
+        return
+    bot._meeting_results_checked = now
+    try:
+        from functions import governance_notices
+        await governance_notices.send_meeting_results(bot)
+    except Exception:
+        log.exception("shareholder meeting results")
 
 
 async def web_job_loop(bot):
     log = logging.getLogger(__name__)
     while not bot.is_closed():
         try:
+            await _send_meeting_results(bot, log)
             job = await asyncio.to_thread(_claim, bot.db)
             if job is None:
                 await asyncio.sleep(POLL_SECONDS)

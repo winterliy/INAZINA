@@ -15,4 +15,6 @@ def test_general_ratio_endpoint_preserves_both_ratio_terms():
 
 @pytest.mark.parametrize('payload',[{}, {'action':'execute','mode':'ratio_split','oldShares':'2'}, {'action':'execute','mode':'ratio_split','oldShares':'2','newShares':'3','unexpected':True}])
 def test_ratio_endpoint_rejects_incomplete_or_unknown_fields(payload):
-    with pytest.raises(ValueError):server.admin_company_share_action('admin','CO',payload)
+    # Never let the endpoint build its real domain: that opens the live database.
+    with patch.object(server,'domain',return_value=SimpleNamespace(bot=SimpleNamespace(db=object()))), pytest.raises(ValueError):
+        server.admin_company_share_action('admin','CO',payload)

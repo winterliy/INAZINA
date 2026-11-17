@@ -155,6 +155,33 @@ class ELSTests(unittest.TestCase):
         self.assertEqual(self.manager.get_user_positions('citizen'), [])
         self.assertEqual(self.manager.process_due(self.issue_epoch + 31 * DAY), [])
         self.assertEqual(self.db.products.execute_one('SELECT COUNT(*) FROM els_settlements')[0], 1)
+        # The subscription debit and the settlement credit are each tied to their wallet rows.
+        from managers.accounting_journal import AccountingJournal
+        with self.db.readonly() as conn:
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item['ledger_scope'] == 'business_cash')
+            kinds = [row[0] for row in conn.execute('SELECT kind FROM business_cash_events ORDER BY event_id')]
+        self.assertEqual(check['status'], 'matched', check)
+        self.assertEqual(kinds, ['els_subscription', 'els_settlement'])
+        self.assertEqual(check['checked_records'], 2)
+        self.assertEqual(self._locked_check()['status'], 'matched', self._locked_check())
+
+    def _locked_check(self, conn=None):
+        from managers.accounting_journal import AccountingJournal
+        if conn is not None:
+            return AccountingJournal.reconcile_els_locked(conn)
+        with self.db.readonly() as connection:
+            return AccountingJournal.reconcile_els_locked(connection)
+
+    def test_locked_els_money_equals_its_open_subscriptions(self):
+        self.subscribe_and_issue()
+        check = self._locked_check()
+        self.assertEqual((check['status'], check['product_count']), ('matched', 1), check)
+        with self.db.atomic() as conn:
+            conn.execute("UPDATE els_products SET locked_amount=locked_amount+1 WHERE product_code='ELS1'")
+            broken = self._locked_check(conn)
+            conn.execute("UPDATE els_products SET locked_amount=locked_amount-1 WHERE product_code='ELS1'")
+        self.assertEqual([gap['status'] for gap in broken['gaps']], ['els_locked_mismatch'])
 
     def test_observation_snapshot_preserves_large_price_as_decimal_text(self):
         import json

@@ -8,7 +8,7 @@ from managers.currency_exchange_manager import CurrencyExchangeManager,SCALE,MAX
 from managers.currency_manager import CurrencyManager
 from managers.deposit_accounts import PRIMARY_NUMBER, PRINCIPAL_DELTA, account as deposit_account
 from managers.market_session_manager import MarketSessionManager
-from functions.money import (parse_currency_money, currency_precision,
+from functions.money import (base_currency_code, parse_currency_money, currency_precision,
                              to_minor_units, from_minor_units)
 
 
@@ -59,7 +59,7 @@ class ForeignSecuritiesManager:
                 state = MarketSessionManager.process_conn(conn, now, exchange_id) if exchange_id else {'status': 'open'}
                 deferred = state['status'] != 'open'
                 asset,source = self.users._asset_row(conn,code)
-                currency = asset['quote_currency']
+                currency = str(asset['quote_currency'] or base_currency_code(conn)).upper()
                 limit_price = parse_currency_money(
                     conn, limit_price, currency, minimum=0
                 )
@@ -140,7 +140,7 @@ class ForeignSecuritiesManager:
             side=incoming['side']
             comparator,sort = ('<=','ASC') if side=='buy' else ('>=','DESC')
             asset,source=self.users._asset_row(conn,incoming['asset_code'])
-            currency=asset['quote_currency']
+            currency=str(asset['quote_currency'] or base_currency_code(conn)).upper()
             places = currency_precision(conn, currency)
             incoming_limit_minor = int(incoming['limit_price_minor_units'])
             maker=conn.execute(f"SELECT * FROM market_orders WHERE asset_code=? AND order_kind='asset' AND side=? AND status IN ('open','partial') AND user_id<>? AND limit_price_minor_units {comparator} ? ORDER BY limit_price_minor_units {sort},created_epoch,order_id LIMIT 1",(incoming['asset_code'],'sell' if side=='buy' else 'buy',incoming['user_id'],incoming_limit_minor)).fetchone()

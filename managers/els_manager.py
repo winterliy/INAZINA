@@ -236,6 +236,8 @@ class ELSManager:
                 if principal + coupon > MAX_MONEY:
                     return False, "❌ 청약금과 최대 쿠폰 합계가 허용 금액을 초과합니다."
                 currency = terms["quote_currency"]
+                from managers.accounting_journal import AccountingJournal
+                cash_mark = AccountingJournal.cash_mark(conn)
                 if currency != CurrencyManager.home(conn, user_id):
                     # Foreign citizens subscribe from their foreign-currency account.
                     account = conn.execute("SELECT account_number FROM accounts WHERE user_id=? AND quote_currency=? "
@@ -263,9 +265,10 @@ class ELSManager:
                     (principal, coupon, principal + coupon, code, principal + coupon, MAX_MONEY))
                 if changed.rowcount != 1:
                     raise ValueError("계약 총예치금이 허용 금액을 초과합니다.")
-                conn.execute("INSERT INTO els_subscriptions(product_code,user_id,account_number,quantity,principal,"
+                subscription = conn.execute("INSERT INTO els_subscriptions(product_code,user_id,account_number,quantity,principal,"
                     "coupon_reserved,created_epoch) VALUES (?,?,?,?,?,?,?)",
                     (code, user_id, account_number, quantity, principal, coupon, now))
+                AccountingJournal.link_cash(conn, "els_subscription", subscription.lastrowid, cash_mark, now)
                 from managers.asset_cost_manager import AssetCostManager
                 AssetCostManager.upsert(
                     conn, user_id, code, account_number, quantity, terms["face_value"]
@@ -441,16 +444,19 @@ class ELSManager:
         notifications = []
         for subscription, gross in payments:
             currency = self._currency(conn, code)
+            from managers.accounting_journal import AccountingJournal
+            cash_mark = AccountingJournal.cash_mark(conn)
             tax = self.users._tax(conn, subscription["user_id"], "els_profit", max(0, gross - subscription["principal"]), currency)
             net = gross - tax
             self._safe_credit(conn, subscription["user_id"], subscription["account_number"], net, currency)
-            conn.execute(
+            settlement = conn.execute(
                 "INSERT INTO els_settlements(product_code,sequence,subscription_id,user_id,quantity,principal,"
                 "gross_amount,tax_amount,net_amount,recorded_epoch) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (code, observation["sequence"], subscription["subscription_id"],
                  subscription["user_id"], subscription["quantity"], subscription["principal"],
                  gross, tax, net, now),
             )
+            AccountingJournal.link_cash(conn, "els_settlement", settlement.lastrowid, cash_mark, now)
             conn.execute(
                 "INSERT INTO product_settlements(user_id,product_code,kind,quantity,gross_amount,tax_amount,recorded_epoch) "
                 "VALUES (?,?,?,?,?,?,?)",

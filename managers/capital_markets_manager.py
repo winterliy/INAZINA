@@ -105,6 +105,8 @@ class CapitalMarketsManager:
                 if shares <= 0:
                     raise ValueError(f"전환가격 {price:,}보다 큰 액면만큼 전환해주세요.")
                 residual = face_total - shares * price
+                from managers.accounting_journal import AccountingJournal
+                cash_mark = AccountingJournal.cash_mark(conn)
                 if residual:
                     # Fractional shares are settled in cash from the issuer.
                     paid = conn.execute("UPDATE issuer_cash_accounts SET balance=balance-? "
@@ -121,9 +123,10 @@ class CapitalMarketsManager:
                 self._book(conn, company["company_code"], "전환사채 주식 전환",
                            [("bonds", face_total), ("common_capital", -shares * price)]
                            + ([("cash", -residual)] if residual else []))
-                conn.execute("INSERT INTO hybrid_bond_events(user_id,product_code,kind,bond_units,shares,cash,recorded_epoch) "
+                event = conn.execute("INSERT INTO hybrid_bond_events(user_id,product_code,kind,bond_units,shares,cash,recorded_epoch) "
                              "VALUES (?,?,?,?,?,?,?)",
                              (user_id, bond["product_code"], "conversion", quantity, shares, residual, time.time()))
+                AccountingJournal.link_cash(conn, "hybrid_bond", event.lastrowid, cash_mark, time.time())
             return True, (f"✅ `{code}` {quantity:,}매를 `{company['company_code']}` {shares:,}주로 전환했습니다 "
                           f"(전환가 {price:,}" + (f" · 단주 대금 {residual:,} 입금" if residual else "") + ").")
         except ValueError as exc:
@@ -152,6 +155,8 @@ class CapitalMarketsManager:
                 if shares <= 0:
                     raise ValueError("행사로 받을 신주가 없습니다. 수량을 늘려주세요.")
                 cost = shares * price
+                from managers.accounting_journal import AccountingJournal
+                cash_mark = AccountingJournal.cash_mark(conn)
                 funds = UserManager._choose_funds(conn, user_id)
                 if not funds or funds[0] < cost or not UserManager._debit_source(conn, user_id, funds[1], cost):
                     raise ValueError(f"행사 대금 {cost:,}이 부족합니다.")
@@ -160,9 +165,10 @@ class CapitalMarketsManager:
                              (cost, company["company_code"]))
                 _issue_shares(conn, user_id, company, shares, price, cost)
                 self._book(conn, company["company_code"], "신주인수권 행사", [("cash", cost), ("common_capital", -cost)])
-                conn.execute("INSERT INTO hybrid_bond_events(user_id,product_code,kind,bond_units,shares,cash,recorded_epoch) "
+                event = conn.execute("INSERT INTO hybrid_bond_events(user_id,product_code,kind,bond_units,shares,cash,recorded_epoch) "
                              "VALUES (?,?,?,?,?,?,?)",
                              (user_id, bond["product_code"], "warrant", quantity, shares, cost, time.time()))
+                AccountingJournal.link_cash(conn, "hybrid_bond", event.lastrowid, cash_mark, time.time())
             return True, (f"✅ `{code}` 신주인수권 {quantity:,}매를 행사해 `{company['company_code']}` "
                           f"{shares:,}주를 받았습니다 (행사가 {price:,} · 납입 {cost:,}).")
         except ValueError as exc:
@@ -206,6 +212,8 @@ class CapitalMarketsManager:
                     raise ValueError("등록된 활성 사용자만 스왑을 체결할 수 있습니다.")
                 nationality = user["nationality"]
                 currency = CurrencyManager.home(conn, user_id)
+                from managers.accounting_journal import AccountingJournal
+                cash_mark = AccountingJournal.swap_cash_mark(conn, currency, now)
                 if not UserManager._change_cash(conn, user_id, -margin):
                     raise ValueError(f"증거금 {margin:,} {currency}가 부족합니다.")
                 fixed = self._fixed(conn, nationality, tenor_days)
@@ -214,6 +222,7 @@ class CapitalMarketsManager:
                     "start_epoch,maturity_epoch,last_settle_epoch,margin) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (user_id, nationality, currency, notional, side, fixed, tenor_days,
                      now, now + tenor_days * 86400, now, margin)).lastrowid
+                AccountingJournal.link_swap_cash(conn, f"open:{swap_id}", cash_mark, now)
             direction = "고정 지급 · 변동 수취" if side == "pay_fixed" else "고정 수취 · 변동 지급"
             return True, (f"✅ 금리스왑 #{swap_id} 체결 · {direction} · 명목 {notional:,} {currency} · "
                           f"고정 {fixed:.3f}% · {tenor_days}일 · 증거금 {margin:,} {currency}")
@@ -272,9 +281,12 @@ class CapitalMarketsManager:
                                     (int(swap_id), user_id)).fetchone()
                 if not swap:
                     raise ValueError("진행 중인 내 스왑 번호를 확인해주세요.")
+                from managers.accounting_journal import AccountingJournal
+                cash_mark = AccountingJournal.swap_cash_mark(conn, swap["currency"], now)
                 self._settle_swap(conn, swap, now)
                 swap = conn.execute("SELECT * FROM swap_contracts WHERE swap_id=?", (swap["swap_id"],)).fetchone()
                 if swap["status"] != "open":
+                    AccountingJournal.link_swap_cash(conn, f"settle:{swap_id}", cash_mark, now)
                     return True, f"✅ 스왑 #{swap_id}은(는) 이미 {swap['status']} 상태로 정산되었습니다."
                 remaining = max(0.0, float(swap["maturity_epoch"]) - now)
                 current = self._fixed(conn, swap["nationality"], max(1, int(remaining // 86400)))
@@ -297,6 +309,7 @@ class CapitalMarketsManager:
                     CurrencyManager.treasury_receive(conn, treasury, swap["currency"], owed * SCALE)
                 conn.execute("UPDATE swap_contracts SET realized=realized+? WHERE swap_id=?", (value, swap["swap_id"]))
                 self._finish_swap(conn, swap["swap_id"], "closed", now)
+                AccountingJournal.link_swap_cash(conn, f"close:{swap_id}", cash_mark, now)
             return True, f"✅ 스왑 #{swap_id}을(를) 해지했습니다. 해지 정산 {value:+,} {swap['currency']} · 증거금 반환"
         except ValueError as exc:
             return False, f"❌ {exc}"
@@ -435,7 +448,10 @@ class CapitalMarketsManager:
             for swap in conn.execute("SELECT * FROM swap_contracts WHERE status='open' "
                                      "AND (last_settle_epoch<=? OR maturity_epoch<=?)",
                                      (now - 86400, now)).fetchall():
+                from managers.accounting_journal import AccountingJournal
+                cash_mark = AccountingJournal.swap_cash_mark(conn, swap["currency"], now)
                 self._settle_swap(conn, swap, now)
+                AccountingJournal.link_swap_cash(conn, f"settle:{swap['swap_id']}", cash_mark, now)
             self.charge_wrap_fees(conn, now)
             # Book trades that settled later (fills, dividends, interest) on company accounts.
             from managers.company_account_manager import CompanyAccounts

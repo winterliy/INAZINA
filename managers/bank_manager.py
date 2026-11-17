@@ -953,6 +953,10 @@ class BankManager:
             self._settle_user_interest(user_id)
             with self.db.atomic(("users", "accounts", "product", "assets", "company")) as conn:
                 ComplianceManager.require_financial_eligibility(conn, user_id)
+                from managers.insolvency_manager import loan_ban_message
+                banned = loan_ban_message(conn, user_id)
+                if banned:
+                    return False, banned
                 product = conn.execute(
                     "SELECT * FROM product.liability WHERE product_code = ?", (product_code,)
                 ).fetchone()
@@ -1389,6 +1393,10 @@ class BankManager:
                     f"{ACTIVE_OR_TREASURY}", (str(user_id),)).fetchone()
                 if not user:
                     return False, '❌ 등록된 사용자만 대출을 연장할 수 있습니다.'
+                from managers.insolvency_manager import loan_ban_message
+                banned = loan_ban_message(conn, user_id)
+                if banned:
+                    return False, banned
                 # Product IDs are accepted as well as the individual loan number;
                 # each user has at most one contract per product.
                 rows = conn.execute("SELECT l.*,p.extension_days,p.extension_min_credit_score,p.status product_status "
@@ -1543,7 +1551,7 @@ class BankManager:
                     conn, loan["issuer"], "loan_repayment",
                     repayment_ref,
                     loan["quote_currency"],
-                    [("settlement_asset", "debit", total_debit),
+                    [(UserFunds.settlement_account(conn, funds[1], loan["issuer"]), "debit", total_debit),
                      ("default_loss_allowance", "debit", recovery),
                      ("loans_receivable", "credit", payment),
                      ("credit_loss_recovery_income", "credit", recovery),
@@ -1621,6 +1629,10 @@ class BankManager:
                     continue
                 if cycle > 0 and now - last >= cycle:
                     due_users.add(str(row["user_id"]))
+            from managers.insolvency_manager import frozen_users
+            with self.db.readonly() as frozen_conn:
+                frozen = frozen_users(frozen_conn)  # 회생 변제 중에는 정기상환 대신 회생 변제만
+            due_users -= frozen
             for due_user_id in due_users:
                 self._settle_user_interest(due_user_id, now=now)
 
@@ -1635,6 +1647,8 @@ class BankManager:
                     "ON p.product_code = l.product_code WHERE l.status = 'active'"
                 ).fetchall()
                 for loan in loans:
+                    if str(loan["user_id"]) in frozen:
+                        continue
                     if loan["amortization_type"] != "legacy":
                         paid, missed, amount_paid, balance = self._process_due_schedule(
                             conn, loan, now
@@ -1736,7 +1750,7 @@ class BankManager:
                                 conn, loan["issuer"], "loan_repayment",
                                 f"loan:{loan['loan_id']}:scheduled:{int(last+(processed+1)*cycle)}",
                                 loan["quote_currency"],
-                                [("settlement_asset", "debit", payment),
+                                [(UserFunds.settlement_account(conn, funds[1], loan["issuer"]), "debit", payment),
                                  ("loans_receivable", "credit", payment)],
                                 description=f"Scheduled repayment for loan {loan['loan_id']}",
                                 now=last+(processed+1)*cycle,
@@ -2103,7 +2117,7 @@ class BankManager:
                     conn, loan["issuer"], "loan_repayment",
                     f"loan:{loan['loan_id']}:schedule:{row['schedule_id']}",
                     currency,
-                    [("settlement_asset", "debit", due_amount),
+                    [(UserFunds.settlement_account(conn, funds[1], loan["issuer"]), "debit", due_amount),
                      ("loans_receivable", "credit", due_amount)],
                     description=f"Scheduled repayment for loan {loan['loan_id']}",
                     now=now,
@@ -2620,6 +2634,17 @@ class UserFunds:
             return None
         balance, account_number = max(sources, key=lambda source: source[0])
         return balance, account_number
+
+    @staticmethod
+    def settlement_account(conn, account_number, issuer):
+        """Journal account a repayment debits: the deposit liability when the money
+        came out of one of this issuer's own deposit accounts, else settlement cash."""
+        if account_number is not None and conn.execute(
+                "SELECT 1 FROM accounts.accounts a JOIN product.saving s ON s.product_code=a.product_code "
+                "WHERE a.account_number=? AND s.issuer=? AND a.account_type IN ('saving','currency_saving')",
+                (str(account_number), str(issuer))).fetchone():
+            return "customer_deposits_payable"
+        return "settlement_asset"
 
     @staticmethod
     def debit(conn, user_id, account_number, amount):

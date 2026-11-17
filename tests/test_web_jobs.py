@@ -55,9 +55,14 @@ class WebJobTests(unittest.TestCase):
         submit.assert_awaited_once_with("bot", "user-1", "닉", "파산")
         bot = SimpleNamespace(db=SimpleNamespace(users=SimpleNamespace(get_user=lambda _id: {"role": "user"})))
         meeting = {"job_id": 3, "kind": "user_shareholder_meeting", "actor_id": "user-1", "payload": json.dumps({"code": "AAA", "place": "홀"})}
-        with patch("functions.slash_commands.convene_shareholder_meeting", AsyncMock(return_value="ok")) as convene:
+        with patch("functions.governance_notices.convene_from_discord", AsyncMock(return_value="ok")) as convene:
             self.assertEqual(asyncio.run(web_jobs.run_job(bot, meeting)), "ok")
         self.assertEqual(convene.await_args.args[1:], ("user-1", "user", "AAA", "홀"))
+        # 나루 convened it already: only the invitations are sent, without a second check.
+        convened = {**meeting, "payload": json.dumps({"meetingId": 7})}
+        with patch("functions.governance_notices.invite_holders", AsyncMock(return_value="invited")) as invite:
+            self.assertEqual(asyncio.run(web_jobs.run_job(bot, convened)), "invited")
+        invite.assert_awaited_once_with(bot, 7)
 
     def test_loop_records_failures_and_keeps_running(self):
         job_id = self.add(kind="unknown")

@@ -44,6 +44,36 @@ class FundAccountingTests(unittest.TestCase):
         with self.assertRaises(sqlite3.IntegrityError):
             self.db.products.execute("DELETE FROM fund_cash_ledger WHERE product_code='FD'")
 
+    def test_treasury_bond_coupon_links_exactly_the_funds_own_cash_entry(self):
+        from database.fund_accounting import change_cash
+        from managers.accounting_journal import AccountingJournal
+        fund = self.fund()
+        self.ok(fund.activate('admin', 'FD'))
+        owner, now = PREFIX+'FD', 2_000_000_000
+        self.ok(self.users.bond_manager.issue('GOVF', '펀드 국채', 10, 365, 1000, 100_000))
+        self.db.accounts.execute(
+            "INSERT INTO treasury_bond_holdings(user_id,product_code,product_name,annual_rate,maturity_days,"
+            "principal,face_value,acquisition_cost,purchased_epoch,maturity_epoch,coupon_frequency_days,"
+            "day_count_convention,last_coupon_epoch) VALUES (?,'GOVF','펀드 국채',10,365,73000,1000,73000,"
+            "?,?,180,'ACT/365',?)", (owner, now-180*86400, now+100*86400, now-180*86400))
+        with self.db.atomic() as conn:
+            # An unrelated fund receipt of another kind just before the coupon must not be linked.
+            change_cash(conn, owner, 3600, 'fixture', 'GOVF')
+        paid = self.users.bond_manager.pay_due_coupons(owner, now=now)
+        self.assertEqual(len(paid), 1)
+        self.assertEqual((paid[0]['coupon'], paid[0]['tax']), (3600, 0))
+        link = self.db.currency.execute_one(
+            "SELECT l.product_code,l.event,l.reference,l.amount FROM treasury_bond_cash_fund_links x "
+            "JOIN fund_cash_ledger l ON l.entry_id=x.fund_entry_id")
+        self.assertEqual(tuple(link), ('FD', 'bond_coupon', 'GOVF', 3600))
+        self.assertEqual(self.db.currency.execute_one(
+            "SELECT COUNT(*) FROM treasury_bond_cash_wallet_links")[0], 0)
+        self.assertEqual(self.db.currency.execute_one(
+            "SELECT COUNT(*) FROM treasury_bond_cash_fx_settlements")[0], 0)
+        with self.db.readonly() as conn:
+            check = AccountingJournal.reconcile_treasury_bond_cash_events(conn)
+        self.assertEqual(check['status'], 'matched', check)
+
     def test_fund_cash_common_journal_reconciles_and_detects_missing_posting(self):
         from database.fund_accounting import change_cash
         from managers.accounting_journal import AccountingJournal

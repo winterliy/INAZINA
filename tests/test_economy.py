@@ -373,6 +373,18 @@ class EconomyTests(unittest.TestCase):
             result = next(item for item in AccountingJournal.reconcile_subledgers(conn)
                           if item["ledger_scope"] == "market_executions")
             self.assertTrue(result["primary_settlement_gaps"], result)
+            AccountingJournal.record_primary_recipient_override(
+                conn, execution_key=missing_receipt_key, recipient_id="treasury-before-issuer-account",
+                reason="the issuer cash account did not exist yet", actor_id="admin", now=1)
+            result = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                          if item["ledger_scope"] == "market_executions")
+            gap = next(g for g in result["primary_settlement_gaps"] if g["execution_key"] == missing_receipt_key)
+            # The receipt is now checked against the recorded recipient, and none arrived there.
+            self.assertEqual((gap["counterparty_kind"], gap["counterparty_id"]),
+                             ("recorded_recipient", "treasury-before-issuer-account"))
+            with self.assertRaisesRegex(ValueError, "사유"):
+                AccountingJournal.record_primary_recipient_override(
+                    conn, execution_key=missing_receipt_key, recipient_id="x", reason=" ", actor_id="admin", now=1)
         with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
             self.db.assets.execute(
                 "UPDATE market_execution_events SET quantity=2 WHERE execution_key=?",
@@ -440,13 +452,14 @@ class EconomyTests(unittest.TestCase):
         success, message = self.users.gamble("citizen-1", 100)
 
         self.assertFalse(success)
-        self.assertIn("국고에 입금", message)
+        self.assertIn("잃었습니다", message)
         self.assertAlmostEqual(self.db.users.get_user("citizen-1")["cash"], 9900)
         self.assertAlmostEqual(self.db.users.get_treasury_balance(), 100)
 
     def test_government_bond_sale_funds_treasury_and_maturity_redeems_integer_nwx(self):
         bonds = self.users.bond_manager
-        self.db.currency.execute("INSERT INTO currencies(code,name) VALUES ('NAC','Nac 화폐')")
+        self.db.currency.execute(
+            "INSERT INTO currencies(code,name,reference_rate,decimal_places) VALUES ('NAC','Nac 화폐','2',0)")
         self.db.currency.execute(
             "INSERT INTO country_currencies(nationality,currency_code,base_rate,legal_max_rate,tax_percent) "
             "VALUES ('Nac','NAC',3,20,3)"
@@ -461,9 +474,27 @@ class EconomyTests(unittest.TestCase):
         self.assertFalse(success)
         self.assertIn("액면가 1,000 기준 통화", message)
         self.assertEqual(self.db.users.get_user("citizen-1")["cash"], 10000)
+        # The bond is in NWX and the buyer's own currency is NAC: home cash is not
+        # a substitute, so the purchase needs an NWX account.
+        success, message = bonds.buy("citizen-1", "GOV1", 10000)
+        self.assertFalse(success, message)
+        self.assertEqual(self.db.users.get_user("citizen-1")["cash"], 10000)
+        from managers.currency_exchange_manager import CurrencyExchangeManager
+        from managers.currency_manager import CurrencyManager
+        self.db.products.execute(
+            "INSERT INTO saving(product_code,name,interest_rate,quote_currency,product_kind,status) "
+            "VALUES ('FX_NWX','NWX 외환통장',0,'NWX','saving','active')")
+        nwx_account = CurrencyExchangeManager(self.db).open_account("citizen-1", "FX_NWX")
+        with self.db.atomic() as conn:
+            CurrencyManager.change(conn, "citizen-1", "NWX", 10000 * 1_000_000)
+
+        def nwx_balance():
+            return self.db.accounts.execute_one(
+                "SELECT balance_minor_units FROM accounts WHERE account_number=?", (nwx_account,))[0]
         success, message = bonds.buy("citizen-1", "GOV1", 10000)
         self.assertTrue(success, message)
-        self.assertEqual(self.db.users.get_user("citizen-1")["cash"], 0)
+        self.assertEqual(nwx_balance(), 0)
+        self.assertEqual(self.db.users.get_user("citizen-1")["cash"], 10000)
         self.assertEqual(self.db.users.get_treasury_balance(), 10000)
         holding = self.db.accounts.execute_one(
             "SELECT holding_id FROM treasury_bond_holdings WHERE user_id = 'citizen-1'"
@@ -480,19 +511,20 @@ class EconomyTests(unittest.TestCase):
         self.assertEqual(redeemed[0]["interest"], 100)
         self.assertEqual(redeemed[0]["tax"], 20)
         self.assertEqual(redeemed[0]["net"], 10080)
-        self.assertEqual(self.db.users.get_user("citizen-1")["cash"], 10080)
+        # Paid back into the same NWX account it was bought from, never as NAC cash.
+        self.assertEqual(nwx_balance(), 10080)
+        self.assertEqual(self.db.users.get_user("citizen-1")["cash"], 10000)
+        self.assertIsNone(self.db.currency.execute_one("SELECT 1 FROM treasury_bond_cash_fx_settlements"))
         self.assertEqual(self.db.users.get_treasury_balance(), -100)
         from managers.accounting_journal import AccountingJournal
         with self.db.readonly() as conn:
             bond_check = AccountingJournal.reconcile_treasury_bond_cash_events(conn)
-        self.assertEqual(bond_check['status'], 'mismatch', bond_check)
-        self.assertTrue(any(gap['status'] == 'wallet_settlement_amount_or_currency_mismatch'
-                            for gap in bond_check['common_journal_gaps']), bond_check)
+        self.assertEqual(bond_check['status'], 'matched', bond_check)
         nac_treasury = self.db.currency.execute_one(
             "SELECT u.cash FROM country_treasuries t JOIN users.users u ON u.user_id=t.user_id "
             "WHERE t.nationality='Nac'"
         )
-        self.assertEqual(nac_treasury['cash'], 20)
+        self.assertTrue(0 < nac_treasury['cash'] < 20, nac_treasury['cash'])
         tax_entry = self.db.tax.execute_one(
             "SELECT source,gross_amount,tax_amount FROM tax_transactions "
             "WHERE user_id='citizen-1' AND source='treasury_bond_interest'"
@@ -623,6 +655,26 @@ class EconomyTests(unittest.TestCase):
         self.assertTrue(self.bank.repay_loan("citizen-1", "LOAN", 250)[0])
         loan = self.db.accounts.execute_one("SELECT outstanding_balance FROM loans WHERE user_id='citizen-1'")
         self.assertEqual(loan["outstanding_balance"], 750)
+
+    def _repayment_debit_accounts(self):
+        return [row["account_code"] for row in self.db.accounts.execute(
+            "SELECT l.account_code FROM bank_journal_entries e JOIN bank_journal_lines l USING(entry_id) "
+            "WHERE e.event_type='loan_repayment' AND l.debit_units>0 ORDER BY e.entry_id")]
+
+    def test_repayment_from_cash_debits_settlement_cash(self):
+        self.db.products.register_liability("LOAN", "Loan", 3, 5000, 365, 3600, 600, "New Bank")
+        self.assertTrue(self.bank.apply_loan("citizen-1", "LOAN", 1000)[0])
+        self.assertTrue(self.bank.repay_loan("citizen-1", "LOAN", 250)[0])
+        self.assertEqual(self._repayment_debit_accounts(), ["settlement_asset"])
+
+    def test_repayment_from_the_same_banks_deposit_debits_the_deposit_liability(self):
+        self.db.products.register_liability("LOAN", "Loan", 3, 5000, 365, 3600, 600, "New Bank")
+        self.db.products.register_saving("SAVE", "Saving", 0, 100, 365, 3600, 0, "New Bank")
+        self.assertTrue(self.bank.open_account("citizen-1", "SAVE", "1234", 9500)[0])   # deposit outweighs cash
+        self.assertTrue(self.bank.apply_loan("citizen-1", "LOAN", 100)[0])
+        self.db.users.execute("UPDATE users SET cash=0 WHERE user_id='citizen-1'")
+        self.assertTrue(self.bank.repay_loan("citizen-1", "LOAN", 50)[0])
+        self.assertEqual(self._repayment_debit_accounts(), ["customer_deposits_payable"])
 
     def test_loan_interest_reads_and_writes_canonical_minor_balance(self):
         self.db.products.register_liability(

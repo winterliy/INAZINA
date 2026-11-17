@@ -1,4 +1,5 @@
 import asyncio
+from decimal import Decimal
 import math
 import sqlite3
 import tempfile
@@ -1198,6 +1199,64 @@ class MarketFeatureTests(unittest.TestCase):
         self.assertTrue(self.book.place_limit_order("alice", "FUT", "sell", 2, 110)[0])
         self.assertIsNone(self.db.assets.execute_one("SELECT * FROM futures_positions WHERE user_id = 'alice'"))
         self.assertEqual(self.db.users.get_user("alice")["cash"], 10019)
+
+    def _foreign_future_trader(self, nwx_units=None):
+        """A USD citizen; with ``nwx_units`` also an NWX deposit account holding that much."""
+        from managers.currency_exchange_manager import CurrencyExchangeManager
+        from managers.currency_manager import CurrencyManager
+        self.issue_future()
+        self.db.currency.execute("INSERT INTO currencies(code,name,reference_rate,decimal_places) VALUES ('USD','Dollar','1500',2)")
+        self.db.currency.execute("INSERT INTO country_currencies(nationality,currency_code) VALUES ('US','USD')")
+        self.db.currency.execute(
+            "INSERT INTO country_tax_rules(nationality,income_source,tax_percent,updated_by,updated_epoch) "
+            "VALUES ('US','futures_realized_gain',100,'test',1)")
+        self.db.users.create_user('foreign-future', 'Foreign', 'US', 10000)
+        if nwx_units is None:
+            return None
+        self.db.products.execute(
+            "INSERT INTO saving(product_code,name,interest_rate,quote_currency,product_kind,status) "
+            "VALUES ('FX_NWX','NWX 외환통장',0,'NWX','saving','active')")
+        number = CurrencyExchangeManager(self.db).open_account('foreign-future', 'FX_NWX')
+        with self.db.atomic() as conn:
+            CurrencyManager.change(conn, 'foreign-future', 'NWX', nwx_units * 1_000_000)
+        return number
+
+    def _nwx_units(self, number):
+        return int(self.db.accounts.execute_one(
+            "SELECT balance_minor_units FROM accounts WHERE account_number=?", (number,))[0])
+
+    def test_future_order_needs_an_account_in_the_futures_currency(self):
+        self._foreign_future_trader()
+        before = self.db.users.get_user('foreign-future')['cash']
+        ok, message = self.futures.place_limit_order('foreign-future', 'FUT', 'buy', 1, 100)
+        self.assertFalse(ok, message)
+        self.assertIn('NWX', message)
+        self.assertEqual(self.db.users.get_user('foreign-future')['cash'], before)   # USD wallet is never debited
+        self.assertFalse(self.db.assets.execute("SELECT 1 FROM market_orders WHERE user_id='foreign-future'"))
+
+    def test_any_nationality_trades_futures_from_an_nwx_account_and_is_taxed_in_its_own_currency(self):
+        number = self._foreign_future_trader(5000)
+        wallet = self.db.users.get_user('foreign-future')['cash']
+        ok, message = self.book.place_limit_order('foreign-future', 'FUT', 'buy', 2, 100)
+        self.assertTrue(ok, message)
+        self.assertEqual(self._nwx_units(number), 4960)                      # margin comes out of the NWX account
+        self.assertEqual(self.db.users.get_user('foreign-future')['cash'], wallet)
+        self.db.companies.update_share_price("CO", 110)
+        self.futures.settle_positions()
+        self.assertTrue(self.book.place_limit_order('foreign-future', 'FUT', 'sell', 2, 110)[0])
+        self.assertIsNone(self.db.assets.execute_one("SELECT * FROM futures_positions WHERE user_id = 'foreign-future'"))
+        tax = self.db.accounts.execute_one(
+            "SELECT currency_code,tax_amount FROM tax_transactions WHERE user_id='foreign-future' "
+            "AND source='futures_realized_gain'")
+        self.assertEqual(tax["currency_code"], 'USD')                         # assessed in the citizen's currency
+        self.assertEqual(Decimal(str(tax["tax_amount"])), Decimal('0.01'))
+        self.assertEqual(self._nwx_units(number), 4960 + 60 - 15)             # 0.01 USD withheld as 15 NWX
+        self.assertEqual(self.db.users.get_user('foreign-future')['cash'], wallet)
+        from managers.accounting_journal import AccountingJournal
+        with self.db.readonly() as conn:
+            check = next(item for item in AccountingJournal.reconcile_subledgers(conn)
+                         if item["ledger_scope"] == "futures_cash")
+        self.assertEqual(check["status"], "matched", check)
 
     def test_future_short_profit_and_margin_addition(self):
         self.issue_future()
