@@ -648,6 +648,22 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     send(response, result.status, result.body);
     return;
   }
+  // 주주총회 and 회생·파산: proxied as-is to the Python service.
+  if (url.pathname === "/api/governance/meetings" || url.pathname === "/api/court/filings" || /^\/api\/governance\/meetings\/\d+\/(respond|close)$/.test(url.pathname)) {
+    const internal = url.pathname.replace(/^\/api\//, "/internal/");
+    const result = request.method === "GET"
+      ? await internalGet(internal, principal.userId)
+      : await internalRequest("POST", internal, principal.userId, await requestJson(request), 30_000);
+    send(response, result.status, result.body);
+    return;
+  }
+  if (url.pathname === "/api/hts/password" && request.method === "POST") {
+    const result = await internalRequest("POST", "/internal/hts/password", principal.userId, await requestJson(request));
+    // The change bumps the credential's auth version; reissue this browser's session so it stays signed in.
+    if (result.status === 200 && result.body.user) send(response, 200, { success: true }, { "set-cookie": sessionHeader(result.body.user.userId, result.body.user.authVersion) });
+    else send(response, result.status, result.body);
+    return;
+  }
   if (url.pathname === "/api/hts/account" && request.method === "POST") {
     const body = await requestJson(request);
     const result = await internalRequest("POST", "/internal/hts/account", principal.userId, body);
@@ -862,6 +878,19 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
 
   if (request.method === "GET" && url.pathname === "/api/me/portfolio") {
     const result = await internalGet("/internal/market/portfolio", principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+
+  // Bell notifications and payout choices (the receiver's decision on a payment with no account to credit).
+  if (url.pathname.startsWith("/api/me/notifications") || url.pathname.startsWith("/api/me/payouts")) {
+    const internalPath = url.pathname.replace("/api/", "/internal/");
+    const result = request.method === "GET"
+      && (internalPath === "/internal/me/notifications" || internalPath === "/internal/me/payouts")
+      ? await internalGet(internalPath, principal.userId)
+      : request.method === "POST" && internalPath.split("/").length === 5
+        ? await internalRequest("POST", internalPath, principal.userId, await requestJson(request))
+        : { status: 405, body: { error: "method_not_allowed" } };
     send(response, result.status, result.body);
     return;
   }
@@ -1254,7 +1283,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
   }
 
   // Product, country, exchange, user-detail, help and bot-job administration.
-  const adminMatch = url.pathname.match(/^\/api\/admin\/((?:products|countries|exchanges|help|bot-jobs|user|companies|organizations|warnings|feedback|naturalization|banks|logs|compliance|bank-journal|dr)(?:\/[^/]+){0,2})$/);
+  const adminMatch = url.pathname.match(/^\/api\/admin\/((?:products|countries|exchanges|help|bot-jobs|user|companies|organizations|warnings|feedback|court|naturalization|banks|logs|compliance|bank-journal|dr)(?:\/[^/]+){0,2})$/);
   if (adminMatch) {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });

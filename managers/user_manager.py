@@ -205,10 +205,12 @@ class UserManager:
 
     @staticmethod
     def _credit_currency(conn, user_id, currency, amount, *, preferred_account=None,
-                         event='settlement', reference=None):
+                         event='settlement', reference=None, payout=None):
         """Pay ``amount`` (native units) of ``currency``: into ``preferred_account`` if it still
         holds that currency, else the wallet when it is the citizen's own, else their largest
-        account in it, else exchanged at the live quote into their own currency."""
+        account in it. With none of those the citizen chooses how to receive it (``payout`` names
+        the payer, the business-cash kind and a unique reference; see PayoutManager); without
+        ``payout`` it is exchanged at the live quote into their own currency."""
         if amount <= 0:
             return
         from database.fund_accounting import account
@@ -225,6 +227,11 @@ class UserManager:
             target = preferred_account
         elif currency != home:
             funds = UserManager._choose_funds(conn, user_id, currency=currency)
+            if funds is None and payout:
+                from managers.payout_manager import PayoutManager
+                PayoutManager.offer(conn, user_id, payout["payer_id"], currency, amount, payout["kind"],
+                                    payout["reference"], now=payout.get("now"))
+                return
             if funds is None:
                 from functions.money import currency_precision, to_minor_units
                 minor = to_minor_units(amount, currency_precision(conn, currency))

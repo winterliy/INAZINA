@@ -1301,7 +1301,8 @@ class BankManager:
                 BankJournal.post(
                     conn, product["issuer"], "loan_origination", f"loan:{loan_id}", home,
                     [("loans_receivable", "debit", amount_decimal),
-                     ("customer_funds_payable", "credit", net_payout_decimal),
+                     # The proceeds reach the borrower's wallet at once: cash leaves the bank here.
+                     ("settlement_asset", "credit", net_payout_decimal),
                      ("fee_income", "credit", total_fee_decimal)],
                     description=f"Loan {loan_id} originated", now=opened_epoch,
                 )

@@ -137,6 +137,12 @@ class FuturesManager:
             filled += quantity
         return filled
 
+    def _payout(self, conn, product_code, user_id, tag, now):
+        """Who pays and under which unique reference, if the receiver has no account to credit."""
+        from managers.currency_manager import CurrencyManager
+        return {"payer_id": CurrencyManager.exchange_treasury(conn, product_code), "kind": "futures",
+                "reference": f"{tag}:{product_code}:{user_id}:{time.time_ns()}", "now": now}
+
     @staticmethod
     def _currency(conn):
         """Futures are quoted and margined in the base currency, whoever trades them."""
@@ -195,7 +201,8 @@ class FuturesManager:
                 raise ValueError("체결가가 변해 추가 증거금이 필요합니다. 주문을 다시 제출해주세요.")
             available += extra
         self.users._credit_currency(conn, order["user_id"], currency, available - required,
-                                    preferred_account=order["funding_account"], event="futures_fill")
+                                    preferred_account=order["funding_account"], event="futures_fill",
+                                    payout=self._payout(conn, product["product_code"], order["user_id"], "fill", now))
         AccountingJournal.link_futures_cash(conn, "fill", cash_mark, now)
         collateral += required
         new_qty = old_qty + delta
@@ -216,7 +223,8 @@ class FuturesManager:
     def _cancel(self, conn, order, now, status="cancelled"):
         cash_mark = AccountingJournal.futures_cash_mark(conn, now)
         self.users._credit_currency(conn, order["user_id"], self._currency(conn), int(order["reserved_cash"]),
-                                    preferred_account=order["funding_account"], event="futures_cancel")
+                                    preferred_account=order["funding_account"], event="futures_cancel",
+                                    payout=self._payout(conn, order["asset_code"], order["user_id"], f"cancel{order['order_id']}", now))
         AccountingJournal.link_futures_cash(conn, "cancel", cash_mark, now)
         conn.execute("UPDATE assets.market_orders SET reserved_cash = 0, status = ?, updated_epoch = ? WHERE order_id = ?",
                      (status, now, order["order_id"]))
@@ -258,7 +266,8 @@ class FuturesManager:
                     tax = self.users._tax_in_home_currency(conn, position["user_id"], "futures_realized_gain",
                                                            max(0, net_pnl), currency)
                     self.users._credit_currency(conn, position["user_id"], currency, collateral - tax,
-                                                event="futures_close")
+                                                event="futures_close",
+                                                payout=self._payout(conn, product["product_code"], position["user_id"], "close", now))
                     AccountingJournal.link_futures_cash(conn, "close", cash_mark, now)
                     conn.execute("DELETE FROM assets.futures_positions WHERE user_id = ? AND product_code = ?",
                                  (position["user_id"], product["product_code"]))

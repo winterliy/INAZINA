@@ -192,6 +192,16 @@ class CreditScoreTests(unittest.TestCase):
             "SELECT trigger FROM credit_score_history ORDER BY history_id DESC LIMIT 1")
         self.assertEqual(history["trigger"], "periodic")
 
+    def test_every_score_change_lands_in_the_notification_bell(self):
+        from managers.notification_manager import NotificationManager
+        now = time.time()
+        self.record("payment_missed", "late", now-DAY, now)          # the score falls
+        self.assertGreaterEqual(CreditScoreManager(self.db).refresh_due(now+30*DAY), 1)   # decay lets it recover
+        with self.db.readonly() as conn:
+            notes = [n for n in NotificationManager.list(conn, "borrower") if n["kind"] == "credit_score"]
+        self.assertEqual([n["title"] for n in notes], ["신용점수가 올랐습니다", "신용점수가 내려갔습니다"])
+        self.assertRegex(notes[1]["body"], r"점 → .*\(-\d+\)")
+
     def test_only_stacked_new_loans_lower_the_score(self):
         for code in ("N1", "N2", "N3"):
             self.db.products.register_liability(code, code, 0, 0, 365, 3600, 0, "Bank")

@@ -1623,6 +1623,8 @@ class CurrencyDB(DBManager):
         ensure_accounting_line_repairs(self.execute)
         ensure_wallet_baseline_adjustments(self.execute)
         ensure_primary_recipient_overrides(self.execute)
+        ensure_notifications(self.execute)
+        ensure_payout_requests(self.execute)
 
     def _ensure_treasury_bond_minor_units(self):
         """Make bond offer and lot cash amounts authoritative in quote-currency units."""
@@ -3729,6 +3731,36 @@ def ensure_accounting_line_repairs(execute):
         execute(f"""CREATE TRIGGER IF NOT EXISTS trg_accounting_line_repairs_{operation.lower()}
             BEFORE {operation} ON accounting_line_repairs
             BEGIN SELECT RAISE(ABORT,'accounting line repairs are append-only'); END""")
+
+
+def ensure_notifications(execute):
+    """Per-user notification inbox shown behind the bell; delivery to Discord is tracked per row."""
+    execute("""CREATE TABLE IF NOT EXISTS notifications (
+        notification_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, kind TEXT NOT NULL,
+        title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', action_path TEXT,
+        payload_json TEXT NOT NULL DEFAULT '{}', dedupe_key TEXT UNIQUE,
+        created_epoch INTEGER NOT NULL, read_epoch INTEGER, discord_sent_epoch INTEGER)""")
+    execute("CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, notification_id)")
+
+
+def ensure_payout_requests(execute):
+    """A payment whose receiver holds no account in its currency: they choose exchange or a temporary account.
+
+    The amount is held by this row (nobody's wallet) until the receiver decides. A temporary
+    account is only a status of the row, so it can never be sent from, deposited to or otherwise used
+    as an account. Undecided or unwithdrawn amounts return to the payer after the hold period.
+    """
+    execute("""CREATE TABLE IF NOT EXISTS payout_requests (
+        payout_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, payer_id TEXT NOT NULL,
+        currency_code TEXT NOT NULL, decimal_places INTEGER NOT NULL CHECK(decimal_places BETWEEN 0 AND 6),
+        minor_units INTEGER NOT NULL CHECK(typeof(minor_units)='integer' AND minor_units>0),
+        kind TEXT NOT NULL, reference TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending'
+            CHECK(status IN ('pending','converted','temp_open','withdrawn','forfeited')),
+        created_epoch INTEGER NOT NULL, expires_epoch INTEGER NOT NULL, decided_epoch INTEGER,
+        temp_number TEXT, withdrawn_account TEXT, fee_minor_units INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(kind,reference))""")
+    execute("CREATE INDEX IF NOT EXISTS idx_payout_requests_user ON payout_requests(user_id, status)")
 
 
 def ensure_primary_recipient_overrides(execute):

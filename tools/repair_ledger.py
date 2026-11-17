@@ -2,11 +2,12 @@
 
     python tools/repair_ledger.py <data-dir> [--apply] [--actor NAME]
 
-<data-dir> is a folder holding inazina.db (the live database/ folder, or a copy).
-Without --apply every step runs inside a transaction that is rolled back, so the
-printed before/after reconciliation shows what applying would do. Start-up still creates
-the new tables/triggers and prunes orphan snapshots, so dry-run on a COPY of database/.
-With --apply the database is first copied to <data-dir>/backups/ and the changes commit.
+<data-dir> is a folder holding inazina.db (normally the live database/ folder).
+Without --apply this is a true preview: the database is copied to a temporary folder and
+everything (start-up included, which creates the new tables/triggers and prunes orphan
+snapshots) runs on that copy inside a transaction that is rolled back. The live database
+is only read. With --apply the live database is first copied to <data-dir>/backups/, then
+the steps run on it and commit.
 
 Steps, in order (each is idempotent):
   1. rebuild_from_subledgers      company/bank entries missing from the common journal
@@ -14,6 +15,7 @@ Steps, in order (each is idempotent):
   3. rebaseline_customer_wallets  wallet/ledger gaps restated as labelled baseline rows
   4. deposit liability correction interest later repaid into a loan from the same bank's deposit
   5. primary recipient note       market-fill:79 paid the treasury before SELOA had a cash account
+  6. clear customer_funds_payable loan proceeds booked as payable to customers but never settled
 Stop the bot and the web API before running with --apply.
 """
 import argparse
@@ -55,6 +57,25 @@ def main(argv=None):
     if not db_path.exists():
         raise SystemExit(f"{db_path} not found")
 
+    scratch = None
+    if args.apply:
+        # Back up before anything else: start-up below already changes the live database.
+        backups = data_dir / "backups"
+        backups.mkdir(exist_ok=True)
+        target = backups / f"inazina-before-ledger-repair-{time.strftime('%Y%m%d-%H%M%S')}.db"
+        with sqlite3.connect(db_path) as source, sqlite3.connect(target) as copy:
+            source.backup(copy)
+        print(f"backup: {target}")
+    else:
+        import tempfile
+        scratch = tempfile.TemporaryDirectory(prefix="repair-ledger-preview-")
+        data_dir = Path(scratch.name)
+        copy_path = data_dir / "inazina.db"
+        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as source, sqlite3.connect(copy_path) as copy:
+            source.backup(copy)
+        db_path = copy_path
+        print(f"preview on a copy: {copy_path}")
+
     from database.db_manager import DBManager
     DBManager.database_dir = data_dir
     from database import DatabaseManager
@@ -62,14 +83,6 @@ def main(argv=None):
     from database.unified import UnifiedConnection
     from managers.accounting_journal import AccountingJournal
     from managers.bank_journal import BankJournal
-
-    if args.apply:
-        backups = data_dir / "backups"
-        backups.mkdir(exist_ok=True)
-        target = backups / f"inazina-before-ledger-repair-{time.strftime('%Y%m%d-%H%M%S')}.db"
-        with sqlite3.connect(db_path) as source, sqlite3.connect(target) as copy:
-            source.backup(copy)
-        print(f"backup: {target}")
 
     conn = sqlite3.connect(db_path, factory=UnifiedConnection, isolation_level=None)
     conn.row_factory = sqlite3.Row
@@ -102,6 +115,8 @@ def main(argv=None):
                 conn, execution_key=p["execution_key"], recipient_id=p["recipient_id"],
                 reason=p["reason"], actor_id=args.actor, now=now)
             print("5 primary recipient note: recorded")
+        print("6 clear customer_funds_payable:", BankJournal.clear_customer_funds_payable(
+            conn, actor_id=args.actor, now=now))
         report = AccountingJournal.reconcile_all_financial_ledgers(conn)
         print("after: ", summarize(report))
         for finding in report["findings"][:10]:
@@ -114,8 +129,10 @@ def main(argv=None):
         print("committed")
     else:
         conn.execute("ROLLBACK")
-        print("dry run: rolled back (use --apply to commit)")
+        print("preview only: the live database was not changed (use --apply to run it for real)")
     conn.close()
+    if scratch is not None:
+        scratch.cleanup()
 
 
 if __name__ == "__main__":

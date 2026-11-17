@@ -524,6 +524,39 @@ class BankJournal:
                 for currency, places in sorted(set(outstanding) | set(journal))]
 
     @staticmethod
+    def clear_customer_funds_payable(conn, *, actor_id, now):
+        """Settle the loan proceeds that were booked as payable to customers but never relieved.
+
+        Loan proceeds reach the borrower's wallet at origination, so the payable is settled
+        against settlement cash at once. Earlier entries left the whole amount standing; one
+        correcting entry per registered institution and currency clears it. Idempotent. An
+        institution's former name keeps its old entries as history: its balances were carried to
+        the current name by an opening-balance transfer, so only registered names are cleared.
+        """
+        from functions.money import from_minor_units
+        if not str(actor_id or "").strip():
+            raise ValueError("정정 담당자가 필요합니다.")
+        cleared = []
+        rows = conn.execute("""SELECT e.issuer,e.currency_code,e.decimal_places,
+                SUM(l.credit_units)-SUM(l.debit_units) net
+            FROM bank_journal_entries e JOIN bank_journal_lines l USING(entry_id)
+            WHERE e.status='posted' AND l.account_code='customer_funds_payable'
+              AND e.issuer IN (SELECT issuer FROM financial_institutions)
+            GROUP BY e.issuer,e.currency_code,e.decimal_places""").fetchall()
+        for issuer, currency, places, net in ((str(r[0]), str(r[1]), int(r[2]), int(r[3] or 0)) for r in rows):
+            if not net:
+                continue
+            amount = from_minor_units(abs(net), places)
+            sides = (("customer_funds_payable", "debit"), ("settlement_asset", "credit")) if net > 0 else (
+                ("customer_funds_payable", "credit"), ("settlement_asset", "debit"))
+            BankJournal.post(
+                conn, issuer, "funds_payable_settlement", f"correction:funds-payable-cleared:{issuer}:{currency}:{now}",
+                currency, [(account, side, amount) for account, side in sides],
+                description="Loan proceeds payable to customers settled against settlement cash", now=now)
+            cleared.append({"issuer": issuer, "currency": currency, "units": net})
+        return cleared
+
+    @staticmethod
     def reconcile_all(conn, issuer):
         """Run every implemented institution subledger-to-journal reconciliation.
 

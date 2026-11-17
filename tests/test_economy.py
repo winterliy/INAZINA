@@ -661,6 +661,52 @@ class EconomyTests(unittest.TestCase):
             "SELECT l.account_code FROM bank_journal_entries e JOIN bank_journal_lines l USING(entry_id) "
             "WHERE e.event_type='loan_repayment' AND l.debit_units>0 ORDER BY e.entry_id")]
 
+    def test_loan_origination_pays_the_proceeds_out_of_settlement_cash(self):
+        self.db.products.register_liability("LOAN", "Loan", 3, 5000, 365, 3600, 600, "New Bank")
+        self.assertTrue(self.bank.apply_loan("citizen-1", "LOAN", 1000)[0])
+        lines = {(row["account_code"], row["debit_units"] > 0) for row in self.db.accounts.execute(
+            "SELECT l.account_code,l.debit_units FROM bank_journal_entries e JOIN bank_journal_lines l USING(entry_id) "
+            "WHERE e.event_type='loan_origination'")}
+        self.assertIn(("loans_receivable", True), lines)
+        self.assertIn(("settlement_asset", False), lines)
+        self.assertNotIn("customer_funds_payable", {account for account, _ in lines})
+
+    def test_funds_payable_left_by_earlier_originations_is_cleared_once(self):
+        from managers.bank_journal import BankJournal
+        self.db.products.register_liability("LOAN", "Loan", 3, 5000, 365, 3600, 600, "New Bank")
+        self.assertTrue(self.bank.apply_loan("citizen-1", "LOAN", 1000)[0])
+        with self.db.atomic() as conn:   # an entry written the way origination used to
+            BankJournal.post(conn, "New Bank", "loan_origination", "legacy:1", "NWX",
+                             [("loans_receivable", "debit", 100), ("customer_funds_payable", "credit", 100)],
+                             now=1_700_000_000)
+            BankJournal.post(conn, "Not A Bank", "loan_origination", "legacy:2", "NWX",
+                             [("loans_receivable", "debit", 7), ("customer_funds_payable", "credit", 7)],
+                             now=1_700_000_000)   # a former name: history only
+            cleared = BankJournal.clear_customer_funds_payable(conn, actor_id="admin", now=1_700_000_100)
+            self.assertEqual([(item["issuer"], item["units"]) for item in cleared], [("New Bank", 100)])
+            self.assertEqual(BankJournal.clear_customer_funds_payable(conn, actor_id="admin", now=1_700_000_200), [])
+            net = conn.execute(
+                "SELECT SUM(l.credit_units)-SUM(l.debit_units) FROM bank_journal_entries e JOIN bank_journal_lines l "
+                "USING(entry_id) WHERE e.issuer='New Bank' AND l.account_code='customer_funds_payable'").fetchone()[0]
+            self.assertEqual(net, 0)
+
+    def test_reminders_for_loan_maturity_and_overdue_are_raised_once(self):
+        from managers.notification_manager import NotificationManager
+        self.db.products.register_liability("LOAN", "Loan", 3, 5000, 365, 3600, 600, "New Bank")
+        self.assertTrue(self.bank.apply_loan("citizen-1", "LOAN", 1000)[0])
+        now = int(time.time())
+        self.db.accounts.execute("UPDATE loans SET maturity_epoch=? WHERE user_id='citizen-1'", (now + 3 * 86400,))
+        with self.db.atomic() as conn:
+            self.assertEqual(NotificationManager.scan_due(conn, now), 1)
+            self.assertEqual(NotificationManager.scan_due(conn, now), 0)          # never repeated
+            titles = [n["title"] for n in NotificationManager.list(conn, "citizen-1")]
+        self.assertEqual(titles, ["대출 만기가 7일 이내입니다"])
+        self.db.accounts.execute("UPDATE loans SET overdue_since_epoch=? WHERE user_id='citizen-1'", (now,))
+        with self.db.atomic() as conn:
+            self.assertEqual(NotificationManager.scan_due(conn, now), 1)
+            kinds = {n["kind"] for n in NotificationManager.list(conn, "citizen-1")}
+        self.assertEqual(kinds, {"loan_maturity", "loan_overdue"})
+
     def test_repayment_from_cash_debits_settlement_cash(self):
         self.db.products.register_liability("LOAN", "Loan", 3, 5000, 365, 3600, 600, "New Bank")
         self.assertTrue(self.bank.apply_loan("citizen-1", "LOAN", 1000)[0])

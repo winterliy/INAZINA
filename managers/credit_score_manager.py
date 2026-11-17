@@ -238,6 +238,14 @@ class CreditScoreManager:
                 (str(user_id), previous, result["score"], str(trigger),
                  json.dumps(result["factors"], ensure_ascii=False, sort_keys=True), now),
             )
+            # Every change is announced in the bell inbox (and by Discord DM), nowhere else.
+            from managers.notification_manager import NotificationManager
+            change = int(result["score"]) - previous
+            NotificationManager.add(
+                conn, user_id, "credit_score",
+                "신용점수가 올랐습니다" if change > 0 else "신용점수가 내려갔습니다",
+                f"{previous}점 → {int(result['score'])}점 ({change:+d})",
+                dedupe_key=f"credit:{user_id}:{time.time_ns()}", now=int(now))
         return result["score"]
 
     @classmethod

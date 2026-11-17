@@ -2491,7 +2491,12 @@ class AccountingJournal:
         rows = (list(conn.execute("SELECT collateral FROM futures_positions"))
                 + list(conn.execute("SELECT reserved_cash FROM market_orders WHERE order_kind='future' "
                                     "AND status IN ('open','partial')")))
-        return sum((Decimal(str(row[0] or 0)) for row in rows), Decimal(0))
+        held = sum((Decimal(str(row[0] or 0)) for row in rows), Decimal(0))
+        # Amounts waiting for their receiver to choose, or in a temporary account, are still the product's cash.
+        for minor, places in conn.execute("SELECT minor_units,decimal_places FROM payout_requests "
+                                          "WHERE kind='futures' AND status IN ('pending','temp_open')"):
+            held += Decimal(int(minor)) / (10 ** int(places))
+        return held
 
     @classmethod
     def futures_cash_mark(cls, conn, now):
@@ -2582,11 +2587,12 @@ class AccountingJournal:
             linked += Decimal(int(row[1])) / (10 ** int(row[0]))
         exchanged_tax = Decimal(0)
         for row in conn.execute("""SELECT source_decimal_places,source_minor_units FROM cash_fx_settlements
-            WHERE kind='tax:futures_realized_gain' AND source_currency=? AND recorded_epoch>=?""",
+            WHERE kind IN ('tax:futures_realized_gain','payout:futures') AND source_currency=?
+              AND recorded_epoch>=?""",
             (base_currency_code(conn), int(conn.execute(
                 "SELECT recorded_epoch FROM business_cash_baseline_values WHERE kind='futures'").fetchone()[0]))):
             exchanged_tax += Decimal(int(row[1])) / (10 ** int(row[0]))
-        linked += exchanged_tax          # left the product as exchanged tax, not as wallet cash
+        linked += exchanged_tax          # left the product exchanged (tax, payouts), not as wallet cash
         for row in conn.execute("""SELECT f.amount FROM business_cash_fund_links l
             JOIN business_cash_events e ON e.event_id=l.event_id
             JOIN fund_cash_ledger f ON f.entry_id=l.fund_entry_id WHERE e.kind='futures'"""):

@@ -1291,6 +1291,51 @@ def user_tax_residency_profile(user_id):
             "countries": countries}
 
 
+def user_notifications(user_id):
+    """The bell inbox: newest first, plus the unread count shown on the badge."""
+    domain()
+    from managers.notification_manager import NotificationManager
+    with connect_readonly() as connection:
+        return {"notifications": NotificationManager.list(connection, user_id),
+                "unread": NotificationManager.unread_count(connection, user_id)}
+
+
+def change_notifications(user_id, action, notification_id=None):
+    """Opening the panel reads everything; a single notification or the whole inbox can be removed."""
+    domain()
+    from managers.notification_manager import NotificationManager
+    with connect_db() as connection:
+        with connection:
+            if action == "read-all":
+                changed = NotificationManager.mark_all_read(connection, user_id)
+            elif action == "delete":
+                changed = int(NotificationManager.delete(connection, user_id, int(notification_id)))
+            elif action == "delete-all":
+                changed = NotificationManager.delete_all(connection, user_id)
+            else:
+                raise ValueError("invalid_notification_action")
+    return {"changed": changed}
+
+
+def user_payouts(user_id):
+    domain()
+    from managers.payout_manager import PayoutManager
+    with connect_readonly() as connection:
+        return {"payouts": PayoutManager.open_for(connection, user_id)}
+
+
+def choose_payout(user_id, action, payout_id):
+    """Exchange now, take a temporary account, or withdraw a temporary account into an own account."""
+    domain()
+    from managers.payout_manager import PayoutManager
+    steps = {"convert": PayoutManager.convert, "temp": PayoutManager.open_temp, "withdraw": PayoutManager.withdraw}
+    if action not in steps:
+        raise ValueError("invalid_payout_action")
+    with connect_db() as connection:
+        with connection:
+            return {"payout": steps[action](LegacyNames(connection), user_id, int(payout_id))}
+
+
 def set_user_tax_residency(user_id, residency):
     domain()
     value = str(residency or "").strip() or None
@@ -4644,6 +4689,13 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     self.send_json(200, user_credit_report(user["userId"]) or {})
+            elif path in {"/internal/me/notifications", "/internal/me/payouts"}:
+                user = identity(internal_user_id(self))
+                if not user:
+                    self.send_json(403, {"error": "active_user_required"})
+                else:
+                    self.send_json(200, user_notifications(user["userId"]) if path.endswith("notifications")
+                                   else user_payouts(user["userId"]))
             elif path == "/internal/me/loan-schedules":
                 user = identity(internal_user_id(self))
                 if not user:
@@ -5062,6 +5114,17 @@ class Handler(BaseHTTPRequestHandler):
                     nickname=payload.get("nickname", ""), country_id=payload.get("countryId", ""),
                 )
                 self.send_json(201, {"user": user})
+                return
+            if path.startswith(("/internal/me/notifications/", "/internal/me/payouts/")):
+                user = identity(verified_id)
+                if not user:
+                    self.send_json(403, {"error": "active_user_required"})
+                    return
+                action = path.rsplit("/", 1)[1]
+                if path.startswith("/internal/me/notifications/"):
+                    self.send_json(200, change_notifications(user["userId"], action, payload.get("id")))
+                else:
+                    self.send_json(200, choose_payout(user["userId"], action, payload.get("payoutId")))
                 return
             if path == "/internal/me/tax-residency":
                 user = identity(verified_id)

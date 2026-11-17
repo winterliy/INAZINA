@@ -100,6 +100,64 @@ class InazinaBot(discord.Client):
         async with self._background_write_lock:
             return await asyncio.to_thread(callback, *args)
 
+    def _record_notification(self, user_id, kind, title, body, action_path):
+        from managers.notification_manager import NotificationManager
+        with self.db.atomic() as conn:
+            NotificationManager.add(conn, user_id, kind, title, body, action_path=action_path, discord_sent=True)
+
+    async def _notify(self, user_id, embed, kind, recipient=None, action_path=None):
+        """One event, two places: the bell inbox on the web and the same message as a Discord DM."""
+        body = "\n".join(part for part in [embed.description or "",
+                                          *(f"{field.name}: {field.value}" for field in embed.fields)] if part)
+        try:
+            await self._run_background_write(self._record_notification, str(user_id), kind, embed.title or "",
+                                             body, action_path)
+        except Exception as exc:
+            print(f"[Notification Record Error] {user_id}: {exc}")
+        recipient = recipient or self.get_user(int(user_id)) or await self.fetch_user(int(user_id))
+        await recipient.send(embed=embed)
+
+    def _process_notification_work(self, now=None):
+        """Return unchosen payouts to their payers and raise reminders that are due."""
+        from managers.notification_manager import NotificationManager
+        from managers.payout_manager import PayoutManager
+        with self.db.atomic() as conn:
+            returned = PayoutManager.expire_due(conn, now)
+            reminders = NotificationManager.scan_due(conn, now)
+        return len(returned), reminders
+
+    def _pending_discord_notifications(self):
+        from managers.notification_manager import NotificationManager
+        with self.db.atomic() as conn:
+            return NotificationManager.pending_discord(conn)
+
+    def _mark_notifications_sent(self, ids):
+        from managers.notification_manager import NotificationManager
+        with self.db.atomic() as conn:
+            NotificationManager.mark_discord_sent(conn, ids)
+
+    async def notification_delivery_loop(self):
+        """Send the Discord copy of notifications created inside the managers (payout choices, reminders...)."""
+        while not self.is_closed():
+            try:
+                pending = await self._run_background_write(self._pending_discord_notifications)
+                sent = []
+                for item in pending:
+                    try:
+                        user_id = int(item["user_id"])
+                        recipient = self.get_user(user_id) or await self.fetch_user(user_id)
+                        text = item["body"] + (f"\n웹에서 확인: {item['action_path']}" if item["action_path"] else "")
+                        await recipient.send(embed=discord.Embed(title=f"🔔 {item['title']}", description=text,
+                                                                 color=discord.Color.blurple()))
+                    except (discord.HTTPException, ValueError, TypeError):
+                        pass          # not reachable on Discord; the bell still has it
+                    sent.append(item["notification_id"])
+                if sent:
+                    await self._run_background_write(self._mark_notifications_sent, sent)
+            except Exception as exc:
+                print(f"[Notification Delivery Error] {type(exc).__name__}: {exc}")
+            await asyncio.sleep(15)
+
     async def setup_hook(self):
         from functions.slash_commands import SlashCommandRegistry
 
@@ -181,6 +239,7 @@ class InazinaBot(discord.Client):
             )
             self.loop.create_task(self.market_update_loop(), name="market-price-worker")
             self.loop.create_task(self.scheduled_loan_payment_loop(), name="scheduled-loan-worker")
+            self.loop.create_task(self.notification_delivery_loop(), name="notification-delivery-worker")
             from functions.web_jobs import web_job_loop
             self.loop.create_task(web_job_loop(self), name="dashboard-job-worker")
 
@@ -292,8 +351,8 @@ class InazinaBot(discord.Client):
                             reason = {"futures_maturity": "선물 만기", "futures_liquidation": "선물 유지증거금 미달 청산",
                                       "els_early": "ELS 조기상환", "els_maturity": "ELS 만기상환",
                                       "els_maturity_loss": "ELS 만기 손실상환"}.get(result.get("reason"), "회사채 만기")
-                            await recipient.send(embed=discord.Embed(title=f"📄 {reason}",
-                                description=f"`{result['product_code']}` 정산 · 지갑 입금 **{result['net']:,} {self.db.base_currency_code()}**", color=discord.Color.gold()))
+                            await self._notify(recipient_id, discord.Embed(title=f"📄 {reason}",
+                                description=f"`{result['product_code']}` 정산 · 지갑 입금 **{result['net']:,} {self.db.base_currency_code()}**", color=discord.Color.gold()), "settlement", recipient)
                         except (discord.HTTPException, ValueError, TypeError):
                             pass
                 except Exception as exc:
@@ -365,7 +424,7 @@ class InazinaBot(discord.Client):
                                 if result["exercised"] else "행사하지 않은 계약은 만료되었습니다."
                             )
                         notice.add_field(name="정산", value=settlement, inline=False)
-                        await recipient.send(embed=notice)
+                        await self._notify(recipient_id, notice, "option_expiry", recipient)
                     except Exception as exc:
                         print(f"[Option Expiry Notice Error] {result['user_id']}: {exc}")
                 bond_redemptions = await self._run_background_write(
@@ -384,7 +443,7 @@ class InazinaBot(discord.Client):
                         notice.add_field(name="이자", value=f"{bond['interest']:,} {self.db.base_currency_code()}", inline=True)
                         notice.add_field(name="세금", value=f"{bond['tax']:,} {self.db.base_currency_code()}", inline=True)
                         notice.add_field(name="지갑 입금", value=f"**{bond['net']:,} {self.db.base_currency_code()}**", inline=False)
-                        await recipient.send(embed=notice)
+                        await self._notify(recipient_id, notice, "bond_redemption", recipient)
                     except (discord.HTTPException, ValueError, TypeError):
                         pass
                 paid_count, missed_count, payment_notifications = await self._run_background_write(
@@ -415,7 +474,7 @@ class InazinaBot(discord.Client):
                         notice.add_field(
                             name="남은 원리금", value=f"{result['remaining']:,.0f} {self.db.base_currency_code()}", inline=False
                         )
-                        await recipient.send(embed=notice)
+                        await self._notify(recipient_id, notice, "loan_payment", recipient)
                     except (discord.HTTPException, ValueError, TypeError) as exc:
                         print(f"[Loan Repayment Notice Error] {result['user_id']}: {exc}")
                 from managers.insolvency_manager import InsolvencyManager
@@ -431,9 +490,13 @@ class InazinaBot(discord.Client):
                         title, text, color = rehab_text[result["event"]]
                         recipient_id = int(result["user_id"])
                         recipient = self.get_user(recipient_id) or await self.fetch_user(recipient_id)
-                        await recipient.send(embed=discord.Embed(title=title, description=text.format(**result), color=color))
+                        await self._notify(recipient_id, discord.Embed(title=title, description=text.format(**result), color=color), "rehab", recipient)
                     except (discord.HTTPException, ValueError, TypeError, KeyError) as exc:
                         print(f"[Rehab Notice Error] {result.get('user_id')}: {exc}")
+                try:
+                    await self._run_background_write(self._process_notification_work)
+                except Exception as exc:
+                    print(f"[Notification Work Error] {type(exc).__name__}: {exc}")
                 deposit_notices = await self._run_background_write(
                     self.bank_mgr.process_scheduled_deposits
                 )
@@ -454,7 +517,7 @@ class InazinaBot(discord.Client):
                             notice.add_field(name="미납",
                                              value=f"{result['missed_count']}회 · 지갑이나 입출금 계열 통장의 잔액이 부족했습니다.",
                                              inline=False)
-                        await recipient.send(embed=notice)
+                        await self._notify(recipient_id, notice, "deposit_payment", recipient)
                     except (discord.HTTPException, ValueError, TypeError) as exc:
                         print(f"[Installment Notice Error] {result['user_id']}: {exc}")
                 kind_notices = await self._run_background_write(
@@ -485,7 +548,7 @@ class InazinaBot(discord.Client):
                                 description=f"`{result['account_number']}`\n" + "\n".join(lines),
                                 color=discord.Color.blurple(),
                             )
-                        await recipient.send(embed=notice)
+                        await self._notify(recipient_id, notice, "account_notice", recipient)
                     except (discord.HTTPException, ValueError, TypeError) as exc:
                         print(f"[Account Kind Notice Error] {result['user_id']}: {exc}")
             except Exception as e:

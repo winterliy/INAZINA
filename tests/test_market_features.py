@@ -1258,6 +1258,29 @@ class MarketFeatureTests(unittest.TestCase):
                          if item["ledger_scope"] == "futures_cash")
         self.assertEqual(check["status"], "matched", check)
 
+    def test_any_nationality_buys_an_option_with_an_nwx_account(self):
+        number = self._foreign_future_trader(5000)
+        self.db.assets.add_user_asset("alice", "CO", 5, unit_cost=100)
+        ok, message = self.options.create_and_write("alice", "CO", "call", 100, 1, 2, 10)
+        self.assertTrue(ok, message)
+        code = self.options.get_active_contracts("CO")[0]["contract_code"]
+        wallet = self.db.users.get_user('foreign-future')['cash']
+        ok, message = self.book.place_limit_order('foreign-future', code, 'buy', 1, 10)
+        self.assertTrue(ok, message)
+        self.assertEqual(self.options.get_user_positions('foreign-future')[0]['quantity'], 1)
+        self.assertEqual(self._nwx_units(number), 4990)                       # the premium came out of the NWX account
+        self.assertEqual(self.db.users.get_user('foreign-future')['cash'], wallet)
+
+    def test_option_order_without_an_nwx_account_is_refused_and_touches_no_wallet(self):
+        self._foreign_future_trader()
+        self.db.assets.add_user_asset("alice", "CO", 5, unit_cost=100)
+        self.assertTrue(self.options.create_and_write("alice", "CO", "call", 100, 1, 2, 10)[0])
+        code = self.options.get_active_contracts("CO")[0]["contract_code"]
+        wallet = self.db.users.get_user('foreign-future')['cash']
+        ok, message = self.book.place_limit_order('foreign-future', code, 'buy', 1, 10)
+        self.assertFalse(ok, message)
+        self.assertEqual(self.db.users.get_user('foreign-future')['cash'], wallet)
+
     def test_future_short_profit_and_margin_addition(self):
         self.issue_future()
         self.assertTrue(self.book.place_limit_order("alice", "FUT", "sell", 1, 100)[0])
