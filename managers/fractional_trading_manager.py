@@ -93,7 +93,7 @@ class FractionalTradingManager:
 
     @staticmethod
     def _remove_lots(conn, user, code, units, price):
-        left, gain, sold = units, 0, []
+        left, gain, sold, cost_minor = units, 0, [], Fraction(0)
         from managers.asset_cost_manager import AssetCostManager
         currency = AssetCostManager.currency(conn, code)
         places = CurrencyManager.precision(conn, currency)
@@ -108,9 +108,11 @@ class FractionalTradingManager:
                 quantity = Fraction(take, QUANTITY_SCALE)
                 cost_units = AssetCostManager.sale_cost_minor(conn, row['holding_id'], AssetCostManager.decimal_minor(quantity))
                 gain += max(Fraction(0), price_units * quantity - cost_units) * (SCALE // (10 ** places))
+                cost_minor += cost_units
             else:
                 cost_units = int(row['average_cost_minor_units'] or 0)
                 gain += max(0, price_units-cost_units) * take * (SCALE // QUANTITY_SCALE // (10 ** places))
+                cost_minor += Fraction(cost_units * take, QUANTITY_SCALE)
             if take == held:
                 conn.execute('DELETE FROM user_assets WHERE holding_id=?', (row['holding_id'],))
             else:
@@ -122,9 +124,9 @@ class FractionalTradingManager:
                 break
         if left:
             raise ValueError('예약된 매도 수량과 보유 수량이 일치하지 않습니다.')
-        return sold, gain
+        return sold, gain, cost_minor
 
-    def _pay_seller(self, conn, user, code, currency, gross, sold, gain, now):
+    def _pay_seller(self, conn, user, code, currency, gross, sold, gain, now, cost_minor=0):
         quantum = self._quantum(conn, currency)
         rate = CurrencyManager.rate_fraction(conn, currency)
         taxable = min(gain, gross) * rate / SCALE
@@ -141,6 +143,13 @@ class FractionalTradingManager:
             allocations[i] += 1
         for (account, _), amount in zip(sold, allocations):
             self._credit(conn, user, currency, amount*quantum, account, now)
+        # The realized result (loss included) for the statistics ledger, in the currency's own minor units.
+        places = CurrencyManager.precision(conn, currency)
+        per_minor = SCALE // (10 ** places)
+        from managers.pnl_ledger import PnlLedger
+        PnlLedger.record(conn, str(user), 'stock_sale', f"fractional:{code}:{now}:{time.time_ns()}", currency, places,
+                         gross // per_minor, int(round(cost_minor)), tax_minor=tax_units // per_minor,
+                         asset_code=code, now=now)
 
     def order(self, user, code, side, quantity, price):
         user, code = str(user), str(code)
@@ -275,8 +284,8 @@ class FractionalTradingManager:
             gross = price_minor*units*(SCALE//(10**places)//QUANTITY_SCALE)
             gross = gross//self._quantum(conn,currency)*self._quantum(conn,currency)
             if seller:
-                sold, gain = self._remove_lots(conn,seller['user_id'],asset['code'],units,price_minor)
-                self._pay_seller(conn,seller['user_id'],asset['code'],currency,gross,sold,gain,now)
+                sold, gain, cost_minor = self._remove_lots(conn,seller['user_id'],asset['code'],units,price_minor)
+                self._pay_seller(conn,seller['user_id'],asset['code'],currency,gross,sold,gain,now,cost_minor)
                 CurrencyManager.treasury_receive(conn, CurrencyManager.exchange_treasury(conn, asset['code']), currency, spent-gross)
                 if source == 'company':
                     from managers.corporate_actions_manager import CorporateActionsManager
@@ -350,8 +359,8 @@ class FractionalTradingManager:
                         raise ValueError('매도 가능 수량이 부족합니다.')
                     gross=raw//quantum*quantum
                     CurrencyManager.treasury_pay(conn, CurrencyManager.exchange_treasury(conn, code), currency, gross)
-                    sold,gain=self._remove_lots(conn,user,code,units,price)
-                    self._pay_seller(conn,user,code,currency,gross,sold,gain,now)
+                    sold,gain,cost_minor=self._remove_lots(conn,user,code,units,price)
+                    self._pay_seller(conn,user,code,currency,gross,sold,gain,now,cost_minor)
                 else:
                     if asset.get('supply') is not None and self._held(conn,code)+units>int(asset['supply'])*QUANTITY_SCALE:
                         raise ValueError('잔여 발행 수량이 부족합니다.')

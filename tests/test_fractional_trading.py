@@ -96,6 +96,21 @@ class FractionalTradingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.command('소수점거래관리', 'ST 1')
 
+    def test_a_fractional_sale_below_cost_is_recorded_as_a_realized_loss(self):
+        self.stock()
+        self.db.assets.add_user_asset('admin', 'ST', .5, unit_cost=100)
+        self.assertTrue(self.bot.order_book.place_limit_order('citizen', 'ST', 'buy', '.2', 99)[0])
+        self.assertTrue(self.bot.order_book.place_limit_order('admin', 'ST', 'sell', '.2', 99)[0])
+        with self.db.readonly() as conn:
+            rows = conn.execute("SELECT kind,asset_code,proceeds_minor_units,cost_minor_units,pnl_minor_units,tax_minor_units "
+                                "FROM user_realized_pnl WHERE user_id='admin'").fetchall()
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual((row['kind'], row['asset_code'], row['cost_minor_units']), ('stock_sale', 'ST', 20))
+        self.assertLess(row['pnl_minor_units'], 0)
+        self.assertEqual(row['pnl_minor_units'], row['proceeds_minor_units'] - row['cost_minor_units'])
+        self.assertEqual(row['tax_minor_units'], 0)
+
     def test_funds_dividends_and_fractional_share_collateral(self):
         self.stock(supply=100)
         self.command('상품생성', 'MF fund 펀드 100 100 ST:1 EX 1')

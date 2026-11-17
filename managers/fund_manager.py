@@ -430,7 +430,7 @@ class FundManager:
                         if left <= 0:
                             break
                     change_cash(conn, state['ownerId'], -gross, 'redemption', str(user))
-                    sold, _ = fractions._remove_lots(conn, user, code, units, ExactDecimal(nav))
+                    sold, _, _ = fractions._remove_lots(conn, user, code, units, ExactDecimal(nav))
                     fractions._pay_seller(conn, user, code, base_currency_code(conn), gross*SCALE, sold, int(gain*SCALE), int(time.time()))
                 else:
                     if issued + Decimal(str(qty)) > product['total_supply']:

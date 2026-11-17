@@ -593,11 +593,13 @@ class OptionManager:
             self._add_option_position(conn, contract["contract_id"], buyer_id, quantity, price)
         else:
             held = conn.execute(
-                "SELECT quantity FROM assets.option_positions WHERE contract_id = ? AND user_id = ?",
+                "SELECT quantity, average_premium FROM assets.option_positions WHERE contract_id = ? AND user_id = ?",
                 (contract["contract_id"], seller_id),
             ).fetchone()
             if not held or int(held["quantity"]) < quantity:
                 raise RuntimeError("매도 예약 옵션 수량이 변경되어 체결을 취소했습니다.")
+            self._record_option_result(conn, seller_id, buy_order["asset_code"], quantity * price,
+                                       quantity * int(held["average_premium"] or 0), f"close:{sell_order['order_id']}:{buy_order['order_id']}:{time.time_ns()}", now)
             if int(held["quantity"]) == quantity:
                 seller_position = conn.execute(
                     "DELETE FROM assets.option_positions WHERE contract_id = ? AND user_id = ? "
@@ -615,6 +617,14 @@ class OptionManager:
             self._add_option_position(conn, contract["contract_id"], buyer_id, quantity, price)
         from managers.accounting_journal import AccountingJournal
         AccountingJournal.post_option_premium(conn, buy_order, sell_order, quantity, price, now)
+
+    @staticmethod
+    def _record_option_result(conn, user_id, contract_code, proceeds, cost, ref, now):
+        """Realized result of an option holding (selling it, or letting it expire) for the statistics ledger."""
+        from managers.pnl_ledger import PnlLedger
+        currency = base_currency_code(conn)
+        PnlLedger.record(conn, user_id, "option", ref, currency, currency_precision(conn, currency),
+                         int(proceeds), int(cost), asset_code=contract_code, now=now)
 
     @staticmethod
     def _add_option_position(conn, contract_id, user_id, quantity, premium):
@@ -1037,7 +1047,7 @@ class OptionManager:
                         )
 
                     holders = conn.execute(
-                        "SELECT user_id, quantity FROM assets.option_positions "
+                        "SELECT user_id, quantity, average_premium FROM assets.option_positions "
                         "WHERE contract_id = ? ORDER BY user_id",
                         (contract["contract_id"],),
                     ).fetchall()
@@ -1116,6 +1126,10 @@ class OptionManager:
                                 conn, contract, holder_id, exercised, assets_before,
                                 self._exercise_asset_snapshot(conn, contract, holder_id),
                             )
+                        # The premium paid is spent either way; what an exercise delivers shows up when the shares are sold.
+                        self._record_option_result(conn, holder_id, contract["contract_code"], 0,
+                                                   held * int(holder["average_premium"] or 0),
+                                                   f"expiry:{contract['contract_id']}:{holder_id}", now)
                         conn.execute(
                             "DELETE FROM assets.option_positions WHERE contract_id = ? AND user_id = ?",
                             (contract["contract_id"], holder_id),

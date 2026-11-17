@@ -23,7 +23,7 @@ TAX_LABEL = {
     "els_profit": "ELS 수익세", "special_dividend": "배당소득세", "special_dividend_reversal": "배당소득세 환급",
     "liquidation": "청산 배당세",
 }
-INCOME_KINDS = {"stock_sale": "주식·상품 매매", "bond_sale": "채권 매매", "futures": "선물", "gamble": "도박"}
+INCOME_KINDS = {"stock_sale": "주식·상품 매매", "bond_sale": "채권 매매", "futures": "선물", "option": "옵션", "gamble": "도박"}
 # Before the realized-result ledger existed only the taxed gain of these survives (in the tax record), never the loss.
 TAX_GAIN_KIND = {"stock_sale_gain": "stock_sale", "foreign_security_sale_gain": "stock_sale",
                  "fractional_sale_gain": "stock_sale", "bond_sale_gain": "bond_sale",
@@ -238,5 +238,5 @@ class StatsManager:
                        "maxGain": shown(max(gains)) if gains else None,
                        "maxLoss": shown(min(losses)) if losses else None},
             "recordingSince": int(first_epoch) if first_epoch is not None else None,
-            "notRecorded": ["소수 단위 거래·옵션의 확정 손익은 기록 대상이 아니라 총수익·총손실에 들어가지 않습니다."],
+            "notRecorded": ["옵션은 팔았을 때의 손익과 만기에 소멸한 프리미엄만 집계합니다. 작성자가 받은 프리미엄과 행사·배정으로 받은 주식은 이후 매매로 반영됩니다."],
         }

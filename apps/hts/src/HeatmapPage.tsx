@@ -4,6 +4,9 @@ import { exchangeStocks, formatChange, summarizeExchanges, tone } from "./Exchan
 import { GuideLayout, Hero, pad, RotatingStat, Section, type Stat } from "./GuideLayout";
 import { formatMoneyNumeric } from "../../shared/money";
 import { DotField } from "./HeroData";
+import { api } from "../../shared/api";
+
+type ExchangeIndex = { exchangeId: string; value: number; change24h: number | null; updatedEpoch: number };
 
 type Instrument = Parameters<typeof summarizeExchanges>[0][number];
 
@@ -13,6 +16,15 @@ export function HeatmapPage({ instruments, exchangeId, onExchangeChange, onSelec
   const exchanges = summaries.map((item) => item.exchangeId);
   const [query, setQuery] = useState(exchangeId ?? "");
   useEffect(() => setQuery(exchangeId ?? ""), [exchangeId]);
+  const [indexes, setIndexes] = useState<ExchangeIndex[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => api<{ indexes: ExchangeIndex[] }>("/api/market/exchange-indexes").then((body) => { if (!cancelled) setIndexes(body.indexes); }).catch(() => undefined);
+    void load();
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") void load(); }, 15_000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
+  const exchangeIndex = indexes.find((item) => item.exchangeId === exchangeId);
   const stocks = exchangeId ? exchangeStocks(instruments, exchangeId).slice(0, 40) : [];
   const maxVolume = Math.max(...stocks.map((item) => item.volume24h), 1);
   const up = stocks.filter((item) => (item.change24h ?? 0) > 0).length;
@@ -21,6 +33,11 @@ export function HeatmapPage({ instruments, exchangeId, onExchangeChange, onSelec
   const leader = stocks.reduce<(typeof stocks)[number] | null>((best, item) => (item.change24h ?? -Infinity) > (best?.change24h ?? -Infinity) ? item : best, null);
   const heroStats: Stat[] = [
     { label: "거래소", value: exchangeId || "거래소", unit: stocks.length ? `${stocks.length}종목` : undefined },
+    ...(exchangeIndex ? [{
+      label: "거래소 지수", value: exchangeIndex.value.toLocaleString("ko-KR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+      unit: exchangeIndex.change24h === null ? "24시간 변동 –" : `24시간 ${formatChange(exchangeIndex.change24h)}`,
+      tone: exchangeIndex.change24h === null ? undefined : exchangeIndex.change24h > 0 ? "up" as const : exchangeIndex.change24h < 0 ? "down" as const : undefined,
+    }] : []),
     ...(stocks.length ? [
       { label: "평균 변동률 · 24시간", value: formatChange(average), tone: average > 0 ? "up" as const : average < 0 ? "down" as const : undefined },
       { label: "상승 / 하락 종목", value: `▲ ${up} · ▼ ${down}`, unit: `${stocks.length}종목 중` },

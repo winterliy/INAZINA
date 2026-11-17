@@ -967,6 +967,30 @@ def authenticate_login_identifier(identifier, password):
     return None, False
 
 
+def exchange_indexes():
+    """Each exchange's index value with its change over the last 24 hours (from the index history)."""
+    domain()
+    since = int(time.time()) - 86400
+    with connect_readonly() as connection:
+        rows = connection.execute(
+            "SELECT exchange_id,index_value,index_updated_epoch FROM market_exchanges "
+            "WHERE UPPER(exchange_id)<>'CURRENCY' ORDER BY exchange_id").fetchall()
+        result = []
+        for row in rows:
+            base = connection.execute(
+                "SELECT index_value FROM market_exchange_index_history WHERE exchange_id=? AND recorded_epoch<=? "
+                "ORDER BY recorded_epoch DESC LIMIT 1", (row["exchange_id"], since)).fetchone()
+            if base is None:
+                base = connection.execute(
+                    "SELECT index_value FROM market_exchange_index_history WHERE exchange_id=? "
+                    "ORDER BY recorded_epoch LIMIT 1", (row["exchange_id"],)).fetchone()
+            value, start = float(row["index_value"]), float(base[0]) if base else 0.0
+            result.append({"exchangeId": row["exchange_id"], "value": value,
+                           "change24h": (value / start - 1) * 100 if start > 0 else None,
+                           "updatedEpoch": int(row["index_updated_epoch"] or 0)})
+        return result
+
+
 def instruments(include_inactive=False):
     # Ensure additive schema migrations have run before the read-only adapter
     # selects newly introduced fund metadata.
@@ -4603,6 +4627,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "active_user_required"})
                 else:
                     self.send_json(200, {"commands": catalog(), "lookups": user_lookups(user)})
+            elif path == "/internal/market/exchange-indexes":
+                self.send_json(200, {"indexes": exchange_indexes()})
             elif path == "/internal/market/instruments":
                 self.send_json(200, {"instruments": instruments()})
             elif path == "/internal/market/portfolio":

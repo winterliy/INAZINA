@@ -683,6 +683,12 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     return;
   }
 
+  if (request.method === "GET" && url.pathname === "/api/market/exchange-indexes") {
+    const result = await internalGet("/internal/market/exchange-indexes", principal.userId);
+    send(response, result.status, result.body);
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/admin/overview") {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });

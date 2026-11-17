@@ -51,6 +51,24 @@ class RealizedPnlLedgerTests(unittest.TestCase):
         rows = self._rows("alice", "gamble")
         self.assertEqual([r["pnl_minor_units"] for r in rows], [-100, 100])
 
+    def test_selling_an_option_and_its_expiry_are_recorded(self):
+        import time
+        self.db.users.create_user("carol", "Carol", "Nac", 10000)
+        self.db.assets.add_user_asset("alice", "CO", 5, unit_cost=100)
+        self.assertTrue(self.options.create_and_write("alice", "CO", "call", 100, 1, 2, 10)[0])
+        code = self.options.get_active_contracts()[0]["contract_code"]
+        self.assertTrue(self.options.place_limit_order("bob", code, "buy", 2, 10)[0])
+        self.assertTrue(self.options.place_limit_order("bob", code, "sell", 1, 15)[0])
+        self.assertTrue(self.options.place_limit_order("carol", code, "buy", 1, 15)[0])
+        self.db.assets.execute("UPDATE option_contracts SET expiration_epoch = ?", (int(time.time()) - 1,))
+        self.options.expire_matured()
+        rows = self._rows("bob", "option")
+        self.assertEqual([(r["proceeds_minor_units"], r["cost_minor_units"], r["pnl_minor_units"]) for r in rows],
+                         [(15, 10, 5), (0, 10, -10)])
+        self.assertEqual(len(self._rows("carol", "option")), 1)       # carol's premium expires worthless too
+        self.options.expire_matured()
+        self.assertEqual(len(self._rows("bob", "option")), 2)         # a second run records nothing new
+
     def test_recording_is_idempotent_and_append_only(self):
         with self.db.atomic() as conn:
             self.assertTrue(PnlLedger.record(conn, "alice", "stock_sale", "r1", "NWX", 0, 50, 70, now=1))

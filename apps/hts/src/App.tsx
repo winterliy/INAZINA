@@ -670,7 +670,7 @@ export default function App() {
   if (location.pathname === "/portfolio" || location.pathname === "/portfolio/") return <div className="hts-shell stage portfolio-page-shell">
     <Backdrop />
     {topbar("home")}
-    <main><PortfolioPage holdings={holdings} instruments={instruments} homeCurrency={homeCurrency} cash={portfolio?.cash ?? user.cash} totalAssets={portfolio?.grand_total ?? portfolio?.net_worth ?? 0} onRefreshRates={() => void refreshRates()} ratesBusy={ratesBusy} onSelect={(code) => { window.location.href = `/?symbol=${encodeURIComponent(code)}`; }} /></main>
+    <main><PortfolioPage holdings={holdings} instruments={instruments} homeCurrency={homeCurrency} cash={portfolio?.cash ?? user.cash} totalAssets={portfolio?.grand_total ?? portfolio?.net_worth ?? 0} onRefreshRates={() => void refreshRates()} ratesBusy={ratesBusy} onSelect={(code) => { window.location.href = `/?code=${encodeURIComponent(code)}`; }} /></main>
     <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
   </div>;
   if (service) return <div className="hts-shell stage service-shell">
