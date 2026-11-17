@@ -16,8 +16,10 @@ class CurrencyDB(DBManager):
     # Money snapshots that follow their source row out when it is deleted (see the trigger loop).
     # market_auto_target_history is trimmed to its newest rows and user_assets rows disappear when a
     # position is sold out; the snapshots of both are routine leftovers, not missing money.
+    # market_trade_history is a log administrators may clear, and aml_monitoring_rules rows go with their country.
     SNAPSHOTS_DELETED_WITH_SOURCE = frozenset({"market_price_history", "market_exchange_index_components",
-                                               "market_auto_target_history", "user_assets"})
+                                               "market_auto_target_history", "user_assets",
+                                               "market_trade_history", "aml_monitoring_rules"})
 
     def __init__(self):
         super().__init__("forex")
@@ -1624,6 +1626,7 @@ class CurrencyDB(DBManager):
         ensure_wallet_baseline_adjustments(self.execute)
         ensure_primary_recipient_overrides(self.execute)
         ensure_notifications(self.execute)
+        ensure_snapshot_retirements(self.execute)
         ensure_payout_requests(self.execute)
 
     def _ensure_treasury_bond_minor_units(self):
@@ -2006,6 +2009,7 @@ class CurrencyDB(DBManager):
                 ("credit_score_policy", "value", "신용점수 정책값"),
                 ("board_post_reactions", "value", "게시글 반응 값(+1/-1)이며 금액이 아님"),
                 ("board_comment_reactions", "value", "댓글 반응 값(+1/-1)이며 금액이 아님"),
+                ("market_events", "target_value", "사건 목표값(변동 % 또는 목표가격). 가격 목표는 market_event_targets에서 금액으로 등록되며 이 값은 원장에 직접 쓰이지 않음"),
                 ("financial_institutions", "operating_cost_spread", "금액이 아닌 비용 가산율"),
                 ("financial_lines", "amount", "이미 회사 원장 통화 최소단위로 저장된 서명 분개액"),
                 ("users", "cash_minor", "이미 고객 통화 최소단위로 저장된 권위 잔액"),
@@ -2021,8 +2025,6 @@ class CurrencyDB(DBManager):
                     (source_table,amount_field,reason) VALUES (?,?,?)
                     ON CONFLICT(source_table,amount_field) DO UPDATE SET reason=excluded.reason""",
                     exemption)
-            self.execute("DELETE FROM financial_amount_field_exemptions "
-                         "WHERE source_table='market_events' AND amount_field='target_value'")
 
     # Minor units of a citizen's home currency: x1 for 0 decimal places, x10, x100.
     PLACES = ("(SELECT COALESCE(MAX(c.decimal_places),0) FROM country_currencies n "
@@ -3743,6 +3745,22 @@ def ensure_accounting_line_repairs(execute):
         execute(f"""CREATE TRIGGER IF NOT EXISTS trg_accounting_line_repairs_{operation.lower()}
             BEFORE {operation} ON accounting_line_repairs
             BEGIN SELECT RAISE(ABORT,'accounting line repairs are append-only'); END""")
+
+
+def ensure_snapshot_retirements(execute):
+    """Amount snapshots of rows that were deleted for a documented reason, so the audit stops reporting them.
+
+    A snapshot whose source row has gone is normally an audit finding (money may have vanished). Retiring one
+    needs the evidence that nothing was lost, the person and the reason; the record can never be changed.
+    """
+    execute("""CREATE TABLE IF NOT EXISTS financial_amount_snapshot_retirements (
+        source_table TEXT NOT NULL, source_key TEXT NOT NULL, amount_field TEXT NOT NULL,
+        reason TEXT NOT NULL, actor_id TEXT NOT NULL, recorded_epoch INTEGER NOT NULL,
+        PRIMARY KEY(source_table,source_key,amount_field))""")
+    for operation in ("UPDATE", "DELETE"):
+        execute(f"""CREATE TRIGGER IF NOT EXISTS trg_financial_amount_snapshot_retirements_{operation.lower()}
+            BEFORE {operation} ON financial_amount_snapshot_retirements
+            BEGIN SELECT RAISE(ABORT,'snapshot retirements are append-only'); END""")
 
 
 def ensure_notifications(execute):

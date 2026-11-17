@@ -148,6 +148,11 @@ def audit_amount_snapshots(conn):
         return [{"status": "missing_inventory"}]
     rowid_tables = {str(row[1]) for row in conn.execute("PRAGMA table_list").fetchall()
                     if len(row) > 4 and int(row[4]) == 0}
+    # Snapshots of rows deleted for a documented reason (financial_amount_snapshot_retirements) are not findings.
+    retired = {(str(row[0]), str(row[1]), str(row[2])) for row in conn.execute(
+        "SELECT source_table,source_key,amount_field FROM financial_amount_snapshot_retirements")
+    } if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                      "AND name='financial_amount_snapshot_retirements'").fetchone() else set()
     findings = []
     registry_exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='financial_amount_field_registry'"
@@ -218,8 +223,9 @@ def audit_amount_snapshots(conn):
                 (table, key_field, field)):
             key = str(row["source_key"])
             if row["absent"]:
-                checked.append({"source_table": table, "source_key": key,
-                                "amount_field": field, "status": "missing_source_row"})
+                if (table, key, field) not in retired:
+                    checked.append({"source_table": table, "source_key": key,
+                                    "amount_field": field, "status": "missing_source_row"})
                 continue
             if row["amount"] is None:
                 continue

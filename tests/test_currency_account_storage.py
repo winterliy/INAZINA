@@ -49,6 +49,44 @@ class CurrencyAccountStorageTests(unittest.TestCase):
         self.tmp.cleanup()
 
     @unittest.skipIf(pg_backend.enabled(), "financial_amount_snapshots is not carried to PostgreSQL")
+    def test_a_cleared_trade_log_leaves_no_orphaned_snapshots(self):
+        self.db.assets.execute("INSERT INTO market_trade_history(asset_code,side,quantity,price,recorded_epoch) "
+                               "VALUES ('X','buy',1,6.5,1)")
+        count = lambda: self.db.assets.execute_one(
+            "SELECT COUNT(*) FROM financial_amount_snapshots WHERE source_table='market_trade_history'")[0]
+        self.assertEqual(count(), 1)
+        self.db.assets.execute("DELETE FROM market_trade_history")
+        self.assertEqual(count(), 0)
+
+    @unittest.skipIf(pg_backend.enabled(), "financial_amount_snapshots is not carried to PostgreSQL")
+    def test_a_snapshot_is_retired_only_for_a_deleted_row_with_a_reason_and_then_stops_being_a_finding(self):
+        from functions.money import audit_amount_snapshots
+        self.db.users.create_user("ret-user", "Ret", "낙원", 0)
+        self.db.users.create_user("kept-user", "Kept", "낙원", 0)
+        missing = lambda conn: [f for f in audit_amount_snapshots(conn)
+                                if f["status"] == "missing_source_row" and f["source_key"] == "ret-user"]
+        with self.db.atomic() as conn:
+            conn.execute("DELETE FROM users WHERE user_id='ret-user'")     # nothing deletes a user's snapshots
+            self.assertTrue(missing(conn))
+            with self.assertRaisesRegex(ValueError, "사유"):
+                AccountingJournal.retire_snapshot(conn, source_table="users", source_key="ret-user",
+                                                  amount_field="cash", reason=" ", actor_id="admin", now=1)
+            with self.assertRaisesRegex(ValueError, "원본 행이 아직"):
+                AccountingJournal.retire_snapshot(conn, source_table="users", source_key="kept-user",
+                                                  amount_field="cash", reason="r", actor_id="admin", now=1)
+            fields = sorted({f["amount_field"] for f in missing(conn)})
+            for field in fields:
+                self.assertTrue(AccountingJournal.retire_snapshot(
+                    conn, source_table="users", source_key="ret-user", amount_field=field,
+                    reason="삭제된 시험 사용자", actor_id="admin", now=1))
+            self.assertFalse(AccountingJournal.retire_snapshot(
+                conn, source_table="users", source_key="ret-user", amount_field=fields[0],
+                reason="again", actor_id="admin", now=2))                   # idempotent
+            self.assertEqual(missing(conn), [])
+            with self.assertRaisesRegex(Exception, "append-only"):
+                conn.execute("DELETE FROM financial_amount_snapshot_retirements")
+
+    @unittest.skipIf(pg_backend.enabled(), "financial_amount_snapshots is not carried to PostgreSQL")
     def test_snapshots_of_routinely_pruned_rows_are_removed_with_them(self):
         count = lambda table: self.db.system.execute_one(
             "SELECT COUNT(*) FROM financial_amount_snapshots WHERE source_table=?", (table,))[0]
@@ -699,17 +737,21 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             for item in after["unclassified"]
         ), after)
 
-    def test_mode_dependent_price_event_value_is_not_blanket_exempted(self):
+    @unittest.skipIf(pg_backend.enabled(), "the amount-field registry and exemptions are not carried to PostgreSQL")
+    def test_market_event_target_value_is_a_documented_exemption_because_price_targets_are_registered_elsewhere(self):
         with self.db.atomic() as conn:
             conn.execute("""INSERT INTO market_events
                 (asset_code,event_type,severity,starts_epoch,ends_epoch,created_by,target_mode,target_value)
                 VALUES ('USD_ASSET','good',1,1,2,'test','price',12.34)""")
             report = audit_amount_field_coverage(conn)
-        self.assertTrue(any(
-            item["source_table"] == "market_events"
-            and item["amount_field"] == "target_value"
-            for item in report["unclassified"]
-        ), report)
+            reason = conn.execute("SELECT reason FROM financial_amount_field_exemptions "
+                                  "WHERE source_table='market_events' AND amount_field='target_value'").fetchone()
+            registered = conn.execute("SELECT 1 FROM financial_amount_field_registry "
+                                      "WHERE source_table='market_event_targets' AND amount_field='target_price'").fetchone()
+        self.assertFalse(any(item["source_table"] == "market_events" and item["amount_field"] == "target_value"
+                             for item in report["unclassified"]), report)
+        self.assertIn("market_event_targets", reason[0])     # the money lives in the targets the event creates
+        self.assertIsNotNone(registered)
 
     def test_market_event_target_snapshots_use_asset_code_and_rowid(self):
         self.db.assets.execute("""INSERT INTO market_assets

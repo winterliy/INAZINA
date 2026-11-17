@@ -16,6 +16,7 @@ Steps, in order (each is idempotent):
   4. deposit liability correction interest later repaid into a loan from the same bank's deposit
   5. primary recipient note       market-fill:79 paid the treasury before SELOA had a cash account
   6. clear customer_funds_payable loan proceeds booked as payable to customers but never settled
+  7. retire explained snapshots  snapshots of deleted rows, each retired only when evidence shows nothing was lost
 Stop the bot and the web API before running with --apply.
 """
 import argparse
@@ -44,6 +45,27 @@ PRIMARY_RECIPIENT = {
 def summarize(report):
     counts = collections.Counter((f["scope"], f.get("status") or "") for f in report["findings"])
     return dict(sorted(counts.items()))
+
+
+def explain_deleted_row(conn, table, key, field, snapshot_units):
+    """Evidence that a deleted row's snapshot lost no money, or None (the finding stays)."""
+    def ledger_net(where, value):
+        rows = conn.execute(f"SELECT currency_code,SUM(delta_minor_units) FROM customer_wallet_ledger WHERE {where} GROUP BY currency_code",
+                            (value,)).fetchall()
+        return all(int(row[1] or 0) == 0 for row in rows)
+    if table == "accounts" and ledger_net("source_type='account' AND source_account=?", key) and snapshot_units == 0:
+        return "계좌가 해지됨: 지갑 원장 순합계 0, 스냅샷 금액 0"
+    if table == "users" and snapshot_units == 0 and ledger_net("user_id=?", key) and not conn.execute(
+            "SELECT 1 FROM users WHERE user_id=?", (key,)).fetchone():
+        return "삭제된 사용자(국가·시스템 잔재 포함): 지갑 원장 순합계 0, 스냅샷 금액 0"
+    if table == "financial_institutions":
+        renamed = conn.execute("SELECT 1 FROM bank_journal_entries WHERE event_type='opening_balance_transfer' "
+                               "AND reference_key LIKE 'issuer-rename:%' AND description LIKE ?", (f"%{key}%",)).fetchone()
+        carried = conn.execute(f"SELECT 1 FROM financial_institutions WHERE {field}=?", (snapshot_units,)).fetchone() \
+            if field in {"equity_capital", "deposit_insurance_limit"} else None
+        if renamed and (snapshot_units == 0 or carried):
+            return "금융기관 이름 변경: 잔액이 새 이름의 개시 이관 분개로 옮겨졌고 같은 값이 현재 기관에 있음"
+    return None
 
 
 def main(argv=None):
@@ -117,6 +139,23 @@ def main(argv=None):
             print("5 primary recipient note: recorded")
         print("6 clear customer_funds_payable:", BankJournal.clear_customer_funds_payable(
             conn, actor_id=args.actor, now=now))
+        from functions.money import audit_amount_snapshots
+        retired, kept = 0, []
+        for finding in audit_amount_snapshots(conn):
+            if finding.get("status") != "missing_source_row":
+                continue
+            units = conn.execute("SELECT amount_minor_units FROM financial_amount_snapshots WHERE source_table=? "
+                                 "AND source_key=? AND amount_field=?", (finding["source_table"], finding["source_key"],
+                                                                         finding["amount_field"])).fetchone()
+            evidence = explain_deleted_row(conn, finding["source_table"], finding["source_key"],
+                                           finding["amount_field"], int(units[0]))
+            if evidence and AccountingJournal.retire_snapshot(
+                    conn, source_table=finding["source_table"], source_key=finding["source_key"],
+                    amount_field=finding["amount_field"], reason=evidence, actor_id=args.actor, now=now):
+                retired += 1
+            elif not evidence:
+                kept.append((finding["source_table"], finding["source_key"], finding["amount_field"]))
+        print("7 retire explained snapshots:", retired, "retired;", len(kept), "left as findings", kept[:5])
         report = AccountingJournal.reconcile_all_financial_ledgers(conn)
         print("after: ", summarize(report))
         for finding in report["findings"][:10]:

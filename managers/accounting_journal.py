@@ -3146,6 +3146,32 @@ class AccountingJournal:
                     BEGIN SELECT RAISE(ABORT,'common accounting journal is append-only'); END""")
         return {"repaired_entries": len(plan), "lines_removed": to_remove, "skipped_entries": skipped}
 
+    @staticmethod
+    def retire_snapshot(conn, *, source_table, source_key, amount_field, reason, actor_id, now):
+        """Stop reporting the snapshot of a deleted row, with the reason and person on record (append-only).
+
+        Refused unless the snapshot exists and its source row really is gone. Returns False if already retired."""
+        import re
+        from database.currency_db import ensure_snapshot_retirements
+        ensure_snapshot_retirements(conn.execute)
+        if not str(reason or "").strip() or not str(actor_id or "").strip():
+            raise ValueError("스냅샷 해제에는 담당자와 사유가 필요합니다.")
+        snap = conn.execute(
+            "SELECT source_key_field FROM financial_amount_snapshots WHERE source_table=? AND source_key=? "
+            "AND amount_field=?", (str(source_table), str(source_key), str(amount_field))).fetchone()
+        if not snap:
+            raise ValueError("해제할 금액 스냅샷이 없습니다.")
+        table, key_field = str(source_table), str(snap[0])
+        if not all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in (table, key_field)):
+            raise ValueError("스냅샷 식별자가 올바르지 않습니다.")
+        if conn.execute(f'SELECT 1 FROM "{table}" WHERE "{key_field}"=?', (str(source_key),)).fetchone():
+            raise ValueError("원본 행이 아직 있어 스냅샷을 해제할 수 없습니다.")
+        cursor = conn.execute(
+            "INSERT OR IGNORE INTO financial_amount_snapshot_retirements"
+            "(source_table,source_key,amount_field,reason,actor_id,recorded_epoch) VALUES (?,?,?,?,?,?)",
+            (table, str(source_key), str(amount_field), str(reason).strip(), str(actor_id), int(now)))
+        return cursor.rowcount == 1
+
     @classmethod
     def record_primary_recipient_override(cls, conn, *, execution_key, recipient_id, reason, actor_id, now):
         """Note who actually received a primary fill's proceeds (append-only, one per fill)."""

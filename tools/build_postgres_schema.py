@@ -38,6 +38,7 @@ DROPPED = {
     "market_execution_order_baselines": "superseded by market_execution_order_baselines_v2",
     "financial_amount_snapshots": "duplicated source amounts; reconciliation reads source tables",
     "financial_amount_field_registry": "inventory for financial_amount_snapshots",
+    "financial_amount_snapshot_retirements": "retires findings of financial_amount_snapshots",
     "market_exchange_operators": "no code reads or writes it",
     "wide_money_schema": "SQLite wide-money marker",
     "startup_migration_state": "SQLite startup marker",
