@@ -80,6 +80,10 @@ class PayoutChoiceTests(unittest.TestCase):
         with self.db.atomic() as conn:
             temp = PayoutManager.open_temp(conn, self.USER, payout["payout_id"], now=opened)
         self.assertEqual((temp["status"], temp["temp_number"]), ("temp_open", f"TMP{payout['payout_id']:08d}"))
+        with self.db.readonly() as conn:
+            note = next(n for n in NotificationManager.list(conn, self.USER) if n["kind"] == "payout_temp_account")
+        fee_text = f"(수수료: {int(temp['withdraw_fee']):,} NWX)"
+        self.assertIn("3%가 차감됩니다 " + fee_text, note["body"])           # the real amount, not an example
         self.assertEqual(temp["expires_epoch"], opened + HOLD_DAYS * DAY)
         with self.assertRaisesRegex(ValueError, "NWX 통장을 먼저"):                   # no NWX account yet
             with self.db.atomic() as conn:
@@ -110,6 +114,36 @@ class PayoutChoiceTests(unittest.TestCase):
         self.assertIn("payout_expired", kinds)
         check = self._futures_check()
         self.assertEqual(check["status"], "matched", check)
+
+
+class FillAndMarginNotificationTests(unittest.TestCase):
+    setUp = fixtures.MarketFeatureTests.setUp
+    tearDown = fixtures.MarketFeatureTests.tearDown
+    issue = fixtures.MarketFeatureTests.issue
+    issue_future = fixtures.MarketFeatureTests.issue_future
+
+    def _kinds(self, user):
+        with self.db.readonly() as conn:
+            return [n["kind"] for n in NotificationManager.list(conn, user)]
+
+    def test_both_sides_of_a_fill_are_notified(self):
+        self.db.assets.add_user_asset("alice", "CO", 5, unit_cost=100)
+        self.assertTrue(self.book.place_limit_order("alice", "CO", "sell", 1, 100)[0])
+        self.assertEqual(self._kinds("alice"), [])
+        self.assertTrue(self.book.place_limit_order("bob", "CO", "buy", 1, 100)[0])
+        self.assertEqual(self._kinds("alice"), ["order_fill"])
+        self.assertEqual(self._kinds("bob"), ["order_fill"])
+
+    def test_a_futures_position_close_to_liquidation_is_warned_once_a_day(self):
+        self.issue_future()
+        self.assertTrue(self.book.place_limit_order("alice", "FUT", "buy", 2, 100)[0])
+        self.db.companies.update_share_price("CO", 95)         # collateral 30 against a maintenance margin of about 29
+        self.futures.settle_positions()
+        position = self.db.assets.execute_one("SELECT * FROM futures_positions WHERE user_id='alice'")
+        self.assertIsNotNone(position, "the position must survive the fall to be warned about")
+        self.futures.settle_positions()
+        warnings = [kind for kind in self._kinds("alice") if kind == "futures_margin"]
+        self.assertEqual(warnings, ["futures_margin"])
 
 
 if __name__ == "__main__":

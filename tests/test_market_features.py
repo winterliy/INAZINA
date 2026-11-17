@@ -1271,6 +1271,21 @@ class MarketFeatureTests(unittest.TestCase):
         self.assertEqual(self._nwx_units(number), 4990)                       # the premium came out of the NWX account
         self.assertEqual(self.db.users.get_user('foreign-future')['cash'], wallet)
 
+    def test_the_last_nwx_account_cannot_be_closed_while_option_contracts_remain(self):
+        from managers.bank_manager import BankManager
+        number = self._foreign_future_trader(5000)
+        self.db.assets.add_user_asset("alice", "CO", 5, unit_cost=100)
+        self.assertTrue(self.options.create_and_write("alice", "CO", "call", 100, 1, 2, 10)[0])
+        code = self.options.get_active_contracts("CO")[0]["contract_code"]
+        self.assertTrue(self.book.place_limit_order('foreign-future', code, 'buy', 1, 10)[0])
+        ok, message = BankManager(self.db).close_account('foreign-future', number)
+        self.assertFalse(ok)
+        self.assertIn("옵션", message)
+        self.assertEqual(self._nwx_units(number), 4990)                      # nothing moved
+        self.db.assets.execute("DELETE FROM option_positions WHERE user_id='foreign-future'")
+        ok, message = BankManager(self.db).close_account('foreign-future', number)
+        self.assertTrue(ok, message)                                         # free to close once nothing is open
+
     def test_option_order_without_an_nwx_account_is_refused_and_touches_no_wallet(self):
         self._foreign_future_trader()
         self.db.assets.add_user_asset("alice", "CO", 5, unit_cost=100)

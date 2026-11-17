@@ -260,6 +260,14 @@ class FuturesManager:
                         product, position["quantity"], quote, product["maintenance_margin"]
                     )
                     if not expired and collateral >= maintenance:
+                        if collateral * 10 < int(maintenance) * 12:      # within 20% of liquidation
+                            from managers.notification_manager import NotificationManager
+                            NotificationManager.add(
+                                conn, position["user_id"], "futures_margin", "선물 증거금이 부족해지고 있습니다",
+                                f"`{product['product_code']}` 증거금 {int(collateral):,}이 유지증거금 {int(maintenance):,}에 "
+                                f"가까워졌습니다. 증거금을 추가하지 않으면 청산됩니다.",
+                                dedupe_key=f"futures-margin:{position['user_id']}:{product['product_code']}:{int(now) // 86400}",
+                                now=now)
                         continue
                     cash_mark = AccountingJournal.futures_cash_mark(conn, now)
                     currency = self._currency(conn)

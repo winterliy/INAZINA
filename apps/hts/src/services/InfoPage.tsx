@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { FormEvent } from "react";
-import { ActionCard, type ServiceProps } from "./ServiceKit";
+import type { ServiceProps } from "./ServiceKit";
 
 const FORMS = { contact: { title: "📞 Contact · 문의", who: "문의" }, report: { title: "🚨 Report · 신고", who: "신고" } } as const;
 const ERRORS: Record<string, string> = {
@@ -51,18 +51,10 @@ function FeedbackCard() {
 }
 
 /** 정보 · 고객센터: lookups and requests to the administrators. */
-export function InfoPage({ kit }: ServiceProps) {
+export function InfoPage(_props: ServiceProps) {
   return <div className="svc-info">
-    <h3 className="svc-section-title">금융 정보</h3>
-    <div className="svc-two">
-      <a className="svc-card svc-link-card" href="/financials" target="_blank" rel="noopener"><header><h3>기업 재무제표 ↗</h3><p>회사의 자산·부채·자본, 손익과 주요 비율을 새 탭의 재무제표 화면에서 봅니다.</p></header></a>
-    </div>
     <h3 className="svc-section-title">고객센터</h3>
     <a className="svc-help-link" href="https://dramatic-bread-b4a.notion.site/NAKWON-BOTS-3ea27b50c7bf80e0904ef783e0e5dfc4" target="_blank" rel="noreferrer"><b>📚 도움말 (/도움말)</b><small>봇·나루 이용 안내와 정책 문서</small></a>
     <FeedbackCard />
-    <div className="svc-two">
-      <ActionCard kit={kit} name="주총소집" title="주주총회 소집" description="최대주주만 소집할 수 있습니다. 주주들에게 Discord로 참석 여부를 묻습니다." submit="소집 요청" />
-      <ActionCard kit={kit} name="파산" title="파산 신청" description="현재 자산 현황이 관리자에게 전달됩니다. 관리자 검토 후 처리됩니다." submit="파산 신청하기" />
-    </div>
   </div>;
 }

@@ -15,7 +15,9 @@ export const SERVICES = [
   { path: "/market", label: "시장정보", description: "실시간차트 · 자산 순위 · 거래소 지수 · 금리 · 전체 상품 목록 (/검색)" },
   { path: "/history", label: "거래내역", description: "입출금 · 송금 · 기본소득 · 환전 · 주문 내역" },
   { path: "/financials", label: "기업 재무", description: "회사·우선주의 재무상태표 · 손익 · 현금흐름 · 주요 비율" },
-  { path: "/info", label: "정보 · 고객센터", description: "문의 · 신고 · 파산 신청 · 주주총회" },
+  { path: "/meetings", label: "주주총회", description: "주주총회 소집 · 의제 투표 · 지난 회의록" },
+  { path: "/court", label: "회생 · 파산", description: "개인회생 · 파산 신청서 작성과 제출 · 신청 내역" },
+  { path: "/info", label: "정보 · 고객센터", description: "도움말 · 문의 · 신고" },
 ] as const;
 
 export const won = (value: Money, digits = 0) => number(value, digits);

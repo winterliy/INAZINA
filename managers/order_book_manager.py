@@ -523,6 +523,13 @@ class OrderBookManager:
             (key, execution_type, str(buy_order["asset_code"]), buy_id, sell_id,
              str(buy_order["user_id"]), seller_id, quantity, price_units,
              price_units*quantity, tax_units, proceeds_units, currency, places, int(now)))
+        from managers.notification_manager import NotificationManager
+        shown = f"{buy_order['asset_code']} {quantity:,}개 × {from_minor_units(price_units, places):,} {currency}"
+        NotificationManager.add(conn, buy_order["user_id"], "order_fill", "매수 주문이 체결되었습니다", shown,
+                                dedupe_key=f"fill:{key}:buy", now=int(now))
+        if seller_id:
+            NotificationManager.add(conn, seller_id, "order_fill", "매도 주문이 체결되었습니다", shown,
+                                    dedupe_key=f"fill:{key}:sell", now=int(now))
         if holding_before is not None:
             expected = {"buyer": int(quantity)}
             if sell_order is not None:

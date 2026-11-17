@@ -81,6 +81,14 @@ class NaturalizationManager:
                          (status, str(actor), time.time(), str(note or "")[:300], row["request_id"]))
             control._audit(conn, actor, f"naturalization.{status}", {"request_id": row["request_id"], "user_id": row["user_id"],
                                                                     "to": row["to_nationality"], "note": note})
+            from managers.notification_manager import NotificationManager
+            reason = f" 사유: {str(note)[:200]}" if str(note or "").strip() else ""
+            NotificationManager.add(
+                conn, row["user_id"], "naturalization",
+                "귀화 신청이 승인되었습니다" if approve else "귀화 신청이 거절되었습니다",
+                (f"{row['to_nationality']} 국적으로 변경되었습니다." if approve else
+                 f"{row['to_nationality']} 국적 귀화 신청이 거절되었습니다.") + reason,
+                dedupe_key=f"naturalization:{row['request_id']}:{status}")
         if approve:
             return f"✅ 귀화 신청 #{row['request_id']}을 승인했습니다. {moved}"
         return f"✅ 귀화 신청 #{row['request_id']}을 거절했습니다."

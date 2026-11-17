@@ -104,12 +104,13 @@ class PayoutManager:
         if row["status"] != "pending" or int(row["expires_epoch"]) <= now:
             raise ValueError("이미 처리됐거나 기한이 지난 지급입니다.")
         number = f"TMP{int(payout_id):08d}"
+        fee = from_minor_units(cls.fee_minor_units(row["minor_units"]), int(row["decimal_places"]))
         conn.execute("UPDATE payout_requests SET status='temp_open',decided_epoch=?,temp_number=?,expires_epoch=? "
                      "WHERE payout_id=?", (now, number, now + HOLD_DAYS * DAY, int(payout_id)))
         NotificationManager.add(
             conn, user_id, "payout_temp_account", "임시계좌가 발급되었습니다",
             f"임시계좌 {number}에서 {HOLD_DAYS}일 안에 인출하세요. 인출하려면 {row['currency_code']} 통장이 있어야 하고, "
-            f"인출 시 보관 수수료 {FEE_PERCENT}%가 차감됩니다.",
+            f"인출 시 보관 수수료 {FEE_PERCENT}%가 차감됩니다 (수수료: {fee:,} {row['currency_code']}).",
             action_path=f"/payouts/{payout_id}", payload={"payout_id": int(payout_id), "temp_number": number},
             dedupe_key=f"payout:{payout_id}:temp", now=now)
         return cls.view(cls._row(conn, payout_id))

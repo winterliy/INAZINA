@@ -318,6 +318,20 @@ class OptionManager:
             return False, f"❌ 옵션 작성 중 오류가 발생했습니다: {exc}"
 
     @staticmethod
+    def has_open_exposure(conn, user_id):
+        """True while the user holds or has written an unsettled option, or has cash posted as its collateral.
+
+        Option settlement credits are traced one-to-one against the receiver's wallet rows, so the
+        account they will be paid into has to exist until every contract is settled."""
+        user_id = str(user_id)
+        return bool(conn.execute(
+            "SELECT 1 FROM option_positions p JOIN option_contracts c ON c.contract_id=p.contract_id "
+            "WHERE p.user_id=? AND p.quantity>0 AND c.status='active' "
+            "UNION ALL SELECT 1 FROM option_contracts WHERE writer_id=? AND status='active' "
+            "UNION ALL SELECT 1 FROM option_collateral_cash_lots WHERE writer_id=?",
+            (user_id, user_id, user_id)).fetchone())
+
+    @staticmethod
     def _cash_sources(conn, user_id):
         from managers.currency_manager import CurrencyManager
 

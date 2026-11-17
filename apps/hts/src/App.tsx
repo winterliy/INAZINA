@@ -14,6 +14,9 @@ import { SearchIndicators } from "./SearchIndicators";
 import { ExchangeHeatmap } from "./ExchangeHeatmap";
 import { PortfolioPage } from "./PortfolioPage";
 import { HeatmapPage } from "./HeatmapPage";
+import { PasswordSection } from "./PasswordSection";
+import { NotificationBell } from "./NotificationBell";
+import { PayoutPage } from "./PayoutPage";
 import "./pages.css";
 import type { OwnershipGraphData } from "../../shared/OwnershipGraph";
 
@@ -630,6 +633,7 @@ export default function App() {
     <div className="top-actions">
       {here === "home" && <span className="connection"><i />API {health}</span>}
       <a className="header-action account-action" href="/account" aria-current={here === "account" ? "page" : undefined}>{user.nickname} <small>{htsId || "아이디 만들기"}</small></a>
+      <NotificationBell />
       <button className="icon-button" title={user.delegatedBy ? "관리자 계정으로 돌아갑니다" : "로그아웃"} onClick={() => void logout()}>{user.delegatedBy ? "관리자로 돌아가기" : "로그아웃"}</button>
     </div>
     {user.delegatedBy && <p className="delegation-bar" role="status">관리자 {user.delegatedByName ?? user.delegatedBy}님이 <b>{ROLE_LABEL[user.role]} {user.nickname}</b>(으)로 로그인 중 · 모든 거래는 이 계정 명의로 처리됩니다.</p>}
@@ -641,6 +645,13 @@ export default function App() {
     return null;
   }
   const service = servicePath(location.pathname);
+  const payoutRoute = location.pathname.match(/^\/payouts\/(\d+)\/?$/);
+  if (payoutRoute) return <div className="hts-shell stage payout-shell">
+    <Backdrop />
+    {topbar("account")}
+    <main><PayoutPage payoutId={Number(payoutRoute[1])} /></main>
+    <footer className="hts-footer">© INAZINA. All rights reserved.</footer>
+  </div>;
   if (location.pathname === "/heatmap" || location.pathname === "/heatmap/") return <div className="hts-shell stage heatmap-page-shell">
     <Backdrop />
     {topbar("home")}
@@ -697,6 +708,7 @@ export default function App() {
             <button className="account-save" disabled={settingsBusy || !htsIdInput}>{settingsBusy ? "저장 중…" : htsId ? "아이디 변경" : "아이디 설정"}</button>
           </form>
         </section>
+        {!user.delegatedBy && <PasswordSection />}
         {portfolio?.kyc_profile && <section className="account-section">
           <header><h2>본인 확인 (KYC)</h2><p>국적별 확인 상태입니다.</p></header>
           <dl className="account-facts"><div><dt>상태</dt><dd>{KYC_STATUS[portfolio.kyc_profile.status]}</dd></div><div><dt>위험 등급</dt><dd>{KYC_RISK[portfolio.kyc_profile.risk_tier]}</dd></div><div><dt>만료</dt><dd>{portfolio.kyc_profile.expires_epoch ? date(portfolio.kyc_profile.expires_epoch) : "—"}</dd></div></dl>

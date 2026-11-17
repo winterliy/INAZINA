@@ -696,6 +696,19 @@ def admin_feedback_action(actor, feedback_id, payload):
         if not changed:
             raise ValueError("문의·신고를 찾을 수 없습니다.")
         _audit_db(connection, actor, "site.feedback", {"id": int(feedback_id), "status": status})
+        # The submitter is told when their inquiry/report is read and when it is done (and any reply text).
+        row = connection.execute("SELECT kind,title,discord_id FROM site_feedback WHERE feedback_id=?",
+                                 (int(feedback_id),)).fetchone()
+        if status != "new" and row and connection.execute(
+                "SELECT 1 FROM users WHERE user_id=?", (str(row[2]),)).fetchone():
+            from managers.notification_manager import NotificationManager
+            label = "문의" if row[0] == "contact" else "신고"
+            reply = str(payload.get("reply") or "").strip()[:500]
+            NotificationManager.add(
+                connection, str(row[2]), "feedback",
+                f"{label}가 {'확인되었습니다' if status == 'read' else '처리되었습니다'}",
+                f"「{row[1]}」" + (f"\n답변: {reply}" if reply else ""),
+                dedupe_key=f"feedback:{int(feedback_id)}:{status}:{int(time.time()) // 60}")
     return "✅ 처리 상태를 바꿨습니다."
 
 

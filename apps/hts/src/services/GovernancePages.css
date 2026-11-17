@@ -1,0 +1,131 @@
+/* ---- 주주총회 ---- */
+.gov-page { display: grid; gap: 20px; }
+.gov-page > section { display: grid; gap: 12px; }
+.gov-empty { padding: 28px; border-radius: 20px; background: var(--surface); text-align: center; }
+.gov-muted { color: var(--ink2); font-size: 13px; }
+.gov-badge { display: inline-flex; align-items: center; height: 22px; padding: 0 9px; border-radius: 999px; font-size: 12px; font-weight: 700; }
+.gov-badge.live { color: #fff; background: var(--accent); }
+.gov-badge.pass { color: #1b7a3d; background: rgba(48, 176, 88, .14); }
+.gov-badge.fail { color: var(--up); background: var(--up-soft); }
+.gov-meeting-head { display: grid; gap: 12px; }
+.gov-meeting-head h3 { margin-top: 6px; font-size: 21px; font-weight: 750; letter-spacing: -.02em; }
+.gov-meeting-head h3 small { color: var(--ink2); font-size: 13px; font-weight: 600; }
+.gov-meeting-head dl, .gov-facts { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px 16px; }
+.gov-meeting-head dt, .gov-facts dt { color: var(--ink2); font-size: 12px; }
+.gov-meeting-head dd, .gov-facts dd { margin: 2px 0 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.gov-me { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; border-radius: 14px; background: var(--pearl); }
+.gov-me small { color: var(--ink2); }
+.gov-seg { display: inline-flex; gap: 4px; padding: 3px; border-radius: 12px; background: var(--chip); }
+.gov-seg button { min-height: 34px; padding: 0 16px; border: 0; border-radius: 9px; color: var(--ink); background: transparent; font-size: 14px; }
+.gov-seg button[aria-checked="true"] { color: #fff; background: var(--accent); }
+.gov-seg.vote button.for[aria-checked="true"] { background: #1b7a3d; }
+.gov-seg.vote button.against[aria-checked="true"] { background: var(--up); }
+.gov-seg.vote button.abstain[aria-checked="true"] { background: var(--ink2); }
+.gov-items { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.gov-items > li { display: grid; gap: 10px; padding: 16px; border-radius: 16px; background: var(--pearl); }
+.gov-item-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.gov-item-head b { color: var(--accent); font-size: 13px; }
+.gov-item-head h4 { font-size: 16px; font-weight: 700; }
+.gov-detail { color: var(--ink2); font-size: 13px; line-height: 1.55; white-space: pre-wrap; }
+.gov-tally { display: grid; gap: 6px; }
+.gov-tally small { color: var(--ink2); font-size: 12px; }
+.gov-bar { display: flex; height: 8px; overflow: hidden; border-radius: 999px; background: var(--chip); }
+.gov-bar .for { background: #30b058; } .gov-bar .against { background: var(--up); } .gov-bar .abstain { background: var(--ink2); }
+.gov-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.gov-actions .svc-submit { flex: 1 1 200px; }
+.gov-ghost { min-height: 40px; padding: 0 16px; border-radius: 12px; font-size: 14px; }
+.gov-agenda { display: grid; gap: 10px; margin: 0; padding: 0; border: 0; }
+.gov-agenda legend { margin-bottom: 8px; font-size: 14px; font-weight: 650; }
+.gov-agenda-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 12px; border-radius: 14px; background: var(--pearl); }
+.gov-agenda-row > b { padding-top: 10px; color: var(--accent); font-size: 13px; }
+.gov-agenda-row textarea { grid-column: 2; }
+.gov-agenda-row > button { grid-column: 3; grid-row: 1; }
+.gov-minutes-list { display: grid; gap: 8px; }
+.gov-minutes { border-radius: 18px; background: var(--surface); }
+.gov-minutes summary { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 2px 14px; padding: 16px 20px; cursor: pointer; list-style: none; }
+.gov-minutes summary::-webkit-details-marker { display: none; }
+.gov-minutes summary small { grid-column: 2; color: var(--ink2); font-size: 13px; }
+.gov-date { grid-row: span 2; color: var(--ink2); font-size: 13px; font-weight: 600; }
+.gov-minutes[open] summary { border-bottom: 1px solid var(--line); }
+.gov-minutes-body { display: grid; gap: 12px; padding: 16px 20px 20px; }
+.gov-minutes-body h4 { margin-top: 4px; font-size: 14px; font-weight: 700; }
+.gov-attendees { display: flex; flex-wrap: wrap; gap: 6px; }
+.gov-attendees > span { padding: 4px 10px; border-radius: 999px; background: var(--pearl); font-size: 13px; }
+.gov-attendees small { color: var(--ink2); }
+.gov-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.gov-table th { padding: 8px; color: var(--ink2); font-weight: 600; text-align: left; border-bottom: 1px solid var(--line); }
+.gov-table td { padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.gov-table td small { display: block; margin-top: 2px; color: var(--ink2); font-size: 11px; }
+@media (max-width: 640px) {
+  .gov-minutes summary { grid-template-columns: minmax(0, 1fr); }
+  .gov-minutes summary small { grid-column: 1; }
+  .gov-date { grid-row: auto; }
+  .gov-table thead { display: none; }
+  .gov-table tr { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); padding: 10px 0; border-bottom: 1px solid var(--line); }
+  .gov-table td { padding: 4px; border: 0; }
+  .gov-table td:first-child { grid-column: 1 / -1; }
+}
+
+/* ---- 회생 · 파산 (전자소송 style) ---- */
+.court { --court: #1d3c78; display: grid; gap: 20px; }
+.court-frame { overflow: hidden; border: 1px solid var(--line); border-radius: 16px; background: var(--canvas); }
+.court-head { display: grid; gap: 4px; padding: 22px 26px; color: #fff; background: linear-gradient(120deg, #142c5c, var(--court)); }
+.court-head p { font-size: 12px; font-weight: 700; letter-spacing: .14em; opacity: .75; }
+.court-head h2 { font-size: 24px; font-weight: 800; letter-spacing: -.02em; }
+.court-head span { font-size: 13px; opacity: .8; }
+.court-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; padding: 0; list-style: none; border-bottom: 1px solid var(--line); background: var(--surface); }
+.court-steps li { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 14px 8px; color: var(--ink2); font-size: 14px; font-weight: 600; text-align: center; }
+.court-steps li + li { border-left: 1px solid var(--line); }
+.court-steps b { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; color: var(--ink2); background: var(--chip); font-size: 12px; }
+.court-steps li[aria-current="step"] { color: var(--court); background: var(--canvas); box-shadow: inset 0 -3px 0 var(--court); }
+.court-steps li[aria-current="step"] b, .court-steps li.done b { color: #fff; background: var(--court); }
+.court-body { display: grid; gap: 18px; padding: 26px; }
+.court-title { padding-left: 10px; border-left: 4px solid var(--court); font-size: 17px; font-weight: 750; }
+.court-kinds { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.court-kinds button { display: grid; gap: 8px; align-content: start; min-height: 0; padding: 20px; border: 1px solid var(--line); border-radius: 12px; color: var(--ink); background: var(--canvas); text-align: left; font-size: 14px; }
+.court-kinds button:hover { border-color: var(--court); }
+.court-kinds button[aria-checked="true"] { border-color: var(--court); background: rgba(29, 60, 120, .07); box-shadow: inset 0 0 0 1px var(--court); }
+.court-kinds h4 { color: var(--court); font-size: 17px; font-weight: 800; }
+.court-kinds p { color: var(--ink); font-size: 13px; line-height: 1.55; }
+.court-kinds ul { display: grid; gap: 3px; margin: 0; padding-left: 18px; color: var(--ink2); font-size: 12px; }
+.court-form { width: 100%; border-collapse: collapse; border-top: 2px solid var(--court); font-size: 14px; }
+.court-form th { width: 160px; padding: 14px; color: var(--ink); background: var(--surface); font-weight: 650; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+.court-form th em { color: var(--up); font-style: normal; }
+.court-form td { padding: 12px 14px; border-bottom: 1px solid var(--line); }
+.court-form td small { display: block; margin-top: 4px; color: var(--ink2); font-size: 12px; }
+.court-form textarea { width: 100%; resize: vertical; }
+.court-pre { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; }
+.court-consent { display: flex; gap: 10px; align-items: flex-start; padding: 14px; border-radius: 10px; background: var(--surface); font-size: 13px; line-height: 1.5; }
+.court-nav { display: flex; justify-content: space-between; gap: 8px; }
+.court-primary, .court-secondary { min-width: 120px; min-height: 44px; padding: 0 22px; border-radius: 8px; font-size: 15px; font-weight: 650; }
+.court-primary { border: 0; color: #fff; background: var(--court); }
+.court-primary:disabled { opacity: .4; }
+.court-message { margin: 0 26px 22px; }
+.court-subhead { padding: 16px 22px; border-bottom: 2px solid var(--court); }
+.court-subhead h3 { font-size: 16px; font-weight: 750; }
+.court-cases { width: 100%; border-collapse: collapse; font-size: 14px; }
+.court-cases th { padding: 10px 14px; color: var(--ink2); background: var(--surface); font-weight: 600; text-align: left; }
+.court-cases td { padding: 12px 14px; border-top: 1px solid var(--line); }
+.court-status { padding: 3px 9px; border-radius: 6px; color: var(--court); background: rgba(29, 60, 120, .1); font-size: 12px; font-weight: 700; }
+.court-status.approved { color: #1b7a3d; background: rgba(48, 176, 88, .14); }
+.court-status.rejected { color: var(--up); background: var(--up-soft); }
+@media (max-width: 640px) {
+  .court-head, .court-body { padding: 18px; }
+  .court-steps li { flex-direction: column; gap: 4px; font-size: 12px; }
+  .court-form th { width: 96px; padding: 12px 10px; font-size: 13px; }
+  .court-form td { padding: 10px; }
+  .court-nav button { flex: 1; min-width: 0; }
+}
+
+/* Form fields: the same look as the other service forms (.svc-field) */
+.gov-convene label { display: grid; gap: 6px; color: var(--ink2); font-size: 13px; font-weight: 600; }
+.gov-convene input, .gov-convene select, .gov-convene textarea, .court-form textarea {
+  width: 100%; min-width: 0; padding: 0 14px; border: 0; border-radius: 12px; color: var(--ink); background: var(--field);
+  box-shadow: inset 0 0 0 1px var(--line); font: inherit; font-size: 15px; font-weight: 400;
+}
+.gov-convene input, .gov-convene select { height: 48px; }
+.gov-convene textarea, .court-form textarea { padding: 12px 14px; line-height: 1.5; resize: vertical; }
+.gov-convene input:focus, .gov-convene select:focus, .gov-convene textarea:focus, .court-form textarea:focus { outline: 0; box-shadow: inset 0 0 0 2px var(--accent); }
+.court-form textarea:focus { box-shadow: inset 0 0 0 2px var(--court); }
+.gov-agenda-row input { height: 44px; }
+.gov-agenda-row textarea { font-size: 14px; }

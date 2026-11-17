@@ -49,6 +49,18 @@ class NotificationApiTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             server.change_notifications("alice", "explode")
 
+    def test_the_submitter_is_told_when_their_inquiry_is_read_and_done(self):
+        found = server.submit_feedback({"kind": "contact", "title": "문의드립니다", "body": "내용", "discordId": "alice",
+                                        "email": "a@example.com", "consent": True})
+        server.admin_feedback_action("bob", found["id"], {"status": "read"})
+        server.admin_feedback_action("bob", found["id"], {"status": "done", "reply": "안내드렸습니다."})
+        notes = [n for n in server.user_notifications("alice")["notifications"] if n["kind"] == "feedback"]
+        self.assertEqual([n["title"] for n in notes], ["문의가 처리되었습니다", "문의가 확인되었습니다"])
+        self.assertIn("답변: 안내드렸습니다.", notes[0]["body"])
+        stranger = server.submit_feedback({"kind": "report", "title": "신고", "body": "내용", "discordId": "nobody",
+                                           "email": "a@example.com", "consent": True})
+        server.admin_feedback_action("bob", stranger["id"], {"status": "done"})   # not a player: nothing to notify
+
     def test_unknown_payout_actions_and_other_peoples_payouts_are_refused(self):
         with self.assertRaises(ValueError):
             server.choose_payout("alice", "steal", 1)

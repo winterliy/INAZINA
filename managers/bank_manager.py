@@ -415,7 +415,7 @@ class BankManager:
                     "SELECT account_number,user_id,balance,balance_units,password,principal,created_at,"
                     "early_withdrawal_rate,early_withdrawal_fee_percent,product_code,account_type,"
                     "reference_price,reference_price_minor_units,account_kind,kind_terms,"
-                    "deferred_interest_units,credited_contribution_units,overdraft_units "
+                    "deferred_interest_units,credited_contribution_units,overdraft_units,quote_currency "
                     "FROM accounts.accounts "
                     "WHERE account_number = ? AND user_id = ? AND account_type = 'saving'",
                     (str(account_number), str(user_id)),
@@ -444,6 +444,18 @@ class BankManager:
                 ).fetchone()
                 if wrap_sell:
                     return False, f"❌ 이 계좌 보유자산의 매도 주문 #{wrap_sell['order_id']}이 남아 있습니다. 먼저 취소해주세요."
+                from managers.currency_manager import CurrencyManager
+                from managers.option_manager import OptionManager
+                settles_in = str(source["quote_currency"] or base_currency_code(conn)).upper()
+                if (settles_in == base_currency_code(conn).upper()
+                        and CurrencyManager.home(conn, user_id) != settles_in
+                        and OptionManager.has_open_exposure(conn, user_id)
+                        and not conn.execute(
+                            "SELECT 1 FROM accounts.accounts WHERE user_id=? AND account_number<>? "
+                            "AND account_type='saving' AND COALESCE(quote_currency,?)=?",
+                            (str(user_id), str(account_number), settles_in, settles_in)).fetchone()):
+                    return False, (f"❌ 옵션 계약(보유·작성·담보)이 남아 있어 마지막 {settles_in} 통장은 해지할 수 없습니다. "
+                                   "옵션이 정산된 뒤에 해지해주세요.")
                 if destination_account:
                     destination = conn.execute(
                         "SELECT a.account_number,s.issuer FROM accounts.accounts a "

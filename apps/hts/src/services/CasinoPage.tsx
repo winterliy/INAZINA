@@ -100,8 +100,12 @@ export function CasinoPage({ kit, cash, homeCurrency, homeDigits, accounts }: Se
     <section className="casino-hero">
       <p>INAZINA CASINO</p>
       <h2>오늘의 행운을 시험해 보세요</h2>
-      <label>출금 계좌<select value={source} onChange={(event) => setSource(event.target.value)}><option value="__wallet__">현금 · {won(cash, homeDigits)} {homeCurrency}</option>{eligibleAccounts.map((account) => <option key={account.number} value={account.number}>{account.product_name} · {account.number} · {won(account.balance, homeDigits)} {homeCurrency}</option>)}</select></label>
-      <span>출금 가능 {won(balance, homeDigits)} {homeCurrency}</span>
+      <div className="casino-source" role="radiogroup" aria-label="출금 계좌">
+        <small>출금 계좌</small>
+        <div className="casino-source-list">
+          {[{ value: "__wallet__", name: "현금", sub: "지갑", amount: cash }, ...eligibleAccounts.map((account) => ({ value: account.number, name: account.product_name, sub: account.number, amount: account.balance }))].map((item) => <button type="button" role="radio" aria-checked={source === item.value} key={item.value} className={source === item.value ? "on" : ""} onClick={() => setSource(item.value)}><span>{item.name}<em>{item.sub}</em></span><b>{won(item.amount, homeDigits)} <small>{homeCurrency}</small></b></button>)}
+        </div>
+      </div>
     </section>
 
     <div className="casino-grid">

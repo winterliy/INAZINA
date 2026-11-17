@@ -41,6 +41,10 @@ class NaturalizationTests(unittest.TestCase):
         self.assertEqual(self.db.users.get_user('citizen')['nationality'], '달러국')
         self.assertEqual(self.holdings(), 0)
         self.assertEqual(manager.requests()[0]['status'], 'approved')
+        from managers.notification_manager import NotificationManager
+        with self.db.readonly() as conn:
+            note = NotificationManager.list(conn, 'citizen')[0]
+        self.assertEqual((note['kind'], note['title']), ('naturalization', '귀화 신청이 승인되었습니다'))
         with self.assertRaisesRegex(ValueError, '심사 대기'):
             manager.decide('admin', request_id, True)
 
@@ -49,6 +53,11 @@ class NaturalizationTests(unittest.TestCase):
         request_id = manager.request('citizen', '달러국')
         self.assertIn(f'#{request_id}', AdminCommandsManager(self.bot).execute('admin', '귀화심사', '목록'))
         self.assertIn('거절', manager.decide('admin', request_id, False, '서류 미비'))
+        from managers.notification_manager import NotificationManager
+        with self.db.readonly() as conn:
+            note = NotificationManager.list(conn, 'citizen')[0]
+        self.assertEqual(note['title'], '귀화 신청이 거절되었습니다')
+        self.assertIn('서류 미비', note['body'])
         self.assertEqual(self.db.users.get_user('citizen')['nationality'], '낙원')
         self.assertEqual(self.holdings(), 1)
         with self.assertRaisesRegex(ValueError, '관리자'):
