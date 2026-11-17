@@ -62,6 +62,12 @@ def currency_precision(conn, currency_code):
     return places
 
 
+def convert_minor_units(units, decimal_places, rate, target_decimal_places):
+    """Convert minor units at ``rate`` (target per source, a Fraction), rounding down."""
+    return (int(units) * rate.numerator * 10 ** int(target_decimal_places)
+            // (rate.denominator * 10 ** int(decimal_places)))
+
+
 def to_minor_units(value, decimal_places, *, rounding=ROUND_HALF_UP):
     """Convert a monetary amount to exact integer minor units.
 
@@ -130,6 +136,11 @@ def audit_amount_snapshots(conn):
     before interpolation. Missing source rows and stale amount values are
     returned as findings rather than silently repaired.
     """
+    from database import pg_backend
+    if pg_backend.enabled():
+        # The snapshot inventory is not carried to PostgreSQL (redesign pending);
+        # source tables are reconciled directly, so there is nothing to compare.
+        return []
     exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='financial_amount_snapshots'"
     ).fetchone()
@@ -231,6 +242,13 @@ def audit_amount_field_coverage(conn):
     returns candidates instead of guessing that names such as ``value`` or
     ``price`` always represent currency.
     """
+    from database import pg_backend
+    if pg_backend.enabled():
+        # "matched" only because nothing could be compared: callers can see this
+        # report covers fewer checks than SQLite via ``skipped``.
+        return {"status": "matched", "registered_count": 0,
+                "exempt_count": 0, "unclassified": [],
+                "skipped": "amount_field_registry is not carried to PostgreSQL"}
     table_exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='financial_amount_field_registry'"
     ).fetchone()

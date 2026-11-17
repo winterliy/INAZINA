@@ -129,6 +129,11 @@ def _route_test_database_connections():
 
     def connect(database, *args, **kwargs):
         target = str(database)
+        from database import pg_backend
+        if target == pg_backend.dsn():
+            # DBManager.db_path is the PostgreSQL DSN in this mode. Raw
+            # connections to an already initialized DB must keep its triggers.
+            return pg_backend.connect()
         if target.startswith("file:"):
             target = target[5:].split("?", 1)[0]
         if target.endswith("inazina.db") and Path(target).resolve().parent == Path(DBManager.database_dir).resolve():
@@ -229,6 +234,17 @@ SQLITE_ONLY = {
     "test_currency_account_storage.py::CurrencyAccountStorageTests::test_registered_currency_amount_snapshots_reconcile_to_source_rows": "financial_amount_snapshots is not carried to PostgreSQL (redesign pending)",
     "test_currency_account_storage.py::CurrencyAccountStorageTests::test_market_event_target_snapshots_use_asset_code_and_rowid": "inspects the SQLite-only financial_amount_snapshots table; PostgreSQL inventory redesign is pending",
     "test_financial.py::FinancialTests::test_closed_wallet_period_survives_restart_and_reports_snapshot_drift": "financial_amount_snapshots is not carried to PostgreSQL (redesign pending)",
+    # Startup migrations of legacy SQLite data are not run on PostgreSQL, which starts
+    # from the current schema.
+    "test_currency_account_storage.py::CurrencyAccountStorageTests::test_market_order_reservation_migration_backfills_and_is_idempotent": "exercises SQLite schema migration of legacy data; PostgreSQL starts from the current schema",
+    "test_credit_score.py::CreditScoreTests::test_year_scale_policy_rows_move_to_simulator_defaults": "exercises SQLite startup migration of legacy policy rows; PostgreSQL starts from the current schema",
+    # reads the amount-field registry that is not carried to PostgreSQL
+    "test_currency_account_storage.py::CurrencyAccountStorageTests::test_mode_dependent_price_event_value_is_not_blanket_exempted": "financial_amount_snapshots is not carried to PostgreSQL (redesign pending)",
+    # build a reduced SQLite fixture schema with raw DDL and assert on it
+    "test_web_api.py::WebApiTests::test_admin_countries_returns_auditable_income_source_tax_overrides": "adds legacy columns and tables with raw SQLite DDL (base_rate DEFAULT 3)",
+    "test_web_api.py::WebApiTests::test_admin_users_separates_people_from_company_accounts": "creates SQLite-only company_accounts and country_treasuries fixture tables",
+    "test_web_api.py::WebApiTests::test_audit_and_events_are_read_from_the_database": "relies on a market_events fixture without the target_mode column",
+    "test_web_api.py::WebApiTests::test_dr_web_ledgers_distinguish_holder_basis_from_custody_pool_basis": "creates reduced SQLite depositary-receipt fixture tables",
     # These tests explicitly lock or corrupt a separate SQLite file; PostgreSQL
     # needs its own concurrent-writer and integrity-audit coverage.
     "test_auto_target_market.py::AutoTargetMarketTests::test_busy_price_database_rolls_back_cycle_creation_and_stochastic_state": "uses sqlite3 BEGIN IMMEDIATE on the local database file",

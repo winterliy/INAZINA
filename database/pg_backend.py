@@ -275,6 +275,8 @@ def translate(sql):
         # back after a fixture edit): the same rule with the shared raise_abort().
         # PostgreSQL has no temporary triggers; it lives until dropped or rolled back.
         name, event, table, message = abort.groups()
+        if table in DROPPED:
+            return "SELECT 1 WHERE false", None
         return (f'DROP TRIGGER IF EXISTS "{name}" ON "{target_table(table)}"; '
                 f'CREATE TRIGGER "{name}" BEFORE {event.upper()} ON "{target_table(table)}" '
                 f"FOR EACH ROW EXECUTE FUNCTION raise_abort('{message}')"), None
@@ -314,6 +316,12 @@ def translate(sql):
     for extract in tree.find_all(exp.JSONExtractScalar):
         extract.set("this", exp.cast(extract.this.copy(), "JSON"))
     tree = rewrite(tree)
+    if isinstance(tree, exp.Create) and tree.args.get("exists") and tree.args.get("kind") == "TABLE":
+        created = tree.find(exp.Table)
+        if created is not None and created.name in DROPPED:
+            # Legacy SQLite startup can be invoked again after migration. Do not
+            # recreate obsolete tables which PostgreSQL deliberately removed.
+            return "SELECT 1 WHERE false", None
     for table in tree.find_all(exp.Table):
         if table.name in DROPPED:
             raise sqlite3.OperationalError(f"no such table: {table.name} (not in the PostgreSQL schema)")
@@ -497,7 +505,8 @@ class PgConnection:
 
     def _begin(self, immediate):
         if not self._in_transaction:
-            self._raw.execute("BEGIN")
+            # A snapshot reader must reject writes like SQLite's query_only does.
+            self._raw.execute("BEGIN READ ONLY" if self.readonly else "BEGIN")
             self._in_transaction = True
         if immediate:
             self._raw.execute(WRITER_LOCK)

@@ -9,6 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch
 
 from database import DatabaseManager
+from database import pg_backend
 from database.db_manager import DBManager
 from database.user_db import TREASURY_USER_ID
 from managers.bank_manager import BankManager
@@ -377,13 +378,17 @@ class EconomyTests(unittest.TestCase):
                 "UPDATE market_execution_events SET quantity=2 WHERE execution_key=?",
                 (event["execution_key"],),
             )
-        self.db.assets.execute(
-            "INSERT INTO market_execution_order_baselines VALUES (-1,0,unixepoch())"
-        )
+        if pg_backend.enabled():  # the v1 baseline table was dropped; v2 carries the trigger
+            baselines = "market_execution_order_baselines_v2"
+            insert = (f"INSERT INTO {baselines}(order_id,baseline_filled_quantity,"
+                      "baseline_execution_quantity,captured_epoch) VALUES (-1,0,0,0)")
+        else:
+            baselines = "market_execution_order_baselines"
+            insert = f"INSERT INTO {baselines} VALUES (-1,0,unixepoch())"
+        self.db.assets.execute(insert)
         with self.assertRaisesRegex(sqlite3.IntegrityError, "append-only"):
             self.db.assets.execute(
-                "UPDATE market_execution_order_baselines SET baseline_filled_quantity=1 "
-                "WHERE order_id=-1"
+                f"UPDATE {baselines} SET baseline_filled_quantity=1 WHERE order_id=-1"
             )
 
     def test_leveraged_and_inverse_etfs_follow_exchange_index_daily_base(self):

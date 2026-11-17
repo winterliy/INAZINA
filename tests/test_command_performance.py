@@ -121,6 +121,10 @@ class CommandPerformanceTests(unittest.TestCase):
     def test_reader_sees_committed_cash_while_writer_is_pending(self):
         entered,release=threading.Event(),threading.Event()
         old=self.db.users.get_user('citizen')['cash']
+        # The 2s reader budget is about lock waits, not the one-time cost of
+        # translating these queries for PostgreSQL on a cold process.
+        self.bot.user_mgr.get_total_assets('citizen',False)
+        MoneyDisplay(self.db,'citizen')
         def writer():
             with self.db.atomic() as conn:
                 conn.execute("UPDATE users SET cash=cash+100 WHERE user_id='citizen'")

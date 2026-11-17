@@ -299,8 +299,14 @@ def _rewrite(node):
         return exp.Round(this=exp.Cast(this=node.this, to=exp.DataType.build("numeric")),
                          decimals=exp.Cast(this=node.args["decimals"], to=exp.DataType.build("int"))
                          if node.args.get("decimals") else None)
-    if isinstance(node, exp.Div) and not node.args.get("typed"):
-        # No float cast: bigint/bigint divides like SQLite, NUMERIC divides exactly.
+    if isinstance(node, exp.Div) and not node.meta.get("inazina_scaled"):
+        # PostgreSQL chooses a division scale based on significant digits. The
+        # cash_minor mirror otherwise loses cents when the balance is large.
+        if (any(column.name == "cash_minor" for column in node.find_all(exp.Column))
+                and (_real_expression(node.this) or _real_expression(node.expression))):
+            node.set("this", exp.Paren(this=exp.Add(this=node.this,
+                                                   expression=exp.Literal.number("0." + "0" * 30))))
+        node.meta["inazina_scaled"] = True
         node.set("typed", True)
         return node
     if isinstance(node, exp.Collate):

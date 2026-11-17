@@ -7,7 +7,7 @@ from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
-from database import DatabaseManager
+from database import DatabaseManager, pg_backend
 from database.currency_db import CurrencyDB
 from database.db_manager import DBManager
 from database.user_db import TREASURY_USER_ID
@@ -125,7 +125,8 @@ class CurrencyAccountStorageTests(unittest.TestCase):
             for table in ('tax_bank_remittance_activation', 'tax_bank_remittance_quote_activation'):
                 with self.subTest(table=table), self.assertRaisesRegex(sqlite3.IntegrityError, 'activation is immutable'):
                     conn.execute(f'INSERT OR REPLACE INTO {table}(singleton_id,through_transaction_id) VALUES (1,999)')
-        CurrencyDB().close()
+        if not pg_backend.enabled():  # restarting the SQLite startup path
+            CurrencyDB().close()
 
     def test_financial_reconciliation_reports_dangling_declared_references(self):
         # A legacy or externally edited database can contain violations even

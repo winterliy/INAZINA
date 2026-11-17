@@ -85,6 +85,7 @@ class CountryAccountTests(unittest.TestCase):
                 and row[4] == "user_id" and row[6] == "CASCADE"
                 for row in foreign_keys
             ))
+            connection.execute("DELETE FROM country_treasuries WHERE user_id='5001'")
             connection.execute("DELETE FROM users WHERE user_id='5001'")
             remaining = connection.execute("SELECT 1 FROM web_auth_credentials WHERE user_id='5001'").fetchone()
         self.assertIsNone(remaining)
@@ -119,7 +120,7 @@ class CountryAccountTests(unittest.TestCase):
         finally:
             server._DELEGATION.by = ""
         with closing(server.sqlite3.connect(server.DATABASE)) as connection, connection:
-            connection.execute("CREATE TABLE company (company_code TEXT PRIMARY KEY, status TEXT)")
+            connection.execute("CREATE TABLE IF NOT EXISTS company (company_code TEXT PRIMARY KEY, status TEXT)")
         with self.assertRaisesRegex(ValueError, "국가 ID"):
             server.admin_login_as("admin-1", {"target": "Nowhere"})
 
