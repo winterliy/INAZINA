@@ -5917,6 +5917,12 @@ def main():
     import signal
     if not INTERNAL_TOKEN:
         raise SystemExit("INAZINA_INTERNAL_TOKEN is required")
+    # The managers open <database_dir>/inazina.db. Without this, INAZINA_DB_PATH pointed the server's own
+    # queries at a copy while the managers (and their start-up migrations) still ran on the live database.
+    if DATABASE.name != "inazina.db":
+        raise SystemExit("INAZINA_DB_PATH must point to a file named inazina.db")
+    from database.db_manager import DBManager
+    DBManager.database_dir = DATABASE.parent
     # The Discord bot migrates and backs up the same database at the same moment on start_all;
     # a busy or locked database at startup is retried instead of ending the service.
     for attempt in range(1, 7):

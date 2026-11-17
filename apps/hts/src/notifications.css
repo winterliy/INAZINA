@@ -5,8 +5,11 @@
 .bell-panel { position: absolute; top: calc(100% + 12px); right: 0; z-index: 30; width: min(380px, calc(100vw - 24px)); overflow: hidden; border-radius: 20px; background: var(--canvas); color: var(--ink); box-shadow: 0 12px 40px rgba(0, 0, 0, .16), inset 0 0 0 1px var(--line); }
 .bell-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 10px; }
 .bell-head h2 { margin: 0; font-size: 15px; }
-.bell-clear { border: 0; border-radius: 8px; padding: 4px 8px; background: none; color: var(--ink2); font: inherit; font-size: 12.5px; cursor: pointer; }
-.bell-clear:hover { background: var(--select); color: var(--accent); }
+/* The panel sits inside the black top bar, whose `.top-actions button` rule makes every button light-on-transparent;
+   these selectors out-rank it so the panel keeps its own light surface. */
+.hts-topbar .top-actions .bell-panel button { min-height: 0; text-decoration: none; }
+.hts-topbar .top-actions .bell-panel .bell-clear { border: 0; border-radius: 8px; padding: 4px 8px; background: none; color: var(--ink2); font: inherit; font-size: 12.5px; cursor: pointer; }
+.hts-topbar .top-actions .bell-panel .bell-clear:hover:not(:disabled) { background: var(--select); color: var(--accent); text-decoration: none; }
 .bell-list { display: grid; gap: 2px; max-height: min(60vh, 380px); margin: 0; padding: 0 8px 8px; overflow: auto; list-style: none; }
 .bell-item { position: relative; display: grid; grid-template-columns: 10px 1fr; gap: 10px; padding: 11px 36px 11px 10px; border-radius: 14px; }
 .bell-item:hover { background: var(--select); }
@@ -17,10 +20,11 @@
 .bell-body p { margin: 2px 0 0; color: var(--ink2); font-size: 12.5px; overflow-wrap: anywhere; white-space: pre-line; }
 .bell-body time { display: block; margin-top: 4px; color: var(--ink2); font-size: 11.5px; opacity: .8; }
 .bell-kind { display: inline-block; margin-right: 6px; padding: 1px 7px; border-radius: 999px; background: var(--chip); color: var(--ink2); font-size: 11px; font-weight: 600; vertical-align: 1px; }
-.bell-go { display: inline-flex; align-items: center; min-height: 30px; margin-top: 8px; padding: 0 12px; border: 0; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
-.bell-x { position: absolute; top: 8px; right: 8px; width: 24px; height: 24px; border: 0; border-radius: 50%; background: none; color: var(--ink2); font-size: 16px; line-height: 1; opacity: .4; cursor: pointer; }
-.bell-item:hover .bell-x, .bell-x:focus-visible { opacity: .9; }
-.bell-x:hover { background: var(--chip); }
+.hts-topbar .top-actions .bell-panel .bell-go { display: inline-flex; align-items: center; min-height: 30px; margin-top: 8px; padding: 0 12px; border: 0; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.hts-topbar .top-actions .bell-panel .bell-go:hover:not(:disabled) { background: var(--accent); text-decoration: none; filter: brightness(1.08); }
+.hts-topbar .top-actions .bell-panel .bell-x { position: absolute; top: 8px; right: 8px; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--ink2); font-size: 16px; line-height: 1; opacity: .4; cursor: pointer; }
+.bell-item:hover .bell-x, .hts-topbar .top-actions .bell-panel .bell-x:focus-visible { opacity: .9; }
+.hts-topbar .top-actions .bell-panel .bell-x:hover:not(:disabled) { background: var(--chip); text-decoration: none; }
 .bell-empty { margin: 0; padding: 34px 16px; text-align: center; color: var(--ink2); }
 .bell-button:focus-visible, .bell-clear:focus-visible, .bell-go:focus-visible, .bell-x:focus-visible, .payout-cta:focus-visible, .payout-pill:focus-visible { outline: 2px solid var(--accent-focus, var(--accent)); outline-offset: 2px; }
 @media (prefers-reduced-motion: no-preference) { .bell-panel { animation: bell-pop .18s ease-out; } @keyframes bell-pop { from { opacity: 0; transform: translateY(-6px); } } }
@@ -30,7 +34,8 @@
 .payout-page { width: min(860px, 100%); padding: 24px; border-radius: 24px; background: var(--canvas); box-shadow: inset 0 0 0 1px var(--line); color: var(--ink); }
 .payout-page h1 { margin: 10px 0 4px; font-size: 20px; text-wrap: balance; }
 .payout-state { display: inline-flex; padding: 3px 10px; border-radius: 999px; background: var(--select); color: var(--accent); font-size: 12px; font-weight: 650; }
-.payout-meta { margin: 6px 0 0; color: var(--ink2); }
+.payout-meta { margin: 6px 0 0; color: var(--ink2); font-size: 14px; }
+.payout-actions + .payout-meta { margin-top: 14px; }
 .payout-amount { margin: 14px 0 4px; font-size: 30px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
 .payout-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin-top: 20px; }
 .payout-choice { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 18px; border-radius: 18px; background: var(--surface); }
@@ -45,7 +50,13 @@
 .payout-facts span { display: block; color: var(--ink2); font-size: 12px; }
 .payout-facts b { font-variant-numeric: tabular-nums; }
 .payout-note { margin: 16px 0 0; padding: 12px 14px; border-radius: 14px; background: var(--select); font-size: 13px; }
-.payout-error { margin: 12px 0 0; color: var(--up); }
+.payout-error { margin: 12px 0 0; color: var(--up); font-size: 13px; }
 .payout-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
 .payout-pill { display: inline-flex; align-items: center; min-height: 38px; padding: 0 16px; border: 0; border-radius: 999px; background: var(--chip); color: var(--ink); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
 .payout-pill.primary { background: var(--accent); color: var(--accent-ink); }
+
+/* The HTS-wide `button:hover:not(:disabled)` paints hovered buttons white; keep these buttons' own surfaces. */
+.payout-cta:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
+.payout-cta.alt:hover:not(:disabled) { background: var(--chip); filter: brightness(.97); }
+.payout-pill:hover:not(:disabled) { background: var(--chip); filter: brightness(.97); }
+.payout-pill.primary:hover:not(:disabled) { background: var(--accent); filter: brightness(1.08); }
