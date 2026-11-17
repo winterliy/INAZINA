@@ -90,8 +90,10 @@ def set_policy(conn, actor, nationality, values):
         current[key] = number
     if not 1 <= current["rehab_min_weeks"] <= current["rehab_weeks"] <= current["rehab_max_weeks"]:
         raise ValueError("회생 기간은 최소~최대 주 사이여야 합니다.")
-    conn.execute(f"INSERT OR REPLACE INTO insolvency_policies(nationality,{','.join(FIELDS)},updated_by,updated_epoch) "
-                 f"VALUES (?,{','.join('?' * len(FIELDS))},?,?)",
+    updates = ','.join(f"{field}=excluded.{field}" for field in (*FIELDS, 'updated_by', 'updated_epoch'))
+    conn.execute(f"INSERT INTO insolvency_policies(nationality,{','.join(FIELDS)},updated_by,updated_epoch) "
+                 f"VALUES (?,{','.join('?' * len(FIELDS))},?,?) "
+                 f"ON CONFLICT(nationality) DO UPDATE SET {updates}",
                  (str(nationality), *[current[k] for k in FIELDS], str(actor), int(time.time())))
     return current
 

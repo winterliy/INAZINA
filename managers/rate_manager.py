@@ -253,9 +253,11 @@ class RateManager:
                         (now, country),
                     )
                     conn.execute(
-                        "INSERT OR REPLACE INTO market_rate_curve_history "
+                        "INSERT INTO market_rate_curve_history "
                         "SELECT nationality,benchmark_key,tenor_days,annual_rate,?,? "
-                        "FROM market_rate_curve WHERE nationality=?",
+                        "FROM market_rate_curve WHERE nationality=? "
+                        "ON CONFLICT(nationality,benchmark_key,tenor_days,effective_epoch) DO UPDATE SET "
+                        "annual_rate=excluded.annual_rate,changed_by=excluded.changed_by",
                         (now, str(actor_id), country),
                     )
                 if key in {"base_rate", "legal_max_rate"}:
@@ -1743,7 +1745,9 @@ class RateManager:
                 if updated.rowcount != 1:
                     raise ValueError("해당 국가·지표·만기 구간을 찾을 수 없습니다.")
                 db_conn.execute(
-                    "INSERT OR REPLACE INTO market_rate_curve_history VALUES (?,?,?,?,?,?)",
+                    "INSERT INTO market_rate_curve_history VALUES (?,?,?,?,?,?) "
+                    "ON CONFLICT(nationality,benchmark_key,tenor_days,effective_epoch) DO UPDATE SET "
+                    "annual_rate=excluded.annual_rate,changed_by=excluded.changed_by",
                     (str(nationality), key, tenor, rate, when, str(actor_id)),
                 )
                 self.reprice_floating_products(db_conn, str(nationality))

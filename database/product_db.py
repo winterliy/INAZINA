@@ -1,3 +1,5 @@
+import sqlite3
+
 from .db_manager import DBManager
 from .fractional import initialize_fractional
 
@@ -349,35 +351,59 @@ class ProductDB(DBManager):
                 self.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
     def register_saving(self, code, name, rate, deposit, maturity, cycle, compound, issuer):
-        self.execute(
-            """INSERT OR REPLACE INTO saving
+        self._register_bank_product(
+            code, "saving", "liability", """INSERT INTO saving
                (product_code,name,interest_rate,deposit_amount,maturity_days,interest_cycle,
                 compound_type,issuer,status,quote_currency,product_kind)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', base_currency_code(), 'saving')""",
+            "UPDATE saving SET name=?,interest_rate=?,deposit_amount=?,maturity_days=?,interest_cycle=?, "
+            "compound_type=?,issuer=?,status='active',quote_currency=base_currency_code(),product_kind='saving' "
+            "WHERE product_code=?",
             (code, name, rate, deposit, maturity, cycle, compound, issuer),
+            (name, rate, deposit, maturity, cycle, compound, issuer, code),
         )
 
     def register_liability(
         self, code, name, rate, limit, maturity, cycle, credit, issuer,
         repayment_cycle_seconds=0, repayment_amount=0,
     ):
-        self.execute(
-            "INSERT OR REPLACE INTO liability "
+        self._register_bank_product(
+            code, "liability", "saving", "INSERT INTO liability "
             "(product_code, name, interest_rate, loan_limit, maturity_days, interest_cycle, "
             "min_credit_score, issuer, status, repayment_cycle_seconds, repayment_amount) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+            "UPDATE liability SET name=?,interest_rate=?,loan_limit=?,maturity_days=?,interest_cycle=?, "
+            "min_credit_score=?,issuer=?,status='active',repayment_cycle_seconds=?,repayment_amount=? "
+            "WHERE product_code=?",
             (code, name, rate, limit, maturity, cycle, credit, issuer,
              repayment_cycle_seconds, repayment_amount),
+            (name, rate, limit, maturity, cycle, credit, issuer, repayment_cycle_seconds, repayment_amount, code),
         )
+
+    def _register_bank_product(self, code, table, other_table, insert, update, insert_params, update_params):
+        # A write reservation serializes the cross-table check and both writes.
+        with self.lock, self.conn:
+            if not self.conn.in_transaction:
+                self.conn.execute("BEGIN IMMEDIATE")
+            if self.conn.execute(f"SELECT 1 FROM {other_table} WHERE product_code=?", (code,)).fetchone():
+                raise sqlite3.IntegrityError("저축과 대출 상품은 같은 코드를 사용할 수 없습니다.")
+            exists = self.conn.execute(f"SELECT 1 FROM {table} WHERE product_code=?", (code,)).fetchone()
+            self.conn.execute(update if exists else insert, update_params if exists else insert_params)
 
     def register_investment(
         self, code, name, p_type, supply, price, maturity, manager, ex_id,
         underlying_exchange_id=None, leverage_multiplier=1, rebalance_cycle_seconds=86400,
     ):
-        self.execute("INSERT OR REPLACE INTO investment "
+        self.execute("INSERT INTO investment "
                      "(product_code, name, product_type, total_supply, unit_price, maturity_days, "
                      "manager, exchange_id, status, underlying_exchange_id, leverage_multiplier, "
-                     "rebalance_cycle_seconds, fund_category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)",
+                     "rebalance_cycle_seconds, fund_category) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?) "
+                     "ON CONFLICT(product_code) DO UPDATE SET name=excluded.name,product_type=excluded.product_type, "
+                     "total_supply=excluded.total_supply,unit_price=excluded.unit_price,maturity_days=excluded.maturity_days, "
+                     "manager=excluded.manager,exchange_id=excluded.exchange_id,status=excluded.status, "
+                     "underlying_exchange_id=excluded.underlying_exchange_id, "
+                     "leverage_multiplier=excluded.leverage_multiplier,rebalance_cycle_seconds=excluded.rebalance_cycle_seconds, "
+                     "fund_category=excluded.fund_category",
                      (code, name, p_type, supply, price, maturity, manager, ex_id,
                       underlying_exchange_id, leverage_multiplier, rebalance_cycle_seconds,
                       'equity' if p_type in {'mutual_fund','index_fund'} else None))

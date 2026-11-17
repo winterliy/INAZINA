@@ -772,16 +772,16 @@ CREATE TRIGGER "trg_country_rate_history_events_immutable_delete" BEFORE DELETE 
 CREATE TRIGGER "trg_country_rate_history_events_immutable_update" BEFORE UPDATE ON "country_rate_history_events" FOR EACH ROW EXECUTE FUNCTION raise_abort('country rate history events are append-only');
 CREATE OR REPLACE FUNCTION "trg_country_rate_history_insert_fn"() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    INSERT INTO country_rate_history VALUES (NEW.nationality, 'base_rate', NEW.base_rate, GREATEST(((EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) / 86400.0 + 2440587.5) - 2440587.5) * 86400.0, COALESCE((SELECT MAX(effective_epoch) + 0.000001 FROM country_rate_history WHERE nationality = NEW.nationality AND rate_key = 'base_rate'), 0)), 'sql') ON CONFLICT(nationality, rate_key, effective_epoch) DO UPDATE SET annual_percent = EXCLUDED.annual_percent, changed_by = EXCLUDED.changed_by;
-    INSERT INTO country_rate_history VALUES (NEW.nationality, 'legal_max_rate', NEW.legal_max_rate, GREATEST(((EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) / 86400.0 + 2440587.5) - 2440587.5) * 86400.0, COALESCE((SELECT MAX(effective_epoch) + 0.000001 FROM country_rate_history WHERE nationality = NEW.nationality AND rate_key = 'legal_max_rate'), 0)), 'sql') ON CONFLICT(nationality, rate_key, effective_epoch) DO UPDATE SET annual_percent = EXCLUDED.annual_percent, changed_by = EXCLUDED.changed_by;
+    INSERT INTO country_rate_history VALUES (NEW.nationality, 'base_rate', NEW.base_rate, GREATEST(((EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) / 86400.0 + 2440587.5) - 2440587.5) * 86400.0, COALESCE((SELECT MAX(effective_epoch) + 0.000001 FROM country_rate_history WHERE nationality = NEW.nationality AND rate_key = 'base_rate'), 0)), 'sql') ON CONFLICT(nationality, rate_key, effective_epoch) DO UPDATE SET annual_percent = excluded.annual_percent, changed_by = excluded.changed_by;
+    INSERT INTO country_rate_history VALUES (NEW.nationality, 'legal_max_rate', NEW.legal_max_rate, GREATEST(((EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) / 86400.0 + 2440587.5) - 2440587.5) * 86400.0, COALESCE((SELECT MAX(effective_epoch) + 0.000001 FROM country_rate_history WHERE nationality = NEW.nationality AND rate_key = 'legal_max_rate'), 0)), 'sql') ON CONFLICT(nationality, rate_key, effective_epoch) DO UPDATE SET annual_percent = excluded.annual_percent, changed_by = excluded.changed_by;
     RETURN NULL;
 END $$;
 CREATE TRIGGER "trg_country_rate_history_insert" AFTER INSERT ON "country_currencies" FOR EACH ROW EXECUTE FUNCTION "trg_country_rate_history_insert_fn"();
 CREATE OR REPLACE FUNCTION "trg_country_rate_history_update_fn"() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF (NEW.base_rate IS DISTINCT FROM OLD.base_rate OR NEW.legal_max_rate IS DISTINCT FROM OLD.legal_max_rate) THEN
-        INSERT INTO country_rate_history SELECT NEW.nationality, 'base_rate', NEW.base_rate, GREATEST(((EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) / 86400.0 + 2440587.5) - 2440587.5) * 86400.0, COALESCE((SELECT MAX(effective_epoch) + 0.000001 FROM country_rate_history WHERE nationality = NEW.nationality AND rate_key = 'base_rate'), 0)), 'sql' WHERE NOT NEW.base_rate IS NOT DISTINCT FROM OLD.base_rate ON CONFLICT(nationality, rate_key, effective_epoch) DO UPDATE SET annual_percent = EXCLUDED.annual_percent, changed_by = EXCLUDED.changed_by;
-        INSERT INTO country_rate_history SELECT NEW.nationality, 'legal_max_rate', NEW.legal_max_rate, GREATEST(((EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) / 86400.0 + 2440587.5) - 2440587.5) * 86400.0, COALESCE((SELECT MAX(effective_epoch) + 0.000001 FROM country_rate_history WHERE nationality = NEW.nationality AND rate_key = 'legal_max_rate'), 0)), 'sql' WHERE NOT NEW.legal_max_rate IS NOT DISTINCT FROM OLD.legal_max_rate ON CONFLICT(nationality, rate_key, effective_epoch) DO UPDATE SET annual_percent = EXCLUDED.annual_percent, changed_by = EXCLUDED.changed_by;
+        INSERT INTO country_rate_history SELECT NEW.nationality, 'base_rate', NEW.base_rate, GREATEST(((EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) / 86400.0 + 2440587.5) - 2440587.5) * 86400.0, COALESCE((SELECT MAX(effective_epoch) + 0.000001 FROM country_rate_history WHERE nationality = NEW.nationality AND rate_key = 'base_rate'), 0)), 'sql' WHERE NOT NEW.base_rate IS NOT DISTINCT FROM OLD.base_rate ON CONFLICT(nationality, rate_key, effective_epoch) DO UPDATE SET annual_percent = excluded.annual_percent, changed_by = excluded.changed_by;
+        INSERT INTO country_rate_history SELECT NEW.nationality, 'legal_max_rate', NEW.legal_max_rate, GREATEST(((EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) / 86400.0 + 2440587.5) - 2440587.5) * 86400.0, COALESCE((SELECT MAX(effective_epoch) + 0.000001 FROM country_rate_history WHERE nationality = NEW.nationality AND rate_key = 'legal_max_rate'), 0)), 'sql' WHERE NOT NEW.legal_max_rate IS NOT DISTINCT FROM OLD.legal_max_rate ON CONFLICT(nationality, rate_key, effective_epoch) DO UPDATE SET annual_percent = excluded.annual_percent, changed_by = excluded.changed_by;
     END IF;
     RETURN NULL;
 END $$;
@@ -2303,14 +2303,14 @@ CREATE TRIGGER "trg_market_curve_history_events_immutable_delete" BEFORE DELETE 
 CREATE TRIGGER "trg_market_curve_history_events_immutable_update" BEFORE UPDATE ON "market_rate_curve_history_events" FOR EACH ROW EXECUTE FUNCTION raise_abort('market rate curve history events are append-only');
 CREATE OR REPLACE FUNCTION "trg_market_curve_history_insert_fn"() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
-    INSERT INTO market_rate_curve_history VALUES (NEW.nationality, NEW.benchmark_key, NEW.tenor_days, NEW.annual_rate, COALESCE(NULLIF(NEW.updated_epoch, 0), CAST(EXTRACT(epoch FROM CURRENT_TIMESTAMP) AS BIGINT)), 'sql') ON CONFLICT(nationality, benchmark_key, tenor_days, effective_epoch) DO UPDATE SET annual_rate = EXCLUDED.annual_rate, changed_by = EXCLUDED.changed_by;
+    INSERT INTO market_rate_curve_history VALUES (NEW.nationality, NEW.benchmark_key, NEW.tenor_days, NEW.annual_rate, COALESCE(NULLIF(NEW.updated_epoch, 0), CAST(EXTRACT(epoch FROM CURRENT_TIMESTAMP) AS BIGINT)), 'sql') ON CONFLICT(nationality, benchmark_key, tenor_days, effective_epoch) DO UPDATE SET annual_rate = excluded.annual_rate, changed_by = excluded.changed_by;
     RETURN NULL;
 END $$;
 CREATE TRIGGER "trg_market_curve_history_insert" AFTER INSERT ON "market_rate_curve" FOR EACH ROW EXECUTE FUNCTION "trg_market_curve_history_insert_fn"();
 CREATE OR REPLACE FUNCTION "trg_market_curve_history_update_fn"() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
     IF ((NEW.annual_rate IS DISTINCT FROM OLD.annual_rate) AND (NOT NEW.annual_rate IS NOT DISTINCT FROM OLD.annual_rate)) THEN
-        INSERT INTO market_rate_curve_history VALUES (NEW.nationality, NEW.benchmark_key, NEW.tenor_days, NEW.annual_rate, COALESCE(NULLIF(NEW.updated_epoch, 0), CAST(EXTRACT(epoch FROM CURRENT_TIMESTAMP) AS BIGINT)), 'sql') ON CONFLICT(nationality, benchmark_key, tenor_days, effective_epoch) DO UPDATE SET annual_rate = EXCLUDED.annual_rate, changed_by = EXCLUDED.changed_by;
+        INSERT INTO market_rate_curve_history VALUES (NEW.nationality, NEW.benchmark_key, NEW.tenor_days, NEW.annual_rate, COALESCE(NULLIF(NEW.updated_epoch, 0), CAST(EXTRACT(epoch FROM CURRENT_TIMESTAMP) AS BIGINT)), 'sql') ON CONFLICT(nationality, benchmark_key, tenor_days, effective_epoch) DO UPDATE SET annual_rate = excluded.annual_rate, changed_by = excluded.changed_by;
     END IF;
     RETURN NULL;
 END $$;

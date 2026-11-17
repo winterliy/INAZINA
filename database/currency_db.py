@@ -2549,31 +2549,39 @@ class CurrencyDB(DBManager):
         self.execute('DROP TRIGGER IF EXISTS "trg_country_rate_history_update"')
         self.execute("""CREATE TRIGGER trg_country_rate_history_insert
             AFTER INSERT ON country_currencies BEGIN
-                INSERT OR REPLACE INTO country_rate_history VALUES
+                INSERT INTO country_rate_history VALUES
                     (NEW.nationality,'base_rate',NEW.base_rate,
                      MAX((julianday('now')-2440587.5)*86400.0,COALESCE((
                          SELECT MAX(effective_epoch)+0.000001 FROM country_rate_history
-                         WHERE nationality=NEW.nationality AND rate_key='base_rate'),0)),'sql');
-                INSERT OR REPLACE INTO country_rate_history VALUES
+                         WHERE nationality=NEW.nationality AND rate_key='base_rate'),0)),'sql')
+                    ON CONFLICT(nationality,rate_key,effective_epoch) DO UPDATE SET
+                        annual_percent=excluded.annual_percent,changed_by=excluded.changed_by;
+                INSERT INTO country_rate_history VALUES
                     (NEW.nationality,'legal_max_rate',NEW.legal_max_rate,
                      MAX((julianday('now')-2440587.5)*86400.0,COALESCE((
                          SELECT MAX(effective_epoch)+0.000001 FROM country_rate_history
-                         WHERE nationality=NEW.nationality AND rate_key='legal_max_rate'),0)),'sql');
+                         WHERE nationality=NEW.nationality AND rate_key='legal_max_rate'),0)),'sql')
+                    ON CONFLICT(nationality,rate_key,effective_epoch) DO UPDATE SET
+                        annual_percent=excluded.annual_percent,changed_by=excluded.changed_by;
             END""")
         self.execute("""CREATE TRIGGER trg_country_rate_history_update
             AFTER UPDATE OF base_rate,legal_max_rate ON country_currencies BEGIN
-                INSERT OR REPLACE INTO country_rate_history
+                INSERT INTO country_rate_history
                     SELECT NEW.nationality,'base_rate',NEW.base_rate,
                         MAX((julianday('now')-2440587.5)*86400.0,COALESCE((
                             SELECT MAX(effective_epoch)+0.000001 FROM country_rate_history
                             WHERE nationality=NEW.nationality AND rate_key='base_rate'),0)),'sql'
-                    WHERE NEW.base_rate IS NOT OLD.base_rate;
-                INSERT OR REPLACE INTO country_rate_history
+                    WHERE NEW.base_rate IS NOT OLD.base_rate
+                    ON CONFLICT(nationality,rate_key,effective_epoch) DO UPDATE SET
+                        annual_percent=excluded.annual_percent,changed_by=excluded.changed_by;
+                INSERT INTO country_rate_history
                     SELECT NEW.nationality,'legal_max_rate',NEW.legal_max_rate,
                         MAX((julianday('now')-2440587.5)*86400.0,COALESCE((
                             SELECT MAX(effective_epoch)+0.000001 FROM country_rate_history
                             WHERE nationality=NEW.nationality AND rate_key='legal_max_rate'),0)),'sql'
-                    WHERE NEW.legal_max_rate IS NOT OLD.legal_max_rate;
+                    WHERE NEW.legal_max_rate IS NOT OLD.legal_max_rate
+                    ON CONFLICT(nationality,rate_key,effective_epoch) DO UPDATE SET
+                        annual_percent=excluded.annual_percent,changed_by=excluded.changed_by;
             END""")
         self.execute("""CREATE TABLE IF NOT EXISTS country_rate_history_events (
             event_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2690,16 +2698,20 @@ class CurrencyDB(DBManager):
         self.execute('DROP TRIGGER IF EXISTS "trg_market_curve_history_update"')
         self.execute("""CREATE TRIGGER trg_market_curve_history_insert
             AFTER INSERT ON market_rate_curve BEGIN
-                INSERT OR REPLACE INTO market_rate_curve_history VALUES
+                INSERT INTO market_rate_curve_history VALUES
                     (NEW.nationality,NEW.benchmark_key,NEW.tenor_days,NEW.annual_rate,
-                     COALESCE(NULLIF(NEW.updated_epoch,0),unixepoch()),'sql');
+                     COALESCE(NULLIF(NEW.updated_epoch,0),unixepoch()),'sql')
+                    ON CONFLICT(nationality,benchmark_key,tenor_days,effective_epoch) DO UPDATE SET
+                        annual_rate=excluded.annual_rate,changed_by=excluded.changed_by;
             END""")
         self.execute("""CREATE TRIGGER trg_market_curve_history_update
             AFTER UPDATE OF annual_rate ON market_rate_curve
             WHEN NEW.annual_rate IS NOT OLD.annual_rate BEGIN
-                INSERT OR REPLACE INTO market_rate_curve_history VALUES
+                INSERT INTO market_rate_curve_history VALUES
                     (NEW.nationality,NEW.benchmark_key,NEW.tenor_days,NEW.annual_rate,
-                     COALESCE(NULLIF(NEW.updated_epoch,0),unixepoch()),'sql');
+                     COALESCE(NULLIF(NEW.updated_epoch,0),unixepoch()),'sql')
+                    ON CONFLICT(nationality,benchmark_key,tenor_days,effective_epoch) DO UPDATE SET
+                        annual_rate=excluded.annual_rate,changed_by=excluded.changed_by;
             END""")
         self.execute("""CREATE TABLE IF NOT EXISTS market_rate_curve_history_events (
             event_id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -127,10 +127,18 @@ class ELSDB(DBManager):
             if mismatch:
                 raise RuntimeError('ELS 조건과 준비금의 상품 코드 또는 발행자가 일치하지 않습니다.')
         with self.lock, self.conn:
+            if not self.conn.in_transaction:
+                self.conn.execute("BEGIN IMMEDIATE")
+            duplicate = self.conn.execute(
+                "SELECT t.product_code FROM els_terms t JOIN els_products p "
+                "ON p.product_code=t.product_code LIMIT 1"
+            ).fetchone()
+            if duplicate:
+                raise RuntimeError(f"기존 ELS 상품과 이전 상품이 중복되어 자동 이전할 수 없습니다: {duplicate[0]}")
             reserve_join = ("LEFT JOIN els_reserves r USING(product_code)" if reserves else
                             "LEFT JOIN (SELECT NULL product_code,NULL principal_amount,"
                             "NULL coupon_amount,NULL locked_amount) r USING(product_code)")
-            self.conn.execute(f"""INSERT OR REPLACE INTO els_products(
+            self.conn.execute(f"""INSERT INTO els_products(
                 product_code,issuer_code,face_value,annual_coupon,maturity_days,maturity_level,
                 knock_in_level,subscription_end_epoch,created_epoch,issue_epoch,maturity_epoch,
                 state,knocked_in,final_ratio,final_sequence,settlement_kind,settled_epoch,

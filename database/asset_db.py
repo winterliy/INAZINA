@@ -1033,9 +1033,12 @@ class AssetDB(DBManager):
 
     def register_asset(self, code, name, ex_id, price, asset_type, total_supply=None):
         self.execute(
-            "INSERT OR REPLACE INTO market_assets "
+            "INSERT INTO market_assets "
             "(code, name, exchange_id, price, type, status, is_fixed, total_supply) "
-            "VALUES (?, ?, ?, ?, ?, 'active', 0, ?)",
+            "VALUES (?, ?, ?, ?, ?, 'active', 0, ?) "
+            "ON CONFLICT(code) DO UPDATE SET name=excluded.name,exchange_id=excluded.exchange_id, "
+            "price=excluded.price,type=excluded.type,status=excluded.status, "
+            "is_fixed=excluded.is_fixed,total_supply=excluded.total_supply",
             (code, name, ex_id, price, asset_type, total_supply),
         )
 
