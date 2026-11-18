@@ -97,7 +97,7 @@ class LiquidityManager:
                 assets.setdefault(order["asset_code"], {"buy": [], "sell": []})[order["side"]].append(int(order["price"]))
             for code, _price in self._targets(conn, row["company_code"], cfg["assets"]):
                 assets.setdefault(code, {"buy": [], "sell": []})
-            for code, held in conn.execute("SELECT asset_code, SUM(quantity) FROM user_assets WHERE user_id=? GROUP BY asset_code", (user_id,)):
+            for (code,) in conn.execute("SELECT DISTINCT asset_code FROM user_assets WHERE user_id=?", (user_id,)):
                 assets.setdefault(code, {"buy": [], "sell": []})
             result = []
             for code, quotes in sorted(assets.items()):
