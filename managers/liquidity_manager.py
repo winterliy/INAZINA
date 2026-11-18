@@ -195,8 +195,8 @@ class LiquidityManager:
     @staticmethod
     def _event_running(conn, asset, now):
         return bool(conn.execute(
-            "SELECT 1 FROM market_event_targets WHERE asset_code=? AND state='active' AND start_epoch<=? AND end_epoch>? LIMIT 1",
-            (asset, now, now)).fetchone())
+            "SELECT 1 FROM market_event_targets WHERE asset_code=? AND state='active' AND start_epoch<=? LIMIT 1",
+            (asset, now)).fetchone())      # 'active' lasts until the price engine has finished the event, even past its end time
 
     def withdraw_stale(self, now):
         """Pull quotes that a price jump has made unsafe, every tick (not only when a firm is due to requote):
