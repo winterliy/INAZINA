@@ -134,10 +134,11 @@ def ensure_tables(connection):
         "VALUES (?,?,?,?,?,?,0)", DEFAULT_BOARDS)
     connection.executemany("UPDATE board_boards SET news=1 WHERE board_id=? AND created_epoch=0", [(b,) for b in DEFAULT_NEWS_BOARDS])
     connection.commit()
-    existing = connection.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='board_posts'").fetchone()
-    if not existing:
+    # Column names, not the stored CREATE statement: PostgreSQL answers sqlite_master with a stub that never lists them.
+    post_columns = {row[1] for row in connection.execute("PRAGMA table_info(board_posts)")}
+    if not post_columns:
         connection.executescript(_POSTS_TABLE.format(name="board_posts") + ";" + _POSTS_INDEXES)
-    elif "category_id" not in existing[0]:
+    elif "category_id" not in post_columns:
         _rebuild_posts(connection)
     connection.executescript("""
         CREATE TABLE IF NOT EXISTS board_comments (
