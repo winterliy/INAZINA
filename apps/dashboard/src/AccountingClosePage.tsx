@@ -8,7 +8,7 @@ type Residual = { currency: string; decimalPlaces: number; dust: string; recogni
 type Entry = { clearing_id: number; kind: "recognize" | "transfer"; currency_code: string; decimal_places: number; minor_units: number; recipient_user_id: string | null; actor: string; recorded_epoch: number };
 type Position = { currency: string; decimalPlaces: number; position: number; rate: string; previousRate: string | null; pnl: number; baseline: boolean };
 type RevalRun = { run_id: number; kind: "baseline" | "revalue" | "reverse"; period_key: string; currency_code: string; decimal_places: number; position_minor_units: number; rate_text: string; pnl_base_minor_units: number; actor: string; recorded_epoch: number };
-type Overview = { gates: Gate[]; checked: boolean; closeReady: boolean | null; residuals: Residual[]; history: Entry[]; revaluation: { preview: Position[]; history: RevalRun[]; period: string } };
+type Overview = { gates: Gate[]; checked: boolean; closeReady: boolean | null; residuals: Residual[]; history: Entry[]; revaluation: { preview: Position[]; history: RevalRun[]; period: string }; baselines: { table: string; label: string; rows: number }[] };
 /** A stored rate is an exact fraction ("1/120"); show it with six decimals. */
 const rateValue = (text: string) => { const [top, bottom] = text.split("/"); return (Number(top) / Number(bottom ?? 1)).toFixed(6); };
 const RUN_LABEL = { baseline: "기준 저장", revalue: "평가", reverse: "되돌림" } as const;
@@ -84,6 +84,13 @@ export function AccountingClosePage({ ctx }: { ctx: Ctx }) {
         <tbody>{data.revaluation.history.map((run) => <tr key={run.run_id}><td>{date(run.recorded_epoch)}</td><td>{run.period_key}</td><td>{RUN_LABEL[run.kind]}</td>
           <td>{run.currency_code}</td><td>{amount(run.position_minor_units, run.decimal_places)}</td><td>{rateValue(run.rate_text)}</td>
           <td>{run.pnl_base_minor_units ? run.pnl_base_minor_units.toLocaleString("ko-KR") : "—"}</td></tr>)}</tbody></table></div>}
+    </Card>
+
+    <Card title="기준선 현황" caption="근거가 없어 복원하지 못한 과거는 추정하지 않고 기준선으로 따로 기록합니다. 아래는 그 기록이 얼마나 되는지입니다. 건수가 0이면 그 원장은 처음부터 모두 기록으로 이어져 있습니다.">
+      <div className="scroll-x"><table><thead><tr><th>기준선</th><th>건수</th></tr></thead><tbody>
+        {data.baselines.map((item) => <tr key={item.table}><td>{item.label} <span className="mono cap">{item.table}</span></td>
+          <td>{item.rows > 0 ? <span className="tag warn">{item.rows.toLocaleString("ko-KR")}건</span> : <span className="tag ok">없음</span>}</td></tr>)}
+      </tbody></table></div>
     </Card>
 
     {data.history.length > 0 && <Card title="정리·이전 기록" caption="최근 50건">

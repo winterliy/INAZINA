@@ -1,0 +1,15 @@
+/* 작업 히트맵의 3D 보기: the grid tilts into an isometric view and every active cell rises to a column (--h). */
+.heatmap-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+.heatmap-toggle { min-height: 0; padding: 4px 14px; font-size: 12.5px; }
+.heatmap-stage { overflow-x: auto; padding-block: 2px; transition: padding .5s ease; }
+.heatmap-stage .heatmap { overflow: visible; transition: transform .6s cubic-bezier(.2, .7, .2, 1); transform-origin: 50% 40%; }
+.heatmap-stage .heatmap-row i { position: relative; transition: transform .6s cubic-bezier(.2, .7, .2, 1); }
+.heatmap-stage.iso { padding: 150px 40px 120px; overflow-x: auto; }
+.heatmap-stage.iso .heatmap { transform: rotateX(58deg) rotateZ(-42deg) scale(.82); transform-style: preserve-3d; margin-inline: auto; width: max-content; }
+.heatmap-stage.iso .heatmap-row { transform-style: preserve-3d; }
+.heatmap-stage.iso .heatmap-row i { transform-style: preserve-3d; transform: translateZ(var(--h, 0px)); }
+.heatmap-stage.iso .heatmap-row i::before, .heatmap-stage.iso .heatmap-row i::after { content: ""; position: absolute; background: inherit; filter: brightness(.78); }
+.heatmap-stage.iso .heatmap-row i::before { left: 0; right: 0; top: 100%; height: var(--h, 0px); transform-origin: top; transform: rotateX(-90deg); }
+.heatmap-stage.iso .heatmap-row i::after { top: 0; bottom: 0; left: 100%; width: var(--h, 0px); transform-origin: left; transform: rotateY(90deg); filter: brightness(.62); }
+.heatmap-stage.iso .heatmap-hours { opacity: 0; }
+@media (prefers-reduced-motion: reduce) { .heatmap-stage, .heatmap-stage .heatmap, .heatmap-stage .heatmap-row i { transition: none; } }

@@ -1,9 +1,12 @@
+import { useState, type CSSProperties } from "react";
 import { date } from "./common";
+import "./heatmap-iso.css";
 
 const DAY = 86400;
 const WEEKDAYS = ["일", "월", "화", "수", "목", "금", "토"];
 
-/** 작업 기록: the last seven days by hour, darker where more admin work happened. */
+/** 작업 기록: the last seven days by hour, darker where more admin work happened. One click lifts every cell into a column
+ *  as tall as its activity (an isometric landscape); a second click lays them back down. */
 export function AuditHeatmap({ entries }: { entries: { time: number }[] }) {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -14,14 +17,20 @@ export function AuditHeatmap({ entries }: { entries: { time: number }[] }) {
     if (day >= 0 && day < 7) counts[day][new Date(entry.time * 1000).getHours()] += 1;
   }
   const max = Math.max(1, ...counts.flat());
+  const [iso, setIso] = useState(false);
   return <section className="tile heatmap-tile" aria-label="최근 7일 시간대별 관리자 작업">
-    <p className="tile-label">작업 히트맵 · 최근 7일 (불러온 {entries.length}건 기준)</p>
+    <div className="heatmap-head">
+      <p className="tile-label">작업 히트맵 · 최근 7일 (불러온 {entries.length}건 기준)</p>
+      <button type="button" className="outline heatmap-toggle" aria-pressed={iso} onClick={() => setIso((value) => !value)}>{iso ? "2D로 보기" : "3D로 보기"}</button>
+    </div>
+    <div className={iso ? "heatmap-stage iso" : "heatmap-stage"}>
     <div className="heatmap">
       {counts.map((hours, day) => <div key={day} className="heatmap-row">
         <span>{WEEKDAYS[new Date((first + day * DAY) * 1000).getDay()]}</span>
-        {hours.map((count, hour) => <i key={hour} title={`${hour}시 · ${count}건`} style={{ opacity: count ? 0.25 + 0.75 * count / max : 1 }} className={count ? "on" : undefined} />)}
+        {hours.map((count, hour) => <i key={hour} title={`${hour}시 · ${count}건`} style={{ opacity: count ? 0.25 + 0.75 * count / max : 1, "--h": `${Math.round(count / max * 64)}px` } as CSSProperties} className={count ? "on" : undefined} />)}
       </div>)}
       <div className="heatmap-row heatmap-hours"><span />{[0, 6, 12, 18].map((hour) => <small key={hour} style={{ gridColumn: `${hour + 2} / span 6` }}>{hour}시</small>)}</div>
+    </div>
     </div>
   </section>;
 }

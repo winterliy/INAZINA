@@ -4487,11 +4487,13 @@ def accounting_close_overview(check=False):
     """Residuals and history are quick; the full reconciliation (slow on a big database) only runs when asked."""
     from managers.accounting_journal import AccountingJournal
     from managers.fx_residual import FxResiduals
+    from managers.baseline_report import BaselineReport
     from managers.fx_revaluation import FxRevaluation, period_key
     import time as _time
     with domain().db.readonly() as conn:
         residuals = FxResiduals.report(conn)
         history = FxResiduals.history(conn)
+        baselines = BaselineReport.collect(conn)
         revaluation = {"preview": FxRevaluation.preview(conn), "history": FxRevaluation.history(conn), "period": period_key(_time.time())}
         done_now = {row[0] for row in conn.execute(
             "SELECT currency_code FROM fx_revaluation_runs WHERE kind IN ('baseline','revalue') AND period_key=?", (revaluation["period"],))}
@@ -4512,7 +4514,7 @@ def accounting_close_overview(check=False):
         ] + gates
         close_ready = bool(report.get("close_ready")) and pending == 0 and not open_positions
     return {"gates": gates, "checked": report is not None, "closeReady": close_ready, "residuals": residuals, "history": history,
-            "revaluation": revaluation}
+            "revaluation": revaluation, "baselines": baselines}
 
 
 def accounting_close_action(actor, payload):
