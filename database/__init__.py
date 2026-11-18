@@ -92,9 +92,29 @@ class DatabaseManager:
     def base_currency_code(self):
         return self.currency.base_currency_code()
 
+    @staticmethod
+    def _sync_postgres_schema():
+        """Add tables/columns/indexes/triggers the code defines and the live PostgreSQL lacks (see database/pg_schema_sync.py).
+        Off under pytest (tests build their own schema) and with INAZINA_PG_SCHEMA_SYNC=0; a failure is reported, not fatal."""
+        import os
+        import sys
+        if os.environ.get("INAZINA_PG_SCHEMA_SYNC") == "0" or ("pytest" in sys.modules and os.environ.get("INAZINA_PG_SCHEMA_SYNC") != "1"):
+            return
+        try:
+            from . import pg_schema_sync
+            summary = pg_schema_sync.ensure_current()
+        except Exception as exc:
+            print(f"[PostgreSQL schema sync] {type(exc).__name__}: {exc}", flush=True)
+            return
+        if summary and any(summary.values()):
+            print("[PostgreSQL schema sync] " + ", ".join(f"{kind} {len(items)}" for kind, items in summary.items() if items), flush=True)
+            for error in summary["errors"][:10]:
+                print(f"[PostgreSQL schema sync] could not apply {error}", flush=True)
+
     def _attach_postgres(self):
         """Connect every database module without running the SQLite schema setup:
         PostgreSQL gets its schema from database/postgres/*.sql."""
+        self._sync_postgres_schema()
         for attribute, cls, name in (
                 ("users", UserDB, "users"), ("assets", AssetDB, "assets"), ("products", ProductDB, "product"),
                 ("companies", CompanyDB, "company"), ("accounts", AccountDB, "accounts"), ("pot", PotDB, "pot"),

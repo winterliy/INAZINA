@@ -26,3 +26,9 @@
 - `run.py`가 `.env`를 읽어 봇·웹 API·도구가 같은 백엔드를 쓰게 한다(시작할 때 `Database backend: ...`를 출력한다).
 - 금액 스냅샷 점검은 PostgreSQL에서 원본 표를 직접 점검하는 방식이다. 화면·문서에 이 차이를 알린다.
 - 정리: 리허설용 DB `inazina_rehearsal`, `inazina_dev`를 삭제한다.
+
+## 새 표·컬럼 반영 (전환 뒤 개발 규칙)
+- PostgreSQL은 시작할 때 `database/pg_schema_sync.py`가 현재 코드가 정의하는 레이아웃(코드가 만든 빈 SQLite를 `tools/build_postgres_schema.py`로 변환한 것)과 운영 DB를 비교해 **없는 표·컬럼·인덱스·뷰·트리거만 추가**한다. 기존 표와 데이터는 건드리지 않는다.
+- 스키마를 정의하는 코드(`database/`, `managers/`, `web_api/`, `functions/`)의 지문이 바뀐 시작에서만 실행되고(약 20초), 같으면 쿼리 한 번으로 끝난다. 실패한 문장은 `[PostgreSQL schema sync] could not apply ...`로 출력되고 서버는 계속 뜬다.
+- 미리 보기: `INAZINA_DB_BACKEND=postgres python -m database.pg_schema_sync --dry-run`. 끄기: `INAZINA_PG_SCHEMA_SYNC=0`. 테스트(pytest)에서는 꺼져 있다.
+- 한계: NOT NULL이고 기본값이 없는 새 컬럼은 기존 행 때문에 NULL 허용으로 추가하고, 이름이 없는 외래키는 새로 만들어진 표에만 붙는다. 컬럼 삭제·타입 변경·이름 변경은 자동으로 하지 않으니 수동 마이그레이션이 필요하다.
