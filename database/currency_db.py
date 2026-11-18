@@ -2012,6 +2012,7 @@ class CurrencyDB(DBManager):
                 ("credit_score_policy", "value", "신용점수 정책값"),
                 ("board_post_reactions", "value", "게시글 반응 값(+1/-1)이며 금액이 아님"),
                 ("board_comment_reactions", "value", "댓글 반응 값(+1/-1)이며 금액이 아님"),
+                ("board_news", "target_price", "게시판 뉴스 요청의 목표가. 사건으로 등록될 때 관리자 검증을 거쳐 market_event_targets에서 금액으로 등록되며 원장에 직접 쓰이지 않음"),
                 ("market_events", "target_value", "사건 목표값(변동 % 또는 목표가격). 가격 목표는 market_event_targets에서 금액으로 등록되며 이 값은 원장에 직접 쓰이지 않음"),
                 ("financial_institutions", "operating_cost_spread", "금액이 아닌 비용 가산율"),
                 ("financial_lines", "amount", "이미 회사 원장 통화 최소단위로 저장된 서명 분개액"),
