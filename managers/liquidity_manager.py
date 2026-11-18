@@ -333,7 +333,7 @@ class LiquidityManager:
         values = [int(row[0]) for row in rows if row[0] is not None]
         return sum(values) / len(values) if values else None
 
-    def _signal(self, strategy, asset, price, half, held, held_ratio, cash, equity, now, rng):
+    def _signal(self, strategy, asset, price, half, held_ratio, now, rng):
         """('buy'|'sell'|None, limit price, size basis) for the firm's persona; sizes are fixed by the caller."""
         if strategy == "noise":                       # zero-intelligence with a budget constraint: random side near the touch
             side = rng.choice(("buy", "sell"))
@@ -375,7 +375,7 @@ class LiquidityManager:
             shares = conn.execute("SELECT total_shares FROM company WHERE company_code=?", (asset,)).fetchone()
         if recent and abs(price / recent - 1) > TAKE_MOVE_LIMIT:
             return 0                                   # the market is already moving: do not push it further
-        side, offset = self._signal(provider.get("strategy") or "inventory", asset, price, half, held, held_ratio, cash, equity, now, rng)
+        side, offset = self._signal(provider.get("strategy") or "inventory", asset, price, half, held_ratio, now, rng)
         if side == "buy" and cash > RESERVE_FLOOR * equity:
             limit = max(1, math.ceil(price * (1 + offset)))
             size = int(cash * cfg["take_cash_pct"] // limit)

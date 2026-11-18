@@ -248,7 +248,6 @@ class LiquidityStrategyTests(unittest.TestCase):
         # now the price is 20% away from its last five-minute average (115): every persona rests
         manager2 = LiquidityManager(self.db, self.book)
         self.db.companies.update_share_price("CO", 140)
-        before = len(self.orders(code))
         with mock.patch.dict(PROFILES["high"], {"take_prob": 1.0}):
             manager2.run_cycle(now=self.NOW + 200)
         swept = [limit for side, limit in self.orders(code, "buy") if limit >= 141]
