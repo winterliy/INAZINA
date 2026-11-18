@@ -3,7 +3,7 @@
 export type NavGroup = { id: string; label: string; pages: string[]; external?: { label: string; hash: string } };
 
 export const NAV_GROUPS: NavGroup[] = [
-  { id: "ops", label: "운영", pages: ["overview", "audit", "documents", "commands", "database"] },
+  { id: "ops", label: "운영", pages: ["overview", "audit", "security", "documents", "commands", "database"] },
   { id: "market", label: "시장 · 회계", pages: ["instruments", "finance", "exchanges", "events", "liquidity", "accounting", "close", "credit"] },
   { id: "corp", label: "기업", pages: ["companies", "organizations"], external: { label: "조직도", hash: "#ownership" } },
   { id: "users", label: "사용자", pages: ["users", "naturalization", "court", "feedback", "board"] },

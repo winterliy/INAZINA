@@ -21,6 +21,7 @@ const BoardAdminPage = lazy(() => import("./BoardAdminPage").then((module) => ({
 const DocumentsPage = lazy(() => import("./DocumentsPage").then((module) => ({ default: module.DocumentsPage })));
 const CompliancePage = lazy(() => import("./CompliancePage").then((module) => ({ default: module.CompliancePage })));
 const BanksPage = lazy(() => import("./BanksPage").then((module) => ({ default: module.BanksPage })));
+const SecurityPage = lazy(() => import("./SecurityPage").then((module) => ({ default: module.SecurityPage })));
 const DatabasePage = lazy(() => import("./DatabasePage").then((module) => ({ default: module.DatabasePage })));
 const GambleTile = lazy(() => import("./GambleTile").then((module) => ({ default: module.GambleTile })));
 const EventTimeline = lazy(() => import("./ActivityTiles").then((module) => ({ default: module.EventTimeline })));
@@ -32,7 +33,7 @@ const AccountPage = lazy(() => import("./AccountPage").then((module) => ({ defau
 const OrganizationPage = lazy(() => import("./OrganizationPage").then((module) => ({ default: module.OrganizationPage })));
 const OrganizationOwnershipWindow = lazy(() => import("./OrganizationOwnershipWindow").then((module) => ({ default: module.OrganizationOwnershipWindow })));
 
-type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "feedback" | "board" | "documents" | "credit" | "accounting" | "close" | "events" | "liquidity" | "commands" | "database" | "audit" | "ownership";
+type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "feedback" | "board" | "documents" | "credit" | "accounting" | "close" | "events" | "liquidity" | "commands" | "database" | "security" | "audit" | "ownership";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
 type Instrument = { code: string; name: string; type: string; price: Money; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
 type Exchange = { exchange_id: string; status: string; reason: string | null; trading_halted: number; updated_epoch: number | null; resume_epoch: number | null; circuit_stage: number | null };
@@ -67,6 +68,7 @@ const pages: { id: Page; label: string }[] = [
   { id: "liquidity", label: "유동성" },
   { id: "commands", label: "관리자 명령어" },
   { id: "database", label: "DB 편집" },
+  { id: "security", label: "보안" },
   { id: "audit", label: "작업 기록" },
   { id: "ownership", label: "조직도" },
 ];
@@ -90,6 +92,7 @@ const subtitles: Record<Page, string> = {
   liquidity: "알고리즘으로 호가를 올려 유동성을 공급하는 회사를 넣고 빼고, 유동성 성향을 정합니다.",
   commands: "Discord의 모든 $ 명령어와 도움말을 같은 검증과 기록으로 실행합니다.",
   database: "DB Browser에서 하던 설정 편집을 감사 기록과 함께 처리합니다.",
+  security: "4312·4313 접속 비밀번호를 바꾸고, 접속 시도와 적용 중인 보호를 확인합니다.",
   audit: "모든 관리자 작업과 관리자 계정 로그인의 최근 기록입니다.",
   ownership: "기업 지분과 의결권 관계를 넓은 화면에서 확인합니다.",
 };
@@ -517,6 +520,7 @@ export default function App() {
         </div>}
 
         {page === "database" && <DatabasePage ctx={ctx} />}
+        {page === "security" && <SecurityPage ctx={ctx} />}
 
         {page === "audit" && <Card title="최근 관리자 작업" caption="최근 50건 · 작업 기록은 append-only이며 수정·삭제할 수 없습니다.">
           <div className="scroll-x tall"><table><thead><tr><th>시각</th><th>관리자 ID</th><th>작업</th><th>세부 내용</th></tr></thead><tbody>{audit.map((entry) => <tr key={entry.auditId}>

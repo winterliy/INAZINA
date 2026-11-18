@@ -225,6 +225,15 @@ tr.focus td { background: var(--warn-bg); }
 .settings h3 { margin: 0 0 10px; font-size: 14px; }
 .settings .close { width: 32px; height: 32px; border: 0; border-radius: 8px; background: var(--soft); color: var(--ink); cursor: pointer; }
 .settings footer { font-size: 12px; }
+.settings .security { padding: 16px 22px 22px; border-top: 1px solid var(--line); }
+.settings .security .muted { margin: 0 0 4px; font-size: 12px; color: var(--muted, var(--ink)); opacity: .75; }
+.settings .security form { padding: 12px 0 0; }
+.settings .security label { display: grid; gap: 6px; font-size: 13px; }
+.settings .security label small { opacity: .65; font-size: 11px; }
+.settings .security input { min-height: 36px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--soft); color: var(--ink); font: inherit; }
+.settings .security-row { display: flex; align-items: center; gap: 12px; }
+.settings .security-row span { font-size: 12px; }
+.settings .security-row span[data-state="error"] { color: var(--a1, #e5484d); }
 .themes { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
 .theme-card { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid rgba(127, 127, 127, .3); border-radius: 10px; font: 700 12px var(--mono); text-align: left; cursor: pointer; }
 .theme-card.on { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -311,7 +320,7 @@ th { font: 700 12px var(--mono); text-transform: uppercase; letter-spacing: .04e
 /* A window of model names, a divider, then ▲ ▼; the list steps one line at a time (no scrollbar, no easing). */
 .entry-models { position: absolute; left: clamp(16px, 4vw, 56px); top: 50%; z-index: 2; display: flex; flex-direction: column; gap: 18px; min-width: 120px; transform: translateY(-50%); }
 .entry-model-page { display: flex; flex-direction: column; gap: 18px; }
-.entry-models hr { width: 100%; margin: 0; border: 0; border-top: 1px solid rgba(255, 255, 255, .45); }
+.entry-models hr { width: 100%; margin: 0; border: 0; border-top: 1px solid color-mix(in srgb, var(--entry-fg) 45%, transparent); }
 .entry-model-arrows { display: flex; gap: 14px; }
 .entry-model-arrows[hidden] { display: none; }
 .entry-models .entry-model-arrows button { opacity: 1; font-size: 14px; }
@@ -319,17 +328,17 @@ th { font: 700 12px var(--mono); text-transform: uppercase; letter-spacing: .04e
 .entry-models button, .entry-link, .entry-start { border: 0; background: none; color: inherit; font: 400 15px var(--entry-font); cursor: pointer; }
 .entry-models button { padding: 0; text-align: left; opacity: .6; }
 .entry-models button:hover, .entry-models button[aria-current="true"] { opacity: 1; }
-.entry-btn { width: 100%; padding: 6px 12px; border: 1px solid rgba(255, 255, 255, .3); border-radius: 6px; background: rgba(255, 255, 255, .2); color: inherit; font: 400 15px var(--entry-font); text-align: left; cursor: pointer; }
+.entry-btn { width: 100%; padding: 6px 12px; border: 1px solid color-mix(in srgb, var(--entry-fg) 30%, transparent); border-radius: 6px; background: color-mix(in srgb, var(--entry-fg) 20%, transparent); color: inherit; font: 400 15px var(--entry-font); text-align: left; cursor: pointer; }
 .entry-panel { position: absolute; right: clamp(12px, 3vw, 32px); top: 50%; z-index: 2; display: grid; gap: 26px; width: 200px; padding: 16px; transform: translateY(-50%); }
 .entry-panel h2 { margin: 0 0 10px; font: 400 15px var(--entry-font); }
 .entry-panel section { display: grid; gap: 8px; }
-.entry-btn:hover, .entry-btn[aria-pressed="true"] { background: rgba(255, 255, 255, .32); }
-.entry-panel input[type="range"] { width: 100%; height: 6px; margin: 4px 0; appearance: none; border-radius: 99px; background: rgba(255, 255, 255, .2); accent-color: #fff; }
-.entry-panel input[type="range"]::-webkit-slider-thumb { width: 18px; height: 18px; appearance: none; border-radius: 50%; background: #fff; }
-.entry-panel input[type="range"]::-moz-range-thumb { width: 18px; height: 18px; border: 0; border-radius: 50%; background: #fff; }
-.entry-panel output { color: rgba(255, 255, 255, .6); font-size: 15px; }
-.entry-link { justify-self: start; margin-top: -14px; padding: 0; color: rgba(255, 255, 255, .6); text-decoration: underline; }
-.entry-link:hover { color: #fff; }
+.entry-btn:hover, .entry-btn[aria-pressed="true"] { background: color-mix(in srgb, var(--entry-fg) 32%, transparent); }
+.entry-panel input[type="range"] { width: 100%; height: 6px; margin: 4px 0; appearance: none; border-radius: 99px; background: color-mix(in srgb, var(--entry-fg) 20%, transparent); accent-color: var(--entry-fg); }
+.entry-panel input[type="range"]::-webkit-slider-thumb { width: 18px; height: 18px; appearance: none; border-radius: 50%; background: var(--entry-fg); }
+.entry-panel input[type="range"]::-moz-range-thumb { width: 18px; height: 18px; border: 0; border-radius: 50%; background: var(--entry-fg); }
+.entry-panel output { color: color-mix(in srgb, var(--entry-fg) 60%, transparent); font-size: 15px; }
+.entry-link { justify-self: start; margin-top: -14px; padding: 0; color: color-mix(in srgb, var(--entry-fg) 60%, transparent); text-decoration: underline; }
+.entry-link:hover { color: var(--entry-fg); }
 .entry-start { position: absolute; left: 50%; bottom: clamp(20px, 6vh, 56px); z-index: 2; padding: 8px 14px; transform: translateX(-50%); font-size: 17px; letter-spacing: .04em; }
 .entry-start .cursor { background: currentColor; }
 .entry-start:hover { text-decoration: underline; }
@@ -345,16 +354,53 @@ body.entering .term:not(.entry-term) { visibility: hidden; }
   .entry-panel { top: 12px; right: 8px; transform: none; width: 160px; gap: 14px; padding: 8px; font-size: 13px; }
 }
 
-/* Password box: a black TUI window with an inner line in the stage colour and a blinking cursor. */
-.entry-prompt { position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; }
+/* Password box: a TUI window filled with the theme's accent colour, with its inner line, text
+   and blinking cursor in the stage colour (Laplace Blue: white box, blue line). */
+.entry-prompt { --prompt-bg: var(--accent); --prompt-ink: var(--entry-bg); --prompt-line: var(--entry-bg); position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; }
 .entry-prompt[hidden] { display: none; }
 /* Fixed size: typing never resizes the box; a long entry scrolls its oldest * out on the left. */
-.entry-prompt-box { position: relative; width: min(420px, calc(100% - 32px)); height: 66px; margin: 0; padding: 22px 26px; overflow: hidden; background: #000; color: #fff;
-  box-shadow: inset 0 0 0 6px #000, inset 0 0 0 8px var(--entry-bg); font: 400 16px/1.4 var(--entry-font); }
+.entry-prompt-box { position: relative; width: min(420px, calc(100% - 32px)); height: 66px; margin: 0; padding: 22px 26px; overflow: hidden; background: var(--prompt-bg); color: var(--prompt-ink);
+  box-shadow: inset 0 0 0 6px var(--prompt-bg), inset 0 0 0 8px var(--prompt-line); font: 400 16px/1.4 var(--entry-font); }
 .entry-prompt-box label { display: flex; align-items: center; gap: 0; height: 22px; white-space: pre; cursor: text; }
-.entry-prompt-box .cursor { flex: none; width: 9px; height: 18px; margin-left: 2px; background: #fff; }
+.entry-prompt-box .cursor { flex: none; width: 9px; height: 18px; margin-left: 2px; background: var(--prompt-ink); }
 .entry-mask { flex: 0 1 auto; min-width: 0; overflow: hidden; direction: rtl; letter-spacing: .1em; }
+/* Deep Dark: the lobby controls use plain light greys (no colour-mixing), so they never vanish on the black. */
+:root[data-theme="deep-dark"] .entry-btn { border-color: #9a9a9a; background: #2b2b2b; }
+:root[data-theme="deep-dark"] :is(.entry-btn:hover, .entry-btn[aria-pressed="true"]) { background: #4a4a4a; }
+:root[data-theme="deep-dark"] .entry-panel input[type="range"] { background: #9a9a9a; }
+:root[data-theme="deep-dark"] .entry-panel input[type="range"]::-webkit-slider-thumb { background: #ffffff; box-shadow: 0 0 0 1px #000000; }
+:root[data-theme="deep-dark"] .entry-panel input[type="range"]::-moz-range-thumb { background: #ffffff; box-shadow: 0 0 0 1px #000000; }
+:root[data-theme="deep-dark"] :is(.entry-panel output, .entry-link) { color: #bdbdbd; }
+:root[data-theme="deep-dark"] .entry-models hr { border-top-color: #9a9a9a; }
+
+/* Hidden login log (0154, then Shift+Space+Esc+Enter): the password box's TUI look, scrolled. */
+.entry-log { position: absolute; inset: 0; z-index: 6; display: grid; place-items: center; background: color-mix(in srgb, var(--entry-bg) 70%, transparent); }
+.entry-log[hidden] { display: none; }
+.entry-log-box { display: grid; grid-template-rows: auto 1fr; width: min(860px, calc(100% - 32px)); height: min(520px, calc(100% - 48px)); padding: 18px 22px;
+  background: var(--entry-bg); color: var(--entry-fg); box-shadow: inset 0 0 0 6px var(--entry-bg), inset 0 0 0 8px var(--accent); font: 400 13px/1.5 var(--entry-font); }
+.entry-log-box header { display: flex; justify-content: space-between; padding: 0 0 10px; }
+.entry-log-box header span { opacity: .6; }
+.entry-log-body { overflow: auto; }
+.entry-log-body table { width: 100%; border-collapse: collapse; }
+.entry-log-body th { position: sticky; top: 0; background: var(--entry-bg); text-align: left; font-weight: 400; opacity: .6; }
+.entry-log-body :is(th, td) { padding: 4px 10px 4px 0; white-space: nowrap; }
+.entry-log-body td:nth-child(4) { white-space: pre; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.entry-log-body tr.fail td:last-child { color: var(--accent); }
+.entry-log-body i { opacity: .6; }
 .entry-secret { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+:root[data-theme="deep-dark"] {  /* black and white only, CLAUDE/CODEX included */
+  --panel: #000000; --soft: #000000; --line: #ffffff; --ink-2: #ffffff; --muted: #ffffff;
+  --accent: #ffffff; --ok: #ffffff; --warn: #ffffff; --bad: #ffffff;
+  --claude: #ffffff; --codex: #ffffff; --claude-bg: #000000; --codex-bg: #000000;
+  --ok-bg: #000000; --warn-bg: #000000; --bad-bg: #000000;
+  --chrome: #000000; --chrome-ink: #ffffff; --chrome-line: #ffffff; --desk: #000000;
+}
+:root[data-theme="deep-dark"] ::selection { background: #ffffff; color: #000000; }
+/* Chips that printed white on an author colour now print black on white. */
+:root[data-theme="deep-dark"] :is(.avatar, .type-review, .status-simulator-assumption),
+:root[data-theme="deep-dark"][data-chat="log"] .bubble header b { color: #000000; }
+:root[data-theme="deep-dark"] .bubble { border-color: #ffffff; }
 
 /* Laplace Blue (the entry screen's colours): every text is white on #007BE5, whatever its
    rank; only CLAUDE/CODEX keep their own colours. Nothing is black. Where a chip used to print

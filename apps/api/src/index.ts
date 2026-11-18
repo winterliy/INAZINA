@@ -7,8 +7,10 @@ import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { resolve, join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { landingPage, type LandingReason } from "./landing.js";
+import { browserAccess } from "./browserAccess.js";
 
 const projectRoot = findProjectRoot();
+const access = browserAccess(projectRoot);
 
 try {
   process.loadEnvFile(resolve(projectRoot, ".env"));
@@ -405,9 +407,9 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
         send(response, 400, { error: "invalid_target" });
         return;
       }
-      const actual = createHash("sha256").update(password).digest();
-      const expected = Buffer.from(browserPasswordHash, "hex");
-      if (actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
+      const passed = access.verify(password);
+      access.record(key, passed);
+      if (!passed) {
         browserLoginAttempts.set(key, { count: attempt && attempt.resetAt > now ? attempt.count + 1 : 1, resetAt: attempt && attempt.resetAt > now ? attempt.resetAt : now + 10 * 60_000 });
         redirectBrowserToMain(response);
         return;
@@ -1331,7 +1333,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
   }
 
   // Product, country, exchange, user-detail, help and bot-job administration.
-  const adminMatch = url.pathname.match(/^\/api\/admin\/((?:products|countries|exchanges|help|bot-jobs|user|companies|organizations|warnings|feedback|court|naturalization|banks|logs|compliance|bank-journal|dr)(?:\/[^/]+){0,2})$/);
+  const adminMatch = url.pathname.match(/^\/api\/admin\/((?:products|countries|exchanges|help|bot-jobs|user|companies|organizations|warnings|feedback|court|naturalization|banks|logs|compliance|bank-journal|dr|security)(?:\/[^/]+){0,2})$/);
   if (adminMatch) {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });

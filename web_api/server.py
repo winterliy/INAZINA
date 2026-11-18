@@ -24,10 +24,6 @@ from urllib.parse import urlsplit, parse_qs, unquote
 ROOT = Path(__file__).resolve().parents[1]
 DATABASE = Path(os.environ.get("INAZINA_DB_PATH", ROOT / "database" / "inazina.db")).resolve()
 INTERNAL_TOKEN = os.environ.get("INAZINA_INTERNAL_TOKEN", "")
-BROWSER_PASSWORD_SHA256 = os.environ.get(
-    "INAZINA_BROWSER_PASSWORD_SHA256",
-    "04b2ad6979a436129b5f30cd00a3804bd87fc8bef73b0bb38640bf49a8479c64",
-)
 _browser_login_attempts = {}
 PORT = int(os.environ.get("INAZINA_PYTHON_PORT", "4313"))
 MAX_HTTP_THREADS = max(1, min(int(os.environ.get("INAZINA_MAX_HTTP_THREADS", "16")), 64))
@@ -4483,6 +4479,22 @@ def update_admin_user(actor, user_id, changes):
     return domain().admin_control.user(actor, user_id, changes)
 
 
+def security_overview():
+    from web_api import security_store
+    return security_store.overview()
+
+
+def security_action(actor, payload):
+    """Change the browser-access password of the API (4312) or data service (4313) port."""
+    from web_api import security_store
+    if payload.get("action") != "browser_password" or set(payload) - {"action", "service", "current", "password"}:
+        raise ValueError("요청을 확인해주세요.")
+    service = str(payload.get("service", ""))
+    security_store.set_password(service, str(payload.get("current", "")), payload.get("password"), actor)
+    audit_admin_access(actor, "security.browser_password", {"service": service})
+    return "비밀번호를 변경했습니다. 바로 적용됩니다."
+
+
 def accounting_close_overview(check=False):
     """Residuals and history are quick; the full reconciliation (slow on a big database) only runs when asked."""
     from managers.accounting_journal import AccountingJournal
@@ -4900,6 +4912,12 @@ class Handler(BaseHTTPRequestHandler):
                         "result_count": len(users),
                     })
                     self.send_json(200, {"users": users})
+            elif path == "/internal/admin/security":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    self.send_json(200, security_overview())
             elif path == "/internal/admin/accounting-close":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -5799,6 +5817,14 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     success, message = set_market_state(user["userId"], payload)
                     self.send_json(200 if success else 400, {"success": success, "message": message})
+            elif path == "/internal/admin/security":
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    try:
+                        self.send_json(200, {"success": True, "message": security_action(user["userId"], payload)})
+                    except ValueError as exc:
+                        self.send_json(400, {"success": False, "message": str(exc)})
             elif path == "/internal/admin/accounting-close":
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
@@ -5994,11 +6020,13 @@ class Handler(BaseHTTPRequestHandler):
             payload = parse_qs(self.rfile.read(length).decode("utf-8"), keep_blank_values=True)
             password = payload.get("password", [""])[0]
             target = payload.get("target", [""])[0]
-            actual = hashlib.sha256(password.encode("utf-8")).hexdigest()
         except (ValueError, UnicodeDecodeError):
             self.send_json(400, {"error": "invalid_request"})
             return
-        if not hmac.compare_digest(actual, BROWSER_PASSWORD_SHA256):
+        from web_api import security_store
+        passed = security_store.verify("python", password)
+        security_store.log_attempt("python", address, passed)
+        if not passed:
             _browser_login_attempts[address] = (count + 1 if reset_at > now else 1,
                                                 reset_at if reset_at > now else now + 600)
             self.redirect_browser_to_main()

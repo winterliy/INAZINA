@@ -12,6 +12,10 @@ export const THEMES: Theme[] = [
   // accents, author colours and states stay readable on the blue.
   theme("laplace-blue", "Laplace Blue", false, ["#007be5", "#ffffff", "#ffffff", "#0a5fb4"],
     "003d73 ffb4b4 a6ffcb ffe486 d6ecff ffc2f1 9ff4ff eaf4ff 7cbcf5 ffcaca c4ffdb fff0b3 ebf6ff ffd6f6 c4f9ff ffffff"),
+  // Black and white only: every colour, even the ANSI ones, is white on pure black
+  // (style.css takes the greys and author colours to white or black too).
+  theme("deep-dark", "Deep Dark", false, ["#000000", "#ffffff", "#ffffff", "#ffffff"],
+    "000000 " + Array(15).fill("ffffff").join(" ")),
   theme("dracula", "Dracula", false, ["#282a36", "#f8f8f2", "#f8f8f2", "#44475a"],
     "21222c ff5555 50fa7b f1fa8c bd93f9 ff79c6 8be9fd f8f8f2 6272a4 ff6e6e 69ff94 ffffa5 d6acff ff92df a4ffff ffffff"),
   theme("tokyonight", "TokyoNight", false, ["#1a1b26", "#c0caf5", "#c0caf5", "#33467c"],

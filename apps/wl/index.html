@@ -37,6 +37,16 @@
       <section class="rows" id="setting-rows"></section>
       <footer><span class="muted">이 브라우저에만 저장됩니다.</span><button type="button" id="settings-reset" class="reload">기본값으로</button></footer>
     </form>
+    <section class="security">
+      <h3>보안</h3>
+      <p class="muted">입장 비밀번호와 로그인 시도 확인 코드를 바꿉니다. 이 서버에 저장되어 모든 브라우저에 적용됩니다.</p>
+      <form id="security-form" autocomplete="off">
+        <label>현재 입장 비밀번호<input type="password" name="current" autocomplete="off" required></label>
+        <label>새 입장 비밀번호 <small>8~64자 · 비우면 그대로</small><input type="password" name="entry" autocomplete="new-password" minlength="8" maxlength="64"></label>
+        <label>새 로그인 시도 확인 코드 <small>숫자 4~8자리 · 비우면 그대로</small><input name="code" inputmode="numeric" pattern="[0-9]{4,8}" maxlength="8" autocomplete="off"></label>
+        <div class="security-row"><button type="submit" class="reload">변경</button><span id="security-msg" role="status"></span></div>
+      </form>
+    </section>
   </dialog>
   <script type="module" src="/src/main.ts"></script>
 </body>

@@ -29,3 +29,8 @@ database/wl-entry-log.jsonl
 
 # Wide-Learning agent notes stay local
 docs/wide-learning/
+
+# Access passwords and attempt logs: hashes never go into git
+/database/security.json
+/database/wl-security.json
+/database/browser-access.log.jsonl

@@ -285,13 +285,30 @@ dialog.addEventListener("click", (event) => {
   else if (event.target === dialog) dialog.close();
 });
 dialog.addEventListener("change", (event) => {
+  if ((event.target as Element).closest("#security-form")) return;  // the password fields are not display settings
   const input = event.target as HTMLInputElement;
   const key = input.name as keyof Settings;
   const raw = input.value;
   update({ [key]: typeof DEFAULTS[key] === "boolean" ? raw === "true" : typeof DEFAULTS[key] === "number" ? Number(raw) : raw });
 });
 document.getElementById("settings-reset")!.addEventListener("click", () => update({ ...DEFAULTS }));
-function openSettings() { renderSettings(); dialog.showModal(); }
+// Passwords live on the server (never in this browser): the form posts them and clears itself.
+const securityForm = document.getElementById("security-form") as HTMLFormElement;
+const securityMessage = document.getElementById("security-msg")!;
+securityForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const field = (name: string) => (securityForm.elements.namedItem(name) as HTMLInputElement).value;
+  securityMessage.textContent = "";
+  try {
+    const reply = await fetch("/wl-api/security", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ current: field("current"), entryPassword: field("entry"), logCode: field("code") }) });
+    const result = await reply.json() as { ok: boolean; message?: string };
+    securityMessage.textContent = result.ok ? "바꿨습니다. 바로 적용됩니다." : result.message ?? "바꾸지 못했습니다.";
+    securityMessage.dataset.state = result.ok ? "ok" : "error";
+    if (result.ok) securityForm.reset();
+  } catch { securityMessage.textContent = "서버에 연결하지 못했습니다."; securityMessage.dataset.state = "error"; }
+});
+function openSettings() { renderSettings(); securityForm.reset(); securityMessage.textContent = ""; dialog.showModal(); }
 document.getElementById("settings")!.addEventListener("click", openSettings);
 view.addEventListener("click", (event) => { if ((event.target as Element).closest("[data-open-settings]")) openSettings(); });
 

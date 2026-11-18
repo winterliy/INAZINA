@@ -1,0 +1,8 @@
+/* 보안: tiles and the protection facts. */
+.security-tiles .tile.warn { box-shadow: inset 0 0 0 1px var(--warn-ink, #a24400); }
+.security-facts { display: grid; margin: 0; }
+.security-facts > div { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 4px 24px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.security-facts > div:last-child { border-bottom: 0; }
+.security-facts dt { color: var(--ink2); font-size: 13px; }
+.security-facts dd { margin: 0; }
+@media (max-width: 600px) { .security-facts > div { grid-template-columns: 1fr; } }

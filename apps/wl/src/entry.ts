@@ -1,57 +1,63 @@
 // Entry screen: a terminal window showing a turning 3D model drawn in ASCII
 // (Three.js AsciiEffect, as in the "3D ASCII Model Viewer" Figma Make file),
-// with a model list, a control panel and "enter to start". Colours are always inverted.
+// with a model list, a control panel and "enter to start", in the current theme's colours.
 // Three.js is loaded on demand, and everything is disposed on entering.
 
-type Model = { id: string; name: string; file: string; credit: string };
+
+// A model is either a .glb file or a procedural scene from entry-scenes.ts.
+type Model = { id: string; name: string; credit: string; file?: string; scene?: keyof typeof import("./entry-scenes") };
 
 const MODELS: Model[] = [
-  { id: "suzanne", name: "Suzanne", file: "/models/suzanne.glb", credit: "Suzanne — Blender Foundation, CC0 1.0" },
-  { id: "fox", name: "Fox", file: "/models/fox.glb", credit: "Fox — tomkranis; glTF by @AsoboStudio and @scurest, CC BY 4.0" },
-  { id: "lantern", name: "Lantern", file: "/models/lantern.glb", credit: "Lantern — Microsoft, CC0 1.0" },
   { id: "avocado", name: "Avocado", file: "/models/avocado.glb", credit: "Avocado — Microsoft, CC0 1.0" },
-  { id: "boombox", name: "Boom Box", file: "/models/boombox.glb", credit: "Boom Box — Microsoft, CC0 1.0" },
   { id: "teacup", name: "Teacup", file: "/models/teacup.glb", credit: "Teacup — Polyhaven.com and Eric Chadwick, CC0 1.0" },
   { id: "fish", name: "Fish", file: "/models/fish.glb", credit: "Barramundi Fish — Microsoft, CC0 1.0" },
   { id: "waterbottle", name: "Bottle", file: "/models/waterbottle.glb", credit: "Water Bottle — Microsoft, CC0 1.0" },
-  { id: "corset", name: "Corset", file: "/models/corset.glb", credit: "Corset — Microsoft / UX3D, CC0 1.0" },
-  { id: "shoe", name: "Shoe", file: "/models/shoe.glb", credit: "Materials Variants Shoe — Shopify, CC BY 4.0" },
   { id: "chair", name: "Chair", file: "/models/chair.glb", credit: "Chair Damask Purplegold — Eric Chadwick / Wayfair, CC BY 4.0" },
-  { id: "sofa", name: "Sofa", file: "/models/sofa.glb", credit: "Glam Velvet Sofa — Eric Chadwick / Wayfair, LLC, CC BY 4.0" },
   { id: "barnlamp", name: "Barn Lamp", file: "/models/barnlamp.glb", credit: "Anisotropy Barn Lamp — Eric Chadwick / Wayfair, LLC, CC BY 4.0" },
-  { id: "dragon", name: "Dragon", file: "/models/dragon.glb", credit: "Dragon — Stanford 3D Scanning Repository (glTF: Khronos)" },
-  { id: "helmet", name: "Helmet", file: "/models/helmet.glb", credit: "Damaged Helmet — theblueturtle_, CC BY-NC 4.0" },
-  { id: "brainstem", name: "BrainStem", file: "/models/brainstem.glb", credit: "BrainStem — Smith Micro Software (Poser)" },
-  { id: "cesiumman", name: "Walker", file: "/models/cesiumman.glb", credit: "Cesium Man — Cesium, CC BY 4.0" },
-  { id: "truck", name: "Milk Truck", file: "/models/truck.glb", credit: "Cesium Milk Truck — Cesium, CC BY 4.0" },
-  { id: "toycar", name: "Toy Car", file: "/models/toycar.glb", credit: "Toy Car — Guido Odendahl, CC0 1.0" },
-  { id: "camera", name: "Camera", file: "/models/camera.glb", credit: "Antique Camera — UX3D, CC0 1.0" },
   { id: "fridge", name: "Fridge", file: "/models/fridge.glb", credit: "Commercial Refrigerator — Eric Chadwick / Wayfair, CC BY 4.0" },
   { id: "sheenchair", name: "Armchair", file: "/models/sheenchair.glb", credit: "Sheen Chair — Eric Chadwick / Wayfair, CC0 1.0" },
   { id: "pouf", name: "Pouf", file: "/models/pouf.glb", credit: "Specular Silk Pouf — Eric Chadwick / Wayfair, CC BY 4.0" },
   { id: "olives", name: "Olives", file: "/models/olives.glb", credit: "Iridescent Dish with Olives — Wayfair, CC BY 4.0" },
+  { id: "tree", name: "Xmas Tree", scene: "christmasTree", credit: "Xmas Tree — after dwcminh.ascii \"ASCII Christmas Tree\"" },
+  { id: "bouquet", name: "Bouquet", scene: "roseBouquet", credit: "Bouquet — after dwcminh.ascii rose bouquet" },
+  { id: "heart", name: "Heart", scene: "heart", credit: "Heart — after jin_22ee ASCII reels" },
+  { id: "ocean", name: "Ocean", scene: "ocean", credit: "Ocean — after jin_22ee ASCII reels" },
+  { id: "blackhole", name: "Black Hole", scene: "blackHole", credit: "Black Hole — after jin_22ee ASCII reels" },
+  { id: "cake", name: "Cake", scene: "cake", credit: "Cake — after jin_22ee ASCII reels" },
+  { id: "rose", name: "Rose", scene: "rose", credit: "Rose — after jin_22ee ASCII reels" },
+  { id: "ring", name: "Ring", scene: "ring", credit: "Ring — after jin_22ee ASCII reels" },
+  { id: "snowman", name: "Snowman", scene: "snowman", credit: "Snowman — after jin_22ee ASCII reels" },
 ];
 // The model list shows a window of this many names. ▲ ▼ move it a page; the mouse wheel
 // moves it one line at a time, with no easing, like scrolling a terminal.
 const MODELS_VISIBLE = 8;
 const PRESETS: [string, string][] = [[".:-=+*#%@", " .:-=+*#%@"], [".-+*#", " .-+*#"]];
-// The reference's colours and defaults; colours are always inverted.
-const DEFAULTS = { model: "suzanne", characters: " .:-=+*#%@", resolution: 0.22, scale: 1 };
-const INVERT = true;
-// SHA-256 of the entry password, so the password itself is not in the source.
-// This only gates the page in the browser; it is not access control.
-const PASSWORD_SHA256 = "04b2ad6979a436129b5f30cd00a3804bd87fc8bef73b0bb38640bf49a8479c64";
+// The reference's defaults; colours follow the theme (see entryColors).
+const DEFAULTS = { model: "avocado", characters: " .:-=+*#%@", resolution: 0.22, scale: 1 };
 
-async function sha256(text: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+// The entry always takes the current theme's own background and text colours (--bg / --ink),
+// the default "system" theme included.
+// A terminal theme puts --t-bg / --t-fg on <html> itself; the default "system" theme only has
+// --bg / --ink from the stylesheet, which in dev arrives a moment after the script (Safari then
+// reads them as ""), so that case waits for it.
+function entryColors() {
+  const css = getComputedStyle(document.documentElement);
+  const read = (theme: string, sheet: string) => css.getPropertyValue(theme).trim() || css.getPropertyValue(sheet).trim();
+  return { fg: read("--t-fg", "--ink"), bg: read("--t-bg", "--bg") };
 }
-const FG = "#ffffff", BG = "#007BE5";
+async function stylesheetReady() {
+  for (let frame = 0; frame < 120 && !getComputedStyle(document.documentElement).getPropertyValue("--bg").trim(); frame++)
+    await new Promise(requestAnimationFrame);
+}
 
 const html = String.raw;
+const escapeHtml = (text: string) => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+type LogEntry = { at: string; ip: string; location: string; length?: number; pass: boolean };
 
 export async function showEntry(onEnter: () => void): Promise<void> {
   if (document.body.classList.contains("entering")) return;
+  await stylesheetReady();
+  const colors = entryColors();
   document.body.classList.add("entering");
   const root = document.createElement("div");
   root.className = "entry";
@@ -59,8 +65,8 @@ export async function showEntry(onEnter: () => void): Promise<void> {
   root.setAttribute("aria-label", "Wide-Learning 시작 화면");
   root.innerHTML = html`
     <div class="term entry-term">
-      <header class="term-bar"><span class="term-title"><b>wl@laplace</b> — ascii<i class="cursor" aria-hidden="true"></i></span></header>
-      <div class="entry-stage" style="--entry-fg:${FG};--entry-bg:${BG}">
+      <header class="term-bar"><span class="term-title"><b>wl@laplace</b> — main<i class="cursor" aria-hidden="true"></i></span></header>
+      <div class="entry-stage" style="--entry-fg:${colors.fg};--entry-bg:${colors.bg}">
         <div class="entry-canvas" aria-hidden="true"></div>
         <nav class="entry-models" aria-label="모델">
           <div class="entry-model-page"></div>
@@ -83,10 +89,16 @@ export async function showEntry(onEnter: () => void): Promise<void> {
               <input class="entry-secret" type="password" autocomplete="off" spellcheck="false" aria-label="비밀번호"></label>
           </form>
         </div>
+        <div class="entry-log" hidden>
+          <section class="entry-log-box" role="dialog" aria-label="로그인 기록">
+            <header><b>login attempts</b><span>esc 닫기</span></header>
+            <div class="entry-log-body"></div>
+          </section>
+        </div>
       </div>
     </div>
     <dialog class="entry-credits"><h2>Credits</h2>${MODELS.map((model) => `<p>${model.credit}</p>`).join("")}
-      <p>Models from the Khronos glTF Sample Assets (textures removed).</p><form method="dialog"><button class="entry-btn">닫기</button></form></dialog>`;
+      <p>Other models from the Khronos glTF Sample Assets (textures removed).</p><form method="dialog"><button class="entry-btn">닫기</button></form></dialog>`;
   document.body.prepend(root);
 
   const $ = <T extends Element>(selector: string) => root.querySelector(selector) as T;
@@ -117,10 +129,22 @@ export async function showEntry(onEnter: () => void): Promise<void> {
   }, { passive: false });
   const status = $<HTMLParagraphElement>(".entry-status");
   let cleanup = () => {};
+  // Follow a theme change while the entry is open: new stage colours, and the scene redraws.
+  const stage = $<HTMLDivElement>(".entry-stage");
+  const themeWatch = new MutationObserver(() => {
+    Object.assign(colors, entryColors());
+    stage.style.setProperty("--entry-fg", colors.fg);
+    stage.style.setProperty("--entry-bg", colors.bg);
+    root.dispatchEvent(new Event("entry-theme"));
+  });
+  themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ["style", "data-theme"] });
 
   const enter = () => {
     cleanup();
+    themeWatch.disconnect();
     window.removeEventListener("keydown", onKey, true);
+    window.removeEventListener("keyup", onKeyUp, true);
+    window.removeEventListener("blur", onBlur);
     root.classList.add("leaving");
     document.body.classList.remove("entering");
     setTimeout(() => root.remove(), 260);
@@ -150,17 +174,58 @@ export async function showEntry(onEnter: () => void): Promise<void> {
   $<HTMLFormElement>(".entry-prompt-box").addEventListener("submit", (event) => {
     event.preventDefault();
     const typed = secret.value;
-    void sha256(typed).then((hash) => (hash === PASSWORD_SHA256 ? enter() : closePrompt())).catch(closePrompt);
+    // The dev server judges and records the attempt itself (time, address, location, verdict).
+    void fetch("/wl-api/entry-attempt", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ typed }) })
+      .then((reply) => reply.json() as Promise<{ pass?: boolean }>).then(({ pass }) => (pass ? enter() : closePrompt())).catch(closePrompt);
   });
   // While the entry is open, the terminal's own shortcuts wait.
+  // Hidden login log: with the password box closed, type the log code (set in the settings tab; 0154 until
+  // changed), then press Shift, Space, Esc and Enter together (within 5 s). While armed, Space and Enter don't open the password box.
+  const logView = $<HTMLDivElement>(".entry-log");
+  const COMBO = ["Shift", " ", "Escape", "Enter"];
+  const held = new Set<string>();
+  let code = "", codeAt = 0;
+  const armed = () => code.length >= 4 && performance.now() - codeAt < 5000;
+  const closeLog = () => { logView.hidden = true; $<HTMLButtonElement>(".entry-start").focus({ preventScroll: true }); };
+  const openLog = async (opened: string) => {
+    logView.hidden = false;
+    const body = $<HTMLDivElement>(".entry-log-body");
+    body.textContent = "불러오는 중…";
+    try {
+      // The server checks the digits typed last against the log code; a wrong one gets nothing.
+      const reply = await fetch("/wl-api/entry-log", { method: "POST", cache: "no-store", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: opened }) });
+      if (!reply.ok) { body.textContent = "확인 코드가 맞지 않습니다."; return; }
+      const { entries } = await reply.json() as { entries: LogEntry[] };
+      body.innerHTML = entries.length ? html`<table>
+        <thead><tr><th>일시</th><th>IP</th><th>위치</th><th>입력</th><th>결과</th></tr></thead>
+        <tbody>${entries.map((entry) => `<tr class="${entry.pass ? "pass" : "fail"}"><td>${escapeHtml(new Date(entry.at).toLocaleString("ko-KR", { hour12: false }))}</td>`
+          + `<td>${escapeHtml(entry.ip)}</td><td>${escapeHtml(entry.location)}</td>`
+          + `<td>${typeof entry.length === "number" ? `${"●".repeat(Math.min(entry.length, 16))} (${entry.length}자)` : "<i>(기록 안 함)</i>"}</td><td>${entry.pass ? "Pass" : "Fail"}</td></tr>`).join("")}</tbody>
+      </table>` : "기록이 없습니다.";
+    } catch { body.textContent = "기록을 불러오지 못했습니다."; }
+  };
   const onKey = (event: KeyboardEvent) => {
     if ((event.target as HTMLElement).closest("input, dialog")) return;
-    if (event.key === "Enter" || event.key === " ") {
+    held.add(event.key);
+    if (!logView.hidden) {
+      if (event.key === "Escape") closeLog();
+    } else if (armed() && COMBO.includes(event.key)) {
       event.preventDefault();
+      if (COMBO.every((key) => held.has(key))) { const typed = code; code = ""; void openLog(typed); }
+    } else if (/^\d$/.test(event.key)) {
+      code = (code + event.key).slice(-8);
+      codeAt = performance.now();
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      code = "";
       openPrompt();
-    }
+    } else if (event.key !== "Shift") code = "";
     event.stopPropagation();
   };
+  const onKeyUp = (event: KeyboardEvent) => held.delete(event.key);
+  const onBlur = () => held.clear();
+  window.addEventListener("keyup", onKeyUp, true);
+  window.addEventListener("blur", onBlur);
   window.addEventListener("keydown", onKey, true);
   $<HTMLButtonElement>("[data-action=enter]").addEventListener("click", openPrompt);
   $<HTMLButtonElement>("[data-action=credits]").addEventListener("click", () => $<HTMLDialogElement>(".entry-credits").showModal());
@@ -171,7 +236,7 @@ export async function showEntry(onEnter: () => void): Promise<void> {
   for (let attempt = 1; ; attempt++) {
     try {
       $<HTMLDivElement>(".entry-canvas").replaceChildren();
-      cleanup = await startScene($<HTMLDivElement>(".entry-canvas"), state, say, root);
+      cleanup = await startScene($<HTMLDivElement>(".entry-canvas"), state, say, root, colors);
       break;
     } catch (error) {
       console.error("[wl entry] 3D scene failed", error);
@@ -183,8 +248,9 @@ export async function showEntry(onEnter: () => void): Promise<void> {
   $<HTMLButtonElement>(".entry-start").focus({ preventScroll: true });
 }
 
-async function startScene(host: HTMLDivElement, state: typeof DEFAULTS, say: (text: string) => void, root: HTMLElement) {
+async function startScene(host: HTMLDivElement, state: typeof DEFAULTS, say: (text: string) => void, root: HTMLElement, colors: ReturnType<typeof entryColors>) {
   const THREE = await import("three");
+  const { colorAscii } = await import("./entry-ascii-color");
   const [{ AsciiEffect }, { OrbitControls }, { GLTFLoader }, { RoomEnvironment }] = await Promise.all([
     import("three/addons/effects/AsciiEffect.js"),
     import("three/addons/controls/OrbitControls.js"),
@@ -209,10 +275,14 @@ async function startScene(host: HTMLDivElement, state: typeof DEFAULTS, say: (te
   const holder = new THREE.Group();  // user scale applies here
   scene.add(holder);
   const loader = new GLTFLoader();
-  const cache = new Map<string, { object: import("three").Object3D; clips: import("three").AnimationClip[] }>();
+  const cache = new Map<string, { object: import("three").Object3D; clips: import("three").AnimationClip[]; update?: (t: number) => void }>();
   let mixer: import("three").AnimationMixer | null = null;
+  let animate: ((t: number) => void) | null = null;  // procedural scenes
+  let shownAt = 0;
+  let colorful = false;  // procedural scenes are drawn in their own colours; .glb models stay one colour
   let current: import("three").Object3D | null = null;
-  let effect: InstanceType<typeof AsciiEffect> | null = null;
+  type Effect = { domElement: HTMLElement; setSize(w: number, h: number): void; render(s: import("three").Scene, c: import("three").Camera): void; dispose?(): void };
+  let effect: Effect | null = null;
   let controls: InstanceType<typeof OrbitControls> | null = null;
   const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -240,14 +310,26 @@ async function startScene(host: HTMLDivElement, state: typeof DEFAULTS, say: (te
     say(`${model.name} 불러오는 중…`);
     let entry = cache.get(model.id);
     if (!entry) {
-      const gltf = await loader.loadAsync(model.file);
-      entry = { object: fit(gltf.scene), clips: gltf.animations };
+      if (model.scene) {
+        const built = (await import("./entry-scenes"))[model.scene](THREE);
+        const object = fit(built.object);  // fitted at full size, without the sparkles around it
+        if (built.ambient) { built.ambient.position.copy(built.object.position); object.add(built.ambient); }
+        entry = { object, clips: [], update: built.update };
+      } else {
+        const gltf = await loader.loadAsync(model.file!);
+        entry = { object: fit(gltf.scene), clips: gltf.animations };
+      }
       cache.set(model.id, entry);
     }
     if (current) holder.remove(current);
     current = entry.object;
     holder.add(current);
     mixer = null;
+    animate = entry.update ?? null;
+    isScene = Boolean(model.scene);
+    if (colorful !== wantColor()) { colorful = wantColor(); rebuild(); }
+    shownAt = performance.now();  // a scene replays from the start each time it is picked
+    animate?.(reduced ? 60 : 0);
     if (entry.clips.length) {  // the fox walks
       mixer = new THREE.AnimationMixer(current);
       const clip = entry.clips.find((item) => /walk/i.test(item.name)) ?? entry.clips[0];
@@ -258,13 +340,22 @@ async function startScene(host: HTMLDivElement, state: typeof DEFAULTS, say: (te
 
   // AsciiEffect takes its options at construction, so a setting change rebuilds it
   // (the reference re-mounts its AsciiRenderer the same way).
+  // Procedural scenes are drawn in colour, except on Deep Dark, which is black and white only.
+  let isScene = false;
+  const wantColor = () => isScene && document.documentElement.dataset.theme !== "deep-dark";
+  const onTheme = () => { colorful = wantColor(); rebuild(); };
+  root.addEventListener("entry-theme", onTheme);
+
   function rebuild() {
     const target = controls?.target.clone();
     controls?.dispose();
     effect?.domElement.remove();
-    effect = new AsciiEffect(renderer, state.characters, { invert: INVERT, resolution: state.resolution });
-    effect.domElement.style.color = FG;
-    effect.domElement.style.backgroundColor = BG;
+    effect?.dispose?.();
+    // Colour scenes draw on a canvas (fast); the one-colour models keep AsciiEffect's text grid.
+    effect = colorful ? colorAscii(THREE, renderer, state.characters, state.resolution)
+      : new AsciiEffect(renderer, state.characters, { invert: true, resolution: state.resolution });
+    effect.domElement.style.color = colors.fg;
+    effect.domElement.style.backgroundColor = colors.bg;
     effect.domElement.classList.add("entry-ascii");
     host.append(effect.domElement);
     resize();
@@ -322,6 +413,7 @@ async function startScene(host: HTMLDivElement, state: typeof DEFAULTS, say: (te
     frame = requestAnimationFrame(loop);
     const delta = clock.getDelta();
     mixer?.update(delta);
+    if (animate && !reduced) animate((performance.now() - shownAt) / 1000);
     controls?.update(delta);
     effect?.render(scene, camera);
   };
@@ -333,8 +425,10 @@ async function startScene(host: HTMLDivElement, state: typeof DEFAULTS, say: (te
     root.removeEventListener("click", onPanel);
     root.removeEventListener("input", onPanel);
     root.removeEventListener("change", onPanel);
+    root.removeEventListener("entry-theme", onTheme);
     controls?.dispose();
     effect?.domElement.remove();
+    effect?.dispose?.();
     scene.environment?.dispose();
     pmrem.dispose();
     scene.traverse((object) => {
