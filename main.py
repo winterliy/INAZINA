@@ -395,8 +395,8 @@ class InazinaBot(discord.Client):
                     # Daily consistent snapshot; keeps the newest 14 in database/backups.
                     self._last_backup = time.time()
                     try:
-                        from database.backup import backup
-                        print(f"[Backup] {await asyncio.to_thread(backup, self.db.users.db_path)}")
+                        from database.backup import backup_current
+                        print(f"[Backup] {await asyncio.to_thread(backup_current, self.db.users.db_path)}")
                     except Exception as exc:
                         print(f"[Backup] {type(exc).__name__}: {exc}")
                 try:

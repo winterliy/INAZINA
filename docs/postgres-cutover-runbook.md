@@ -22,6 +22,7 @@
 - PostgreSQL로 운영한 뒤에 되돌리면 그 사이의 쓰기는 SQLite에 없다. 그 경우는 먼저 `pg_dump`로 보존하고 사용자와 상의한다.
 
 ## 전환 뒤
-- PostgreSQL 정기 백업(`pg_dump`)을 켠다. 기존 SQLite 백업 스크립트는 더 이상 운영 데이터를 담지 않는다.
+- 봇의 하루 1회 백업은 PostgreSQL에서 `pg_dump`(custom 형식, `database/backups/inazina-pg-*.dump`, 최근 14개 보관)를 만든다. 복원은 `pg_restore`. 수동 실행: `INAZINA_DB_BACKEND=postgres python -m database.backup`.
+- `run.py`가 `.env`를 읽어 봇·웹 API·도구가 같은 백엔드를 쓰게 한다(시작할 때 `Database backend: ...`를 출력한다).
 - 금액 스냅샷 점검은 PostgreSQL에서 원본 표를 직접 점검하는 방식이다. 화면·문서에 이 차이를 알린다.
 - 정리: 리허설용 DB `inazina_rehearsal`, `inazina_dev`를 삭제한다.

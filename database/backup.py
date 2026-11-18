@@ -37,6 +37,35 @@ def backup(db_path, directory=None, keep=DEFAULT_KEEP):
     return target
 
 
+def backup_postgres(directory=None, keep=DEFAULT_KEEP, dsn=None):
+    """pg_dump of the PostgreSQL database in custom format (restorable with pg_restore); keeps the newest ``keep``."""
+    import os
+    import shutil
+    import subprocess
+    from database import pg_backend
+    directory = Path(directory) if directory else Path(__file__).resolve().parent / "backups"
+    directory.mkdir(parents=True, exist_ok=True)
+    pg_dump = shutil.which("pg_dump") or next((c for c in ("/opt/homebrew/opt/postgresql@17/bin/pg_dump", "/opt/homebrew/bin/pg_dump",
+                                                          "/usr/local/bin/pg_dump") if os.path.exists(c)), None)
+    if not pg_dump:
+        raise RuntimeError("pg_dump를 찾을 수 없습니다. PostgreSQL 클라이언트 도구를 설치해주세요.")
+    target = directory / f"inazina-pg-{time.strftime('%Y%m%d-%H%M%S')}.dump"
+    result = subprocess.run([pg_dump, "--format=custom", "--file", str(target), dsn or pg_backend.dsn()],
+                            capture_output=True, text=True, timeout=1800)
+    if result.returncode or not target.exists() or target.stat().st_size == 0:
+        target.unlink(missing_ok=True)
+        raise RuntimeError(f"pg_dump 실패: {result.stderr.strip()[:300]}")
+    for old in sorted(directory.glob("inazina-pg-*.dump"))[:-keep]:
+        old.unlink()
+    return target
+
+
+def backup_current(db_path, directory=None, keep=DEFAULT_KEEP):
+    """The backup of whichever database the app runs on."""
+    from database import pg_backend
+    return backup_postgres(directory, keep) if pg_backend.enabled() else backup(db_path, directory, keep)
+
+
 def latest(directory):
     files = sorted(Path(directory).glob("*.db"))
     return files[-1] if files else None
@@ -44,4 +73,4 @@ def latest(directory):
 
 if __name__ == "__main__":
     from database.db_manager import DBManager
-    print(backup(Path(DBManager.database_dir) / "inazina.db"))
+    print(backup_current(Path(DBManager.database_dir) / "inazina.db"))

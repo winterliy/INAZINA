@@ -24,6 +24,21 @@ def acquire_instance_lock():
     return lock_file
 
 
+def load_env_file():
+    """Read KEY=VALUE lines of .env into the environment (existing variables win), so the bot, the web API and the
+    tools all see the same settings, notably the database backend."""
+    path = Path(__file__).resolve().parent / ".env"
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
+load_env_file()
 _instance_lock = acquire_instance_lock()
 
 from main import InazinaBot
@@ -32,5 +47,6 @@ token = os.getenv("INAZINA_TOKEN") or os.getenv("NACONOMICS_TOKEN")
 if not token:
     raise SystemExit("INAZINA_TOKEN 환경변수를 설정해주세요.")
 
+print(f"Database backend: {os.getenv('INAZINA_DB_BACKEND', 'sqlite')}", flush=True)
 bot = InazinaBot(token)
 bot.run(token)
