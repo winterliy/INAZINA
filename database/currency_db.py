@@ -1632,6 +1632,7 @@ class CurrencyDB(DBManager):
         ensure_payout_requests(self.execute)
         ensure_liquidity_providers(self.execute)
         ensure_fx_residual_clearings(self.execute)
+        ensure_fx_revaluation_runs(self.execute)
 
     def _ensure_treasury_bond_minor_units(self):
         """Make bond offer and lot cash amounts authoritative in quote-currency units."""
@@ -3782,6 +3783,22 @@ def ensure_fx_residual_clearings(execute):
         execute(f"""CREATE TRIGGER IF NOT EXISTS trg_fx_residual_clearings_{operation.lower()}
             BEFORE {operation} ON fx_residual_clearings
             BEGIN SELECT RAISE(ABORT,'FX residual clearing rows are append-only'); END""")
+
+
+def ensure_fx_revaluation_runs(execute):
+    """Period-end revaluation of the open FX position per currency: the first run of a currency only stores its rate
+    ('baseline'), later ones book position x rate change ('revalue') and each is undone on the first day of the next
+    period ('reverse'). Rows never change."""
+    execute("""CREATE TABLE IF NOT EXISTS fx_revaluation_runs (
+        run_id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK(kind IN ('baseline','revalue','reverse')),
+        period_key TEXT NOT NULL, currency_code TEXT NOT NULL, decimal_places INTEGER NOT NULL CHECK(decimal_places BETWEEN 0 AND 6),
+        position_minor_units INTEGER NOT NULL, rate_text TEXT NOT NULL, previous_rate_text TEXT,
+        pnl_base_minor_units INTEGER NOT NULL DEFAULT 0, reverses_run_id INTEGER, actor TEXT NOT NULL,
+        recorded_epoch INTEGER NOT NULL, UNIQUE(kind,period_key,currency_code))""")
+    for operation in ("UPDATE", "DELETE"):
+        execute(f"""CREATE TRIGGER IF NOT EXISTS trg_fx_revaluation_runs_{operation.lower()}
+            BEFORE {operation} ON fx_revaluation_runs
+            BEGIN SELECT RAISE(ABORT,'FX revaluation rows are append-only'); END""")
 
 
 def ensure_liquidity_providers(execute):

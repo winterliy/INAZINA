@@ -4487,12 +4487,20 @@ def accounting_close_overview(check=False):
     """Residuals and history are quick; the full reconciliation (slow on a big database) only runs when asked."""
     from managers.accounting_journal import AccountingJournal
     from managers.fx_residual import FxResiduals
+    from managers.fx_revaluation import FxRevaluation, period_key
+    import time as _time
     with domain().db.readonly() as conn:
         residuals = FxResiduals.report(conn)
         history = FxResiduals.history(conn)
+        revaluation = {"preview": FxRevaluation.preview(conn), "history": FxRevaluation.history(conn), "period": period_key(_time.time())}
+        done_now = {row[0] for row in conn.execute(
+            "SELECT currency_code FROM fx_revaluation_runs WHERE kind IN ('baseline','revalue') AND period_key=?", (revaluation["period"],))}
         report = AccountingJournal.reconcile_all_financial_ledgers(conn) if check else None
     pending = sum(1 for row in residuals if row["pending"] > 0)
-    gates = [{"key": "fx_residual", "label": "환전 반올림 잔여 정리", "ok": pending == 0, "detail": f"정리할 통화 {pending}개"}]
+    open_positions = [row for row in revaluation["preview"] if row["position"] and row["currency"] not in done_now]
+    gates = [{"key": "fx_residual", "label": "환전 반올림 잔여 정리", "ok": pending == 0, "detail": f"정리할 통화 {pending}개"},
+             {"key": "fx_revaluation", "label": "외환 포지션 평가", "ok": not open_positions,
+              "detail": f"이번 기간 미평가 통화 {len(open_positions)}개"}]
     close_ready = None
     if report is not None:
         coverage = report.get("amount_field_coverage") or {}
@@ -4502,8 +4510,9 @@ def accounting_close_overview(check=False):
             {"key": "coverage", "label": "금액 필드 분류", "ok": coverage.get("status") == "matched",
              "detail": f"미분류 {len(coverage.get('unclassified') or [])}건"},
         ] + gates
-        close_ready = bool(report.get("close_ready")) and pending == 0
-    return {"gates": gates, "checked": report is not None, "closeReady": close_ready, "residuals": residuals, "history": history}
+        close_ready = bool(report.get("close_ready")) and pending == 0 and not open_positions
+    return {"gates": gates, "checked": report is not None, "closeReady": close_ready, "residuals": residuals, "history": history,
+            "revaluation": revaluation}
 
 
 def accounting_close_action(actor, payload):
@@ -4515,6 +4524,10 @@ def accounting_close_action(actor, payload):
         if action == "recognize":
             booked = FxResiduals.recognize(conn, actor)
             message = ", ".join(f"{currency} {units}" for currency, units in booked) + " 을(를) 환전 손익으로 기록했습니다." if booked else "새로 기록할 잔여가 없습니다."
+        elif action == "revalue":
+            from managers.fx_revaluation import FxRevaluation
+            done = FxRevaluation.run(conn, actor)
+            message = ", ".join(f"{currency} {kind} {pnl:+d}" for currency, kind, pnl in done) + " (기준통화 최소단위)" if done else "이번 기간 평가는 이미 끝났습니다."
         elif action == "transfer":
             units = payload.get("units")
             if isinstance(units, bool) or not isinstance(units, int):

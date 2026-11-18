@@ -6,7 +6,12 @@ import "./accounting-close.css";
 type Gate = { key: string; label: string; ok: boolean; detail: string };
 type Residual = { currency: string; decimalPlaces: number; dust: string; recognized: number; pending: number; transferred: number; balance: number };
 type Entry = { clearing_id: number; kind: "recognize" | "transfer"; currency_code: string; decimal_places: number; minor_units: number; recipient_user_id: string | null; actor: string; recorded_epoch: number };
-type Overview = { gates: Gate[]; checked: boolean; closeReady: boolean | null; residuals: Residual[]; history: Entry[] };
+type Position = { currency: string; decimalPlaces: number; position: number; rate: string; previousRate: string | null; pnl: number; baseline: boolean };
+type RevalRun = { run_id: number; kind: "baseline" | "revalue" | "reverse"; period_key: string; currency_code: string; decimal_places: number; position_minor_units: number; rate_text: string; pnl_base_minor_units: number; actor: string; recorded_epoch: number };
+type Overview = { gates: Gate[]; checked: boolean; closeReady: boolean | null; residuals: Residual[]; history: Entry[]; revaluation: { preview: Position[]; history: RevalRun[]; period: string } };
+/** A stored rate is an exact fraction ("1/120"); show it with six decimals. */
+const rateValue = (text: string) => { const [top, bottom] = text.split("/"); return (Number(top) / Number(bottom ?? 1)).toFixed(6); };
+const RUN_LABEL = { baseline: "기준 저장", revalue: "평가", reverse: "되돌림" } as const;
 
 /** Show a count of minor units as an amount in the currency (e.g. 120 with 2 places -> "1.20"). */
 const amount = (units: number, places: number) => (units / 10 ** places).toLocaleString("ko-KR", { minimumFractionDigits: places, maximumFractionDigits: places });
@@ -63,6 +68,22 @@ export function AccountingClosePage({ ctx }: { ctx: Ctx }) {
               }}>이전</button></td></tr>;
         })}</tbody>
       </table></div>}
+    </Card>
+
+    <Card title="외환 포지션 평가" caption="환전 중간 계정에 남아 있는 통화별 포지션을 기간 말 환율로 다시 평가합니다. 이전 기간 말 환율과의 차이만큼 평가손익을 기준통화로 장부에 남기고, 다음 기간 첫날 자동으로 반대 분개로 되돌립니다. 통화의 첫 실행은 환율만 저장합니다."
+      actions={<button type="button" className="btn primary" disabled={busy} onClick={() => act({ action: "revalue" }, "평가하지 못했습니다.", `${data.revaluation.period} 기간의 외환 포지션을 평가할까요?\n평가 분개가 장부에 남습니다.`)}>이번 기간 평가 실행</button>}>
+      <div className="scroll-x"><table>
+        <thead><tr><th>통화</th><th>포지션</th><th>이전 환율</th><th>현재 환율</th><th>평가손익 (기준통화)</th></tr></thead>
+        <tbody>{data.revaluation.preview.map((row) => <tr key={row.currency}>
+          <td>{row.currency}</td><td>{amount(row.position, row.decimalPlaces)}</td>
+          <td>{row.previousRate ?? <span className="tag warn">기준 없음</span>}</td><td>{row.rate}</td>
+          <td className={row.pnl > 0 ? "close-up" : row.pnl < 0 ? "close-down" : ""}>{row.baseline ? "첫 실행은 기준만 저장" : `${row.pnl > 0 ? "+" : ""}${row.pnl.toLocaleString("ko-KR")}`}</td></tr>)}
+        </tbody></table></div>
+      {data.revaluation.history.length > 0 && <div className="scroll-x close-sub"><table>
+        <thead><tr><th>시각</th><th>기간</th><th>구분</th><th>통화</th><th>포지션</th><th>환율</th><th>손익</th></tr></thead>
+        <tbody>{data.revaluation.history.map((run) => <tr key={run.run_id}><td>{date(run.recorded_epoch)}</td><td>{run.period_key}</td><td>{RUN_LABEL[run.kind]}</td>
+          <td>{run.currency_code}</td><td>{amount(run.position_minor_units, run.decimal_places)}</td><td>{rateValue(run.rate_text)}</td>
+          <td>{run.pnl_base_minor_units ? run.pnl_base_minor_units.toLocaleString("ko-KR") : "—"}</td></tr>)}</tbody></table></div>}
     </Card>
 
     {data.history.length > 0 && <Card title="정리·이전 기록" caption="최근 50건">

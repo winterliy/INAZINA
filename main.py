@@ -174,6 +174,20 @@ class InazinaBot(discord.Client):
                 print(f"[Liquidity Error] {type(exc).__name__}: {exc}")
             await asyncio.sleep(5)
 
+    async def fx_reversal_loop(self):
+        """Book the automatic reversing entries of FX revaluations once their period has ended."""
+        from managers.fx_revaluation import FxRevaluation
+
+        def reverse():
+            with self.db.atomic() as conn:
+                return FxRevaluation.reverse_due(conn, "system")
+        while not self.is_closed():
+            try:
+                await self._run_background_write(reverse)
+            except Exception as exc:
+                print(f"[FX Reversal Error] {type(exc).__name__}: {exc}")
+            await asyncio.sleep(3600)
+
     async def setup_hook(self):
         from functions.slash_commands import SlashCommandRegistry
 
@@ -257,6 +271,7 @@ class InazinaBot(discord.Client):
             self.loop.create_task(self.scheduled_loan_payment_loop(), name="scheduled-loan-worker")
             self.loop.create_task(self.notification_delivery_loop(), name="notification-delivery-worker")
             self.loop.create_task(self.liquidity_loop(), name="liquidity-worker")
+            self.loop.create_task(self.fx_reversal_loop(), name="fx-reversal-worker")
             from functions.web_jobs import web_job_loop
             self.loop.create_task(web_job_loop(self), name="dashboard-job-worker")
 
