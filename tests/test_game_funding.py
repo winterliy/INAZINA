@@ -52,8 +52,8 @@ class GameFundingTests(unittest.TestCase):
         self.db.currency.execute(
             "INSERT INTO currencies(code,name,reference_rate,decimal_places) VALUES ('SCD','남방','1/120',2)")
         self.db.currency.execute(
-            "INSERT INTO country_currencies(nationality,currency_code,tax_percent) VALUES ('남방연방','SCD',10)")
-        self.db.users.create_user('scd-player', '남방인', '남방연방', cash)
+            "INSERT INTO country_currencies(nationality,currency_code,tax_percent) VALUES ('United Southerns','SCD',10)")
+        self.db.users.create_user('scd-player', '남방인', 'United Southerns', cash)
 
     def _cash_minor(self, user):
         return int(self.db.users.execute_one("SELECT cash_minor FROM users WHERE user_id=?", (user,))[0])

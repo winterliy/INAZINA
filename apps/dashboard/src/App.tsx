@@ -5,6 +5,8 @@ import type { FormEvent, ReactNode } from "react";
 import { api, appUrl, clearToken, signedOut, type ApiUser } from "../../shared/api";
 import { AuthPanel } from "../../shared/AuthPanel";
 import { Card, plain, type Ctx } from "./common";
+import { TopBar } from "./TopBar";
+import { LEGACY_PAGE } from "./nav";
 const ProductsPage = lazy(() => import("./ProductsPage").then((module) => ({ default: module.ProductsPage })));
 const UsersPage = lazy(() => import("./UsersPage").then((module) => ({ default: module.UsersPage })));
 const ExchangesPage = lazy(() => import("./ExchangesPage").then((module) => ({ default: module.ExchangesPage })));
@@ -30,7 +32,7 @@ const AccountPage = lazy(() => import("./AccountPage").then((module) => ({ defau
 const OrganizationPage = lazy(() => import("./OrganizationPage").then((module) => ({ default: module.OrganizationPage })));
 const OrganizationOwnershipWindow = lazy(() => import("./OrganizationOwnershipWindow").then((module) => ({ default: module.OrganizationOwnershipWindow })));
 
-type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "feedback" | "board" | "documents" | "compliance" | "accounting" | "close" | "events" | "liquidity" | "commands" | "database" | "audit" | "ownership";
+type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "feedback" | "board" | "documents" | "credit" | "accounting" | "close" | "events" | "liquidity" | "commands" | "database" | "audit" | "ownership";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
 type Instrument = { code: string; name: string; type: string; price: Money; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
 type Exchange = { exchange_id: string; status: string; reason: string | null; trading_halted: number; updated_epoch: number | null; resume_epoch: number | null; circuit_stage: number | null };
@@ -57,7 +59,7 @@ const pages: { id: Page; label: string }[] = [
   { id: "naturalization", label: "귀화심사" },
   { id: "feedback", label: "문의·신고" },
   { id: "board", label: "게시판 관리" },
-  { id: "compliance", label: "KYC · AML" },
+  { id: "credit", label: "신용위험" },
   { id: "accounting", label: "은행 · 원장" },
   { id: "close", label: "회계 마감" },
   { id: "documents", label: "문서 · 약관" },
@@ -80,7 +82,7 @@ const subtitles: Record<Page, string> = {
   feedback: "공식 사이트의 Contact·Report로 들어온 문의와 신고를 확인하고 처리합니다.",
   documents: "약관·처리방침·규칙·도움말과 Discord 등록 안내문을 고치고 확정합니다.",
   board: "나루 게시판의 신고를 처리하고 글을 숨기거나 고정합니다. 익명 글의 실제 작성자와 IP를 확인할 수 있습니다.",
-  compliance: "국적별 KYC 검토 상태와 AML 시뮬레이터 경보·규칙을 관리합니다.",
+  credit: "기대신용손실(ECL), 부도채권 상각·회수, 담보, 신용등급 정책을 관리합니다.",
   close: "마감 게이트를 확인하고 환전 반올림 잔여를 환전 손익 계정에 정리하거나 국고로 이전합니다.",
   accounting: "은행을 고유 ID로 만들고 관리하며, 은행별 이중분개 시산 잔액·불균형·결과 원장 대사를 조회합니다.",
   users: "사용자와 국가, 국가 계정의 모든 설정을 관리합니다.",
@@ -100,11 +102,12 @@ const message = (cause: unknown, fallback: string) => cause instanceof Error ? c
 // Each page (and each command category) has its own address: #instruments, #commands/거래소.
 function readRoute(): { page: Page; sub: string } {
   const [head, ...rest] = decodeURIComponent(location.hash.replace(/^#\/?/, "")).replace(/\/+$/, "").split("/");
-  return { page: pages.some((item) => item.id === head) ? head as Page : "overview", sub: rest.join("/") };
+  const id = LEGACY_PAGE[head] ?? head;
+  return { page: pages.some((item) => item.id === id) ? id as Page : "overview", sub: rest.join("/") };
 }
 const NATIONAL = "국가 명의", HELP = "도움말";
 // Redesign D (grid guideline) was approved for these tabs only; the rest keep the bento look.
-const THEME_D_PAGES = new Set<Page>(["instruments", "finance", "exchanges", "board", "compliance", "documents"]);
+const THEME_D_PAGES = new Set<Page>(["instruments", "finance", "exchanges", "board", "credit", "documents"]);
 const scopeOf = (section: string) => section === NATIONAL ? "national" : section === HELP ? "help" : "admin";
 const initialRoute = readRoute();
 
@@ -391,27 +394,9 @@ export default function App() {
 
   return <Stage>
     <div className="shell">
-      <header className="gnav">
-        <div className="gnav-in">
-          <div className="brand"><strong>INAZINA</strong><small>운영 Dashboard</small></div>
-          <div className="gnav-meta">
-            <span className="status"><span className={connected ? "dot ok" : "dot"} />{health}</span>
-            <span className="mono dim">127.0.0.1</span>
-            <button type="button" className="gnav-account" aria-current={page === "account" ? "page" : undefined} onClick={() => setPage("account")} title="내 계정"><span aria-hidden="true">{user.nickname.slice(0, 1)}</span>{user.nickname} · 관리자</button>
-            <button type="button" onClick={() => void refresh()} disabled={busy}>새로고침</button>
-            <button type="button" onClick={logout}>로그아웃</button>
-          </div>
-        </div>
-      </header>
-      <nav className="subnav" aria-label="관리 메뉴">
-        <div className="subnav-in">
-          {pages.filter((item) => item.id !== "account" && item.id !== "ownership").map((item) => <button key={item.id} type="button" className="subnav-item" aria-current={page === item.id ? "page" : undefined} onClick={() => setPage(item.id)}>
-            {item.label}
-            {item.id === "feedback" && unreadFeedback > 0 && <span className="nav-badge" aria-label={`새 알림 ${unreadFeedback}건`}>{unreadFeedback}</span>}
-            {item.id === "naturalization" && pendingNaturalization > 0 && <span className="nav-badge" aria-label={`심사 대기 ${pendingNaturalization}건`}>{pendingNaturalization}</span>}
-          </button>)}
-        </div>
-      </nav>
+      <TopBar user={user} page={page} pages={pages.filter((item) => item.id !== "account" && item.id !== "ownership")}
+        badges={{ feedback: unreadFeedback, naturalization: pendingNaturalization }} health={health} connected={connected} busy={busy}
+        onPage={(next) => setPage(next as Page)} onRefresh={() => void refresh()} onLogout={logout} />
       <main className={THEME_D_PAGES.has(page) ? "content theme-d" : "content"}>
         {page === "overview"
           ? <section className="hero">
@@ -461,7 +446,7 @@ export default function App() {
         {page === "organizations" && <OrganizationPage ctx={ctx} />}
         {page === "board" && <BoardAdminPage ctx={ctx} />}
         {page === "documents" && <DocumentsPage ctx={ctx} />}
-        {page === "compliance" && <CompliancePage ctx={ctx} />}
+        {page === "credit" && <CompliancePage ctx={ctx} />}
         {page === "accounting" && <BanksPage ctx={ctx} />}
         {page === "feedback" && <FeedbackPage ctx={ctx} onChange={() => void loadUnread()} />}
         {page === "naturalization" && <NaturalizationPage ctx={ctx} onChange={() => void loadUnread()} />}

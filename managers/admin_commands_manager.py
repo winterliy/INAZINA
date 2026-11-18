@@ -13,12 +13,13 @@ from managers.admin_control_manager import ENTITIES, KINDS, BOND_FEATURES, SAVIN
 from managers.currency_exchange_manager import SCALE, MAX_UNITS, amount_units, display_units
 from managers.rate_manager import RateManager
 from functions.money import parse_currency_money
+from managers.compliance_commands import KYC_USAGE, AML_USAGE, run_compliance_command
 
 COMMANDS = {'상품수정','상품가격수정','상품생성','상품삭제','기본소득','잔고수정','등록','도박확률','도박리턴값','서버설치','소수점거래관리','상품이율수정','양도',
             '시장분위기','상품분위기','복권당첨번호보기','복권당첨번호변경','세율','소득세율','환율수정',
             '국가생성','국가삭제',
             '복권가격설정','금리수정','시장금리수정','법정최고이자수정','자본변경','증자','정기배당수정','정기배당활성','특별배당실시','합병','분할','액면분할병합',
-            '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소','거래경고','귀화심사'}
+            '휴장','개장','장일시정지','장재개','서킷브레이커','사이드카','법인잔고수정','법인청산','ELS취소','거래경고','귀화심사','KYC심사','AML경보'}
 TAX_SOURCES = {
     'bond_sale_gain', 'corporate_bond_interest', 'els_profit', 'foreign_security_sale_gain',
     'fractional_sale_gain', 'futures_realized_gain', 'gambling_winnings', 'liquidation',
@@ -68,6 +69,7 @@ USAGE.update({'법인잔고수정':'[보통주 법인id] [add/del/modify] [금�
               '법인청산':'[보통주 법인id]', 'ELS취소':'[ELS id]',
               '거래경고':'[종목id] [주의/경고/위험/해제] [사유(선택)] [기간 일수(선택)]',
               '귀화심사':'[목록|승인|거절] [신청번호] [사유(선택)]',
+              'KYC심사':KYC_USAGE, 'AML경보':AML_USAGE,
               '양도':'[받을 유저·법인·국가 ID] [주식 코드] [주] · 보유분 간 이전은 [보내는 ID] [받는 ID] [주식 코드] [주]'})
 
 # Core positional arguments vary by product type; extra JSON is always optional.
@@ -384,6 +386,7 @@ class AdminCommandsManager:
                         or (command in {'휴장','개장','장일시정지','장재개','사이드카'} and len(args) in {0,1})
                         or (command=='서킷브레이커' and len(args) in {1,2})
                         or (command=='거래경고' and len(args) in {2,3,4})
+                        or command in {'KYC심사','AML경보'}
                         or (command=='양도' and len(args) in {3,4})
                         or (command=='귀화심사' and (args[:1]==['목록'] and len(args)==1 or args[:1] in (['승인'],['거절']) and len(args) in {2,3})))
             if not flexible and command not in {'복권당첨번호변경'} and len(args)!=count.get(command,-1):
@@ -422,6 +425,8 @@ class AdminCommandsManager:
             if command=='거래경고':
                 from managers.trading_warning_manager import TradingWarnings
                 return TradingWarnings(self.db).set(actor,args[0],args[1],args[2] if len(args)>2 else '',args[3] if len(args)>3 else None)
+            if command in {'KYC심사','AML경보'}:
+                return run_compliance_command(self.db,actor,command,args)
             if command=='귀화심사':
                 from managers.naturalization_manager import NaturalizationManager
                 manager=NaturalizationManager(self.bot)

@@ -1,15 +1,9 @@
-import { exactMoney, validMoney, moneyCompare, minorMoney, formatMoney } from "../../shared/money";
-import type { Money } from "../../shared/money";
+import { validMoney, moneyCompare, minorMoney, formatMoney } from "../../shared/money";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api } from "../../shared/api";
 import { Card, Field, date, plain, type Ctx } from "./common";
 
-type Kyc = { user_id: string; status: string; risk_tier: string; reviewed_by: string | null; reviewed_epoch: number | null; expires_epoch: number | null; updated_epoch: number };
-type Alert = { alert_id: number; user_id: string; nationality: string; rule_code: string; reference_key: string; currency_code: string; amount: Money; amount_text: string; status: string; outcome_code: string | null; opened_epoch: number; reviewed_by: string | null; reviewed_epoch: number | null };
-type Rule = { nationality: string; currency_code: string; large_transaction_limit: number; rolling_24h_amount_limit: number; rolling_24h_count_limit: number; enabled: number; updated_epoch: number };
-type KycEvent = { event_id: number; user_id: string; actor_id: string; event_type: string; prior_status: string; new_status: string; prior_risk_tier: string; new_risk_tier: string; reason_code: string; recorded_epoch: number };
-type AmlEvent = { event_id: number; alert_id: number; actor_id: string; event_type: string; prior_status: string | null; new_status: string; outcome_code: string | null; recorded_epoch: number; nationality: string; user_id: string };
 type EclScenario = { nationality: string; scenario_key: "optimistic" | "base" | "downside"; probability: number; pd_multiplier: number; lgd_multiplier: number; updated_epoch: number };
 type EclAssessment = { assessment_id: number; loan_id: number; as_of_day: string; stage: number; risk_grade: string | null; nonaccrual_since_epoch: number | null; pd_12m: number; lifetime_pd: number; lgd: number; ead: number; expected_loss: number; discount_factor: number; effective_interest_rate: number; expected_loss_time_years: number; macro_pd_multiplier: number; ead_text: string; expected_loss_text: string; decimal_places: number; quote_currency: string; scenario: string; calculated_epoch: number; nationality: string };
 type EclBacktest = { issuer: string; nationality: string; pdBand: string; sampleCount: number; borrowerCount: number; effectiveSampleCount: number; observedDefaults: number; meanPredictedPd: number; observedDefaultRate: number; calibrationGap: number; observedToExpected: number | null; observedRateLower95: number; observedRateUpper95: number; predictedPdWithinObserved95: boolean; brierScore: number };
@@ -23,26 +17,14 @@ type CreditPolicy = { nationality: string; product_code: string; pd_multiplier: 
 type FutureCommitment = { loan_id: number; committed_limit_minor_units: number; committed_limit_text: string; quote_currency: string; credit_conversion_factor_bps: number; expires_epoch: number | null; active: number; updated_epoch: number; updated_by: string };
 type CollateralRecovery = { collateral_id: number; loan_id: number; asset_code: string; seniority_rank: number; recovery_days: number; recovery_cost_bps: number; last_value: number; quote_currency: string; status: string; nationality: string };
 type ChargeoffEvent = { event_id: number; loan_id: number; event_key: string; event_type: string; amount_minor_units: number; decimal_places: number; currency_code: string; actor_id: string; created_epoch: number; memo: string; nationality: string };
-type Overview = { kycProfiles: Kyc[]; amlAlerts: Alert[]; amlRules: Rule[]; kycEvents: KycEvent[]; amlEvents: AmlEvent[]; creditRiskScenarios: EclScenario[]; creditSupport: CreditSupport[]; creditPolicyOverrides: CreditPolicy[]; futureCommitments: FutureCommitment[]; collateralRecovery: CollateralRecovery[]; chargeoffEvents: ChargeoffEvent[]; eclAssessments: EclAssessment[]; eclBacktest: { maturedThroughEpoch: number; groups: EclBacktest[]; discrimination: EclDiscrimination[]; stability: EclStability[]; borrowerHoldout: EclBorrowerHoldout[]; outOfTimeBorrowerHoldout: EclOutOfTimeHoldout[]; gradeTransitions: GradeTransition[]; gradeTransitionMethod: string; method: string } };
+type Overview = { amlRules: { nationality: string }[]; creditRiskScenarios: EclScenario[]; creditSupport: CreditSupport[]; creditPolicyOverrides: CreditPolicy[]; futureCommitments: FutureCommitment[]; collateralRecovery: CollateralRecovery[]; chargeoffEvents: ChargeoffEvent[]; eclAssessments: EclAssessment[]; eclBacktest: { maturedThroughEpoch: number; groups: EclBacktest[]; discrimination: EclDiscrimination[]; stability: EclStability[]; borrowerHoldout: EclBorrowerHoldout[]; outOfTimeBorrowerHoldout: EclOutOfTimeHoldout[]; gradeTransitions: GradeTransition[]; gradeTransitionMethod: string; method: string } };
 type Result = { success: boolean; result: Record<string, unknown> };
 
-const KYC_STATUSES = [["pending", "검토 대기"], ["verified", "확인 완료"], ["rejected", "확인 거절"], ["expired", "만료"]];
-const REASONS = [["review_started", "검토 시작"], ["requirements_met", "요건 충족"], ["requirements_not_met", "요건 미충족"], ["periodic_review", "정기 검토"], ["expired", "만료"], ["risk_escalation", "위험 상향"], ["customer_request", "사용자 요청"]];
-const OUTCOMES = [["no_action", "추가 조치 없음"], ["false_positive", "오탐"], ["further_review", "추가 검토"], ["escalated", "상급 검토"], ["account_restriction_considered", "제한 검토"]];
-const KYC_EVENT_LABELS: Record<string, string> = { review: "심사", expiry: "만료", transfer_denied: "송금 차단", deposit_open_denied: "예금 계좌 개설 차단", loan_apply_denied: "대출 신청 차단" };
-const KYC_EVENT_REASON_LABELS: Record<string, string> = { risk_restricted: "제한 위험등급", kyc_incomplete_or_expired: "확인 미완료 또는 만료", eligibility_changed_during_check: "확인 중 자격 상태 변경" };
-const AML_EVENT_LABELS: Record<string, string> = { alert_opened: "경보 생성", analyst_review: "분석 검토" };
-const AML_STATUS_LABELS: Record<string, string> = { open: "미검토", reviewing: "검토 중", closed: "종결" };
-const AML_OUTCOME_LABELS: Record<string, string> = { no_action: "추가 조치 없음", false_positive: "오탐", further_review: "추가 검토", escalated: "상급 검토", account_restriction_considered: "제한 검토" };
-
-/** Administrator-only simulator compliance controls; never collects identity documents. */
+/** Administrator-only credit-risk controls (ECL, charge-offs, collateral, grade policy). KYC/AML moved to admin commands. */
 export function CompliancePage({ ctx }: { ctx: Ctx }) {
   const { busy, run, say } = ctx;
-  const [data, setData] = useState<Overview>({ kycProfiles: [], amlAlerts: [], amlRules: [], kycEvents: [], amlEvents: [], creditRiskScenarios: [], creditSupport: [], creditPolicyOverrides: [], futureCommitments: [], collateralRecovery: [], chargeoffEvents: [], eclAssessments: [], eclBacktest: { maturedThroughEpoch: 0, groups: [], discrimination: [], stability: [], borrowerHoldout: [], outOfTimeBorrowerHoldout: [], gradeTransitions: [], gradeTransitionMethod: "", method: "" } });
+  const [data, setData] = useState<Overview>({ amlRules: [], creditRiskScenarios: [], creditSupport: [], creditPolicyOverrides: [], futureCommitments: [], collateralRecovery: [], chargeoffEvents: [], eclAssessments: [], eclBacktest: { maturedThroughEpoch: 0, groups: [], discrimination: [], stability: [], borrowerHoldout: [], outOfTimeBorrowerHoldout: [], gradeTransitions: [], gradeTransitionMethod: "", method: "" } });
   const [nationality, setNationality] = useState("");
-  const [kyc, setKyc] = useState({ userId: "", status: "pending", riskTier: "standard", reasonCode: "review_started", expires: "" });
-  const [rule, setRule] = useState({ large: "", rollingAmount: "", rollingCount: "", enabled: false });
-  const [outcomes, setOutcomes] = useState<Record<number, string>>({});
   const [creditSupport, setCreditSupport] = useState({ loanId: "", partyUserId: "", supportType: "co_borrower", exposureShareBps: "10000", underwritingDti: "", underwritingDsr: "", guaranteeLimit: "", guaranteeRecoveryBps: "10000", recoveryDays: "180", recoveryCostBps: "0", seniorityRank: "1" });
   const [policyDraft, setPolicyDraft] = useState({ productCode: "*", pdMultiplier: "1", a: "0.005", b: "0.01", c: "0.025", d: "0.05", e: "0.1", f: "0.2" });
   const [commitmentDraft, setCommitmentDraft] = useState({ loanId: "", limit: "", conversionBps: "5000", expires: "" });
@@ -60,7 +42,6 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
     setData(result);
     if (!nationality && result.amlRules.length) setNationality(result.amlRules[0].nationality);
     const selected = result.amlRules.find((item) => item.nationality === nationality) ?? result.amlRules[0];
-    if (selected) setRule({ large: String(selected.large_transaction_limit || ""), rollingAmount: String(selected.rolling_24h_amount_limit || ""), rollingCount: String(selected.rolling_24h_count_limit || ""), enabled: Boolean(selected.enabled) });
     const selectedCountry = nationality || selected?.nationality || "";
     const scenarios = result.creditRiskScenarios.filter((item) => item.nationality === selectedCountry);
     if (scenarios.length) {
@@ -75,42 +56,6 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
   }, [nationality]);
 
   useEffect(() => { load().catch((cause) => say(cause instanceof Error ? cause.message : "준법 정보를 불러오지 못했습니다.", true)); }, [load, say]);
-
-  function saveKyc(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const expiresEpoch = kyc.expires ? Math.floor(new Date(kyc.expires).getTime() / 1000) : undefined;
-    if (!window.confirm(`${kyc.userId} 사용자의 KYC 상태를 '${kyc.status}'로 기록할까요? 신원 문서는 저장하지 않습니다.`)) return;
-    void run(() => api<Result>("/api/admin/compliance", { method: "POST", body: JSON.stringify({ action: "kyc_review", userId: kyc.userId.trim(), status: kyc.status, riskTier: kyc.riskTier, reasonCode: kyc.reasonCode, ...(expiresEpoch ? { expiresEpoch } : {}) }) }),
-      "KYC 검토를 저장하지 못했습니다.", async (result) => { say(plain(JSON.stringify(result.result)), !result.success); setKyc({ ...kyc, userId: "", expires: "" }); await load(); });
-  }
-
-  function saveRule(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!nationality) { say("AML 규칙을 설정할 국적을 선택해주세요.", true); return; }
-    if (rule.enabled && !([rule.large, rule.rollingAmount].some((value) => validMoney(value, true)) || Number(rule.rollingCount) > 0)) { say("감시를 켜려면 하나 이상의 양수 임계치가 필요합니다.", true); return; }
-    if (!window.confirm(`${nationality}의 AML 시뮬레이터 감시 규칙을 저장할까요? 법정 신고 기준이 아닙니다.`)) return;
-    void run(() => api<Result>("/api/admin/compliance", { method: "POST", body: JSON.stringify({ action: "aml_rule", nationality, largeTransactionLimit: exactMoney(rule.large || 0), rolling24hAmountLimit: exactMoney(rule.rollingAmount || 0), rolling24hCountLimit: Number(rule.rollingCount || 0), enabled: rule.enabled }) }),
-      "AML 규칙을 저장하지 못했습니다.", async (result) => { say(plain(JSON.stringify(result.result)), !result.success); await load(); });
-  }
-
-  function reviewAlert(item: Alert, close: boolean) {
-    const status = close ? "closed" : "reviewing";
-    const outcomeCode = close ? (outcomes[item.alert_id] || "no_action") : "further_review";
-    const text = close ? "종결" : "검토 중";
-    if (!window.confirm(`AML 경보 #${item.alert_id}을 '${text}' 상태로 바꿀까요?`)) return;
-    void run(() => api<Result>("/api/admin/compliance", { method: "POST", body: JSON.stringify({ action: "aml_review", alertId: item.alert_id, status, outcomeCode }) }),
-      "AML 사례를 갱신하지 못했습니다.", async (result) => { say(plain(JSON.stringify(result.result)), !result.success); await load(); });
-  }
-
-  function expireDueKyc() {
-    if (!window.confirm("만료일이 지난 확인 완료 KYC를 만료 처리하고 감사 이력에 기록할까요? 최대 500건씩 처리합니다.")) return;
-    void run(() => api<Result>("/api/admin/compliance", { method: "POST", body: JSON.stringify({ action: "kyc_expire_due" }) }),
-      "만료된 KYC를 처리하지 못했습니다.", async (result) => {
-        const count = Number(result.result.expired_count ?? 0);
-        say(`KYC 만료 처리 ${count}건 · 감사 이력에 기록했습니다.`, !result.success);
-        await load();
-      });
-  }
 
   function saveScenarios(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -207,35 +152,7 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
       "대손상각·회수를 기록하지 못했습니다.", async (result) => { say(plain(JSON.stringify(result.result)), !result.success); await load(); });
   }
 
-  const selectedRule = data.amlRules.find((item) => item.nationality === nationality);
   return <>
-    <Card title="KYC 상태 검토" caption="상태·위험등급·고정 사유 코드와 검토 이력만 저장합니다. KYC 프로필이 있는 사용자는 확인 완료·유효 상태이며 제한 등급이 아닐 때 송금, 예금 계좌 개설, 대출 신청을 할 수 있고 수취는 계속 가능합니다. 프로필이 없는 기존 사용자는 기존 정책을 따릅니다. 실명, 신분증 번호·이미지, 자유기술형 증빙은 입력하지 마세요."
-      actions={<button className="soft small" type="button" disabled={busy} onClick={expireDueKyc}>만료 처리 실행</button>}>
-      <form className="form-grid" onSubmit={saveKyc}>
-        <Field label="사용자 ID"><input className="mono" value={kyc.userId} required maxLength={80} onChange={(event) => setKyc({ ...kyc, userId: event.target.value })} /></Field>
-        <Field label="상태"><select value={kyc.status} onChange={(event) => setKyc({ ...kyc, status: event.target.value })}>{KYC_STATUSES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
-        <Field label="위험 등급"><select value={kyc.riskTier} onChange={(event) => setKyc({ ...kyc, riskTier: event.target.value })}><option value="standard">일반</option><option value="enhanced">강화</option><option value="restricted">제한</option></select></Field>
-        <Field label="사유 코드"><select value={kyc.reasonCode} onChange={(event) => setKyc({ ...kyc, reasonCode: event.target.value })}>{REASONS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
-        <Field label="만료일" hint="선택"><input type="datetime-local" value={kyc.expires} onChange={(event) => setKyc({ ...kyc, expires: event.target.value })} /></Field>
-        <button className="btn primary" disabled={busy || !kyc.userId.trim()}>검토 기록</button>
-      </form>
-      <div className="scroll-x"><table><thead><tr><th>사용자 ID</th><th>상태</th><th>위험</th><th>검토자</th><th>만료</th><th>갱신</th></tr></thead><tbody>
-        {data.kycProfiles.map((item) => <tr key={item.user_id}><td className="mono">{item.user_id}</td><td>{item.status}</td><td>{item.risk_tier}</td><td className="mono">{item.reviewed_by || "—"}</td><td>{item.expires_epoch ? date(item.expires_epoch) : "—"}</td><td>{date(item.updated_epoch)}</td></tr>)}
-      </tbody></table>{!data.kycProfiles.length && <p className="empty">KYC 검토 기록이 없습니다.</p>}</div>
-    </Card>
-
-    <Card title="국적별 AML 시뮬레이터 규칙" caption="고액·24시간 누적액·횟수 기준으로 경보만 생성합니다. 기본 비활성 상태이며 법정 기준·신고 판정이 아닙니다.">
-      <form className="form-grid" onSubmit={saveRule}>
-        <Field label="국적"><select value={nationality} onChange={(event) => setNationality(event.target.value)}>{data.amlRules.map((item) => <option key={item.nationality} value={item.nationality}>{item.nationality} · {item.currency_code}</option>)}</select></Field>
-        <Field label={`단건 기준 (${selectedRule?.currency_code || "통화"})`}><input type="number" min="0" step="any" value={rule.large} onChange={(event) => setRule({ ...rule, large: event.target.value })} /></Field>
-        <Field label={`24시간 누적액 (${selectedRule?.currency_code || "통화"})`}><input type="number" min="0" step="any" value={rule.rollingAmount} onChange={(event) => setRule({ ...rule, rollingAmount: event.target.value })} /></Field>
-        <Field label="24시간 거래 횟수"><input type="number" min="0" step="1" value={rule.rollingCount} onChange={(event) => setRule({ ...rule, rollingCount: event.target.value })} /></Field>
-        <Field label="감시"><select value={rule.enabled ? "on" : "off"} onChange={(event) => setRule({ ...rule, enabled: event.target.value === "on" })}><option value="off">비활성</option><option value="on">활성</option></select></Field>
-        <button className="btn primary" disabled={busy || !nationality}>규칙 저장</button>
-      </form>
-      <p className="hint">현재 규칙 {selectedRule ? `${selectedRule.currency_code} · ${selectedRule.enabled ? "활성" : "비활성"} · 갱신 ${date(selectedRule.updated_epoch)}` : "없음"}</p>
-    </Card>
-
     <Card title="대출별 공동차주·보증 지원" caption="내부 시뮬레이터용 익스포저 분담 또는 동일 통화 보증입니다. 변경은 불변 지원 이력과 관리자 감사 로그에 기록됩니다.">
       <form className="form-grid" onSubmit={saveCreditSupport}>
         <Field label="대출 ID"><input type="number" min="1" step="1" required value={creditSupport.loanId} onChange={(event) => setCreditSupport({ ...creditSupport, loanId: event.target.value })} /></Field>
@@ -348,20 +265,6 @@ export function CompliancePage({ ctx }: { ctx: Ctx }) {
         {data.eclAssessments.map((item) => <tr key={item.assessment_id}><td>{item.as_of_day}</td><td className="mono">#{item.loan_id}</td><td>{item.nationality}</td><td>{item.stage}</td><td>{item.risk_grade ?? "과거평가"}</td><td>{item.nonaccrual_since_epoch ? date(item.nonaccrual_since_epoch) : "—"}</td><td className="r">{(item.pd_12m * 100).toFixed(2)}%</td><td className="r">{(item.lifetime_pd * 100).toFixed(2)}%</td><td className="r mono">{Number(item.macro_pd_multiplier).toFixed(3)}×</td><td className="r">{(item.lgd * 100).toFixed(2)}%</td><td className="r mono">{Number(item.effective_interest_rate).toFixed(4)}%</td><td className="r mono">{Number(item.expected_loss_time_years).toFixed(3)}</td><td className="r mono">{Number(item.discount_factor).toFixed(6)}</td><td className="r mono">{groupAmount(item.ead_text)}</td><td className="r mono">{groupAmount(item.expected_loss_text)}</td><td>{item.quote_currency}</td><td>{plain(item.scenario)}</td></tr>)}
       </tbody></table>{!data.eclAssessments.length && <p className="empty">아직 ECL 평가가 없습니다.</p>}</div>
     </Card>
-
-    <Card title="미종결 AML 경보" caption="송금인·수취인 양쪽을 감시합니다. 24시간 누적액 규칙의 금액은 경보 시점 누적합이며, 그 밖의 규칙은 해당 거래액입니다. 거래가 자동 차단되는 것은 아니며, 추가 조치는 별도 절차로 진행하세요.">
-      <div className="scroll-x"><table><thead><tr><th>ID</th><th>사용자</th><th>국적</th><th>규칙</th><th>거래 참조</th><th className="r">금액</th><th>상태</th><th>종결 결과</th><th>접수</th><th /></tr></thead><tbody>
-        {data.amlAlerts.map((item) => <tr key={item.alert_id}><td className="mono">#{item.alert_id}</td><td className="mono">{item.user_id}</td><td>{item.nationality}</td><td>{item.rule_code}</td><td className="mono">{item.reference_key}</td><td className="r mono">{groupAmount(item.amount_text)} {item.currency_code}</td><td>{item.status}</td><td><select aria-label={`AML 경보 #${item.alert_id} 종결 결과`} value={outcomes[item.alert_id] || "no_action"} onChange={(event) => setOutcomes({ ...outcomes, [item.alert_id]: event.target.value })}>{OUTCOMES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></td><td>{date(item.opened_epoch)}</td><td className="row-actions"><button className="soft small" disabled={busy || item.status === "reviewing"} onClick={() => reviewAlert(item, false)}>검토 시작</button><button className="soft small" disabled={busy} onClick={() => reviewAlert(item, true)}>종결</button></td></tr>)}
-      </tbody></table>{!data.amlAlerts.length && <p className="empty">미종결 경보가 없습니다.</p>}</div>
-    </Card>
-
-    <Card title="준법 검토 이력" caption="KYC·AML 변경 이벤트의 최근 기록입니다. 저장된 기록은 수정·삭제할 수 없습니다.">
-      <div className="scroll-x"><table><thead><tr><th>시각</th><th>종류</th><th>사용자 / 사례</th><th>행위자</th><th>상태 / 당시 등급</th><th>사유 / 결과</th></tr></thead><tbody>
-        {[...data.kycEvents.map((item) => ({ id: `kyc-${item.event_id}`, time: item.recorded_epoch, kind: `KYC · ${KYC_EVENT_LABELS[item.event_type] || item.event_type}`, subject: item.user_id, actor: item.actor_id, change: formatKycEventChange(item), reason: KYC_EVENT_REASON_LABELS[item.reason_code] || item.reason_code })),
-          ...data.amlEvents.map((item) => ({ id: `aml-${item.event_id}`, time: item.recorded_epoch, kind: `AML · ${item.nationality} · ${AML_EVENT_LABELS[item.event_type] || item.event_type}`, subject: `${item.user_id} / #${item.alert_id}`, actor: item.actor_id, change: `${item.prior_status ? AML_STATUS_LABELS[item.prior_status] || item.prior_status : "—"} → ${AML_STATUS_LABELS[item.new_status] || item.new_status}`, reason: item.outcome_code ? AML_OUTCOME_LABELS[item.outcome_code] || item.outcome_code : "—" }))]
-          .sort((left, right) => right.time - left.time).slice(0, 100).map((item) => <tr key={item.id}><td>{date(item.time)}</td><td>{item.kind}</td><td className="mono">{item.subject}</td><td className="mono">{item.actor}</td><td>{item.change}</td><td>{item.reason}</td></tr>)}
-      </tbody></table>{!data.kycEvents.length && !data.amlEvents.length && <p className="empty">준법 검토 이력이 없습니다.</p>}</div>
-    </Card>
   </>;
 }
 
@@ -369,13 +272,4 @@ function groupAmount(value: string) {
   const [whole, fraction] = value.split(".");
   const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   return fraction === undefined ? grouped : `${grouped}.${fraction}`;
-}
-
-function formatKycEventChange(item: KycEvent) {
-  const statuses: Record<string, string> = { pending: "검토 대기", verified: "확인 완료", rejected: "확인 거절", expired: "만료" };
-  const tiers: Record<string, string> = { standard: "일반", enhanced: "강화", restricted: "제한" };
-  const status = statuses[item.new_status] || item.new_status;
-  const tier = tiers[item.new_risk_tier] || item.new_risk_tier;
-  if (item.event_type.endsWith("_denied")) return `차단 당시: ${status} · ${tier} 위험등급`;
-  return `${statuses[item.prior_status] || item.prior_status} → ${status} · ${tiers[item.prior_risk_tier] || item.prior_risk_tier} → ${tier}`;
 }

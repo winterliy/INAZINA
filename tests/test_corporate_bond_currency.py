@@ -14,8 +14,8 @@ class CorporateBondCurrencyTests(unittest.TestCase):
         self.db.currency.execute(
             "INSERT INTO currencies(code,name,reference_rate,decimal_places) VALUES ('SCD','남방','1/120',2)")
         self.db.currency.execute(
-            "INSERT INTO country_currencies(nationality,currency_code,tax_percent) VALUES ('남방연방','SCD',10)")
-        self.db.users.create_user('scd', '남방인', '남방연방', 0)
+            "INSERT INTO country_currencies(nationality,currency_code,tax_percent) VALUES ('United Southerns','SCD',10)")
+        self.db.users.create_user('scd', '남방인', 'United Southerns', 0)
         self.db.assets.add_user_asset('scd', code, quantity, unit_cost=100)
 
     def _cash_minor(self, user):

@@ -19,8 +19,8 @@ class TaxIncomeCurrencyTests(unittest.TestCase):
         self.db.currency.execute(
             "INSERT INTO currencies(code,name,reference_rate,decimal_places) VALUES ('SCD','남방','1/120',2)")
         self.db.currency.execute(
-            "INSERT INTO country_currencies(nationality,currency_code,tax_percent) VALUES ('남방연방','SCD',10)")
-        self.db.users.create_user('scd', '남방인', '남방연방', 1000)
+            "INSERT INTO country_currencies(nationality,currency_code,tax_percent) VALUES ('United Southerns','SCD',10)")
+        self.db.users.create_user('scd', '남방인', 'United Southerns', 1000)
         self.db.users.create_user('nwx', '시민', '낙원', 1000)
         self.users = UserManager(self.db)
 
@@ -43,7 +43,7 @@ class TaxIncomeCurrencyTests(unittest.TestCase):
         self.assertEqual(self._tax_row('scd'), (Decimal('10.55'), Decimal('1.06'), Decimal('9.49'), 'SCD', 106))
         treasury = self.db.currency.execute_one(
             "SELECT u.cash_minor FROM country_treasuries t JOIN users.users u ON u.user_id=t.user_id "
-            "WHERE t.nationality='남방연방'")
+            "WHERE t.nationality='United Southerns'")
         self.assertEqual(int(treasury[0]), 106)
         with self.db.readonly() as conn:
             check = next(c for c in AccountingJournal.reconcile_subledgers(conn)

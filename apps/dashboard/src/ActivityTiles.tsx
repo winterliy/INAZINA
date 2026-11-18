@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useState } from "react";
 import { date } from "./common";
 import "./heatmap-iso.css";
 
@@ -18,33 +18,61 @@ export function AuditHeatmap({ entries }: { entries: { time: number }[] }) {
   }
   const max = Math.max(1, ...counts.flat());
   const [iso, setIso] = useState(false);
-  // The tilted grid is about 760px wide at full size; shrink it to the card so it is never cut off.
-  const stage = useRef<HTMLDivElement>(null);
-  const [scale, setScale] = useState(0.8);
-  useEffect(() => {
-    const node = stage.current;
-    if (!node || typeof ResizeObserver === "undefined") return;
-    const fit = () => setScale(Math.max(0.35, Math.min(1, (node.clientWidth - 24) / 800)));
-    fit();
-    const observer = new ResizeObserver(fit);
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
   return <section className="tile heatmap-tile" aria-label="최근 7일 시간대별 관리자 작업">
     <div className="heatmap-head">
       <p className="tile-label">작업 히트맵 · 최근 7일 (불러온 {entries.length}건 기준)</p>
       <button type="button" className="outline heatmap-toggle" aria-pressed={iso} onClick={() => setIso((value) => !value)}>{iso ? "2D로 보기" : "3D로 보기"}</button>
     </div>
-    <div ref={stage} className={iso ? "heatmap-stage iso" : "heatmap-stage"} style={{ "--iso-scale": scale } as CSSProperties}>
-    <div className="heatmap">
-      {counts.map((hours, day) => <div key={day} className="heatmap-row">
-        <span>{WEEKDAYS[new Date((first + day * DAY) * 1000).getDay()]}</span>
-        {hours.map((count, hour) => <i key={hour} title={`${hour}시 · ${count}건`} style={{ opacity: !iso && count ? 0.25 + 0.75 * count / max : 1, "--a": count ? 0.3 + 0.7 * count / max : 0, "--h": `${Math.round(count / max * 64)}px` } as CSSProperties} className={count ? "on" : undefined} />)}
-      </div>)}
-      <div className="heatmap-row heatmap-hours"><span />{[0, 6, 12, 18].map((hour) => <small key={hour} style={{ gridColumn: `${hour + 2} / span 6` }}>{hour}시</small>)}</div>
-    </div>
-    </div>
+    {iso
+      ? <IsoHeatmap counts={counts} max={max} first={first} />
+      : <div className="heatmap-stage"><div className="heatmap">
+        {counts.map((hours, day) => <div key={day} className="heatmap-row">
+          <span>{WEEKDAYS[new Date((first + day * DAY) * 1000).getDay()]}</span>
+          {hours.map((count, hour) => <i key={hour} title={`${hour}시 · ${count}건`} style={{ opacity: count ? 0.25 + 0.75 * count / max : 1 }} className={count ? "on" : undefined} />)}
+        </div>)}
+        <div className="heatmap-row heatmap-hours"><span />{[0, 6, 12, 18].map((hour) => <small key={hour} style={{ gridColumn: `${hour + 2} / span 6` }}>{hour}시</small>)}</div>
+      </div></div>}
   </section>;
+}
+
+// Isometric columns drawn as flat SVG polygons, back to front, so every browser paints them the same
+// (CSS 3D transforms render differently in Safari). Days run to the lower left, hours to the lower right.
+const TW = 15, TH = 8.5, TALL = 64;
+const px = (hour: number, day: number) => (hour - day) * TW;
+const py = (hour: number, day: number) => (hour + day) * TH;
+
+/** An opaque face: the chip colour, the accent over it, then a dark wash for the side it turns away from the light. */
+function Face({ points, a, shade }: { points: string; a: number; shade: number }) {
+  return <>
+    <polygon className="iso-top" points={points} />
+    <polygon className="iso-top-on" points={points} fillOpacity={a} />
+    <polygon className="iso-shade" points={points} fillOpacity={shade} />
+  </>;
+}
+
+function IsoHeatmap({ counts, max, first }: { counts: number[][]; max: number; first: number }) {
+  const cells: { day: number; hour: number; count: number }[] = [];
+  for (let sum = 0; sum <= 23 + 6; sum++) for (let day = 0; day < 7; day++) { const hour = sum - day; if (hour >= 0 && hour < 24) cells.push({ day, hour, count: counts[day][hour] }); }
+  const left = px(-1, 6) - TW * 2, right = px(23, 0) + TW + 6, top = -TALL - 6, bottom = py(23, 8) + TH * 2 + 14;
+  return <div className="heatmap-iso">
+    <svg viewBox={`${left} ${top} ${right - left} ${bottom - top}`} role="img" aria-label="시간대별 관리자 작업 3D 보기">
+      {cells.map(({ day, hour, count }) => {
+        const x = px(hour, day), y = py(hour, day), rise = count ? Math.max(6, Math.round(count / max * TALL)) : 0, a = count ? 0.3 + 0.7 * count / max : 0;
+        const topFace = `${x},${y - rise} ${x + TW},${y + TH - rise} ${x},${y + TH * 2 - rise} ${x - TW},${y + TH - rise}`;
+        return <g key={`${day}-${hour}`}>
+          <title>{`${hour}시 · ${count}건`}</title>
+          {rise > 0 && <>
+            <Face points={`${x - TW},${y + TH - rise} ${x},${y + TH * 2 - rise} ${x},${y + TH * 2} ${x - TW},${y + TH}`} a={a} shade={0.22} />
+            <Face points={`${x},${y + TH * 2 - rise} ${x + TW},${y + TH - rise} ${x + TW},${y + TH} ${x},${y + TH * 2}`} a={a} shade={0.4} />
+          </>}
+          <polygon className="iso-top" points={topFace} />
+          {count > 0 && <polygon className="iso-top-on" points={topFace} fillOpacity={a} />}
+        </g>;
+      })}
+      {counts.map((_, day) => <text key={day} className="iso-label" x={px(-1, day) - 4} y={py(-1, day) + TH + 4} textAnchor="end">{WEEKDAYS[new Date((first + day * DAY) * 1000).getDay()]}</text>)}
+      {[0, 6, 12, 18].map((hour) => <text key={hour} className="iso-label" x={px(hour, 8) + TW} y={py(hour, 8) + TH}>{hour}시</text>)}
+    </svg>
+  </div>;
 }
 
 type MarketEvent = { event_id: number; asset_code: string | null; event_type: string; starts_epoch: number; ends_epoch: number; active: boolean };
