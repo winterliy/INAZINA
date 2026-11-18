@@ -1,10 +1,10 @@
 // Run: node --import tsx --test apps/wl/security-store.test.ts
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { wlSecurity } from "./security-store.ts";
+import { hashSecret, wlSecurity } from "./security-store.ts";
 
 const fresh = () => { const dir = mkdtempSync(join(tmpdir(), "wl-sec-")); return { dir, store: wlSecurity(dir, join(dir, "wl-security.json")) }; };
 
@@ -17,20 +17,15 @@ test("before any change the built-in log code works and a wrong password does no
   assert.deepEqual(store.state(), { entryCustom: false, codeCustom: false, codeLength: 4 });
 });
 
-test("the entry password and the code change separately, need the current password and are stored salted", () => {
+test("a refused change writes nothing", () => {
   const { dir, store } = fresh();
-  // Seed a known entry password through the same path the viewer uses: first an invalid current is refused.
   assert.throws(() => store.change("not-the-current", "long-enough-pass"), /현재 입장 비밀번호/);
-  // Reaching a known state without the built-in password: write one with the store's own hasher.
-  const path = join(dir, "wl-security.json");
-  assert.throws(() => statSync(path), "nothing is written by a refused change");
+  assert.throws(() => statSync(join(dir, "wl-security.json")));
 });
 
-test("changing with a known current password", async () => {
+test("the entry password and the code change separately, need the current password and are stored salted", () => {
   const { dir } = fresh();
-  const { hashSecret } = await import("./security-store.ts");
   const path = join(dir, "wl-security.json");
-  const { writeFileSync } = await import("node:fs");
   writeFileSync(path, JSON.stringify({ entry: { hash: hashSecret("first-password") } }));
   const store = wlSecurity(dir, path);
   assert.equal(store.verifyEntry("first-password"), true);
