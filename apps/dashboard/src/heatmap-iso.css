@@ -12,4 +12,7 @@
 .heatmap-stage.iso .heatmap-row i::before { left: 0; right: 0; top: 100%; height: var(--h, 0px); transform-origin: top; transform: rotateX(-90deg); }
 .heatmap-stage.iso .heatmap-row i::after { top: 0; bottom: 0; left: 100%; width: var(--h, 0px); transform-origin: left; transform: rotateY(90deg); filter: brightness(.62); }
 .heatmap-stage.iso .heatmap-hours { opacity: 0; }
+/* A cell with opacity below 1 is flattened by the browser, which tears its column faces off; the 3D view shades with an opaque colour mix instead. */
+.heatmap-stage.iso .heatmap-row i.on { background: color-mix(in srgb, var(--accent) calc(var(--a, 1) * 100%), var(--chip)); }
+.heatmap-stage.iso .heatmap-row i { backface-visibility: hidden; }
 @media (prefers-reduced-motion: reduce) { .heatmap-stage, .heatmap-stage .heatmap, .heatmap-stage .heatmap-row i { transition: none; } }

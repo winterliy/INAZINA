@@ -27,7 +27,7 @@ export function AuditHeatmap({ entries }: { entries: { time: number }[] }) {
     <div className="heatmap">
       {counts.map((hours, day) => <div key={day} className="heatmap-row">
         <span>{WEEKDAYS[new Date((first + day * DAY) * 1000).getDay()]}</span>
-        {hours.map((count, hour) => <i key={hour} title={`${hour}시 · ${count}건`} style={{ opacity: count ? 0.25 + 0.75 * count / max : 1, "--h": `${Math.round(count / max * 64)}px` } as CSSProperties} className={count ? "on" : undefined} />)}
+        {hours.map((count, hour) => <i key={hour} title={`${hour}시 · ${count}건`} style={{ opacity: !iso && count ? 0.25 + 0.75 * count / max : 1, "--a": count ? 0.3 + 0.7 * count / max : 0, "--h": `${Math.round(count / max * 64)}px` } as CSSProperties} className={count ? "on" : undefined} />)}
       </div>)}
       <div className="heatmap-row heatmap-hours"><span />{[0, 6, 12, 18].map((hour) => <small key={hour} style={{ gridColumn: `${hour + 2} / span 6` }}>{hour}시</small>)}</div>
     </div>
