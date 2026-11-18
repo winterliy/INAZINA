@@ -22,6 +22,7 @@ const BanksPage = lazy(() => import("./BanksPage").then((module) => ({ default: 
 const DatabasePage = lazy(() => import("./DatabasePage").then((module) => ({ default: module.DatabasePage })));
 const GambleTile = lazy(() => import("./GambleTile").then((module) => ({ default: module.GambleTile })));
 const EventTimeline = lazy(() => import("./ActivityTiles").then((module) => ({ default: module.EventTimeline })));
+const AccountingClosePage = lazy(() => import("./AccountingClosePage").then((module) => ({ default: module.AccountingClosePage })));
 const LiquidityPage = lazy(() => import("./LiquidityPage").then((module) => ({ default: module.LiquidityPage })));
 const NaturalizationPage = lazy(() => import("./NaturalizationPage").then((module) => ({ default: module.NaturalizationPage })));
 import { COMMAND_FORMS, CommandForm } from "./CommandForm";
@@ -29,7 +30,7 @@ const AccountPage = lazy(() => import("./AccountPage").then((module) => ({ defau
 const OrganizationPage = lazy(() => import("./OrganizationPage").then((module) => ({ default: module.OrganizationPage })));
 const OrganizationOwnershipWindow = lazy(() => import("./OrganizationOwnershipWindow").then((module) => ({ default: module.OrganizationOwnershipWindow })));
 
-type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "feedback" | "board" | "documents" | "compliance" | "accounting" | "events" | "liquidity" | "commands" | "database" | "audit" | "ownership";
+type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "feedback" | "board" | "documents" | "compliance" | "accounting" | "close" | "events" | "liquidity" | "commands" | "database" | "audit" | "ownership";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
 type Instrument = { code: string; name: string; type: string; price: Money; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
 type Exchange = { exchange_id: string; status: string; reason: string | null; trading_halted: number; updated_epoch: number | null; resume_epoch: number | null; circuit_stage: number | null };
@@ -58,6 +59,7 @@ const pages: { id: Page; label: string }[] = [
   { id: "board", label: "게시판 관리" },
   { id: "compliance", label: "KYC · AML" },
   { id: "accounting", label: "은행 · 원장" },
+  { id: "close", label: "회계 마감" },
   { id: "documents", label: "문서 · 약관" },
   { id: "events", label: "시장 사건" },
   { id: "liquidity", label: "유동성" },
@@ -79,6 +81,7 @@ const subtitles: Record<Page, string> = {
   documents: "약관·처리방침·규칙·도움말과 Discord 등록 안내문을 고치고 확정합니다.",
   board: "나루 게시판의 신고를 처리하고 글을 숨기거나 고정합니다. 익명 글의 실제 작성자와 IP를 확인할 수 있습니다.",
   compliance: "국적별 KYC 검토 상태와 AML 시뮬레이터 경보·규칙을 관리합니다.",
+  close: "마감 게이트를 확인하고 환전 반올림 잔여를 환전 손익 계정에 정리하거나 국고로 이전합니다.",
   accounting: "은행을 고유 ID로 만들고 관리하며, 은행별 이중분개 시산 잔액·불균형·결과 원장 대사를 조회합니다.",
   users: "사용자와 국가, 국가 계정의 모든 설정을 관리합니다.",
   events: "호재·악재 사건을 등록하고 최근 사건을 확인합니다.",
@@ -463,6 +466,7 @@ export default function App() {
         {page === "feedback" && <FeedbackPage ctx={ctx} onChange={() => void loadUnread()} />}
         {page === "naturalization" && <NaturalizationPage ctx={ctx} onChange={() => void loadUnread()} />}
         {page === "liquidity" && <LiquidityPage ctx={ctx} />}
+        {page === "close" && <AccountingClosePage ctx={ctx} />}
         {page === "users" && <UsersPage ctx={ctx} currentUserId={user.userId} />}
         {page === "events" && <>
           <EventTimeline events={events} />

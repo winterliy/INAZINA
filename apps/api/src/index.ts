@@ -854,6 +854,18 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     return;
   }
 
+  if (url.pathname === "/api/admin/accounting-close" && (request.method === "GET" || request.method === "POST")) {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const result = request.method === "GET"
+      ? await internalRequest("GET", `/internal/admin/accounting-close${url.search}`, principal.userId, undefined, 120_000)
+      : await internalRequest("POST", "/internal/admin/accounting-close", principal.userId, await requestJson(request));
+    send(response, result.status, result.body);
+    return;
+  }
+
   const liquidityDetail = url.pathname.match(/^\/api\/admin\/liquidity\/([^/]+)$/);
   if (liquidityDetail && request.method === "GET") {
     if (user.role !== "admin") {

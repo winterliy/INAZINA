@@ -1631,6 +1631,7 @@ class CurrencyDB(DBManager):
         ensure_user_realized_pnl(self.execute)
         ensure_payout_requests(self.execute)
         ensure_liquidity_providers(self.execute)
+        ensure_fx_residual_clearings(self.execute)
 
     def _ensure_treasury_bond_minor_units(self):
         """Make bond offer and lot cash amounts authoritative in quote-currency units."""
@@ -3767,6 +3768,20 @@ def ensure_user_realized_pnl(execute):
         execute(f"""CREATE TRIGGER IF NOT EXISTS trg_user_realized_pnl_{operation.lower()}
             BEFORE {operation} ON user_realized_pnl
             BEGIN SELECT RAISE(ABORT,'realized profit and loss rows are append-only'); END""")
+
+
+def ensure_fx_residual_clearings(execute):
+    """Sub-minor-unit dust left by rounding every currency conversion down, recognized into the 환전 손익 account
+    ('recognize') and later moved to the currency's treasury ('transfer'). Rows are written by FxResiduals and never change."""
+    execute("""CREATE TABLE IF NOT EXISTS fx_residual_clearings (
+        clearing_id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL CHECK(kind IN ('recognize','transfer')),
+        currency_code TEXT NOT NULL, decimal_places INTEGER NOT NULL CHECK(decimal_places BETWEEN 0 AND 6),
+        minor_units INTEGER NOT NULL CHECK(minor_units>0), recipient_user_id TEXT, actor TEXT NOT NULL,
+        recorded_epoch INTEGER NOT NULL)""")
+    for operation in ("UPDATE", "DELETE"):
+        execute(f"""CREATE TRIGGER IF NOT EXISTS trg_fx_residual_clearings_{operation.lower()}
+            BEFORE {operation} ON fx_residual_clearings
+            BEGIN SELECT RAISE(ABORT,'FX residual clearing rows are append-only'); END""")
 
 
 def ensure_liquidity_providers(execute):

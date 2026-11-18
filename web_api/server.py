@@ -4483,6 +4483,51 @@ def update_admin_user(actor, user_id, changes):
     return domain().admin_control.user(actor, user_id, changes)
 
 
+def accounting_close_overview(check=False):
+    """Residuals and history are quick; the full reconciliation (slow on a big database) only runs when asked."""
+    from managers.accounting_journal import AccountingJournal
+    from managers.fx_residual import FxResiduals
+    with domain().db.readonly() as conn:
+        residuals = FxResiduals.report(conn)
+        history = FxResiduals.history(conn)
+        report = AccountingJournal.reconcile_all_financial_ledgers(conn) if check else None
+    pending = sum(1 for row in residuals if row["pending"] > 0)
+    gates = [{"key": "fx_residual", "label": "환전 반올림 잔여 정리", "ok": pending == 0, "detail": f"정리할 통화 {pending}개"}]
+    close_ready = None
+    if report is not None:
+        coverage = report.get("amount_field_coverage") or {}
+        gates = [
+            {"key": "reconcile", "label": "통합 원장 대사", "ok": report["status"] == "matched",
+             "detail": f"이상 {len(report['findings'])}건"},
+            {"key": "coverage", "label": "금액 필드 분류", "ok": coverage.get("status") == "matched",
+             "detail": f"미분류 {len(coverage.get('unclassified') or [])}건"},
+        ] + gates
+        close_ready = bool(report.get("close_ready")) and pending == 0
+    return {"gates": gates, "checked": report is not None, "closeReady": close_ready, "residuals": residuals, "history": history}
+
+
+def accounting_close_action(actor, payload):
+    from managers.fx_residual import FxResiduals
+    if not isinstance(payload, dict):
+        raise ValueError("invalid_close_action")
+    action = str(payload.get("action") or "")
+    with domain().db.atomic() as conn:
+        if action == "recognize":
+            booked = FxResiduals.recognize(conn, actor)
+            message = ", ".join(f"{currency} {units}" for currency, units in booked) + " 을(를) 환전 손익으로 기록했습니다." if booked else "새로 기록할 잔여가 없습니다."
+        elif action == "transfer":
+            units = payload.get("units")
+            if isinstance(units, bool) or not isinstance(units, int):
+                raise ValueError("이전 금액은 정수 최소단위여야 합니다.")
+            treasury = FxResiduals.transfer(conn, actor, str(payload.get("currency") or ""), units)
+            message = f"{units} 최소단위를 국고({treasury})로 이전했습니다."
+        else:
+            raise ValueError("unknown_close_action")
+    with connect_db(timeout=5) as connection:
+        _audit_db(connection, actor, f"accounting_close.{action}", {"currency": payload.get("currency"), "units": payload.get("units")})
+    return message
+
+
 def liquidity_overview():
     from managers.liquidity_manager import FIRMS, PROFILES
     manager = _liquidity_manager()
@@ -4838,6 +4883,12 @@ class Handler(BaseHTTPRequestHandler):
                         "result_count": len(users),
                     })
                     self.send_json(200, {"users": users})
+            elif path == "/internal/admin/accounting-close":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    self.send_json(200, accounting_close_overview(check=(parse_qs(urlsplit(self.path).query).get("check") or ["0"])[0] == "1"))
             elif path == "/internal/admin/liquidity":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -5731,6 +5782,14 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     success, message = set_market_state(user["userId"], payload)
                     self.send_json(200 if success else 400, {"success": success, "message": message})
+            elif path == "/internal/admin/accounting-close":
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    try:
+                        self.send_json(200, {"success": True, "message": accounting_close_action(user["userId"], payload)})
+                    except ValueError as exc:
+                        self.send_json(400, {"success": False, "message": str(exc)})
             elif path == "/internal/admin/liquidity":
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
