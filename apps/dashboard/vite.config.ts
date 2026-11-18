@@ -5,10 +5,10 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: "127.0.0.1",
-    port: 4310,
+    port: Number(process.env.INAZINA_DASHBOARD_PORT ?? 4310),
     strictPort: true,
     proxy: {
-      "/api": "http://127.0.0.1:4312",
+      "/api": `http://127.0.0.1:${process.env.PORT ?? 4312}`,
     },
   },
 });

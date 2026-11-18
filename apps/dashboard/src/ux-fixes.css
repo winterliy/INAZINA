@@ -1,0 +1,6 @@
+/* Layout fixes found by the view audit. */
+.check { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.close-gates { min-width: 0; }
+.close-gates td { white-space: normal; }
+.ownership-tree-company { white-space: normal; overflow-wrap: anywhere; }
+.audit-payload { text-overflow: ellipsis; }

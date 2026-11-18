@@ -30,14 +30,14 @@ INITIAL_CAPITAL = 5_000_000_000
 REQUOTE_TOLERANCE = 0.25        # keep a resting order while it is within this share of the half-spread
 STALE_FRACTION = 0.25           # a quote this close to (or through) the price, as a share of the half-spread, is withdrawn
 
-# Twelve independent companies: name, code, industry, temperament (four of each).
+# Twelve independent companies named like overseas financial houses: name, code, industry, temperament (four of each).
 FIRMS = [
-    ("한빛무역", "HNBT", "무역", "low"), ("도람산업", "DRMS", "제조", "low"),
-    ("그랜트상사", "GRNT", "유통", "low"), ("새벽물산", "SBMS", "식품", "low"),
-    ("별누리상사", "BNRS", "유통", "medium"), ("누리개발", "NRDB", "건설", "medium"),
-    ("미래유통", "MRYT", "유통", "medium"), ("타온에너지", "TAON", "에너지", "medium"),
-    ("솔라인더스트리", "SLIN", "제조", "high"), ("가람산업", "GRMS", "제조", "high"),
-    ("편안상사", "PYAN", "무역", "high"), ("오대양물산", "ODYM", "무역", "high"),
+    ("싱가포르증권", "HNBT", "금융", "low"), ("취리히에셋", "DRMS", "금융", "low"),
+    ("룩셈부르크자산운용", "GRNT", "금융", "low"), ("암스테르담증권", "SBMS", "금융", "low"),
+    ("런던에셋", "BNRS", "금융", "medium"), ("뉴욕자산운용", "NRDB", "금융", "medium"),
+    ("도쿄증권", "MRYT", "금융", "medium"), ("시드니에셋", "TAON", "금융", "medium"),
+    ("홍콩자산운용", "SLIN", "금융", "high"), ("프랑크푸르트증권", "GRMS", "금융", "high"),
+    ("두바이에셋", "PYAN", "금융", "high"), ("토론토자산운용", "ODYM", "금융", "high"),
 ]
 
 

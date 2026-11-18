@@ -6,6 +6,7 @@ import { NAVIGATE, interceptLinks } from "./nav";
 import "./style.css";
 import "../../shared/typography.css";
 import "../../shared/backdrop.css";
+import "./ux-fixes.css";
 
 /** Re-renders on in-app navigation; App stays mounted so its session and data carry over. */
 function Root() {

@@ -4,8 +4,9 @@
 .heatmap-stage { overflow-x: auto; padding-block: 2px; transition: padding .5s ease; }
 .heatmap-stage .heatmap { overflow: visible; transition: transform .6s cubic-bezier(.2, .7, .2, 1); transform-origin: 50% 40%; }
 .heatmap-stage .heatmap-row i { position: relative; transition: transform .6s cubic-bezier(.2, .7, .2, 1); }
-.heatmap-stage.iso { padding: 150px 40px 120px; overflow-x: auto; }
-.heatmap-stage.iso .heatmap { transform: rotateX(58deg) rotateZ(-42deg) scale(.82); transform-style: preserve-3d; margin-inline: auto; width: max-content; }
+.heatmap-stage.iso { height: calc(var(--iso-scale, .8) * 560px + 40px); overflow: visible; display: flex; align-items: center; justify-content: center; padding: 0; }
+.heatmap-stage.iso .heatmap { transform: rotateX(58deg) rotateZ(-42deg) scale(var(--iso-scale, .8)); transform-style: preserve-3d; margin: 0; width: max-content; flex: none; }
+.heatmap-stage.iso .heatmap-row { grid-template-columns: 24px repeat(24, 28px); min-width: 0; }
 .heatmap-stage.iso .heatmap-row { transform-style: preserve-3d; }
 .heatmap-stage.iso .heatmap-row i { transform-style: preserve-3d; transform: translateZ(var(--h, 0px)); }
 .heatmap-stage.iso .heatmap-row i::before, .heatmap-stage.iso .heatmap-row i::after { content: ""; position: absolute; background: inherit; filter: brightness(.78); }

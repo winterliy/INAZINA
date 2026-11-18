@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { date } from "./common";
 import "./heatmap-iso.css";
 
@@ -18,12 +18,24 @@ export function AuditHeatmap({ entries }: { entries: { time: number }[] }) {
   }
   const max = Math.max(1, ...counts.flat());
   const [iso, setIso] = useState(false);
+  // The tilted grid is about 760px wide at full size; shrink it to the card so it is never cut off.
+  const stage = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(0.8);
+  useEffect(() => {
+    const node = stage.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    const fit = () => setScale(Math.max(0.35, Math.min(1, (node.clientWidth - 24) / 800)));
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
   return <section className="tile heatmap-tile" aria-label="최근 7일 시간대별 관리자 작업">
     <div className="heatmap-head">
       <p className="tile-label">작업 히트맵 · 최근 7일 (불러온 {entries.length}건 기준)</p>
       <button type="button" className="outline heatmap-toggle" aria-pressed={iso} onClick={() => setIso((value) => !value)}>{iso ? "2D로 보기" : "3D로 보기"}</button>
     </div>
-    <div className={iso ? "heatmap-stage iso" : "heatmap-stage"}>
+    <div ref={stage} className={iso ? "heatmap-stage iso" : "heatmap-stage"} style={{ "--iso-scale": scale } as CSSProperties}>
     <div className="heatmap">
       {counts.map((hours, day) => <div key={day} className="heatmap-row">
         <span>{WEEKDAYS[new Date((first + day * DAY) * 1000).getDay()]}</span>

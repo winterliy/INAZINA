@@ -1,0 +1,7 @@
+/* Phone layout fixes found by the view audit (long names were cut to "…", value columns were squeezed). */
+@media (max-width: 520px) {
+  .search-result { flex-wrap: wrap; align-items: flex-start; row-gap: 4px; }
+  .search-result b { overflow: visible; white-space: normal; overflow-wrap: anywhere; text-overflow: clip; }
+  .search-result > span:first-child, .search-result > .search-name { flex: 1 1 100%; }
+  .search-result strong { flex: 1 0 100%; text-align: left; }
+}

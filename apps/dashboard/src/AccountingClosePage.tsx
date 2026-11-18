@@ -36,10 +36,10 @@ export function AccountingClosePage({ ctx }: { ctx: Ctx }) {
   const waiting = data.residuals.filter((row) => row.pending > 0);
   return <>
     <Card title="마감 게이트" caption="모든 항목이 통과해야 기간을 닫을 수 있습니다. 통합 원장 대사는 큰 DB에서 오래 걸려서 누를 때만 실행합니다.">
-      <table className="close-gates"><tbody>
+      <div className="scroll-x"><table className="close-gates"><tbody>
         {data.gates.map((gate) => <tr key={gate.key}><td>{gate.label}</td><td className="cap">{gate.detail}</td>
           <td><span className={`tag ${gate.ok ? "ok" : "warn"}`}>{gate.ok ? "통과" : "확인 필요"}</span></td></tr>)}
-      </tbody></table>
+      </tbody></table></div>
       <p className="close-summary">
         {!data.checked ? <span className="tag warn">전체 점검 전</span> : data.closeReady ? <span className="tag ok">마감 가능</span> : <span className="tag warn">마감 전에 확인할 항목이 있습니다</span>}
         <button type="button" className="outline" disabled={busy} onClick={check}>{data.checked ? "점검 다시 실행" : "전체 점검 실행"}</button></p>
