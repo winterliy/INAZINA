@@ -45,9 +45,14 @@ footer a{{color:var(--accent);text-decoration:none}}footer a:hover{{text-decorat
 """
 
 
+MODAL_CSS = '\ndialog.pw{width:min(420px,calc(100% - 32px));padding:28px;border:0;border-radius:24px;color:var(--ink);background:var(--canvas);box-shadow:0 24px 70px rgba(0,0,0,.35),inset 0 0 0 1px var(--line)}\ndialog.pw::backdrop{background:rgba(0,0,0,.42);backdrop-filter:blur(6px)}\ndialog.pw h2{margin:0 0 4px;font-size:22px;font-weight:600}\ndialog.pw p{margin:0;max-width:none;font-size:14px;text-align:left}\ndialog.pw form{display:flex;gap:8px;margin-top:20px}\ndialog.pw input{min-width:0;flex:1;padding:12px;border:1px solid var(--line);border-radius:12px;color:var(--ink);background:var(--surface);font:inherit}\ndialog.pw button{padding:12px 18px;border:0;border-radius:12px;color:#fff;background:var(--focus);font:inherit;cursor:pointer}\ndialog.pw button.ghost{color:var(--ink);background:var(--surface)}\ndialog.pw .err{min-height:20px;margin-top:10px;color:#d93025;font-size:13px;text-align:left}\ndialog.pw pre{max-height:50vh;overflow:auto;margin:16px 0 0;padding:14px;border-radius:14px;background:var(--surface);font:12.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;text-align:left;white-space:pre-wrap;word-break:break-word}\ndialog.pw .row{display:flex;justify-content:flex-end;margin-top:16px}\ndialog.pw [hidden]{display:none!important}\n'
+MODAL_HTML = '<dialog class="pw" id="pw" aria-labelledby="pw-title">\n  <h2 id="pw-title">API 비밀번호</h2>\n  <p>상태를 확인하려면 비밀번호를 입력하세요.</p>\n  <form id="pw-form"><input type="password" name="password" autocomplete="current-password" aria-label="비밀번호" required><button type="submit">확인</button><button type="button" class="ghost" data-close>취소</button></form>\n  <div class="err" id="pw-err" role="alert"></div>\n  <pre id="pw-out" hidden></pre>\n  <div class="row" id="pw-done" hidden><button type="button" data-close>닫기</button></div>\n</dialog>\n<script>\n(function(){\n  var link=document.getElementById("health-link"),dlg=document.getElementById("pw"),form=document.getElementById("pw-form"),\n      err=document.getElementById("pw-err"),out=document.getElementById("pw-out"),done=document.getElementById("pw-done"),input=form.elements.password;\n  if(!link||!dlg||!dlg.showModal)return;\n  link.addEventListener("click",function(e){e.preventDefault();form.hidden=false;out.hidden=true;done.hidden=true;err.textContent="";input.value="";dlg.showModal();input.focus()});\n  Array.prototype.forEach.call(dlg.querySelectorAll("[data-close]"),function(b){b.addEventListener("click",function(){dlg.close()})});\n  form.addEventListener("submit",function(e){\n    e.preventDefault();err.textContent="";\n    var body=new URLSearchParams({target:link.getAttribute("href"),password:input.value});\n    fetch("/__browser-access",{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body:body,redirect:"manual",cache:"no-store"}).then(function(r){\n      if(r.type==="opaqueredirect"||r.status===0||(r.status>=300&&r.status<400)){err.textContent="비밀번호가 맞지 않습니다.";input.select();return}\n      return r.text().then(function(t){\n        var s;try{s=JSON.stringify(JSON.parse(t),null,2)}catch(x){err.textContent="상태를 읽지 못했습니다.";return}\n        out.textContent=s;out.hidden=false;done.hidden=false;form.hidden=true;\n      });\n    }).catch(function(){err.textContent="서버에 연결하지 못했습니다."});\n  });\n})();\n</script>'
+
+
 def landing_page(reason, path, database_ok):
     title, text = REASONS[reason]
-    style = STYLE.format(dot="#30d158" if database_ok else "#ff453a")
+    style = STYLE.format(dot="#30d158" if database_ok else "#ff453a") + MODAL_CSS
+    modal = MODAL_HTML
     path_chip = "" if reason == "home" else f'<span class="path">{html.escape(path)}</span>'
     status = "서비스 정상" if database_ok else "서비스 점검 필요"
     return f"""<!doctype html>
@@ -72,7 +77,8 @@ def landing_page(reason, path, database_ok):
     <a class="card" href="http://127.0.0.1:4311/"><span class="icon i2" aria-hidden="true">📈</span><span><b>나루</b><span>시세 보기 · 주문 · 내 지갑</span></span><span class="arrow" aria-hidden="true">›</span></a>
     <a class="card" href="http://127.0.0.1:4310/"><span class="icon i1" aria-hidden="true">🛠</span><span><b>관리자 대시보드</b><span>운영 · 상품 · 사용자 관리</span></span><span class="arrow" aria-hidden="true">›</span></a>
   </nav>
-  <footer><span class="status"><span class="dot"></span>{status}</span><a href="/internal/health">상태 확인 (JSON)</a></footer>
+  <footer><span class="status"><span class="dot"></span>{status}</span><a id="health-link" href="/internal/health">상태 확인 (JSON)</a></footer>
 </main>
+{modal}
 </body>
 </html>"""

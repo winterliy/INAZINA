@@ -364,7 +364,7 @@ async function sendLanding(response: ServerResponse, reason: LandingReason, path
   const health = await internalGet("/internal/health");
   response.writeHead(status ?? (reason === "not_found" ? 404 : 200), {
     "content-type": "text/html; charset=utf-8", "cache-control": "no-store",
-    "content-security-policy": "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'",
+    "content-security-policy": "default-src 'none'; img-src data:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'",
     "x-content-type-options": "nosniff",
   });
   response.end(landingPage(reason, path, health.status === 200));
