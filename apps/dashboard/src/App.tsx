@@ -22,13 +22,14 @@ const BanksPage = lazy(() => import("./BanksPage").then((module) => ({ default: 
 const DatabasePage = lazy(() => import("./DatabasePage").then((module) => ({ default: module.DatabasePage })));
 const GambleTile = lazy(() => import("./GambleTile").then((module) => ({ default: module.GambleTile })));
 const EventTimeline = lazy(() => import("./ActivityTiles").then((module) => ({ default: module.EventTimeline })));
+const LiquidityPage = lazy(() => import("./LiquidityPage").then((module) => ({ default: module.LiquidityPage })));
 const NaturalizationPage = lazy(() => import("./NaturalizationPage").then((module) => ({ default: module.NaturalizationPage })));
 import { COMMAND_FORMS, CommandForm } from "./CommandForm";
 const AccountPage = lazy(() => import("./AccountPage").then((module) => ({ default: module.AccountPage })));
 const OrganizationPage = lazy(() => import("./OrganizationPage").then((module) => ({ default: module.OrganizationPage })));
 const OrganizationOwnershipWindow = lazy(() => import("./OrganizationOwnershipWindow").then((module) => ({ default: module.OrganizationOwnershipWindow })));
 
-type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "feedback" | "board" | "documents" | "compliance" | "accounting" | "events" | "commands" | "database" | "audit" | "ownership";
+type Page = "account" | "overview" | "instruments" | "finance" | "exchanges" | "companies" | "organizations" | "users" | "naturalization" | "feedback" | "board" | "documents" | "compliance" | "accounting" | "events" | "liquidity" | "commands" | "database" | "audit" | "ownership";
 type FundComponent = { assetCode: string; weight: number; assetClass: string };
 type Instrument = { code: string; name: string; type: string; price: Money; status: string; exchange_id?: string; fund_category?: string | null; components?: FundComponent[] };
 type Exchange = { exchange_id: string; status: string; reason: string | null; trading_halted: number; updated_epoch: number | null; resume_epoch: number | null; circuit_stage: number | null };
@@ -59,6 +60,7 @@ const pages: { id: Page; label: string }[] = [
   { id: "accounting", label: "은행 · 원장" },
   { id: "documents", label: "문서 · 약관" },
   { id: "events", label: "시장 사건" },
+  { id: "liquidity", label: "유동성" },
   { id: "commands", label: "관리자 명령어" },
   { id: "database", label: "DB 편집" },
   { id: "audit", label: "작업 기록" },
@@ -80,6 +82,7 @@ const subtitles: Record<Page, string> = {
   accounting: "은행을 고유 ID로 만들고 관리하며, 은행별 이중분개 시산 잔액·불균형·결과 원장 대사를 조회합니다.",
   users: "사용자와 국가, 국가 계정의 모든 설정을 관리합니다.",
   events: "호재·악재 사건을 등록하고 최근 사건을 확인합니다.",
+  liquidity: "알고리즘으로 호가를 올려 유동성을 공급하는 회사를 넣고 빼고, 유동성 성향을 정합니다.",
   commands: "Discord의 모든 $ 명령어와 도움말을 같은 검증과 기록으로 실행합니다.",
   database: "DB Browser에서 하던 설정 편집을 감사 기록과 함께 처리합니다.",
   audit: "모든 관리자 작업과 관리자 계정 로그인의 최근 기록입니다.",
@@ -459,6 +462,7 @@ export default function App() {
         {page === "accounting" && <BanksPage ctx={ctx} />}
         {page === "feedback" && <FeedbackPage ctx={ctx} onChange={() => void loadUnread()} />}
         {page === "naturalization" && <NaturalizationPage ctx={ctx} onChange={() => void loadUnread()} />}
+        {page === "liquidity" && <LiquidityPage ctx={ctx} />}
         {page === "users" && <UsersPage ctx={ctx} currentUserId={user.userId} />}
         {page === "events" && <>
           <EventTimeline events={events} />

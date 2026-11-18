@@ -725,7 +725,7 @@ class CurrencyDB(DBManager):
             ("company", ("capital", "share_price", "liquidation_value_per_share",
                          "dividend_per_share"), "company_code", "NEW.quote_currency"),
             ("market_assets", ("price", "dividend_per_share"), "code", "NEW.quote_currency"),
-            ("saving", ("deposit_amount",), "product_code", "NEW.quote_currency"),
+            ("saving", ("deposit_amount", "installment_amount"), "product_code", "NEW.quote_currency"),
             ("liability", ("loan_limit", "repayment_amount"), "product_code", "NEW.quote_currency"),
             ("investment", ("unit_price", "face_value", "dividend_per_share"),
              "product_code", "NEW.quote_currency"),
@@ -1630,6 +1630,7 @@ class CurrencyDB(DBManager):
         ensure_option_settlement_account_guard(self.execute)
         ensure_user_realized_pnl(self.execute)
         ensure_payout_requests(self.execute)
+        ensure_liquidity_providers(self.execute)
 
     def _ensure_treasury_bond_minor_units(self):
         """Make bond offer and lot cash amounts authoritative in quote-currency units."""
@@ -2014,6 +2015,7 @@ class CurrencyDB(DBManager):
                 ("market_events", "target_value", "사건 목표값(변동 % 또는 목표가격). 가격 목표는 market_event_targets에서 금액으로 등록되며 이 값은 원장에 직접 쓰이지 않음"),
                 ("financial_institutions", "operating_cost_spread", "금액이 아닌 비용 가산율"),
                 ("financial_lines", "amount", "이미 회사 원장 통화 최소단위로 저장된 서명 분개액"),
+                ("business_cash_baseline_values", "amount", "선물·스왑 상품별 현금 대조에서 별도로 확인하는 기초 잔액"),
                 ("users", "cash_minor", "이미 고객 통화 최소단위로 저장된 권위 잔액"),
                 ("accounts", "balance_units", "통화 최소단위에 정렬된 레거시 micro-unit 잔액; balance_minor_units가 권위값"),
                 ("market_orders", "reserved_cash_units", "레거시 micro-unit 미러; reserved_cash_minor_units가 권위값"),
@@ -3764,6 +3766,19 @@ def ensure_user_realized_pnl(execute):
         execute(f"""CREATE TRIGGER IF NOT EXISTS trg_user_realized_pnl_{operation.lower()}
             BEFORE {operation} ON user_realized_pnl
             BEGIN SELECT RAISE(ABORT,'realized profit and loss rows are append-only'); END""")
+
+
+def ensure_liquidity_providers(execute):
+    """The companies whose algorithm quotes the market for liquidity (dashboard 유동성 tab).
+
+    One row per company: its liquidity temperament, whether it is switched on, the capital it started with
+    (the loss floor is measured against it) and its quoting clock."""
+    execute("""CREATE TABLE IF NOT EXISTS liquidity_providers (
+        company_code TEXT PRIMARY KEY, profile TEXT NOT NULL CHECK(profile IN ('low','medium','high')),
+        enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
+        halted INTEGER NOT NULL DEFAULT 0 CHECK(halted IN (0,1)),
+        initial_capital_minor_units INTEGER NOT NULL DEFAULT 0, last_run_epoch INTEGER NOT NULL DEFAULT 0,
+        created_epoch INTEGER NOT NULL, updated_epoch INTEGER NOT NULL)""")
 
 
 def ensure_option_settlement_account_guard(execute):

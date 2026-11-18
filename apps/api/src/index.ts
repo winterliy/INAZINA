@@ -854,6 +854,18 @@ async function handle(request: IncomingMessage, response: ServerResponse, browse
     return;
   }
 
+  if (url.pathname === "/api/admin/liquidity" && (request.method === "GET" || request.method === "POST")) {
+    if (user.role !== "admin") {
+      send(response, 403, { error: "admin_required" });
+      return;
+    }
+    const result = request.method === "GET"
+      ? await internalGet("/internal/admin/liquidity", principal.userId)
+      : await internalRequest("POST", "/internal/admin/liquidity", principal.userId, await requestJson(request));
+    send(response, result.status, result.body);
+    return;
+  }
+
   if (request.method === "GET" && url.pathname === "/api/admin/events") {
     if (user.role !== "admin") {
       send(response, 403, { error: "admin_required" });

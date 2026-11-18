@@ -23,7 +23,7 @@ LAYERS = {
         "depositary_receipt_manager", "dr_deviation_monitor_manager", "dr_dividend_tax_manager", "listing_requirements",
         "fund_dividend_receiver", "price_gap_filler", "bank_companies", "asset_cost_manager", "game_funding", "funding_manager", "funding_maturity",
         "organization_manager", "overdraft", "account_kind_settlement", "insolvency_manager", "payout_manager", "stats_manager"},
-    3: {"admin_manager", "admin_control_manager", "admin_commands_manager", "catalog_manager"},
+    3: {"admin_manager", "admin_control_manager", "admin_commands_manager", "catalog_manager", "liquidity_manager"},
 }
 LAYER_OF = {module: layer for layer, modules in LAYERS.items() for module in modules}
 

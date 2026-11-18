@@ -163,6 +163,17 @@ class InazinaBot(discord.Client):
                 print(f"[Notification Delivery Error] {type(exc).__name__}: {exc}")
             await asyncio.sleep(15)
 
+    async def liquidity_loop(self):
+        """Algorithmic liquidity companies requote the order book under their own names."""
+        from managers.liquidity_manager import LiquidityManager
+        manager = LiquidityManager(self.db, self.order_book)
+        while not self.is_closed():
+            try:
+                await self._run_background_write(manager.run_cycle)
+            except Exception as exc:
+                print(f"[Liquidity Error] {type(exc).__name__}: {exc}")
+            await asyncio.sleep(5)
+
     async def setup_hook(self):
         from functions.slash_commands import SlashCommandRegistry
 
@@ -245,6 +256,7 @@ class InazinaBot(discord.Client):
             self.loop.create_task(self.market_update_loop(), name="market-price-worker")
             self.loop.create_task(self.scheduled_loan_payment_loop(), name="scheduled-loan-worker")
             self.loop.create_task(self.notification_delivery_loop(), name="notification-delivery-worker")
+            self.loop.create_task(self.liquidity_loop(), name="liquidity-worker")
             from functions.web_jobs import web_job_loop
             self.loop.create_task(web_job_loop(self), name="dashboard-job-worker")
 

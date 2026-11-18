@@ -4483,6 +4483,55 @@ def update_admin_user(actor, user_id, changes):
     return domain().admin_control.user(actor, user_id, changes)
 
 
+def liquidity_overview():
+    from managers.liquidity_manager import FIRMS, PROFILES
+    manager = _liquidity_manager()
+    with connect_readonly() as connection:
+        candidates = [dict(row) for row in connection.execute(
+            "SELECT c.company_code AS code, c.name FROM company c WHERE c.status='active' AND c.share_class='common' "
+            "AND NOT EXISTS (SELECT 1 FROM liquidity_providers p WHERE p.company_code=c.company_code) ORDER BY c.company_code")]
+        provisioned = {row[0] for row in connection.execute("SELECT company_code FROM company WHERE company_code IN (%s)" % ",".join("?" * len(FIRMS)),
+                                                              [firm[1] for firm in FIRMS])}
+    return {"providers": manager.providers(), "candidates": candidates,
+            "profiles": {key: {"spreadBps": value["spread_bps"], "levels": value["levels"], "assets": value["assets"],
+                               "cycleSeconds": value["cycle_seconds"]} for key, value in PROFILES.items()},
+            "firmsPending": [firm[1] for firm in FIRMS if firm[1] not in provisioned]}
+
+
+def _liquidity_manager():
+    from managers.liquidity_manager import LiquidityManager
+    domain_ = domain()
+    return LiquidityManager(domain_.db, domain_.order_book)
+
+
+def liquidity_action(actor, payload):
+    """Add/remove a company in the liquidity set, change its temperament, switch it on/off, or create the 12 firms."""
+    if not isinstance(payload, dict):
+        raise ValueError("invalid_liquidity_action")
+    action = str(payload.get("action") or "")
+    manager = _liquidity_manager()
+    code = str(payload.get("companyCode") or "").strip()
+    if action == "add":
+        manager.add_provider(code, str(payload.get("profile") or ""))
+    elif action == "remove":
+        manager.remove_provider(code)
+    elif action == "profile":
+        manager.set_profile(code, str(payload.get("profile") or ""))
+    elif action == "enable":
+        manager.set_enabled(code, bool(payload.get("enabled")))
+    elif action == "provision":
+        created = manager.provision_firms()
+        message = f"{len(created)}개 회사를 만들고 낙원국고에서 자본을 지급했습니다."
+        with connect_db(timeout=5) as connection:
+            _audit_db(connection, actor, "liquidity.provision", {"created": created})
+        return message
+    else:
+        raise ValueError("unknown_liquidity_action")
+    with connect_db(timeout=5) as connection:
+        _audit_db(connection, actor, f"liquidity.{action}", {"companyCode": code, "profile": payload.get("profile")})
+    return "완료했습니다."
+
+
 def create_admin_event(actor, payload):
     if not isinstance(payload, dict):
         raise ValueError("invalid_event")
@@ -4789,6 +4838,12 @@ class Handler(BaseHTTPRequestHandler):
                         "result_count": len(users),
                     })
                     self.send_json(200, {"users": users})
+            elif path == "/internal/admin/liquidity":
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    self.send_json(200, liquidity_overview())
             elif path == "/internal/admin/events":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":
@@ -5667,6 +5722,14 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     success, message = set_market_state(user["userId"], payload)
                     self.send_json(200 if success else 400, {"success": success, "message": message})
+            elif path == "/internal/admin/liquidity":
+                if user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    try:
+                        self.send_json(200, {"success": True, "message": liquidity_action(user["userId"], payload)})
+                    except ValueError as exc:
+                        self.send_json(400, {"success": False, "message": str(exc)})
             elif path == "/internal/admin/events":
                 if user["role"] != "admin":
                     self.send_json(403, {"error": "admin_required"})
