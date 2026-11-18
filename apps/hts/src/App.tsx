@@ -62,7 +62,8 @@ const STATUS: Record<string, string> = { open: "미체결", partial: "부분 체
 const money = formatMoney;
 const compactMoney = formatMoneyNumeric;
 const ORDER_TYPES = [["limit", "지정가"], ["market", "시장가"], ["current", "현재가"]] as const;
-const date = (epoch: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "short" }).format(epoch * 1000);
+// A missing or invalid time shows as a dash; one bad row must never blank the whole page.
+const date = (epoch: number) => Number.isFinite(epoch * 1000) ? new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "short" }).format(epoch * 1000) : "—";
 const CREDIT_EVENTS: Record<string, string> = {
   payment_on_time: "정상 납부", payment_missed: "납부 연체", payment_cured: "연체 회차 사후 납부", loan_closed: "대출 완납",
   acceleration: "기한이익상실", default: "부도", manual_adjustment: "관리자 정정", external_adjustment: "점수 정정 반영", legacy_baseline: "신용모델 도입",

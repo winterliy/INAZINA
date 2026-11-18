@@ -9,6 +9,7 @@ equity falls below half of the capital it started with.
 """
 import hashlib
 import math
+import random
 import time
 
 from functions.money import base_currency_code
@@ -19,11 +20,23 @@ from managers.company_account_manager import CompanyAccounts
 # size_pct: share of free cash (or held shares) one level quotes; assets: how many stocks it covers;
 # cycle_seconds: how often it requotes; inventory_cap: stock value it will hold as a share of its equity.
 PROFILES = {
-    "low": {"spread_bps": 120, "skew_bps": 30, "levels": 1, "size_pct": 0.01, "assets": 3, "cycle_seconds": 180, "inventory_cap": 0.15},
-    "medium": {"spread_bps": 60, "skew_bps": 20, "levels": 2, "size_pct": 0.01, "assets": 6, "cycle_seconds": 90, "inventory_cap": 0.3},
-    "high": {"spread_bps": 25, "skew_bps": 5, "levels": 3, "size_pct": 0.01, "assets": 8, "cycle_seconds": 45, "inventory_cap": 0.5},
+    "low": {"spread_bps": 120, "skew_bps": 30, "levels": 1, "size_pct": 0.01, "assets": 3, "cycle_seconds": 180, "inventory_cap": 0.15,
+            "take_prob": 0.05, "take_cash_pct": 0.004, "take_sell_pct": 0.2},
+    "medium": {"spread_bps": 60, "skew_bps": 20, "levels": 2, "size_pct": 0.01, "assets": 6, "cycle_seconds": 90, "inventory_cap": 0.3,
+               "take_prob": 0.15, "take_cash_pct": 0.008, "take_sell_pct": 0.3},
+    "high": {"spread_bps": 25, "skew_bps": 5, "levels": 3, "size_pct": 0.01, "assets": 8, "cycle_seconds": 45, "inventory_cap": 0.5,
+             "take_prob": 0.3, "take_cash_pct": 0.012, "take_sell_pct": 0.4},
 }
+# take_prob: chance per stock and cycle that the firm also trades AGAINST the book (buys offered shares while it holds few,
+# sells into bids once it holds many), which is how the firms get their first inventory and trade with each other.
+# take_cash_pct: share of free cash one buy sweep spends; take_sell_pct: share of the holding one sell sweep offers.
 LEVEL_STEP_BPS = 15
+# Price-impact guards for the taker step (it can move thin stocks): a sweep never spends more than this share of the company's
+# market value, and no persona trades while the price has already moved this far from its last-five-minutes average.
+TAKE_MARKET_VALUE_SHARE = 0.002
+TAKE_MOVE_LIMIT = 0.03
+TAKE_SEED_RATIO = 0.1          # buy sweeps only below this inventory ratio
+TAKE_SELL_RATIO = 0.5          # sell sweeps only above this inventory ratio
 HALT_EQUITY_RATIO = 0.5
 RESERVE_FLOOR = 0.5            # free cash must stay above this share of equity for new bids
 INITIAL_CAPITAL = 5_000_000_000
@@ -31,14 +44,18 @@ REQUOTE_TOLERANCE = 0.25        # keep a resting order while it is within this s
 STALE_FRACTION = 0.25           # a quote this close to (or through) the price, as a share of the half-spread, is withdrawn
 
 # Twelve independent companies named like overseas financial houses: name, code, industry, temperament (four of each).
+# Each group of four temperament firms runs the four trading personas known from agent-based market simulations
+# (ABIDES: zero-intelligence noise, value, momentum agents beside the market maker): inventory, noise, value, momentum.
 FIRMS = [
-    ("싱가포르증권", "HNBT", "금융", "low"), ("취리히에셋", "DRMS", "금융", "low"),
-    ("룩셈부르크자산운용", "GRNT", "금융", "low"), ("암스테르담증권", "SBMS", "금융", "low"),
-    ("런던에셋", "BNRS", "금융", "medium"), ("뉴욕자산운용", "NRDB", "금융", "medium"),
-    ("도쿄증권", "MRYT", "금융", "medium"), ("시드니에셋", "TAON", "금융", "medium"),
-    ("홍콩자산운용", "SLIN", "금융", "high"), ("프랑크푸르트증권", "GRMS", "금융", "high"),
-    ("두바이에셋", "PYAN", "금융", "high"), ("토론토자산운용", "ODYM", "금융", "high"),
+    ("싱가포르증권", "HNBT", "금융", "low", "inventory"), ("취리히에셋", "DRMS", "금융", "low", "noise"),
+    ("룩셈부르크자산운용", "GRNT", "금융", "low", "value"), ("암스테르담증권", "SBMS", "금융", "low", "momentum"),
+    ("런던에셋", "BNRS", "금융", "medium", "inventory"), ("뉴욕자산운용", "NRDB", "금융", "medium", "noise"),
+    ("도쿄증권", "MRYT", "금융", "medium", "value"), ("시드니에셋", "TAON", "금융", "medium", "momentum"),
+    ("홍콩자산운용", "SLIN", "금융", "high", "inventory"), ("프랑크푸르트증권", "GRMS", "금융", "high", "noise"),
+    ("두바이에셋", "PYAN", "금융", "high", "value"), ("토론토자산운용", "ODYM", "금융", "high", "momentum"),
 ]
+STRATEGIES = ("inventory", "noise", "value", "momentum")
+FAST_SECONDS, SLOW_SECONDS = 300, 1800      # momentum: short vs long average; value: the long average is the fundamental
 
 
 def quote_prices(price, held_value_ratio, profile):
@@ -72,7 +89,7 @@ class LiquidityManager:
                 cash, holdings = self._standing(conn, row["user_id"]) if row["user_id"] else (0, 0)
                 equity = cash + holdings
                 result.append({
-                    "companyCode": row["company_code"], "name": row["name"], "profile": row["profile"],
+                    "companyCode": row["company_code"], "name": row["name"], "profile": row["profile"], "strategy": row["strategy"],
                     "enabled": bool(row["enabled"]), "halted": bool(row["halted"]),
                     "initialCapital": int(row["initial_capital_minor_units"]), "cash": cash, "holdingsValue": holdings,
                     "equity": equity, "pnl": equity - int(row["initial_capital_minor_units"]),
@@ -127,10 +144,10 @@ class LiquidityManager:
             holdings += int(float(row["q"]) * int(row["price"] or 0))
         return cash, holdings
 
-    def add_provider(self, company_code, profile, *, enabled=True):
+    def add_provider(self, company_code, profile, *, enabled=True, strategy="inventory"):
         """Put an existing company into the liquidity set (its capital account is opened if missing)."""
-        if profile not in PROFILES:
-            raise ValueError("유동성 성향은 low, medium, high 중에서 선택해주세요.")
+        if profile not in PROFILES or strategy not in STRATEGIES:
+            raise ValueError("유동성 성향은 low, medium, high, 전략은 inventory, noise, value, momentum 중에서 선택해주세요.")
         now = int(time.time())
         with self.db.atomic(("users", "accounts", "assets", "product", "company", "tax")) as conn:
             company = conn.execute("SELECT * FROM company WHERE company_code=? AND status='active'", (str(company_code),)).fetchone()
@@ -139,10 +156,10 @@ class LiquidityManager:
             user_id = CompanyAccounts.account_id(conn, company["company_code"])
             cash, holdings = self._standing(conn, user_id)
             conn.execute(
-                "INSERT INTO liquidity_providers(company_code,profile,enabled,initial_capital_minor_units,created_epoch,updated_epoch) "
-                "VALUES (?,?,?,?,?,?) ON CONFLICT(company_code) DO UPDATE SET profile=excluded.profile, "
+                "INSERT INTO liquidity_providers(company_code,profile,strategy,enabled,initial_capital_minor_units,created_epoch,updated_epoch) "
+                "VALUES (?,?,?,?,?,?,?) ON CONFLICT(company_code) DO UPDATE SET profile=excluded.profile, strategy=excluded.strategy, "
                 "enabled=excluded.enabled, halted=0, updated_epoch=excluded.updated_epoch",
-                (company["company_code"], profile, int(bool(enabled)), cash + holdings, now, now))
+                (company["company_code"], profile, strategy, int(bool(enabled)), cash + holdings, now, now))
         return True
 
     def set_profile(self, company_code, profile):
@@ -151,6 +168,14 @@ class LiquidityManager:
         with self.db.atomic(("company",)) as conn:
             if not conn.execute("UPDATE liquidity_providers SET profile=?, updated_epoch=? WHERE company_code=?",
                                 (profile, int(time.time()), str(company_code))).rowcount:
+                raise ValueError("유동성 공급 회사가 아닙니다.")
+
+    def set_strategy(self, company_code, strategy):
+        if strategy not in STRATEGIES:
+            raise ValueError("전략은 inventory, noise, value, momentum 중에서 선택해주세요.")
+        with self.db.atomic(("company",)) as conn:
+            if not conn.execute("UPDATE liquidity_providers SET strategy=?, updated_epoch=? WHERE company_code=?",
+                                (strategy, int(time.time()), str(company_code))).rowcount:
                 raise ValueError("유동성 공급 회사가 아닙니다.")
 
     def set_enabled(self, company_code, enabled):
@@ -283,6 +308,7 @@ class LiquidityManager:
                     wanted.append(("sell", ask, size))
                     sellable -= size
             keep = set()
+            count += self._take(user_id, asset, price, half, held, held_ratio, cash, equity, cfg, provider, now)
             for order in resting:
                 match = next((w for w in wanted if w[0] == order["side"] and w not in keep
                               and abs(w[1] - int(order["price"])) <= max(1, REQUOTE_TOLERANCE * half * price)), None)
@@ -299,13 +325,81 @@ class LiquidityManager:
             conn.execute("UPDATE liquidity_providers SET last_run_epoch=? WHERE company_code=?", (now, code))
         return count
 
+    @staticmethod
+    def _average(conn, asset, now, seconds):
+        """Average market price over the last ``seconds`` (sampled every 30 s of the per-second price history)."""
+        rows = conn.execute("SELECT price_minor_units FROM market_price_history WHERE asset_code=? AND recorded_epoch>? "
+                            "AND recorded_epoch%30=0", (asset, int(now) - int(seconds))).fetchall()
+        values = [int(row[0]) for row in rows if row[0] is not None]
+        return sum(values) / len(values) if values else None
+
+    def _signal(self, strategy, asset, price, half, held, held_ratio, cash, equity, now, rng):
+        """('buy'|'sell'|None, limit price, size basis) for the firm's persona; sizes are fixed by the caller."""
+        if strategy == "noise":                       # zero-intelligence with a budget constraint: random side near the touch
+            side = rng.choice(("buy", "sell"))
+            offset = rng.uniform(0, 2 * half)
+            return (side, offset)
+        with self.db.readonly() as conn:
+            slow = self._average(conn, asset, now, SLOW_SECONDS)
+            fast = self._average(conn, asset, now, FAST_SECONDS) if strategy == "momentum" else None
+        if strategy == "value" and slow:              # trade back toward the fundamental (the long average)
+            if price < slow * (1 - 2 * half):
+                return ("buy", half)
+            if price > slow * (1 + 2 * half):
+                return ("sell", half)
+            return (None, 0)
+        if strategy == "momentum" and slow and fast:  # follow the trend: short average through the long one
+            if fast > slow * (1 + half):
+                return ("buy", half)
+            if fast < slow * (1 - half):
+                return ("sell", half)
+            return (None, 0)
+        if strategy == "inventory":                   # keep inventory between the bounds: seed it, then trade it down
+            if held_ratio < TAKE_SEED_RATIO:
+                return ("buy", half)
+            if held_ratio > TAKE_SELL_RATIO:
+                return ("sell", half)
+        return (None, 0)
+
+    def _take(self, user_id, asset, price, half, held, held_ratio, cash, equity, cfg, provider, now):
+        """Trade against the book now and then, as the firm's persona would (see FIRMS).
+
+        The order is priced through the market so it sweeps what rests there (users' offers and the other liquidity firms'
+        quotes alike); whatever is left is withdrawn by the next ``withdraw_stale``. Buys spend at most ``take_cash_pct`` of
+        free cash while free cash stays above half the equity; sells offer at most ``take_sell_pct`` of the holding."""
+        rng = random.Random(f"{provider['company_code']}:{asset}:{now // max(1, cfg['cycle_seconds'])}")
+        if rng.random() >= cfg["take_prob"]:
+            return 0
+        with self.db.readonly() as conn:
+            recent = self._average(conn, asset, now, FAST_SECONDS)
+            shares = conn.execute("SELECT total_shares FROM company WHERE company_code=?", (asset,)).fetchone()
+        if recent and abs(price / recent - 1) > TAKE_MOVE_LIMIT:
+            return 0                                   # the market is already moving: do not push it further
+        side, offset = self._signal(provider.get("strategy") or "inventory", asset, price, half, held, held_ratio, cash, equity, now, rng)
+        if side == "buy" and cash > RESERVE_FLOOR * equity:
+            limit = max(1, math.ceil(price * (1 + offset)))
+            size = int(cash * cfg["take_cash_pct"] // limit)
+            if shares and shares[0]:                   # never more than a small slice of the whole company
+                size = min(size, int(TAKE_MARKET_VALUE_SHARE * int(shares[0])))
+        elif side == "sell" and held:
+            limit = max(1, math.floor(price * (1 - offset)))
+            size = min(held, max(1, int(held * cfg["take_sell_pct"])))
+            if shares and shares[0]:
+                size = min(size, max(1, int(TAKE_MARKET_VALUE_SHARE * int(shares[0]))))
+        else:
+            return 0
+        if size < 1:
+            return 0
+        ok, _message = self.book.place_limit_order(user_id, asset, side, size, limit)
+        return 1 if ok else 0
+
     # ------------------------------------------------------------------ provisioning
     def provision_firms(self, treasury_user_id=None, capital=INITIAL_CAPITAL):
         """Create the twelve independent 법인 (unlisted, not stock companies, nationality 낙원), fund each
         from the 낙원 treasury and register it as a provider. Safe to run again: existing firms are kept."""
         from managers.currency_exchange_manager import CurrencyExchangeManager
         created = []
-        for name, code, industry, profile in FIRMS:
+        for name, code, industry, profile, strategy in FIRMS:
             with self.db.atomic(("users", "accounts", "assets", "product", "company", "tax")) as conn:
                 if conn.execute("SELECT 1 FROM company WHERE company_code=?", (code,)).fetchone():
                     continue
@@ -319,7 +413,7 @@ class LiquidityManager:
                     (code, name, industry, capital, 1_000_000, max(1, capital // 1_000_000), treasury))
                 account = CompanyAccounts.account_id(conn, code)
             CurrencyExchangeManager(self.db).transfer(treasury, account, capital)
-            self.add_provider(code, profile)
+            self.add_provider(code, profile, strategy=strategy)
             created.append(code)
         return created
 

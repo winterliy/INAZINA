@@ -4,8 +4,9 @@ import { Card, date, errorText, number, type Ctx } from "./common";
 import "./liquidity.css";
 
 type Profile = "low" | "medium" | "high";
+type Strategy = "inventory" | "noise" | "value" | "momentum";
 type Provider = {
-  companyCode: string; name: string; profile: Profile; enabled: boolean; halted: boolean; initialCapital: number;
+  companyCode: string; name: string; profile: Profile; strategy: Strategy; enabled: boolean; halted: boolean; initialCapital: number;
   cash: number; holdingsValue: number; equity: number; pnl: number; lastRunEpoch: number; openOrders: number;
 };
 type Overview = {
@@ -15,6 +16,13 @@ type Overview = {
 type Stock = { assetCode: string; name: string; price: number; held: number; buys: number[]; sells: number[]; state: "quoting" | "event" | "halted" | "off" | "waiting" };
 
 const PROFILE_LABEL: Record<Profile, string> = { low: "낮음", medium: "중간", high: "높음" };
+const STRATEGY_LABEL: Record<Strategy, string> = { inventory: "재고 조절", noise: "무작위", value: "가치 회귀", momentum: "추세 추종" };
+const STRATEGY_HINT: Record<Strategy, string> = {
+  inventory: "재고가 적으면 매도 물량을 사고, 많으면 매수 호가에 팝니다.",
+  noise: "무작위 방향으로 소액을 시장가 근처에 냅니다. 예산 안에서만 거래합니다.",
+  value: "최근 30분 평균보다 싸면 사고 비싸면 파는 평균 회귀 전략입니다.",
+  momentum: "5분 평균이 30분 평균을 넘으면 사고 아래로 내려가면 파는 추세 추종 전략입니다.",
+};
 const STATE_LABEL: Record<Stock["state"], [string, string]> = {
   quoting: ["호가 중", "ok"], event: ["사건 진행 중 · 거둠", "warn"], halted: ["자본 부족으로 중지", "danger"],
   off: ["꺼짐", "warn"], waiting: ["다음 갱신 대기", "warn"],
@@ -83,7 +91,7 @@ export function LiquidityPage({ ctx }: { ctx: Ctx }) {
 
     <Card title="유동성 공급 회사" caption="회사를 누르면 아래에 종목별 호가가 열립니다. 자본이 시작 자본의 절반(막대의 세로선) 아래로 내려가면 그 회사는 거래를 멈춥니다. 가격 사건이 진행 중이거나 가격이 호가를 지나가면 호가를 거둡니다.">
       <div className="scroll-x"><table className="liq-table">
-        <thead><tr><th>회사</th><th>성향</th><th>상태</th><th>자본 (시작 대비)</th><th>순자산</th><th>손익</th><th>호가</th><th /></tr></thead>
+        <thead><tr><th>회사</th><th>성향</th><th>전략</th><th>상태</th><th>자본 (시작 대비)</th><th>순자산</th><th>손익</th><th>호가</th><th /></tr></thead>
         <tbody>
           {providers.map((item) => {
             const ratio = item.initialCapital ? item.equity / item.initialCapital : 1;
@@ -96,6 +104,10 @@ export function LiquidityPage({ ctx }: { ctx: Ctx }) {
                   {(Object.keys(PROFILE_LABEL) as Profile[]).map((key) => <button key={key} type="button" aria-pressed={item.profile === key} disabled={busy} title={spec(key)}
                     onClick={() => item.profile !== key && act({ action: "profile", companyCode: item.companyCode, profile: key }, "성향을 바꾸지 못했습니다.")}>{PROFILE_LABEL[key]}</button>)}
                 </div></td>
+                <td><select aria-label={`${item.name} 거래 전략`} value={item.strategy} disabled={busy} title={STRATEGY_HINT[item.strategy]}
+                  onChange={(event) => act({ action: "strategy", companyCode: item.companyCode, strategy: event.target.value }, "전략을 바꾸지 못했습니다.")}>
+                  {(Object.keys(STRATEGY_LABEL) as Strategy[]).map((key) => <option key={key} value={key}>{STRATEGY_LABEL[key]}</option>)}
+                </select></td>
                 <td>{item.halted ? <span className="tag danger">자본 부족으로 중지</span> : item.enabled ? <span className="tag ok">공급 중</span> : <span className="tag warn">꺼짐</span>}</td>
                 <td><div className="liq-capbar" role="img" aria-label={`시작 자본의 ${(ratio * 100).toFixed(0)}%`}><i style={{ width: `${Math.min(100, ratio * 50)}%` }} /><u /></div></td>
                 <td>{number(item.equity)}</td>
@@ -112,7 +124,7 @@ export function LiquidityPage({ ctx }: { ctx: Ctx }) {
                   </button>
                 </td>
               </tr>
-              {expanded && <tr className="liq-detail"><td colSpan={8}>
+              {expanded && <tr className="liq-detail"><td colSpan={9}>
                 <p className="cap">{item.name} · 종목별 호가 · 현금 {number(item.cash)} · 보유 주식 {number(item.holdingsValue)}</p>
                 {!stocks ? <p className="cap">불러오는 중…</p> : stocks.length === 0 ? <p className="cap">아직 호가를 올린 종목이 없습니다.</p> :
                   <div className="scroll-x"><table><thead><tr><th>종목</th><th>현재가</th><th>보유</th><th>매수 호가</th><th>매도 호가</th><th>상태</th></tr></thead><tbody>
@@ -124,13 +136,14 @@ export function LiquidityPage({ ctx }: { ctx: Ctx }) {
               </td></tr>}
             </Fragment>;
           })}
-          {!providers.length && <tr><td colSpan={8} className="cap">유동성 공급 회사가 없습니다. 아래에서 회사를 넣어 주세요.</td></tr>}
+          {!providers.length && <tr><td colSpan={9} className="cap">유동성 공급 회사가 없습니다. 아래에서 회사를 넣어 주세요.</td></tr>}
         </tbody>
       </table></div>
     </Card>
 
-    <Card title="성향 안내" caption="성향이 바뀌면 다음 갱신 주기부터 적용됩니다.">
-      <div className="liq-profiles">{(Object.keys(PROFILE_LABEL) as Profile[]).map((key) => <div key={key}><b>{PROFILE_LABEL[key]}</b><span>{spec(key)}</span></div>)}</div>
+    <Card title="성향과 전략 안내" caption="성향은 호가의 폭과 갱신 주기를, 전략은 시장의 매물을 사고파는 방식을 정합니다. 바뀌면 다음 갱신 주기부터 적용됩니다.">
+      <div className="liq-profiles">{(Object.keys(PROFILE_LABEL) as Profile[]).map((key) => <div key={key}><b>성향 {PROFILE_LABEL[key]}</b><span>{spec(key)}</span></div>)}
+        {(Object.keys(STRATEGY_LABEL) as Strategy[]).map((key) => <div key={key}><b>전략 {STRATEGY_LABEL[key]}</b><span>{STRATEGY_HINT[key]}</span></div>)}</div>
     </Card>
 
     <Card title="회사 넣기" caption="이미 있는 회사의 자본 계정으로 거래합니다. 넣는 시점의 순자산이 시작 자본이 됩니다.">

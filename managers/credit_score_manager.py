@@ -314,8 +314,8 @@ class CreditScoreManager:
             "anchor": result["anchor"],
             "factors": factors,
             "events": [dict(row) for row in conn.execute(
-                "SELECT event_type AS type,reference,loan_id AS loanId,occurred_epoch AS occurredEpoch,"
-                "points,actor_id AS actorId,reason FROM credit_events WHERE user_id=? "
+                "SELECT event_type AS type,reference,loan_id AS \"loanId\",occurred_epoch AS \"occurredEpoch\","
+                "points,actor_id AS \"actorId\",reason FROM credit_events WHERE user_id=? "
                 "ORDER BY occurred_epoch DESC,event_id DESC LIMIT ?",
                 (str(user_id), int(events)),
             )],

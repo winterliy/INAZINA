@@ -4572,11 +4572,13 @@ def liquidity_action(actor, payload):
     manager = _liquidity_manager()
     code = str(payload.get("companyCode") or "").strip()
     if action == "add":
-        manager.add_provider(code, str(payload.get("profile") or ""))
+        manager.add_provider(code, str(payload.get("profile") or ""), strategy=str(payload.get("strategy") or "inventory"))
     elif action == "remove":
         manager.remove_provider(code)
     elif action == "profile":
         manager.set_profile(code, str(payload.get("profile") or ""))
+    elif action == "strategy":
+        manager.set_strategy(code, str(payload.get("strategy") or ""))
     elif action == "enable":
         manager.set_enabled(code, bool(payload.get("enabled")))
     elif action == "provision":

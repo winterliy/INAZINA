@@ -3808,12 +3808,16 @@ def ensure_liquidity_providers(execute):
     (the loss floor is measured against it) and its quoting clock."""
     execute("""CREATE TABLE IF NOT EXISTS liquidity_providers (
         company_code TEXT PRIMARY KEY, profile TEXT NOT NULL CHECK(profile IN ('low','medium','high')),
+        strategy TEXT NOT NULL DEFAULT 'inventory' CHECK(strategy IN ('inventory','noise','value','momentum')),
         enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN (0,1)),
         halted INTEGER NOT NULL DEFAULT 0 CHECK(halted IN (0,1)),
         initial_capital_minor_units INTEGER NOT NULL DEFAULT 0, last_run_epoch INTEGER NOT NULL DEFAULT 0,
         created_epoch INTEGER NOT NULL, updated_epoch INTEGER NOT NULL)""")
     # The capital column was first called initial_capital_units; databases that started the table under that name keep their rows.
     columns = {str(row[1]) for row in (execute("PRAGMA table_info(liquidity_providers)") or [])}
+    if columns and "strategy" not in columns:
+        execute("ALTER TABLE liquidity_providers ADD COLUMN strategy TEXT NOT NULL DEFAULT 'inventory' "
+                "CHECK(strategy IN ('inventory','noise','value','momentum'))")
     if "initial_capital_units" in columns and "initial_capital_minor_units" not in columns:
         execute("ALTER TABLE liquidity_providers RENAME COLUMN initial_capital_units TO initial_capital_minor_units")
 
