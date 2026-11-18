@@ -3779,6 +3779,10 @@ def ensure_liquidity_providers(execute):
         halted INTEGER NOT NULL DEFAULT 0 CHECK(halted IN (0,1)),
         initial_capital_minor_units INTEGER NOT NULL DEFAULT 0, last_run_epoch INTEGER NOT NULL DEFAULT 0,
         created_epoch INTEGER NOT NULL, updated_epoch INTEGER NOT NULL)""")
+    # The capital column was first called initial_capital_units; databases that started the table under that name keep their rows.
+    columns = {str(row[1]) for row in (execute("PRAGMA table_info(liquidity_providers)") or [])}
+    if "initial_capital_units" in columns and "initial_capital_minor_units" not in columns:
+        execute("ALTER TABLE liquidity_providers RENAME COLUMN initial_capital_units TO initial_capital_minor_units")
 
 
 def ensure_option_settlement_account_guard(execute):

@@ -49,6 +49,8 @@ class LiquidityManagerTests(unittest.TestCase):
         manager.provision_firms("admin", capital=50_000)
         placed = manager.run_cycle(now=10_000)
         self.assertTrue(sum(placed.values()) > 0)
+        for row in manager.providers():                      # cash reserved for resting bids is still the firm's
+            self.assertEqual((row["equity"], row["pnl"]), (50_000, 0))
         with self.db.readonly() as conn:
             orders = conn.execute("SELECT side, limit_price_minor_units p FROM market_orders WHERE status='open' "
                                   "AND asset_code='CO' AND user_id LIKE 'company:%'").fetchall()
@@ -109,3 +111,17 @@ class LiquidityManagerTests(unittest.TestCase):
                                                                   target_price=500, target_percent=1)[0])
         manager.run_cycle(now=now + 100)
         self.assertEqual(resting(), 0)                            # nothing quoted on a stock with a running event
+
+    def test_detail_lists_each_stock_with_its_quotes_and_state(self):
+        manager = self.manager()
+        manager.provision_firms("admin", capital=50_000)
+        manager.run_cycle(now=10_000)
+        code = next(r["companyCode"] for r in manager.providers() if r["openOrders"] > 0)
+        rows = manager.detail(code)
+        co = next(r for r in rows if r["assetCode"] == "CO")
+        self.assertEqual(co["state"], "quoting")
+        self.assertTrue(co["buys"] and all(price < co["price"] for price in co["buys"]))
+        manager.set_enabled(code, False)
+        self.assertEqual({r["state"] for r in manager.detail(code)}, {"off"})
+        with self.assertRaises(ValueError):
+            manager.detail("NOPE")

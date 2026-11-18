@@ -4844,6 +4844,15 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(403, {"error": "admin_required"})
                 else:
                     self.send_json(200, liquidity_overview())
+            elif path.startswith("/internal/admin/liquidity/"):
+                user = identity(internal_user_id(self))
+                if not user or user["role"] != "admin":
+                    self.send_json(403, {"error": "admin_required"})
+                else:
+                    try:
+                        self.send_json(200, {"stocks": _liquidity_manager().detail(unquote(path.removeprefix("/internal/admin/liquidity/")))})
+                    except ValueError as exc:
+                        self.send_json(404, {"error": str(exc)})
             elif path == "/internal/admin/events":
                 user = identity(internal_user_id(self))
                 if not user or user["role"] != "admin":

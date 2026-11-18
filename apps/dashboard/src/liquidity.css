@@ -1,0 +1,21 @@
+/* 유동성 tab: tokens come from the dashboard (--ink, --ink2, --surface, --pearl, --accent, --up-ink, --down-ink). */
+.liq-tile-number { font-size: 26px; }
+.liq-tile-note { margin: 10px 0 0; }
+.liq-table .liq-name { min-height: 0; padding: 0; border: 0; background: transparent; color: var(--ink); font: inherit; font-weight: 600; text-align: left; cursor: pointer; }
+.liq-table .liq-name:hover { color: var(--accent); }
+.liq-open > td { background: var(--pearl); }
+.liq-detail > td { padding: 14px 16px 18px; background: var(--pearl); white-space: normal; }
+.liq-detail table { min-width: 0; }
+.liq-seg { display: inline-flex; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--line, rgba(0,0,0,.12)); overflow: hidden; }
+.liq-seg button { min-height: 0; padding: 4px 11px; border: 0; border-radius: 0; background: transparent; color: var(--ink2); font-size: 12.5px; cursor: pointer; }
+.liq-seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.liq-seg button:hover:not(:disabled):not([aria-pressed="true"]) { background: var(--chip, rgba(0,0,0,.06)); }
+.liq-capbar { position: relative; height: 8px; min-width: 110px; border-radius: 4px; background: var(--chip, rgba(0,0,0,.1)); }
+.liq-capbar i { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--accent); }
+.liq-capbar u { position: absolute; top: -3px; bottom: -3px; left: 25%; width: 2px; background: var(--ink2); }
+.liq-up { color: var(--up-ink); } .liq-down { color: var(--down-ink); }
+.liq-profiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.liq-profiles div { padding: 10px 12px; border-radius: 12px; background: var(--pearl); }
+.liq-profiles b { display: block; } .liq-profiles span { color: var(--ink2); font-size: 12.5px; }
+.liq-add { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+.liq-add label { display: grid; gap: 4px; color: var(--ink2); font-size: 12.5px; }

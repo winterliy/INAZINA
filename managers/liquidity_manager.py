@@ -20,11 +20,12 @@ from managers.company_account_manager import CompanyAccounts
 # cycle_seconds: how often it requotes; inventory_cap: stock value it will hold as a share of its equity.
 PROFILES = {
     "low": {"spread_bps": 120, "skew_bps": 30, "levels": 1, "size_pct": 0.01, "assets": 3, "cycle_seconds": 180, "inventory_cap": 0.15},
-    "medium": {"spread_bps": 60, "skew_bps": 20, "levels": 2, "size_pct": 0.02, "assets": 6, "cycle_seconds": 90, "inventory_cap": 0.3},
-    "high": {"spread_bps": 25, "skew_bps": 5, "levels": 3, "size_pct": 0.03, "assets": 8, "cycle_seconds": 45, "inventory_cap": 0.5},
+    "medium": {"spread_bps": 60, "skew_bps": 20, "levels": 2, "size_pct": 0.01, "assets": 6, "cycle_seconds": 90, "inventory_cap": 0.3},
+    "high": {"spread_bps": 25, "skew_bps": 5, "levels": 3, "size_pct": 0.01, "assets": 8, "cycle_seconds": 45, "inventory_cap": 0.5},
 }
 LEVEL_STEP_BPS = 15
 HALT_EQUITY_RATIO = 0.5
+RESERVE_FLOOR = 0.5            # free cash must stay above this share of equity for new bids
 INITIAL_CAPITAL = 5_000_000_000
 REQUOTE_TOLERANCE = 0.25        # keep a resting order while it is within this share of the half-spread
 STALE_FRACTION = 0.25           # a quote this close to (or through) the price, as a share of the half-spread, is withdrawn
@@ -81,9 +82,44 @@ class LiquidityManager:
                         (row["user_id"],)).fetchone()[0] if row["user_id"] else 0})
             return result
 
+    def detail(self, company_code):
+        """One provider's stocks: price, shares held, resting buy/sell quotes, and why it is (not) quoting."""
+        with self.db.readonly() as conn:
+            row = conn.execute(
+                "SELECT p.*, a.user_id FROM liquidity_providers p JOIN company_accounts a ON a.company_code=p.company_code "
+                "WHERE p.company_code=?", (str(company_code),)).fetchone()
+            if not row:
+                raise ValueError("유동성 공급 회사가 아닙니다.")
+            user_id, now = row["user_id"], int(time.time())
+            cfg = PROFILES[row["profile"]]
+            assets = {}
+            for order in self._open_orders(conn, user_id):
+                assets.setdefault(order["asset_code"], {"buy": [], "sell": []})[order["side"]].append(int(order["price"]))
+            for code, _price in self._targets(conn, row["company_code"], cfg["assets"]):
+                assets.setdefault(code, {"buy": [], "sell": []})
+            for code, held in conn.execute("SELECT asset_code, SUM(quantity) FROM user_assets WHERE user_id=? GROUP BY asset_code", (user_id,)):
+                assets.setdefault(code, {"buy": [], "sell": []})
+            result = []
+            for code, quotes in sorted(assets.items()):
+                company = conn.execute("SELECT name, share_price FROM company WHERE company_code=?", (code,)).fetchone()
+                held = conn.execute("SELECT COALESCE(SUM(quantity),0) FROM user_assets WHERE user_id=? AND asset_code=?", (user_id, code)).fetchone()[0]
+                evented = self._event_running(conn, code, now)
+                quoting = bool(quotes["buy"] or quotes["sell"])
+                state = ("halted" if row["halted"] else "off" if not row["enabled"] else "event" if evented
+                         else "quoting" if quoting else "waiting")
+                result.append({"assetCode": code, "name": company["name"] if company else code,
+                               "price": int(company["share_price"]) if company and company["share_price"] else 0,
+                               "held": int(float(held)), "buys": sorted(quotes["buy"], reverse=True),
+                               "sells": sorted(quotes["sell"]), "state": state})
+            return result
+
     @staticmethod
     def _standing(conn, user_id):
         cash = int(conn.execute("SELECT cash FROM users WHERE user_id=?", (user_id,)).fetchone()[0] or 0)
+        # Cash set aside for resting buy quotes still belongs to the company.
+        cash += int(conn.execute(
+            "SELECT COALESCE(SUM(reserved_cash_minor_units),0) FROM market_orders WHERE user_id=? AND status IN ('open','partial') "
+            "AND order_kind='asset'", (user_id,)).fetchone()[0] or 0)
         holdings = 0
         for row in conn.execute(
                 "SELECT h.asset_code, SUM(h.quantity) q, COALESCE(c.share_price, 0) price FROM user_assets h "
@@ -238,7 +274,7 @@ class LiquidityManager:
             wanted = []
             for level, bid in enumerate(bids):
                 size = int(cash * cfg["size_pct"] * (1 + level) // max(1, bid))
-                if held_ratio < 1 and size >= 1:
+                if held_ratio < 1 and size >= 1 and cash > RESERVE_FLOOR * equity:   # never tie up more than half the capital in bids
                     wanted.append(("buy", bid, size))
             sellable = held
             for level, ask in enumerate(asks):
