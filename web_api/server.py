@@ -6040,7 +6040,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("content-type", "text/html; charset=utf-8")
             self.send_header("cache-control", "no-store")
             self.send_header("content-security-policy",
-                             "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'")
+                             "default-src 'none'; img-src data:; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'")
             self.send_header("x-content-type-options", "nosniff")
             self.send_header("content-length", str(len(body)))
             self.end_headers()
