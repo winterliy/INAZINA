@@ -9,7 +9,8 @@ import { fileURLToPath } from "node:url";
 
 export type LandingReason = "home" | "not_found" | "login_required" | "login";
 
-const template = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../shared/gate.html"), "utf8");
+const sharedDir = join(dirname(fileURLToPath(import.meta.url)), "../../shared");
+const template = readFileSync(join(sharedDir, "gate.html"), "utf8").replace("{{SCENE}}", readFileSync(join(sharedDir, "scene.svg"), "utf8"));
 const ICON = '<link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAAXNSR0IArs4c6QAAAjdJREFUeJztm0FrE0EYhp8dGpoeitIgFq0SwaqH6qXSXsRLCbS33ES8C/070v/gYS85CuJFcmmhh2IhtAhKxECUhYZeIjSpB6chNpFutc673ZkHvkMGkrzfuzs7s5u8EemoAKvAMnAPKAEm5Xtd0QcSYB/YBN4Ab//1Q9eBBnB8Sathezg3i0A9Aw1cVNVtT6l4BvQyIPqiq2d7O7N5tdD/XX80YTGnR37cmTB2OuRpzp9V9dPNr2dAlOv6bXW4zEvd31bjpPlKBsSoqmLsDs9XVo3d3vrKcgR8A66plYj4Htl1MWs3Nq7oR/ZiIGGyeAWAH92OSgITii+9WX7K/YfPuXH7CQCtZp29D6/5+vm9cy0SAxYev+TBoxeD16XrCxQmpyUGOJ/7s3NLlOfXRsbL82vMzi25luPeAGMKFKdmRsaLUzMYU3Atx70B7dY2SXt3ZDxp79JubbuW496A3lGXna0NDjvNwdhhp8nO1ga9o65rOciWwaulu9y6swLAl0/vOEg+KmToDMgKvu4AB3hvgGQjVK1Wx47XajXnWlA8iIjj+Pg0cRxLHop4PwWCAWoBaoIBagFqggFqAWqCAWoBaoIBagFqggFqAWqCAWoBaoIBagFqggFqAWqCAWoBarw3IPw0ZpMWvtI3NmbiK4mxGRtf2Tc2YOQrm8amq3xl0Lu3f5c/2Qe8kh0DHSM9ex2ZIYSmfuF1bG7YhDyeCamCk8PTIU/XhHNFZ4fJfXg6SmlEbuPzPwHcXCuP81/MBwAAAABJRU5ErkJggg==">';
 const escape = (value: string) => value.replace(/[&<>"']/g, (char) => `&#${char.charCodeAt(0)};`);
 const jsString = (value: string) => JSON.stringify(value).slice(1, -1).replace(/</g, "\\u003c");

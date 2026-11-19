@@ -4,6 +4,7 @@ import type { FormEvent, ReactNode } from "react";
 import { api, type ApiUser } from "./api";
 import "./typography.css";
 import "./auth.css";
+import sceneSvg from "./scene.svg?raw";
 
 type Mode = "login" | "register" | "find-id" | "reset-password";
 type Country = { countryId: string; currencyName: string; currencyCode: string };
@@ -190,34 +191,8 @@ export function AuthPanel({ app, onAuthenticated, extra }: { app: "dashboard" | 
   </main>;
 }
 
-/** A calm harbour scene drawn in SVG: sky, far hills, sea with reflections, a breakwater, a lighthouse and a small boat. */
+/** The sign-in picture: the inazina. wordmark rising letter by letter, the blue dots dropping in, the period sending out ripples.
+ *  One SVG file (scene.svg) shared with the plain gate pages on 4312/4313. */
 function AuthScene() {
-  return <svg className="auth-scene" viewBox="0 0 800 900" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
-    <defs>
-      <linearGradient id="as-sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#b9c9d8" /><stop offset=".55" stopColor="#dcdccf" /><stop offset="1" stopColor="#efdcc0" /></linearGradient>
-      <linearGradient id="as-sea" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#8ea5b6" /><stop offset="1" stopColor="#4f6677" /></linearGradient>
-      <radialGradient id="as-sun" cx=".5" cy=".5" r=".5"><stop offset="0" stopColor="#fff6dc" stopOpacity=".95" /><stop offset="1" stopColor="#fff6dc" stopOpacity="0" /></radialGradient>
-    </defs>
-    <rect width="800" height="900" fill="url(#as-sky)" />
-    <circle cx="560" cy="430" r="190" fill="url(#as-sun)" />
-    <path d="M0 520 L90 450 L170 500 L270 410 L380 505 L480 440 L590 510 L700 430 L800 500 V560 H0Z" fill="#7d92a6" opacity=".55" />
-    <path d="M0 560 L120 500 L210 545 L330 480 L450 550 L560 505 L690 555 L800 520 V600 H0Z" fill="#62798d" opacity=".7" />
-    <rect y="560" width="800" height="340" fill="url(#as-sea)" />
-    <g stroke="#e9ecee" strokeLinecap="round" opacity=".38">
-      <path d="M520 600h130M470 626h210M500 654h150M440 686h250M490 722h170M420 760h280" strokeWidth="3" />
-      <path d="M40 640h90M70 700h140M30 770h120M120 820h160" strokeWidth="2.5" opacity=".6" />
-    </g>
-    <path d="M0 585 Q120 565 260 585 T520 590 T800 580 V632 Q640 622 520 640 T240 628 T0 640Z" fill="#2f3f4a" opacity=".9" />
-    <path d="M0 612 Q140 598 280 616 T560 622 T800 612 V650 H0Z" fill="#24323b" />
-    <g transform="translate(600 330)">
-      <rect x="-3" y="-32" width="6" height="12" fill="#2d3a44" /><rect x="-20" y="-20" width="40" height="22" rx="3" fill="#ffffff" opacity=".95" />
-      <rect x="-14" y="-16" width="28" height="14" rx="2" fill="#2d3a44" opacity=".85" /><rect x="-24" y="0" width="48" height="8" fill="#2d3a44" />
-      <path d="M-22 8 L-30 150 H30 L22 8Z" fill="#f4f3ee" /><path d="M-26 58 L-28 90 H28 L26 58Z" fill="#1f3fff" />
-      <path d="M-30 150h60v10h-60z" fill="#2d3a44" />
-    </g>
-    <g transform="translate(250 470)">
-      <path d="M0 80 L-70 20 L0 -140Z" fill="#f4f3ee" opacity=".95" /><path d="M8 80 L8 -150 L75 70Z" fill="#e2e0d6" />
-      <path d="M-90 92 Q0 118 90 92 L72 112 Q0 128 -72 112Z" fill="#33414c" />
-    </g>
-  </svg>;
+  return <div className="auth-scene" dangerouslySetInnerHTML={{ __html: sceneSvg }} />;
 }

@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 900" preserveAspectRatio="xMidYMid slice" role="presentation" focusable="false">
+<style>
+.sc-bg{fill:url(#scbg)}
+.sc-ltr{fill:#141414;opacity:0;transform-box:fill-box;transform-origin:50% 100%;animation:sc-rise 1.1s cubic-bezier(.2,.8,.2,1) forwards}
+.sc-dot{fill:#1f3fff;transform-box:fill-box;transform-origin:50% 50%;opacity:0;animation:sc-drop 1.3s cubic-bezier(.3,1.5,.5,1) forwards}
+.sc-dot.d1{animation-delay:.95s}.sc-dot.d2{animation-delay:1.1s}.sc-dot.d3{animation-delay:1.3s}
+.sc-ring{fill:none;stroke:#1f3fff;stroke-width:5;opacity:0;transform-box:fill-box;transform-origin:50% 50%;animation:sc-ripple 4.2s ease-out infinite}
+.sc-ring.r2{animation-delay:1.4s}.sc-ring.r3{animation-delay:2.8s}
+.sc-float{fill:#1f3fff;opacity:0;animation:sc-float 11s linear infinite}
+.sc-word{animation:sc-breathe 7s ease-in-out 2.4s infinite}
+.sc-sheen{fill:url(#scsheen);mix-blend-mode:soft-light;animation:sc-sheen 7s ease-in-out 2.4s infinite}
+@keyframes sc-rise{0%{opacity:0;transform:translateY(120px) scaleY(1.2)}100%{opacity:1;transform:none}}
+@keyframes sc-drop{0%{opacity:0;transform:translateY(-260px) scale(.4)}60%{opacity:1}100%{opacity:1;transform:none}}
+@keyframes sc-ripple{0%{opacity:.45;transform:scale(.2)}100%{opacity:0;transform:scale(8)}}
+@keyframes sc-float{0%{opacity:0;transform:translateY(0)}12%{opacity:.5}88%{opacity:.5}100%{opacity:0;transform:translateY(-520px)}}
+@keyframes sc-breathe{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}
+@keyframes sc-sheen{0%,100%{opacity:0}50%{opacity:.6}}
+@media (prefers-reduced-motion:reduce){.sc-ltr,.sc-dot,.sc-ring,.sc-float,.sc-word,.sc-sheen{animation:none!important;opacity:1}.sc-ring,.sc-float,.sc-sheen{opacity:0}}
+</style>
+<defs>
+<linearGradient id="scbg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e8ecf6"/><stop offset=".55" stop-color="#d8dff0"/><stop offset="1" stop-color="#c7d1ea"/></linearGradient>
+<radialGradient id="scsheen" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#fff" stop-opacity=".9"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient>
+</defs>
+<rect class="sc-bg" width="800" height="900"/>
+<circle class="sc-sheen" cx="400" cy="450" r="360"/>
+<g>
+  <circle class="sc-float" cx="90" cy="860" r="5" style="animation-delay:0s;animation-duration:12s"/>
+  <circle class="sc-float" cx="190" cy="900" r="3" style="animation-delay:2.5s;animation-duration:9s"/>
+  <circle class="sc-float" cx="300" cy="880" r="6" style="animation-delay:5s;animation-duration:13s"/>
+  <circle class="sc-float" cx="420" cy="905" r="3.5" style="animation-delay:1.2s;animation-duration:10s"/>
+  <circle class="sc-float" cx="520" cy="870" r="5" style="animation-delay:7s;animation-duration:12s"/>
+  <circle class="sc-float" cx="640" cy="900" r="4" style="animation-delay:3.4s;animation-duration:11s"/>
+  <circle class="sc-float" cx="730" cy="885" r="6" style="animation-delay:8.6s;animation-duration:14s"/>
+  <circle class="sc-float" cx="40" cy="905" r="3" style="animation-delay:6s;animation-duration:9.5s"/>
+</g>
+<g transform="translate(80 478) scale(.2)">
+  <g class="sc-word">
+    <circle class="sc-ring" cx="3116" cy="-64" r="70"/>
+    <circle class="sc-ring sc-r2" cx="3116" cy="-64" r="70"/>
+    <circle class="sc-ring sc-r3" cx="3116" cy="-64" r="70"/>
+    <g transform="translate(0 0)">
+    <path class="sc-ltr" style="animation-delay:0.15s" d="M62 0V-480H172V0Z"/>
+    <path class="sc-ltr" style="animation-delay:0.27s" d="M594 0V-277Q594 -325 563.5 -356.0Q533 -387 485 -387Q453 -387 428.0 -373.0Q403 -359 389.0 -334.0Q375 -309 375 -277L332 -301Q332 -356 356.0 -398.5Q380 -441 422.5 -465.5Q465 -490 518 -490Q572 -490 614.0 -462.5Q656 -435 680.0 -391.5Q704 -348 704 -301V0ZM265 0V-480H375V0Z"/>
+    <path class="sc-ltr" style="animation-delay:0.39s" d="M987 10Q922 10 869.5 -23.0Q817 -56 786.5 -112.5Q756 -169 756 -239Q756 -310 786.5 -366.5Q817 -423 869.5 -456.5Q922 -490 987 -490Q1042 -490 1084.5 -466.5Q1127 -443 1152.0 -402.0Q1177 -361 1177 -309V-171Q1177 -119 1152.5 -78.0Q1128 -37 1085.0 -13.5Q1042 10 987 10ZM1005 -94Q1066 -94 1103.5 -135.0Q1141 -176 1141 -240Q1141 -283 1124.0 -316.0Q1107 -349 1076.5 -367.5Q1046 -386 1005 -386Q965 -386 934.5 -367.5Q904 -349 886.5 -316.0Q869 -283 869 -240Q869 -197 886.5 -164.0Q904 -131 934.5 -112.5Q965 -94 1005 -94ZM1134 0V-129L1153 -246L1134 -362V-480H1244V0Z"/>
+    <path class="sc-ltr" style="animation-delay:0.51s" d="M1300 -60 1568 -420H1697L1429 -60ZM1300 0V-60L1400 -100H1691V0ZM1318 -380V-480H1697V-420L1597 -380Z"/>
+    <path class="sc-ltr" style="animation-delay:0.63s" d="M1758 0V-480H1868V0Z"/>
+    <path class="sc-ltr" style="animation-delay:0.75s" d="M2290 0V-277Q2290 -325 2259.5 -356.0Q2229 -387 2181 -387Q2149 -387 2124.0 -373.0Q2099 -359 2085.0 -334.0Q2071 -309 2071 -277L2028 -301Q2028 -356 2052.0 -398.5Q2076 -441 2118.5 -465.5Q2161 -490 2214 -490Q2268 -490 2310.0 -462.5Q2352 -435 2376.0 -391.5Q2400 -348 2400 -301V0ZM1961 0V-480H2071V0Z"/>
+    <path class="sc-ltr" style="animation-delay:0.87s" d="M2683 10Q2618 10 2565.5 -23.0Q2513 -56 2482.5 -112.5Q2452 -169 2452 -239Q2452 -310 2482.5 -366.5Q2513 -423 2565.5 -456.5Q2618 -490 2683 -490Q2738 -490 2780.5 -466.5Q2823 -443 2848.0 -402.0Q2873 -361 2873 -309V-171Q2873 -119 2848.5 -78.0Q2824 -37 2781.0 -13.5Q2738 10 2683 10ZM2701 -94Q2762 -94 2799.5 -135.0Q2837 -176 2837 -240Q2837 -283 2820.0 -316.0Q2803 -349 2772.5 -367.5Q2742 -386 2701 -386Q2661 -386 2630.5 -367.5Q2600 -349 2582.5 -316.0Q2565 -283 2565 -240Q2565 -197 2582.5 -164.0Q2600 -131 2630.5 -112.5Q2661 -94 2701 -94ZM2830 0V-129L2849 -246L2830 -362V-480H2940V0Z"/>
+    </g>
+    <circle class="sc-dot sc-d1" cx="117" cy="-634" r="66"/>
+    <circle class="sc-dot sc-d2" cx="1813" cy="-634" r="66"/>
+    <path class="sc-dot sc-d3" d="M3116 10Q3084 10 3063.5 -11.5Q3043 -33 3043 -64Q3043 -96 3063.5 -117.0Q3084 -138 3116 -138Q3148 -138 3168.5 -117.0Q3189 -96 3189 -64Q3189 -33 3168.5 -11.5Q3148 10 3116 10Z"/>
+  </g>
+</g>
+</svg>

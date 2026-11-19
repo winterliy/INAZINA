@@ -176,34 +176,31 @@ input.mono, select.mono { font-size: 13px; }
 .stage .segment-tabs button, .stage .court-ref .segment-tabs button, .stage .court-ref .segment-tabs button.active { border-radius: 0; }
 .court-ref .segment-tabs button.active { box-shadow: inset 0 -2px 0 var(--cr-accent); }
 
-/* ---- Board structure: one block per board instead of a table that wraps every cell ---- */
-.board-structure table, .board-structure tbody, .board-structure tr, .board-structure td { display: block; }
-.board-structure thead { display: none; }
-.board-structure tr { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 14px 16px; align-items: start; padding: 18px 0; border-top: 1px solid var(--line); }
-.board-structure tr:first-child { border-top: 0; }
-.board-structure td { min-width: 0; padding: 0; border: 0; text-align: left; }
-.board-structure td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 6px; color: var(--ink2); font: 400 12px/1.2 var(--font-mono); }
-.board-structure td[data-label="ID"] { grid-column: span 2; }
-.board-structure td[data-label="이름"] { grid-column: span 3; }
-.board-structure td[data-label="설명"] { grid-column: span 5; }
-.board-structure td[data-label="순서"], .board-structure td[data-label="글"] { grid-column: span 1; }
-.board-structure td[data-label="쓰기"], .board-structure td[data-label="종목 코드"], .board-structure td[data-label="비밀"], .board-structure td[data-label="뉴스"] { grid-column: span 3; }
-.board-structure td[data-label="카테고리"], .board-structure td[data-label="정지"] { grid-column: span 6; }
-.board-structure td.row-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; padding-top: 4px; }
-.board-structure .mini-input, .board-structure .mini-input.wide { width: 100%; min-height: 36px; border-radius: 4px; }
-.board-structure .mini-input.narrow { text-align: left; }
-.board-structure .check { white-space: nowrap; overflow-wrap: normal; }
-.board-structure .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; }
-.board-structure .category-chip { display: inline-flex; align-items: center; gap: 6px; }
-.board-structure .category-chip .mini-input { width: 140px; }
-.board-structure .suspend-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-@media (max-width: 900px) { .board-structure tr > td { grid-column: 1 / -1 !important; } }
+/* ---- Board structure: one card per board ---- */
+.board-cards { display: grid; gap: 14px; }
+.board-card { display: grid; gap: 16px; padding: 18px 20px; border-radius: 6px; background: rgba(var(--glass-rgb), .55); box-shadow: inset 0 0 0 1px var(--line); }
+.bc-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.bc-id { font-size: 15px; font-weight: 600; letter-spacing: 0; }
+.bc-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-left: auto; }
+.bc-fields { display: grid; grid-template-columns: minmax(140px, 1fr) minmax(220px, 3fr) 110px; gap: 14px; }
+.bc-fields label { display: grid; gap: 6px; min-width: 0; color: var(--ink2); font-size: 12px; font-weight: 400; }
+.bc-fields input { width: 100%; min-height: 40px; border-radius: 4px; color: var(--ink); font-size: 14px; }
+.bc-perms { display: flex; flex-wrap: wrap; gap: 8px 22px; padding: 12px 14px; border-radius: 4px; background: var(--field); box-shadow: inset 0 0 0 1px var(--line); }
+.bc-perms .check { white-space: nowrap; color: var(--ink); font-size: 13px; }
+.bc-block { display: grid; gap: 8px; }
+.bc-block h5 { margin: 0; color: var(--ink2); font: 400 12px/1.2 var(--font-mono); }
+.bc-block .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0; }
+.bc-block .category-chip { display: inline-flex; align-items: center; gap: 6px; }
+.bc-block .mini-input { min-height: 34px; width: 150px; border-radius: 4px; }
+.bc-block .mini-input.wide { width: 260px; }
+.suspend-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+@media (max-width: 760px) { .bc-fields { grid-template-columns: minmax(0, 1fr); } .bc-actions { margin-left: 0; } }
 
 /* new board form */
 .board-create-form .board-create-fields { align-items: start; gap: 16px; }
-.board-create-form label { display: grid; gap: 6px; color: var(--ink2); font-size: 13px; font-weight: 500; }
-.board-create-form label small { color: var(--ink2); font-size: 12px; font-weight: 400; }
-.board-create-form input { width: 100%; min-height: 40px; }
+.board-create-fields label { display: grid; gap: 6px; color: var(--ink2); font-size: 13px; font-weight: 500; }
+.board-create-fields label small { color: var(--ink2); font-size: 12px; font-weight: 400; }
+.board-create-fields input { width: 100%; min-height: 40px; }
 .board-structure td, .board-structure td:first-child { border: 0 !important; border-bottom: 0 !important; }
 .board-structure .mono { font-size: 13px; }
 .board-create-form .board-create-fields { align-items: end; }
@@ -232,6 +229,16 @@ input.mono, select.mono { font-size: 13px; }
 .stage select:not([multiple]) { padding-left: 12px; }
 .stage .mini-select { padding-left: 10px; }
 .stage select, .stage .mini-select { border: 0; }
-/* A long value (a JSON blob, a browser user-agent) wraps inside its cell instead of widening the whole table */
-.scroll-x table td:not(.r):not(.num):not(.row-actions) { max-width: 420px; white-space: normal !important; overflow-wrap: anywhere; }
-.scroll-x table td.r, .scroll-x table td.num { white-space: nowrap; }
+/* Tables never break a line inside a cell: a wide table scrolls sideways instead. A very long value is cut with an ellipsis
+   (the full text is in the cell's title where the page sets one). Header cells are opaque so rows never show through them. */
+.scroll-x table th, .scroll-x table td { white-space: nowrap; overflow-wrap: normal; word-break: keep-all; }
+.scroll-x table td { max-width: 520px; overflow: hidden; text-overflow: ellipsis; }
+.scroll-x table td.row-actions, .scroll-x table td:has(button), .scroll-x table td:has(select), .scroll-x table td:has(input) { overflow: visible; }
+.scroll-x table th { background: var(--canvas) !important; }
+.scroll-x table .tag, .scroll-x table .chip { white-space: nowrap; }
+.bc-fields input, .bc-block .mini-input, .board-create-fields input[type="text"], .board-create-fields input:not([type]), .board-create-fields input[type="number"] { border: 0; box-shadow: inset 0 0 0 1px var(--line); background: var(--field); }
+.bc-block .soft, .suspend-form .soft { align-self: flex-start; }
+.board-create-form .board-create-fields { align-items: start; }
+.board-create-fields label { display: flex; flex-direction: column; gap: 6px; }
+.board-create-fields label small { order: 3; margin-top: 0; }
+.bc-block > .soft, .bc-block > button { justify-self: start; }
