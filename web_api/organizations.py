@@ -175,7 +175,10 @@ def ownership_graph(conn, organization_code, min_percent=1):
                     equity, votes = Decimal(str(holder[2])), Decimal(str(holder[3]))
                 except (InvalidOperation, TypeError, ValueError):
                     continue
-                if not equity.is_finite() or not votes.is_finite() or max(equity, votes) < Decimal(str(min_percent)):
+                if not equity.is_finite() or not votes.is_finite():
+                    continue
+                # Companies and countries always count; a private person only with a strong stake.
+                if holder_kind not in {"company", "country"} and max(equity, votes) < max(Decimal(str(min_percent)), Decimal(5)):
                     continue
                 if holder_kind == "company":
                     node_id = "company:" + holder_id
@@ -228,7 +231,52 @@ def ownership_graph(conn, organization_code, min_percent=1):
         add_capital_holders(code, 0, set())
         graph["nodes"] = list(nodes.values())
         graph["edges"] = list(edges.values())
+    graph["holdings"] = _holdings(conn, code)
     return {"graph": graph}
+
+
+def _holdings(conn, code):
+    """The companies this one is a shareholder of (one share is enough), plus the non-stock companies it holds capital in.
+
+    The chart above shows who owns the selected company; this is the other direction, so a company that has no
+    shareholders of its own but holds others (a liquidity firm, a holding company) still shows its relations."""
+    from managers.organization_manager import OrganizationManager
+    names = {str(row[0]): str(row[1] or row[0]) for row in conn.execute("SELECT organization_code,name FROM organizations")}
+    found = {}
+    account = conn.execute("SELECT user_id FROM company_accounts WHERE company_code=?", (code,)).fetchone()
+    if account:
+        rows = conn.execute(
+            "SELECT si.organization_code,SUM(u.quantity) FROM user_assets u JOIN company co ON co.company_code=u.asset_code "
+            "JOIN share_issuances si ON si.issuance_id=co.share_issuance_id "
+            "WHERE u.user_id=? AND u.quantity>0 GROUP BY si.organization_code", (str(account[0]),)).fetchall()
+        for issuer, quantity in rows:
+            issuer = str(issuer)
+            if issuer == code or issuer not in names:
+                continue
+            equity = voting = None
+            try:
+                direct = OrganizationManager.ownership_graph(conn, issuer, max_depth=0, min_percent=0)
+                for edge in direct["edges"]:
+                    if edge["from"] == "company:" + code and edge["to"] == "company:" + issuer:
+                        equity, voting = edge["equity_percent"], edge["voting_percent"]
+            except Exception:  # the list is a convenience; a graph that cannot be built must not hide the chart
+                pass
+            found[issuer] = {"code": issuer, "name": names[issuer], "equity_percent": equity, "voting_percent": voting,
+                             "shares": str(quantity), "unit": "share"}
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='company_capital_interests'").fetchone():
+        for issuer, equity, voting in conn.execute(
+                "SELECT organization_code,economic_percent,voting_percent FROM company_capital_interests "
+                "WHERE holder_id=? AND holder_kind='company'", (code,)).fetchall():
+            issuer = str(issuer)
+            if issuer in names and issuer not in found:
+                found[issuer] = {"code": issuer, "name": names[issuer], "equity_percent": str(equity),
+                                 "voting_percent": str(voting), "shares": None, "unit": "capital_interest"}
+    def strength(item):
+        try:
+            return max(float(item["equity_percent"] or 0), float(item["voting_percent"] or 0))
+        except (TypeError, ValueError):
+            return 0.0
+    return sorted(found.values(), key=lambda item: (-strength(item), item["name"]))
 
 
 def action(conn, payload, actor, now=None):

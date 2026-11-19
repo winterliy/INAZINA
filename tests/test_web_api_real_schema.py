@@ -97,6 +97,44 @@ class RealSchemaWebApiTests(unittest.TestCase):
         self.assertEqual([row["code"] for row in found["savingProducts"]], ["SV1"])
         self.assertEqual([row["code"] for row in found["loanProducts"]], ["LN1"])
 
+    def test_a_company_shows_the_companies_it_holds_even_with_one_share(self):
+        # The ownership chart follows a company's shareholders. A company with none of its own (a holding company
+        # before anyone bought in, a liquidity firm) used to open an empty chart although it owns other companies.
+        from web_api import organizations
+        with self.db.atomic(("users", "accounts", "assets", "product", "company", "tax")) as conn:
+            for code in ("HOLDA", "HELDB"):
+                conn.execute(
+                    "INSERT INTO company(company_code,name,industry,capital,total_shares,share_price,max_shareholder_id,"
+                    "exchange_id,nationality,legal_form) VALUES (?,?,'금융',1000,1000,1,NULL,NULL,'낙원','limited_company')",
+                    (code, code))
+            holder = CompanyAccounts.account_id(conn, "HOLDA")
+            conn.execute("INSERT INTO user_assets(user_id,asset_code,quantity) VALUES (?,?,1)", (holder, "HELDB"))
+        with server.connect_readonly() as connection:
+            graph = organizations.ownership_graph(connection, "HOLDA", min_percent=0)["graph"]
+            self.assertEqual([item["code"] for item in graph["holdings"]], ["HELDB"])
+            self.assertEqual(graph["holdings"][0]["shares"], "1")
+            self.assertEqual(organizations.ownership_graph(connection, "HELDB", min_percent=0)["graph"]["holdings"], [])
+
+    def test_chart_shows_any_company_holder_but_only_strong_person_holders(self):
+        from web_api import organizations
+        self.db.users.create_user("small-1", "소액", "낙원", 1000)
+        self.db.users.create_user("big-1", "대주주", "낙원", 1000)
+        with self.db.atomic(("users", "accounts", "assets", "product", "company", "tax")) as conn:
+            for code in ("TARGET", "OWNERCO"):
+                conn.execute(
+                    "INSERT INTO company(company_code,name,industry,capital,total_shares,share_price,max_shareholder_id,"
+                    "exchange_id,nationality,legal_form) VALUES (?,?,'금융',1000,1000,1,NULL,NULL,'낙원','limited_company')",
+                    (code, code))
+            owner = CompanyAccounts.account_id(conn, "OWNERCO")
+            for holder, quantity in ((owner, 1), ("small-1", 3), ("big-1", 600)):
+                conn.execute("INSERT INTO user_assets(user_id,asset_code,quantity) VALUES (?,?,?)", (holder, "TARGET", quantity))
+        with server.connect_readonly() as connection:
+            graph = organizations.ownership_graph(connection, "TARGET", min_percent=0)["graph"]
+        sources = {edge["from"] for edge in graph["edges"]}
+        self.assertIn("company:OWNERCO", sources)      # one share is enough for a company
+        self.assertIn("user:big-1", sources)            # a major shareholder is shown
+        self.assertNotIn("user:small-1", sources)       # a small private holder is not
+
 
 if __name__ == "__main__":
     unittest.main()

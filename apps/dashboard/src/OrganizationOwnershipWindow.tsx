@@ -213,7 +213,7 @@ export function OrganizationOwnershipWindow({ route }: { route: string }) {
         </>}
       </aside>}
       <section className="ownership-graph-panel" aria-label={personal ? "내 보유 기업 지배구조" : "선택한 법인의 지분 조직도"}>
-        {loading ? <LoadingGraph /> : error ? <div className="ownership-load-error" role="alert"><p>{error}</p><button className="soft" type="button" onClick={() => personal ? window.location.reload() : selected && void loadOrganization(selected, includeMinor, false)}>다시 불러오기</button></div> : <OwnershipGraph graph={graph} fullScreen focusedNodeId={focusedNodeId} focusRequest={focusRequest} />}
+        {loading ? <LoadingGraph /> : error ? <div className="ownership-load-error" role="alert"><p>{error}</p><button className="soft" type="button" onClick={() => personal ? window.location.reload() : selected && void loadOrganization(selected, includeMinor, false)}>다시 불러오기</button></div> : <OwnershipGraph graph={graph} fullScreen focusedNodeId={focusedNodeId} focusRequest={focusRequest} onSelectCompany={personal ? undefined : (code) => { setSelected(code); void loadOrganization(code, true); }} />}
       </section>
     </div>
   </main>;

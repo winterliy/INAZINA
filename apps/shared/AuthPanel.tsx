@@ -1,5 +1,5 @@
 import { Logo } from "./Logo";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent, ReactNode } from "react";
 import { api, type ApiUser } from "./api";
 import "./typography.css";
@@ -191,8 +191,21 @@ export function AuthPanel({ app, onAuthenticated, extra }: { app: "dashboard" | 
   </main>;
 }
 
-/** The sign-in picture: the inazina. wordmark rising letter by letter, the blue dots dropping in, the period sending out ripples.
- *  One SVG file (scene.svg) shared with the plain gate pages on 4312/4313. */
+/** The sign-in picture: the inazina. wordmark as a 3D solid (loginScene3d.ts, three.js with a bloom) that rises letter by letter,
+ *  drops the blue dots in and sends rings from the period. The plain SVG (scene.svg, also used by the 4312/4313 gate pages) shows
+ *  first and stays when WebGL is not available or the person asked for less motion. */
 function AuthScene() {
-  return <div className="auth-scene" dangerouslySetInnerHTML={{ __html: sceneSvg }} />;
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    void import("./loginScene3d").then((scene) => {
+      if (cancelled) return;
+      try { dispose = scene.mountLoginScene(element); element.classList.add("is-3d"); } catch { element.classList.remove("is-3d"); }
+    }).catch(() => undefined);
+    return () => { cancelled = true; dispose?.(); element.classList.remove("is-3d"); };
+  }, []);
+  return <div className="auth-scene" ref={ref}><div className="auth-scene-svg" dangerouslySetInnerHTML={{ __html: sceneSvg }} /></div>;
 }

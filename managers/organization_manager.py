@@ -276,7 +276,7 @@ class OrganizationManager:
                 "max_depth": max_depth, "truncated": truncated, "root_kind": "user", "root_id": root_id}
 
     @staticmethod
-    def ownership_graph(conn, organization_code, max_depth=8, max_children=100, min_percent=0):
+    def ownership_graph(conn, organization_code, max_depth=8, max_children=100, min_percent=0, person_min_percent=5):
         """Build a bounded, read-only direct/indirect ownership graph.
 
         Percentages use exact decimal strings. The direct equity and vote ratios
@@ -295,6 +295,9 @@ class OrganizationManager:
         # the system treasury is excluded; hiding every country_treasuries user
         # made state-owned companies appear ownerless (or disappear from graphs).
         treasury_user_ids = {str(TREASURY_USER_ID)}
+        nation_ids = {str(row[0]) for row in conn.execute("SELECT user_id FROM users WHERE role='nation'")}
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='country_treasuries'").fetchone():
+            nation_ids |= {str(row[0]) for row in conn.execute("SELECT user_id FROM country_treasuries")}
         company_rows = {str(row[0]): str(row[1]) for row in conn.execute(
             "SELECT organization_code,name FROM organizations"
         )}
@@ -353,6 +356,10 @@ class OrganizationManager:
                 equity_total = Decimal(0)
                 votes_total = Decimal(0)
                 owner_amounts = defaultdict(lambda: [Decimal(0), Decimal(0)])
+                # Shares the state still holds. They are not outstanding, so they stay out of the ratios, unless the
+                # state holds all of them: then the state is the owner and is shown with its share of the whole supply.
+                state_amounts = defaultdict(lambda: [Decimal(0), Decimal(0)])
+                supply_equity = supply_votes = Decimal(0)
                 own_treasury_ids = treasury_user_ids | {user_id for user_id, issuer in accounts.items() if issuer == code}
                 for issue in issues:
                     _, issue_code, _, supply, _, vote_text, equity_text = issue
@@ -375,14 +382,28 @@ class OrganizationManager:
                         if holder not in own_treasury_ids:
                             owner_amounts[holder][0] += quantity * equity_per_share
                             owner_amounts[holder][1] += quantity * vote_per_share
+                    supply_equity += supply * equity_per_share
+                    supply_votes += supply * vote_per_share
+                    for holder, quantity in holdings.items():
+                        if holder in treasury_user_ids and holder not in {u for u, issuer in accounts.items() if issuer == code}:
+                            state_amounts[holder][0] += quantity * equity_per_share
+                            state_amounts[holder][1] += quantity * vote_per_share
 
+                if not owner_amounts and state_amounts and supply_equity > 0 and supply_votes > 0:
+                    for holder, (equity, votes) in state_amounts.items():
+                        owner_amounts[holder] = [equity, votes]
+                    equity_total, votes_total = supply_equity, supply_votes
                 display_candidates = []
                 for holder, (equity, votes) in owner_amounts.items():
                     equity_ratio = equity / equity_total if equity_total else Decimal(0)
                     votes_ratio = votes / votes_total if votes_total else Decimal(0)
-                    if max(equity_ratio, votes_ratio) * 100 < min_percent:
-                        continue
                     parent_code = accounts.get(holder)
+                    # Companies and countries always count, down to a single share. A private person only when the stake
+                    # is strong (a major shareholder), so the chart is not buried under small holders.
+                    is_person = not parent_code and holder not in nation_ids
+                    threshold = max(Decimal(str(min_percent)), Decimal(str(person_min_percent))) if is_person else Decimal(0)
+                    if max(equity_ratio, votes_ratio) * 100 < threshold:
+                        continue
                     if parent_code:
                         node_id = "company:" + parent_code
                         nodes[node_id] = {"id": node_id, "kind": "company", "code": parent_code,

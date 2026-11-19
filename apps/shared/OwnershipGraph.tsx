@@ -6,6 +6,8 @@ export type OwnershipGraphData = {
   edges: { from: string; to: string; equity_percent: string; voting_percent: string; root_equity_percent: string; root_voting_percent: string; depth: number; direct?: boolean; cycle?: boolean }[];
   beneficial_owners?: { id: string; name: string; root_equity_percent: string; root_voting_percent: string }[];
   truncated?: boolean;
+  /** Companies the selected one is a shareholder of (one share is enough), the other direction of the chart. */
+  holdings?: { code: string; name: string; equity_percent: string | null; voting_percent: string | null; shares: string | null; unit: "share" | "capital_interest" }[];
   root_kind?: "user" | "organization";
   root_id?: string;
 };
@@ -22,7 +24,7 @@ function percent(value: string | undefined) {
   return Number.isFinite(number) ? `${new Intl.NumberFormat("ko-KR", { maximumFractionDigits: 2 }).format(number)}%` : "—";
 }
 
-export function OwnershipGraph({ graph, fullScreen = false, focusedNodeId, focusRequest = 0 }: { graph?: OwnershipGraphData; fullScreen?: boolean; focusedNodeId?: string; focusRequest?: number }) {
+export function OwnershipGraph({ graph, fullScreen = false, focusedNodeId, focusRequest = 0, onSelectCompany }: { graph?: OwnershipGraphData; fullScreen?: boolean; focusedNodeId?: string; focusRequest?: number; onSelectCompany?: (code: string) => void }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
   // null = fit the whole chart in the window; a number is what the person chose with the buttons
@@ -56,7 +58,12 @@ export function OwnershipGraph({ graph, fullScreen = false, focusedNodeId, focus
     };
   }, [focusedNodeId, focusRequest, graph?.nodes.length, viewportWidth, manualZoom]);
   // A company with no holders is a single node and no edge: show the empty note, not a blank canvas.
-  if (!graph?.nodes.length || !graph.edges.length) return <p className="empty">지분 자료가 없거나 표시할 주주가 없습니다.</p>;
+  if (!graph?.nodes.length || !graph.edges.length) {
+    return <>
+      <p className="empty">{graph?.holdings?.length ? "이 법인의 주주는 없습니다(국고 보유분 제외). 이 법인이 지분을 가진 법인은 아래와 같습니다." : "연결된 법인이 없습니다. 주주도 없고, 다른 법인의 지분도 가지고 있지 않습니다(국고 보유분 제외)."}</p>
+      <Holdings graph={graph} onSelectCompany={onSelectCompany} />
+    </>;
+  }
 
   // Every edge is a direct holding between its two companies. The root
   // percentages are path aggregates and belong in the detail list, not labels.
@@ -248,7 +255,8 @@ export function OwnershipGraph({ graph, fullScreen = false, focusedNodeId, focus
   // Opens large enough to read; "전체 보기" shrinks the chart until every company is inside the window.
   const zoom = manualZoom ?? Math.max(fitZoom, 0.4);
 
-  return <figure className={`ownership-diagram${fullScreen ? " ownership-diagram-full" : ""}${radial ? " ownership-diagram-radial" : ""}`} aria-label={userRoot ? "개인 보유 기업 지배구조" : "기업 지분 및 의결권 구조"}>
+  return <>
+  <figure className={`ownership-diagram${fullScreen ? " ownership-diagram-full" : ""}${radial ? " ownership-diagram-radial" : ""}`} aria-label={userRoot ? "개인 보유 기업 지배구조" : "기업 지분 및 의결권 구조"}>
     {complex && <div className="ownership-layout-controls" role="group" aria-label="조직도 관계 표시">
       <button type="button" aria-pressed={simplified} onClick={() => setShowAllRelationships(false)}>주요 지배 경로</button>
       <button type="button" aria-pressed={showAllRelationships} onClick={() => setShowAllRelationships(true)}>전체 지분 관계 · {edges.length}</button>
@@ -340,5 +348,24 @@ export function OwnershipGraph({ graph, fullScreen = false, focusedNodeId, focus
       <p className="hint">최대 5단계 단순 경로 기여의 합입니다. 순환 출자에 대한 최종 지배 판정은 아닙니다.</p>
       <ul>{graph.beneficial_owners.map((owner) => <li key={owner.id}>{owner.name} · 경제 {percent(owner.root_equity_percent)} · 의결 {percent(owner.root_voting_percent)}</li>)}</ul>
     </details>}
-  </figure>;
+  </figure>
+  <Holdings graph={graph} onSelectCompany={onSelectCompany} />
+  </>;
+}
+
+
+/** The companies the selected company holds shares (or capital) in: every one with even a single share, strongest first. */
+function Holdings({ graph, onSelectCompany }: { graph?: OwnershipGraphData; onSelectCompany?: (code: string) => void }) {
+  const holdings = graph?.holdings ?? [];
+  if (!holdings.length) return null;
+  return <section className="ownership-holdings" aria-label="보유 법인">
+    <h3>보유 법인 <small>{holdings.length}곳</small></h3>
+    <ul>{holdings.map((item) => <li key={item.code}>
+      <button type="button" disabled={!onSelectCompany} onClick={() => onSelectCompany?.(item.code)}>
+        <strong>{item.name}</strong>
+        <span>경제 {percent(item.equity_percent ?? undefined)} · 의결 {percent(item.voting_percent ?? undefined)}</span>
+        <small>{item.unit === "capital_interest" ? "출자지분" : `${Number(item.shares ?? 0).toLocaleString("ko-KR")}주`}</small>
+      </button>
+    </li>)}</ul>
+  </section>;
 }
