@@ -25,7 +25,9 @@ function percent(value: string | undefined) {
 export function OwnershipGraph({ graph, fullScreen = false, focusedNodeId, focusRequest = 0 }: { graph?: OwnershipGraphData; fullScreen?: boolean; focusedNodeId?: string; focusRequest?: number }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
-  const [zoom, setZoom] = useState(1);
+  // null = fit the whole chart in the window; a number is what the person chose with the buttons
+  const [manualZoom, setManualZoom] = useState<number | null>(null);
+  useEffect(() => setManualZoom(null), [graph]);
   const [showAllRelationships, setShowAllRelationships] = useState(true);
   useEffect(() => setShowAllRelationships(true), [graph]);
   useEffect(() => {
@@ -48,11 +50,11 @@ export function OwnershipGraph({ graph, fullScreen = false, focusedNodeId, focus
     container.scrollTo({ left: Math.max(0, left), top: Math.max(0, top), behavior: "smooth" });
     node.classList.add("ownership-node-focused");
     const timeout = window.setTimeout(() => node.classList.remove("ownership-node-focused"), 1500);
-    return () => {
+  return () => {
       window.clearTimeout(timeout);
       node.classList.remove("ownership-node-focused");
     };
-  }, [focusedNodeId, focusRequest, graph?.nodes.length, viewportWidth, zoom]);
+  }, [focusedNodeId, focusRequest, graph?.nodes.length, viewportWidth, manualZoom]);
   // A company with no holders is a single node and no edge: show the empty note, not a blank canvas.
   if (!graph?.nodes.length || !graph.edges.length) return <p className="empty">지분 자료가 없거나 표시할 주주가 없습니다.</p>;
 
@@ -241,6 +243,11 @@ export function OwnershipGraph({ graph, fullScreen = false, focusedNodeId, focus
       trunk: `M ${targetX} ${busY} L ${targetX} ${targetY}` }];
   });
 
+  const availableHeight = typeof window === "undefined" ? 700 : Math.max(360, window.innerHeight - 300);
+  const fitZoom = Math.max(0.1, Math.min(1, Math.floor(Math.min(viewportWidth > 0 ? viewportWidth / width : 1, availableHeight / height) * 20) / 20));
+  // Opens large enough to read; "전체 보기" shrinks the chart until every company is inside the window.
+  const zoom = manualZoom ?? Math.max(fitZoom, 0.4);
+
   return <figure className={`ownership-diagram${fullScreen ? " ownership-diagram-full" : ""}${radial ? " ownership-diagram-radial" : ""}`} aria-label={userRoot ? "개인 보유 기업 지배구조" : "기업 지분 및 의결권 구조"}>
     {complex && <div className="ownership-layout-controls" role="group" aria-label="조직도 관계 표시">
       <button type="button" aria-pressed={simplified} onClick={() => setShowAllRelationships(false)}>주요 지배 경로</button>
@@ -249,10 +256,10 @@ export function OwnershipGraph({ graph, fullScreen = false, focusedNodeId, focus
     {simplified && <p className="ownership-layout-hint">각 법인의 가장 강한 의결권 경로를 표시합니다. 다른 관계는 전체 지분 관계에서 확인할 수 있습니다.</p>}
     {bundled && !simplified && <p className="ownership-layout-hint">같은 법인으로 향하는 주주 관계는 공통 연결선으로 묶어 표시합니다. 카드에는 대표 관계만 표시합니다.</p>}
     <div className="ownership-zoom-controls" role="group" aria-label="조직도 확대·축소">
-      <button type="button" aria-label="조직도 축소" disabled={zoom <= 0.1} onClick={() => setZoom((value) => Math.max(0.1, Math.round((value - 0.1) * 10) / 10))}>−</button>
+      <button type="button" aria-label="조직도 축소" disabled={zoom <= 0.1} onClick={() => setManualZoom(Math.max(0.1, Math.round((zoom - 0.1) * 10) / 10))}>−</button>
       <output aria-live="polite">{Math.round(zoom * 100)}%</output>
-      <button type="button" aria-label="조직도 확대" disabled={zoom >= 1.6} onClick={() => setZoom((value) => Math.min(1.6, Math.round((value + 0.1) * 10) / 10))}>+</button>
-      <button type="button" className="ownership-zoom-reset" onClick={() => setZoom(1)}>초기화</button>
+      <button type="button" aria-label="조직도 확대" disabled={zoom >= 1.6} onClick={() => setManualZoom(Math.min(1.6, Math.round((zoom + 0.1) * 10) / 10))}>+</button>
+      <button type="button" className="ownership-zoom-reset" onClick={() => setManualZoom(fitZoom)}>전체 보기</button>
     </div>
     <div ref={scrollRef} className="ownership-diagram-scroll" role="group" aria-label="소유 관계 도식. 가로 스크롤로 전체 구조를 볼 수 있습니다.">
       <div className="ownership-diagram-zoom-layer" style={{ width: Math.max(viewportWidth, width * zoom), height: height * zoom }}>
@@ -320,9 +327,9 @@ export function OwnershipGraph({ graph, fullScreen = false, focusedNodeId, focus
           return <article data-node-id={id} className={`ownership-node ${node.kind === "user" ? "person" : "company"}${!userRoot && node.id === root?.id ? " root" : ""}`} key={id} style={{ left: point.x, top: point.y }}>
             <span className="ownership-node-kind">{node.kind === "company" ? "법인" : "개인"} · {level + 1}단계</span>
             <strong>{node.name}</strong>
-            {ownerships.length ? <div className="ownership-node-ownerships">{ownerships.slice(0, 3).map((edge) => <small key={`${edge.from}-${edge.to}`}>
+            {ownerships.length ? <div className="ownership-node-ownerships">{ownerships.map((edge) => <small key={`${edge.from}-${edge.to}`}>
               {nodeById.get(edge.from)?.name ?? edge.from} · 경제 {percent(edge.equity_percent)} · 의결 {percent(edge.voting_percent)}{edge.cycle ? " · 순환 보유" : ""}
-            </small>)}{ownerships.length > 3 && <small>외 {ownerships.length - 3}개 보유 관계</small>}</div> : <small>{connections.length ? `${connections.length}개 보유 관계` : node.code}</small>}
+            </small>)}</div> : <small>{connections.length ? `${connections.length}개 보유 관계` : node.code}</small>}
           </article>;
         }))}
       </div>
