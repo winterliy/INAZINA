@@ -37,10 +37,6 @@
 .ownership-tree-company { cursor: pointer; }
 .ownership-tree-company:hover, .ownership-tree-company.active { background: var(--select); color: var(--accent); }
 .ownership-tree-leaf-row { padding: 2px 0 2px 18px; }
-.ownership-tree-loading { display: grid; gap: 9px; padding: 6px 0; }
-.ownership-tree-loading i, .ownership-skeleton i { display: block; height: 12px; border-radius: 6px; background: linear-gradient(90deg, var(--line), var(--surface), var(--line)); background-size: 200% 100%; animation: ownership-shimmer 1.2s linear infinite; }
-.ownership-tree-loading i:nth-child(2) { width: 82%; margin-left: 14px; }
-.ownership-tree-loading i:nth-child(3) { width: 68%; margin-left: 28px; }
 .ownership-graph-panel { min-width: 0; min-height: 0; overflow: hidden; }
 .ownership-window-admin .ownership-graph-panel .ownership-diagram { display: flex; flex-direction: column; height: 100%; margin: 0; }
 .ownership-window-admin .ownership-graph-panel .ownership-diagram-scroll { flex: 1; width: 100%; height: auto; min-height: 0; max-height: none; }
@@ -52,11 +48,8 @@
 .ownership-loading, .ownership-load-error { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; width: 100%; height: 100%; min-height: 240px; color: var(--ink2); text-align: center; }
 .ownership-loading strong { color: var(--ink); font-size: 14px; }
 .ownership-spinner { width: 28px; height: 28px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: ownership-spin .8s linear infinite; }
-.ownership-skeleton { display: flex; gap: 12px; width: min(460px, 80%); margin-top: 8px; }
-.ownership-skeleton i { flex: 1; height: 64px; border-radius: 12px; }
 .ownership-load-error p { margin: 0; color: var(--danger, #c4281c); }
 @keyframes ownership-spin { to { transform: rotate(360deg); } }
-@keyframes ownership-shimmer { to { background-position: -200% 0; } }
 .ownership-diagram-scroll { overflow: auto; max-width: 100%; padding: 8px 4px 16px; overscroll-behavior-inline: contain; }
 .ownership-zoom-controls { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; justify-content: flex-end; gap: 6px; min-height: 38px; padding: 2px 4px 8px; background: var(--canvas); }
 .ownership-zoom-controls button { min-width: 36px; height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface); color: var(--ink); font: inherit; font-size: 16px; line-height: 1; }
@@ -95,3 +88,7 @@
   .ownership-window-admin .ownership-graph-panel { min-height: 52vh; }
   .ownership-window-admin .ownership-graph-panel .ownership-diagram-scroll { min-height: 52vh; }
 }
+
+/* The window's buttons are quiet: a hairline, not a black frame. */
+.ownership-toolbar .soft, .ownership-sidebar-toggle, main.ownership-window > header .soft { color: var(--ink2); background: transparent; box-shadow: inset 0 0 0 1px var(--line); font-weight: 400; }
+.ownership-toolbar .soft:hover:not(:disabled), main.ownership-window > header .soft:hover:not(:disabled) { color: var(--ink); background: transparent; box-shadow: inset 0 0 0 1px var(--ink2); }

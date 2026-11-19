@@ -161,3 +161,5 @@ input.mono, select.mono { font-size: 13px; }
 .bot-links { display: flex; flex-wrap: wrap; gap: 8px 24px; }
 .bot-links em { font: 400 12px var(--font-mono); font-style: normal; color: var(--ink2); }
 
+
+.bot-logo { display: block; height: 15px; width: auto; color: var(--ink); }

@@ -127,7 +127,7 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
         <Field label="업종"><input value={newIndustry} onChange={(event) => setNewIndustry(event.target.value)} maxLength={120} /></Field>
         <Field label="국적"><input value={newCountry} onChange={(event) => setNewCountry(event.target.value)} maxLength={80} /></Field>
         <Field label="법인 형태"><select value={newLegalForm} onChange={(event) => setNewLegalForm(event.target.value)}>{Object.entries(LEGAL_FORMS).filter(([key]) => key !== "stock_company").map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></Field>
-        <button type="button" disabled={saving || !newCode.trim() || !newName.trim() || !newCountry.trim()} onClick={() => void saveAction({ action: "organization_create", organization_code: newCode, name: newName, industry: newIndustry, country_code: newCountry, legal_form: newLegalForm }, "비주식 영리법인을 등록했습니다.").then((ok) => { if (ok) { setNewCode(""); setNewName(""); setNewIndustry(""); } })}>비주식 법인 등록</button>
+        <button className="soft" type="button" disabled={saving || !newCode.trim() || !newName.trim() || !newCountry.trim()} onClick={() => void saveAction({ action: "organization_create", organization_code: newCode, name: newName, industry: newIndustry, country_code: newCountry, legal_form: newLegalForm }, "비주식 영리법인을 등록했습니다.").then((ok) => { if (ok) { setNewCode(""); setNewName(""); setNewIndustry(""); } })}>비주식 법인 등록</button>
       </div><p className="hint">등록한 비주식 법인은 주식 종목이나 거래소를 만들지 않습니다. 자본은 아래 출자지분 명부에서 관리합니다.</p></div>
       <div className="scroll-x tall"><table><thead><tr><th>기업</th><th>법인 형태</th><th>영리성</th><th>공공 분류</th><th>자동 규모</th><th>표시 규모</th><th>소유 항목</th></tr></thead><tbody>
         {data?.organizations.map((item) => <tr key={item.organization_code} className={selected === item.organization_code ? "selected" : "clickable"} onClick={() => { setSelected(item.organization_code); void load(item.organization_code); }}>
@@ -142,7 +142,7 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
     <div className="organization-layout">
       <Card title="기업집단" caption="집단 소속과 지분 지배관계는 별도로 관리됩니다.">
         <div className="organization-form-row"><Field label="새 기업집단"><input value={groupName} onChange={(event) => setGroupName(event.target.value)} maxLength={120} /></Field>
-          <button type="button" disabled={saving || !groupName.trim()} onClick={() => void saveAction({ action: "group_create", name: groupName, representative: selected || null }, "기업집단을 만들었습니다.").then((ok) => { if (ok) setGroupName(""); })}>집단 만들기</button></div>
+          <button className="soft" type="button" disabled={saving || !groupName.trim()} onClick={() => void saveAction({ action: "group_create", name: groupName, representative: selected || null }, "기업집단을 만들었습니다.").then((ok) => { if (ok) setGroupName(""); })}>집단 만들기</button></div>
         <div>{data?.groups.map((group) => <section className="organization-inset" key={group.group_id}>
           <strong>{group.name}</strong>
           <Field label="대표기업"><select disabled={saving} value={group.representative_organization_code ?? ""} onChange={(event) => void saveAction({ action: "group_representative", group_id: group.group_id, organization_code: event.target.value || null }, "대표기업을 변경했습니다.")}>
@@ -163,7 +163,7 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
           </div></div>)}
         </div>
         <p className="hint">기본 기준은 매출·자산 중소 100억/중견 1,000억 NWX, 종업원 300/1,000명입니다. 종업원 수는 자료원이 연결되기 전까지 판정에서 제외됩니다. 제품 내 규칙이며 법정 기준이 아닙니다.</p>
-        <button type="button" disabled={saving || !/^\d+$/.test(announcementSeconds)} onClick={() => {
+        <button className="soft" type="button" disabled={saving || !/^\d+$/.test(announcementSeconds)} onClick={() => {
           const configured = Object.fromEntries(Object.entries(thresholds).filter(([, limits]) => limits[0].trim() && limits[1].trim()));
           void saveAction({ action: "size_settings", announcement_seconds: Number(announcementSeconds), rules: { mode: ruleMode, thresholds: configured } }, "기업 규모 분류 설정을 저장했습니다.");
         }}>분류 설정 저장</button>
@@ -180,7 +180,7 @@ export function OrganizationPage({ ctx }: { ctx: Ctx }) {
           <div className="spec-strip"><Metric label="연간 매출 · 기준 통화" value={num(organization.metrics.revenue)} /><Metric label="자산 · 기준 통화" value={num(organization.metrics.assets)} /><Metric label="종업원 수" value={organization.metrics.employees === null ? "—" : new Intl.NumberFormat("ko-KR").format(organization.metrics.employees)} /></div>
           {organization.pending_size && <p className="notice">공시 예정: {SIZE[organization.pending_size]} · {organization.size_effective_epoch ? new Date(organization.size_effective_epoch * 1000).toLocaleString("ko-KR") : ""}</p>}
           <div className="organization-form-row"><Field label="관리자 지정 규모"><select key={organization.organization_code} id="organization-size-override" defaultValue={organization.size_override ?? ""}><option value="">자동 판정 사용</option><option value="sme">중소기업</option><option value="mid_market">중견기업</option><option value="large">대기업</option></select></Field>
-            <button type="button" disabled={saving} onClick={() => { const size = (document.getElementById("organization-size-override") as HTMLSelectElement).value || null; void saveAction({ action: "size_override", organization_code: organization.organization_code, size, reason: "관리자 대시보드 지정" }, "기업 규모 지정을 저장했습니다."); }}>규모 적용</button></div>
+            <button className="soft" type="button" disabled={saving} onClick={() => { const size = (document.getElementById("organization-size-override") as HTMLSelectElement).value || null; void saveAction({ action: "size_override", organization_code: organization.organization_code, size, reason: "관리자 대시보드 지정" }, "기업 규모 지정을 저장했습니다."); }}>규모 적용</button></div>
         </Card>
         {organization.legal_form === "stock_company" ? <Card className="organization-issuances" title="주식 발행 종류" caption="주식회사만 주식 종류를 발행할 수 있습니다. 의결권·경제지분·배당 조건은 발행 종류별 권리입니다.">
           {organization.issuances.map((issue) => <IssuanceEditor key={issue.company_code} issue={issue} saving={saving} canRetire={issue.company_code !== organization.organization_code} onIssue={(payload) => void issueShares(issue, payload)} onRetire={() => void retireIssuance(issue)} onReduce={(ratio) => void reduceShares(issue, ratio)} onSave={(rights) => saveAction({ action: "issuance_rights", issuance_id: issue.issuance_id, company_code: issue.company_code, class_name: rights.class_name, voting_rights_per_share: rights.voting_rights_per_share, economic_interest_per_share: rights.economic_interest_per_share, rights: rights.dividend }, `${rights.class_name} 권리를 저장했습니다.`)} />)}
@@ -206,7 +206,7 @@ function LegalFormEditor({ organization, saving, onSave }: { organization: Org; 
   return <div className="organization-form-row">
     <Field label="법인 형태"><select value={legalForm} onChange={(event) => setLegalForm(event.target.value)}>{Object.entries(LEGAL_FORMS).map(([key, label]) => <option value={key} key={key}>{label}</option>)}</select></Field>
     <span className="hint">주식회사는 주식 발행, 나머지는 출자지분 명부를 사용합니다.</span>
-    <button type="button" disabled={saving || legalForm === organization.legal_form} onClick={() => onSave(legalForm)}>법인 형태 저장</button>
+    <button className="soft" type="button" disabled={saving || legalForm === organization.legal_form} onClick={() => onSave(legalForm)}>법인 형태 저장</button>
   </div>;
 }
 
@@ -227,7 +227,7 @@ function CapitalInterestForm({ saving, onSave }: { saving: boolean; onSave: (pay
     <Field label="통화 코드"><input required value={currency} onChange={(event) => setCurrency(event.target.value)} maxLength={12} /></Field>
     <Field label="경제적 지분 (%)"><input required type="number" min="0" max="100" step="0.01" value={economic} onChange={(event) => setEconomic(event.target.value)} /></Field>
     <Field label="의결권 (%)"><input required type="number" min="0" max="100" step="0.01" value={voting} onChange={(event) => setVoting(event.target.value)} /></Field>
-    <button type="submit" disabled={saving || !holderId.trim()}>출자지분 저장</button>
+    <button className="soft" type="submit" disabled={saving || !holderId.trim()}>출자지분 저장</button>
     <p className="hint">같은 출자자의 항목은 새 행을 추가하지 않고 값이 갱신됩니다. 지분 이전은 기존 지분을 줄이고 새 출자자 항목을 등록해주세요.</p>
   </form>;
 }

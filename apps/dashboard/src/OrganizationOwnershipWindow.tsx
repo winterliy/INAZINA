@@ -86,7 +86,6 @@ function LoadingGraph() {
   return <div className="ownership-loading" role="status" aria-live="polite">
     <span className="ownership-spinner" aria-hidden="true" />
     <strong>지분·의결권 조직도를 불러오는 중…</strong>
-    <div className="ownership-skeleton" aria-hidden="true"><i /><i /><i /></div>
   </div>;
 }
 
@@ -200,7 +199,7 @@ export function OrganizationOwnershipWindow({ route }: { route: string }) {
         {organizationSearch.trim() ? <ul className="ownership-tree ownership-search-results">{filteredOrganizations.map((organization) => <li key={organization.organization_code}><button type="button" className={selected === organization.organization_code ? "ownership-tree-company active" : "ownership-tree-company"} onClick={() => void loadOrganization(organization.organization_code, includeMinor)}>{organization.name} <small>{organization.organization_code}</small></button></li>)}{!filteredOrganizations.length && <li className="empty">검색된 법인이 없습니다.</li>}</ul> : <>
           <details className="ownership-tree-section" open>
             <summary>현재 지분 관계 경로</summary>
-            {loading && !tree.length ? <div className="ownership-tree-loading"><i /><i /><i /></div> : tree.length
+            {loading && !tree.length ? <p className="empty">불러오는 중…</p> : tree.length
               ? <ul className="ownership-tree">{tree.map((node) => <TreeItem key={node.id} node={node} selectedNodeId={focusedNodeId} onSelect={(nodeId) => { setFocusedNodeId(nodeId); setFocusRequest((value) => value + 1); }} />)}</ul>
               : <p className="empty">표시할 주주 관계가 없습니다.</p>}
           </details>

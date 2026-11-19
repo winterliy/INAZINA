@@ -2,6 +2,7 @@ import { formatMoney, formatMoneyNumeric, exactMoney, moneyAdd, moneyMultiply, m
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { api, apiError, clearToken, signedOut, type ApiUser } from "../../shared/api";
+import { Logo } from "../../shared/Logo";
 import { navigate } from "./nav";
 import { AuthPanel } from "../../shared/AuthPanel";
 import { DEFAULT_INDICATORS, INDICATOR_CATALOG, PriceChart, type Candle, type Drawing, type IndicatorCatalog, type IndicatorChoice, type IndicatorData, type Point, type Tool } from "./PriceChart";
@@ -64,21 +65,6 @@ const compactMoney = formatMoneyNumeric;
 const ORDER_TYPES = [["limit", "지정가"], ["market", "시장가"], ["current", "현재가"]] as const;
 // A missing or invalid time shows as a dash; one bad row must never blank the whole page.
 const date = (epoch: number) => Number.isFinite(epoch * 1000) ? new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "short" }).format(epoch * 1000) : "—";
-const CREDIT_EVENTS: Record<string, string> = {
-  payment_on_time: "정상 납부", payment_missed: "납부 연체", payment_cured: "연체 회차 사후 납부", loan_closed: "대출 완납",
-  acceleration: "기한이익상실", default: "부도", manual_adjustment: "관리자 정정", external_adjustment: "점수 정정 반영", legacy_baseline: "신용모델 도입",
-};
-const CREDIT_TIPS: Record<string, string> = {
-  unpaid_installments: "미납 회차를 갚으면 현재 미납 감점이 바로 사라집니다.",
-  missed: "연체 기록은 시간이 지나며 줄어들고, 미납 회차를 갚으면 일부 회복됩니다.",
-  delinquent_loans: "연체 중인 대출 잔액을 상환하면 연체 상태 감점이 사라집니다.",
-  acceleration: "기한이익상실 기록은 시간이 지나며 줄어듭니다. 정상 납부 실적이 회복을 돕습니다.",
-  default: "부도 기록은 시간이 지나며 줄어듭니다. 남은 잔액 상환과 정상 납부가 회복을 돕습니다.",
-  debt_burden: "대출 잔액을 줄이거나 연소득 정보를 갱신하면 부채수준 요인이 개선됩니다.",
-  new_credit: "짧은 기간에 대출을 여러 건 받지 않으면 5일 뒤 회복됩니다.",
-  legacy: "도입 전 감점은 시간이 지나며 줄어듭니다.",
-};
-const signedPoints = (value: number) => `${value > 0 ? "+" : ""}${Math.round(value * 10) / 10}`;
 const KYC_STATUS: Record<KycProfile["status"], string> = { pending: "확인 대기", verified: "확인 완료", rejected: "확인 거절", expired: "만료" };
 const KYC_RISK: Record<KycProfile["risk_tier"], string> = { standard: "일반", enhanced: "강화 심사", restricted: "송금 제한" };
 const fundCategoryName: Record<string, string> = { equity: "주식형", bond: "채권형", mixed: "혼합형", other: "기타형" };
@@ -629,7 +615,7 @@ export default function App() {
     if (location.pathname !== "/") navigate("/");
   };
   const topbar = (here: "home" | "account" | "services") => <header className="hts-topbar">
-    <a className="brand" href="/" aria-label="NARU 나루 홈"><b className="brand-mark" aria-hidden="true">N</b>NARU <span>나루 · INAZINA</span></a>
+    <a className="brand" href="/" aria-label="나루 홈"><Logo className="brand-logo" /><span>나루</span></a>
     <div className="top-search" ref={searchBoxRef}>
       <label className="top-search-field"><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><circle cx="11" cy="11" r="7" /><path d="M20 20l-4-4" /></svg>
         <input ref={searchInputRef} value={search} aria-label="종목·상품코드·금리·지수 검색" aria-expanded={searchOpen} aria-controls="top-search-pop" placeholder="종목명·상품코드·국가·거래소 검색" onFocus={() => setSearchOpen(true)} onChange={(event) => { setSearch(event.target.value); setSearchOpen(true); }} onKeyDown={(event) => { if (event.key === "Enter" && filtered[0]) chooseInstrument(filtered[0].code); }} />

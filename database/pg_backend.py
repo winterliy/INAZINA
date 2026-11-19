@@ -156,6 +156,27 @@ def _integer_keys():
             if len(columns) == 1 and columns == bigint_keys.get(table)}
 
 
+def _nullable_names():
+    """Column names that are nullable in at least one table or view. Anything else is NOT NULL wherever it appears."""
+    query = ("SELECT 'c', column_name FROM information_schema.columns "
+             "WHERE table_schema = 'public' AND is_nullable = 'YES'")
+    return set(_catalog(query).get("c", []))
+
+
+def _natural_null_order(tree):
+    """SQLite sorts NULL as the smallest value, PostgreSQL as the largest, so the translation spells the order out
+    (`ASC NULLS FIRST`). For a column that can never be NULL that changes nothing, but it is no longer the order a
+    plain index delivers, so `ORDER BY recorded_epoch LIMIT 1` scanned the whole table (~0.3s each, 190 times for
+    one dashboard page). Drop the clause where the column cannot hold NULL."""
+    ordered = [o for o in tree.find_all(exp.Ordered) if isinstance(o.this, exp.Column)]
+    if not ordered:
+        return
+    nullable = _nullable_names()
+    for item in ordered:
+        if item.this.name not in nullable:
+            item.set("nulls_first", bool(item.args.get("desc")))
+
+
 def _replace_to_upsert(tree):
     """INSERT OR REPLACE with SQLite's result: on a primary-key conflict the row is replaced,
     so listed columns take the new values and every other column returns to its DEFAULT
@@ -324,6 +345,7 @@ def translate(sql):
     for extract in tree.find_all(exp.JSONExtractScalar):
         extract.set("this", exp.cast(extract.this.copy(), "JSON"))
     tree = rewrite(tree)
+    _natural_null_order(tree)
     if isinstance(tree, exp.Create) and tree.args.get("exists") and tree.args.get("kind") == "TABLE":
         created = tree.find(exp.Table)
         if created is not None and created.name in DROPPED:

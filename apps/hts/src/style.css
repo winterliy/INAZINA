@@ -1398,3 +1398,7 @@ th:last-child, td:last-child { padding-right: 20px; }
 .connection.ok i { background: #30d158; }
 .connection.bad i { background: #ff453a; }
 .connection.pending i { background: #8e8e93; }
+
+.hts-topbar .brand { display: inline-flex; align-items: center; gap: 10px; }
+.hts-topbar .brand-logo { display: block; height: 19px; width: auto; }
+.hts-topbar .brand span { margin-left: 0; padding-left: 10px; border-left: 1px solid rgba(255,255,255,.22); font-size: 13px; }

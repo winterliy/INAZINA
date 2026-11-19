@@ -107,7 +107,6 @@ const subtitles: Record<Page, string> = {
 };
 const number = formatMoney;
 const date = (value: number) => new Intl.DateTimeFormat("ko-KR", { dateStyle: "short", timeStyle: "medium" }).format(value * 1000);
-const marketStatusName: Record<string, string> = { open: "개장", closed: "휴장", paused: "일시 정지", halted: "거래 정지" };
 const message = (cause: unknown, fallback: string) => cause instanceof Error ? cause.message : fallback;
 
 
@@ -127,7 +126,7 @@ export default function App() {
   const [user, setUser] = useState<ApiUser | null>(null);
   const [checked, setChecked] = useState(false);
   const [page, setPage] = useState<Page>(initialRoute.page);
-  const [health, setHealth] = useState("확인 중");
+  const [, setHealth] = useState("확인 중");
   const [connected, setConnected] = useState(false);
   const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -314,12 +313,6 @@ export default function App() {
 
   const ctx: Ctx = { busy, run, say, query, openCommand };
 
-  function marketAction(action: string, exchangeId?: string, stage?: number) {
-    const labels: Record<string, string> = { close: "휴장", open: "개장", pause: "일시 정지", resume: "재개", circuit: `서킷브레이커 ${stage}단계`, sidecar: "사이드카(5분)" };
-    if (!window.confirm(`${exchangeId ?? "전체 거래소"}에 ${labels[action]}을(를) 적용할까요?`)) return;
-    void run(() => api<{ message: string; success: boolean }>("/api/admin/market", { method: "POST", body: JSON.stringify({ action, exchangeId, stage }) }),
-      "시장 상태를 변경하지 못했습니다.", (result) => say(plain(result.message), result.success === false));
-  }
 
   function createEvent(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -395,7 +388,7 @@ export default function App() {
         {user.delegatedBy && <div className="notice" role="status"><span>관리자 {user.delegatedByName ?? user.delegatedBy}님이 {user.nickname} 계정으로 로그인 중입니다.</span></div>}
         {notice && <div className={notice.error ? "notice error" : "notice"} role={notice.error ? "alert" : "status"}><span>{notice.text}</span><button type="button" className="ghost" aria-label="알림 닫기" onClick={() => setNotice(null)}>×</button></div>}
         <Suspense fallback={<p className="loading">계정 화면을 불러오는 중…</p>}><AccountPage ctx={ctx} user={user} onLogout={logout} /></Suspense>
-        <footer className="bot"><div className="bot-in"><span className="bot-status"><b>inazina</b></span><span>© INAZINA. All rights reserved.</span></div></footer>
+        <footer className="bot"><div className="bot-in"><span className="bot-status"><Logo className="bot-logo" /></span><span>© INAZINA. All rights reserved.</span></div></footer>
       </main>
     </div></Stage>;
   }

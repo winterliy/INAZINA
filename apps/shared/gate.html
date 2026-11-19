@@ -37,8 +37,10 @@ button.go:disabled{opacity:.6;cursor:progress}
 .err:empty{display:none}
 pre{max-height:40vh;overflow:auto;margin:16px 0 0;padding:14px;border-radius:6px;background:var(--field);font:12.5px/1.6 var(--mono);white-space:pre-wrap;word-break:break-word}
 .divider{height:1px;margin:28px 0 20px;background:var(--line)}
-.links{display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px 16px;font-size:13px}
-.links a{color:var(--accent);text-decoration:none}.links a:hover{text-decoration:underline;text-underline-offset:3px}
+.links{display:flex}
+.links a.back{display:flex;align-items:center;justify-content:center;width:100%;min-height:42px;border-radius:6px;box-shadow:inset 0 0 0 1px var(--line);color:var(--ink);font-size:14px;font-weight:500;text-decoration:none}.links a.back:hover{color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.result{margin:16px 0 0;border:1px solid var(--line);border-radius:6px;overflow:hidden}.result div{display:flex;justify-content:space-between;gap:16px;padding:10px 14px;font-size:13px}.result div+div{border-top:1px solid var(--line)}.result span{color:var(--ink2)}.result b{font-weight:500;word-break:break-all;text-align:right}
+details.raw{margin-top:10px;font-size:12px;color:var(--ink2)}details.raw summary{cursor:pointer}details.raw pre{margin-top:8px}
 .foot{display:flex;justify-content:space-between;align-items:center;gap:12px;color:var(--ink2);font-size:12px}
 .status{display:inline-flex;align-items:center;gap:8px}.status i{width:8px;height:8px;border-radius:50%;background:var(--bad)}.status.ok i{background:var(--ok)}
 [hidden]{display:none!important}
@@ -74,7 +76,7 @@ pre{max-height:40vh;overflow:auto;margin:16px 0 0;padding:14px;border-radius:6px
 <button class="go" type="submit" id="go">로그인</button>
 </form>
 <p class="err" id="err" role="alert"></p>
-<pre id="out" hidden></pre>
+<div id="out" hidden></div>
 <div class="divider"></div>
 <nav class="links" aria-label="이동">{{LINKS}}</nav>
 </div>
@@ -90,8 +92,11 @@ pre{max-height:40vh;overflow:auto;margin:16px 0 0;padding:14px;border-radius:6px
     var body=new URLSearchParams({target:target,password:pw.value,loginId:form.elements.loginId.value.trim()});
     fetch("/__browser-access",{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},body:body,redirect:"manual",cache:"no-store"}).then(function(r){
       if(r.type==="opaqueredirect"||r.status===0||(r.status>=300&&r.status<400)||r.status===401||r.status===403||r.status===429){err.textContent=r.status===429?"시도가 너무 많습니다. 잠시 뒤에 다시 시도해주세요.":"아이디 또는 비밀번호가 맞지 않거나 관리자 계정이 아닙니다.";return}
-      return r.text().then(function(t){var s;try{s=JSON.stringify(JSON.parse(t),null,2)}catch(x){err.textContent="결과를 읽지 못했습니다.";return}
-        out.textContent=s;out.hidden=false;pw.value=""})
+      return r.text().then(function(t){var j;try{j=JSON.parse(t)}catch(x){err.textContent="결과를 읽지 못했습니다.";return}
+        var k;out.textContent="";var box=document.createElement("div");box.className="result";
+        for(k in j){if(j[k]!==null&&typeof j[k]!=="object"){var d=document.createElement("div"),a=document.createElement("span"),b=document.createElement("b");a.textContent=k;b.textContent=String(j[k]);d.appendChild(a);d.appendChild(b);box.appendChild(d)}}
+        var det=document.createElement("details");det.className="raw";var sm=document.createElement("summary");sm.textContent="JSON 원문";var pre=document.createElement("pre");pre.textContent=JSON.stringify(j,null,2);det.appendChild(sm);det.appendChild(pre);
+        if(box.children.length)out.appendChild(box);out.appendChild(det);out.hidden=false;pw.value=""})
     }).catch(function(){err.textContent="서버에 연결하지 못했습니다."}).then(function(){go.disabled=false});
   });
 })();

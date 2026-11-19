@@ -41,7 +41,7 @@ html,body{margin:0;min-height:100%}
 body{min-height:100vh;display:grid;place-items:center;padding:64px 20px;color:var(--ink);background:var(--canvas);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Apple SD Gothic Neo","Noto Sans KR",system-ui,sans-serif;font-size:17px;letter-spacing:-.022em;-webkit-font-smoothing:antialiased;overflow-x:clip}
 main{width:min(760px,100%);text-align:center;animation:rise 700ms var(--ease) backwards}
 .brand{display:inline-flex;align-items:center;gap:10px;margin-bottom:40px;font-size:14px;font-weight:600;letter-spacing:-.224px;text-align:left}
-.mark{display:grid;place-items:center;width:28px;height:28px;border-radius:7px;color:var(--canvas);background:var(--ink);font-size:14px}
+.wordmark{display:block;height:20px;width:auto;color:var(--ink)}
 .brand small{display:block;color:var(--ink2);font-size:12px;font-weight:400;letter-spacing:0}
 h1{margin:0;font-size:56px;line-height:1.07;font-weight:600;letter-spacing:-.015em}
 p{max-width:560px;margin:16px auto 0;color:var(--ink2);font-size:21px;line-height:1.38;letter-spacing:-.01em}
@@ -67,7 +67,7 @@ footer a{color:var(--accent);text-decoration:none}footer a:hover{text-decoration
 <body>
 
 <main>
-  <div class="brand"><span class="mark">I</span><span>INAZINA<small>API 서버 · 127.0.0.1:4312</small></span></div>
+  <div class="brand"><span><svg xmlns="http://www.w3.org/2000/svg" viewBox="-6 -714 3273 728" class="wordmark" role="img" aria-label="inazina." height="20"><g fill="currentColor"><path d="M62 0V-480H172V0Z"/><path d="M594 0V-277Q594 -325 563.5 -356.0Q533 -387 485 -387Q453 -387 428.0 -373.0Q403 -359 389.0 -334.0Q375 -309 375 -277L332 -301Q332 -356 356.0 -398.5Q380 -441 422.5 -465.5Q465 -490 518 -490Q572 -490 614.0 -462.5Q656 -435 680.0 -391.5Q704 -348 704 -301V0ZM265 0V-480H375V0Z"/><path d="M987 10Q922 10 869.5 -23.0Q817 -56 786.5 -112.5Q756 -169 756 -239Q756 -310 786.5 -366.5Q817 -423 869.5 -456.5Q922 -490 987 -490Q1042 -490 1084.5 -466.5Q1127 -443 1152.0 -402.0Q1177 -361 1177 -309V-171Q1177 -119 1152.5 -78.0Q1128 -37 1085.0 -13.5Q1042 10 987 10ZM1005 -94Q1066 -94 1103.5 -135.0Q1141 -176 1141 -240Q1141 -283 1124.0 -316.0Q1107 -349 1076.5 -367.5Q1046 -386 1005 -386Q965 -386 934.5 -367.5Q904 -349 886.5 -316.0Q869 -283 869 -240Q869 -197 886.5 -164.0Q904 -131 934.5 -112.5Q965 -94 1005 -94ZM1134 0V-129L1153 -246L1134 -362V-480H1244V0Z"/><path d="M1300 -60 1568 -420H1697L1429 -60ZM1300 0V-60L1400 -100H1691V0ZM1318 -380V-480H1697V-420L1597 -380Z"/><path d="M1758 0V-480H1868V0Z"/><path d="M2290 0V-277Q2290 -325 2259.5 -356.0Q2229 -387 2181 -387Q2149 -387 2124.0 -373.0Q2099 -359 2085.0 -334.0Q2071 -309 2071 -277L2028 -301Q2028 -356 2052.0 -398.5Q2076 -441 2118.5 -465.5Q2161 -490 2214 -490Q2268 -490 2310.0 -462.5Q2352 -435 2376.0 -391.5Q2400 -348 2400 -301V0ZM1961 0V-480H2071V0Z"/><path d="M2683 10Q2618 10 2565.5 -23.0Q2513 -56 2482.5 -112.5Q2452 -169 2452 -239Q2452 -310 2482.5 -366.5Q2513 -423 2565.5 -456.5Q2618 -490 2683 -490Q2738 -490 2780.5 -466.5Q2823 -443 2848.0 -402.0Q2873 -361 2873 -309V-171Q2873 -119 2848.5 -78.0Q2824 -37 2781.0 -13.5Q2738 10 2683 10ZM2701 -94Q2762 -94 2799.5 -135.0Q2837 -176 2837 -240Q2837 -283 2820.0 -316.0Q2803 -349 2772.5 -367.5Q2742 -386 2701 -386Q2661 -386 2630.5 -367.5Q2600 -349 2582.5 -316.0Q2565 -283 2565 -240Q2565 -197 2582.5 -164.0Q2600 -131 2630.5 -112.5Q2661 -94 2701 -94ZM2830 0V-129L2849 -246L2830 -362V-480H2940V0Z"/></g><path d="M3116 10Q3084 10 3063.5 -11.5Q3043 -33 3043 -64Q3043 -96 3063.5 -117.0Q3084 -138 3116 -138Q3148 -138 3168.5 -117.0Q3189 -96 3189 -64Q3189 -33 3168.5 -11.5Q3148 10 3116 10Z" fill="#1f3fff"/><circle cx="117.0" cy="-634.0" r="66.0" fill="#1f3fff"/><circle cx="1813.0" cy="-634.0" r="66.0" fill="#1f3fff"/></svg><small>API 서버 · 127.0.0.1:4312</small></span></div>
   <h1>${title}</h1>
   <p>${text}</p>
   ${reason === "home" ? "" : `<span class="path">${escape(path)}</span>`}
@@ -95,7 +95,7 @@ function gatePage(reason: "login_required" | "login", path: string, pythonConnec
   const values: Record<string, string> = {
     TITLE: escape(heading), ICON, SERVICE: "API 서버", PORT: "4312", HEADING: escape(heading), LEAD: escape(lead),
     PATH_CHIP: reason === "login" ? "" : `<span class="chip">${escape(path)}</span>`,
-    LINKS: '<a href="http://127.0.0.1:4310/">대시보드</a><a href="http://127.0.0.1:4311/">나루</a><a href="http://127.0.0.1:4313/">데이터 서비스 4313</a>',
+    LINKS: '<a class="back" href="/">돌아가기</a>',
     STATUS_CLASS: pythonConnected ? "ok" : "", STATUS_TEXT: pythonConnected ? "서비스 정상" : "서비스 점검 필요", TARGET_JS: jsString(target),
   };
   return template.replace(/\{\{(\w+)\}\}/g, (_match, key: string) => values[key] ?? "");

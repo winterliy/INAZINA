@@ -50,7 +50,8 @@ main.auth-shell .auth-foot { display: flex; justify-content: space-between; gap:
   main.auth-shell .auth-body { padding-top: 36px; }
 }
 
-/* a link under the form (나루: read the board without signing in), centred at the bottom of the panel */
-main.auth-shell .auth-extra { display: flex; justify-content: center; padding: 6px 0 18px; }
-main.auth-shell .auth-extra a { position: static; transform: none; display: inline-flex; align-items: center; min-height: 38px; padding: 0 16px; border-radius: 6px; color: var(--a-ink); background: var(--a-field); box-shadow: none; backdrop-filter: none; font-size: 13px; font-weight: 500; text-decoration: none; }
+/* a link for 나루 (read the board without signing in), centred at the bottom of the whole window */
+main.auth-shell .auth-extra { position: fixed; left: 50%; bottom: 22px; z-index: 5; transform: translateX(-50%); padding: 0; }
+main.auth-shell .auth-extra a { display: inline-flex; align-items: center; min-height: 38px; padding: 0 18px; border-radius: 6px; color: var(--a-ink); background: var(--a-panel); box-shadow: 0 0 0 1px var(--a-line), 0 6px 18px rgba(0, 0, 0, .12); font-size: 13px; font-weight: 500; text-decoration: none; white-space: nowrap; }
 main.auth-shell .auth-extra a:hover { color: var(--a-accent); }
+@media (max-width: 900px) { main.auth-shell .auth-extra { bottom: 14px; } }
